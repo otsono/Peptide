@@ -1,0 +1,203 @@
+{
+  "_note": "Content ids for use in Script.hx: AudioClip.play(\"<id>\")",
+  "sounds": [
+    {
+      "id": "sandbag::sandbag_win",
+      "metadata": {
+        "durationSecs": 4.832653045654297,
+        "originalName": "sandbag_win",
+        "sampleCount": 213120,
+        "sampleRate": 44100
+      },
+      "path": "sounds/sandbag_win.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::sandbag_starKO",
+      "metadata": {
+        "durationSecs": 2.1234467029571533,
+        "originalName": "sandbag_starKO",
+        "sampleCount": 93644,
+        "sampleRate": 44100
+      },
+      "path": "sounds/sandbag_starKO.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::mario_dspec6",
+      "metadata": {
+        "durationSecs": 0.3640136122703552,
+        "originalName": "mario_dspec6",
+        "sampleCount": 16053,
+        "sampleRate": 44100
+      },
+      "path": "sounds/mario_dspec6.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::mario_dspec5",
+      "metadata": {
+        "durationSecs": 0.44394558668136597,
+        "originalName": "mario_dspec5",
+        "sampleCount": 19578,
+        "sampleRate": 44100
+      },
+      "path": "sounds/mario_dspec5.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::mario_dspec4",
+      "metadata": {
+        "durationSecs": 0.48673468828201294,
+        "originalName": "mario_dspec4",
+        "sampleCount": 21465,
+        "sampleRate": 44100
+      },
+      "path": "sounds/mario_dspec4.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::mario_dspec3",
+      "metadata": {
+        "durationSecs": 0.5079138278961182,
+        "originalName": "mario_dspec3",
+        "sampleCount": 22399,
+        "sampleRate": 44100
+      },
+      "path": "sounds/mario_dspec3.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::mario_dspec2",
+      "metadata": {
+        "durationSecs": 0.533696174621582,
+        "originalName": "mario_dspec2",
+        "sampleCount": 23536,
+        "sampleRate": 44100
+      },
+      "path": "sounds/mario_dspec2.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::mario_dspec",
+      "metadata": {
+        "durationSecs": 0.5501587390899658,
+        "originalName": "mario_dspec",
+        "sampleCount": 24262,
+        "sampleRate": 44100
+      },
+      "path": "sounds/mario_dspec.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::link_step",
+      "metadata": {
+        "durationSecs": 0.07278911769390106,
+        "originalName": "link_step",
+        "sampleCount": 3210,
+        "sampleRate": 44100
+      },
+      "path": "sounds/link_step.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::link_runstart",
+      "metadata": {
+        "durationSecs": 0.19337868690490723,
+        "originalName": "link_runstart",
+        "sampleCount": 8528,
+        "sampleRate": 44100
+      },
+      "path": "sounds/link_runstart.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::link_bombappear",
+      "metadata": {
+        "durationSecs": 0.0802040845155716,
+        "originalName": "link_bombappear",
+        "sampleCount": 3537,
+        "sampleRate": 44100
+      },
+      "path": "sounds/link_bombappear.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::knockback_launch_l",
+      "metadata": {
+        "durationSecs": 1.2153741121292114,
+        "originalName": "knockback_launch_l",
+        "sampleCount": 53598,
+        "sampleRate": 44100
+      },
+      "path": "sounds/knockback_launch_l.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::sandbag_itemSpawn",
+      "metadata": {
+        "durationSecs": 0.6483673453330994,
+        "originalName": "sandbag_itemSpawn",
+        "sampleCount": 28593,
+        "sampleRate": 44100
+      },
+      "path": "sounds/sandbag_itemSpawn.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::sandbag_ticker",
+      "metadata": {
+        "durationSecs": 0.13206349313259125,
+        "originalName": "sandbag_ticker",
+        "sampleCount": 5824,
+        "sampleRate": 44100
+      },
+      "path": "sounds/sandbag_ticker.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::fox_jumpSound2",
+      "metadata": {
+        "durationSecs": 0.37154194712638855,
+        "originalName": "fox_jumpSound2",
+        "sampleCount": 16385,
+        "sampleRate": 44100
+      },
+      "path": "sounds/fox_jumpSound2.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::fox_jumpSound",
+      "metadata": {
+        "durationSecs": 0.47795918583869934,
+        "originalName": "fox_jumpSound",
+        "sampleCount": 10539,
+        "sampleRate": 22050
+      },
+      "path": "sounds/fox_jumpSound.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::dk_midairflip",
+      "metadata": {
+        "durationSecs": 0.22170068323612213,
+        "originalName": "dk_midairflip",
+        "sampleCount": 9777,
+        "sampleRate": 44100
+      },
+      "path": "sounds/dk_midairflip.ogg",
+      "type": "audio"
+    },
+    {
+      "id": "sandbag::bowser_swing5",
+      "metadata": {
+        "durationSecs": 0.3288208544254303,
+        "originalName": "bowser_swing5",
+        "sampleCount": 14501,
+        "sampleRate": 44100
+      },
+      "path": "sounds/bowser_swing5.ogg",
+      "type": "audio"
+    }
+  ]
+}

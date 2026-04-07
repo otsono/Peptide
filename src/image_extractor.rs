@@ -269,7 +269,7 @@ fn prerender_skewed_frames(
 ) -> usize {
     use image::{GenericImageView, RgbaImage, Rgba};
     let mut count = 0;
-    let mut prerendered_cache: BTreeMap<String, (String, u32, u32)> = BTreeMap::new();
+    let mut prerendered_cache: BTreeMap<String, (String, u32, u32, f64, f64)> = BTreeMap::new();
 
     // Collect all (anim, frame, entry_idx) that need pre-rendering
     let mut work: Vec<(String, u16, usize)> = Vec::new();
@@ -307,16 +307,20 @@ fn prerender_skewed_frames(
         let cache_key = format!("{}_{:.2}_{:.2}_{:.2}_{:.2}",
             entry.shape_id, mat.a, mat.b, mat.c, mat.d);
 
-        let (new_sym, new_w, new_h) = if let Some(cached) = prerendered_cache.get(&cache_key) {
+        let (new_sym, new_w, new_h, bbox_min_x, bbox_min_y) = if let Some(cached) = prerendered_cache.get(&cache_key) {
             cached.clone()
         } else {
             // Load source image
-            let src_path = sprites_dir.parent()
-                .unwrap_or(sprites_dir)
-                .join(&src_img.png_path);
+            // png_path is "library/sprites/X.png" — resolve relative to char output dir
+            // (two levels up from sprites_dir)
+            let char_output_dir = sprites_dir.parent().and_then(|p| p.parent()).unwrap_or(sprites_dir);
+            let src_path = char_output_dir.join(&src_img.png_path);
             let src = match image::open(&src_path) {
                 Ok(img) => img.to_rgba8(),
-                Err(_) => continue,
+                Err(e) => {
+                    log::debug!("prerender_skewed: failed to open '{}': {}", src_path.display(), e);
+                    continue;
+                }
             };
             let (sw, sh) = (src.width() as f64, src.height() as f64);
 
@@ -382,19 +386,26 @@ fn prerender_skewed_frames(
                 png_path: format!("library/sprites/{}", filename),
             });
 
-            prerendered_cache.insert(cache_key.clone(), (new_sym_name.clone(), dst_w, dst_h));
-            (new_sym_name, dst_w, dst_h)
+            prerendered_cache.insert(cache_key.clone(), (new_sym_name.clone(), dst_w, dst_h, min_x, min_y));
+            (new_sym_name, dst_w, dst_h, min_x, min_y)
         };
 
-        // Replace the frame entry with identity placement at adjusted position
+        // Replace the frame entry with identity placement at adjusted position.
+        // The pre-rendered bitmap pixel (0,0) maps to (min_x, min_y) in the original
+        // transformed coordinate space.  So the new tx/ty must incorporate that offset
+        // so the image lands in the correct position.
         let entry = &mut anim_images.get_mut(anim_name).unwrap().frames.get_mut(frame).unwrap()[*entry_idx];
-        // The pre-rendered bitmap's origin is offset by (min_x, min_y) from the original
-        // transform, so adjust tx/ty to account for this
+        let new_local_tx = entry.local_matrix.tx + bbox_min_x;
+        let new_local_ty = entry.local_matrix.ty + bbox_min_y;
         entry.symbol_name = new_sym.clone();
         entry.local_matrix = ImageLocalMatrix::from_abcd(1.0, 0.0, 0.0, 1.0,
-            entry.local_matrix.tx, entry.local_matrix.ty);
-        entry.world_sx = new_w as f64;
-        entry.world_sy = new_h as f64;
+            new_local_tx, new_local_ty);
+        entry.world_tx = entry.world_tx + bbox_min_x;
+        entry.world_ty = entry.world_ty + bbox_min_y;
+        // Pre-rendered image is already at final size — scale is 1:1
+        entry.world_sx = 1.0;
+        entry.world_sy = 1.0;
+        entry.world_rotation = 0.0;
 
         count += 1;
     }
