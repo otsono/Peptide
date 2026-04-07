@@ -673,27 +673,43 @@ pub fn generate_entity(
                             let meta_guid = image_guids.get(&img.symbol_name)
                                 .cloned().unwrap_or_default();
 
-                            // FrayTools uses y-down (negative = above foot), same as SSF2.
-                            // x/y = top-left corner of the image (unrotated).
-                            // Pivot = image center (rotation origin).
-                            // Rotation is in degrees from the SWF matrix decomposition.
+                            // FrayTools coordinate model:
+                            // (x, y) = position of the pivot point in entity space
+                            // (pivotX, pivotY) = offset from image top-left to rotation center
+                            // rotation happens around pivot
+                            //
+                            // SWF model: [a,b,c,d,tx,ty] is a full affine transform.
+                            // tx,ty positions the bitmap origin (top-left), and the matrix
+                            // rotates/scales around that origin.  To make rotation look correct
+                            // in Fraymakers, we use the bitmap center as the pivot.  Then x,y
+                            // becomes the world-space position of that center:
+                            //   x = world_tx + a*(w/2) + c*(h/2)
+                            //   y = world_ty + b*(w/2) + d*(h/2)
                             let img_w = img.width as f64;
                             let img_h = img.height as f64;
                             let fm_sx = round2(world_sx.abs());
                             let fm_sy = round2(world_sy.abs());
 
-                            // SSF2 tx/ty is where the sprite's local origin (top-left) maps to in world space.
-                            // Fraymakers x/y is that same point. Pivot is (0,0) — rotation around the
-                            // sprite's own origin, matching SSF2 behavior.
-                            let fm_x = round2(world_tx);
-                            let fm_y = round2(world_ty);
+                            // Get world-space matrix components
+                            let wa = entry.map(|e| e.world_a).unwrap_or(1.0);
+                            let wb = entry.map(|e| e.world_b).unwrap_or(0.0);
+                            let wc = entry.map(|e| e.world_c).unwrap_or(0.0);
+                            let wd = entry.map(|e| e.world_d).unwrap_or(1.0);
+
+                            // Pivot at bitmap center
+                            let pivot_x = round2(img_w / 2.0);
+                            let pivot_y = round2(img_h / 2.0);
+
+                            // x,y = world position of the bitmap center
+                            let fm_x = round2(world_tx + wa * (img_w / 2.0) + wc * (img_h / 2.0));
+                            let fm_y = round2(world_ty + wb * (img_w / 2.0) + wd * (img_h / 2.0));
 
                             symbols.push(json!({
                                 "$id": per_placement_sym_id,
                                 "alpha": 1,
                                 "imageAsset": meta_guid,
-                                "pivotX": 0,
-                                "pivotY": 0,
+                                "pivotX": pivot_x,
+                                "pivotY": pivot_y,
                                 "pluginMetadata": {},
                                 // FrayTools uses CCW-positive; SWF atan2(b,a) is CW-positive in y-down.
                                 "rotation": round2(-world_rot),

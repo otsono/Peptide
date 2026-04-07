@@ -96,6 +96,12 @@ pub struct FrameImageEntry {
     pub world_sy: f64,
     /// World-space rotation in degrees (local rotation + root MC rotation, if any).
     pub world_rotation: f64,
+    /// World-space affine matrix components (local matrix * root transform).
+    /// Used to compute pivot-corrected positions.
+    pub world_a: f64,
+    pub world_b: f64,
+    pub world_c: f64,
+    pub world_d: f64,
 }
 
 /// Per-animation per-frame image references.
@@ -241,14 +247,15 @@ pub fn extract_images(
     log::info!("Animation image mappings: {} animations (after fallbacks)", anim_images.len());
 
     // 5. Pre-render skewed frames as new bitmaps
-    // Fraymakers doesn't support skew transforms, so we bake the full affine
-    // into a new PNG and replace the frame entry with identity placement.
-    let skew_count = prerender_skewed_frames(
-        &mut anim_images, &mut images, &shape_to_bitmap, &sprites_dir, char_name,
-    );
-    if skew_count > 0 {
-        log::info!("Pre-rendered {} skewed frame placements as new bitmaps", skew_count);
-    }
+    // DISABLED: Fraymakers handles rotation via the rotation field in IMAGE symbols.
+    // Pre-rendering caused position regressions because bounding-box offsets don't
+    // compose cleanly with the existing world-coordinate pipeline.
+    // let skew_count = prerender_skewed_frames(
+    //     &mut anim_images, &mut images, &shape_to_bitmap, &sprites_dir, char_name,
+    // );
+    // if skew_count > 0 {
+    //     log::info!("Pre-rendered {} skewed frame placements as new bitmaps", skew_count);
+    // }
 
     Ok(ImageExtractionResult {
         images,
@@ -406,6 +413,10 @@ fn prerender_skewed_frames(
         entry.world_sx = 1.0;
         entry.world_sy = 1.0;
         entry.world_rotation = 0.0;
+        entry.world_a = 1.0;
+        entry.world_b = 0.0;
+        entry.world_c = 0.0;
+        entry.world_d = 1.0;
 
         count += 1;
     }
@@ -620,6 +631,11 @@ fn build_anim_frame_images(
                             let (world_tx, world_ty) = root_xf.apply(mat.tx, mat.ty);
                             let world_sx = mat.sx * root_xf.scale_x();
                             let world_sy = mat.sy * root_xf.scale_y();
+                            // World matrix = root_xf * local_matrix (2x2 part)
+                            let wa = root_xf.a * mat.a + root_xf.b * mat.c;
+                            let wb = root_xf.a * mat.b + root_xf.b * mat.d;
+                            let wc = root_xf.c * mat.a + root_xf.d * mat.c;
+                            let wd = root_xf.c * mat.b + root_xf.d * mat.d;
                             entries.push(FrameImageEntry {
                                 depth,
                                 shape_id: *id,
@@ -630,6 +646,10 @@ fn build_anim_frame_images(
                                 world_sx,
                                 world_sy,
                                 world_rotation: mat.rotation,
+                                world_a: wa,
+                                world_b: wb,
+                                world_c: wc,
+                                world_d: wd,
                             });
                         }
 
@@ -644,6 +664,10 @@ fn build_anim_frame_images(
                                     let (world_tx, world_ty) = root_xf.apply(composed.tx, composed.ty);
                                     let world_sx = composed.sx * root_xf.scale_x();
                                     let world_sy = composed.sy * root_xf.scale_y();
+                                    let wa = root_xf.a * composed.a + root_xf.b * composed.c;
+                                    let wb = root_xf.a * composed.b + root_xf.b * composed.d;
+                                    let wc = root_xf.c * composed.a + root_xf.d * composed.c;
+                                    let wd = root_xf.c * composed.b + root_xf.d * composed.d;
                                     let effect_depth = depth + 1000;
                                     entries.push(FrameImageEntry {
                                         depth: effect_depth,
@@ -655,6 +679,10 @@ fn build_anim_frame_images(
                                         world_sx,
                                         world_sy,
                                         world_rotation: composed.rotation,
+                                        world_a: wa,
+                                        world_b: wb,
+                                        world_c: wc,
+                                        world_d: wd,
                                     });
                                 }
                             }
