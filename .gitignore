@@ -10,5 +10,4 @@ __pycache__/
 
 /target
 # Generated binary/image assets inside character output — track .hx, .json, .entity etc but not media
-characters/*/library/sprites/
-characters/*/library/sounds/
+characters/
