@@ -997,12 +997,11 @@ pub fn extract_projectile_frame_images(
         if let swf::Tag::DefineSprite(s) = tag { all_sprites.insert(s.id, s); }
     }
 
-    // Pass 1: unnamed sprite frame tables
-    // These sprites have no SymbolClass entry; they contain raw shape placements.
-    // We resolve shape_id → bitmap_id → symbol_name via img_result.shape_to_bitmap.
+    // Pass 1: build sprite frame tables for ALL sprites (named and unnamed)
+    // For unnamed sprites: resolve shape_id → bitmap_id → symbol_name via img_result.shape_to_bitmap.
+    // For named sprites: use symbol names directly; these form inner animation sprites for projectiles.
     let mut unnamed_frames: BTreeMap<u16, Vec<Vec<(u16, String, ImageLocalMatrix)>>> = BTreeMap::new();
     for (&sid, sprite) in &all_sprites {
-        if symbols.contains_key(&sid) { continue; }
         let mut disp: BTreeMap<u16, (u16, String, ImageLocalMatrix)> = BTreeMap::new();
         let mut frames: Vec<Vec<(u16, String, ImageLocalMatrix)>> = Vec::new();
         for stag in &sprite.tags {
