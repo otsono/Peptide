@@ -277,23 +277,30 @@ fn prerender_skewed_frames(
         for (frame, entries) in &anim_data.frames {
             for (idx, entry) in entries.iter().enumerate() {
                 if entry.local_matrix.has_skew() {
+                    log::debug!("prerender_skewed: queuing anim={} frame={} sym={} a={:.3} b={:.3} c={:.3} d={:.3}",
+                        anim_name, frame, entry.symbol_name, entry.local_matrix.a, entry.local_matrix.b, entry.local_matrix.c, entry.local_matrix.d);
                     work.push((anim_name.clone(), *frame, idx));
                 }
             }
         }
     }
+    log::debug!("prerender_skewed: {} entries to process", work.len());
 
     for (anim_name, frame, entry_idx) in &work {
         let entry = &anim_images[anim_name].frames[frame][*entry_idx];
         let mat = entry.local_matrix;
 
-        // Resolve shape_id → bitmap_id → on-disk PNG
-        let bitmap_id = shape_to_bitmap.get(&entry.shape_id)
-            .copied()
-            .unwrap_or(entry.shape_id);
-        let src_img = match images.get(&bitmap_id) {
+        // Resolve source image: try shape_id → bitmap_id first,
+        // then fall back to looking up by symbol_name (for named sub-sprites like sand_sprite2)
+        let bitmap_id = shape_to_bitmap.get(&entry.shape_id).copied().unwrap_or(entry.shape_id);
+        let src_img = match images.get(&bitmap_id)
+            .or_else(|| images.values().find(|img| img.symbol_name == entry.symbol_name))
+        {
             Some(img) => img,
-            None => continue,
+            None => {
+                log::debug!("prerender_skewed: no source image for sym='{}' shape={}", entry.symbol_name, entry.shape_id);
+                continue;
+            }
         };
 
         // Cache key: shape_id + quantized matrix (avoid redundant renders)
