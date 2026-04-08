@@ -717,8 +717,10 @@ pub fn generate_entity(
                                 "pivotX": pivot_x,
                                 "pivotY": pivot_y,
                                 "pluginMetadata": {},
-                                // FrayTools uses CCW-positive; SWF atan2(b,a) is CW-positive in y-down.
-                                "rotation": round2(-world_rot),
+                                // FrayTools uses CW-positive 0-360 degrees.
+                                // SWF world_rot = atan2(b,a) which is CCW in y-down, so negate.
+                                // Then normalize to 0-360 range.
+                                "rotation": round2(((-world_rot % 360.0) + 360.0) % 360.0),
                                 "scaleX": fm_sx,
                                 "scaleY": fm_sy,
                                 "type": "IMAGE",
