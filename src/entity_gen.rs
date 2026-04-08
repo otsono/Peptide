@@ -700,9 +700,15 @@ pub fn generate_entity(
                             let pivot_x = round2(img_w / 2.0);
                             let pivot_y = round2(img_h / 2.0);
 
-                            // x,y = world position of the bitmap center
-                            let fm_x = round2(world_tx + wa * (img_w / 2.0) + wc * (img_h / 2.0));
-                            let fm_y = round2(world_ty + wb * (img_w / 2.0) + wd * (img_h / 2.0));
+                            // FrayTools model: (x,y) is the top-left of the UNROTATED image.
+                            // Rotation happens around (x+pivotX, y+pivotY).
+                            // So: rotation_center = world_tx + M*(pivotX, pivotY)
+                            //     x = rotation_center_x - pivotX
+                            //     y = rotation_center_y - pivotY
+                            let center_x = world_tx + wa * pivot_x + wc * pivot_y;
+                            let center_y = world_ty + wb * pivot_x + wd * pivot_y;
+                            let fm_x = round2(center_x - pivot_x);
+                            let fm_y = round2(center_y - pivot_y);
 
                             symbols.push(json!({
                                 "$id": per_placement_sym_id,
