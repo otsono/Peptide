@@ -19,8 +19,14 @@ fn main() {
                     swf::FillStyle::Color(_) => "Color",
                     swf::FillStyle::LinearGradient(_) => "LinearGradient",
                     swf::FillStyle::RadialGradient(_) => "RadialGradient",
-                    swf::FillStyle::Bitmap { id, .. } => {
-                        println!("  fill[{}]: Bitmap id={}", i, id);
+                    swf::FillStyle::Bitmap { id, matrix, .. } => {
+                        let tx = matrix.tx.get() as f64 / 20.0;
+                        let ty = matrix.ty.get() as f64 / 20.0;
+                        let a = matrix.a.to_f64();
+                        let b = matrix.b.to_f64();
+                        let c = matrix.c.to_f64();
+                        let d = matrix.d.to_f64();
+                        println!("  fill[{}]: Bitmap id={} matrix: a={:.3} b={:.3} c={:.3} d={:.3} tx={:.2} ty={:.2}", i, id, a, b, c, d, tx, ty);
                         continue;
                     }
                     _ => "Other",
