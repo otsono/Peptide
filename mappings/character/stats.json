@@ -1,6 +1,6 @@
 {
   "$schema": "Stat mappings for CHARACTER conversion (SSF2 -> Fraymakers).",
-  "$comment": "Edit this file to change how stats are read and scaled; the converter reloads it at runtime, no recompile needed. If the file is missing or malformed the converter falls back to its built-in defaults. 'field_keys' lists the SSF2 stat key names to try (in order) for each Fraymakers stat field. 'multipliers' scale a raw SSF2 value into Fraymakers units via: fm = max(floor, raw / divisor * target). The 'air_friction' multiplier is applied to the absolute value.",
+  "$comment": "Drives every value in the generated CharacterStats.hx. Loaded at runtime; the converter falls back to its built-in defaults if this file is missing or malformed. SECTIONS: 'field_keys' lists the SSF2 stat key names to try (in order) for each Fraymakers stat field. 'multipliers' scale a raw SSF2 value into Fraymakers units via fm = max(floor, raw / divisor * target) (the air_friction multiplier is applied to the absolute value). 'offsets' are integer offsets added after extraction (SSF2 max_jump counts midair jumps; Fraymakers maxJumps counts total, so +1). 'derivations' compute a stat from other already-converted stats: 'sources' are combined with 'combine' (max), then 'op' (multiply) is applied with 'operand'. 'constants' are flat default values emitted verbatim into CharacterStats.hx — numbers, strings and arrays are all allowed and are written in Haxe-literal form. Editing any value here changes the output with no recompile.",
 
   "field_keys": {
     "weight": ["weight1", "weight"],
@@ -23,5 +23,86 @@
     "walk":         { "divisor": 4.0,  "target": 3.25, "floor": 1.0 },
     "dash":         { "divisor": 11.0, "target": 8.5,  "floor": 2.0 },
     "air_friction": { "divisor": 0.15, "target": 0.20, "floor": 0.05 }
+  },
+
+  "offsets": {
+    "max_jumps": 1
+  },
+
+  "derivations": {
+    "shortHopSpeed":  { "sources": ["jump_speed"],                       "combine": "max", "op": "multiply", "operand": 0.55 },
+    "aerialSpeedCap": { "sources": ["air_mobility_raw", "aerial_friction"], "combine": "max", "op": "multiply", "operand": 5.0 }
+  },
+
+  "constants": {
+    "friction": 0.57,
+    "walkSpeedInitial": 1.0,
+    "walkSpeedAcceleration": 0.3,
+    "runSpeedInitial": 4.75,
+    "runSpeedAcceleration": 0.55,
+    "runSpeedCap": 7.5,
+    "groundSpeedAcceleration": 0.3,
+    "groundSpeedCap": 11,
+    "aerialSpeedAcceleration": 0.45,
+    "doubleJumpSpeedFallback": 15.5,
+
+    "floorHeadPosition": 86,
+    "floorHipWidth": 29,
+    "floorHipXOffset": 0,
+    "floorHipYOffset": 0,
+    "floorFootPosition": 0,
+    "aerialHeadPosition": 86,
+    "aerialHipWidth": 29,
+    "aerialHipXOffset": 0,
+    "aerialHipYOffset": 0,
+    "aerialFootPosition": 25,
+
+    "cameraBoxOffsetX": 25,
+    "cameraBoxOffsetY": 75,
+    "cameraBoxWidth": 200,
+    "cameraBoxHeight": 250,
+
+    "techRollSpeed": 18,
+    "techRollSpeedStartFrame": 14,
+    "techRollSpeedLength": 2,
+    "dodgeRollSpeed": 13,
+    "dodgeRollSpeedStartFrame": 6,
+    "dodgeRollSpeedLength": 2,
+    "getupRollSpeed": 15.5,
+    "getupRollSpeedStartFrame": 4,
+    "getupRollSpeedLength": 2,
+    "ledgeRollSpeed": 14,
+    "ledgeRollSpeedStartFrame": 2,
+    "ledgeRollSpeedLength": 2,
+    "ledgeJumpXSpeed": 2.5,
+    "ledgeJumpYSpeed": -10,
+
+    "airdashInitialSpeed": 11,
+    "airdashSpeedCap": 12.5,
+    "airdashAccelMultiplier": 0.4,
+    "airdashCancelSpeedConservation": 0.9,
+
+    "shieldCrossupThreshold": 16,
+    "shieldFrontNineSliceContent": "global::vfx.vfx_shield_front",
+    "shieldFrontXOffset": 10.5,
+    "shieldFrontYOffset": 4,
+    "shieldFrontWidth": 53,
+    "shieldFrontHeight": 93,
+    "shieldBackNineSliceContent": "global::vfx.vfx_shield_back",
+    "shieldBackXOffset": 12.5,
+    "shieldBackYOffset": 4,
+    "shieldBackWidth": 49,
+    "shieldBackHeight": 93,
+
+    "attackVoiceIds": [],
+    "hurtLightVoiceIds": [],
+    "hurtMediumVoiceIds": [],
+    "hurtHeavyVoiceIds": [],
+    "koVoiceIds": [],
+    "attackVoiceSilenceRate": 0.5,
+    "hurtLightSilenceRate": 1,
+    "hurtMediumSilenceRate": 0.5,
+    "hurtHeavySilenceRate": 0,
+    "koVoiceSilenceRate": 0
   }
 }

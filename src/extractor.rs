@@ -303,7 +303,9 @@ fn convert_stats(vals: &BTreeMap<String, f64>) -> CharacterStats {
         walk_speed:         get("walk_speed"),
         dash_speed:         get("dash_speed"),
         air_mobility:       get("air_mobility"),
-        max_jumps:          get("max_jumps") as i32 + 1, // SSF2 max_jump=1 = 2 total jumps
+        // SSF2 max_jump counts midair jumps; Fraymakers counts total jumps.
+        // The +1 offset is loaded from mappings/character/stats.json.
+        max_jumps:          get("max_jumps") as i32 + stat_map.offset("max_jumps") as i32,
         jump_height:        get("jump_height"),
         double_jump_height: get("double_jump_height"),
         air_friction:       get("air_friction"),

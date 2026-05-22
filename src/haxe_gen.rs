@@ -424,7 +424,8 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
     let s = &data.stats;
     let todo = |v: f64| if v == 0.0 { " /*TODO*/" } else { "" };
 
-    // Convert SSF2 values to Fraymakers equivalents
+    // Convert SSF2 values to Fraymakers equivalents (scaling driven by the
+    // multipliers in mappings/character/stats.json).
     let gravity       = if s.gravity > 0.0      { ssf2_gravity_to_fm(s.gravity) }      else { 0.0 };
     let terminal_vel  = if s.fall_speed > 0.0   { ssf2_speed_to_fm(s.fall_speed) }     else { 0.0 };
     let fast_fall     = if s.fast_fall_speed > 0.0 { ssf2_speed_to_fm(s.fast_fall_speed) } else { 0.0 };
@@ -435,116 +436,145 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
     let aerial_fric   = if s.air_friction != 0.0 { ssf2_air_to_fm(s.air_friction) }   else { 0.0 };
     let weight        = if s.weight > 0.0 { s.weight } else { 0.0 };
 
-    // Build double jump speeds array
+    // offsets, derivations and flat constants all come from stats.json.
+    let cfg = crate::mappings::character_stats();
+    let c = |k: &str| cfg.constant(k);
+
+    // Derived stats — formulas referencing already-converted stats.
+    let inputs: std::collections::BTreeMap<&str, f64> = [
+        ("jump_speed", jump_speed),
+        ("air_mobility_raw", s.air_mobility),
+        ("aerial_friction", aerial_fric),
+    ].into_iter().collect();
+    let short_hop  = cfg.derive("shortHopSpeed", &inputs);
+    let aerial_cap = cfg.derive("aerialSpeedCap", &inputs);
+
+    // doubleJumpSpeeds: the real converted value, or the JSON fallback default.
     let dj_array = if dj_speed > 0.0 {
         format!("[{}]", fmt(dj_speed))
     } else {
-        "[15.5] /*TODO*/".to_string()
+        format!("[{}] /*TODO*/", c("doubleJumpSpeedFallback"))
     };
 
-    format!(
-        "// Character stats for {} — converted from SSF2\n\
+    let mut out = format!(
+        "// Character stats for {char_name} — converted from SSF2\n\
         // SSF2 physics values are scaled to Fraymakers equivalents.\n\
         // Review all values before use — units differ between engines.\n\
         {{\n\
-        \tspriteContent: self.getResource().getContent(\"{}\"),\n\n\
+        \tspriteContent: self.getResource().getContent(\"{char_id}\"),\n\n\
         \t//GENERIC STATS\n\
-        \tbaseScaleX: {},\n\
-        \tbaseScaleY: {},\n\
-        \tweight: {}{},\n\
-        \tgravity: {}{},\n\
-        \tshortHopSpeed: {} /*TODO: set manually*/,\n\
-        \tjumpSpeed: {}{},\n\
-        \tdoubleJumpSpeeds: {},\n\
-        \tterminalVelocity: {}{},\n\
-        \tfastFallSpeed: {}{},\n\
-        \tfriction: 0.57 /*TODO*/,\n\
-        \twalkSpeedInitial: 1.0,\n\
-        \twalkSpeedAcceleration: 0.3,\n\
-        \twalkSpeedCap: {}{},\n\
-        \tdashSpeed: {}{},\n\
-        \trunSpeedInitial: 4.75,\n\
-        \trunSpeedAcceleration: 0.55,\n\
-        \trunSpeedCap: 7.5,\n\
-        \tgroundSpeedAcceleration: 0.3,\n\
-        \tgroundSpeedCap: 11,\n\
-        \taerialSpeedAcceleration: 0.45,\n\
-        \taerialSpeedCap: {}{},\n\
-        \taerialFriction: {}{},\n\n\
-        \t//ENVIRONMENTAL COLLISION BODY (ECB) STATS\n\
-        \tfloorHeadPosition: 86 /*TODO*/,\n\
-        \tfloorHipWidth: 29 /*TODO*/,\n\
-        \tfloorHipXOffset: 0,\n\
-        \tfloorHipYOffset: 0,\n\
-        \tfloorFootPosition: 0,\n\
-        \taerialHeadPosition: 86 /*TODO*/,\n\
-        \taerialHipWidth: 29 /*TODO*/,\n\
-        \taerialHipXOffset: 0,\n\
-        \taerialHipYOffset: 0,\n\
-        \taerialFootPosition: 25 /*TODO*/,\n\n\
-        \t//CAMERA BOX STATS\n\
-        \tcameraBoxOffsetX: 25,\n\
-        \tcameraBoxOffsetY: 75,\n\
-        \tcameraBoxWidth: 200,\n\
-        \tcameraBoxHeight: 250,\n\n\
-        \t//ROLL AND LEDGE JUMP STATS\n\
-        \ttechRollSpeed: 18,\n\
-        \ttechRollSpeedStartFrame: 14,\n\
-        \ttechRollSpeedLength: 2,\n\
-        \tdodgeRollSpeed: 13,\n\
-        \tdodgeRollSpeedStartFrame: 6,\n\
-        \tdodgeRollSpeedLength: 2,\n\
-        \tgetupRollSpeed: 15.5,\n\
-        \tgetupRollSpeedStartFrame: 4,\n\
-        \tgetupRollSpeedLength: 2,\n\
-        \tledgeRollSpeed: 14,\n\
-        \tledgeRollSpeedStartFrame: 2,\n\
-        \tledgeRollSpeedLength: 2,\n\
-        \tledgeJumpXSpeed: 2.5,\n\
-        \tledgeJumpYSpeed: -10,\n\n\
-        \t//AIRDASH STATS\n\
-        \tairdashInitialSpeed: 11,\n\
-        \tairdashSpeedCap: 12.5,\n\
-        \tairdashAccelMultiplier: 0.4,\n\
-        \tairdashCancelSpeedConservation: 0.9,\n\n\
-        \t//SHIELD STATS\n\
-        \tshieldCrossupThreshold: 16,\n\
-        \tshieldFrontNineSliceContent: \"global::vfx.vfx_shield_front\",\n\
-        \tshieldFrontXOffset: 10.5,\n\
-        \tshieldFrontYOffset: 4,\n\
-        \tshieldFrontWidth: 53,\n\
-        \tshieldFrontHeight: 93,\n\
-        \tshieldBackNineSliceContent: \"global::vfx.vfx_shield_back\",\n\
-        \tshieldBackXOffset: 12.5,\n\
-        \tshieldBackYOffset: 4,\n\
-        \tshieldBackWidth: 49,\n\
-        \tshieldBackHeight: 93,\n\n\
-        \t//VOICE STATS\n\
-        \tattackVoiceIds: [],\n\
-        \thurtLightVoiceIds: [],\n\
-        \thurtMediumVoiceIds: [],\n\
-        \thurtHeavyVoiceIds: [],\n\
-        \tkoVoiceIds: [],\n\
-        \tattackVoiceSilenceRate: 0.5,\n\
-        \thurtLightSilenceRate: 1,\n\
-        \thurtMediumSilenceRate: 0.5,\n\
-        \thurtHeavySilenceRate: 0,\n\
-        \tkoVoiceSilenceRate: 0,\n\
-        }}\n",
-        data.name, char_id,
-        fmt(s.base_scale_x), fmt(s.base_scale_y),
-        fmt(weight), todo(weight),
-        fmt(gravity), todo(gravity),
-        fmt(jump_speed * 0.55), // short hop ~55% of full jump
-        fmt(jump_speed), todo(jump_speed),
-        dj_array,
-        fmt(terminal_vel), todo(terminal_vel),
-        fmt(fast_fall), todo(fast_fall),
-        fmt(walk_cap), todo(walk_cap),
-        fmt(dash_speed), todo(dash_speed),
-        fmt(s.air_mobility.max(aerial_fric) * 5.0), todo(s.air_mobility),
-        fmt(aerial_fric), todo(aerial_fric),
-    )
+        \tbaseScaleX: {base_scale_x},\n\
+        \tbaseScaleY: {base_scale_y},\n\
+        \tweight: {weight}{weight_todo},\n\
+        \tgravity: {gravity}{gravity_todo},\n\
+        \tshortHopSpeed: {short_hop} /*TODO: set manually*/,\n\
+        \tjumpSpeed: {jump_speed}{jump_speed_todo},\n\
+        \tdoubleJumpSpeeds: {dj_array},\n\
+        \tterminalVelocity: {terminal_vel}{terminal_vel_todo},\n\
+        \tfastFallSpeed: {fast_fall}{fast_fall_todo},\n\
+        \tfriction: {friction} /*TODO*/,\n\
+        \twalkSpeedInitial: {walk_speed_initial},\n\
+        \twalkSpeedAcceleration: {walk_speed_accel},\n\
+        \twalkSpeedCap: {walk_cap}{walk_cap_todo},\n\
+        \tdashSpeed: {dash_speed}{dash_speed_todo},\n\
+        \trunSpeedInitial: {run_speed_initial},\n\
+        \trunSpeedAcceleration: {run_speed_accel},\n\
+        \trunSpeedCap: {run_speed_cap},\n\
+        \tgroundSpeedAcceleration: {ground_speed_accel},\n\
+        \tgroundSpeedCap: {ground_speed_cap},\n\
+        \taerialSpeedAcceleration: {aerial_speed_accel},\n\
+        \taerialSpeedCap: {aerial_cap}{aerial_cap_todo},\n\
+        \taerialFriction: {aerial_fric}{aerial_fric_todo},\n\n",
+        char_name = data.name,
+        char_id = char_id,
+        base_scale_x = fmt(s.base_scale_x),
+        base_scale_y = fmt(s.base_scale_y),
+        weight = fmt(weight), weight_todo = todo(weight),
+        gravity = fmt(gravity), gravity_todo = todo(gravity),
+        short_hop = fmt(short_hop),
+        jump_speed = fmt(jump_speed), jump_speed_todo = todo(jump_speed),
+        dj_array = dj_array,
+        terminal_vel = fmt(terminal_vel), terminal_vel_todo = todo(terminal_vel),
+        fast_fall = fmt(fast_fall), fast_fall_todo = todo(fast_fall),
+        friction = c("friction"),
+        walk_speed_initial = c("walkSpeedInitial"),
+        walk_speed_accel = c("walkSpeedAcceleration"),
+        walk_cap = fmt(walk_cap), walk_cap_todo = todo(walk_cap),
+        dash_speed = fmt(dash_speed), dash_speed_todo = todo(dash_speed),
+        run_speed_initial = c("runSpeedInitial"),
+        run_speed_accel = c("runSpeedAcceleration"),
+        run_speed_cap = c("runSpeedCap"),
+        ground_speed_accel = c("groundSpeedAcceleration"),
+        ground_speed_cap = c("groundSpeedCap"),
+        aerial_speed_accel = c("aerialSpeedAcceleration"),
+        aerial_cap = fmt(aerial_cap), aerial_cap_todo = todo(s.air_mobility),
+        aerial_fric = fmt(aerial_fric), aerial_fric_todo = todo(aerial_fric),
+    );
+
+    // Flat-constant sections — every value comes from stats.json `constants`.
+    out.push_str("\t//ENVIRONMENTAL COLLISION BODY (ECB) STATS\n");
+    for (f, anno) in [
+        ("floorHeadPosition", " /*TODO*/"),
+        ("floorHipWidth", " /*TODO*/"),
+        ("floorHipXOffset", ""),
+        ("floorHipYOffset", ""),
+        ("floorFootPosition", ""),
+        ("aerialHeadPosition", " /*TODO*/"),
+        ("aerialHipWidth", " /*TODO*/"),
+        ("aerialHipXOffset", ""),
+        ("aerialHipYOffset", ""),
+        ("aerialFootPosition", " /*TODO*/"),
+    ] {
+        out.push_str(&format!("\t{}: {}{},\n", f, c(f), anno));
+    }
+    out.push('\n');
+
+    out.push_str("\t//CAMERA BOX STATS\n");
+    for f in ["cameraBoxOffsetX", "cameraBoxOffsetY", "cameraBoxWidth", "cameraBoxHeight"] {
+        out.push_str(&format!("\t{}: {},\n", f, c(f)));
+    }
+    out.push('\n');
+
+    out.push_str("\t//ROLL AND LEDGE JUMP STATS\n");
+    for f in [
+        "techRollSpeed", "techRollSpeedStartFrame", "techRollSpeedLength",
+        "dodgeRollSpeed", "dodgeRollSpeedStartFrame", "dodgeRollSpeedLength",
+        "getupRollSpeed", "getupRollSpeedStartFrame", "getupRollSpeedLength",
+        "ledgeRollSpeed", "ledgeRollSpeedStartFrame", "ledgeRollSpeedLength",
+        "ledgeJumpXSpeed", "ledgeJumpYSpeed",
+    ] {
+        out.push_str(&format!("\t{}: {},\n", f, c(f)));
+    }
+    out.push('\n');
+
+    out.push_str("\t//AIRDASH STATS\n");
+    for f in ["airdashInitialSpeed", "airdashSpeedCap", "airdashAccelMultiplier", "airdashCancelSpeedConservation"] {
+        out.push_str(&format!("\t{}: {},\n", f, c(f)));
+    }
+    out.push('\n');
+
+    out.push_str("\t//SHIELD STATS\n");
+    for f in [
+        "shieldCrossupThreshold", "shieldFrontNineSliceContent", "shieldFrontXOffset",
+        "shieldFrontYOffset", "shieldFrontWidth", "shieldFrontHeight",
+        "shieldBackNineSliceContent", "shieldBackXOffset", "shieldBackYOffset",
+        "shieldBackWidth", "shieldBackHeight",
+    ] {
+        out.push_str(&format!("\t{}: {},\n", f, c(f)));
+    }
+    out.push('\n');
+
+    out.push_str("\t//VOICE STATS\n");
+    for f in [
+        "attackVoiceIds", "hurtLightVoiceIds", "hurtMediumVoiceIds", "hurtHeavyVoiceIds", "koVoiceIds",
+        "attackVoiceSilenceRate", "hurtLightSilenceRate", "hurtMediumSilenceRate",
+        "hurtHeavySilenceRate", "koVoiceSilenceRate",
+    ] {
+        out.push_str(&format!("\t{}: {},\n", f, c(f)));
+    }
+
+    out.push_str("}\n");
+    out
 }
 
 // ─── AnimationStats.hx ───────────────────────────────────────────────────────

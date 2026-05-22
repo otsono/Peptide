@@ -54,6 +54,24 @@ impl StatMultiplier {
     }
 }
 
+/// Computes one Fraymakers stat from other already-converted stats:
+/// `op(combine(sources), operand)`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Derivation {
+    /// Names of already-computed values to feed in.
+    #[serde(default)]
+    pub sources: Vec<String>,
+    /// How to combine multiple sources ("max"); a single source passes through.
+    #[serde(default)]
+    pub combine: String,
+    /// Operation applied to the combined value ("multiply").
+    #[serde(default)]
+    pub op: String,
+    /// Right-hand operand for `op`.
+    #[serde(default)]
+    pub operand: f64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct StatMappings {
     /// Fraymakers stat field → ordered list of SSF2 key names to try.
@@ -62,6 +80,16 @@ pub struct StatMappings {
     /// Named scaling factors applied to raw SSF2 stat values.
     #[serde(default)]
     pub multipliers: BTreeMap<String, StatMultiplier>,
+    /// Integer offsets added to a stat after extraction (e.g. max_jumps +1).
+    #[serde(default)]
+    pub offsets: BTreeMap<String, i64>,
+    /// Stats computed from other already-converted stats.
+    #[serde(default)]
+    pub derivations: BTreeMap<String, Derivation>,
+    /// Flat default values emitted verbatim into CharacterStats.hx (numbers,
+    /// strings or arrays — kept as raw JSON so each is written Haxe-literally).
+    #[serde(default)]
+    pub constants: BTreeMap<String, serde_json::Value>,
 }
 
 impl StatMappings {
@@ -74,6 +102,38 @@ impl StatMappings {
     /// behaviour (returning `raw`) if the multiplier is absent.
     pub fn scale(&self, name: &str, raw: f64) -> f64 {
         self.multipliers.get(name).map(|m| m.apply(raw)).unwrap_or(raw)
+    }
+
+    /// Integer offset for a stat (0 if none configured).
+    pub fn offset(&self, name: &str) -> i64 {
+        self.offsets.get(name).copied().unwrap_or(0)
+    }
+
+    /// Evaluate a named derivation. `inputs` resolves source names to values.
+    pub fn derive(&self, name: &str, inputs: &BTreeMap<&str, f64>) -> f64 {
+        let Some(d) = self.derivations.get(name) else { return 0.0 };
+        let combined = d.sources.iter()
+            .map(|src| inputs.get(src.as_str()).copied().unwrap_or(0.0))
+            .reduce(|a, b| match d.combine.as_str() {
+                "max" => a.max(b),
+                "min" => a.min(b),
+                "sum" => a + b,
+                _ => a,
+            })
+            .unwrap_or(0.0);
+        match d.op.as_str() {
+            "multiply" => combined * d.operand,
+            "add" => combined + d.operand,
+            _ => combined,
+        }
+    }
+
+    /// A flat constant rendered as a Haxe literal (bare number, quoted string,
+    /// `[]` array). Returns a visible `/*MISSING*/` marker if unconfigured.
+    pub fn constant(&self, name: &str) -> String {
+        self.constants.get(name)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| format!("0 /*MISSING:{}*/", name))
     }
 }
 
