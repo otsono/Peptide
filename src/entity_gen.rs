@@ -624,6 +624,7 @@ pub fn generate_entity(
 
                 if let Some(anim_imgs) = img_result.anim_images.get(source_anim.as_str()) {
                     let total = frame_count;
+
                     let mut f: u32 = 0;
                     while f < total {
                         // Offset into source animation frame table
@@ -673,42 +674,40 @@ pub fn generate_entity(
                             let meta_guid = image_guids.get(&img.symbol_name)
                                 .cloned().unwrap_or_default();
 
-                            // FrayTools coordinate model:
-                            // (x, y) = position of the pivot point in entity space
-                            // (pivotX, pivotY) = offset from image top-left to rotation center
-                            // rotation happens around pivot
+                            // FrayTools IMAGE-symbol model:
+                            //   world(L) = (x, y) + R(rotation)·diag(sx,sy)·L
+                            // The bitmap's local (0,0) is placed at (x, y) and the
+                            // image rotates/scales around it.
                             //
-                            // SWF model: [a,b,c,d,tx,ty] is a full affine transform.
-                            // tx,ty positions the bitmap origin (top-left), and the matrix
-                            // rotates/scales around that origin.  To make rotation look correct
-                            // in Fraymakers, we use the bitmap center as the pivot.  Then x,y
-                            // becomes the world-space position of that center:
-                            //   x = world_tx + a*(w/2) + c*(h/2)
-                            //   y = world_ty + b*(w/2) + d*(h/2)
-                            let img_w = img.width as f64;
-                            let img_h = img.height as f64;
-                            let fm_sx = round2(world_sx.abs());
-                            let fm_sy = round2(world_sy.abs());
+                            // The SWF places the bitmap with world matrix
+                            //   world_pt = M·L + (tx, ty),  M = R(rot)·diag(sx,sy).
+                            // Faithfully reproducing it — x=tx, y=ty, rotation/scale
+                            // from the decomposition — is exact for every frame, so a
+                            // spin (orbiting translation + rotation) stays anchored
+                            // automatically, with no special-casing.
+                            //
+                            // For a DefineShape with a bitmap fill the bitmap is
+                            // offset inside the shape; shape_pivot is that offset, so
+                            // the bitmap origin lands at M·shape_pivot.
+                            //
+                            // Preserve sign: negative scaleX/scaleY = flip, which FrayTools supports.
+                            let fm_sx = round2(world_sx);
+                            let fm_sy = round2(world_sy);
 
-                            // Get world-space matrix components
+                            // World-space matrix components
                             let wa = entry.map(|e| e.world_a).unwrap_or(1.0);
                             let wb = entry.map(|e| e.world_b).unwrap_or(0.0);
                             let wc = entry.map(|e| e.world_c).unwrap_or(0.0);
                             let wd = entry.map(|e| e.world_d).unwrap_or(1.0);
 
-                            // Pivot at bitmap center
-                            let pivot_x = round2(img_w / 2.0);
-                            let pivot_y = round2(img_h / 2.0);
-
-                            // FrayTools model: (x,y) is the top-left of the UNROTATED image.
-                            // Rotation happens around (x+pivotX, y+pivotY).
-                            // So: rotation_center = world_tx + M*(pivotX, pivotY)
-                            //     x = rotation_center_x - pivotX
-                            //     y = rotation_center_y - pivotY
-                            let center_x = world_tx + wa * pivot_x + wc * pivot_y;
-                            let center_y = world_ty + wb * pivot_x + wd * pivot_y;
-                            let fm_x = round2(center_x - pivot_x);
-                            let fm_y = round2(center_y - pivot_y);
+                            let (off_x, off_y) = shape_id
+                                .and_then(|sid| img_result.shape_pivot.get(&sid))
+                                .copied()
+                                .unwrap_or((0.0, 0.0));
+                            let fm_x = round2(world_tx + wa * off_x + wc * off_y);
+                            let fm_y = round2(world_ty + wb * off_x + wd * off_y);
+                            let pivot_x = 0.0_f64;
+                            let pivot_y = 0.0_f64;
 
                             symbols.push(json!({
                                 "$id": per_placement_sym_id,

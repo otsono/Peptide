@@ -271,6 +271,7 @@ fn process_character(
             image_extractor::ImageExtractionResult {
                 images: Default::default(),
                 shape_to_bitmap: Default::default(),
+                shape_pivot: Default::default(),
                 anim_images: Default::default(),
             }
         });

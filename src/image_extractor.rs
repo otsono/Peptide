@@ -50,11 +50,27 @@ impl Default for ImageLocalMatrix {
 
 impl ImageLocalMatrix {
     /// Construct from raw SWF matrix components.
+    ///
+    /// Scale/rotation decomposition:
+    ///   sx = magnitude of x-axis column vector (always positive)
+    ///   sy = magnitude of y-axis column vector, NEGATED when det<0 (encodes flip)
+    ///   rotation = atan2(b, a) — angle of the x-axis column
+    ///
+    /// With sy negative (flip), FrayTools reconstruct:
+    ///   x' = sx*cos(rot)*x - sy*sin(rot)*y
+    ///   y' = sx*sin(rot)*x + sy*cos(rot)*y
+    /// which exactly matches the original a/b/c/d when the flip is encoded in sy.
     pub fn from_abcd(a: f64, b: f64, c: f64, d: f64, tx: f64, ty: f64) -> Self {
+        let sx_mag = (a*a + b*b).sqrt();
+        let sy_mag = (c*c + d*d).sqrt();
+        let det = a * d - b * c;
+        // Encode the flip in sy: negative det means an odd number of reflections.
+        // Convention: keep sx positive and put the flip sign into sy.
+        let sy = if det < 0.0 { -sy_mag } else { sy_mag };
         Self {
             tx, ty,
-            sx: (a*a + b*b).sqrt(),
-            sy: (c*c + d*d).sqrt(),
+            sx: sx_mag,
+            sy,
             rotation: b.atan2(a).to_degrees(),
             a, b, c, d,
         }
@@ -71,12 +87,23 @@ impl ImageLocalMatrix {
         Self::from_abcd(a, b, c, d, tx, ty)
     }
 
-    /// Returns true if this matrix contains a skew (not just scale + rotation).
-    /// A pure rotation has atan2(b,a) == atan2(-c,d). Skew means they differ.
+    /// Returns true if this matrix contains a skew (not just scale + rotation + flip).
+    /// A pure rotation (with optional flip) has the x-axis and y-axis perpendicular.
+    /// When sy < 0 (flip encoded), the y-axis column direction is negated.
     pub fn has_skew(&self) -> bool {
         let rot1 = self.b.atan2(self.a);
-        let rot2 = (-self.c).atan2(self.d);
-        (rot1 - rot2).abs() > 0.02 // ~1 degree tolerance
+        // When sy is negative the y-axis direction is flipped, so compare against
+        // the negated column to see if the axes are still perpendicular.
+        let rot2 = if self.sy < 0.0 {
+            self.c.atan2(-self.d) // negated y-axis
+        } else {
+            (-self.c).atan2(self.d)
+        };
+        // Normalize angle difference to (-π, π]
+        let mut diff = rot1 - rot2;
+        while diff > std::f64::consts::PI  { diff -= 2.0 * std::f64::consts::PI; }
+        while diff < -std::f64::consts::PI { diff += 2.0 * std::f64::consts::PI; }
+        diff.abs() > 0.02 // ~1 degree tolerance
     }
 }
 
@@ -102,6 +129,12 @@ pub struct FrameImageEntry {
     pub world_b: f64,
     pub world_c: f64,
     pub world_d: f64,
+    /// World-space position of the animation's LOCAL ORIGIN (0,0).
+    /// In SSF2/Flash, the sub-sprite rotates around its local origin.
+    /// This is simply root_xf.apply(0,0) = (root_xf.tx, root_xf.ty).
+    /// This is the TRUE rotation center in world space.
+    pub anim_origin_x: f64,
+    pub anim_origin_y: f64,
 }
 
 /// Per-animation per-frame image references.
@@ -122,6 +155,11 @@ pub struct ImageExtractionResult {
     pub images: BTreeMap<u16, ExtractedImage>,
     /// shape_id → bitmap_id (for resolving PlaceObject refs)
     pub shape_to_bitmap: ShapeToBitmapMap,
+    /// shape_id → (pivot_x, pivot_y) in bitmap pixel space.
+    /// This is where the shape's local (0,0) origin lands in the bitmap,
+    /// computed as (-fill_tx / (fill_a/20), -fill_ty / (fill_d/20)).
+    /// Only populated for shapes with a non-trivial fill offset.
+    pub shape_pivot: BTreeMap<u16, (f64, f64)>,
     /// fm_anim_name → per-frame image references
     pub anim_images: BTreeMap<String, AnimFrameImages>,
 }
@@ -149,24 +187,47 @@ pub fn extract_images(
         }
     }
 
-    // 1. Build shape_id → bitmap_id map from DefineShape tags
+    // 1. Build shape_id → bitmap_id map from DefineShape tags.
+    //    Also compute shape_pivot: where shape (0,0) lands in bitmap pixel space.
+    //    pivot_x = -fill_tx / (fill_a / 20),  pivot_y = -fill_ty / (fill_d / 20)
     let mut shape_to_bitmap: ShapeToBitmapMap = BTreeMap::new();
+    let mut shape_pivot: BTreeMap<u16, (f64, f64)> = BTreeMap::new();
     for tag in &swf.tags {
         if let swf::Tag::DefineShape(shape) = tag {
-
             // Look for bitmap fill in fill styles.
             // Skip id=65535 (SWF null/clipping bitmap) — take the first real bitmap.
             for fill in &shape.styles.fill_styles {
-                if let swf::FillStyle::Bitmap { id, .. } = fill {
+                if let swf::FillStyle::Bitmap { id, matrix, .. } = fill {
                     if *id != 65535 {
                         shape_to_bitmap.insert(shape.id, *id);
+                        // fill matrix: a/d are in twips-per-20-pixels, tx/ty in twips/20.
+                        // scale_x = a/20 (pixels per shape-unit); pivot_x = -tx / scale_x
+                        let fa = matrix.a.to_f64();
+                        let fd = matrix.d.to_f64();
+                        let ftx = matrix.tx.get() as f64 / 20.0;
+                        let fty = matrix.ty.get() as f64 / 20.0;
+                        let scale_x = fa / 20.0;
+                        let scale_y = fd / 20.0;
+                        if scale_x.abs() > 0.001 && scale_y.abs() > 0.001 {
+                            // fill matrix: shape_pt = fill_matrix * bitmap_pt
+                            // So: bitmap_pt = inv(fill_matrix) * shape_pt
+                            // For shape (0,0): bitmap_pt = (-tx/a, -ty/d) in pixel space
+                            // But we want the OPPOSITE: offset FROM bitmap origin TO shape origin
+                            // bitmap origin (0,0) → shape coords via fill matrix: (tx, ty)
+                            // In pixels: (tx/(a/20), ty/(d/20)) = (tx*20/a, ty*20/d)
+                            let px = ftx / scale_x;  // no negation
+                            let py = fty / scale_y;
+                            if px.abs() > 0.5 || py.abs() > 0.5 {
+                                shape_pivot.insert(shape.id, (px, py));
+                            }
+                        }
                         break;
                     }
                 }
             }
         }
     }
-    log::info!("Shape→bitmap mappings: {}", shape_to_bitmap.len());
+    log::info!("Shape→bitmap mappings: {} ({} with non-zero pivot)", shape_to_bitmap.len(), shape_pivot.len());
 
     // 2. Extract all bitmaps to PNGs
     let sprites_dir = output_dir.join("library/sprites");
@@ -260,6 +321,7 @@ pub fn extract_images(
     Ok(ImageExtractionResult {
         images,
         shape_to_bitmap,
+        shape_pivot,
         anim_images,
     })
 }
@@ -626,6 +688,11 @@ fn build_anim_frame_images(
                     swf::Tag::ShowFrame => {
                         let mut entries: Vec<FrameImageEntry> = Vec::new();
 
+                        // Animation local origin (0,0) in world space = root_xf.apply(0,0)
+                        // This is the TRUE rotation center: Flash rotates sub-sprites around (0,0).
+                        let anim_origin_x = root_xf.tx;
+                        let anim_origin_y = root_xf.ty;
+
                         // Regular display list entries
                         for (&depth, (id, sym, mat)) in &display_list {
                             let (world_tx, world_ty) = root_xf.apply(mat.tx, mat.ty);
@@ -650,6 +717,8 @@ fn build_anim_frame_images(
                                 world_b: wb,
                                 world_c: wc,
                                 world_d: wd,
+                                anim_origin_x,
+                                anim_origin_y,
                             });
                         }
 
@@ -659,6 +728,9 @@ fn build_anim_frame_images(
                                 let eff_frame = (current_frame.saturating_sub(*place_frame)) as usize;
                                 // Clamp to last frame (effect may loop or hold)
                                 let eff_frame = eff_frame.min(effect_frames.len().saturating_sub(1));
+                                // The effect sub-sprite rotates around its own local origin (0,0).
+                                // In world space that's root_xf.apply(parent_mat.tx, parent_mat.ty).
+                                let (effect_origin_x, effect_origin_y) = root_xf.apply(parent_mat.tx, parent_mat.ty);
                                 for (inner_id, inner_sym, inner_mat) in &effect_frames[eff_frame] {
                                     let composed = parent_mat.compose(inner_mat);
                                     let (world_tx, world_ty) = root_xf.apply(composed.tx, composed.ty);
@@ -683,6 +755,8 @@ fn build_anim_frame_images(
                                         world_b: wb,
                                         world_c: wc,
                                         world_d: wd,
+                                        anim_origin_x: effect_origin_x,
+                                        anim_origin_y: effect_origin_y,
                                     });
                                 }
                             }
@@ -1160,14 +1234,8 @@ fn po_to_mat(po: &swf::PlaceObject) -> ImageLocalMatrix {
     po.matrix.map(|m| {
         let a = m.a.to_f64(); let b = m.b.to_f64();
         let c = m.c.to_f64(); let d = m.d.to_f64();
-        ImageLocalMatrix {
-            tx: m.tx.get() as f64 / 20.0,
-            ty: m.ty.get() as f64 / 20.0,
-            sx: (a*a + b*b).sqrt(),
-            sy: (c*c + d*d).sqrt(),
-            rotation: b.atan2(a).to_degrees(),
-            a, b, c, d,
-        }
+        ImageLocalMatrix::from_abcd(a, b, c, d,
+            m.tx.get() as f64 / 20.0, m.ty.get() as f64 / 20.0)
     }).unwrap_or_default()
 }
 
