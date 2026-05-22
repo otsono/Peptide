@@ -307,16 +307,15 @@ pub fn extract_images(
     apply_image_fallbacks(&mut anim_images);
     log::info!("Animation image mappings: {} animations (after fallbacks)", anim_images.len());
 
-    // 5. Pre-render skewed frames as new bitmaps
-    // DISABLED: Fraymakers handles rotation via the rotation field in IMAGE symbols.
-    // Pre-rendering caused position regressions because bounding-box offsets don't
-    // compose cleanly with the existing world-coordinate pipeline.
-    // let skew_count = prerender_skewed_frames(
-    //     &mut anim_images, &mut images, &shape_to_bitmap, &sprites_dir, char_name,
-    // );
-    // if skew_count > 0 {
-    //     log::info!("Pre-rendered {} skewed frame placements as new bitmaps", skew_count);
-    // }
+    // 5. Pre-render frames whose world matrix contains shear — FrayTools
+    //    keyframes can't express shear, so the shear is baked into a new
+    //    bitmap and the frame becomes a plain translation.
+    let skew_count = prerender_skewed_frames(
+        &mut anim_images, &mut images, &shape_to_bitmap, &sprites_dir, char_name,
+    );
+    if skew_count > 0 {
+        log::info!("Pre-rendered {} sheared frame placement(s) as baked bitmaps", skew_count);
+    }
 
     Ok(ImageExtractionResult {
         images,
@@ -326,9 +325,17 @@ pub fn extract_images(
     })
 }
 
-/// Pre-render any frame image entries that have skew transforms.
-/// Loads the source bitmap, applies the full affine matrix, writes a new PNG.
-/// Replaces the entry's symbol/matrix with the pre-rendered version.
+/// Pre-render frames whose WORLD placement matrix contains shear.
+///
+/// FrayTools' IMAGE keyframe expresses translation, rotation and
+/// scaleX/scaleY but NOT shear. When a SWF places a sprite with a sheared
+/// matrix, decomposing it to scale+rotation is lossy — the sprite appears to
+/// shrink/balloon instead of stretching. For those frames we bake the full
+/// linear part of the world matrix into a fresh bitmap and rewrite the entry
+/// as a plain translation, which FrayTools can reproduce exactly.
+///
+/// Non-sheared frames (pure rotation + scale, with or without flip) are left
+/// untouched — only genuine shear is baked.
 fn prerender_skewed_frames(
     anim_images: &mut BTreeMap<String, AnimFrameImages>,
     images: &mut BTreeMap<u16, ExtractedImage>,
@@ -336,150 +343,177 @@ fn prerender_skewed_frames(
     sprites_dir: &std::path::Path,
     char_name: &str,
 ) -> usize {
-    use image::{GenericImageView, RgbaImage, Rgba};
-    let mut count = 0;
-    let mut prerendered_cache: BTreeMap<String, (String, u32, u32, f64, f64)> = BTreeMap::new();
+    use image::RgbaImage;
 
-    // Collect all (anim, frame, entry_idx) that need pre-rendering
+    // Collect (anim, frame, entry_idx) for entries whose world matrix shears.
     let mut work: Vec<(String, u16, usize)> = Vec::new();
     for (anim_name, anim_data) in anim_images.iter() {
         for (frame, entries) in &anim_data.frames {
-            for (idx, entry) in entries.iter().enumerate() {
-                if entry.local_matrix.has_skew() {
-                    log::debug!("prerender_skewed: queuing anim={} frame={} sym={} a={:.3} b={:.3} c={:.3} d={:.3}",
-                        anim_name, frame, entry.symbol_name, entry.local_matrix.a, entry.local_matrix.b, entry.local_matrix.c, entry.local_matrix.d);
+            for (idx, e) in entries.iter().enumerate() {
+                // Only bake direct-bitmap placements. When a DefineShape wraps a
+                // bitmap fill (e.g. sandbag's trail sprites), the entry's world
+                // matrix is in shape-coordinate space, not bitmap-pixel space —
+                // baking the bitmap by that matrix would mis-place it. Those
+                // stay on the faithful scale+rotation path.
+                if shape_to_bitmap.contains_key(&e.shape_id) {
+                    continue;
+                }
+                let wm = ImageLocalMatrix::from_abcd(
+                    e.world_a, e.world_b, e.world_c, e.world_d, e.world_tx, e.world_ty);
+                if wm.has_skew() {
                     work.push((anim_name.clone(), *frame, idx));
                 }
             }
         }
     }
-    log::debug!("prerender_skewed: {} entries to process", work.len());
+    if work.is_empty() { return 0; }
+
+    // Synthetic bitmap ids for the baked PNGs — start above every real id.
+    let mut next_id: u16 = images.keys().max().copied().unwrap_or(0).max(59_999) + 1;
+    // quantized world linear part + source id → (id, sym, w, h, min_x, min_y)
+    let mut cache: BTreeMap<String, (u16, String, u32, u32, f64, f64)> = BTreeMap::new();
+    let mut count = 0usize;
 
     for (anim_name, frame, entry_idx) in &work {
-        let entry = &anim_images[anim_name].frames[frame][*entry_idx];
-        let mat = entry.local_matrix;
+        // Snapshot the fields we need (immutable borrow ends here).
+        let (wa, wb, wc, wd, wtx, wty, shape_id, symbol_name) = {
+            let e = &anim_images[anim_name].frames[frame][*entry_idx];
+            (e.world_a, e.world_b, e.world_c, e.world_d, e.world_tx, e.world_ty,
+             e.shape_id, e.symbol_name.clone())
+        };
 
-        // Resolve source image: try shape_id → bitmap_id first,
-        // then fall back to looking up by symbol_name (for named sub-sprites like sand_sprite2)
-        let bitmap_id = shape_to_bitmap.get(&entry.shape_id).copied().unwrap_or(entry.shape_id);
+        // Resolve the source bitmap: shape_id → bitmap, else by symbol name.
+        let bitmap_id = shape_to_bitmap.get(&shape_id).copied().unwrap_or(shape_id);
         let src_img = match images.get(&bitmap_id)
-            .or_else(|| images.values().find(|img| img.symbol_name == entry.symbol_name))
+            .or_else(|| images.values().find(|img| img.symbol_name == symbol_name))
         {
-            Some(img) => img,
+            Some(img) => img.clone(),
             None => {
-                log::debug!("prerender_skewed: no source image for sym='{}' shape={}", entry.symbol_name, entry.shape_id);
+                log::debug!("prerender_skewed: no source image for sym='{}' shape={}", symbol_name, shape_id);
                 continue;
             }
         };
 
-        // Cache key: shape_id + quantized matrix (avoid redundant renders)
-        let cache_key = format!("{}_{:.2}_{:.2}_{:.2}_{:.2}",
-            entry.shape_id, mat.a, mat.b, mat.c, mat.d);
-
-        let (new_sym, new_w, new_h, bbox_min_x, bbox_min_y) = if let Some(cached) = prerendered_cache.get(&cache_key) {
-            cached.clone()
+        // Bake once per distinct (linear part, source bitmap).
+        let cache_key = format!("{:.3}_{:.3}_{:.3}_{:.3}_{}", wa, wb, wc, wd, src_img.bitmap_id);
+        let (new_id, new_sym, _nw, _nh, min_x, min_y) = if let Some(c) = cache.get(&cache_key) {
+            c.clone()
         } else {
-            // Load source image
-            // png_path is "library/sprites/X.png" — resolve relative to char output dir
-            // (two levels up from sprites_dir)
+            // png_path is "library/sprites/X.png" — resolve from the char output dir.
             let char_output_dir = sprites_dir.parent().and_then(|p| p.parent()).unwrap_or(sprites_dir);
-            let src_path = char_output_dir.join(&src_img.png_path);
-            let src = match image::open(&src_path) {
+            let src = match image::open(char_output_dir.join(&src_img.png_path)) {
                 Ok(img) => img.to_rgba8(),
                 Err(e) => {
-                    log::debug!("prerender_skewed: failed to open '{}': {}", src_path.display(), e);
+                    log::debug!("prerender_skewed: failed to open '{}': {}", src_img.png_path, e);
                     continue;
                 }
             };
             let (sw, sh) = (src.width() as f64, src.height() as f64);
 
-            // Compute bounding box of transformed image
-            let corners = [
-                (0.0, 0.0),
-                (sw, 0.0),
-                (0.0, sh),
-                (sw, sh),
-            ];
-            let transformed: Vec<(f64, f64)> = corners.iter()
-                .map(|(x, y)| (mat.a * x + mat.b * y, mat.c * x + mat.d * y))
+            // Bounding box of the source rectangle under the linear map A_w.
+            let corners = [(0.0, 0.0), (sw, 0.0), (0.0, sh), (sw, sh)];
+            let tx: Vec<(f64, f64)> = corners.iter()
+                .map(|(x, y)| (wa * x + wc * y, wb * x + wd * y))
                 .collect();
-            let min_x = transformed.iter().map(|p| p.0).fold(f64::MAX, f64::min);
-            let min_y = transformed.iter().map(|p| p.1).fold(f64::MAX, f64::min);
-            let max_x = transformed.iter().map(|p| p.0).fold(f64::MIN, f64::max);
-            let max_y = transformed.iter().map(|p| p.1).fold(f64::MIN, f64::max);
+            let min_x = tx.iter().map(|p| p.0).fold(f64::MAX, f64::min);
+            let min_y = tx.iter().map(|p| p.1).fold(f64::MAX, f64::min);
+            let max_x = tx.iter().map(|p| p.0).fold(f64::MIN, f64::max);
+            let max_y = tx.iter().map(|p| p.1).fold(f64::MIN, f64::max);
+            let dst_w = (max_x - min_x).ceil().max(1.0) as u32;
+            let dst_h = (max_y - min_y).ceil().max(1.0) as u32;
+            if dst_w > 4096 || dst_h > 4096 { continue; }
 
-            let dst_w = (max_x - min_x).ceil() as u32;
-            let dst_h = (max_y - min_y).ceil() as u32;
-            if dst_w == 0 || dst_h == 0 || dst_w > 4096 || dst_h > 4096 { continue; }
-
-            // Inverse affine for backward mapping
-            let det = mat.a * mat.d - mat.b * mat.c;
-            if det.abs() < 1e-10 { continue; }
-            let inv_a =  mat.d / det;
-            let inv_b = -mat.b / det;
-            let inv_c = -mat.c / det;
-            let inv_d =  mat.a / det;
+            // Inverse of [[wa, wc], [wb, wd]] for backward sampling.
+            let det = wa * wd - wb * wc;
+            if det.abs() < 1e-9 { continue; }
+            let (inv_a, inv_c) = ( wd / det, -wc / det);
+            let (inv_b, inv_d) = (-wb / det,  wa / det);
 
             let mut dst = RgbaImage::new(dst_w, dst_h);
+            let swi = src.width() as i64;
+            let shi = src.height() as i64;
             for dy in 0..dst_h {
                 for dx in 0..dst_w {
-                    // Map destination pixel back to source coordinates
                     let fx = dx as f64 + min_x;
                     let fy = dy as f64 + min_y;
-                    let sx = inv_a * fx + inv_b * fy;
-                    let sy = inv_c * fx + inv_d * fy;
-                    let sxi = sx.round() as i64;
-                    let syi = sy.round() as i64;
-                    if sxi >= 0 && sxi < sw as i64 && syi >= 0 && syi < sh as i64 {
-                        dst.put_pixel(dx, dy, *src.get_pixel(sxi as u32, syi as u32));
+                    let sx = inv_a * fx + inv_c * fy;
+                    let sy = inv_b * fx + inv_d * fy;
+                    // Bilinear sample with premultiplied alpha — antialiases the
+                    // sheared edges and avoids dark fringing at transparent
+                    // borders. Pixel (i,j)'s value sits at integer coord (i,j),
+                    // the same convention as the old nearest sampler, so this
+                    // introduces no half-pixel positional shift.
+                    let xf = sx.floor();
+                    let yf = sy.floor();
+                    let tx_frac = sx - xf;
+                    let ty_frac = sy - yf;
+                    let (x0, y0) = (xf as i64, yf as i64);
+                    let sample = |xi: i64, yi: i64| -> [f64; 4] {
+                        if xi >= 0 && xi < swi && yi >= 0 && yi < shi {
+                            let p = src.get_pixel(xi as u32, yi as u32).0;
+                            let a = p[3] as f64 / 255.0;
+                            [p[0] as f64 * a, p[1] as f64 * a, p[2] as f64 * a, p[3] as f64]
+                        } else {
+                            [0.0; 4]
+                        }
+                    };
+                    let c00 = sample(x0, y0);
+                    let c10 = sample(x0 + 1, y0);
+                    let c01 = sample(x0, y0 + 1);
+                    let c11 = sample(x0 + 1, y0 + 1);
+                    let mut out = [0.0f64; 4];
+                    for k in 0..4 {
+                        let top = c00[k] * (1.0 - tx_frac) + c10[k] * tx_frac;
+                        let bot = c01[k] * (1.0 - tx_frac) + c11[k] * tx_frac;
+                        out[k] = top * (1.0 - ty_frac) + bot * ty_frac;
+                    }
+                    let alpha = out[3];
+                    if alpha > 0.5 {
+                        let inv = 255.0 / alpha; // un-premultiply
+                        dst.put_pixel(dx, dy, image::Rgba([
+                            (out[0] * inv).round().clamp(0.0, 255.0) as u8,
+                            (out[1] * inv).round().clamp(0.0, 255.0) as u8,
+                            (out[2] * inv).round().clamp(0.0, 255.0) as u8,
+                            alpha.round().clamp(0.0, 255.0) as u8,
+                        ]));
                     }
                 }
             }
 
-            // Write new PNG
-            let new_sym_name = format!("skew_{}_{}_f{}", char_name, anim_name.replace('/', "_"), frame);
-            let filename = format!("{}.png", sanitize_name(&new_sym_name));
-            let png_path = sprites_dir.join(&filename);
-            if let Err(e) = dst.save(&png_path) {
+            let new_id = next_id;
+            next_id += 1;
+            let new_sym = format!("skew_{}_{}", char_name, new_id);
+            let filename = format!("{}.png", sanitize_name(&new_sym));
+            if let Err(e) = dst.save(sprites_dir.join(&filename)) {
                 log::warn!("Failed to save pre-rendered skew bitmap: {}", e);
                 continue;
             }
-
-            // Register as a new extracted image with a synthetic bitmap ID
-            let new_id = 60000 + count as u16;
             images.insert(new_id, ExtractedImage {
                 bitmap_id: new_id,
-                symbol_name: new_sym_name.clone(),
+                symbol_name: new_sym.clone(),
                 width: dst_w,
                 height: dst_h,
                 png_path: format!("library/sprites/{}", filename),
             });
-
-            prerendered_cache.insert(cache_key.clone(), (new_sym_name.clone(), dst_w, dst_h, min_x, min_y));
-            (new_sym_name, dst_w, dst_h, min_x, min_y)
+            let v = (new_id, new_sym, dst_w, dst_h, min_x, min_y);
+            cache.insert(cache_key, v.clone());
+            v
         };
 
-        // Replace the frame entry with identity placement at adjusted position.
-        // The pre-rendered bitmap pixel (0,0) maps to (min_x, min_y) in the original
-        // transformed coordinate space.  So the new tx/ty must incorporate that offset
-        // so the image lands in the correct position.
-        let entry = &mut anim_images.get_mut(anim_name).unwrap().frames.get_mut(frame).unwrap()[*entry_idx];
-        let new_local_tx = entry.local_matrix.tx + bbox_min_x;
-        let new_local_ty = entry.local_matrix.ty + bbox_min_y;
-        entry.symbol_name = new_sym.clone();
-        entry.local_matrix = ImageLocalMatrix::from_abcd(1.0, 0.0, 0.0, 1.0,
-            new_local_tx, new_local_ty);
-        entry.world_tx = entry.world_tx + bbox_min_x;
-        entry.world_ty = entry.world_ty + bbox_min_y;
-        // Pre-rendered image is already at final size — scale is 1:1
-        entry.world_sx = 1.0;
-        entry.world_sy = 1.0;
-        entry.world_rotation = 0.0;
-        entry.world_a = 1.0;
-        entry.world_b = 0.0;
-        entry.world_c = 0.0;
-        entry.world_d = 1.0;
-
+        // Rewrite the entry as a plain translation of the baked bitmap.
+        // The baked bitmap's pixel (0,0) holds world content A_w·L at
+        // (min_x, min_y); placed with an identity transform at
+        // (world_tx + min_x, world_ty + min_y) it lands exactly where the
+        // sheared placement intended.
+        let e = anim_images.get_mut(anim_name).unwrap()
+            .frames.get_mut(frame).unwrap().get_mut(*entry_idx).unwrap();
+        e.shape_id = new_id;
+        e.symbol_name = new_sym;
+        e.world_tx = wtx + min_x;
+        e.world_ty = wty + min_y;
+        e.world_a = 1.0; e.world_b = 0.0; e.world_c = 0.0; e.world_d = 1.0;
+        e.world_sx = 1.0; e.world_sy = 1.0; e.world_rotation = 0.0;
+        e.local_matrix = ImageLocalMatrix::from_abcd(1.0, 0.0, 0.0, 1.0, e.world_tx, e.world_ty);
         count += 1;
     }
 
