@@ -564,7 +564,11 @@ fn build_anim_frame_images(
                                 }
                             }
                             swf::PlaceObjectAction::Modify => {
-                                if let Some(e) = disp.get_mut(&po.depth) { e.2 = local_mat; }
+                                // A MODIFY with no matrix only re-states the object —
+                                // keep its existing transform instead of resetting it.
+                                if po.matrix.is_some() {
+                                    if let Some(e) = disp.get_mut(&po.depth) { e.2 = local_mat; }
+                                }
                             }
                         }
                     }
@@ -631,8 +635,12 @@ fn build_anim_frame_images(
                                     }
                                 }
                                 swf::PlaceObjectAction::Modify => {
-                                    if let Some(e) = disp.get_mut(&po.depth) { e.2 = local_mat; }
-                                    if let Some(e) = unnamed_placements.get_mut(&po.depth) { e.1 = local_mat; }
+                                    // A MODIFY with no matrix only re-states the object —
+                                    // keep its existing transform.
+                                    if po.matrix.is_some() {
+                                        if let Some(e) = disp.get_mut(&po.depth) { e.2 = local_mat; }
+                                        if let Some(e) = unnamed_placements.get_mut(&po.depth) { e.1 = local_mat; }
+                                    }
                                 }
                             }
                         }
@@ -820,11 +828,16 @@ fn build_anim_frame_images(
                                 }
                             }
                             swf::PlaceObjectAction::Modify => {
-                                if let Some(entry) = display_list.get_mut(&depth) {
-                                    entry.2 = local_mat;
-                                } else if let Some(entry) = sub_sprite_placements.get_mut(&depth) {
-                                    // Update the parent matrix of a sub-sprite placement
-                                    entry.2 = local_mat;
+                                // A MODIFY with no matrix only re-states the object (a
+                                // "keep" frame) — preserve its existing transform rather
+                                // than resetting it to identity, which would teleport it.
+                                if po.matrix.is_some() {
+                                    if let Some(entry) = display_list.get_mut(&depth) {
+                                        entry.2 = local_mat;
+                                    } else if let Some(entry) = sub_sprite_placements.get_mut(&depth) {
+                                        // Update the parent matrix of a sub-sprite placement
+                                        entry.2 = local_mat;
+                                    }
                                 }
                             }
                         }
@@ -1137,7 +1150,11 @@ pub fn extract_projectile_frame_images(
                             }
                         }
                         swf::PlaceObjectAction::Modify => {
-                            if let Some(e) = disp.get_mut(&po.depth) { e.2 = mat; }
+                            // A MODIFY with no matrix only re-states the object —
+                            // keep its existing transform.
+                            if po.matrix.is_some() {
+                                if let Some(e) = disp.get_mut(&po.depth) { e.2 = mat; }
+                            }
                         }
                     }
                 }
@@ -1197,8 +1214,12 @@ pub fn extract_projectile_frame_images(
                         }
                     }
                     swf::PlaceObjectAction::Modify => {
-                        if let Some(e) = disp.get_mut(&po.depth) { e.2 = mat; }
-                        if let Some(e) = unnamed_placements.get_mut(&po.depth) { e.1 = mat; }
+                        // A MODIFY with no matrix only re-states the object —
+                        // keep its existing transform.
+                        if po.matrix.is_some() {
+                            if let Some(e) = disp.get_mut(&po.depth) { e.2 = mat; }
+                            if let Some(e) = unnamed_placements.get_mut(&po.depth) { e.1 = mat; }
+                        }
                     }
                 }
             }
