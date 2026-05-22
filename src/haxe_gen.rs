@@ -482,17 +482,17 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
         \tcameraBoxHeight: 250,\n\n\
         \t//ROLL AND LEDGE JUMP STATS\n\
         \ttechRollSpeed: 18,\n\
-        \ttechRollSpeedStartFrame: 7,\n\
-        \ttechRollSpeedLength: 1,\n\
+        \ttechRollSpeedStartFrame: 14,\n\
+        \ttechRollSpeedLength: 2,\n\
         \tdodgeRollSpeed: 13,\n\
-        \tdodgeRollSpeedStartFrame: 3,\n\
-        \tdodgeRollSpeedLength: 1,\n\
+        \tdodgeRollSpeedStartFrame: 6,\n\
+        \tdodgeRollSpeedLength: 2,\n\
         \tgetupRollSpeed: 15.5,\n\
-        \tgetupRollSpeedStartFrame: 2,\n\
-        \tgetupRollSpeedLength: 1,\n\
+        \tgetupRollSpeedStartFrame: 4,\n\
+        \tgetupRollSpeedLength: 2,\n\
         \tledgeRollSpeed: 14,\n\
-        \tledgeRollSpeedStartFrame: 1,\n\
-        \tledgeRollSpeedLength: 1,\n\
+        \tledgeRollSpeedStartFrame: 2,\n\
+        \tledgeRollSpeedLength: 2,\n\
         \tledgeJumpXSpeed: 2.5,\n\
         \tledgeJumpYSpeed: -10,\n\n\
         \t//AIRDASH STATS\n\

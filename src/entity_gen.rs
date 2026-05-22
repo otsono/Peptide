@@ -138,6 +138,23 @@ pub fn generate_meta(guid: &str) -> String {
 
 // ─── Main generator ───────────────────────────────────────────────────────────
 
+/// Stretch every animation timeline 2x for the 30fps → 60fps move.
+///
+/// SSF2 plays at 30fps; Fraymakers runs at 60fps. To preserve each
+/// animation's real-time playback speed, every keyframe must be held for two
+/// Fraymakers frames instead of one. FrayTools timelines are laid out purely
+/// by sequential keyframe `length`, so doubling every keyframe's `length`
+/// doubles every layer's span and every keyframe's start position in
+/// lockstep — image, collision-box, collision-body/ECB, frame-script and
+/// label layers all scale together and cannot fall out of sync.
+fn double_keyframe_lengths(keyframes: &mut [Value]) {
+    for kf in keyframes {
+        if let Some(len) = kf.get("length").and_then(Value::as_u64) {
+            kf["length"] = json!(len * 2);
+        }
+    }
+}
+
 pub fn generate_entity(
     data: &CharacterData,
     char_id: &str,
@@ -837,6 +854,9 @@ pub fn generate_entity(
         }));
     }
 
+    // 30fps → 60fps: hold every keyframe for two frames (see fn docs).
+    double_keyframe_lengths(&mut keyframes);
+
     let entity = json!({
         "animations": animations,
         "export": true,
@@ -1124,6 +1144,9 @@ pub fn generate_menu_entity(
         animations.push(json!({ "$id": uuid(char_id, &format!("menu_anim_{}", hud_name)),
             "name": *hud_name, "layers": [img, aid], "pluginMetadata": {} }));
     }
+
+    // 30fps → 60fps: hold every keyframe for two frames (see fn docs).
+    double_keyframe_lengths(&mut keyframes);
 
     let entity = json!({
         "animations": animations,
@@ -1701,6 +1724,9 @@ pub fn generate_projectile_entity(
             "pluginMetadata": {}
         }));
     }
+
+    // 30fps → 60fps: hold every keyframe for two frames (see fn docs).
+    double_keyframe_lengths(&mut keyframes);
 
     let entity_id = format!("{}Projectile", proj.name.replace('_', ""));
     let entity = json!({
