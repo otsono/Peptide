@@ -379,10 +379,13 @@ fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool) -> String {
     let prefix = if is_extra { "\t// SSF2: " } else { "\t" };
     let mut out = format!("{}{}: {{\n", prefix, name);
     for (i, hb) in hitboxes.iter().enumerate() {
-        // SSF2 hitLag of 255 means -1 (no hitstun override)
-        let hitstun = if hb.hitstun == 255 || hb.hitstun == -1 { -1 } else { hb.hitstun };
-        let hitstop = if hb.hitstop <= 0 { -1 } else { hb.hitstop };
-        let self_hitstop = if hb.self_hitstop <= 0 { -1 } else { hb.self_hitstop };
+        // SSF2 hitLag of 255 means -1 (no hitstun override).
+        // Durations are doubled: SSF2 runs at 30fps, Fraymakers at 60fps, so a
+        // hit-freeze / hitstun of N SSF2 frames must be 2N Fraymakers frames to
+        // last the same real time. The -1 "no override" sentinel is preserved.
+        let hitstun = if hb.hitstun == 255 || hb.hitstun == -1 { -1 } else { hb.hitstun * 2 };
+        let hitstop = if hb.hitstop <= 0 { -1 } else { hb.hitstop * 2 };
+        let self_hitstop = if hb.self_hitstop <= 0 { -1 } else { hb.self_hitstop * 2 };
 
         out.push_str(&format!(
             "\t\thitbox{}: {{ damage: {}, angle: {}, baseKnockback: {}, knockbackGrowth: {}, hitstop: {}, selfHitstop: {}",
