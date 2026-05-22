@@ -862,6 +862,61 @@ pub fn generate_entity(
     // 30fps → 60fps: hold every keyframe for two frames (see fn docs).
     double_keyframe_lengths(&mut keyframes);
 
+    // Drop animations whose image timeline is entirely blank (no IMAGE
+    // keyframe carries a symbol). Empty stubs clutter the FrayTools editor
+    // and confuse modders. Animations named in Script.hx boilerplate by
+    // name (the jab1→jab2→jab3 chain template) are KEPT even when empty,
+    // because runtime setAnimation("jab2") / setAnimation("jab3") calls
+    // would otherwise hit a missing animation.
+    const KEEP_EMPTY: &[&str] = &["jab2", "jab3"];
+    {
+        let layer_type: std::collections::BTreeMap<String, String> = layers.iter()
+            .filter_map(|l| Some((l["$id"].as_str()?.to_string(), l["type"].as_str()?.to_string())))
+            .collect();
+        let layer_kfs: std::collections::BTreeMap<String, Vec<String>> = layers.iter()
+            .filter_map(|l| {
+                let id = l["$id"].as_str()?.to_string();
+                let kfs = l["keyframes"].as_array()?.iter()
+                    .filter_map(|v| Some(v.as_str()?.to_string())).collect();
+                Some((id, kfs))
+            }).collect();
+        let kf_has_symbol: std::collections::BTreeMap<String, bool> = keyframes.iter()
+            .filter_map(|k| Some((
+                k["$id"].as_str()?.to_string(),
+                k.get("symbol").map(|v| !v.is_null()).unwrap_or(false),
+            ))).collect();
+
+        let mut drop_layers: std::collections::BTreeSet<String> = Default::default();
+        let mut dropped_names: Vec<String> = Vec::new();
+        animations.retain(|a| {
+            let name = match a["name"].as_str() { Some(n) => n, None => return true };
+            if KEEP_EMPTY.contains(&name) { return true; }
+            let lids = match a["layers"].as_array() { Some(v) => v, None => return true };
+            let has_image = lids.iter().filter_map(|v| v.as_str()).any(|lid| {
+                if layer_type.get(lid).map(String::as_str) != Some("IMAGE") { return false; }
+                layer_kfs.get(lid).map(|ks|
+                    ks.iter().any(|k| *kf_has_symbol.get(k).unwrap_or(&false))
+                ).unwrap_or(false)
+            });
+            if !has_image {
+                dropped_names.push(name.to_string());
+                for v in lids { if let Some(s) = v.as_str() { drop_layers.insert(s.to_string()); } }
+            }
+            has_image
+        });
+        let mut drop_kfs: std::collections::BTreeSet<String> = Default::default();
+        for lid in &drop_layers {
+            if let Some(ks) = layer_kfs.get(lid) {
+                for k in ks { drop_kfs.insert(k.clone()); }
+            }
+        }
+        layers.retain(|l| l["$id"].as_str().map(|id| !drop_layers.contains(id)).unwrap_or(true));
+        keyframes.retain(|k| k["$id"].as_str().map(|id| !drop_kfs.contains(id)).unwrap_or(true));
+        if !dropped_names.is_empty() {
+            log::info!("Dropped {} empty animation(s): {}", dropped_names.len(), dropped_names.join(", "));
+        }
+    }
+
     let entity = json!({
         "animations": animations,
         "export": true,
