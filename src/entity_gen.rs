@@ -300,13 +300,12 @@ pub fn generate_entity(
                             if global_frame >= frame_offset {
                                 let local_frame = global_frame - frame_offset;
                                 if local_frame < frame_count {
-                                    // 30fps → 60fps: double frame-count
-                                    // arguments in the decompiled script —
-                                    // hit-freeze/hitstun durations and
-                                    // createTimer frame delays.
+                                    // 30fps → 60fps: double the frame-count
+                                    // parameters flagged `isframe` in
+                                    // commands.json (timers, hit durations,
+                                    // stancePlayFrame, refreshRate, ...).
                                     let body = extract_function_body(&script.code);
-                                    let body = crate::api_mappings::double_frame_script_hit_durations(&body);
-                                    let body = crate::api_mappings::double_frame_script_timers(&body);
+                                    let body = crate::api_mappings::double_frame_counts(&body);
                                     frame_code.insert(local_frame, body);
                                 }
                             }

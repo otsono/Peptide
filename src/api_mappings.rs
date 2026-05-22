@@ -905,24 +905,74 @@ fn double_int_after_marker(code: &str, marker: &str, skip_at: i64) -> String {
     out
 }
 
-/// Double the hit-freeze / hitstun durations in inline hitbox objects of
-/// decompiled frame-script code (e.g. `updateAttackBoxStats(1, { hitStun: 2,
-/// selfHitStun: 1 })`). SSF2 `hitStun`/`selfHitStun`/`hitLag` are frame counts;
-/// the 255 "no override" sentinel and negatives are left unchanged.
-pub fn double_frame_script_hit_durations(code: &str) -> String {
-    let mut out = code.to_string();
-    for marker in ["hitStun:", "selfHitStun:", "hitLag:"] {
-        out = double_int_after_marker(&out, marker, 255);
+/// Double the integer literal at positional argument `arg_idx` of every
+/// `fn_name(...)` call. Arguments before the target are walked over with
+/// bracket-depth tracking, so commas inside nested calls/arrays/objects don't
+/// miscount. Non-literal and negative arguments are left unchanged; a literal
+/// `>= skip_at` is treated as a sentinel and left unchanged.
+fn double_call_arg(code: &str, fn_name: &str, arg_idx: usize, skip_at: i64) -> String {
+    let marker = format!("{}(", fn_name);
+    let bytes = code.as_bytes();
+    let mut out = String::with_capacity(code.len() + 16);
+    let mut cursor = 0usize;
+    while let Some(rel) = code[cursor..].find(&marker) {
+        let arg0 = cursor + rel + marker.len(); // start of argument 0
+        // Walk to the start of argument `arg_idx`, depth-tracking brackets.
+        let mut j = arg0;
+        let mut depth = 0i32;
+        let mut cur = 0usize;
+        let mut bailed = false;
+        while cur < arg_idx && j < code.len() {
+            match bytes[j] {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => {
+                    if depth == 0 { bailed = true; break; } // call closed early
+                    depth -= 1;
+                }
+                b',' if depth == 0 => cur += 1,
+                _ => {}
+            }
+            j += 1;
+        }
+        // Copy verbatim up to the target argument's start.
+        out.push_str(&code[cursor..j]);
+        cursor = j;
+        if bailed || cur < arg_idx { continue; } // argument not present
+        // Skip leading whitespace, then double the integer literal if present.
+        let mut k = j;
+        while k < code.len() && (bytes[k] == b' ' || bytes[k] == b'\t') { k += 1; }
+        out.push_str(&code[j..k]);
+        let start = k;
+        while k < code.len() && bytes[k].is_ascii_digit() { k += 1; }
+        if k > start {
+            match code[start..k].parse::<i64>() {
+                Ok(n) if n < skip_at => out.push_str(&(n * 2).to_string()),
+                _ => out.push_str(&code[start..k]),
+            }
+        }
+        cursor = k;
     }
+    out.push_str(&code[cursor..]);
     out
 }
 
-/// Double the frame-delay argument of `createTimer(delay, repeatCount, cb)`
-/// calls in decompiled frame-script code. Only the first argument — the delay,
-/// in frames — is scaled; the repeat count and callback are left untouched
-/// (doubling the delay alone already stretches the timer's total real time).
-pub fn double_frame_script_timers(code: &str) -> String {
-    double_int_after_marker(code, "createTimer(", i64::MAX)
+/// Double every command parameter flagged `isframe` in mappings/commands.json
+/// — `createTimer` delays, `stancePlayFrame` indices, and object-literal
+/// fields like `hitStun` / `refreshRate` / `chargetime_max`. This is the
+/// single, data-driven path for frame-count scaling in decompiled frame-script
+/// Haxe; which parameters are doubled is controlled entirely by the JSON.
+pub fn double_frame_counts(code: &str) -> String {
+    let mut out = code.to_string();
+    for p in &crate::mappings::api_commands().frame_params {
+        if !p.isframe { continue; }
+        let skip_at = p.sentinel.unwrap_or(i64::MAX);
+        out = match p.kind.as_str() {
+            "field" => double_int_after_marker(&out, &format!("{}:", p.name), skip_at),
+            "call"  => double_call_arg(&out, &p.name, p.arg, skip_at),
+            _ => out, // unknown kind — leave untouched
+        };
+    }
+    out
 }
 
 #[cfg(test)]

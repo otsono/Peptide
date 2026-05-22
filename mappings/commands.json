@@ -69,5 +69,22 @@
     { "from": "selfHitStun:", "to": "selfHitstop:" },
     { "from": "hitLag:", "to": "hitstun:" },
     { "from": "selfHitLag:", "to": "selfHitstop:" }
+  ],
+
+  "$frame_params_comment": "frame_params flags command parameters that carry a frame count, so the converter doubles their numeric value for the 30fps -> 60fps timing change. Granularity is per-parameter. Each entry has a 'kind': 'call' targets one positional argument of a function call (identify it by 'name' and the 0-based 'arg' index — e.g. createTimer(delay, repeat, callback) flags only arg 0); 'field' targets a named key in an object literal (e.g. { refreshRate: 90 }). 'isframe' is the flag itself — only entries with isframe:true are doubled, so a parameter can be listed and left off. Optional 'sentinel': a literal value at or above which the parameter is left unchanged (used for hitStun/hitLag's 255 'no override' marker). Negative and non-literal arguments are never touched.",
+  "frame_params": [
+    { "kind": "call",  "name": "createTimer",     "arg": 0, "isframe": true,
+      "note": "createTimer(delay, repeatCount, callback) — only the delay (arg 0) is a frame count; the repeat count is left alone" },
+    { "kind": "call",  "name": "stancePlayFrame", "arg": 0, "isframe": true,
+      "note": "stancePlayFrame(frameIndex) — jumps to a frame of the now-2x-long stance timeline" },
+    { "kind": "field", "name": "hitStun",       "isframe": true, "sentinel": 255,
+      "note": "frames of hit-freeze on the attacker; 255 = no-override sentinel, left unchanged" },
+    { "kind": "field", "name": "selfHitStun",   "isframe": true, "sentinel": 255 },
+    { "kind": "field", "name": "hitLag",        "isframe": true, "sentinel": 255,
+      "note": "frames the victim is stunned" },
+    { "kind": "field", "name": "refreshRate",   "isframe": true,
+      "note": "hitbox re-hit cooldown in frames" },
+    { "kind": "field", "name": "chargetime_max", "isframe": true,
+      "note": "maximum charge duration in frames" }
   ]
 }

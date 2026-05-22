@@ -82,12 +82,36 @@ pub struct Replacement {
     pub to: String,
 }
 
+/// A command parameter flagged as carrying a frame count, so the converter
+/// doubles its value for the 30fps -> 60fps timing change.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FrameParam {
+    /// "call" — a positional argument of a function call; "field" — a named
+    /// key in an object literal.
+    pub kind: String,
+    /// Function name (kind=call) or object-literal key (kind=field).
+    pub name: String,
+    /// kind=call only: 0-based index of the argument that is a frame count.
+    #[serde(default)]
+    pub arg: usize,
+    /// Only entries with `isframe == true` are doubled.
+    #[serde(default)]
+    pub isframe: bool,
+    /// Optional: a literal value at or above which the parameter is left
+    /// unchanged (e.g. 255 for the hitStun/hitLag "no override" sentinel).
+    #[serde(default)]
+    pub sentinel: Option<i64>,
+}
+
 /// Universal SSF2 -> Fraymakers API command conversions: an ordered list of
-/// literal string replacements applied to decompiled Haxe. Order matters.
+/// literal string replacements applied to decompiled Haxe (order matters),
+/// plus the per-parameter frame-count flags.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApiCommands {
     #[serde(default)]
     pub replacements: Vec<Replacement>,
+    #[serde(default)]
+    pub frame_params: Vec<FrameParam>,
 }
 
 // ─── Loading ────────────────────────────────────────────────────────────────
