@@ -445,49 +445,134 @@ fn prerender_skewed_frames(
             let mut dst = RgbaImage::new(dst_w, dst_h);
             let swi = src.width() as i64;
             let shi = src.height() as i64;
+
+            // Sample the source with premultiplied alpha; out-of-bounds reads
+            // return transparent black so sheared edges fade out cleanly.
+            let sample = |xi: i64, yi: i64| -> [f64; 4] {
+                if xi >= 0 && xi < swi && yi >= 0 && yi < shi {
+                    let p = src.get_pixel(xi as u32, yi as u32).0;
+                    let a = p[3] as f64 / 255.0;
+                    [p[0] as f64 * a, p[1] as f64 * a, p[2] as f64 * a, p[3] as f64]
+                } else {
+                    [0.0; 4]
+                }
+            };
+            // Catmull-Rom cubic weights for a fractional offset in [0,1).
+            let cubic = |t: f64| -> [f64; 4] {
+                let t2 = t * t;
+                let t3 = t2 * t;
+                [
+                    -0.5 * t3 + t2 - 0.5 * t,
+                     1.5 * t3 - 2.5 * t2 + 1.0,
+                    -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+                     0.5 * t3 - 0.5 * t2,
+                ]
+            };
+            // Bicubic (Catmull-Rom) sample of the source at a continuous point.
+            // This interpolating kernel stays much sharper than bilinear and
+            // its mild negative lobes preserve contrast, so the sprites' thin
+            // dark outlines keep their definition instead of being averaged
+            // toward the lighter interior.
+            let bicubic = |sx: f64, sy: f64| -> [f64; 4] {
+                let xf = sx.floor();
+                let yf = sy.floor();
+                let wx = cubic(sx - xf);
+                let wy = cubic(sy - yf);
+                let (x0, y0) = (xf as i64 - 1, yf as i64 - 1);
+                let mut acc = [0.0f64; 4];
+                for (j, &wyj) in wy.iter().enumerate() {
+                    for (i, &wxi) in wx.iter().enumerate() {
+                        let w = wxi * wyj;
+                        let c = sample(x0 + i as i64, y0 + j as i64);
+                        for k in 0..4 { acc[k] += c[k] * w; }
+                    }
+                }
+                acc
+            };
+            // Bicubic-resample every destination pixel into a premultiplied
+            // float buffer. One interpolating tap per pixel — no supersampling,
+            // which would blur thin dark outlines back toward their lighter
+            // neighbours. Pixel (i,j) is centred on integer coord (i,j),
+            // matching the previous sampler's convention (no positional shift).
+            let npx = (dst_w as usize) * (dst_h as usize);
+            let mut buf: Vec<[f64; 4]> = Vec::with_capacity(npx);
             for dy in 0..dst_h {
                 for dx in 0..dst_w {
                     let fx = dx as f64 + min_x;
                     let fy = dy as f64 + min_y;
                     let sx = inv_a * fx + inv_c * fy;
                     let sy = inv_b * fx + inv_d * fy;
-                    // Bilinear sample with premultiplied alpha — antialiases the
-                    // sheared edges and avoids dark fringing at transparent
-                    // borders. Pixel (i,j)'s value sits at integer coord (i,j),
-                    // the same convention as the old nearest sampler, so this
-                    // introduces no half-pixel positional shift.
-                    let xf = sx.floor();
-                    let yf = sy.floor();
-                    let tx_frac = sx - xf;
-                    let ty_frac = sy - yf;
-                    let (x0, y0) = (xf as i64, yf as i64);
-                    let sample = |xi: i64, yi: i64| -> [f64; 4] {
-                        if xi >= 0 && xi < swi && yi >= 0 && yi < shi {
-                            let p = src.get_pixel(xi as u32, yi as u32).0;
-                            let a = p[3] as f64 / 255.0;
-                            [p[0] as f64 * a, p[1] as f64 * a, p[2] as f64 * a, p[3] as f64]
-                        } else {
-                            [0.0; 4]
-                        }
-                    };
-                    let c00 = sample(x0, y0);
-                    let c10 = sample(x0 + 1, y0);
-                    let c01 = sample(x0, y0 + 1);
-                    let c11 = sample(x0 + 1, y0 + 1);
+                    buf.push(bicubic(sx, sy));
+                }
+            }
+
+            // Mild unsharp mask in premultiplied space: a small Gaussian blur
+            // (sigma 0.9) is subtracted back in at 45% strength, lifting edge
+            // contrast so the result reads sharper and the sprites' thin dark
+            // outlines stay dark. Working premultiplied, with the same [0,alpha]
+            // clamp below, keeps the sharpen from fringing at transparent edges.
+            const UNSHARP_AMOUNT: f64 = 0.45;
+            let gauss: Vec<f64> = {
+                let sigma = 0.9_f64;
+                let radius = (sigma * 3.0).ceil() as i64;
+                let mut k: Vec<f64> = (-radius..=radius)
+                    .map(|i| (-((i * i) as f64) / (2.0 * sigma * sigma)).exp())
+                    .collect();
+                let sum: f64 = k.iter().sum();
+                for w in &mut k { *w /= sum; }
+                k
+            };
+            let gradius = (gauss.len() / 2) as i64;
+            let w = dst_w as i64;
+            let h = dst_h as i64;
+            let idx = |x: i64, y: i64| (y * w + x) as usize;
+            // Separable Gaussian, zero-padded (premultiplied → transparent
+            // outside): horizontal pass into `tmp`, then vertical into `blurred`.
+            let mut tmp = vec![[0.0f64; 4]; npx];
+            for y in 0..h {
+                for x in 0..w {
+                    let mut acc = [0.0f64; 4];
+                    for (t, &gw) in gauss.iter().enumerate() {
+                        let sx = x + t as i64 - gradius;
+                        if sx < 0 || sx >= w { continue; }
+                        let c = buf[idx(sx, y)];
+                        for k in 0..4 { acc[k] += c[k] * gw; }
+                    }
+                    tmp[idx(x, y)] = acc;
+                }
+            }
+            let mut blurred = vec![[0.0f64; 4]; npx];
+            for y in 0..h {
+                for x in 0..w {
+                    let mut acc = [0.0f64; 4];
+                    for (t, &gw) in gauss.iter().enumerate() {
+                        let sy = y + t as i64 - gradius;
+                        if sy < 0 || sy >= h { continue; }
+                        let c = tmp[idx(x, sy)];
+                        for k in 0..4 { acc[k] += c[k] * gw; }
+                    }
+                    blurred[idx(x, y)] = acc;
+                }
+            }
+
+            // Finalize: apply the unsharp mask, then un-premultiply. Clamp
+            // alpha to [0,255] and premultiplied colour to [0,alpha] so the
+            // sharpen overshoot can't manufacture a bright or dark fringe.
+            for y in 0..h {
+                for x in 0..w {
+                    let p = idx(x, y);
                     let mut out = [0.0f64; 4];
                     for k in 0..4 {
-                        let top = c00[k] * (1.0 - tx_frac) + c10[k] * tx_frac;
-                        let bot = c01[k] * (1.0 - tx_frac) + c11[k] * tx_frac;
-                        out[k] = top * (1.0 - ty_frac) + bot * ty_frac;
+                        out[k] = buf[p][k] + UNSHARP_AMOUNT * (buf[p][k] - blurred[p][k]);
                     }
-                    let alpha = out[3];
+                    let alpha = out[3].clamp(0.0, 255.0);
                     if alpha > 0.5 {
                         let inv = 255.0 / alpha; // un-premultiply
-                        dst.put_pixel(dx, dy, image::Rgba([
-                            (out[0] * inv).round().clamp(0.0, 255.0) as u8,
-                            (out[1] * inv).round().clamp(0.0, 255.0) as u8,
-                            (out[2] * inv).round().clamp(0.0, 255.0) as u8,
-                            alpha.round().clamp(0.0, 255.0) as u8,
+                        dst.put_pixel(x as u32, y as u32, image::Rgba([
+                            (out[0].clamp(0.0, alpha) * inv).round().clamp(0.0, 255.0) as u8,
+                            (out[1].clamp(0.0, alpha) * inv).round().clamp(0.0, 255.0) as u8,
+                            (out[2].clamp(0.0, alpha) * inv).round().clamp(0.0, 255.0) as u8,
+                            alpha.round() as u8,
                         ]));
                     }
                 }
