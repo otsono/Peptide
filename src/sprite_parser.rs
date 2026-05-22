@@ -600,42 +600,98 @@ fn apply_fallbacks(result: &mut BTreeMap<String, AnimationBoxData>) {
 
 /// Find the pixel size of one side of the CollisionBox base shape.
 /// SSF2 uses a square shape; we want the width (= height for square).
+/// Measure a collision-box character's intrinsic size in pixels.
+/// The box character is usually a DefineSprite wrapping a square DefineShape;
+/// descend through sprites, folding in each placement matrix's scale so a
+/// non-identity inner transform is accounted for.
+fn measure_box_char(swf: &swf::Swf, char_id: u16, depth: u8) -> Option<f64> {
+    if depth > 4 { return None; }
+    for tag in &swf.tags {
+        match tag {
+            swf::Tag::DefineShape(shape) if shape.id == char_id => {
+                let b = &shape.shape_bounds;
+                let w = (b.x_max.get() - b.x_min.get()) as f64 / 20.0;
+                let h = (b.y_max.get() - b.y_min.get()) as f64 / 20.0;
+                return Some((w + h) / 2.0);
+            }
+            swf::Tag::DefineSprite(sprite) if sprite.id == char_id => {
+                for stag in &sprite.tags {
+                    if let swf::Tag::PlaceObject(po) = stag {
+                        let child = match &po.action {
+                            swf::PlaceObjectAction::Place(id)
+                            | swf::PlaceObjectAction::Replace(id) => *id,
+                            _ => continue,
+                        };
+                        let scale = po.matrix
+                            .map(|m| (m.a.to_f64().abs() + m.d.to_f64().abs()) / 2.0)
+                            .unwrap_or(1.0);
+                        return measure_box_char(swf, child, depth + 1).map(|s| s * scale);
+                    }
+                }
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Determine the base (unscaled, pre-PlaceObject-matrix) size of the
+/// collision-box shape in pixels.
+///
+/// SSF2 places every collision box as the same character — a small square
+/// shape scaled per instance by the PlaceObject matrix. We find that
+/// character by tallying which char id the box-named instances
+/// (attackBox / hitBox / grabBox / …) actually place, then measure its
+/// shape. The symbol is not reliably named "CollisonBox" (sandbag's isn't),
+/// so name-based lookup is only a last-resort fallback.
 fn find_collision_box_base_size(swf: &swf::Swf, sym_names: &BTreeMap<u16, String>) -> f64 {
-    // Find the CollisonBox sprite id
-    let collison_sprite_id = sym_names.iter()
-        .find(|(_, name)| name.to_lowercase().contains("collisonbox") || name.to_lowercase().contains("collisionbox"))
-        .map(|(id, _)| *id);
-
-    let Some(sprite_id) = collison_sprite_id else { return DEFAULT_BASE_SIZE; };
-
-    // Find the sprite and its first child (should be a shape)
+    // Tally char ids placed under box-typed instance names (excluding
+    // itemBox, which is a separate character with its own geometry).
+    let mut tally: BTreeMap<u16, u32> = BTreeMap::new();
     for tag in &swf.tags {
         if let swf::Tag::DefineSprite(sprite) = tag {
-            if sprite.id != sprite_id { continue; }
-            // Get the first PlaceObject to find the shape id
             for stag in &sprite.tags {
                 if let swf::Tag::PlaceObject(po) = stag {
-                    let shape_id = match &po.action {
-                        swf::PlaceObjectAction::Place(id) => *id,
-                        swf::PlaceObjectAction::Replace(id) => *id,
+                    let child = match &po.action {
+                        swf::PlaceObjectAction::Place(id)
+                        | swf::PlaceObjectAction::Replace(id) => *id,
                         _ => continue,
                     };
-                    // Now find the DefineShape with that id
-                    for tag2 in &swf.tags {
-                        if let swf::Tag::DefineShape(shape) = tag2 {
-                            if shape.id != shape_id { continue; }
-                            let bounds = &shape.shape_bounds;
-                            let w = (bounds.x_max.get() - bounds.x_min.get()) as f64 / 20.0;
-                            let h = (bounds.y_max.get() - bounds.y_min.get()) as f64 / 20.0;
-                            log::debug!("CollisonBox shape id={} bounds: {}x{} px", shape_id, w, h);
-                            // Use average of w/h in case it's not exactly square
-                            return (w + h) / 2.0;
+                    let Some(name) = po.name.as_ref()
+                        .map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252).to_string())
+                    else { continue };
+                    if let Some(bt) = BoxType::from_instance_name(&name) {
+                        if bt != BoxType::ItemBox {
+                            *tally.entry(child).or_insert(0) += 1;
                         }
                     }
                 }
             }
         }
     }
+    if let Some((&char_id, _)) = tally.iter().max_by_key(|(_, &count)| count) {
+        if let Some(size) = measure_box_char(swf, char_id, 0) {
+            log::info!("CollisonBox char id={}: measured base size {:.1}px", char_id, size);
+            return size;
+        }
+    }
+
+    // Fallback: locate the box character by symbol name.
+    let collison_sprite_id = sym_names.iter()
+        .find(|(_, name)| {
+            let l = name.to_lowercase();
+            l.contains("collisonbox") || l.contains("collisionbox")
+        })
+        .map(|(id, _)| *id);
+    if let Some(sprite_id) = collison_sprite_id {
+        if let Some(size) = measure_box_char(swf, sprite_id, 0) {
+            log::info!("CollisonBox (by name) id={}: base size {:.1}px", sprite_id, size);
+            return size;
+        }
+    }
+
+    log::warn!("CollisonBox shape not found; using default base size {:.0}px", DEFAULT_BASE_SIZE);
     DEFAULT_BASE_SIZE
 }
 
