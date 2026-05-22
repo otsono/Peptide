@@ -721,7 +721,13 @@ fn build_anim_frame_images(
             if !sym.contains("_fla.") { continue; }
 
             let fm_name = match extract_ssf2_anim_name(sym, &char_lower, ssf2_to_fm) {
-                Some(ssf2_name) => ssf2_to_fm.get(&ssf2_name).cloned().unwrap_or(ssf2_name),
+                // Prefer the dynamic xframe-derived map; fall back to the
+                // static table so animations the bytecode never setXFrame'd
+                // still route to their Fraymakers slot instead of landing
+                // under the raw SSF2 name (which leaves the slot empty).
+                Some(ssf2_name) => ssf2_to_fm.get(&ssf2_name).cloned()
+                    .or_else(|| crate::sprite_parser::static_ssf2_to_fm(&ssf2_name))
+                    .unwrap_or(ssf2_name),
                 None => {
                     // No mapping but still process — use raw symbol name as key
                     // e.g. "sandbag_fla.UpThrow_69" contains trail/effect images

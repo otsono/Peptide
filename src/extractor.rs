@@ -246,108 +246,17 @@ pub fn is_split_sub_anim(fm_name: &str) -> bool {
 }
 
 fn build_ssf2_to_fm_anim(xframe_map: &XframeMap) -> BTreeMap<String, String> {
-    // Static SSF2 animation name → Fraymakers animation name mapping
-    // Source: SSF2_TO_FRAYMAKERS_API.md + Fraymakers entity spec
-    let table: &[(&str, &str)] = &[
-        ("stand",           "idle"),
-        ("walk",            "walk"),
-        ("run",             "run"),
-        ("jump",            "jump"),
-        ("jump_midair",     "jump_aerial"),
-        ("fall",            "fall"),
-        ("land",            "land"),
-        ("heavyland",       "land_heavy"),
-        ("skid",            "skid"),
-        ("crouch",          "crouch"),
-        ("entrance",        "entry"),
-        ("revival",         "respawn"),
-        ("win",             "victory"),
-        ("lose",            "defeat"),
-        // Attacks
-        ("a",               "jab"),
-        ("a_forward",       "dash_attack"),
-        ("a_forward_tilt",  "tilt_forward"),
-        ("a_up_tilt",       "tilt_up"),
-        ("a_down",          "tilt_down"),
-        ("crouch_attack",   "tilt_down"),
-        ("a_forwardsmash",  "strong_forward"),
-        ("a_up",            "strong_up"),
-        ("a_air",           "aerial_neutral"),
-        ("a_air_forward",   "aerial_forward"),
-        ("a_air_backward",  "aerial_back"),
-        ("a_air_up",        "aerial_up"),
-        ("a_air_down",      "aerial_down"),
-        ("b",               "special_neutral"),
-        ("b_air",           "special_neutral_air"),
-        ("b_forward",       "special_side"),
-        ("b_forward_air",   "special_side_air"),
-        ("b_up",            "special_up"),
-        ("b_up_air",        "special_up_air"),
-        ("b_down",          "special_down"),
-        ("b_down_air",      "special_down_air"),
-        ("throw_forward",   "throw_forward"),
-        ("throw_back",      "throw_back"),
-        ("throw_up",        "throw_up"),
-        ("throw_down",      "throw_down"),
-        ("ledge_attack",    "ledge_attack"),
-        ("getup_attack",    "getup_attack"),
-        // Defense / movement
-        ("defend",          "shield"),
-        ("dodgeroll",       "roll"),
-        ("airdodge",        "airdodge"),
-        ("sidestep",        "sidestep"),
-        ("grab",            "grab"),
-        ("carry",           "carry"),
-        // Damage
-        ("hurt",            "hurt"),
-        ("stunned",         "stunned"),
-        ("dizzy",           "dizzy"),
-        ("sleep",           "sleep"),
-        ("falling",         "tumble"),
-        ("crash",           "knockdown"),
-        ("frozen",          "frozen"),
-        ("egg",             "egg"),
-        ("star",            "star_ko"),
-        ("pitfall",         "buried"),
-        // Edge / climb
-        ("hang",            "ledge_hang"),
-        ("climbup",         "ledge_climb"),
-        ("edgelean",        "ledge_lean"),
-        ("rollup",          "ledge_roll"),
-        ("wallstick",       "wall_stick"),
-        // Misc
-        ("taunt",           "taunt"),
-        ("swim",            "swim"),
-        ("ladder",          "ladder"),
-        ("flying",          "fly"),
-        ("special",         "special"),
-        ("tech_ground",     "tech"),
-        ("tech_roll",       "tech_roll"),
-        ("toss",            "item_throw"),
-        ("toss_air",        "item_throw_air"),
-        // Items
-        ("item_pickup",     "item_pickup"),
-        ("item_jab",        "item_jab"),
-        ("item_dash",       "item_dash_attack"),
-        ("item_tilt",       "item_tilt"),
-        ("item_smash",      "item_smash"),
-        ("item_homerun",    "item_homerun"),
-        ("item_fan",        "item_fan"),
-        ("item_shoot",      "item_shoot"),
-        ("item_raise",      "item_raise"),
-        ("item_float",      "item_float"),
-        ("item_screw",      "item_screw"),
-    ];
-
-    let lookup: BTreeMap<&str, &str> = table.iter().cloned().collect();
+    // SSF2 animation name → Fraymakers animation name table is loaded from
+    // mappings/character/animations.json (see crate::mappings).
+    let lookup = &crate::mappings::character_animations().ssf2_to_fm;
     let mut result = BTreeMap::new();
 
     // Map every unique SSF2 anim name from xframe_map through the table
     for ssf2_name in xframe_map.values() {
-        let fm_name = lookup.get(ssf2_name.as_str())
-            .copied()
-            .unwrap_or(ssf2_name.as_str()); // fallback: keep as-is
-        result.insert(ssf2_name.clone(), fm_name.to_string());
+        let fm_name = lookup.get(ssf2_name)
+            .cloned()
+            .unwrap_or_else(|| ssf2_name.clone()); // fallback: keep as-is
+        result.insert(ssf2_name.clone(), fm_name);
     }
 
     result
@@ -371,25 +280,25 @@ fn convert_hitboxes(raw: &[BTreeMap<String, f64>]) -> Vec<Hitbox> {
 }
 
 fn convert_stats(vals: &BTreeMap<String, f64>) -> CharacterStats {
-    // SSF2 key name → Fraymakers field mapping
-    // SSF2 stores: weight1, norm_xSpeed (walk), max_xSpeed (dash),
-    //              max_ySpeed (fallSpeed), fastFallSpeed, gravity,
-    //              accel_rate_air (airMobility), max_jump (double jumps)
-    let get = |keys: &[&str]| {
-        keys.iter().find_map(|k| vals.get(*k)).copied().unwrap_or(0.0)
+    // SSF2 key name → Fraymakers field mapping is loaded from
+    // mappings/character/stats.json (see crate::mappings).
+    let stat_map = crate::mappings::character_stats();
+    let get = |field: &str| {
+        stat_map.keys_for(field).iter()
+            .find_map(|k| vals.get(k)).copied().unwrap_or(0.0)
     };
     CharacterStats {
-        weight:             get(&["weight1", "weight"]),
-        gravity:            get(&["gravity"]),
-        fall_speed:         get(&["max_ySpeed", "fallSpeed"]),
-        fast_fall_speed:    get(&["fastFallSpeed"]),
-        walk_speed:         get(&["norm_xSpeed", "walkSpeed"]),
-        dash_speed:         get(&["max_xSpeed", "dashSpeed"]),
-        air_mobility:       get(&["accel_rate_air", "airMobility"]),
-        max_jumps:          get(&["max_jump", "maxJumps"]) as i32 + 1, // SSF2 max_jump=1 = 2 total jumps
-        jump_height:        get(&["jumpSpeed", "jumpHeight"]),
-        double_jump_height: get(&["jumpSpeedMidair", "doubleJumpHeight"]),
-        air_friction:       get(&["decel_rate_air", "airFriction"]),
+        weight:             get("weight"),
+        gravity:            get("gravity"),
+        fall_speed:         get("fall_speed"),
+        fast_fall_speed:    get("fast_fall_speed"),
+        walk_speed:         get("walk_speed"),
+        dash_speed:         get("dash_speed"),
+        air_mobility:       get("air_mobility"),
+        max_jumps:          get("max_jumps") as i32 + 1, // SSF2 max_jump=1 = 2 total jumps
+        jump_height:        get("jump_height"),
+        double_jump_height: get("double_jump_height"),
+        air_friction:       get("air_friction"),
         // base_scale_x/y are set later from sprite_parser::extract_xframe_scale
         base_scale_x:       1.0,
         base_scale_y:       1.0,

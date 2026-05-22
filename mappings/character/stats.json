@@ -1,0 +1,27 @@
+{
+  "$schema": "Stat mappings for CHARACTER conversion (SSF2 -> Fraymakers).",
+  "$comment": "Edit this file to change how stats are read and scaled; the converter reloads it at runtime, no recompile needed. If the file is missing or malformed the converter falls back to its built-in defaults. 'field_keys' lists the SSF2 stat key names to try (in order) for each Fraymakers stat field. 'multipliers' scale a raw SSF2 value into Fraymakers units via: fm = max(floor, raw / divisor * target). The 'air_friction' multiplier is applied to the absolute value.",
+
+  "field_keys": {
+    "weight": ["weight1", "weight"],
+    "gravity": ["gravity"],
+    "fall_speed": ["max_ySpeed", "fallSpeed"],
+    "fast_fall_speed": ["fastFallSpeed"],
+    "walk_speed": ["norm_xSpeed", "walkSpeed"],
+    "dash_speed": ["max_xSpeed", "dashSpeed"],
+    "air_mobility": ["accel_rate_air", "airMobility"],
+    "max_jumps": ["max_jump", "maxJumps"],
+    "jump_height": ["jumpSpeed", "jumpHeight"],
+    "double_jump_height": ["jumpSpeedMidair", "doubleJumpHeight"],
+    "air_friction": ["decel_rate_air", "airFriction"]
+  },
+
+  "multipliers": {
+    "gravity":      { "divisor": 1.3,  "target": 0.84, "floor": 0.3 },
+    "speed":        { "divisor": 13.0, "target": 9.25, "floor": 0.5 },
+    "jump":         { "divisor": 17.4, "target": 15.0, "floor": 5.0 },
+    "walk":         { "divisor": 4.0,  "target": 3.25, "floor": 1.0 },
+    "dash":         { "divisor": 11.0, "target": 8.5,  "floor": 2.0 },
+    "air_friction": { "divisor": 0.15, "target": 0.20, "floor": 0.05 }
+  }
+}

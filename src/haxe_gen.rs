@@ -283,12 +283,13 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
 // Fraymakers uses its own unit system. Approximate conversions based on
 // studying template characters vs SSF2 data.
 
-fn ssf2_gravity_to_fm(v: f64) -> f64 { (v / 1.3 * 0.84).max(0.3) }
-fn ssf2_speed_to_fm(v: f64) -> f64   { (v / 13.0 * 9.25).max(0.5) }
-fn ssf2_jump_to_fm(v: f64) -> f64    { (v / 17.4 * 15.0).max(5.0) }
-fn ssf2_walk_to_fm(v: f64) -> f64    { (v / 4.0 * 3.25).max(1.0) }
-fn ssf2_dash_to_fm(v: f64) -> f64    { (v / 11.0 * 8.5).max(2.0) }
-fn ssf2_air_to_fm(v: f64) -> f64     { (v.abs() / 0.15 * 0.20).max(0.05) }
+// Scaling factors are loaded from mappings/character/stats.json (see crate::mappings).
+fn ssf2_gravity_to_fm(v: f64) -> f64 { crate::mappings::character_stats().scale("gravity", v) }
+fn ssf2_speed_to_fm(v: f64) -> f64   { crate::mappings::character_stats().scale("speed", v) }
+fn ssf2_jump_to_fm(v: f64) -> f64    { crate::mappings::character_stats().scale("jump", v) }
+fn ssf2_walk_to_fm(v: f64) -> f64    { crate::mappings::character_stats().scale("walk", v) }
+fn ssf2_dash_to_fm(v: f64) -> f64    { crate::mappings::character_stats().scale("dash", v) }
+fn ssf2_air_to_fm(v: f64) -> f64     { crate::mappings::character_stats().scale("air_friction", v.abs()) }
 
 fn fmt(v: f64) -> String {
     if v == v.round() && v.abs() < 1000.0 {
