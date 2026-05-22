@@ -265,16 +265,24 @@ fn build_ssf2_to_fm_anim(xframe_map: &XframeMap) -> BTreeMap<String, String> {
 // ─── Conversion helpers ─────────────────────────────────────────────────────────
 
 fn convert_hitboxes(raw: &[BTreeMap<String, f64>]) -> Vec<Hitbox> {
+    // SSF2 key → Fraymakers hitbox field mapping is loaded from
+    // mappings/character/hitbox_stats.json (see crate::mappings).
+    let cfg = crate::mappings::character_hitbox_stats();
     raw.iter().map(|obj| {
-        let get = |k: &str| obj.get(k).copied().unwrap_or(0.0);
+        // Value of a Fraymakers field = max over its SSF2 source keys
+        // (an absent key counts as 0.0).
+        let v = |fm: &str| cfg.keys_for(fm).iter()
+            .map(|k| obj.get(k).copied().unwrap_or(0.0))
+            .reduce(f64::max)
+            .unwrap_or(0.0);
         Hitbox {
-            damage:           get("damage"),
-            angle:            get("direction").max(get("angle")),
-            base_knockback:   get("power").max(get("weightKB")),
-            knockback_growth: get("kbConstant"),
-            hitstop:          get("hitStun") as i32,
-            self_hitstop:     get("selfHitStun") as i32,
-            hitstun:          get("hitLag") as i32,
+            damage:           v("damage"),
+            angle:            v("angle"),
+            base_knockback:   v("baseKnockback"),
+            knockback_growth: v("knockbackGrowth"),
+            hitstop:          v("hitstop") as i32,
+            self_hitstop:     v("selfHitstop") as i32,
+            hitstun:          v("hitstun") as i32,
         }
     }).collect()
 }

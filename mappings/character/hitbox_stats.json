@@ -1,0 +1,14 @@
+{
+  "$schema": "SSF2 -> Fraymakers hitbox-stats conversion for CHARACTER conversion.",
+  "$comment": "Describes how an SSF2 hitbox object is converted into a Fraymakers HitboxStats.hx hitbox entry. Each entry in 'fields' maps one Fraymakers field ('fm_field') to the SSF2 source key(s) it reads ('ssf2_keys'). When several SSF2 keys are listed the converter takes the MAX of their values (an absent key counts as 0); this mirrors SSF2, where e.g. either 'direction' or 'angle' may carry the launch angle and either 'power' or 'weightKB' the base knockback. 'isframe: true' marks a frame-count field whose value is doubled for the 30fps -> 60fps timing change — the same isframe flag used in commands.json, so all frame-doubling now runs through one path. The -1 'no override' sentinel handling for hitstop/selfHitstop/hitstun stays in code (it is emit formatting, not conversion). Loaded at runtime; the converter falls back to its built-in defaults if this file is missing or malformed.",
+
+  "fields": [
+    { "fm_field": "damage",          "ssf2_keys": ["damage"] },
+    { "fm_field": "angle",           "ssf2_keys": ["direction", "angle"] },
+    { "fm_field": "baseKnockback",   "ssf2_keys": ["power", "weightKB"] },
+    { "fm_field": "knockbackGrowth", "ssf2_keys": ["kbConstant"] },
+    { "fm_field": "hitstop",         "ssf2_keys": ["hitStun"],     "isframe": true },
+    { "fm_field": "selfHitstop",     "ssf2_keys": ["selfHitStun"], "isframe": true },
+    { "fm_field": "hitstun",         "ssf2_keys": ["hitLag"],      "isframe": true }
+  ]
+}

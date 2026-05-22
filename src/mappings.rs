@@ -21,6 +21,8 @@ const DEFAULT_CHARACTER_ANIMATIONS: &str =
     include_str!("../mappings/character/animations.json");
 const DEFAULT_CHARACTER_STATS: &str =
     include_str!("../mappings/character/stats.json");
+const DEFAULT_CHARACTER_HITBOX_STATS: &str =
+    include_str!("../mappings/character/hitbox_stats.json");
 // API command conversions are universal, not character-scoped, so this file
 // lives at the top of mappings/ rather than under mappings/character/.
 const DEFAULT_API_COMMANDS: &str =
@@ -72,6 +74,44 @@ impl StatMappings {
     /// behaviour (returning `raw`) if the multiplier is absent.
     pub fn scale(&self, name: &str, raw: f64) -> f64 {
         self.multipliers.get(name).map(|m| m.apply(raw)).unwrap_or(raw)
+    }
+}
+
+/// One Fraymakers hitbox field and the SSF2 key(s) it is converted from.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HitboxField {
+    /// Fraymakers HitboxStats field name.
+    pub fm_field: String,
+    /// SSF2 source key(s); the converter takes the max of their values.
+    #[serde(default)]
+    pub ssf2_keys: Vec<String>,
+    /// If true, the value is a frame count and is doubled for 30fps -> 60fps.
+    #[serde(default)]
+    pub isframe: bool,
+}
+
+/// SSF2 -> Fraymakers hitbox-stats conversion (character-scoped).
+#[derive(Debug, Clone, Deserialize)]
+pub struct HitboxStatsMapping {
+    #[serde(default)]
+    pub fields: Vec<HitboxField>,
+}
+
+impl HitboxStatsMapping {
+    /// SSF2 source keys for a Fraymakers hitbox field (empty if unmapped).
+    pub fn keys_for(&self, fm_field: &str) -> &[String] {
+        self.fields.iter()
+            .find(|f| f.fm_field == fm_field)
+            .map(|f| f.ssf2_keys.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Whether a Fraymakers hitbox field is a frame count (doubled for 60fps).
+    pub fn is_frame(&self, fm_field: &str) -> bool {
+        self.fields.iter()
+            .find(|f| f.fm_field == fm_field)
+            .map(|f| f.isframe)
+            .unwrap_or(false)
     }
 }
 
@@ -171,6 +211,13 @@ pub fn character_stats() -> &'static StatMappings {
     static CACHE: OnceLock<StatMappings> = OnceLock::new();
     CACHE.get_or_init(|| {
         load("mappings/character/stats.json", DEFAULT_CHARACTER_STATS)
+    })
+}
+
+pub fn character_hitbox_stats() -> &'static HitboxStatsMapping {
+    static CACHE: OnceLock<HitboxStatsMapping> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        load("mappings/character/hitbox_stats.json", DEFAULT_CHARACTER_HITBOX_STATS)
     })
 }
 

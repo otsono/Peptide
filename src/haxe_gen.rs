@@ -378,14 +378,18 @@ fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool) -> String {
     let limb = guess_limb(name);
     let prefix = if is_extra { "\t// SSF2: " } else { "\t" };
     let mut out = format!("{}{}: {{\n", prefix, name);
+    // Frame-count fields are doubled for the 30fps -> 60fps timing change.
+    // Which fields are frame counts is driven by the `isframe` flags in
+    // mappings/character/hitbox_stats.json (see crate::mappings), the same
+    // mechanism commands.json uses — so all frame-doubling is one path.
+    let hb_cfg = crate::mappings::character_hitbox_stats();
+    let scale = |fm_field: &str, v: i32| if hb_cfg.is_frame(fm_field) { v * 2 } else { v };
     for (i, hb) in hitboxes.iter().enumerate() {
-        // SSF2 hitLag of 255 means -1 (no hitstun override).
-        // Durations are doubled: SSF2 runs at 30fps, Fraymakers at 60fps, so a
-        // hit-freeze / hitstun of N SSF2 frames must be 2N Fraymakers frames to
-        // last the same real time. The -1 "no override" sentinel is preserved.
-        let hitstun = if hb.hitstun == 255 || hb.hitstun == -1 { -1 } else { hb.hitstun * 2 };
-        let hitstop = if hb.hitstop <= 0 { -1 } else { hb.hitstop * 2 };
-        let self_hitstop = if hb.self_hitstop <= 0 { -1 } else { hb.self_hitstop * 2 };
+        // The -1 "no override" sentinel (and SSF2's 255, which maps to it) is
+        // emit formatting and stays in code; only the doubling is data-driven.
+        let hitstun = if hb.hitstun == 255 || hb.hitstun == -1 { -1 } else { scale("hitstun", hb.hitstun) };
+        let hitstop = if hb.hitstop <= 0 { -1 } else { scale("hitstop", hb.hitstop) };
+        let self_hitstop = if hb.self_hitstop <= 0 { -1 } else { scale("selfHitstop", hb.self_hitstop) };
 
         out.push_str(&format!(
             "\t\thitbox{}: {{ damage: {}, angle: {}, baseKnockback: {}, knockbackGrowth: {}, hitstop: {}, selfHitstop: {}",
