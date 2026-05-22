@@ -363,41 +363,100 @@ pub fn generate_entity(
             anim_layer_ids.push(layer_id);
         }
 
-        // ── 3. COLLISION_BODY layer ───────────────────────────────────────────
+        // ── 3. COLLISION_BODY layer (per-frame ECB from hurtbox bounds) ───────
         {
             let layer_id = uuid(char_id, &format!("layer_body_{}", anim_name));
-            let kf_id = uuid(char_id, &format!("kf_body_{}", anim_name));
-            let sym_id = uuid(char_id, &format!("sym_body_{}", anim_name));
 
-            // Create a COLLISION_BODY symbol
-            symbols.push(json!({
-                "$id": sym_id,
-                "alpha": Value::Null,
-                "color": Value::Null,
-                "foot": 0,
-                "head": 86,
-                "hipWidth": 40,
-                "hipXOffset": 0,
-                "hipYOffset": 0,
-                "pluginMetadata": {},
-                "type": "COLLISION_BODY",
-                "x": 0
-            }));
+            // FrayTools draws the COLLISION_BODY (ECB) as a 4-vertex diamond:
+            //   foot vertex (0, -foot),  head vertex (0, -head),
+            //   hip vertices (±hipWidth/2 + hipXOffset, -(head+foot)/2 + hipYOffset)
+            // foot/head are heights measured UP from the character origin; the
+            // hip's vertical position is an offset from the foot/head midpoint.
+            // The foot and head vertices are pinned to x = 0.
+            //
+            // Per frame we fit the diamond to the union AABB of that frame's
+            // HURTBOX-typed boxes so its four vertices touch the box's four
+            // edges: foot at the bottom, head at the top, hips at the sides at
+            // mid-height. hipXOffset re-centres the hip on the box; hipYOffset
+            // stays 0 (hip at the vertical midpoint).
+            let default_body = (0.0_f64, 86.0_f64, 40.0_f64, 0.0_f64); // foot,head,hipWidth,hipXOffset
 
-            keyframes.push(json!({
-                "$id": kf_id,
-                "type": "COLLISION_BODY",
-                "length": frame_count,
-                "symbol": sym_id,
-                "tweened": false,
-                "tweenType": "LINEAR",
-                "pluginMetadata": {}
-            }));
+            let mut per_frame: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(frame_count as usize);
+            {
+                let split_start_f = split.start_frame;
+                let box_data = sprite_boxes.get(source_anim.as_str());
+                let mut last = default_body;
+                for f in 0..frame_count {
+                    let src_f = split_start_f + f as u16;
+                    let mut aabb: Option<(f64, f64, f64, f64)> = None; // left,right,top,bottom
+                    if let Some(boxes) = box_data.and_then(|bd| bd.frames.get(&src_f)) {
+                        for b in boxes {
+                            if b.box_type != crate::sprite_parser::BoxType::Hurtbox { continue; }
+                            let (l, r, t, btm) = (b.x, b.x + b.width, b.y, b.y + b.height);
+                            aabb = Some(match aabb {
+                                None => (l, r, t, btm),
+                                Some((al, ar, at, ab)) => (al.min(l), ar.max(r), at.min(t), ab.max(btm)),
+                            });
+                        }
+                    }
+                    let body = match aabb {
+                        Some((l, r, t, btm)) => (
+                            round2(-btm),          // foot  = up-height of the bottom edge
+                            round2(-t),            // head  = up-height of the top edge
+                            round2(r - l),         // hipWidth = box width
+                            round2((l + r) / 2.0), // hipXOffset = box centre x
+                        ),
+                        None => last, // no hurtboxes this frame — hold the last body
+                    };
+                    last = body;
+                    per_frame.push(body);
+                }
+            }
+
+            // Run-length encode consecutive frames with an identical body.
+            let mut body_kf_ids: Vec<String> = Vec::new();
+            let mut f: u32 = 0;
+            while f < frame_count {
+                let body = per_frame[f as usize];
+                let mut run = 1u32;
+                while (f + run) < frame_count {
+                    let nb = per_frame[(f + run) as usize];
+                    let same = (nb.0 - body.0).abs() < 0.01 && (nb.1 - body.1).abs() < 0.01
+                        && (nb.2 - body.2).abs() < 0.01 && (nb.3 - body.3).abs() < 0.01;
+                    if same { run += 1; } else { break; }
+                }
+                let sym_id = uuid(char_id, &format!("sym_body_{}_{}", anim_name, f));
+                let kf_id = uuid(char_id, &format!("kf_body_{}_{}", anim_name, f));
+                symbols.push(json!({
+                    "$id": sym_id,
+                    "alpha": Value::Null,
+                    "color": Value::Null,
+                    "foot": body.0,
+                    "head": body.1,
+                    "hipWidth": body.2,
+                    "hipXOffset": body.3,
+                    "hipYOffset": 0,
+                    "pluginMetadata": {},
+                    "type": "COLLISION_BODY"
+                }));
+                keyframes.push(json!({
+                    "$id": kf_id,
+                    "type": "COLLISION_BODY",
+                    "length": run,
+                    "symbol": sym_id,
+                    "tweened": false,
+                    "tweenType": "LINEAR",
+                    "pluginMetadata": {}
+                }));
+                body_kf_ids.push(kf_id);
+                f += run;
+            }
+
             layers.push(json!({
                 "$id": layer_id,
                 "name": "Body",
                 "type": "COLLISION_BODY",
-                "keyframes": [kf_id],
+                "keyframes": body_kf_ids,
                 "hidden": false,
                 "locked": false,
                 "defaultAlpha": 0.5,
