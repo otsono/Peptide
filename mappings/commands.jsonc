@@ -1,8 +1,20 @@
+// ─────────────────────────────────────────────────────────────────────────
+// commands.jsonc — SSF2 → Fraymakers API command conversions (UNIVERSAL)
+//
+// Universal API conversions — NOT character-scoped, which is why this file
+// sits at the top of mappings/ rather than under mappings/character/.
+// Loaded at runtime; built-in defaults are used if missing or malformed.
+// JSONC: // comments and trailing commas are allowed.
+// ─────────────────────────────────────────────────────────────────────────
 {
-  "$schema": "SSF2 -> Fraymakers API command/call translation table.",
-  "$comment": "Universal API command conversions — NOT character-scoped, which is why this file sits at the top of mappings/ rather than under mappings/character/. It is the ordered list of literal find->replace pairs applied to decompiled Haxe to turn SSF2 API calls into their Fraymakers equivalents. ORDER MATTERS: replacements run top to bottom (e.g. 'self.self.' must run before the bare 'self.self'). Loaded at runtime; the converter falls back to its built-in defaults if this file is missing or malformed. Structural transforms (readiness-guard removal, last-frame endAnimation stripping, unknown-call commenting) stay in code — only the literal table lives here.",
-
+  // replacements: the ordered list of literal find→replace pairs applied to
+  // decompiled Haxe to turn SSF2 API calls into Fraymakers equivalents.
+  // ORDER MATTERS — they run top to bottom (e.g. "self.self." must run
+  // before the bare "self.self"). Structural transforms (readiness-guard
+  // removal, last-frame endAnimation stripping, unknown-call commenting)
+  // stay in code; only this literal table lives here.
   "replacements": [
+    // self.self → self  (SSF2 sub-MC closures capture the character this way)
     { "from": "self.self = /* ? */;", "to": "// self reference (implicit in FM)" },
     { "from": "self.self = /* ? */", "to": "self /* parent character */" },
     { "from": "self.self.", "to": "self." },
@@ -15,6 +27,7 @@
     { "from": "if (self.self && ", "to": "if (/* self always valid */ true && " },
     { "from": "|| self.self", "to": " /* || self always valid */" },
 
+    // SSF2API static calls
     { "from": "SSF2API.print(", "to": "Engine.log(" },
     { "from": "SSF2API.isReady()", "to": "true" },
     { "from": "SSF2API.random()", "to": "Random.getFloat(0, 1)" },
@@ -22,6 +35,7 @@
     { "from": "SSF2API.getElapsedFrames()", "to": "Engine.getElapsedFrames()" },
     { "from": "SSF2API.getCharacters()", "to": "Match.getCharacters()" },
 
+    // Method renames
     { "from": ".endAttack()", "to": ".endAnimation()" },
     { "from": ".refreshAttackID()", "to": ".reactivateHitboxes()" },
     { "from": ".updateAttackBoxStats(", "to": ".updateHitboxStats(" },
@@ -31,6 +45,7 @@
     { "from": ".getXSpeed()", "to": ".getXVelocity()" },
     { "from": ".getYSpeed()", "to": ".getYVelocity()" },
 
+    // State transitions
     { "from": ".toLand()", "to": ".toState(CState.LAND)" },
     { "from": ".toHelpless()", "to": ".toState(CState.FALL_SPECIAL)" },
     { "from": ".toHeavyLand()", "to": ".toState(CState.LAND) //TODO: create land_heavy anim & change to toState(CState.LAND, \"land_heavy\")" },
@@ -52,15 +67,18 @@
     { "from": ".playVoiceSound(", "to": ".playAttackVoice(/* voice index: */" },
     { "from": ".playSoundFX(", "to": "/* TODO: playSoundFX */Engine.playAudio(" },
 
+    // Event types
     { "from": "SSF2Event.STATE_CHANGE", "to": "GameObjectEvent.LINK_FRAMES" },
     { "from": "SSF2Event.HIT", "to": "GameObjectEvent.HIT_DEALT" },
     { "from": "SSF2Event.LAND", "to": "GameObjectEvent.LAND" },
 
+    // Timer / effect patterns
     { "from": ".createTimer(", "to": ".addTimer(" },
     { "from": ".destroyTimer(", "to": ".removeTimer(" },
     { "from": ".removeAllEffects()", "to": "/* TODO: removeAllEffects */" },
     { "from": ".addEffectToList(", "to": "/* TODO: addEffectToList */ " },
 
+    // Hitbox property renames in object literals
     { "from": "direction:", "to": "angle:" },
     { "from": "power:", "to": "baseKnockback:" },
     { "from": "kbGrowth:", "to": "knockbackGrowth:" },
@@ -68,23 +86,26 @@
     { "from": "hitStun:", "to": "hitstop:" },
     { "from": "selfHitStun:", "to": "selfHitstop:" },
     { "from": "hitLag:", "to": "hitstun:" },
-    { "from": "selfHitLag:", "to": "selfHitstop:" }
+    { "from": "selfHitLag:", "to": "selfHitstop:" },
   ],
 
-  "$frame_params_comment": "frame_params flags command parameters that carry a frame count, so the converter doubles their numeric value for the 30fps -> 60fps timing change. Granularity is per-parameter. Each entry has a 'kind': 'call' targets one positional argument of a function call (identify it by 'name' and the 0-based 'arg' index — e.g. createTimer(delay, repeat, callback) flags only arg 0); 'field' targets a named key in an object literal (e.g. { refreshRate: 90 }). 'isframe' is the flag itself — only entries with isframe:true are doubled, so a parameter can be listed and left off. Optional 'sentinel': a literal value at or above which the parameter is left unchanged (used for hitStun/hitLag's 255 'no override' marker). Negative and non-literal arguments are never touched.",
+  // frame_params: command parameters that carry a frame count, doubled for
+  // the 30fps → 60fps timing change. 'kind: "call"' targets one positional
+  // argument (by 'name' + 0-based 'arg' index); 'kind: "field"' targets a
+  // named object-literal key. Only entries with 'isframe: true' are doubled.
+  // Optional 'sentinel': a value at/above which the parameter is left alone.
   "frame_params": [
-    { "kind": "call",  "name": "createTimer",     "arg": 0, "isframe": true,
-      "note": "createTimer(delay, repeatCount, callback) — only the delay (arg 0) is a frame count; the repeat count is left alone" },
-    { "kind": "call",  "name": "stancePlayFrame", "arg": 0, "isframe": true,
-      "note": "stancePlayFrame(frameIndex) — jumps to a frame of the now-2x-long stance timeline" },
-    { "kind": "field", "name": "hitStun",       "isframe": true, "sentinel": 255,
-      "note": "frames of hit-freeze on the attacker; 255 = no-override sentinel, left unchanged" },
-    { "kind": "field", "name": "selfHitStun",   "isframe": true, "sentinel": 255 },
-    { "kind": "field", "name": "hitLag",        "isframe": true, "sentinel": 255,
-      "note": "frames the victim is stunned" },
-    { "kind": "field", "name": "refreshRate",   "isframe": true,
-      "note": "hitbox re-hit cooldown in frames" },
-    { "kind": "field", "name": "chargetime_max", "isframe": true,
-      "note": "maximum charge duration in frames" }
-  ]
+    // createTimer(delay, repeatCount, callback) — only the delay (arg 0).
+    { "kind": "call",  "name": "createTimer",     "arg": 0, "isframe": true },
+    // stancePlayFrame(frameIndex) — jumps to a frame of the 2×-long stance.
+    { "kind": "call",  "name": "stancePlayFrame", "arg": 0, "isframe": true },
+    // hit-freeze / hitstun durations; 255 = "no override" sentinel, kept.
+    { "kind": "field", "name": "hitStun",        "isframe": true, "sentinel": 255 },
+    { "kind": "field", "name": "selfHitStun",    "isframe": true, "sentinel": 255 },
+    { "kind": "field", "name": "hitLag",         "isframe": true, "sentinel": 255 },
+    // hitbox re-hit cooldown, in frames.
+    { "kind": "field", "name": "refreshRate",    "isframe": true },
+    // maximum charge duration, in frames.
+    { "kind": "field", "name": "chargetime_max", "isframe": true },
+  ],
 }

@@ -1,7 +1,14 @@
+// ─────────────────────────────────────────────────────────────────────────
+// stats.jsonc — SSF2 → Fraymakers stat conversion (CHARACTER scope)
+//
+// Drives every value in the generated CharacterStats.hx. Loaded at runtime;
+// the converter falls back to its built-in defaults if this file is missing
+// or malformed. Edit any value/formula/comment here — no recompile needed.
+// JSONC: // comments and trailing commas are allowed.
+// ─────────────────────────────────────────────────────────────────────────
 {
-  "$schema": "Stat mappings for CHARACTER conversion (SSF2 -> Fraymakers).",
-  "$comment": "Drives every value in the generated CharacterStats.hx. Loaded at runtime; the converter falls back to its built-in defaults if this file is missing or malformed. SECTIONS: 'field_keys' lists the SSF2 stat key names to try (in order) for each Fraymakers stat field. 'multipliers' scale a raw SSF2 value into Fraymakers units via fm = max(floor, raw / divisor * target) (the air_friction multiplier is applied to the absolute value). 'offsets' are integer offsets added after extraction (SSF2 max_jump counts midair jumps; Fraymakers maxJumps counts total, so +1). 'derivations' compute a stat from other already-converted stats: 'sources' are combined with 'combine' (max), then 'op' (multiply) is applied with 'operand'. 'constants' are flat default values emitted verbatim into CharacterStats.hx — numbers, strings and arrays are all allowed and are written in Haxe-literal form. Editing any value here changes the output with no recompile.",
-
+  // field_keys: the SSF2 stat key names to try (in order) for each
+  // Fraymakers stat field; the first key present in the SWF data wins.
   "field_keys": {
     "weight": ["weight1", "weight"],
     "gravity": ["gravity"],
@@ -13,27 +20,40 @@
     "max_jumps": ["max_jump", "maxJumps"],
     "jump_height": ["jumpSpeed", "jumpHeight"],
     "double_jump_height": ["jumpSpeedMidair", "doubleJumpHeight"],
-    "air_friction": ["decel_rate_air", "airFriction"]
+    "air_friction": ["decel_rate_air", "airFriction"],
   },
 
+  // multipliers: scale a raw SSF2 value into Fraymakers units via
+  //   fm = max(floor, raw / divisor * target)
+  // The air_friction multiplier is applied to the absolute value.
   "multipliers": {
     "gravity":      { "divisor": 1.3,  "target": 0.84, "floor": 0.3 },
     "speed":        { "divisor": 13.0, "target": 9.25, "floor": 0.5 },
     "jump":         { "divisor": 17.4, "target": 15.0, "floor": 5.0 },
     "walk":         { "divisor": 4.0,  "target": 3.25, "floor": 1.0 },
     "dash":         { "divisor": 11.0, "target": 8.5,  "floor": 2.0 },
-    "air_friction": { "divisor": 0.15, "target": 0.20, "floor": 0.05 }
+    "air_friction": { "divisor": 0.15, "target": 0.20, "floor": 0.05 },
   },
 
+  // offsets: integer offsets added to a stat after extraction.
+  // SSF2 max_jump counts midair jumps; Fraymakers maxJumps counts total.
   "offsets": {
-    "max_jumps": 1
+    "max_jumps": 1,
   },
 
+  // derivations: stats computed from other already-converted stats, written
+  // as plain expression strings. Available variables: jump_speed,
+  // air_mobility_raw, aerial_friction. Functions: max, min, clamp (plus the
+  // usual fasteval built-ins). Each expression is compiled once at load time.
   "derivations": {
-    "shortHopSpeed":  { "sources": ["jump_speed"],                       "combine": "max", "op": "multiply", "operand": 0.55 },
-    "aerialSpeedCap": { "sources": ["air_mobility_raw", "aerial_friction"], "combine": "max", "op": "multiply", "operand": 5.0 }
+    // short hop ~55% of the converted full-jump speed.
+    "shortHopSpeed":  "jump_speed * 0.55",
+    // aerial speed cap scaled from the stronger of air mobility / aerial friction.
+    "aerialSpeedCap": "max(air_mobility_raw, aerial_friction) * 5.0",
   },
 
+  // constants: flat default values emitted verbatim into CharacterStats.hx.
+  // Numbers, strings and arrays are all allowed and render as Haxe literals.
   "constants": {
     "friction": 0.57,
     "walkSpeedInitial": 1.0,
@@ -46,6 +66,7 @@
     "aerialSpeedAcceleration": 0.45,
     "doubleJumpSpeedFallback": 15.5,
 
+    // Environmental collision body (ECB)
     "floorHeadPosition": 86,
     "floorHipWidth": 29,
     "floorHipXOffset": 0,
@@ -57,11 +78,13 @@
     "aerialHipYOffset": 0,
     "aerialFootPosition": 25,
 
+    // Camera box
     "cameraBoxOffsetX": 25,
     "cameraBoxOffsetY": 75,
     "cameraBoxWidth": 200,
     "cameraBoxHeight": 250,
 
+    // Roll and ledge jump
     "techRollSpeed": 18,
     "techRollSpeedStartFrame": 14,
     "techRollSpeedLength": 2,
@@ -77,11 +100,13 @@
     "ledgeJumpXSpeed": 2.5,
     "ledgeJumpYSpeed": -10,
 
+    // Airdash
     "airdashInitialSpeed": 11,
     "airdashSpeedCap": 12.5,
     "airdashAccelMultiplier": 0.4,
     "airdashCancelSpeedConservation": 0.9,
 
+    // Shield
     "shieldCrossupThreshold": 16,
     "shieldFrontNineSliceContent": "global::vfx.vfx_shield_front",
     "shieldFrontXOffset": 10.5,
@@ -94,6 +119,7 @@
     "shieldBackWidth": 49,
     "shieldBackHeight": 93,
 
+    // Voice
     "attackVoiceIds": [],
     "hurtLightVoiceIds": [],
     "hurtMediumVoiceIds": [],
@@ -103,6 +129,6 @@
     "hurtLightSilenceRate": 1,
     "hurtMediumSilenceRate": 0.5,
     "hurtHeavySilenceRate": 0,
-    "koVoiceSilenceRate": 0
-  }
+    "koVoiceSilenceRate": 0,
+  },
 }

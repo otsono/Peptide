@@ -440,14 +440,15 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
     let cfg = crate::mappings::character_stats();
     let c = |k: &str| cfg.constant(k);
 
-    // Derived stats — formulas referencing already-converted stats.
-    let inputs: std::collections::BTreeMap<&str, f64> = [
-        ("jump_speed", jump_speed),
-        ("air_mobility_raw", s.air_mobility),
-        ("aerial_friction", aerial_fric),
+    // Derived stats — expression strings in stats.jsonc, compiled once and
+    // evaluated with the already-converted stats exposed as variables.
+    let vars: std::collections::BTreeMap<String, f64> = [
+        ("jump_speed".to_string(), jump_speed),
+        ("air_mobility_raw".to_string(), s.air_mobility),
+        ("aerial_friction".to_string(), aerial_fric),
     ].into_iter().collect();
-    let short_hop  = cfg.derive("shortHopSpeed", &inputs);
-    let aerial_cap = cfg.derive("aerialSpeedCap", &inputs);
+    let short_hop  = crate::mappings::evaluate_stat_derivation("shortHopSpeed", &vars).unwrap_or(0.0);
+    let aerial_cap = crate::mappings::evaluate_stat_derivation("aerialSpeedCap", &vars).unwrap_or(0.0);
 
     // doubleJumpSpeeds: the real converted value, or the JSON fallback default.
     let dj_array = if dj_speed > 0.0 {

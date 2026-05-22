@@ -1,7 +1,15 @@
+// ─────────────────────────────────────────────────────────────────────────
+// animations.jsonc — SSF2 → Fraymakers animation name mappings (CHARACTER)
+//
+// Loaded at runtime; built-in defaults are used if this file is missing or
+// malformed. Edit freely — no recompile needed. JSONC: // comments and
+// trailing commas are allowed.
+//
+//  ssf2_to_fm    — maps an SSF2 xframe/animation name to a Fraymakers slot.
+//  label_to_ssf2 — maps a sprite-symbol AnimLabel (the part before the _NNN
+//                  suffix, lowercased) to an SSF2 animation name.
+// ─────────────────────────────────────────────────────────────────────────
 {
-  "$schema": "Animation name mappings for CHARACTER conversion (SSF2 -> Fraymakers).",
-  "$comment": "Edit this file to change how animations are mapped; the converter reloads it at runtime, no recompile needed. If the file is missing or malformed the converter falls back to its built-in defaults. 'ssf2_to_fm' maps an SSF2 xframe/animation name to a Fraymakers animation slot. 'label_to_ssf2' maps a sprite-symbol AnimLabel (the part before the _NNN suffix, lowercased) to an SSF2 animation name.",
-
   "ssf2_to_fm": {
     "stand": "idle",
     "walk": "walk",
@@ -93,7 +101,7 @@
     "item_screw": "item_screw",
     "item_heavyshoot": "item_heavyshoot",
     "item_firedash": "item_firedash",
-    "item_bubblebounce": "item_bubblebounce"
+    "item_bubblebounce": "item_bubblebounce",
   },
 
   "label_to_ssf2": {
@@ -248,6 +256,6 @@
     "itemfiredash": "item_firedash",
     "itembubblebounce": "item_bubblebounce",
     "itemhomerun": "item_homerun",
-    "itemhomrun": "item_homerun"
-  }
+    "itemhomrun": "item_homerun",
+  },
 }

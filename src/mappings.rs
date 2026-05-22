@@ -1,12 +1,13 @@
 //! Runtime-loaded conversion mapping tables.
 //!
-//! Mapping data lives in editable JSON files under `mappings/<category>/`.
-//! Today only the `character` category exists; stages and other future
-//! conversion targets get their own sibling directories (`mappings/stage/`,
-//! ...). Each file is loaded at runtime so it can be tweaked without
-//! recompiling. If a file is missing or malformed the built-in defaults
-//! (embedded at compile time via `include_str!`) are used instead, so the
-//! converter always has a valid table.
+//! Mapping data lives in editable JSONC files under `mappings/<category>/`
+//! (JSONC = JSON with `//` comments and trailing commas, so entries can be
+//! annotated). Today only the `character` category exists; stages and other
+//! future conversion targets get their own sibling directories. Each file is
+//! loaded at runtime so it — including derivation formulas and comments — can
+//! be tweaked without recompiling. If a file is missing or malformed the
+//! built-in defaults (embedded at compile time via `include_str!`) are used
+//! instead, so the converter always has a valid table.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -18,15 +19,15 @@ use serde::Deserialize;
 // Guaranteed-valid fallback, also the source the on-disk files are copied from.
 
 const DEFAULT_CHARACTER_ANIMATIONS: &str =
-    include_str!("../mappings/character/animations.json");
+    include_str!("../mappings/character/animations.jsonc");
 const DEFAULT_CHARACTER_STATS: &str =
-    include_str!("../mappings/character/stats.json");
+    include_str!("../mappings/character/stats.jsonc");
 const DEFAULT_CHARACTER_HITBOX_STATS: &str =
-    include_str!("../mappings/character/hitbox_stats.json");
+    include_str!("../mappings/character/hitbox_stats.jsonc");
 // API command conversions are universal, not character-scoped, so this file
 // lives at the top of mappings/ rather than under mappings/character/.
 const DEFAULT_API_COMMANDS: &str =
-    include_str!("../mappings/commands.json");
+    include_str!("../mappings/commands.jsonc");
 
 // ─── Schema ─────────────────────────────────────────────────────────────────
 
@@ -54,24 +55,6 @@ impl StatMultiplier {
     }
 }
 
-/// Computes one Fraymakers stat from other already-converted stats:
-/// `op(combine(sources), operand)`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct Derivation {
-    /// Names of already-computed values to feed in.
-    #[serde(default)]
-    pub sources: Vec<String>,
-    /// How to combine multiple sources ("max"); a single source passes through.
-    #[serde(default)]
-    pub combine: String,
-    /// Operation applied to the combined value ("multiply").
-    #[serde(default)]
-    pub op: String,
-    /// Right-hand operand for `op`.
-    #[serde(default)]
-    pub operand: f64,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct StatMappings {
     /// Fraymakers stat field → ordered list of SSF2 key names to try.
@@ -83,9 +66,11 @@ pub struct StatMappings {
     /// Integer offsets added to a stat after extraction (e.g. max_jumps +1).
     #[serde(default)]
     pub offsets: BTreeMap<String, i64>,
-    /// Stats computed from other already-converted stats.
+    /// Stats computed from other already-converted stats, as expression
+    /// strings (e.g. `"max(air_mobility_raw, aerial_friction) * 5.0"`).
+    /// Each is compiled once at load time — see `evaluate_stat_derivation`.
     #[serde(default)]
-    pub derivations: BTreeMap<String, Derivation>,
+    pub derivations: BTreeMap<String, String>,
     /// Flat default values emitted verbatim into CharacterStats.hx (numbers,
     /// strings or arrays — kept as raw JSON so each is written Haxe-literally).
     #[serde(default)]
@@ -107,25 +92,6 @@ impl StatMappings {
     /// Integer offset for a stat (0 if none configured).
     pub fn offset(&self, name: &str) -> i64 {
         self.offsets.get(name).copied().unwrap_or(0)
-    }
-
-    /// Evaluate a named derivation. `inputs` resolves source names to values.
-    pub fn derive(&self, name: &str, inputs: &BTreeMap<&str, f64>) -> f64 {
-        let Some(d) = self.derivations.get(name) else { return 0.0 };
-        let combined = d.sources.iter()
-            .map(|src| inputs.get(src.as_str()).copied().unwrap_or(0.0))
-            .reduce(|a, b| match d.combine.as_str() {
-                "max" => a.max(b),
-                "min" => a.min(b),
-                "sum" => a + b,
-                _ => a,
-            })
-            .unwrap_or(0.0);
-        match d.op.as_str() {
-            "multiply" => combined * d.operand,
-            "add" => combined + d.operand,
-            _ => combined,
-        }
     }
 
     /// A flat constant rendered as a Haxe literal (bare number, quoted string,
@@ -216,6 +182,77 @@ pub struct ApiCommands {
 
 // ─── Loading ────────────────────────────────────────────────────────────────
 
+/// Strip JSONC down to plain JSON: remove `//` line and `/* */` block
+/// comments and drop trailing commas, so `serde_json` can parse it.
+/// String-aware — comment markers and commas inside string literals are
+/// preserved. `serde_json` is used (not a JSON5 crate) because it keeps the
+/// integer/float distinction the `constants` section relies on.
+fn strip_jsonc(src: &str) -> String {
+    // Pass 1 — remove comments.
+    let mut decommented = String::with_capacity(src.len());
+    let mut chars = src.chars().peekable();
+    let mut in_string = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            decommented.push(c);
+            if c == '\\' {
+                if let Some(n) = chars.next() { decommented.push(n); }
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => { in_string = true; decommented.push(c); }
+            '/' if chars.peek() == Some(&'/') => {
+                for n in chars.by_ref() {
+                    if n == '\n' { decommented.push('\n'); break; }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = '\0';
+                for n in chars.by_ref() {
+                    if prev == '*' && n == '/' { break; }
+                    prev = n;
+                }
+            }
+            _ => decommented.push(c),
+        }
+    }
+    // Pass 2 — drop trailing commas (a `,` whose next non-whitespace char
+    // is `}` or `]`).
+    let glyphs: Vec<char> = decommented.chars().collect();
+    let mut out = String::with_capacity(glyphs.len());
+    let mut in_string = false;
+    let mut i = 0;
+    while i < glyphs.len() {
+        let c = glyphs[i];
+        if in_string {
+            out.push(c);
+            if c == '\\' {
+                if i + 1 < glyphs.len() { out.push(glyphs[i + 1]); i += 2; continue; }
+            } else if c == '"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' { in_string = true; out.push(c); i += 1; continue; }
+        if c == ',' {
+            let mut j = i + 1;
+            while j < glyphs.len() && glyphs[j].is_whitespace() { j += 1; }
+            if j < glyphs.len() && (glyphs[j] == '}' || glyphs[j] == ']') {
+                i += 1; // skip the trailing comma
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
 /// Candidate locations for a mapping file, tried in order. The first that
 /// exists and parses wins; this lets users drop an edited copy next to either
 /// the working directory or the binary.
@@ -233,12 +270,12 @@ fn candidate_paths(rel: &str) -> Vec<PathBuf> {
     paths
 }
 
-/// Load and parse a mapping file, preferring an on-disk copy and falling back
-/// to the compiled-in default.
+/// Load and parse a JSONC mapping file, preferring an on-disk copy and
+/// falling back to the compiled-in default.
 fn load<T: for<'de> Deserialize<'de>>(rel: &str, embedded: &str) -> T {
     for path in candidate_paths(rel) {
         match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<T>(&text) {
+            Ok(text) => match serde_json::from_str::<T>(&strip_jsonc(&text)) {
                 Ok(parsed) => {
                     log::info!("Loaded mapping file {}", path.display());
                     return parsed;
@@ -254,8 +291,8 @@ fn load<T: for<'de> Deserialize<'de>>(rel: &str, embedded: &str) -> T {
             Err(_) => continue, // not at this location — keep looking
         }
     }
-    serde_json::from_str(embedded)
-        .expect("embedded default mapping JSON must be valid")
+    serde_json::from_str(&strip_jsonc(embedded))
+        .expect("embedded default mapping JSONC must be valid")
 }
 
 // ─── Cached accessors ───────────────────────────────────────────────────────
@@ -263,27 +300,85 @@ fn load<T: for<'de> Deserialize<'de>>(rel: &str, embedded: &str) -> T {
 pub fn character_animations() -> &'static AnimationMappings {
     static CACHE: OnceLock<AnimationMappings> = OnceLock::new();
     CACHE.get_or_init(|| {
-        load("mappings/character/animations.json", DEFAULT_CHARACTER_ANIMATIONS)
+        load("mappings/character/animations.jsonc", DEFAULT_CHARACTER_ANIMATIONS)
     })
 }
 
 pub fn character_stats() -> &'static StatMappings {
     static CACHE: OnceLock<StatMappings> = OnceLock::new();
     CACHE.get_or_init(|| {
-        load("mappings/character/stats.json", DEFAULT_CHARACTER_STATS)
+        load("mappings/character/stats.jsonc", DEFAULT_CHARACTER_STATS)
     })
 }
 
 pub fn character_hitbox_stats() -> &'static HitboxStatsMapping {
     static CACHE: OnceLock<HitboxStatsMapping> = OnceLock::new();
     CACHE.get_or_init(|| {
-        load("mappings/character/hitbox_stats.json", DEFAULT_CHARACTER_HITBOX_STATS)
+        load("mappings/character/hitbox_stats.jsonc", DEFAULT_CHARACTER_HITBOX_STATS)
     })
 }
 
 pub fn api_commands() -> &'static ApiCommands {
     static CACHE: OnceLock<ApiCommands> = OnceLock::new();
     CACHE.get_or_init(|| {
-        load("mappings/commands.json", DEFAULT_API_COMMANDS)
+        load("mappings/commands.jsonc", DEFAULT_API_COMMANDS)
     })
+}
+
+// ─── Stat derivations (compiled expressions) ────────────────────────────────
+
+/// A stat-derivation expression compiled once into a fasteval instruction.
+/// `slab` owns the parsed/compiled arena; `instr` is evaluated against it.
+struct CompiledDerivation {
+    slab: fasteval::Slab,
+    instr: fasteval::Instruction,
+}
+
+/// Parse + compile one derivation expression. Done once, at config-load time.
+fn compile_derivation(expr: &str) -> Result<CompiledDerivation, fasteval::Error> {
+    use fasteval::Compiler;
+    let parser = fasteval::Parser::new();
+    let mut slab = fasteval::Slab::new();
+    let instr = parser
+        .parse(expr, &mut slab.ps)?
+        .from(&slab.ps)
+        .compile(&slab.ps, &mut slab.cs);
+    Ok(CompiledDerivation { slab, instr })
+}
+
+/// Every stat derivation, compiled once. Built lazily from `character_stats`.
+fn compiled_stat_derivations() -> &'static BTreeMap<String, CompiledDerivation> {
+    static CACHE: OnceLock<BTreeMap<String, CompiledDerivation>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let mut map = BTreeMap::new();
+        for (name, expr) in &character_stats().derivations {
+            match compile_derivation(expr) {
+                Ok(compiled) => { map.insert(name.clone(), compiled); }
+                Err(e) => log::warn!(
+                    "stat derivation '{}' failed to compile ({}): {}", name, e, expr
+                ),
+            }
+        }
+        map
+    })
+}
+
+/// Evaluate the named stat derivation. `vars` exposes the already-converted
+/// stat values to the expression; `max`, `min` (fasteval built-ins) and
+/// `clamp(x, lo, hi)` are available. Returns `None` if the derivation is
+/// absent or failed to compile.
+pub fn evaluate_stat_derivation(name: &str, vars: &BTreeMap<String, f64>) -> Option<f64> {
+    use fasteval::Evaler;
+    let compiled = compiled_stat_derivations().get(name)?;
+    let mut ns = |fname: &str, args: Vec<f64>| -> Option<f64> {
+        if args.is_empty() {
+            // Bare identifier — resolve as a variable.
+            return vars.get(fname).copied();
+        }
+        match (fname, args.as_slice()) {
+            ("clamp", [x, lo, hi]) => Some(x.max(*lo).min(*hi)),
+            _ => None, // unknown function — fasteval handles max/min/... itself
+        }
+    };
+    compiled.instr.eval(&compiled.slab, &mut ns).ok()
 }
