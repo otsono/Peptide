@@ -776,55 +776,73 @@ fn count_populated_jabs(img: &crate::image_extractor::ImageExtractionResult) -> 
 }
 
 fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) -> String {
+    // Filter out trivial slot-initializer stubs.
+    let ext_methods: Vec<&crate::extractor::ScriptInfo> = data.scripts.iter()
+        .filter(|s| s.is_ext_method)
+        .filter(|s| !s.code.contains("Object.SSF2API"))
+        .collect();
+
+    // SSF2 ext methods whose names collide with the template functions are
+    // MERGED into those functions (their bodies inlined after the template's
+    // mandatory setup) instead of renamed to ssf2_*. That keeps one canonical
+    // initialize() / update() / ... and avoids a redundant ssf2_initialize().
+    const TEMPLATE_FNS: [&str; 5] =
+        ["initialize", "update", "inputUpdateHook", "handleLinkFrames", "onTeardown"];
+    let mut template_bodies: std::collections::BTreeMap<&str, String> =
+        std::collections::BTreeMap::new();
+    let mut regular_ext: Vec<&crate::extractor::ScriptInfo> = Vec::new();
+    for s in &ext_methods {
+        if let Some(tf) = TEMPLATE_FNS.iter().find(|t| s.name == **t).copied() {
+            let translated = crate::api_mappings::translate_ssf2_to_fm(&s.code);
+            if let Some(body) = extract_fn_body(&translated) {
+                template_bodies.insert(tf, body);
+            }
+        } else {
+            regular_ext.push(s);
+        }
+    }
+
+    // Emit one merged template function per name. `setup` is the mandatory FM
+    // line(s) the template must always include (e.g. the LINK_FRAMES listener
+    // registration on initialize); the SSF2 body, if any, is appended.
+    let emit_tpl = |out: &mut String, header_comment: &str, signature: &str, setup: &str, name: &str| {
+        if !header_comment.is_empty() { out.push_str(header_comment); }
+        out.push_str(signature);
+        out.push_str(setup);
+        if let Some(body) = template_bodies.get(name) {
+            out.push_str(body);
+            out.push('\n');
+        }
+        out.push_str("}\n\n");
+    };
+
     let mut out = format!(
         "// API Script for {} — converted from SSF2\n\
-        // Frame scripts are embedded in the entity file (FRAME_SCRIPT layers).\n\
-        // SSF2 API calls are mapped to Fraymakers equivalents where possible.\n\
-        // Lines marked TODO need manual review.\n\n\
-        // start general functions ---\n\n\
-        //Runs on object init\n\
-        function initialize(){{\n\
-        \tself.addEventListener(GameObjectEvent.LINK_FRAMES, handleLinkFrames, {{persistent:true}});\n\
-        }}\n\n\
-        function update(){{\n\
-        }}\n\n\
-        // Runs when reading inputs (before determining character state, update, framescript, etc.)\n\
-        function inputUpdateHook(pressedControls:ControlsObject, heldControls:ControlsObject) {{\n\
-        }}\n\n\
-        // CState-based handling for LINK_FRAMES\n\
-        function handleLinkFrames(e){{\n\
-        }}\n\n\
-        function onTeardown() {{\n\
-        }}\n\n\
-        // --- end general functions\n\n",
+// Frame scripts are embedded in the entity file (FRAME_SCRIPT layers).\n\
+// SSF2 API calls are mapped to Fraymakers equivalents where possible.\n\
+// Lines marked TODO need manual review.\n\n\
+// start general functions ---\n\n",
         data.name
     );
 
-    // Emit decompiled Ext class methods (these belong in Script.hx)
-    // Filter out trivial slot initializers (tiny methods that just set SSF2API)
-    let ext_methods: Vec<_> = data.scripts.iter()
-        .filter(|s| s.is_ext_method)
-        .filter(|s| {
-            // Filter out trivial slot initializer stubs
-            !s.code.contains("Object.SSF2API")
-        })
-        .collect();
-    if !ext_methods.is_empty() {
+    emit_tpl(&mut out, "//Runs on object init\n", "function initialize(){\n",
+        "\tself.addEventListener(GameObjectEvent.LINK_FRAMES, handleLinkFrames, {persistent:true});\n",
+        "initialize");
+    emit_tpl(&mut out, "", "function update(){\n", "", "update");
+    emit_tpl(&mut out,
+        "// Runs when reading inputs (before determining character state, update, framescript, etc.)\n",
+        "function inputUpdateHook(pressedControls:ControlsObject, heldControls:ControlsObject) {\n",
+        "", "inputUpdateHook");
+    emit_tpl(&mut out, "// CState-based handling for LINK_FRAMES\n",
+        "function handleLinkFrames(e){\n", "", "handleLinkFrames");
+    emit_tpl(&mut out, "", "function onTeardown() {\n", "", "onTeardown");
+
+    out.push_str("// --- end general functions\n\n");
+
+    if !regular_ext.is_empty() {
         out.push_str("// ── Decompiled from SSF2 XxxExt.as ─────────────────────────────────────────\n\n");
-        // Built-in functions that are already in the template header
-        let template_fns = ["initialize", "update", "inputUpdateHook", "handleLinkFrames", "onTeardown"];
-        for script in &ext_methods {
-            // Rename colliding functions so they don't shadow the template
-            let code = if template_fns.iter().any(|f| script.name == *f) {
-                script.code.replacen(
-                    &format!("function {}(", script.name),
-                    &format!("function ssf2_{}(", script.name),
-                    1
-                )
-            } else {
-                script.code.clone()
-            };
-            let translated = crate::api_mappings::translate_ssf2_to_fm(&code);
+        for script in &regular_ext {
+            let translated = crate::api_mappings::translate_ssf2_to_fm(&script.code);
             out.push_str(&translated);
             out.push('\n');
         }
@@ -858,6 +876,17 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
 ///   - jab1: on last frame, if attack pressed → enter jab2; else idle
 ///   - jab2: on last frame, if attack pressed → enter jab3; else idle
 ///   - jab3: on last frame → idle
+/// Extract the body between the outermost braces of a `function NAME(...) { ... }`
+/// string. Used to inline a translated SSF2 ext method into the matching
+/// template function. Returns None if the body is empty or unbalanced.
+fn extract_fn_body(code: &str) -> Option<String> {
+    let open = code.find('{')?;
+    let close = code.rfind('}')?;
+    if close <= open { return None; }
+    let body = code[open + 1..close].trim_matches('\n').trim_end();
+    if body.is_empty() { None } else { Some(body.to_string()) }
+}
+
 fn generate_jab_scripts() -> String {
     r#"
 // ── Jab chain — SSF2 Jab_21 sub-animations (begin / hit2 / hit3) ─────────────────

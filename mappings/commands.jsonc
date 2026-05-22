@@ -74,6 +74,7 @@
     // Timer / effect patterns
     { "from": ".createTimer(", "to": ".addTimer(" },
     { "from": ".destroyTimer(", "to": ".removeTimer(" },
+    { "from": ".stancePlayFrame(", "to": ".playLabel(" },
     { "from": ".removeAllEffects()", "to": "/* TODO: removeAllEffects */" },
     { "from": ".addEffectToList(", "to": "/* TODO: addEffectToList */ " },
 
@@ -96,8 +97,6 @@
   "frame_params": [
     // createTimer(delay, repeatCount, callback) — only the delay (arg 0).
     { "kind": "call",  "name": "createTimer",     "arg": 0, "isframe": true },
-    // stancePlayFrame(frameIndex) — jumps to a frame of the 2×-long stance.
-    { "kind": "call",  "name": "stancePlayFrame", "arg": 0, "isframe": true },
     // hit-freeze / hitstun durations; 255 = "no override" sentinel, kept.
     { "kind": "field", "name": "hitStun",        "isframe": true, "sentinel": 255 },
     { "kind": "field", "name": "selfHitStun",    "isframe": true, "sentinel": 255 },

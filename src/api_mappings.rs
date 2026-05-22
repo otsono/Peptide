@@ -753,7 +753,8 @@ pub fn comment_out_unknown_calls(code: &str) -> String {
         // Attack helpers
         ".killAttackboxes(",    // no FM equivalent
         ".checkAtkilled(",      // no FM equivalent
-        ".updateAttackStats(",  // use updateAnimationStats/updateHitboxStats instead
+        // NOTE: .updateAttackStats( is FM-legit — kept as-is; field renames inside
+        // its parameter object run via the commands.jsonc replacements.
         // NOTE: .setLandingLag( → updateAnimationStats({autoCancel}), translated above
         // NOTE: .setIntangibility( → applyGlobalBodyStatus, handled in fix_intangibility_pairs
         // NOTE: .resetJumps( → .preLand(), translated above
@@ -773,7 +774,8 @@ pub fn comment_out_unknown_calls(code: &str) -> String {
         ".getMetalStatus(",
         ".isForcedCrash(",
         ".inUpperLeftWarningBounds(",
-        ".stancePlayFrame(",
+        // NOTE: .stancePlayFrame( renames to .playLabel( via the commands.jsonc
+        // replacements — string-label form is FM-legit, so no comment-out.
         // Sound (FM uses content IDs not SWF asset IDs — manual port)
         ".playAttackSound(",
         ".playSound(",
