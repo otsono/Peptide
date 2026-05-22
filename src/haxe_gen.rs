@@ -20,11 +20,17 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
 
     log::info!("Generating Fraymakers character package in {}", char_dir.display());
 
+    // How many of jab1/jab2/jab3/jab4 actually have image content. Drives
+    // the jab-chain emission in Script.hx and the keep-empty allowlist in
+    // entity_gen — a single-jab character gets no chain boilerplate, and
+    // jab2/jab3 are dropped as empty along with the others.
+    let populated_jabs = count_populated_jabs(img_result);
+
     fs::write(scripts_dir.join("HitboxStats.hx"),   generate_hitbox_stats(data, &char_id))?;
     fs::write(scripts_dir.join("CharacterStats.hx"), generate_character_stats(data, &char_id))?;
     let splits = crate::anim_splitter::split_animations(&data.animations, sprite_boxes);
     fs::write(scripts_dir.join("AnimationStats.hx"), generate_animation_stats(data, &splits))?;
-    fs::write(scripts_dir.join("Script.hx"),         generate_script(data, &char_id))?;
+    fs::write(scripts_dir.join("Script.hx"),         generate_script(data, &char_id, populated_jabs))?;
 
     // .meta sidecar files for character scripts
     fs::write(scripts_dir.join("HitboxStats.hx.meta"),    script_meta(&format!("{}HitboxStats", char_id),    &det_uuid(&format!("{}::HitboxStats::meta", char_id)),    false))?;
@@ -42,7 +48,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
     // Character.entity
     let entities_dir = char_dir.join("library/entities");
     fs::create_dir_all(&entities_dir)?;
-    fs::write(entities_dir.join("Character.entity"), entity_gen::generate_entity(data, &char_id, sprite_boxes, img_result))?;
+    fs::write(entities_dir.join("Character.entity"), entity_gen::generate_entity(data, &char_id, sprite_boxes, img_result, populated_jabs))?;
 
     // Generate .meta sidecar files for each sprite PNG
     let meta_guids = entity_gen::get_image_meta_guids(&char_id, img_result);
@@ -71,7 +77,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
             fs::write(sprites_dir.join("palette_preview.png.meta"), &pal.preview_meta_json)?;
             // Write the entity with the paletteMap filled in
             let entity_json = entity_gen::generate_entity_with_palette(
-                data, &char_id, sprite_boxes, img_result,
+                data, &char_id, sprite_boxes, img_result, populated_jabs,
                 &pal.collection_guid, &pal.base_map_id,
             );
             fs::write(entities_dir.join("Character.entity"), entity_json)?;
@@ -758,7 +764,18 @@ fn generate_animation_stats(data: &CharacterData, splits: &[crate::anim_splitter
 
 // ─── Script.hx ───────────────────────────────────────────────────────────────
 
-fn generate_script(data: &CharacterData, _char_id: &str) -> String {
+/// How many of jab1..jab4 actually have image content. Drives whether the
+/// jab-chain boilerplate is emitted in Script.hx, and whether the empty-
+/// animation drop in entity_gen keeps jab2/jab3 as referenced placeholders.
+fn count_populated_jabs(img: &crate::image_extractor::ImageExtractionResult) -> usize {
+    ["jab1", "jab2", "jab3", "jab4"].iter()
+        .filter(|name| img.anim_images.get(**name)
+            .map(|af| af.frames.values().any(|f| !f.is_empty()))
+            .unwrap_or(false))
+        .count()
+}
+
+fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) -> String {
     let mut out = format!(
         "// API Script for {} — converted from SSF2\n\
         // Frame scripts are embedded in the entity file (FRAME_SCRIPT layers).\n\
@@ -816,8 +833,12 @@ fn generate_script(data: &CharacterData, _char_id: &str) -> String {
     // Frame scripts are embedded directly in the entity file via FRAME_SCRIPT layers.
     // They are no longer duplicated here.
 
-    // Jab chain transition logic
-    out.push_str(&generate_jab_scripts());
+    // Jab chain transition logic — only when the character actually has a
+    // multi-hit combo. Single-jab characters get no chain boilerplate, so
+    // nothing references the missing jab2/jab3 animations.
+    if populated_jabs >= 2 {
+        out.push_str(&generate_jab_scripts());
+    }
 
     // Full-script post-pass: fix paired setIntangibility calls
     out = crate::api_mappings::fix_intangibility_pairs(&out);

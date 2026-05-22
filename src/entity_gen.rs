@@ -160,6 +160,9 @@ pub fn generate_entity(
     char_id: &str,
     sprite_boxes: &BTreeMap<String, AnimationBoxData>,
     img_result: &ImageExtractionResult,
+    // How many of jab1..jab4 carry real image content. Decides which empty
+    // animations are kept as placeholders for Script.hx jab-chain references.
+    populated_jabs: usize,
 ) -> String {
     let mut keyframes: Vec<Value> = Vec::new();
     let mut layers: Vec<Value> = Vec::new();
@@ -864,11 +867,21 @@ pub fn generate_entity(
 
     // Drop animations whose image timeline is entirely blank (no IMAGE
     // keyframe carries a symbol). Empty stubs clutter the FrayTools editor
-    // and confuse modders. Animations named in Script.hx boilerplate by
-    // name (the jab1→jab2→jab3 chain template) are KEPT even when empty,
-    // because runtime setAnimation("jab2") / setAnimation("jab3") calls
-    // would otherwise hit a missing animation.
-    const KEEP_EMPTY: &[&str] = &["jab2", "jab3"];
+    // and confuse modders. KEEP_EMPTY allowlists empty animations that the
+    // jab-chain boilerplate in Script.hx still references by name — those
+    // would crash at runtime if dropped.
+    //
+    // For populated_jabs == 1 (single-jab characters) Script.hx emits no
+    // chain at all, so jab2/jab3 are not referenced and can be dropped like
+    // the other empties. For populated_jabs >= 2 the chain is emitted; the
+    // chain reaches up to jab3, so jab3 must exist if it's the last link
+    // and would otherwise be empty (populated_jabs == 2). populated_jabs
+    // >= 3 means jab2/jab3 are themselves populated and don't need an
+    // allowlist entry.
+    let keep_empty: &[&str] = match populated_jabs {
+        2 => &["jab3"],
+        _ => &[],
+    };
     {
         let layer_type: std::collections::BTreeMap<String, String> = layers.iter()
             .filter_map(|l| Some((l["$id"].as_str()?.to_string(), l["type"].as_str()?.to_string())))
@@ -890,7 +903,7 @@ pub fn generate_entity(
         let mut dropped_names: Vec<String> = Vec::new();
         animations.retain(|a| {
             let name = match a["name"].as_str() { Some(n) => n, None => return true };
-            if KEEP_EMPTY.contains(&name) { return true; }
+            if keep_empty.contains(&name) { return true; }
             let lids = match a["layers"].as_array() { Some(v) => v, None => return true };
             let has_image = lids.iter().filter_map(|v| v.as_str()).any(|lid| {
                 if layer_type.get(lid).map(String::as_str) != Some("IMAGE") { return false; }
@@ -948,10 +961,11 @@ pub fn generate_entity_with_palette(
     char_id: &str,
     sprite_boxes: &BTreeMap<String, AnimationBoxData>,
     img_result: &ImageExtractionResult,
+    populated_jabs: usize,
     palette_collection_guid: &str,
     palette_map_id: &str,
 ) -> String {
-    let json_str = generate_entity(data, char_id, sprite_boxes, img_result);
+    let json_str = generate_entity(data, char_id, sprite_boxes, img_result, populated_jabs);
     let mut entity: serde_json::Value = serde_json::from_str(&json_str).unwrap_or(serde_json::json!({}));
     entity["paletteMap"] = serde_json::json!({
         "paletteCollection": palette_collection_guid,
