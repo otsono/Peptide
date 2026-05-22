@@ -76,14 +76,21 @@ impl ImageLocalMatrix {
         }
     }
 
-    /// Compose two matrices (self * other), producing a new affine matrix.
+    /// Compose two matrices: apply `other` first, then `self`
+    /// (i.e. self ∘ other). The SWF matrix maps (x,y) →
+    /// (a·x + c·y + tx, b·x + d·y + ty).
+    ///
+    /// The previous implementation multiplied the wrong off-diagonal
+    /// terms, which injected a false shear into every composed
+    /// sub-sprite / effect matrix whenever rotation or non-uniform
+    /// scale was involved.
     pub fn compose(&self, other: &ImageLocalMatrix) -> Self {
-        let a = self.a * other.a + self.b * other.c;
-        let b = self.a * other.b + self.b * other.d;
-        let c = self.c * other.a + self.d * other.c;
-        let d = self.c * other.b + self.d * other.d;
-        let tx = self.a * other.tx + self.b * other.ty + self.tx;
-        let ty = self.c * other.tx + self.d * other.ty + self.ty;
+        let a = self.a * other.a + self.c * other.b;
+        let b = self.b * other.a + self.d * other.b;
+        let c = self.a * other.c + self.c * other.d;
+        let d = self.b * other.c + self.d * other.d;
+        let tx = self.a * other.tx + self.c * other.ty + self.tx;
+        let ty = self.b * other.tx + self.d * other.ty + self.ty;
         Self::from_abcd(a, b, c, d, tx, ty)
     }
 
