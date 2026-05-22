@@ -377,7 +377,7 @@ fn prerender_skewed_frames(
 
     // Synthetic bitmap ids for the baked PNGs — start above every real id.
     let mut next_id: u16 = images.keys().max().copied().unwrap_or(0).max(59_999) + 1;
-    // quantized world linear part + source id → (id, sym, w, h, min_x, min_y)
+    // exact world linear part + source id → (id, sym, w, h, min_x, min_y)
     let mut cache: BTreeMap<String, (u16, String, u32, u32, f64, f64)> = BTreeMap::new();
     let mut count = 0usize;
 
@@ -401,8 +401,14 @@ fn prerender_skewed_frames(
             }
         };
 
-        // Bake once per distinct (linear part, source bitmap).
-        let cache_key = format!("{:.3}_{:.3}_{:.3}_{:.3}_{}", wa, wb, wc, wd, src_img.bitmap_id);
+        // Bake once per distinct (linear part, source bitmap). The key uses the
+        // exact f64 bit patterns of the linear matrix: only frames whose matrix
+        // is bit-for-bit identical share a baked bitmap, so two animations with
+        // merely near-identical matrices can never collide and reuse each
+        // other's bake. Truly identical placements still dedup, so this does
+        // not bloat the output.
+        let cache_key = format!("{:016x}_{:016x}_{:016x}_{:016x}_{}",
+            wa.to_bits(), wb.to_bits(), wc.to_bits(), wd.to_bits(), src_img.bitmap_id);
         let (new_id, new_sym, _nw, _nh, min_x, min_y) = if let Some(c) = cache.get(&cache_key) {
             c.clone()
         } else {
