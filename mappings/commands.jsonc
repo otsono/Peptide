@@ -15,16 +15,16 @@
   // stay in code; only this literal table lives here.
   "replacements": [
     { "from": "self.self = /* ? */;", "to": "// self reference (implicit in FM)" },
-    { "from": "self.self = /* ? */", "to": "self /* parent character */" },
+    { "from": "self.self = /* ? */", "to": "self" },
     { "from": "self.self.", "to": "self." },
     { "from": "&& self.self)", "to": ")" },
-    { "from": "if (true && self.self)", "to": "if (true /* FM: self always valid */)" },
-    { "from": "|| self.self)", "to": ") /* self always valid */" },
-    { "from": "if ((self.self && true)", "to": "if ((true /* self always valid */)" },
-    { "from": "(self.self && true)", "to": "(true /* self always valid */)" },
-    { "from": "self.self", "to": "self /* was self.self */" },
-    { "from": "if (self.self && ", "to": "if (/* self always valid */ true && " },
-    { "from": "|| self.self", "to": " /* || self always valid */" },
+    { "from": "if (true && self.self)", "to": "if (true)" },
+    { "from": "|| self.self)", "to": ")" },
+    { "from": "if ((self.self && true)", "to": "if ((true)" },
+    { "from": "(self.self && true)", "to": "(true)" },
+    { "from": "self.self", "to": "self" },
+    { "from": "if (self.self && ", "to": "if (true && " },
+    { "from": "|| self.self", "to": "" },
 
     // SSF2API static calls
     { "from": "SSF2API.print(", "to": "Engine.log(" },
