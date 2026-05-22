@@ -948,6 +948,70 @@ pub fn load_api_methods_json(mappings_dir: &std::path::Path) -> Vec<(String, Str
     pairs
 }
 
+// ─── 30fps → 60fps frame-count scaling ───────────────────────────────────────
+//
+// SSF2 plays at 30fps, Fraymakers at 60fps. Numeric arguments in decompiled
+// frame-script Haxe that represent frame counts must be doubled so the script
+// runs at the same real time. Only specific, known frame-count fields are
+// touched — speeds, positions, IDs, angles, repeat counts and multipliers are
+// deliberately left alone.
+
+/// Double the first non-negative integer literal that follows each occurrence
+/// of `marker` (after optional spaces/tabs). Values `>= skip_at` are treated as
+/// sentinels and left unchanged; non-literal arguments (expressions, negatives)
+/// are skipped because no digits immediately follow the marker.
+fn double_int_after_marker(code: &str, marker: &str, skip_at: i64) -> String {
+    let mut out = String::with_capacity(code.len() + 16);
+    let bytes = code.as_bytes();
+    let mut i = 0usize;
+    while i < code.len() {
+        if code[i..].starts_with(marker) {
+            out.push_str(marker);
+            let mut j = i + marker.len();
+            while j < code.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                out.push(bytes[j] as char);
+                j += 1;
+            }
+            let start = j;
+            while j < code.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > start {
+                match code[start..j].parse::<i64>() {
+                    Ok(n) if n < skip_at => out.push_str(&(n * 2).to_string()),
+                    _ => out.push_str(&code[start..j]),
+                }
+            }
+            i = j;
+        } else {
+            let ch = code[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+/// Double the hit-freeze / hitstun durations in inline hitbox objects of
+/// decompiled frame-script code (e.g. `updateAttackBoxStats(1, { hitStun: 2,
+/// selfHitStun: 1 })`). SSF2 `hitStun`/`selfHitStun`/`hitLag` are frame counts;
+/// the 255 "no override" sentinel and negatives are left unchanged.
+pub fn double_frame_script_hit_durations(code: &str) -> String {
+    let mut out = code.to_string();
+    for marker in ["hitStun:", "selfHitStun:", "hitLag:"] {
+        out = double_int_after_marker(&out, marker, 255);
+    }
+    out
+}
+
+/// Double the frame-delay argument of `createTimer(delay, repeatCount, cb)`
+/// calls in decompiled frame-script code. Only the first argument — the delay,
+/// in frames — is scaled; the repeat count and callback are left untouched
+/// (doubling the delay alone already stretches the timer's total real time).
+pub fn double_frame_script_timers(code: &str) -> String {
+    double_int_after_marker(code, "createTimer(", i64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
