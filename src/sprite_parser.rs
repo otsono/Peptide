@@ -785,11 +785,15 @@ pub fn extract_ssf2_anim_name(
         ("downspecial", "b_down"),
         ("downb", "b_down"),
         ("downbair", "b_down_air"),
-        // Throws
+        // Throws — both word orders ("ThrowForward" and "ForwardThrow")
         ("throwforward", "throw_forward"),
         ("throwback", "throw_back"),
         ("throwup", "throw_up"),
         ("throwdown", "throw_down"),
+        ("forwardthrow", "throw_forward"),
+        ("backthrow", "throw_back"),
+        ("upthrow", "throw_up"),
+        ("downthrow", "throw_down"),
         ("grab", "grab"),
         // Defense
         ("shield", "defend"),

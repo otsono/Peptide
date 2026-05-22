@@ -568,7 +568,16 @@ fn build_anim_frame_images(
     // Pre-build effect sprite frame tables: sprite_id → Vec<frame> → Vec<(shape_id, sym, mat)>
     // Effect sprites are _fla. named sprites that are NOT top-level animation containers.
     // Recursively expands unnamed inner sprites.
-    let effect_sprites: BTreeMap<u16, Vec<Vec<(u16, String, ImageLocalMatrix)>>> = {
+    // `effect_sprites` holds the named "_fla." effect-sprite frame tables;
+    // `unnamed_frames` holds every unnamed sub-sprite's frame table. Both are
+    // needed downstream: a named effect placed in an animation expands via
+    // `effect_sprites`, but an *unnamed* sub-sprite placed directly in an
+    // animation timeline (e.g. sandbag's item_homerun body movieclips) must
+    // expand via `unnamed_frames`.
+    let (effect_sprites, unnamed_frames): (
+        BTreeMap<u16, Vec<Vec<(u16, String, ImageLocalMatrix)>>>,
+        BTreeMap<u16, Vec<Vec<(u16, String, ImageLocalMatrix)>>>,
+    ) = {
         // Two-pass approach:
         // Pass 1: build inner unnamed sprite frame tables
         // Pass 2: for named effect sprites, inline the unnamed sub-sprites
@@ -699,7 +708,7 @@ fn build_anim_frame_images(
                 }
             }
         }
-        map
+        (map, unnamed_frames)
     };
 
     for tag in &swf.tags {
@@ -771,9 +780,15 @@ fn build_anim_frame_images(
                             });
                         }
 
-                        // Expand effect sub-sprite placements into their current inner frame
+                        // Expand sub-sprite placements into their current inner
+                        // frame. Named "_fla." effects live in effect_sprites;
+                        // unnamed sub-sprites placed directly in the timeline
+                        // (e.g. item_homerun's body movieclips) live in
+                        // unnamed_frames.
                         for (&depth, (effect_id, place_frame, parent_mat)) in &sub_sprite_placements {
-                            if let Some(effect_frames) = effect_sprites.get(effect_id) {
+                            if let Some(effect_frames) = effect_sprites.get(effect_id)
+                                .or_else(|| unnamed_frames.get(effect_id))
+                            {
                                 let eff_frame = (current_frame.saturating_sub(*place_frame)) as usize;
                                 // Clamp to last frame (effect may loop or hold)
                                 let eff_frame = eff_frame.min(effect_frames.len().saturating_sub(1));
