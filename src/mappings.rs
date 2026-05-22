@@ -21,6 +21,10 @@ const DEFAULT_CHARACTER_ANIMATIONS: &str =
     include_str!("../mappings/character/animations.json");
 const DEFAULT_CHARACTER_STATS: &str =
     include_str!("../mappings/character/stats.json");
+// API command conversions are universal, not character-scoped, so this file
+// lives at the top of mappings/ rather than under mappings/character/.
+const DEFAULT_API_COMMANDS: &str =
+    include_str!("../mappings/commands.json");
 
 // ─── Schema ─────────────────────────────────────────────────────────────────
 
@@ -69,6 +73,21 @@ impl StatMappings {
     pub fn scale(&self, name: &str, raw: f64) -> f64 {
         self.multipliers.get(name).map(|m| m.apply(raw)).unwrap_or(raw)
     }
+}
+
+/// One literal find -> replace pair in the API command translation table.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Replacement {
+    pub from: String,
+    pub to: String,
+}
+
+/// Universal SSF2 -> Fraymakers API command conversions: an ordered list of
+/// literal string replacements applied to decompiled Haxe. Order matters.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApiCommands {
+    #[serde(default)]
+    pub replacements: Vec<Replacement>,
 }
 
 // ─── Loading ────────────────────────────────────────────────────────────────
@@ -128,5 +147,12 @@ pub fn character_stats() -> &'static StatMappings {
     static CACHE: OnceLock<StatMappings> = OnceLock::new();
     CACHE.get_or_init(|| {
         load("mappings/character/stats.json", DEFAULT_CHARACTER_STATS)
+    })
+}
+
+pub fn api_commands() -> &'static ApiCommands {
+    static CACHE: OnceLock<ApiCommands> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        load("mappings/commands.json", DEFAULT_API_COMMANDS)
     })
 }

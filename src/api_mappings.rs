@@ -514,101 +514,14 @@ pub fn translate_ssf2_to_fm(code: &str) -> String {
     // First: strip SSF2API.isReady() guard blocks entirely (they're always-true in FM)
     let mut result = remove_readiness_guards(code);
 
-    // ── self.self → self ──
-    // SSF2 sub-MC closures capture the character as "self.self"
-    // The assignment `self.self = /* ? */` is the sub-MC saving a ref to parent character.
-    // In FM, Script.hx `self` already IS the character, so this is a no-op we can elide.
-    result = result.replace("self.self = /* ? */;", "// self reference (implicit in FM)");
-    result = result.replace("self.self = /* ? */", "self /* parent character */");
-    result = result.replace("self.self.", "self.");
-    // Also handle: if (SSF2API.isReady() && self.self) → if (true)
-    // "SSF2API.isReady() && self.self" pattern → just drop the self.self check
-    result = result.replace("&& self.self)", ")");
-    result = result.replace("if (true && self.self)", "if (true /* FM: self always valid */)");
-    // Other self.self null-guard patterns
-    result = result.replace("|| self.self)", ") /* self always valid */");
-    result = result.replace("if ((self.self && true)", "if ((true /* self always valid */)");
-    // Also handle (self.self && true) without if prefix
-    result = result.replace("(self.self && true)", "(true /* self always valid */)");
-    // Final catch-all: any remaining self.self that wasn't a method call (boolean checks etc)
-    result = result.replace("self.self", "self /* was self.self */");
-    result = result.replace("if (self.self && ", "if (/* self always valid */ true && ");
-    result = result.replace("|| self.self", " /* || self always valid */");
-
-    // ── SSF2API static calls ──
-    result = result.replace("SSF2API.print(", "Engine.log(");
-    result = result.replace("SSF2API.isReady()", "true");
-    result = result.replace("SSF2API.random()", "Random.getFloat(0, 1)");
-    result = result.replace("SSF2API.randomInteger(", "Random.getInt(");
-    result = result.replace("SSF2API.getElapsedFrames()", "Engine.getElapsedFrames()");
-    result = result.replace("SSF2API.getCharacters()", "Match.getCharacters()");
-
-    // ── Method renames ──
-    result = result.replace(".endAttack()", ".endAnimation()");
-    result = result.replace(".refreshAttackID()", ".reactivateHitboxes()");
-    result = result.replace(".updateAttackBoxStats(", ".updateHitboxStats(");
-    result = result.replace(".getControls()", ".getHeldControls()");
-    result = result.replace(".setXSpeed(", ".setXVelocity(");
-    result = result.replace(".setYSpeed(", ".setYVelocity(");
-    result = result.replace(".getXSpeed()", ".getXVelocity()");
-    result = result.replace(".getYSpeed()", ".getYVelocity()");
-
-    // ── State transitions ──
-    // SSF2 had dedicated helpers; FM uses toState(CState.X)
-    result = result.replace(".toLand()", ".toState(CState.LAND)");
-    result = result.replace(".toHelpless()", ".toState(CState.FALL_SPECIAL)");
-    // toHeavyLand → LAND for now; annotated TODO for land_heavy animation override
-    result = result.replace(
-        ".toHeavyLand()",
-        ".toState(CState.LAND) //TODO: create land_heavy anim & change to toState(CState.LAND, \"land_heavy\")",
-    );
-
-    // ── Jump / landing reset ──
-    // SSF2 resetJumps() → FM preLand() (resets jumps, airdash, fastfall)
-    result = result.replace(".resetJumps()", ".preLand()");
-
-    // ── Velocity reset ──
-    result = result.replace(".resetMovement()", ".setXVelocity(0); self.setYVelocity(0)");
-    result = result.replace(".safeMove(", ".move(");
-
-    // ── Ground detection ──
-    result = result.replace(".isOnGround()", ".isOnFloor()");
-    result = result.replace(".checkGround()", ".attachToFloor()");
-
-    // ── Landing lag / autocancel ──
-    result = result.replace(".setLandingLag(true)", ".updateAnimationStats({ autoCancel: true })");
-    result = result.replace(".setLandingLag(false)", ".updateAnimationStats({ autoCancel: false })");
-
-    // ── SSF2 global variable pattern ──
-    // self.setGlobalVariable("key", val) → self.setCustomVar("key", val) or metadata
-    result = result.replace(".setGlobalVariable(", ".updateAnimationStatsMetadata(/* TODO: setGlobalVariable */ ");
-    result = result.replace(".getGlobalVariable(", ".getAnimationStatsMetadata(/* TODO: getGlobalVariable */ ");
-
-    // ── Sound calls ──
-    result = result.replace(".playVoiceSound(", ".playAttackVoice(/* voice index: */");
-    result = result.replace(".playSoundFX(", "/* TODO: playSoundFX */Engine.playAudio(");
-
-    // ── Event types ──
-    result = result.replace("SSF2Event.STATE_CHANGE", "GameObjectEvent.LINK_FRAMES");
-    result = result.replace("SSF2Event.HIT", "GameObjectEvent.HIT_DEALT");
-    result = result.replace("SSF2Event.LAND", "GameObjectEvent.LAND");
-
-    // ── Timer/effect patterns ──
-    result = result.replace(".createTimer(", ".addTimer(");
-    result = result.replace(".destroyTimer(", ".removeTimer(");
-    result = result.replace(".removeAllEffects()", "/* TODO: removeAllEffects */");
-    result = result.replace(".addEffectToList(", "/* TODO: addEffectToList */ ");
-
-    // ── Hitbox property renames in object literals ──
-    // SSF2 name          → FM HitboxStats field
-    result = result.replace("direction:",    "angle:");
-    result = result.replace("power:",         "baseKnockback:");
-    result = result.replace("kbGrowth:",      "knockbackGrowth:");
-    result = result.replace("kbConstant:",    "knockbackGrowth:");  // SSF2 kbConstant = flat KB growth
-    result = result.replace("hitStun:",       "hitstop:");          // SSF2 hitStun = frames of hitStop on attacker
-    result = result.replace("selfHitStun:",   "selfHitstop:");
-    result = result.replace("hitLag:",        "hitstun:");          // SSF2 hitLag = frames target is stunned
-    result = result.replace("selfHitLag:",    "selfHitstop:");
+    // ── Literal SSF2 → Fraymakers API command translations ──
+    // Loaded, in order, from mappings/commands.json (see crate::mappings).
+    // These are universal API conversions — not character-specific — so the
+    // file lives at the top of mappings/ rather than under mappings/character/.
+    // Order matters (e.g. "self.self." must run before the bare "self.self").
+    for r in &crate::mappings::api_commands().replacements {
+        result = result.replace(&r.from, &r.to);
+    }
 
     // ── endAnimation on last frame: strip it ──
     // FM animations naturally end when the last frame plays. endAnimation() on the final
