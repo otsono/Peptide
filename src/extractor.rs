@@ -13,6 +13,10 @@ pub struct CharacterData {
     pub stats: CharacterStats,
     pub animations: BTreeMap<String, AnimationInfo>,
     pub scripts: Vec<ScriptInfo>,
+    /// Instance variables declared on the SSF2 XxxExt class (slot/const traits).
+    /// Carried over into Script.hx as top-level `var name;` declarations.
+    #[serde(default)]
+    pub ext_vars: Vec<String>,
     /// SSF2 animation name → Fraymakers animation name
     /// Built from xframe_map + SSF2→Fraymakers name table
     pub ssf2_to_fm_anim: BTreeMap<String, String>,
@@ -89,6 +93,7 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
     let mut char_stats = CharacterStats::default();
     let mut animations: BTreeMap<String, AnimationInfo> = BTreeMap::new();
     let mut scripts: Vec<ScriptInfo> = Vec::new();
+    let mut ext_vars: Vec<String> = Vec::new();
     let mut xframe_map: XframeMap = BTreeMap::new();
 
     // Parse each ABC block (usually just one)
@@ -117,6 +122,11 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
                         code: code.clone(),
                         is_ext_method: true,
                     });
+                }
+
+                // Ext-class instance variable declarations → Script.hx top.
+                for v in &extracted.ext_vars {
+                    if !ext_vars.contains(v) { ext_vars.push(v.clone()); }
                 }
 
                 // Frame scripts → will go to .entity file (not Script.hx)
@@ -212,6 +222,7 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
         attacks.len(), animations.len(), ssf2_to_fm_anim.len());
 
     Ok(CharacterData {
+        ext_vars,
         name: char_name.to_string(),
         attacks,
         stats: char_stats,

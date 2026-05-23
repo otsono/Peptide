@@ -820,10 +820,26 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
         "// API Script for {} — converted from SSF2\n\
 // Frame scripts are embedded in the entity file (FRAME_SCRIPT layers).\n\
 // SSF2 API calls are mapped to Fraymakers equivalents where possible.\n\
-// Lines marked TODO need manual review.\n\n\
-// start general functions ---\n\n",
+// Lines marked TODO need manual review.\n\n",
         data.name
     );
+
+    // Instance variables carried over from the SSF2 XxxExt class (its
+    // Slot/Const traits — `public var foo:T;`). Emitted untyped at top
+    // level so the references later in the translated methods aren't
+    // undeclared. Types and initial values are not carried; review and
+    // assign defaults as needed (often in initialize() via self.foo = ...).
+    if !data.ext_vars.is_empty() {
+        out.push_str("// ── Instance variables (from SSF2 ");
+        out.push_str(&data.name);
+        out.push_str("Ext) ──────────────────────────\n");
+        for v in &data.ext_vars {
+            out.push_str(&format!("var {};\n", v));
+        }
+        out.push('\n');
+    }
+
+    out.push_str("// start general functions ---\n\n");
 
     emit_tpl(&mut out, "//Runs on object init\n", "function initialize(){\n",
         "\tself.addEventListener(GameObjectEvent.LINK_FRAMES, handleLinkFrames, {persistent:true});\n",

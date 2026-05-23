@@ -149,6 +149,9 @@ pub struct ExtractedCharacter {
     pub frame_scripts: BTreeMap<String, Vec<FrameAction>>,
     /// Decompiled Ext class methods translated to Fraymakers Haxe
     pub ext_methods: BTreeMap<String, String>,
+    /// Names of instance Slot/Const traits on the Ext class (the SSF2
+    /// `public var foo:T;` declarations).
+    pub ext_vars: Vec<String>,
     /// frame method name → SSF2 animation name (from self.xframe = "...")
     pub xframe_map: XframeMap,
     /// Costumes from SSF2API::getCostumeData — name → list of ARGB color values
@@ -671,7 +674,17 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
         .collect();
 
     // --- Process MarioExt methods specifically ---
+    let mut ext_vars: Vec<String> = Vec::new();
     if let Some(ext) = char_class {
+        // Collect Slot (kind=0) / Const (kind=6) instance traits — the SSF2
+        // class's `public var foo:T;` declarations. We carry these over to
+        // Script.hx as top-level `var foo;` so the references later in the
+        // translated methods aren't undeclared.
+        for t in &ext.instance_methods {
+            if (t.kind == 0 || t.kind == 6) && !t.name.is_empty() {
+                ext_vars.push(t.name.clone());
+            }
+        }
         for t in &ext.instance_methods {
             let Some(body) = body_by_method.get(&t.method_idx) else { continue };
             match t.name.as_str() {
@@ -1082,6 +1095,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
         stats,
         frame_scripts,
         ext_methods,
+        ext_vars,
         xframe_map,
         costumes,
     })
