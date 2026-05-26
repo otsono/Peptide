@@ -797,22 +797,84 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
         });
     if let Some(mc) = main_class {
         log::info!("Main class '{}': {} frame methods", mc.name, mc.instance_methods.len());
+        // Helper methods on the main class — anything that isn't a frame*
+        // entry or a stat-getter — are decompiled and emitted in Script.hx
+        // alongside the Ext-class methods. Calls to per-character helpers
+        // like `aimTrampoline`, `chef`, `eat`, `gokuKaiokenHUD` would
+        // otherwise resolve to nothing (the helpers exist only on the main
+        // class, not the Ext class).
+        const STAT_GETTERS: &[&str] = &["getOwnStats", "getAttackStats", "getItemStats", "getProjectileStats"];
         for t in &mc.instance_methods {
-            if !t.name.starts_with("frame") { continue; }
-            let Some(body) = body_by_method.get(&t.method_idx) else { continue };
-            // Extract xframe name
-            if let Some(anim_name) = extract_xframe_name(&body.bytecode, abc) {
-                xframe_map.insert(t.name.clone(), anim_name);
+            if t.name.starts_with("frame") {
+                let Some(body) = body_by_method.get(&t.method_idx) else { continue };
+                // Extract xframe name
+                if let Some(anim_name) = extract_xframe_name(&body.bytecode, abc) {
+                    xframe_map.insert(t.name.clone(), anim_name);
+                }
+                let params: Vec<String> = if let Some(method) = abc.methods.get(body.method_idx as usize) {
+                    (0..method.param_count).map(|i| format!("arg{}", i)).collect()
+                } else { vec![] };
+                let code = decompiler::decompile_method(body, abc, &t.name, &params);
+                frame_scripts.insert(t.name.clone(), vec![FrameAction {
+                    frame: 0,
+                    action: code,
+                    args: vec![],
+                }]);
+            } else if matches!(t.kind, 1 | 2 | 3) && !t.name.is_empty()
+                && !STAT_GETTERS.contains(&t.name.as_str())
+                && !ext_methods.contains_key(&t.name)
+            {
+                // kind 1/2/3 = Method/Getter/Setter; skip Slot/Const (0/6) and
+                // anything the Ext class already provides under the same name.
+                let Some(body) = body_by_method.get(&t.method_idx) else { continue };
+                let params: Vec<String> = if let Some(method) = abc.methods.get(body.method_idx as usize) {
+                    (0..method.param_count).map(|i| format!("arg{}", i)).collect()
+                } else { vec![] };
+                let code = decompiler::decompile_method(body, abc, &t.name, &params);
+                ext_methods.insert(t.name.clone(), code);
             }
-            let params: Vec<String> = if let Some(method) = abc.methods.get(body.method_idx as usize) {
-                (0..method.param_count).map(|i| format!("arg{}", i)).collect()
-            } else { vec![] };
-            let code = decompiler::decompile_method(body, abc, &t.name, &params);
-            frame_scripts.insert(t.name.clone(), vec![FrameAction {
-                frame: 0,
-                action: code,
-                args: vec![],
-            }]);
+        }
+    }
+
+    // --- Sub-MovieClip helper methods ---
+    // Some per-character helpers (e.g. pacman's `aimTrampoline` on
+    // `pacman_fla.UpSpecial_37`) live on sub-MC `_fla.*` classes rather than
+    // the main class or the Ext class. Their frame-script callers reference
+    // them by bare name, so they need to land in Script.hx like the other
+    // helpers — otherwise the calls resolve to nothing. Scope the scan to
+    // classes that belong to THIS character (name starts with the char
+    // lowercase prefix) so we don't suck in SSF2's framework classes
+    // (Controls, Matrix3D, KeyboardOptions, etc.) that are unrelated and
+    // would flood Script.hx with generic utility methods.
+    {
+        const STAT_GETTERS: &[&str] = &["getOwnStats", "getAttackStats", "getItemStats", "getProjectileStats"];
+        for class in &abc.classes {
+            // Skip the Ext class and the main class (already processed).
+            if Some(class.name.as_str()) == char_class.map(|c| c.name.as_str()) { continue; }
+            if Some(class.name.as_str()) == main_class.map(|c| c.name.as_str()) { continue; }
+            // Limit to this character's classes: same prefix as the main
+            // class name (or the char name), so `pacman_fla.UpSpecial_37` is
+            // in but `Controls` / `Matrix3D` are out. Also drop projectile-
+            // specific sub-MCs — those have their own converter path.
+            let cn = class.name.to_lowercase();
+            let main_prefix = main_class.map(|c| c.name.to_lowercase()).unwrap_or_default();
+            let main_root = main_prefix.split(['.', '_']).next().unwrap_or(&char_lower);
+            let belongs = !main_root.is_empty()
+                && (cn.starts_with(main_root) || cn.starts_with(&char_lower));
+            if !belongs { continue; }
+            if cn.contains("proj") || cn.contains("helper") { continue; }
+            for t in &class.instance_methods {
+                if !matches!(t.kind, 1 | 2 | 3) { continue; }
+                if t.name.is_empty() || t.name.starts_with("frame") { continue; }
+                if STAT_GETTERS.contains(&t.name.as_str()) { continue; }
+                if ext_methods.contains_key(&t.name) { continue; }
+                let Some(body) = body_by_method.get(&t.method_idx) else { continue };
+                let params: Vec<String> = if let Some(m) = abc.methods.get(body.method_idx as usize) {
+                    (0..m.param_count).map(|i| format!("arg{}", i)).collect()
+                } else { vec![] };
+                let code = decompiler::decompile_method(body, abc, &t.name, &params);
+                ext_methods.insert(t.name.clone(), code);
+            }
         }
     }
 
