@@ -744,6 +744,7 @@ pub fn comment_out_unknown_calls(code: &str) -> String {
 
     let lines: Vec<&str> = code.lines().collect();
     let mut out = Vec::with_capacity(lines.len());
+    let mut ssf2_hits: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.starts_with("//") { out.push(line.to_string()); continue; }
@@ -751,6 +752,7 @@ pub fn comment_out_unknown_calls(code: &str) -> String {
         if let Some((_, name)) = hit {
             let indent = &line[..line.len() - line.trim_start().len()];
             out.push(format!("{}// [SSF2-only: {}] {}", indent, name, trimmed));
+            *ssf2_hits.entry((*name).to_string()).or_insert(0) += 1;
         } else {
             out.push(line.to_string());
         }
@@ -758,18 +760,46 @@ pub fn comment_out_unknown_calls(code: &str) -> String {
     let mut joined = out.join("\n");
     if code.ends_with('\n') { joined.push('\n'); }
 
-    if log::log_enabled!(log::Level::Debug) {
-        log_unknown_calls(&joined, cfg);
+    // Always accrue counts into the conversion log (the JSON file is written
+    // unconditionally at the end of the run). The debug-level log line is
+    // separately gated inside log_unknown_calls.
+    if !ssf2_hits.is_empty() {
+        let mut log = conversion_log().lock().unwrap();
+        for (name, n) in ssf2_hits {
+            *log.ssf2_only.entry(name).or_insert(0) += n;
+        }
     }
+    log_unknown_calls(&joined, cfg);
     joined
 }
 
-/// Static "already logged" set — each unknown call name is reported once
-/// per converter run, no matter how many bodies contain it.
-fn unknown_log_seen() -> &'static std::sync::Mutex<std::collections::BTreeSet<String>> {
-    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<String>>>
-        = std::sync::OnceLock::new();
-    SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeSet::new()))
+/// Per-character bookkeeping written to `conversion_log.json` at the end of a
+/// run. `unknown` are calls that didn't appear in ANY commands.jsonc section
+/// (genuine gaps); `ssf2_only` are calls we know lack a Fraymakers equivalent
+/// and have intentionally commented out. The "already logged" set keeps each
+/// unknown name's debug-log line down to one occurrence per process.
+#[derive(Debug, Default, Clone)]
+pub struct ConversionLog {
+    pub unknown: std::collections::BTreeMap<String, usize>,
+    pub ssf2_only: std::collections::BTreeMap<String, usize>,
+    pub already_logged: std::collections::BTreeSet<String>,
+}
+
+fn conversion_log() -> &'static std::sync::Mutex<ConversionLog> {
+    static LOG: std::sync::OnceLock<std::sync::Mutex<ConversionLog>> = std::sync::OnceLock::new();
+    LOG.get_or_init(|| std::sync::Mutex::new(ConversionLog::default()))
+}
+
+/// Reset the conversion log — call at the start of each character so per-
+/// character counts and the once-per-name dedup start from a clean slate.
+pub fn reset_conversion_log() {
+    *conversion_log().lock().unwrap() = ConversionLog::default();
+}
+
+/// Snapshot the current log (does not reset). Used at the end of a run to
+/// write `conversion_log.json` next to the exported character.
+pub fn snapshot_conversion_log() -> ConversionLog {
+    conversion_log().lock().unwrap().clone()
 }
 
 /// Walk `code` for `.NAME(` call sites and log any name that isn't covered
@@ -806,7 +836,8 @@ fn log_unknown_calls(code: &str, cfg: &crate::mappings::ApiCommands) {
 
     let bytes = code.as_bytes();
     let mut i = 0usize;
-    let mut seen = unknown_log_seen().lock().unwrap();
+    let debug = log::log_enabled!(log::Level::Debug);
+    let mut log_state = conversion_log().lock().unwrap();
     while i < bytes.len() {
         if bytes[i] == b'.'
             && i + 1 < bytes.len()
@@ -819,12 +850,15 @@ fn log_unknown_calls(code: &str, cfg: &crate::mappings::ApiCommands) {
             { j += 1; }
             if j < bytes.len() && bytes[j] == b'(' {
                 let name = String::from_utf8_lossy(&bytes[start..j]).into_owned();
-                if !known.contains(&name) && seen.insert(name.clone()) {
-                    log::debug!(
-                        "[api_mappings] unknown call '{}' — add to replacements / \
-                         passthrough_fm_apis / ssf2_only in commands.jsonc as appropriate",
-                        name
-                    );
+                if !known.contains(&name) {
+                    *log_state.unknown.entry(name.clone()).or_insert(0) += 1;
+                    if debug && log_state.already_logged.insert(name.clone()) {
+                        log::debug!(
+                            "[api_mappings] unknown call '{}' — add to replacements / \
+                             passthrough_fm_apis / ssf2_only in commands.jsonc as appropriate",
+                            name
+                        );
+                    }
                 }
                 i = j;
                 continue;

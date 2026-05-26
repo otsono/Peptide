@@ -240,6 +240,11 @@ fn process_character(
     output: &PathBuf,
     costumes: Option<&std::path::Path>,
 ) -> Result<()> {
+    // Fresh conversion log for this character — counts unknown / SSF2-only
+    // calls so we can write conversion_log.json next to the exported files
+    // and surface them in the SwiftUI popup.
+    ssf2_converter::api_mappings::reset_conversion_log();
+
     // Extract character data (ABC: attacks, stats, frame scripts, xframe map)
     let mut char_data = extractor::extract(swf, char_name)?;
     log::info!("Extracted: {} attacks, {} animations, {} ssf2→fm mappings",
@@ -300,5 +305,35 @@ fn process_character(
         costumes, &sounds, &projectiles, head_sprite.as_ref(), swf_data)?;
     log::info!("Generated Fraymakers files for {}", char_name);
 
+    write_conversion_log(&char_output_dir, char_name)?;
+
+    Ok(())
+}
+
+/// Write `<char_dir>/conversion_log.json` summarising calls that the
+/// converter couldn't fully map: `unknown` are genuine gaps (no entry in any
+/// commands.jsonc section), `ssf2_only` are calls we deliberately surfaced as
+/// `// [SSF2-only: …]` comments because they have no Fraymakers equivalent.
+/// Written unconditionally so the SwiftUI GUI can show a post-conversion
+/// popup, and so CLI users get the same artifact alongside the character.
+fn write_conversion_log(char_dir: &std::path::Path, char_name: &str) -> Result<()> {
+    let snap = ssf2_converter::api_mappings::snapshot_conversion_log();
+    let to_entries = |m: std::collections::BTreeMap<String, usize>| -> Vec<serde_json::Value> {
+        let mut v: Vec<(String, usize)> = m.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        v.into_iter()
+            .map(|(name, count)| serde_json::json!({ "name": name, "count": count }))
+            .collect()
+    };
+    let payload = serde_json::json!({
+        "character": char_name,
+        "unknown": to_entries(snap.unknown),
+        "ssf2_only": to_entries(snap.ssf2_only),
+    });
+    std::fs::create_dir_all(char_dir)?;
+    std::fs::write(
+        char_dir.join("conversion_log.json"),
+        serde_json::to_string_pretty(&payload)? + "\n",
+    )?;
     Ok(())
 }

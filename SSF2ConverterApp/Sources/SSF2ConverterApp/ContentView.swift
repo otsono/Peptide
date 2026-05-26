@@ -11,6 +11,29 @@ enum ConversionState {
     case failure(message: String, log: String)
 }
 
+// Mirror of the Rust-side `conversion_log.json` written next to the exported
+// character. The Rust struct is in src/main.rs (write_conversion_log) — keep
+// fields in sync. `unknown` are calls with no commands.jsonc entry at all;
+// `ssf2_only` were intentionally commented out as `// [SSF2-only: …]`.
+struct ConversionLog: Codable {
+    struct Entry: Codable, Identifiable {
+        let name: String
+        let count: Int
+        var id: String { name }
+    }
+    let character: String
+    let unknown: [Entry]
+    let ssf2_only: [Entry]
+
+    var isEmpty: Bool { unknown.isEmpty && ssf2_only.isEmpty }
+
+    static func load(from charDir: String) -> ConversionLog? {
+        let url = URL(fileURLWithPath: charDir).appendingPathComponent("conversion_log.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(ConversionLog.self, from: data)
+    }
+}
+
 // MARK: - Main View
 
 struct ContentView: View {
@@ -24,6 +47,8 @@ struct ContentView: View {
             .appendingPathComponent("characters")
     }()
     @State private var miscSSF: URL? = nil
+    @State private var conversionLog: ConversionLog? = nil
+    @State private var showLogSheet: Bool = false
 
     // Path to the ssf2_converter binary — bundled inside Contents/MacOS/
     var converterBin: URL {
@@ -40,6 +65,14 @@ struct ContentView: View {
         }
         .frame(width: 700, height: 520)
         .background(Color(nsColor: .windowBackgroundColor))
+        .sheet(isPresented: $showLogSheet) {
+            ConversionLogSheet(log: conversionLog) { showLogSheet = false }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .convertSsfFile)) { note in
+            if let url = note.object as? URL {
+                startConversion(url: url)
+            }
+        }
     }
 
     // MARK: Header
@@ -231,9 +264,14 @@ struct ContentView: View {
                     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: outputPath)
                 }
                 .buttonStyle(.bordered)
+                if conversionLog != nil {
+                    Button("Unhandled Calls…") { showLogSheet = true }
+                        .buttonStyle(.bordered)
+                }
                 Button("Convert Another") {
                     conversionState = .idle
                     progress = 0
+                    conversionLog = nil
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -387,12 +425,17 @@ struct ContentView: View {
                 DispatchQueue.main.async {
                     withAnimation(.easeInOut(duration: 0.3)) { progress = 1.0 }
                     if process.terminationStatus == 0 {
+                        let parsedLog = ConversionLog.load(from: charOutputPath)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            conversionLog = parsedLog
                             conversionState = .success(
                                 character: charName,
                                 outputPath: charOutputPath,
                                 log: log
                             )
+                            if let parsed = parsedLog, !parsed.isEmpty {
+                                showLogSheet = true
+                            }
                         }
                     } else {
                         conversionState = .failure(
@@ -407,6 +450,116 @@ struct ContentView: View {
                     conversionState = .failure(message: error.localizedDescription, log: "")
                 }
             }
+        }
+    }
+}
+
+// MARK: - Conversion Log Sheet
+
+// Auto-presented after a successful conversion when the log has any entries.
+// "Unknown" calls are real gaps — names with no entry in any commands.jsonc
+// section. "SSF2-only" calls are intentionally surfaced as `// [SSF2-only:…]`
+// comments in the generated Haxe and need a manual port (no FM equivalent).
+struct ConversionLogSheet: View {
+    let log: ConversionLog?
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Unhandled Calls")
+                        .font(.system(size: 16, weight: .semibold))
+                    if let log {
+                        Text(log.character)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button("Done", action: onDismiss)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            if let log, !log.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        if !log.unknown.isEmpty {
+                            section(
+                                title: "Unknown calls",
+                                subtitle: "No mapping in commands.jsonc — likely needs a replacement, passthrough, or ssf2_only entry.",
+                                entries: log.unknown,
+                                color: .orange
+                            )
+                        }
+                        if !log.ssf2_only.isEmpty {
+                            section(
+                                title: "SSF2-only calls",
+                                subtitle: "No Fraymakers equivalent — commented out in the generated Haxe. Manual port required.",
+                                entries: log.ssf2_only,
+                                color: .blue
+                            )
+                        }
+                    }
+                    .padding(16)
+                }
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.green)
+                    Text("All calls handled")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(32)
+            }
+        }
+        .frame(width: 520, height: 460)
+    }
+
+    @ViewBuilder
+    func section(title: String, subtitle: String, entries: [ConversionLog.Entry], color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Circle().fill(color).frame(width: 8, height: 8)
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                Text("\(entries.count)")
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(color.opacity(0.15))
+                    .clipShape(Capsule())
+            }
+            Text(subtitle)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+
+            VStack(spacing: 0) {
+                ForEach(entries) { entry in
+                    HStack {
+                        Text(entry.name)
+                            .font(.system(size: 12, design: .monospaced))
+                        Spacer()
+                        Text("\(entry.count)")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    if entry.id != entries.last?.id {
+                        Divider()
+                    }
+                }
+            }
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.2)))
         }
     }
 }
