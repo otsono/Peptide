@@ -152,6 +152,10 @@ pub struct ExtractedCharacter {
     /// Names of instance Slot/Const traits on the Ext class (the SSF2
     /// `public var foo:T;` declarations).
     pub ext_vars: Vec<String>,
+    /// Initial values for the ext_vars, pulled out of the Ext class
+    /// constructor (iinit). `(name, rhs_expression)`; one per var that the
+    /// constructor actually assigns.
+    pub ext_var_inits: Vec<(String, String)>,
     /// frame method name → SSF2 animation name (from self.xframe = "...")
     pub xframe_map: XframeMap,
     /// Costumes from SSF2API::getCostumeData — name → list of ARGB color values
@@ -675,6 +679,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
 
     // --- Process MarioExt methods specifically ---
     let mut ext_vars: Vec<String> = Vec::new();
+    let mut ext_var_inits: Vec<(String, String)> = Vec::new();
     if let Some(ext) = char_class {
         // Collect Slot (kind=0) / Const (kind=6) instance traits — the SSF2
         // class's `public var foo:T;` declarations. We carry these over to
@@ -683,6 +688,34 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
         for t in &ext.instance_methods {
             if (t.kind == 0 || t.kind == 6) && !t.name.is_empty() {
                 ext_vars.push(t.name.clone());
+            }
+        }
+        // Decompile the constructor (iinit) and pull out `self.<var> = expr;`
+        // assignments for each ext_var. This recovers the initial values the
+        // AS3 source wrote as `public var foo:T = expr;` (the compiler puts
+        // them at the top of iinit) so the generator can emit them inside
+        // initialize().
+        if !ext_vars.is_empty() {
+            if let Some(iinit_body) = body_by_method.get(&ext.constructor_idx) {
+                let params: Vec<String> = if let Some(m) = abc.methods.get(iinit_body.method_idx as usize) {
+                    (0..m.param_count).map(|i| format!("arg{}", i)).collect()
+                } else { vec![] };
+                let raw = decompiler::decompile_method(iinit_body, abc, "iinit", &params);
+                let translated = crate::api_mappings::translate_ssf2_to_fm(&raw);
+                let mut seen: std::collections::BTreeSet<String> = Default::default();
+                for line in translated.lines() {
+                    let trimmed = line.trim();
+                    for v in &ext_vars {
+                        let prefix = format!("self.{} = ", v);
+                        if let Some(rest) = trimmed.strip_prefix(&prefix) {
+                            if seen.insert(v.clone()) {
+                                let rhs = rest.trim_end_matches(';').trim().to_string();
+                                ext_var_inits.push((v.clone(), rhs));
+                            }
+                            break;
+                        }
+                    }
+                }
             }
         }
         for t in &ext.instance_methods {
@@ -1096,6 +1129,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
         frame_scripts,
         ext_methods,
         ext_vars,
+        ext_var_inits,
         xframe_map,
         costumes,
     })

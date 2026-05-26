@@ -841,9 +841,22 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
 
     out.push_str("// start general functions ---\n\n");
 
+    // initialize — extend the template's setup with iinit-derived
+    // `self.<var> = <expr>;` assignments for each ext_var, but SKIP any name
+    // the merged-in SSF2 initialize body already assigns (per user: "if
+    // something is already set in initialize then skip that").
+    let init_body_text = template_bodies.get("initialize").map(|s| s.as_str()).unwrap_or("");
+    let mut init_setup = String::from(
+        "\tself.addEventListener(GameObjectEvent.LINK_FRAMES, handleLinkFrames, {persistent:true});\n"
+    );
+    for (name, expr) in &data.ext_var_inits {
+        let needle = format!("self.{} = ", name);
+        if !init_body_text.contains(&needle) {
+            init_setup.push_str(&format!("\tself.{} = {};\n", name, expr));
+        }
+    }
     emit_tpl(&mut out, "//Runs on object init\n", "function initialize(){\n",
-        "\tself.addEventListener(GameObjectEvent.LINK_FRAMES, handleLinkFrames, {persistent:true});\n",
-        "initialize");
+        &init_setup, "initialize");
     emit_tpl(&mut out, "", "function update(){\n", "", "update");
     emit_tpl(&mut out,
         "// Runs when reading inputs (before determining character state, update, framescript, etc.)\n",

@@ -303,12 +303,22 @@ pub fn generate_entity(
                             if global_frame >= frame_offset {
                                 let local_frame = global_frame - frame_offset;
                                 if local_frame < frame_count {
-                                    // 30fps → 60fps: double the frame-count
-                                    // parameters flagged `isframe` in
-                                    // commands.json (timers, hit durations,
-                                    // stancePlayFrame, refreshRate, ...).
+                                    // Frame-script bodies run through the same
+                                    // SSF2 → Fraymakers conversion as Script.hx:
+                                    // (1) double frame-count args flagged in
+                                    //     commands.jsonc `frame_params` —
+                                    //     SSF2 names like `hitStun:` are still
+                                    //     matchable here, so this must run
+                                    //     BEFORE the translation;
+                                    // (2) `translate_ssf2_to_fm` applies the
+                                    //     commands.jsonc literal replacements
+                                    //     (API renames, self.self fixups,
+                                    //     hitbox field renames, …) so frame
+                                    //     scripts speak the same FM dialect as
+                                    //     Script.hx.
                                     let body = extract_function_body(&script.code);
                                     let body = crate::api_mappings::double_frame_counts(&body);
+                                    let body = crate::api_mappings::translate_ssf2_to_fm(&body);
                                     frame_code.insert(local_frame, body);
                                 }
                             }

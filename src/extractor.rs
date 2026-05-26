@@ -17,6 +17,11 @@ pub struct CharacterData {
     /// Carried over into Script.hx as top-level `var name;` declarations.
     #[serde(default)]
     pub ext_vars: Vec<String>,
+    /// Initial values pulled out of the Ext-class constructor (iinit) for the
+    /// `ext_vars`. `(name, rhs)`. Emitted at the top of initialize() unless
+    /// the same name is already assigned in the merged-in SSF2 initialize body.
+    #[serde(default)]
+    pub ext_var_inits: Vec<(String, String)>,
     /// SSF2 animation name → Fraymakers animation name
     /// Built from xframe_map + SSF2→Fraymakers name table
     pub ssf2_to_fm_anim: BTreeMap<String, String>,
@@ -94,6 +99,7 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
     let mut animations: BTreeMap<String, AnimationInfo> = BTreeMap::new();
     let mut scripts: Vec<ScriptInfo> = Vec::new();
     let mut ext_vars: Vec<String> = Vec::new();
+    let mut ext_var_inits: Vec<(String, String)> = Vec::new();
     let mut xframe_map: XframeMap = BTreeMap::new();
 
     // Parse each ABC block (usually just one)
@@ -127,6 +133,11 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
                 // Ext-class instance variable declarations → Script.hx top.
                 for v in &extracted.ext_vars {
                     if !ext_vars.contains(v) { ext_vars.push(v.clone()); }
+                }
+                for (n, rhs) in &extracted.ext_var_inits {
+                    if !ext_var_inits.iter().any(|(en, _)| en == n) {
+                        ext_var_inits.push((n.clone(), rhs.clone()));
+                    }
                 }
 
                 // Frame scripts → will go to .entity file (not Script.hx)
@@ -223,6 +234,7 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
 
     Ok(CharacterData {
         ext_vars,
+        ext_var_inits,
         name: char_name.to_string(),
         attacks,
         stats: char_stats,
