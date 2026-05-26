@@ -722,95 +722,116 @@ pub fn fix_intangibility_pairs(full_script: &str) -> String {
 }
 
 /// Comment out entire statements containing SSF2-only method calls that have
-/// no Fraymakers equivalent. Leaves a note so modders know what was there.
+/// no Fraymakers equivalent. The list of names comes from
+/// `commands.jsonc :: ssf2_only` (see crate::mappings).
 ///
-/// Only whole statements (lines ending with `;`) are commented. Lines that are
-/// part of conditionals or assignments that contain an unknown call are prefixed
-/// with `// [SSF2-only] ` so they don't compile but remain readable.
+/// Each matched line is replaced with `// [SSF2-only: NAME] <original>` so it
+/// won't compile but stays readable. Lines that already start with `//` are
+/// left alone (idempotent).
+///
+/// Side-effect: when log level is at least `debug`, any `.NAME(` call whose
+/// name doesn't appear in ANY section of commands.jsonc (replacements,
+/// passthrough_fm_apis, ssf2_only, or frame_params) is logged once globally.
+/// This is what makes `passthrough_fm_apis` functional — listing a name
+/// there suppresses it from this "unknown call" stream. Run with
+/// `RUST_LOG=debug` to surface new SSF2 calls that need attention.
 pub fn comment_out_unknown_calls(code: &str) -> String {
-    // Methods that exist in SSF2 but not in the Fraymakers API.
-    // Calls to these must be commented out to avoid compile errors.
-    const COMMENT_METHODS: &[&str] = &[
-        // Effects / visuals
-        ".attachEffect(",
-        ".clearEffectsOnStateChange(",
-        ".addEffectToList(",   // already partially handled above, catch remainder
-        // Projectiles (need CustomGameObject — manual port)
-        ".fireProjectile(",
-        ".getCurrentProjectile(",
-        // Grab helpers (different grab model in FM)
-        ".getGrabbedOpponent(",
-        ".releaseOpponent(",
-        ".swapDepthsWithGrabbedOpponent(",
-        // State transitions (not yet translated — passed as event listeners)
-        ".gotoAndStop(",        // timeline nav; no FM equivalent
-        ".jumpToContinue(",     // SSF2 jump-to-continue loop; no FM equivalent
-        // NOTE: .toLand( / .toHeavyLand( / .toHelpless( are translated above
-        // to self.toState(CState.X). Only comment if they survived untranslated
-        // (e.g. when used as event-listener references like addEventListener(..., self.toLand))
-        // Ground/platform
-        ".unnattachFromGround(",  // FM uses unattachFromFloor() — close but not identical
-        // Attack helpers
-        ".killAttackboxes(",    // no FM equivalent
-        ".checkAtkilled(",      // no FM equivalent
-        // NOTE: .updateAttackStats( is FM-legit — kept as-is; field renames inside
-        // its parameter object run via the commands.jsonc replacements.
-        // NOTE: .setLandingLag( → updateAnimationStats({autoCancel}), translated above
-        // NOTE: .setIntangibility( → applyGlobalBodyStatus, handled in fix_intangibility_pairs
-        // NOTE: .resetJumps( → .preLand(), translated above
-        // NOTE: .resetMovement( → setXVelocity(0)/setYVelocity(0), translated above
-        // NOTE: .safeMove( → .move(, translated above
-        // NOTE: .isOnGround( → .isOnFloor(), translated above
-        // NOTE: .checkGround( → .attachToFloor(), translated above
-        // Item / misc
-        ".pickupItem(",
-        ".tossItem(",
-        ".getItem(",
-        ".getMC(",
-        ".getExecTime(",
-        ".getNearestLedge(",
-        ".getCPULevel(",
-        ".isCPU(",
-        ".getMetalStatus(",
-        ".isForcedCrash(",
-        ".inUpperLeftWarningBounds(",
-        // NOTE: .stancePlayFrame( renames to .playLabel( via the commands.jsonc
-        // replacements — string-label form is FM-legit, so no comment-out.
-        // Sound (FM uses content IDs not SWF asset IDs — manual port)
-        ".playAttackSound(",
-        ".playSound(",
-        // Timeline navigation (no timeline in FM)
-        ".stop(",
-    ];
+    let cfg = crate::mappings::api_commands();
+    // Build the `.NAME(` match strings from the JSON ssf2_only list.
+    let markers: Vec<(String, &str)> = cfg.ssf2_only.iter()
+        .map(|e| (format!(".{}(", e.name), e.name.as_str()))
+        .collect();
 
     let lines: Vec<&str> = code.lines().collect();
     let mut out = Vec::with_capacity(lines.len());
-
     for line in &lines {
         let trimmed = line.trim();
-        // Skip lines already commented out
-        if trimmed.starts_with("//") {
-            out.push(line.to_string());
-            continue;
-        }
-        // Check if this line contains an unknown call
-        let has_unknown = COMMENT_METHODS.iter().any(|m| line.contains(m));
-        if has_unknown {
-            // Determine a useful tag based on which method it is
-            let tag = COMMENT_METHODS.iter()
-                .find(|m| line.contains(*m))
-                .map(|m| m.trim_matches('.').trim_matches('('))
-                .unwrap_or("SSF2-only");
+        if trimmed.starts_with("//") { out.push(line.to_string()); continue; }
+        let hit = markers.iter().find(|(m, _)| line.contains(m));
+        if let Some((_, name)) = hit {
             let indent = &line[..line.len() - line.trim_start().len()];
-            out.push(format!("{}// [SSF2-only: {}] {}", indent, tag, trimmed));
+            out.push(format!("{}// [SSF2-only: {}] {}", indent, name, trimmed));
         } else {
             out.push(line.to_string());
         }
     }
-
     let mut joined = out.join("\n");
     if code.ends_with('\n') { joined.push('\n'); }
+
+    if log::log_enabled!(log::Level::Debug) {
+        log_unknown_calls(&joined, cfg);
+    }
     joined
+}
+
+/// Static "already logged" set — each unknown call name is reported once
+/// per converter run, no matter how many bodies contain it.
+fn unknown_log_seen() -> &'static std::sync::Mutex<std::collections::BTreeSet<String>> {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<String>>>
+        = std::sync::OnceLock::new();
+    SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeSet::new()))
+}
+
+/// Walk `code` for `.NAME(` call sites and log any name that isn't covered
+/// by any of the four commands.jsonc sections. Locally-defined helper names
+/// will appear here too — the log is a hint, not a strict gap report.
+fn log_unknown_calls(code: &str, cfg: &crate::mappings::ApiCommands) {
+    // Build the union of all known names across every section.
+    let mut known: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let extract = |s: &str, out: &mut std::collections::BTreeSet<String>| {
+        let bytes = s.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            // start of identifier?
+            if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+                let start = i;
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                { i += 1; }
+                if i < bytes.len() && bytes[i] == b'(' {
+                    out.insert(String::from_utf8_lossy(&bytes[start..i]).into_owned());
+                }
+            } else {
+                i += 1;
+            }
+        }
+    };
+    for r in &cfg.replacements {
+        extract(&r.from, &mut known);
+        extract(&r.to,   &mut known);
+    }
+    for p in &cfg.passthrough_fm_apis { known.insert(p.name.clone()); }
+    for o in &cfg.ssf2_only           { known.insert(o.name.clone()); }
+    for f in &cfg.frame_params        { known.insert(f.name.clone()); }
+
+    let bytes = code.as_bytes();
+    let mut i = 0usize;
+    let mut seen = unknown_log_seen().lock().unwrap();
+    while i < bytes.len() {
+        if bytes[i] == b'.'
+            && i + 1 < bytes.len()
+            && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_')
+        {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len()
+                && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_')
+            { j += 1; }
+            if j < bytes.len() && bytes[j] == b'(' {
+                let name = String::from_utf8_lossy(&bytes[start..j]).into_owned();
+                if !known.contains(&name) && seen.insert(name.clone()) {
+                    log::debug!(
+                        "[api_mappings] unknown call '{}' — add to replacements / \
+                         passthrough_fm_apis / ssf2_only in commands.jsonc as appropriate",
+                        name
+                    );
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
 }
 
 /// Load SSF2→FM method mappings from the JSON file at `mappings/api_methods.json`

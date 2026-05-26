@@ -169,15 +169,35 @@ pub struct FrameParam {
     pub sentinel: Option<i64>,
 }
 
-/// Universal SSF2 -> Fraymakers API command conversions: an ordered list of
-/// literal string replacements applied to decompiled Haxe (order matters),
-/// plus the per-parameter frame-count flags.
+/// A named API call carried by a passthrough or ssf2_only entry, with an
+/// optional human-readable note. The note isn't consumed by the converter.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NamedApi {
+    pub name: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// Universal SSF2 -> Fraymakers API command conversions.
+///
+/// Every section here is consumed by the converter — there are no
+/// documentation-only sections.
+///   - `replacements`        — ordered literal find→replace pairs (order matters)
+///   - `frame_params`        — per-parameter frame-count flags for 30→60fps
+///   - `passthrough_fm_apis` — calls that ARE valid Fraymakers API; left
+///                              untouched and treated as known calls
+///   - `ssf2_only`           — calls with no Fraymakers equivalent; replaced
+///                              by `// [SSF2-only: NAME] …` markers
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApiCommands {
     #[serde(default)]
     pub replacements: Vec<Replacement>,
     #[serde(default)]
     pub frame_params: Vec<FrameParam>,
+    #[serde(default)]
+    pub passthrough_fm_apis: Vec<NamedApi>,
+    #[serde(default)]
+    pub ssf2_only: Vec<NamedApi>,
 }
 
 // ─── Loading ────────────────────────────────────────────────────────────────
