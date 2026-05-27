@@ -317,7 +317,11 @@ pub fn generate_entity(
                                     //     scripts speak the same FM dialect as
                                     //     Script.hx.
                                     let body = extract_function_body(&script.code);
-                                    let body = crate::api_mappings::double_frame_counts(&body);
+                                    // `double_frame_counts` is now the first
+                                    // step inside translate_ssf2_to_fm so
+                                    // Script.hx + ext-methods + entity frame
+                                    // scripts all get the same 30→60fps
+                                    // treatment from a single source of truth.
                                     let body = crate::api_mappings::translate_ssf2_to_fm(&body);
                                     let var_types = crate::api_mappings::infer_ext_var_types(
                                         &data.ext_vars, &data.ext_var_inits);

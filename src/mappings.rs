@@ -192,6 +192,21 @@ pub struct NamedApi {
     pub note: String,
 }
 
+/// Per-source-method routing table for SSF2 "umbrella" calls that need
+/// to be split into multiple FM calls. Map key (in `ApiCommands`) is the
+/// SSF2 method name (e.g. `"updateAttackStats"`); each entry below is the
+/// mapping that drives the split.
+///
+/// `fields` maps SSF2 field name → `"<target_method>.<fm_field_name>"`.
+/// Fields with the same target method get GROUPED into one combined call;
+/// fields with no entry become `// TODO:` comments. The split is per-call;
+/// the same source line can fan out to multiple FM calls but never adds
+/// arguments the SSF2 source didn't supply.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallSplit {
+    pub fields: std::collections::BTreeMap<String, String>,
+}
+
 /// Universal SSF2 -> Fraymakers API command conversions.
 ///
 /// Every section here is consumed by the converter — there are no
@@ -199,6 +214,9 @@ pub struct NamedApi {
 ///   - `replacements`        — ordered literal find→replace pairs (order matters)
 ///   - `regex_replacements`  — regex-based renames, applied AFTER the literal
 ///                              pass; used for arg-dropping / arg-aware cases
+///   - `call_splits`         — SSF2 umbrella calls (e.g. updateAttackStats)
+///                              that need their object-literal args split
+///                              and routed to multiple FM target methods
 ///   - `frame_params`        — per-parameter frame-count flags for 30→60fps
 ///   - `passthrough_fm_apis` — calls that ARE valid Fraymakers API; left
 ///                              untouched and treated as known calls
@@ -210,6 +228,8 @@ pub struct ApiCommands {
     pub replacements: Vec<Replacement>,
     #[serde(default)]
     pub regex_replacements: Vec<RegexReplacement>,
+    #[serde(default)]
+    pub call_splits: std::collections::BTreeMap<String, CallSplit>,
     #[serde(default)]
     pub frame_params: Vec<FrameParam>,
     #[serde(default)]

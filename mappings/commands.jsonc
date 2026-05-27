@@ -170,6 +170,29 @@
     }
   ],
 
+  // call_splits: SSF2 "umbrella" calls whose object-literal argument
+  // needs to be split into multiple FM calls. Each entry maps an SSF2
+  // field name to "<fm_target_method>.<fm_field_name>". Fields sharing
+  // a target method get GROUPED into one combined call (one
+  // updateAnimationStats call with all matched fields, etc.). Source
+  // fields not listed below pass through as `// TODO: …` comments —
+  // they're surfaced for manual review without dropping data.
+  "call_splits": {
+    "updateAttackStats": {
+      "fields": {
+        // SSF2 attack-state flags → FM AnimationStats. updateAttackStats
+        // takes no hitbox id; everything routed here ends up in a single
+        // updateAnimationStats({ … }) call per source line.
+        "cancelWhenAirborne": "updateAnimationStats.leaveGroundCancel",
+        "allowControl":       "updateAnimationStats.interruptible"
+        // Other observed SSF2 fields (air_ease, allowJump, atk_id,
+        // refreshRate, etc.) have no AnimationStats equivalent and no
+        // hitbox id on this method, so they cannot be auto-routed.
+        // They surface as TODO comments per call site.
+      }
+    }
+  },
+
   // frame_params: command parameters that carry a frame count, doubled for
   // the 30fps → 60fps timing change. 'kind: "call"' targets one positional
   // argument (by 'name' + 0-based 'arg' index); 'kind: "field"' targets a
@@ -202,7 +225,8 @@
     { "name": "setIntangibility", "note": "kept SSF2 name; pairs are rewritten to applyGlobalBodyStatus by fix_intangibility_pairs in haxe_gen" },
     { "name": "getCamera", "note": "Fraymakers Camera accessor" },
     { "name": "shake", "note": "Camera.shake — same name in Fraymakers" },
-    { "name": "updateAttackStats", "note": "Fraymakers attack-stat updater; same name. Parameter field renames apply via the replacements table." },
+    // updateAttackStats is NOT a valid FM API — moved to `call_splits`
+    // below. Each SSF2 field is routed to the proper FM target method.
     { "name": "getOwner", "note": "Projectile API" },
     { "name": "getCostumeIndex", "note": "Projectile/character API" },
     { "name": "setCostumeIndex", "note": "Projectile/character API" },
@@ -307,6 +331,12 @@
     { "name": "stopSound",                       "note": "FM AudioClip.stop() needs the AudioClip handle returned by AudioClip.play() — manual port required" },
     { "name": "stopSFX",                         "note": "same as stopSound — needs an AudioClip handle from the matching play() call" },
     { "name": "stopHoldSound",                   "note": "same as stopSound — needs an AudioClip handle from the matching play() call" },
+
+    // updateAttackStats is normally fanned out by `call_splits` above
+    // (object-literal arg form). Variable-arg form `updateAttackStats(var)`
+    // can't be split — this catches that residue and surfaces it as a
+    // `[SSF2-only]` marker so the user notices and rewrites manually.
+    { "name": "updateAttackStats",               "note": "split into FM updateAnimationStats / updateHitboxStats via call_splits when called with object literal; variable-arg form needs manual rewrite" },
 
     // Event-listener cleanup — SSF2 stopListening removes a listener; FM
     // uses removeEventListener but the signature differs (FM needs the same

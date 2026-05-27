@@ -510,43 +510,53 @@ fn strip_one_tab(line: &str) -> &str {
 
 /// Apply text-level SSF2→FM API translations to decompiled Haxe code.
 /// This is a post-processing step run on the output of the decompiler.
+///
+/// Pipeline order:
+///   1. `remove_readiness_guards`      — strip `SSF2API.isReady()` guards
+///   2. `double_frame_counts`           — 30→60 fps scaling on frame-typed
+///                                        fields BEFORE any rename or split,
+///                                        so SSF2 field names still match
+///   3. `apply_call_splits`             — fan out SSF2 umbrella calls
+///                                        (e.g. updateAttackStats) to their
+///                                        FM target methods using
+///                                        `call_splits` from commands.jsonc
+///   4. literal `replacements`          — text find→replace pairs (ordered;
+///                                        SSF2 field names like `hitStun:`
+///                                        get renamed to FM `hitstop:` here)
+///   5. `regex_replacements`            — regex-based renames
+///   6. `strip_last_frame_end_animation` — drop redundant terminal calls
+///   7. `comment_out_unknown_calls`     — `ssf2_only` markers + log unknowns
 pub fn translate_ssf2_to_fm(code: &str) -> String {
-    // First: strip SSF2API.isReady() guard blocks entirely (they're always-true in FM)
     let mut result = remove_readiness_guards(code);
 
-    // ── Literal SSF2 → Fraymakers API command translations ──
-    // Loaded, in order, from mappings/commands.json (see crate::mappings).
-    // These are universal API conversions — not character-specific — so the
-    // file lives at the top of mappings/ rather than under mappings/character/.
-    // Order matters (e.g. "self.self." must run before the bare "self.self").
+    // 30→60fps frame doubling on SSF2-named frame fields (hitStun, hitLag,
+    // refreshRate, etc.). Runs BEFORE call_splits and the rename pass so
+    // SSF2 field names still match `frame_params` entries. Previously this
+    // ran only in entity_gen; moved here so Script.hx + ext-methods get it
+    // too (otherwise frame fields inside updateHitboxStats calls in
+    // Script.hx kept SSF2 30fps values).
+    result = double_frame_counts(&result);
+
+    // Fan out SSF2 umbrella calls into one or more FM calls per the
+    // `call_splits` table. Runs BEFORE the rename pass so the rename
+    // pass can finish field-name conversions on the emitted FM calls.
+    result = apply_call_splits(&result);
+
+    // Literal SSF2 → Fraymakers find/replace pairs. Order matters.
     for r in &crate::mappings::api_commands().replacements {
         result = result.replace(&r.from, &r.to);
     }
 
-    // ── Regex replacements ──
-    // For cases the literal table can't express: arg-dropping, arg-aware
-    // dispatch, etc. Compiled lazily and cached at process scope; bad
-    // patterns warn once and are skipped (don't break the conversion).
+    // Regex replacements — arg-dropping, arg-aware dispatch, etc.
     for re in regex_replacement_cache() {
-        // .replace_all returns Cow — only allocate when there's a match.
         let next = re.regex.replace_all(&result, re.replacement.as_str());
         if matches!(&next, std::borrow::Cow::Owned(_)) {
             result = next.into_owned();
         }
     }
 
-    // ── endAnimation on last frame: strip it ──
-    // FM animations naturally end when the last frame plays. endAnimation() on the final
-    // frame of a sub-MC is redundant and causes a double-end. Strip it.
     result = strip_last_frame_end_animation(&result);
-
-    // ── Comment out SSF2 calls with no FM equivalent ──
-    // These would cause compile errors in Fraymakers. They're left as commented stubs
-    // so modders know what logic existed and can implement alternatives.
-    // NOTE: setIntangibility is NOT in this list — it's handled by the full-script
-    // fix_intangibility_pairs() pass in haxe_gen after all scripts are assembled.
     result = comment_out_unknown_calls(&result);
-
     result
 }
 
@@ -747,6 +757,280 @@ pub fn fix_intangibility_pairs(full_script: &str) -> String {
 /// This is what makes `passthrough_fm_apis` functional — listing a name
 /// there suppresses it from this "unknown call" stream. Run with
 /// `RUST_LOG=debug` to surface new SSF2 calls that need attention.
+/// Split SSF2 umbrella calls (currently `updateAttackStats`) into one or
+/// more grouped FM calls per the `call_splits` table in commands.jsonc.
+///
+/// Source pattern: `<receiver>.<method>({ k1: v1, k2: v2, … })`. The
+/// receiver may be any chain (`self`, `match.getCamera()`,
+/// `self.lightningBolts[…]`) — it's preserved verbatim on every emitted
+/// call. Calls whose argument isn't an object literal are left alone.
+///
+/// Per-field semantics (drawn from CallSplit.fields):
+///   - mapping `"updateAnimationStats.leaveGroundCancel"`  →
+///     groups under target `updateAnimationStats` with FM field
+///     `leaveGroundCancel: <value>`
+///   - source fields absent from the mapping become a `// TODO: …` line
+///   - all fields sharing a target method merge into ONE call with
+///     `, `-joined pairs, no trailing comma
+///   - source line indentation propagates to every emitted line
+pub fn apply_call_splits(code: &str) -> String {
+    let cfg = crate::mappings::api_commands();
+    if cfg.call_splits.is_empty() { return code.to_string(); }
+    let mut current = code.to_string();
+    for (source_method, split) in &cfg.call_splits {
+        current = apply_one_call_split(&current, source_method, split);
+    }
+    current
+}
+
+fn apply_one_call_split(code: &str, method: &str, split: &crate::mappings::CallSplit) -> String {
+    let needle = format!(".{}(", method);
+    let bytes = code.as_bytes();
+    let mut result = String::with_capacity(code.len());
+    let mut cursor = 0usize;
+
+    while cursor < bytes.len() {
+        let Some(rel) = code[cursor..].find(&needle) else {
+            result.push_str(&code[cursor..]);
+            break;
+        };
+        let dot_pos = cursor + rel;
+        // Don't replace inside a single-line comment — if the line up to
+        // dot_pos contains a `//` (outside of a string), skip this match.
+        if line_is_commented_at(code, dot_pos) {
+            result.push_str(&code[cursor..=dot_pos]);
+            cursor = dot_pos + 1;
+            continue;
+        }
+        let paren_open = dot_pos + needle.len() - 1;
+        let receiver_start = find_receiver_start(code, dot_pos);
+        let receiver = &code[receiver_start..dot_pos];
+
+        let Some(paren_close) = find_matching_close(code, paren_open) else {
+            // Unclosed call — give up on this match, advance past `.`.
+            result.push_str(&code[cursor..=dot_pos]);
+            cursor = dot_pos + 1;
+            continue;
+        };
+
+        let args = code[paren_open + 1..paren_close].trim();
+        if !args.starts_with('{') || !args.ends_with('}') {
+            // Not an object-literal argument — leave the call alone.
+            result.push_str(&code[cursor..=paren_close]);
+            cursor = paren_close + 1;
+            continue;
+        }
+        let body = &args[1..args.len() - 1];
+        let fields = parse_object_fields(body);
+
+        let line_start = code[..receiver_start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let indent: String = code[line_start..receiver_start].chars()
+            .take_while(|c| c.is_whitespace() && *c != '\n').collect();
+
+        // Consume trailing `;` and any spaces between `)` and `;`.
+        let mut full_end = paren_close + 1;
+        while full_end < bytes.len() && bytes[full_end] == b' ' { full_end += 1; }
+        if full_end < bytes.len() && bytes[full_end] == b';' { full_end += 1; }
+
+        let rendered = render_call_split(receiver, &fields, split, &indent);
+        result.push_str(&code[cursor..receiver_start]);
+        result.push_str(&rendered);
+        cursor = full_end;
+    }
+    result
+}
+
+fn render_call_split(
+    receiver: &str,
+    source_fields: &[(String, String)],
+    split: &crate::mappings::CallSplit,
+    indent: &str,
+) -> String {
+    use std::collections::BTreeMap;
+    // Group routed fields by target method; preserve insertion order via Vec.
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut unmapped: Vec<(String, String)> = Vec::new();
+
+    for (field_name, value) in source_fields {
+        match split.fields.get(field_name) {
+            Some(target_str) => {
+                if let Some(dot) = target_str.rfind('.') {
+                    let target_method = target_str[..dot].to_string();
+                    let fm_field = target_str[dot + 1..].to_string();
+                    if !groups.contains_key(&target_method) {
+                        order.push(target_method.clone());
+                    }
+                    groups.entry(target_method).or_default()
+                        .push((fm_field, value.clone()));
+                } else {
+                    unmapped.push((field_name.clone(), value.clone()));
+                }
+            }
+            None => unmapped.push((field_name.clone(), value.clone())),
+        }
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    for (f, v) in &unmapped {
+        lines.push(format!("// TODO: {}: {} — no FM mapping in call_splits", f, v));
+    }
+    for target_method in &order {
+        let pairs = groups.get(target_method).unwrap();
+        let joined: Vec<String> = pairs.iter().map(|(f, v)| format!("{}: {}", f, v)).collect();
+        lines.push(format!("{}.{}({{ {} }});", receiver, target_method, joined.join(", ")));
+    }
+
+    if lines.is_empty() {
+        // Empty source object — nothing to emit. Leave a single-line marker
+        // so the disappearance isn't silent.
+        return format!("// {}.<call_split source had empty object>;", receiver);
+    }
+    lines.join(&format!("\n{}", indent))
+}
+
+/// Parse the inside of an object literal (everything between `{` and `}`,
+/// exclusive) into `(field_name, value_expr)` pairs. Tracks brace/paren/
+/// bracket depth + string state so nested objects, function calls in
+/// values, and quoted commas don't break field splitting.
+fn parse_object_fields(body: &str) -> Vec<(String, String)> {
+    let chars: Vec<char> = body.chars().collect();
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        while i < chars.len() && (chars[i].is_whitespace() || chars[i] == ',') { i += 1; }
+        if i >= chars.len() { break; }
+        let name_start = i;
+        while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') { i += 1; }
+        let field_name: String = chars[name_start..i].iter().collect();
+        if field_name.is_empty() { break; }
+        while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+        if i >= chars.len() || chars[i] != ':' { break; }
+        i += 1;
+        while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+        let val_start = i;
+        let mut depth = 0i32;
+        let mut in_str: Option<char> = None;
+        while i < chars.len() {
+            let c = chars[i];
+            if let Some(q) = in_str {
+                if c == '\\' { i += 1; if i < chars.len() { i += 1; } continue; }
+                if c == q { in_str = None; }
+            } else {
+                match c {
+                    '"' | '\'' => in_str = Some(c),
+                    '{' | '[' | '(' => depth += 1,
+                    '}' | ']' | ')' => depth -= 1,
+                    ',' if depth == 0 => break,
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+        let value: String = chars[val_start..i].iter().collect::<String>().trim().to_string();
+        if !value.is_empty() {
+            out.push((field_name, value));
+        }
+    }
+    out
+}
+
+/// Walk backward from a `.<method>(` position to find the start of the
+/// receiver expression. Accepts identifier chars, `.`, balanced `[…]`
+/// and `(…)` (for method-chain / index expressions).
+fn find_receiver_start(code: &str, dot_pos: usize) -> usize {
+    let bytes = code.as_bytes();
+    let mut i = dot_pos;
+    loop {
+        if i == 0 { return 0; }
+        let prev = bytes[i - 1];
+        if prev.is_ascii_alphanumeric() || prev == b'_' || prev == b'.' {
+            i -= 1;
+        } else if prev == b']' {
+            match find_matching_open(code, i - 1, b'[', b']') {
+                Some(open) => i = open,
+                None => return i,
+            }
+        } else if prev == b')' {
+            match find_matching_open(code, i - 1, b'(', b')') {
+                Some(open) => i = open,
+                None => return i,
+            }
+        } else {
+            return i;
+        }
+    }
+}
+
+/// Walk forward from an opening bracket/paren/brace to find the matching
+/// close. Tracks string state so quoted delimiters don't disturb the count.
+fn find_matching_close(code: &str, open_pos: usize) -> Option<usize> {
+    let bytes = code.as_bytes();
+    let mut depth = 1i32;
+    let mut i = open_pos + 1;
+    let mut in_str: Option<u8> = None;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if let Some(q) = in_str {
+            if c == b'\\' { i += 2; continue; }
+            if c == q { in_str = None; }
+        } else {
+            match c {
+                b'"' | b'\'' => in_str = Some(c),
+                b'(' | b'{' | b'[' => depth += 1,
+                b')' | b'}' | b']' => {
+                    depth -= 1;
+                    if depth == 0 { return Some(i); }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn find_matching_open(code: &str, close_pos: usize, open: u8, close: u8) -> Option<usize> {
+    let bytes = code.as_bytes();
+    let mut depth = 1i32;
+    let mut i = close_pos;
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == close { depth += 1; }
+        else if bytes[i] == open {
+            depth -= 1;
+            if depth == 0 { return Some(i); }
+        }
+    }
+    None
+}
+
+/// True if `pos` sits after a `//` on the same line (i.e. inside a
+/// single-line comment). Used to skip call_splits matches that landed
+/// inside comments.
+fn line_is_commented_at(code: &str, pos: usize) -> bool {
+    let line_start = code[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_prefix = &code[line_start..pos];
+    let mut in_str: Option<char> = None;
+    let chars: Vec<char> = line_prefix.chars().collect();
+    let mut j = 0;
+    while j < chars.len() {
+        let c = chars[j];
+        if let Some(q) = in_str {
+            if c == '\\' { j += 1; if j < chars.len() { j += 1; } continue; }
+            if c == q { in_str = None; }
+        } else {
+            match c {
+                '"' | '\'' => in_str = Some(c),
+                '/' if j + 1 < chars.len() && chars[j + 1] == '/' => return true,
+                _ => {}
+            }
+        }
+        j += 1;
+    }
+    false
+}
+
 /// Inferred type for an SSF2 instance variable, picked from `ext_var_inits`.
 /// Drives which `self.make<Kind>(default)` wrapper is used when rewriting
 /// the var declaration, and whether `.inc()`/`.dec()` are emitted for
