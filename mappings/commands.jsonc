@@ -128,15 +128,40 @@
     { "from": ".removeAllEffects()", "to": "/* TODO: removeAllEffects */" },
     { "from": ".addEffectToList(", "to": "/* TODO: addEffectToList */ " },
 
-    // Hitbox property renames in object literals
-    { "from": "direction:", "to": "angle:" },
-    { "from": "power:", "to": "baseKnockback:" },
-    { "from": "kbGrowth:", "to": "knockbackGrowth:" },
-    { "from": "kbConstant:", "to": "knockbackGrowth:" },
-    { "from": "hitStun:", "to": "hitstop:" },
-    { "from": "selfHitStun:", "to": "selfHitstop:" },
-    { "from": "hitLag:", "to": "hitstun:" },
-    { "from": "selfHitLag:", "to": "selfHitstop:" },
+    // Hitbox property renames in object literals — universal SSF2 → FM
+    // field-name conversions. Applied to ANY object literal containing
+    // these keys (typically inside updateHitboxStats / updateAttackBoxStats
+    // / updateAttackStats calls). The canonical SSF2 ↔ FM pairs here
+    // MIRROR mappings/character/hitbox_stats.jsonc — that file uses the
+    // same names when generating HitboxStats.hx from extracted attacks;
+    // both files share one canonical naming, not duplicated logic.
+    //
+    // Knockback / hit-effect names
+    { "from": "direction:",            "to": "angle:" },
+    { "from": "power:",                "to": "baseKnockback:" },
+    { "from": "weightKB:",             "to": "baseKnockback:" },
+    { "from": "kbGrowth:",             "to": "knockbackGrowth:" },
+    { "from": "kbConstant:",           "to": "knockbackGrowth:" },
+    // Frame fields (doubled BEFORE this stage by double_frame_counts)
+    { "from": "hitStun:",              "to": "hitstop:" },
+    { "from": "selfHitStun:",          "to": "selfHitstop:" },
+    { "from": "hitLag:",               "to": "hitstun:" },
+    { "from": "selfHitLag:",           "to": "selfHitstop:" },
+    // High-frequency SSF2 hitbox-only names with direct FM equivalents.
+    // Cross-checked against Fraymakers/api-types-plugin updateHitboxStats
+    // props. Counts indicate corpus-wide occurrences (45 chars scanned).
+    { "from": "effectSound:",          "to": "hitSoundOverride:" },    // 225
+    { "from": "effect_id:",            "to": "hitEffectOverride:" },   // 125
+    { "from": "effect_ID:",            "to": "hitEffectOverride:" },   //   1
+    { "from": "reversableAngle:",      "to": "reversibleAngle:" },     //  46 (spelling fix)
+    { "from": "canDI:",                "to": "directionalInfluence:" },//  25
+    { "from": "atk_id:",               "to": "attackId:" },            //  17
+    { "from": "shieldStunMultiplier:", "to": "shieldstunMultiplier:" },//   2 (camelCase fix)
+    // SSF2 fields with no clear FM mapping (left alone — surface as
+    // compile errors so the modder fixes per-site): aura, burn, shock,
+    // paralysis, pitfall (would need FM `element` enum), camShake,
+    // chargedPriority, hasEffect, ignoreChargeDamage, meteorBounce,
+    // onlyAffectsGround, priority, sdiDistance, shieldDamage, stackKnockback.
   ],
 
   // regex_replacements: regex-based renames applied AFTER the literal
@@ -183,12 +208,36 @@
         // SSF2 attack-state flags → FM AnimationStats. updateAttackStats
         // takes no hitbox id; everything routed here ends up in a single
         // updateAnimationStats({ … }) call per source line.
+        // Cross-checked against Fraymakers/api-types-plugin
+        // AnimationStatsProps (lines 796-835 of fraymakers-api.d.ts).
+        //
+        // Boolean flags
         "cancelWhenAirborne": "updateAnimationStats.leaveGroundCancel",
-        "allowControl":       "updateAnimationStats.interruptible"
-        // Other observed SSF2 fields (air_ease, allowJump, atk_id,
-        // refreshRate, etc.) have no AnimationStats equivalent and no
-        // hitbox id on this method, so they cannot be auto-routed.
-        // They surface as TODO comments per call site.
+        "allowControl":       "updateAnimationStats.interruptible",
+        // Charge timing (chargetime_max is in frame_params → doubled
+        // before this stage; the rendered FM value is the 60fps count).
+        "chargetime_max":     "updateAnimationStats.chargeFramesMax",
+        // Per-anim physics overrides (FM AnimationStatsProps supports
+        // friction / *SpeedAcceleration / *SpeedCap as per-animation
+        // overrides). SSF2's xSpeedDecay is a NEGATIVE multiplier; FM
+        // friction is a POSITIVE decay value — name maps cleanly but
+        // the user may need to flip signs per site. Flagged inline.
+        "xSpeedAccel":        "updateAnimationStats.groundSpeedAcceleration",
+        "xSpeedAccelAir":     "updateAnimationStats.aerialSpeedAcceleration",
+        "xSpeedCap":          "updateAnimationStats.groundSpeedCap",
+        "xSpeedDecay":        "updateAnimationStats.friction",
+        "xSpeedDecayAir":     "updateAnimationStats.aerialFriction"
+        // Other observed SSF2 fields with no clean FM equivalent surface
+        // as `// TODO:` lines per call site: air_ease, allowJump,
+        // allowDoubleJump, allowFastFall, allowFullInterrupt, allowRun,
+        // allowTurn, airCancel, airCancelSpecial, atk_id, canFallOff,
+        // cancelSoundOnEnd, cancelVoiceOnEnd, disableJump,
+        // doubleJumpCancelAttack, facedLedgesOnly, heavyArmor, hit_ease,
+        // IASA, invincible, jumpCancelAttack, ledgeFrame, linkFrames,
+        // refreshRate, rocket, rotate, secondaryAttack, superArmor,
+        // allowControlGround. Several (superArmor/heavyArmor/invincible)
+        // would route to FM AnimationStats.bodyStatus but require a
+        // bool→enum conversion that can't be a flat text rename.
       }
     }
   },
