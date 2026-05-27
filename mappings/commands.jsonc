@@ -139,7 +139,11 @@
     // Knockback / hit-effect names
     { "from": "direction:",            "to": "angle:" },
     { "from": "power:",                "to": "baseKnockback:" },
-    { "from": "weightKB:",             "to": "baseKnockback:" },
+    // weightKB: was previously renamed to baseKnockback: but the user
+    // reports they're different SSF2 concepts. weightKB now passes
+    // through unchanged so the FM compiler surfaces it for manual
+    // handling per call site. hitbox_stats.jsonc also no longer pulls
+    // weightKB into baseKnockback's source-key list.
     { "from": "kbGrowth:",             "to": "knockbackGrowth:" },
     { "from": "kbConstant:",           "to": "knockbackGrowth:" },
     // Frame fields (doubled BEFORE this stage by double_frame_counts)
@@ -226,7 +230,23 @@
         "xSpeedAccelAir":     "updateAnimationStats.aerialSpeedAcceleration",
         "xSpeedCap":          "updateAnimationStats.groundSpeedCap",
         "xSpeedDecay":        "updateAnimationStats.friction",
-        "xSpeedDecayAir":     "updateAnimationStats.aerialFriction"
+        "xSpeedDecayAir":     "updateAnimationStats.aerialFriction",
+        // Object-form entries — value-conditional + skip rules.
+        //
+        // canFallOff: only `true` maps cleanly (player can drop through
+        // soft platforms during the attack → FM LandType.NORMAL). Other
+        // values surface as TODO. The inline `todo` note also fires on
+        // the success path because the FM landType has more nuance than
+        // SSF2's bool — the user should sanity-check each call site.
+        "canFallOff": {
+          "target": "updateAnimationStats.landType",
+          "value_map": { "true": "LandType.NORMAL" },
+          "todo": "verify per call site (SSF2 canFallOff is bool; FM landType is an enum with more options)"
+        },
+        // air_ease has no FM equivalent. The common SSF2 sentinel `-1`
+        // means "no override" — silently drop so it doesn't pollute the
+        // output. Other values surface as the default TODO comment.
+        "air_ease": { "skip_if_value": "-1" }
         // Other observed SSF2 fields with no clean FM equivalent surface
         // as `// TODO:` lines per call site: air_ease, allowJump,
         // allowDoubleJump, allowFastFall, allowFullInterrupt, allowRun,

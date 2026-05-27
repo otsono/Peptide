@@ -833,11 +833,44 @@ fn apply_one_call_split(code: &str, method: &str, split: &crate::mappings::CallS
         if full_end < bytes.len() && bytes[full_end] == b';' { full_end += 1; }
 
         let rendered = render_call_split(receiver, &fields, split, &indent);
+        // When the render is empty (every field was skipped) AND the only
+        // text between cursor and the call is leading whitespace on this
+        // line, also consume the trailing newline so the line vanishes
+        // cleanly instead of leaving a blank-with-indent.
+        if rendered.is_empty()
+            && code[..receiver_start].rfind('\n').map(|i| i + 1).unwrap_or(0) >= cursor
+            && code[cursor..receiver_start].chars().all(|c| c.is_whitespace() && c != '\n')
+        {
+            // Skip up to and including the next '\n' after the call.
+            let mut skip_end = full_end;
+            while skip_end < bytes.len() && bytes[skip_end] != b'\n' {
+                if !(bytes[skip_end] as char).is_whitespace() { break; }
+                skip_end += 1;
+            }
+            if skip_end < bytes.len() && bytes[skip_end] == b'\n' {
+                skip_end += 1;
+                cursor = skip_end;
+                continue;
+            }
+        }
         result.push_str(&code[cursor..receiver_start]);
         result.push_str(&rendered);
         cursor = full_end;
     }
     result
+}
+
+/// Per-field decision when resolving a CallSplit field against a source.
+enum FieldOutcome {
+    /// Route into the named target method's grouped call. `todo_note`,
+    /// if present, also emits an inline `// TODO:` comment for the user
+    /// to verify the value.
+    Route { target_method: String, fm_field: String, value: String, todo_note: Option<String> },
+    /// Emit only as a TODO comment line — no routed call.
+    Todo { src_name: String, src_value: String, note: Option<String> },
+    /// Drop the field entirely (no emission, no TODO) — used by
+    /// `skip_if_value` matches.
+    Skip,
 }
 
 fn render_call_split(
@@ -846,35 +879,74 @@ fn render_call_split(
     split: &crate::mappings::CallSplit,
     indent: &str,
 ) -> String {
+    use crate::mappings::CallSplitFieldMapping as M;
     use std::collections::BTreeMap;
-    // Group routed fields by target method; preserve insertion order via Vec.
-    let mut order: Vec<String> = Vec::new();
-    let mut groups: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-    let mut unmapped: Vec<(String, String)> = Vec::new();
 
+    let parse_target = |s: &str| -> Option<(String, String)> {
+        s.rfind('.').map(|d| (s[..d].to_string(), s[d + 1..].to_string()))
+    };
+
+    let mut outcomes: Vec<FieldOutcome> = Vec::with_capacity(source_fields.len());
     for (field_name, value) in source_fields {
-        match split.fields.get(field_name) {
-            Some(target_str) => {
-                if let Some(dot) = target_str.rfind('.') {
-                    let target_method = target_str[..dot].to_string();
-                    let fm_field = target_str[dot + 1..].to_string();
-                    if !groups.contains_key(&target_method) {
-                        order.push(target_method.clone());
+        let trimmed = value.trim();
+        let outcome = match split.fields.get(field_name) {
+            None => FieldOutcome::Todo {
+                src_name: field_name.clone(),
+                src_value: value.clone(),
+                note: None,
+            },
+            Some(M::Simple(s)) => match parse_target(s) {
+                Some((tm, ff)) => FieldOutcome::Route {
+                    target_method: tm, fm_field: ff, value: value.clone(), todo_note: None,
+                },
+                None => FieldOutcome::Todo {
+                    src_name: field_name.clone(),
+                    src_value: value.clone(),
+                    note: Some("malformed mapping in commands.jsonc".to_string()),
+                },
+            },
+            Some(M::Detailed { target, value_map, skip_if_value, todo }) => {
+                if let Some(sv) = skip_if_value {
+                    if trimmed == sv.trim() {
+                        FieldOutcome::Skip
+                    } else {
+                        resolve_detailed(field_name, value, trimmed, target, value_map, todo, &parse_target)
                     }
-                    groups.entry(target_method).or_default()
-                        .push((fm_field, value.clone()));
                 } else {
-                    unmapped.push((field_name.clone(), value.clone()));
+                    resolve_detailed(field_name, value, trimmed, target, value_map, todo, &parse_target)
                 }
             }
-            None => unmapped.push((field_name.clone(), value.clone())),
+        };
+        outcomes.push(outcome);
+    }
+
+    // Group Route outcomes by target method (preserve first-seen order),
+    // collect TODO lines (from both Todo outcomes and Route todo_notes).
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut todo_lines: Vec<String> = Vec::new();
+
+    for o in outcomes {
+        match o {
+            FieldOutcome::Route { target_method, fm_field, value, todo_note } => {
+                if !groups.contains_key(&target_method) {
+                    order.push(target_method.clone());
+                }
+                if let Some(n) = &todo_note {
+                    todo_lines.push(format!("// TODO: {}: {}", fm_field, n));
+                }
+                groups.entry(target_method).or_default().push((fm_field, value));
+            }
+            FieldOutcome::Todo { src_name, src_value, note } => {
+                let n = note.as_deref().unwrap_or("no FM mapping in call_splits");
+                todo_lines.push(format!("// TODO: {}: {} — {}", src_name, src_value, n));
+            }
+            FieldOutcome::Skip => {}
         }
     }
 
     let mut lines: Vec<String> = Vec::new();
-    for (f, v) in &unmapped {
-        lines.push(format!("// TODO: {}: {} — no FM mapping in call_splits", f, v));
-    }
+    lines.extend(todo_lines);
     for target_method in &order {
         let pairs = groups.get(target_method).unwrap();
         let joined: Vec<String> = pairs.iter().map(|(f, v)| format!("{}: {}", f, v)).collect();
@@ -882,11 +954,62 @@ fn render_call_split(
     }
 
     if lines.is_empty() {
-        // Empty source object — nothing to emit. Leave a single-line marker
-        // so the disappearance isn't silent.
-        return format!("// {}.<call_split source had empty object>;", receiver);
+        // Everything skipped (or source object was empty). Drop the
+        // source line entirely so the output has no stray no-op.
+        return String::new();
     }
     lines.join(&format!("\n{}", indent))
+}
+
+/// Resolve a Detailed field mapping when `skip_if_value` didn't apply.
+/// Handles the value_map lookup + target routing.
+fn resolve_detailed(
+    field_name: &str,
+    raw_value: &str,
+    trimmed_value: &str,
+    target: &Option<String>,
+    value_map: &std::collections::BTreeMap<String, String>,
+    todo: &Option<String>,
+    parse_target: &dyn Fn(&str) -> Option<(String, String)>,
+) -> FieldOutcome {
+    if !value_map.is_empty() {
+        match value_map.get(trimmed_value) {
+            Some(mapped_value) => match target.as_deref().and_then(|s| parse_target(s)) {
+                Some((tm, ff)) => FieldOutcome::Route {
+                    target_method: tm, fm_field: ff, value: mapped_value.clone(),
+                    todo_note: todo.clone(),
+                },
+                None => FieldOutcome::Todo {
+                    src_name: field_name.to_string(),
+                    src_value: raw_value.to_string(),
+                    note: todo.clone().or_else(|| Some("value_map matched but no target defined".to_string())),
+                },
+            },
+            None => FieldOutcome::Todo {
+                src_name: field_name.to_string(),
+                src_value: raw_value.to_string(),
+                note: todo.clone().or_else(|| Some("value not in value_map".to_string())),
+            },
+        }
+    } else if let Some(t) = target {
+        match parse_target(t) {
+            Some((tm, ff)) => FieldOutcome::Route {
+                target_method: tm, fm_field: ff, value: raw_value.to_string(),
+                todo_note: todo.clone(),
+            },
+            None => FieldOutcome::Todo {
+                src_name: field_name.to_string(),
+                src_value: raw_value.to_string(),
+                note: todo.clone().or_else(|| Some("malformed target".to_string())),
+            },
+        }
+    } else {
+        FieldOutcome::Todo {
+            src_name: field_name.to_string(),
+            src_value: raw_value.to_string(),
+            note: todo.clone(),
+        }
+    }
 }
 
 /// Parse the inside of an object literal (everything between `{` and `}`,

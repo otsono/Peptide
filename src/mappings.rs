@@ -197,14 +197,47 @@ pub struct NamedApi {
 /// SSF2 method name (e.g. `"updateAttackStats"`); each entry below is the
 /// mapping that drives the split.
 ///
-/// `fields` maps SSF2 field name → `"<target_method>.<fm_field_name>"`.
-/// Fields with the same target method get GROUPED into one combined call;
-/// fields with no entry become `// TODO:` comments. The split is per-call;
-/// the same source line can fan out to multiple FM calls but never adds
-/// arguments the SSF2 source didn't supply.
+/// `fields` maps SSF2 field name → either a simple route string
+/// (`"<target_method>.<fm_field_name>"`) or an object form with
+/// value-conditional logic — see `CallSplitFieldMapping`. Fields sharing
+/// a target method get GROUPED into one combined call; fields with no
+/// entry become `// TODO:` comments.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CallSplit {
-    pub fields: std::collections::BTreeMap<String, String>,
+    pub fields: std::collections::BTreeMap<String, CallSplitFieldMapping>,
+}
+
+/// Per-field routing entry. Most fields are simple `target.fm_field`
+/// renames — those use the `Simple` variant. The `Detailed` variant
+/// supports value-conditional rewriting (e.g. only emit when the value
+/// is `true`) and skip rules (drop the field entirely when the value
+/// matches a sentinel like `-1`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum CallSplitFieldMapping {
+    /// `"<target_method>.<fm_field_name>"` — source value passes through.
+    Simple(String),
+    /// Object form with optional value_map / skip_if_value / todo.
+    Detailed {
+        /// `"<target_method>.<fm_field_name>"` destination. Optional when
+        /// the entry exists solely to express a skip rule.
+        #[serde(default)]
+        target: Option<String>,
+        /// If non-empty: only emit when the source value (trimmed) is one
+        /// of these keys; the emitted value is the mapped string. Values
+        /// not in the map fall through to TODO.
+        #[serde(default)]
+        value_map: std::collections::BTreeMap<String, String>,
+        /// If the source value (trimmed) equals this, drop the field
+        /// silently — no emission, no TODO.
+        #[serde(default)]
+        skip_if_value: Option<String>,
+        /// Extra note appended to the inline TODO comment that's emitted
+        /// alongside every successful routing from this entry (and to the
+        /// TODO line emitted when the value doesn't match value_map).
+        #[serde(default)]
+        todo: Option<String>,
+    },
 }
 
 /// Universal SSF2 -> Fraymakers API command conversions.

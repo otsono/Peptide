@@ -17,7 +17,7 @@
   "fields": [
     { "fm_field": "damage",          "ssf2_keys": ["damage"] },
     { "fm_field": "angle",           "ssf2_keys": ["direction", "angle"] },
-    { "fm_field": "baseKnockback",   "ssf2_keys": ["power", "weightKB"] },
+    { "fm_field": "baseKnockback",   "ssf2_keys": ["power"] },
     { "fm_field": "knockbackGrowth", "ssf2_keys": ["kbConstant"] },
     { "fm_field": "hitstop",         "ssf2_keys": ["hitStun"],     "isframe": true },
     { "fm_field": "selfHitstop",     "ssf2_keys": ["selfHitStun"], "isframe": true },
