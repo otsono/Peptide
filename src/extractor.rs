@@ -22,6 +22,14 @@ pub struct CharacterData {
     /// the same name is already assigned in the merged-in SSF2 initialize body.
     #[serde(default)]
     pub ext_var_inits: Vec<(String, String)>,
+    /// Per-projectile physics + hitboxes pulled from the Ext class's
+    /// `getProjectileStats()` method. Keys match the SSF2 projectile name
+    /// used in the projectile SymbolClass (e.g. `dee_nspec`). Consumed
+    /// by haxe_gen's projectile-file generators to fill real values into
+    /// ProjectileStats.hx / ProjectileHitboxStats.hx; falls back to
+    /// scaffolding placeholders when a projectile has no entry here.
+    #[serde(default)]
+    pub projectile_data: BTreeMap<String, abc_parser::ProjectileData>,
     /// SSF2 animation name → Fraymakers animation name
     /// Built from xframe_map + SSF2→Fraymakers name table
     pub ssf2_to_fm_anim: BTreeMap<String, String>,
@@ -100,6 +108,7 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
     let mut scripts: Vec<ScriptInfo> = Vec::new();
     let mut ext_vars: Vec<String> = Vec::new();
     let mut ext_var_inits: Vec<(String, String)> = Vec::new();
+    let mut projectile_data: BTreeMap<String, abc_parser::ProjectileData> = BTreeMap::new();
     let mut xframe_map: XframeMap = BTreeMap::new();
 
     // Parse each ABC block (usually just one)
@@ -150,6 +159,11 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
                 // Note: we no longer seed animations from raw symbol names here.
                 // The xframe_map seeding below produces FM-named entries which avoids
                 // duplicates like "bair" + "aerial_back".
+
+                // Merge projectile stats from getProjectileStats()
+                for (name, data) in &extracted.projectiles {
+                    projectile_data.entry(name.clone()).or_insert_with(|| data.clone());
+                }
 
                 // Merge xframe_map (frame method → SSF2 anim name)
                 xframe_map.extend(extracted.xframe_map.clone());
@@ -235,6 +249,7 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
     Ok(CharacterData {
         ext_vars,
         ext_var_inits,
+        projectile_data,
         name: char_name.to_string(),
         attacks,
         stats: char_stats,

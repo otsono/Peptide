@@ -235,9 +235,10 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
                 ScriptMetaKind::ProjectileAnimationStats,
             ),
         )?;
+        let proj_ssf2_match = best_match_projectile_data(&proj.name, &data.projectile_data);
         fs::write(
             proj_scripts_dir.join("ProjectileStats.hx"),
-            generate_projectile_stats(&char_id, &entity_id, &proj_info.extra_states),
+            generate_projectile_stats(&char_id, &entity_id, &proj_info.extra_states, proj_ssf2_match),
         )?;
         fs::write(
             proj_scripts_dir.join("ProjectileStats.hx.meta"),
@@ -249,7 +250,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
         )?;
         fs::write(
             proj_scripts_dir.join("ProjectileHitboxStats.hx"),
-            generate_projectile_hitbox_stats(&char_id, &entity_id, &proj_info),
+            generate_projectile_hitbox_stats(&char_id, &entity_id, &proj_info, proj_ssf2_match),
         )?;
         fs::write(
             proj_scripts_dir.join("ProjectileHitboxStats.hx.meta"),
@@ -1363,34 +1364,139 @@ fn generate_projectile_animation_stats(extra_states: &[entity_gen::ProjectileSta
 }
 
 /// ProjectileStats.hx — physics, geometry, and state → animation mapping.
+/// Heuristic match between a discovered projectile sprite (e.g.
+/// `"dee_nspec"`) and SSF2's per-attack `getProjectileStats()` entries
+/// (keyed by attack name like `"b"`, `"b_up"`, `"final_smash"`, etc.).
+///
+/// Strategy:
+/// 1. Exact name match (`dee_nspec` == `dee_nspec`) wins.
+/// 2. Substring match on common projectile name fragments:
+///       *nspec*       → `b`
+///       *fspec/sspec* → `b_forward`
+///       *uspec*       → `b_up`
+///       *dspec*       → `b_down`
+///       *fs*/*finalsmash* → `final_smash` / any key containing "final"
+/// 3. Otherwise, pick the entry with the most populated data
+///    (stats.len() + hitboxes.len()) — best-effort.
+/// 4. None if the projectile_data map is empty.
+///
+/// Result is best-effort; callers should mark output with a TODO so the
+/// modder verifies the mapping per call site.
+fn best_match_projectile_data<'a>(
+    proj_name: &str,
+    projectile_data: &'a std::collections::BTreeMap<String, crate::abc_parser::ProjectileData>,
+) -> Option<&'a crate::abc_parser::ProjectileData> {
+    if projectile_data.is_empty() { return None; }
+    if let Some(exact) = projectile_data.get(proj_name) { return Some(exact); }
+    let lower = proj_name.to_lowercase();
+    let candidate_keys: &[&str] = if lower.contains("nspec") || lower.contains("nspecial") {
+        &["b", "nspec", "neutral_special"]
+    } else if lower.contains("fspec") || lower.contains("sspec") || lower.contains("sspecial") {
+        &["b_forward", "fspec", "sspec", "side_special"]
+    } else if lower.contains("uspec") || lower.contains("uspecial") {
+        &["b_up", "uspec", "up_special"]
+    } else if lower.contains("dspec") || lower.contains("dspecial") {
+        &["b_down", "dspec", "down_special"]
+    } else if lower.contains("finalsmash") || lower.contains("_fs") || lower.ends_with("fs") {
+        &["final_smash", "finalsmash", "fs"]
+    } else {
+        &[]
+    };
+    for k in candidate_keys {
+        if let Some(d) = projectile_data.get(*k) { return Some(d); }
+        // Fuzzy: any key containing the candidate
+        if let Some((_, d)) = projectile_data.iter().find(|(name, _)| name.contains(*k)) {
+            return Some(d);
+        }
+    }
+    // Fallback: pick the entry with the most populated data.
+    projectile_data.values()
+        .max_by_key(|d| d.stats.len() + d.hitboxes.len())
+}
+
 fn generate_projectile_stats(
     _char_id: &str,
     entity_id: &str,
     extra_states: &[entity_gen::ProjectileStateData],
+    ssf2_match: Option<&crate::abc_parser::ProjectileData>,
 ) -> String {
     let content_id = format!("{}Projectile", entity_id);
-    // Multi-state projectiles still map PState.ACTIVE → projectileIdle;
-    // animation switching between substates is done via Common.toLocalState() in Script.hx.
     let _ = extra_states; // used in Script.hx, not Stats
-    format!(
+
+    // SSF2 physics field name → FM ProjectileStats field name. The set
+    // is small and most names align; this table handles the few that
+    // need renaming. Unknown SSF2 keys are emitted as `// TODO: …`.
+    let physics_map: &[(&str, &str)] = &[
+        ("gravity",            "gravity"),
+        ("friction",           "friction"),
+        ("terminalVelocity",   "terminalVelocity"),
+        ("groundSpeedCap",     "groundSpeedCap"),
+        ("aerialSpeedCap",     "aerialSpeedCap"),
+        ("aerialFriction",     "aerialFriction"),
+        ("xSpeed",             "groundSpeedCap"),  // proxy: SSF2 starting xSpeed ≈ cap
+        ("ySpeed",             "aerialSpeedCap"),
+    ];
+
+    // Build the physics lines from SSF2 data where available.
+    let (mut physics_lines, mut todo_lines, source_note): (Vec<String>, Vec<String>, String) =
+        match ssf2_match {
+            Some(d) if !d.stats.is_empty() => {
+                let mut taken: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+                let mut out: Vec<String> = Vec::new();
+                for (ssf2_key, fm_field) in physics_map {
+                    if taken.contains(fm_field) { continue; }
+                    if let Some(v) = d.stats.get(*ssf2_key) {
+                        out.push(format!("    {}: {},", fm_field, fmt_num(*v)));
+                        taken.insert(fm_field);
+                    }
+                }
+                // Surface any SSF2 stat keys we didn't map as TODOs
+                let mut todos: Vec<String> = Vec::new();
+                let mapped_ssf2: std::collections::BTreeSet<&str> = physics_map.iter()
+                    .filter(|(_, fm)| taken.contains(fm))
+                    .map(|(s, _)| *s)
+                    .collect();
+                for (k, v) in &d.stats {
+                    if !mapped_ssf2.contains(k.as_str()) {
+                        todos.push(format!("    // TODO: SSF2 {}: {} — no ProjectileStats mapping", k, fmt_num(*v)));
+                    }
+                }
+                (out, todos, "// Values pulled from SSF2 getProjectileStats() (best-effort key match — verify per projectile).\n".to_string())
+            }
+            _ => (vec![], vec![], "// SSF2 source had no matching projectile-stats entry — defaults below.\n".to_string()),
+        };
+
+    // Always emit the scaffolding defaults for fields SSF2 didn't supply.
+    let scaffolding: &[(&str, &str)] = &[
+        ("gravity",          "0.7"),
+        ("friction",         "0"),
+        ("terminalVelocity", "20"),
+        ("groundSpeedCap",   "11"),
+        ("aerialSpeedCap",   "11"),
+        ("aerialFriction",   "0"),
+    ];
+    let provided: std::collections::BTreeSet<String> = physics_lines.iter()
+        .filter_map(|l| l.split(':').next().map(|s| s.trim().to_string()))
+        .collect();
+    for (k, v) in scaffolding {
+        if !provided.contains(*k) {
+            physics_lines.push(format!("    {}: {},", k, v));
+        }
+    }
+    physics_lines.sort();
+    todo_lines.sort();
+
+    let body = format!(
 "// Projectile stats for {entity_id}
-{{
+{source_note}{{
     spriteContent: self.getResource().getContent(\"{content_id}\"),
     stateTransitionMapOverrides: [
-        PState.ACTIVE => {{
-            animation: \"projectileIdle\"
-        }},
-        PState.DESTROYING => {{
-            animation: \"projectileDestroy\"
-        }}
+        PState.ACTIVE => {{ animation: \"projectileIdle\" }},
+        PState.DESTROYING => {{ animation: \"projectileDestroy\" }}
     ],
-    gravity: 0.7,
     shadows: true,
-    friction: 0,
-    groundSpeedCap: 11,
-    aerialSpeedCap: 11,
-    aerialFriction: 0,
-    terminalVelocity: 20,
+{physics}
+{todos}
     floorHeadPosition: 15,
     floorHipWidth: 16,
     floorHipXOffset: 0,
@@ -1404,32 +1510,85 @@ fn generate_projectile_stats(
 }}
 ",
         entity_id = entity_id,
+        source_note = source_note,
         content_id = content_id,
-    )
+        physics = physics_lines.join("\n"),
+        todos = if todo_lines.is_empty() { String::new() } else { todo_lines.join("\n") + "\n" },
+    );
+    body.replace("{{", "{").replace("}}", "}")
 }
 
-/// ProjectileHitboxStats.hx — hitbox entries extracted from the SSF2 attack data.
-/// Emits one `hitbox0` entry under `projectileIdle` using the first attack that
-/// references this projectile, if any.
+/// ProjectileHitboxStats.hx — pulls real hitbox values from SSF2's
+/// `getProjectileStats()` data when a match is found. Uses
+/// `mappings/character/hitbox_stats.jsonc` as the canonical SSF2→FM
+/// field-name table (same source the character HitboxStats.hx generator
+/// uses — single source of truth, not duplicated).
 fn generate_projectile_hitbox_stats(
-    char_id: &str,
+    _char_id: &str,
     entity_id: &str,
-    proj: &entity_gen::ProjectileInfo,
+    _proj: &entity_gen::ProjectileInfo,
+    ssf2_match: Option<&crate::abc_parser::ProjectileData>,
 ) -> String {
-    // Try to pull the first hitbox from the collision boxes
-    // proj.boxes is Option<AnimationBoxData>: frames → Vec<FrameBox>
-    // For now emit a sensible default (damage 6, knockback like the template)
-    // since full per-hitbox attack data cross-referencing isn't wired up yet.
-    format!(r#"// Hitbox stats for {entity_id}
-// TODO: tune damage, knockback, and angle to match SSF2.
-{{
+    let mapping = crate::mappings::character_hitbox_stats();
+
+    let (idle_body, source_note) = match ssf2_match.and_then(|d| d.hitboxes.first()) {
+        Some(hb) => {
+            // Build hitbox0 from SSF2 keys via the hitbox_stats.jsonc canon.
+            let mut parts: Vec<String> = Vec::new();
+            for field in &mapping.fields {
+                // Take the MAX of all listed SSF2 keys (mirrors how
+                // hitbox_stats.jsonc is used elsewhere). Absent keys count as 0.
+                let mut best: Option<f64> = None;
+                for key in &field.ssf2_keys {
+                    if let Some(v) = hb.get(key) {
+                        best = Some(best.map_or(*v, |b: f64| b.max(*v)));
+                    }
+                }
+                if let Some(mut v) = best {
+                    if field.isframe { v *= 2.0; } // 30→60fps
+                    parts.push(format!("{}: {}", field.fm_field, fmt_num(v)));
+                }
+            }
+            // Always emit the projectile-typical flags
+            parts.push("reversibleAngle: true".to_string());
+            parts.push("directionalInfluence: false".to_string());
+            parts.push("reflectable: true".to_string());
+            (
+                format!("hitbox0: {{ {} }}", parts.join(", ")),
+                "// Values pulled from SSF2 getProjectileStats() (best-effort key match — verify per projectile).\n// SSF2→FM field names come from mappings/character/hitbox_stats.jsonc (shared canon).\n".to_string(),
+            )
+        }
+        None => (
+            "hitbox0: { damage: 6, knockbackGrowth: 30, baseKnockback: 65, angle: 0, reversibleAngle: true, directionalInfluence: false, reflectable: true }"
+                .to_string(),
+            "// TODO: no matching SSF2 projectile-stats entry found — values below are scaffolding placeholders. Tune to match SSF2.\n".to_string(),
+        ),
+    };
+
+    let body = format!(
+"// Hitbox stats for {entity_id}
+{source_note}{{
     projectileSpawn: {{}},
     projectileIdle: {{
-        hitbox0: {{ damage: 6, knockbackGrowth: 30, baseKnockback: 65, angle: 0, reversibleAngle: true, directionalInfluence: false, reflectable: true }}
+        {idle_body}
     }},
     projectileDestroy: {{}}
 }}
-"#,
+",
         entity_id = entity_id,
-    ).replace("{{", "{").replace("}}", "}")
+        source_note = source_note,
+        idle_body = idle_body,
+    );
+    body.replace("{{", "{").replace("}}", "}")
+}
+
+/// Format a float like SSF2 would have written it: integers stay integers,
+/// floats round to 3 decimal places without trailing zeros.
+fn fmt_num(v: f64) -> String {
+    if v.fract() == 0.0 { format!("{}", v as i64) }
+    else {
+        let s = format!("{:.3}", v);
+        let s = s.trim_end_matches('0').trim_end_matches('.');
+        s.to_string()
+    }
 }

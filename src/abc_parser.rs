@@ -145,6 +145,10 @@ pub type XframeMap = BTreeMap<String, String>;
 pub struct ExtractedCharacter {
     pub name: String,
     pub attacks: BTreeMap<String, AttackData>,
+    /// Per-projectile physics + hitboxes pulled from the Ext class's
+    /// `getProjectileStats()` method. Keys are SSF2 projectile names
+    /// (matching the projectile sprite SymbolClass names).
+    pub projectiles: BTreeMap<String, ProjectileData>,
     pub stats: Option<CharStats>,
     pub frame_scripts: BTreeMap<String, Vec<FrameAction>>,
     /// Decompiled Ext class methods translated to Fraymakers Haxe
@@ -179,6 +183,20 @@ pub struct AttackData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CharStats {
     pub values: BTreeMap<String, f64>,
+}
+
+/// One projectile-stat entry extracted from SSF2's `getProjectileStats()`.
+/// The Ext class returns a top-level object keyed by projectile name
+/// (matching the projectile sprite's class name, e.g. `dee_nspec`).
+/// Each value combines:
+///   - flat-scalar physics fields (gravity, xSpeed, ySpeed, friction, …)
+///   - a nested `attackBoxes` object with the projectile's hitboxes
+/// Hitbox shape mirrors `AttackData.hitboxes` so it can share the
+/// `hitbox_stats.jsonc` SSF2→FM field-name canon.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectileData {
+    pub stats:    BTreeMap<String, f64>,
+    pub hitboxes: Vec<BTreeMap<String, f64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -623,6 +641,7 @@ fn extract_xframe_name(bytecode: &[u8], abc: &AbcFile) -> Option<String> {
 /// Extract character data by analyzing ABC bytecode
 pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedCharacter> {
     let mut attacks: BTreeMap<String, AttackData> = BTreeMap::new();
+    let mut projectiles: BTreeMap<String, ProjectileData> = BTreeMap::new();
     let mut stats: Option<CharStats> = None;
     let mut frame_scripts: BTreeMap<String, Vec<FrameAction>> = BTreeMap::new();
     let mut ext_methods: BTreeMap<String, String> = BTreeMap::new();
@@ -734,6 +753,11 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
                     let extracted = extract_attack_objects(&body.bytecode, abc);
                     log::info!("getAttackStats: extracted {} attacks", extracted.len());
                     attacks.extend(extracted);
+                }
+                "getProjectileStats" => {
+                    let extracted = extract_projectile_objects(&body.bytecode, abc);
+                    log::info!("getProjectileStats: extracted {} per-attack projectile entries", extracted.len());
+                    projectiles.extend(extracted);
                 }
                 name if name.starts_with("frame") => {
                     // Extract xframe animation name first (always, for animation name mapping)
@@ -1187,6 +1211,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
     Ok(ExtractedCharacter {
         name: char_name.to_string(),
         attacks,
+        projectiles,
         stats,
         frame_scripts,
         ext_methods,
@@ -1393,6 +1418,196 @@ fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, At
             _ => {}
         }
 
+        if stack.len() > 512 { stack.drain(0..256); }
+    }
+
+    result
+}
+
+/// Extract per-projectile stat objects from a `getProjectileStats()`
+/// bytecode body. Mirrors `extract_attack_objects` but recognises
+/// projectile-shaped objects: an object is a projectile if it carries
+/// any flat-scalar physics field (gravity / xSpeed / ySpeed / friction /
+/// etc.) OR a nested `attackBoxes` hitbox map.
+///
+/// Returns a map keyed by the SSF2 projectile name (the key under which
+/// the per-projectile object appears in the top-level returned object).
+fn extract_projectile_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, ProjectileData> {
+    let mut result: BTreeMap<String, ProjectileData> = BTreeMap::new();
+    let mut stack: Vec<StackVal> = Vec::new();
+    let mut i = 0;
+
+    // Physics keys SSF2 commonly puts on a projectile-stats object. Any
+    // top-level value object holding at least one of these (or an
+    // `attackBoxes` key) is treated as a projectile entry.
+    const PHYSICS_KEYS: &[&str] = &[
+        "gravity", "friction", "weight", "fall_speed", "terminalVelocity",
+        "xSpeed", "ySpeed", "x_speed", "y_speed",
+        "groundSpeedCap", "aerialSpeedCap", "aerialFriction",
+        "ground_speed_cap", "aerial_speed_cap", "aerial_friction",
+    ];
+
+    while i < bytecode.len() {
+        let op = bytecode[i];
+        i += 1;
+        match op {
+            OP_PUSHSTRING => {
+                if let Some(idx) = read_u30_at(bytecode, &mut i) {
+                    let s = abc.strings.get(idx as usize).cloned().unwrap_or_default();
+                    stack.push(StackVal::Str(s));
+                }
+            }
+            OP_PUSHDOUBLE => {
+                if let Some(idx) = read_u30_at(bytecode, &mut i) {
+                    let v = abc.doubles.get(idx as usize).copied().unwrap_or(0.0);
+                    stack.push(StackVal::Num(v));
+                }
+            }
+            OP_PUSHBYTE => {
+                if i < bytecode.len() {
+                    let v = bytecode[i] as i8 as f64;
+                    i += 1;
+                    stack.push(StackVal::Num(v));
+                }
+            }
+            OP_PUSHSHORT => {
+                if let Some(v) = read_u30_at(bytecode, &mut i) {
+                    stack.push(StackVal::Num(v as i16 as f64));
+                }
+            }
+            OP_PUSHINT => {
+                if let Some(idx) = read_u30_at(bytecode, &mut i) {
+                    let v = abc.ints.get(idx as usize).copied().unwrap_or(0) as f64;
+                    stack.push(StackVal::Num(v));
+                }
+            }
+            OP_PUSHUINT => {
+                if let Some(idx) = read_u30_at(bytecode, &mut i) {
+                    let v = abc.uints.get(idx as usize).copied().unwrap_or(0) as f64;
+                    stack.push(StackVal::Num(v));
+                }
+            }
+            OP_PUSHTRUE | OP_PUSHFALSE => stack.push(StackVal::Bool(())),
+            OP_PUSHNULL | OP_PUSHNAN => stack.push(StackVal::Null),
+            OP_NEWOBJECT => {
+                if let Some(count) = read_u30_at(bytecode, &mut i) {
+                    let count = count as usize;
+                    let needed = count * 2;
+                    let mut obj: BTreeMap<String, StackVal> = BTreeMap::new();
+                    if stack.len() >= needed {
+                        let pairs: Vec<_> = stack.drain(stack.len() - needed..).collect();
+                        for chunk in pairs.chunks(2) {
+                            if let StackVal::Str(k) = &chunk[0] {
+                                obj.insert(k.clone(), chunk[1].clone());
+                            }
+                        }
+                    }
+                    // Top-level projectile-map detection: any key whose
+                    // value object has physics-y / attackBoxes shape gets
+                    // promoted to a ProjectileData entry.
+                    let mut found = false;
+                    for (proj_name, val) in &obj {
+                        if let StackVal::Obj(inner) = val {
+                            let is_proj = inner.contains_key("attackBoxes")
+                                || PHYSICS_KEYS.iter().any(|k| inner.contains_key(*k));
+                            if is_proj {
+                                let mut stats: BTreeMap<String, f64> = BTreeMap::new();
+                                for (k, v) in inner {
+                                    if let StackVal::Num(n) = v {
+                                        stats.insert(k.clone(), *n);
+                                    }
+                                }
+                                let hitboxes = extract_hitboxes_from_val(val);
+                                result.insert(proj_name.clone(), ProjectileData { stats, hitboxes });
+                                found = true;
+                            }
+                        }
+                    }
+                    if !found { stack.push(StackVal::Obj(obj)); }
+                }
+            }
+            OP_NEWARRAY => {
+                if let Some(count) = read_u30_at(bytecode, &mut i) {
+                    let drain = stack.len().min(count as usize);
+                    let _: Vec<_> = if stack.len() >= drain {
+                        stack.drain(stack.len() - drain..).collect()
+                    } else { vec![] };
+                    stack.push(StackVal::Unknown);
+                }
+            }
+            OP_CALLPROPERTY | OP_CALLPROPVOID => {
+                let _ = read_u30_at(bytecode, &mut i);
+                let arg_count = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                let drain = stack.len().min(arg_count + 1);
+                stack.drain(stack.len() - drain..);
+                if op == OP_CALLPROPERTY { stack.push(StackVal::Unknown); }
+            }
+            OP_SETPROPERTY | OP_INITPROPERTY => {
+                let _ = read_u30_at(bytecode, &mut i);
+                if stack.len() >= 2 { stack.truncate(stack.len() - 2); }
+            }
+            OP_GETPROPERTY => {
+                let mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
+                let name = abc.multinames.get(mn_idx as usize).map(|m| m.name.clone()).unwrap_or_default();
+                if !stack.is_empty() { stack.pop(); }
+                stack.push(StackVal::Str(name));
+            }
+            OP_FINDPROPSTRICT | OP_FINDPROP | OP_GETLEX => {
+                read_u30_at(bytecode, &mut i);
+                stack.push(StackVal::Unknown);
+            }
+            OP_COERCE | OP_COERCE_A | OP_CONVERT_D | OP_CONVERT_I => {
+                if op == OP_COERCE { read_u30_at(bytecode, &mut i); }
+            }
+            OP_NOP | OP_LABEL => {}
+            OP_POP => { stack.pop(); }
+            OP_DUP => { if let Some(top) = stack.last().cloned() { stack.push(top); } }
+            OP_SWAP => { let len = stack.len(); if len >= 2 { stack.swap(len-1, len-2); } }
+            OP_NEGATE => {
+                match stack.pop() {
+                    Some(StackVal::Num(v)) => stack.push(StackVal::Num(-v)),
+                    _ => stack.push(StackVal::Unknown),
+                }
+            }
+            OP_ADD | OP_SUBTRACT | OP_MULTIPLY | OP_DIVIDE => {
+                let b = stack.pop(); let a = stack.pop();
+                match (a, b) {
+                    (Some(StackVal::Num(a)), Some(StackVal::Num(b))) => {
+                        let r = match op {
+                            OP_ADD => a+b, OP_SUBTRACT => a-b,
+                            OP_MULTIPLY => a*b, OP_DIVIDE => a/b, _ => 0.0
+                        };
+                        stack.push(StackVal::Num(r));
+                    }
+                    _ => stack.push(StackVal::Unknown),
+                }
+            }
+            OP_CONSTRUCTPROP => {
+                read_u30_at(bytecode, &mut i);
+                let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                let drain = stack.len().min(argc + 1);
+                stack.drain(stack.len() - drain..);
+                stack.push(StackVal::Unknown);
+            }
+            OP_CONSTRUCT => {
+                let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                let drain = stack.len().min(argc + 1);
+                stack.drain(stack.len() - drain..);
+                stack.push(StackVal::Unknown);
+            }
+            OP_GETLOCAL0 | OP_GETLOCAL1 | OP_GETLOCAL2 | OP_GETLOCAL3 => stack.push(StackVal::Unknown),
+            OP_GETLOCAL => { read_u30_at(bytecode, &mut i); stack.push(StackVal::Unknown); }
+            OP_SETLOCAL0 | OP_SETLOCAL1 | OP_SETLOCAL2 | OP_SETLOCAL3 => { stack.pop(); }
+            OP_SETLOCAL => { read_u30_at(bytecode, &mut i); stack.pop(); }
+            OP_RETURNVALUE => { stack.pop(); }
+            OP_RETURNVOID => {}
+            OP_JUMP | OP_IFTRUE | OP_IFFALSE | OP_IFEQ | OP_IFNE | OP_IFLT |
+            OP_IFLE | OP_IFGT | OP_IFGE | OP_IFSTRICTEQ | OP_IFSTRICTNE => {
+                if i + 3 <= bytecode.len() { i += 3; }
+                if op != OP_JUMP { stack.pop(); }
+            }
+            _ => {}
+        }
         if stack.len() > 512 { stack.drain(0..256); }
     }
 
