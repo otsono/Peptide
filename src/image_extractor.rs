@@ -8,7 +8,7 @@
 /// DefineSprite PlaceObject references to actual image files.
 
 use anyhow::{Context, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -1488,87 +1488,109 @@ pub fn discover_projectiles_and_head(
         }
     }
 
+    // Pre-compute which IDs are bitmaps. The head sprite usually places a
+    // mix of Shapes (outlines/backgrounds) and one Bitmap (the actual pixel
+    // art portrait). We need to prefer the bitmap when scanning inner tags.
+    let mut bitmap_ids: BTreeSet<u16> = BTreeSet::new();
+    for tag in &swf.tags {
+        match tag {
+            swf::Tag::DefineBitsLossless(b) => { bitmap_ids.insert(b.id); }
+            swf::Tag::DefineBitsJpeg2 { id, .. } => { bitmap_ids.insert(*id); }
+            swf::Tag::DefineBitsJpeg3(d) => { bitmap_ids.insert(d.id); }
+            _ => {}
+        }
+    }
+
     // Scan DefineSprite tags
     let mut projectiles: Vec<DiscoveredProjectile> = Vec::new();
     let mut head: Option<DiscoveredHead> = None;
     let char_lower = char_name.to_lowercase();
 
+    // Build candidate-head ranking. Every SSF2 character has pixel-art at
+    // the SWF root, but the naming varies — the cross-character survey
+    // showed `*_head` (most chars: dee_head, blackmage_head, fox_head,
+    // bomberman_head, etc.) and `*_icon` (sandbag_icon). `*_hud` is the
+    // in-game damage-counter HUD (animated, hundreds of frames), NOT a
+    // menu portrait — explicitly excluded. Head sprites named without an
+    // underscore (dkhead, dkicon) only contain shapes — they need shape
+    // rasterization which is a separate code path.
+    let mut candidates: Vec<&swf::Sprite> = Vec::new();
     for tag in &swf.tags {
         if let swf::Tag::DefineSprite(sprite) = tag {
             let sprite_name = symbols.get(&sprite.id).cloned().unwrap_or_default();
             if sprite_name.is_empty() { continue; }
+            let nl = sprite_name.to_lowercase();
+            // Skip names that look like in-game gameplay assets (cutins,
+            // weapons, HUDs).
+            if nl.contains("cutin") || nl.contains("trail") || nl.contains("fs_")
+                || nl.ends_with("_hud") || nl == format!("{}_hud", char_lower)
+            {
+                continue;
+            }
+            let head_like = nl.ends_with("_head")
+                || nl == format!("{}_icon", char_lower);
+            if head_like {
+                candidates.push(sprite);
+            }
+        }
+    }
+    // Stable preference: _head > _icon. _head is the standard convention;
+    // _icon is the CSS thumbnail (sandbag uses this since it has no _head).
+    candidates.sort_by_key(|s| {
+        let n = symbols.get(&s.id).map(|s| s.to_lowercase()).unwrap_or_default();
+        if n.ends_with("_head") { 0 } else { 1 }
+    });
 
-            // Check for head sprite: "{char}_head" or "{char}head" or "jiggly_head" etc.
-            let name_lower = sprite_name.to_lowercase();
-            if name_lower.ends_with("_head") || name_lower.ends_with("head") {
-                // Verify it belongs to this character
-                // Some chars abbreviate: jiggly_head for jigglypuff, etc.
-                let is_char_head = name_lower.starts_with(&char_lower)
-                    || name_lower == format!("{}_head", char_lower)
-                    || name_lower.ends_with("_head")  // Any _head sprite in a char SSF is the char's head
-                    ;
-                if is_char_head {
-                    // Find what image it places.
-                    // First try PlaceObject inside the sprite tags.
-                    let mut image_symbol = None;
-                    let mut image_shape_id = None;
-                    for stag in &sprite.tags {
-                        if let swf::Tag::PlaceObject(po) = stag {
-                            match &po.action {
-                                swf::PlaceObjectAction::Place(id) => {
-                                    image_shape_id = Some(*id);
-                                    image_symbol = symbols.get(id).cloned();
-                                    break;
-                                }
-                                _ => {}
-                            }
+    for sprite in candidates {
+        let sprite_name = symbols.get(&sprite.id).cloned().unwrap_or_default();
+        // Walk all inner PlaceObject tags. Prefer a placement whose target
+        // is a Bitmap with a SymbolClass name — the actual portrait. Fall
+        // back to any placement with a symbol name, then to anything.
+        let mut best_bitmap: Option<(u16, String)> = None;
+        let mut best_named: Option<(u16, String)> = None;
+        let mut first_placement: Option<u16> = None;
+        for stag in &sprite.tags {
+            if let swf::Tag::PlaceObject(po) = stag {
+                if let swf::PlaceObjectAction::Place(id) = &po.action {
+                    if first_placement.is_none() { first_placement = Some(*id); }
+                    let sym = symbols.get(id).cloned().unwrap_or_default();
+                    if !sym.is_empty() {
+                        if bitmap_ids.contains(id) && best_bitmap.is_none() {
+                            best_bitmap = Some((*id, sym.clone()));
+                        }
+                        if best_named.is_none() {
+                            best_named = Some((*id, sym));
                         }
                     }
-                    // Fallback: try known naming patterns for head portrait images
-                    if image_symbol.is_none() {
-                        let patterns: Vec<String> = vec![
-                            format!("{}_dm0", char_lower),
-                            format!("{}_pa0", char_lower),
-                            format!("{}_dmpa", char_lower),
-                        ];
-                        for pat in &patterns {
-                            if let Some((id, name)) = symbols.iter().find(|(_, n)| n.to_lowercase() == *pat) {
-                                image_symbol = Some(name.clone());
-                                image_shape_id = Some(*id);
-                                log::debug!("Head sprite '{}': used pattern fallback '{}' → id={}", sprite_name, pat, id);
-                                break;
-                            }
-                        }
-                    }
-                    // Last resort: search all symbols for portrait-like names
-                    if image_symbol.is_none() {
-                        for (id, name) in &symbols {
-                            let nl = name.to_lowercase();
-                            // Skip internal sprites and animation frames
-                            if nl.contains("_fla.") || nl.contains("_i") && nl.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false) {
-                                continue;
-                            }
-                            // Match common portrait patterns:
-                            // {char}_pa0, {char}_dmpa, {char}_dm0, {abbr}_PA, {abbr}_cssp2
-                            let is_portrait = nl.ends_with("_pa0") || nl.ends_with("_dmpa")
-                                || nl.ends_with("_dm0") || nl.ends_with("_pa") || nl.ends_with("_pa_nhb")
-                                || nl.contains("_cssp");
-                            if is_portrait {
-                                image_symbol = Some(name.clone());
-                                image_shape_id = Some(*id);
-                                log::debug!("Head sprite '{}': used heuristic fallback → id={} sym={}", sprite_name, id, name);
-                                break;
-                            }
-                        }
-                    }
-                    head = Some(DiscoveredHead {
-                        sprite_id: sprite.id,
-                        name: sprite_name.clone(),
-                        image_symbol,
-                        image_shape_id,
-                    });
                 }
             }
+        }
+        let (image_shape_id, image_symbol) = match (best_bitmap, best_named, first_placement) {
+            (Some((id, sym)), _, _) => (Some(id), Some(sym)),
+            (None, Some((id, sym)), _) => (Some(id), Some(sym)),
+            (None, None, Some(id)) => (Some(id), None),
+            _ => (None, None),
+        };
+
+        if image_symbol.is_some() {
+            log::debug!("Head sprite '{}': resolved image symbol '{}' (id={:?})",
+                sprite_name, image_symbol.as_deref().unwrap_or(""), image_shape_id);
+            head = Some(DiscoveredHead {
+                sprite_id: sprite.id,
+                name: sprite_name,
+                image_symbol,
+                image_shape_id,
+            });
+            break;
+        }
+    }
+
+    // The remainder of the scan (projectile detection) walks the same
+    // DefineSprite tags but doesn't depend on `head`.
+    for tag in &swf.tags {
+        if let swf::Tag::DefineSprite(sprite) = tag {
+            let sprite_name = symbols.get(&sprite.id).cloned().unwrap_or_default();
+            if sprite_name.is_empty() { continue; }
 
             // Check for projectile: has 'attack_idle' label
             let has_attack_idle = sprite.tags.iter().any(|t| {
@@ -1581,7 +1603,7 @@ pub fn discover_projectiles_and_head(
             if !has_attack_idle { continue; }
 
             // Skip the root character sprite
-            if name_lower == char_lower { continue; }
+            if sprite_name.to_lowercase() == char_lower { continue; }
 
             // Walk the outer sprite timeline to collect all frame-label → stance placements.
             // Single-state: one label ('attack_idle') + one PlaceObject(stance).
