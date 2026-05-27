@@ -523,6 +523,18 @@ pub fn translate_ssf2_to_fm(code: &str) -> String {
         result = result.replace(&r.from, &r.to);
     }
 
+    // ── Regex replacements ──
+    // For cases the literal table can't express: arg-dropping, arg-aware
+    // dispatch, etc. Compiled lazily and cached at process scope; bad
+    // patterns warn once and are skipped (don't break the conversion).
+    for re in regex_replacement_cache() {
+        // .replace_all returns Cow — only allocate when there's a match.
+        let next = re.regex.replace_all(&result, re.replacement.as_str());
+        if matches!(&next, std::borrow::Cow::Owned(_)) {
+            result = next.into_owned();
+        }
+    }
+
     // ── endAnimation on last frame: strip it ──
     // FM animations naturally end when the last frame plays. endAnimation() on the final
     // frame of a sub-MC is redundant and causes a double-end. Strip it.
@@ -771,6 +783,37 @@ pub fn comment_out_unknown_calls(code: &str) -> String {
     }
     log_unknown_calls(&joined, cfg);
     joined
+}
+
+/// One regex_replacements entry, pre-compiled from the JSONC config.
+struct CompiledRegexReplacement {
+    regex: regex::Regex,
+    replacement: String,
+}
+
+/// Pre-compile every `regex_replacements` entry once per process. Bad patterns
+/// log a warning and are silently skipped, so a typo in commands.jsonc can't
+/// break the conversion.
+fn regex_replacement_cache() -> &'static [CompiledRegexReplacement] {
+    static CACHE: std::sync::OnceLock<Vec<CompiledRegexReplacement>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let cfg = crate::mappings::api_commands();
+        let mut out = Vec::with_capacity(cfg.regex_replacements.len());
+        for r in &cfg.regex_replacements {
+            match regex::Regex::new(&r.pattern) {
+                Ok(re) => out.push(CompiledRegexReplacement {
+                    regex: re,
+                    replacement: r.replacement.clone(),
+                }),
+                Err(e) => log::warn!(
+                    "[api_mappings] regex_replacements pattern failed to compile — \
+                     pattern={:?} note={:?} error={}",
+                    r.pattern, r.note, e
+                ),
+            }
+        }
+        out
+    })
 }
 
 /// Per-character bookkeeping written to `conversion_log.json` at the end of a

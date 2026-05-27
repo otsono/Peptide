@@ -58,6 +58,41 @@
     { "from": ".getCostume(",            "to": ".getCostumeIndex(" },
     { "from": ".getCurrentAnimation(",   "to": ".getAnimation(" },
     { "from": ".bringBehind(",           "to": ".sendBehind(" },
+    { "from": ".pushEffectBehind(",      "to": ".sendBehind(" },
+    { "from": ".destroy(",               "to": ".kill(" },
+    // releaseOpponent → releaseAllCharacters: SSF2 .releaseOpponent() often
+    // has no arg (release everything). releaseCharacter(target) is the
+    // single-target form — verify each callsite if behaviour seems off.
+    { "from": ".releaseOpponent(",       "to": ".releaseAllCharacters(" },
+    // Palette swap: return/arg type wraps PaletteSwapShader; mechanical
+    // rename only — call sites may still need manual touch-up.
+    { "from": ".setPaletteSwapData(",    "to": ".setCostumeShader(" },
+    { "from": ".getPaletteSwapData(",    "to": ".getCostumeShader(" },
+    // setIASA: SSF2 source already emits self.setIASA(true) inside the
+    // appropriate frame script. FM's API is Common.setIASA(bool). Drop self,
+    // route to Common.
+    { "from": "self.setIASA(",           "to": "Common.setIASA(" },
+
+    // FM engine globals (no `self.` — `match` is a global instance, like
+    // `self` and `Common`). The TS typedef declares the TMatch class; the
+    // global is lowercase `match`. Routes:
+    //   - SSF2API.getStage()     → match.getStage()
+    //   - SSF2API.getCamera()    → match.getCamera()
+    //   - SSF2API.shakeCamera(x) → match.getCamera().shake(x)
+    //   - self.addTarget / self.deleteTarget → match.getCamera().*
+    // After SSF2API.getStage() rewires, chained .getCameraBounds() and
+    // .getDeathBounds() (the FM names) already work — same names on Stage.
+    { "from": "SSF2API.getStage()",      "to": "match.getStage()" },
+    { "from": "SSF2API.getCamera()",     "to": "match.getCamera()" },
+    { "from": "SSF2API.shakeCamera(",    "to": "match.getCamera().shake(" },
+    { "from": "self.addTarget(",         "to": "match.getCamera().addTarget(" },
+    { "from": "self.deleteTarget(",      "to": "match.getCamera().deleteTarget(" },
+
+    // Random — SSF2API.safeRandom() / .safeRandomInteger(min,max) → FM
+    // Random.* statics. safeRandom is a clean text rename. safeRandomInteger
+    // drops its (min,max) args; handled by the regex_replacements section
+    // below because the literal table can't drop args.
+    { "from": "SSF2API.safeRandom(",     "to": "Random.getValue(" },
 
     // State transitions
     { "from": ".toLand()", "to": ".toState(CState.LAND)" },
@@ -102,6 +137,37 @@
     { "from": "selfHitStun:", "to": "selfHitstop:" },
     { "from": "hitLag:", "to": "hitstun:" },
     { "from": "selfHitLag:", "to": "selfHitstop:" },
+  ],
+
+  // regex_replacements: regex-based renames applied AFTER the literal
+  // `replacements` pass. Used for cases the literal table can't express:
+  // dropping/rewriting args, dispatching on argument shape, etc. The
+  // `replacement` string follows Rust's `regex` crate substitution syntax —
+  // `$1`, `${name}`, `$$` for a literal `$`. Bad patterns warn once and are
+  // skipped.
+  "regex_replacements": [
+    // safeRandomInteger(min, max) → Random.getValue() * 100. The (min, max)
+    // args are dropped (user-specified placeholder mapping). `[^()]*` keeps
+    // it safe against the rare nested call: matches only flat arg lists, so
+    // safeRandomInteger(foo(x), y) won't be touched.
+    {
+      "pattern": "SSF2API\\.safeRandomInteger\\([^()]*\\)",
+      "replacement": "Random.getValue() * 100",
+      "note": "drop (min,max) args, fixed placeholder mapping"
+    },
+    // gotoAndPlay("LABEL") → playFrameLabel("LABEL"). Numeric form
+    // gotoAndPlay(N) → playFrame(N) — included for completeness even though
+    // no character currently uses it.
+    {
+      "pattern": "\\.gotoAndPlay\\(\\s*\"([^\"]*)\"\\s*\\)",
+      "replacement": ".playFrameLabel(\"$1\")",
+      "note": "string-label form"
+    },
+    {
+      "pattern": "\\.gotoAndPlay\\(\\s*(\\d+)\\s*\\)",
+      "replacement": ".playFrame($1)",
+      "note": "numeric-frame form"
+    }
   ],
 
   // frame_params: command parameters that carry a frame count, doubled for
@@ -164,6 +230,7 @@
     { "name": "setRotation",           "note": "Entity.setRotation(value:Float):Float" },
     { "name": "getRotation",           "note": "Entity.getRotation():Float" },
     { "name": "resetRotation",         "note": "Entity.resetRotation():Void" },
+    { "name": "rotate",                "note": "Entity.rotate() — user-confirmed supported on self" },
     // State / stats
     { "name": "getState",              "note": "Entity.getState():Int" },
     { "name": "inState",               "note": "Character.inState(CState.*):Bool — confirmed in character-template" },
@@ -187,33 +254,63 @@
   // don't compile but stay readable. Editable via this file — replaces the
   // previously-hardcoded COMMENT_METHODS list in api_mappings.rs.
   "ssf2_only": [
-    { "name": "attachEffect" },
-    { "name": "clearEffectsOnStateChange" },
-    { "name": "addEffectToList", "note": "already partially handled above; this catches the remainder" },
-    { "name": "fireProjectile", "note": "needs CustomGameObject — manual port" },
-    { "name": "getCurrentProjectile", "note": "needs CustomGameObject — manual port" },
-    // getGrabbedOpponent → getGrabbedFoe is now in `replacements` above
-    // (FM does expose a direct grabbed-foe accessor; earlier note was wrong).
-    { "name": "releaseOpponent", "note": "different grab model in FM (Fraymakers has releaseCharacter(target, grabReleaseKb?) and releaseAllCharacters(grabReleaseKb) — signature differs, manual port)" },
-    { "name": "swapDepthsWithGrabbedOpponent" },
-    { "name": "gotoAndStop", "note": "timeline nav; no FM equivalent" },
-    { "name": "jumpToContinue", "note": "SSF2 jump-to-continue loop; no FM equivalent" },
-    { "name": "unnattachFromGround", "note": "FM uses unattachFromFloor() — close but not identical" },
-    { "name": "killAttackboxes", "note": "no FM equivalent" },
-    { "name": "checkAtkilled", "note": "no FM equivalent" },
-    { "name": "pickupItem" },
-    { "name": "tossItem" },
-    { "name": "getItem" },
-    { "name": "getMC" },
-    { "name": "getExecTime" },
-    { "name": "getNearestLedge" },
-    { "name": "getCPULevel" },
-    { "name": "isCPU" },
-    { "name": "getMetalStatus" },
-    { "name": "isForcedCrash" },
-    { "name": "inUpperLeftWarningBounds" },
-    { "name": "playAttackSound", "note": "FM uses content IDs not SWF asset IDs — manual port" },
-    { "name": "playSound", "note": "FM uses content IDs not SWF asset IDs — manual port" },
-    { "name": "stop", "note": "timeline navigation; no timeline in FM" },
+    // Effects / VFX — FM uses match.createVfx(stats, owner) /
+    // startBodySparkleEffect() with per-VFX content IDs. Manual port.
+    { "name": "attachEffect",                    "note": "FM uses match.createVfx(vfxStats, owner) or startBodySparkleEffect() — manual port" },
+    { "name": "clearEffectsOnStateChange",       "note": "VFX lifecycle is owned by the Vfx instance / event listeners in FM — no global clear" },
+    { "name": "addEffectToList",                 "note": "already partially handled above; this catches the remainder" },
+
+    // Projectiles — FM uses match.createProjectile() + CustomGameObject.
+    { "name": "fireProjectile",                  "note": "FM uses match.createProjectile(projectileContent, owner) — manual port" },
+    { "name": "getCurrentProjectile",            "note": "FM tracks projectiles in script-level vars; use match.getProjectiles() — manual port" },
+
+    // getGrabbedOpponent → getGrabbedFoe is in `replacements` above (FM does
+    // expose a direct grabbed-foe accessor; earlier comment was wrong).
+    // releaseOpponent → releaseAllCharacters is also in `replacements`;
+    // single-target sites may need manual swap to releaseCharacter(target).
+    { "name": "swapDepthsWithGrabbedOpponent",   "note": "rewrite as self.swapDepths(self.getGrabbedFoe()) — small structural change" },
+
+    // Timeline nav — no timeline in FM.
+    { "name": "gotoAndStop",                     "note": "timeline nav; no FM equivalent. Closest is self.playFrame(n) + self.pause() but semantics differ" },
+    { "name": "jumpToContinue",                  "note": "SSF2 jump-to-continue loop; no FM equivalent" },
+    { "name": "stop",                            "note": "timeline navigation; no timeline in FM (AudioClip.stop() exists but requires a clip handle)" },
+
+    // Misc carryover
+    { "name": "unnattachFromGround",             "note": "FM uses unattachFromFloor() — close but not identical, manual port" },
+    { "name": "killAttackboxes",                 "note": "no FM equivalent" },
+    { "name": "checkAtkilled",                   "note": "no FM equivalent" },
+
+    // Items — no item system in FM (it has Assists instead).
+    { "name": "pickupItem",                      "note": "no FM item system (FM has Assists)" },
+    { "name": "tossItem",                        "note": "no FM item system" },
+    { "name": "getItem",                         "note": "no FM item system" },
+
+    // MovieClip / Flash carry-overs
+    { "name": "getMC",                           "note": "AS3 MovieClip access — FM is not Flash" },
+    { "name": "getExecTime",                     "note": "FM has match.getElapsedFrames() but scope differs (match-wide, not entity)" },
+    { "name": "getNearestLedge",                 "note": "FM ledge API is action-oriented (attemptLedgeGrab), not query-oriented" },
+
+    // CPU/AI — FM AI lives in a separate CharacterAiScript class
+    { "name": "getCPULevel",                     "note": "no public 'getCPULevel' in FM — AI is in CharacterAiScript" },
+    { "name": "isCPU",                           "note": "no public isCPU getter in FM (port-colour internally branches on it)" },
+
+    // SSF2-specific mechanics
+    { "name": "getMetalStatus",                  "note": "SSF2 'Metal Box' powerup — FM uses StatusEffect/BodyStatus instead" },
+    { "name": "isForcedCrash",                   "note": "no FM equivalent" },
+    { "name": "inUpperLeftWarningBounds",        "note": "SSF2 offscreen-warning bounds; FM exposes OffscreenIndicator but no in/out bounds queries" },
+
+    // Sound — FM uses AudioClip.play(contentId) which returns a clip handle;
+    // stopping requires that handle. Bulk text-rename can't synthesise one,
+    // so these stay flagged for manual implementation.
+    { "name": "playSound",                       "note": "FM uses AudioClip.play(contentId) — content IDs not SWF asset IDs; manual port" },
+    { "name": "playAttackSound",                 "note": "FM uses Character.playAttackVoice() (voice category) or AudioClip.play(contentId) — manual port" },
+    { "name": "stopSound",                       "note": "FM AudioClip.stop() needs the AudioClip handle returned by AudioClip.play() — manual port required" },
+    { "name": "stopSFX",                         "note": "same as stopSound — needs an AudioClip handle from the matching play() call" },
+    { "name": "stopHoldSound",                   "note": "same as stopSound — needs an AudioClip handle from the matching play() call" },
+
+    // Event-listener cleanup — SSF2 stopListening removes a listener; FM
+    // uses removeEventListener but the signature differs (FM needs the same
+    // (type, listener) pair). Flagging as TODO instead of auto-renaming.
+    { "name": "stopListening",                   "note": "TODO: maps to removeEventListener(type, listener) in FM but signature differs — verify per-callsite" },
   ],
 }

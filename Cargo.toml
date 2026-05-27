@@ -26,3 +26,4 @@ sha1 = "0.10"
 stdio-override = { version = "0.1", optional = true }
 indicatif = "0.17"
 colored = "2.1"
+regex = "1"

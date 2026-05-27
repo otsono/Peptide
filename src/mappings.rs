@@ -148,6 +148,20 @@ pub struct Replacement {
     pub to: String,
 }
 
+/// A regex-based replacement, for cases the literal table can't express:
+/// dropping/rewriting arguments, dispatching on argument shape, etc.
+/// `pattern` is a Rust `regex` crate pattern; `replacement` follows the
+/// standard `$1` / `${name}` capture-substitution syntax.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RegexReplacement {
+    pub pattern: String,
+    pub replacement: String,
+    /// Human-readable label used in error messages if the pattern fails to
+    /// compile. Optional.
+    #[serde(default)]
+    pub note: String,
+}
+
 /// A command parameter flagged as carrying a frame count, so the converter
 /// doubles its value for the 30fps -> 60fps timing change.
 #[derive(Debug, Clone, Deserialize)]
@@ -183,6 +197,8 @@ pub struct NamedApi {
 /// Every section here is consumed by the converter — there are no
 /// documentation-only sections.
 ///   - `replacements`        — ordered literal find→replace pairs (order matters)
+///   - `regex_replacements`  — regex-based renames, applied AFTER the literal
+///                              pass; used for arg-dropping / arg-aware cases
 ///   - `frame_params`        — per-parameter frame-count flags for 30→60fps
 ///   - `passthrough_fm_apis` — calls that ARE valid Fraymakers API; left
 ///                              untouched and treated as known calls
@@ -192,6 +208,8 @@ pub struct NamedApi {
 pub struct ApiCommands {
     #[serde(default)]
     pub replacements: Vec<Replacement>,
+    #[serde(default)]
+    pub regex_replacements: Vec<RegexReplacement>,
     #[serde(default)]
     pub frame_params: Vec<FrameParam>,
     #[serde(default)]

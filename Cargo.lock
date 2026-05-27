@@ -1413,6 +1413,7 @@ dependencies = [
  "image",
  "indicatif",
  "log",
+ "regex",
  "serde",
  "serde_json",
  "sha1",
