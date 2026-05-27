@@ -44,6 +44,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
     // manifest.json (based on character-template)
     let proj_names: Vec<String> = projectiles.iter().map(|p| p.name.clone()).collect();
     fs::write(char_dir.join("library/manifest.json"), generate_manifest(&char_id, char_name, &proj_names))?;
+    fs::write(char_dir.join("library/manifest.json.meta"), generate_manifest_meta(&det_uuid(&format!("{}::manifest::meta", char_id))))?;
 
     // Character.entity
     let entities_dir = char_dir.join("library/entities");
@@ -1106,6 +1107,24 @@ fn sanitize_entity_name(name: &str) -> String {
 }
 
 // ─── Projectile script generators ─────────────────────────────────────────────
+
+/// Generate `library/manifest.json.meta` — the JSON sidecar that pairs
+/// `manifest.json` with its content id (`"manifest"`) and language hint.
+/// Schema cross-referenced against `Fraymakers/character-template`.
+fn generate_manifest_meta(guid: &str) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "export": true,
+        "guid": guid,
+        "id": "manifest",
+        "language": "json",
+        "pluginMetadata": {
+            "com.fraymakers.FraymakersMetadata": { "version": "0.1.0" }
+        },
+        "plugins": [],
+        "tags": [],
+        "version": 1
+    })).unwrap_or_default()
+}
 
 /// Which kind of `.hx.meta` sidecar to emit. The choice determines the
 /// `language`, `pluginMetadata`, and `plugins` fields — values are taken
