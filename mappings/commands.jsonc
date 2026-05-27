@@ -44,6 +44,21 @@
     { "from": ".getXSpeed()", "to": ".getXVelocity()" },
     { "from": ".getYSpeed()", "to": ".getYVelocity()" },
 
+    // FM API renames — confirmed against Fraymakers/api-types-plugin (the
+    // authoritative TS declarations of every class+method) and real usage in
+    // Fraymakers/character-template's Script.hx and character.entity.
+    { "from": ".getOpponents(",          "to": ".getFoes(" },
+    { "from": ".getGrabbedOpponents(",   "to": ".getAllGrabbedFoes(" },
+    { "from": ".getGrabbedOpponent(",    "to": ".getGrabbedFoe(" },
+    { "from": ".setVisibility(",         "to": ".setVisible(" },
+    { "from": ".forceHitStun(",          "to": ".forceStartHitstun(" },
+    { "from": ".getUID(",                "to": ".getUid(" },
+    { "from": ".getID(",                 "to": ".getUid(" },
+    { "from": ".getTeamID(",             "to": ".getTeam(" },
+    { "from": ".getCostume(",            "to": ".getCostumeIndex(" },
+    { "from": ".getCurrentAnimation(",   "to": ".getAnimation(" },
+    { "from": ".bringBehind(",           "to": ".sendBehind(" },
+
     // State transitions
     { "from": ".toLand()", "to": ".toState(CState.LAND)" },
     { "from": ".toHelpless()", "to": ".toState(CState.FALL_SPECIAL)" },
@@ -134,6 +149,36 @@
     { "name": "finalFramePlayed", "note": "Projectile / animation runtime check" },
     { "name": "getContent", "note": "Fraymakers resource API" },
     { "name": "getResource", "note": "Fraymakers resource API" },
+
+    // Confirmed against Fraymakers/api-types-plugin TS declarations + real
+    // usage in Fraymakers/character-template (Script.hx + character.entity).
+    // Position / transform
+    { "name": "getX",                  "note": "Entity coordinate accessor — same name" },
+    { "name": "getY",                  "note": "Entity coordinate accessor — same name" },
+    { "name": "setX",                  "note": "Entity coordinate setter — same name" },
+    { "name": "setY",                  "note": "Entity coordinate setter — same name" },
+    { "name": "flipX",                 "note": "Entity.flipX(value:Float):Float — multiplies value by -1 when facing left" },
+    { "name": "flip",                  "note": "Entity.flip() — confirmed in character-template Script.hx" },
+    { "name": "faceLeft",              "note": "Entity.faceLeft()" },
+    { "name": "faceRight",             "note": "Entity.faceRight()" },
+    { "name": "setRotation",           "note": "Entity.setRotation(value:Float):Float" },
+    { "name": "getRotation",           "note": "Entity.getRotation():Float" },
+    { "name": "resetRotation",         "note": "Entity.resetRotation():Void" },
+    // State / stats
+    { "name": "getState",              "note": "Entity.getState():Int" },
+    { "name": "inState",               "note": "Character.inState(CState.*):Bool — confirmed in character-template" },
+    { "name": "getType",               "note": "Entity.getType():Int" },
+    { "name": "isDisposed",            "note": "Entity.isDisposed():Bool" },
+    { "name": "getDamage",             "note": "GameObject.getDamage():Float" },
+    { "name": "setDamage",             "note": "GameObject.setDamage(dmg:Float):Float" },
+    { "name": "getCharacterStat",      "note": "Character.getCharacterStat(name:String):Dynamic" },
+    { "name": "updateCharacterStats",  "note": "Character.updateCharacterStats(stats:CharacterStatsProps):Void" },
+    { "name": "getProjectileStat",     "note": "Projectile.getProjectileStat(name:String):Dynamic" },
+    { "name": "updateProjectileStats", "note": "Projectile.updateProjectileStats(stats:ProjectileStatsProps):Void" },
+    // Z-order / ownership
+    { "name": "swapDepths",            "note": "Entity.swapDepths(gameObject:GameObject):Void" },
+    { "name": "bringInFront",          "note": "Entity.bringInFront(gameObject:GameObject):Void" },
+    { "name": "setOwner",              "note": "GameObject.setOwner(owner:GameObject):Void" },
   ],
 
   // ─── SSF2-only calls (commented out in output) ─────────────────────────
@@ -147,8 +192,9 @@
     { "name": "addEffectToList", "note": "already partially handled above; this catches the remainder" },
     { "name": "fireProjectile", "note": "needs CustomGameObject — manual port" },
     { "name": "getCurrentProjectile", "note": "needs CustomGameObject — manual port" },
-    { "name": "getGrabbedOpponent", "note": "different grab model in FM" },
-    { "name": "releaseOpponent", "note": "different grab model in FM" },
+    // getGrabbedOpponent → getGrabbedFoe is now in `replacements` above
+    // (FM does expose a direct grabbed-foe accessor; earlier note was wrong).
+    { "name": "releaseOpponent", "note": "different grab model in FM (Fraymakers has releaseCharacter(target, grabReleaseKb?) and releaseAllCharacters(grabReleaseKb) — signature differs, manual port)" },
     { "name": "swapDepthsWithGrabbedOpponent" },
     { "name": "gotoAndStop", "note": "timeline nav; no FM equivalent" },
     { "name": "jumpToContinue", "note": "SSF2 jump-to-continue loop; no FM equivalent" },
