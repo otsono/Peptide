@@ -137,29 +137,28 @@ pub fn parse_sounds(swf: &[u8]) -> Result<Vec<SoundEntry>> {
     Ok(sounds.into_values().collect())
 }
 
-// ─── Convert one SoundEntry to OGG via FLV intermediary ──────────────────────
+// ─── Convert one SoundEntry to WAV via FLV intermediary ──────────────────────
 
-pub fn convert_to_ogg(entry: &SoundEntry, out_path: &Path) -> Result<()> {
+pub fn convert_to_wav(entry: &SoundEntry, out_path: &Path) -> Result<()> {
     match entry.fmt {
-        FMT_NELLYMOSER | FMT_NELLYMOSER8 => convert_nellymoser_to_ogg(entry, out_path),
-        FMT_MP3   => convert_mp3_to_ogg(entry, out_path),
+        FMT_NELLYMOSER | FMT_NELLYMOSER8 => convert_nellymoser_to_wav(entry, out_path),
+        FMT_MP3   => convert_mp3_to_wav(entry, out_path),
         FMT_ADPCM => convert_via_flv(entry, out_path),
         other => bail!("Unsupported sound format {} for '{}'", other, entry.name),
     }
 }
 
-fn convert_nellymoser_to_ogg(entry: &SoundEntry, out_path: &Path) -> Result<()> {
-    // Wrap raw Nellymoser bytes in a minimal FLV audio-only file, then ffmpeg → OGG
+fn convert_nellymoser_to_wav(entry: &SoundEntry, out_path: &Path) -> Result<()> {
+    // Wrap raw Nellymoser bytes in a minimal FLV audio-only file, then ffmpeg → WAV
     let flv = build_nellymoser_flv(entry);
 
-    // Write FLV to a temp file
     let tmp_flv = out_path.with_extension("tmp.flv");
     std::fs::write(&tmp_flv, &flv)?;
 
     let output = Command::new("ffmpeg")
         .args(["-y", "-i"])
         .arg(&tmp_flv)
-        .args(["-c:a", "libopus", "-b:a", "96k", "-vn"])
+        .args(["-c:a", "pcm_s16le", "-vn"])
         .arg(out_path)
         .output()?;
 
@@ -167,14 +166,13 @@ fn convert_nellymoser_to_ogg(entry: &SoundEntry, out_path: &Path) -> Result<()> 
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // grab last 3 lines of stderr for the real error
         let msg: String = stderr.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
         bail!("ffmpeg failed for '{}': {}", entry.name, msg);
     }
     Ok(())
 }
 
-fn convert_mp3_to_ogg(entry: &SoundEntry, out_path: &Path) -> Result<()> {
+fn convert_mp3_to_wav(entry: &SoundEntry, out_path: &Path) -> Result<()> {
     // SWF MP3 has a 2-byte SeekSamples header we skip
     let mp3_data = if entry.data.len() > 2 { &entry.data[2..] } else { &entry.data[..] };
     let tmp_mp3 = out_path.with_extension("tmp.mp3");
@@ -183,7 +181,7 @@ fn convert_mp3_to_ogg(entry: &SoundEntry, out_path: &Path) -> Result<()> {
     let status = Command::new("ffmpeg")
         .args(["-y", "-i"])
         .arg(&tmp_mp3)
-        .args(["-c:a", "libopus", "-b:a", "96k", "-vn"])
+        .args(["-c:a", "pcm_s16le", "-vn"])
         .arg(out_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -191,7 +189,7 @@ fn convert_mp3_to_ogg(entry: &SoundEntry, out_path: &Path) -> Result<()> {
 
     let _ = std::fs::remove_file(&tmp_mp3);
     if !status.success() {
-        bail!("ffmpeg failed converting MP3 '{}' to OGG", entry.name);
+        bail!("ffmpeg failed converting MP3 '{}' to WAV", entry.name);
     }
     Ok(())
 }
@@ -203,14 +201,14 @@ fn convert_via_flv(entry: &SoundEntry, out_path: &Path) -> Result<()> {
     std::fs::write(&tmp, &flv)?;
     let status = Command::new("ffmpeg")
         .args(["-y", "-i"]).arg(&tmp)
-        .args(["-c:a", "libopus", "-b:a", "96k", "-vn"])
+        .args(["-c:a", "pcm_s16le", "-vn"])
         .arg(out_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()?;
     let _ = std::fs::remove_file(&tmp);
     if !status.success() {
-        bail!("ffmpeg failed converting ADPCM '{}' to OGG", entry.name);
+        bail!("ffmpeg failed converting ADPCM '{}' to WAV", entry.name);
     }
     Ok(())
 }
@@ -313,16 +311,16 @@ pub fn extract_all_sounds(swf: &[u8], out_dir: &Path, char_id: &str) -> Result<V
             .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
             .collect();
 
-        let out_path = out_dir.join(format!("{}.ogg", safe_name));
+        let out_path = out_dir.join(format!("{}.wav", safe_name));
 
         if out_path.exists() {
             skip += 1;
             continue;
         }
 
-        match convert_to_ogg(entry, &out_path) {
+        match convert_to_wav(entry, &out_path) {
             Ok(()) => {
-                log::debug!("  {} → {}.ogg ({:.2}s)", entry.name, safe_name, entry.duration_secs());
+                log::debug!("  {} → {}.wav ({:.2}s)", entry.name, safe_name, entry.duration_secs());
                 ok += 1;
             }
             Err(e) => {

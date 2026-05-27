@@ -1035,64 +1035,40 @@ fn generate_manifest(char_id: &str, display_name: &str, projectile_names: &[Stri
 
 // ─── Sound content entries ────────────────────────────────────────────────────
 
-/// Generate manifest content entries + .meta sidecar files for extracted sounds.
-/// Sounds live in library/sounds/*.ogg and are referenced by content id
-/// "{char_name}::{sound_name}" so Script.hx can call AudioClip.play("mario::mario_jumpsfx").
+/// Write a `.wav.meta` sidecar next to each extracted audio file, matching
+/// the schema observed in `Fraymakers/character-template` (id = filename
+/// sans `.wav`, plus pluginMetadata + plugins references). No central audio
+/// manifest is needed: reference characters register sounds purely through
+/// these per-file sidecars.
 fn generate_sound_entries(
     char_dir: &Path,
     char_name: &str,
     sounds: &[crate::sound_extractor::SoundEntry],
 ) -> Result<()> {
-    let sounds_dir = char_dir.join("library/sounds");
-    fs::create_dir_all(&sounds_dir)?;
+    let audio_dir = char_dir.join("library/audio");
+    fs::create_dir_all(&audio_dir)?;
 
-    // Build a sounds manifest listing all audio content ids
-    let sound_entries: Vec<serde_json::Value> = sounds.iter().map(|s| {
-        let safe_name: String = s.name.chars()
-            .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
-            .collect();
-        let content_id = format!("{}::{}", char_name, safe_name);
-        let ogg_path   = format!("sounds/{}.ogg", safe_name);
-        serde_json::json!({
-            "id":      content_id,
-            "type":    "audio",
-            "path":    ogg_path,
-            "metadata": {
-                "originalName": s.name,
-                "sampleRate":   s.sample_rate,
-                "sampleCount":  s.sample_count,
-                "durationSecs": s.duration_secs(),
-            }
-        })
-    }).collect();
-
-    // Write sounds_manifest.json alongside the main manifest
-    let sounds_manifest = serde_json::json!({
-        "sounds": sound_entries,
-        "_note": "Content ids for use in Script.hx: AudioClip.play(\"<id>\")"
-    });
-    fs::write(
-        char_dir.join("library/sounds_manifest.json"),
-        serde_json::to_string_pretty(&sounds_manifest)?,
-    )?;
-
-    // Write a .meta sidecar for each OGG file that exists
     for s in sounds {
         let safe_name: String = s.name.chars()
             .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
             .collect();
-        let ogg_path = sounds_dir.join(format!("{}.ogg", safe_name));
-        if !ogg_path.exists() { continue; }
+        let wav_path = audio_dir.join(format!("{}.wav", safe_name));
+        if !wav_path.exists() { continue; }
 
-        let content_id = format!("{}::{}", char_name, safe_name);
+        // content id = filename sans .wav — referenced from CharacterStats
+        // voice arrays and from AudioClip.play(self.getResource().getContent(<id>))
         let guid = det_uuid(&format!("{}::sound_meta_{}", char_name, safe_name));
         let meta = serde_json::json!({
-            "guid": guid,
-            "id":   content_id,
-            "type": "audio"
+            "export": true,
+            "guid":   guid,
+            "id":     safe_name,
+            "pluginMetadata": {},
+            "plugins": ["com.fraymakers.FraymakersMetadata"],
+            "tags":    [],
+            "version": 1
         });
         fs::write(
-            sounds_dir.join(format!("{}.ogg.meta", safe_name)),
+            audio_dir.join(format!("{}.wav.meta", safe_name)),
             serde_json::to_string_pretty(&meta)?,
         )?;
     }
@@ -1163,7 +1139,7 @@ fn script_meta(id: &str, guid: &str, kind: ScriptMetaKind) -> String {
         CharacterScript => serde_json::json!({
             "com.fraymakers.FraymakersMetadata": {
                 "objectType": "CHARACTER",
-                "version": "0.1.2"
+                "version": "0.3.0"
             }
         }),
         ProjectileScript => serde_json::json!({

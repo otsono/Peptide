@@ -284,7 +284,7 @@ fn process_character(
         img_result.images.len(), img_result.anim_images.len());
 
     // Extract sounds
-    let sounds_dir = char_output_dir.join("library/sounds");
+    let sounds_dir = char_output_dir.join("library/audio");
     let sounds = match sound_extractor::extract_all_sounds(swf_data, &sounds_dir, char_name) {
         Ok(s) => s,
         Err(e) => { log::warn!("sound_extractor failed: {}", e); vec![] }
