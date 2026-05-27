@@ -319,6 +319,10 @@ pub fn generate_entity(
                                     let body = extract_function_body(&script.code);
                                     let body = crate::api_mappings::double_frame_counts(&body);
                                     let body = crate::api_mappings::translate_ssf2_to_fm(&body);
+                                    let var_types = crate::api_mappings::infer_ext_var_types(
+                                        &data.ext_vars, &data.ext_var_inits);
+                                    let body = crate::api_mappings::wrap_persistent_state(
+                                        &body, &var_types);
                                     frame_code.insert(local_frame, body);
                                 }
                             }

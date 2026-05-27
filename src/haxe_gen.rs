@@ -826,16 +826,23 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     );
 
     // Instance variables carried over from the SSF2 XxxExt class (its
-    // Slot/Const traits — `public var foo:T;`). Emitted untyped at top
-    // level so the references later in the translated methods aren't
-    // undeclared. Types and initial values are not carried; review and
-    // assign defaults as needed (often in initialize() via self.foo = ...).
+    // Slot/Const traits — `public var foo:T;`). Emitted as Fraymakers
+    // persistent-state wrappers: `var foo = self.makeInt(0)` /
+    // `self.makeBool(false)` / `self.makeObject(null)`, with the kind
+    // inferred from each var's init expression in `ext_var_inits`.
+    // Wrapped wrappers expose `.get() / .set(v) / .inc() / .dec()`.
+    let var_types = crate::api_mappings::infer_ext_var_types(&data.ext_vars, &data.ext_var_inits);
     if !data.ext_vars.is_empty() {
         out.push_str("// ── Instance variables (from SSF2 ");
         out.push_str(&data.name);
-        out.push_str("Ext) ──────────────────────────\n");
+        out.push_str("Ext) — wrapped for FM persistent state ──\n");
         for v in &data.ext_vars {
-            out.push_str(&format!("var {};\n", v));
+            let (factory, default) = match var_types.get(v).copied().unwrap_or(crate::api_mappings::ExtVarType::Object) {
+                crate::api_mappings::ExtVarType::Bool   => ("makeBool", "false"),
+                crate::api_mappings::ExtVarType::Int    => ("makeInt", "0"),
+                crate::api_mappings::ExtVarType::Object => ("makeObject", "null"),
+            };
+            out.push_str(&format!("var {} = self.{}({});\n", v, factory, default));
         }
         out.push('\n');
     }
@@ -851,9 +858,24 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
         "\tself.addEventListener(GameObjectEvent.LINK_FRAMES, handleLinkFrames, {persistent:true});\n"
     );
     for (name, expr) in &data.ext_var_inits {
-        let needle = format!("self.{} = ", name);
-        if !init_body_text.contains(&needle) {
-            init_setup.push_str(&format!("\tself.{} = {};\n", name, expr));
+        // Skip names the SSF2 initialize body already covers — match both
+        // the legacy `self.X = ` form (in case the merged body hasn't been
+        // wrapped yet) and the new `X.set(` form.
+        let legacy_needle = format!("self.{} = ", name);
+        let wrapped_needle = format!("{}.set(", name);
+        if !init_body_text.contains(&legacy_needle) && !init_body_text.contains(&wrapped_needle) {
+            // Skip emitting an initial assignment when the wrapper's own
+            // default already matches (e.g. `var foo = self.makeBool(false)`
+            // doesn't need `foo.set(false)` right after).
+            let default_already_matches = matches!(
+                (var_types.get(name).copied(), expr.trim()),
+                (Some(crate::api_mappings::ExtVarType::Bool), "false")
+                | (Some(crate::api_mappings::ExtVarType::Int), "0")
+                | (Some(crate::api_mappings::ExtVarType::Object), "null"),
+            );
+            if !default_already_matches {
+                init_setup.push_str(&format!("\t{}.set({});\n", name, expr));
+            }
         }
     }
     emit_tpl(&mut out, "//Runs on object init\n", "function initialize(){\n",
@@ -890,6 +912,12 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
 
     // Full-script post-pass: fix paired setIntangibility calls
     out = crate::api_mappings::fix_intangibility_pairs(&out);
+
+    // Full-script post-pass: rewrite SSF2 instance-variable references
+    // into Fraymakers persistent-state wrappers (`.get()/.set()/.inc()/
+    // .dec()`). Frame scripts embedded in the entity get the same rewrite
+    // in entity_gen so cross-file references stay consistent.
+    out = crate::api_mappings::wrap_persistent_state(&out, &var_types);
 
     out
 }

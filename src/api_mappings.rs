@@ -747,6 +747,87 @@ pub fn fix_intangibility_pairs(full_script: &str) -> String {
 /// This is what makes `passthrough_fm_apis` functional — listing a name
 /// there suppresses it from this "unknown call" stream. Run with
 /// `RUST_LOG=debug` to surface new SSF2 calls that need attention.
+/// Inferred type for an SSF2 instance variable, picked from `ext_var_inits`.
+/// Drives which `self.make<Kind>(default)` wrapper is used when rewriting
+/// the var declaration, and whether `.inc()`/`.dec()` are emitted for
+/// increment/decrement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtVarType { Bool, Int, Object }
+
+/// Classify each ext_var as Bool / Int / Object based on its initial-value
+/// expression in `ext_var_inits`. Vars with no init expression — or whose
+/// init isn't a clean literal — fall back to Object (which can hold any
+/// value; only the optional `.inc()` / `.dec()` shorthands need Int).
+pub fn infer_ext_var_types(
+    ext_vars: &[String],
+    ext_var_inits: &[(String, String)],
+) -> std::collections::BTreeMap<String, ExtVarType> {
+    let init_lookup: std::collections::BTreeMap<&String, &String> =
+        ext_var_inits.iter().map(|(n, e)| (n, e)).collect();
+    let mut out = std::collections::BTreeMap::new();
+    for name in ext_vars {
+        let kind = match init_lookup.get(name).map(|s| s.trim()) {
+            Some("true") | Some("false") => ExtVarType::Bool,
+            Some(s) if s.parse::<i64>().is_ok() => ExtVarType::Int,
+            Some(s) if s.parse::<f64>().is_ok() => ExtVarType::Int,
+            _ => ExtVarType::Object,
+        };
+        out.insert(name.clone(), kind);
+    }
+    out
+}
+
+/// Wrap SSF2 instance-variable accesses into Fraymakers' persistent-state
+/// wrappers. Pattern (from Fraymakers/character-template Script.hx):
+///
+///   ```
+///   var counter = self.makeInt(0);   // declaration
+///   counter.set(5);                  // assignment
+///   counter.get();                   // read
+///   counter.inc();                   // ++
+///   counter.dec();                   // --
+///   ```
+///
+/// Affects only references to names in `var_types`; other `self.X` calls
+/// (FM API methods, fields) are left alone. Safe to run multiple times —
+/// the rewrites are idempotent because they no longer contain `self.<name>`.
+///
+/// Called on Script.hx and on each translated entity frame-script body
+/// with the same type map, so cross-file references stay consistent.
+pub fn wrap_persistent_state(
+    code: &str,
+    var_types: &std::collections::BTreeMap<String, ExtVarType>,
+) -> String {
+    if var_types.is_empty() { return code.to_string(); }
+    let mut result = code.to_string();
+    for (name, kind) in var_types {
+        // Increment / decrement (Int only — Object/Bool don't have .inc/.dec).
+        if *kind == ExtVarType::Int {
+            let re_inc = regex::Regex::new(&format!(r"\bself\.{}\+\+", regex::escape(name))).unwrap();
+            result = re_inc.replace_all(&result, format!("{}.inc()", name)).into_owned();
+            let re_dec = regex::Regex::new(&format!(r"\bself\.{}--", regex::escape(name))).unwrap();
+            result = re_dec.replace_all(&result, format!("{}.dec()", name)).into_owned();
+        }
+        // Assignment (`self.foo = X` → `foo.set(X)`). Match a single `=` with
+        // optional surrounding whitespace, not `==` and not `+=`/`-=`/etc.
+        // — those are handled separately or fall through to .get()-based
+        // rewrites the user can clean up by eye.
+        let assign_re = regex::Regex::new(
+            &format!(r"\bself\.{}\s*=\s*(?P<rhs>[^=;\n][^;\n]*?);", regex::escape(name))
+        ).unwrap();
+        result = assign_re.replace_all(&result, format!("{}.set($rhs);", name)).into_owned();
+        // Read (`self.foo` not followed by `=`, `++`, `--`, or `.`). The
+        // negative-lookahead form isn't available in the `regex` crate, so
+        // we split on the boundary character and emit `.get()` only when the
+        // next char is whitespace, punctuation, or end-of-expression.
+        // Field/method chains (`self.foo.bar`) get `foo.get().bar` which is
+        // the desired form.
+        let read_re = regex::Regex::new(&format!(r"\bself\.{}\b", regex::escape(name))).unwrap();
+        result = read_re.replace_all(&result, format!("{}.get()", name)).into_owned();
+    }
+    result
+}
+
 pub fn comment_out_unknown_calls(code: &str) -> String {
     let cfg = crate::mappings::api_commands();
     // Build the `.NAME(` match strings from the JSON ssf2_only list.
