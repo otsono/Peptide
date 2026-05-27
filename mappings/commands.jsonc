@@ -213,7 +213,7 @@
         //
         // Boolean flags
         "cancelWhenAirborne": "updateAnimationStats.leaveGroundCancel",
-        "allowControl":       "updateAnimationStats.interruptible",
+        "allowControl":       "updateAnimationStats.allowMovement",
         // Charge timing (chargetime_max is in frame_params → doubled
         // before this stage; the rendered FM value is the 60fps count).
         "chargetime_max":     "updateAnimationStats.chargeFramesMax",
