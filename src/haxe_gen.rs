@@ -33,10 +33,10 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
     fs::write(scripts_dir.join("Script.hx"),         generate_script(data, &char_id, populated_jabs))?;
 
     // .meta sidecar files for character scripts
-    fs::write(scripts_dir.join("HitboxStats.hx.meta"),    script_meta(&format!("{}HitboxStats", char_id),    &det_uuid(&format!("{}::HitboxStats::meta", char_id)),    false))?;
-    fs::write(scripts_dir.join("CharacterStats.hx.meta"), script_meta(&format!("{}CharacterStats", char_id), &det_uuid(&format!("{}::CharacterStats::meta", char_id)), false))?;
-    fs::write(scripts_dir.join("AnimationStats.hx.meta"), script_meta(&format!("{}AnimationStats", char_id), &det_uuid(&format!("{}::AnimationStats::meta", char_id)), false))?;
-    fs::write(scripts_dir.join("Script.hx.meta"),         script_meta(&format!("{}Script", char_id),         &det_uuid(&format!("{}::Script::meta", char_id)),         false))?;
+    fs::write(scripts_dir.join("HitboxStats.hx.meta"),    script_meta(&format!("{}HitboxStats", char_id),    &det_uuid(&format!("{}::HitboxStats::meta", char_id)),    ScriptMetaKind::CharacterHitboxStats))?;
+    fs::write(scripts_dir.join("CharacterStats.hx.meta"), script_meta(&format!("{}CharacterStats", char_id), &det_uuid(&format!("{}::CharacterStats::meta", char_id)), ScriptMetaKind::CharacterStats))?;
+    fs::write(scripts_dir.join("AnimationStats.hx.meta"), script_meta(&format!("{}AnimationStats", char_id), &det_uuid(&format!("{}::AnimationStats::meta", char_id)), ScriptMetaKind::CharacterAnimationStats))?;
+    fs::write(scripts_dir.join("Script.hx.meta"),         script_meta(&format!("{}Script", char_id),         &det_uuid(&format!("{}::Script::meta", char_id)),         ScriptMetaKind::CharacterScript))?;
 
     // .fraytools project file
     fs::write(char_dir.join(format!("{}.fraytools", char_name)), fraytools_project::generate_fraytools_project(char_name))?;
@@ -219,7 +219,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
             script_meta(
                 &format!("{}ProjectileScript", entity_id),
                 &det_uuid(&format!("{}::{}::ProjectileScript::meta", char_id, proj.name)),
-                true,
+                ScriptMetaKind::ProjectileScript,
             ),
         )?;
         fs::write(
@@ -231,7 +231,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
             script_meta(
                 &format!("{}ProjectileAnimationStats", entity_id),
                 &det_uuid(&format!("{}::{}::ProjectileAnimationStats::meta", char_id, proj.name)),
-                false,
+                ScriptMetaKind::ProjectileAnimationStats,
             ),
         )?;
         fs::write(
@@ -243,7 +243,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
             script_meta(
                 &format!("{}ProjectileStats", entity_id),
                 &det_uuid(&format!("{}::{}::ProjectileStats::meta", char_id, proj.name)),
-                false,
+                ScriptMetaKind::ProjectileStats,
             ),
         )?;
         fs::write(
@@ -255,7 +255,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
             script_meta(
                 &format!("{}ProjectileHitboxStats", entity_id),
                 &det_uuid(&format!("{}::{}::ProjectileHitboxStats::meta", char_id, proj.name)),
-                false,
+                ScriptMetaKind::ProjectileHitboxStats,
             ),
         )?;
         log::info!("Generated projectile scripts for {}", proj.name);
@@ -1107,25 +1107,75 @@ fn sanitize_entity_name(name: &str) -> String {
 
 // ─── Projectile script generators ─────────────────────────────────────────────
 
-/// Generate a .hx.meta sidecar for a script file.
-/// `is_projectile_script` adds FraymakersMetadata plugin block.
-fn script_meta(id: &str, guid: &str, is_projectile: bool) -> String {
-    let plugin_meta = if is_projectile {
-        serde_json::json!({
+/// Which kind of `.hx.meta` sidecar to emit. The choice determines the
+/// `language`, `pluginMetadata`, and `plugins` fields — values are taken
+/// verbatim from the Fraymakers/character-template reference repo so that
+/// FrayTools recognises our exports the same way it does first-party ones.
+#[derive(Copy, Clone)]
+pub enum ScriptMetaKind {
+    /// Character `Script.hx.meta` — objectType=CHARACTER + plugin listed.
+    CharacterScript,
+    /// `CharacterStats.hx.meta` — plugin listed, plugin version 0.4.0.
+    CharacterStats,
+    /// `AnimationStats.hx.meta` — pluginMetadata version only, no plugin.
+    CharacterAnimationStats,
+    /// `HitboxStats.hx.meta` — pluginMetadata version only, no plugin.
+    CharacterHitboxStats,
+    /// Projectile `ProjectileScript.hx.meta` — objectType=PROJECTILE + plugin.
+    ProjectileScript,
+    /// Projectile companion stats files — empty pluginMetadata, no plugin.
+    ProjectileStats,
+    /// Projectile companion stats files — empty pluginMetadata, no plugin.
+    ProjectileAnimationStats,
+    /// Projectile companion stats files — empty pluginMetadata, no plugin.
+    ProjectileHitboxStats,
+}
+
+/// Generate a `.hx.meta` sidecar matching the Fraymakers reference layout.
+/// All script-kind .meta files use `language: "hscript"`. The
+/// `pluginMetadata` shape and `plugins` array vary by kind — see the enum
+/// docs. Cross-referenced against Fraymakers/character-template.
+fn script_meta(id: &str, guid: &str, kind: ScriptMetaKind) -> String {
+    use ScriptMetaKind::*;
+    // `plugin_meta` always contains a `com.fraymakers.FraymakersMetadata`
+    // entry except for the projectile companion stats files, which use an
+    // empty object in the reference.
+    let plugin_meta = match kind {
+        CharacterScript => serde_json::json!({
+            "com.fraymakers.FraymakersMetadata": {
+                "objectType": "CHARACTER",
+                "version": "0.1.2"
+            }
+        }),
+        ProjectileScript => serde_json::json!({
             "com.fraymakers.FraymakersMetadata": {
                 "objectType": "PROJECTILE",
                 "version": "0.1.1"
             }
-        })
-    } else {
-        serde_json::json!({})
+        }),
+        CharacterStats => serde_json::json!({
+            "com.fraymakers.FraymakersMetadata": { "version": "0.4.0" }
+        }),
+        CharacterAnimationStats | CharacterHitboxStats => serde_json::json!({
+            "com.fraymakers.FraymakersMetadata": { "version": "0.1.0" }
+        }),
+        ProjectileStats | ProjectileAnimationStats | ProjectileHitboxStats => {
+            serde_json::json!({})
+        }
     };
-    let plugins: Vec<&str> = if is_projectile { vec!["com.fraymakers.FraymakersMetadata"] } else { vec![] };
+    // `plugins` is listed only on the files the reference flags it on: the
+    // character + projectile Script.hx.meta and CharacterStats.hx.meta.
+    let plugins: Vec<&str> = match kind {
+        CharacterScript | ProjectileScript | CharacterStats => {
+            vec!["com.fraymakers.FraymakersMetadata"]
+        }
+        _ => vec![],
+    };
     serde_json::to_string_pretty(&serde_json::json!({
         "export": true,
         "guid": guid,
         "id": id,
-        "language": if is_projectile { "hscript" } else { "" },
+        "language": "hscript",
         "pluginMetadata": plugin_meta,
         "plugins": plugins,
         "tags": [],
