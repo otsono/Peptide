@@ -31,12 +31,6 @@ struct Args {
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
-
-    /// Use the legacy inline (<X>Ext::get*Stats) extractor instead of the
-    /// default bundle (Main::get<X>) path. Escape hatch for one release;
-    /// removed in Step C of the path 2 migration.
-    #[arg(long)]
-    legacy_inline: bool,
 }
 
 fn main() -> Result<()> {
@@ -103,11 +97,7 @@ fn main() -> Result<()> {
         vec![name]
     } else {
         // Auto-detect all root character MCs in the SWF
-        let detected = if args.legacy_inline {
-            detect_char_names_legacy_inline(&swf, &args.input)
-        } else {
-            detect_char_names(&swf, &args.input)
-        };
+        let detected = detect_char_names(&swf, &args.input);
         if detected.is_empty() {
             // Fallback: use filename
             let fallback = args.input
@@ -127,7 +117,6 @@ fn main() -> Result<()> {
         log::info!("─── Processing: {} ───", char_name);
         if let Err(e) = process_character(
             &swf_data, &swf, char_name, &args.output, costumes_path.as_deref(),
-            args.legacy_inline,
         ) {
             log::error!("Failed to process {}: {}", char_name, e);
         }
@@ -193,25 +182,6 @@ fn extract_costumes_to_temp(misc_ssf: &std::path::Path) -> Result<PathBuf> {
 /// the naming convention but is actually a projectile, an engine base
 /// class, or some other helper.
 ///
-/// Path-1 legacy marker constant. Reserved for `--legacy-inline` only;
-/// removed in Step C of the path 2 migration.
-const CHARACTER_MARKER_METHODS: &[&str] = &[
-    "getOwnStats",
-    "getAttackStats",
-    "getProjectileStats",
-];
-
-/// Path-1 legacy `*Ext` predicate. Reserved for `--legacy-inline` only;
-/// removed in Step C.
-fn is_character_ext_class(class: &abc_parser::Class) -> bool {
-    let Some(prefix) = class.name.strip_suffix("Ext") else { return false };
-    if prefix.len() < 2 || !prefix.chars().all(|c| c.is_ascii_alphabetic()) {
-        return false;
-    }
-    class.instance_methods.iter()
-        .any(|t| CHARACTER_MARKER_METHODS.contains(&t.name.as_str()))
-}
-
 /// Derive the canonical character id from a `Main::get<X>()` method name.
 /// Per `docs/path2_unification_plan.md` §1: strip `get`, lowercase the
 /// remainder, preserve explicit `_` characters. Examples:
@@ -256,33 +226,6 @@ fn detect_char_names(swf: &ssf2_converter::swf_parser::SwfFile, _input_path: &Pa
     names
 }
 
-/// Path-1 legacy detect: scans `*Ext` classes with marker methods.
-/// Reserved for `--legacy-inline` only; removed in Step C.
-fn detect_char_names_legacy_inline(swf: &ssf2_converter::swf_parser::SwfFile, input_path: &PathBuf) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for abc_bytes in &swf.abc_blocks {
-        let Ok(abc) = abc_parser::parse(abc_bytes) else { continue; };
-        for class in &abc.classes {
-            if is_character_ext_class(class) {
-                let prefix = class.name.strip_suffix("Ext").unwrap();
-                names.push(prefix.to_lowercase());
-            }
-        }
-    }
-    let mut seen = std::collections::HashSet::new();
-    names.retain(|n| seen.insert(n.clone()));
-    if names.is_empty() { return names; }
-    let stem = input_path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-    let resolved: Vec<String> = names.iter().map(|n| {
-        if stem.starts_with(n.as_str()) { stem.clone() }
-        else if n.starts_with(stem.as_str()) { n.clone() }
-        else { n.clone() }
-    }).collect();
-    let mut seen2 = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for n in resolved { if seen2.insert(n.clone()) { out.push(n); } }
-    out
-}
 
 fn process_character(
     swf_data: &[u8],
@@ -290,7 +233,6 @@ fn process_character(
     char_name: &str,
     output: &PathBuf,
     costumes: Option<&std::path::Path>,
-    legacy_inline: bool,
 ) -> Result<()> {
     // Fresh conversion log for this character — counts unknown / SSF2-only
     // calls so we can write conversion_log.json next to the exported files
@@ -309,7 +251,7 @@ fn process_character(
         .map_err(|e| anyhow::anyhow!("parse SWF for {}: {}", char_name, e))?;
 
     // Extract character data (ABC: attacks, stats, frame scripts, xframe map)
-    let mut char_data = extractor::extract(swf, char_name, legacy_inline)?;
+    let mut char_data = extractor::extract(swf, char_name)?;
     log::info!("Extracted: {} attacks, {} animations, {} ssf2→fm mappings",
         char_data.attacks.len(), char_data.animations.len(), char_data.ssf2_to_fm_anim.len());
 
@@ -416,82 +358,6 @@ fn write_conversion_log(char_dir: &std::path::Path, char_name: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ssf2_converter::abc_parser::{Class, Trait};
-
-    fn mk_class(name: &str, methods: &[&str]) -> Class {
-        Class {
-            name: name.to_string(),
-            super_name: String::new(),
-            instance_methods: methods.iter().map(|m| Trait {
-                name: m.to_string(),
-                kind: 1, // Method
-                method_idx: 0,
-                slot_idx: 0,
-            }).collect(),
-            class_methods: vec![],
-            constructor_idx: 0,
-        }
-    }
-
-    #[test]
-    fn character_ext_with_get_own_stats_is_accepted() {
-        // BandanaDeeExt-style: implements getOwnStats / getAttackStats /
-        // getProjectileStats. Should be classified as a character.
-        let c = mk_class("MarioExt", &["getOwnStats", "getAttackStats", "getProjectileStats"]);
-        assert!(is_character_ext_class(&c));
-    }
-
-    #[test]
-    fn projectile_ext_without_marker_methods_is_rejected() {
-        // DeeSpearExt is bandanadee's spear projectile. It happens to end
-        // in `Ext` but extends SSF2Projectile, not SSF2Character, and
-        // implements none of the character-marker methods. Must be
-        // rejected — otherwise we'd emit a spurious `deespear/` output
-        // dir alongside `bandanadee/`.
-        let c = mk_class("DeeSpearExt", &["update", "onCollision"]);
-        assert!(!is_character_ext_class(&c),
-            "projectile Ext without marker methods must NOT be classified as a character");
-    }
-
-    #[test]
-    fn framework_ssf2_character_ext_was_already_rejected_but_pin_it() {
-        // SSF2CharacterExt is the engine's own base class. The `prefix
-        // must be all alphabetic` rule rejects it via the digit `2`.
-        // Pin that the marker-method check ALSO rejects it (defence in
-        // depth) — if some future SWF carries a no-digit variant we'd
-        // still want it filtered.
-        let c = mk_class("SSF2CharacterExt", &[]);
-        assert!(!is_character_ext_class(&c));
-        let c = mk_class("FrameworkExt", &[]); // hypothetical no-digit framework ext
-        assert!(!is_character_ext_class(&c));
-    }
-
-    #[test]
-    fn non_ext_classes_are_rejected() {
-        let c = mk_class("Mario", &["getOwnStats"]);
-        assert!(!is_character_ext_class(&c));
-        let c = mk_class("MarioExtension", &["getOwnStats"]);
-        assert!(!is_character_ext_class(&c));
-    }
-
-    #[test]
-    fn too_short_prefix_rejected() {
-        let c = mk_class("AExt", &["getOwnStats"]);
-        assert!(!is_character_ext_class(&c),
-            "single-char prefix is too ambiguous to accept");
-    }
-
-    #[test]
-    fn any_one_marker_method_is_sufficient() {
-        // Real characters all have all three, but the predicate only
-        // requires ONE so future engines that drop a method don't
-        // suddenly fail recognition.
-        for m in CHARACTER_MARKER_METHODS {
-            let c = mk_class("FooExt", &[m]);
-            assert!(is_character_ext_class(&c),
-                "marker '{}' alone should be sufficient", m);
-        }
-    }
 
     #[test]
     fn derive_id_from_getter_covers_every_corpus_shape() {

@@ -99,8 +99,8 @@ impl Default for CharacterStats {
 
 // ─── Main extraction logic ───────────────────────────────────────────────────
 
-pub fn extract(swf: &SwfFile, char_name: &str, legacy_inline: bool) -> Result<CharacterData> {
-    log::info!("Extracting character data for '{}' (legacy_inline={})", char_name, legacy_inline);
+pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
+    log::info!("Extracting character data for '{}'", char_name);
 
     let mut all_attacks: BTreeMap<String, Vec<Hitbox>> = BTreeMap::new();
     let mut char_stats = CharacterStats::default();
@@ -117,11 +117,7 @@ pub fn extract(swf: &SwfFile, char_name: &str, legacy_inline: bool) -> Result<Ch
 
         match abc_parser::parse(abc_data) {
             Ok(abc) => {
-                let extracted = if legacy_inline {
-                    abc_parser::extract_character(&abc, char_name)?
-                } else {
-                    abc_parser::extract_character_bundle(&abc, char_name)?
-                };
+                let extracted = abc_parser::extract_character(&abc, char_name)?;
 
                 // Merge attacks
                 for (name, attack_data) in &extracted.attacks {

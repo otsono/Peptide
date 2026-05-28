@@ -656,7 +656,11 @@ fn extract_xframe_name(bytecode: &[u8], abc: &AbcFile) -> Option<String> {
     None
 }
 
-/// Extract character data by analyzing ABC bytecode
+/// Extract character data by analyzing ABC bytecode. Path-2 implementation:
+/// stats / attacks / projectiles come from `Main::get<X>()` (the "bundle"
+/// — see `docs/path2_unification_plan.md`); behavior code (frame scripts,
+/// ext methods, ext vars + inits) comes from the per-character `<X>Ext`
+/// class plus the main character MovieClip and per-character sub-MCs.
 pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedCharacter> {
     let mut attacks: BTreeMap<String, AttackData> = BTreeMap::new();
     let mut projectiles: BTreeMap<String, ProjectileData> = BTreeMap::new();
@@ -664,6 +668,16 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
     let mut frame_scripts: BTreeMap<String, Vec<FrameAction>> = BTreeMap::new();
     let mut ext_methods: BTreeMap<String, String> = BTreeMap::new();
     let mut xframe_map: XframeMap = BTreeMap::new();
+
+    // ── Stage A: stats / attacks / projectiles from Main::get<X>() ─────
+    if let Some((body, method_name)) = find_bundle_method(abc, char_name) {
+        log::info!("path-2: extracting Stage A from Main::{}", method_name);
+        attacks     = extract_attack_objects(&body.bytecode, abc);
+        projectiles = extract_projectile_objects(&body.bytecode, abc);
+        stats       = extract_ssf2_stats(&body.bytecode, abc);
+    } else {
+        log::warn!("path-2: no Main::get* matching {:?}; Stage B behavior code will still be extracted", char_name);
+    }
 
     // Build method name lookup: method_idx → name
     let mut method_names: BTreeMap<u32, String> = BTreeMap::new();
@@ -758,25 +772,12 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
         for t in &ext.instance_methods {
             let Some(body) = body_by_method.get(&t.method_idx) else { continue };
             match t.name.as_str() {
-                "getOwnStats" => {
-                    // getOwnStats contains the big character stats newobject.
-                    // We scan the bytecode for specific SSF2 stat key pushes
-                    // followed by numeric values.
-                    if let Some(s) = extract_ssf2_stats(&body.bytecode, abc) {
-                        log::info!("getOwnStats: extracted {} stat values", s.values.len());
-                        stats = Some(s);
-                    }
-                }
-                "getAttackStats" => {
-                    let extracted = extract_attack_objects(&body.bytecode, abc);
-                    log::info!("getAttackStats: extracted {} attacks", extracted.len());
-                    attacks.extend(extracted);
-                }
-                "getProjectileStats" => {
-                    let extracted = extract_projectile_objects(&body.bytecode, abc);
-                    log::info!("getProjectileStats: extracted {} per-attack projectile entries", extracted.len());
-                    projectiles.extend(extracted);
-                }
+                // Stat getters are no-ops here — stats/attacks/projectiles
+                // come from Main::get<X>() (Stage A, applied at the top of
+                // this function). The names are still listed in the
+                // catch-all exclusion below so they don't end up in
+                // Script.hx as helper methods.
+                "getOwnStats" | "getAttackStats" | "getProjectileStats" | "getItemStats" => {}
                 name if name.starts_with("frame") => {
                     // Extract xframe animation name first (always, for animation name mapping)
                     if let Some(anim_name) = extract_xframe_name(&body.bytecode, abc) {
@@ -1255,43 +1256,6 @@ pub fn find_bundle_method<'a>(abc: &'a AbcFile, char_name: &str)
     })?;
     let body = abc.method_bodies.iter().find(|b| b.method_idx == getter.method_idx)?;
     Some((body, getter.name.clone()))
-}
-
-/// Path-2 extraction: stats / attacks / projectiles come from the
-/// `Main::get<X>()` bundle method body; behavior (Ext methods, ext_vars,
-/// frame_scripts, xframe_map) reuses Stage B from `extract_character`.
-///
-/// Because the bundle method body contains byte-identical object literals
-/// to the `<X>Ext::get*Stats` bodies (proven across the corpus — see
-/// `docs/path2_unification_plan.md` §0 / §1.5), running the existing
-/// `extract_ssf2_stats` / `extract_attack_objects` /
-/// `extract_projectile_objects` over the bundle body produces the same
-/// data as the inline path.
-///
-/// When no `Main::get<X>` is found for `char_name`, returns Stage B data
-/// only (stats/attacks/projectiles empty). Useful for misc.ssf-style
-/// SWFs or for characters that haven't appeared in the bundle yet.
-pub fn extract_character_bundle(abc: &AbcFile, char_name: &str) -> Result<ExtractedCharacter> {
-    let mut ec = extract_character(abc, char_name)?;
-
-    let Some((body, _method_name)) = find_bundle_method(abc, char_name) else {
-        log::warn!("path-2: no Main::get* matching {:?}; falling through with path-1 data", char_name);
-        return Ok(ec);
-    };
-
-    // Override Stage A with bundle-derived data.
-    // (Path 1's Stage A output gets discarded — wasteful but contained.
-    // The duplicate Stage A code in extract_character disappears in
-    // Step C when path 1 is deleted.)
-    let bundle_attacks      = extract_attack_objects(&body.bytecode, abc);
-    let bundle_projectiles  = extract_projectile_objects(&body.bytecode, abc);
-    let bundle_stats        = extract_ssf2_stats(&body.bytecode, abc);
-
-    ec.attacks     = bundle_attacks;
-    ec.projectiles = bundle_projectiles;
-    ec.stats       = bundle_stats.or(ec.stats);  // keep path-1's stats if bundle scan finds nothing
-
-    Ok(ec)
 }
 
 /// Symbolic value pushed onto the simulated AVM2 stack by `scan_method`
