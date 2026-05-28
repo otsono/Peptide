@@ -555,9 +555,102 @@ pub fn translate_ssf2_to_fm(code: &str) -> String {
         }
     }
 
+    // Context-aware self.attachEffect(...) → match.createVfx(...) rewrite.
+    // Needs the per-character effect→primary-animation map (set up by
+    // haxe_gen::generate via `with_effect_animations`); a static regex
+    // can't pick the right animation name for effects that split into
+    // multiple FrameLabel-derived animations.
+    result = rewrite_attach_effect_calls(&result);
+
     result = strip_last_frame_end_animation(&result);
     result = comment_out_unknown_calls(&result);
     result
+}
+
+thread_local! {
+    /// Per-character map of `<effect_name>` → first/primary animation name
+    /// in its emitted `.entity` file. Set at the top of `haxe_gen::generate`
+    /// via `with_effect_animations` and cleared on return. Used only by
+    /// `rewrite_attach_effect_calls`. Empty map = no effects discovered
+    /// (or we're outside a `with_effect_animations` scope) → all calls
+    /// fall through to the `ssf2_only` marker.
+    static EFFECT_PRIMARY_ANIMS: std::cell::RefCell<BTreeMap<String, String>>
+        = std::cell::RefCell::new(BTreeMap::new());
+}
+
+/// RAII guard that installs an effect→primary-animation map on
+/// construction and clears it on drop. Use at the top of a
+/// per-character generation pass so any `translate_ssf2_to_fm` call
+/// made on this thread (Character.entity frame scripts, Script.hx,
+/// per-attack scripts) gets context-aware attachEffect rewriting.
+pub struct EffectAnimGuard;
+
+impl EffectAnimGuard {
+    pub fn install(map: BTreeMap<String, String>) -> Self {
+        EFFECT_PRIMARY_ANIMS.with(|cell| { *cell.borrow_mut() = map; });
+        EffectAnimGuard
+    }
+}
+
+impl Drop for EffectAnimGuard {
+    fn drop(&mut self) {
+        EFFECT_PRIMARY_ANIMS.with(|cell| { cell.borrow_mut().clear(); });
+    }
+}
+
+/// Rewrite `self.attachEffect("name")` and `self.attachEffect("name", { props })`
+/// to `match.createVfx(new VfxStats({ spriteContent: …, animation: "<primary>" }), self)`.
+///
+/// Animation-name resolution:
+///   - If `name` is in the thread_local map (a local effect we extracted),
+///     use that effect's primary animation name — picks the right name
+///     even when the entity has multiple FrameLabel-derived animations.
+///   - If `name` is not in the map, fall back to `"vfx"`. Most unknown
+///     references are FM-global effects (`global_dust_blast`,
+///     `global_spark`, `itempickup_effect`, …) whose entities live in
+///     the engine's standard library and use the `"vfx"` convention.
+///     Worst case the animation is wrong → runtime warning; never worse
+///     than the original SSF2 call which we couldn't translate at all.
+///
+/// The 2-arg form preserves the original `{…}` props as a trailing TODO
+/// comment for hand-tuning, since prop semantics (x/y offset, scale,
+/// rotation, parentLock) don't map 1:1 to FM's VfxStats.
+pub fn rewrite_attach_effect_calls(code: &str) -> String {
+    static RE_2ARG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static RE_1ARG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_2arg = RE_2ARG.get_or_init(|| {
+        regex::Regex::new(r#"\bself\.attachEffect\(\s*"([^"]*)"\s*,\s*\{([^{}]*)\}\s*\)"#).unwrap()
+    });
+    let re_1arg = RE_1ARG.get_or_init(|| {
+        regex::Regex::new(r#"\bself\.attachEffect\(\s*"([^"]*)"\s*\)"#).unwrap()
+    });
+
+    EFFECT_PRIMARY_ANIMS.with(|cell| {
+        let map = cell.borrow();
+        let resolve = |name: &str| -> String {
+            map.get(name).cloned().unwrap_or_else(|| "vfx".to_string())
+        };
+        // 2-arg form first (more specific): preserve props as TODO comment.
+        let after_2arg = re_2arg.replace_all(code, |caps: &regex::Captures| {
+            let name = &caps[1];
+            let props = &caps[2];
+            let anim = resolve(name);
+            format!(
+                "match.createVfx(new VfxStats({{ spriteContent: self.getResource().getContent(\"{n}\"), animation: \"{a}\" }}), self) /* TODO port props: {{{p}}} */",
+                n = name, a = anim, p = props,
+            )
+        });
+        // 1-arg form.
+        let after_1arg = re_1arg.replace_all(&after_2arg, |caps: &regex::Captures| {
+            let name = &caps[1];
+            let anim = resolve(name);
+            format!(
+                "match.createVfx(new VfxStats({{ spriteContent: self.getResource().getContent(\"{n}\"), animation: \"{a}\" }}), self)",
+                n = name, a = anim,
+            )
+        });
+        after_1arg.into_owned()
+    })
 }
 
 /// Strip `self.endAnimation()` calls that appear alone on a line inside the

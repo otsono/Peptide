@@ -196,29 +196,13 @@
       "pattern": "\\.gotoAndPlay\\(\\s*(\\d+)\\s*\\)",
       "replacement": ".playFrame($1)",
       "note": "numeric-frame form"
-    },
-    // self.attachEffect("name") → match.createVfx(new VfxStats({ ... }), self).
-    // Each effect ships as its own library/entities/<name>.entity, looked up
-    // at runtime via self.getResource().getContent("<name>"). The pattern
-    // consumes the `self.` prefix so the replacement isn't accidentally
-    // glued onto the preceding token. Calls with a non-self receiver
-    // (`enemy.attachEffect`, etc.) or non-literal args fall through to
-    // ssf2_only marking — they need a manual port.
-    {
-      "pattern": "\\bself\\.attachEffect\\(\\s*\"([^\"]*)\"\\s*\\)",
-      "replacement": "match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(\"$1\"), animation: \"vfx\" }), self)",
-      "note": "1-arg self.attachEffect → createVfx with default animation"
-    },
-    // 2-arg form: self.attachEffect("name", { props }). The {…} block can
-    // carry x/y offset, scale, rotation, animation, etc. We can't safely
-    // map every prop (some SSF2 props have no FM equivalent), so the raw
-    // object is preserved as a trailing TODO comment for hand-tuning.
-    // `[^{}]*` rejects nested braces — those rare cases stay flagged.
-    {
-      "pattern": "\\bself\\.attachEffect\\(\\s*\"([^\"]*)\"\\s*,\\s*\\{([^{}]*)\\}\\s*\\)",
-      "replacement": "match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(\"$1\"), animation: \"vfx\" }), self) /* TODO port props: {$2} */",
-      "note": "2-arg self.attachEffect → createVfx; props preserved as TODO comment"
     }
+    // self.attachEffect(...) → match.createVfx(...) is handled by the
+    // context-aware `rewrite_attach_effect_calls` pass in api_mappings.rs,
+    // not by regex_replacements. That pass needs per-character knowledge
+    // of which animation name to reference in each effect's entity (since
+    // effects can have multiple FrameLabel-derived animations), which a
+    // static regex can't provide.
   ],
 
   // call_splits: SSF2 "umbrella" calls whose object-literal argument

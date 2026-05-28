@@ -18,6 +18,22 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
     let scripts_dir = char_dir.join("library/scripts/Character");
     fs::create_dir_all(&scripts_dir)?;
 
+    // Effect → primary-animation map for the context-aware
+    // self.attachEffect("name") → match.createVfx(...) rewrite. The guard
+    // installs the map for the duration of this function and clears it on
+    // drop, so every translate_ssf2_to_fm call made while generating this
+    // character (Character.entity frame scripts, Script.hx, per-attack
+    // scripts) sees the right effect→animation pairing.
+    let effect_anim_map: std::collections::BTreeMap<String, String> = effects.iter()
+        .filter_map(|e| {
+            entity_gen::effect_animation_names(e)
+                .into_iter()
+                .next()
+                .map(|first| (e.name.clone(), first))
+        })
+        .collect();
+    let _effect_anim_guard = crate::api_mappings::EffectAnimGuard::install(effect_anim_map);
+
     log::info!("Generating Fraymakers character package in {}", char_dir.display());
 
     // How many of jab1/jab2/jab3/jab4 actually have image content. Drives
@@ -282,10 +298,12 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
             &char_id, effect, img_result, swf_data,
         );
         fs::write(entities_dir.join(&filename), entity_json)?;
+        let anim_names = entity_gen::effect_animation_names(effect);
         log::info!(
-            "Generated effect entity: {} ({} frames)",
+            "Generated effect entity: {} ({} frames, animations: [{}])",
             filename,
             effect.frame_count,
+            anim_names.join(", "),
         );
     }
 
