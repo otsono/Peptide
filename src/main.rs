@@ -177,20 +177,55 @@ fn extract_costumes_to_temp(misc_ssf: &std::path::Path) -> Result<PathBuf> {
     Ok(temp_path)
 }
 
-/// Detect all root character names in a SWF by looking for `{Name}Ext` ABC classes.
-/// This is the authoritative signal — every SSF2 character has a corresponding
-/// `MarioExt`, `ZeldaExt`, `SheikExt` etc. class in the ABC block.
+/// Methods that, when present on a class, identify it as a real
+/// SSF2 character — as opposed to a `*Ext` class that happens to share
+/// the naming convention but is actually a projectile, an engine base
+/// class, or some other helper.
+///
+/// The SSF2 engine routes character logic through these accessors, so
+/// every real character implements at least one of them. Projectile
+/// `*Ext` classes (`DeeSpearExt extends SSF2Projectile`) don't, nor
+/// does the framework's own `SSF2CharacterExt` base class. Requiring
+/// at least one of these to be present rejects both kinds of false
+/// positive.
+const CHARACTER_MARKER_METHODS: &[&str] = &[
+    "getOwnStats",
+    "getAttackStats",
+    "getProjectileStats",
+];
+
+/// Detect all root character names in a SWF by looking for `{Name}Ext`
+/// ABC classes that ALSO implement at least one of the character-marker
+/// methods listed above. The naming convention alone is not sufficient
+/// — for example bandanadee.ssf carries:
+///   - `BandanaDeeExt extends SSF2Character`   ← real character
+///   - `DeeSpearExt   extends SSF2Projectile`  ← a projectile, NOT a character
+/// and some SWFs carry `SSF2CharacterExt extends SSF2Character` as the
+/// framework's own base class. The marker-method check filters both
+/// out.
+/// Returns true iff the given ABC class looks like a real character's
+/// `*Ext` extension class — the test that `detect_char_names` applies
+/// per class. Split out so it can be unit-tested directly against
+/// hand-crafted `abc_parser::Class` values.
+fn is_character_ext_class(class: &abc_parser::Class) -> bool {
+    let Some(prefix) = class.name.strip_suffix("Ext") else { return false };
+    if prefix.len() < 2 || !prefix.chars().all(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    class.instance_methods.iter()
+        .any(|t| CHARACTER_MARKER_METHODS.contains(&t.name.as_str()))
+}
+
 fn detect_char_names(swf: &ssf2_converter::swf_parser::SwfFile, input_path: &PathBuf) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
 
     for abc_bytes in &swf.abc_blocks {
         let Ok(abc) = abc_parser::parse(abc_bytes) else { continue; };
         for class in &abc.classes {
-            // Look for XxxExt pattern (e.g. MarioExt, ZeldaExt, SheikExt)
-            if let Some(prefix) = class.name.strip_suffix("Ext") {
-                if prefix.len() >= 2 && prefix.chars().all(|c| c.is_ascii_alphabetic()) {
-                    names.push(prefix.to_lowercase());
-                }
+            if is_character_ext_class(class) {
+                // Safe: strip_suffix succeeded in the predicate.
+                let prefix = class.name.strip_suffix("Ext").unwrap();
+                names.push(prefix.to_lowercase());
             }
         }
     }
@@ -359,4 +394,85 @@ fn write_conversion_log(char_dir: &std::path::Path, char_name: &str) -> Result<(
         serde_json::to_string_pretty(&payload)? + "\n",
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ssf2_converter::abc_parser::{Class, Trait};
+
+    fn mk_class(name: &str, methods: &[&str]) -> Class {
+        Class {
+            name: name.to_string(),
+            super_name: String::new(),
+            instance_methods: methods.iter().map(|m| Trait {
+                name: m.to_string(),
+                kind: 1, // Method
+                method_idx: 0,
+                slot_idx: 0,
+            }).collect(),
+            class_methods: vec![],
+            constructor_idx: 0,
+        }
+    }
+
+    #[test]
+    fn character_ext_with_get_own_stats_is_accepted() {
+        // BandanaDeeExt-style: implements getOwnStats / getAttackStats /
+        // getProjectileStats. Should be classified as a character.
+        let c = mk_class("MarioExt", &["getOwnStats", "getAttackStats", "getProjectileStats"]);
+        assert!(is_character_ext_class(&c));
+    }
+
+    #[test]
+    fn projectile_ext_without_marker_methods_is_rejected() {
+        // DeeSpearExt is bandanadee's spear projectile. It happens to end
+        // in `Ext` but extends SSF2Projectile, not SSF2Character, and
+        // implements none of the character-marker methods. Must be
+        // rejected — otherwise we'd emit a spurious `deespear/` output
+        // dir alongside `bandanadee/`.
+        let c = mk_class("DeeSpearExt", &["update", "onCollision"]);
+        assert!(!is_character_ext_class(&c),
+            "projectile Ext without marker methods must NOT be classified as a character");
+    }
+
+    #[test]
+    fn framework_ssf2_character_ext_was_already_rejected_but_pin_it() {
+        // SSF2CharacterExt is the engine's own base class. The `prefix
+        // must be all alphabetic` rule rejects it via the digit `2`.
+        // Pin that the marker-method check ALSO rejects it (defence in
+        // depth) — if some future SWF carries a no-digit variant we'd
+        // still want it filtered.
+        let c = mk_class("SSF2CharacterExt", &[]);
+        assert!(!is_character_ext_class(&c));
+        let c = mk_class("FrameworkExt", &[]); // hypothetical no-digit framework ext
+        assert!(!is_character_ext_class(&c));
+    }
+
+    #[test]
+    fn non_ext_classes_are_rejected() {
+        let c = mk_class("Mario", &["getOwnStats"]);
+        assert!(!is_character_ext_class(&c));
+        let c = mk_class("MarioExtension", &["getOwnStats"]);
+        assert!(!is_character_ext_class(&c));
+    }
+
+    #[test]
+    fn too_short_prefix_rejected() {
+        let c = mk_class("AExt", &["getOwnStats"]);
+        assert!(!is_character_ext_class(&c),
+            "single-char prefix is too ambiguous to accept");
+    }
+
+    #[test]
+    fn any_one_marker_method_is_sufficient() {
+        // Real characters all have all three, but the predicate only
+        // requires ONE so future engines that drop a method don't
+        // suddenly fail recognition.
+        for m in CHARACTER_MARKER_METHODS {
+            let c = mk_class("FooExt", &[m]);
+            assert!(is_character_ext_class(&c),
+                "marker '{}' alone should be sufficient", m);
+        }
+    }
 }
