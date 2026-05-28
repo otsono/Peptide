@@ -1730,8 +1730,27 @@ pub fn discover_projectiles_and_head(
     // A second walk picks up root-level SymbolClass'd sprites that aren't
     // projectiles, the character itself, or UI carve-outs. Effects are
     // pure visual sprites (no `attack_idle`, no `stance`).
-    let projectile_ids: std::collections::BTreeSet<u16> =
+    //
+    // We exclude BOTH the projectile root sprite IDs AND each projectile's
+    // inner animation sprite IDs. The inner sprite is where the projectile
+    // actually renders its frames (e.g. `deeFinalSmashProjectile` is the
+    // inner sprite under `dee_finalsmash`'s `stance` PlaceObject). Without
+    // this exclusion, those inner sprites get re-discovered here and
+    // emitted as phantom effect entities — and their ids tend to
+    // case-collide with the projectile entity's `<name>Projectile` id
+    // (e.g. `deeFinalSmashProjectile` vs `deefinalsmashProjectile`),
+    // which FrayTools rejects as a duplicate-id error when it normalizes
+    // ids for cross-resource lookup.
+    let mut projectile_ids: std::collections::BTreeSet<u16> =
         projectiles.iter().map(|p| p.sprite_id).collect();
+    for p in &projectiles {
+        if let Some(inner) = p.inner_sprite_id {
+            projectile_ids.insert(inner);
+        }
+        for s in &p.states {
+            projectile_ids.insert(s.inner_sprite_id);
+        }
+    }
     let head_id = head.as_ref().map(|h| h.sprite_id);
     let mut effects: Vec<DiscoveredEffect> = Vec::new();
     for tag in &swf.tags {
