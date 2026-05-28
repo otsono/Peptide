@@ -1435,8 +1435,14 @@ pub fn infer_ext_var_types(
     for name in ext_vars {
         let kind = match init_lookup.get(name).map(|s| s.trim()) {
             Some("true") | Some("false") => ExtVarType::Bool,
+            // Integer literals → Int (`5`, `-3`, `0`). The wrapper exposes
+            // `.inc()` / `.dec()` and `.get()` / `.set()` semantics.
             Some(s) if s.parse::<i64>().is_ok() => ExtVarType::Int,
-            Some(s) if s.parse::<f64>().is_ok() => ExtVarType::Int,
+            // Non-integer numeric literals (e.g. `0.5`, `1.5e2`) must NOT
+            // classify as Int — `self.makeInt(0)` would round on `.set(0.5)`
+            // and `.inc()`/`.dec()` would step by 1 rather than the source-
+            // logical step. Fall through to Object, which is the safe FM
+            // wrapper for any non-bool / non-int value.
             _ => ExtVarType::Object,
         };
         out.insert(name.clone(), kind);

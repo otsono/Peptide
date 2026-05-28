@@ -389,19 +389,16 @@ fn infer_ext_var_types_object_for_complex_init() {
     assert_eq!(m.get("bar"), Some(&ExtVarType::Object));
 }
 
-/// Bug §3.7 from docs/codebase_analysis.md: a float init like `0.5` currently
-/// classifies as `Int` because the `s.parse::<f64>().is_ok()` arm in
-/// `infer_ext_var_types` returns `ExtVarType::Int` instead of a non-Int
-/// variant. The fix lands in Phase 2; this test goes from ignored to passing
-/// when it does. (Remove `#[ignore]` after the fix.)
+/// Bug §3.7 from docs/codebase_analysis.md: a non-integer numeric init must
+/// not classify as Int. After the Phase 2 fix, floats fall through to Object.
 #[test]
-#[ignore = "documents bug §3.7; remove ignore after Phase 2 fix lands"]
 fn infer_ext_var_types_float_not_int() {
     let vars = vec!["scale".to_string()];
     let inits = vec![("scale".to_string(), "0.5".to_string())];
     let m = infer_ext_var_types(&vars, &inits);
-    assert_ne!(m.get("scale"), Some(&ExtVarType::Int),
-        "float init like 0.5 must not classify as Int; got: {:?}", m.get("scale"));
+    assert_eq!(m.get("scale"), Some(&ExtVarType::Object),
+        "float init like 0.5 must classify as Object, not Int; got: {:?}",
+        m.get("scale"));
 }
 
 // ─── wrap_persistent_state ───────────────────────────────────────────────
