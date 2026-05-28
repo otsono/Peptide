@@ -11,7 +11,21 @@
 
 use std::collections::BTreeMap;
 
-// ─── Method Mappings ──────────────────────────────────────────────────────────
+// ─── Legacy / TODO Mappings ───────────────────────────────────────────────────
+//
+// The five `build_*_map` functions below + `load_api_methods_json` are
+// LEGACY tables from before the JSONC mapping system. They have no current
+// callers anywhere in the workspace. They are KEPT (not deleted) until
+// every entry has been confirmed to have a JSONC home — most do, a few
+// may carry a note or special-case that hasn't been migrated.
+//
+// To migrate an entry: confirm the SSF2→FM mapping is present in
+// `mappings/commands.jsonc` (replacements / call_splits / passthrough /
+// ssf2_only) or `mappings/character/*.jsonc`, then delete the entry here.
+// Once a whole map is empty, delete the function and its supporting types.
+//
+// Tracking: docs/codebase_analysis.md §2.1.
+
 // (ssf2_receiver, ssf2_method) → (fm_receiver, fm_method, note)
 // receiver = "" means static/global, "self" means self.self in SSF2 → self in FM
 
@@ -37,6 +51,11 @@ pub enum ArgTransform {
     Custom(&'static str),
 }
 
+// TODO: migrate every entry below to `mappings/commands.jsonc` (mostly
+// `replacements`; a few may need `regex_replacements` or `ssf2_only`), then
+// remove this function and the MethodMapping / ArgTransform types it uses.
+// Tracking: docs/codebase_analysis.md §2.1.
+#[allow(dead_code)]
 pub fn build_method_map() -> BTreeMap<(&'static str, &'static str), MethodMapping> {
     let mut m = BTreeMap::new();
     let id = ArgTransform::Identity;
@@ -277,6 +296,10 @@ pub fn build_method_map() -> BTreeMap<(&'static str, &'static str), MethodMappin
 // ─── Property Mappings ────────────────────────────────────────────────────────
 // SSF2 property name → (FM getter, FM setter)
 
+// TODO: migrate every entry below to `mappings/commands.jsonc :: replacements`
+// (e.g. `.x = ` → `.setX(`, `.alpha = ` → `.setAlpha(`), then remove.
+// Tracking: docs/codebase_analysis.md §2.1.
+#[allow(dead_code)]
 pub fn build_property_map() -> BTreeMap<&'static str, (&'static str, &'static str)> {
     let mut m = BTreeMap::new();
 
@@ -295,6 +318,11 @@ pub fn build_property_map() -> BTreeMap<&'static str, (&'static str, &'static st
 
 // ─── SSF2 State → FM CState Mappings ──────────────────────────────────────────
 
+// TODO: migrate every entry below to `mappings/commands.jsonc :: replacements`
+// (e.g. `CState.IDLE` → `CState.STAND`) or a new `state_map` section if a
+// dedicated table makes sense, then remove.
+// Tracking: docs/codebase_analysis.md §2.1.
+#[allow(dead_code)]
 pub fn build_state_map() -> BTreeMap<&'static str, &'static str> {
     let mut m = BTreeMap::new();
 
@@ -366,6 +394,12 @@ pub fn build_state_map() -> BTreeMap<&'static str, &'static str> {
 
 // ─── SSF2 Event → FM GameObjectEvent Mappings ─────────────────────────────────
 
+// TODO: migrate every entry below to `mappings/commands.jsonc :: replacements`
+// (e.g. `GameObjectEvent.HIT` → `GameObjectEvent.HIT_DEALT`) — the
+// `addEventListener(SSF2_EVENT.X, …)` calls are already rewritten via the
+// literal table where applicable. Once parity is confirmed, remove.
+// Tracking: docs/codebase_analysis.md §2.1.
+#[allow(dead_code)]
 pub fn build_event_map() -> BTreeMap<&'static str, &'static str> {
     let mut m = BTreeMap::new();
 
@@ -385,6 +419,14 @@ pub fn build_event_map() -> BTreeMap<&'static str, &'static str> {
 
 // ─── SSF2 Hitbox Property → FM HitboxStats Property Mappings ──────────────────
 
+// TODO: this overlaps with `mappings/character/hitbox_stats.jsonc :: fields`
+// (which already covers damage / angle / baseKnockback / knockbackGrowth /
+// hitstop / hitstun). The remaining entries (shieldDamage, priority,
+// hitSound, refreshRate, selfHitStun→selfHitstop) need to land either in
+// hitbox_stats.jsonc as new `fm_field` rows or in commands.jsonc :: ssf2_only.
+// Once that's done, remove this function.
+// Tracking: docs/codebase_analysis.md §2.1.
+#[allow(dead_code)]
 pub fn build_hitbox_prop_map() -> BTreeMap<&'static str, &'static str> {
     let mut m = BTreeMap::new();
 
@@ -1799,6 +1841,13 @@ fn log_unknown_calls(code: &str, cfg: &crate::mappings::ApiCommands) {
 
 /// Load SSF2→FM method mappings from the JSON file at `mappings/api_methods.json`
 /// relative to the project root. Falls back to empty map if file not found.
+// TODO: this loader reads `mappings/api_methods.json`, which doesn't
+// exist in the repo and isn't called from anywhere. The schema it parses
+// (`{ "method_name": { "fm": "<replacement>" } }`) was superseded by
+// `mappings/commands.jsonc :: replacements`. Confirm no out-of-tree
+// caller depends on this signature, then remove.
+// Tracking: docs/codebase_analysis.md §2.1.
+#[allow(dead_code)]
 pub fn load_api_methods_json(mappings_dir: &std::path::Path) -> Vec<(String, String)> {
     let path = mappings_dir.join("api_methods.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return vec![]; };
