@@ -1446,6 +1446,13 @@ pub struct DiscoveredProjectile {
     /// each entry is one SSF2 state with its own inner sprite.
     /// Empty for single-state projectiles.
     pub states: Vec<ProjectileState>,
+    /// SSF2 frame labels found INSIDE the inner animation sprite, in
+    /// timeline order, as `(frame_1_based, label)`. These are the
+    /// projectile's own animation labels — extracted in parallel to the
+    /// character's xframe extraction. Empty when the inner sprite has
+    /// no FrameLabel tags (in which case the generators fall back to
+    /// the FM template's `projectileSpawn`/`projectileIdle`/`projectileDestroy`).
+    pub inner_labels: Vec<(u16, String)>,
 }
 
 /// The head/portrait sprite discovered in the SWF.
@@ -1652,6 +1659,33 @@ pub fn discover_projectiles_and_head(
             // Only keep states vec if it has more than just attack_idle
             let states = if states.len() > 1 { states } else { Vec::new() };
 
+            // Walk the inner sprite's tags for its own FrameLabel pings —
+            // these are the projectile's per-frame SSF2 animation labels
+            // (parallel to character xframe labels). Order by frame.
+            let mut inner_labels: Vec<(u16, String)> = Vec::new();
+            if let Some(inner_id) = inner_sprite_id {
+                if let Some(inner_sprite) = swf.tags.iter().find_map(|t| {
+                    if let swf::Tag::DefineSprite(s) = t {
+                        if s.id == inner_id { return Some(s); }
+                    }
+                    None
+                }) {
+                    let mut frame: u16 = 1;
+                    for tag in &inner_sprite.tags {
+                        match tag {
+                            swf::Tag::FrameLabel(fl) => {
+                                let label = fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
+                                if !label.is_empty() {
+                                    inner_labels.push((frame, label));
+                                }
+                            }
+                            swf::Tag::ShowFrame => { frame += 1; }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
             projectiles.push(DiscoveredProjectile {
                 sprite_id: sprite.id,
                 name: sprite_name,
@@ -1659,6 +1693,7 @@ pub fn discover_projectiles_and_head(
                 inner_sprite_name,
                 inner_frame_count,
                 states,
+                inner_labels,
             });
         }
     }

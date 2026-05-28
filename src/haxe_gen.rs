@@ -190,6 +190,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
             image_frames,
             image_guids,
             extra_states,
+            inner_labels: proj.inner_labels.clone(),
         };
 
         let filename = format!("{}.entity", sanitize_entity_name(&proj.name));
@@ -207,16 +208,25 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
         log::info!("Generated projectile entity: {} ({} frames)", filename, proj.inner_frame_count);
 
         // ── projectile script files ──────────────────────────────────────────
+        // Layout matches the convention observed in aJewelofRarity/AnnieCharacter
+        // (real FM character mod): a SINGLE `library/scripts/Projectile/`
+        // directory holds files for every projectile, with each file
+        // prefixed by the projectile name in PascalCase
+        // (`DeeNspecScript.hx`, `DeeNspecStats.hx`, …). Scales cleanly to
+        // multi-projectile characters; matches a real-FM-mod precedent
+        // (our prior `Projectile_<name>/` layout matched none of the 6
+        // surveyed repos).
         let entity_id = proj.name.replace('_', "");
-        let proj_scripts_dir = char_dir.join(format!("library/scripts/Projectile_{}", proj.name));
+        let pascal = snake_to_pascal(&proj.name);
+        let proj_scripts_dir = char_dir.join("library/scripts/Projectile");
         fs::create_dir_all(&proj_scripts_dir)?;
 
         fs::write(
-            proj_scripts_dir.join("ProjectileScript.hx"),
+            proj_scripts_dir.join(format!("{}Script.hx", pascal)),
             generate_projectile_script(&char_id, &entity_id, &proj_info.extra_states),
         )?;
         fs::write(
-            proj_scripts_dir.join("ProjectileScript.hx.meta"),
+            proj_scripts_dir.join(format!("{}Script.hx.meta", pascal)),
             script_meta(
                 &format!("{}ProjectileScript", entity_id),
                 &det_uuid(&format!("{}::{}::ProjectileScript::meta", char_id, proj.name)),
@@ -224,11 +234,11 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
             ),
         )?;
         fs::write(
-            proj_scripts_dir.join("ProjectileAnimationStats.hx"),
-            generate_projectile_animation_stats(&proj_info.extra_states),
+            proj_scripts_dir.join(format!("{}AnimationStats.hx", pascal)),
+            generate_projectile_animation_stats(&proj_info),
         )?;
         fs::write(
-            proj_scripts_dir.join("ProjectileAnimationStats.hx.meta"),
+            proj_scripts_dir.join(format!("{}AnimationStats.hx.meta", pascal)),
             script_meta(
                 &format!("{}ProjectileAnimationStats", entity_id),
                 &det_uuid(&format!("{}::{}::ProjectileAnimationStats::meta", char_id, proj.name)),
@@ -237,11 +247,11 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
         )?;
         let proj_ssf2_match = best_match_projectile_data(&proj.name, &data.projectile_data);
         fs::write(
-            proj_scripts_dir.join("ProjectileStats.hx"),
-            generate_projectile_stats(&char_id, &entity_id, &proj_info.extra_states, proj_ssf2_match),
+            proj_scripts_dir.join(format!("{}Stats.hx", pascal)),
+            generate_projectile_stats(&char_id, &entity_id, &proj_info, proj_ssf2_match),
         )?;
         fs::write(
-            proj_scripts_dir.join("ProjectileStats.hx.meta"),
+            proj_scripts_dir.join(format!("{}Stats.hx.meta", pascal)),
             script_meta(
                 &format!("{}ProjectileStats", entity_id),
                 &det_uuid(&format!("{}::{}::ProjectileStats::meta", char_id, proj.name)),
@@ -249,18 +259,18 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
             ),
         )?;
         fs::write(
-            proj_scripts_dir.join("ProjectileHitboxStats.hx"),
+            proj_scripts_dir.join(format!("{}HitboxStats.hx", pascal)),
             generate_projectile_hitbox_stats(&char_id, &entity_id, &proj_info, proj_ssf2_match),
         )?;
         fs::write(
-            proj_scripts_dir.join("ProjectileHitboxStats.hx.meta"),
+            proj_scripts_dir.join(format!("{}HitboxStats.hx.meta", pascal)),
             script_meta(
                 &format!("{}ProjectileHitboxStats", entity_id),
                 &det_uuid(&format!("{}::{}::ProjectileHitboxStats::meta", char_id, proj.name)),
                 ScriptMetaKind::ProjectileHitboxStats,
             ),
         )?;
-        log::info!("Generated projectile scripts for {}", proj.name);
+        log::info!("Generated projectile scripts for {} → {}*.hx", proj.name, pascal);
     }
 
     // Stats summary for debugging
@@ -1111,6 +1121,26 @@ fn sanitize_entity_name(name: &str) -> String {
     name.replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_")
 }
 
+/// Convert an SSF2 projectile name like `dee_nspec` to the PascalCase
+/// prefix used for the script-file names (`DeeNspec` → `DeeNspecScript.hx`).
+/// Matches the convention seen in real FM character mods
+/// (aJewelofRarity/AnnieCharacter: `Cut` → `CutScript.hx`).
+fn snake_to_pascal(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut capitalize_next = true;
+    for c in name.chars() {
+        if c == '_' || c == '-' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            out.extend(c.to_uppercase());
+            capitalize_next = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 // ─── Projectile script generators ─────────────────────────────────────────────
 
 /// Generate `library/manifest.json.meta` — the JSON sidecar that pairs
@@ -1346,21 +1376,95 @@ function update() {{
 }
 
 /// ProjectileAnimationStats.hx — endType for each projectile animation.
-fn generate_projectile_animation_stats(extra_states: &[entity_gen::ProjectileStateData]) -> String {
-    let mut extra_lines = String::new();
-    for state in extra_states {
-        let fm = entity_gen::ssf2_proj_label_to_fm_anim(&state.label);
-        extra_lines.push_str(&format!("    {fm}: {{ endType: AnimationEndType.NONE }},\n"));
+/// Three anchor animation names used across a projectile's stats files.
+/// When SSF2's inner sprite carries its own FrameLabel tags, those literal
+/// labels become the names; otherwise the converter falls back to FM's
+/// template trio (`projectileSpawn` / `projectileIdle` / `projectileDestroy`).
+/// This is the projectile-side parallel to character xframe-label
+/// extraction the user explicitly asked for.
+struct ProjectileAnims {
+    spawn:   String,
+    active:  String,
+    destroy: String,
+    /// All distinct animation names referenced by this projectile, in
+    /// timeline order. Includes spawn/active/destroy plus any extra
+    /// labels from `inner_labels` or multi-state `extra_states`.
+    all: Vec<String>,
+}
+
+fn projectile_anim_names(proj: &entity_gen::ProjectileInfo) -> ProjectileAnims {
+    // Sanitize a raw SSF2 label into a valid Haxe identifier.
+    fn ident(s: &str) -> String {
+        let cleaned: String = s.chars()
+            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+            .collect();
+        // Disallow leading digit.
+        if cleaned.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            format!("_{}", cleaned)
+        } else if cleaned.is_empty() {
+            "projectile".to_string()
+        } else {
+            cleaned
+        }
+    }
+
+    // Prefer real SSF2 labels when present, ordered by frame.
+    let mut sorted: Vec<&(u16, String)> = proj.inner_labels.iter().collect();
+    sorted.sort_by_key(|(f, _)| *f);
+    let raw: Vec<String> = sorted.into_iter().map(|(_, l)| ident(l)).collect();
+
+    let (spawn, active, destroy) = match raw.len() {
+        0 => (
+            "projectileSpawn".to_string(),
+            "projectileIdle".to_string(),
+            "projectileDestroy".to_string(),
+        ),
+        1 => {
+            // Single label — re-use as the active animation; synthesize
+            // spawn/destroy variants from it. Matches the Annie
+            // convention of using one logical animation across states.
+            let only = raw[0].clone();
+            (only.clone(), only.clone(), only)
+        }
+        2 => (raw[0].clone(), raw[0].clone(), raw[1].clone()),
+        _ => (raw[0].clone(), raw[1].clone(), raw[raw.len() - 1].clone()),
+    };
+
+    // Build the union of all referenced names + any multi-state labels.
+    let mut all: Vec<String> = vec![spawn.clone(), active.clone(), destroy.clone()];
+    for s in &proj.extra_states {
+        let n = entity_gen::ssf2_proj_label_to_fm_anim(&s.label);
+        if !all.contains(&n) { all.push(n); }
+    }
+    for r in &raw {
+        if !all.contains(r) { all.push(r.clone()); }
+    }
+    // De-dup while preserving first-seen order.
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    all.retain(|n| seen.insert(n.clone()));
+
+    ProjectileAnims { spawn, active, destroy, all }
+}
+
+fn generate_projectile_animation_stats(proj: &entity_gen::ProjectileInfo) -> String {
+    let anims = projectile_anim_names(proj);
+    let mut lines: Vec<String> = Vec::new();
+    for (i, n) in anims.all.iter().enumerate() {
+        // Mark the destroy animation with resetId:false to prevent
+        // hit-id churn on state change (per template convention).
+        if n == &anims.destroy && i > 0 {
+            lines.push(format!("    {n}: {{ xSpeedConservation: 0, ySpeedConservation: 0, resetId: false }}"));
+        } else {
+            lines.push(format!("    {n}: {{ endType: AnimationEndType.NONE }}"));
+        }
     }
     format!(
-"// Animation stats for projectile
+"// Animation stats for projectile (names from SSF2 inner-sprite FrameLabel tags)
 {{
-    projectileSpawn:   {{ endType: AnimationEndType.NONE }},
-{extra_lines}    projectileIdle:    {{ endType: AnimationEndType.NONE }},
-    projectileDestroy: {{ xSpeedConservation: 0, ySpeedConservation: 0, resetId: false }}
+{body}
 }}
 ",
-        extra_lines = extra_lines)
+        body = lines.join(",\n"))
 }
 
 /// ProjectileStats.hx — physics, geometry, and state → animation mapping.
@@ -1417,11 +1521,11 @@ fn best_match_projectile_data<'a>(
 fn generate_projectile_stats(
     _char_id: &str,
     entity_id: &str,
-    extra_states: &[entity_gen::ProjectileStateData],
+    proj: &entity_gen::ProjectileInfo,
     ssf2_match: Option<&crate::abc_parser::ProjectileData>,
 ) -> String {
     let content_id = format!("{}Projectile", entity_id);
-    let _ = extra_states; // used in Script.hx, not Stats
+    let anims = projectile_anim_names(proj);
 
     // SSF2 physics field name → FM ProjectileStats field name. The set
     // is small and most names align; this table handles the few that
@@ -1491,8 +1595,8 @@ fn generate_projectile_stats(
 {source_note}{{
     spriteContent: self.getResource().getContent(\"{content_id}\"),
     stateTransitionMapOverrides: [
-        PState.ACTIVE => {{ animation: \"projectileIdle\" }},
-        PState.DESTROYING => {{ animation: \"projectileDestroy\" }}
+        PState.ACTIVE => {{ animation: \"{active}\" }},
+        PState.DESTROYING => {{ animation: \"{destroy}\" }}
     ],
     shadows: true,
 {physics}
@@ -1514,6 +1618,8 @@ fn generate_projectile_stats(
         content_id = content_id,
         physics = physics_lines.join("\n"),
         todos = if todo_lines.is_empty() { String::new() } else { todo_lines.join("\n") + "\n" },
+        active = anims.active,
+        destroy = anims.destroy,
     );
     body.replace("{{", "{").replace("}}", "}")
 }
@@ -1526,10 +1632,11 @@ fn generate_projectile_stats(
 fn generate_projectile_hitbox_stats(
     _char_id: &str,
     entity_id: &str,
-    _proj: &entity_gen::ProjectileInfo,
+    proj: &entity_gen::ProjectileInfo,
     ssf2_match: Option<&crate::abc_parser::ProjectileData>,
 ) -> String {
     let mapping = crate::mappings::character_hitbox_stats();
+    let anims = projectile_anim_names(proj);
 
     let (idle_body, source_note) = match ssf2_match.and_then(|d| d.hitboxes.first()) {
         Some(hb) => {
@@ -1565,19 +1672,31 @@ fn generate_projectile_hitbox_stats(
         ),
     };
 
+    // Build the projection-by-animation block dynamically: all known
+    // projectile animations get an entry; the hitbox payload lives on
+    // the "active" animation (matches FM convention — hitboxes are
+    // attached to the animation that's playing while the projectile is
+    // alive). Spawn/destroy animations stay empty unless the SSF2 source
+    // explicitly carried hitbox data for them, which we don't currently
+    // surface (per-animation hitboxes is a follow-up).
+    let mut anim_blocks: Vec<String> = Vec::new();
+    for name in &anims.all {
+        if name == &anims.active {
+            anim_blocks.push(format!("    {name}: {{\n        {idle_body}\n    }}",
+                idle_body = idle_body));
+        } else {
+            anim_blocks.push(format!("    {name}: {{}}"));
+        }
+    }
     let body = format!(
 "// Hitbox stats for {entity_id}
 {source_note}{{
-    projectileSpawn: {{}},
-    projectileIdle: {{
-        {idle_body}
-    }},
-    projectileDestroy: {{}}
+{blocks}
 }}
 ",
         entity_id = entity_id,
         source_note = source_note,
-        idle_body = idle_body,
+        blocks = anim_blocks.join(",\n"),
     );
     body.replace("{{", "{").replace("}}", "}")
 }

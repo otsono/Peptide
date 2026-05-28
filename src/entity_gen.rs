@@ -1285,6 +1285,11 @@ pub struct ProjectileInfo {
     /// Extra per-state data for multi-state projectiles (e.g. link_bomb).
     /// Each entry is (ssf2_label, image_frames, image_guids, boxes, frame_count).
     pub extra_states: Vec<ProjectileStateData>,
+    /// SSF2 frame labels found INSIDE the inner animation sprite, in
+    /// timeline order. `(1-based frame, label)`. Empty for projectiles
+    /// without timeline labels — those fall back to the FM template
+    /// trio (`projectileSpawn` / `projectileIdle` / `projectileDestroy`).
+    pub inner_labels: Vec<(u16, String)>,
 }
 
 /// Image + box data for one state of a multi-state projectile.
