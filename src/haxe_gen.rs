@@ -283,10 +283,9 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
         );
         fs::write(entities_dir.join(&filename), entity_json)?;
         log::info!(
-            "Generated effect entity: {} ({} frames, {} animations)",
+            "Generated effect entity: {} ({} frames)",
             filename,
             effect.frame_count,
-            if effect.inner_labels.is_empty() { 1 } else { effect.inner_labels.len() },
         );
     }
 
