@@ -647,81 +647,100 @@ pub fn rewrite_attach_effect_calls(code: &str) -> String {
         regex::Regex::new(r#"\bself\.attachEffect\(\s*"([^"]*)"\s*\)"#).unwrap()
     });
 
-    EFFECT_PRIMARY_ANIMS.with(|cell| {
-        let map = cell.borrow();
-        let resolve = |name: &str| -> String {
-            map.get(name).cloned().unwrap_or_else(|| "active".to_string())
-        };
+    // Build the translated `new VfxStats({…})` literal from the parsed
+    // props. Returns the bag body (no surrounding `{}`) plus a list of
+    // TODO notes for unmapped props.
+    let build_bag = |name: &str, props_block: &str| -> (String, Vec<String>) {
+        let mut fm_fields: Vec<(String, String)> = Vec::new();
+        let mut todo_lines: Vec<String> = Vec::new();
+        for (key, value) in parse_prop_bag(props_block) {
+            translate_attach_effect_prop(&key, &value, &mut fm_fields, &mut todo_lines);
+        }
+        let mut bag = build_vfx_head(name);
+        for (k, v) in &fm_fields {
+            bag.push_str(&format!(", {}: {}", k, v));
+        }
+        (bag, todo_lines)
+    };
 
-        // Build the translated `new VfxStats({…})` literal from the parsed
-        // props. Returns the bag body (no surrounding `{}`) plus a list of
-        // TODO notes for unmapped props.
-        let build_bag = |name: &str, props_block: &str| -> (String, Vec<String>) {
-            let anim = resolve(name);
-            let mut fm_fields: Vec<(String, String)> = Vec::new();
-            let mut todo_lines: Vec<String> = Vec::new();
-            for (key, value) in parse_prop_bag(props_block) {
-                translate_attach_effect_prop(&key, &value, &mut fm_fields, &mut todo_lines);
-            }
-            let mut bag = format!(
-                "spriteContent: self.getResource().getContent(\"{n}\"), animation: \"{a}\"",
-                n = name, a = anim,
-            );
-            for (k, v) in &fm_fields {
-                bag.push_str(&format!(", {}: {}", k, v));
-            }
-            (bag, todo_lines)
-        };
+    // Pass 1: line-anchored 2-arg form — emit TODOs above the call.
+    let after_line_2arg = re_line_2arg.replace_all(code, |caps: &regex::Captures| {
+        let indent = &caps[1];
+        let name = &caps[2];
+        let props_block = &caps[3];
+        let (bag, todo_lines) = build_bag(name, props_block);
 
-        // Pass 1: line-anchored 2-arg form — emit TODOs above the call.
-        let after_line_2arg = re_line_2arg.replace_all(code, |caps: &regex::Captures| {
-            let indent = &caps[1];
-            let name = &caps[2];
-            let props_block = &caps[3];
-            let (bag, todo_lines) = build_bag(name, props_block);
-
-            let mut out = String::new();
-            for note in &todo_lines {
-                out.push_str(indent);
-                out.push_str("// TODO: ");
-                out.push_str(note);
-                out.push('\n');
-            }
+        let mut out = String::new();
+        for note in &todo_lines {
             out.push_str(indent);
-            out.push_str(&format!(
-                "match.createVfx(new VfxStats({{ {bag} }}), self)"
-            ));
-            out
-        });
+            out.push_str("// TODO: ");
+            out.push_str(note);
+            out.push('\n');
+        }
+        out.push_str(indent);
+        out.push_str(&format!(
+            "match.createVfx(new VfxStats({{ {bag} }}), self)"
+        ));
+        out
+    });
 
-        // Pass 2: mid-line 2-arg fallback — translate inline. Embedded
-        // calls can't host above-line TODOs (would break the surrounding
-        // expression), so any unmapped props ride along as a trailing
-        // `/* TODO: … */` block-comment instead. That keeps the warning
-        // visible without altering line topology.
-        let after_any_2arg = re_any_2arg.replace_all(&after_line_2arg, |caps: &regex::Captures| {
-            let name = &caps[1];
-            let props_block = &caps[2];
-            let (bag, todos) = build_bag(name, props_block);
-            let call = format!("match.createVfx(new VfxStats({{ {bag} }}), self)");
-            if todos.is_empty() {
-                call
-            } else {
-                format!("{} /* TODO: {} */", call, todos.join(" | TODO: "))
-            }
-        });
+    // Pass 2: mid-line 2-arg fallback — translate inline. Embedded
+    // calls can't host above-line TODOs (would break the surrounding
+    // expression), so any unmapped props ride along as a trailing
+    // `/* TODO: … */` block-comment instead. That keeps the warning
+    // visible without altering line topology.
+    let after_any_2arg = re_any_2arg.replace_all(&after_line_2arg, |caps: &regex::Captures| {
+        let name = &caps[1];
+        let props_block = &caps[2];
+        let (bag, todos) = build_bag(name, props_block);
+        let call = format!("match.createVfx(new VfxStats({{ {bag} }}), self)");
+        if todos.is_empty() {
+            call
+        } else {
+            format!("{} /* TODO: {} */", call, todos.join(" | TODO: "))
+        }
+    });
 
-        // 1-arg form — no props to translate.
-        let after_1arg = re_1arg.replace_all(&after_any_2arg, |caps: &regex::Captures| {
-            let name = &caps[1];
-            let anim = resolve(name);
-            format!(
-                "match.createVfx(new VfxStats({{ spriteContent: self.getResource().getContent(\"{n}\"), animation: \"{a}\" }}), self)",
-                n = name, a = anim,
-            )
+    // 1-arg form — no props to translate; the head alone is the bag.
+    let after_1arg = re_1arg.replace_all(&after_any_2arg, |caps: &regex::Captures| {
+        let name = &caps[1];
+        let head = build_vfx_head(name);
+        format!("match.createVfx(new VfxStats({{ {head} }}), self)")
+    });
+    after_1arg.into_owned()
+}
+
+/// Build the `spriteContent: …, animation: …` head of the VfxStats bag
+/// for an effect named `name`. Shape selection:
+///   - If `name` matches `global_vfx_map`, emit the Fraymakers global
+///     shape:
+///       `spriteContent: "global::vfx.vfx", animation: GlobalVfx.<C>`
+///     The constant is unquoted because it's an accessor on the
+///     `GlobalVfx` class, not a string literal — the engine resolves
+///     the underlying animation name at runtime.
+///   - Otherwise emit the per-character shape that resolves `name`
+///     against the local effect entity we generated:
+///       `spriteContent: self.getResource().getContent("name"),
+///        animation: "<primary or active fallback>"`
+///     where the animation name comes from `EFFECT_PRIMARY_ANIMS` (set
+///     up per-character by `haxe_gen::generate`), or `"active"` when
+///     the name isn't a known local effect.
+pub fn build_vfx_head(name: &str) -> String {
+    let cfg = crate::mappings::api_commands();
+    if let Some(constant) = cfg.global_vfx_map.get(name) {
+        format!(
+            "spriteContent: \"global::vfx.vfx\", animation: GlobalVfx.{c}",
+            c = constant,
+        )
+    } else {
+        let anim = EFFECT_PRIMARY_ANIMS.with(|cell| {
+            cell.borrow().get(name).cloned().unwrap_or_else(|| "active".to_string())
         });
-        after_1arg.into_owned()
-    })
+        format!(
+            "spriteContent: self.getResource().getContent(\"{n}\"), animation: \"{a}\"",
+            n = name, a = anim,
+        )
+    }
 }
 
 /// Split a `{ key1: val1, key2: val2, … }` body (without the braces) into

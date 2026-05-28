@@ -294,6 +294,8 @@ pub struct ApiCommands {
     #[serde(default)]
     pub attach_effect_props: std::collections::BTreeMap<String, AttachEffectPropMapping>,
     #[serde(default)]
+    pub global_vfx_map: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
     pub frame_params: Vec<FrameParam>,
     #[serde(default)]
     pub passthrough_fm_apis: Vec<NamedApi>,

@@ -251,6 +251,53 @@
     "resize":      { "todo": "SSF2 resize flag with no FM equivalent — manual port (consider resizeWith)" }
   },
 
+  // global_vfx_map: SSF2 → Fraymakers GlobalVfx constants. Effect names
+  // listed here are shared "system" effects (dust, sparks, ground impacts,
+  // pickup indicators) — they don't ship as per-character entities in FM;
+  // instead, every character can play them off the global VFX sprite by
+  // referencing the right animation constant.
+  //
+  // When `rewrite_attach_effect_calls` sees an effect name in this table,
+  // it emits the global-shape VfxStats call:
+  //   match.createVfx(new VfxStats({
+  //     spriteContent: "global::vfx.vfx",
+  //     animation:     GlobalVfx.<CONSTANT>
+  //   }), self)
+  // …instead of the per-character `self.getResource().getContent("…")`
+  // form. The constant is referenced unquoted — it's a string-typed
+  // member on the `GlobalVfx` class in api-types-plugin, but the Haxe
+  // hscript reads it via the class accessor at runtime.
+  //
+  // Coverage was picked from the corpus tally (most-used SSF2 global
+  // names + best-fit FM constants from fraymakers-api.d.ts lines
+  // 2948–3064). Unmapped global_* names (e.g. `global_wind_wave`,
+  // `global_bubbles`) fall through to the per-character `getContent`
+  // path and use the `active` animation fallback — porters can either
+  // add a mapping here or supply a local `<name>.entity`.
+  "global_vfx_map": {
+    // Landing / impact / strong-move dust.
+    "global_dust_heavy":    "LAND_DUST",
+    "global_dust_heavy_rv": "LAND_DUST_BACK",
+    "global_dust_blast":    "LAND_DUST",
+    // Small-motion / dash kick dust.
+    "global_dust_light":    "DUST_START_LIGHT",
+    "global_dust_light_rv": "DUST_START_LIGHT",
+    // Generic poof / cloud.
+    "global_dust_cloud":    "DUST_POOF",
+    // Spinning / swirl dust.
+    "global_dust_swirl":    "DUST_SPIN",
+    "global_dust_spin":     "DUST_SPIN",
+    "global_dust_spiral":   "DUST_SPIN",
+    // Launch knockback smoke.
+    "global_dust_launch":   "KNOCKBACK_SMOKE",
+    // Hit sparks.
+    "global_spark":         "SPARKLE_LIGHT",
+    "global_sparkle":       "SPARKLE_LIGHT",
+    "global_smash_spark":   "SPARKLE_HEAVY",
+    // Item pickup indicator.
+    "itempickup_effect":    "ITEM_INDICATOR"
+  },
+
   // call_splits: SSF2 "umbrella" calls whose object-literal argument
   // needs to be split into multiple FM calls. Each entry maps an SSF2
   // field name to "<fm_target_method>.<fm_field_name>". Fields sharing
