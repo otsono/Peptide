@@ -1535,11 +1535,13 @@ pub fn wrap_persistent_state(
     let mut result = code.to_string();
     for (name, kind) in var_types {
         // Increment / decrement (Int only — Object/Bool don't have .inc/.dec).
+        // Regexes for the three patterns we apply are compiled once per
+        // (name, kind) pair via persistent_state_regexes() and reused across
+        // the per-frame-script and Script.hx call sites in entity_gen.rs.
+        let res = persistent_state_regexes(name);
         if *kind == ExtVarType::Int {
-            let re_inc = regex::Regex::new(&format!(r"\bself\.{}\+\+", regex::escape(name))).unwrap();
-            result = re_inc.replace_all(&result, format!("{}.inc()", name)).into_owned();
-            let re_dec = regex::Regex::new(&format!(r"\bself\.{}--", regex::escape(name))).unwrap();
-            result = re_dec.replace_all(&result, format!("{}.dec()", name)).into_owned();
+            result = res.inc.replace_all(&result, format!("{}.inc()", name)).into_owned();
+            result = res.dec.replace_all(&result, format!("{}.dec()", name)).into_owned();
         }
         // Assignment (`self.foo = X` → `foo.set(X)`). Hand-rolled scan
         // (instead of a regex) so multi-line RHS — e.g. an inline closure
@@ -1552,10 +1554,40 @@ pub fn wrap_persistent_state(
         // desired form. The assignment pass above has already rewritten
         // `self.foo = …`, so this pass is read-only — no `self.foo =`
         // remains for it to mis-match.
-        let read_re = regex::Regex::new(&format!(r"\bself\.{}\b", regex::escape(name))).unwrap();
-        result = read_re.replace_all(&result, format!("{}.get()", name)).into_owned();
+        result = res.read.replace_all(&result, format!("{}.get()", name)).into_owned();
     }
     result
+}
+
+/// Per-name compiled regex bundle used by `wrap_persistent_state`.
+struct PersistentStateRegexes {
+    inc:  regex::Regex,
+    dec:  regex::Regex,
+    read: regex::Regex,
+}
+
+/// Compile (or return) the three regexes for one ext_var name. Cached in a
+/// process-global `OnceLock<Mutex<BTreeMap<String, ...>>>` so the second
+/// (and tenth, and thousandth) wrap_persistent_state call for the same
+/// character doesn't recompile them. `wrap_persistent_state` runs once on
+/// Script.hx and once per embedded frame-script body during entity_gen
+/// (hundreds of times for a typical character) — this caching is a
+/// straight perf win, output unchanged.
+fn persistent_state_regexes(name: &str) -> std::sync::Arc<PersistentStateRegexes> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<String, std::sync::Arc<PersistentStateRegexes>>>
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    let mut guard = cache.lock().unwrap();
+    if let Some(v) = guard.get(name) { return v.clone(); }
+    let escaped = regex::escape(name);
+    let v = std::sync::Arc::new(PersistentStateRegexes {
+        inc:  regex::Regex::new(&format!(r"\bself\.{}\+\+", escaped)).unwrap(),
+        dec:  regex::Regex::new(&format!(r"\bself\.{}--",   escaped)).unwrap(),
+        read: regex::Regex::new(&format!(r"\bself\.{}\b",   escaped)).unwrap(),
+    });
+    guard.insert(name.to_string(), v.clone());
+    v
 }
 
 /// Rewrite every top-level `self.<name> = <rhs>;` to `<name>.set(<rhs>);`.
