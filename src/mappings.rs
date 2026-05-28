@@ -240,6 +240,34 @@ pub enum CallSplitFieldMapping {
     },
 }
 
+/// Per-prop mapping for SSF2 `self.attachEffect("name", { props })` calls.
+/// Drives the inline translation that injects translated fields into
+/// `new VfxStats({…})` and emits `// TODO:` lines for props with no
+/// clean FM equivalent. See `attach_effect_props` in commands.jsonc.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum AttachEffectPropMapping {
+    /// `"fmPropName"` — direct rename; source value passes through.
+    Simple(String),
+    /// Object form for non-trivial mappings.
+    Detailed {
+        /// FM prop name; source value passes through. Same as the
+        /// `Simple` variant but in object form for readability when
+        /// combined with a `todo` note.
+        #[serde(default)]
+        target: Option<String>,
+        /// Expand a single SSF2 prop into multiple FM props that all
+        /// receive the same source value. Used for `parentLock` →
+        /// `relativeWith` + `resizeWith` + `flipWith`.
+        #[serde(default)]
+        expand_to: Vec<String>,
+        /// If set, the prop has no FM equivalent — emit a `// TODO:`
+        /// line above the call carrying this note and the source value.
+        #[serde(default)]
+        todo: Option<String>,
+    },
+}
+
 /// Universal SSF2 -> Fraymakers API command conversions.
 ///
 /// Every section here is consumed by the converter — there are no
@@ -263,6 +291,8 @@ pub struct ApiCommands {
     pub regex_replacements: Vec<RegexReplacement>,
     #[serde(default)]
     pub call_splits: std::collections::BTreeMap<String, CallSplit>,
+    #[serde(default)]
+    pub attach_effect_props: std::collections::BTreeMap<String, AttachEffectPropMapping>,
     #[serde(default)]
     pub frame_params: Vec<FrameParam>,
     #[serde(default)]

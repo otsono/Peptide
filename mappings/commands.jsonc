@@ -202,8 +202,54 @@
     // not by regex_replacements. That pass needs per-character knowledge
     // of which animation name to reference in each effect's entity (since
     // effects can have multiple FrameLabel-derived animations), which a
-    // static regex can't provide.
+    // static regex can't provide. Per-prop translation is driven by the
+    // `attach_effect_props` table below.
   ],
+
+  // attach_effect_props: per-prop translation table for the second
+  // argument of SSF2 `self.attachEffect("name", { props })`. The
+  // `rewrite_attach_effect_calls` pass parses the {…} block, looks up
+  // each key here, and emits the translated field(s) inside the
+  // generated `new VfxStats({…})` argument — alongside `spriteContent`
+  // and `animation`. Source values pass through unchanged unless a
+  // mapping entry says otherwise. Keys with no entry surface as
+  // `// TODO:` lines above the call, same convention as call_splits.
+  //
+  // FM target field reference: VfxStats constructor from
+  // Fraymakers/api-types-plugin's fraymakers-api.d.ts (mirrors the
+  // Haxe VfxStatsProps typedef). Mappings were chosen by walking
+  // through all 1,583 prop-bag attachEffect calls across 46 SSF2
+  // characters and tallying every key:
+  //   x:1161  y:1039  scaleX:740  scaleY:735  parentLock:321
+  //   syncHitStun:180  rotation:53  loop:16  behind:9  flipOnX:5
+  //   resize:2  flip:1
+  //
+  // Forms:
+  //   "<fmPropName>"                              — direct rename, value passes through
+  //   { "expand_to": ["a","b","c"] }              — one source → multiple FM fields (same value)
+  //   { "todo": "<note>" }                        — no FM equivalent; emit TODO above call
+  //   { "target": "<fmPropName>", "todo": "…" }  — rename + carry a non-fatal note
+  "attach_effect_props": {
+    // 1:1 renames — same name and identical semantics in VfxStats.
+    "x":           "x",
+    "y":           "y",
+    "scaleX":      "scaleX",
+    "scaleY":      "scaleY",
+    "rotation":    "rotation",
+    // SSF2 `parentLock: true` packs three FM toggles together: position
+    // follows owner (relativeWith), scale follows owner (resizeWith),
+    // flip follows owner (flipWith). The expansion writes the source
+    // value into each — so `parentLock: false` correctly turns all
+    // three off.
+    "parentLock":  { "expand_to": ["relativeWith", "resizeWith", "flipWith"] },
+    // No clean FM equivalent — let the porter decide.
+    "syncHitStun": { "todo": "no FM equivalent — Vfx instances don't track owner hitstun automatically; chain or event-listener port required" },
+    "loop":        { "todo": "SSF2 loop:Int (play N times) vs FM loop:Bool (true=infinite); semantics differ — check intent and either drop or set loop:true" },
+    "behind":      { "todo": "SSF2 z-order flag vs FM layer:String (VfxLayer.*) — pick a VfxLayer constant (likely CHARACTERS_BACK)" },
+    "flipOnX":     { "todo": "SSF2 render-flip on X; closest FM hint is scaleX: -x or flipWith — manual port" },
+    "flip":        { "todo": "SSF2 render-flip toggle with no FM equivalent — manual port" },
+    "resize":      { "todo": "SSF2 resize flag with no FM equivalent — manual port (consider resizeWith)" }
+  },
 
   // call_splits: SSF2 "umbrella" calls whose object-literal argument
   // needs to be split into multiple FM calls. Each entry maps an SSF2

@@ -599,7 +599,7 @@ impl Drop for EffectAnimGuard {
 }
 
 /// Rewrite `self.attachEffect("name")` and `self.attachEffect("name", { props })`
-/// to `match.createVfx(new VfxStats({ spriteContent: …, animation: "<primary>" }), self)`.
+/// to `match.createVfx(new VfxStats({ spriteContent: …, animation: "<primary>", <translated props> }), self)`.
 ///
 /// Animation-name resolution:
 ///   - If `name` is in the thread_local map (a local effect we extracted),
@@ -614,13 +614,33 @@ impl Drop for EffectAnimGuard {
 ///     animation is wrong → runtime warning; never worse than the
 ///     original SSF2 call which we couldn't translate at all.
 ///
-/// The 2-arg form preserves the original `{…}` props as a trailing TODO
-/// comment for hand-tuning, since prop semantics (x/y offset, scale,
-/// rotation, parentLock) don't map 1:1 to FM's VfxStats.
+/// Per-prop translation:
+///   - The 2-arg form parses the `{…}` block with paren-aware comma
+///     splitting (so `Random.getFloat(0, 1)` is one value, not two).
+///     Each `key: value` is routed through the `attach_effect_props`
+///     mapping table in commands.jsonc, which supports direct renames,
+///     1→N expansions (e.g. `parentLock` → `relativeWith` +
+///     `resizeWith` + `flipWith`), and explicit `todo` notes for keys
+///     with no clean FM equivalent (`syncHitStun`, `loop`, `behind`, …).
+///   - Unmapped props emit a `// TODO: <key>: <value> — note` line
+///     above the call, preserving the original value alongside the
+///     reason. The call line itself never carries free-form comments.
 pub fn rewrite_attach_effect_calls(code: &str) -> String {
-    static RE_2ARG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static RE_LINE_2ARG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static RE_ANY_2ARG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static RE_1ARG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re_2arg = RE_2ARG.get_or_init(|| {
+    // Two 2-arg patterns. The first is line-anchored (`(?m)^([ \t]*)…`)
+    // and captures the line's indent so the emitted `// TODO:` lines
+    // can mirror it. The second is the mid-line fallback (assignments
+    // like `self.effect = self.attachEffect(…)` or calls that follow
+    // an inline comment); it can't safely inject TODO lines without
+    // breaking the surrounding expression, so unmapped props are
+    // dropped silently in that case. The two passes run in order, so
+    // the line-anchored form is preferred whenever it can match.
+    let re_line_2arg = RE_LINE_2ARG.get_or_init(|| {
+        regex::Regex::new(r#"(?m)^([ \t]*)\bself\.attachEffect\(\s*"([^"]*)"\s*,\s*\{([^{}]*)\}\s*\)"#).unwrap()
+    });
+    let re_any_2arg = RE_ANY_2ARG.get_or_init(|| {
         regex::Regex::new(r#"\bself\.attachEffect\(\s*"([^"]*)"\s*,\s*\{([^{}]*)\}\s*\)"#).unwrap()
     });
     let re_1arg = RE_1ARG.get_or_init(|| {
@@ -632,18 +652,67 @@ pub fn rewrite_attach_effect_calls(code: &str) -> String {
         let resolve = |name: &str| -> String {
             map.get(name).cloned().unwrap_or_else(|| "active".to_string())
         };
-        // 2-arg form first (more specific): preserve props as TODO comment.
-        let after_2arg = re_2arg.replace_all(code, |caps: &regex::Captures| {
-            let name = &caps[1];
-            let props = &caps[2];
+
+        // Build the translated `new VfxStats({…})` literal from the parsed
+        // props. Returns the bag body (no surrounding `{}`) plus a list of
+        // TODO notes for unmapped props.
+        let build_bag = |name: &str, props_block: &str| -> (String, Vec<String>) {
             let anim = resolve(name);
-            format!(
-                "match.createVfx(new VfxStats({{ spriteContent: self.getResource().getContent(\"{n}\"), animation: \"{a}\" }}), self) /* TODO port props: {{{p}}} */",
-                n = name, a = anim, p = props,
-            )
+            let mut fm_fields: Vec<(String, String)> = Vec::new();
+            let mut todo_lines: Vec<String> = Vec::new();
+            for (key, value) in parse_prop_bag(props_block) {
+                translate_attach_effect_prop(&key, &value, &mut fm_fields, &mut todo_lines);
+            }
+            let mut bag = format!(
+                "spriteContent: self.getResource().getContent(\"{n}\"), animation: \"{a}\"",
+                n = name, a = anim,
+            );
+            for (k, v) in &fm_fields {
+                bag.push_str(&format!(", {}: {}", k, v));
+            }
+            (bag, todo_lines)
+        };
+
+        // Pass 1: line-anchored 2-arg form — emit TODOs above the call.
+        let after_line_2arg = re_line_2arg.replace_all(code, |caps: &regex::Captures| {
+            let indent = &caps[1];
+            let name = &caps[2];
+            let props_block = &caps[3];
+            let (bag, todo_lines) = build_bag(name, props_block);
+
+            let mut out = String::new();
+            for note in &todo_lines {
+                out.push_str(indent);
+                out.push_str("// TODO: ");
+                out.push_str(note);
+                out.push('\n');
+            }
+            out.push_str(indent);
+            out.push_str(&format!(
+                "match.createVfx(new VfxStats({{ {bag} }}), self)"
+            ));
+            out
         });
-        // 1-arg form.
-        let after_1arg = re_1arg.replace_all(&after_2arg, |caps: &regex::Captures| {
+
+        // Pass 2: mid-line 2-arg fallback — translate inline. Embedded
+        // calls can't host above-line TODOs (would break the surrounding
+        // expression), so any unmapped props ride along as a trailing
+        // `/* TODO: … */` block-comment instead. That keeps the warning
+        // visible without altering line topology.
+        let after_any_2arg = re_any_2arg.replace_all(&after_line_2arg, |caps: &regex::Captures| {
+            let name = &caps[1];
+            let props_block = &caps[2];
+            let (bag, todos) = build_bag(name, props_block);
+            let call = format!("match.createVfx(new VfxStats({{ {bag} }}), self)");
+            if todos.is_empty() {
+                call
+            } else {
+                format!("{} /* TODO: {} */", call, todos.join(" | TODO: "))
+            }
+        });
+
+        // 1-arg form — no props to translate.
+        let after_1arg = re_1arg.replace_all(&after_any_2arg, |caps: &regex::Captures| {
             let name = &caps[1];
             let anim = resolve(name);
             format!(
@@ -653,6 +722,83 @@ pub fn rewrite_attach_effect_calls(code: &str) -> String {
         });
         after_1arg.into_owned()
     })
+}
+
+/// Split a `{ key1: val1, key2: val2, … }` body (without the braces) into
+/// `(key, value)` pairs, respecting parentheses so values like
+/// `Random.getFloat(0, 1)` aren't split on the inner comma. Whitespace
+/// around keys and values is trimmed.
+fn parse_prop_bag(body: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut cur = String::new();
+    for ch in body.chars() {
+        match ch {
+            '(' | '[' => { depth += 1; cur.push(ch); }
+            ')' | ']' => { depth -= 1; cur.push(ch); }
+            ',' if depth == 0 => {
+                if let Some((k, v)) = cur.split_once(':') {
+                    let k = k.trim().to_string();
+                    let v = v.trim().to_string();
+                    if !k.is_empty() && !v.is_empty() {
+                        out.push((k, v));
+                    }
+                }
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        if let Some((k, v)) = cur.split_once(':') {
+            let k = k.trim().to_string();
+            let v = v.trim().to_string();
+            if !k.is_empty() && !v.is_empty() {
+                out.push((k, v));
+            }
+        }
+    }
+    out
+}
+
+/// Route one SSF2 prop through `attach_effect_props` in commands.jsonc.
+/// On a successful mapping, push `(fm_field, value)` pairs into
+/// `fm_fields`. On an explicit `todo` or an unknown key, push a
+/// `// TODO:` note onto `todo_lines`. Both arrays are caller-owned so
+/// the rewrite can emit them in source order.
+fn translate_attach_effect_prop(
+    key: &str,
+    value: &str,
+    fm_fields: &mut Vec<(String, String)>,
+    todo_lines: &mut Vec<String>,
+) {
+    use crate::mappings::AttachEffectPropMapping as M;
+    let cfg = crate::mappings::api_commands();
+    match cfg.attach_effect_props.get(key) {
+        Some(M::Simple(fm)) => {
+            fm_fields.push((fm.clone(), value.to_string()));
+        }
+        Some(M::Detailed { target, expand_to, todo }) => {
+            if !expand_to.is_empty() {
+                for fm in expand_to {
+                    fm_fields.push((fm.clone(), value.to_string()));
+                }
+            } else if let Some(fm) = target {
+                fm_fields.push((fm.clone(), value.to_string()));
+            }
+            if let Some(note) = todo {
+                // Even routed entries can carry a porter-facing caveat
+                // (matches call_splits's todo semantics).
+                todo_lines.push(format!("{}: {} — {}", key, value, note));
+            } else if expand_to.is_empty() && target.is_none() {
+                // Entry exists but routes nowhere → treat as unmapped.
+                todo_lines.push(format!("{}: {} — entry present but no target/expand_to", key, value));
+            }
+        }
+        None => {
+            todo_lines.push(format!("{}: {} — no mapping in attach_effect_props", key, value));
+        }
+    }
 }
 
 /// Strip `self.endAnimation()` calls that appear alone on a line inside the
