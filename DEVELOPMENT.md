@@ -8,11 +8,11 @@
 > **Companion docs:**
 > - [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md) — the authoritative *format* reference
 >   (SSF2 `.ssf`/SWF internals and the Fraymakers `.entity` JSON schema). Read it
->   alongside this file. Where the two disagree, see
->   [§9 "Known issues"](#9-known-issues--gaps) — `AGENT_CONTEXT.md` has drifted
->   slightly out of date on rotation handling.
-> - [`README.md`](README.md) — short user-facing summary (also slightly stale;
->   see [§3.6](#36-readme--agent_context-discrepancies)).
+>   alongside this file.
+> - [`README.md`](README.md) — short user-facing summary.
+> - [`docs/codebase_analysis.md`](docs/codebase_analysis.md) — a separate
+>   optimization / cleanup / bug audit with file-and-line refs. Useful when picking
+>   up "what should I fix next" work.
 
 ---
 
@@ -23,13 +23,14 @@
 3. [Setup, build & run](#3-setup-build--run)
 4. [The conversion pipeline](#4-the-conversion-pipeline)
 5. [Module-by-module reference](#5-module-by-module-reference)
-6. [Input format: SSF2 `.ssf`](#6-input-format-ssf2-ssf)
-7. [Output format: Fraymakers character package](#7-output-format-fraymakers-character-package)
-8. [Current status — what works](#8-current-status--what-works)
-9. [Known issues & gaps](#9-known-issues--gaps)
-10. [Prioritized next steps](#10-prioritized-next-steps)
-11. [Git state & history](#11-git-state--history)
-12. [Tips for the next agent](#12-tips-for-the-next-agent)
+6. [Mapping files (`mappings/`)](#6-mapping-files-mappings)
+7. [30 → 60 fps doubling](#7-30--60-fps-doubling)
+8. [Input format: SSF2 `.ssf`](#8-input-format-ssf2-ssf)
+9. [Output format: Fraymakers character package](#9-output-format-fraymakers-character-package)
+10. [Current status — what works](#10-current-status--what-works)
+11. [Known issues & gaps](#11-known-issues--gaps)
+12. [Prioritized next steps](#12-prioritized-next-steps)
+13. [Tips for the next agent](#13-tips-for-the-next-agent)
 
 ---
 
@@ -49,25 +50,28 @@ It converts, per character:
 | SSF2 source | → | Fraymakers output |
 |---|---|---|
 | Bitmap sprites (one per animation frame) | → | `library/sprites/*.png` + `.meta` sidecars |
-| Per-frame collision boxes (hitboxes, hurtboxes, grab/ledge/reflect boxes…) | → | `COLLISION_BOX` / `COLLISION_BODY` / `POINT` layers in `Character.entity` |
+| Per-frame collision boxes (hitboxes, hurtboxes, grab/ledge/reflect/absorb/touch boxes…) | → | `COLLISION_BOX` / `COLLISION_BODY` / `POINT` layers in `Character.entity` |
 | Animation timelines | → | `animations` / `layers` / `keyframes` in `Character.entity` |
 | AS3 frame scripts (ABC bytecode) | → | `FRAME_SCRIPT` keyframe code in the entity |
 | AS3 character logic (`XxxExt` class methods) | → | decompiled into `Script.hx` |
-| Character stats (weight, gravity, speeds…) | → | `CharacterStats.hx` |
-| Attack/hitbox data | → | `HitboxStats.hx` |
+| Character stats (weight, gravity, speeds…) | → | `CharacterStats.hx` (data-driven via `mappings/character/stats.jsonc`) |
+| Attack / hitbox data | → | `HitboxStats.hx` (data-driven via `mappings/character/hitbox_stats.jsonc`) |
 | Animation flags | → | `AnimationStats.hx` |
 | Costume palettes (`misc.ssf`) | → | `costumes.palettes` + entity `paletteMap` |
-| Sounds | → | `library/sounds/*.ogg` + sound content entries |
-| Projectiles & menu head sprite | → | extra `*.entity` files + projectile scripts |
+| Sounds | → | `library/audio/*.wav` + per-sound `.wav.meta` content entries |
+| Projectiles | → | `library/entities/<name>.entity` + `library/scripts/Projectile/<Pascal>*.hx` |
+| Effects (VFX) | → | `library/entities/<effect>.entity` (one per effect; no scripts/stats); referenced from `Script.hx` via `match.createVfx(…)` |
+| Menu / portrait head sprite | → | `menu.entity` (full / css / icon / hud variants) |
 
 The conversion is **fully automatic and deterministic** — every GUID in the
 output is derived (UUID v5) from the character id + a context string, so
 re-running the converter on the same input reproduces byte-identical GUIDs.
 
-**Scope note (confirmed from code, not assumed):** this is a *data* converter,
-not a runtime. It does not run SSF2 or Fraymakers. It does not produce gameplay
-behaviour — translated logic lands in `.hx` files that a human must still review
-(many lines are emitted with `/*TODO*/` markers where no equivalent exists).
+**Scope note:** this is a *data* converter, not a runtime. It does not run SSF2 or
+Fraymakers. Translated logic lands in `.hx` files that a human must still review —
+many lines are emitted with `/*TODO*/` markers or as `// [SSF2-only: NAME] …`
+comments where no equivalent exists. The set of "still SSF2-only" calls per run
+is logged to `conversion_log.json`.
 
 ---
 
@@ -75,40 +79,56 @@ behaviour — translated logic lands in `.hx` files that a human must still revi
 
 ```
 ssf2-fraymakers-converter/
-├── Cargo.toml              Rust package manifest (package name: ssf2_converter)
+├── Cargo.toml                Rust package manifest (package name: ssf2_converter)
 ├── Cargo.lock
-├── README.md               Short user-facing readme (slightly stale)
-├── AGENT_CONTEXT.md         Authoritative SSF2/Fraymakers FORMAT reference
-├── DEVELOPMENT.md           ← this file
-├── build-app.sh             Build Rust + Swift, assemble the macOS .app, launch it
-├── rebuild-sandbag.sh       Quick: rebuild release binary + convert sandbag.ssf
-├── .gitignore              Ignores *.ssf, *.swf, /target, characters/
-├── src/                    All Rust source (the converter itself)
-│   ├── main.rs             CLI entry point + pipeline orchestration
-│   ├── lib.rs              Module declarations (exposes modules to src/bin/)
-│   ├── ssf.rs              .ssf → raw SWF decompression
-│   ├── swf_parser.rs       SWF tag parsing (thin wrapper over the `swf` crate)
-│   ├── abc_parser.rs       AS3 ABC bytecode parser  (largest module, ~2200 LOC)
-│   ├── decompiler.rs       ABC bytecode → readable Haxe-ish source (~1700 LOC)
-│   ├── extractor.rs        Pulls attacks/stats/scripts/anim-map out of ABC
-│   ├── anim_splitter.rs    Splits multi-move SSF2 sprites into FM animations
-│   ├── sprite_parser.rs    Per-frame collision-box geometry from SWF timelines
-│   ├── image_extractor.rs  PNG sprite extraction + per-frame image placement
-│   ├── sound_extractor.rs  Audio extraction (Nellymoser/MP3 → OGG via FLV)
-│   ├── palette_gen.rs      Costume palette generation & sprite re-indexing
-│   ├── api_mappings.rs     SSF2 AS3 API → Fraymakers Haxe API translation table
-│   ├── entity_gen.rs       Builds the Fraymakers .entity JSON (~1700 LOC)
-│   ├── haxe_gen.rs         Top-level output generator — writes the whole package
-│   ├── fraytools_project.rs  Emits the `<name>.fraytools` project file
-│   ├── uuid_gen.rs         Deterministic UUID v5 generation
-│   └── bin/                17 diagnostic / reverse-engineering binaries
+├── README.md                 Short user-facing readme
+├── AGENT_CONTEXT.md          Authoritative SSF2 / Fraymakers FORMAT reference
+├── DEVELOPMENT.md            ← this file
+├── build-app.sh              Build Rust + Swift, assemble the macOS .app, launch it
+├── rebuild-sandbag.sh        Quick: rebuild release binary + convert sandbag.ssf
+├── .gitignore                Ignores *.ssf, *.swf, /target, characters/
+│
+├── mappings/                  ← editable runtime config (JSONC)
+│   ├── commands.jsonc         universal SSF2 → FM API command conversions
+│   └── character/
+│       ├── animations.jsonc   SSF2 anim names ↔ FM anim names
+│       ├── stats.jsonc        CharacterStats.hx field keys / multipliers / derivations / constants
+│       └── hitbox_stats.jsonc HitboxStats.hx field mapping + isframe flags
+│
+├── src/                       All Rust source (the converter itself)
+│   ├── main.rs                CLI entry point + pipeline orchestration
+│   ├── lib.rs                 pub mod declarations (so src/bin/ can `use ssf2_converter::*`)
+│   ├── ssf.rs                 .ssf → raw SWF decompression
+│   ├── swf_parser.rs          SWF tag parsing (thin wrapper over the Ruffle `swf` crate)
+│   ├── abc_parser.rs          AVM2/ABC bytecode parser + semantic extractors (~2500 LOC)
+│   ├── decompiler.rs          ABC bytecode → Haxe-ish source (~1700 LOC)
+│   ├── extractor.rs           Bridges abc_parser output into CharacterData
+│   ├── anim_splitter.rs       Splits multi-move SSF2 sprites into FM animations
+│   ├── sprite_parser.rs       Per-frame collision-box geometry from SWF timelines
+│   ├── image_extractor.rs     PNG extraction, per-frame image placement, skew baking,
+│   │                          projectile/effect/head discovery (~1800 LOC)
+│   ├── sound_extractor.rs     Audio extraction (Nellymoser / MP3 / ADPCM → WAV via ffmpeg)
+│   ├── palette_gen.rs         Costume palette generation
+│   ├── api_mappings.rs        Decompiled-Haxe rewriter pipeline (JSONC-driven, ~1900 LOC)
+│   ├── mappings.rs            JSONC loader + OnceLock-cached accessors for mappings/*.jsonc
+│   ├── entity_gen.rs          Fraymakers .entity JSON builder (~2000 LOC)
+│   ├── haxe_gen.rs            Top-level output orchestrator — writes the whole package
+│   ├── fraytools_project.rs   Emits the `<name>.fraytools` project file
+│   ├── uuid_gen.rs            Deterministic UUID v5 generation
+│   └── bin/                   17 diagnostic / reverse-engineering binaries
+│
 ├── docs/
-│   └── anim_split_rules.json   Data table consumed by anim_splitter.rs
-├── SSF2ConverterApp/       Native macOS SwiftUI GUI wrapper
+│   ├── anim_split_rules.json  Historical reference for the multi-label split patterns
+│   │                          (NOT loaded at runtime — anim_splitter.rs has the live rules)
+│   └── codebase_analysis.md   Optimization / cleanup / bug audit
+│
+├── SSF2ConverterApp/          Native macOS SwiftUI GUI wrapper
 │   ├── Package.swift
 │   └── Sources/SSF2ConverterApp/{App.swift, ContentView.swift}
-├── characters/             Converter OUTPUT (git-ignored; sample runs present)
-└── target/                Cargo build output (git-ignored)
+│
+├── characters/                Converter OUTPUT (`*.hx`, `*.json`, `*.entity` tracked;
+│                              binary/image media git-ignored). Sample runs present.
+└── target/                    Cargo build output (git-ignored)
 ```
 
 **Where the test inputs live.** The `.ssf` input files are *not* in this repo
@@ -120,10 +140,10 @@ ssf2-fraymakers-converter/
 └── ssf2-ssfs/                   ← 47 SSF2 character .ssf files + misc.ssf
 ```
 
-`ssf2-ssfs/` contains the full SSF2 roster (`mario.ssf`, `fox.ssf`,
-`link.ssf`, `bowser.ssf`, … 46 characters) plus **`misc.ssf`** (the shared file
-that holds costume palette data). A fresh checkout on another machine will need
-those files supplied separately.
+`ssf2-ssfs/` contains the full SSF2 roster (`mario.ssf`, `fox.ssf`, `link.ssf`,
+`bowser.ssf`, …) plus **`misc.ssf`** (the shared file that holds costume palette
+data). A fresh checkout on another machine will need those files supplied
+separately.
 
 ---
 
@@ -131,15 +151,18 @@ those files supplied separately.
 
 ### 3.1 Prerequisites
 
-- **Rust** (stable toolchain) — the only requirement for the core converter.
-- **Swift 5.9 + Xcode command-line tools** — only if you want to build the
-  macOS GUI app. Core conversion does not need it.
-- **macOS 13+** — only for the GUI app. The Rust converter itself is
-  platform-agnostic (it has been developed and run on macOS).
+- **Rust** (stable toolchain) — required to build the core converter.
+- **`ffmpeg`** on `PATH` — used at runtime for sound conversion (Nellymoser / MP3 /
+  ADPCM → WAV). If `ffmpeg` is absent the conversion still completes; sound
+  extraction is skipped with a warning.
+- **Swift 5.9 + Xcode command-line tools** — only if you want to build the macOS
+  GUI app. Core conversion does not need it.
+- **macOS 13+** — only for the GUI app. The Rust converter itself is platform-
+  agnostic (it has been developed and run on macOS).
 
-There is **no external runtime dependency** — SWF parsing/decompression,
-bitmap decoding and audio remuxing are all done in-process by Rust crates.
-(Historically the project shelled out to JPEXS/FFDec; that is gone.)
+There is **no external Rust runtime dependency** for SWF decompression, bitmap
+decoding, or ABC parsing — those all happen in-process. (Historically the project
+shelled out to JPEXS / FFDec; that is gone.)
 
 ### 3.2 Build the converter
 
@@ -170,6 +193,11 @@ Options:
   -v, --verbose          Debug-level logging
 ```
 
+Costume extraction is **in-process** — `main.rs::extract_costumes_to_temp`
+unwraps `misc.ssf` and runs `abc_parser::scan_all_costume_methods` directly,
+writing a temporary JSON cache that's deleted after the run. There is no
+separate `extract_costumes` binary anymore.
+
 Examples:
 
 ```bash
@@ -182,7 +210,7 @@ Examples:
 ```
 
 Output for character `mario` lands in `./characters/mario/` — a complete
-FrayTools character package (see [§7](#7-output-format-fraymakers-character-package)).
+FrayTools character package (see [§9](#9-output-format-fraymakers-character-package)).
 
 ### 3.4 Quick rebuild loop
 
@@ -215,20 +243,13 @@ The GUI (`SSF2ConverterApp/Sources/SSF2ConverterApp/`) is intentionally thin:
 - `App.swift` — `@main` SwiftUI `App` + an `AppDelegate` that forces a normal
   foreground window.
 - `ContentView.swift` — a drag-and-drop / file-picker window. On drop it runs
-  the bundled `ssf2_converter` binary as a child `Process`, animates a fake
-  progress bar, and shows success/failure with the captured log. It auto-detects
-  a sibling `misc.ssf` and lets the user override the output dir.
+  the bundled `ssf2_converter` binary as a child `Process`, animates a progress
+  bar, and shows success/failure with the captured log. It auto-detects a sibling
+  `misc.ssf`, lets the user override the output dir, and reads
+  `<output>/<char>/conversion_log.json` to display an "Unhandled Calls" popup
+  summarising the `unknown` / `ssf2_only` counts after every run.
 
 The GUI adds **no conversion logic** — all behaviour lives in the Rust binary.
-
-### 3.6 README / AGENT_CONTEXT discrepancies
-
-Both older docs mention an **`extract_costumes`** standalone binary and a
-two-step "extract costumes first, then convert" workflow. **That binary no
-longer exists.** Costume extraction is now done **in-process** by `main.rs`
-(`extract_costumes_to_temp`), which reads `misc.ssf`, caches costume data to a
-temporary `.ssf2_costumes_cache.json`, and deletes it after the run. The only
-costume-related binary still present is the diagnostic `dump_costumes`.
 
 ---
 
@@ -253,14 +274,18 @@ End to end, one `ssf2_converter` invocation does this (`src/main.rs`):
     ├─ (once) extract_costumes_to_temp:
     │     misc.ssf → ssf::decompress → swf_parser::parse →
     │     abc_parser::scan_all_costume_methods → temp costumes JSON
+    │     (in-process; temp file deleted at end of run)
     │
     ▼  for each character id:
 process_character():
     │
+    ├─ api_mappings::reset_conversion_log()   start a fresh per-character log
+    │
 [4] extractor::extract           ABC → CharacterData {
-    │                              attacks + hitboxes, stats, decompiled
-    │                              Ext-method scripts, frame scripts,
-    │                              ssf2→fm animation-name map }
+    │                              attacks + hitboxes, stats, decompiled Ext methods,
+    │                              frame scripts, ssf2→fm anim-map, ext_vars +
+    │                              ext_var_inits, projectile_data (per-projectile
+    │                              SSF2 physics + hitboxes from getProjectileStats()) }
     │                            (delegates to abc_parser + decompiler)
     ▼
 [5] sprite_parser::extract_xframe_scale     root MovieClip → base scaleX/scaleY
@@ -269,40 +294,68 @@ process_character():
     │                                       per-frame collision-box geometry
     ▼
 [7] image_extractor::extract_images         SWF bitmaps → PNG files + per-frame
-    │                                       image PLACEMENT (matrix) data
+    │                                       image PLACEMENT (full affine matrix) data
+    │                                       + skew-bake on sheared placements
     ▼
-[8] sound_extractor::extract_all_sounds     SWF audio → library/sounds/*.ogg
+[8] sound_extractor::extract_all_sounds     SWF audio → library/audio/*.wav (via ffmpeg)
     │
 [9] image_extractor::discover_projectiles_and_head
-    │                                       find projectile sprites + menu head
+    │                                       find projectile sprites, effect sprites,
+    │                                       and menu head sprite
     ▼
 [10] haxe_gen::generate          Writes the ENTIRE output package:
+       │
+       ├─ EffectAnimGuard::install(effect→primary-animation map)
+       │   so all translate_ssf2_to_fm calls in this scope can resolve
+       │   attachEffect("name") → match.createVfx(…) with the right animation.
+       │
        ├─ HitboxStats.hx / CharacterStats.hx / AnimationStats.hx / Script.hx
        │   (+ .hx.meta sidecars)
-       ├─ anim_splitter::split_animations  (jab→jab1/2/3, taunt→3 slots, …)
+       ├─ anim_splitter::split_animations  (jab→jab1/2/3/4, taunt→3 slots,
+       │                                    aerial → active + land, strong → in/charge/attack,
+       │                                    grab → grab/dash_grab/grab_hold/grab_pummel, …)
        ├─ entity_gen::generate_entity      → library/entities/Character.entity
-       ├─ <name>.fraytools  (fraytools_project)   + library/manifest.json
+       │   (drops empty animations; jab-count-driven jab keep-list)
+       ├─ <name>.fraytools  (fraytools_project)   + library/manifest.json (+ .meta)
        ├─ entity_gen::get_image_meta_guids → a .meta sidecar per sprite PNG
        ├─ palette_gen::generate_palettes_and_remap
-       │     → costumes.palettes(+.meta), palette_preview.png,
+       │     → costumes.palettes (+ .meta), palette_preview.png,
        │       then REWRITES Character.entity with paletteMap filled in
-       ├─ menu.entity        (from the discovered head sprite)
-       ├─ <projectile>.entity + Projectile_<name>/*.hx scripts (per projectile)
-       └─ sound content entries + conversion_stats.json
+       ├─ entity_gen::generate_menu_entity      from the discovered head sprite
+       ├─ for each projectile:
+       │     ├─ <proj>.entity   (visuals + boxes + multi-state animations)
+       │     └─ library/scripts/Projectile/<Pascal>{Script,Stats,HitboxStats,AnimationStats}.hx
+       │        (Annie / aJewelofRarity convention: single Projectile/ dir,
+       │        Pascal-cased filename per projectile)
+       ├─ for each effect:
+       │     └─ <effect>.entity   (image-only; one animation per inner FrameLabel,
+       │                          or single `active` if no labels)
+       ├─ generate_sound_entries  (per-WAV .meta sidecar)
+       └─ conversion_stats.json
+    │
+[11] write_conversion_log        Snapshot api_mappings::snapshot_conversion_log()
+                                 → <char>/conversion_log.json (unknown + ssf2_only counts).
+                                 Used by the SwiftUI "Unhandled Calls" popup.
 ```
 
-Two sub-systems are worth calling out:
+Three sub-systems are worth calling out:
 
 - **ABC path** (`abc_parser` + `decompiler`): SSF2 keeps character *logic*,
-  *stats*, *attack tables* and *costume data* inside AS3 bytecode. `abc_parser`
-  is a from-scratch ABC (AVM2) parser; `decompiler` reconstructs control flow
-  (a CFG with proper if/else/while) and renders Haxe-like source. `api_mappings`
-  then rewrites SSF2 API calls into Fraymakers API calls.
+  *stats*, *attack tables*, *projectile stats* and *costume data* inside AS3
+  bytecode. `abc_parser` is a from-scratch ABC (AVM2) parser; `decompiler`
+  reconstructs control flow (a CFG with proper if/else/while) and renders
+  Haxe-like source.
 
 - **SWF-timeline path** (`sprite_parser` + `image_extractor`): SSF2 keeps all
   *visual* and *collision* data in the SWF display list (`DefineSprite`
-  timelines of `PlaceObject`/`ShowFrame`/`RemoveObject` tags), **not** in code.
-  These two modules walk those timelines frame-by-frame.
+  timelines of `PlaceObject` / `ShowFrame` / `RemoveObject` tags), **not** in
+  code. These two modules walk those timelines frame-by-frame and produce per-
+  animation, per-frame, per-layer data structures.
+
+- **Rewriter pipeline** (`api_mappings::translate_ssf2_to_fm`): every block of
+  decompiled Haxe (Script.hx ext methods, ext-class iinit, frame scripts) is
+  passed through a fixed pipeline of structural and text transforms — see
+  [§5.5](#55-the-translation-pipeline-api_mappingsrs) for the exact order.
 
 `haxe_gen::generate` is the real orchestrator of *output* — `main.rs` only
 prepares the inputs and hands everything to it.
@@ -315,195 +368,374 @@ Sizes are approximate (Rust LOC). Modules are grouped by pipeline role.
 
 ### 5.1 Entry point & wiring
 
-#### `main.rs` (~305 LOC)
+#### `main.rs` (~340 LOC)
 CLI definition (`clap`), logging setup, and the top-level orchestration in
 `fn main` + `process_character`. Key functions:
 - `extract_costumes_to_temp(misc_ssf)` — extracts every character's costume data
   from `misc.ssf` into a temp JSON cache; drops noise (`unknown` key, <10
-  costumes).
+  costumes). The temp file is deleted after the run.
 - `detect_char_names(swf, input)` — finds every `XxxExt` ABC class and lowercases
   the prefix; reconciles truncated names against the filename (`CaptainExt` +
   `captainfalcon.ssf` → `captainfalcon`).
 - `process_character(...)` — runs pipeline steps [4]–[10] for one character;
   every stage is wrapped so a failure logs a warning and continues with a
   default rather than aborting the whole run.
+- `write_conversion_log(...)` — writes `<char_dir>/conversion_log.json` with
+  the per-character `unknown` / `ssf2_only` snapshot from `api_mappings`.
 
-#### `lib.rs` (17 LOC)
+#### `lib.rs`
 Just `pub mod` declarations. Exists so the 17 binaries in `src/bin/` can
 `use ssf2_converter::*`. The crate is **both** a library and a binary.
 
-### 5.2 SSF / SWF layer
+### 5.2 SSF / SWF / mapping layer
 
-#### `ssf.rs` (~73 LOC)
+#### `ssf.rs`
 `decompress(data) -> Vec<u8>`: turns a `.ssf` into raw SWF bytes. A `.ssf` is
-either already a raw SWF (`FWS`/`CWS`/`ZWS` magic — passed through) or an
+either already a raw SWF (`FWS` / `CWS` / `ZWS` magic — passed through) or an
 SSF-wrapped file: `u32 swf_len` + `u32 garbage_header_size` + zlib payload.
-Falls back gracefully if the payload is already uncompressed.
 
-#### `swf_parser.rs` (~67 LOC)
+#### `swf_parser.rs`
 `parse(data) -> SwfFile`: thin wrapper over the **`swf` crate** (Ruffle's SWF
-library). Calls `swf::decompress_swf` + `swf::parse_swf`, then collects the
-`SymbolClass` table (`id → class name`) and every `DoAbc`/`DoAbc2` block's raw
-bytecode into `SwfFile { version, frame_count, frame_rate, symbols, abc_blocks }`.
+library). Returns `SwfFile { version, frame_count, frame_rate, symbols,
+abc_blocks }`. **Note**: many downstream modules re-run `swf::decompress_swf` +
+`swf::parse_swf` themselves on the raw `swf_data` buffer rather than reusing
+this parsed value — see [`docs/codebase_analysis.md`](docs/codebase_analysis.md)
+§1.1.
+
+#### `mappings.rs`
+The JSONC loader for `mappings/*.jsonc`. `strip_jsonc(src)` removes `//` and
+`/* */` comments and trailing commas; then `serde_json` parses the result.
+Each accessor is cached via `OnceLock` so the JSONC is parsed exactly once per
+process:
+- `character_animations()` → `AnimationMappings { ssf2_to_fm, label_to_ssf2 }`.
+- `character_stats()` → `StatMappings { field_keys, multipliers, offsets,
+  derivations, constants }`.
+- `character_hitbox_stats()` → `HitboxStatsMapping { fields: Vec<HitboxField
+  { fm_field, ssf2_keys, isframe }> }`.
+- `api_commands()` → `ApiCommands { replacements, regex_replacements,
+  call_splits, attach_effect_props, global_vfx_map, frame_params,
+  passthrough_fm_apis, ssf2_only }`.
+
+For each file, an on-disk copy (working-dir, next-to-binary, or
+`<bin-parent>/<bin-parent>` for the repo root) overrides the `include_str!`'d
+default. Malformed override files log a warning and fall back to the default.
+
+`evaluate_stat_derivation(name, vars)` compiles `stats.jsonc :: derivations`
+expression strings once via `fasteval` and evaluates them with the converted
+stats exposed as variables (so e.g. `aerialSpeedCap` can be defined as
+`max(air_mobility_raw, aerial_friction) * 5.0`).
 
 ### 5.3 ABC (ActionScript bytecode) layer
 
-#### `abc_parser.rs` (~2200 LOC — largest module)
+#### `abc_parser.rs` (~2500 LOC — largest module)
 A complete AVM2/ABC parser written from scratch. Parses the ABC constant pool
 (ints, uints, doubles, strings, namespaces, multinames), `Method`s, `Class`es,
 `Trait`s, `Script`s and `MethodBody`s into `AbcFile`. Beyond plain parsing it
 contains a lot of *semantic* extraction tuned to SSF2's code shape:
-- `extract_character(abc, char_name)` — the main entry: pulls the character's
-  attacks, stats, frame scripts and the **xframe map** (frame-method → SSF2
-  animation name).
+- `extract_character(abc, char_name)` — the main entry. Pulls the character's
+  attacks, stats, frame scripts, the **xframe map** (frame-method → SSF2
+  animation name), Ext-class instance vars (`ext_vars`) and their iinit-derived
+  initial values (`ext_var_inits`), and per-projectile stats from
+  `getProjectileStats()`.
 - `extract_attack_objects` / `extract_hitboxes_from_val` — recovers attack
   tables by interpreting bytecode with a small stack machine (`StackVal`).
-- `extract_stats_from_body` / `extract_ssf2_stats` /
-  `extract_largest_numeric_object` — three strategies (in fallback order) for
-  finding the character's stat object.
-- `extract_costume_data*` / `scan_all_costume_methods` / `decode_costume_objects`
-  — recovers the 15-costume palette tables from `misc.ssf`.
+- `extract_projectile_objects` — pulls flat-scalar physics fields + nested
+  `attackBoxes` from `getProjectileStats()`. Keys are SSF2 projectile names.
+- `extract_ssf2_stats` / `extract_stats_from_body` — two strategies (in
+  fallback order) for finding the character's stat object.
+- `scan_all_costume_methods` / `decode_costume_objects` — recovers per-character
+  costume tables from `misc.ssf` (Pattern A: `paletteSwap: { colors,
+  replacements }`; Pattern B: `{ name, colors }`).
 - `extract_xframe_name` / `is_root_xframe_method` — maps internal frame methods
-  to animation labels.
+  to animation labels via `self.xframe = "..."` assignments in their bytecode.
+
+> The `extract_costume_data` / `extract_costume_data_from_apply_palette` /
+> `extract_largest_numeric_object` / `extract_frame_actions` functions are
+> dead-code legacy variants — see `docs/codebase_analysis.md` §2.2.
 
 #### `decompiler.rs` (~1700 LOC)
 Turns ABC method bytecode into readable, Haxe-ish source. This is a real
 decompiler, not a disassembler:
 - `build_blocks` — splits bytecode into basic blocks with `Terminator`s.
 - `BlockDecoder` / `StructuredDecoder` — reconstruct a CFG and recover
-  structured control flow (`if`/`else`/`while`, branch inversion).
+  structured control flow (`if` / `else` / `while`, short-circuit `&&` / `||`
+  collapsing, branch inversion).
 - `Expr` / `Stmt` ASTs + `render_stmts` / `render_closure` — pretty-printing.
 - `infer_activation_slots` / `slots_from_traits` / `rename_loop_counters` /
   `rename_locals_in_*` — give locals meaningful names.
-- `lookup_api` — a small inline SSF2→FM API table used during decompilation
-  (distinct from the larger `api_mappings` table; several entries are stubbed
-  `/* TODO */`).
-- `decompile_method(...)` — public entry.
+- `lookup_api` — a small inline SSF2 → FM API table used during decompilation
+  (distinct from the larger JSONC-driven rewriter table in `api_mappings`).
+- `decompile_method(...)` / `decompile_closure(...)` — public entry points.
 
 ### 5.4 Extraction layer
 
-#### `extractor.rs` (~419 LOC)
+#### `extractor.rs`
 The bridge between the raw ABC data and the generator. Defines the central
-**`CharacterData`** struct (`attacks`, `stats`, `animations`, `scripts`,
-`ssf2_to_fm_anim`) and the supporting `Attack`/`Hitbox`/`CharacterStats`/
-`AnimationInfo`/`ScriptInfo` types.
-- `extract(swf, char_name)` — drives `abc_parser`, converts the results.
-- `build_ssf2_to_fm_anim` — the **static SSF2→Fraymakers animation-name table**
-  (`stand`→`idle`, `a_air_forward`→`aerial_forward`, `b_down`→`special_down`, …;
-  ~90 entries). Edit this table to fix animation-name mapping.
-- `convert_hitboxes` / `convert_stats` — map SSF2 field names to FM fields
-  (e.g. SSF2 `weight1`/`norm_xSpeed`/`max_ySpeed` → FM weight/walk/fall).
+`CharacterData` struct (`attacks`, `stats`, `animations`, `scripts`, `ext_vars`,
+`ext_var_inits`, `projectile_data`, `ssf2_to_fm_anim`) and supporting types.
+- `extract(swf, char_name)` — drives `abc_parser`, converts the results, dedupes
+  raw SSF2 names against known-FM names, and seeds split sub-animations
+  (`jab1`/`jab2`/…).
+- `build_ssf2_to_fm_anim` — looks up SSF2 names through
+  `mappings/character/animations.jsonc` (no longer a hardcoded table).
+- `convert_hitboxes` / `convert_stats` — map SSF2 field names to FM fields via
+  `mappings/character/hitbox_stats.jsonc` and `mappings/character/stats.jsonc`.
 - `expand_split_anim` / `is_split_sub_anim` — declare which FM anims split into
-  sub-anims (`jab`→`jab1..jab4`, `taunt`→`taunt`/`taunt_up`/`taunt_down`).
+  sub-anims (`jab` → `jab1..jab4`, `taunt` → `taunt` / `taunt_up` / `taunt_down`).
 
-#### `anim_splitter.rs` (~450 LOC)
-`split_animations(animations, sprite_boxes) -> Vec<SplitAnim>`: some SSF2 sprites
-pack several Fraymakers moves into one timeline separated by internal frame
-labels (the classic case: a "Jab" sprite contains jab1→jab2→jab3). This module
-decides where to cut, driven by `docs/anim_split_rules.json`.
+#### `anim_splitter.rs`
+`split_animations(animations, sprite_boxes) -> Vec<SplitAnim>`: some SSF2
+sprites pack several Fraymakers moves into one timeline separated by internal
+frame labels (the classic case: a "Jab" sprite contains jab1 → jab2 → jab3).
+This module decides where to cut.
 
-#### `sprite_parser.rs` (~1280 LOC)
-Extracts **collision-box geometry** from SWF `DefineSprite` timelines (SSF2
-stores all box data in the display list, never in code).
+Rules are **hardcoded match arms** keyed on `anim_name` (aerial / strong /
+grab / run / jump / jump_aerial / idle / crouch / special_up / item_smash /
+item_throw / fly / helpless / ledge_hang / shield / fall / land / jab4 / hurt /
+tech / item_float / ladder / respawn / special / select_screen / taunt_up /
+taunt_down). [`docs/anim_split_rules.json`](docs/anim_split_rules.json) is the
+historical reference for how those patterns were derived from scanning the
+roster — the splitter does NOT load it at runtime.
+
+#### `sprite_parser.rs`
+Extracts **collision-box geometry** from SWF `DefineSprite` timelines.
 - `BoxType` enum + `parse_sprite_boxes` — per-animation, per-frame boxes
   (`FrameBox` / `AnimationBoxData`).
 - `extract_xframe_transforms` / `extract_xframe_scale` / `XframeTransform` —
-  recover the root-MovieClip transform (origin offset + character scale).
+  recover the root-MovieClip transform (full affine matrix `a, b, c, d, tx,
+  ty`, plus convenience `sx`, `sy`).
 - `extract_ssf2_anim_name` / `static_ssf2_to_fm` / `normalize_anim_label` —
   animation-name resolution at the sprite level.
 - `find_collision_box_base_size` — measures the `CollisonBox_6` shape's true
-  size (note the SSF2-internal typo "Collison").
+  size at runtime (note the SSF2-internal typo "Collison"); tallies which char
+  id box-typed instances actually place to find the right shape (since the
+  symbol isn't reliably named `CollisonBox`).
 - `matrix_to_box` / `matrix_to_itembox` — turn a `PlaceObject` matrix into a
   Fraymakers box `(x, y, w, h[, pivot])`.
 - `split_jab` / `split_taunt` / `sub_anim_image_splits` — sprite-level splitting
-  that mirrors `anim_splitter`.
+  that mirrors `anim_splitter`; called from `image_extractor` so collision-box
+  splits and image-frame splits stay aligned.
+- `apply_fallbacks` — clones box data from a related animation when a target
+  has none (e.g. `stunned ← hurt`, `swim ← fall`, `victory ← taunt`).
 
-#### `image_extractor.rs` (~1340 LOC)
+#### `image_extractor.rs` (~1800 LOC)
 Extracts the **visual sprites** and their **per-frame placement**.
-- `extract_images(...)` — decodes every `DefineBitsLossless`/`DefineBitsJpeg3`
+- `extract_images(...)` — decodes every `DefineBitsLossless` / `DefineBitsJpeg3`
   bitmap to a PNG (`decode_lossless` / `decode_jpeg3` / `write_png`); builds
-  `shape_to_bitmap` (resolves `DefineShape`→bitmap, skipping the SWF null
+  `shape_to_bitmap` (resolves `DefineShape` → bitmap, skipping the SWF null
   bitmap id `65535`) and `shape_pivot` (where a shape's local origin sits inside
   its bitmap — computed from the fill matrix).
 - `build_anim_frame_images` — walks each animation timeline and records, per
-  frame, every placed image with its full world-space matrix (`FrameImageEntry`).
-- `ImageLocalMatrix` — SWF matrix decomposition (`from_abcd`): scale, rotation,
-  and **flip encoded as a negative `sy`**; `has_skew()` detects non-rigid
-  matrices.
-- `prerender_skewed_frames` — pre-renders skewed image placements (a skew can't
-  be represented by FrayTools' scale+rotation, so the pixels are baked).
-- `discover_projectiles_and_head` — locates projectile sprites and the menu
-  head sprite; `extract_projectile_frame_images` flattens nested effect sprites.
+  frame, every placed image with its full world-space affine matrix
+  (`FrameImageEntry`). Two-pass effect-sprite flattening: build unnamed sub-
+  sprite frame tables first, then expand named `_fla.` effect placements by
+  composing the parent matrix with each inner frame.
+- `ImageLocalMatrix` — SWF matrix decomposition (`from_abcd`): scale, rotation
+  (via `atan2(b, a)`), **flip encoded as a negative `sy`**, and `has_skew()`
+  detects non-rigid matrices.
+- `prerender_skewed_frames` — bakes sheared placements (which FrayTools' IMAGE
+  symbol can't express) into fresh PNGs and rewrites the placement as a plain
+  translation. Uses bicubic (Catmull-Rom) resampling + a mild unsharp pass.
+  Cache key uses the bit pattern of the linear matrix + source bitmap id so
+  near-identical placements never accidentally share a bake.
+- `apply_image_fallbacks` — image-side counterpart to `sprite_parser`'s
+  fallback table.
+- `discover_projectiles_and_head` — locates projectile sprites (have an
+  `attack_idle` FrameLabel + a `stance` PlaceObject), effect sprites (everything
+  else at SWF root that isn't a projectile / the character / `_fla.*` / HUD /
+  icon / sparkle), and the menu head sprite. The head detection prefers `*_head`,
+  also accepts `*_icon`, and explicitly excludes `*_hud` (the animated damage
+  counter, which is not a portrait).
+- `extract_projectile_frame_images` — flattens nested effect/sub-sprites for a
+  given inner sprite id, returning per-frame image symbol names + a
+  symbol→meta-GUID map. Used by both projectile and effect entity generation.
 
-#### `sound_extractor.rs` (~330 LOC)
+#### `sound_extractor.rs`
 `extract_all_sounds(...)`: pulls `DefineSound` data out of the SWF and writes
-`.ogg` files. Handles Nellymoser and MP3 by wrapping the raw audio in a
-synthetic **FLV** container and remuxing (`build_nellymoser_flv` /
-`build_generic_flv` / `convert_via_flv`).
+**`library/audio/*.wav`** files (PCM 16-bit). Handles Nellymoser (8 kHz +
+variable-rate) and MP3 by wrapping the raw audio in a synthetic **FLV** container
+and remuxing through `ffmpeg`; ADPCM goes through a generic FLV wrapper.
 
-### 5.5 Generation layer
+> The hand-rolled SWF tag walker (`parse_sounds`) is a historical artifact — it
+> predates the `swf` crate's `DefineSound` support. See
+> `docs/codebase_analysis.md` §2.3.
 
-#### `haxe_gen.rs` (~1290 LOC)
+### 5.5 The translation pipeline (`api_mappings.rs`)
+
+`translate_ssf2_to_fm(code)` is the single entry that every block of decompiled
+Haxe passes through (Script.hx ext methods, ext-class iinit, embedded frame
+scripts in the entity). The fixed pipeline order is:
+
+1. **`remove_readiness_guards`** — strips `if (SSF2API.isReady()) { … }` /
+   `if (self && SSF2API.isReady())` wrappers and inlines the body one tab to
+   the left.
+2. **`double_frame_counts`** — 30 → 60 fps scaling, driven by
+   `commands.jsonc :: frame_params`. Runs *before* the rename pass so SSF2
+   field names (`hitStun:`, `hitLag:`, `refreshRate:`, …) still match the
+   `isframe`-flagged entries. See [§7](#7-30--60-fps-doubling).
+3. **`apply_call_splits`** — fans out SSF2 umbrella calls (e.g.
+   `self.updateAttackStats({ … })`) into multiple FM calls (e.g.
+   `self.updateAnimationStats({ leaveGroundCancel: false, … });` +
+   `self.updateHitboxStats({ … });`) per `commands.jsonc :: call_splits`.
+   Source fields with no mapping become `// TODO:` comments. Source fields
+   with a `skip_if_value` match are dropped silently. The call splitter is
+   bracket-aware (so commas inside nested calls/arrays/objects don't break
+   field splitting) and comment-aware (matches inside `//` are skipped).
+4. **Literal `replacements`** — ordered find/replace pairs from
+   `commands.jsonc :: replacements`. Order matters (e.g. `self.self.` must
+   run before bare `self.self`).
+5. **`regex_replacements`** — `commands.jsonc :: regex_replacements`,
+   precompiled once into a `OnceLock<Vec<CompiledRegexReplacement>>`. Used
+   for arg-dropping, arg-aware dispatch, etc.
+6. **`rewrite_attach_effect_calls`** — context-aware
+   `self.attachEffect("name") / self.attachEffect("name", { props })` →
+   `match.createVfx(new VfxStats({ spriteContent: …, animation: …,
+   <translated props> }), self)`.
+   - The shape of the VfxStats head is decided in `build_vfx_head(name)`:
+     - If `name` is in `commands.jsonc :: global_vfx_map`, emit
+       `spriteContent: "global::vfx.vfx", animation: GlobalVfx.<CONST>`.
+     - Otherwise emit per-character
+       `spriteContent: self.getResource().getContent("name"),
+       animation: "<primary or active fallback>"`. The animation name comes
+       from a thread-local `EFFECT_PRIMARY_ANIMS` map installed by
+       `haxe_gen::generate` via the RAII `EffectAnimGuard`.
+   - Per-prop translation goes through `commands.jsonc :: attach_effect_props`,
+     supporting `Simple` direct renames, `Detailed` 1→N `expand_to`
+     (e.g. `parentLock` → `relativeWith` + `resizeWith` + `flipWith`), and
+     explicit `todo` notes.
+7. **`strip_last_frame_end_animation`** — removes redundant
+   `self.endAnimation();` calls in the last-numbered frame function of each
+   animation group (FM ends animations naturally on the final frame).
+8. **`comment_out_unknown_calls`** — turns lines containing
+   `.<name>(` for any name listed in `commands.jsonc :: ssf2_only` into
+   `// [SSF2-only: NAME] <original>`. Counts these into the per-character
+   `ConversionLog::ssf2_only` map.
+
+Beyond that pipeline, two **whole-script** passes also run (in `haxe_gen`):
+
+- **`fix_intangibility_pairs(full_script)`** — pairs each
+  `self.setIntangibility(true);` with the next `self.setIntangibility(false);`
+  in the same anim-prefix and rewrites to a single
+  `self.applyGlobalBodyStatus(BodyStatus.INTANGIBLE, N);` with the duration
+  baked in. Unpaired calls are surfaced with a `// [SSF2-only:
+  setIntangibility]` marker.
+- **`wrap_persistent_state(code, var_types)`** — rewrites SSF2 ext-class
+  instance-variable references into Fraymakers persistent-state wrappers:
+  `self.foo++` → `foo.inc()`, `self.foo = X;` → `foo.set(X);`,
+  `self.foo` reads → `foo.get()`. `var_types` comes from
+  `api_mappings::infer_ext_var_types(ext_vars, ext_var_inits)` and chooses
+  `makeBool` / `makeInt` / `makeObject` factories for the declaration.
+
+`comment_out_unknown_calls` also records every `.NAME(` call that doesn't
+appear in **any** `commands.jsonc` section (`replacements`,
+`regex_replacements`, `passthrough_fm_apis`, `ssf2_only`, `frame_params`,
+`call_splits` source methods) into `ConversionLog::unknown`. The combined
+log lands in `<char>/conversion_log.json` at the end of the run and drives
+the SwiftUI "Unhandled Calls" popup.
+
+### 5.6 Generation layer
+
+#### `haxe_gen.rs` (~1750 LOC)
 The **output orchestrator**. `generate(...)` writes the entire character package
 (see pipeline step [10]). Also owns:
-- The **SSF2→FM stat scaling** functions (`ssf2_gravity_to_fm`,
-  `ssf2_speed_to_fm`, `ssf2_jump_to_fm`, …) — *approximate* conversions reverse-
-  engineered by comparing template characters to SSF2 data.
-- `generate_hitbox_stats` / `generate_character_stats` / `generate_animation_stats`
-  / `generate_script` — the four character `.hx` files.
-- `generate_jab_scripts` — synthesizes jab-chain logic.
-- `generate_manifest` — `library/manifest.json`.
-- `generate_projectile_*` — projectile `.hx` files (logic is largely **stubbed**;
-  see [§9](#9-known-issues--gaps)).
-- `generate_sound_entries`, `script_meta`, `sanitize_entity_name`.
+- Installation of the `EffectAnimGuard` (per-character effect → primary-animation
+  map) for the duration of the generation pass.
+- `count_populated_jabs(img_result)` → drives the jab-chain decision (a
+  single-jab character gets no chain boilerplate; `populated_jabs == 2`
+  keeps `jab3` as an empty-but-allowlisted placeholder so the chain doesn't
+  break on the last link).
+- **Stat scaling** wrappers (`ssf2_gravity_to_fm`, `ssf2_speed_to_fm`,
+  `ssf2_jump_to_fm`, `ssf2_walk_to_fm`, `ssf2_dash_to_fm`, `ssf2_air_to_fm`) —
+  thin wrappers around `crate::mappings::character_stats().scale("name", v)`
+  so every value comes from `stats.jsonc :: multipliers`.
+- `generate_hitbox_stats` / `generate_character_stats` /
+  `generate_animation_stats` / `generate_script` — the four character `.hx`
+  files. `generate_character_stats` pulls every value from `stats.jsonc` (raw
+  values via `field_keys` + `multipliers`, derivations via
+  `evaluate_stat_derivation`, flat sections like ECB / camera / shield /
+  voice via `stats.jsonc :: constants`). `generate_script` MERGES SSF2 ext
+  methods whose names match template functions (`initialize`, `update`,
+  `inputUpdateHook`, `handleLinkFrames`, `onTeardown`) into the template
+  versions instead of renaming them, with ext-var init assignments emitted in
+  `initialize()` (skip-dup against names the merged SSF2 init body already
+  assigns).
+- **`generate_jab_scripts`** — emitted only when `populated_jabs >= 2`.
+- `generate_manifest` — `library/manifest.json` (includes projectile manifest
+  entries, `*ProjectileStats` / `…AnimationStats` / `…HitboxStats` /
+  `…Script` references).
+- **`generate_projectile_script`** — uses a local-state-machine pattern
+  (`Common.initLocalStateMachine()` + `Common.registerLocalState(...)`) for
+  multi-state projectiles, with one `LState` per SSF2 frame label.
+- `generate_projectile_animation_stats` / `generate_projectile_stats` /
+  `generate_projectile_hitbox_stats` — pull real values out of the SSF2
+  `getProjectileStats()` data via `best_match_projectile_data(name,
+  projectile_data)` (exact name → substring heuristic → most-populated
+  fallback). Field names go through the shared `hitbox_stats.jsonc` canon.
+- `generate_sound_entries` — writes `.wav.meta` sidecars next to each
+  extracted audio file.
+- `script_meta(id, guid, kind)` — emits the `.hx.meta` sidecar variants
+  (`CharacterScript` / `CharacterStats` / `CharacterAnimationStats` /
+  `CharacterHitboxStats` / `ProjectileScript` / `ProjectileStats` /
+  `ProjectileAnimationStats` / `ProjectileHitboxStats`).
 
-#### `entity_gen.rs` (~1700 LOC)
+#### `entity_gen.rs` (~2000 LOC)
 Builds the Fraymakers `.entity` JSON — the heart of a FrayTools character.
-- `generate_entity` / `generate_entity_with_palette` — the main `Character.entity`
-  builder (with/without `paletteMap`).
-- `generate_menu_entity` — the character-select head entity.
+- `generate_entity` / `generate_entity_with_palette` — the main
+  `Character.entity` builder (with/without `paletteMap`).
+- `double_keyframe_lengths(keyframes)` — runs at the end of every entity
+  build, doubling every keyframe's `length` for the 30 → 60 fps move
+  ([§7](#7-30--60-fps-doubling)).
+- Empty-animation drop pass: animations whose IMAGE timeline carries no
+  symbols anywhere are removed, except a small `keep_empty` allowlist driven
+  by `populated_jabs`.
+- `generate_menu_entity` — the character-select head entity, with `full`,
+  `css` (2-layer fg/bg), `icon`, `icon_no_palette`, `stock`, and ten
+  `hud[/_front/_angry/_happy/_hurt/_sad]` variants.
 - `generate_projectile_entity` (+ `ProjectileInfo` / `ProjectileStateData`) —
-  per-projectile entities, including multi-state projectiles (e.g. `link_bomb`).
+  per-projectile entities, including multi-state projectiles (e.g.
+  `link_bomb`). Animation names come from inner-sprite FrameLabels when
+  present (`projectile_anim_names(proj)`); else fall back to the FM template
+  trio (`projectileSpawn` / `projectileIdle` / `projectileDestroy`).
+- `generate_effect_entity` — emits one `.entity` per discovered effect, with
+  one IMAGE layer per inner FrameLabel segment (or a single `active`
+  animation if there are no labels). No scripts, no stats — the character's
+  `Script.hx` triggers them via the `attachEffect` rewrite.
+- `effect_animation_names(effect)` — the lockstep helper used by
+  `haxe_gen::generate` to build the per-character `EFFECT_PRIMARY_ANIMS`
+  map. Keep this in sync with the `segments` block of `generate_effect_entity`.
 - `generate_meta` / `get_image_meta_guids` — sprite `.meta` sidecars.
 - `box_type_to_fm` / `ssf2_box_name_to_fm` / `fm_box_index` / `box_color` —
-  the SSF2-box-name → Fraymakers-layer mapping (see table in `AGENT_CONTEXT.md`).
-- `uuid` / `det_uuid` — deterministic GUID helper used throughout the entity.
-- ⚠️ **This file holds the active uncommitted work** — the new "spinning vs
-  direct" image-placement logic. See [§8](#8-current-status--what-works) /
-  [§9](#9-known-issues--gaps).
+  the SSF2-box-name → Fraymakers-layer mapping (see the table in
+  `AGENT_CONTEXT.md`).
+- COLLISION_BOX and IMAGE rotation are both emitted with the same
+  **CW-positive, 0-360-normalized** convention — no negation, matching SWF's
+  `atan2(b, a)` convention. (Commit `40fad65d` brought collision-box rotation
+  in line with the IMAGE-symbol convention; both paths now agree.)
 
-#### `palette_gen.rs` (~410 LOC)
+#### `palette_gen.rs`
 `generate_palettes_and_remap(...)`: builds Fraymakers costume palettes.
-- `load_ssf2_costumes` / `build_from_ssf2` — preferred path: uses the real
-  `misc.ssf` costume colour tables (15 costumes × 76 colour slots).
-- `build_from_sprites` / `kmeans` / `rotate_hue` — fallback when no `misc.ssf`:
-  derives a palette from the sprite pixels via k-means and synthesizes
-  team-colour variants by hue rotation.
-- `build_output` — writes `costumes.palettes`, the `.meta`, and re-indexes the
-  sprite PNGs against the palette; `argb_to_fm_hex` for colour formatting.
+- `load_ssf2_costumes` / `build_from_ssf2` — preferred path: uses real
+  `misc.ssf` costume tables (typically 15 costumes × variable colour-slot
+  count).
+- `build_from_sprites` / `kmeans` / `rotate_hue` — fallback when no
+  `misc.ssf`: derives a palette from idle-sprite pixels via k-means and
+  synthesizes team-colour variants by hue rotation.
+- `build_output` — writes `costumes.palettes`, the `.meta`, and writes the
+  preview PNG (one column per colour slot).
 
-#### `api_mappings.rs` (~920 LOC)
-The big **SSF2 AS3 → Fraymakers Haxe** translation table + the rewriter that
-applies it to decompiled script text.
-- `build_method_map` / `build_property_map` / `build_state_map` /
-  `build_event_map` / `build_hitbox_prop_map` — the lookup tables
-  (`MethodMapping`, `ArgTransform`).
-- `translate_ssf2_to_fm(code)` — rewrites a block of decompiled code.
-- `remove_readiness_guards`, `fix_intangibility_pairs`,
-  `strip_last_frame_end_animation`, `comment_out_unknown_calls` — cleanup passes.
-  `comment_out_unknown_calls` is what produces the `/* unknown */`-style markers
-  in generated scripts.
-
-#### `fraytools_project.rs` (~60 LOC)
+#### `fraytools_project.rs`
 `generate_fraytools_project(char_name)` — emits the small `<name>.fraytools`
-project descriptor FrayTools opens.
+project descriptor FrayTools opens. Includes the default collision-box layer
+preset (hitbox / hurtbox / grabbox / counterbox / reflectbox / ledgegrabbox /
+holdbox / absorbbox / custom × 3) and the project-wide `frame_rate: 60` /
+`paletteShaderMode: "RG_MAP"` settings.
 
-#### `uuid_gen.rs` (~80 LOC)
+#### `uuid_gen.rs`
 `det_uuid(seed)` — RFC-4122 **UUID v5** (SHA-1 namespace). Every GUID in the
 output is `det_uuid("{char_id}::{context}")`, which is what makes conversions
 reproducible.
 
-### 5.6 Diagnostic binaries (`src/bin/`)
+### 5.7 Diagnostic binaries (`src/bin/`)
 
 These are **reverse-engineering / debugging tools**, not part of the conversion.
 Each builds to its own executable in `target/release/`. They were the workbench
@@ -515,7 +747,7 @@ used to figure the formats out and remain useful when a conversion looks wrong.
 | `dump_images` | List all extracted bitmaps |
 | `dump_image_placement` | Per-frame `PlaceObject` data for a named sprite |
 | `dump_collision_box` | Collision-box geometry for an animation |
-| `dump_shape_bounds` | Measure the true bounds of the `CollisonBox_6` shape |
+| `dump_shape_bounds` | Measure the true bounds of the `CollisonBox` shape |
 | `dump_shape_origins` | Shape origin offsets |
 | `dump_pivots` | Pivot points |
 | `dump_frame_labels` | Frame labels inside a sprite timeline |
@@ -525,15 +757,166 @@ used to figure the formats out and remain useful when a conversion looks wrong.
 | `dump_stage` | Stage / root timeline inspection |
 | `dump_costumes` | Costume tables from `misc.ssf` |
 | `dump_aerial_down_frames` | Targeted debug for the aerial-down animation |
-| `dump_trail_matrices` | **New (untracked)** — trail-effect matrices; created for the in-progress spinning/trail placement work |
+| `dump_trail_matrices` | Trail-effect matrix inspection (used during the rotation/pivot/skew work) |
 | `check_shape_bitmap` | Inspect a shape's bitmap fill + fill matrix |
 | `what_is_id` | Identify what a numeric SWF character id refers to |
 
-Typical use: `./target/release/dump_image_placement ../ssf2-ssfs/mario.ssf "FAir_42"`.
+Typical use: `./target/release/dump_image_placement ../ssf2-ssfs/mario.ssf
+"FAir_42"`. (There is no longer a standalone `extract_costumes` binary —
+costume extraction is in-process inside `ssf2_converter`.)
 
 ---
 
-## 6. Input format: SSF2 `.ssf`
+## 6. Mapping files (`mappings/`)
+
+Most of the converter's *behaviour* is data — JSONC files loaded at runtime
+with `include_str!`'d defaults as a guaranteed-valid fallback. Edit these
+files (not the Rust source) to tune the conversion. They live in
+`mappings/` at the repo root.
+
+### 6.1 `mappings/commands.jsonc` (universal SSF2 → FM API conversions)
+
+Sections, in the order they're applied by `translate_ssf2_to_fm`:
+
+- **`replacements`** — ordered literal find/replace pairs. ORDER MATTERS.
+  Covers the bulk of SSF2 → FM API renames (`self.self.` → `self.`,
+  `.endAttack()` → `.endAnimation()`, `.setXSpeed(` → `.setXVelocity(`,
+  `SSF2API.print(` → `Engine.log(`, hitbox field renames like `direction:` →
+  `angle:`, etc.).
+- **`regex_replacements`** — `{ pattern, replacement, note? }`. Compiled
+  once into a `OnceLock` cache; bad patterns log a warning and are skipped.
+  Used for cases the literal table can't express (arg-dropping, arg-aware
+  dispatch).
+- **`call_splits`** — map of `<source_method>` → `{ fields: { <ssf2_field>
+  → <"target_method.fm_field"> | { target?, value_map?, skip_if_value?,
+  todo? } } }`. Drives the fan-out of SSF2 umbrella calls into multiple FM
+  target methods (currently `updateAttackStats` → `updateAnimationStats` +
+  `updateHitboxStats`). Fields sharing a target method are GROUPED into a
+  single combined call. Fields with no mapping become `// TODO:` comments
+  above the emitted calls.
+- **`attach_effect_props`** — map of `<ssf2_prop>` → `"fmPropName"` |
+  `{ target?, expand_to?, todo? }`. Drives the inline translation that
+  injects translated fields into `new VfxStats({…})`. `expand_to` lets one
+  SSF2 prop become several FM props (e.g. `parentLock` →
+  `relativeWith` + `resizeWith` + `flipWith`).
+- **`global_vfx_map`** — `<effect_name>` → `<GlobalVfx constant name>`.
+  Names listed here are rewritten to `spriteContent: "global::vfx.vfx",
+  animation: GlobalVfx.<C>` instead of the per-character resource lookup.
+- **`frame_params`** — `[{ kind: "call" | "field", name, arg?, isframe,
+  sentinel? }]`. Drives 30 → 60 fps doubling. `kind: "call"` doubles the
+  literal at positional arg index `arg` of every `name(...)` call. `kind:
+  "field"` doubles the literal that follows `name:`. Only entries with
+  `isframe: true` are doubled; values ≥ `sentinel` are left alone (e.g.
+  255 / -1 "no override" sentinels for hitStun).
+- **`passthrough_fm_apis`** — `[{ name, note? }]`. Names listed here are
+  "known FM API calls" — left untouched and suppressed from the
+  `conversion_log.json :: unknown` stream.
+- **`ssf2_only`** — `[{ name, note? }]`. Names listed here have no FM
+  equivalent — every call site gets replaced with
+  `// [SSF2-only: <name>] <original>` and counted in `conversion_log.json
+  :: ssf2_only`.
+
+### 6.2 `mappings/character/animations.jsonc`
+
+```jsonc
+{
+  "ssf2_to_fm":     { "stand": "idle", "a_air_forward": "aerial_forward", ... },
+  "label_to_ssf2":  { "nair": "a_air", "fair": "a_air_forward", ... }
+}
+```
+
+- `ssf2_to_fm` is the primary table; used everywhere SSF2 anim names need
+  to become FM anim names (extractor, sprite_parser, image_extractor,
+  haxe_gen).
+- `label_to_ssf2` is consulted by `sprite_parser::extract_ssf2_anim_name`
+  when a sub-sprite symbol's local label (lowercased, suffix-stripped, e.g.
+  `NAir` → `nair`) doesn't appear directly in `ssf2_to_fm` — it bridges the
+  sprite-label-shorthand to the SSF2 xframe name.
+
+### 6.3 `mappings/character/stats.jsonc`
+
+Drives **every value** in `CharacterStats.hx`. Sections:
+
+- **`field_keys`** — `<fm_field>` → `[<ssf2_key>, …]`. Ordered list of
+  SSF2 keys to try when extracting an FM stat (the first matching key wins).
+- **`multipliers`** — `<name>` → `{ divisor, target, floor }`. Applied as
+  `(raw / divisor * target).max(floor)`. Referenced by the `scale("name",
+  v)` wrappers in `haxe_gen.rs` (gravity / speed / jump / walk / dash /
+  air_friction).
+- **`offsets`** — `<stat>` → integer offset added after extraction (used
+  for `max_jumps + 1` to bridge SSF2's midair-jumps count and FM's total-
+  jumps count).
+- **`derivations`** — `<stat>` → expression string. Compiled once with
+  `fasteval` (built-ins `max` / `min` plus our `clamp(x, lo, hi)`);
+  evaluated against the already-converted stats exposed as variables. Used
+  for `shortHopSpeed`, `aerialSpeedCap`, etc.
+- **`constants`** — `<field>` → raw JSON value. Emitted Haxe-literally for
+  fields the converter can't derive from SSF2 source (ECB, camera box,
+  shield 9-slice, voice IDs).
+
+### 6.4 `mappings/character/hitbox_stats.jsonc`
+
+```jsonc
+{
+  "fields": [
+    { "fm_field": "damage",          "ssf2_keys": ["damage"] },
+    { "fm_field": "angle",           "ssf2_keys": ["direction", "angle"] },
+    { "fm_field": "baseKnockback",   "ssf2_keys": ["power", "kbConstant", "weightKB"] },
+    { "fm_field": "knockbackGrowth", "ssf2_keys": ["kbGrowth"] },
+    { "fm_field": "hitstop",         "ssf2_keys": ["hitLag", "hitstop"], "isframe": true },
+    { "fm_field": "selfHitstop",     "ssf2_keys": ["selfHitLag"],       "isframe": true },
+    { "fm_field": "hitstun",         "ssf2_keys": ["hitStun", "hitstun"], "isframe": true }
+  ]
+}
+```
+
+Per FM hitbox field, the converter takes the **max** over all listed SSF2
+source keys (an absent key counts as 0). `isframe: true` flags the field as
+a frame count → it gets doubled for the 30 → 60 fps move. This same canon
+is used by `entity_gen` (character hitboxes), `haxe_gen`
+(`generate_projectile_hitbox_stats`), and `extractor::convert_hitboxes`
+(single source of truth across the codebase).
+
+---
+
+## 7. 30 → 60 fps doubling
+
+SSF2 plays at 30 fps; Fraymakers at 60 fps. To preserve playback speed,
+every frame-count value must be doubled. The converter does this in **two
+unified places**:
+
+1. **Timeline lengths** — `entity_gen::double_keyframe_lengths` doubles the
+   `length` field of every keyframe (LABEL, FRAME_SCRIPT, COLLISION_BODY,
+   COLLISION_BOX, POINT, IMAGE) right before the entity JSON is finalized.
+   Because FrayTools timelines are laid out purely by sequential keyframe
+   length, doubling every length doubles every layer's span and every
+   keyframe's start position in lockstep — image, collision-box, frame-
+   script and label layers can never fall out of sync.
+
+2. **Frame-count arguments / fields in code** —
+   `api_mappings::double_frame_counts` doubles specific literal arguments
+   and object-literal fields based on `commands.jsonc :: frame_params`. Two
+   helpers do the work:
+   - `double_int_after_marker(code, "name:", skip_at)` for `kind: "field"`.
+   - `double_call_arg(code, "fn_name", arg_idx, skip_at)` for `kind:
+     "call"` — bracket-depth-aware so commas inside nested calls / arrays /
+     objects don't miscount.
+
+   Runs **first** in the translation pipeline so SSF2 field names still
+   match the `frame_params` entries (the literal `replacements` pass below
+   it renames `hitStun:` → `hitstop:`, etc.). Same pass covers Script.hx
+   ext methods, decompiled ext-class iinit, and embedded frame scripts in
+   the entity — they all go through `translate_ssf2_to_fm`.
+
+3. **HitboxStats.hx and projectile-hitbox values** — `entity_gen` and
+   `haxe_gen::generate_projectile_hitbox_stats` both consult
+   `hitbox_stats.jsonc :: isframe` to decide which extracted hitbox values
+   to double (hitstop / hitstun / selfHitstop, with sentinel handling for
+   the 255 / -1 "no override" values).
+
+---
+
+## 8. Input format: SSF2 `.ssf`
 
 Summary of what the code assumes — full detail in
 [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md).
@@ -542,260 +925,280 @@ Summary of what the code assumes — full detail in
 - **Character logic, stats, attack tables and costume data live in AS3 bytecode**
   (`DoABC` tags) — parsed by `abc_parser`, decompiled by `decompiler`.
 - **Sprites, animation timelines and collision boxes live in the SWF display
-  list** — `DefineBitsLossless`/`DefineShape`/`DefineSprite` tags with
-  `PlaceObject`/`ShowFrame`/`RemoveObject` — parsed by `sprite_parser` /
-  `image_extractor`.
+  list** — `DefineBitsLossless` / `DefineBitsJpeg3` / `DefineShape` /
+  `DefineSprite` tags with `PlaceObject` / `ShowFrame` / `RemoveObject` —
+  parsed by `sprite_parser` / `image_extractor`.
 - Each character has an **`XxxExt` AS3 class** (`MarioExt`, `FoxExt`, …) — this
   is the signal `detect_char_names` keys on.
 - Animation sprites are named `{char}_fla.{AnimLabel}_{index}` (e.g.
   `mario_fla.FAir_42`).
-- Collision boxes are a 100×100 unit square (`CollisonBox_6` — note SSF2's
-  internal typo) scaled/positioned by a `PlaceObject` matrix; box *type* comes
-  from the instance name (`attackBox`→hitbox, `hitBox`→hurtbox, `grabBox`,
+- Collision boxes are a square shape (`CollisonBox_6` — note SSF2's internal
+  typo) scaled/positioned by a `PlaceObject` matrix; box *type* comes from
+  the instance name (`attackBox` → hitbox, `hitBox` → hurtbox, `grabBox`,
   `touchBox`, `ledgeBox`, `reflectBox`, …).
 - SWF matrices use fixed-point components; translations are in **twips**
   (÷20 = pixels). Both SSF2 and Fraymakers use **y-down** screen coordinates,
   so no vertical flip is needed.
-- Costume data is in `misc.ssf` → `Misc.as` → `getCostumeData()`: 15 costumes
-  per character (Red/Green/Blue/Default + 11 alts), each with 76 source colours
-  and 76 replacements.
+- Both SWF (`atan2(b, a)`) and FrayTools use **CW-positive rotation** — the
+  converter does NOT negate; it normalizes to `[0, 360)`.
+- Costume data is in `misc.ssf` → `Misc.as` → `getCostumeData()`: ~15
+  costumes per character (Red / Green / Blue / Default + ~11 alts), each
+  with parallel `colors` and `replacements` arrays.
 
-## 7. Output format: Fraymakers character package
+---
 
-The converter writes a directory FrayTools can open. For character `mario`:
+## 9. Output format: Fraymakers character package
+
+For character `mario`:
 
 ```
 characters/mario/
-├── mario.fraytools                     FrayTools project file
-├── conversion_stats.json               debug summary of the run
+├── mario.fraytools                       FrayTools project file
+├── conversion_stats.json                 debug summary of the run
+├── conversion_log.json                   unhandled / SSF2-only call counts
 └── library/
-    ├── manifest.json
-    ├── costumes.palettes  (+ .meta)     15 SSF2 costumes as FM palettes
+    ├── manifest.json (+ .meta)            ← lists Character + per-projectile manifest entries
+    ├── costumes.palettes  (+ .meta)        15 SSF2 costumes as FM palettes
     ├── entities/
-    │   ├── Character.entity             main entity (animations/layers/keyframes/symbols)
-    │   ├── menu.entity                  character-select head
-    │   └── <projectile>.entity          one per discovered projectile
+    │   ├── Character.entity                main entity (animations/layers/keyframes/symbols)
+    │   ├── menu.entity                     full / css / icon / stock / hud variants
+    │   ├── <projectile>.entity             one per discovered projectile
+    │   └── <effect>.entity                 one per discovered VFX sprite
     ├── sprites/
-    │   ├── *.png                        extracted frame bitmaps
-    │   ├── *.png.meta                   GUID sidecar per PNG (entity refs the GUID)
+    │   ├── *.png                           extracted frame bitmaps
+    │   ├── *.png.meta                      GUID sidecar per PNG (entity refs the GUID)
     │   └── palette_preview.png (+ .meta)
     ├── scripts/
     │   ├── Character/
-    │   │   ├── CharacterStats.hx         movement physics
-    │   │   ├── HitboxStats.hx            per-attack hitbox data
-    │   │   ├── AnimationStats.hx         animation flags
-    │   │   ├── Script.hx                 decompiled character logic
+    │   │   ├── CharacterStats.hx           movement physics
+    │   │   ├── HitboxStats.hx              per-attack hitbox data
+    │   │   ├── AnimationStats.hx           animation flags
+    │   │   ├── Script.hx                   decompiled character logic
     │   │   └── *.hx.meta
-    │   └── Projectile_<name>/            one folder per projectile
-    │       └── Projectile{Script,Stats,HitboxStats,AnimationStats}.hx (+ .meta)
-    └── sounds/
-        └── *.ogg
+    │   └── Projectile/
+    │       └── <Pascal>{Script,Stats,HitboxStats,AnimationStats}.hx (+ .meta)
+    └── audio/
+        ├── *.wav                           extracted sounds (PCM 16-bit via ffmpeg)
+        └── *.wav.meta                      per-sound content sidecar
 ```
 
 `.entity` files are JSON. The top-level shape is `{ animations[], layers[],
 keyframes[], symbols[], paletteMap, pluginMetadata, plugins, version: 14, … }`.
 Each animation owns an ordered layer stack — `LABEL`, `FRAME_SCRIPT`,
-`COLLISION_BODY`, one `COLLISION_BOX`/`POINT` per box instance, one `IMAGE` per
-depth slot — and layers reference keyframes which reference symbols. The full
-schema (every layer/symbol/keyframe shape, the box-type enum, `.meta` sidecar
-format) is documented in **`AGENT_CONTEXT.md` §"Fraymakers Entity Format"** and
-is the ground truth — keep it open when working on `entity_gen.rs`.
+`COLLISION_BODY`, one `COLLISION_BOX` / `POINT` per box instance, one `IMAGE`
+per depth slot — and layers reference keyframes which reference symbols. The
+full schema (every layer/symbol/keyframe shape, the box-type enum, `.meta`
+sidecar format) is in [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md) and is the ground
+truth — keep it open when working on `entity_gen.rs`.
+
+Projectile scripts use the Annie/aJewelofRarity convention: a **single**
+`library/scripts/Projectile/` directory holds files for every projectile,
+each prefixed by the projectile name in PascalCase
+(`DeeNspecScript.hx`, `DeeNspecStats.hx`, `DeeNspecHitboxStats.hx`,
+`DeeNspecAnimationStats.hx`, …).
+
+Effects (VFX) are emitted as plain entities under
+`library/entities/<effect>.entity` — one IMAGE layer per inner FrameLabel
+segment (or a single `active` animation if there are no labels). No scripts,
+no stats. The character's `Script.hx` triggers them via the
+`attachEffect` → `match.createVfx(...)` rewrite.
 
 ---
 
-## 8. Current status — what works
+## 10. Current status — what works
 
 **The pipeline runs end to end and produces complete, FrayTools-shaped
 character packages.** Evidence in the repo:
 
-- `characters/mario/` — a full conversion: **858** sprite PNGs (each with a
-  `.meta` sidecar), a **~4 MB** `Character.entity`, `menu.entity`, two
-  projectile entities (`mario_fireball`, `mario_finale_projectile`) with their
-  script folders, palettes, sounds.
-- `characters/sandbag/` — the smoke-test character.
-- Sibling `../test_chars/` holds additional converted outputs for `fox`,
-  `link`, `naruto`, `jigglypuff`, `samus`, plus helper entities
-  (`cstate_fraymakers`, `displayobject_fraymakers`, `object_fraymakers`).
-- 47 SSF2 inputs are available in `../ssf2-ssfs/`.
+- `characters/sandbag/` — the smoke-test character (small, simple).
+- `characters/mario/`, `characters/fox/`, `characters/link/`,
+  `characters/naruto/`, `characters/jigglypuff/`, `characters/samus/`,
+  `characters/bandanadee/`, `characters/captainfalcon/`, … — full
+  conversions of most of the roster.
+- 47 SSF2 inputs available in the sibling `../ssf2-ssfs/`.
 
 What is solid:
 
-- `.ssf`→SWF decompression, SWF parsing, ABC parsing.
-- Character / stats / attack / frame-script extraction from ABC.
-- The AS3 decompiler (CFG reconstruction, structured control flow).
+- `.ssf` → SWF decompression, SWF parsing, ABC parsing.
+- Character / stats / attack / frame-script / projectile-stat / ext-var
+  extraction from ABC.
+- The AS3 decompiler (CFG reconstruction, structured control flow,
+  short-circuit `&&` / `||` collapsing, loop counter renaming).
 - Bitmap extraction → PNG, sprite `.meta` generation.
-- Collision-box geometry extraction.
+- Collision-box geometry extraction; full affine matrix composition with
+  root MC transform; CW-positive 0-360 rotation on both IMAGE and
+  COLLISION_BOX symbols; itemBox pivot-at-bottom-centre.
+- Shear-bake fallback for sheared image placements
+  (`prerender_skewed_frames`).
 - Costume/palette extraction from `misc.ssf` (with k-means fallback).
-- Sound extraction to OGG.
+- Sound extraction to WAV via `ffmpeg` (Nellymoser, MP3, ADPCM).
 - Deterministic GUIDs.
-- Entity JSON assembly (layers/keyframes/symbols), manifest, `.fraytools`,
-  projectile & menu entities.
+- Entity JSON assembly: LABEL / FRAME_SCRIPT / COLLISION_BODY /
+  COLLISION_BOX / POINT / IMAGE layers; per-frame ECB diamond auto-fit
+  to hurtboxes; run-length-encoded keyframes; 30 → 60 fps length doubling.
+- Multi-state projectile entities (LState local state machine in the
+  emitted script).
+- Per-effect entities (`<name>.entity`) split by inner FrameLabels;
+  `match.createVfx(new VfxStats({…}), self)` rewrite for both 1-arg and
+  2-arg `attachEffect` calls; `global_vfx_map` constant routing for FM
+  built-in VFX.
+- Persistent-state wrappers for SSF2 ext-class vars (`var foo =
+  self.makeInt(0)`; `foo.get()` / `foo.set(v)` / `foo.inc()` /
+  `foo.dec()`); ext-class iinit assignments emitted in
+  `initialize()` (skip-dup against the merged SSF2 init body).
+- Jab-chain emission gated by populated-jab count.
+- Empty-animation dropping (with a jab-aware keep-list).
+- menu.entity with broadened head-sprite detection (`_head`, `_icon`;
+  excludes `_hud`).
+- Conversion log + SwiftUI "Unhandled Calls" popup.
 - The macOS SwiftUI GUI wrapper.
 
-### What the last agent was working on (uncommitted)
+---
 
-`git status` shows **8 commits ahead of `origin/main`** and **uncommitted
-changes** in 4 tracked files plus 1 new untracked file. The work in flight is
-**image-placement geometry** — getting sprites to sit and rotate correctly in
-the entity:
+## 11. Known issues & gaps
 
-- `src/image_extractor.rs` — matrix decomposition now **encodes mirror/flip as a
-  negative `sy`** (instead of dropping the sign); `has_skew()` updated to match;
-  new `shape_pivot` map (where a shape's local origin lands inside its bitmap,
-  derived from the fill matrix); new `anim_origin_x/y` fields on
-  `FrameImageEntry` (world-space rotation centre).
-- `src/entity_gen.rs` — image placement now picks between **two modes**:
-  *spinning* (rotation varies a lot while the sprite's world position stays put
-  → pin the rotation centre to `anim_origin` via an inverse-matrix pivot) and
-  *direct* (use the fill-matrix `shape_pivot`). This is a heuristic
-  (`rot_range > 30° && pos_spread < 20px && ≥4 frames`).
-- `src/bin/check_shape_bitmap.rs` — now also prints the fill matrix.
-- `src/bin/dump_trail_matrices.rs` — **new, untracked** — a probe for the
-  trail/spinning-effect case.
-- `src/main.rs` — one line: passes the new `shape_pivot` field through.
+1. **Shape-only menu portraits.** A handful of characters
+   (`donkeykong`, `fox`, `marth`) have `*_head` portraits composed entirely
+   of shapes rather than a bitmap. The head finder prefers a Bitmap
+   placement when one exists; when it doesn't, the head image is missing
+   and `menu.entity` ships with a placeholder. Needs a small SWF shape
+   rasterizer.
 
-This work is **mid-stream**: it compiles-clean intent is there, but the
-spinning/direct heuristic is unverified across the roster and is the immediate
-thing to finish (see [§10](#10-prioritized-next-steps)). Recent committed
-history (last ~9 commits) is all in the same area — rotation pivot, skew
-pre-rendering, rotation convention — so image placement is the project's
-current frontier.
+2. **Mario sprite placement not re-verified.** After the recent rotation /
+   itemBox / shear-baking work, most characters look right in FrayTools,
+   but Mario in particular hasn't been re-verified frame by frame. Mario
+   was the canary that drove the rotation work; some animations may still
+   need a focused pass.
+
+3. **One `.ssf` still fails conversion outright.** A single character file
+   in the roster trips a hard error not covered by the per-stage
+   `unwrap_or_else` fallbacks. Tracked separately; not yet diagnosed.
+
+4. **Vector-only effect sprites are silently skipped.** Effects whose
+   visuals are pure-vector shapes with solid-colour fills (e.g. some
+   charge sparkles, the F-air twinkle) cannot be rasterized without a
+   full SWF vector renderer. Only bitmap-backed shapes are exported.
+
+5. **Frame-script / API translation is incomplete.** `commands.jsonc`
+   covers the bulk of SSF2 API calls, but the `ssf2_only` list and the
+   `conversion_log.json :: unknown` stream surface the rest. Generated
+   `.hx` always needs human review.
+
+6. **Projectile behaviour is stubbed.** Projectile *entities* (visuals,
+   boxes, animations, palettes) are generated. Projectile *behaviour*
+   (`<Pascal>Script.hx`) is template scaffolding with `// TODO: tune
+   X_SPEED / Y_SPEED` placeholders and (for multi-state projectiles) empty
+   LState transitions.
+
+7. **Stat scaling is approximate.** The `stats.jsonc :: multipliers` were
+   hand-tuned by comparing template characters to SSF2 data. Generated
+   `CharacterStats.hx` marks uncertain numbers with `/*TODO*/`.
+
+8. **`rebuild-sandbag.sh` has an absolute path** baked in — breaks if the
+   repo moves.
+
+9. **`tokio` is a declared dependency but the converter is synchronous** —
+   `main.rs` has no async. Likely vestigial; verify before relying on it,
+   and consider removing it to cut build time.
+
+10. **Robustness.** `process_character` swallows per-stage errors and
+    continues with defaults — good for batch runs, but means a partly-broken
+    character can be produced without an obvious failure. Always check
+    `conversion_stats.json` and `conversion_log.json` after a run.
+
+11. **Multiple full SWF re-parses per character.** Most entry points
+    (`extract_xframe_scale`, `parse_sprite_boxes`, `extract_images`,
+    `discover_projectiles_and_head`, per-projectile and per-effect inner-
+    sprite extractors) all decompress + parse the raw `swf_data` buffer
+    independently. See `docs/codebase_analysis.md` §1.1 for the full count
+    and the proposed fix.
+
+12. **Dead-code surface.** ~350 lines of unused `build_method_map` /
+    `build_property_map` / `build_state_map` / `build_event_map` /
+    `build_hitbox_prop_map` / `load_api_methods_json` in
+    `api_mappings.rs`, plus ~250 lines of dead/duplicate costume + stat
+    extractors in `abc_parser.rs`. See `docs/codebase_analysis.md` §2.1
+    and §2.2.
 
 ---
 
-## 9. Known issues & gaps
-
-1. **Image placement geometry is not fully solved.** The committed history
-   churns on rotation/pivot/skew, and the uncommitted "spinning vs direct"
-   heuristic is a work in progress. Expect some animations to have sprites
-   offset, mis-rotated, or mis-pivoted until this is finished and verified.
-
-2. **`AGENT_CONTEXT.md` is stale on rotation.** It says *"always negate rotation
-   when writing to the entity"*. That is **still true for collision boxes**
-   (`entity_gen.rs` writes `rotation: -fb.rotation`) but **no longer true for
-   images** — commit `f472a2dd` ("don't negate rotation — SWF and FrayTools use
-   same CW convention") changed image rotation to a non-negated, 0–360-normalized
-   value. Trust the code over `AGENT_CONTEXT.md` here.
-
-3. **Vector-only effect sprites are silently skipped.** Effects that are pure
-   vector shapes with solid-colour fills (e.g. `mario_fla.ChargeSpark_25`, the
-   F-air twinkle) cannot be rasterized without a full SWF vector renderer. Only
-   bitmap-backed shapes are exported, so some effects are visually missing.
-
-4. **`grabHoldPoint` / `touchBox` format unverified.** SSF2 `touchBox` marks
-   where a grabbed opponent is held. It is currently emitted as a
-   `COLLISION_BOX`, but FrayTools likely expects a `POINT` layer
-   (`pointType: "GRAB_HOLD_POINT"`). Needs a reference FrayTools entity to
-   confirm. (`AGENT_CONTEXT.md` documents both the current and the suspected-
-   correct form.)
-
-5. **Frame-script / API translation is incomplete.** `api_mappings.rs` and
-   `decompiler.rs` have many SSF2 calls with no Fraymakers equivalent — these
-   are emitted as `/* TODO */` or commented out by `comment_out_unknown_calls`.
-   Generated `.hx` always needs human review.
-
-6. **Projectile logic is stubbed.** `generate_projectile_script` /
-   `generate_projectile_stats` emit structure with `// TODO: implement state
-   logic` / `// TODO: tune X_SPEED/Y_SPEED` placeholders. Projectile *entities*
-   (visuals, boxes, animations) are generated; projectile *behaviour* is not.
-
-7. **Stat scaling is approximate.** The `ssf2_*_to_fm` functions in
-   `haxe_gen.rs` are hand-tuned ratios. Generated `CharacterStats.hx` /
-   `HitboxStats.hx` deliberately mark uncertain numbers with `/*TODO*/`.
-
-8. **Doc drift.** `README.md` and `AGENT_CONTEXT.md` both reference an
-   `extract_costumes` binary and a separate costume-extraction step that no
-   longer exist (costumes are extracted in-process — see [§3.6](#36-readme--agent_context-discrepancies)).
-
-9. **`rebuild-sandbag.sh` has an absolute path** baked in — breaks if the repo
-   moves.
-
-10. **`tokio` is a declared dependency but the converter is synchronous** —
-    `main.rs` has no async. It is likely vestigial; verify before relying on it,
-    and consider removing it to cut build time.
-
-11. **Robustness.** `process_character` swallows per-stage errors and continues
-    with defaults — good for batch runs, but means a partly-broken character can
-    be produced without an obvious failure. Check `conversion_stats.json` and
-    the warning log after a run.
-
----
-
-## 10. Prioritized next steps
+## 12. Prioritized next steps
 
 Roughly in the order a fresh agent should tackle them.
 
-1. **Finish & commit the image-placement work.** Decide whether the
-   "spinning vs direct" heuristic in `entity_gen.rs` is the right model, verify
-   it against several characters in FrayTools (sandbag first — `rebuild-sandbag.sh`
-   — then mario aerials and a trail-effect move), tune the
-   `rot_range / pos_spread / frame-count` thresholds, then commit. Use the new
-   `dump_trail_matrices` binary to inspect cases. This unblocks everything
-   visual.
-2. **Verify the build is green** with the uncommitted changes: `cargo build
-   --release` and a sandbag conversion. The new `shape_pivot` field is threaded
-   through `main.rs` and `entity_gen.rs` — confirm no other `ImageExtractionResult`
-   constructor was missed.
-3. **Reconcile `AGENT_CONTEXT.md` with the code** — fix the rotation section
-   (collision boxes negate, images don't) and remove the dead `extract_costumes`
-   references from both `AGENT_CONTEXT.md` and `README.md`.
-4. **Confirm the `grabHoldPoint` format.** Get a reference FrayTools character
-   that has a grab-hold point, compare, and switch `touchBox` output to a
-   `POINT` layer if needed.
-5. **Vector effect sprites.** Either integrate a minimal SWF shape rasterizer or
-   formally document which effects are dropped so users aren't surprised.
-6. **Projectile behaviour.** Replace the `// TODO` stubs in the projectile `.hx`
-   generators with real translated logic (reuse `decompiler` + `api_mappings`).
+1. **Fix the one failing `.ssf`.** Identify which character file fails;
+   trace the crash; either harden the path or skip the offending feature
+   gracefully so the full 47-char batch converts.
+
+2. **Shape-only head rasterizer.** Add a minimal SWF shape rasterizer (or
+   pull one from `ruffle`) so `donkeykong` / `fox` / `marth` menu portraits
+   actually contain pixels instead of placeholders.
+
+3. **Verify Mario in FrayTools.** Re-run mario, open in FrayTools, scrub
+   frame by frame; tune any remaining placement / rotation / scale issues.
+
+4. **Land the SWF-parse-once refactor** from
+   `docs/codebase_analysis.md` §1.1. Drops per-character runtime
+   substantially on projectile-heavy chars; mechanical change.
+
+5. **Delete dead code.** Both `api_mappings.rs` §2.1 and `abc_parser.rs`
+   §2.2 from the analysis report. Pure clarity win.
+
+6. **Projectile behaviour.** Replace the `// TODO` stubs in the projectile
+   `<Pascal>Script.hx` generators with real translated logic (reuse the
+   existing decompiler + JSONC rewriter pipeline).
+
 7. **Validate stat scaling** against a handful of hand-tuned reference
-   characters and tighten the `ssf2_*_to_fm` ratios.
-8. **Batch-convert the full 47-character roster** from `../ssf2-ssfs/`, triage
-   which characters convert cleanly, and capture a per-character status list.
+   characters and tighten the `stats.jsonc :: multipliers`.
+
+8. **Batch-convert the full 47-character roster** from `../ssf2-ssfs/`,
+   triage which characters convert cleanly, and capture a per-character
+   status list.
+
 9. **Housekeeping:** make `rebuild-sandbag.sh` path-relative; drop unused
-   `tokio`; consider committing or `.gitignore`-ing `dump_trail_matrices.rs`.
+   `tokio`; fix the `infer_ext_var_types` floats-as-Int bug noted in
+   `docs/codebase_analysis.md` §3.7.
 
 ---
 
-## 11. Git state & history
+## 13. Tips for the next agent
 
-- **Branch:** `main`, tracking `origin/main`. **8 local commits ahead**,
-  not pushed.
-- **Uncommitted:** modified `src/entity_gen.rs`, `src/image_extractor.rs`,
-  `src/main.rs`, `src/bin/check_shape_bitmap.rs`; untracked
-  `src/bin/dump_trail_matrices.rs`. (All the image-placement work — [§8](#8-current-status--what-works).)
-- **History:** 109 commits. The project began as a **Python** script
-  (`convert.py`, "47 SSF2 characters ported"), was **rewritten in Rust** with a
-  from-scratch native SWF/ABC parser, then gained the **AVM2 decompiler**, then
-  the **SwiftUI app**, and most recently a long run of **image
-  rotation / pivot / skew** fixes — which is exactly where the uncommitted work
-  continues.
-
-> **Do not commit or push** as part of documentation work. Leave the working
-> tree as-is unless Jimmy explicitly asks. These docs are intentionally left
-> uncommitted too.
-
----
-
-## 12. Tips for the next agent
-
-- **Smoke test = `sandbag`.** `./rebuild-sandbag.sh` is the fast loop. `mario`
-  is the heavy, full-featured test (projectiles, costumes, big roster of moves).
-- **`AGENT_CONTEXT.md` is the format bible** — but cross-check it against the
-  code for rotation (see [§9.2](#9-known-issues--gaps)). It is otherwise
-  detailed and reliable.
-- **Reach for the `dump_*` binaries** before guessing. They exist precisely so
-  you can inspect a SWF without re-deriving the format. Example:
-  `./target/release/dump_collision_box ../ssf2-ssfs/mario.ssf "a_air_forward"`.
+- **Smoke test = `sandbag`.** `./rebuild-sandbag.sh` is the fast loop.
+  Mario is the heavy, full-featured test (projectiles, costumes, big
+  roster of moves).
+- **`AGENT_CONTEXT.md` is the format bible** — formats are reverse-
+  engineered and not documented anywhere else.
+- **Edit the JSONC, not the Rust.** Most behaviour lives in
+  `mappings/`. Adding a new API rename, marking a method as
+  SSF2-only, tweaking a stat scaling — all JSONC edits, no rebuild
+  needed beyond a fresh run.
+- **Reach for the `dump_*` binaries** before guessing. They exist
+  precisely so you can inspect a SWF without re-deriving the format.
+  Example: `./target/release/dump_collision_box ../ssf2-ssfs/mario.ssf
+  "a_air_forward"`.
 - **Inputs are the sibling `../ssf2-ssfs/` folder**, not in this repo
-  (`.gitignore` excludes `*.ssf`). `misc.ssf` lives there too and is needed for
-  real costume colours.
-- **Output is git-ignored** (`characters/`). Deleting it and re-running is safe.
-- **GUIDs are deterministic** — re-running the converter is idempotent w.r.t.
-  GUIDs, so diffs between runs reflect real logic changes, not GUID churn.
+  (`.gitignore` excludes `*.ssf`). `misc.ssf` lives there too and is
+  needed for real costume colours.
+- **Output is git-tracked partially** — `.hx`, `.json`, `.entity`,
+  `.meta` are committed in `characters/`, but binary media (PNGs,
+  WAVs) are git-ignored. Deleting `characters/` and re-running is safe;
+  the entity / script files will regenerate identically (deterministic
+  GUIDs).
+- **GUIDs are deterministic** — re-running the converter is idempotent
+  w.r.t. GUIDs, so diffs between runs reflect real logic changes, not
+  GUID churn.
+- **Always check `conversion_log.json`** after a conversion. The
+  `unknown` list tells you which SSF2 API calls slipped past every
+  mapping table; the `ssf2_only` list tells you which calls we
+  deliberately gave up on. Both are good signals when something feels
+  off in the converted output.
 - **Reference resources** (from `AGENT_CONTEXT.md`): the official
   [Fraymakers character-template](https://github.com/Fraymakers/character-template)
-  repo's `library/entities/character.entity` is ground truth for the entity
-  format; the [Fraymakers community docs](https://github.com/aJewelofRarity/FraymakersDocs)
-  and [SSF2 modding docs](https://ssf2-modding.readthedocs.io/) cover the rest.
+  repo's `library/entities/character.entity` is ground truth for the
+  entity format; the [Fraymakers community
+  docs](https://github.com/aJewelofRarity/FraymakersDocs) and
+  [SSF2 modding docs](https://ssf2-modding.readthedocs.io/) cover the
+  rest.
 - **The pipeline is fail-soft.** A stage that errors logs a warning and
-  continues — always scan the run log and `conversion_stats.json`, don't assume
-  a non-crashing run was a clean run.
+  continues — always scan the run log, `conversion_stats.json`, and
+  `conversion_log.json`. Don't assume a non-crashing run was a clean run.
