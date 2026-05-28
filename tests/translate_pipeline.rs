@@ -418,6 +418,26 @@ fn wrap_persistent_state_int_inc_dec_set_get() {
     assert!(out.contains("counter.get()"), "read → .get(); got: {}", out);
 }
 
+/// Bug §3.19: multi-line RHS (e.g. an inline closure literal that the
+/// decompiler produces) must still be wrapped into `<name>.set(...);`.
+/// The single-line `[^;\n]*?` regex misses these; a brace-balanced scan
+/// must handle them.
+#[test]
+fn wrap_persistent_state_multiline_closure_rhs() {
+    let mut var_types = BTreeMap::new();
+    var_types.insert("onHit".to_string(), ExtVarType::Object);
+    let input = "self.onHit = function() {\n\
+        \treturn 1;\n\
+        };\n";
+    let out = wrap_persistent_state(input, &var_types);
+    assert!(out.contains("onHit.set("),
+        "multi-line closure RHS must still be wrapped in .set(...); got:\n{}", out);
+    // The inner `;` of the closure body must not be the terminator.
+    // After the wrap, we should still see `return 1;` intact.
+    assert!(out.contains("return 1;"),
+        "closure body must round-trip; got:\n{}", out);
+}
+
 #[test]
 fn wrap_persistent_state_object_no_inc_dec() {
     // ExtVarType::Object doesn't get .inc / .dec rewrites.

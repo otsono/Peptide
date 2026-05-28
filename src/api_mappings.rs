@@ -1481,24 +1481,133 @@ pub fn wrap_persistent_state(
             let re_dec = regex::Regex::new(&format!(r"\bself\.{}--", regex::escape(name))).unwrap();
             result = re_dec.replace_all(&result, format!("{}.dec()", name)).into_owned();
         }
-        // Assignment (`self.foo = X` → `foo.set(X)`). Match a single `=` with
-        // optional surrounding whitespace, not `==` and not `+=`/`-=`/etc.
-        // — those are handled separately or fall through to .get()-based
-        // rewrites the user can clean up by eye.
-        let assign_re = regex::Regex::new(
-            &format!(r"\bself\.{}\s*=\s*(?P<rhs>[^=;\n][^;\n]*?);", regex::escape(name))
-        ).unwrap();
-        result = assign_re.replace_all(&result, format!("{}.set($rhs);", name)).into_owned();
-        // Read (`self.foo` not followed by `=`, `++`, `--`, or `.`). The
-        // negative-lookahead form isn't available in the `regex` crate, so
-        // we split on the boundary character and emit `.get()` only when the
-        // next char is whitespace, punctuation, or end-of-expression.
-        // Field/method chains (`self.foo.bar`) get `foo.get().bar` which is
-        // the desired form.
+        // Assignment (`self.foo = X` → `foo.set(X)`). Hand-rolled scan
+        // (instead of a regex) so multi-line RHS — e.g. an inline closure
+        // literal `function () { … };` that the decompiler produces — is
+        // captured correctly. We track brace + string state to find the
+        // `;` at depth-zero rather than the first `;` we see.
+        result = rewrite_persistent_assignment(&result, name);
+        // Read (`self.foo` not followed by `=`, `++`, `--`). Field/method
+        // chains (`self.foo.bar`) get `foo.get().bar` which is the
+        // desired form. The assignment pass above has already rewritten
+        // `self.foo = …`, so this pass is read-only — no `self.foo =`
+        // remains for it to mis-match.
         let read_re = regex::Regex::new(&format!(r"\bself\.{}\b", regex::escape(name))).unwrap();
         result = read_re.replace_all(&result, format!("{}.get()", name)).into_owned();
     }
     result
+}
+
+/// Rewrite every top-level `self.<name> = <rhs>;` to `<name>.set(<rhs>);`.
+/// `<rhs>` may span newlines and contain nested `{ … }` / `( … )` /
+/// `[ … ]` / strings — the scan tracks bracket depth and string state and
+/// only matches the depth-zero `;` as the terminator.
+///
+/// Matches:
+/// - `self.foo = expr;`                    (single-line)
+/// - `self.foo = function () { … };`       (multi-line closure)
+/// - `self.foo = { a: 1, b: 2 };`          (object literal)
+/// - `self.foo  =  Random.getFloat(0, 1);` (whitespace + nested call)
+///
+/// Skips:
+/// - `self.foo == bar`   (the `==` after the `=` is consumed by the next-
+///   char check; we require a single `=` followed by something other than `=`)
+/// - `self.foo += 1`     (`+=` doesn't match the bare `=` boundary)
+/// - `self.foobar = …`   (token boundary check: char before `self.foo` must
+///   not be alphanumeric/underscore; char after `foo` must not be either)
+fn rewrite_persistent_assignment(code: &str, name: &str) -> String {
+    let needle = format!("self.{}", name);
+    let bytes = code.as_bytes();
+    let nl = needle.len();
+    let mut out = String::with_capacity(code.len());
+    let mut cursor = 0usize;
+
+    while cursor < bytes.len() {
+        // Find the next candidate occurrence of `self.<name>`.
+        let rel = match code[cursor..].find(&needle) {
+            Some(r) => r,
+            None => { out.push_str(&code[cursor..]); break; }
+        };
+        let start = cursor + rel;
+
+        // Token boundary on the LEFT — char before `self` must not be a word char.
+        let lhs_ok = start == 0 || {
+            let prev = bytes[start - 1];
+            !(prev.is_ascii_alphanumeric() || prev == b'_')
+        };
+        // Token boundary on the RIGHT — char after the matched name must not
+        // be a word char (otherwise `self.foo` is a prefix of `self.foobar`).
+        let after_name = start + nl;
+        let rhs_ok = after_name >= bytes.len() || {
+            let next = bytes[after_name];
+            !(next.is_ascii_alphanumeric() || next == b'_')
+        };
+        if !lhs_ok || !rhs_ok {
+            out.push_str(&code[cursor..=start]);
+            cursor = start + 1;
+            continue;
+        }
+
+        // Skip optional whitespace, then require a single `=` not followed
+        // by `=`. (Excludes `==`, `+=`, `-=`, etc. — `+=` doesn't reach here
+        // because the byte before `=` would be `+`, not whitespace.)
+        let mut p = after_name;
+        while p < bytes.len() && (bytes[p] == b' ' || bytes[p] == b'\t') { p += 1; }
+        if p >= bytes.len() || bytes[p] != b'=' {
+            out.push_str(&code[cursor..=start]);
+            cursor = start + 1;
+            continue;
+        }
+        if p + 1 < bytes.len() && bytes[p + 1] == b'=' {
+            // `==` — comparison, not assignment. Skip this match.
+            out.push_str(&code[cursor..=start]);
+            cursor = start + 1;
+            continue;
+        }
+        let eq_pos = p;
+
+        // Find the depth-zero, outside-of-string `;`.
+        let mut q = eq_pos + 1;
+        let mut depth: i32 = 0;
+        let mut in_str: Option<u8> = None;
+        let mut end_semi: Option<usize> = None;
+        while q < bytes.len() {
+            let c = bytes[q];
+            if let Some(quote) = in_str {
+                if c == b'\\' { q = q.saturating_add(2); continue; }
+                if c == quote { in_str = None; }
+            } else {
+                match c {
+                    b'"' | b'\'' => in_str = Some(c),
+                    b'{' | b'(' | b'[' => depth += 1,
+                    b'}' | b')' | b']' => {
+                        if depth == 0 { break; }
+                        depth -= 1;
+                    }
+                    b';' if depth == 0 => { end_semi = Some(q); break; }
+                    _ => {}
+                }
+            }
+            q += 1;
+        }
+        let semi = match end_semi {
+            Some(s) => s,
+            None => {
+                // Unterminated — give up on this site, advance past `self.`.
+                out.push_str(&code[cursor..=start]);
+                cursor = start + 1;
+                continue;
+            }
+        };
+
+        // Compose: keep up-to start, emit `<name>.set(<rhs>);`.
+        out.push_str(&code[cursor..start]);
+        // Strip surrounding whitespace from the RHS so `set(  x  )` doesn't appear.
+        let rhs = code[eq_pos + 1..semi].trim();
+        out.push_str(&format!("{}.set({});", name, rhs));
+        cursor = semi + 1;
+    }
+    out
 }
 
 pub fn comment_out_unknown_calls(code: &str) -> String {
