@@ -1240,12 +1240,10 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
     })
 }
 
-/// Simulate the AVM2 stack to extract object literals from bytecode.
-/// SSF2 attack data structure:
-///   newobject(N) where one key is 'attackBoxes' → value is newobject(M hitboxes)
-///   each hitbox is newobject(10) with keys: damage, priority, hitStun, hitLag,
-///     effect_id, direction, weightKB, power, kbConstant, effectSound
-/// The top-level getAttackStats builds: newobject(attack_count) where keys are move names
+/// Symbolic value pushed onto the simulated AVM2 stack by `scan_method`
+/// and inspected by `AbcVisitor` implementations to recognise object
+/// literals (`newobject`) that carry SSF2 attack / projectile / stat /
+/// costume data.
 #[derive(Debug, Clone)]
 enum StackVal {
     Str(String),
@@ -1259,16 +1257,98 @@ enum StackVal {
     Unknown,
 }
 
-fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, AttackData> {
-    let mut result: BTreeMap<String, AttackData> = BTreeMap::new();
+// ─── Shared AVM2 stack-sim scanner ───────────────────────────────────────────
+//
+// SSF2 keeps several flavours of structured data inside AVM2 bytecode:
+//   1. `getAttackStats()` — one top-level newobject keyed by move name,
+//       each value is a hitbox object literal.
+//   2. `getProjectileStats()` — one top-level newobject keyed by
+//      projectile name, each value is a physics + attackBoxes object.
+//   3. `getOwnStats()` / fallback — one newobject with character physics keys.
+//   4. `misc.ssf :: getCostumeData()` (and per-character costume methods)
+//      — one or more newobjects matching one of two palette-table shapes.
+//
+// Each used to live in its own bespoke stack interpreter (~150 lines × 4 = ~600
+// lines of nearly-identical opcode handlers). They've now been unified
+// behind `scan_method` + the `AbcVisitor` trait. Each former extractor
+// is a thin wrapper that builds a visitor, calls `scan_method`, and
+// reads the visitor's accumulator. See the visitors immediately below.
+//
+// We did NOT consolidate `extract_ssf2_stats` — it's a fundamentally
+// different algorithm (a linear pushstring-followed-by-numeric-push scan
+// that doesn't model the stack at all). Folding it into the visitor
+// model would require either complicating the scanner or weakening the
+// extractor's recognition.
+
+/// What `AbcVisitor::on_newobject` wants the scanner to do with the
+/// freshly-built object literal.
+enum NewObjectAction {
+    /// Push StackVal::Obj(obj) onto the stack — the default for visitors
+    /// that may need to look at this object again as a sub-value in a
+    /// later newobject.
+    PushObj(BTreeMap<String, StackVal>),
+    /// Push some other StackVal (typically StackVal::Unknown) instead
+    /// of the obj. Used by visitors that recorded the obj as a
+    /// top-level extraction target and don't need its identity on the
+    /// stack any more.
+    Push(StackVal),
+    /// Halt scanning entirely. Used by single-shot extractors that have
+    /// already found what they came for (e.g. CharacterStats).
+    Stop,
+}
+
+/// Hook surface for `scan_method`. Default impls match the
+/// attack/projectile/stats simulators' common semantics; the costume
+/// visitor overrides a couple of behaviours where its parsing differs.
+trait AbcVisitor {
+    /// Called when a `newobject(N)` opcode completes. The scanner has
+    /// already drained 2N items from the stack and built the obj map;
+    /// the visitor decides what to record, then returns an action
+    /// telling the scanner what to push (or whether to stop).
+    fn on_newobject(
+        &mut self,
+        obj: BTreeMap<String, StackVal>,
+        current_char: &Option<String>,
+    ) -> NewObjectAction {
+        let _ = current_char;
+        NewObjectAction::PushObj(obj)
+    }
+
+    /// Called when a `newarray(N)` opcode completes with `items` drained
+    /// in declared order. Default: drop the items and push
+    /// StackVal::Unknown — matches the attack/projectile/stats sims,
+    /// which never inspect array contents. The costume visitor returns
+    /// `StackVal::Arr(items)` so it can read color literals back.
+    fn on_newarray(&mut self, items: Vec<StackVal>) -> StackVal {
+        let _ = items;
+        StackVal::Unknown
+    }
+
+    /// If true, the scanner uses the costume-style getproperty / set-
+    /// property handling: track a runtime-key or static-name match
+    /// against `current_char`, and on STATIC getproperty preserve the
+    /// receiver on the stack (so `_loc1_.mario.push(...)` still binds
+    /// the right receiver). False (default) = pop receiver and push
+    /// Unknown, matching the attack/projectile sims' post-§3.5-fix
+    /// behaviour.
+    fn costume_getproperty_semantics(&self) -> bool { false }
+}
+
+/// One pass over a method body. Built-in handlers cover every opcode
+/// every former simulator handled. The visitor's hooks decide what to
+/// record on newobject / newarray and (optionally) how to treat
+/// getproperty — see the trait above.
+fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
     let mut stack: Vec<StackVal> = Vec::new();
+    let mut current_char: Option<String> = None;
     let mut i = 0;
+    let costume_mode = visitor.costume_getproperty_semantics();
 
     while i < bytecode.len() {
         let op = bytecode[i];
         i += 1;
-
         match op {
+            // ── Constant pushes ─────────────────────────────────────────
             OP_PUSHSTRING => {
                 if let Some(idx) = read_u30_at(bytecode, &mut i) {
                     let s = abc.strings.get(idx as usize).cloned().unwrap_or_default();
@@ -1277,15 +1357,13 @@ fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, At
             }
             OP_PUSHDOUBLE => {
                 if let Some(idx) = read_u30_at(bytecode, &mut i) {
-                    let v = abc.doubles.get(idx as usize).copied().unwrap_or(0.0);
-                    stack.push(StackVal::Num(v));
+                    stack.push(StackVal::Num(abc.doubles.get(idx as usize).copied().unwrap_or(0.0)));
                 }
             }
             OP_PUSHBYTE => {
                 if i < bytecode.len() {
-                    let v = bytecode[i] as i8 as f64;
+                    stack.push(StackVal::Num(bytecode[i] as i8 as f64));
                     i += 1;
-                    stack.push(StackVal::Num(v));
                 }
             }
             OP_PUSHSHORT => {
@@ -1295,20 +1373,18 @@ fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, At
             }
             OP_PUSHINT => {
                 if let Some(idx) = read_u30_at(bytecode, &mut i) {
-                    let v = abc.ints.get(idx as usize).copied().unwrap_or(0) as f64;
-                    stack.push(StackVal::Num(v));
+                    stack.push(StackVal::Num(abc.ints.get(idx as usize).copied().unwrap_or(0) as f64));
                 }
             }
             OP_PUSHUINT => {
                 if let Some(idx) = read_u30_at(bytecode, &mut i) {
-                    let v = abc.uints.get(idx as usize).copied().unwrap_or(0) as f64;
-                    stack.push(StackVal::Num(v));
+                    stack.push(StackVal::Num(abc.uints.get(idx as usize).copied().unwrap_or(0) as f64));
                 }
             }
-            OP_PUSHTRUE  => stack.push(StackVal::Bool(())),
-            OP_PUSHFALSE => stack.push(StackVal::Bool(())),
+            OP_PUSHTRUE | OP_PUSHFALSE => stack.push(StackVal::Bool(())),
             OP_PUSHNULL | OP_PUSHNAN => stack.push(StackVal::Null),
 
+            // ── newobject (the only visitor-driven push) ────────────────
             OP_NEWOBJECT => {
                 if let Some(count) = read_u30_at(bytecode, &mut i) {
                     let count = count as usize;
@@ -1322,74 +1398,118 @@ fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, At
                             }
                         }
                     }
-
-                    // Check if this is a top-level attacks object:
-                    // keys are move names ("a", "b", "a_air", etc.)
-                    let attack_keys_found: Vec<_> = obj.keys()
-                        .filter(|k| is_attack_name(k))
-                        .cloned().collect();
-
-                    if !attack_keys_found.is_empty() {
-                        // This is the top-level move map
-                        for move_name in &attack_keys_found {
-                            let fm_name = normalize_attack_name(move_name);
-                            if let Some(val) = obj.get(move_name) {
-                                let hitboxes = extract_hitboxes_from_val(val);
-                                if !hitboxes.is_empty() {
-                                    result.insert(fm_name, AttackData { hitboxes });
-                                }
-                            }
-                        }
-                        // Also check non-attack-name keys that might contain moves (e.g. grouped)
-                        stack.push(StackVal::Obj(obj));
-                    } else {
-                        stack.push(StackVal::Obj(obj));
+                    match visitor.on_newobject(obj, &current_char) {
+                        NewObjectAction::PushObj(o)  => stack.push(StackVal::Obj(o)),
+                        NewObjectAction::Push(v)     => stack.push(v),
+                        NewObjectAction::Stop        => return,
                     }
                 }
             }
 
+            // ── newarray (visitor-overridable) ──────────────────────────
             OP_NEWARRAY => {
                 if let Some(count) = read_u30_at(bytecode, &mut i) {
-                    let drain = stack.len().min(count as usize);
-                    let _items: Vec<_> = if stack.len() >= drain {
-                        stack.drain(stack.len() - drain..).collect()
-                    } else { vec![] };
-                    stack.push(StackVal::Unknown);
+                    let count = count as usize;
+                    let drain_start = stack.len().saturating_sub(count);
+                    let items: Vec<StackVal> = stack.drain(drain_start..).collect();
+                    stack.push(visitor.on_newarray(items));
                 }
             }
 
+            // ── Calls & construction (drain args+receiver, push unknown) ─
             OP_CALLPROPERTY | OP_CALLPROPVOID => {
-                let _mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
-                let arg_count = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
-                let drain = stack.len().min(arg_count + 1);
+                read_u30_at(bytecode, &mut i);
+                let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                let drain = stack.len().min(argc + 1);
                 stack.drain(stack.len() - drain..);
                 if op == OP_CALLPROPERTY { stack.push(StackVal::Unknown); }
             }
-
-            OP_SETPROPERTY | OP_INITPROPERTY => {
-                let _mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
-                if stack.len() >= 2 { stack.truncate(stack.len() - 2); }
+            OP_CONSTRUCTPROP => {
+                read_u30_at(bytecode, &mut i);
+                let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                let drain = stack.len().min(argc + 1);
+                stack.drain(stack.len() - drain..);
+                stack.push(StackVal::Unknown);
+            }
+            OP_CONSTRUCT => {
+                let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                let drain = stack.len().min(argc + 1);
+                stack.drain(stack.len() - drain..);
+                stack.push(StackVal::Unknown);
             }
 
+            // ── Property reads/writes ───────────────────────────────────
+            // setproperty/initproperty are the same in every former sim:
+            // drain 2 items. The costume sim ALSO inspects the multiname
+            // for a static char name. Track that opportunistically.
+            OP_SETPROPERTY | OP_INITPROPERTY => {
+                let mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
+                if costume_mode {
+                    let mn = abc.multinames.get(mn_idx as usize);
+                    let is_runtime = mn.map(|m| m.kind == 0x1B || m.kind == 0x1C).unwrap_or(false);
+                    let static_name = mn.and_then(|m| if m.name.is_empty() { None } else { Some(m.name.clone()) });
+                    if is_runtime {
+                        let _val = stack.pop();
+                        let key = stack.pop();
+                        stack.pop(); // object
+                        if let Some(StackVal::Str(s)) = &key {
+                            if looks_like_char_name(s) { current_char = Some(s.clone()); }
+                        }
+                    } else {
+                        stack.pop(); stack.pop();
+                        if let Some(name) = static_name {
+                            if looks_like_char_name(&name) { current_char = Some(name); }
+                        }
+                    }
+                } else if stack.len() >= 2 {
+                    stack.truncate(stack.len() - 2);
+                }
+            }
+
+            // getproperty splits cleanly into two modes:
+            //  - default: pop receiver, push Unknown (post-§3.5 fix)
+            //  - costume: track current_char from multiname, and on
+            //    STATIC getproperty preserve the receiver so chained
+            //    `_loc1_.mario.push(...)` still resolves.
             OP_GETPROPERTY => {
-                // Bug §3.5: getproperty pops the receiver and pushes the
-                // property VALUE, not its name. We don't track object
-                // contents through this stack sim, so push Unknown — that
-                // way arithmetic / conditional ops that consume the value
-                // don't accidentally interpret the property-NAME as a
-                // String operand.
-                read_u30_at(bytecode, &mut i);
-                if !stack.is_empty() { stack.pop(); }
-                stack.push(StackVal::Unknown);
+                let mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
+                if costume_mode {
+                    let mn = abc.multinames.get(mn_idx as usize);
+                    let is_runtime = mn.map(|m| m.kind == 0x1B || m.kind == 0x1C).unwrap_or(false);
+                    let static_name = mn.and_then(|m| if m.name.is_empty() { None } else { Some(m.name.clone()) });
+                    if is_runtime {
+                        let key = stack.pop();
+                        stack.pop(); // receiver
+                        if let Some(StackVal::Str(s)) = &key {
+                            if looks_like_char_name(s) { current_char = Some(s.clone()); }
+                        }
+                        stack.push(StackVal::Null);
+                    } else {
+                        let top = stack.pop().unwrap_or(StackVal::Null);
+                        if let Some(name) = static_name {
+                            if looks_like_char_name(&name) { current_char = Some(name); }
+                            stack.push(top); // preserve receiver for chained access
+                        } else {
+                            stack.push(StackVal::Null);
+                        }
+                    }
+                } else {
+                    stack.pop();
+                    stack.push(StackVal::Unknown);
+                }
             }
 
             OP_FINDPROPSTRICT | OP_FINDPROP | OP_GETLEX => {
                 read_u30_at(bytecode, &mut i);
                 stack.push(StackVal::Unknown);
             }
+
+            // ── Coerce / convert — operand-bearing but mostly no-ops ────
             OP_COERCE | OP_COERCE_A | OP_CONVERT_D | OP_CONVERT_I => {
                 if op == OP_COERCE { read_u30_at(bytecode, &mut i); }
             }
+
+            // ── Plumbing ───────────────────────────────────────────────
             OP_NOP | OP_LABEL => {}
             OP_POP => { stack.pop(); }
             OP_DUP => { if let Some(top) = stack.last().cloned() { stack.push(top); } }
@@ -1413,19 +1533,6 @@ fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, At
                     _ => stack.push(StackVal::Unknown),
                 }
             }
-            OP_CONSTRUCTPROP => {
-                read_u30_at(bytecode, &mut i);
-                let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
-                let drain = stack.len().min(argc + 1);
-                stack.drain(stack.len() - drain..);
-                stack.push(StackVal::Unknown);
-            }
-            OP_CONSTRUCT => {
-                let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
-                let drain = stack.len().min(argc + 1);
-                stack.drain(stack.len() - drain..);
-                stack.push(StackVal::Unknown);
-            }
             OP_GETLOCAL0 | OP_GETLOCAL1 | OP_GETLOCAL2 | OP_GETLOCAL3 => stack.push(StackVal::Unknown),
             OP_GETLOCAL => { read_u30_at(bytecode, &mut i); stack.push(StackVal::Unknown); }
             OP_SETLOCAL0 | OP_SETLOCAL1 | OP_SETLOCAL2 | OP_SETLOCAL3 => { stack.pop(); }
@@ -1439,11 +1546,53 @@ fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, At
             }
             _ => {}
         }
-
+        // Bound the stack so a malformed body can't blow memory.
         if stack.len() > 512 { stack.drain(0..256); }
     }
+}
 
-    result
+/// Helper used by the costume visitor + the costume-mode getproperty
+/// branch of `scan_method`. Lowercase alphabetic-only strings between 3
+/// and 24 chars long are accepted as character ids.
+fn looks_like_char_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_alphanumeric())
+        && s.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false)
+        && s.len() >= 3 && s.len() <= 24
+}
+
+/// Visitor for `getAttackStats()`-style bodies. A top-level newobject
+/// whose keys are SSF2 attack-move names (`a`, `b_air`, `a_air_forward`,
+/// …) is the attack table; each value carries the hitbox data.
+struct AttackVisitor {
+    result: BTreeMap<String, AttackData>,
+}
+
+impl AbcVisitor for AttackVisitor {
+    fn on_newobject(
+        &mut self,
+        obj: BTreeMap<String, StackVal>,
+        _current_char: &Option<String>,
+    ) -> NewObjectAction {
+        let attack_keys_found: Vec<_> = obj.keys()
+            .filter(|k| is_attack_name(k))
+            .cloned().collect();
+        for move_name in &attack_keys_found {
+            if let Some(val) = obj.get(move_name) {
+                let hitboxes = extract_hitboxes_from_val(val);
+                if !hitboxes.is_empty() {
+                    self.result.insert(normalize_attack_name(move_name), AttackData { hitboxes });
+                }
+            }
+        }
+        NewObjectAction::PushObj(obj)
+    }
+}
+
+fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, AttackData> {
+    let mut v = AttackVisitor { result: BTreeMap::new() };
+    scan_method(bytecode, abc, &mut v);
+    v.result
 }
 
 /// Extract per-projectile stat objects from a `getProjectileStats()`
@@ -1454,188 +1603,65 @@ fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, At
 ///
 /// Returns a map keyed by the SSF2 projectile name (the key under which
 /// the per-projectile object appears in the top-level returned object).
-fn extract_projectile_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, ProjectileData> {
-    let mut result: BTreeMap<String, ProjectileData> = BTreeMap::new();
-    let mut stack: Vec<StackVal> = Vec::new();
-    let mut i = 0;
+/// SSF2 physics-stat keys commonly found on a projectile-stats object.
+/// Any inner value-object holding at least one of these (or an
+/// `attackBoxes` key) is recognised as a projectile entry.
+const PROJECTILE_PHYSICS_KEYS: &[&str] = &[
+    "gravity", "friction", "weight", "fall_speed", "terminalVelocity",
+    "xSpeed", "ySpeed", "x_speed", "y_speed",
+    "groundSpeedCap", "aerialSpeedCap", "aerialFriction",
+    "ground_speed_cap", "aerial_speed_cap", "aerial_friction",
+];
 
-    // Physics keys SSF2 commonly puts on a projectile-stats object. Any
-    // top-level value object holding at least one of these (or an
-    // `attackBoxes` key) is treated as a projectile entry.
-    const PHYSICS_KEYS: &[&str] = &[
-        "gravity", "friction", "weight", "fall_speed", "terminalVelocity",
-        "xSpeed", "ySpeed", "x_speed", "y_speed",
-        "groundSpeedCap", "aerialSpeedCap", "aerialFriction",
-        "ground_speed_cap", "aerial_speed_cap", "aerial_friction",
-    ];
+/// Visitor for `getProjectileStats()`-style bodies. The top-level
+/// newobject's KEYS are projectile names; the VALUES are physics +
+/// attackBoxes objects we promote to `ProjectileData`.
+struct ProjectileVisitor {
+    result: BTreeMap<String, ProjectileData>,
+}
 
-    while i < bytecode.len() {
-        let op = bytecode[i];
-        i += 1;
-        match op {
-            OP_PUSHSTRING => {
-                if let Some(idx) = read_u30_at(bytecode, &mut i) {
-                    let s = abc.strings.get(idx as usize).cloned().unwrap_or_default();
-                    stack.push(StackVal::Str(s));
-                }
-            }
-            OP_PUSHDOUBLE => {
-                if let Some(idx) = read_u30_at(bytecode, &mut i) {
-                    let v = abc.doubles.get(idx as usize).copied().unwrap_or(0.0);
-                    stack.push(StackVal::Num(v));
-                }
-            }
-            OP_PUSHBYTE => {
-                if i < bytecode.len() {
-                    let v = bytecode[i] as i8 as f64;
-                    i += 1;
-                    stack.push(StackVal::Num(v));
-                }
-            }
-            OP_PUSHSHORT => {
-                if let Some(v) = read_u30_at(bytecode, &mut i) {
-                    stack.push(StackVal::Num(v as i16 as f64));
-                }
-            }
-            OP_PUSHINT => {
-                if let Some(idx) = read_u30_at(bytecode, &mut i) {
-                    let v = abc.ints.get(idx as usize).copied().unwrap_or(0) as f64;
-                    stack.push(StackVal::Num(v));
-                }
-            }
-            OP_PUSHUINT => {
-                if let Some(idx) = read_u30_at(bytecode, &mut i) {
-                    let v = abc.uints.get(idx as usize).copied().unwrap_or(0) as f64;
-                    stack.push(StackVal::Num(v));
-                }
-            }
-            OP_PUSHTRUE | OP_PUSHFALSE => stack.push(StackVal::Bool(())),
-            OP_PUSHNULL | OP_PUSHNAN => stack.push(StackVal::Null),
-            OP_NEWOBJECT => {
-                if let Some(count) = read_u30_at(bytecode, &mut i) {
-                    let count = count as usize;
-                    let needed = count * 2;
-                    let mut obj: BTreeMap<String, StackVal> = BTreeMap::new();
-                    if stack.len() >= needed {
-                        let pairs: Vec<_> = stack.drain(stack.len() - needed..).collect();
-                        for chunk in pairs.chunks(2) {
-                            if let StackVal::Str(k) = &chunk[0] {
-                                obj.insert(k.clone(), chunk[1].clone());
-                            }
+impl AbcVisitor for ProjectileVisitor {
+    fn on_newobject(
+        &mut self,
+        obj: BTreeMap<String, StackVal>,
+        _current_char: &Option<String>,
+    ) -> NewObjectAction {
+        let mut found = false;
+        for (proj_name, val) in &obj {
+            if let StackVal::Obj(inner) = val {
+                let is_proj = inner.contains_key("attackBoxes")
+                    || PROJECTILE_PHYSICS_KEYS.iter().any(|k| inner.contains_key(*k));
+                if is_proj {
+                    let mut stats: BTreeMap<String, f64> = BTreeMap::new();
+                    for (k, v) in inner {
+                        if let StackVal::Num(n) = v {
+                            stats.insert(k.clone(), *n);
                         }
                     }
-                    // Top-level projectile-map detection: any key whose
-                    // value object has physics-y / attackBoxes shape gets
-                    // promoted to a ProjectileData entry.
-                    let mut found = false;
-                    for (proj_name, val) in &obj {
-                        if let StackVal::Obj(inner) = val {
-                            let is_proj = inner.contains_key("attackBoxes")
-                                || PHYSICS_KEYS.iter().any(|k| inner.contains_key(*k));
-                            if is_proj {
-                                let mut stats: BTreeMap<String, f64> = BTreeMap::new();
-                                for (k, v) in inner {
-                                    if let StackVal::Num(n) = v {
-                                        stats.insert(k.clone(), *n);
-                                    }
-                                }
-                                let hitboxes = extract_hitboxes_from_val(val);
-                                result.insert(proj_name.clone(), ProjectileData { stats, hitboxes });
-                                found = true;
-                            }
-                        }
-                    }
-                    if !found { stack.push(StackVal::Obj(obj)); }
+                    let hitboxes = extract_hitboxes_from_val(val);
+                    self.result.insert(proj_name.clone(), ProjectileData { stats, hitboxes });
+                    found = true;
                 }
             }
-            OP_NEWARRAY => {
-                if let Some(count) = read_u30_at(bytecode, &mut i) {
-                    let drain = stack.len().min(count as usize);
-                    let _: Vec<_> = if stack.len() >= drain {
-                        stack.drain(stack.len() - drain..).collect()
-                    } else { vec![] };
-                    stack.push(StackVal::Unknown);
-                }
-            }
-            OP_CALLPROPERTY | OP_CALLPROPVOID => {
-                let _ = read_u30_at(bytecode, &mut i);
-                let arg_count = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
-                let drain = stack.len().min(arg_count + 1);
-                stack.drain(stack.len() - drain..);
-                if op == OP_CALLPROPERTY { stack.push(StackVal::Unknown); }
-            }
-            OP_SETPROPERTY | OP_INITPROPERTY => {
-                let _ = read_u30_at(bytecode, &mut i);
-                if stack.len() >= 2 { stack.truncate(stack.len() - 2); }
-            }
-            OP_GETPROPERTY => {
-                // Bug §3.5: push the value (unknown to this stack sim),
-                // not the property name. Pushing the name would let it
-                // be consumed as a Str operand by downstream ops.
-                read_u30_at(bytecode, &mut i);
-                if !stack.is_empty() { stack.pop(); }
-                stack.push(StackVal::Unknown);
-            }
-            OP_FINDPROPSTRICT | OP_FINDPROP | OP_GETLEX => {
-                read_u30_at(bytecode, &mut i);
-                stack.push(StackVal::Unknown);
-            }
-            OP_COERCE | OP_COERCE_A | OP_CONVERT_D | OP_CONVERT_I => {
-                if op == OP_COERCE { read_u30_at(bytecode, &mut i); }
-            }
-            OP_NOP | OP_LABEL => {}
-            OP_POP => { stack.pop(); }
-            OP_DUP => { if let Some(top) = stack.last().cloned() { stack.push(top); } }
-            OP_SWAP => { let len = stack.len(); if len >= 2 { stack.swap(len-1, len-2); } }
-            OP_NEGATE => {
-                match stack.pop() {
-                    Some(StackVal::Num(v)) => stack.push(StackVal::Num(-v)),
-                    _ => stack.push(StackVal::Unknown),
-                }
-            }
-            OP_ADD | OP_SUBTRACT | OP_MULTIPLY | OP_DIVIDE => {
-                let b = stack.pop(); let a = stack.pop();
-                match (a, b) {
-                    (Some(StackVal::Num(a)), Some(StackVal::Num(b))) => {
-                        let r = match op {
-                            OP_ADD => a+b, OP_SUBTRACT => a-b,
-                            OP_MULTIPLY => a*b, OP_DIVIDE => a/b, _ => 0.0
-                        };
-                        stack.push(StackVal::Num(r));
-                    }
-                    _ => stack.push(StackVal::Unknown),
-                }
-            }
-            OP_CONSTRUCTPROP => {
-                read_u30_at(bytecode, &mut i);
-                let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
-                let drain = stack.len().min(argc + 1);
-                stack.drain(stack.len() - drain..);
-                stack.push(StackVal::Unknown);
-            }
-            OP_CONSTRUCT => {
-                let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
-                let drain = stack.len().min(argc + 1);
-                stack.drain(stack.len() - drain..);
-                stack.push(StackVal::Unknown);
-            }
-            OP_GETLOCAL0 | OP_GETLOCAL1 | OP_GETLOCAL2 | OP_GETLOCAL3 => stack.push(StackVal::Unknown),
-            OP_GETLOCAL => { read_u30_at(bytecode, &mut i); stack.push(StackVal::Unknown); }
-            OP_SETLOCAL0 | OP_SETLOCAL1 | OP_SETLOCAL2 | OP_SETLOCAL3 => { stack.pop(); }
-            OP_SETLOCAL => { read_u30_at(bytecode, &mut i); stack.pop(); }
-            OP_RETURNVALUE => { stack.pop(); }
-            OP_RETURNVOID => {}
-            OP_JUMP | OP_IFTRUE | OP_IFFALSE | OP_IFEQ | OP_IFNE | OP_IFLT |
-            OP_IFLE | OP_IFGT | OP_IFGE | OP_IFSTRICTEQ | OP_IFSTRICTNE => {
-                if i + 3 <= bytecode.len() { i += 3; }
-                if op != OP_JUMP { stack.pop(); }
-            }
-            _ => {}
         }
-        if stack.len() > 512 { stack.drain(0..256); }
+        // Preserve the original behaviour: when the visitor recorded
+        // projectile entries from this obj, leave the obj OFF the stack
+        // (Push(Unknown) is the same observable shape as the legacy
+        // "don't push obj back" since the only thing that consumed the
+        // top-of-stack after this newobject was OP_RETURNVALUE, which
+        // pops one item either way).
+        if found {
+            NewObjectAction::Push(StackVal::Unknown)
+        } else {
+            NewObjectAction::PushObj(obj)
+        }
     }
+}
 
-    result
+fn extract_projectile_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, ProjectileData> {
+    let mut v = ProjectileVisitor { result: BTreeMap::new() };
+    scan_method(bytecode, abc, &mut v);
+    v.result
 }
 
 /// Recursively extract hitboxes from a StackVal.
@@ -1671,91 +1697,47 @@ fn extract_hitboxes_from_val(val: &StackVal) -> Vec<BTreeMap<String, f64>> {
     }
 }
 
-fn extract_stats_from_body(bytecode: &[u8], abc: &AbcFile) -> Option<CharStats> {
-    // Simulate stack; look for newobject whose keys include stat names
-    let mut stack: Vec<StackVal> = Vec::new();
-    let mut i = 0;
+/// Visitor for `getOwnStats()`-style bodies (the heuristic fallback,
+/// distinct from the targeted `extract_ssf2_stats` linear scan). Looks
+/// for the first newobject whose keys overlap the canonical SSF2
+/// character-stat names by at least 3; stops scanning the moment it
+/// finds one.
+struct StatsVisitor {
+    found: Option<CharStats>,
+}
 
-    while i < bytecode.len() {
-        let op = bytecode[i];
-        i += 1;
-        match op {
-            OP_PUSHSTRING => {
-                if let Some(idx) = read_u30_at(bytecode, &mut i) {
-                    stack.push(StackVal::Str(abc.strings.get(idx as usize).cloned().unwrap_or_default()));
-                }
-            }
-            OP_PUSHDOUBLE => {
-                if let Some(idx) = read_u30_at(bytecode, &mut i) {
-                    stack.push(StackVal::Num(abc.doubles.get(idx as usize).copied().unwrap_or(0.0)));
-                }
-            }
-            OP_PUSHBYTE => {
-                if i < bytecode.len() { let v = bytecode[i] as i8 as f64; i += 1; stack.push(StackVal::Num(v)); }
-            }
-            OP_PUSHSHORT => {
-                if let Some(v) = read_u30_at(bytecode, &mut i) { stack.push(StackVal::Num(v as i16 as f64)); }
-            }
-            OP_PUSHINT => {
-                if let Some(idx) = read_u30_at(bytecode, &mut i) {
-                    stack.push(StackVal::Num(abc.ints.get(idx as usize).copied().unwrap_or(0) as f64));
-                }
-            }
-            OP_PUSHUINT => {
-                if let Some(idx) = read_u30_at(bytecode, &mut i) {
-                    stack.push(StackVal::Num(abc.uints.get(idx as usize).copied().unwrap_or(0) as f64));
-                }
-            }
-            OP_PUSHTRUE  => stack.push(StackVal::Bool(())),
-            OP_PUSHFALSE => stack.push(StackVal::Bool(())),
-            OP_PUSHNULL | OP_PUSHNAN => stack.push(StackVal::Null),
-            OP_NEWOBJECT => {
-                if let Some(count) = read_u30_at(bytecode, &mut i) {
-                    let count = count as usize;
-                    let needed = count * 2;
-                    let mut obj: BTreeMap<String, StackVal> = BTreeMap::new();
-                    if stack.len() >= needed {
-                        let pairs: Vec<_> = stack.drain(stack.len() - needed..).collect();
-                        for chunk in pairs.chunks(2) {
-                            if let StackVal::Str(k) = &chunk[0] {
-                                obj.insert(k.clone(), chunk[1].clone());
-                            }
-                        }
-                    }
-                    // Check if this looks like character stats:
-                    // SSF2 uses: gravity, weight1, norm_xSpeed, max_xSpeed, max_ySpeed,
-                    //   fastFallSpeed, jumpSpeed, jumpSpeedMidair, accel_rate_air, decel_rate_air
-                    let stat_keys = ["gravity", "weight1", "norm_xSpeed", "max_xSpeed",
-                                     "fastFallSpeed", "jumpSpeed", "jumpSpeedMidair",
-                                     "accel_rate_air", "decel_rate_air", "max_ySpeed",
-                                     "accel_rate", "walkSpeed", "dashSpeed", "airMobility"];
-                    let numeric_stats: BTreeMap<String, f64> = obj.iter()
-                        .filter_map(|(k, v)| {
-                            if let StackVal::Num(n) = v { Some((k.clone(), *n)) } else { None }
-                        }).collect();
-                    // Require at least 3 stat keys to be confident
-                    let match_count = numeric_stats.keys().filter(|k| stat_keys.contains(&k.as_str())).count();
-                    if match_count >= 3 {
-                        return Some(CharStats { values: numeric_stats });
-                    }
-                    stack.push(StackVal::Obj(obj));
-                }
-            }
-            OP_COERCE | OP_GETLEX | OP_FINDPROPSTRICT | OP_FINDPROP | OP_GETPROPERTY |
-            OP_INITPROPERTY | OP_SETPROPERTY => { read_u30_at(bytecode, &mut i); }
-            OP_CALLPROPERTY | OP_CALLPROPVOID | OP_CONSTRUCTPROP => {
-                read_u30_at(bytecode, &mut i); read_u30_at(bytecode, &mut i);
-            }
-            OP_GETLOCAL | OP_SETLOCAL | OP_CONSTRUCT | OP_NEWARRAY => { read_u30_at(bytecode, &mut i); }
-            OP_JUMP | OP_IFTRUE | OP_IFFALSE | OP_IFEQ | OP_IFNE | OP_IFLT |
-            OP_IFLE | OP_IFGT | OP_IFGE | OP_IFSTRICTEQ | OP_IFSTRICTNE => {
-                if i + 3 <= bytecode.len() { i += 3; }
-            }
-            _ => {}
+const STATS_FALLBACK_KEYS: &[&str] = &[
+    "gravity", "weight1", "norm_xSpeed", "max_xSpeed",
+    "fastFallSpeed", "jumpSpeed", "jumpSpeedMidair",
+    "accel_rate_air", "decel_rate_air", "max_ySpeed",
+    "accel_rate", "walkSpeed", "dashSpeed", "airMobility",
+];
+
+impl AbcVisitor for StatsVisitor {
+    fn on_newobject(
+        &mut self,
+        obj: BTreeMap<String, StackVal>,
+        _current_char: &Option<String>,
+    ) -> NewObjectAction {
+        let numeric_stats: BTreeMap<String, f64> = obj.iter()
+            .filter_map(|(k, v)| {
+                if let StackVal::Num(n) = v { Some((k.clone(), *n)) } else { None }
+            }).collect();
+        let match_count = numeric_stats.keys()
+            .filter(|k| STATS_FALLBACK_KEYS.contains(&k.as_str()))
+            .count();
+        if match_count >= 3 {
+            self.found = Some(CharStats { values: numeric_stats });
+            return NewObjectAction::Stop;
         }
-        if stack.len() > 256 { stack.drain(0..128); }
+        NewObjectAction::PushObj(obj)
     }
-    None
+}
+
+fn extract_stats_from_body(bytecode: &[u8], abc: &AbcFile) -> Option<CharStats> {
+    let mut v = StatsVisitor { found: None };
+    scan_method(bytecode, abc, &mut v);
+    v.found
 }
 
 /// Extract the largest object in the body that has the most numeric key-value pairs.
@@ -1942,218 +1924,374 @@ pub fn scan_all_costume_methods(abc: &AbcFile) -> BTreeMap<String, Vec<CostumeDa
     results
 }
 
-/// Simulate AVM2 stack execution to extract costume palette data.
-/// Returns per-character costume lists, keyed by character name string.
-/// Handles both misc.ssf (single method, array-of-char-keyed objects)
-/// and character-file (small per-costume method) layouts.
+/// Visitor for `misc.ssf :: getCostumeData()` and per-character costume
+/// methods. Two palette-table shapes are recognised:
+///
+///   - Pattern A (misc.ssf): `{ team | base, paletteSwap: { colors,
+///     replacements } }`. Costume name comes from `base` (Default) or
+///     `team` (capitalised) or a synthesised `Alt N` counter.
+///
+///   - Pattern B (character file): `{ name: "...", colors: [uint…] }`.
+///     Costume name is the literal `name`; no `replacements`.
+///
+/// The visitor relies on `scan_method`'s costume-mode getproperty
+/// semantics to keep `current_char` in sync across multi-character
+/// misc.ssf bodies (where the runtime key on `_loc1_[char]` IS the
+/// character id, and the static name on `obj.mario` IS the character id).
+struct CostumeVisitor {
+    per_char: BTreeMap<String, Vec<CostumeData>>,
+    alt_counters: BTreeMap<String, usize>,
+}
+
+impl AbcVisitor for CostumeVisitor {
+    fn costume_getproperty_semantics(&self) -> bool { true }
+
+    fn on_newarray(&mut self, items: Vec<StackVal>) -> StackVal {
+        // Costume needs to read array contents back as colour literals,
+        // so build a real Arr instead of the default Unknown placeholder.
+        StackVal::Arr(items)
+    }
+
+    fn on_newobject(
+        &mut self,
+        obj: BTreeMap<String, StackVal>,
+        current_char: &Option<String>,
+    ) -> NewObjectAction {
+        // Pattern A — misc.ssf style.
+        if let Some(StackVal::Obj(ps)) = obj.get("paletteSwap") {
+            let colors = stackval_arr_to_u32(ps.get("colors"));
+            let replacements = stackval_arr_to_u32(ps.get("replacements"));
+            if colors.len() >= 4 && colors.len() == replacements.len() {
+                let char_key = current_char.clone().unwrap_or_else(|| "unknown".to_string());
+                let alt_n = self.alt_counters.entry(char_key.clone()).or_insert(0);
+                let costume_name = if obj.contains_key("base") {
+                    "Default".to_string()
+                } else if let Some(StackVal::Str(team)) = obj.get("team") {
+                    // Capitalise the team name ("red" → "Red").
+                    let mut c = team.chars();
+                    match c.next() {
+                        None    => team.clone(),
+                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    }
+                } else {
+                    *alt_n += 1;
+                    format!("Alt {}", alt_n)
+                };
+                self.per_char.entry(char_key).or_default()
+                    .push(CostumeData { name: costume_name, colors, replacements });
+            }
+        }
+        // Pattern B — character-file style.
+        else if let (Some(StackVal::Str(name)), Some(StackVal::Arr(color_arr))) =
+            (obj.get("name"), obj.get("colors"))
+        {
+            let colors: Vec<u32> = color_arr.iter().filter_map(|v| {
+                if let StackVal::Num(n) = v { Some(*n as u32) } else { None }
+            }).collect();
+            if colors.len() >= 4 {
+                let char_key = current_char.clone().unwrap_or_else(|| "unknown".to_string());
+                self.per_char.entry(char_key).or_default()
+                    .push(CostumeData { name: name.clone(), colors, replacements: vec![] });
+            }
+        }
+        NewObjectAction::PushObj(obj)
+    }
+}
+
+/// Pull every numeric item out of a possibly-Arr StackVal as u32.
+fn stackval_arr_to_u32(v: Option<&StackVal>) -> Vec<u32> {
+    match v {
+        Some(StackVal::Arr(arr)) => arr.iter().filter_map(|x| {
+            if let StackVal::Num(n) = x { Some(*n as u32) } else { None }
+        }).collect(),
+        _ => vec![],
+    }
+}
+
 fn decode_costume_objects(code: &[u8], abc: &AbcFile) -> BTreeMap<String, Vec<CostumeData>> {
-    #[derive(Clone, Debug)]
-    enum V {
-        Null,
-        Num(f64),
-        Str(String),
-        Arr(Vec<V>),
-        Obj(BTreeMap<String, V>),
-    }
+    let mut v = CostumeVisitor {
+        per_char: BTreeMap::new(),
+        alt_counters: BTreeMap::new(),
+    };
+    scan_method(code, abc, &mut v);
+    v.per_char
+}
 
-    fn arr_to_u32(v: Option<&V>) -> Vec<u32> {
-        match v {
-            Some(V::Arr(arr)) => arr.iter().filter_map(|x| {
-                if let V::Num(n) = x { Some(*n as u32) } else { None }
-            }).collect(),
-            _ => vec![],
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Bytecode-construction helpers ────────────────────────────────────
+    //
+    // Each `push_*` helper writes one AVM2 opcode + operand to a Vec<u8>.
+    // The companion `mk_abc()` builds the constant pool slots the
+    // opcodes index into. With these we can hand-craft tiny method bodies
+    // that exercise the shared scanner against each visitor without
+    // having to round-trip through a real SWF.
+
+    fn write_u30(bc: &mut Vec<u8>, mut v: u32) {
+        loop {
+            let b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v == 0 { bc.push(b); break; }
+            bc.push(b | 0x80);
         }
     }
 
-    let mut pos = 0usize;
-    let mut stack: Vec<V> = Vec::new();
-    // per-character costume accumulator
-    let mut per_char: BTreeMap<String, Vec<CostumeData>> = BTreeMap::new();
-    // tracks which character name was last used as an array key
-    // (set when we see getproperty/setproperty with a plain string constant)
-    let mut current_char: Option<String> = None;
-    // per-char alt counter
-    let mut alt_counters: BTreeMap<String, usize> = BTreeMap::new();
+    fn push_string(bc: &mut Vec<u8>, idx: u32) { bc.push(0x2C); write_u30(bc, idx); }
+    fn push_double(bc: &mut Vec<u8>, idx: u32) { bc.push(0x2F); write_u30(bc, idx); }
+    fn push_byte  (bc: &mut Vec<u8>, v: i8)    { bc.push(0x24); bc.push(v as u8); }
+    fn push_uint  (bc: &mut Vec<u8>, idx: u32) { bc.push(0x2E); write_u30(bc, idx); }
+    fn newobject  (bc: &mut Vec<u8>, n: u32)   { bc.push(0x55); write_u30(bc, n); }
+    fn newarray   (bc: &mut Vec<u8>, n: u32)   { bc.push(0x56); write_u30(bc, n); }
 
-    macro_rules! r30 { () => { read_u30_at(code, &mut pos).unwrap_or(0) } }
-    macro_rules! pop  { () => { stack.pop().unwrap_or(V::Null) } }
-
-    // Helper: is a string a known SSF2 character name?
-    // We accept any lowercase alphabetic string that looks like a char id.
-    fn looks_like_char_name(s: &str) -> bool {
-        !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric())
-            && s.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false)
-            && s.len() >= 3 && s.len() <= 24
-    }
-
-    while pos < code.len() {
-        let op = code[pos]; pos += 1;
-        match op {
-            // Push literals
-            0x24 => { let v = code.get(pos).copied().unwrap_or(0) as i8; pos += 1; stack.push(V::Num(v as f64)); }
-            0x25 => { let v = r30!() as i16; stack.push(V::Num(v as f64)); }
-            0x2C => { let i = r30!() as usize; stack.push(V::Str(abc.strings.get(i).cloned().unwrap_or_default())); }
-            0x2D => { let i = r30!() as usize; stack.push(V::Num(*abc.ints.get(i).unwrap_or(&0) as f64)); }
-            0x2E => { let i = r30!() as usize; stack.push(V::Num(*abc.uints.get(i).unwrap_or(&0) as f64)); }
-            0x2F => { let i = r30!() as usize; stack.push(V::Num(*abc.doubles.get(i).unwrap_or(&0.0))); }
-            0x26 | 0x27 | 0x20 | 0x28 => stack.push(V::Null),
-
-            // getproperty / setproperty / initproperty — track char name from runtime key
-            // Opcode 0x66 = getproperty, 0x61 = setproperty, 0x68 = initproperty
-            // The multiname index tells us if it's a static or runtime (MultinameL) name.
-            0x66 => {
-                let mn_idx = r30!() as usize;
-                let mn = abc.multinames.get(mn_idx);
-                let is_runtime = mn.map(|m| m.kind == 0x1B || m.kind == 0x1C).unwrap_or(false);
-                let static_name = mn.and_then(|m| if m.name.is_empty() { None } else { Some(m.name.clone()) });
-                if is_runtime {
-                    // Runtime key was top of stack before the receiver
-                    // stack is: [..., receiver, key] — but getproperty pops receiver, uses name from stack
-                    // Actually for MultinameL: pops the name then the object, pushes result
-                    let key = pop!();
-                    pop!(); // receiver / object
-                    if let V::Str(s) = &key {
-                        if looks_like_char_name(s) {
-                            current_char = Some(s.clone());
-                        }
-                    }
-                    stack.push(V::Null); // result of getproperty (the array slot)
-                } else {
-                    // Static name property access
-                    let top = pop!();
-                    if let Some(name) = static_name {
-                        if looks_like_char_name(&name) {
-                            current_char = Some(name);
-                        }
-                        stack.push(top); // preserve for chained calls
-                    } else {
-                        stack.push(V::Null);
-                    }
-                }
-            }
-            0x61 | 0x68 => {
-                let mn_idx = r30!() as usize;
-                let mn = abc.multinames.get(mn_idx);
-                let is_runtime = mn.map(|m| m.kind == 0x1B || m.kind == 0x1C).unwrap_or(false);
-                let static_name = mn.and_then(|m| if m.name.is_empty() { None } else { Some(m.name.clone()) });
-                if is_runtime {
-                    let _val = pop!();
-                    let key = pop!();
-                    pop!(); // object
-                    if let V::Str(s) = &key {
-                        if looks_like_char_name(s) { current_char = Some(s.clone()); }
-                    }
-                } else {
-                    pop!(); pop!();
-                    if let Some(name) = static_name {
-                        if looks_like_char_name(&name) { current_char = Some(name); }
-                    }
-                }
-            }
-
-            // newarray
-            0x56 => {
-                let n = r30!() as usize;
-                let start = stack.len().saturating_sub(n);
-                let items: Vec<V> = stack.drain(start..).collect();
-                stack.push(V::Arr(items));
-            }
-
-            // newobject — the key opcode; build a costume if it matches the SSF2 palette format
-            0x55 => {
-                let n = r30!() as usize;
-                let start = stack.len().saturating_sub(n * 2);
-                let pairs: Vec<V> = stack.drain(start..).collect();
-                let mut obj: BTreeMap<String, V> = BTreeMap::new();
-                let mut i = 0;
-                while i + 1 < pairs.len() {
-                    if let V::Str(k) = &pairs[i] { obj.insert(k.clone(), pairs[i+1].clone()); }
-                    i += 2;
-                }
-
-                // Pattern A: misc.ssf — {team|base, paletteSwap:{colors,replacements}}
-                if let Some(V::Obj(ps)) = obj.get("paletteSwap") {
-                    let colors = arr_to_u32(ps.get("colors"));
-                    let replacements = arr_to_u32(ps.get("replacements"));
-                    if colors.len() >= 4 && colors.len() == replacements.len() {
-                        let char_key = current_char.clone().unwrap_or_else(|| "unknown".to_string());
-                        let alt_n = alt_counters.entry(char_key.clone()).or_insert(0);
-                        let costume_name = if obj.contains_key("base") {
-                            "Default".to_string()
-                        } else if let Some(V::Str(team)) = obj.get("team") {
-                            let mut c = team.chars();
-                            match c.next() {
-                                None    => team.clone(),
-                                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                            }
-                        } else {
-                            *alt_n += 1;
-                            format!("Alt {}", alt_n)
-                        };
-                        per_char.entry(char_key).or_default()
-                            .push(CostumeData { name: costume_name, colors, replacements });
-                    }
-                }
-                // Pattern B: character-file — {name:String, colors:[uint...]}
-                else if let (Some(V::Str(name)), Some(V::Arr(color_arr))) = (obj.get("name"), obj.get("colors")) {
-                    let colors: Vec<u32> = color_arr.iter().filter_map(|v| {
-                        if let V::Num(n) = v { Some(*n as u32) } else { None }
-                    }).collect();
-                    if colors.len() >= 4 {
-                        let char_key = current_char.clone().unwrap_or_else(|| "unknown".to_string());
-                        per_char.entry(char_key).or_default()
-                            .push(CostumeData { name: name.clone(), colors, replacements: vec![] });
-                    }
-                }
-                stack.push(V::Obj(obj));
-            }
-
-            // callproperty / callpropvoid — track "push" calls so we know the target char
-            // For callpropvoid "push", the receiver is _loc1_["mario"] already resolved
-            0x46 | 0x4F => {
-                let mn_idx = r30!() as usize;
-                let argc = r30!() as usize;
-                let mn_name = abc.multinames.get(mn_idx)
-                    .map(|m| m.name.as_str()).unwrap_or("");
-                let drain = (argc + 1).min(stack.len());
-                if mn_name == "push" {
-                    // stack top = arg (the costume object), then receiver = char array
-                    // current_char is already set from the preceding getproperty
-                    stack.drain(stack.len()-drain..);
-                } else {
-                    stack.drain(stack.len()-drain..);
-                }
-                if op == 0x46 { stack.push(V::Null); }
-            }
-            // constructprop / construct / callsuper etc.
-            0x4A | 0x6E | 0x4B | 0x45 => {
-                r30!(); let argc = r30!() as usize;
-                let drain = (argc + 1).min(stack.len());
-                stack.drain(stack.len()-drain..);
-                stack.push(V::Null);
-            }
-
-            0x60 | 0x5C | 0x5D | 0x65 | 0x80 => { r30!(); stack.push(V::Null); }
-            0x62 | 0x63 | 0x08 => { r30!(); }
-            0x29 => { pop!(); }
-            0x2A => { if let Some(v) = stack.last().cloned() { stack.push(v); } }
-            0x2B => { let n = stack.len(); if n >= 2 { stack.swap(n-1, n-2); } }
-            0xD0 | 0xD1 | 0xD2 | 0xD3 => stack.push(V::Null),
-            // Branch opcodes (3-byte offsets)
-            0x10 | 0x0C | 0x0D | 0x0E | 0x0F | 0x13 | 0x14 | 0x15 | 0x16 | 0x17 | 0x18 | 0x19 | 0x1A => {
-                if pos + 3 <= code.len() { pos += 3; }
-            }
-            0x47 | 0x48 => break,
-            // Arithmetic — consume 1 or 2, push result
-            0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA8 | 0xA9 | 0xAA | 0xA5 | 0xA6 | 0xA7 => {
-                if !stack.is_empty() { stack.pop(); }
-                if stack.is_empty() { stack.push(V::Null); } else { *stack.last_mut().unwrap() = V::Null; }
-            }
-            0x90 | 0x96 | 0xAB | 0xB1 => { if !stack.is_empty() { *stack.last_mut().unwrap() = V::Null; } }
-            0x30 | 0x1D | 0x02 | 0x82 | 0x73 | 0x74 | 0x75 | 0x76 | 0x70 => {}
-            _ => {}
+    /// Build an `AbcFile` whose constant pools are seeded with the
+    /// given strings / doubles / uints (indices start at 1, as AVM2's
+    /// constant pool has a sentinel at index 0).
+    fn mk_abc(strings: &[&str], doubles: &[f64], uints: &[u32]) -> AbcFile {
+        let mut all_strings = vec![String::new()];
+        all_strings.extend(strings.iter().map(|s| s.to_string()));
+        let mut all_doubles = vec![f64::NAN];
+        all_doubles.extend(doubles.iter().copied());
+        let mut all_uints = vec![0u32];
+        all_uints.extend(uints.iter().copied());
+        AbcFile {
+            strings: all_strings,
+            ints: vec![0],
+            uints: all_uints,
+            doubles: all_doubles,
+            multinames: vec![Multiname { kind: 0, name_idx: 0, ns_idx: 0, name: String::new() }],
+            methods: vec![],
+            classes: vec![],
+            scripts: vec![],
+            method_bodies: vec![],
         }
     }
 
-    per_char
+    // ── AttackVisitor ────────────────────────────────────────────────────
+
+    #[test]
+    fn attack_visitor_recognises_a_air_object() {
+        // Build bytecode that constructs:
+        //   { a_air: { damage: 5, direction: 45, power: 10 } }
+        let abc = mk_abc(&["a_air", "damage", "direction", "power"], &[], &[]);
+        let mut bc = Vec::new();
+        push_string(&mut bc, 1); // "a_air" (outer key)
+        push_string(&mut bc, 2); // "damage"
+        push_byte(&mut bc, 5);
+        push_string(&mut bc, 3); // "direction"
+        push_byte(&mut bc, 45);
+        push_string(&mut bc, 4); // "power"
+        push_byte(&mut bc, 10);
+        newobject(&mut bc, 3);   // inner hitbox = { damage, direction, power }
+        newobject(&mut bc, 1);   // outer = { a_air: inner }
+        bc.push(0x48);            // returnvalue
+        let result = extract_attack_objects(&bc, &abc);
+        assert!(result.contains_key("aerial_neutral"),
+            "a_air must normalise to aerial_neutral; got: {:?}", result.keys().collect::<Vec<_>>());
+        let attack = &result["aerial_neutral"];
+        assert_eq!(attack.hitboxes.len(), 1, "one hitbox expected; got: {:?}", attack.hitboxes);
+        assert_eq!(attack.hitboxes[0].get("damage").copied(), Some(5.0));
+        assert_eq!(attack.hitboxes[0].get("direction").copied(), Some(45.0));
+        assert_eq!(attack.hitboxes[0].get("power").copied(), Some(10.0));
+    }
+
+    #[test]
+    fn attack_visitor_ignores_non_attack_objects() {
+        let abc = mk_abc(&["foo", "bar"], &[], &[]);
+        let mut bc = Vec::new();
+        push_string(&mut bc, 1); push_byte(&mut bc, 1);
+        push_string(&mut bc, 2); push_byte(&mut bc, 2);
+        newobject(&mut bc, 2);
+        let result = extract_attack_objects(&bc, &abc);
+        assert!(result.is_empty(), "unmatched keys should produce no attacks; got: {:?}", result);
+    }
+
+    // ── ProjectileVisitor ────────────────────────────────────────────────
+
+    #[test]
+    fn projectile_visitor_detects_inner_obj_with_physics_key() {
+        // { mario_fireball: { gravity: 0.5, xSpeed: 10 } }
+        let abc = mk_abc(&["mario_fireball", "gravity", "xSpeed"], &[0.5], &[]);
+        let mut bc = Vec::new();
+        push_string(&mut bc, 1);           // outer key
+        push_string(&mut bc, 2);           // "gravity"
+        push_double(&mut bc, 1);            // 0.5
+        push_string(&mut bc, 3);           // "xSpeed"
+        push_byte  (&mut bc, 10);
+        newobject  (&mut bc, 2);            // inner physics obj
+        newobject  (&mut bc, 1);            // outer
+        let result = extract_projectile_objects(&bc, &abc);
+        assert!(result.contains_key("mario_fireball"),
+            "projectile key must be picked up; got: {:?}", result.keys().collect::<Vec<_>>());
+        let proj = &result["mario_fireball"];
+        assert_eq!(proj.stats.get("gravity").copied(), Some(0.5));
+        assert_eq!(proj.stats.get("xSpeed").copied(), Some(10.0));
+    }
+
+    #[test]
+    fn projectile_visitor_skips_non_physics_inner() {
+        // Inner obj has no projectile-shape keys → not recognised.
+        let abc = mk_abc(&["foo", "label"], &[], &[]);
+        let mut bc = Vec::new();
+        push_string(&mut bc, 1);
+        push_string(&mut bc, 2);
+        push_byte  (&mut bc, 1);
+        newobject  (&mut bc, 1);
+        newobject  (&mut bc, 1);
+        let result = extract_projectile_objects(&bc, &abc);
+        assert!(result.is_empty(),
+            "no-physics inner objects must not be recognised; got: {:?}", result);
+    }
+
+    // ── StatsVisitor ─────────────────────────────────────────────────────
+
+    #[test]
+    fn stats_visitor_accepts_threshold_of_3_keys() {
+        // { gravity: 1, weight1: 100, jumpSpeed: 9 }  → 3 stat keys → accept
+        let abc = mk_abc(&["gravity", "weight1", "jumpSpeed"], &[], &[]);
+        let mut bc = Vec::new();
+        push_string(&mut bc, 1); push_byte(&mut bc, 1);
+        push_string(&mut bc, 2); push_byte(&mut bc, 100);
+        push_string(&mut bc, 3); push_byte(&mut bc, 9);
+        newobject(&mut bc, 3);
+        let result = extract_stats_from_body(&bc, &abc);
+        let stats = result.expect("3+ stat keys must yield CharStats");
+        assert_eq!(stats.values.get("gravity").copied(), Some(1.0));
+        assert_eq!(stats.values.get("weight1").copied(), Some(100.0));
+        assert_eq!(stats.values.get("jumpSpeed").copied(), Some(9.0));
+    }
+
+    #[test]
+    fn stats_visitor_rejects_two_keys() {
+        // Only 2 stat keys → below threshold → None.
+        let abc = mk_abc(&["gravity", "weight1"], &[], &[]);
+        let mut bc = Vec::new();
+        push_string(&mut bc, 1); push_byte(&mut bc, 1);
+        push_string(&mut bc, 2); push_byte(&mut bc, 100);
+        newobject(&mut bc, 2);
+        assert!(extract_stats_from_body(&bc, &abc).is_none());
+    }
+
+    #[test]
+    fn stats_visitor_stops_after_first_match() {
+        // First newobject matches and triggers Stop; a second newobject
+        // (with different values) must NOT overwrite the first.
+        let abc = mk_abc(&["gravity", "weight1", "jumpSpeed"], &[], &[]);
+        let mut bc = Vec::new();
+        // First (matching) object
+        push_string(&mut bc, 1); push_byte(&mut bc, 1);
+        push_string(&mut bc, 2); push_byte(&mut bc, 100);
+        push_string(&mut bc, 3); push_byte(&mut bc, 9);
+        newobject(&mut bc, 3);
+        // Second (also matching, but different values) — should never run.
+        push_string(&mut bc, 1); push_byte(&mut bc, 99);
+        push_string(&mut bc, 2); push_byte(&mut bc, 99);
+        push_string(&mut bc, 3); push_byte(&mut bc, 99);
+        newobject(&mut bc, 3);
+        let stats = extract_stats_from_body(&bc, &abc).expect("first match should be returned");
+        // Values must be from the FIRST newobject (1 / 100 / 9), not the second (99s).
+        assert_eq!(stats.values.get("gravity").copied(), Some(1.0));
+        assert_eq!(stats.values.get("weight1").copied(), Some(100.0));
+    }
+
+    // ── CostumeVisitor ───────────────────────────────────────────────────
+
+    #[test]
+    fn costume_visitor_pattern_b_character_file() {
+        // { name: "Default", colors: [0xff112233, 0xff445566, 0xff778899, 0xffaabbcc] }
+        let abc = mk_abc(&["Default", "name", "colors"], &[], &[0xff112233, 0xff445566, 0xff778899, 0xffaabbcc]);
+        let mut bc = Vec::new();
+        // Build the colors array on the stack first.
+        push_uint(&mut bc, 1);  push_uint(&mut bc, 2);
+        push_uint(&mut bc, 3);  push_uint(&mut bc, 4);
+        newarray(&mut bc, 4);
+        // Now the outer obj.
+        push_string(&mut bc, 2);                     // "name"
+        push_string(&mut bc, 1);                     // "Default"
+        push_string(&mut bc, 3);                     // "colors"
+        // ← The newarray result is already on the stack just below "name"/"Default"/"colors".
+        //   But the obj wants pairs in (key, value) order from the bottom.
+        //   Simpler: rebuild fresh — pop the existing array.
+        // Reset: drop the array we just built and start over with the
+        // canonical key/value order.
+        let mut bc = Vec::new();
+        push_string(&mut bc, 2);                     // key "name"
+        push_string(&mut bc, 1);                     // value "Default"
+        push_string(&mut bc, 3);                     // key "colors"
+        push_uint(&mut bc, 1); push_uint(&mut bc, 2); push_uint(&mut bc, 3); push_uint(&mut bc, 4);
+        newarray(&mut bc, 4);                         // value = arr
+        newobject(&mut bc, 2);                        // { name, colors }
+        let result = decode_costume_objects(&bc, &abc);
+        let costumes = result.get("unknown").expect("no current_char → 'unknown' bucket");
+        assert_eq!(costumes.len(), 1, "exactly one costume expected");
+        assert_eq!(costumes[0].name, "Default");
+        assert_eq!(costumes[0].colors, vec![0xff112233, 0xff445566, 0xff778899, 0xffaabbcc]);
+    }
+
+    #[test]
+    fn costume_visitor_rejects_under_four_colors() {
+        // colors.len() < 4 → silent skip (matches the legacy behaviour).
+        let abc = mk_abc(&["Default", "name", "colors"], &[], &[0x11, 0x22]);
+        let mut bc = Vec::new();
+        push_string(&mut bc, 2);
+        push_string(&mut bc, 1);
+        push_string(&mut bc, 3);
+        push_uint(&mut bc, 1); push_uint(&mut bc, 2);
+        newarray(&mut bc, 2);
+        newobject(&mut bc, 2);
+        let result = decode_costume_objects(&bc, &abc);
+        assert!(result.is_empty() || result.values().all(|v| v.is_empty()),
+            "under-4-colour objects must not produce a CostumeData; got: {:?}", result);
+    }
+
+    // ── Shared scanner edge cases ────────────────────────────────────────
+
+    #[test]
+    fn scanner_handles_empty_bytecode() {
+        let abc = mk_abc(&[], &[], &[]);
+        let result = extract_attack_objects(&[], &abc);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn scanner_survives_unknown_opcode() {
+        // Opcode 0xFF (undefined) → default branch in scan_method's match
+        // should be a no-op. Bytecode that reaches a newobject after an
+        // unknown opcode should still extract correctly.
+        let abc = mk_abc(&["a_air", "damage"], &[], &[]);
+        let mut bc = Vec::new();
+        bc.push(0xFF);            // garbage / unknown opcode
+        push_string(&mut bc, 1);
+        push_string(&mut bc, 2); push_byte(&mut bc, 5);
+        newobject(&mut bc, 1);     // inner hitbox { damage: 5 }
+        newobject(&mut bc, 1);     // outer { a_air: inner }
+        let result = extract_attack_objects(&bc, &abc);
+        assert!(result.contains_key("aerial_neutral"),
+            "unknown opcode must not derail recognition; got: {:?}", result.keys().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn scanner_returnvalue_pops_one() {
+        // After returnvalue, the scanner should pop the top of stack but
+        // KEEP scanning subsequent ops (which may produce more
+        // newobjects). This pins the behaviour against the OLD
+        // decode_costume_objects' break-on-return, which we deliberately
+        // unified to pop-and-continue.
+        let abc = mk_abc(&["a_air", "damage"], &[], &[]);
+        let mut bc = Vec::new();
+        push_byte(&mut bc, 0);
+        bc.push(0x48); // returnvalue — pops the dummy 0
+        // Even after returnvalue, the scanner continues. Build a
+        // recognised attack obj next:
+        push_string(&mut bc, 1);
+        push_string(&mut bc, 2); push_byte(&mut bc, 5);
+        newobject(&mut bc, 1);
+        newobject(&mut bc, 1);
+        let result = extract_attack_objects(&bc, &abc);
+        assert!(result.contains_key("aerial_neutral"),
+            "post-returnvalue opcodes must still be processed; got: {:?}", result.keys().collect::<Vec<_>>());
+    }
 }
