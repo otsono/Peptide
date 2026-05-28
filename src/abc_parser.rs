@@ -286,7 +286,27 @@ impl<'a> Reader<'a> {
         if self.pos + len > self.data.len() {
             return Err(anyhow!("read_string: length {} out of bounds at pos {}", len, self.pos));
         }
-        let s = String::from_utf8_lossy(&self.data[self.pos..self.pos + len]).to_string();
+        // ABC strings are spec'd as UTF-8 but SSF2 SWFs sometimes carry a
+        // Windows-1252 byte (an `é` etc.) — `from_utf8_lossy` silently
+        // inserts U+FFFD, which downstream filters (`looks_like_char_name`,
+        // is-alphanumeric checks on xframe labels) then reject, losing the
+        // trait. Log a debug-level warning when we actually replaced any
+        // bytes so the loss is visible without spamming the normal log.
+        let raw = &self.data[self.pos..self.pos + len];
+        let s = match std::str::from_utf8(raw) {
+            Ok(valid) => valid.to_string(),
+            Err(_) => {
+                if log::log_enabled!(log::Level::Debug) {
+                    log::debug!(
+                        "read_string: non-UTF8 bytes at pos {} (len={}); \
+                         using lossy UTF-8 decode — character data may be \
+                         silently filtered later",
+                        self.pos, len
+                    );
+                }
+                String::from_utf8_lossy(raw).to_string()
+            }
+        };
         self.pos += len;
         Ok(s)
     }

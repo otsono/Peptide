@@ -29,7 +29,16 @@ pub fn decompress(data: &[u8]) -> Result<Vec<u8>> {
 
     log::debug!("SSF: expected SWF length = {}, garbage header size = {}", swf_len, header_size);
 
-    let compressed_start = 8 + header_size;
+    // Guard against integer overflow on 32-bit targets where usize == u32:
+    // an attacker-controlled header_size near usize::MAX could wrap with
+    // `8 + header_size` and land back inside the buffer.
+    let compressed_start = match 8usize.checked_add(header_size) {
+        Some(s) => s,
+        None => return Err(anyhow!(
+            "SSF header_size {} overflows when added to fixed 8-byte preamble",
+            header_size
+        )),
+    };
     if compressed_start > data.len() {
         return Err(anyhow!("SSF header_size {} extends past end of file", header_size));
     }

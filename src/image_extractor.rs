@@ -440,8 +440,19 @@ fn prerender_skewed_frames(
             if dst_w > 4096 || dst_h > 4096 { continue; }
 
             // Inverse of [[wa, wc], [wb, wd]] for backward sampling.
+            // Near-singular world matrix → no inverse, can't bake. Warn so
+            // the user knows a sheared frame fell back to the (visually
+            // wrong) scale+rotation path instead of being baked.
             let det = wa * wd - wb * wc;
-            if det.abs() < 1e-9 { continue; }
+            if det.abs() < 1e-9 {
+                log::warn!(
+                    "prerender_skewed_frames: skipping anim='{}' frame={} \
+                     entry={} — world matrix is near-singular (det={:.3e}); \
+                     the placement will use the scale+rotation fallback",
+                    anim_name, frame, entry_idx, det
+                );
+                continue;
+            }
             let (inv_a, inv_c) = ( wd / det, -wc / det);
             let (inv_b, inv_d) = (-wb / det,  wa / det);
 
