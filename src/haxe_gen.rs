@@ -560,7 +560,10 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
         ground_speed_accel = c("groundSpeedAcceleration"),
         ground_speed_cap = c("groundSpeedCap"),
         aerial_speed_accel = c("aerialSpeedAcceleration"),
-        aerial_cap = fmt(aerial_cap), aerial_cap_todo = todo(s.air_mobility),
+        // aerial_cap is derived from air_mobility_raw + aerial_friction;
+        // the TODO marker must reflect whether the DERIVATION result is
+        // zero, not whether `s.air_mobility` happens to be (fixes §3.10).
+        aerial_cap = fmt(aerial_cap), aerial_cap_todo = todo(aerial_cap),
         aerial_fric = fmt(aerial_fric), aerial_fric_todo = todo(aerial_fric),
     );
 
