@@ -322,7 +322,7 @@ fn process_character(
         costumes, &sounds, &projectiles, &effects, head_sprite.as_ref(), &parsed_swf)?;
     log::info!("Generated Fraymakers files for {}", char_name);
 
-    write_conversion_log(&char_output_dir, char_name)?;
+    write_conversion_log(&char_output_dir, char_name, &char_data)?;
 
     Ok(())
 }
@@ -331,9 +331,11 @@ fn process_character(
 /// converter couldn't fully map: `unknown` are genuine gaps (no entry in any
 /// commands.jsonc section), `ssf2_only` are calls we deliberately surfaced as
 /// `// [SSF2-only: …]` comments because they have no Fraymakers equivalent.
+/// For transformation characters (Giga Bowser, Wario Man), also includes
+/// `ssf2_source` so the SwiftUI popup can surface the parent identity.
 /// Written unconditionally so the SwiftUI GUI can show a post-conversion
 /// popup, and so CLI users get the same artifact alongside the character.
-fn write_conversion_log(char_dir: &std::path::Path, char_name: &str) -> Result<()> {
+fn write_conversion_log(char_dir: &std::path::Path, char_name: &str, char_data: &extractor::CharacterData) -> Result<()> {
     let snap = ssf2_converter::api_mappings::snapshot_conversion_log();
     let to_entries = |m: std::collections::BTreeMap<String, usize>| -> Vec<serde_json::Value> {
         let mut v: Vec<(String, usize)> = m.into_iter().collect();
@@ -342,11 +344,23 @@ fn write_conversion_log(char_dir: &std::path::Path, char_name: &str) -> Result<(
             .map(|(name, count)| serde_json::json!({ "name": name, "count": count }))
             .collect()
     };
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "character": char_name,
         "unknown": to_entries(snap.unknown),
         "ssf2_only": to_entries(snap.ssf2_only),
     });
+    if let Some(df) = &char_data.derived_from {
+        payload.as_object_mut().unwrap().insert(
+            "ssf2_source".to_string(),
+            serde_json::json!({
+                "parent_normal_stats_id": df.parent_normal_stats_id,
+                "source_method": df.source_method,
+                "note": "Fraymakers has no native transformation API; \
+                    this character is emitted as a standalone package and \
+                    must be wired manually in the parent's Script.hx.",
+            }),
+        );
+    }
     std::fs::create_dir_all(char_dir)?;
     std::fs::write(
         char_dir.join("conversion_log.json"),

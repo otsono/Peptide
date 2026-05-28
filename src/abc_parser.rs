@@ -162,6 +162,22 @@ pub struct ExtractedCharacter {
     pub ext_var_inits: Vec<(String, String)>,
     /// frame method name → SSF2 animation name (from self.xframe = "...")
     pub xframe_map: XframeMap,
+    /// Populated when this character's bundle method's `cData.normalStats_id`
+    /// disagrees with `char_name` — i.e. this is a transformation /
+    /// alternate form of a parent character (Giga Bowser, Wario Man).
+    /// Fraymakers has no native transformation API; the converter emits
+    /// the alternate form as a standalone character package and surfaces
+    /// this metadata in `CharacterStats.hx` (TODO banner) and
+    /// `conversion_stats.json` (`ssf2_source`).
+    pub derived_from: Option<DerivedFrom>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DerivedFrom {
+    /// `cData.normalStats_id` — the parent character's id.
+    pub parent_normal_stats_id: String,
+    /// The Main method that produced this bundle (e.g. `getGigaBowser`).
+    pub source_method: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -670,11 +686,27 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
     let mut xframe_map: XframeMap = BTreeMap::new();
 
     // ── Stage A: stats / attacks / projectiles from Main::get<X>() ─────
+    let mut derived_from: Option<DerivedFrom> = None;
     if let Some((body, method_name)) = find_bundle_method(abc, char_name) {
         log::info!("path-2: extracting Stage A from Main::{}", method_name);
         attacks     = extract_attack_objects(&body.bytecode, abc);
         projectiles = extract_projectile_objects(&body.bytecode, abc);
         stats       = extract_ssf2_stats(&body.bytecode, abc);
+
+        // Detect transformation: cData.normalStats_id ≠ derived char_name.
+        // Recorded as metadata; Fraymakers has no native transformation
+        // surface, so emission downstream is unchanged but the
+        // CharacterStats.hx header gets a TODO banner.
+        if let Some(nsi) = extract_normal_stats_id(body, abc) {
+            if nsi != char_name {
+                log::info!("path-2: {:?} is a transformation of {:?} (via Main::{})",
+                    char_name, nsi, method_name);
+                derived_from = Some(DerivedFrom {
+                    parent_normal_stats_id: nsi,
+                    source_method: format!("Main::{}", method_name),
+                });
+            }
+        }
     } else {
         log::warn!("path-2: no Main::get* matching {:?}; Stage B behavior code will still be extracted", char_name);
     }
@@ -1238,6 +1270,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
         ext_vars,
         ext_var_inits,
         xframe_map,
+        derived_from,
     })
 }
 
@@ -1256,6 +1289,45 @@ pub fn find_bundle_method<'a>(abc: &'a AbcFile, char_name: &str)
     })?;
     let body = abc.method_bodies.iter().find(|b| b.method_idx == getter.method_idx)?;
     Some((body, getter.name.clone()))
+}
+
+/// Scan a method body for the literal string value of `normalStats_id`.
+/// The AVM2 pattern emitted by SSF2's source is:
+///     pushstring "normalStats_id"
+///     pushstring "<value>"
+///     setproperty/initproperty
+/// We find the first occurrence of `pushstring "normalStats_id"` and
+/// return the very next pushed string. Used by `extract_character` to
+/// detect transformation/alternate-form bundles (their `normalStats_id`
+/// is the parent character's id, not their own derived id).
+pub fn extract_normal_stats_id(body: &MethodBody, abc: &AbcFile) -> Option<String> {
+    let needle_idx = abc.strings.iter().position(|s| s == "normalStats_id")? as u32;
+    let bytes = &body.bytecode;
+    let mut i = 0;
+    while i < bytes.len() {
+        let op = bytes[i];
+        if op == OP_PUSHSTRING {
+            let mut j = i + 1;
+            if let Some(idx) = read_u30_at(bytes, &mut j) {
+                if idx == needle_idx {
+                    // Walk forward to the next OP_PUSHSTRING and take its value.
+                    let mut k = j;
+                    while k < bytes.len() {
+                        if bytes[k] == OP_PUSHSTRING {
+                            let mut m = k + 1;
+                            let v = read_u30_at(bytes, &mut m)?;
+                            return abc.strings.get(v as usize).cloned();
+                        }
+                        k += 1;
+                    }
+                    return None;
+                }
+                i = j; continue;
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Symbolic value pushed onto the simulated AVM2 stack by `scan_method`

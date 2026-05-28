@@ -33,6 +33,11 @@ pub struct CharacterData {
     /// SSF2 animation name → Fraymakers animation name
     /// Built from xframe_map + SSF2→Fraymakers name table
     pub ssf2_to_fm_anim: BTreeMap<String, String>,
+    /// Populated when this character is a transformation / alternate
+    /// form (Giga Bowser, Wario Man). Forwarded from
+    /// `ExtractedCharacter.derived_from`. See path 2 plan §1.6.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_from: Option<abc_parser::DerivedFrom>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +115,7 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
     let mut ext_var_inits: Vec<(String, String)> = Vec::new();
     let mut projectile_data: BTreeMap<String, abc_parser::ProjectileData> = BTreeMap::new();
     let mut xframe_map: XframeMap = BTreeMap::new();
+    let mut derived_from: Option<abc_parser::DerivedFrom> = None;
 
     // Parse each ABC block (usually just one)
     for (block_idx, abc_data) in swf.abc_blocks.iter().enumerate() {
@@ -118,6 +124,7 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
         match abc_parser::parse(abc_data) {
             Ok(abc) => {
                 let extracted = abc_parser::extract_character(&abc, char_name)?;
+                if derived_from.is_none() { derived_from = extracted.derived_from.clone(); }
 
                 // Merge attacks
                 for (name, attack_data) in &extracted.attacks {
@@ -255,6 +262,7 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
         animations,
         scripts,
         ssf2_to_fm_anim,
+        derived_from,
     })
 }
 

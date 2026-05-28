@@ -509,8 +509,40 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
         format!("[{}] /*TODO*/", c("doubleJumpSpeedFallback"))
     };
 
+    // Transformation banner: when this character was extracted from a
+    // Main::get<X>() bundle whose cData.normalStats_id ≠ the derived id
+    // (Giga Bowser, Wario Man), prepend a TODO note. Fraymakers has no
+    // native transformation hook; the form is emitted as a standalone
+    // character and the content author must wire the trigger by hand.
+    let transformation_banner = if let Some(df) = &data.derived_from {
+        format!(
+            "// ─────────────────────────────────────────────────────────────────\n\
+             // TODO: TRANSFORMATION FORM — manual wiring required.\n\
+             //\n\
+             // This character was extracted as a Final-Smash / transformation\n\
+             // form of `{parent}` (SSF2 source: {source_method}). Fraymakers\n\
+             // does not yet expose a transformation API, so we emit the form\n\
+             // as a standalone character package. Selecting it from the FM\n\
+             // roster will run these stats directly — NOT what SSF2 does at\n\
+             // runtime, where the form is entered via the parent's Final\n\
+             // Smash trigger.\n\
+             //\n\
+             // To replicate the SSF2 behaviour you'll need to script the\n\
+             // transformation in the parent character's Script.hx (likely by\n\
+             // swapping resources / stats / animations into the parent at the\n\
+             // Final Smash trigger). Track the upstream FM API request:\n\
+             //   https://github.com/Fraymakers (no transformation API yet)\n\
+             // ─────────────────────────────────────────────────────────────────\n",
+            parent = df.parent_normal_stats_id,
+            source_method = df.source_method,
+        )
+    } else {
+        String::new()
+    };
+
     let mut out = format!(
-        "// Character stats for {char_name} — converted from SSF2\n\
+        "{transformation_banner}\
+        // Character stats for {char_name} — converted from SSF2\n\
         // SSF2 physics values are scaled to Fraymakers equivalents.\n\
         // Review all values before use — units differ between engines.\n\
         {{\n\
@@ -538,6 +570,7 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
         \taerialSpeedAcceleration: {aerial_speed_accel},\n\
         \taerialSpeedCap: {aerial_cap}{aerial_cap_todo},\n\
         \taerialFriction: {aerial_fric}{aerial_fric_todo},\n\n",
+        transformation_banner = transformation_banner,
         char_name = data.name,
         char_id = char_id,
         base_scale_x = fmt(s.base_scale_x),
