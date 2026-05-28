@@ -31,6 +31,12 @@ struct Args {
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
+
+    /// Use the legacy inline (<X>Ext::get*Stats) extractor instead of the
+    /// default bundle (Main::get<X>) path. Escape hatch for one release;
+    /// removed in Step C of the path 2 migration.
+    #[arg(long)]
+    legacy_inline: bool,
 }
 
 fn main() -> Result<()> {
@@ -97,7 +103,11 @@ fn main() -> Result<()> {
         vec![name]
     } else {
         // Auto-detect all root character MCs in the SWF
-        let detected = detect_char_names(&swf, &args.input);
+        let detected = if args.legacy_inline {
+            detect_char_names_legacy_inline(&swf, &args.input)
+        } else {
+            detect_char_names(&swf, &args.input)
+        };
         if detected.is_empty() {
             // Fallback: use filename
             let fallback = args.input
@@ -116,7 +126,8 @@ fn main() -> Result<()> {
     for char_name in &char_names {
         log::info!("─── Processing: {} ───", char_name);
         if let Err(e) = process_character(
-            &swf_data, &swf, char_name, &args.output, costumes_path.as_deref()
+            &swf_data, &swf, char_name, &args.output, costumes_path.as_deref(),
+            args.legacy_inline,
         ) {
             log::error!("Failed to process {}: {}", char_name, e);
         }
@@ -182,31 +193,16 @@ fn extract_costumes_to_temp(misc_ssf: &std::path::Path) -> Result<PathBuf> {
 /// the naming convention but is actually a projectile, an engine base
 /// class, or some other helper.
 ///
-/// The SSF2 engine routes character logic through these accessors, so
-/// every real character implements at least one of them. Projectile
-/// `*Ext` classes (`DeeSpearExt extends SSF2Projectile`) don't, nor
-/// does the framework's own `SSF2CharacterExt` base class. Requiring
-/// at least one of these to be present rejects both kinds of false
-/// positive.
+/// Path-1 legacy marker constant. Reserved for `--legacy-inline` only;
+/// removed in Step C of the path 2 migration.
 const CHARACTER_MARKER_METHODS: &[&str] = &[
     "getOwnStats",
     "getAttackStats",
     "getProjectileStats",
 ];
 
-/// Detect all root character names in a SWF by looking for `{Name}Ext`
-/// ABC classes that ALSO implement at least one of the character-marker
-/// methods listed above. The naming convention alone is not sufficient
-/// — for example bandanadee.ssf carries:
-///   - `BandanaDeeExt extends SSF2Character`   ← real character
-///   - `DeeSpearExt   extends SSF2Projectile`  ← a projectile, NOT a character
-/// and some SWFs carry `SSF2CharacterExt extends SSF2Character` as the
-/// framework's own base class. The marker-method check filters both
-/// out.
-/// Returns true iff the given ABC class looks like a real character's
-/// `*Ext` extension class — the test that `detect_char_names` applies
-/// per class. Split out so it can be unit-tested directly against
-/// hand-crafted `abc_parser::Class` values.
+/// Path-1 legacy `*Ext` predicate. Reserved for `--legacy-inline` only;
+/// removed in Step C.
 fn is_character_ext_class(class: &abc_parser::Class) -> bool {
     let Some(prefix) = class.name.strip_suffix("Ext") else { return false };
     if prefix.len() < 2 || !prefix.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -216,56 +212,76 @@ fn is_character_ext_class(class: &abc_parser::Class) -> bool {
         .any(|t| CHARACTER_MARKER_METHODS.contains(&t.name.as_str()))
 }
 
-fn detect_char_names(swf: &ssf2_converter::swf_parser::SwfFile, input_path: &PathBuf) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
+/// Derive the canonical character id from a `Main::get<X>()` method name.
+/// Per `docs/path2_unification_plan.md` §1: strip `get`, lowercase the
+/// remainder, preserve explicit `_` characters. Examples:
+///   getMario        → "mario"
+///   getBandanaDee   → "bandanadee"
+///   getGigaBowser   → "gigabowser"
+///   getWario_Man    → "wario_man"
+///   getgameandwatch → "gameandwatch"
+fn derive_id_from_getter(method_name: &str) -> Option<String> {
+    let stripped = method_name.strip_prefix("get")?;
+    if stripped.is_empty() { return None; }
+    Some(stripped.to_lowercase())
+}
 
+/// Detect all character names in a SWF by enumerating every `Main`
+/// instance method whose name starts with `get`. Returns derived ids in
+/// `Main`'s declared method order, deduplicated.
+///
+/// Audited across the full 45-SSF corpus (`src/bin/audit_main_gets.rs`):
+/// every observed `Main::get*` method is a character bundle, no
+/// exceptions. The `Main` class exists solely to expose the character
+/// roster.
+///
+/// Returns an empty vec for SWFs without a `Main` class (the misc.ssf
+/// case); the caller falls back to the filename stem.
+fn detect_char_names(swf: &ssf2_converter::swf_parser::SwfFile, _input_path: &PathBuf) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for abc_bytes in &swf.abc_blocks {
+        let Ok(abc) = abc_parser::parse(abc_bytes) else { continue };
+        let Some(main) = abc.classes.iter().find(|c| c.name == "Main") else { continue };
+        for t in &main.instance_methods {
+            if let Some(id) = derive_id_from_getter(&t.name) {
+                if seen.insert(id.clone()) {
+                    names.push(id);
+                }
+            }
+        }
+    }
+
+    names
+}
+
+/// Path-1 legacy detect: scans `*Ext` classes with marker methods.
+/// Reserved for `--legacy-inline` only; removed in Step C.
+fn detect_char_names_legacy_inline(swf: &ssf2_converter::swf_parser::SwfFile, input_path: &PathBuf) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
     for abc_bytes in &swf.abc_blocks {
         let Ok(abc) = abc_parser::parse(abc_bytes) else { continue; };
         for class in &abc.classes {
             if is_character_ext_class(class) {
-                // Safe: strip_suffix succeeded in the predicate.
                 let prefix = class.name.strip_suffix("Ext").unwrap();
                 names.push(prefix.to_lowercase());
             }
         }
     }
-
-    // Deduplicate, preserve order
     let mut seen = std::collections::HashSet::new();
     names.retain(|n| seen.insert(n.clone()));
-
-    if !names.is_empty() {
-        // Resolve truncated names against the filename.
-        // e.g. ABC has "CaptainExt" -> "captain", filename is "captainfalcon"
-        // -> use "captainfalcon" as the canonical name.
-        let stem = input_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        let resolved: Vec<String> = names.iter().map(|n| {
-            // If the filename starts with this name (or vice versa), use the longer one
-            if stem.starts_with(n.as_str()) { stem.clone() }
-            else if n.starts_with(stem.as_str()) { n.clone() }
-            else { n.clone() }
-        }).collect();
-
-        // Deduplicate again after resolution
-        let mut seen2 = std::collections::HashSet::new();
-        let mut out = Vec::new();
-        for n in resolved {
-            if seen2.insert(n.clone()) { out.push(n); }
-        }
-        return out;
-    }
-
-    // Fallback: use filename
-    if let Some(stem) = input_path.file_stem().and_then(|s| s.to_str()) {
-        return vec![stem.to_lowercase()];
-    }
-
-    vec![]
+    if names.is_empty() { return names; }
+    let stem = input_path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    let resolved: Vec<String> = names.iter().map(|n| {
+        if stem.starts_with(n.as_str()) { stem.clone() }
+        else if n.starts_with(stem.as_str()) { n.clone() }
+        else { n.clone() }
+    }).collect();
+    let mut seen2 = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for n in resolved { if seen2.insert(n.clone()) { out.push(n); } }
+    out
 }
 
 fn process_character(
@@ -274,6 +290,7 @@ fn process_character(
     char_name: &str,
     output: &PathBuf,
     costumes: Option<&std::path::Path>,
+    legacy_inline: bool,
 ) -> Result<()> {
     // Fresh conversion log for this character — counts unknown / SSF2-only
     // calls so we can write conversion_log.json next to the exported files
@@ -292,7 +309,7 @@ fn process_character(
         .map_err(|e| anyhow::anyhow!("parse SWF for {}: {}", char_name, e))?;
 
     // Extract character data (ABC: attacks, stats, frame scripts, xframe map)
-    let mut char_data = extractor::extract(swf, char_name)?;
+    let mut char_data = extractor::extract(swf, char_name, legacy_inline)?;
     log::info!("Extracted: {} attacks, {} animations, {} ssf2→fm mappings",
         char_data.attacks.len(), char_data.animations.len(), char_data.ssf2_to_fm_anim.len());
 
@@ -474,5 +491,43 @@ mod tests {
             assert!(is_character_ext_class(&c),
                 "marker '{}' alone should be sufficient", m);
         }
+    }
+
+    #[test]
+    fn derive_id_from_getter_covers_every_corpus_shape() {
+        // Lowercase + strip "get" + preserve explicit `_` chars. Cases
+        // span the corpus shapes — single word, camelCase, mid-word
+        // underscore, all-lowercase prefix. Matches the existing
+        // converter's output directory names for all 44 normal
+        // characters, plus the three new sub-character ids.
+        let cases: &[(&str, &str)] = &[
+            ("getMario",         "mario"),
+            ("getBandanaDee",    "bandanadee"),
+            ("getCaptainFalcon", "captainfalcon"),
+            ("getChibiRobo",     "chibirobo"),
+            ("getDonkeyKong",    "donkeykong"),
+            ("getgameandwatch",  "gameandwatch"),
+            ("getMegaMan",       "megaman"),
+            ("getMetaKnight",    "metaknight"),
+            ("getPacMan",        "pacman"),
+            ("getBlackMage",     "blackmage"),
+            ("getGigaBowser",    "gigabowser"),
+            ("getWario_Man",     "wario_man"),
+            ("getSheik",         "sheik"),
+        ];
+        for (m, expected) in cases {
+            let got = derive_id_from_getter(m);
+            assert_eq!(got.as_deref(), Some(*expected),
+                "derive_id_from_getter({:?}) = {:?}, expected Some({:?})",
+                m, got, expected);
+        }
+    }
+
+    #[test]
+    fn derive_id_rejects_non_get_prefix() {
+        assert_eq!(derive_id_from_getter("init"), None);
+        assert_eq!(derive_id_from_getter(""), None);
+        // "get" alone (no suffix) is also rejected — empty id is useless.
+        assert_eq!(derive_id_from_getter("get"), None);
     }
 }

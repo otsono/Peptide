@@ -7,7 +7,7 @@ fn main() {
     let raw = std::fs::read("/Users/jimmy/.openclaw/workspace-main/ssf2-ssfs/sandbag.ssf").unwrap();
     let swf_data = ssf2_converter::ssf::decompress(&raw).unwrap();
     let swf = swf_parser::parse(&swf_data).unwrap();
-    let char_data = extractor::extract(&swf, "sandbag").unwrap();
+    let char_data = extractor::extract(&swf, "sandbag", false).unwrap();
     
     let temp_dir = std::env::temp_dir();
     let img_result = image_extractor::extract_images(&swf_data, Path::new(&temp_dir), "sandbag", &char_data.ssf2_to_fm_anim).unwrap();
