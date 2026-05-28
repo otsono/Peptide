@@ -1050,7 +1050,7 @@ fn build_anim_frame_images(
 
                 // Check if this animation should be split into sub-animations
                 // (same split table as sprite_parser)
-                let frame_labels = extract_frame_labels_from_sprite(&sprite.tags);
+                let frame_labels = crate::sprite_parser::extract_frame_labels_from_tags(&sprite.tags);
                 let sub_splits = crate::sprite_parser::sub_anim_image_splits(&fm_name, &frame_labels, total);
 
                 if sub_splits.is_empty() {
@@ -1083,25 +1083,7 @@ fn build_anim_frame_images(
     result
 }
 
-/// Apply image fallbacks for procedural/synthetic animations (same table as sprite_parser)
-/// Extract frame labels from a sprite tag list (same logic as sprite_parser)
-fn extract_frame_labels_from_sprite(tags: &[swf::Tag]) -> Vec<(String, u16)> {
-    let mut frame_num: u16 = 0;
-    let mut labels: Vec<(String, u16)> = Vec::new();
-    for tag in tags {
-        match tag {
-            swf::Tag::ShowFrame => { frame_num += 1; }
-            swf::Tag::FrameLabel(fl) => {
-                let label = fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
-                labels.push((label, frame_num));
-            }
-            _ => {}
-        }
-    }
-    labels.sort_by_key(|(_, f)| *f);
-    labels
-}
-
+/// Apply image fallbacks for procedural/synthetic animations.
 fn apply_image_fallbacks(result: &mut BTreeMap<String, AnimFrameImages>) {
     let fallbacks: &[(&str, &str)] = &[
         ("stunned", "hurt"), ("star_ko", "hurt"), ("starko", "hurt"),

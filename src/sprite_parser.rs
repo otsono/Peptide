@@ -348,7 +348,7 @@ pub fn parse_sprite_boxes(
             let xform = xform_map.get(&fm_name).copied().unwrap_or_default();
 
             // Collect internal frame labels (for sub-animation splitting)
-            let frame_labels = extract_frame_labels(sprite);
+            let frame_labels = extract_frame_labels_from_tags(&sprite.tags);
 
             let frames = extract_frame_boxes(sprite, &sym_names, box_base_size, xform);
 
@@ -417,12 +417,13 @@ pub fn parse_sprite_boxes(
 
 // ─── Sub-animation splitting ─────────────────────────────────────────────────
 
-/// Extract all FrameLabel tags from a DefineSprite, returning (label, frame_number) pairs
-/// sorted by frame number.
-fn extract_frame_labels(sprite: &swf::Sprite) -> Vec<(String, u16)> {
+/// Extract all FrameLabel tags from a SWF tag list, returning (label,
+/// frame_number) pairs sorted by frame number. Public so `image_extractor`
+/// can reuse the same implementation instead of carrying a duplicate copy.
+pub fn extract_frame_labels_from_tags(tags: &[swf::Tag]) -> Vec<(String, u16)> {
     let mut frame_num: u16 = 0;
     let mut labels: Vec<(String, u16)> = Vec::new();
-    for tag in &sprite.tags {
+    for tag in tags {
         match tag {
             swf::Tag::ShowFrame => { frame_num += 1; }
             swf::Tag::FrameLabel(fl) => {

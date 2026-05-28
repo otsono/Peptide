@@ -674,16 +674,6 @@ impl<'a> BlockDecoder<'a> {
         self.stack.pop().unwrap_or(Expr::Unknown)
     }
 
-    /// After a unary branch (iftrue/iffalse), if the previous instruction was dup,
-    /// there may be an identical residue on the stack — pop it.
-    fn clear_dup_residue(&mut self) {
-        // If top of stack is the same expression as the one we just branched on,
-        // it's a dup artifact. Pop it silently.
-        // We detect by checking if top == second-from-top before we popped.
-        // Simpler heuristic: if next instr is pop, let pop handle it.
-        // For now, just flush obviously duplicated expressions.
-    }
-
     fn string(&self, idx: u32) -> String {
         self.abc.strings.get(idx as usize).cloned().unwrap_or_default()
     }
@@ -995,17 +985,17 @@ impl<'a> BlockDecoder<'a> {
                 OP_RETURNVOID  => { self.stmts.push(Stmt::Return(None)); return None; }
                 OP_RETURNVALUE => { let v = self.pop(); self.stmts.push(Stmt::Return(Some(v))); return None; }
 
-                // Branch instructions — consume s24 offset and return condition expr
+                // Branch instructions — return the raw condition expression
+                // and stop decoding this block. The branch target is resolved
+                // by the structured decoder (which keys on the pre-computed
+                // Terminator), so we don't need to consume the s24 offset here.
+                // The Branch { cond_inv } flag controls the then/else swap in
+                // StructuredDecoder; for iffalse: cond_inv=true means the
+                // condition is inverted — we DON'T negate here.
                 OP_IFTRUE | OP_IFFALSE | OP_IFEQ | OP_IFNE | OP_IFSTRICTEQ | OP_IFSTRICTNE
                 | OP_IFLT | OP_IFLE | OP_IFGT | OP_IFGE => {
-                    // Skip the s24 offset (3 bytes) — not used here, branch target
-                    // is resolved by the structured decoder.
-                    let _ = pos; // consumed by caller
-                    // Return the RAW condition (not inverted).
-                    // The Branch { cond_inv } flag controls the then/else swap in StructuredDecoder.
-                    // For iffalse: cond_inv=true means the condition is inverted — we DON'T negate here.
                     let cond = match op {
-                        OP_IFTRUE | OP_IFFALSE => { let v = self.pop(); self.clear_dup_residue(); v }
+                        OP_IFTRUE | OP_IFFALSE => self.pop(),
                         OP_IFEQ | OP_IFSTRICTEQ => { let r = self.pop(); let l = self.pop(); Expr::BinOp("==", Box::new(l), Box::new(r)) }
                         OP_IFNE | OP_IFSTRICTNE  => { let r = self.pop(); let l = self.pop(); Expr::BinOp("!=", Box::new(l), Box::new(r)) }
                         OP_IFLT => { let r = self.pop(); let l = self.pop(); Expr::BinOp("<",  Box::new(l), Box::new(r)) }
@@ -1016,7 +1006,9 @@ impl<'a> BlockDecoder<'a> {
                     };
                     return Some(cond);
                 }
-                OP_JUMP => { if pos + 3 <= self.bc.len() { let _ = pos + 3; } return None; }
+                // OP_JUMP: structured decoder resolves the branch target
+                // from the Terminator; no need to consume the offset here.
+                OP_JUMP => return None,
 
                 _ => {
                     // unknown — try to skip operands using instr_size

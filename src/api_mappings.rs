@@ -871,9 +871,7 @@ fn translate_attach_effect_prop(
 pub fn strip_last_frame_end_animation(code: &str) -> String {
     // Collect all (anim_prefix, max_frame_num) seen across all functions
     let mut max_frames: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
-    let frame_fn_re = simple_frame_fn_re();
-
-    for (prefix, frame_num) in iter_frame_fns(code, &frame_fn_re) {
+    for (prefix, frame_num) in iter_frame_fns(code) {
         let entry = max_frames.entry(prefix.to_string()).or_insert(0);
         if frame_num > *entry {
             *entry = frame_num;
@@ -889,7 +887,7 @@ pub fn strip_last_frame_end_animation(code: &str) -> String {
     for line in &lines {
         let trimmed = line.trim();
         // Check if this line opens a last-frame function
-        if let Some((prefix, frame_num)) = parse_frame_fn_header(trimmed, &frame_fn_re) {
+        if let Some((prefix, frame_num)) = parse_frame_fn_header(trimmed) {
             in_last_frame = max_frames.get(&prefix).copied() == Some(frame_num);
         } else if trimmed == "}" {
             // Leaving any function
@@ -912,25 +910,23 @@ pub fn strip_last_frame_end_animation(code: &str) -> String {
     joined
 }
 
-// Simple &str-based frame function pattern matching (avoids regex dep)
-struct FrameFnPattern;
-fn simple_frame_fn_re() -> FrameFnPattern { FrameFnPattern }
+// Simple &str-based frame function pattern matching (no regex dep).
 
-fn iter_frame_fns<'a>(code: &'a str, _pat: &FrameFnPattern) -> impl Iterator<Item=(String, u32)> + 'a {
-    code.lines().filter_map(|line| parse_frame_fn_header(line.trim(), &FrameFnPattern))
+/// Iterate `function <prefix>__frame<N>(…)` headers in a block of code,
+/// yielding `(prefix, N)` for each.
+fn iter_frame_fns(code: &str) -> impl Iterator<Item = (String, u32)> + '_ {
+    code.lines().filter_map(|line| parse_frame_fn_header(line.trim()))
 }
 
-fn parse_frame_fn_header(trimmed: &str, _pat: &FrameFnPattern) -> Option<(String, u32)> {
-    // Match: function <prefix>__frame<N>()
-    if !trimmed.starts_with("function ") { return None; }
-    let rest = &trimmed["function ".len()..];
+/// Parse a single trimmed line. Returns `Some((prefix, N))` if the line
+/// is a `function <prefix>__frame<N>(…)` header, `None` otherwise.
+fn parse_frame_fn_header(trimmed: &str) -> Option<(String, u32)> {
+    let rest = trimmed.strip_prefix("function ")?;
     let paren = rest.find('(')?;
     let name = &rest[..paren];
-    // Must contain __frame
     let frame_pos = name.rfind("__frame")?;
     let prefix = name[..frame_pos].to_string();
-    let frame_str = &name[frame_pos + "__frame".len()..];
-    let frame_num: u32 = frame_str.parse().ok()?;
+    let frame_num: u32 = name[frame_pos + "__frame".len()..].parse().ok()?;
     Some((prefix, frame_num))
 }
 
@@ -948,7 +944,6 @@ fn parse_frame_fn_header(trimmed: &str, _pat: &FrameFnPattern) -> Option<(String
 pub fn fix_intangibility_pairs(full_script: &str) -> String {
     // 1. Collect all (anim_prefix, frame_num, line_index) for setIntangibility calls
     let lines: Vec<&str> = full_script.lines().collect();
-    let pat = FrameFnPattern;
 
     // Track current function context while scanning
     let mut current_prefix: Option<String> = None;
@@ -959,13 +954,13 @@ pub fn fix_intangibility_pairs(full_script: &str) -> String {
 
     for (idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if let Some((pfx, fnum)) = parse_frame_fn_header(trimmed, &pat) {
+        if let Some((pfx, fnum)) = parse_frame_fn_header(trimmed) {
             current_prefix = Some(pfx);
             current_frame = fnum;
         }
-        if trimmed == "}" {
-            // Don't clear prefix here — frame functions can contain inner braces
-        }
+        // (We don't clear `current_prefix` on `}` — frame functions can
+        // contain inner braces, so a naive `if trimmed == "}"` would close
+        // the wrong scope.)
         if let Some(ref pfx) = current_prefix {
             if trimmed == "self.setIntangibility(true);" {
                 calls.push((pfx.clone(), current_frame, idx, true));

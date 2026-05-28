@@ -220,7 +220,6 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
     // Deduplicate: remove raw SSF2/symbol names that have a known FM equivalent.
     // e.g. if both "bair" and "aerial_back" exist, drop "bair".
     // Also drop internal/helper symbols that aren't real character animations.
-    let _ssf2_names: std::collections::BTreeSet<String> = ssf2_to_fm_anim.keys().cloned().collect();
     // Include sub-anim names (jab1/jab2/jab3 etc) produced by split expansion
     let mut fm_names: std::collections::BTreeSet<String> = ssf2_to_fm_anim.values().cloned().collect();
     for base_fm in ssf2_to_fm_anim.values() {
@@ -359,17 +358,3 @@ fn render_frame_script(_method_name: &str, actions: &[crate::abc_parser::FrameAc
     actions.iter().map(|a| a.action.as_str()).collect::<Vec<_>>().join("\n")
 }
 
-/// Extract a clean animation name from a symbol like "mario_fla.NAir_40"
-#[allow(dead_code)]
-fn extract_animation_name(sym_name: &str, _char_name: &str) -> Option<String> {
-    // Skip non-animation symbols
-    if sym_name.contains('.') {
-        // "mario_fla.NAir_40" → "NAir_40"
-        let local = sym_name.split('.').last()?;
-        // Strip trailing _NNN frame number
-        let name = local.trim_end_matches(|c: char| c.is_numeric() || c == '_');
-        if name.is_empty() || name.len() < 2 { return None; }
-        return Some(name.to_lowercase());
-    }
-    None
-}

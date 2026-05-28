@@ -162,8 +162,6 @@ pub struct ExtractedCharacter {
     pub ext_var_inits: Vec<(String, String)>,
     /// frame method name → SSF2 animation name (from self.xframe = "...")
     pub xframe_map: XframeMap,
-    /// Costumes from SSF2API::getCostumeData — name → list of ARGB color values
-    pub costumes: Vec<CostumeData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1220,13 +1218,14 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
         }
     }
 
-    // SSF2 costume/palette data lives in the engine SWF, not the character SWF.
-    // Both getCostumeData and applyPalette are thin wrappers that call m_api at runtime.
-    // We cannot extract the actual costume color data from here.
-    // palette_gen.rs builds costumes from sprite imagery instead.
-    let costumes: Vec<CostumeData> = vec![];
-    log::info!("Extracted {} attacks, {} frame scripts, {} ext methods, {} xframe mappings, {} costumes, stats={}",
-        attacks.len(), frame_scripts.len(), ext_methods.len(), xframe_map.len(), costumes.len(), stats.is_some());
+    // Per-character costume data isn't extracted here — both
+    // getCostumeData() and applyPalette() are thin wrappers around the
+    // engine SWF's runtime API. The real costumes for misc.ssf-style
+    // characters come from `scan_all_costume_methods` against misc.ssf
+    // (driven from main.rs); palette_gen.rs falls back to k-means on
+    // sprite imagery when that isn't available.
+    log::info!("Extracted {} attacks, {} frame scripts, {} ext methods, {} xframe mappings, stats={}",
+        attacks.len(), frame_scripts.len(), ext_methods.len(), xframe_map.len(), stats.is_some());
 
     Ok(ExtractedCharacter {
         name: char_name.to_string(),
@@ -1238,7 +1237,6 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
         ext_vars,
         ext_var_inits,
         xframe_map,
-        costumes,
     })
 }
 
@@ -1849,113 +1847,6 @@ fn extract_ssf2_stats(bytecode: &[u8], abc: &AbcFile) -> Option<CharStats> {
     }
 }
 
-#[allow(dead_code)]
-fn extract_largest_numeric_object(bytecode: &[u8], abc: &AbcFile) -> Option<CharStats> {
-    let mut stack: Vec<StackVal> = Vec::new();
-    let mut best: Option<BTreeMap<String, f64>> = None;
-    let mut i = 0;
-
-    while i < bytecode.len() {
-        let op = bytecode[i]; i += 1;
-        match op {
-            OP_PUSHSTRING => { if let Some(idx) = read_u30_at(bytecode, &mut i) { stack.push(StackVal::Str(abc.strings.get(idx as usize).cloned().unwrap_or_default())); } }
-            OP_PUSHDOUBLE => { if let Some(idx) = read_u30_at(bytecode, &mut i) { stack.push(StackVal::Num(abc.doubles.get(idx as usize).copied().unwrap_or(0.0))); } }
-            OP_PUSHBYTE   => { if i < bytecode.len() { let v = bytecode[i] as i8 as f64; i += 1; stack.push(StackVal::Num(v)); } }
-            OP_PUSHSHORT  => { if let Some(v) = read_u30_at(bytecode, &mut i) { stack.push(StackVal::Num(v as i16 as f64)); } }
-            OP_PUSHINT    => { if let Some(idx) = read_u30_at(bytecode, &mut i) { stack.push(StackVal::Num(abc.ints.get(idx as usize).copied().unwrap_or(0) as f64)); } }
-            OP_PUSHUINT   => { if let Some(idx) = read_u30_at(bytecode, &mut i) { stack.push(StackVal::Num(abc.uints.get(idx as usize).copied().unwrap_or(0) as f64)); } }
-            OP_PUSHTRUE   => stack.push(StackVal::Bool(())),
-            OP_PUSHFALSE  => stack.push(StackVal::Bool(())),
-            OP_PUSHNULL | OP_PUSHNAN => stack.push(StackVal::Null),
-            OP_NEWOBJECT => {
-                if let Some(count) = read_u30_at(bytecode, &mut i) {
-                    let count = count as usize;
-                    let needed = count * 2;
-                    let mut numeric: BTreeMap<String, f64> = BTreeMap::new();
-                    if stack.len() >= needed {
-                        let pairs: Vec<_> = stack.drain(stack.len() - needed..).collect();
-                        for chunk in pairs.chunks(2) {
-                            if let (StackVal::Str(k), StackVal::Num(v)) = (&chunk[0], &chunk[1]) {
-                                numeric.insert(k.clone(), *v);
-                            }
-                        }
-                    }
-                    // Keep the largest purely numeric object
-                    if numeric.len() >= 5 {
-                        if best.as_ref().map_or(true, |b: &BTreeMap<String, f64>| numeric.len() > b.len()) {
-                            best = Some(numeric.clone());
-                        }
-                    }
-                    stack.push(StackVal::Unknown);
-                }
-            }
-            OP_COERCE | OP_GETLEX | OP_FINDPROPSTRICT | OP_FINDPROP | OP_GETPROPERTY |
-            OP_INITPROPERTY | OP_SETPROPERTY => { read_u30_at(bytecode, &mut i); }
-            OP_CALLPROPERTY | OP_CALLPROPVOID | OP_CONSTRUCTPROP => {
-                read_u30_at(bytecode, &mut i); read_u30_at(bytecode, &mut i);
-            }
-            OP_GETLOCAL | OP_SETLOCAL | OP_CONSTRUCT | OP_NEWARRAY => { read_u30_at(bytecode, &mut i); }
-            OP_JUMP | OP_IFTRUE | OP_IFFALSE | OP_IFEQ | OP_IFNE | OP_IFLT |
-            OP_IFLE | OP_IFGT | OP_IFGE | OP_IFSTRICTEQ | OP_IFSTRICTNE => {
-                if i + 3 <= bytecode.len() { i += 3; }
-            }
-            _ => {}
-        }
-        if stack.len() > 256 { stack.drain(0..128); }
-    }
-    best.map(|values| CharStats { values })
-}
-
-#[allow(dead_code)]
-fn extract_frame_actions(bytecode: &[u8], abc: &AbcFile) -> Vec<FrameAction> {
-    let mut actions = Vec::new();
-    let mut i = 0;
-    let mut last_frame_num: u32 = 0;
-
-    while i < bytecode.len() {
-        let op = bytecode[i];
-        i += 1;
-        match op {
-            OP_PUSHBYTE => {
-                if i < bytecode.len() {
-                    last_frame_num = bytecode[i] as u32;
-                    i += 1;
-                }
-            }
-            OP_PUSHSHORT => {
-                if let Some(v) = read_u30_at(bytecode, &mut i) {
-                    last_frame_num = v;
-                }
-            }
-            OP_CALLPROPVOID | OP_CALLPROPERTY => {
-                if let Some(mn_idx) = read_u30_at(bytecode, &mut i) {
-                    let _arg_count = read_u30_at(bytecode, &mut i).unwrap_or(0);
-                    let name = abc.multinames.get(mn_idx as usize).map(|m| m.name.clone()).unwrap_or_default();
-                    if !name.is_empty() {
-                        actions.push(FrameAction {
-                            frame: last_frame_num,
-                            action: name,
-                            args: vec![],
-                        });
-                    }
-                }
-            }
-            OP_COERCE | OP_GETLEX | OP_FINDPROPSTRICT | OP_FINDPROP | OP_GETPROPERTY |
-            OP_INITPROPERTY | OP_SETPROPERTY => { read_u30_at(bytecode, &mut i); }
-            OP_CONSTRUCTPROP => { read_u30_at(bytecode, &mut i); read_u30_at(bytecode, &mut i); }
-            OP_GETLOCAL | OP_SETLOCAL | OP_NEWARRAY | OP_NEWOBJECT | OP_CONSTRUCT => {
-                read_u30_at(bytecode, &mut i);
-            }
-            OP_JUMP | OP_IFTRUE | OP_IFFALSE | OP_IFEQ | OP_IFNE | OP_IFLT |
-            OP_IFLE | OP_IFGT | OP_IFGE | OP_IFSTRICTEQ | OP_IFSTRICTNE => {
-                if i + 3 <= bytecode.len() { i += 3; }
-            }
-            _ => {}
-        }
-    }
-    actions
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn read_u30_at(data: &[u8], i: &mut usize) -> Option<u32> {
@@ -2027,304 +1918,6 @@ fn normalize_attack_name(s: &str) -> String {
     s.to_string()
 }
 
-/// Does this object look like SSF2 attack hitbox data?
-#[allow(dead_code)]
-fn is_attack_object(obj: &BTreeMap<String, f64>) -> bool {
-    if obj.is_empty() { return false; }
-    let attack_keys = ["damage", "direction", "power", "kbConstant", "weightKB",
-                       "hitStun", "selfHitStun", "hitLag", "angle"];
-    obj.keys().any(|k| attack_keys.contains(&k.as_str()))
-}
-
-/// Does this object look like character physics stats?
-#[allow(dead_code)]
-fn is_stats_object(obj: &BTreeMap<String, f64>) -> bool {
-    if obj.is_empty() { return false; }
-    let stat_keys = ["weight", "gravity", "fallSpeed", "fastFallSpeed",
-                     "walkSpeed", "dashSpeed", "airMobility", "maxJumps",
-                     "jumpHeight", "doubleJumpHeight", "airFriction"];
-    obj.keys().any(|k| stat_keys.contains(&k.as_str()))
-}
-
-
-/// Extract costume data from SSF2API::getCostumeData (static method).
-///
-/// getCostumeData returns an Array of objects: [{name:"Default", colors:[0xFFRRGGBB,...]}, ...]
-/// We simulate the AVM2 stack to reconstruct these objects.
-pub fn extract_costume_data(abc: &AbcFile) -> Vec<CostumeData> {
-    let api_class = abc.classes.iter().find(|c| c.name == "SSF2API");
-    let Some(api) = api_class else {
-        log::debug!("extract_costume_data: no SSF2API class");
-        return vec![];
-    };
-    let mi = match api.class_methods.iter().find(|t| t.name == "getCostumeData") {
-        Some(t) => t.method_idx,
-        None => { log::debug!("extract_costume_data: no getCostumeData trait"); return vec![]; }
-    };
-    let body = match abc.method_bodies.iter().find(|b| b.method_idx == mi) {
-        Some(b) => b,
-        None => { log::debug!("extract_costume_data: no body for mi={}", mi); return vec![]; }
-    };
-    log::info!("extract_costume_data: decoding getCostumeData ({} bytes)", body.bytecode.len());
-    // Decode the 13-byte wrapper: getlex CLASS → callproperty METHOD → returnvalue
-    // The real costume data is in CLASS::METHOD. Decode the wrapper to find which method.
-    {
-        let code = &body.bytecode;
-        let mut pos = 0usize;
-        // skip getlocal_0 + pushscope
-        while pos < code.len() && code[pos] != 0x60 { pos += 1; }
-        if code[pos] == 0x60 {
-            pos += 1;
-            let class_mn = read_u30_at(code, &mut pos).unwrap_or(0) as usize;
-            log::info!("getCostumeData wrapper: getlex multiname[{}] = {:?}",
-                class_mn, abc.multinames.get(class_mn));
-            // find callproperty
-            while pos < code.len() && code[pos] != 0x46 { pos += 1; }
-            if code[pos] == 0x46 {
-                pos += 1;
-                let method_mn = read_u30_at(code, &mut pos).unwrap_or(0) as usize;
-                let argc = read_u30_at(code, &mut pos).unwrap_or(0);
-                log::info!("getCostumeData wrapper: callproperty multiname[{}] = {:?} argc={}",
-                    method_mn, abc.multinames.get(method_mn), argc);
-
-                // Now find the class with that name and the method with that name
-                let class_name = abc.multinames.get(class_mn).map(|m| m.name.as_str()).unwrap_or("");
-                let method_name = abc.multinames.get(method_mn).map(|m| m.name.as_str()).unwrap_or("");
-                log::info!("getCostumeData delegates to {}::{}", class_name, method_name);
-
-                // Scan ALL method bodies with many pushuint (0x2E) calls — color palette data
-                let mut best: Vec<(u32, usize, u32)> = vec![]; // (method_idx, bytes, pushuint_count)
-                for body2 in &abc.method_bodies {
-                    let pu_count = body2.bytecode.iter().filter(|&&b| b == 0x2E).count() as u32;
-                    if pu_count >= 8 {
-                        best.push((body2.method_idx, body2.bytecode.len(), pu_count));
-                    }
-                }
-                best.sort_by_key(|&(_, _, pu)| std::cmp::Reverse(pu));
-                let trait_for: BTreeMap<u32, (&str, &str)> = abc.classes.iter()
-                    .flat_map(|cls| cls.instance_methods.iter().chain(cls.class_methods.iter())
-                        .map(move |t| (t.method_idx, (cls.name.as_str(), t.name.as_str()))))
-                    .collect();
-                for (mi2, bytes, pu) in best.iter().take(10) {
-                    let (cn, mn) = trait_for.get(mi2).copied().unwrap_or(("?", "?"));
-                    log::info!("  pushuint-heavy: mi={} {}::{} bytes={} pushuints={}", mi2, cn, mn, bytes, pu);
-                }
-            }
-        }
-    }
-
-    let code = &body.bytecode;
-    let mut pos = 0usize;
-    let mut stack: Vec<StackVal> = Vec::new();
-    let mut costumes: Vec<CostumeData> = Vec::new();
-
-    macro_rules! ru30 {
-        () => { read_u30_at(code, &mut pos).unwrap_or(0) }
-    }
-
-    while pos < code.len() {
-        let op = code[pos]; pos += 1;
-        match op {
-            0x24 => { // pushbyte
-                let v = if pos < code.len() { let b = code[pos] as i8; pos += 1; b as f64 } else { 0.0 };
-                stack.push(StackVal::Num(v));
-            }
-            0x25 => { let v = ru30!() as i16; stack.push(StackVal::Num(v as f64)); }
-            0x2C => { // pushstring
-                let i = ru30!() as usize;
-                stack.push(StackVal::Str(abc.strings.get(i).cloned().unwrap_or_default()));
-            }
-            0x2D => { // pushint
-                let i = ru30!() as usize;
-                stack.push(StackVal::Num(abc.ints.get(i).copied().unwrap_or(0) as f64));
-            }
-            0x2E => { // pushuint
-                let i = ru30!() as usize;
-                stack.push(StackVal::Num(abc.uints.get(i).copied().unwrap_or(0) as f64));
-            }
-            0x2F => { // pushdouble
-                let i = ru30!() as usize;
-                stack.push(StackVal::Num(abc.doubles.get(i).copied().unwrap_or(0.0)));
-            }
-            0x26 => stack.push(StackVal::Bool(())),
-            0x27 => stack.push(StackVal::Bool(())),
-            0x20 | 0x28 => stack.push(StackVal::Null),
-            0x56 => { // newarray(n)
-                let n = ru30!() as usize;
-                let start = stack.len().saturating_sub(n);
-                let items = stack.drain(start..).collect();
-                stack.push(StackVal::Arr(items));
-            }
-            0x55 => { // newobject(n) — 2n items on stack: key0,val0,key1,val1,...
-                let n = ru30!() as usize;
-                let start = stack.len().saturating_sub(n * 2);
-                let items: Vec<StackVal> = stack.drain(start..).collect();
-                let mut obj: BTreeMap<String, StackVal> = BTreeMap::new();
-                let mut i = 0;
-                while i + 1 < items.len() {
-                    if let StackVal::Str(k) = &items[i] {
-                        obj.insert(k.clone(), items[i+1].clone());
-                    }
-                    i += 2;
-                }
-                // Is this a costume entry? { name: "...", colors: [...] }
-                if let (Some(StackVal::Str(name)), Some(StackVal::Arr(colors))) =
-                    (obj.get("name"), obj.get("colors"))
-                {
-                    let color_vals: Vec<u32> = colors.iter().filter_map(|c| {
-                        if let StackVal::Num(v) = c { Some(*v as u32) } else { None }
-                    }).collect();
-                    if !color_vals.is_empty() {
-                        log::debug!("  costume {:?}: {} colors", name, color_vals.len());
-                        costumes.push(CostumeData { name: name.clone(), colors: color_vals, replacements: vec![] });
-                    }
-                }
-                stack.push(StackVal::Obj(obj));
-            }
-            // ops with 2 u30 args
-            0x46 | 0x4F | 0x6E | 0x4B | 0x45 | 0x4A => { ru30!(); ru30!(); stack.push(StackVal::Null); }
-            // ops with 1 u30 arg (read-side)
-            0x60 | 0x5C | 0x5D | 0x80 | 0x65 => { ru30!(); stack.push(StackVal::Null); }
-            // ops with 1 u30 arg (write-side — no push)
-            0x61 | 0x66 | 0x68 | 0x62 | 0x63 | 0x08 => { ru30!(); }
-            // branches (s24)
-            0x10 | 0x0C | 0x0D | 0x0E | 0x0F |
-            0x13 | 0x14 | 0x15 | 0x16 | 0x17 | 0x18 | 0x19 | 0x1A => { pos += 3; }
-            // locals → push placeholder
-            0xD0 | 0xD1 | 0xD2 | 0xD3 => stack.push(StackVal::Null),
-            // stack ops
-            0x29 => { stack.pop(); }
-            0x2A => { if let Some(t) = stack.last().cloned() { stack.push(t); } }
-            0x2B => { let n = stack.len(); if n >= 2 { stack.swap(n-1, n-2); } }
-            // scope
-            0x30 | 0x1D => {}
-            // return
-            0x47 | 0x48 => break,
-            // nop / coerce_a / convert_*
-            0x02 | 0x82 | 0x73 | 0x74 | 0x75 | 0x76 | 0x70 => {}
-            // arithmetic (binary) — pop 2, push 1
-            0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA8 | 0xA9 | 0xAA | 0xA5 | 0xA6 | 0xA7 => {
-                stack.pop(); if stack.is_empty() { stack.push(StackVal::Null); }
-            }
-            // arithmetic (unary) — pop 1, push 1
-            0x90 | 0x96 | 0xAB | 0xB1 => {
-                if !stack.is_empty() { *stack.last_mut().unwrap() = StackVal::Null; }
-            }
-            _ => {}
-        }
-    }
-
-    log::info!("extract_costume_data: {} costumes found", costumes.len());
-    costumes
-}
-
-/// Extract costume palette data by decoding the applyPalette method.
-///
-/// SSF2 applies costumes via Flash ColorTransform: each costume index maps to
-/// (redMultiplier, greenMultiplier, blueMultiplier, redOffset, greenOffset, blueOffset).
-/// The applyPalette method body contains a switch-like structure that pushes these
-/// values and calls setTransform on each sprite's ColorTransform.
-///
-/// We scan for ColorTransform constructor calls with numeric args to extract costume data.
-pub fn extract_costume_data_from_apply_palette(abc: &AbcFile) -> Option<Vec<CostumeData>> {
-    // Find the character class (e.g. "mario") — applyPalette is an instance method
-    let apply_palette_body = abc.classes.iter()
-        .flat_map(|cls| cls.instance_methods.iter())
-        .find(|t| t.name == "applyPalette")
-        .and_then(|t| abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx));
-
-    if apply_palette_body.is_none() {
-        // Try class methods too
-        log::debug!("extract_apply_palette: applyPalette not found as instance method, trying class methods");
-    }
-
-    let body = apply_palette_body?;
-    log::info!("extract_apply_palette: found applyPalette ({} bytes)", body.bytecode.len());
-
-    // Simulate the stack looking for sequences of 8 numeric pushes followed by
-    // constructprop ColorTransform or callproperty setTransform
-    let code = &body.bytecode;
-    let mut pos = 0usize;
-    let mut stack: Vec<StackVal> = Vec::new();
-    let mut costumes: Vec<CostumeData> = Vec::new();
-    let mut current_nums: Vec<f64> = Vec::new();
-
-    macro_rules! ru30 { () => { read_u30_at(code, &mut pos).unwrap_or(0) } }
-
-    while pos < code.len() {
-        let op = code[pos]; pos += 1;
-        match op {
-            0x24 => {
-                let v = if pos < code.len() { let b = code[pos] as i8; pos += 1; b as f64 } else { 0.0 };
-                stack.push(StackVal::Num(v));
-                current_nums.push(v);
-            }
-            0x25 => { let v = ru30!() as i16 as f64; stack.push(StackVal::Num(v)); current_nums.push(v); }
-            0x2D => { let i = ru30!() as usize; let v = abc.ints.get(i).copied().unwrap_or(0) as f64; stack.push(StackVal::Num(v)); current_nums.push(v); }
-            0x2E => { let i = ru30!() as usize; let v = abc.uints.get(i).copied().unwrap_or(0) as f64; stack.push(StackVal::Num(v)); current_nums.push(v); }
-            0x2F => { let i = ru30!() as usize; let v = abc.doubles.get(i).copied().unwrap_or(0.0); stack.push(StackVal::Num(v)); current_nums.push(v); }
-            0x2C => { let i = ru30!() as usize; let s = abc.strings.get(i).cloned().unwrap_or_default(); stack.push(StackVal::Str(s)); current_nums.clear(); }
-            0x4A => { // constructprop
-                let mn = ru30!() as usize; let argc = ru30!();
-                let name = abc.multinames.get(mn).map(|m| m.name.as_str()).unwrap_or("");
-                if name == "ColorTransform" && argc >= 6 {
-                    // last 6 nums on stack: rMult, gMult, bMult, aMult, rOff, gOff, bOff, aOff
-                    // or just rMult, gMult, bMult, aMult, rOff, gOff, bOff
-                    let nums: Vec<f64> = stack.iter().rev().take(argc as usize)
-                        .filter_map(|v| if let StackVal::Num(n) = v { Some(*n) } else { None })
-                        .collect::<Vec<_>>().into_iter().rev().collect();
-                    if nums.len() >= 3 {
-                        // Convert multipliers to 0-255 RGB
-                        // Flash ColorTransform: 1.0 = no change, values 0-1 for multiply
-                        let r = ((nums[0].abs()) * 255.0).min(255.0) as u8;
-                        let g = ((nums[1].abs()) * 255.0).min(255.0) as u8;
-                        let b = ((nums[2].abs()) * 255.0).min(255.0) as u8;
-                        log::debug!("  ColorTransform({:?}) → rgb=({},{},{})", nums, r, g, b);
-                        let idx = costumes.len();
-                        costumes.push(CostumeData {
-                            name: format!("Alt {}", idx + 1),
-                            colors: vec![0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)],
-                            replacements: vec![],
-                        });
-                    }
-                    current_nums.clear();
-                }
-                for _ in 0..argc { stack.pop(); }
-                stack.push(StackVal::Null);
-            }
-            // standard stack ops
-            0x46 | 0x4F | 0x6E | 0x4B | 0x45 => { ru30!(); ru30!(); stack.push(StackVal::Null); current_nums.clear(); }
-            0x60 | 0x5C | 0x5D | 0x80 | 0x65 => { ru30!(); stack.push(StackVal::Null); }
-            0x61 | 0x66 | 0x68 | 0x62 | 0x63 | 0x08 => { ru30!(); }
-            0x10 | 0x0C | 0x0D | 0x0E | 0x0F | 0x13 | 0x14 | 0x15 | 0x16 | 0x17 | 0x18 | 0x19 | 0x1A => { pos += 3; }
-            0xD0 | 0xD1 | 0xD2 | 0xD3 => stack.push(StackVal::Null),
-            0x56 => { let n = ru30!() as usize; let start = stack.len().saturating_sub(n); let items = stack.drain(start..).collect(); stack.push(StackVal::Arr(items)); }
-            0x55 => { let n = ru30!() as usize; let start = stack.len().saturating_sub(n*2); stack.drain(start..); stack.push(StackVal::Obj(BTreeMap::new())); }
-            0x29 => { stack.pop(); }
-            0x2A => { if let Some(t) = stack.last().cloned() { stack.push(t); } }
-            0x2B => { let n = stack.len(); if n >= 2 { stack.swap(n-1, n-2); } }
-            0x30 | 0x1D => {}
-            0x47 | 0x48 => break,
-            0x02 | 0x82 | 0x73 | 0x74 | 0x75 | 0x76 | 0x70 => {}
-            0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA8 | 0xA9 | 0xAA | 0xA5 | 0xA6 | 0xA7 => { stack.pop(); if stack.is_empty() { stack.push(StackVal::Null); } }
-            0x90 | 0x96 | 0xAB | 0xB1 => { if !stack.is_empty() { *stack.last_mut().unwrap() = StackVal::Null; } }
-            0x26 => stack.push(StackVal::Bool(())),
-            0x27 => stack.push(StackVal::Bool(())),
-            0x20 | 0x28 => stack.push(StackVal::Null),
-            _ => {}
-        }
-    }
-
-    if costumes.is_empty() {
-        log::info!("extract_apply_palette: no ColorTransform constructors found in applyPalette");
-        return None;
-    }
-
-    // Insert "Default" costume at index 0
-    costumes.insert(0, CostumeData { name: "Default".to_string(), colors: vec![], replacements: vec![] });
-    log::info!("extract_apply_palette: found {} costumes", costumes.len());
-    Some(costumes)
-}
 
 /// Scan ALL method bodies for SSF2 costume data patterns.
 ///
@@ -2564,6 +2157,3 @@ fn decode_costume_objects(code: &[u8], abc: &AbcFile) -> BTreeMap<String, Vec<Co
 
     per_char
 }
-
-
-// DEBUG REMOVED
