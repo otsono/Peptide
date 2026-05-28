@@ -1859,7 +1859,7 @@ pub fn generate_projectile_entity(
 pub fn effect_animation_names(effect: &crate::image_extractor::DiscoveredEffect) -> Vec<String> {
     let total_frames = effect.frame_count.max(1) as usize;
     if effect.inner_labels.is_empty() {
-        return vec!["vfx".to_string()];
+        return vec!["active".to_string()];
     }
     let mut names: Vec<String> = Vec::new();
     for (i, (frame_1based, label)) in effect.inner_labels.iter().enumerate() {
@@ -1879,11 +1879,11 @@ pub fn effect_animation_names(effect: &crate::image_extractor::DiscoveredEffect)
     }
     if let Some(first_start) = effect.inner_labels.first().map(|(f, _)| f.saturating_sub(1) as usize) {
         if first_start > 0 {
-            names.insert(0, "vfx".to_string());
+            names.insert(0, "active".to_string());
         }
     }
     if names.is_empty() {
-        names.push("vfx".to_string());
+        names.push("active".to_string());
     }
     names
 }
@@ -1933,9 +1933,9 @@ pub fn generate_effect_entity(
 
     // Determine animation segments: (name, start_0based, end_exclusive).
     // Mirror `effect_animation_names`: same ordering and same fallbacks.
-    // No labels → single "vfx" animation covering the whole sprite.
+    // No labels → single "active" animation covering the whole sprite.
     let segments: Vec<(String, usize, usize)> = if effect.inner_labels.is_empty() {
-        vec![("vfx".to_string(), 0usize, total_frames as usize)]
+        vec![("active".to_string(), 0usize, total_frames as usize)]
     } else {
         let mut segs: Vec<(String, usize, usize)> = Vec::new();
         for (i, (frame_1based, label)) in effect.inner_labels.iter().enumerate() {
@@ -1953,14 +1953,14 @@ pub fn generate_effect_entity(
                 segs.push((anim_name, start, end));
             }
         }
-        // Cover any frames before the first label with a leading `vfx` segment.
+        // Cover any frames before the first label with a leading `active` segment.
         if let Some(first_start) = effect.inner_labels.first().map(|(f, _)| f.saturating_sub(1) as usize) {
             if first_start > 0 {
-                segs.insert(0, ("vfx".to_string(), 0, first_start));
+                segs.insert(0, ("active".to_string(), 0, first_start));
             }
         }
         if segs.is_empty() {
-            segs.push(("vfx".to_string(), 0, total_frames as usize));
+            segs.push(("active".to_string(), 0, total_frames as usize));
         }
         segs
     };

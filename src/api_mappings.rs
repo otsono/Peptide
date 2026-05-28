@@ -605,12 +605,14 @@ impl Drop for EffectAnimGuard {
 ///   - If `name` is in the thread_local map (a local effect we extracted),
 ///     use that effect's primary animation name — picks the right name
 ///     even when the entity has multiple FrameLabel-derived animations.
-///   - If `name` is not in the map, fall back to `"vfx"`. Most unknown
-///     references are FM-global effects (`global_dust_blast`,
+///   - If `name` is not in the map, fall back to `"active"`. Most
+///     unknown references are FM-global effects (`global_dust_blast`,
 ///     `global_spark`, `itempickup_effect`, …) whose entities live in
-///     the engine's standard library and use the `"vfx"` convention.
-///     Worst case the animation is wrong → runtime warning; never worse
-///     than the original SSF2 call which we couldn't translate at all.
+///     the engine's standard library; `"active"` is the project-wide
+///     default animation name for VFX entities we emit, so any local
+///     fallback also lands on a valid animation. Worst case the
+///     animation is wrong → runtime warning; never worse than the
+///     original SSF2 call which we couldn't translate at all.
 ///
 /// The 2-arg form preserves the original `{…}` props as a trailing TODO
 /// comment for hand-tuning, since prop semantics (x/y offset, scale,
@@ -628,7 +630,7 @@ pub fn rewrite_attach_effect_calls(code: &str) -> String {
     EFFECT_PRIMARY_ANIMS.with(|cell| {
         let map = cell.borrow();
         let resolve = |name: &str| -> String {
-            map.get(name).cloned().unwrap_or_else(|| "vfx".to_string())
+            map.get(name).cloned().unwrap_or_else(|| "active".to_string())
         };
         // 2-arg form first (more specific): preserve props as TODO comment.
         let after_2arg = re_2arg.replace_all(code, |caps: &regex::Captures| {
