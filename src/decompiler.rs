@@ -265,12 +265,17 @@ fn render_stmts(stmts: &[Stmt], depth: usize) -> String {
             Stmt::Return(None) => out.push_str(&format!("{}return;\n", tab)),
             Stmt::Return(Some(e)) => out.push_str(&format!("{}return {};\n", tab, e.render())),
             Stmt::VarDecl(n, v) => {
-                let var_name = if *n == 0 {
-                    "self".to_string()
-                } else {
-                    format!("_v{}", n)
-                };
-                if var_name == "self" && matches!(v, Expr::This) { continue; }
+                // Local 0 is AVM2 `this`. If the value being assigned IS
+                // `Expr::This`, the assignment is a no-op (the `this = this`
+                // setup line emitted by some compilers) — drop it.
+                if *n == 0 && matches!(v, Expr::This) { continue; }
+                // Local 0 reassignment with a non-`this` value: SSF2
+                // bytecode occasionally rebinds local_0, but in Fraymakers
+                // Haxe `self` is final and assigning to it doesn't compile.
+                // Render it under a synthetic name (`_v0`) instead so the
+                // statement is at least a syntactically valid local — the
+                // user can choose to use it or delete it.
+                let var_name = format!("_v{}", n);
                 let val_str = if let Expr::Closure(params, stmts) = v {
                     render_closure(params, stmts, depth)
                 } else { v.render() };
