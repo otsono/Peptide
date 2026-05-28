@@ -195,7 +195,19 @@ pub fn extract_xframe_transforms(
 ) -> anyhow::Result<BTreeMap<String, XframeTransform>> {
     let swf_buf = swf::decompress_swf(Cursor::new(swf_data))?;
     let swf = swf::parse_swf(&swf_buf)?;
+    extract_xframe_transforms_from_swf(&swf, char_name, ssf2_to_fm)
+}
 
+/// Same as `extract_xframe_transforms` but operates on an already-parsed
+/// SWF. Use this when the caller has access to the parsed `swf::Swf` and
+/// wants to avoid the redundant `decompress_swf` + `parse_swf` round-trip.
+/// `main.rs::process_character` parses the SWF once and threads it through
+/// every per-character extractor; the `_from_swf` variants are how.
+pub fn extract_xframe_transforms_from_swf(
+    swf: &swf::Swf<'_>,
+    char_name: &str,
+    ssf2_to_fm: &BTreeMap<String, String>,
+) -> anyhow::Result<BTreeMap<String, XframeTransform>> {
     let mut sym_names: BTreeMap<u16, String> = BTreeMap::new();
     for tag in &swf.tags {
         if let swf::Tag::SymbolClass(links) = tag {
@@ -292,7 +304,21 @@ pub fn parse_sprite_boxes(
 ) -> anyhow::Result<BTreeMap<String, AnimationBoxData>> {
     let swf_buf = swf::decompress_swf(Cursor::new(swf_data))?;
     let swf = swf::parse_swf(&swf_buf)?;
+    let xform_map = extract_xframe_transforms_from_swf(&swf, char_name, ssf2_to_fm)
+        .unwrap_or_default();
+    parse_sprite_boxes_from_swf(&swf, char_name, ssf2_to_fm, &xform_map)
+}
 
+/// Same as `parse_sprite_boxes` but operates on an already-parsed SWF and
+/// a precomputed xform_map. Main.rs parses each character's SWF once and
+/// computes its xform_map once, then threads both here to skip the
+/// redundant decompress + parse + xform-extraction round-trip.
+pub fn parse_sprite_boxes_from_swf(
+    swf: &swf::Swf<'_>,
+    char_name: &str,
+    ssf2_to_fm: &BTreeMap<String, String>,
+    xform_map: &BTreeMap<String, XframeTransform>,
+) -> anyhow::Result<BTreeMap<String, AnimationBoxData>> {
     // Build id → symbol name map
     let mut sym_names: BTreeMap<u16, String> = BTreeMap::new();
     for tag in &swf.tags {
@@ -305,17 +331,8 @@ pub fn parse_sprite_boxes(
     }
 
     // Find the base size of the collision box shape
-    // Look for the DefineShape that the CollisonBox sprite (id=112 for mario) references
-    let box_base_size = find_collision_box_base_size(&swf, &sym_names);
+    let box_base_size = find_collision_box_base_size(swf, &sym_names);
     log::info!("CollisonBox base size: {:.1}px", box_base_size);
-
-    // Build reverse map: FM anim name → SSF2 anim name (for lookup)
-    // and a set of all SSF2 anim names we care about
-    let _known_ssf2_names: std::collections::HashSet<&str> = ssf2_to_fm.keys().map(|s| s.as_str()).collect();
-
-    // Extract root MovieClip placement transforms for each animation
-    let xform_map = extract_xframe_transforms(swf_data, char_name, ssf2_to_fm)
-        .unwrap_or_default();
     log::info!("Root MC transforms: {} animations", xform_map.len());
 
     // Find all character animation sprites
@@ -780,7 +797,15 @@ pub fn extract_boxes_for_sprite_id(
 ) -> anyhow::Result<Option<AnimationBoxData>> {
     let swf_buf = swf::decompress_swf(Cursor::new(swf_data))?;
     let swf = swf::parse_swf(&swf_buf)?;
+    extract_boxes_for_sprite_id_from_swf(&swf, sprite_id)
+}
 
+/// `extract_boxes_for_sprite_id` against an already-parsed SWF. Used per
+/// projectile / per effect in main.rs to avoid the per-call SWF parse.
+pub fn extract_boxes_for_sprite_id_from_swf(
+    swf: &swf::Swf<'_>,
+    sprite_id: u16,
+) -> anyhow::Result<Option<AnimationBoxData>> {
     let mut sym_names: BTreeMap<u16, String> = BTreeMap::new();
     for tag in &swf.tags {
         if let swf::Tag::SymbolClass(links) = tag {
@@ -791,7 +816,7 @@ pub fn extract_boxes_for_sprite_id(
         }
     }
 
-    let box_base_size = find_collision_box_base_size(&swf, &sym_names);
+    let box_base_size = find_collision_box_base_size(swf, &sym_names);
     let identity = XframeTransform::default();
 
     for tag in &swf.tags {
@@ -1041,7 +1066,14 @@ pub fn extract_xframe_scale(
 ) -> anyhow::Result<(f64, f64)> {
     let swf_buf = swf::decompress_swf(Cursor::new(swf_data))?;
     let swf = swf::parse_swf(&swf_buf)?;
+    extract_xframe_scale_from_swf(&swf, char_name)
+}
 
+/// `extract_xframe_scale` against an already-parsed SWF.
+pub fn extract_xframe_scale_from_swf(
+    swf: &swf::Swf<'_>,
+    char_name: &str,
+) -> anyhow::Result<(f64, f64)> {
     let mut sym_names: BTreeMap<u16, String> = BTreeMap::new();
     for tag in &swf.tags {
         if let swf::Tag::SymbolClass(links) = tag {

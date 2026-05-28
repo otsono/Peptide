@@ -182,7 +182,22 @@ pub fn extract_images(
         .context("Failed to decompress SWF")?;
     let swf = swf::parse_swf(&swf_buf)
         .context("Failed to parse SWF tags")?;
+    let xform_map = crate::sprite_parser::extract_xframe_transforms_from_swf(
+        &swf, char_name, ssf2_to_fm,
+    ).unwrap_or_default();
+    extract_images_from_swf(&swf, output_dir, char_name, ssf2_to_fm, &xform_map)
+}
 
+/// `extract_images` against an already-parsed SWF and a precomputed
+/// xform_map. Used by main.rs::process_character so the SWF and the
+/// xform_map are computed exactly once per character.
+pub fn extract_images_from_swf(
+    swf: &swf::Swf<'_>,
+    output_dir: &Path,
+    char_name: &str,
+    ssf2_to_fm: &BTreeMap<String, String>,
+    xform_map: &BTreeMap<String, crate::sprite_parser::XframeTransform>,
+) -> Result<ImageExtractionResult> {
     // Build symbol table: char_id → class_name
     let mut symbols: BTreeMap<u16, String> = BTreeMap::new();
     for tag in &swf.tags {
@@ -304,12 +319,12 @@ pub fn extract_images(
 
     log::info!("Extracted {} images to {}", images.len(), sprites_dir.display());
 
-    // 3. Extract root MC transforms for applying to image positions
-    let xform_map = crate::sprite_parser::extract_xframe_transforms(swf_data, char_name, ssf2_to_fm)
-        .unwrap_or_default();
-
+    // 3. xform_map is supplied by the caller so it's computed exactly
+    //    once per character (was previously re-extracted here AND inside
+    //    parse_sprite_boxes — three SWF parses across the two call sites).
+    //
     // 4. Build per-animation per-frame image references from DefineSprite tags
-    let mut anim_images = build_anim_frame_images(&swf, char_name, ssf2_to_fm, &symbols, &shape_to_bitmap, &xform_map, &images);
+    let mut anim_images = build_anim_frame_images(swf, char_name, ssf2_to_fm, &symbols, &shape_to_bitmap, xform_map, &images);
     // Apply same fallbacks as sprite_parser for animations with no image data
     apply_image_fallbacks(&mut anim_images);
     log::info!("Animation image mappings: {} animations (after fallbacks)", anim_images.len());
@@ -1270,7 +1285,18 @@ pub fn extract_projectile_frame_images(
     use std::io::Cursor;
     let swf_buf = swf::decompress_swf(Cursor::new(swf_data)).context("decompress")?;
     let swf = swf::parse_swf(&swf_buf).context("parse")?;
+    extract_projectile_frame_images_from_swf(&swf, char_id, inner_sprite_id, img_result)
+}
 
+/// `extract_projectile_frame_images` against an already-parsed SWF. Used
+/// per projectile / per effect by main.rs / haxe_gen.rs to amortise the
+/// SWF parse across all calls within one character's conversion.
+pub fn extract_projectile_frame_images_from_swf(
+    swf: &swf::Swf<'_>,
+    char_id: &str,
+    inner_sprite_id: u16,
+    img_result: &ImageExtractionResult,
+) -> Result<ProjectileFrameImages> {
     // Build symbol map
     let mut symbols: BTreeMap<u16, String> = BTreeMap::new();
     for tag in &swf.tags {
@@ -1521,7 +1547,14 @@ pub fn discover_projectiles_and_head(
     use std::io::Cursor;
     let swf_buf = swf::decompress_swf(Cursor::new(swf_data)).context("decompress SWF")?;
     let swf = swf::parse_swf(&swf_buf).context("parse SWF")?;
+    discover_projectiles_and_head_from_swf(&swf, char_name)
+}
 
+/// `discover_projectiles_and_head` against an already-parsed SWF.
+pub fn discover_projectiles_and_head_from_swf(
+    swf: &swf::Swf<'_>,
+    char_name: &str,
+) -> Result<(Vec<DiscoveredProjectile>, Vec<DiscoveredEffect>, Option<DiscoveredHead>)> {
     // Build SymbolClass map: id → name
     let mut symbols: BTreeMap<u16, String> = BTreeMap::new();
     for tag in &swf.tags {

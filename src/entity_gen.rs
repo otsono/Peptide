@@ -1919,7 +1919,7 @@ pub fn generate_effect_entity(
     char_id: &str,
     effect: &crate::image_extractor::DiscoveredEffect,
     img_result: &crate::image_extractor::ImageExtractionResult,
-    swf_data: &[u8],
+    parsed_swf: &swf::Swf<'_>,
 ) -> String {
     let mut keyframes: Vec<Value> = Vec::new();
     let mut layers: Vec<Value> = Vec::new();
@@ -1930,8 +1930,8 @@ pub fn generate_effect_entity(
     let total_frames = effect.frame_count.max(1) as u32;
 
     // Pull per-frame images by walking the effect sprite's timeline.
-    let frame_images = crate::image_extractor::extract_projectile_frame_images(
-        swf_data,
+    let frame_images = crate::image_extractor::extract_projectile_frame_images_from_swf(
+        parsed_swf,
         char_id,
         effect.sprite_id,
         img_result,

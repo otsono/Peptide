@@ -12,7 +12,7 @@ use crate::fraytools_project;
 use crate::palette_gen;
 use crate::uuid_gen::det_uuid;
 
-pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite_boxes: &std::collections::BTreeMap<String, crate::sprite_parser::AnimationBoxData>, img_result: &crate::image_extractor::ImageExtractionResult, costumes_json: Option<&Path>, sounds: &[crate::sound_extractor::SoundEntry], projectiles: &[crate::image_extractor::DiscoveredProjectile], effects: &[crate::image_extractor::DiscoveredEffect], head_sprite: Option<&crate::image_extractor::DiscoveredHead>, swf_data: &[u8]) -> Result<()> {
+pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite_boxes: &std::collections::BTreeMap<String, crate::sprite_parser::AnimationBoxData>, img_result: &crate::image_extractor::ImageExtractionResult, costumes_json: Option<&Path>, sounds: &[crate::sound_extractor::SoundEntry], projectiles: &[crate::image_extractor::DiscoveredProjectile], effects: &[crate::image_extractor::DiscoveredEffect], head_sprite: Option<&crate::image_extractor::DiscoveredHead>, parsed_swf: &swf::Swf<'_>) -> Result<()> {
     let char_id = char_name.to_lowercase().replace(" ", "");
     let char_dir = output_dir.join(&char_id);
     let scripts_dir = char_dir.join("library/scripts/Character");
@@ -145,8 +145,8 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
     for proj in projectiles {
         // Extract image frames from the inner sprite using effect-sprite flattening
         let (image_frames, image_guids) = if let Some(inner_id) = proj.inner_sprite_id {
-            match crate::image_extractor::extract_projectile_frame_images(
-                swf_data, &char_id, inner_id, img_result
+            match crate::image_extractor::extract_projectile_frame_images_from_swf(
+                parsed_swf, &char_id, inner_id, img_result
             ) {
                 Ok(pfi) => {
                     log::debug!("Projectile '{}': {} image frames", proj.name, pfi.frames.len());
@@ -163,7 +163,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
 
         // Extract collision boxes from the inner sprite
         let boxes = if let Some(inner_id) = proj.inner_sprite_id {
-            match crate::sprite_parser::extract_boxes_for_sprite_id(swf_data, inner_id) {
+            match crate::sprite_parser::extract_boxes_for_sprite_id_from_swf(parsed_swf, inner_id) {
                 Ok(b) => b,
                 Err(e) => {
                     log::warn!("Failed to extract boxes for projectile '{}': {}", proj.name, e);
@@ -176,8 +176,8 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
         let mut extra_states: Vec<entity_gen::ProjectileStateData> = Vec::new();
         for state in &proj.states {
             if state.label == "attack_idle" { continue; } // already extracted above
-            let (sf, sg) = match crate::image_extractor::extract_projectile_frame_images(
-                swf_data, &char_id, state.inner_sprite_id, img_result
+            let (sf, sg) = match crate::image_extractor::extract_projectile_frame_images_from_swf(
+                parsed_swf, &char_id, state.inner_sprite_id, img_result
             ) {
                 Ok(pfi) => (pfi.frames, pfi.image_guids),
                 Err(e) => {
@@ -185,7 +185,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
                     (vec![], std::collections::BTreeMap::new())
                 }
             };
-            let sb = match crate::sprite_parser::extract_boxes_for_sprite_id(swf_data, state.inner_sprite_id) {
+            let sb = match crate::sprite_parser::extract_boxes_for_sprite_id_from_swf(parsed_swf, state.inner_sprite_id) {
                 Ok(b) => b,
                 Err(_) => None,
             };
@@ -295,7 +295,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
     for effect in effects {
         let filename = format!("{}.entity", effect.name);
         let entity_json = entity_gen::generate_effect_entity(
-            &char_id, effect, img_result, swf_data,
+            &char_id, effect, img_result, parsed_swf,
         );
         fs::write(entities_dir.join(&filename), entity_json)?;
         let anim_names = entity_gen::effect_animation_names(effect);
