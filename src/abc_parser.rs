@@ -1354,11 +1354,15 @@ fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, At
             }
 
             OP_GETPROPERTY => {
-                let mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
-                let name = abc.multinames.get(mn_idx as usize).map(|m| m.name.clone()).unwrap_or_default();
-                // Pop object, push value (unknown unless we track obj)
+                // Bug §3.5: getproperty pops the receiver and pushes the
+                // property VALUE, not its name. We don't track object
+                // contents through this stack sim, so push Unknown — that
+                // way arithmetic / conditional ops that consume the value
+                // don't accidentally interpret the property-NAME as a
+                // String operand.
+                read_u30_at(bytecode, &mut i);
                 if !stack.is_empty() { stack.pop(); }
-                stack.push(StackVal::Str(name));
+                stack.push(StackVal::Unknown);
             }
 
             OP_FINDPROPSTRICT | OP_FINDPROP | OP_GETLEX => {
@@ -1547,10 +1551,12 @@ fn extract_projectile_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String
                 if stack.len() >= 2 { stack.truncate(stack.len() - 2); }
             }
             OP_GETPROPERTY => {
-                let mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
-                let name = abc.multinames.get(mn_idx as usize).map(|m| m.name.clone()).unwrap_or_default();
+                // Bug §3.5: push the value (unknown to this stack sim),
+                // not the property name. Pushing the name would let it
+                // be consumed as a Str operand by downstream ops.
+                read_u30_at(bytecode, &mut i);
                 if !stack.is_empty() { stack.pop(); }
-                stack.push(StackVal::Str(name));
+                stack.push(StackVal::Unknown);
             }
             OP_FINDPROPSTRICT | OP_FINDPROP | OP_GETLEX => {
                 read_u30_at(bytecode, &mut i);
