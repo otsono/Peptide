@@ -292,6 +292,27 @@ fn attach_effect_value_with_inner_call_is_one_field() {
         "nested call commas must not split fields; got: {}", out);
 }
 
+/// Bug §3.16: `parse_object_fields` previously only accepted bare identifier
+/// keys (`[a-zA-Z0-9_]+:`); a quoted key like `"foo bar": 1` was silently
+/// dropped. The hand-rolled parser inside `apply_call_splits` now accepts
+/// both bare AND quoted keys (the latter is rare in decompiled SSF2 output,
+/// but possible in hand-edited frame scripts and Haxe allows it).
+#[test]
+fn call_split_quoted_key_accepted() {
+    // Use a real call-split target so the field has a chance of routing
+    // to a known target if listed; we only assert that the key is
+    // *recognised* (i.e. either routed or emitted as TODO). Without the
+    // fix, the field is silently dropped — so we'd see no trace of it.
+    let input = "self.updateAttackStats({ \"cancelWhenAirborne\": false });";
+    let out = apply_call_splits(input);
+    // Quoted-key parse: should at minimum result in a routed call OR a
+    // TODO mentioning the quoted name. Silent drop is the bug.
+    assert!(
+        out.contains("leaveGroundCancel: false") || out.contains("cancelWhenAirborne"),
+        "quoted key should be parsed and routed/TODO'd; got: {}", out
+    );
+}
+
 // ─── strip_last_frame_end_animation ──────────────────────────────────────
 
 #[test]

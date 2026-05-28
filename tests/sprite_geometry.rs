@@ -34,6 +34,21 @@ fn box_type_touchbox_is_grab_hold() {
     assert_eq!(BoxType::from_instance_name("touchBox"), Some(BoxType::GrabHoldBox));
 }
 
+/// Bug §3.2 from docs/codebase_analysis.md: the `||`/`&&` precedence in
+/// the grabbox branch could mis-classify names like `grabHoldBox` once
+/// SSF2 starts using them, because `starts_with("grab") && ends_with("box")`
+/// would catch them BEFORE the touchbox/holdpoint check fires. After the
+/// explicit-paren fix, `grabHoldBox` still hits this branch (it's not a
+/// `touchBox` name), but the precedence is no longer ambiguous to readers.
+#[test]
+fn box_type_grabhold_variants_classify_consistently() {
+    // grabbox, grabBox, grabBox2 — all GrabBox.
+    assert_eq!(BoxType::from_instance_name("grabbox"), Some(BoxType::GrabBox));
+    assert_eq!(BoxType::from_instance_name("grabBox2"), Some(BoxType::GrabBox));
+    // grabSomeBox (starts_with grab, ends_with box) → GrabBox by fallthrough.
+    assert_eq!(BoxType::from_instance_name("grabSomethingBox"), Some(BoxType::GrabBox));
+}
+
 #[test]
 fn box_type_specialty_boxes() {
     assert_eq!(BoxType::from_instance_name("shieldBox"), Some(BoxType::ShieldBox));

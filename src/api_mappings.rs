@@ -1283,9 +1283,32 @@ fn parse_object_fields(body: &str) -> Vec<(String, String)> {
     while i < chars.len() {
         while i < chars.len() && (chars[i].is_whitespace() || chars[i] == ',') { i += 1; }
         if i >= chars.len() { break; }
-        let name_start = i;
-        while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') { i += 1; }
-        let field_name: String = chars[name_start..i].iter().collect();
+        // Quoted key form: `"foo bar": value`. Accept the same set of
+        // characters as inside any string literal — read until the closing
+        // quote (honouring backslash escapes), then proceed to the `:`
+        // separator as with bare identifier keys.
+        let field_name: String = if chars[i] == '"' || chars[i] == '\'' {
+            let quote = chars[i];
+            i += 1;
+            let mut name = String::new();
+            while i < chars.len() && chars[i] != quote {
+                if chars[i] == '\\' {
+                    i += 1;
+                    if i >= chars.len() { break; }
+                    name.push(chars[i]);
+                    i += 1;
+                    continue;
+                }
+                name.push(chars[i]);
+                i += 1;
+            }
+            if i < chars.len() && chars[i] == quote { i += 1; }
+            name
+        } else {
+            let name_start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') { i += 1; }
+            chars[name_start..i].iter().collect()
+        };
         if field_name.is_empty() { break; }
         while i < chars.len() && chars[i].is_whitespace() { i += 1; }
         if i >= chars.len() || chars[i] != ':' { break; }

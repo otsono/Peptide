@@ -376,6 +376,9 @@ fn prerender_skewed_frames(
     if work.is_empty() { return 0; }
 
     // Synthetic bitmap ids for the baked PNGs — start above every real id.
+    // u16 namespace, so we cap at u16::MAX. Past ~5,500 cache misses we
+    // bail loudly instead of silently wrapping back into the real-id range
+    // and colliding with existing shapes.
     let mut next_id: u16 = images.keys().max().copied().unwrap_or(0).max(59_999) + 1;
     // exact world linear part + source id → (id, sym, w, h, min_x, min_y)
     let mut cache: BTreeMap<String, (u16, String, u32, u32, f64, f64)> = BTreeMap::new();
@@ -579,7 +582,23 @@ fn prerender_skewed_frames(
             }
 
             let new_id = next_id;
-            next_id += 1;
+            // Bail out cleanly if we'd overflow the u16 id namespace.
+            // Wrapping back into 0 would collide with real shape ids.
+            match next_id.checked_add(1) {
+                Some(n) => next_id = n,
+                None => {
+                    log::warn!(
+                        "prerender_skewed_frames: exhausted u16 synthetic-id \
+                         namespace at id={}; subsequent sheared placements \
+                         will fall back to the faithful scale+rotation path",
+                        new_id
+                    );
+                    // Don't continue baking; emit nothing for this and any
+                    // later entries. The faithful path is still correct,
+                    // just visually wrong for shears.
+                    break;
+                }
+            }
             let new_sym = format!("skew_{}_{}", char_name, new_id);
             let filename = format!("{}.png", sanitize_name(&new_sym));
             if let Err(e) = dst.save(sprites_dir.join(&filename)) {

@@ -61,7 +61,9 @@ impl BoxType {
             Some(BoxType::Hitbox)
         } else if lower.starts_with("hitbox") || lower.starts_with("hurtbox") {
             Some(BoxType::Hurtbox)
-        } else if lower.starts_with("grabbox") || lower.starts_with("grab") && lower.ends_with("box") {
+        } else if lower.starts_with("grabbox")
+            || (lower.starts_with("grab") && lower.ends_with("box"))
+        {
             Some(BoxType::GrabBox)
         } else if lower.starts_with("itembox") || lower == "itembox" {
             Some(BoxType::ItemBox)
