@@ -634,8 +634,14 @@ pub fn generate_entity(
                             "pivotX": pivot_x,
                             "pivotY": pivot_y,
                             "pluginMetadata": {},
-                            // FrayTools uses CCW-positive; SWF atan2(b,a) is CW-positive in y-down.
-                            "rotation": round2(-fb.rotation),
+                            // SWF `atan2(b, a)` in y-down gives CW-positive degrees;
+                            // FrayTools uses the same CW-positive convention (see
+                            // f472a2dd for the IMAGE-symbol equivalent). Don't negate
+                            // — earlier code did, which silently flipped every
+                            // rotated COLLISION_BOX around its pivot (most visible
+                            // on the itemBox, which is the only routinely rotated
+                            // box). Normalize to 0-360 to match the IMAGE path.
+                            "rotation": round2(((fb.rotation % 360.0) + 360.0) % 360.0),
                             "scaleX": round2(fb.width),
                             "scaleY": round2(fb.height),
                             "type": "COLLISION_BOX",
@@ -1498,7 +1504,10 @@ pub fn generate_projectile_entity(
                         "pivotX": piv_x,
                         "pivotY": piv_y,
                         "pluginMetadata": {},
-                        "rotation": round2(-fb.rotation),
+                        // Same CW-positive 0-360 convention as the IMAGE rotation
+                        // path (see f472a2dd); no negation. Matches the
+                        // Character.entity collision-box emission above.
+                        "rotation": round2(((fb.rotation % 360.0) + 360.0) % 360.0),
                         "scaleX": round2(fb.width),
                         "scaleY": round2(fb.height),
                         "type": "COLLISION_BOX",
