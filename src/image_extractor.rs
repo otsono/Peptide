@@ -1455,6 +1455,28 @@ pub struct DiscoveredProjectile {
     pub inner_labels: Vec<(u16, String)>,
 }
 
+/// A visual effect sprite discovered in the SWF root. Effects are like
+/// projectiles in that they live on the root with a SymbolClass linkage
+/// ID, but they don't carry an `attack_idle` FrameLabel or a `stance`
+/// PlaceObject — they're pure visual playback. Converted to standalone
+/// `library/entities/<name>.entity` files with no scripts/stats; the
+/// character's Script.hx spawns them via `match.createVfx(...)`.
+#[derive(Debug, Clone)]
+pub struct DiscoveredEffect {
+    /// Sprite ID of the effect's root timeline
+    pub sprite_id: u16,
+    /// SymbolClass name (e.g. `effect_land`, `dee_fs_sparkle`).
+    /// Becomes the entity `id` and the `getContent()` lookup key.
+    pub name: String,
+    /// Frame count of the effect's timeline
+    pub frame_count: u16,
+    /// SSF2 FrameLabel tags found inside the effect sprite, in
+    /// timeline order: `(1-based frame, label)`. Used to name the
+    /// emitted entity animations; falls back to a single `vfx`
+    /// animation when there are no labels.
+    pub inner_labels: Vec<(u16, String)>,
+}
+
 /// The head/portrait sprite discovered in the SWF.
 #[derive(Debug, Clone)]
 pub struct DiscoveredHead {
@@ -1468,16 +1490,22 @@ pub struct DiscoveredHead {
     pub image_shape_id: Option<u16>,
 }
 
-/// Scan the SWF for projectile sprites and the head/portrait sprite.
+/// Scan the SWF for projectile, effect, and head/portrait sprites.
 ///
-/// Projectiles are identified by having an `attack_idle` frame label.
-/// Head sprites are identified by the naming pattern `{char}_head`.
+///   - Projectiles → have an `attack_idle` FrameLabel + a `stance`
+///     PlaceObject inside.
+///   - Effects → a root-level SymbolClass'd sprite with NEITHER of
+///     those, AND not matched by the head/UI carve-outs (`*_head`,
+///     `*_hud`, `*_icon`, `*_Symbol`, the character's own sprite, or
+///     auto-generated `_fla.*` timelines).
+///   - Head → matched by `*_head` etc.; see `find_receiver_start`-style
+///     name heuristics for menu.entity rendering.
 ///
-/// Returns (projectiles, head_sprite)
+/// Returns (projectiles, effects, head_sprite).
 pub fn discover_projectiles_and_head(
     swf_data: &[u8],
     char_name: &str,
-) -> Result<(Vec<DiscoveredProjectile>, Option<DiscoveredHead>)> {
+) -> Result<(Vec<DiscoveredProjectile>, Vec<DiscoveredEffect>, Option<DiscoveredHead>)> {
     use std::io::Cursor;
     let swf_buf = swf::decompress_swf(Cursor::new(swf_data)).context("decompress SWF")?;
     let swf = swf::parse_swf(&swf_buf).context("parse SWF")?;
@@ -1698,5 +1726,70 @@ pub fn discover_projectiles_and_head(
         }
     }
 
-    Ok((projectiles, head))
+    // ── Effects pass ────────────────────────────────────────────────────
+    // A second walk picks up root-level SymbolClass'd sprites that aren't
+    // projectiles, the character itself, or UI carve-outs. Effects are
+    // pure visual sprites (no `attack_idle`, no `stance`).
+    let projectile_ids: std::collections::BTreeSet<u16> =
+        projectiles.iter().map(|p| p.sprite_id).collect();
+    let head_id = head.as_ref().map(|h| h.sprite_id);
+    let mut effects: Vec<DiscoveredEffect> = Vec::new();
+    for tag in &swf.tags {
+        if let swf::Tag::DefineSprite(sprite) = tag {
+            let name = symbols.get(&sprite.id).cloned().unwrap_or_default();
+            if name.is_empty() { continue; }
+            // Auto-generated timeline classes — never effects.
+            if name.contains("_fla.") { continue; }
+            // Already classified.
+            if projectile_ids.contains(&sprite.id) { continue; }
+            if Some(sprite.id) == head_id { continue; }
+            // The character's own sprite — has a `stance` PlaceObject but
+            // no `attack_idle` (which is why the projectile pass skipped
+            // it). Skip by name match.
+            if name.to_lowercase() == char_lower { continue; }
+            // UI carve-outs: HUDs, franchise symbols, head/icon helpers
+            // that menu.entity already handles. Match by suffix or by
+            // shared SSF2 convention.
+            let nl = name.to_lowercase();
+            if nl.ends_with("_hud") || nl.ends_with("_symbol")
+                || nl.ends_with("_icon") || nl.ends_with("icon")
+                || nl.ends_with("_head") || nl == "head"
+                || nl == "sparkle"                       // generic 1-frame placeholder
+            { continue; }
+            // Also skip sprites that carry a `stance` PlaceObject — these
+            // are sub-characters or sub-projectiles (rare but observed).
+            let has_stance = sprite.tags.iter().any(|t| {
+                if let swf::Tag::PlaceObject(po) = t {
+                    po.name.as_ref()
+                        .map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252) == "stance")
+                        .unwrap_or(false)
+                } else { false }
+            });
+            if has_stance { continue; }
+
+            // Collect inner-sprite FrameLabel tags for the entity's
+            // animation names. Same shape as projectile inner_labels.
+            let mut inner_labels: Vec<(u16, String)> = Vec::new();
+            let mut frame: u16 = 1;
+            for t in &sprite.tags {
+                match t {
+                    swf::Tag::FrameLabel(fl) => {
+                        let label = fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
+                        if !label.is_empty() { inner_labels.push((frame, label)); }
+                    }
+                    swf::Tag::ShowFrame => { frame += 1; }
+                    _ => {}
+                }
+            }
+
+            effects.push(DiscoveredEffect {
+                sprite_id: sprite.id,
+                name,
+                frame_count: sprite.num_frames.max(1),
+                inner_labels,
+            });
+        }
+    }
+
+    Ok((projectiles, effects, head))
 }

@@ -12,7 +12,7 @@ use crate::fraytools_project;
 use crate::palette_gen;
 use crate::uuid_gen::det_uuid;
 
-pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite_boxes: &std::collections::BTreeMap<String, crate::sprite_parser::AnimationBoxData>, img_result: &crate::image_extractor::ImageExtractionResult, costumes_json: Option<&Path>, sounds: &[crate::sound_extractor::SoundEntry], projectiles: &[crate::image_extractor::DiscoveredProjectile], head_sprite: Option<&crate::image_extractor::DiscoveredHead>, swf_data: &[u8]) -> Result<()> {
+pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite_boxes: &std::collections::BTreeMap<String, crate::sprite_parser::AnimationBoxData>, img_result: &crate::image_extractor::ImageExtractionResult, costumes_json: Option<&Path>, sounds: &[crate::sound_extractor::SoundEntry], projectiles: &[crate::image_extractor::DiscoveredProjectile], effects: &[crate::image_extractor::DiscoveredEffect], head_sprite: Option<&crate::image_extractor::DiscoveredHead>, swf_data: &[u8]) -> Result<()> {
     let char_id = char_name.to_lowercase().replace(" ", "");
     let char_dir = output_dir.join(&char_id);
     let scripts_dir = char_dir.join("library/scripts/Character");
@@ -271,6 +271,23 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
             ),
         )?;
         log::info!("Generated projectile scripts for {} → {}*.hx", proj.name, pascal);
+    }
+
+    // ── effect .entity files ─────────────────────────────────────────────
+    // Per-effect entities (no scripts, no stats, no manifest entries).
+    // The character's Script.hx spawns them via match.createVfx(...).
+    for effect in effects {
+        let filename = format!("{}.entity", effect.name);
+        let entity_json = entity_gen::generate_effect_entity(
+            &char_id, effect, img_result, swf_data,
+        );
+        fs::write(entities_dir.join(&filename), entity_json)?;
+        log::info!(
+            "Generated effect entity: {} ({} frames, {} animations)",
+            filename,
+            effect.frame_count,
+            if effect.inner_labels.is_empty() { 1 } else { effect.inner_labels.len() },
+        );
     }
 
     // Stats summary for debugging

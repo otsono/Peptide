@@ -1850,3 +1850,170 @@ pub fn generate_projectile_entity(
 
     serde_json::to_string_pretty(&entity).unwrap_or_else(|_| "{}".to_string())
 }
+
+/// Generate a `<effect_name>.entity` file for one SSF2 effect sprite.
+///
+/// Effects are pure visual playback — no scripts, no stats, no manifest
+/// entry. The character's `Script.hx` triggers them with
+/// `match.createVfx(new VfxStats({ spriteContent: self.getResource()
+/// .getContent("<name>"), animation: "<label-or-vfx>" }), self)`.
+///
+/// SSF2 effect structure:
+///   Effect sprite (e.g. `effect_land`, N frames):
+///     - FrameLabels at various 1-based frames split it into named
+///       sub-animations.
+///     - Image placements per frame.
+///
+/// Fraymakers effect animations:
+///   - One animation per inner FrameLabel (animation name = label).
+///   - If there are no labels, a single `vfx` animation covering all frames.
+///
+/// Each animation has a single Image Layer; no collision/script layers.
+pub fn generate_effect_entity(
+    char_id: &str,
+    effect: &crate::image_extractor::DiscoveredEffect,
+    img_result: &crate::image_extractor::ImageExtractionResult,
+    swf_data: &[u8],
+) -> String {
+    let mut keyframes: Vec<Value> = Vec::new();
+    let mut layers: Vec<Value> = Vec::new();
+    let mut symbols: Vec<Value> = Vec::new();
+    let mut animations: Vec<Value> = Vec::new();
+
+    let effect_id = &effect.name;
+    let total_frames = effect.frame_count.max(1) as u32;
+
+    // Pull per-frame images by walking the effect sprite's timeline.
+    let frame_images = crate::image_extractor::extract_projectile_frame_images(
+        swf_data,
+        char_id,
+        effect.sprite_id,
+        img_result,
+    ).unwrap_or(crate::image_extractor::ProjectileFrameImages {
+        frames: vec![],
+        image_guids: std::collections::BTreeMap::new(),
+    });
+
+    // Determine animation segments: (name, start_0based, end_exclusive).
+    // No labels → single "vfx" animation covering the whole sprite.
+    let segments: Vec<(String, usize, usize)> = if effect.inner_labels.is_empty() {
+        vec![("vfx".to_string(), 0usize, total_frames as usize)]
+    } else {
+        let mut segs: Vec<(String, usize, usize)> = Vec::new();
+        for (i, (frame_1based, label)) in effect.inner_labels.iter().enumerate() {
+            let start = (frame_1based.saturating_sub(1)) as usize;
+            let end = if i + 1 < effect.inner_labels.len() {
+                effect.inner_labels[i + 1].0.saturating_sub(1) as usize
+            } else {
+                total_frames as usize
+            };
+            if end > start {
+                let anim_name: String = label
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                    .collect();
+                segs.push((anim_name, start, end));
+            }
+        }
+        // Cover any frames before the first label with a leading `vfx` segment.
+        if let Some(first_start) = effect.inner_labels.first().map(|(f, _)| f.saturating_sub(1) as usize) {
+            if first_start > 0 {
+                segs.insert(0, ("vfx".to_string(), 0, first_start));
+            }
+        }
+        if segs.is_empty() {
+            segs.push(("vfx".to_string(), 0, total_frames as usize));
+        }
+        segs
+    };
+
+    for (seg_idx, (anim_name, start, end)) in segments.iter().enumerate() {
+        let mut img_kf_ids: Vec<Value> = Vec::new();
+        let seg_len = end.saturating_sub(*start).max(1);
+        for offset in 0..seg_len {
+            let frame_idx = start + offset;
+            let kf_id = uuid(char_id, &format!("eff_{}_seg{}_img_kf_{}", effect_id, seg_idx, frame_idx));
+            let sym_name = frame_images.frames.get(frame_idx).and_then(|s| s.as_ref());
+            if let Some(sym_name) = sym_name {
+                if let Some(guid) = frame_images.image_guids.get(sym_name.as_str()) {
+                    let sym_id = uuid(char_id, &format!("eff_{}_seg{}_img_sym_{}", effect_id, seg_idx, frame_idx));
+                    symbols.push(json!({
+                        "$id": sym_id,
+                        "alpha": 1,
+                        "imageAsset": guid,
+                        "pivotX": 0,
+                        "pivotY": 0,
+                        "pluginMetadata": {},
+                        "rotation": 0,
+                        "scaleX": 1,
+                        "scaleY": 1,
+                        "type": "IMAGE",
+                        "x": 0,
+                        "y": 0
+                    }));
+                    keyframes.push(json!({
+                        "$id": kf_id,
+                        "length": 1,
+                        "pluginMetadata": {},
+                        "symbol": sym_id,
+                        "tweenType": "LINEAR",
+                        "tweened": false,
+                        "type": "IMAGE"
+                    }));
+                    img_kf_ids.push(kf_id.into());
+                    continue;
+                }
+            }
+            keyframes.push(json!({
+                "$id": kf_id,
+                "length": 1,
+                "pluginMetadata": {},
+                "symbol": Value::Null,
+                "tweenType": "LINEAR",
+                "tweened": false,
+                "type": "IMAGE"
+            }));
+            img_kf_ids.push(kf_id.into());
+        }
+
+        let img_layer_id = uuid(char_id, &format!("eff_{}_seg{}_img_layer", effect_id, seg_idx));
+        layers.push(json!({
+            "$id": img_layer_id,
+            "name": "Image Layer",
+            "type": "IMAGE",
+            "keyframes": img_kf_ids,
+            "hidden": false,
+            "locked": false,
+            "pluginMetadata": {}
+        }));
+
+        animations.push(json!({
+            "$id": uuid(char_id, &format!("eff_{}_seg{}_anim", effect_id, seg_idx)),
+            "name": anim_name,
+            "layers": [img_layer_id],
+            "pluginMetadata": {}
+        }));
+    }
+
+    // 30fps → 60fps: hold every keyframe for two frames.
+    double_keyframe_lengths(&mut keyframes);
+
+    let entity = json!({
+        "animations": animations,
+        "export": true,
+        "guid": uuid(char_id, &format!("eff_{}_entity_guid", effect_id)),
+        "id": effect_id,
+        "keyframes": keyframes,
+        "layers": layers,
+        "paletteMap": Value::Null,
+        "pluginMetadata": {},
+        "plugins": [],
+        "symbols": symbols,
+        "tags": [],
+        "terrains": [],
+        "tilesets": [],
+        "version": 14
+    });
+
+    serde_json::to_string_pretty(&entity).unwrap_or_else(|_| "{}".to_string())
+}

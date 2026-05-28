@@ -290,19 +290,20 @@ fn process_character(
         Err(e) => { log::warn!("sound_extractor failed: {}", e); vec![] }
     };
 
-    // Discover projectiles and head sprite
-    let (projectiles, head_sprite) = image_extractor::discover_projectiles_and_head(swf_data, char_name)
+    // Discover projectiles, effects, and head sprite
+    let (projectiles, effects, head_sprite) = image_extractor::discover_projectiles_and_head(swf_data, char_name)
         .unwrap_or_else(|e| {
             log::warn!("discover_projectiles_and_head failed: {}", e);
-            (vec![], None)
+            (vec![], vec![], None)
         });
-    log::info!("Discovered {} projectiles, head={}",
+    log::info!("Discovered {} projectiles, {} effects, head={}",
         projectiles.len(),
+        effects.len(),
         head_sprite.as_ref().map(|h| h.name.as_str()).unwrap_or("none"));
 
     // Generate Fraymakers files
     haxe_gen::generate(output, char_name, &char_data, &sprite_boxes, &img_result,
-        costumes, &sounds, &projectiles, head_sprite.as_ref(), swf_data)?;
+        costumes, &sounds, &projectiles, &effects, head_sprite.as_ref(), swf_data)?;
     log::info!("Generated Fraymakers files for {}", char_name);
 
     write_conversion_log(&char_output_dir, char_name)?;

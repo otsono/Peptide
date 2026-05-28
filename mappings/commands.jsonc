@@ -196,6 +196,28 @@
       "pattern": "\\.gotoAndPlay\\(\\s*(\\d+)\\s*\\)",
       "replacement": ".playFrame($1)",
       "note": "numeric-frame form"
+    },
+    // self.attachEffect("name") → match.createVfx(new VfxStats({ ... }), self).
+    // Each effect ships as its own library/entities/<name>.entity, looked up
+    // at runtime via self.getResource().getContent("<name>"). The pattern
+    // consumes the `self.` prefix so the replacement isn't accidentally
+    // glued onto the preceding token. Calls with a non-self receiver
+    // (`enemy.attachEffect`, etc.) or non-literal args fall through to
+    // ssf2_only marking — they need a manual port.
+    {
+      "pattern": "\\bself\\.attachEffect\\(\\s*\"([^\"]*)\"\\s*\\)",
+      "replacement": "match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(\"$1\"), animation: \"vfx\" }), self)",
+      "note": "1-arg self.attachEffect → createVfx with default animation"
+    },
+    // 2-arg form: self.attachEffect("name", { props }). The {…} block can
+    // carry x/y offset, scale, rotation, animation, etc. We can't safely
+    // map every prop (some SSF2 props have no FM equivalent), so the raw
+    // object is preserved as a trailing TODO comment for hand-tuning.
+    // `[^{}]*` rejects nested braces — those rare cases stay flagged.
+    {
+      "pattern": "\\bself\\.attachEffect\\(\\s*\"([^\"]*)\"\\s*,\\s*\\{([^{}]*)\\}\\s*\\)",
+      "replacement": "match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(\"$1\"), animation: \"vfx\" }), self) /* TODO port props: {$2} */",
+      "note": "2-arg self.attachEffect → createVfx; props preserved as TODO comment"
     }
   ],
 
@@ -347,9 +369,11 @@
   // don't compile but stay readable. Editable via this file — replaces the
   // previously-hardcoded COMMENT_METHODS list in api_mappings.rs.
   "ssf2_only": [
-    // Effects / VFX — FM uses match.createVfx(stats, owner) /
-    // startBodySparkleEffect() with per-VFX content IDs. Manual port.
-    { "name": "attachEffect",                    "note": "FM uses match.createVfx(vfxStats, owner) or startBodySparkleEffect() — manual port" },
+    // Effects / VFX — most attachEffect calls are rewritten by the
+    // regex_replacements above (1-arg and flat 2-arg forms). Anything that
+    // survives that pass (e.g. non-literal first arg, nested-brace props,
+    // dynamic effect names) falls through here for manual port.
+    { "name": "attachEffect",                    "note": "regex_replacements rewrites literal-string forms; this catches non-literal/nested cases for manual port" },
     { "name": "clearEffectsOnStateChange",       "note": "VFX lifecycle is owned by the Vfx instance / event listeners in FM — no global clear" },
     { "name": "addEffectToList",                 "note": "already partially handled above; this catches the remainder" },
 
