@@ -1447,7 +1447,7 @@ pub fn infer_ext_var_types(
 /// Wrap SSF2 instance-variable accesses into Fraymakers' persistent-state
 /// wrappers. Pattern (from Fraymakers/character-template Script.hx):
 ///
-///   ```
+///   ```text
 ///   var counter = self.makeInt(0);   // declaration
 ///   counter.set(5);                  // assignment
 ///   counter.get();                   // read
