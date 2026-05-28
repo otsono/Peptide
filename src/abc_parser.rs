@@ -1240,6 +1240,60 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
     })
 }
 
+/// Find the body of `Main::get<X>()` where the lowercased method-name
+/// suffix matches `char_name`. The match is the derived-id rule from
+/// `docs/path2_unification_plan.md` §1: strip `get`, lowercase, compare
+/// — no camelCase splitting, no underscore handling beyond preservation.
+/// Returns the bundle method's body and the original method name.
+pub fn find_bundle_method<'a>(abc: &'a AbcFile, char_name: &str)
+    -> Option<(&'a MethodBody, String)>
+{
+    let main = abc.classes.iter().find(|c| c.name == "Main")?;
+    let getter = main.instance_methods.iter().find(|t| {
+        if !t.name.starts_with("get") { return false; }
+        t.name[3..].to_lowercase() == char_name
+    })?;
+    let body = abc.method_bodies.iter().find(|b| b.method_idx == getter.method_idx)?;
+    Some((body, getter.name.clone()))
+}
+
+/// Path-2 extraction: stats / attacks / projectiles come from the
+/// `Main::get<X>()` bundle method body; behavior (Ext methods, ext_vars,
+/// frame_scripts, xframe_map) reuses Stage B from `extract_character`.
+///
+/// Because the bundle method body contains byte-identical object literals
+/// to the `<X>Ext::get*Stats` bodies (proven across the corpus — see
+/// `docs/path2_unification_plan.md` §0 / §1.5), running the existing
+/// `extract_ssf2_stats` / `extract_attack_objects` /
+/// `extract_projectile_objects` over the bundle body produces the same
+/// data as the inline path.
+///
+/// When no `Main::get<X>` is found for `char_name`, returns Stage B data
+/// only (stats/attacks/projectiles empty). Useful for misc.ssf-style
+/// SWFs or for characters that haven't appeared in the bundle yet.
+pub fn extract_character_bundle(abc: &AbcFile, char_name: &str) -> Result<ExtractedCharacter> {
+    let mut ec = extract_character(abc, char_name)?;
+
+    let Some((body, _method_name)) = find_bundle_method(abc, char_name) else {
+        log::warn!("path-2: no Main::get* matching {:?}; falling through with path-1 data", char_name);
+        return Ok(ec);
+    };
+
+    // Override Stage A with bundle-derived data.
+    // (Path 1's Stage A output gets discarded — wasteful but contained.
+    // The duplicate Stage A code in extract_character disappears in
+    // Step C when path 1 is deleted.)
+    let bundle_attacks      = extract_attack_objects(&body.bytecode, abc);
+    let bundle_projectiles  = extract_projectile_objects(&body.bytecode, abc);
+    let bundle_stats        = extract_ssf2_stats(&body.bytecode, abc);
+
+    ec.attacks     = bundle_attacks;
+    ec.projectiles = bundle_projectiles;
+    ec.stats       = bundle_stats.or(ec.stats);  // keep path-1's stats if bundle scan finds nothing
+
+    Ok(ec)
+}
+
 /// Symbolic value pushed onto the simulated AVM2 stack by `scan_method`
 /// and inspected by `AbcVisitor` implementations to recognise object
 /// literals (`newobject`) that carry SSF2 attack / projectile / stat /
