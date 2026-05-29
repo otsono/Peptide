@@ -1521,23 +1521,42 @@ pub fn generate_projectile_entity(
                         "y": cy
                     }));
                 } else {
-                    let (piv_x, piv_y) = (round2(fb.width / 2.0), round2(fb.height / 2.0));
+                    // Mirror the Character.entity collision-box emission exactly
+                    // (see the path above): ItemBox pivots on its bottom-centre
+                    // (the hand) and bakes the rotation into the top-left so the
+                    // hand stays pinned under rotation; every other box type is
+                    // already AABB-collapsed to rotation 0 in sprite_parser, so
+                    // it uses a centre pivot and raw top-left. Without this,
+                    // rotated projectile itemboxes drift exactly like the
+                    // character path did before the bake.
+                    let (pivot_x, pivot_y) = if box_type == crate::sprite_parser::BoxType::ItemBox {
+                        (fb.width / 2.0, fb.height)        // bottom-centre = hand
+                    } else {
+                        (fb.width / 2.0, fb.height / 2.0)  // centre
+                    };
+                    let theta = ((fb.rotation % 360.0) + 360.0) % 360.0;
+                    let (box_x, box_y) = if box_type == crate::sprite_parser::BoxType::ItemBox {
+                        let hand = crate::fraytools_transform::intended_pivot_point(
+                            fb.x, fb.y, pivot_x, pivot_y);
+                        let off = crate::fraytools_transform::collision_box_anchor(
+                            0.0, 0.0, pivot_x, pivot_y, theta);
+                        (hand.0 - off.0, hand.1 - off.1)
+                    } else {
+                        (fb.x, fb.y)
+                    };
                     symbols.push(json!({
                         "$id": sym_id,
                         "alpha": 0.5,
                         "color": color,
-                        "pivotX": piv_x,
-                        "pivotY": piv_y,
+                        "pivotX": round2(pivot_x),
+                        "pivotY": round2(pivot_y),
                         "pluginMetadata": {},
-                        // Same CW-positive 0-360 convention as the IMAGE rotation
-                        // path (see f472a2dd); no negation. Matches the
-                        // Character.entity collision-box emission above.
-                        "rotation": round2(((fb.rotation % 360.0) + 360.0) % 360.0),
+                        "rotation": round2(theta),
                         "scaleX": round2(fb.width),
                         "scaleY": round2(fb.height),
                         "type": "COLLISION_BOX",
-                        "x": round2(fb.x),
-                        "y": round2(fb.y)
+                        "x": round2(box_x),
+                        "y": round2(box_y)
                     }));
                 }
 
