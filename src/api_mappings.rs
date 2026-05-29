@@ -685,6 +685,19 @@ fn sanitise_sound_id(id: &str) -> (String, Option<String>) {
     }
 }
 
+/// `onTeardown` setup that stops + nulls the active voice clip (mirrors the
+/// no-overlap guard in `playVoiceSound`). Returned only when the character has
+/// a voice helper (`_activeVoiceClip` is declared); spliced into the single
+/// template `onTeardown` by `haxe_gen::generate_script`. Empty otherwise, so
+/// voice-less characters get no cleanup statements (and no dead hook body).
+pub fn voice_teardown_cleanup(has_voice_helper: bool) -> &'static str {
+    if has_voice_helper {
+        "\tif (_activeVoiceClip != null) {\n\t\t_activeVoiceClip.stop();\n\t\t_activeVoiceClip = null;\n\t}\n"
+    } else {
+        ""
+    }
+}
+
 /// Build an `Array<String>` literal for a sound table, substituting the silent
 /// placeholder + a visible TODO (option (i)) for ids that are neither a global
 /// nor an extracted asset, so intent stays inspectable at the data layer.

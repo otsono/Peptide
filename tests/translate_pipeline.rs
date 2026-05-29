@@ -353,6 +353,19 @@ fn sound_helpers_placeholder_for_unmapped_id() {
 }
 
 #[test]
+fn voice_teardown_cleanup_gated_on_voice_helper() {
+    // Voice helper present → onTeardown stops + nulls the active clip.
+    let on = voice_teardown_cleanup(true);
+    assert!(on.contains("if (_activeVoiceClip != null)")
+        && on.contains("_activeVoiceClip.stop();")
+        && on.contains("_activeVoiceClip = null;"),
+        "voice helper present → teardown stops+nulls the clip; got: {}", on);
+    // No voice helper → no cleanup statements (no dead hook body).
+    assert_eq!(voice_teardown_cleanup(false), "",
+        "voice-less character → no teardown cleanup");
+}
+
+#[test]
 fn play_attack_sound_call_routed_to_bare_helper() {
     // self.playAttackSound(N) → bare playAttackSound(N); not commented out.
     let out = translate_ssf2_to_fm("self.playAttackSound(2);");

@@ -1015,6 +1015,17 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
             }
         }
     }
+    // Sound-helper emission flags (see the sound block below). Computed here so
+    // onTeardown can splice in voice-clip cleanup when this character has a
+    // voice helper.
+    let calls_attack = data.scripts.iter().any(|s| s.code.contains("playAttackSound("));
+    let calls_voice  = data.scripts.iter().any(|s| s.code.contains("playVoiceSound("));
+    let emit_voice = !data.voice_sounds.is_empty() || calls_voice;
+    // onTeardown cleanup: stop + null the active voice clip when a voice helper
+    // exists. Spliced into the single template onTeardown so any SSF2
+    // onTeardown body is preserved.
+    let teardown_setup = crate::api_mappings::voice_teardown_cleanup(emit_voice);
+
     emit_tpl(&mut out, "//Runs on object init\n", "function initialize(){\n",
         &init_setup, "initialize");
     emit_tpl(&mut out, "", "function update(){\n", "", "update");
@@ -1024,7 +1035,7 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
         "", "inputUpdateHook");
     emit_tpl(&mut out, "// CState-based handling for LINK_FRAMES\n",
         "function handleLinkFrames(e){\n", "", "handleLinkFrames");
-    emit_tpl(&mut out, "", "function onTeardown() {\n", "", "onTeardown");
+    emit_tpl(&mut out, "", "function onTeardown() {\n", teardown_setup, "onTeardown");
 
     out.push_str("// --- end general functions\n\n");
 
@@ -1047,9 +1058,8 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     // each when its table is non-empty OR the character calls that function —
     // the latter keeps a call-without-table (e.g. sandbag) bound to a defined,
     // bounds-guarded no-op. Runs inside the generate() AvailableSounds guard so
-    // unmapped ids fall back to the silent placeholder.
-    let calls_attack = data.scripts.iter().any(|s| s.code.contains("playAttackSound("));
-    let calls_voice  = data.scripts.iter().any(|s| s.code.contains("playVoiceSound("));
+    // unmapped ids fall back to the silent placeholder. (calls_attack/calls_voice
+    // computed above, near the onTeardown emission.)
     out.push_str(&crate::api_mappings::generate_sound_helpers(
         &data.attack_sounds, &data.voice_sounds, calls_attack, calls_voice));
 
