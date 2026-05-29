@@ -899,9 +899,9 @@ fn extract_frame_boxes(
                             });
                         }
 
-                        // CollisonBox_6: 50×50 centered at origin.
-                        // matrix_to_box returns (top_left_x, top_left_y, width, height).
-                        let (local_x, local_y, local_w, local_h) = matrix_to_box(&item.matrix, base_size);
+                        // CollisonBox_6: centered at origin.
+                        // matrix_to_box returns (top_left_x, top_left_y, width, height, rotation_deg).
+                        let (local_x, local_y, local_w, local_h, rot) = matrix_to_box(&item.matrix, base_size);
                         let world_x = root_xform.tx + local_x * sx;
                         let world_y = root_xform.ty + local_y * sy;
                         let world_w = (local_w * sx).abs();
@@ -913,7 +913,7 @@ fn extract_frame_boxes(
                             y: world_y,
                             width: world_w,
                             height: world_h,
-                            rotation: 0.0,
+                            rotation: rot,
                         })
                     })
                     .collect();
@@ -983,28 +983,60 @@ struct DisplayItem {
     matrix: swf::Matrix,
 }
 
-/// Convert a SWF matrix to (x, y, width, height) in pixels.
-/// The CollisonBox shape is base_size × base_size pixels, **centered at (0,0)**.
-/// Matrix scale (a,d) gives the actual dimensions; tx/ty give the **center** position.
-/// Returns (top_left_x, top_left_y, width, height) — all in pixels.
-fn matrix_to_box(m: &swf::Matrix, base_size: f64) -> (f64, f64, f64, f64) {
+/// Convert a SWF matrix to (top_left_x, top_left_y, width, height, rotation_deg)
+/// in pixels / degrees. The CollisonBox shape is base_size × base_size pixels,
+/// **centered at (0,0)**; tx/ty give the **center** position.
+///
+/// Scale must come from the full column-vector magnitudes, NOT just `a`/`d`.
+/// A box rotated by θ stores its scale in the off-diagonal `b`/`c` terms:
+///   a = sx·cosθ   b = sx·sinθ
+///   c = -sy·sinθ  d = sy·cosθ
+/// so an `a`/`d`-only read collapses a 90°-rotated box to 0×0 (the
+/// sandbag aerial_down frames 7-8 hurtbox bug). Mirror the IMAGE path's
+/// decomposition (AGENT_CONTEXT §"SWF Matrix Decomposition"):
+///   scale_x = √(a²+b²)   scale_y = √(c²+d²)   rotation = atan2(b, a)
+///
+/// Rotation is emitted so entity_gen can orient the box; a collision
+/// rectangle is symmetric under reflection/180°, so magnitude scales +
+/// atan2(b,a) reproduce the covered area faithfully even when the SWF
+/// matrix carries a flip.
+fn matrix_to_box(m: &swf::Matrix, base_size: f64) -> (f64, f64, f64, f64, f64) {
     // tx/ty are in twips (1/20 pixel) → convert to pixels
     let cx = m.tx.get() as f64 / 20.0;  // center x
     let cy = m.ty.get() as f64 / 20.0;  // center y
 
-    // a = scale_x, d = scale_y (Fixed16 → f64)
-    let scale_x = m.a.to_f64();
-    let scale_y = m.d.to_f64();
+    let a = m.a.to_f64();
+    let b = m.b.to_f64();
+    let c = m.c.to_f64();
+    let d = m.d.to_f64();
 
-    let w = (scale_x * base_size).abs();
-    let h = (scale_y * base_size).abs();
+    let scale_x = (a * a + b * b).sqrt();
+    let scale_y = (c * c + d * d).sqrt();
 
-    // The CollisonBox shape spans -25..25 (for base_size=50), so tx/ty is the CENTER.
-    // Convert center → top-left:
+    // Only emit a rotation when the matrix is genuinely off-axis (b/c
+    // non-negligible). For an axis-aligned box — including a horizontal
+    // or vertical flip (negative a/d, but b≈c≈0) — keep rotation 0 so
+    // the output stays byte-identical to the pre-fix axis-aligned path.
+    // A collision rectangle is symmetric under reflection, so dropping
+    // the flip's would-be 180° rotation changes nothing geometrically
+    // while avoiding churn across every flipped box in the corpus.
+    const OFF_AXIS_EPS: f64 = 1e-4;
+    let rotation_deg = if b.abs() < OFF_AXIS_EPS && c.abs() < OFF_AXIS_EPS {
+        0.0
+    } else {
+        b.atan2(a).to_degrees()
+    };
+
+    let w = scale_x * base_size;
+    let h = scale_y * base_size;
+
+    // The CollisonBox shape is centered at the origin, so tx/ty is the
+    // CENTER. Rotation in entity_gen pivots about the box center, so the
+    // top-left of the un-rotated box is still center − (w/2, h/2).
     let x = cx - w / 2.0;
     let y = cy - h / 2.0;
 
-    (x, y, w, h)
+    (x, y, w, h, rotation_deg)
 }
 
 /// Extract itemBox geometry from its PlaceObject matrix.
