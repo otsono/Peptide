@@ -917,27 +917,31 @@ fn extract_frame_boxes(
                         // scale lives in the off-diagonal b/c terms.
                         let (local_x, local_y, local_w, local_h, rot) = matrix_to_box(&item.matrix, base_size);
 
-                        // Fraymakers honors rotation ONLY on ItemBox /
-                        // custom boxes. This `matrix_to_box` path handles
-                        // every OTHER box type (hurt / hit / grab / …),
-                        // none of which support rotation in the engine, so
-                        // collapse the rotated box into the axis-aligned
-                        // bounding box that contains it and emit
-                        // rotation = 0. For θ≈0 the AABB equals (w, h), so
-                        // axis-aligned boxes are unchanged.
-                        debug_assert!(!box_type.supports_rotation(),
-                            "rotation-honoring box types must take the dedicated branch, not the AABB path");
-                        let (aabb_w, aabb_h) = aabb_of_rotated_box(local_w, local_h, rot);
-                        // The AABB shares the rotated box's center; recenter.
+                        // Per-BoxType rotation decision (see
+                        // finalize_box_geometry). FM honors rotation only on
+                        // rotation-capable box types; every other type
+                        // (hurt / hit / grab / shield / reflect / absorb /
+                        // ledge / grab-hold) collapses the rotated box into
+                        // the AABB that contains it and emits rotation = 0.
+                        // The ItemBox path is handled in the dedicated branch
+                        // above (it has its own hand-anchor extractor), so
+                        // here `box_type` is never rotation-capable today and
+                        // the helper returns the AABB; the call is routed
+                        // through it anyway so a future CustomBox emitted with
+                        // a real FM custom-box type keeps its rotation
+                        // automatically.
+                        let (fin_w, fin_h, fin_rot) =
+                            finalize_box_geometry(box_type, local_w, local_h, rot);
+                        // The AABB / kept box shares the source box's center.
                         let cx = local_x + local_w / 2.0;
                         let cy = local_y + local_h / 2.0;
-                        let aabb_x = cx - aabb_w / 2.0;
-                        let aabb_y = cy - aabb_h / 2.0;
+                        let box_x = cx - fin_w / 2.0;
+                        let box_y = cy - fin_h / 2.0;
 
-                        let world_x = root_xform.tx + aabb_x * sx;
-                        let world_y = root_xform.ty + aabb_y * sy;
-                        let world_w = (aabb_w * sx).abs();
-                        let world_h = (aabb_h * sy).abs();
+                        let world_x = root_xform.tx + box_x * sx;
+                        let world_y = root_xform.ty + box_y * sy;
+                        let world_w = (fin_w * sx).abs();
+                        let world_h = (fin_h * sy).abs();
                         Some(FrameBox {
                             box_type,
                             instance_name: item.instance_name.clone(),
@@ -945,7 +949,7 @@ fn extract_frame_boxes(
                             y: world_y,
                             width: world_w,
                             height: world_h,
-                            rotation: 0.0,
+                            rotation: fin_rot,
                         })
                     })
                     .collect();
@@ -1047,6 +1051,25 @@ fn aabb_of_rotated_box(w: f64, h: f64, rotation_deg: f64) -> (f64, f64) {
     let rad = rotation_deg.to_radians();
     let (cos, sin) = (rad.cos().abs(), rad.sin().abs());
     (w * cos + h * sin, w * sin + h * cos)
+}
+
+/// Decide a collision box's final `(width, height, rotation)` from its
+/// decomposed source size + rotation and its `BoxType`.
+///
+/// Fraymakers honors a non-zero rotation only on rotation-capable box
+/// types (`BoxType::supports_rotation()` — `ItemBox`, and `CustomBox`
+/// once we emit a real FM custom-box type). For those, the box is kept
+/// as-is `(w, h, θ)`. For every other type the rotation is collapsed
+/// into the axis-aligned bounding box that contains the rotated
+/// rectangle, emitted with `rotation = 0`. For `θ ≈ 0` the AABB equals
+/// `(w, h)`, so axis-aligned boxes are byte-identical either way.
+fn finalize_box_geometry(box_type: BoxType, w: f64, h: f64, rotation_deg: f64) -> (f64, f64, f64) {
+    if box_type.supports_rotation() {
+        (w, h, rotation_deg)
+    } else {
+        let (aabb_w, aabb_h) = aabb_of_rotated_box(w, h, rotation_deg);
+        (aabb_w, aabb_h, 0.0)
+    }
 }
 
 fn matrix_to_box(m: &swf::Matrix, base_size: f64) -> (f64, f64, f64, f64, f64) {
@@ -1230,7 +1253,7 @@ fn median_f64(sorted: &[f64]) -> f64 {
 
 #[cfg(test)]
 mod matrix_to_box_tests {
-    use super::{matrix_to_box, aabb_of_rotated_box, BoxType};
+    use super::{matrix_to_box, aabb_of_rotated_box, finalize_box_geometry, BoxType};
     use swf::{Matrix, Fixed16, Twips};
 
     fn mat(a: f32, b: f32, c: f32, d: f32, tx: f32, ty: f32) -> Matrix {
@@ -1339,6 +1362,58 @@ mod matrix_to_box_tests {
                    BoxType::ShieldBox, BoxType::ReflectBox, BoxType::AbsorbBox,
                    BoxType::LedgeBox, BoxType::GrabHoldBox] {
             assert!(!bt.supports_rotation(), "{:?} must NOT support rotation", bt);
+        }
+    }
+
+    // ── Per-BoxType geometry finalization (the integration of the rule) ──
+
+    #[test]
+    fn finalize_hurtbox_axis_aligned_unchanged() {
+        // θ=0 hurtbox: AABB == (w,h), rotation 0. Byte-identical to old.
+        let (w, h, rot) = finalize_box_geometry(BoxType::Hurtbox, 80.0, 50.0, 0.0);
+        assert!(approx(w, 80.0) && approx(h, 50.0) && approx(rot, 0.0),
+            "got ({}, {}, {})", w, h, rot);
+    }
+
+    #[test]
+    fn finalize_hurtbox_90_collapses_to_aabb_rotation_zero() {
+        // 90° hurtbox → AABB swaps dims, rotation forced to 0.
+        let (w, h, rot) = finalize_box_geometry(BoxType::Hurtbox, 31.6, 74.5, 90.0);
+        assert!(approx(w, 74.5), "w={}", w);
+        assert!(approx(h, 31.6), "h={}", h);
+        assert!(approx(rot, 0.0), "hurtbox rotation must collapse to 0, got {}", rot);
+    }
+
+    #[test]
+    fn finalize_hurtbox_45_collapses_to_aabb_rotation_zero() {
+        let (w, h, rot) = finalize_box_geometry(BoxType::Hurtbox, 100.0, 100.0, 45.0);
+        assert!(approx(w, 141.4) && approx(h, 141.4), "got {}x{}", w, h);
+        assert!(approx(rot, 0.0), "rotation must be 0, got {}", rot);
+    }
+
+    #[test]
+    fn finalize_itembox_keeps_rotation() {
+        // ItemBox is rotation-capable: dims + rotation pass through as-is
+        // (no AABB collapse). This is the path the earlier itemBox fix
+        // depends on.
+        let (w, h, rot) = finalize_box_geometry(BoxType::ItemBox, 31.6, 74.5, 90.0);
+        assert!(approx(w, 31.6), "w must be unchanged, got {}", w);
+        assert!(approx(h, 74.5), "h must be unchanged, got {}", h);
+        assert!(approx(rot, 90.0), "itembox must keep rotation, got {}", rot);
+
+        let (w2, h2, rot2) = finalize_box_geometry(BoxType::ItemBox, 40.0, 20.0, 45.0);
+        assert!(approx(w2, 40.0) && approx(h2, 20.0) && approx(rot2, 45.0),
+            "itembox 45° must pass through, got ({}, {}, {})", w2, h2, rot2);
+    }
+
+    #[test]
+    fn finalize_hitbox_and_grabbox_also_collapse() {
+        // Every non-rotation-capable type collapses identically.
+        for bt in [BoxType::Hitbox, BoxType::GrabBox, BoxType::ShieldBox,
+                   BoxType::ReflectBox, BoxType::AbsorbBox, BoxType::LedgeBox,
+                   BoxType::GrabHoldBox] {
+            let (_w, _h, rot) = finalize_box_geometry(bt, 31.6, 74.5, 90.0);
+            assert!(approx(rot, 0.0), "{:?} must collapse rotation to 0, got {}", bt, rot);
         }
     }
 }
