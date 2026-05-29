@@ -940,6 +940,10 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
         }
     }
 
+    // Script.hx output templates (moved to commands.jsonc :: script_templates).
+    let fw = &crate::mappings::api_commands().script_templates.framework;
+    let req = crate::mappings::require_template;
+
     // Emit one merged template function per name. `setup` is the mandatory FM
     // line(s) the template must always include (e.g. the LINK_FRAMES listener
     // registration on initialize); the SSF2 body, if any, is appended.
@@ -951,16 +955,10 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
             out.push_str(body);
             out.push('\n');
         }
-        out.push_str("}\n\n");
+        out.push_str(req("framework.fn_close", &fw.fn_close));
     };
 
-    let mut out = format!(
-        "// API Script for {} — converted from SSF2\n\
-// Frame scripts are embedded in the entity file (FRAME_SCRIPT layers).\n\
-// SSF2 API calls are mapped to Fraymakers equivalents where possible.\n\
-// Lines marked TODO need manual review.\n\n",
-        data.name
-    );
+    let mut out = req("framework.header", &fw.header).replace("{{char_name}}", &data.name);
 
     // Instance variables carried over from the SSF2 XxxExt class (its
     // Slot/Const traits — `public var foo:T;`). Emitted as Fraymakers
@@ -970,21 +968,21 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     // Wrapped wrappers expose `.get() / .set(v) / .inc() / .dec()`.
     let var_types = crate::api_mappings::infer_ext_var_types(&data.ext_vars, &data.ext_var_inits);
     if !data.ext_vars.is_empty() {
-        out.push_str("// ── Instance variables (from SSF2 ");
-        out.push_str(&data.name);
-        out.push_str("Ext) — wrapped for FM persistent state ──\n");
+        out.push_str(&req("framework.instance_vars_comment", &fw.instance_vars_comment)
+            .replace("{{char_name}}", &data.name));
         for v in &data.ext_vars {
             let (factory, default) = match var_types.get(v).copied().unwrap_or(crate::api_mappings::ExtVarType::Object) {
                 crate::api_mappings::ExtVarType::Bool   => ("makeBool", "false"),
                 crate::api_mappings::ExtVarType::Int    => ("makeInt", "0"),
                 crate::api_mappings::ExtVarType::Object => ("makeObject", "null"),
             };
-            out.push_str(&format!("var {} = self.{}({});\n", v, factory, default));
+            out.push_str(&req("framework.ext_var_decl", &fw.ext_var_decl)
+                .replace("{{name}}", v).replace("{{factory}}", factory).replace("{{default}}", default));
         }
         out.push('\n');
     }
 
-    out.push_str("// start general functions ---\n\n");
+    out.push_str(req("framework.general_functions_begin", &fw.general_functions_begin));
 
     // initialize — extend the template's setup with iinit-derived
     // `self.<var> = <expr>;` assignments for each ext_var, but SKIP any name
@@ -992,7 +990,7 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     // something is already set in initialize then skip that").
     let init_body_text = template_bodies.get("initialize").map(|s| s.as_str()).unwrap_or("");
     let mut init_setup = String::from(
-        "\tself.addEventListener(GameObjectEvent.LINK_FRAMES, handleLinkFrames, {persistent:true});\n"
+        req("framework.link_frames_listener", &fw.link_frames_listener)
     );
     for (name, expr) in &data.ext_var_inits {
         // Skip names the SSF2 initialize body already covers — match both
@@ -1011,7 +1009,8 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
                 | (Some(crate::api_mappings::ExtVarType::Object), "null"),
             );
             if !default_already_matches {
-                init_setup.push_str(&format!("\t{}.set({});\n", name, expr));
+                init_setup.push_str(&req("framework.ext_var_init_assign", &fw.ext_var_init_assign)
+                    .replace("{{name}}", name).replace("{{expr}}", expr));
             }
         }
     }
@@ -1026,21 +1025,21 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     // onTeardown body is preserved.
     let teardown_setup = crate::api_mappings::voice_teardown_cleanup(emit_voice);
 
-    emit_tpl(&mut out, "//Runs on object init\n", "function initialize(){\n",
-        &init_setup, "initialize");
-    emit_tpl(&mut out, "", "function update(){\n", "", "update");
+    emit_tpl(&mut out, req("framework.initialize_header", &fw.initialize_header),
+        req("framework.initialize_sig", &fw.initialize_sig), &init_setup, "initialize");
+    emit_tpl(&mut out, "", req("framework.update_sig", &fw.update_sig), "", "update");
     emit_tpl(&mut out,
-        "// Runs when reading inputs (before determining character state, update, framescript, etc.)\n",
-        "function inputUpdateHook(pressedControls:ControlsObject, heldControls:ControlsObject) {\n",
+        req("framework.input_update_hook_header", &fw.input_update_hook_header),
+        req("framework.input_update_hook_sig", &fw.input_update_hook_sig),
         "", "inputUpdateHook");
-    emit_tpl(&mut out, "// CState-based handling for LINK_FRAMES\n",
-        "function handleLinkFrames(e){\n", "", "handleLinkFrames");
-    emit_tpl(&mut out, "", "function onTeardown() {\n", teardown_setup, "onTeardown");
+    emit_tpl(&mut out, req("framework.handle_link_frames_header", &fw.handle_link_frames_header),
+        req("framework.handle_link_frames_sig", &fw.handle_link_frames_sig), "", "handleLinkFrames");
+    emit_tpl(&mut out, "", req("framework.onteardown_sig", &fw.onteardown_sig), &teardown_setup, "onTeardown");
 
-    out.push_str("// --- end general functions\n\n");
+    out.push_str(req("framework.general_functions_end", &fw.general_functions_end));
 
     if !regular_ext.is_empty() {
-        out.push_str("// ── Decompiled from SSF2 XxxExt.as ─────────────────────────────────────────\n\n");
+        out.push_str(req("framework.decompiled_ext_header", &fw.decompiled_ext_header));
         for script in &regular_ext {
             let translated = crate::api_mappings::translate_ssf2_to_fm(&script.code);
             out.push_str(&translated);
@@ -1106,38 +1105,10 @@ fn extract_fn_body(code: &str) -> Option<String> {
 }
 
 fn generate_jab_scripts() -> String {
-    r#"
-// ── Jab chain — SSF2 Jab_21 sub-animations (begin / hit2 / hit3) ─────────────────
-// SSF2 uses gotoAndPlay("hit2") / gotoAndPlay("hit3") to chain jabs on button press.
-// In Fraymakers, jab1/jab2/jab3 are separate animations chained via CState transitions.
-
-// Called from AnimationStats.jab1 last-frame handler (link in FrayTools):
-function jab1_end() {
-	if (entity.checkInput(ControlsObject.ATTACK)) {
-		// Player pressed attack again — chain to jab2
-		entity.setAnimation("jab2");
-		entity.playCState(CState.JAB2);
-	} else {
-		// No input — return to idle
-		entity.playCState(CState.IDLE);
-	}
-}
-
-// Called from AnimationStats.jab2 last-frame handler:
-function jab2_end() {
-	if (entity.checkInput(ControlsObject.ATTACK)) {
-		entity.setAnimation("jab3");
-		entity.playCState(CState.JAB3);
-	} else {
-		entity.playCState(CState.IDLE);
-	}
-}
-
-// Called from AnimationStats.jab3 last-frame handler:
-function jab3_end() {
-	entity.playCState(CState.IDLE);
-}
-"#.to_string()
+    crate::mappings::require_template(
+        "jab.chain_helpers",
+        &crate::mappings::api_commands().script_templates.jab.chain_helpers,
+    ).to_string()
 }
 
 // ─── manifest.json ───────────────────────────────────────────────────────────
@@ -1533,54 +1504,18 @@ fn generate_projectile_script(
     entity_id: &str,
     extra_states: &[entity_gen::ProjectileStateData],
 ) -> String {
+    let t = &crate::mappings::api_commands().script_templates.projectile;
+    let req = crate::mappings::require_template;
     if extra_states.is_empty() {
         // Single-state: standard template
-        format!(
-"// Projectile script for {entity_id} -- converted from SSF2
-// TODO: tune X_SPEED / Y_SPEED and gravity to match SSF2 behaviour.
-
-var X_SPEED = 8;
-var Y_SPEED = 0;
-
-function initialize() {{
-    self.addEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit, {{ persistent: true }});
-    self.addEventListener(GameObjectEvent.HIT_DEALT,  onHit,       {{ persistent: true }});
-
-    self.setCostumeIndex(self.getOwner().getCostumeIndex());
-    Common.enableReflectionListener({{ mode: \"X\", replaceOwner: true }});
-
-    self.setState(PState.ACTIVE);
-    self.setXSpeed(X_SPEED);
-    self.setYSpeed(Y_SPEED);
-}}
-
-function onGroundHit(event) {{
-    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);
-    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);
-    self.toState(PState.DESTROYING);
-}}
-
-function onHit(event) {{
-    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);
-    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);
-    self.toState(PState.DESTROYING);
-}}
-
-function update() {{
-    // Projectile moves via setXSpeed/setYSpeed set in initialize().
-    // Add custom movement logic here if needed.
-}}
-",
-            entity_id = entity_id)
+        req("projectile.single_state", &t.single_state).replace("{{entity_id}}", entity_id)
     } else {
         // Multi-state: use Fraymakers local state machine instead of fake PStates
         // Each SSF2 frame label becomes an LState that drives animation switching.
-        let mut lstate_prep: String = String::new();
-        let mut lstate_fields: String = String::new();
-        let mut update_branches: String = String::new();
-
-        // First LState: idle (the attack_idle inner sprite is already projectileIdle)
-        lstate_prep.push_str("    IDLE:    _prepLocalState(\"projectileIdle\"),\n");
+        let mut lstate_prep = String::from(req("projectile.lstate_idle_prep", &t.lstate_idle_prep));
+        let mut update_branches = String::new();
+        let line_tpl = req("projectile.lstate_prep_line", &t.lstate_prep_line);
+        let branch_tpl = req("projectile.update_branch", &t.update_branch);
         for state in extra_states {
             let fm = entity_gen::ssf2_proj_label_to_fm_anim(&state.label);
             let lname = match state.label.as_str() {
@@ -1588,79 +1523,15 @@ function update() {{
                 "attack_toss" => "ACTIVE",
                 _ => "CUSTOM",
             };
-            lstate_prep.push_str(&format!("    {lname}: _prepLocalState(\"{fm}\"),\n"));
-            let fc = state.frame_count;
-            update_branches.push_str(&format!(
-"    }} else if (Common.inLocalState(LState.{lname})) {{
-        // TODO: implement {lname} state logic ({fc} frames)
-        if (self.finalFramePlayed()) {{
-            Common.toLocalState(LState.IDLE);
-        }}
-",
-                lname = lname, fc = fc));
+            lstate_prep.push_str(&line_tpl.replace("{{lstate_name}}", lname).replace("{{fm_anim}}", &fm));
+            update_branches.push_str(&branch_tpl
+                .replace("{{lstate_name}}", lname)
+                .replace("{{frame_count}}", &state.frame_count.to_string()));
         }
-
-        format!(
-"// Projectile script for {entity_id} -- converted from SSF2 (multi-state)
-// Uses the local state machine to switch between animations since PState
-// only supports built-in values (ACTIVE, DESTROYING, etc).
-// TODO: tune X_SPEED / Y_SPEED and gravity to match SSF2 behaviour.
-
-var X_SPEED = 8;
-var Y_SPEED = 0;
-
-// ---- Local state machine setup ----
-function _prepLocalState(animation:String, ?index:Int=Math.NaN):Int {{
-    if (!__hasInitLocalStateMachine) {{
-        Common.initLocalStateMachine();
-        __hasInitLocalStateMachine = true;
-    }}
-    if (index != Math.NaN) {{
-        index = __localStatePrepIndex++;
-    }}
-    Common.registerLocalState(index, animation);
-    return index;
-}}
-var __hasInitLocalStateMachine = false;
-var __localStatePrepIndex = -1;
-
-var LState = {{
-{lstate_prep}}}
-
-function initialize() {{
-    self.addEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit, {{ persistent: true }});
-    self.addEventListener(GameObjectEvent.HIT_DEALT,  onHit,       {{ persistent: true }});
-
-    self.setCostumeIndex(self.getOwner().getCostumeIndex());
-    Common.enableReflectionListener({{ mode: \"X\", replaceOwner: true }});
-
-    self.setState(PState.ACTIVE);
-    Common.toLocalState(LState.IDLE);
-    self.setXSpeed(X_SPEED);
-    self.setYSpeed(Y_SPEED);
-}}
-
-function onGroundHit(event) {{
-    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);
-    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);
-    self.toState(PState.DESTROYING);
-}}
-
-function onHit(event) {{
-    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);
-    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);
-    self.toState(PState.DESTROYING);
-}}
-
-function update() {{
-    if (Common.inLocalState(LState.IDLE)) {{
-        // TODO: implement IDLE state logic (projectileIdle animation)
-{update_branches}    }}
-}}
-",
-            entity_id = entity_id,
-            lstate_prep = lstate_prep,
-            update_branches = update_branches)
+        req("projectile.multi_state", &t.multi_state)
+            .replace("{{entity_id}}", entity_id)
+            .replace("{{lstate_prep}}", &lstate_prep)
+            .replace("{{update_branches}}", &update_branches)
     }
 }
 

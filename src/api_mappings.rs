@@ -650,22 +650,24 @@ impl Drop for AvailableSoundsGuard {
 ///   2. extracted asset    → `AudioClip.play(self.getResource().getContent("id"))`
 ///   3. neither            → placeholder asset + visible `/* TODO … */`
 fn build_sound_call(id: Option<&str>) -> String {
+    let cfg = crate::mappings::api_commands();
+    let t = &cfg.script_templates.playsound;
+    let req = crate::mappings::require_template;
     let id = match id {
         Some(i) if !i.is_empty() => i,
-        _ => return format!(
-            "AudioClip.play(self.getResource().getContent(\"{PLACEHOLDER_SOUND_ID}\")) \
-             /* TODO: replace placeholder — original SSF2 playSound had no static string id */"),
+        _ => return req("playsound.placeholder_no_static_id", &t.placeholder_no_static_id)
+            .replace("{{placeholder_id}}", PLACEHOLDER_SOUND_ID),
     };
-    if let Some(c) = crate::mappings::api_commands().global_sound_map.get(id) {
-        return format!("AudioClip.play(GlobalSfx.{c})");
+    if let Some(c) = cfg.global_sound_map.get(id) {
+        return req("playsound.global", &t.global).replace("{{global_sfx}}", c);
     }
     let have = AVAILABLE_SOUNDS.with(|s| s.borrow().contains(id));
     if have {
-        return format!("AudioClip.play(self.getResource().getContent(\"{id}\"))");
+        return req("playsound.asset", &t.asset).replace("{{ssf2_id}}", id);
     }
-    format!(
-        "AudioClip.play(self.getResource().getContent(\"{PLACEHOLDER_SOUND_ID}\")) \
-         /* TODO: replace placeholder — original SSF2 sound \"{id}\" has no FM equivalent */")
+    req("playsound.placeholder_unmapped", &t.placeholder_unmapped)
+        .replace("{{placeholder_id}}", PLACEHOLDER_SOUND_ID)
+        .replace("{{ssf2_id}}", id)
 }
 
 /// Decide the array-literal form for one SSF2 sound id (option (i)): keep the
@@ -678,10 +680,11 @@ fn sanitise_sound_id(id: &str) -> (String, Option<String>) {
     if is_global || have_asset {
         (id.to_string(), None)
     } else {
-        (
-            PLACEHOLDER_SOUND_ID.to_string(),
-            Some(format!("/* TODO: SSF2 sound \"{id}\" has no FM equivalent */")),
-        )
+        let todo = crate::mappings::require_template(
+            "audio.placeholder_array_entry_todo",
+            &crate::mappings::api_commands().script_templates.audio.placeholder_array_entry_todo,
+        ).replace("{{ssf2_id}}", id);
+        (PLACEHOLDER_SOUND_ID.to_string(), Some(todo))
     }
 }
 
@@ -690,11 +693,14 @@ fn sanitise_sound_id(id: &str) -> (String, Option<String>) {
 /// a voice helper (`_activeVoiceClip` is declared); spliced into the single
 /// template `onTeardown` by `haxe_gen::generate_script`. Empty otherwise, so
 /// voice-less characters get no cleanup statements (and no dead hook body).
-pub fn voice_teardown_cleanup(has_voice_helper: bool) -> &'static str {
+pub fn voice_teardown_cleanup(has_voice_helper: bool) -> String {
     if has_voice_helper {
-        "\tif (_activeVoiceClip != null) {\n\t\t_activeVoiceClip.stop();\n\t\t_activeVoiceClip = null;\n\t}\n"
+        crate::mappings::require_template(
+            "audio.voice_teardown_cleanup",
+            &crate::mappings::api_commands().script_templates.audio.voice_teardown_cleanup,
+        ).to_string()
     } else {
-        ""
+        String::new()
     }
 }
 
@@ -742,58 +748,44 @@ pub fn generate_sound_helpers(
     let emit_voice  = !voice_ids.is_empty()  || calls_voice;
     if !emit_attack && !emit_voice { return String::new(); }
 
+    let cfg = crate::mappings::api_commands();
+    let t = &cfg.script_templates.audio;
+    let req = crate::mappings::require_template;
+
     // Resolver cases: one per global_sound_map entry (BTreeMap → deterministic
     // alphabetical order for stable goldens). switch on the id; default fetches
     // the per-character asset by content id.
+    let case_tpl = req("audio.global_sound_case", &t.global_sound_case);
     let mut cases = String::new();
-    for (id, c) in &crate::mappings::api_commands().global_sound_map {
-        cases.push_str(&format!(
-            "\t\tcase \"{id}\": return AudioClip.play(GlobalSfx.{c});\n"));
+    for (id, c) in &cfg.global_sound_map {
+        cases.push_str(&case_tpl.replace("{{ssf2_id}}", id).replace("{{global_sfx}}", c));
     }
 
-    let mut out = String::from(
-        "// ── SSF2 sound triggers (playAttackSound / playVoiceSound) ──────────────────\n\
-         // 1-based sound tables pulled from the SSF2 character's attackSound{N}_id /\n\
-         // attackVoice{N}_id fields (raw ids kept as a record of intent). Globals route\n\
-         // to a Fraymakers built-in (GlobalSfx) via the resolver; everything else is\n\
-         // fetched from this character's audio bank. Voice playback does not overlap —\n\
-         // the active clip is stopped before a new one starts.\n");
+    let mut out = String::new();
+    out.push_str(req("audio.header_comment", &t.header_comment));
 
     if emit_attack {
-        out.push_str(&format!("var _attackSounds = {};\n", sound_array_literal(attack_ids)));
+        out.push_str(&req("audio.attack_sounds_decl", &t.attack_sounds_decl)
+            .replace("{{entries}}", &sound_array_literal(attack_ids)));
     }
     if emit_voice {
-        out.push_str(&format!("var _voiceSounds = {};\n", sound_array_literal(voice_ids)));
-        out.push_str("var _activeVoiceClip = null;\n");
+        out.push_str(&req("audio.voice_sounds_decl", &t.voice_sounds_decl)
+            .replace("{{entries}}", &sound_array_literal(voice_ids)));
+        out.push_str(req("audio.active_voice_clip_decl", &t.active_voice_clip_decl));
     }
     out.push('\n');
 
     if emit_attack {
-        out.push_str(
-            "function playAttackSound(n) {\n\
-             \tif (n < 1 || n > _attackSounds.length) return;\n\
-             \t_playResolvedSound(_attackSounds[n - 1]);\n\
-             }\n\n");
+        out.push_str(req("audio.play_attack_sound_fn", &t.play_attack_sound_fn));
     }
     if emit_voice {
-        out.push_str(
-            "function playVoiceSound(n) {\n\
-             \tif (n < 1 || n > _voiceSounds.length) return;\n\
-             \tif (_activeVoiceClip != null) { _activeVoiceClip.stop(); _activeVoiceClip = null; }\n\
-             \t_activeVoiceClip = _playResolvedSound(_voiceSounds[n - 1]);\n\
-             }\n\n");
+        out.push_str(req("audio.play_voice_sound_fn", &t.play_voice_sound_fn));
     }
 
     // Shared resolver — returns the AudioClip handle so voice playback can be
     // tracked/stopped. playAttackSound discards the return.
-    out.push_str(&format!(
-        "function _playResolvedSound(id) {{\n\
-         \tswitch (id) {{\n\
-         {cases}\t\tdefault: return AudioClip.play(self.getResource().getContent(id));\n\
-         \t}}\n\
-         }}\n\n",
-        cases = cases,
-    ));
+    out.push_str(&req("audio.play_resolved_sound_resolver", &t.play_resolved_sound_resolver)
+        .replace("{{global_cases}}", &cases));
 
     out
 }

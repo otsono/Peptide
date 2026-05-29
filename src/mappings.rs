@@ -303,6 +303,106 @@ pub struct ApiCommands {
     pub passthrough_fm_apis: Vec<NamedApi>,
     #[serde(default)]
     pub ssf2_only: Vec<NamedApi>,
+    #[serde(default)]
+    pub script_templates: ScriptTemplates,
+}
+
+// ─── Script.hx output templates ──────────────────────────────────────────────
+//
+// The Haxe strings the codegen emits into Script.hx (and projectile Script.hx)
+// live here, not hardcoded in Rust, so their shape can change without
+// recompiling — same philosophy as `global_sound_map` etc. Grouped by feature.
+// Each value is a string filled by `str::replace`-ing `{{slot}}` placeholders;
+// the control flow / data assembly stays in Rust. Empty by default —
+// `require_template` panics with the qualified key if a needed one is missing.
+
+/// playAttackSound / playVoiceSound helper block (api_mappings::generate_sound_helpers).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct AudioTemplates {
+    pub header_comment: String,
+    pub attack_sounds_decl: String,
+    pub voice_sounds_decl: String,
+    pub active_voice_clip_decl: String,
+    pub play_attack_sound_fn: String,
+    pub play_voice_sound_fn: String,
+    pub play_resolved_sound_resolver: String,
+    pub global_sound_case: String,
+    pub voice_teardown_cleanup: String,
+    pub placeholder_array_entry_todo: String,
+}
+
+/// Per-frame playSound("id") rewrite (api_mappings::build_sound_call).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct PlaySoundTemplates {
+    pub global: String,
+    pub asset: String,
+    pub placeholder_no_static_id: String,
+    pub placeholder_unmapped: String,
+}
+
+/// Jab chain helpers (haxe_gen::generate_jab_scripts).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct JabTemplates {
+    pub chain_helpers: String,
+}
+
+/// Character Script.hx framework scaffolding (haxe_gen::generate_script).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct FrameworkTemplates {
+    pub header: String,
+    pub instance_vars_comment: String,
+    pub ext_var_decl: String,
+    pub ext_var_init_assign: String,
+    pub general_functions_begin: String,
+    pub general_functions_end: String,
+    pub decompiled_ext_header: String,
+    pub link_frames_listener: String,
+    pub fn_close: String,
+    pub initialize_header: String,
+    pub initialize_sig: String,
+    pub input_update_hook_header: String,
+    pub input_update_hook_sig: String,
+    pub handle_link_frames_header: String,
+    pub handle_link_frames_sig: String,
+    pub update_sig: String,
+    pub onteardown_sig: String,
+}
+
+/// Projectile Script.hx generator (haxe_gen::generate_projectile_script).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProjectileTemplates {
+    pub single_state: String,
+    pub multi_state: String,
+    pub lstate_idle_prep: String,
+    pub lstate_prep_line: String,
+    pub update_branch: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ScriptTemplates {
+    pub audio: AudioTemplates,
+    pub playsound: PlaySoundTemplates,
+    pub jab: JabTemplates,
+    pub framework: FrameworkTemplates,
+    pub projectile: ProjectileTemplates,
+}
+
+/// Fetch a Script.hx template, panicking with the qualified key if it's empty.
+/// Option A fail-fast: templates live only in commands.jsonc, so an empty
+/// value means the section/key is missing or blank — fail loudly rather than
+/// emit broken Haxe. Genuinely-empty pieces (e.g. the `update`/`onTeardown`
+/// header comments) are NOT routed through this — they stay as `""` literals.
+pub fn require_template<'a>(path: &str, val: &'a str) -> &'a str {
+    if val.is_empty() {
+        panic!("script_templates.{path} is empty — check commands.jsonc");
+    }
+    val
 }
 
 // ─── Loading ────────────────────────────────────────────────────────────────

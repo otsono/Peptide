@@ -353,6 +353,19 @@ fn sound_helpers_placeholder_for_unmapped_id() {
 }
 
 #[test]
+fn require_template_passes_through_non_empty() {
+    assert_eq!(ssf2_converter::mappings::require_template("audio.foo", "bar"), "bar");
+}
+
+#[test]
+#[should_panic(expected = "script_templates.audio.play_attack_sound_fn is empty")]
+fn require_template_panics_on_empty() {
+    // Fail-fast: an empty template means the section/key is missing in
+    // commands.jsonc — panic with the qualified path rather than emit broken Haxe.
+    ssf2_converter::mappings::require_template("audio.play_attack_sound_fn", "");
+}
+
+#[test]
 fn voice_teardown_cleanup_gated_on_voice_helper() {
     // Voice helper present → onTeardown stops + nulls the active clip.
     let on = voice_teardown_cleanup(true);

@@ -550,4 +550,75 @@
     // (type, listener) pair). Flagging as TODO instead of auto-renaming.
     { "name": "stopListening",                   "note": "TODO: maps to removeEventListener(type, listener) in FM but signature differs — verify per-callsite" },
   ],
+
+  // ── Script.hx output templates ───────────────────────────────────────────
+  // The Haxe strings the codegen emits into Script.hx live here, not hardcoded
+  // in Rust, so the emitted shape can change without recompiling. Grouped by
+  // feature. `{{slot}}` placeholders are filled by str::replace in the codegen;
+  // control flow / data assembly stays in Rust. An empty value where one is
+  // needed panics (script_templates.<group>.<key> is empty — fail-fast).
+  "script_templates": {
+    // playAttackSound / playVoiceSound helper block.
+    "audio": {
+      "header_comment": "// ── SSF2 sound triggers (playAttackSound / playVoiceSound) ──────────────────\n// 1-based sound tables pulled from the SSF2 character's attackSound{N}_id /\n// attackVoice{N}_id fields (raw ids kept as a record of intent). Globals route\n// to a Fraymakers built-in (GlobalSfx) via the resolver; everything else is\n// fetched from this character's audio bank. Voice playback does not overlap —\n// the active clip is stopped before a new one starts.\n",
+      "attack_sounds_decl": "var _attackSounds = {{entries}};\n",
+      "voice_sounds_decl": "var _voiceSounds = {{entries}};\n",
+      "active_voice_clip_decl": "var _activeVoiceClip = null;\n",
+      "play_attack_sound_fn": "function playAttackSound(n) {\n\tif (n < 1 || n > _attackSounds.length) return;\n\t_playResolvedSound(_attackSounds[n - 1]);\n}\n\n",
+      "play_voice_sound_fn": "function playVoiceSound(n) {\n\tif (n < 1 || n > _voiceSounds.length) return;\n\tif (_activeVoiceClip != null) { _activeVoiceClip.stop(); _activeVoiceClip = null; }\n\t_activeVoiceClip = _playResolvedSound(_voiceSounds[n - 1]);\n}\n\n",
+      "play_resolved_sound_resolver": "function _playResolvedSound(id) {\n\tswitch (id) {\n{{global_cases}}\t\tdefault: return AudioClip.play(self.getResource().getContent(id));\n\t}\n}\n\n",
+      "global_sound_case": "\t\tcase \"{{ssf2_id}}\": return AudioClip.play(GlobalSfx.{{global_sfx}});\n",
+      "voice_teardown_cleanup": "\tif (_activeVoiceClip != null) {\n\t\t_activeVoiceClip.stop();\n\t\t_activeVoiceClip = null;\n\t}\n",
+      "placeholder_array_entry_todo": "/* TODO: SSF2 sound \"{{ssf2_id}}\" has no FM equivalent */"
+    },
+
+    // Per-frame playSound("id") rewrite (build_sound_call). {{placeholder_id}}
+    // is the silent placeholder content id (a Rust const, also a filename).
+    "playsound": {
+      "global": "AudioClip.play(GlobalSfx.{{global_sfx}})",
+      "asset": "AudioClip.play(self.getResource().getContent(\"{{ssf2_id}}\"))",
+      "placeholder_no_static_id": "AudioClip.play(self.getResource().getContent(\"{{placeholder_id}}\")) /* TODO: replace placeholder — original SSF2 playSound had no static string id */",
+      "placeholder_unmapped": "AudioClip.play(self.getResource().getContent(\"{{placeholder_id}}\")) /* TODO: replace placeholder — original SSF2 sound \"{{ssf2_id}}\" has no FM equivalent */"
+    },
+
+    // Jab chain helpers (generate_jab_scripts) — static, no placeholders.
+    "jab": {
+      "chain_helpers": "\n// ── Jab chain — SSF2 Jab_21 sub-animations (begin / hit2 / hit3) ─────────────────\n// SSF2 uses gotoAndPlay(\"hit2\") / gotoAndPlay(\"hit3\") to chain jabs on button press.\n// In Fraymakers, jab1/jab2/jab3 are separate animations chained via CState transitions.\n\n// Called from AnimationStats.jab1 last-frame handler (link in FrayTools):\nfunction jab1_end() {\n\tif (entity.checkInput(ControlsObject.ATTACK)) {\n\t\t// Player pressed attack again — chain to jab2\n\t\tentity.setAnimation(\"jab2\");\n\t\tentity.playCState(CState.JAB2);\n\t} else {\n\t\t// No input — return to idle\n\t\tentity.playCState(CState.IDLE);\n\t}\n}\n\n// Called from AnimationStats.jab2 last-frame handler:\nfunction jab2_end() {\n\tif (entity.checkInput(ControlsObject.ATTACK)) {\n\t\tentity.setAnimation(\"jab3\");\n\t\tentity.playCState(CState.JAB3);\n\t} else {\n\t\tentity.playCState(CState.IDLE);\n\t}\n}\n\n// Called from AnimationStats.jab3 last-frame handler:\nfunction jab3_end() {\n\tentity.playCState(CState.IDLE);\n}\n"
+    },
+
+    // Character Script.hx framework scaffolding (generate_script).
+    // {{char_name}} = lowercase character id. The update / onTeardown header
+    // comments are genuinely empty and stay as "" literals in Rust.
+    "framework": {
+      "header": "// API Script for {{char_name}} \u2014 converted from SSF2\n// Frame scripts are embedded in the entity file (FRAME_SCRIPT layers).\n// SSF2 API calls are mapped to Fraymakers equivalents where possible.\n// Lines marked TODO need manual review.\n\n",
+      "instance_vars_comment": "// \u2500\u2500 Instance variables (from SSF2 {{char_name}}Ext) \u2014 wrapped for FM persistent state \u2500\u2500\n",
+      "ext_var_decl": "var {{name}} = self.{{factory}}({{default}});\n",
+      "ext_var_init_assign": "\t{{name}}.set({{expr}});\n",
+      "general_functions_begin": "// start general functions ---\n\n",
+      "general_functions_end": "// --- end general functions\n\n",
+      "decompiled_ext_header": "// \u2500\u2500 Decompiled from SSF2 XxxExt.as \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n",
+      "link_frames_listener": "\tself.addEventListener(GameObjectEvent.LINK_FRAMES, handleLinkFrames, {persistent:true});\n",
+      "fn_close": "}\n\n",
+      "initialize_header": "//Runs on object init\n",
+      "initialize_sig": "function initialize(){\n",
+      "input_update_hook_header": "// Runs when reading inputs (before determining character state, update, framescript, etc.)\n",
+      "input_update_hook_sig": "function inputUpdateHook(pressedControls:ControlsObject, heldControls:ControlsObject) {\n",
+      "handle_link_frames_header": "// CState-based handling for LINK_FRAMES\n",
+      "handle_link_frames_sig": "function handleLinkFrames(e){\n",
+      "update_sig": "function update(){\n",
+      "onteardown_sig": "function onTeardown() {\n"
+    },
+
+    // Projectile Script.hx generator (generate_projectile_script).
+    // {{entity_id}} = lowercased projectile entity id. multi_state's
+    // {{lstate_prep}} / {{update_branches}} are Rust-assembled from the
+    // lstate_prep_line / update_branch sub-templates.
+    "projectile": {
+      "single_state": "// Projectile script for {{entity_id}} -- converted from SSF2\n// TODO: tune X_SPEED / Y_SPEED and gravity to match SSF2 behaviour.\n\nvar X_SPEED = 8;\nvar Y_SPEED = 0;\n\nfunction initialize() {\n    self.addEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit, { persistent: true });\n    self.addEventListener(GameObjectEvent.HIT_DEALT,  onHit,       { persistent: true });\n\n    self.setCostumeIndex(self.getOwner().getCostumeIndex());\n    Common.enableReflectionListener({ mode: \"X\", replaceOwner: true });\n\n    self.setState(PState.ACTIVE);\n    self.setXSpeed(X_SPEED);\n    self.setYSpeed(Y_SPEED);\n}\n\nfunction onGroundHit(event) {\n    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);\n    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);\n    self.toState(PState.DESTROYING);\n}\n\nfunction onHit(event) {\n    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);\n    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);\n    self.toState(PState.DESTROYING);\n}\n\nfunction update() {\n    // Projectile moves via setXSpeed/setYSpeed set in initialize().\n    // Add custom movement logic here if needed.\n}\n",
+      "multi_state": "// Projectile script for {{entity_id}} -- converted from SSF2 (multi-state)\n// Uses the local state machine to switch between animations since PState\n// only supports built-in values (ACTIVE, DESTROYING, etc).\n// TODO: tune X_SPEED / Y_SPEED and gravity to match SSF2 behaviour.\n\nvar X_SPEED = 8;\nvar Y_SPEED = 0;\n\n// ---- Local state machine setup ----\nfunction _prepLocalState(animation:String, ?index:Int=Math.NaN):Int {\n    if (!__hasInitLocalStateMachine) {\n        Common.initLocalStateMachine();\n        __hasInitLocalStateMachine = true;\n    }\n    if (index != Math.NaN) {\n        index = __localStatePrepIndex++;\n    }\n    Common.registerLocalState(index, animation);\n    return index;\n}\nvar __hasInitLocalStateMachine = false;\nvar __localStatePrepIndex = -1;\n\nvar LState = {\n{{lstate_prep}}}\n\nfunction initialize() {\n    self.addEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit, { persistent: true });\n    self.addEventListener(GameObjectEvent.HIT_DEALT,  onHit,       { persistent: true });\n\n    self.setCostumeIndex(self.getOwner().getCostumeIndex());\n    Common.enableReflectionListener({ mode: \"X\", replaceOwner: true });\n\n    self.setState(PState.ACTIVE);\n    Common.toLocalState(LState.IDLE);\n    self.setXSpeed(X_SPEED);\n    self.setYSpeed(Y_SPEED);\n}\n\nfunction onGroundHit(event) {\n    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);\n    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);\n    self.toState(PState.DESTROYING);\n}\n\nfunction onHit(event) {\n    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);\n    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);\n    self.toState(PState.DESTROYING);\n}\n\nfunction update() {\n    if (Common.inLocalState(LState.IDLE)) {\n        // TODO: implement IDLE state logic (projectileIdle animation)\n{{update_branches}}    }\n}\n",
+      "lstate_idle_prep": "    IDLE:    _prepLocalState(\"projectileIdle\"),\n",
+      "lstate_prep_line": "    {{lstate_name}}: _prepLocalState(\"{{fm_anim}}\"),\n",
+      "update_branch": "    } else if (Common.inLocalState(LState.{{lstate_name}})) {\n        // TODO: implement {{lstate_name}} state logic ({{frame_count}} frames)\n        if (self.finalFramePlayed()) {\n            Common.toLocalState(LState.IDLE);\n        }\n"
+    }
+  }
 }
