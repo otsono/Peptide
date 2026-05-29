@@ -15,3 +15,4 @@ pub mod image_extractor;
 pub mod sound_extractor;
 pub mod api_mappings;
 pub mod mappings;
+pub mod project;

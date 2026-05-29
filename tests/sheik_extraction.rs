@@ -24,23 +24,41 @@ fn sheik_emits_full_package_from_zelda_ssf() {
     }
 
     let out = tempfile::tempdir().expect("tempdir");
+    // Default: full SSF conversion. Stage B emits zelda+sheik into ONE
+    // project at characters/zelda/. The --name override would route to
+    // single-character mode; we exercise the default multi-char path
+    // here.
     let status = Command::new(env!("CARGO_BIN_EXE_ssf2_converter"))
-        .arg(&ssf).arg("--name").arg("sheik")
+        .arg(&ssf)
         .arg("-o").arg(out.path())
         .status().expect("run converter");
-    assert!(status.success(), "converter exited non-zero for sheik");
+    assert!(status.success(), "converter exited non-zero for zelda.ssf");
 
-    // Stage A: scripts live at library/scripts/Sheik/ (was Character/).
-    let sheik = out.path().join("sheik/library/scripts/Sheik");
+    // Stage B: zelda.ssf → ONE characters/zelda/ project containing both
+    // characters. characters/sheik/ does NOT exist.
+    let project = out.path().join("zelda");
+    assert!(project.exists(), "characters/zelda must exist (multi-char project)");
+    assert!(project.join("zelda.fraytools").exists(), "project .fraytools missing");
+    assert!(!out.path().join("sheik").exists(),
+        "characters/sheik must NOT exist as a standalone project");
+
+    // Sheik's scripts live at library/scripts/Sheik/ inside the project.
+    let sheik = project.join("library/scripts/Sheik");
     for f in &["CharacterStats.hx", "AnimationStats.hx", "HitboxStats.hx", "Script.hx"] {
         let p = sheik.join(f);
         assert!(p.exists(), "expected {} to exist", p.display());
         let body = std::fs::read_to_string(&p).expect("read");
         assert!(body.len() > 100, "{} is suspiciously short ({} bytes)", f, body.len());
     }
-    // Stage A: character entity at library/entities/Sheik.entity (was Character.entity).
-    let sheik_entity = out.path().join("sheik/library/entities/Sheik.entity");
+    // Sheik's character entity at library/entities/Sheik.entity.
+    let sheik_entity = project.join("library/entities/Sheik.entity");
     assert!(sheik_entity.exists(), "expected {} to exist", sheik_entity.display());
+
+    // Both characters' menu entities live at <Pascal>_Menu.entity per
+    // multi-char convention.
+    assert!(project.join("library/entities/Zelda_Menu.entity").exists()
+            || project.join("library/entities/Sheik_Menu.entity").exists(),
+        "at least one of the per-character Menu entities must exist (depending on head-sprite detection)");
 
     // CharacterStats.hx must NOT carry the transformation banner — Sheik's
     // cData.normalStats_id is `sheik` (matches her derived id).
@@ -48,24 +66,23 @@ fn sheik_emits_full_package_from_zelda_ssf() {
     assert!(!stats_body.contains("TRANSFORMATION FORM"),
         "Sheik must not have the transformation TODO banner");
 
-    // conversion_log.json carries ssf2_source for every character now
-    // (package_id / package_guid / source_method always present), but
-    // Sheik must NOT carry the transformation overlay (parent_normal_stats_id
-    // + note) — her normalStats_id is `sheik`, matches her derived id.
-    let log = std::fs::read_to_string(out.path().join("sheik/conversion_log.json")).unwrap();
-    assert!(log.contains("\"ssf2_source\""),
-        "Sheik's conversion_log.json should carry an ssf2_source block (package_id/guid/source_method)");
-    assert!(log.contains("\"source_method\": \"Main::getSheik\""),
-        "Sheik's ssf2_source must point at Main::getSheik");
+    // Project-level conversion_log.json with characters: [...] array
+    // (Stage B). Both zelda and sheik live in it. Sheik must NOT carry
+    // the transformation overlay since her normalStats_id matches her id.
+    let log = std::fs::read_to_string(project.join("conversion_log.json")).unwrap();
+    assert!(log.contains("\"characters\""),
+        "multi-char log must have a characters array");
+    assert!(log.contains("\"zelda\""), "log must reference zelda");
+    assert!(log.contains("\"sheik\""), "log must reference sheik");
+    assert!(log.contains("Main::getSheik"),
+        "log must include Main::getSheik for Sheik");
     assert!(log.contains("\"package_id\": \"zelda\""),
-        "Sheik's package_id is `zelda` — the SSF she ships in");
+        "package_id is `zelda` — the SSF they ship in");
     assert!(!log.contains("parent_normal_stats_id"),
-        "Sheik must NOT carry the transformation overlay (parent_normal_stats_id) — she's a peer character, not a Final-Smash form");
-    assert!(!log.contains("\"note\""),
-        "Sheik must NOT carry the transformation note");
+        "Neither zelda nor sheik are transformation forms");
 
-    // HitboxStats.hx should mention one of her signature attacks
-    // (needle / chain / lightarrow are the canonical Sheik moves).
+    // HitboxStats.hx should mention one of Sheik's signature attacks
+    // (needle / chain / lightarrow are her canonical moves).
     let hb = std::fs::read_to_string(sheik.join("HitboxStats.hx")).unwrap().to_lowercase();
     assert!(hb.contains("needle") || hb.contains("chain") || hb.contains("lightarrow")
             || hb.contains("vanish") || hb.contains("sheik"),

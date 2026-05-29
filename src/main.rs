@@ -6,6 +6,8 @@ use anyhow::{Result, Context};
 use std::path::PathBuf;
 use std::fs;
 
+use ssf2_converter::project::{MultiCharSlot, ManifestCharEntry, ProcessedCharacter};
+
 #[derive(Parser, Debug)]
 #[command(name = "SSF2 to Fraymakers Converter")]
 #[command(about = "Converts Super Smash Flash 2 character data to Fraymakers format", long_about = None)]
@@ -31,6 +33,14 @@ struct Args {
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
+
+    /// Rollback flag: emit each character of a multi-character SSF as its
+    /// own .fraytools project (the pre-Stage-B layout). The default is
+    /// the unified multi-character project per
+    /// docs/multi_character_projects_plan.md §2. Slated for removal in
+    /// a follow-up once FrayTools editor compatibility is confirmed.
+    #[arg(long)]
+    per_character_projects: bool,
 }
 
 fn main() -> Result<()> {
@@ -113,13 +123,85 @@ fn main() -> Result<()> {
 
     log::info!("Characters to process: {:?}", char_names);
 
-    for char_name in &char_names {
+    // Decide on the per-SSF emission shape per
+    // docs/multi_character_projects_plan.md §2:
+    //
+    //   * single-character SSF (or --per-character-projects rollback):
+    //     each character lives in its own characters/<id>/ project
+    //     (the pre-Stage-B layout, retained for one release).
+    //   * multi-character SSF in default mode: one
+    //     characters/<project_id>/ project containing all characters as
+    //     peer entities, merged manifest, shared sprites/audio,
+    //     collision-suffixed costumes.
+    //
+    // project_id comes from MainPackageMetadata.id (the SSF's own
+    // package id, which matches the filename stem in every observed
+    // corpus SSF — Tier 1 validation enforces this).
+    let multi_char_mode = char_names.len() > 1 && !args.per_character_projects;
+    let project_id: Option<String> = if multi_char_mode {
+        swf.abc_blocks.iter()
+            .filter_map(|b| abc_parser::parse(b).ok())
+            .find_map(|abc| abc_parser::extract_main_package_metadata(&abc)
+                .and_then(|md| md.id))
+            .or_else(|| {
+                args.input.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
+            })
+    } else { None };
+
+    // Pre-compute each character's PascalCase form once so multi-char
+    // slot bookkeeping can name menu entities + scripts subdirs without
+    // re-doing the lookup per character.
+    let all_pascals: Vec<String> = {
+        let md = swf.abc_blocks.iter()
+            .filter_map(|b| abc_parser::parse(b).ok())
+            .find_map(|abc| abc_parser::extract_main_package_metadata(&abc));
+        char_names.iter().map(|id| {
+            md.as_ref()
+                .and_then(|md| md.characters.iter().find(|(d, _)| d == id))
+                .map(|(_, method)| abc_parser::pascal_form(method))
+                .unwrap_or_else(|| abc_parser::pascal_form(id))
+        }).collect()
+    };
+
+    let mut accumulated_logs: Vec<serde_json::Value> = Vec::new();
+    let mut accumulated_manifest_chars: Vec<ManifestCharEntry> = Vec::new();
+    let project_dir: std::path::PathBuf = match (&multi_char_mode, &project_id) {
+        (true, Some(pid)) => args.output.join(pid),
+        _ => args.output.clone(),
+    };
+
+    for (slot_idx, char_name) in char_names.iter().enumerate() {
         log::info!("─── Processing: {} ───", char_name);
-        if let Err(e) = process_character(
+        let slot = if multi_char_mode {
+            Some(MultiCharSlot {
+                project_dir: project_dir.clone(),
+                slot_idx,
+                pascals: all_pascals.clone(),
+                char_ids: char_names.clone(),
+            })
+        } else { None };
+        match process_character(
             &swf_data, &swf, char_name, &args.output, costumes_path.as_deref(),
-            &args.input,
+            &args.input, slot.as_ref(),
         ) {
-            log::error!("Failed to process {}: {}", char_name, e);
+            Ok(Some(artifacts)) => {
+                accumulated_manifest_chars.push(artifacts.manifest_entry);
+                accumulated_logs.push(artifacts.log_block);
+            }
+            Ok(None) => { /* single-character; finalized inside process_character */ }
+            Err(e) => log::error!("Failed to process {}: {}", char_name, e),
+        }
+    }
+
+    // Multi-char: write the project-level manifest + .fraytools + log
+    // after all characters are processed. (Single-char path finalizes
+    // inside process_character itself.)
+    if multi_char_mode {
+        if let Err(e) = finalize_multi_char_project(
+            &project_dir, project_id.as_deref().unwrap_or("project"),
+            &accumulated_manifest_chars, &accumulated_logs, &args.input,
+        ) {
+            log::error!("Failed to finalize multi-char project: {}", e);
         }
     }
 
@@ -258,7 +340,8 @@ fn process_character(
     output: &PathBuf,
     costumes: Option<&std::path::Path>,
     input_path: &std::path::Path,
-) -> Result<()> {
+    multi_char_slot: Option<&MultiCharSlot>,
+) -> Result<Option<ProcessedCharacter>> {
     // Fresh conversion log for this character — counts unknown / SSF2-only
     // calls so we can write conversion_log.json next to the exported files
     // and surface them in the SwiftUI popup.
@@ -327,8 +410,13 @@ fn process_character(
     });
     log::info!("Sprite boxes: {} animations with geometry", sprite_boxes.len());
 
-    // Extract sprite images
-    let char_output_dir = output.join(char_name);
+    // For multi-char projects the shared output dir is the project_dir
+    // (e.g. <output>/zelda/) and every character writes into it. For
+    // single-char it's <output>/<char_id>/ as before.
+    let char_output_dir = match multi_char_slot {
+        Some(s) => s.project_dir.clone(),
+        None => output.join(char_name),
+    };
     let img_result = image_extractor::extract_images_from_swf(
         &parsed_swf, &char_output_dir, char_name, &char_data.ssf2_to_fm_anim, &xform_map,
     ).unwrap_or_else(|e| {
@@ -344,7 +432,9 @@ fn process_character(
         img_result.images.len(), img_result.anim_images.len());
 
     // Extract sounds (uses its own hand-rolled SWF tag walker, not the
-    // `swf` crate; left untouched).
+    // `swf` crate; left untouched). For Stage B we extract per-character
+    // into the shared audio dir; Stage C splits this into per-character
+    // subdirs.
     let sounds_dir = char_output_dir.join("library/audio");
     let sounds = match sound_extractor::extract_all_sounds(swf_data, &sounds_dir, char_name) {
         Ok(s) => s,
@@ -363,14 +453,132 @@ fn process_character(
         effects.len(),
         head_sprite.as_ref().map(|h| h.name.as_str()).unwrap_or("none"));
 
-    // Generate Fraymakers files
+    // Generate Fraymakers files. In multi-char mode haxe_gen skips the
+    // project-level manifest + .fraytools writes — those are handled by
+    // finalize_multi_char_project after every character has been processed.
     haxe_gen::generate(output, char_name, &char_pascal, &char_data, &sprite_boxes, &img_result,
-        costumes, &sounds, &projectiles, &effects, head_sprite.as_ref(), &parsed_swf)?;
+        costumes, &sounds, &projectiles, &effects, head_sprite.as_ref(), &parsed_swf,
+        multi_char_slot)?;
     log::info!("Generated Fraymakers files for {}", char_name);
 
-    write_conversion_log(&char_output_dir, char_name, &char_data,
-        package_metadata.as_ref(), &validation)?;
+    // Build the per-character outputs the project finalizer needs.
+    let projectile_names: Vec<String> = projectiles.iter().map(|p| p.name.clone()).collect();
+    let menu_entity_id = match multi_char_slot {
+        Some(_) => format!("{}_menu", char_name),
+        None    => "menu".to_string(),
+    };
 
+    if multi_char_slot.is_none() {
+        // Single-char path: keep the existing inline conversion-log write.
+        write_conversion_log(&char_output_dir, char_name, &char_data,
+            package_metadata.as_ref(), &validation)?;
+        return Ok(None);
+    }
+
+    // Multi-char path: return artifacts for the project finalizer to
+    // merge into the project-level manifest + conversion_log.
+    let log_block = build_conversion_log_block(char_name, &char_data,
+        package_metadata.as_ref(), &validation);
+    Ok(Some(ProcessedCharacter {
+        manifest_entry: ManifestCharEntry {
+            char_id:          char_name.to_string(),
+            display_name:     char_pascal.clone(),
+            projectile_names,
+            menu_entity_id,
+        },
+        log_block,
+    }))
+}
+
+/// Assemble the per-character `ssf2_source` + `validation_warnings`
+/// payload used inside the multi-char project log's `characters: [...]`
+/// array. Mirrors the single-character `write_conversion_log` shape so
+/// the SwiftUI popup can handle both: it can branch on whether the
+/// top-level log has a `characters` array.
+fn build_conversion_log_block(
+    char_name: &str,
+    char_data: &extractor::CharacterData,
+    md: Option<&abc_parser::MainPackageMetadata>,
+    validation_warnings: &[String],
+) -> serde_json::Value {
+    let snap = ssf2_converter::api_mappings::snapshot_conversion_log();
+    let to_entries = |m: std::collections::BTreeMap<String, usize>| -> Vec<serde_json::Value> {
+        let mut v: Vec<(String, usize)> = m.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        v.into_iter()
+            .map(|(name, count)| serde_json::json!({ "name": name, "count": count }))
+            .collect()
+    };
+    let mut payload = serde_json::json!({
+        "id": char_name,
+        "unknown":   to_entries(snap.unknown),
+        "ssf2_only": to_entries(snap.ssf2_only),
+    });
+    if let Some(md) = md {
+        let source_method = md.characters.iter()
+            .find(|(id, _)| id == char_name)
+            .map(|(_, m)| format!("Main::{}", m));
+        let mut ssf2_source = serde_json::Map::new();
+        if let Some(id) = &md.id   { ssf2_source.insert("package_id".into(),   serde_json::json!(id)); }
+        if let Some(g)  = &md.guid { ssf2_source.insert("package_guid".into(), serde_json::json!(g));  }
+        if let Some(sm) = source_method {
+            ssf2_source.insert("source_method".into(), serde_json::json!(sm));
+        }
+        if let Some(df) = &char_data.derived_from {
+            ssf2_source.insert("parent_normal_stats_id".into(),
+                serde_json::json!(df.parent_normal_stats_id));
+            ssf2_source.insert("source_method".into(), serde_json::json!(df.source_method));
+            ssf2_source.insert("note".into(), serde_json::json!(
+                "Fraymakers has no native transformation API. Both \
+                 characters ship as peer entities in the same project so \
+                 that, when the API lands, the parent's Script.hx can \
+                 swap between them at runtime."
+            ));
+        }
+        payload.as_object_mut().unwrap()
+            .insert("ssf2_source".to_string(), serde_json::Value::Object(ssf2_source));
+    }
+    if !validation_warnings.is_empty() {
+        payload.as_object_mut().unwrap().insert(
+            "validation_warnings".to_string(),
+            serde_json::json!(validation_warnings),
+        );
+    }
+    payload
+}
+
+/// Write the multi-char project's `<project>.fraytools` + merged
+/// `library/manifest.json` + project-level `conversion_log.json` with
+/// the per-character `characters: [...]` array. Called once after every
+/// character in the SSF has been emitted.
+fn finalize_multi_char_project(
+    project_dir: &std::path::Path,
+    project_id: &str,
+    chars: &[ManifestCharEntry],
+    char_logs: &[serde_json::Value],
+    input_path: &std::path::Path,
+) -> Result<()> {
+    log::info!("Finalising multi-char project: {} ({} characters)", project_id, chars.len());
+
+    // .fraytools
+    fs::write(project_dir.join(format!("{}.fraytools", project_id)),
+        ssf2_converter::fraytools_project::generate_fraytools_project(project_id))?;
+
+    // manifest.json — merged content[] with one type:"character" entry per char
+    let manifest = haxe_gen::generate_multi_char_manifest(project_id, chars);
+    fs::write(project_dir.join("library/manifest.json"), &manifest)?;
+    fs::write(project_dir.join("library/manifest.json.meta"),
+        haxe_gen::generate_manifest_meta_pub(&ssf2_converter::uuid_gen::det_uuid(
+            &format!("{}::manifest::meta", project_id))))?;
+
+    // conversion_log.json — project-scoped with characters: [...] array
+    let payload = serde_json::json!({
+        "project":      project_id,
+        "input":        input_path.file_name().and_then(|s| s.to_str()),
+        "characters":   char_logs,
+    });
+    fs::write(project_dir.join("conversion_log.json"),
+        serde_json::to_string_pretty(&payload)? + "\n")?;
     Ok(())
 }
 

@@ -12,9 +12,16 @@ use crate::fraytools_project;
 use crate::palette_gen;
 use crate::uuid_gen::det_uuid;
 
-pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &CharacterData, sprite_boxes: &std::collections::BTreeMap<String, crate::sprite_parser::AnimationBoxData>, img_result: &crate::image_extractor::ImageExtractionResult, costumes_json: Option<&Path>, sounds: &[crate::sound_extractor::SoundEntry], projectiles: &[crate::image_extractor::DiscoveredProjectile], effects: &[crate::image_extractor::DiscoveredEffect], head_sprite: Option<&crate::image_extractor::DiscoveredHead>, parsed_swf: &swf::Swf<'_>) -> Result<()> {
+pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &CharacterData, sprite_boxes: &std::collections::BTreeMap<String, crate::sprite_parser::AnimationBoxData>, img_result: &crate::image_extractor::ImageExtractionResult, costumes_json: Option<&Path>, sounds: &[crate::sound_extractor::SoundEntry], projectiles: &[crate::image_extractor::DiscoveredProjectile], effects: &[crate::image_extractor::DiscoveredEffect], head_sprite: Option<&crate::image_extractor::DiscoveredHead>, parsed_swf: &swf::Swf<'_>, multi_char_slot: Option<&crate::project::MultiCharSlot>) -> Result<()> {
     let char_id = char_name.to_lowercase().replace(" ", "");
-    let char_dir = output_dir.join(&char_id);
+    // In multi-char mode every character writes into the shared project
+    // dir; in single-char mode each character has its own subdir under
+    // `output_dir`. The project-finalizer (main::finalize_multi_char_project)
+    // handles the project-level manifest + .fraytools when in multi-char.
+    let char_dir = match multi_char_slot {
+        Some(s) => s.project_dir.clone(),
+        None    => output_dir.join(&char_id),
+    };
     // Per docs/multi_character_projects_plan.md §1: character scripts
     // live at library/scripts/<Pascal>/ (was library/scripts/Character/).
     let scripts_dir = char_dir.join(format!("library/scripts/{}", char_pascal));
@@ -56,13 +63,15 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
     fs::write(scripts_dir.join("AnimationStats.hx.meta"), script_meta(&format!("{}AnimationStats", char_id), &det_uuid(&format!("{}::AnimationStats::meta", char_id)), ScriptMetaKind::CharacterAnimationStats))?;
     fs::write(scripts_dir.join("Script.hx.meta"),         script_meta(&format!("{}Script", char_id),         &det_uuid(&format!("{}::Script::meta", char_id)),         ScriptMetaKind::CharacterScript))?;
 
-    // .fraytools project file
-    fs::write(char_dir.join(format!("{}.fraytools", char_name)), fraytools_project::generate_fraytools_project(char_name))?;
-
-    // manifest.json (based on character-template)
-    let proj_names: Vec<String> = projectiles.iter().map(|p| p.name.clone()).collect();
-    fs::write(char_dir.join("library/manifest.json"), generate_manifest(&char_id, char_name, &proj_names))?;
-    fs::write(char_dir.join("library/manifest.json.meta"), generate_manifest_meta(&det_uuid(&format!("{}::manifest::meta", char_id))))?;
+    // .fraytools + manifest are project-level. In single-char mode we
+    // write them here; in multi-char mode they're written once by the
+    // project finalizer in main.rs after every character is processed.
+    if multi_char_slot.is_none() {
+        fs::write(char_dir.join(format!("{}.fraytools", char_name)), fraytools_project::generate_fraytools_project(char_name))?;
+        let proj_names: Vec<String> = projectiles.iter().map(|p| p.name.clone()).collect();
+        fs::write(char_dir.join("library/manifest.json"), generate_manifest(&char_id, char_name, &proj_names))?;
+        fs::write(char_dir.join("library/manifest.json.meta"), generate_manifest_meta(&det_uuid(&format!("{}::manifest::meta", char_id))))?;
+    }
 
     // <Pascal>.entity (was Character.entity — see plan §1)
     let entities_dir = char_dir.join("library/entities");
@@ -87,14 +96,19 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
     let mut palette_collection_guid: Option<String> = None;
     let mut palette_base_map_id: Option<String> = None;
     // ── Palette / costumes ──────────────────────────────────────────────────
+    // For multi-char projects, characters share the project-level
+    // costumes.palettes / palette_preview.png paths. The first character
+    // (constructor-walk slot 0) keeps the unsuffixed filename; subsequent
+    // characters append `2`/`3`/... per the suffix rule in
+    // docs/multi_character_projects_plan.md §2.
+    let suffix = multi_char_slot.and_then(|s| s.collision_suffix())
+        .map(|n| n.to_string()).unwrap_or_default();
     match palette_gen::generate_palettes_and_remap(&char_id, char_name, &sprites_dir, costumes_json) {
         Ok(pal) => {
-            // costumes.palettes + .meta
-            fs::write(char_dir.join("library/costumes.palettes"), &pal.palettes_json)?;
-            fs::write(char_dir.join("library/costumes.palettes.meta"), &pal.palettes_meta_json)?;
-            // palette_preview.png + .meta (reference image for the R/G map shader)
-            fs::write(sprites_dir.join("palette_preview.png"), &pal.preview_png)?;
-            fs::write(sprites_dir.join("palette_preview.png.meta"), &pal.preview_meta_json)?;
+            fs::write(char_dir.join(format!("library/costumes.palettes{}", suffix)),       &pal.palettes_json)?;
+            fs::write(char_dir.join(format!("library/costumes.palettes{}.meta", suffix)),  &pal.palettes_meta_json)?;
+            fs::write(sprites_dir.join(format!("palette_preview.png{}", suffix)),          &pal.preview_png)?;
+            fs::write(sprites_dir.join(format!("palette_preview.png{}.meta", suffix)),     &pal.preview_meta_json)?;
             // Write the entity with the paletteMap filled in
             let entity_json = entity_gen::generate_entity_with_palette(
                 data, &char_id, sprite_boxes, img_result, populated_jabs,
@@ -132,8 +146,12 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
                     });
                     menu_json = serde_json::to_string_pretty(&menu_val).unwrap_or(menu_json);
                 }
-                fs::write(entities_dir.join("Menu.entity"), menu_json)?;
-                log::info!("Generated Menu.entity using {} ({}x{})", img_sym, head_img.width, head_img.height);
+                let menu_filename = match multi_char_slot {
+                    Some(_) => format!("{}_Menu.entity", char_pascal),
+                    None    => "Menu.entity".to_string(),
+                };
+                fs::write(entities_dir.join(&menu_filename), menu_json)?;
+                log::info!("Generated {} using {} ({}x{})", menu_filename, img_sym, head_img.width, head_img.height);
             } else {
                 log::warn!("Head image '{}' not found in extracted images, skipping Menu.entity", img_sym);
             }
@@ -1143,6 +1161,102 @@ fn generate_manifest(char_id: &str, display_name: &str, projectile_names: &[Stri
         "resourceId": char_id,
         "content": content
     }).to_string()
+}
+
+/// Multi-character project manifest. Mirrors `generate_manifest`'s
+/// per-character content shape but emits one entry per character in
+/// the project, plus per-character AI entries, plus per-character
+/// projectile entries. Used by `main::finalize_multi_char_project`.
+pub fn generate_multi_char_manifest(
+    project_id: &str,
+    chars: &[crate::project::ManifestCharEntry],
+) -> String {
+    let mut content: Vec<serde_json::Value> = Vec::new();
+
+    for entry in chars {
+        let char_id = &entry.char_id;
+        let display_name = &entry.display_name;
+        let ai_id        = format!("{}Ai", char_id);
+        let ai_script_id = format!("{}AiScript", char_id);
+
+        content.push(serde_json::json!({
+            "id": char_id,
+            "name": display_name,
+            "description": format!("{} — converted from Super Smash Flash 2", display_name),
+            "type": "character",
+            "objectStatsId":    format!("{}CharacterStats", char_id),
+            "animationStatsId": format!("{}AnimationStats", char_id),
+            "hitboxStatsId":    format!("{}HitboxStats", char_id),
+            "scriptId":         format!("{}Script", char_id),
+            "costumesId":       format!("{}Costumes", char_id),
+            "aiId":             ai_id.clone(),
+            "metadata": {
+                "ui": {
+                    "entityId": entry.menu_entity_id,
+                    "render": {
+                        "animation":               "full",
+                        "animation_icon":          "icon",
+                        "animation_icon_no_palette": "icon_no_palette",
+                        "x_offset":       0,
+                        "y_offset":       38,
+                        "x_offset_door":  0,
+                        "y_offset_door":  0,
+                        "x_offset_door_ffa": 0,
+                        "y_offset_door_ffa": 0
+                    },
+                    "hud": {
+                        "animation":              "hud",
+                        "animation_front":        "hud_front",
+                        "animation_happy":        "hud_happy",
+                        "animation_happy_front":  "hud_happy_front",
+                        "animation_sad":          "hud_sad",
+                        "animation_sad_front":    "hud_sad_front",
+                        "animation_angry":        "hud_angry",
+                        "animation_angry_front":  "hud_angry_front",
+                        "animation_hurt":         "hud_hurt",
+                        "animation_hurt_front":   "hud_hurt_front",
+                        "animation_stock_icon":   "stock"
+                    },
+                    "css": {
+                        "animation": "css",
+                        "info": {
+                            "game": "Super Smash Flash 2",
+                            "description": format!("{} — ported from SSF2", display_name)
+                        }
+                    }
+                }
+            }
+        }));
+        content.push(serde_json::json!({
+            "id":       ai_id,
+            "type":     "characterAi",
+            "scriptId": ai_script_id
+        }));
+        for proj_name in &entry.projectile_names {
+            let entity_id = proj_name.replace('_', "");
+            content.push(serde_json::json!({
+                "id":               format!("{}Projectile", entity_id),
+                "type":             "projectile",
+                "objectStatsId":    format!("{}ProjectileStats", entity_id),
+                "animationStatsId": format!("{}ProjectileAnimationStats", entity_id),
+                "hitboxStatsId":    format!("{}ProjectileHitboxStats", entity_id),
+                "scriptId":         format!("{}ProjectileScript", entity_id),
+                "costumesId":       format!("{}Costumes", char_id)
+            }));
+        }
+    }
+
+    serde_json::json!({
+        "resourceId": project_id,
+        "content": content
+    }).to_string()
+}
+
+/// Public alias for the manifest .meta sidecar generator, so
+/// `main::finalize_multi_char_project` can call it without leaking the
+/// private name.
+pub fn generate_manifest_meta_pub(guid: &str) -> String {
+    generate_manifest_meta(guid)
 }
 
 // ─── Sound content entries ────────────────────────────────────────────────────
