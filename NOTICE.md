@@ -1,5 +1,9 @@
 # Notice
 
+This project is licensed under the MIT License — see [`LICENSE`](LICENSE)
+for full terms. This `NOTICE.md` covers attribution to dependencies as
+required by their respective licenses.
+
 This project depends on the following open-source crates. Each is
 listed here with the licence under which it is distributed. Their
 attribution requirements (MIT, Apache-2.0, BSD-3-Clause, MPL-2.0) are
@@ -71,8 +75,7 @@ included.
 
 ## This project's own licence
 
-This repository does not currently declare a top-level licence. Code
-authored within this repo is therefore implicitly all-rights-reserved
-under the project's contributors. If you want to redistribute or fork
-this project beyond personal mod development, please reach out to the
-maintainers first.
+This project is licensed under the **MIT License** — see
+[`LICENSE`](LICENSE) for the full text. MIT is compatible with every
+dependency listed above (all are MIT, MIT/Apache-2.0, or carry only
+attribution-style requirements satisfied by this NOTICE).

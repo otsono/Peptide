@@ -1,5 +1,19 @@
 # Multi-character Fraymakers projects (and universal entity/script rename)
 
+> **Status: implemented and shipped.** Stage A (universal PascalCase
+> rename — `Character.entity` → `<Pascal>.entity`, `menu.entity` →
+> `Menu.entity`, `scripts/Character/` → `scripts/<Pascal>/`) landed in
+> commit `388e6faf`. Stage B (one `.fraytools` project per
+> multi-character SSF, merged manifest, per-character entities/scripts,
+> collision-suffixed shared files, `--per-character-projects` rollback
+> flag) landed in `4db74a89`. Stage C (per-character
+> `library/audio/<char_id>/` subdirs) landed in `7729ecda`. The three
+> multi-character SSFs (zelda→zelda+sheik, bowser→bowser+gigabowser,
+> wario→wario+wario_man) now emit one shared project each.
+>
+> Kept for architectural history. For the *current* output layout, see
+> [`DEVELOPMENT.md`](../DEVELOPMENT.md) §9 and [`README.md`](../README.md).
+
 ## Why this exists
 
 Three SSF2 files contain peer character pairs that share a `.ssf` for

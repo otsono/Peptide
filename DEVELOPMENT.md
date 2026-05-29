@@ -84,6 +84,9 @@ ssf2-fraymakers-converter/
 ├── README.md                 Short user-facing readme
 ├── AGENT_CONTEXT.md          Authoritative SSF2 / Fraymakers FORMAT reference
 ├── DEVELOPMENT.md            ← this file
+├── CONTRIBUTING.md           Hot-file → doc-section map + per-change checklist
+├── LICENSE                   MIT License
+├── NOTICE.md                 Dependency attribution (Ruffle swf crate, etc.)
 ├── build-app.sh              Build Rust + Swift, assemble the macOS .app, launch it
 ├── rebuild-sandbag.sh        Quick: rebuild release binary + convert sandbag.ssf
 ├── .gitignore                Ignores *.ssf, *.swf, /target, characters/
@@ -1051,19 +1054,26 @@ Summary of what the code assumes — full detail in
 
 ## 9. Output format: Fraymakers character package
 
-For character `mario`:
+Entity files and the per-character scripts subdir are named after the
+character in **PascalCase**, derived from the `Main::get<X>` method name
+(`getMario` → `Mario`, `getBandanaDee` → `BandanaDee`, `getWario_Man` →
+`WarioMan`, `getgameandwatch` → `Gameandwatch`). See
+[`docs/multi_character_projects_plan.md`](docs/multi_character_projects_plan.md)
+§1 for the `pascal_form` rule.
+
+For the single-character SSF `mario`:
 
 ```
 characters/mario/
-├── mario.fraytools                       FrayTools project file
+├── mario.fraytools                       FrayTools project file (project settings only)
 ├── conversion_stats.json                 debug summary of the run
-├── conversion_log.json                   unhandled / SSF2-only call counts
+├── conversion_log.json                   unhandled / SSF2-only counts + ssf2_source + validation_warnings
 └── library/
-    ├── manifest.json (+ .meta)            ← lists Character + per-projectile manifest entries
+    ├── manifest.json (+ .meta)            ← one type:"character" entry + AI + per-projectile entries
     ├── costumes.palettes  (+ .meta)        15 SSF2 costumes as FM palettes
     ├── entities/
-    │   ├── Character.entity                main entity (animations/layers/keyframes/symbols)
-    │   ├── menu.entity                     full / css / icon / stock / hud variants
+    │   ├── Mario.entity                    main entity, PascalCase = character id (was Character.entity)
+    │   ├── Menu.entity                     full / css / icon / stock / hud variants (was menu.entity)
     │   ├── <projectile>.entity             one per discovered projectile
     │   └── <effect>.entity                 one per discovered VFX sprite
     ├── sprites/
@@ -1071,7 +1081,7 @@ characters/mario/
     │   ├── *.png.meta                      GUID sidecar per PNG (entity refs the GUID)
     │   └── palette_preview.png (+ .meta)
     ├── scripts/
-    │   ├── Character/
+    │   ├── Mario/                          <Pascal>/ — was Character/
     │   │   ├── CharacterStats.hx           movement physics
     │   │   ├── HitboxStats.hx              per-attack hitbox data
     │   │   ├── AnimationStats.hx           animation flags
@@ -1080,9 +1090,48 @@ characters/mario/
     │   └── Projectile/
     │       └── <Pascal>{Script,Stats,HitboxStats,AnimationStats}.hx (+ .meta)
     └── audio/
-        ├── *.wav                           extracted sounds (PCM 16-bit via ffmpeg)
+        ├── *.wav                           extracted sounds (PCM 16-bit via ffmpeg) — flat for single-char
         └── *.wav.meta                      per-sound content sidecar
 ```
+
+### Multi-character SSFs
+
+`zelda.ssf` (Zelda + Sheik), `bowser.ssf` (Bowser + Giga Bowser), and
+`wario.ssf` (Wario + Wario Man) each emit **one shared project**
+containing both characters as peer entities — a forward requirement for
+Fraymakers' future transformation API (which needs both forms in one
+project to swap between them at runtime). For `zelda.ssf`:
+
+```
+characters/zelda/
+├── zelda.fraytools                       one project for both characters
+├── conversion_log.json                   project-scoped, characters:[…] array (per-char ssf2_source)
+└── library/
+    ├── manifest.json (+ .meta)            TWO type:"character" entries (zelda + sheik), namespaced ids
+    ├── costumes.palettes  (+ .meta)        Zelda's (constructor-walk slot 0)
+    ├── costumes.palettes2 (+ .meta)        Sheik's (slot 1 → numeric collision suffix)
+    ├── palette_preview.png / .png2         same collision-suffix rule
+    ├── entities/
+    │   ├── Zelda.entity   Sheik.entity     one character entity each
+    │   ├── Zelda_Menu.entity  Sheik_Menu.entity   per-character portraits
+    │   └── <projectile>.entity             shared projectile entities
+    ├── scripts/
+    │   ├── Zelda/   Sheik/                  per-character script subdirs
+    │   └── Projectile/                      shared
+    ├── sprites/                             shared (PNG names are SSF2 <char>_fla.-prefixed)
+    └── audio/
+        ├── zelda/*.wav                      per-character audio subdirs (multi-char only)
+        └── sheik/*.wav
+```
+
+Collision-suffix rule: files that would collide at a shared library
+path (`costumes.palettes`, `palette_preview.png`) get a numeric suffix
+in constructor-walk order — slot 0 unsuffixed, slot 1 → `2`, etc.
+Per-character entities/scripts don't collide (the PascalCase name is in
+the path). `--per-character-projects` reverts a multi-char SSF to the
+single-character standalone layout. Transformation forms (Giga Bowser,
+Wario Man) carry a TODO banner in `CharacterStats.hx` about the manual
+wiring still owed for the not-yet-shipped FM transformation API.
 
 `.entity` files are JSON. The top-level shape is `{ animations[], layers[],
 keyframes[], symbols[], paletteMap, pluginMetadata, plugins, version: 14, … }`.

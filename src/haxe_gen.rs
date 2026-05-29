@@ -546,18 +546,22 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
             "// ─────────────────────────────────────────────────────────────────\n\
              // TODO: TRANSFORMATION FORM — manual wiring required.\n\
              //\n\
-             // This character was extracted as a Final-Smash / transformation\n\
-             // form of `{parent}` (SSF2 source: {source_method}). Fraymakers\n\
-             // does not yet expose a transformation API, so we emit the form\n\
-             // as a standalone character package. Selecting it from the FM\n\
-             // roster will run these stats directly — NOT what SSF2 does at\n\
-             // runtime, where the form is entered via the parent's Final\n\
-             // Smash trigger.\n\
+             // This character is a Final-Smash / transformation form of\n\
+             // `{parent}` (SSF2 source: {source_method}). It ships as a peer\n\
+             // entity in the SAME .fraytools project as `{parent}`, so that\n\
+             // when Fraymakers exposes a transformation API the parent's\n\
+             // Script.hx can swap between the two forms at runtime without a\n\
+             // cross-project asset reload.\n\
+             //\n\
+             // Fraymakers does not yet expose that transformation API.\n\
+             // Selecting this form directly from the FM roster will run\n\
+             // these stats as-is — NOT what SSF2 does at runtime, where the\n\
+             // form is entered via the parent's Final Smash trigger.\n\
              //\n\
              // To replicate the SSF2 behaviour you'll need to script the\n\
-             // transformation in the parent character's Script.hx (likely by\n\
-             // swapping resources / stats / animations into the parent at the\n\
-             // Final Smash trigger). Track the upstream FM API request:\n\
+             // transformation in `{parent}`'s Script.hx (likely by swapping\n\
+             // resources / stats / animations into the parent at the Final\n\
+             // Smash trigger). Track the upstream FM API request:\n\
              //   https://github.com/Fraymakers (no transformation API yet)\n\
              // ─────────────────────────────────────────────────────────────────\n",
             parent = df.parent_normal_stats_id,
