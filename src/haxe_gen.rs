@@ -342,7 +342,13 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
 
     // ── Sound content entries ─────────────────────────────────────────────────────────────────
     if !sounds.is_empty() {
-        generate_sound_entries(&char_dir, char_name, sounds)?;
+        // Mirrors main::process_character's per-char-subdir rule for
+        // multi-char projects (plan §3); flat path for single-char.
+        let audio_dir = match multi_char_slot {
+            Some(_) => char_dir.join(format!("library/audio/{}", char_id)),
+            None    => char_dir.join("library/audio"),
+        };
+        generate_sound_entries(&audio_dir, char_name, sounds)?;
         log::info!("Generated sound entries for {} sounds", sounds.len());
     }
 
@@ -1267,12 +1273,11 @@ pub fn generate_manifest_meta_pub(guid: &str) -> String {
 /// manifest is needed: reference characters register sounds purely through
 /// these per-file sidecars.
 fn generate_sound_entries(
-    char_dir: &Path,
+    audio_dir: &Path,
     char_name: &str,
     sounds: &[crate::sound_extractor::SoundEntry],
 ) -> Result<()> {
-    let audio_dir = char_dir.join("library/audio");
-    fs::create_dir_all(&audio_dir)?;
+    fs::create_dir_all(audio_dir)?;
 
     for s in sounds {
         let safe_name: String = s.name.chars()

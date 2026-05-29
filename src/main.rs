@@ -431,11 +431,15 @@ fn process_character(
     log::info!("Extracted {} sprite images, {} anim image maps",
         img_result.images.len(), img_result.anim_images.len());
 
-    // Extract sounds (uses its own hand-rolled SWF tag walker, not the
-    // `swf` crate; left untouched). For Stage B we extract per-character
-    // into the shared audio dir; Stage C splits this into per-character
-    // subdirs.
-    let sounds_dir = char_output_dir.join("library/audio");
+    // Extract sounds. Per docs/multi_character_projects_plan.md §3:
+    //   * single-character project: flat library/audio/*.wav (unchanged).
+    //   * multi-character project: library/audio/<char_id>/*.wav so each
+    //     character's audio is namespaced under its own subdir even when
+    //     the project ships multiple characters' sounds side-by-side.
+    let sounds_dir = match multi_char_slot {
+        Some(_) => char_output_dir.join(format!("library/audio/{}", char_name)),
+        None    => char_output_dir.join("library/audio"),
+    };
     let sounds = match sound_extractor::extract_all_sounds(swf_data, &sounds_dir, char_name) {
         Ok(s) => s,
         Err(e) => { log::warn!("sound_extractor failed: {}", e); vec![] }
