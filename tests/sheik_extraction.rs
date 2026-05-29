@@ -30,13 +30,17 @@ fn sheik_emits_full_package_from_zelda_ssf() {
         .status().expect("run converter");
     assert!(status.success(), "converter exited non-zero for sheik");
 
-    let sheik = out.path().join("sheik/library/scripts/Character");
+    // Stage A: scripts live at library/scripts/Sheik/ (was Character/).
+    let sheik = out.path().join("sheik/library/scripts/Sheik");
     for f in &["CharacterStats.hx", "AnimationStats.hx", "HitboxStats.hx", "Script.hx"] {
         let p = sheik.join(f);
         assert!(p.exists(), "expected {} to exist", p.display());
         let body = std::fs::read_to_string(&p).expect("read");
         assert!(body.len() > 100, "{} is suspiciously short ({} bytes)", f, body.len());
     }
+    // Stage A: character entity at library/entities/Sheik.entity (was Character.entity).
+    let sheik_entity = out.path().join("sheik/library/entities/Sheik.entity");
+    assert!(sheik_entity.exists(), "expected {} to exist", sheik_entity.display());
 
     // CharacterStats.hx must NOT carry the transformation banner — Sheik's
     // cData.normalStats_id is `sheik` (matches her derived id).

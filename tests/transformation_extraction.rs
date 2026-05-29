@@ -22,12 +22,18 @@ fn run_converter(ssf: &Path, out: &Path) {
     assert!(status.success(), "converter exited non-zero for {}", ssf.display());
 }
 
-fn assert_transformation_package(out: &Path, parent: &str, transformation: &str, source_method: &str) {
-    let dir = out.join(format!("{}/library/scripts/Character", transformation));
+fn assert_transformation_package(out: &Path, parent: &str, transformation: &str, pascal: &str, source_method: &str) {
+    // Stage A: scripts live at library/scripts/<Pascal>/ per
+    // docs/multi_character_projects_plan.md §1.
+    let dir = out.join(format!("{}/library/scripts/{}", transformation, pascal));
     for f in &["CharacterStats.hx", "AnimationStats.hx", "HitboxStats.hx", "Script.hx"] {
         let p = dir.join(f);
         assert!(p.exists(), "{} should exist for {}", p.display(), transformation);
     }
+    // Stage A: character entity at library/entities/<Pascal>.entity.
+    let entity_path = out.join(format!("{}/library/entities/{}.entity", transformation, pascal));
+    assert!(entity_path.exists(), "{} should exist for {}", entity_path.display(), transformation);
+
     let stats = std::fs::read_to_string(dir.join("CharacterStats.hx")).unwrap();
     assert!(stats.contains("TRANSFORMATION FORM"),
         "{}'s CharacterStats.hx must carry the TODO transformation banner", transformation);
@@ -55,12 +61,12 @@ fn bowser_ssf_emits_bowser_and_gigabowser() {
 
     // Parent does NOT have the transformation banner / ssf2_source.
     let parent_stats = std::fs::read_to_string(
-        out.path().join("bowser/library/scripts/Character/CharacterStats.hx")).unwrap();
+        out.path().join("bowser/library/scripts/Bowser/CharacterStats.hx")).unwrap();
     assert!(!parent_stats.contains("TRANSFORMATION FORM"),
         "Bowser (parent) must not carry the TODO banner");
 
     // Transformation does.
-    assert_transformation_package(out.path(), "bowser", "gigabowser", "Main::getGigaBowser");
+    assert_transformation_package(out.path(), "bowser", "gigabowser", "GigaBowser", "Main::getGigaBowser");
 
     // Differentiating data: Giga's projectile pipeline must produce
     // GigaFireBreath{,Blue,Purple} stat/hitbox files — these come from
@@ -86,9 +92,9 @@ fn wario_ssf_emits_wario_and_wario_man() {
     assert!(out.path().join("wario_man").exists(), "characters/wario_man must exist");
 
     let parent_stats = std::fs::read_to_string(
-        out.path().join("wario/library/scripts/Character/CharacterStats.hx")).unwrap();
+        out.path().join("wario/library/scripts/Wario/CharacterStats.hx")).unwrap();
     assert!(!parent_stats.contains("TRANSFORMATION FORM"),
         "Wario (parent) must not carry the TODO banner");
 
-    assert_transformation_package(out.path(), "wario", "wario_man", "Main::getWario_Man");
+    assert_transformation_package(out.path(), "wario", "wario_man", "WarioMan", "Main::getWario_Man");
 }

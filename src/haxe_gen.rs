@@ -12,10 +12,12 @@ use crate::fraytools_project;
 use crate::palette_gen;
 use crate::uuid_gen::det_uuid;
 
-pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite_boxes: &std::collections::BTreeMap<String, crate::sprite_parser::AnimationBoxData>, img_result: &crate::image_extractor::ImageExtractionResult, costumes_json: Option<&Path>, sounds: &[crate::sound_extractor::SoundEntry], projectiles: &[crate::image_extractor::DiscoveredProjectile], effects: &[crate::image_extractor::DiscoveredEffect], head_sprite: Option<&crate::image_extractor::DiscoveredHead>, parsed_swf: &swf::Swf<'_>) -> Result<()> {
+pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &CharacterData, sprite_boxes: &std::collections::BTreeMap<String, crate::sprite_parser::AnimationBoxData>, img_result: &crate::image_extractor::ImageExtractionResult, costumes_json: Option<&Path>, sounds: &[crate::sound_extractor::SoundEntry], projectiles: &[crate::image_extractor::DiscoveredProjectile], effects: &[crate::image_extractor::DiscoveredEffect], head_sprite: Option<&crate::image_extractor::DiscoveredHead>, parsed_swf: &swf::Swf<'_>) -> Result<()> {
     let char_id = char_name.to_lowercase().replace(" ", "");
     let char_dir = output_dir.join(&char_id);
-    let scripts_dir = char_dir.join("library/scripts/Character");
+    // Per docs/multi_character_projects_plan.md §1: character scripts
+    // live at library/scripts/<Pascal>/ (was library/scripts/Character/).
+    let scripts_dir = char_dir.join(format!("library/scripts/{}", char_pascal));
     fs::create_dir_all(&scripts_dir)?;
 
     // Effect → primary-animation map for the context-aware
@@ -62,10 +64,11 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
     fs::write(char_dir.join("library/manifest.json"), generate_manifest(&char_id, char_name, &proj_names))?;
     fs::write(char_dir.join("library/manifest.json.meta"), generate_manifest_meta(&det_uuid(&format!("{}::manifest::meta", char_id))))?;
 
-    // Character.entity
+    // <Pascal>.entity (was Character.entity — see plan §1)
     let entities_dir = char_dir.join("library/entities");
     fs::create_dir_all(&entities_dir)?;
-    fs::write(entities_dir.join("Character.entity"), entity_gen::generate_entity(data, &char_id, sprite_boxes, img_result, populated_jabs))?;
+    let char_entity_filename = format!("{}.entity", char_pascal);
+    fs::write(entities_dir.join(&char_entity_filename), entity_gen::generate_entity(data, &char_id, sprite_boxes, img_result, populated_jabs))?;
 
     // Generate .meta sidecar files for each sprite PNG
     let meta_guids = entity_gen::get_image_meta_guids(&char_id, img_result);
@@ -97,7 +100,7 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
                 data, &char_id, sprite_boxes, img_result, populated_jabs,
                 &pal.collection_guid, &pal.base_map_id,
             );
-            fs::write(entities_dir.join("Character.entity"), entity_json)?;
+            fs::write(entities_dir.join(&char_entity_filename), entity_json)?;
             palette_collection_guid = Some(pal.collection_guid.clone());
             palette_base_map_id = Some(pal.base_map_id.clone());
         }
@@ -129,16 +132,16 @@ pub fn generate(output_dir: &Path, char_name: &str, data: &CharacterData, sprite
                     });
                     menu_json = serde_json::to_string_pretty(&menu_val).unwrap_or(menu_json);
                 }
-                fs::write(entities_dir.join("menu.entity"), menu_json)?;
-                log::info!("Generated menu.entity using {} ({}x{})", img_sym, head_img.width, head_img.height);
+                fs::write(entities_dir.join("Menu.entity"), menu_json)?;
+                log::info!("Generated Menu.entity using {} ({}x{})", img_sym, head_img.width, head_img.height);
             } else {
-                log::warn!("Head image '{}' not found in extracted images, skipping menu.entity", img_sym);
+                log::warn!("Head image '{}' not found in extracted images, skipping Menu.entity", img_sym);
             }
         } else {
-            log::warn!("Head sprite '{}' has no image placement, skipping menu.entity", head.name);
+            log::warn!("Head sprite '{}' has no image placement, skipping Menu.entity", head.name);
         }
     } else {
-        log::warn!("No head sprite found, skipping menu.entity");
+        log::warn!("No head sprite found, skipping Menu.entity");
     }
 
     // ── projectile.entity files ───────────────────────────────────────────────────

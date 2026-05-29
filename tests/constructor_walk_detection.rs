@@ -47,6 +47,45 @@ fn id_derivation_rule_matches_corpus_method_names() {
 }
 
 #[test]
+fn pascal_form_covers_every_corpus_shape() {
+    // Drives entity filenames (`<Pascal>.entity`) and the scripts subdir
+    // (`library/scripts/<Pascal>/`) per
+    // docs/multi_character_projects_plan.md §1. Coverage is the same
+    // 13 method-name shapes derive_id_from_bundle_method_name handles,
+    // plus the fallback path (no `get` prefix) used by --name overrides
+    // and filename fallbacks.
+    let cases: &[(&str, &str)] = &[
+        // Primary path: from Main::getX() method names.
+        ("getMario",         "Mario"),
+        ("getSandbag",       "Sandbag"),
+        ("getSheik",         "Sheik"),
+        ("getBandanaDee",    "BandanaDee"),
+        ("getCaptainFalcon", "CaptainFalcon"),
+        ("getChibiRobo",     "ChibiRobo"),
+        ("getDonkeyKong",    "DonkeyKong"),
+        ("getMegaMan",       "MegaMan"),
+        ("getMetaKnight",    "MetaKnight"),
+        ("getPacMan",        "PacMan"),
+        ("getBlackMage",     "BlackMage"),
+        ("getGigaBowser",    "GigaBowser"),
+        ("getWario_Man",     "WarioMan"),
+        ("getgameandwatch",  "Gameandwatch"),
+        // Fallback path (no `get` prefix): act on the id directly.
+        ("sandbag",          "Sandbag"),
+        ("mario",            "Mario"),
+        ("wario_man",        "Warioman"),  // fallback can't recover SSF2 case info
+    ];
+    for (input, expected) in cases {
+        let got = abc_parser::pascal_form(input);
+        assert_eq!(got, *expected,
+            "pascal_form({:?}) = {:?}, expected {:?}", input, got, expected);
+    }
+    // Degenerate inputs return empty rather than crashing.
+    assert_eq!(abc_parser::pascal_form("get"), "");
+    assert_eq!(abc_parser::pascal_form(""),    "");
+}
+
+#[test]
 fn corpus_constructor_walk_matches_path2_enumeration() {
     // For every .ssf in the corpus, the constructor walker's
     // declared-characters list should match the path 2 enumeration's

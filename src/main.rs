@@ -289,6 +289,18 @@ fn process_character(
         .find_map(|abc| abc_parser::extract_main_package_metadata(&abc));
     let validation = run_tier1_validation(char_name, &char_data, package_metadata.as_ref(), input_path);
 
+    // PascalCase form for entity filenames + scripts subdir, per
+    // docs/multi_character_projects_plan.md §1. The constructor walker
+    // gave us each character's Main::get<X> method name — we derive
+    // <Pascal> from that (strip `get`, strip `_`, uppercase first
+    // char). When the method name isn't available (--name override or
+    // filename fallback), pascal_form falls back to acting on the char
+    // id directly.
+    let char_pascal: String = package_metadata.as_ref()
+        .and_then(|md| md.characters.iter().find(|(id, _)| id == char_name))
+        .map(|(_, method)| abc_parser::pascal_form(method))
+        .unwrap_or_else(|| abc_parser::pascal_form(char_name));
+
     // Extract median xframe scale from root character MovieClip
     let (base_scale_x, base_scale_y) = sprite_parser::extract_xframe_scale_from_swf(&parsed_swf, char_name)
         .unwrap_or_else(|e| {
@@ -352,7 +364,7 @@ fn process_character(
         head_sprite.as_ref().map(|h| h.name.as_str()).unwrap_or("none"));
 
     // Generate Fraymakers files
-    haxe_gen::generate(output, char_name, &char_data, &sprite_boxes, &img_result,
+    haxe_gen::generate(output, char_name, &char_pascal, &char_data, &sprite_boxes, &img_result,
         costumes, &sounds, &projectiles, &effects, head_sprite.as_ref(), &parsed_swf)?;
     log::info!("Generated Fraymakers files for {}", char_name);
 

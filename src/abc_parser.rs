@@ -1301,6 +1301,38 @@ pub fn derive_id_from_bundle_method_name(method_name: &str) -> Option<String> {
     Some(suffix.to_lowercase())
 }
 
+/// Derive the PascalCase form used for entity filenames and the
+/// `library/scripts/<Pascal>/` subdir per
+/// `docs/multi_character_projects_plan.md`. Rule: strip `get` (if
+/// present), strip `_` characters, uppercase the first character.
+///
+/// Examples:
+///   `getMario`        → `Mario`
+///   `getSandbag`      → `Sandbag`
+///   `getBandanaDee`   → `BandanaDee`
+///   `getCaptainFalcon`→ `CaptainFalcon`
+///   `getGigaBowser`   → `GigaBowser`
+///   `getWario_Man`    → `WarioMan`
+///   `getMegaMan`      → `MegaMan`
+///   `getgameandwatch` → `Gameandwatch`  (no SSF2-side case info)
+///   `sandbag`         → `Sandbag`       (no `get` prefix, fallback)
+///   `wario_man`       → `Warioman`      (fallback path loses word boundary)
+///
+/// The fallback path (input without a `get` prefix) is meant for cases
+/// where we don't have the SSF2 method name handy — `--name` override,
+/// filename fallback for misc.ssf-like SWFs. Multi-char projects
+/// always come through detection with the method name available, so
+/// the fallback never fires for Wario Man et al.
+pub fn pascal_form(method_or_id: &str) -> String {
+    let suffix = method_or_id.strip_prefix("get").unwrap_or(method_or_id);
+    let no_underscores: String = suffix.chars().filter(|c| *c != '_').collect();
+    let mut chars = no_underscores.chars();
+    match chars.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 /// Metadata declared by `Main`'s constructor — the SSF "table of contents".
 /// Populated by `extract_main_package_metadata` from a single iinit body
 /// walk. Used by detection (the `characters` list IS the roster) and by
