@@ -154,22 +154,43 @@ function newestFra(buildDir) {
       console.error('project already open');
     }
 
-    // 4. Trigger FrayTools' publish (force mode → auto-runs the exporter).
-    // publish() force-runs the exporter only when the Publish dialog *mounts*.
-    // If a dialog is already open (e.g. left over from a prior run), re-calling
-    // publish() is a no-op — so close any open dialog first, then publish.
-    const pub = await ev(`(()=>{ try {
+    // 4. Trigger FrayTools' publish via "Publish All".
+    // The Publish dialog has two actions: "Publish" (force mode, primary
+    // folder only) and "Publish All" (every configured output folder). We use
+    // Publish All so the package lands in BOTH ./build and any extra folder
+    // the converter added (e.g. the Fraymakers custom/<Char> dir). publish()
+    // force-mode would only hit the primary folder.
+    //
+    // First close any stale dialog (so the click targets a fresh one), open
+    // the dialog non-force, then click "Publish All". Falls back to force
+    // publish() if the button can't be found.
+    const close = await ev(`(()=>{ try {
       const c = window.__ctrl;
       const dlgOpen = (c.state && c.state.publishDialogVisible) || !!document.querySelector('.PublishSettingsDialog');
       if (dlgOpen && typeof c.onPublishDialogClose === 'function') c.onPublishDialogClose();
       return 'closed:' + (dlgOpen ? 'yes' : 'no');
     } catch(e){ return 'ERR '+e.message; } })()`);
-    if (String(pub).startsWith('ERR')) die(`pre-publish cleanup failed: ${pub}`);
-    if (pub === 'closed:yes') await sleep(800);  // let the dialog unmount
+    if (String(close).startsWith('ERR')) die(`pre-publish cleanup failed: ${close}`);
+    if (close === 'closed:yes') await sleep(800);  // let the dialog unmount
 
-    const pub2 = await ev(`(()=>{ try { window.__ctrl.publish(); return 'published'; } catch(e){ return 'ERR '+e.message; } })()`);
-    if (String(pub2).startsWith('ERR')) die(`publish() failed: ${pub2}`);
-    console.error('publish() invoked — waiting for the .fra to be written…');
+    const open = await ev(`(()=>{ try { window.__ctrl.showPublishDialog(false); return 'ok'; } catch(e){ return 'ERR '+e.message; } })()`);
+    if (String(open).startsWith('ERR')) die(`showPublishDialog failed: ${open}`);
+    await sleep(2500);  // let the dialog + its buttons render
+
+    const pub = await ev(`(()=>{ try {
+      const b = Array.from(document.querySelectorAll('button')).find(x => /publish all/i.test((x.textContent||'').trim()));
+      if (b) {
+        const fk = Object.keys(b).find(k => k.startsWith('__reactInternalInstance'));
+        const oc = fk && b[fk].memoizedProps && b[fk].memoizedProps.onClick;
+        if (oc) { oc({ type:'click', target:b, currentTarget:b, bubbles:true }); return 'publish-all'; }
+        b.click(); return 'publish-all:native';
+      }
+      // Fallback: force publish (primary folder only).
+      window.__ctrl.publish();
+      return 'force-publish-fallback';
+    } catch(e){ return 'ERR '+e.message; } })()`);
+    if (String(pub).startsWith('ERR')) die(`publish failed: ${pub}`);
+    console.error(`publish invoked (${pub}) — waiting for the .fra to be written…`);
 
     // 5. Poll for a freshly written .fra under build/.
     const deadline = Date.now() + timeoutMs;

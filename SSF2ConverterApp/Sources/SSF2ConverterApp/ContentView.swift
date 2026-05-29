@@ -65,7 +65,16 @@ struct ContentView: View {
     // inner Mach-O binary at use time via `resolvedFrayToolsExe`.
     @AppStorage("frayToolsPath") private var frayToolsPath: String = ""
 
+    // Whether to auto-add the Fraymakers custom/<Char> folder to each
+    // converted character's FrayTools publish settings (so exporting drops
+    // the character straight into the game). `…Decided` records that the
+    // user has answered the one-time prompt (Yes or Don't-ask-again); a plain
+    // "No" leaves it undecided so we ask again next launch.
+    @AppStorage("fraymakersAutoPublish") private var fraymakersAutoPublish: Bool = false
+    @AppStorage("fraymakersPromptDecided") private var fraymakersPromptDecided: Bool = false
+
     @State private var exportState: ExportState = .idle
+    @State private var showFraymakersPrompt: Bool = false
 
     // Path to the ssf2_converter binary — bundled inside Contents/MacOS/
     var converterBin: URL {
@@ -105,6 +114,29 @@ struct ContentView: View {
             if let url = note.object as? URL {
                 startConversion(url: url)
             }
+        }
+        .task {
+            // One-time prompt: offer to publish converted characters straight
+            // into the Fraymakers custom-content folder. Only if Fraymakers is
+            // installed and the user hasn't already decided / opted in.
+            if fraymakersRoot() != nil && !fraymakersAutoPublish && !fraymakersPromptDecided {
+                showFraymakersPrompt = true
+            }
+        }
+        .alert("Publish into Fraymakers?", isPresented: $showFraymakersPrompt) {
+            Button("Yes") {
+                fraymakersAutoPublish = true
+                fraymakersPromptDecided = true
+            }
+            Button("Not now") {
+                // Leave undecided — ask again next launch.
+            }
+            Button("Don't ask again", role: .cancel) {
+                fraymakersAutoPublish = false
+                fraymakersPromptDecided = true
+            }
+        } message: {
+            Text("Fraymakers is installed on this Mac. Would you like converted characters to publish straight into your Fraymakers custom-content folder (custom/<Character>) so they're playable in-game? This adds that folder to each character's FrayTools publish settings; you can still publish to ./build too.")
         }
     }
 
@@ -560,6 +592,12 @@ struct ContentView: View {
                     withAnimation(.easeInOut(duration: 0.3)) { progress = 1.0 }
                     if process.terminationStatus == 0 {
                         let parsedLog = ConversionLog.load(from: charOutputPath)
+                        // If opted in, add the Fraymakers custom/<Char> folder to
+                        // this character's FrayTools publish settings so exporting
+                        // drops it straight into the game.
+                        if fraymakersAutoPublish {
+                            ensureFraymakersPublishFolder(charName: charName, charOutputPath: charOutputPath)
+                        }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                             conversionLog = parsedLog
                             conversionState = .success(
@@ -649,6 +687,14 @@ struct ContentView: View {
             return
         }
 
+        // If opted in, make sure the Fraymakers folder is in publish settings
+        // before the harness opens the project (covers characters converted
+        // before opting in). Idempotent.
+        if fraymakersAutoPublish {
+            let charName = URL(fileURLWithPath: project).deletingPathExtension().lastPathComponent
+            ensureFraymakersPublishFolder(charName: charName, charOutputPath: charOutputPath)
+        }
+
         exportState = .running
 
         DispatchQueue.global(qos: .userInitiated).async {
@@ -690,6 +736,81 @@ struct ContentView: View {
                     exportState = .failure(message: error.localizedDescription)
                 }
             }
+        }
+    }
+
+    // MARK: Fraymakers publish-folder integration
+
+    /// The Fraymakers Steam install directory, if present on this Mac.
+    /// (Windows equivalent — for a future cross-platform port — is
+    /// %APPDATA%\Steam\steamapps\common\Fraymakers.)
+    func fraymakersRoot() -> URL? {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Steam/steamapps/common/Fraymakers")
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+            return url
+        }
+        return nil
+    }
+
+    /// custom/<CharacterName> under the Fraymakers install.
+    func fraymakersCustomDir(forCharacter char: String) -> URL? {
+        fraymakersRoot()?.appendingPathComponent("custom/\(char)")
+    }
+
+    /// POSIX relative path from `base` to `target` (both absolute). FrayTools
+    /// stores publish-folder paths relative to the project directory and
+    /// ignores absolute ones, so we must emit a relative path.
+    func relativePath(from base: String, to target: String) -> String {
+        let b = URL(fileURLWithPath: base).standardizedFileURL.pathComponents
+        let t = URL(fileURLWithPath: target).standardizedFileURL.pathComponents
+        var i = 0
+        while i < b.count && i < t.count && b[i] == t[i] { i += 1 }
+        let ups = Array(repeating: "..", count: b.count - i)
+        let downs = Array(t[i...])
+        let comps = ups + downs
+        return comps.isEmpty ? "." : comps.joined(separator: "/")
+    }
+
+    /// Create the Fraymakers custom/<Char> folder (if missing) and add it to
+    /// the character's .fraytools `publishFolders` as a relative path, unless
+    /// it's already there. Idempotent and best-effort (failures are silent so
+    /// they never block the conversion success flow).
+    func ensureFraymakersPublishFolder(charName: String, charOutputPath: String) {
+        guard let customDir = fraymakersCustomDir(forCharacter: charName) else { return }
+
+        // Create custom/<Char> (and any missing parents).
+        try? FileManager.default.createDirectory(at: customDir, withIntermediateDirectories: true)
+
+        // Find the .fraytools project file in the character output dir.
+        let outDir = URL(fileURLWithPath: charOutputPath)
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: outDir, includingPropertiesForKeys: nil),
+              let projURL = entries.first(where: { $0.pathExtension == "fraytools" }) else { return }
+
+        guard let data = try? Data(contentsOf: projURL),
+              var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+
+        var folders = (obj["publishFolders"] as? [[String: Any]]) ?? []
+
+        // Relative path from the project dir to custom/<Char>.
+        let rel = relativePath(from: outDir.path, to: customDir.path)
+
+        // Skip if an entry already resolves to the same place (by relative
+        // path or by absolute resolution against the project dir).
+        let already = folders.contains { entry in
+            guard let p = entry["path"] as? String else { return false }
+            if p == rel { return true }
+            let resolved = URL(fileURLWithPath: p, relativeTo: outDir).standardizedFileURL.path
+            return resolved == customDir.standardizedFileURL.path
+        }
+        if already { return }
+
+        folders.append(["id": "fraymakers", "path": rel])
+        obj["publishFolders"] = folders
+
+        if let out = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]) {
+            try? out.write(to: projURL)
         }
     }
 }
