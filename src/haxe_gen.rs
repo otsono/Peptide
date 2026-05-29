@@ -43,6 +43,16 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
         .collect();
     let _effect_anim_guard = crate::api_mappings::EffectAnimGuard::install(effect_anim_map);
 
+    // Per-character extracted-sound id set → lets rewrite_play_sound_calls
+    // emit getContent("id") for sounds we have and a placeholder for the rest.
+    // Mirrors how sound_extractor sanitizes names for the .wav filenames.
+    let sound_ids: std::collections::BTreeSet<String> = sounds.iter()
+        .map(|s| s.name.chars()
+            .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect())
+        .collect();
+    let _sounds_guard = crate::api_mappings::AvailableSoundsGuard::install(sound_ids);
+
     log::info!("Generating Fraymakers character package in {}", char_dir.display());
 
     // How many of jab1/jab2/jab3/jab4 actually have image content. Drives
@@ -1323,7 +1333,52 @@ fn generate_sound_entries(
         )?;
     }
 
+    // Silent placeholder asset. `rewrite_play_sound_calls` points SSF2 sounds
+    // that have no extracted asset and no GlobalSfx match at this id (with a
+    // visible TODO), so the AudioClip.play() call is valid (plays silence)
+    // and the modder can swap in a real sound.
+    let ph = crate::api_mappings::PLACEHOLDER_SOUND_ID;
+    fs::write(audio_dir.join(format!("{ph}.wav")), silent_wav())?;
+    let ph_guid = det_uuid(&format!("{}::sound_meta_{}", char_name, ph));
+    let ph_meta = serde_json::json!({
+        "export": true,
+        "guid":   ph_guid,
+        "id":     ph,
+        "pluginMetadata": {},
+        "plugins": ["com.fraymakers.FraymakersMetadata"],
+        "tags":    [],
+        "version": 1
+    });
+    fs::write(
+        audio_dir.join(format!("{ph}.wav.meta")),
+        serde_json::to_string_pretty(&ph_meta)?,
+    )?;
+
     Ok(())
+}
+
+/// A minimal valid silent WAV (8 kHz, mono, 16-bit PCM, ~50 ms of silence)
+/// used as the placeholder audio asset for unmapped SSF2 sounds.
+fn silent_wav() -> Vec<u8> {
+    let sample_rate: u32 = 8000;
+    let num_samples: u32 = sample_rate / 20; // ~50 ms
+    let data_size: u32 = num_samples * 2;    // 16-bit mono
+    let mut w = Vec::with_capacity(44 + data_size as usize);
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data_size).to_le_bytes());
+    w.extend_from_slice(b"WAVE");
+    w.extend_from_slice(b"fmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());      // fmt chunk size
+    w.extend_from_slice(&1u16.to_le_bytes());        // PCM
+    w.extend_from_slice(&1u16.to_le_bytes());        // mono
+    w.extend_from_slice(&sample_rate.to_le_bytes());
+    w.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+    w.extend_from_slice(&2u16.to_le_bytes());        // block align
+    w.extend_from_slice(&16u16.to_le_bytes());       // bits per sample
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data_size.to_le_bytes());
+    w.resize(44 + data_size as usize, 0);            // silence
+    w
 }
 
 /// Convert a projectile name to a valid entity filename.

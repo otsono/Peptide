@@ -216,6 +216,48 @@ fn call_split_skip_if_value_drops_field() {
         "skip_if_value should not produce a TODO; got: {}", out);
 }
 
+// ─── rewrite_play_sound_calls ────────────────────────────────────────────
+
+#[test]
+fn play_sound_global_maps_to_globalsfx() {
+    // brawl_swing_s is in commands.jsonc :: global_sound_map → WHOOSH_1
+    let out = rewrite_play_sound_calls("self.playSound(\"brawl_swing_s\");");
+    assert_eq!(out.trim(), "AudioClip.play(GlobalSfx.WHOOSH_1);",
+        "global sound should map to an unquoted GlobalSfx constant; got: {}", out);
+}
+
+#[test]
+fn play_sound_extracted_asset_uses_getcontent() {
+    // Installed available-sound set → direct getContent.
+    let mut ids = std::collections::BTreeSet::new();
+    ids.insert("mario_fireballLand".to_string());
+    let _g = AvailableSoundsGuard::install(ids);
+    let out = rewrite_play_sound_calls("self.playSound(\"mario_fireballLand\");");
+    assert_eq!(out.trim(),
+        "AudioClip.play(self.getResource().getContent(\"mario_fireballLand\"));",
+        "extracted asset should use getContent; got: {}", out);
+}
+
+#[test]
+fn play_sound_unknown_uses_placeholder_with_todo() {
+    // No guard / not in global map → placeholder + visible TODO.
+    let out = rewrite_play_sound_calls("self.playSound(\"totally_unknown_sfx\");");
+    assert!(out.contains("getContent(\"_ssf2_placeholder\")"),
+        "unknown sound should reference the placeholder asset; got: {}", out);
+    assert!(out.contains("/* TODO: replace placeholder")
+        && out.contains("totally_unknown_sfx"),
+        "unknown sound should carry a visible TODO naming the original; got: {}", out);
+}
+
+#[test]
+fn play_sound_drops_extra_args_and_keeps_handle_assignment() {
+    // Extra SSF2 args are dropped; an assignment target is preserved.
+    let _g = AvailableSoundsGuard::install(std::collections::BTreeSet::new());
+    let out = rewrite_play_sound_calls("self.fire = self.playSound(\"brawl_swing_m\", true, 0.5);");
+    assert_eq!(out.trim(), "self.fire = AudioClip.play(GlobalSfx.WHOOSH_2);",
+        "extra args dropped, assignment kept; got: {}", out);
+}
+
 // ─── rewrite_attach_effect_calls ─────────────────────────────────────────
 
 #[test]

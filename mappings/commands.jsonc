@@ -298,6 +298,33 @@
     "itempickup_effect":    "ITEM_INDICATOR"
   },
 
+  // global_sound_map: SSF2 *shared* sound ids (not extracted into a
+  // character's per-char audio bank) → Fraymakers built-in `GlobalSfx`
+  // constant. `rewrite_play_sound_calls` emits
+  //   AudioClip.play(GlobalSfx.<CONSTANT>)
+  // for any playSound("id") whose id is in this table. Ids that are NEITHER
+  // here NOR an extracted per-character asset get a placeholder asset + a
+  // visible TODO comment in the frame-script Haxe.
+  //
+  // Constants are the verbatim members of the GlobalSfx class
+  // (Fraymakers/fraymakers-api-docs docs/classes/GlobalSfx.md). Best-fit
+  // matches from the corpus tally of unmatched playSound ids across
+  // mario/kirby/link/samus.
+  "global_sound_map": {
+    // Swing / throw whooshes (small / medium / large).
+    "brawl_swing_s": "WHOOSH_1",
+    "brawl_swing_m": "WHOOSH_2",
+    "brawl_swing_l": "WHOOSH_3",
+    "throw_woosh":   "WHOOSH_2",
+    // Metal-form landings → generic land sound (no metal-specific GlobalSfx).
+    "metal_land_s":  "LAND",
+    "metal_land_m":  "LAND",
+    "metal_land_l":  "LAND"
+    // No close GlobalSfx match (→ placeholder + TODO): metal_step_*, screw1-6,
+    // *_step* footsteps, mario_lift. GlobalSfx has no footstep/step or
+    // screw/drill constant.
+  },
+
   // call_splits: SSF2 "umbrella" calls whose object-literal argument
   // needs to be split into multiple FM calls. Each entry maps an SSF2
   // field name to "<fm_target_method>.<fm_field_name>". Fields sharing
@@ -493,11 +520,13 @@
     { "name": "isForcedCrash",                   "note": "no FM equivalent" },
     { "name": "inUpperLeftWarningBounds",        "note": "SSF2 offscreen-warning bounds; FM exposes OffscreenIndicator but no in/out bounds queries" },
 
-    // Sound — FM uses AudioClip.play(contentId) which returns a clip handle;
-    // stopping requires that handle. Bulk text-rename can't synthesise one,
-    // so these stay flagged for manual implementation.
-    { "name": "playSound",                       "note": "FM uses AudioClip.play(contentId) — content IDs not SWF asset IDs; manual port" },
-    { "name": "playAttackSound",                 "note": "FM uses Character.playAttackVoice() (voice category) or AudioClip.play(contentId) — manual port" },
+    // Sound — playSound is now wired up by `rewrite_play_sound_calls`
+    // (→ AudioClip.play(self.getResource().getContent("id")) for extracted
+    // per-character sounds, AudioClip.play(GlobalSfx.X) for mapped globals,
+    // or a placeholder + visible TODO otherwise), so it is NOT in ssf2_only.
+    // The remaining sound calls still need a clip handle / voice table that a
+    // bulk rename can't synthesise, so they stay flagged for manual port.
+    { "name": "playAttackSound",                 "note": "FM Character.playAttackVoice(idx) — needs a per-character voice-index table; follow-up" },
     { "name": "stopSound",                       "note": "FM AudioClip.stop() needs the AudioClip handle returned by AudioClip.play() — manual port required" },
     { "name": "stopSFX",                         "note": "same as stopSound — needs an AudioClip handle from the matching play() call" },
     { "name": "stopHoldSound",                   "note": "same as stopSound — needs an AudioClip handle from the matching play() call" },

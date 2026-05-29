@@ -604,9 +604,126 @@ pub fn translate_ssf2_to_fm(code: &str) -> String {
     // multiple FrameLabel-derived animations.
     result = rewrite_attach_effect_calls(&result);
 
+    // SSF2 playSound("id") → Fraymakers AudioClip.play(...). Must run before
+    // comment_out_unknown_calls so the rewritten calls aren't flagged.
+    result = rewrite_play_sound_calls(&result);
+
     result = strip_last_frame_end_animation(&result);
     result = comment_out_unknown_calls(&result);
     result
+}
+
+/// Placeholder audio content id (a silent .wav emitted per character by
+/// haxe_gen) used for SSF2 sounds with no extracted asset and no GlobalSfx
+/// match — paired with a visible TODO so the modder can swap in a real sound.
+pub const PLACEHOLDER_SOUND_ID: &str = "_ssf2_placeholder";
+
+thread_local! {
+    /// Per-character set of extracted audio content ids (the `id` of each
+    /// emitted `<name>.wav.meta`). Installed by `AvailableSoundsGuard` at the
+    /// top of `haxe_gen::generate`; read by `rewrite_play_sound_calls` to
+    /// decide getContent("id") vs. placeholder. Empty outside a guard scope.
+    static AVAILABLE_SOUNDS: std::cell::RefCell<std::collections::BTreeSet<String>>
+        = std::cell::RefCell::new(std::collections::BTreeSet::new());
+}
+
+/// RAII guard installing the per-character extracted-sound id set for the
+/// duration of a generation pass (mirrors `EffectAnimGuard`).
+pub struct AvailableSoundsGuard;
+
+impl AvailableSoundsGuard {
+    pub fn install(ids: std::collections::BTreeSet<String>) -> Self {
+        AVAILABLE_SOUNDS.with(|c| { *c.borrow_mut() = ids; });
+        AvailableSoundsGuard
+    }
+}
+
+impl Drop for AvailableSoundsGuard {
+    fn drop(&mut self) {
+        AVAILABLE_SOUNDS.with(|c| { c.borrow_mut().clear(); });
+    }
+}
+
+/// Build the Fraymakers replacement for a single `playSound` call, given the
+/// extracted first string-literal id (the sound name). Resolution order:
+///   1. global_sound_map  → `AudioClip.play(GlobalSfx.<CONST>)`
+///   2. extracted asset    → `AudioClip.play(self.getResource().getContent("id"))`
+///   3. neither            → placeholder asset + visible `/* TODO … */`
+fn build_sound_call(id: Option<&str>) -> String {
+    let id = match id {
+        Some(i) if !i.is_empty() => i,
+        _ => return format!(
+            "AudioClip.play(self.getResource().getContent(\"{PLACEHOLDER_SOUND_ID}\")) \
+             /* TODO: replace placeholder — original SSF2 playSound had no static string id */"),
+    };
+    if let Some(c) = crate::mappings::api_commands().global_sound_map.get(id) {
+        return format!("AudioClip.play(GlobalSfx.{c})");
+    }
+    let have = AVAILABLE_SOUNDS.with(|s| s.borrow().contains(id));
+    if have {
+        return format!("AudioClip.play(self.getResource().getContent(\"{id}\"))");
+    }
+    format!(
+        "AudioClip.play(self.getResource().getContent(\"{PLACEHOLDER_SOUND_ID}\")) \
+         /* TODO: replace placeholder — original SSF2 sound \"{id}\" has no FM equivalent */")
+}
+
+/// Rewrite every `[receiver.]playSound( "id" [, …] )` call to its Fraymakers
+/// `AudioClip.play(...)` equivalent. Uses balanced-paren scanning (SSF2
+/// playSound args can contain nested calls, e.g. position objects), extracts
+/// the first string-literal argument, and drops the rest (FM AudioClip.play
+/// takes the content + an optional options object we don't synthesise).
+pub fn rewrite_play_sound_calls(code: &str) -> String {
+    const NEEDLE: &str = "playSound(";
+    let bytes = code.as_bytes();
+    let mut out = String::with_capacity(code.len());
+    let mut cursor = 0usize;
+    while let Some(rel) = code[cursor..].find(NEEDLE) {
+        let pos = cursor + rel; // index of 'p' in playSound(
+        // Walk back over the dotted receiver (self. / self.self. / parent. …).
+        let mut recv_start = pos;
+        while recv_start > 0 {
+            let c = bytes[recv_start - 1] as char;
+            if c.is_alphanumeric() || c == '_' || c == '.' { recv_start -= 1; } else { break; }
+        }
+        // Guard: make sure this is really `playSound` and not a longer ident
+        // ending in playSound (e.g. `myplaySound`). The char before the
+        // receiver-run (or the run itself) must not glue another identifier.
+        // recv_start..pos is the receiver; the token right before NEEDLE is
+        // "playSound" only if recv_start==pos or recv_start ends with '.'.
+        let receiver_ok = recv_start == pos || bytes[pos - 1] as char == '.';
+        if !receiver_ok {
+            out.push_str(&code[cursor..pos + NEEDLE.len()]);
+            cursor = pos + NEEDLE.len();
+            continue;
+        }
+        // Find the matching close paren.
+        let open = pos + NEEDLE.len() - 1; // index of '('
+        let mut depth = 0i32;
+        let mut i = open;
+        let mut close = None;
+        while i < bytes.len() {
+            match bytes[i] as char {
+                '(' => depth += 1,
+                ')' => { depth -= 1; if depth == 0 { close = Some(i); break; } }
+                _ => {}
+            }
+            i += 1;
+        }
+        let close = match close {
+            Some(e) => e,
+            None => { out.push_str(&code[cursor..]); cursor = code.len(); break; }
+        };
+        // Extract first string-literal id from the args.
+        let args = &code[open + 1..close];
+        let id = args.find('"').and_then(|s| args[s + 1..].find('"').map(|e| &args[s + 1..s + 1 + e]));
+        // Emit text up to the receiver, then the replacement.
+        out.push_str(&code[cursor..recv_start]);
+        out.push_str(&build_sound_call(id));
+        cursor = close + 1;
+    }
+    out.push_str(&code[cursor..]);
+    out
 }
 
 thread_local! {
