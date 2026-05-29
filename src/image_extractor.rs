@@ -323,8 +323,37 @@ pub fn extract_images_from_swf(
     //     (which only displays bitmaps). They masquerade as bitmaps: keyed by
     //     the shape's own character id in `images` + `shape_to_bitmap`, with
     //     `shape_pivot` set so the existing placement math positions them.
-    //     Morph shapes are rasterized at their mid ratio (single still); the
-    //     per-frame ratio animation is a future refinement.
+    //
+    //     Morph shapes: SSF2 places each morph at a *fixed* ratio (verified
+    //     across chars — morphs are not ratio-tweened per frame; their
+    //     animation comes from placing different morph shapes on different
+    //     frames). So we rasterize each morph once at the ratio it is actually
+    //     placed with (default 0 = start shape), which is exact for this data.
+    let mut morph_ratio: BTreeMap<u16, u16> = BTreeMap::new();
+    {
+        let morph_ids: BTreeSet<u16> = swf.tags.iter().filter_map(|t| match t {
+            swf::Tag::DefineMorphShape(m) => Some(m.id), _ => None,
+        }).collect();
+        if !morph_ids.is_empty() {
+            for tag in &swf.tags {
+                if let swf::Tag::DefineSprite(s) = tag {
+                    for st in &s.tags {
+                        if let swf::Tag::PlaceObject(po) = st {
+                            if let swf::PlaceObjectAction::Place(cid) | swf::PlaceObjectAction::Replace(cid) = &po.action {
+                                if morph_ids.contains(cid) {
+                                    // First non-zero ratio wins; else 0.
+                                    let r = po.ratio.unwrap_or(0);
+                                    let e = morph_ratio.entry(*cid).or_insert(0);
+                                    if *e == 0 { *e = r; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let mut vec_count = 0usize;
     for tag in &swf.tags {
         match tag {
@@ -345,7 +374,8 @@ pub fn extract_images_from_swf(
                 }
             }
             swf::Tag::DefineMorphShape(m) if !shape_to_bitmap.contains_key(&m.id) => {
-                if let Some(r) = crate::vector_raster::rasterize_morph(m, 0.5) {
+                let ratio = *morph_ratio.get(&m.id).unwrap_or(&0) as f64 / 65535.0;
+                if let Some(r) = crate::vector_raster::rasterize_morph(m, ratio) {
                     let sym = format!("{}_vec_{}", char_name, m.id);
                     let filename = format!("{}.png", sanitize_name(&sym));
                     write_png(&sprites_dir.join(&filename), r.width, r.height, &r.rgba)?;
@@ -1435,14 +1465,24 @@ pub fn extract_projectile_frame_images_from_swf(
                 let mat = po_to_mat(po);
                 match &po.action {
                     swf::PlaceObjectAction::Place(cid) | swf::PlaceObjectAction::Replace(cid) => {
-                        if let Some(sname) = symbols.get(cid) {
-                            let lower = sname.to_lowercase();
-                            if !lower.contains("collisonbox") && !lower.contains("collisionbox") {
-                                disp.insert(po.depth, (*cid, sname.clone(), mat));
-                            }
+                        let named = symbols.get(cid);
+                        let is_collisonbox = named.map(|s| {
+                            let l = s.to_lowercase();
+                            l.contains("collisonbox") || l.contains("collisionbox")
+                        }).unwrap_or(false);
+                        if is_collisonbox {
+                            // collision box — not a visual, skip
                         } else if unnamed_frames.contains_key(cid) {
-                            // Unnamed sub-sprite
+                            // A sub-sprite (named OR unnamed) → recurse into its
+                            // frames. Checking this BEFORE the named-symbol case
+                            // is essential: a NAMED nested sprite (e.g.
+                            // mario_fla.MarioCut_InPATriangle) is an animation,
+                            // not an image — treating it as an image emits a
+                            // dangling imageAsset (no PNG is ever written for it).
                             unnamed_placements.insert(po.depth, (*cid, mat, cur_frame));
+                        } else if let Some(sname) = named {
+                            // Named bitmap/shape placed directly → an image.
+                            disp.insert(po.depth, (*cid, sname.clone(), mat));
                         } else if let Some(&bitmap_id) = img_result.shape_to_bitmap.get(cid) {
                             // Direct shape placement with bitmap fill
                             if let Some(img) = img_result.images.get(&bitmap_id) {

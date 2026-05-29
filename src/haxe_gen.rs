@@ -313,19 +313,34 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
     // ── effect .entity files ─────────────────────────────────────────────
     // Per-effect entities (no scripts, no stats, no manifest entries).
     // The character's Script.hx spawns them via match.createVfx(...).
+    let mut blank_effects: Vec<String> = Vec::new();
     for effect in effects {
         let filename = format!("{}.entity", effect.name);
         let entity_json = entity_gen::generate_effect_entity(
             &char_id, effect, img_result, parsed_swf,
         );
+        // Surface effects that still rasterized to nothing (no image symbols) —
+        // typically Kirby copy-ability hats / placeholders whose visuals are
+        // built from deeply-nested named sprites we don't yet flatten.
+        // Count IMAGE *symbols* (which carry "imageAsset"), not the IMAGE
+        // *layer* type — a blank effect still has an Image Layer.
+        let image_symbol_count = entity_json.matches("\"imageAsset\"").count();
+        if image_symbol_count == 0 && effect.frame_count > 0 {
+            blank_effects.push(effect.name.clone());
+            log::warn!("Effect '{}' has no extractable images ({} frames) — renders blank in FrayTools (no vector/bitmap content found to rasterize)", effect.name, effect.frame_count);
+        }
         fs::write(entities_dir.join(&filename), entity_json)?;
         let anim_names = entity_gen::effect_animation_names(effect);
         log::info!(
-            "Generated effect entity: {} ({} frames, animations: [{}])",
+            "Generated effect entity: {} ({} frames, animations: [{}], {} image symbols)",
             filename,
             effect.frame_count,
             anim_names.join(", "),
+            image_symbol_count,
         );
+    }
+    if !blank_effects.is_empty() {
+        log::warn!("{} effect(s) render blank (no extractable art): {}", blank_effects.len(), blank_effects.join(", "));
     }
 
     // Stats summary for debugging
