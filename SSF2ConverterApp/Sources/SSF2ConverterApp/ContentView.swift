@@ -11,6 +11,15 @@ enum ConversionState {
     case failure(message: String, log: String)
 }
 
+// State for the optional "Export in FrayTools" step (post-conversion publish
+// driven by tools/fraytools-harness/export-in-fraytools.js over CDP).
+enum ExportState: Equatable {
+    case idle
+    case running
+    case done(fraPath: String)
+    case failure(message: String)
+}
+
 // Mirror of the Rust-side `conversion_log.json` written next to the exported
 // character. The Rust struct is in src/main.rs (write_conversion_log) — keep
 // fields in sync. `unknown` are calls with no commands.jsonc entry at all;
@@ -50,11 +59,35 @@ struct ContentView: View {
     @State private var conversionLog: ConversionLog? = nil
     @State private var showLogSheet: Bool = false
 
+    // Optional path to the user's FrayTools executable, persisted across
+    // launches. Empty = not set (the export button stays disabled). Stored as
+    // whatever the user picks (.app bundle or raw executable); resolved to the
+    // inner Mach-O binary at use time via `resolvedFrayToolsExe`.
+    @AppStorage("frayToolsPath") private var frayToolsPath: String = ""
+
+    @State private var exportState: ExportState = .idle
+
     // Path to the ssf2_converter binary — bundled inside Contents/MacOS/
     var converterBin: URL {
         Bundle.main.executableURL!
             .deletingLastPathComponent()
             .appendingPathComponent("ssf2_converter")
+    }
+
+    // FrayTools is McLeodGaming proprietary software; we only ever invoke the
+    // user's own install. If they picked a .app bundle, resolve to the inner
+    // executable (Contents/MacOS/<CFBundleExecutable>).
+    var resolvedFrayToolsExe: String? {
+        guard !frayToolsPath.isEmpty else { return nil }
+        if frayToolsPath.hasSuffix(".app") {
+            let appURL = URL(fileURLWithPath: frayToolsPath)
+            if let bundle = Bundle(url: appURL), let exe = bundle.executableURL {
+                return exe.path
+            }
+            let name = appURL.deletingPathExtension().lastPathComponent
+            return appURL.appendingPathComponent("Contents/MacOS/\(name)").path
+        }
+        return frayToolsPath
     }
 
     var body: some View {
@@ -63,7 +96,7 @@ struct ContentView: View {
             Divider()
             mainContent
         }
-        .frame(width: 700, height: 520)
+        .frame(width: 700, height: 560)
         .background(Color(nsColor: .windowBackgroundColor))
         .sheet(isPresented: $showLogSheet) {
             ConversionLogSheet(log: conversionLog) { showLogSheet = false }
@@ -90,10 +123,50 @@ struct ContentView: View {
             VStack(alignment: .trailing, spacing: 6) {
                 miscSsfPicker
                 outputDirPicker
+                frayToolsPicker
             }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
+    }
+
+    var frayToolsPicker: some View {
+        HStack(spacing: 8) {
+            Text("FrayTools:")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            if !frayToolsPath.isEmpty {
+                Text(URL(fileURLWithPath: frayToolsPath).lastPathComponent)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.green)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 160)
+                Button("✕") { frayToolsPath = "" }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("not set")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .italic()
+            }
+            Button(frayToolsPath.isEmpty ? "Set" : "Change") {
+                let panel = NSOpenPanel()
+                panel.allowedContentTypes = [.application, .unixExecutable]
+                panel.allowsMultipleSelection = false
+                panel.canChooseDirectories = false
+                panel.treatsFilePackagesAsDirectories = false
+                panel.directoryURL = URL(fileURLWithPath: "/Applications")
+                panel.prompt = "Select FrayTools"
+                if panel.runModal() == .OK, let url = panel.url {
+                    frayToolsPath = url.path
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
     }
 
     var miscSsfPicker: some View {
@@ -259,6 +332,8 @@ struct ContentView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.2)))
 
+            exportStatusView(outputPath: outputPath)
+
             HStack(spacing: 12) {
                 Button("Show in Finder") {
                     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: outputPath)
@@ -268,15 +343,74 @@ struct ContentView: View {
                     Button("Unhandled Calls…") { showLogSheet = true }
                         .buttonStyle(.bordered)
                 }
+                exportButton(outputPath: outputPath)
                 Button("Convert Another") {
                     conversionState = .idle
                     progress = 0
                     conversionLog = nil
+                    exportState = .idle
                 }
                 .buttonStyle(.borderedProminent)
             }
         }
         .padding(32)
+    }
+
+    // MARK: Export-in-FrayTools button + status
+
+    @ViewBuilder
+    func exportButton(outputPath: String) -> some View {
+        switch exportState {
+        case .running:
+            Button {
+            } label: {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Exporting…")
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(true)
+        default:
+            Button("Export in FrayTools") {
+                runExport(charOutputPath: outputPath)
+            }
+            .buttonStyle(.bordered)
+            .disabled(resolvedFrayToolsExe == nil)
+            .help(resolvedFrayToolsExe == nil
+                  ? "Set your FrayTools path in the top-right first"
+                  : "Open the converted project in FrayTools and publish the .fra package")
+        }
+    }
+
+    @ViewBuilder
+    func exportStatusView(outputPath: String) -> some View {
+        switch exportState {
+        case .idle:
+            EmptyView()
+        case .running:
+            Text("Publishing in FrayTools… (this opens FrayTools and runs its Content Exporter)")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        case .done(let fraPath):
+            HStack(spacing: 6) {
+                Image(systemName: "shippingbox.fill").foregroundStyle(.green)
+                Text("Published:")
+                    .font(.system(size: 12, weight: .medium))
+                Button(URL(fileURLWithPath: fraPath).lastPathComponent) {
+                    NSWorkspace.shared.selectFile(fraPath, inFileViewerRootedAtPath:
+                        URL(fileURLWithPath: fraPath).deletingLastPathComponent().path)
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 12, design: .monospaced))
+            }
+        case .failure(let msg):
+            Text("Export failed: \(msg)")
+                .font(.system(size: 12))
+                .foregroundStyle(.red)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+        }
     }
 
     // MARK: Failure View
@@ -448,6 +582,112 @@ struct ContentView: View {
                 timer.invalidate()
                 DispatchQueue.main.async {
                     conversionState = .failure(message: error.localizedDescription, log: "")
+                }
+            }
+        }
+    }
+
+    // MARK: Export in FrayTools
+
+    /// Locate the `node` executable. GUI apps launched from Finder don't
+    /// inherit the shell PATH, so check common install locations first, then
+    /// fall back to a login shell `which`.
+    func findNode() -> String? {
+        let candidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+        for c in candidates where FileManager.default.isExecutableFile(atPath: c) { return c }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = ["-lc", "which node"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do {
+            try p.run(); p.waitUntilExit()
+            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let out, !out.isEmpty, FileManager.default.isExecutableFile(atPath: out) { return out }
+        } catch {}
+        return nil
+    }
+
+    /// Locate tools/fraytools-harness/export-in-fraytools.js by walking up
+    /// from the app bundle (the app is built/run from inside the repo).
+    func findExportScript() -> String? {
+        var dir = Bundle.main.bundleURL
+        for _ in 0..<10 {
+            let candidate = dir.appendingPathComponent("tools/fraytools-harness/export-in-fraytools.js")
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate.path }
+            dir = dir.deletingLastPathComponent()
+        }
+        return nil
+    }
+
+    /// Find the .fraytools project file inside a converted character directory.
+    func findProjectFile(in charOutputPath: String) -> String? {
+        let dir = URL(fileURLWithPath: charOutputPath)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil) else { return nil }
+        return entries.first { $0.pathExtension == "fraytools" }?.path
+    }
+
+    /// Drive the user's FrayTools install to publish the converted project,
+    /// via tools/fraytools-harness/export-in-fraytools.js over CDP.
+    func runExport(charOutputPath: String) {
+        guard let exe = resolvedFrayToolsExe else {
+            exportState = .failure(message: "FrayTools path not set"); return
+        }
+        guard let node = findNode() else {
+            exportState = .failure(message: "Couldn't find `node`. Install Node.js (e.g. `brew install node`).")
+            return
+        }
+        guard let script = findExportScript() else {
+            exportState = .failure(message: "Couldn't find export-in-fraytools.js under tools/fraytools-harness/")
+            return
+        }
+        guard let project = findProjectFile(in: charOutputPath) else {
+            exportState = .failure(message: "No .fraytools project found in \(charOutputPath)")
+            return
+        }
+
+        exportState = .running
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: node)
+            process.arguments = [script,
+                                 "--project", project,
+                                 "--fraytools", exe]
+            // node resolves chrome-remote-interface from the harness dir.
+            process.currentDirectoryURL = URL(fileURLWithPath: script).deletingLastPathComponent()
+
+            let outPipe = Pipe(), errPipe = Pipe()
+            process.standardOutput = outPipe
+            process.standardError  = errPipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+                let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                let stdout = String(data: outData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let stderr = String(data: errData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+                DispatchQueue.main.async {
+                    if process.terminationStatus == 0, !stdout.isEmpty {
+                        // Harness prints the .fra path on stdout.
+                        let fra = stdout.components(separatedBy: "\n").last ?? stdout
+                        exportState = .done(fraPath: fra)
+                    } else {
+                        // Surface the last line of stderr as the reason.
+                        let reason = stderr.components(separatedBy: "\n").last ?? "exit \(process.terminationStatus)"
+                        exportState = .failure(message: reason.isEmpty ? "exit \(process.terminationStatus)" : reason)
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    exportState = .failure(message: error.localizedDescription)
                 }
             }
         }

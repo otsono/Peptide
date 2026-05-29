@@ -83,6 +83,28 @@ node harness.js \
 `rendered_anchor` is the position FrayTools places the box's pivot point —
 computed via the same math as `src/fraytools_transform.rs`.
 
+### `export-in-fraytools.js` — post-conversion publish
+
+Opens a converted project in FrayTools and runs FrayTools' own **Publish**
+(the Fraymakers Content Exporter), producing the game-ready `.fra` package —
+no manual FrayTools interaction. This is what the converter GUI's
+**"Export in FrayTools"** button invokes.
+
+```
+node export-in-fraytools.js \
+  --project   /abs/path/character.fraytools \
+  [--fraytools "/Applications/FrayTools.app/Contents/MacOS/FrayTools"] \
+  [--port 9222] [--settle 6000] [--timeout 120000]
+```
+
+- Launches FrayTools (or attaches to a running instance), opens the project
+  if needed, then calls the controller's own `publish()` — which force-runs
+  the exporter.
+- Closes any stale Publish dialog first (`publish()` only force-runs the
+  exporter when the dialog freshly mounts).
+- Polls `<projectDir>/build/` for a newly-written `.fra` and prints its path
+  on stdout. Exits non-zero with the reason on stderr on failure.
+
 ### `render-entity.js` — simple stage capture (legacy)
 
 Opens a project + entity and captures the stage canvas as a PNG.
