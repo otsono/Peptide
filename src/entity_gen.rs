@@ -630,27 +630,48 @@ pub fn generate_entity(
                         // (x, y) is the un-rotated top-left (Theory A, confirmed by
                         // matching framy hurtboxes against the body image).
                         let (pivot_x, pivot_y) = if box_type == crate::sprite_parser::BoxType::ItemBox {
-                            (round2(fb.width / 2.0), round2(fb.height))      // bottom-center = hand
+                            (fb.width / 2.0, fb.height)        // bottom-center = hand
                         } else {
-                            (round2(fb.width / 2.0), round2(fb.height / 2.0)) // center
+                            (fb.width / 2.0, fb.height / 2.0)  // center
                         };
                         // SWF `atan2(b, a)` in y-down is CW-positive; FrayTools uses
                         // the same convention (see f472a2dd for the IMAGE path), so
                         // emit the angle as-is, normalized to 0-360.
                         let theta = ((fb.rotation % 360.0) + 360.0) % 360.0;
+
+                        // ── itemBox anchor bake (measured, not guessed) ──
+                        // The itemBox is the only box that carries rotation (all
+                        // others are AABB-collapsed to 0 in sprite_parser).
+                        // FrayTools renders a COLLISION_BOX's registration anchor
+                        // at  s + R(-θ)·pivot  (docs/fraytools_internals.md §2) —
+                        // it MOVES with θ. Emitting the raw top-left lets the hand
+                        // drift up to ~49px on rotated frames (measured by
+                        // `probe_itembox`). anchor(x,y) is affine in (x,y), so to
+                        // pin the hand we solve  topleft = hand − anchor(0,0,pivot,θ).
+                        // At θ=0 this collapses to (fb.x, fb.y), so non-rotated
+                        // boxes stay byte-identical.
+                        let (box_x, box_y) = if box_type == crate::sprite_parser::BoxType::ItemBox {
+                            let hand = crate::fraytools_transform::intended_pivot_point(
+                                fb.x, fb.y, pivot_x, pivot_y);
+                            let off = crate::fraytools_transform::collision_box_anchor(
+                                0.0, 0.0, pivot_x, pivot_y, theta);
+                            (hand.0 - off.0, hand.1 - off.1)
+                        } else {
+                            (fb.x, fb.y)
+                        };
                         symbols.push(json!({
                             "$id": sym_id,
                             "alpha": 0.5,
                             "color": color,
-                            "pivotX": pivot_x,
-                            "pivotY": pivot_y,
+                            "pivotX": round2(pivot_x),
+                            "pivotY": round2(pivot_y),
                             "pluginMetadata": {},
                             "rotation": round2(theta),
                             "scaleX": round2(fb.width),
                             "scaleY": round2(fb.height),
                             "type": "COLLISION_BOX",
-                            "x": round2(fb.x),
-                            "y": round2(fb.y)
+                            "x": round2(box_x),
+                            "y": round2(box_y)
                         }));
                     }
 
