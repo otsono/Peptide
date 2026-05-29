@@ -224,7 +224,9 @@ function boxesAtFrame(animName, frameN, entityCtx) {
             const rot    = sym.rotation ?? 0;
             const pivX   = sym.pivotX  ?? (width  / 2);
             const pivY   = sym.pivotY  ?? (height / 2);
-            const color  = sym.color   ?? 0;
+            // entity_gen stores color as "0xff0000" strings; convert to int.
+            const colorRaw = sym.color ?? 0;
+            const color = typeof colorRaw === 'string' ? Number(colorRaw) : colorRaw;
             const alpha  = sym.alpha   ?? 1;
 
             const anchor = collisionBoxAnchor(x, y, pivX, pivY, rot);
@@ -292,211 +294,80 @@ const IDENTIFY_ROLES_JS = `(()=>{
 // ── FrayTools UI navigation ───────────────────────────────────────────────────
 // Best-effort: tries several strategies in order, reports what worked.
 
+// FrayTools drives the entity editor through a Redux store. The store is
+// reachable from any react-redux Provider fiber as `memoizedProps.store`
+// (it exposes getState() + dispatch()). Navigation is just dispatching the
+// same actions the UI dispatches — verified by recording live UI actions:
+//   - animation switch → timeline::SET_ANIMATION + timeline::EDIT_SPRITE_ANIMATION
+//   - frame seek        → timeline::SET_FRAME { frameIndex }
+// State of truth lives at store.getState().timeline.{animationId,frameIndex}.
+
+/** JS expression that locates the Redux store and stashes it on window.__store. */
+const LOCATE_STORE_JS = `(()=>{
+  if (window.__store && typeof window.__store.dispatch === 'function') return 'cached';
+  let host = null;
+  for (const el of document.querySelectorAll('*')) { if (el._reactRootContainer) { host = el; break; } }
+  if (!host) return 'no react root';
+  const fiber = host._reactRootContainer._internalRoot.current;
+  let store = null;
+  (function walk(f, d) {
+    if (!f || d > 250 || store) return;
+    const pr = f.memoizedProps;
+    if (pr && pr.store && typeof pr.store.getState === 'function' && typeof pr.store.dispatch === 'function') {
+      store = pr.store;
+    }
+    walk(f.child, d + 1); walk(f.sibling, d);
+  })(fiber, 0);
+  if (!store) return 'store not found';
+  window.__store = store;
+  return 'located';
+})()`;
+
 /**
- * Try to select an animation by name in the FrayTools entity editor.
- * Strategies (tried in order):
- *   A. Find a DOM leaf element whose trimmed textContent exactly matches
- *      animName and whose fiber has an onClick prop — call it.
- *   B. Find a DOM element with matching title attribute + onClick.
- *   C. Find a filter <input> (placeholder "filter" / "search") and set its
- *      value to animName, triggering onChange; then retry strategy A.
- *   D. Find a class component with a selectAnimation / onAnimationChange
- *      method and call it with the animation $id.
+ * Select an animation by its FrayTools $id via the Redux store.
+ * Dispatches SET_ANIMATION (sets the pointer) then EDIT_SPRITE_ANIMATION
+ * with resetSequence:true (actually loads it onto the stage) — the exact
+ * pair the UI fires on an animation click. Returns 'ok:<animId>' if the
+ * store's timeline.animationId matches afterward, else an error string.
  */
 async function selectAnimation(ev, animName, animId) {
-  // Build the JS once with the target values baked in.
-  const js = `(()=>{
-    const TARGET_NAME = ${JSON.stringify(animName)};
-    const TARGET_ID   = ${JSON.stringify(animId)};
-
-    // ── Walk all fiber nodes, collect DOM elements with onClick ──────────
-    const candidates = [];  // { el, onClick }
-    let count = 0;
-    (function walk(f, d) {
-      if (!f || d > 200 || count > 80000) return;
-      count++;
-      if (f.stateNode && f.stateNode.nodeType === 1) {
-        const el    = f.stateNode;
-        const props = f.memoizedProps || {};
-        if (props.onClick) {
-          const text  = (el.textContent || '').trim();
-          const title = el.getAttribute ? (el.getAttribute('title') || '') : '';
-          candidates.push({ el, onClick: props.onClick, text, title });
-        }
-      }
-      walk(f.child, d + 1);
-      walk(f.sibling, d);
-    })(window.__ft.fiber, 0);
-
-    // Strategy A: leaf or near-leaf with exact text match
-    for (const { el, onClick, text } of candidates) {
-      if (text === TARGET_NAME && el.children.length === 0) {
-        try { onClick({ type:'click', target:el, currentTarget:el, bubbles:true }); return 'A:leaf-text'; } catch(e) {}
-      }
-    }
-    // Strategy A2: any element with exact text (not just leaf)
-    for (const { el, onClick, text } of candidates) {
-      if (text === TARGET_NAME) {
-        try { onClick({ type:'click', target:el, currentTarget:el, bubbles:true }); return 'A2:text'; } catch(e) {}
-      }
-    }
-    // Strategy B: title attribute match
-    for (const { el, onClick, title } of candidates) {
-      if (title === TARGET_NAME) {
-        try { onClick({ type:'click', target:el, currentTarget:el, bubbles:true }); return 'B:title'; } catch(e) {}
-      }
-    }
-
-    // Strategy C: fill filter input, then retry text walk
-    let filterInputs = [];
-    (function walk(f, d) {
-      if (!f || d > 200) return;
-      if (f.stateNode && f.stateNode.nodeType === 1) {
-        const el = f.stateNode;
-        const tag = el.tagName && el.tagName.toLowerCase();
-        if (tag === 'input') {
-          const ph = (el.placeholder || '').toLowerCase();
-          if (ph.includes('filter') || ph.includes('search') || ph.includes('anim')) {
-            filterInputs.push({ el, props: f.memoizedProps || {} });
-          }
-        }
-      }
-      walk(f.child, d + 1); walk(f.sibling, d);
-    })(window.__ft.fiber, 0);
-
-    for (const { el, props } of filterInputs) {
-      try {
-        // React-controlled input: set nativeInputValueSetter trick
-        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype, 'value').set;
-        nativeInputValueSetter.call(el, TARGET_NAME);
-        if (props.onChange) props.onChange({ target: el, currentTarget: el });
-        else el.dispatchEvent(new Event('input', { bubbles: true }));
-      } catch(e) {}
-    }
-
-    if (filterInputs.length > 0) {
-      // Re-collect candidates after filter
-      const candidates2 = [];
-      (function walk(f, d) {
-        if (!f || d > 200) return;
-        if (f.stateNode && f.stateNode.nodeType === 1) {
-          const el    = f.stateNode;
-          const props = f.memoizedProps || {};
-          if (props.onClick) {
-            const text = (el.textContent || '').trim();
-            candidates2.push({ el, onClick: props.onClick, text });
-          }
-        }
-        walk(f.child, d + 1); walk(f.sibling, d);
-      })(window.__ft.fiber, 0);
-      for (const { el, onClick, text } of candidates2) {
-        if (text === TARGET_NAME) {
-          try { onClick({ type:'click', target:el, currentTarget:el, bubbles:true }); return 'C:filter-then-click'; } catch(e) {}
-        }
-      }
-    }
-
-    // Strategy D: find a component with selectAnimation / onAnimationChange
-    let compCount = 0;
-    let result = null;
-    (function walk(f, d) {
-      if (!f || d > 200 || compCount > 80000 || result) return;
-      compCount++;
-      const sn = f.stateNode;
-      if (sn && typeof sn === 'object' && sn !== window && sn.constructor) {
-        if (typeof sn.selectAnimation === 'function') {
-          try { sn.selectAnimation(TARGET_ID); result = 'D:selectAnimation'; return; } catch(e) {}
-        }
-        if (typeof sn.onAnimationChange === 'function') {
-          try { sn.onAnimationChange(TARGET_ID); result = 'D:onAnimationChange'; return; } catch(e) {}
-        }
-      }
-      walk(f.child, d + 1); walk(f.sibling, d);
-    })(window.__ft.fiber, 0);
-    if (result) return result;
-
-    return 'not found';
-  })()`;
-
-  return await ev(js);
+  const located = await ev(LOCATE_STORE_JS);
+  if (located === 'no react root' || located === 'store not found') {
+    return 'ERR store: ' + located;
+  }
+  return await ev(`(()=>{
+    const store = window.__store;
+    const ID = ${JSON.stringify(animId)};
+    try {
+      store.dispatch({ type: 'timeline::SET_ANIMATION', payload: { animationId: ID } });
+      store.dispatch({ type: 'timeline::EDIT_SPRITE_ANIMATION', payload: { animationId: ID, resetSequence: true } });
+    } catch (e) { return 'ERR dispatch: ' + e.message; }
+    const now = store.getState().timeline.animationId;
+    return now === ID ? 'ok:store-dispatch' : 'ERR animationId is ' + now + ' after dispatch (wanted ' + ID + ')';
+  })()`);
 }
 
 /**
- * Try to seek the entity editor timeline to a specific 0-based frame.
- * Strategies (tried in order):
- *   A. Find a class component with setCurrentFrame / seekToFrame / setFrame
- *      method → call it.
- *   B. Find a class component whose state has currentFrame/frame/frameIndex
- *      → call setState.
- *   C. Find a frame-number <input> or <span> and trigger React onChange/onClick.
+ * Seek the timeline to a specific 0-based frame index via the Redux store.
+ * Dispatches timeline::SET_FRAME { frameIndex } — the same action the UI
+ * fires when you set the playhead. (FrayTools' "Frame: N" display is 1-based,
+ * so frameIndex N shows as "Frame: N+1".) Returns 'ok' if the store's
+ * timeline.frameIndex matches afterward.
  */
 async function seekToFrame(ev, frameN) {
-  const js = `(()=>{
-    const TARGET_FRAME = ${JSON.stringify(frameN)};
-
-    let found = null;
-    let count = 0;
-    (function walk(f, d) {
-      if (!f || d > 200 || count > 80000 || found) return;
-      count++;
-      const sn = f.stateNode;
-      if (sn && typeof sn === 'object' && sn !== window && sn.constructor) {
-        // Strategy A: named methods
-        for (const m of ['setCurrentFrame','seekToFrame','setFrame','gotoFrame','goToFrame']) {
-          if (typeof sn[m] === 'function') {
-            try { sn[m](TARGET_FRAME); found = 'A:' + m; return; } catch(e) {}
-          }
-        }
-        // Strategy B: setState on component with frame state
-        const state = sn.state || {};
-        const hasFrameState = state.currentFrame !== undefined
-          || state.frame !== undefined
-          || state.frameIndex !== undefined;
-        if (hasFrameState && typeof sn.setState === 'function') {
-          const patch = {};
-          if (state.currentFrame !== undefined) patch.currentFrame = TARGET_FRAME;
-          if (state.frame        !== undefined) patch.frame        = TARGET_FRAME;
-          if (state.frameIndex   !== undefined) patch.frameIndex   = TARGET_FRAME;
-          try { sn.setState(patch); found = 'B:setState(' + Object.keys(patch).join(',') + ')'; return; } catch(e) {}
-        }
-      }
-      walk(f.child, d + 1); walk(f.sibling, d);
-    })(window.__ft.fiber, 0);
-    if (found) return found;
-
-    // Strategy C: frame number input
-    let frameInputs = [];
-    (function walk(f, d) {
-      if (!f || d > 200) return;
-      if (f.stateNode && f.stateNode.nodeType === 1) {
-        const el = f.stateNode;
-        const tag = el.tagName && el.tagName.toLowerCase();
-        if (tag === 'input') {
-          const type = (el.type || 'text').toLowerCase();
-          if (type === 'number' || type === 'text') {
-            const val = el.value;
-            if (!isNaN(parseInt(val))) frameInputs.push({ el, props: f.memoizedProps || {} });
-          }
-        }
-      }
-      walk(f.child, d + 1); walk(f.sibling, d);
-    })(window.__ft.fiber, 0);
-
-    for (const { el, props } of frameInputs) {
-      try {
-        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype, 'value').set;
-        nativeInputValueSetter.call(el, String(TARGET_FRAME));
-        if (props.onChange) { props.onChange({ target: el, currentTarget: el }); return 'C:frame-input-change'; }
-        el.dispatchEvent(new Event('change', { bubbles: true })); return 'C:frame-input-event';
-      } catch(e) {}
-    }
-
-    return 'not found';
-  })()`;
-
-  return await ev(js);
+  const located = await ev(LOCATE_STORE_JS);
+  if (located === 'no react root' || located === 'store not found') {
+    return 'ERR store: ' + located;
+  }
+  return await ev(`(()=>{
+    const store = window.__store;
+    const F = ${JSON.stringify(frameN)};
+    try {
+      store.dispatch({ type: 'timeline::SET_FRAME', payload: { frameIndex: F } });
+    } catch (e) { return 'ERR dispatch: ' + e.message; }
+    const now = store.getState().timeline.frameIndex;
+    return now === F ? 'ok:store-dispatch' : 'ERR frameIndex is ' + now + ' after dispatch (wanted ' + F + ')';
+  })()`);
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -543,21 +414,28 @@ async function seekToFrame(ev, frameN) {
 
     // ── 2. Stash React component instances + identify roles. ───────────────
     await ev(STASH_COMPONENTS_JS);
-    const roles = JSON.parse(await ev(IDENTIFY_ROLES_JS));
-    if (!roles.ctrl || !roles.tree) die(`could not locate controller/tree components: ${JSON.stringify(roles)}`);
+    let roles = JSON.parse(await ev(IDENTIFY_ROLES_JS));
+    if (!roles.ctrl) die(`could not locate FrayTools controller component`);
 
     // ── 3. Open project (if provided and not already loaded). ─────────────
+    // If no project is open yet the library tree component won't be mounted,
+    // so `roles.tree` may be null here. Open the project first, re-stash, then
+    // check again.
     if (project) {
       const cur = await ev(`(()=>{ try { return window.__ctrl.getLibraryDirectory().getPath(); } catch(e) { return null; } })()`);
-      if (!cur || !project.startsWith(cur.replace(/\/library\/?$/, ''))) {
-        console.error(`opening project: ${project}`);
-        await ev(`window.__ctrl.openProject(${JSON.stringify(project)})`);
-        await sleep(settle);
-        // Re-stash — a project load can remount the tree.
+      const needOpen = !cur || !project.startsWith(cur.replace(/\/library\/?$/, ''));
+      if (needOpen || !roles.tree) {
+        if (needOpen) {
+          console.error(`opening project: ${project}`);
+          await ev(`window.__ctrl.openProject(${JSON.stringify(project)})`);
+          await sleep(settle);
+        }
+        // Re-stash — opening a project remounts the tree.
         await ev(STASH_COMPONENTS_JS);
-        await ev(IDENTIFY_ROLES_JS);
+        roles = JSON.parse(await ev(IDENTIFY_ROLES_JS));
       }
     }
+    if (!roles.tree) die(`could not locate library tree component (tree=${roles.tree}); is a project open?`);
 
     // ── 4. Resolve entity FS-node and open it. ────────────────────────────
     const openResult = await ev(`(()=>{ try {
@@ -594,27 +472,23 @@ async function seekToFrame(ev, frameN) {
     }
     const clampedFrame = Math.max(0, Math.min(frameN, nFrames - 1));
 
-    // ── 6. Navigate UI to the target animation + frame (best-effort). ─────
+    // ── 6. Navigate to the target animation + frame via the Redux store. ──
+    // Always dispatch (not conditional on "is it the first animation") so the
+    // editor is deterministically on the requested animation/frame regardless
+    // of what it opened to.
     const navResult = { animation: 'skipped', frame: 'skipped' };
 
-    if (animName !== allAnims[0]) {
-      // Only need to navigate if it's not the default (entity editor opens on first anim).
-      console.error(`navigating to animation: "${animName}"`);
-      navResult.animation = await selectAnimation(ev, animName, animId);
-      console.error(`animation nav: ${navResult.animation}`);
-      await sleep(Math.min(settle / 2, 2000));
-    } else {
-      navResult.animation = 'default (first animation, no nav needed)';
-    }
+    console.error(`navigating to animation: "${animName}" (${animId})`);
+    navResult.animation = await selectAnimation(ev, animName, animId);
+    console.error(`animation nav: ${navResult.animation}`);
+    await sleep(Math.min(settle / 2, 2000));
 
-    if (clampedFrame > 0) {
-      console.error(`seeking to frame: ${clampedFrame}`);
-      navResult.frame = await seekToFrame(ev, clampedFrame);
-      console.error(`frame seek: ${navResult.frame}`);
-      await sleep(Math.min(settle / 2, 2000));
-    } else {
-      navResult.frame = 'default (frame 0, no seek needed)';
-    }
+    // Seek the frame AFTER the animation switch (EDIT_SPRITE_ANIMATION with
+    // resetSequence resets the playhead to 0, so always set the frame last).
+    console.error(`seeking to frame: ${clampedFrame}`);
+    navResult.frame = await seekToFrame(ev, clampedFrame);
+    console.error(`frame seek: ${navResult.frame}`);
+    await sleep(Math.min(settle / 2, 2000));
 
     // ── 7. Extract box data from entity JSON. ─────────────────────────────
     const boxes = boxesAtFrame(animName, clampedFrame, entityCtx) || [];

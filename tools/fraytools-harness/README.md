@@ -111,16 +111,29 @@ pixel coordinates:
    FS-node with the methods FrayTools' open handler needs.
 5. `tree.props.onFileDoubleClicked(node)` — the same callback a real
    double-click fires — opens the entity on the stage.
-6. For **animation selection**: walk fiber DOM-element nodes and call the
-   matching list item's `memoizedProps.onClick` directly (tries text-match,
-   title-match, filter-input, then component method — returns which strategy
-   worked).
-7. For **frame seeking**: walk fiber class-component nodes; call a
-   `setCurrentFrame`/`setFrame` method if present, or call `setState` on
-   a component with frame state.
-8. Clip-capture the largest on-screen `<canvas>` via `Page.captureScreenshot`.
-9. Read box geometry from the entity JSON file on disk (always accurate,
-   independent of UI state).
+6. Locate the **Redux store**: FrayTools drives the entity editor through a
+   Redux store, reachable from any react-redux Provider fiber as
+   `memoizedProps.store` (exposes `getState()` + `dispatch()`). State of
+   truth is `store.getState().timeline.{animationId, frameIndex}`.
+7. **Animation selection**: dispatch the exact action pair the UI fires —
+   `timeline::SET_ANIMATION {animationId}` then
+   `timeline::EDIT_SPRITE_ANIMATION {animationId, resetSequence:true}` (the
+   second actually loads the animation onto the stage). Verified by reading
+   `timeline.animationId` afterward.
+8. **Frame seeking**: dispatch `timeline::SET_FRAME {frameIndex}` (0-based;
+   FrayTools' "Frame: N" display is 1-based, so frameIndex N shows as
+   "Frame: N+1"). Verified by reading `timeline.frameIndex` afterward. Done
+   *after* the animation switch, since `EDIT_SPRITE_ANIMATION` resets the
+   playhead to 0.
+9. Clip-capture the largest on-screen `<canvas>` via `Page.captureScreenshot`.
+10. Read box geometry from the entity JSON file on disk (always accurate,
+    independent of UI state).
+
+> These action types were discovered by recording live `store.dispatch`
+> calls while the user manually changed the frame / animation in the UI,
+> then replaying the captured actions — pure interoperability RE, no
+> FrayTools source involved. The `nav` field in the report JSON shows
+> `ok:store-dispatch` when each dispatch verified, or an error string.
 
 ## AI-iterable test loop
 
