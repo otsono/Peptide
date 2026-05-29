@@ -619,43 +619,25 @@ pub fn generate_entity(
                             "y": cy
                         }));
                     } else {
-                        // COLLISION_BOX symbol. FrayTools rotates a collision box
-                        // around (x + pivotX, y + pivotY); every real FM character
-                        // authors that pivot at the box CENTER (w/2, h/2) — no FM
-                        // tooling emits a non-center pivot, and the runtime appears
-                        // to rotate around the geometric center regardless. So we
-                        // always use a center pivot.
-                        //
+                        // COLLISION_BOX symbol. FrayTools rotates a box around
+                        // (x + pivotX, y + pivotY) and HONORS off-center pivots
+                        // (verified: a 41x21 menu box round-trips through FrayTools
+                        // keeping pivot (18,18), not the center (20.5,10.5)). So we
+                        // place the pivot at the true SSF2 anchor:
+                        //   - itemBox → bottom-center (the hand attachment point),
+                        //     so the box sweeps around the hand as it rotates.
+                        //   - every other box → geometric center.
+                        // (x, y) is the un-rotated top-left (Theory A, confirmed by
+                        // matching framy hurtboxes against the body image).
+                        let (pivot_x, pivot_y) = if box_type == crate::sprite_parser::BoxType::ItemBox {
+                            (round2(fb.width / 2.0), round2(fb.height))      // bottom-center = hand
+                        } else {
+                            (round2(fb.width / 2.0), round2(fb.height / 2.0)) // center
+                        };
                         // SWF `atan2(b, a)` in y-down is CW-positive; FrayTools uses
                         // the same convention (see f472a2dd for the IMAGE path), so
                         // emit the angle as-is, normalized to 0-360.
-                        let pivot_x = round2(fb.width / 2.0);
-                        let pivot_y = round2(fb.height / 2.0);
                         let theta = ((fb.rotation % 360.0) + 360.0) % 360.0;
-
-                        // For most boxes the SSF2 rotation is 0 and the un-rotated
-                        // top-left (fb.x, fb.y) is exactly right. The itemBox is the
-                        // exception: in SSF2 it pivots around the hand attachment
-                        // (the box's BOTTOM-center), not its geometric center. Since
-                        // FrayTools only rotates around the center, we bake the
-                        // hand-anchored rotation into the keyframe position: place
-                        // the rotated box's center where it needs to be so that a
-                        // center-pivot rotation reproduces the same hand sweep.
-                        // (At theta = 0 this collapses back to (fb.x, fb.y), so
-                        // non-rotated frames are unchanged.)
-                        let (box_x, box_y) = if box_type == crate::sprite_parser::BoxType::ItemBox {
-                            let hand_x = fb.x + fb.width / 2.0;   // bottom-center = hand
-                            let hand_y = fb.y + fb.height;
-                            let rad = theta.to_radians();
-                            // Rotated center = hand + R(theta)·(0, -h/2). FrayTools'
-                            // CW-in-y-down rotation matrix is [[cos,-sin],[sin,cos]],
-                            // so R(theta)·(0, -h/2) = (sin·h/2, -cos·h/2).
-                            let cx = hand_x + (fb.height / 2.0) * rad.sin();
-                            let cy = hand_y - (fb.height / 2.0) * rad.cos();
-                            (cx - fb.width / 2.0, cy - fb.height / 2.0)
-                        } else {
-                            (fb.x, fb.y)
-                        };
                         symbols.push(json!({
                             "$id": sym_id,
                             "alpha": 0.5,
@@ -667,8 +649,8 @@ pub fn generate_entity(
                             "scaleX": round2(fb.width),
                             "scaleY": round2(fb.height),
                             "type": "COLLISION_BOX",
-                            "x": round2(box_x),
-                            "y": round2(box_y)
+                            "x": round2(fb.x),
+                            "y": round2(fb.y)
                         }));
                     }
 
