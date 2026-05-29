@@ -50,8 +50,8 @@ It converts, per character:
 | SSF2 source | → | Fraymakers output |
 |---|---|---|
 | Bitmap sprites (one per animation frame) | → | `library/sprites/*.png` + `.meta` sidecars |
-| Per-frame collision boxes (hitboxes, hurtboxes, grab/ledge/reflect/absorb/touch boxes…) | → | `COLLISION_BOX` / `COLLISION_BODY` / `POINT` layers in `Character.entity` |
-| Animation timelines | → | `animations` / `layers` / `keyframes` in `Character.entity` |
+| Per-frame collision boxes (hitboxes, hurtboxes, grab/ledge/reflect/absorb/touch boxes…) | → | `COLLISION_BOX` / `COLLISION_BODY` / `POINT` layers in the character entity (`<Pascal>.entity`) |
+| Animation timelines | → | `animations` / `layers` / `keyframes` in the character entity |
 | AS3 frame scripts (ABC bytecode) | → | `FRAME_SCRIPT` keyframe code in the entity |
 | AS3 character logic (`XxxExt` class methods) | → | decompiled into `Script.hx` |
 | Character stats (weight, gravity, speeds…) | → | `CharacterStats.hx` (data-driven via `mappings/character/stats.jsonc`) |
@@ -61,7 +61,7 @@ It converts, per character:
 | Sounds | → | `library/audio/*.wav` + per-sound `.wav.meta` content entries |
 | Projectiles | → | `library/entities/<name>.entity` + `library/scripts/Projectile/<Pascal>*.hx` |
 | Effects (VFX) | → | `library/entities/<effect>.entity` (one per effect; no scripts/stats); referenced from `Script.hx` via `match.createVfx(…)` |
-| Menu / portrait head sprite | → | `menu.entity` (full / css / icon / hud variants) |
+| Menu / portrait head sprite | → | `Menu.entity` (full / css / icon / hud variants; `<Pascal>_Menu.entity` in multi-char projects) |
 
 The conversion is **fully automatic and deterministic** — every GUID in the
 output is derived (UUID v5) from the character id + a context string, so
@@ -325,13 +325,13 @@ process_character():
        ├─ anim_splitter::split_animations  (jab→jab1/2/3/4, taunt→3 slots,
        │                                    aerial → active + land, strong → in/charge/attack,
        │                                    grab → grab/dash_grab/grab_hold/grab_pummel, …)
-       ├─ entity_gen::generate_entity      → library/entities/Character.entity
+       ├─ entity_gen::generate_entity      → library/entities/<Pascal>.entity
        │   (drops empty animations; jab-count-driven jab keep-list)
-       ├─ <name>.fraytools  (fraytools_project)   + library/manifest.json (+ .meta)
+       ├─ <project>.fraytools  (fraytools_project)   + library/manifest.json (+ .meta)
        ├─ entity_gen::get_image_meta_guids → a .meta sidecar per sprite PNG
        ├─ palette_gen::generate_palettes_and_remap
        │     → costumes.palettes (+ .meta), palette_preview.png,
-       │       then REWRITES Character.entity with paletteMap filled in
+       │       then REWRITES <Pascal>.entity with paletteMap filled in
        ├─ entity_gen::generate_menu_entity      from the discovered head sprite
        ├─ for each projectile:
        │     ├─ <proj>.entity   (visuals + boxes + multi-state animations)
@@ -768,7 +768,8 @@ The **output orchestrator**. `generate(...)` writes the entire character package
 #### `entity_gen.rs` (~2000 LOC)
 Builds the Fraymakers `.entity` JSON — the heart of a FrayTools character.
 - `generate_entity` / `generate_entity_with_palette` — the main
-  `Character.entity` builder (with/without `paletteMap`).
+  character-entity builder (with/without `paletteMap`); written to
+  `library/entities/<Pascal>.entity`.
 - `double_keyframe_lengths(keyframes)` — runs at the end of every entity
   build, doubling every keyframe's `length` for the 30 → 60 fps move
   ([§7](#7-30--60-fps-doubling)).
@@ -1213,7 +1214,7 @@ What is solid:
   `initialize()` (skip-dup against the merged SSF2 init body).
 - Jab-chain emission gated by populated-jab count.
 - Empty-animation dropping (with a jab-aware keep-list).
-- menu.entity with broadened head-sprite detection (`_head`, `_icon`;
+- `Menu.entity` with broadened head-sprite detection (`_head`, `_icon`;
   excludes `_hud`).
 - Conversion log + SwiftUI "Unhandled Calls" popup.
 - The macOS SwiftUI GUI wrapper.
@@ -1226,7 +1227,7 @@ What is solid:
    (`donkeykong`, `fox`, `marth`) have `*_head` portraits composed entirely
    of shapes rather than a bitmap. The head finder prefers a Bitmap
    placement when one exists; when it doesn't, the head image is missing
-   and `menu.entity` ships with a placeholder. Needs a small SWF shape
+   and `Menu.entity` ships with a placeholder. Needs a small SWF shape
    rasterizer.
 
 2. **Mario sprite placement not re-verified.** After the recent rotation /

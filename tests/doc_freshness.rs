@@ -100,6 +100,26 @@ const STALE_PATTERNS: &[StalePattern] = &[
                  the path 2 migration. Current Stage A lives directly in \
                  extract_character.",
     },
+
+    // ─── Pre-PascalCase-rename output paths (Stage A of the multi-char work) ──
+    // The character entity is now library/entities/<Pascal>.entity and the
+    // scripts subdir is library/scripts/<Pascal>/. These literal old paths
+    // must never reappear in the docs. Needles are path-qualified so the
+    // legitimate "(was Character.entity)" / "(was Character/)" historical
+    // notes in DEVELOPMENT §9 don't trip the wire.
+    StalePattern {
+        needle: "entities/Character.entity",
+        allowed_files: &["docs/multi_character_projects_plan.md"],
+        reason: "Character.entity → <Pascal>.entity (e.g. Mario.entity) in the \
+                 Stage A universal rename (commit 388e6faf). The plan doc keeps \
+                 the old path in its before/after migration tables.",
+    },
+    StalePattern {
+        needle: "scripts/Character/",
+        allowed_files: &["docs/multi_character_projects_plan.md"],
+        reason: "library/scripts/Character/ → library/scripts/<Pascal>/ (e.g. \
+                 scripts/Mario/) in the Stage A universal rename (commit 388e6faf).",
+    },
 ];
 
 #[test]
