@@ -1,0 +1,360 @@
+# Character-only Haxe templates emitted into Character/Script.hx and the
+# character *Stats.hx files. `{{slot}}` placeholders are filled at codegen time;
+# data tables that drive codegen stay in Rust.
+
+[audio]
+
+header_comment = '''
+// ── SSF2 sound triggers (playAttackSound / playVoiceSound) ──────────────────
+// 1-based sound tables pulled from the SSF2 character's attackSound{N}_id /
+// attackVoice{N}_id fields (raw ids kept as a record of intent). Globals route
+// to a Fraymakers built-in (GlobalSfx) via the resolver; everything else is
+// fetched from this character's audio bank. Voice playback does not overlap —
+// the active clip is stopped before a new one starts.
+'''
+
+# {{entries}}
+attack_sounds_decl = '''
+var _attackSounds = {{entries}};
+'''
+
+# {{entries}}
+voice_sounds_decl = '''
+var _voiceSounds = {{entries}};
+'''
+
+active_voice_clip_decl = '''
+var _activeVoiceClip = null;
+'''
+
+play_attack_sound_fn = '''
+function playAttackSound(n) {
+	if (n < 1 || n > _attackSounds.length) return;
+	_playResolvedSound(_attackSounds[n - 1]);
+}
+
+'''
+
+play_voice_sound_fn = '''
+function playVoiceSound(n) {
+	if (n < 1 || n > _voiceSounds.length) return;
+	if (_activeVoiceClip != null) { _activeVoiceClip.stop(); _activeVoiceClip = null; }
+	_activeVoiceClip = _playResolvedSound(_voiceSounds[n - 1]);
+}
+
+'''
+
+# {{global_cases}}
+play_resolved_sound_resolver = '''
+function _playResolvedSound(id) {
+	switch (id) {
+{{global_cases}}		default: return AudioClip.play(self.getResource().getContent(id));
+	}
+}
+
+'''
+
+# {{global_sfx}}, {{ssf2_id}}
+global_sound_case = '''
+		case "{{ssf2_id}}": return AudioClip.play(GlobalSfx.{{global_sfx}});
+'''
+
+voice_teardown_cleanup = '''
+	if (_activeVoiceClip != null) {
+		_activeVoiceClip.stop();
+		_activeVoiceClip = null;
+	}
+'''
+
+# {{ssf2_id}}
+placeholder_array_entry_todo = '/* TODO: SSF2 sound "{{ssf2_id}}" has no FM equivalent */'
+
+[jab]
+
+chain_helpers = '''
+
+// ── Jab chain — SSF2 Jab_21 sub-animations (begin / hit2 / hit3) ─────────────────
+// SSF2 uses gotoAndPlay("hit2") / gotoAndPlay("hit3") to chain jabs on button press.
+// In Fraymakers, jab1/jab2/jab3 are separate animations chained via CState transitions.
+
+// Called from AnimationStats.jab1 last-frame handler (link in FrayTools):
+function jab1_end() {
+	if (entity.checkInput(ControlsObject.ATTACK)) {
+		// Player pressed attack again — chain to jab2
+		entity.setAnimation("jab2");
+		entity.playCState(CState.JAB2);
+	} else {
+		// No input — return to idle
+		entity.playCState(CState.IDLE);
+	}
+}
+
+// Called from AnimationStats.jab2 last-frame handler:
+function jab2_end() {
+	if (entity.checkInput(ControlsObject.ATTACK)) {
+		entity.setAnimation("jab3");
+		entity.playCState(CState.JAB3);
+	} else {
+		entity.playCState(CState.IDLE);
+	}
+}
+
+// Called from AnimationStats.jab3 last-frame handler:
+function jab3_end() {
+	entity.playCState(CState.IDLE);
+}
+'''
+
+[framework]
+
+# {{char_name}}
+header = '''
+// API Script for {{char_name}} — converted from SSF2
+// Frame scripts are embedded in the entity file (FRAME_SCRIPT layers).
+// SSF2 API calls are mapped to Fraymakers equivalents where possible.
+// Lines marked TODO need manual review.
+
+'''
+
+# {{char_name}}
+instance_vars_comment = '''
+// ── Instance variables (from SSF2 {{char_name}}Ext) — wrapped for FM persistent state ──
+'''
+
+# {{default}}, {{factory}}, {{name}}
+ext_var_decl = '''
+var {{name}} = self.{{factory}}({{default}});
+'''
+
+# {{expr}}, {{name}}
+ext_var_init_assign = '''
+	{{name}}.set({{expr}});
+'''
+
+general_functions_begin = '''
+// start general functions ---
+
+'''
+
+general_functions_end = '''
+// --- end general functions
+
+'''
+
+decompiled_ext_header = '''
+// ── Decompiled from SSF2 XxxExt.as ─────────────────────────────────────────
+
+'''
+
+link_frames_listener = '''
+	self.addEventListener(GameObjectEvent.LINK_FRAMES, handleLinkFrames, {persistent:true});
+'''
+
+fn_close = '''
+}
+
+'''
+
+initialize_header = '''
+//Runs on object init
+'''
+
+initialize_sig = '''
+function initialize(){
+'''
+
+input_update_hook_header = '''
+// Runs when reading inputs (before determining character state, update, framescript, etc.)
+'''
+
+input_update_hook_sig = '''
+function inputUpdateHook(pressedControls:ControlsObject, heldControls:ControlsObject) {
+'''
+
+handle_link_frames_header = '''
+// CState-based handling for LINK_FRAMES
+'''
+
+handle_link_frames_sig = '''
+function handleLinkFrames(e){
+'''
+
+update_sig = '''
+function update(){
+'''
+
+onteardown_sig = '''
+function onTeardown() {
+'''
+
+# Character *Stats.hx generators — populated in a later migration block.
+[stats]
+
+# ── HitboxStats.hx ──
+# {{char_name}}
+hitbox_header = '''
+// Hitbox stats for {{char_name}} — converted from SSF2
+// SSF2 field mapping:
+//   damage → damage
+//   direction → angle
+//   power/weightKB → baseKnockback
+//   kbConstant → knockbackGrowth
+//   hitStun → hitstop  (frames of freeze on hit)
+//   selfHitStun → selfHitstop
+//   hitLag → hitstun   (frames victim can't act)
+// limb values inferred from move type — review before use.
+{
+'''
+
+# {{section}}
+hitbox_section_comment = '''
+
+	//{{section}}
+'''
+
+# {{name}}, {{prefix}}
+hitbox_attack_open = '''
+{{prefix}}{{name}}: {
+'''
+
+# {{angle}}, {{base_knockback}}, {{damage}}, {{hitstop}}, {{i}}, {{knockback_growth}}, {{self_hitstop}}
+hitbox_field_main = '		hitbox{{i}}: { damage: {{damage}}, angle: {{angle}}, baseKnockback: {{base_knockback}}, knockbackGrowth: {{knockback_growth}}, hitstop: {{hitstop}}, selfHitstop: {{self_hitstop}}'
+
+# {{hitstun}}
+hitbox_field_hitstun = ', hitstun: {{hitstun}}'
+
+# {{limb}}
+hitbox_field_close = '''
+, limb: {{limb}} },
+'''
+
+hitbox_attack_close = '''
+	},
+'''
+
+hitbox_emote = '''
+	emote: {
+		hitbox0: {}
+	},
+'''
+
+# {{limb}}, {{name}}
+hitbox_todo_attack = '''
+	{{name}}: {
+		hitbox0: { damage: 0 /*TODO*/, angle: 0 /*TODO*/, baseKnockback: 0 /*TODO*/, knockbackGrowth: 0 /*TODO*/, hitstop: -1, selfHitstop: -1, limb: {{limb}} }
+	},
+'''
+
+hitbox_extras_header = '''
+
+	//SSF2-SPECIFIC (no direct Fraymakers equivalent — map or remove)
+'''
+
+hitbox_footer = '''
+}
+'''
+
+
+# ── CharacterStats.hx ──
+# {{parent}}, {{source_method}}
+char_stats_banner = '''
+// ─────────────────────────────────────────────────────────────────
+// TODO: TRANSFORMATION FORM — manual wiring required.
+//
+// This character is a Final-Smash / transformation form of
+// `{{parent}}` (SSF2 source: {{source_method}}). It ships as a peer
+// entity in the SAME .fraytools project as `{{parent}}`, so that
+// when Fraymakers exposes a transformation API the parent's
+// Script.hx can swap between the two forms at runtime without a
+// cross-project asset reload.
+//
+// Fraymakers does not yet expose that transformation API.
+// Selecting this form directly from the FM roster will run
+// these stats as-is — NOT what SSF2 does at runtime, where the
+// form is entered via the parent's Final Smash trigger.
+//
+// To replicate the SSF2 behaviour you'll need to script the
+// transformation in `{{parent}}`'s Script.hx (likely by swapping
+// resources / stats / animations into the parent at the Final
+// Smash trigger). Track the upstream FM API request:
+//   https://github.com/Fraymakers (no transformation API yet)
+// ─────────────────────────────────────────────────────────────────
+'''
+
+# {{aerial_cap}}, {{aerial_cap_todo}}, {{aerial_fric}}, {{aerial_fric_todo}}, {{aerial_speed_accel}}, {{base_scale_x}}, {{base_scale_y}}, {{char_id}}, {{char_name}}, {{dash_speed}}, {{dash_speed_todo}}, {{dj_array}}, {{fast_fall}}, {{fast_fall_todo}}, {{friction}}, {{gravity}}, {{gravity_todo}}, {{ground_speed_accel}}, {{ground_speed_cap}}, {{jump_speed}}, {{jump_speed_todo}}, {{run_speed_accel}}, {{run_speed_cap}}, {{run_speed_initial}}, {{short_hop}}, {{terminal_vel}}, {{terminal_vel_todo}}, {{walk_cap}}, {{walk_cap_todo}}, {{walk_speed_accel}}, {{walk_speed_initial}}, {{weight}}, {{weight_todo}}
+char_stats_main = '''
+// Character stats for {{char_name}} — converted from SSF2
+// SSF2 physics values are scaled to Fraymakers equivalents.
+// Review all values before use — units differ between engines.
+{
+	spriteContent: self.getResource().getContent("{{char_id}}"),
+
+	//GENERIC STATS
+	baseScaleX: {{base_scale_x}},
+	baseScaleY: {{base_scale_y}},
+	weight: {{weight}}{{weight_todo}},
+	gravity: {{gravity}}{{gravity_todo}},
+	shortHopSpeed: {{short_hop}} /*TODO: set manually*/,
+	jumpSpeed: {{jump_speed}}{{jump_speed_todo}},
+	doubleJumpSpeeds: {{dj_array}},
+	terminalVelocity: {{terminal_vel}}{{terminal_vel_todo}},
+	fastFallSpeed: {{fast_fall}}{{fast_fall_todo}},
+	friction: {{friction}} /*TODO*/,
+	walkSpeedInitial: {{walk_speed_initial}},
+	walkSpeedAcceleration: {{walk_speed_accel}},
+	walkSpeedCap: {{walk_cap}}{{walk_cap_todo}},
+	dashSpeed: {{dash_speed}}{{dash_speed_todo}},
+	runSpeedInitial: {{run_speed_initial}},
+	runSpeedAcceleration: {{run_speed_accel}},
+	runSpeedCap: {{run_speed_cap}},
+	groundSpeedAcceleration: {{ground_speed_accel}},
+	groundSpeedCap: {{ground_speed_cap}},
+	aerialSpeedAcceleration: {{aerial_speed_accel}},
+	aerialSpeedCap: {{aerial_cap}}{{aerial_cap_todo}},
+	aerialFriction: {{aerial_fric}}{{aerial_fric_todo}},
+
+'''
+
+# {{title}}
+char_stats_section_comment = '''
+	//{{title}}
+'''
+
+# {{anno}}, {{field}}, {{value}}
+char_stats_field_anno = '''
+	{{field}}: {{value}}{{anno}},
+'''
+
+# {{field}}, {{value}}
+char_stats_field_plain = '''
+	{{field}}: {{value}},
+'''
+
+char_stats_footer = '''
+}
+'''
+
+
+# ── AnimationStats.hx ──
+# {{char_name}}
+anim_stats_header = '''
+// Animation stats for {{char_name}} — converted from SSF2
+// Many values are automatically set by the Common class.
+// Entries here override those defaults.
+{
+'''
+
+# {{body}}, {{name}}
+anim_stats_entry = '''
+	{{name}}: {{body}},
+'''
+
+anim_stats_split_header = '''
+
+	//SSF2 SPLIT ANIMATIONS
+'''
+
+anim_stats_footer = '''
+}
+'''
+

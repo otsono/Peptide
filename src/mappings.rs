@@ -29,6 +29,14 @@ const DEFAULT_CHARACTER_HITBOX_STATS: &str =
 const DEFAULT_API_COMMANDS: &str =
     include_str!("../mappings/commands.jsonc");
 
+// Per-entity Script.hx template files (TOML). The Haxe lives in `'''…'''`
+// literal blocks, byte-for-byte; placeholders are `{{slot}}`.
+const DEFAULT_GLOBAL_HELPERS: &str     = include_str!("../mappings/global_helpers.toml");
+const DEFAULT_CHARACTER_HELPERS: &str  = include_str!("../mappings/character_helpers.toml");
+const DEFAULT_PROJECTILE_HELPERS: &str = include_str!("../mappings/projectile_helpers.toml");
+const DEFAULT_STAGE_HELPERS: &str      = include_str!("../mappings/stage_helpers.toml");
+const DEFAULT_ITEM_HELPERS: &str       = include_str!("../mappings/item_helpers.toml");
+
 // ─── Schema ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
@@ -303,8 +311,6 @@ pub struct ApiCommands {
     pub passthrough_fm_apis: Vec<NamedApi>,
     #[serde(default)]
     pub ssf2_only: Vec<NamedApi>,
-    #[serde(default)]
-    pub script_templates: ScriptTemplates,
 }
 
 // ─── Script.hx output templates ──────────────────────────────────────────────
@@ -383,16 +389,6 @@ pub struct ProjectileTemplates {
     pub update_branch: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct ScriptTemplates {
-    pub audio: AudioTemplates,
-    pub playsound: PlaySoundTemplates,
-    pub jab: JabTemplates,
-    pub framework: FrameworkTemplates,
-    pub projectile: ProjectileTemplates,
-}
-
 /// Fetch a Script.hx template, panicking with the qualified key if it's empty.
 /// Option A fail-fast: templates live only in commands.jsonc, so an empty
 /// value means the section/key is missing or blank — fail loudly rather than
@@ -400,9 +396,155 @@ pub struct ScriptTemplates {
 /// header comments) are NOT routed through this — they stay as `""` literals.
 pub fn require_template<'a>(path: &str, val: &'a str) -> &'a str {
     if val.is_empty() {
-        panic!("script_templates.{path} is empty — check commands.jsonc");
+        // Point the modder at the right file: the path's first segment names the
+        // entity-scope TOML; legacy (still-in-JSONC) paths fall back to commands.jsonc.
+        let file = match path.split('.').next() {
+            Some("global")     => "global_helpers.toml",
+            Some("character")  => "character_helpers.toml",
+            Some("projectile") => "projectile_helpers.toml",
+            Some("stage")      => "stage_helpers.toml",
+            Some("item")       => "item_helpers.toml",
+            _                  => "commands.jsonc",
+        };
+        panic!("script_templates.{path} is empty — check {file}");
     }
     val
+}
+
+// ─── Per-entity Script.hx template files (TOML) ──────────────────────────────
+//
+// The Haxe the codegen emits lives in `mappings/<scope>_helpers.toml`, grouped
+// by which entity type it applies to (not by codegen function). Each value is a
+// `'''…'''` literal block (or single-quoted one-liner) filled by `str::replace`-
+// ing `{{slot}}` placeholders. Data tables that DRIVE codegen (animation lists,
+// field-name arrays, physics maps) stay in Rust — only Haxe scaffolding moves.
+
+/// Character *Stats.hx generators (HitboxStats / CharacterStats / AnimationStats).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CharStatsTemplates {
+    // HitboxStats.hx
+    pub hitbox_header: String,
+    pub hitbox_section_comment: String,
+    pub hitbox_attack_open: String,
+    pub hitbox_field_main: String,
+    pub hitbox_field_hitstun: String,
+    pub hitbox_field_close: String,
+    pub hitbox_attack_close: String,
+    pub hitbox_emote: String,
+    pub hitbox_todo_attack: String,
+    pub hitbox_extras_header: String,
+    pub hitbox_footer: String,
+    // CharacterStats.hx
+    pub char_stats_banner: String,
+    pub char_stats_main: String,
+    pub char_stats_section_comment: String,
+    pub char_stats_field_anno: String,
+    pub char_stats_field_plain: String,
+    pub char_stats_footer: String,
+    // AnimationStats.hx
+    pub anim_stats_header: String,
+    pub anim_stats_entry: String,
+    pub anim_stats_split_header: String,
+    pub anim_stats_footer: String,
+}
+
+/// Projectile *Stats.hx generators (AnimationStats / Stats / HitboxStats).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProjStatsTemplates {
+    pub proj_anim_wrapper: String,
+    pub proj_anim_entry_destroy: String,
+    pub proj_anim_entry_normal: String,
+    pub proj_stats_body: String,
+    pub proj_stats_physics_line: String,
+    pub proj_stats_todo_line: String,
+    pub proj_stats_source_matched: String,
+    pub proj_stats_source_default: String,
+    pub proj_hitbox_body: String,
+    pub proj_hitbox_active_block: String,
+    pub proj_hitbox_empty_block: String,
+    pub proj_hitbox_idle_matched: String,
+    pub proj_hitbox_idle_default: String,
+    pub proj_hitbox_source_matched: String,
+    pub proj_hitbox_source_default: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct GlobalHelpers {
+    pub playsound: PlaySoundTemplates,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CharacterHelpers {
+    pub audio: AudioTemplates,
+    pub jab: JabTemplates,
+    pub framework: FrameworkTemplates,
+    pub stats: CharStatsTemplates,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProjectileHelpers {
+    pub script: ProjectileTemplates,
+    pub stats: ProjStatsTemplates,
+}
+
+/// Placeholder scopes — no templates yet (TODO files).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct StageHelpers {}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ItemHelpers {}
+
+/// Aggregate of the 5 per-entity template files.
+#[derive(Debug, Clone, Default)]
+pub struct HelperTemplates {
+    pub global: GlobalHelpers,
+    pub character: CharacterHelpers,
+    pub projectile: ProjectileHelpers,
+    pub stage: StageHelpers,
+    pub item: ItemHelpers,
+}
+
+/// Like `load`, but for TOML template files (no comment-stripping needed —
+/// TOML has native comments; literal `'''` blocks preserve the Haxe verbatim).
+fn load_toml<T: for<'de> Deserialize<'de>>(rel: &str, embedded: &str) -> T {
+    for path in candidate_paths(rel) {
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match toml::from_str::<T>(&text) {
+                Ok(parsed) => {
+                    log::info!("Loaded template file {}", path.display());
+                    return parsed;
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Template file {} is malformed ({}); using built-in defaults",
+                        path.display(), e
+                    );
+                    break;
+                }
+            },
+            Err(_) => continue,
+        }
+    }
+    toml::from_str(embedded).expect("embedded default template TOML must be valid")
+}
+
+/// The per-entity Script.hx templates, loaded once from the 5 TOML files.
+pub fn script_templates() -> &'static HelperTemplates {
+    static CACHE: OnceLock<HelperTemplates> = OnceLock::new();
+    CACHE.get_or_init(|| HelperTemplates {
+        global:     load_toml("mappings/global_helpers.toml",     DEFAULT_GLOBAL_HELPERS),
+        character:  load_toml("mappings/character_helpers.toml",  DEFAULT_CHARACTER_HELPERS),
+        projectile: load_toml("mappings/projectile_helpers.toml", DEFAULT_PROJECTILE_HELPERS),
+        stage:      load_toml("mappings/stage_helpers.toml",      DEFAULT_STAGE_HELPERS),
+        item:       load_toml("mappings/item_helpers.toml",       DEFAULT_ITEM_HELPERS),
+    })
 }
 
 // ─── Loading ────────────────────────────────────────────────────────────────

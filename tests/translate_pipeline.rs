@@ -358,11 +358,12 @@ fn require_template_passes_through_non_empty() {
 }
 
 #[test]
-#[should_panic(expected = "script_templates.audio.play_attack_sound_fn is empty")]
+#[should_panic(expected = "script_templates.character.audio.play_attack_sound_fn is empty — check character_helpers.toml")]
 fn require_template_panics_on_empty() {
-    // Fail-fast: an empty template means the section/key is missing in
-    // commands.jsonc — panic with the qualified path rather than emit broken Haxe.
-    ssf2_converter::mappings::require_template("audio.play_attack_sound_fn", "");
+    // Fail-fast: an empty template means the section/key is missing in its
+    // TOML file — panic with the qualified path (incl. the file) rather than
+    // emit broken Haxe.
+    ssf2_converter::mappings::require_template("character.audio.play_attack_sound_fn", "");
 }
 
 #[test]

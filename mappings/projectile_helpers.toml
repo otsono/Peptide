@@ -1,0 +1,209 @@
+# Projectile-only Haxe templates emitted into Projectile/Script.hx and the
+# projectile *Stats.hx files. `{{slot}}` placeholders filled at codegen time.
+
+[script]
+
+# {{entity_id}}
+single_state = '''
+// Projectile script for {{entity_id}} -- converted from SSF2
+// TODO: tune X_SPEED / Y_SPEED and gravity to match SSF2 behaviour.
+
+var X_SPEED = 8;
+var Y_SPEED = 0;
+
+function initialize() {
+    self.addEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit, { persistent: true });
+    self.addEventListener(GameObjectEvent.HIT_DEALT,  onHit,       { persistent: true });
+
+    self.setCostumeIndex(self.getOwner().getCostumeIndex());
+    Common.enableReflectionListener({ mode: "X", replaceOwner: true });
+
+    self.setState(PState.ACTIVE);
+    self.setXSpeed(X_SPEED);
+    self.setYSpeed(Y_SPEED);
+}
+
+function onGroundHit(event) {
+    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);
+    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);
+    self.toState(PState.DESTROYING);
+}
+
+function onHit(event) {
+    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);
+    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);
+    self.toState(PState.DESTROYING);
+}
+
+function update() {
+    // Projectile moves via setXSpeed/setYSpeed set in initialize().
+    // Add custom movement logic here if needed.
+}
+'''
+
+# {{entity_id}}, {{lstate_prep}}, {{update_branches}}
+multi_state = '''
+// Projectile script for {{entity_id}} -- converted from SSF2 (multi-state)
+// Uses the local state machine to switch between animations since PState
+// only supports built-in values (ACTIVE, DESTROYING, etc).
+// TODO: tune X_SPEED / Y_SPEED and gravity to match SSF2 behaviour.
+
+var X_SPEED = 8;
+var Y_SPEED = 0;
+
+// ---- Local state machine setup ----
+function _prepLocalState(animation:String, ?index:Int=Math.NaN):Int {
+    if (!__hasInitLocalStateMachine) {
+        Common.initLocalStateMachine();
+        __hasInitLocalStateMachine = true;
+    }
+    if (index != Math.NaN) {
+        index = __localStatePrepIndex++;
+    }
+    Common.registerLocalState(index, animation);
+    return index;
+}
+var __hasInitLocalStateMachine = false;
+var __localStatePrepIndex = -1;
+
+var LState = {
+{{lstate_prep}}}
+
+function initialize() {
+    self.addEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit, { persistent: true });
+    self.addEventListener(GameObjectEvent.HIT_DEALT,  onHit,       { persistent: true });
+
+    self.setCostumeIndex(self.getOwner().getCostumeIndex());
+    Common.enableReflectionListener({ mode: "X", replaceOwner: true });
+
+    self.setState(PState.ACTIVE);
+    Common.toLocalState(LState.IDLE);
+    self.setXSpeed(X_SPEED);
+    self.setYSpeed(Y_SPEED);
+}
+
+function onGroundHit(event) {
+    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);
+    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);
+    self.toState(PState.DESTROYING);
+}
+
+function onHit(event) {
+    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);
+    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);
+    self.toState(PState.DESTROYING);
+}
+
+function update() {
+    if (Common.inLocalState(LState.IDLE)) {
+        // TODO: implement IDLE state logic (projectileIdle animation)
+{{update_branches}}    }
+}
+'''
+
+lstate_idle_prep = '''
+    IDLE:    _prepLocalState("projectileIdle"),
+'''
+
+# {{fm_anim}}, {{lstate_name}}
+lstate_prep_line = '''
+    {{lstate_name}}: _prepLocalState("{{fm_anim}}"),
+'''
+
+# {{frame_count}}, {{lstate_name}}
+update_branch = '''
+    } else if (Common.inLocalState(LState.{{lstate_name}})) {
+        // TODO: implement {{lstate_name}} state logic ({{frame_count}} frames)
+        if (self.finalFramePlayed()) {
+            Common.toLocalState(LState.IDLE);
+        }
+'''
+
+# Projectile *Stats.hx generators — populated in a later migration block.
+[stats]
+
+# Projectile *Stats.hx generators.
+# {{body}}
+proj_anim_wrapper = '''
+// Animation stats for projectile (names from SSF2 inner-sprite FrameLabel tags)
+{
+{{body}}
+}
+'''
+
+# {{name}}
+proj_anim_entry_destroy = '    {{name}}: { xSpeedConservation: 0, ySpeedConservation: 0, resetId: false }'
+
+# {{name}}
+proj_anim_entry_normal = '    {{name}}: { endType: AnimationEndType.NONE }'
+
+# {{active}}, {{content_id}}, {{destroy}}, {{entity_id}}, {{physics}}, {{source_note}}, {{todos}}
+proj_stats_body = '''
+// Projectile stats for {{entity_id}}
+{{source_note}}{
+    spriteContent: self.getResource().getContent("{{content_id}}"),
+    stateTransitionMapOverrides: [
+        PState.ACTIVE => { animation: "{{active}}" },
+        PState.DESTROYING => { animation: "{{destroy}}" }
+    ],
+    shadows: true,
+{{physics}}
+{{todos}}
+    floorHeadPosition: 15,
+    floorHipWidth: 16,
+    floorHipXOffset: 0,
+    floorHipYOffset: 0,
+    floorFootPosition: 0,
+    aerialHeadPosition: 15,
+    aerialHipWidth: 16,
+    aerialHipXOffset: 0,
+    aerialHipYOffset: 0,
+    aerialFootPosition: 0
+}
+'''
+
+# {{field}}, {{value}}
+proj_stats_physics_line = '    {{field}}: {{value}},'
+
+# {{key}}, {{value}}
+proj_stats_todo_line = '    // TODO: SSF2 {{key}}: {{value}} — no ProjectileStats mapping'
+
+proj_stats_source_matched = '''
+// Values pulled from SSF2 getProjectileStats() (best-effort key match — verify per projectile).
+'''
+
+proj_stats_source_default = '''
+// SSF2 source had no matching projectile-stats entry — defaults below.
+'''
+
+# {{blocks}}, {{entity_id}}, {{source_note}}
+proj_hitbox_body = '''
+// Hitbox stats for {{entity_id}}
+{{source_note}}{
+{{blocks}}
+}
+'''
+
+# {{idle_body}}, {{name}}
+proj_hitbox_active_block = '''
+    {{name}}: {
+        {{idle_body}}
+    }'''
+
+# {{name}}
+proj_hitbox_empty_block = '    {{name}}: {}'
+
+# {{parts}}
+proj_hitbox_idle_matched = 'hitbox0: { {{parts}} }'
+
+proj_hitbox_idle_default = 'hitbox0: { damage: 6, knockbackGrowth: 30, baseKnockback: 65, angle: 0, reversibleAngle: true, directionalInfluence: false, reflectable: true }'
+
+proj_hitbox_source_matched = '''
+// Values pulled from SSF2 getProjectileStats() (best-effort key match — verify per projectile).
+// SSF2→FM field names come from mappings/character/hitbox_stats.jsonc (shared canon).
+'''
+
+proj_hitbox_source_default = '''
+// TODO: no matching SSF2 projectile-stats entry found — values below are scaffolding placeholders. Tune to match SSF2.
+'''
+

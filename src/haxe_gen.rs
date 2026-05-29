@@ -410,20 +410,10 @@ fn generate_hitbox_stats(data: &CharacterData, char_id: &str) -> String {
         .map(|a| (a.name.as_str(), a))
         .collect();
 
-    let mut out = format!(
-        "// Hitbox stats for {} — converted from SSF2\n\
-        // SSF2 field mapping:\n\
-        //   damage → damage\n\
-        //   direction → angle\n\
-        //   power/weightKB → baseKnockback\n\
-        //   kbConstant → knockbackGrowth\n\
-        //   hitStun → hitstop  (frames of freeze on hit)\n\
-        //   selfHitStun → selfHitstop\n\
-        //   hitLag → hitstun   (frames victim can't act)\n\
-        // limb values inferred from move type — review before use.\n\
-        {{\n",
-        data.name
-    );
+    let t = &crate::mappings::script_templates().character.stats;
+    let req = crate::mappings::require_template;
+    let mut out = req("character.stats.hitbox_header", &t.hitbox_header)
+        .replace("{{char_name}}", &data.name);
 
     let sections: &[(&str, &[&str])] = &[
         ("LIGHT ATTACKS",  &["jab1","jab2","jab3","dash_attack","tilt_forward","tilt_up","tilt_down"]),
@@ -438,12 +428,13 @@ fn generate_hitbox_stats(data: &CharacterData, char_id: &str) -> String {
         .flat_map(|(_, moves)| moves.iter().copied()).collect();
 
     for (section, moves) in sections {
-        out.push_str(&format!("\n\t//{}\n", section));
+        out.push_str(&req("character.stats.hitbox_section_comment", &t.hitbox_section_comment)
+            .replace("{{section}}", section));
         for &move_name in *moves {
             if let Some(attack) = attack_lookup.get(move_name) {
                 out.push_str(&format_attack(move_name, &attack.hitboxes, false));
             } else if move_name == "emote" {
-                out.push_str("\temote: {\n\t\thitbox0: {}\n\t},\n");
+                out.push_str(req("character.stats.hitbox_emote", &t.hitbox_emote));
             } else {
                 out.push_str(&format_attack_todo(move_name));
             }
@@ -454,13 +445,13 @@ fn generate_hitbox_stats(data: &CharacterData, char_id: &str) -> String {
     let extras: Vec<_> = data.attacks.iter()
         .filter(|a| !standard.contains(a.name.as_str())).collect();
     if !extras.is_empty() {
-        out.push_str("\n\t//SSF2-SPECIFIC (no direct Fraymakers equivalent — map or remove)\n");
+        out.push_str(req("character.stats.hitbox_extras_header", &t.hitbox_extras_header));
         for attack in extras {
             out.push_str(&format_attack(&attack.name, &attack.hitboxes, true));
         }
     }
 
-    out.push_str("}\n");
+    out.push_str(req("character.stats.hitbox_footer", &t.hitbox_footer));
     out
 }
 
@@ -479,9 +470,12 @@ fn guess_limb(move_name: &str) -> &'static str {
 }
 
 fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool) -> String {
+    let t = &crate::mappings::script_templates().character.stats;
+    let req = crate::mappings::require_template;
     let limb = guess_limb(name);
     let prefix = if is_extra { "\t// SSF2: " } else { "\t" };
-    let mut out = format!("{}{}: {{\n", prefix, name);
+    let mut out = req("character.stats.hitbox_attack_open", &t.hitbox_attack_open)
+        .replace("{{prefix}}", prefix).replace("{{name}}", name);
     // Frame-count fields are doubled for the 30fps -> 60fps timing change.
     // Which fields are frame counts is driven by the `isframe` flags in
     // mappings/character/hitbox_stats.json (see crate::mappings), the same
@@ -495,31 +489,31 @@ fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool) -> String {
         let hitstop = if hb.hitstop <= 0 { -1 } else { scale("hitstop", hb.hitstop) };
         let self_hitstop = if hb.self_hitstop <= 0 { -1 } else { scale("selfHitstop", hb.self_hitstop) };
 
-        out.push_str(&format!(
-            "\t\thitbox{}: {{ damage: {}, angle: {}, baseKnockback: {}, knockbackGrowth: {}, hitstop: {}, selfHitstop: {}",
-            i,
-            hb.damage as i32,
-            hb.angle as i32,
-            hb.base_knockback as i32,
-            hb.knockback_growth as i32,
-            hitstop,
-            self_hitstop,
-        ));
+        out.push_str(&req("character.stats.hitbox_field_main", &t.hitbox_field_main)
+            .replace("{{i}}", &i.to_string())
+            .replace("{{damage}}", &(hb.damage as i32).to_string())
+            .replace("{{angle}}", &(hb.angle as i32).to_string())
+            .replace("{{base_knockback}}", &(hb.base_knockback as i32).to_string())
+            .replace("{{knockback_growth}}", &(hb.knockback_growth as i32).to_string())
+            .replace("{{hitstop}}", &hitstop.to_string())
+            .replace("{{self_hitstop}}", &self_hitstop.to_string()));
         if hitstun != -1 {
-            out.push_str(&format!(", hitstun: {}", hitstun));
+            out.push_str(&req("character.stats.hitbox_field_hitstun", &t.hitbox_field_hitstun)
+                .replace("{{hitstun}}", &hitstun.to_string()));
         }
-        out.push_str(&format!(", limb: {} }},\n", limb));
+        out.push_str(&req("character.stats.hitbox_field_close", &t.hitbox_field_close)
+            .replace("{{limb}}", limb));
     }
-    out.push_str("\t},\n");
+    out.push_str(req("character.stats.hitbox_attack_close", &t.hitbox_attack_close));
     out
 }
 
 fn format_attack_todo(name: &str) -> String {
     let limb = guess_limb(name);
-    format!(
-        "\t{}: {{\n\t\thitbox0: {{ damage: 0 /*TODO*/, angle: 0 /*TODO*/, baseKnockback: 0 /*TODO*/, knockbackGrowth: 0 /*TODO*/, hitstop: -1, selfHitstop: -1, limb: {} }}\n\t}},\n",
-        name, limb
-    )
+    crate::mappings::require_template(
+        "character.stats.hitbox_todo_attack",
+        &crate::mappings::script_templates().character.stats.hitbox_todo_attack,
+    ).replace("{{name}}", name).replace("{{limb}}", limb)
 }
 
 // ─── CharacterStats.hx ───────────────────────────────────────────────────────
@@ -566,98 +560,49 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
     // (Giga Bowser, Wario Man), prepend a TODO note. Fraymakers has no
     // native transformation hook; the form is emitted as a standalone
     // character and the content author must wire the trigger by hand.
+    let t = &crate::mappings::script_templates().character.stats;
+    let req = crate::mappings::require_template;
+
     let transformation_banner = if let Some(df) = &data.derived_from {
-        format!(
-            "// ─────────────────────────────────────────────────────────────────\n\
-             // TODO: TRANSFORMATION FORM — manual wiring required.\n\
-             //\n\
-             // This character is a Final-Smash / transformation form of\n\
-             // `{parent}` (SSF2 source: {source_method}). It ships as a peer\n\
-             // entity in the SAME .fraytools project as `{parent}`, so that\n\
-             // when Fraymakers exposes a transformation API the parent's\n\
-             // Script.hx can swap between the two forms at runtime without a\n\
-             // cross-project asset reload.\n\
-             //\n\
-             // Fraymakers does not yet expose that transformation API.\n\
-             // Selecting this form directly from the FM roster will run\n\
-             // these stats as-is — NOT what SSF2 does at runtime, where the\n\
-             // form is entered via the parent's Final Smash trigger.\n\
-             //\n\
-             // To replicate the SSF2 behaviour you'll need to script the\n\
-             // transformation in `{parent}`'s Script.hx (likely by swapping\n\
-             // resources / stats / animations into the parent at the Final\n\
-             // Smash trigger). Track the upstream FM API request:\n\
-             //   https://github.com/Fraymakers (no transformation API yet)\n\
-             // ─────────────────────────────────────────────────────────────────\n",
-            parent = df.parent_normal_stats_id,
-            source_method = df.source_method,
-        )
+        req("character.stats.char_stats_banner", &t.char_stats_banner)
+            .replace("{{parent}}", &df.parent_normal_stats_id)
+            .replace("{{source_method}}", &df.source_method)
     } else {
         String::new()
     };
 
-    let mut out = format!(
-        "{transformation_banner}\
-        // Character stats for {char_name} — converted from SSF2\n\
-        // SSF2 physics values are scaled to Fraymakers equivalents.\n\
-        // Review all values before use — units differ between engines.\n\
-        {{\n\
-        \tspriteContent: self.getResource().getContent(\"{char_id}\"),\n\n\
-        \t//GENERIC STATS\n\
-        \tbaseScaleX: {base_scale_x},\n\
-        \tbaseScaleY: {base_scale_y},\n\
-        \tweight: {weight}{weight_todo},\n\
-        \tgravity: {gravity}{gravity_todo},\n\
-        \tshortHopSpeed: {short_hop} /*TODO: set manually*/,\n\
-        \tjumpSpeed: {jump_speed}{jump_speed_todo},\n\
-        \tdoubleJumpSpeeds: {dj_array},\n\
-        \tterminalVelocity: {terminal_vel}{terminal_vel_todo},\n\
-        \tfastFallSpeed: {fast_fall}{fast_fall_todo},\n\
-        \tfriction: {friction} /*TODO*/,\n\
-        \twalkSpeedInitial: {walk_speed_initial},\n\
-        \twalkSpeedAcceleration: {walk_speed_accel},\n\
-        \twalkSpeedCap: {walk_cap}{walk_cap_todo},\n\
-        \tdashSpeed: {dash_speed}{dash_speed_todo},\n\
-        \trunSpeedInitial: {run_speed_initial},\n\
-        \trunSpeedAcceleration: {run_speed_accel},\n\
-        \trunSpeedCap: {run_speed_cap},\n\
-        \tgroundSpeedAcceleration: {ground_speed_accel},\n\
-        \tgroundSpeedCap: {ground_speed_cap},\n\
-        \taerialSpeedAcceleration: {aerial_speed_accel},\n\
-        \taerialSpeedCap: {aerial_cap}{aerial_cap_todo},\n\
-        \taerialFriction: {aerial_fric}{aerial_fric_todo},\n\n",
-        transformation_banner = transformation_banner,
-        char_name = data.name,
-        char_id = char_id,
-        base_scale_x = fmt(s.base_scale_x),
-        base_scale_y = fmt(s.base_scale_y),
-        weight = fmt(weight), weight_todo = todo(weight),
-        gravity = fmt(gravity), gravity_todo = todo(gravity),
-        short_hop = fmt(short_hop),
-        jump_speed = fmt(jump_speed), jump_speed_todo = todo(jump_speed),
-        dj_array = dj_array,
-        terminal_vel = fmt(terminal_vel), terminal_vel_todo = todo(terminal_vel),
-        fast_fall = fmt(fast_fall), fast_fall_todo = todo(fast_fall),
-        friction = c("friction"),
-        walk_speed_initial = c("walkSpeedInitial"),
-        walk_speed_accel = c("walkSpeedAcceleration"),
-        walk_cap = fmt(walk_cap), walk_cap_todo = todo(walk_cap),
-        dash_speed = fmt(dash_speed), dash_speed_todo = todo(dash_speed),
-        run_speed_initial = c("runSpeedInitial"),
-        run_speed_accel = c("runSpeedAcceleration"),
-        run_speed_cap = c("runSpeedCap"),
-        ground_speed_accel = c("groundSpeedAcceleration"),
-        ground_speed_cap = c("groundSpeedCap"),
-        aerial_speed_accel = c("aerialSpeedAcceleration"),
-        // aerial_cap is derived from air_mobility_raw + aerial_friction;
-        // the TODO marker must reflect whether the DERIVATION result is
-        // zero, not whether `s.air_mobility` happens to be (fixes §3.10).
-        aerial_cap = fmt(aerial_cap), aerial_cap_todo = todo(aerial_cap),
-        aerial_fric = fmt(aerial_fric), aerial_fric_todo = todo(aerial_fric),
-    );
+    // aerial_cap is derived from air_mobility_raw + aerial_friction; the TODO
+    // marker must reflect whether the DERIVATION result is zero, not whether
+    // `s.air_mobility` happens to be (fixes §3.10).
+    let mut out = transformation_banner;
+    out.push_str(&req("character.stats.char_stats_main", &t.char_stats_main)
+        .replace("{{char_name}}", &data.name)
+        .replace("{{char_id}}", char_id)
+        .replace("{{base_scale_x}}", &fmt(s.base_scale_x))
+        .replace("{{base_scale_y}}", &fmt(s.base_scale_y))
+        .replace("{{weight}}", &fmt(weight)).replace("{{weight_todo}}", todo(weight))
+        .replace("{{gravity}}", &fmt(gravity)).replace("{{gravity_todo}}", todo(gravity))
+        .replace("{{short_hop}}", &fmt(short_hop))
+        .replace("{{jump_speed}}", &fmt(jump_speed)).replace("{{jump_speed_todo}}", todo(jump_speed))
+        .replace("{{dj_array}}", &dj_array)
+        .replace("{{terminal_vel}}", &fmt(terminal_vel)).replace("{{terminal_vel_todo}}", todo(terminal_vel))
+        .replace("{{fast_fall}}", &fmt(fast_fall)).replace("{{fast_fall_todo}}", todo(fast_fall))
+        .replace("{{friction}}", &c("friction"))
+        .replace("{{walk_speed_initial}}", &c("walkSpeedInitial"))
+        .replace("{{walk_speed_accel}}", &c("walkSpeedAcceleration"))
+        .replace("{{walk_cap}}", &fmt(walk_cap)).replace("{{walk_cap_todo}}", todo(walk_cap))
+        .replace("{{dash_speed}}", &fmt(dash_speed)).replace("{{dash_speed_todo}}", todo(dash_speed))
+        .replace("{{run_speed_initial}}", &c("runSpeedInitial"))
+        .replace("{{run_speed_accel}}", &c("runSpeedAcceleration"))
+        .replace("{{run_speed_cap}}", &c("runSpeedCap"))
+        .replace("{{ground_speed_accel}}", &c("groundSpeedAcceleration"))
+        .replace("{{ground_speed_cap}}", &c("groundSpeedCap"))
+        .replace("{{aerial_speed_accel}}", &c("aerialSpeedAcceleration"))
+        .replace("{{aerial_cap}}", &fmt(aerial_cap)).replace("{{aerial_cap_todo}}", todo(aerial_cap))
+        .replace("{{aerial_fric}}", &fmt(aerial_fric)).replace("{{aerial_fric_todo}}", todo(aerial_fric)));
 
     // Flat-constant sections — every value comes from stats.json `constants`.
-    out.push_str("\t//ENVIRONMENTAL COLLISION BODY (ECB) STATS\n");
+    out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "ENVIRONMENTAL COLLISION BODY (ECB) STATS"));
     for (f, anno) in [
         ("floorHeadPosition", " /*TODO*/"),
         ("floorHipWidth", " /*TODO*/"),
@@ -670,17 +615,17 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
         ("aerialHipYOffset", ""),
         ("aerialFootPosition", " /*TODO*/"),
     ] {
-        out.push_str(&format!("\t{}: {}{},\n", f, c(f), anno));
+        out.push_str(&req("character.stats.char_stats_field_anno", &t.char_stats_field_anno).replace("{{field}}", f).replace("{{value}}", &c(f)).replace("{{anno}}", anno));
     }
     out.push('\n');
 
-    out.push_str("\t//CAMERA BOX STATS\n");
+    out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "CAMERA BOX STATS"));
     for f in ["cameraBoxOffsetX", "cameraBoxOffsetY", "cameraBoxWidth", "cameraBoxHeight"] {
-        out.push_str(&format!("\t{}: {},\n", f, c(f)));
+        out.push_str(&req("character.stats.char_stats_field_plain", &t.char_stats_field_plain).replace("{{field}}", f).replace("{{value}}", &c(f)));
     }
     out.push('\n');
 
-    out.push_str("\t//ROLL AND LEDGE JUMP STATS\n");
+    out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "ROLL AND LEDGE JUMP STATS"));
     for f in [
         "techRollSpeed", "techRollSpeedStartFrame", "techRollSpeedLength",
         "dodgeRollSpeed", "dodgeRollSpeedStartFrame", "dodgeRollSpeedLength",
@@ -688,37 +633,37 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
         "ledgeRollSpeed", "ledgeRollSpeedStartFrame", "ledgeRollSpeedLength",
         "ledgeJumpXSpeed", "ledgeJumpYSpeed",
     ] {
-        out.push_str(&format!("\t{}: {},\n", f, c(f)));
+        out.push_str(&req("character.stats.char_stats_field_plain", &t.char_stats_field_plain).replace("{{field}}", f).replace("{{value}}", &c(f)));
     }
     out.push('\n');
 
-    out.push_str("\t//AIRDASH STATS\n");
+    out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "AIRDASH STATS"));
     for f in ["airdashInitialSpeed", "airdashSpeedCap", "airdashAccelMultiplier", "airdashCancelSpeedConservation"] {
-        out.push_str(&format!("\t{}: {},\n", f, c(f)));
+        out.push_str(&req("character.stats.char_stats_field_plain", &t.char_stats_field_plain).replace("{{field}}", f).replace("{{value}}", &c(f)));
     }
     out.push('\n');
 
-    out.push_str("\t//SHIELD STATS\n");
+    out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "SHIELD STATS"));
     for f in [
         "shieldCrossupThreshold", "shieldFrontNineSliceContent", "shieldFrontXOffset",
         "shieldFrontYOffset", "shieldFrontWidth", "shieldFrontHeight",
         "shieldBackNineSliceContent", "shieldBackXOffset", "shieldBackYOffset",
         "shieldBackWidth", "shieldBackHeight",
     ] {
-        out.push_str(&format!("\t{}: {},\n", f, c(f)));
+        out.push_str(&req("character.stats.char_stats_field_plain", &t.char_stats_field_plain).replace("{{field}}", f).replace("{{value}}", &c(f)));
     }
     out.push('\n');
 
-    out.push_str("\t//VOICE STATS\n");
+    out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "VOICE STATS"));
     for f in [
         "attackVoiceIds", "hurtLightVoiceIds", "hurtMediumVoiceIds", "hurtHeavyVoiceIds", "koVoiceIds",
         "attackVoiceSilenceRate", "hurtLightSilenceRate", "hurtMediumSilenceRate",
         "hurtHeavySilenceRate", "koVoiceSilenceRate",
     ] {
-        out.push_str(&format!("\t{}: {},\n", f, c(f)));
+        out.push_str(&req("character.stats.char_stats_field_plain", &t.char_stats_field_plain).replace("{{field}}", f).replace("{{value}}", &c(f)));
     }
 
-    out.push_str("}\n");
+    out.push_str(req("character.stats.char_stats_footer", &t.char_stats_footer));
     out
 }
 
@@ -859,21 +804,17 @@ fn generate_animation_stats(data: &CharacterData, splits: &[crate::anim_splitter
     // Collect template names for dedup
     let template_names: BTreeSet<&str> = template.iter().map(|(n, _)| *n).collect();
 
-    let mut out = format!(
-        "// Animation stats for {} — converted from SSF2\n\
-         // Many values are automatically set by the Common class.\n\
-         // Entries here override those defaults.\n\
-         {{\n",
-        data.name
-    );
+    let t = &crate::mappings::script_templates().character.stats;
+    let req = crate::mappings::require_template;
+    let mut out = req("character.stats.anim_stats_header", &t.anim_stats_header)
+        .replace("{{char_name}}", &data.name);
+    let entry_tpl = req("character.stats.anim_stats_entry", &t.anim_stats_entry);
 
-    // Emit template entries
+    // Emit template entries (the template Vec is data — stays in Rust). `body`
+    // is the `{}` / `{props}` object literal assembled here.
     for (name, props) in &template {
-        if props.is_empty() {
-            out.push_str(&format!("\t{}: {{}},\n", name));
-        } else {
-            out.push_str(&format!("\t{}: {{{}}},\n", name, props));
-        }
+        let body = if props.is_empty() { "{}".to_string() } else { format!("{{{}}}", props) };
+        out.push_str(&entry_tpl.replace("{{name}}", name).replace("{{body}}", &body));
     }
 
     // Emit split animations not already in template
@@ -884,19 +825,16 @@ fn generate_animation_stats(data: &CharacterData, splits: &[crate::anim_splitter
         }
     }
     if !extra_names.is_empty() {
-        out.push_str("\n\t//SSF2 SPLIT ANIMATIONS\n");
+        out.push_str(req("character.stats.anim_stats_split_header", &t.anim_stats_split_header));
         for name in &extra_names {
             // Check if this split has loop_tail
             let is_loop = splits.iter().any(|s| s.fm_name == *name && s.loop_tail);
-            if is_loop {
-                out.push_str(&format!("\t{}: {{endType:AnimationEndType.LOOP}},\n", name));
-            } else {
-                out.push_str(&format!("\t{}: {{}},\n", name));
-            }
+            let body = if is_loop { "{endType:AnimationEndType.LOOP}".to_string() } else { "{}".to_string() };
+            out.push_str(&entry_tpl.replace("{{name}}", name).replace("{{body}}", &body));
         }
     }
 
-    out.push_str("}\n");
+    out.push_str(req("character.stats.anim_stats_footer", &t.anim_stats_footer));
     out
 }
 
@@ -941,7 +879,7 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     }
 
     // Script.hx output templates (moved to commands.jsonc :: script_templates).
-    let fw = &crate::mappings::api_commands().script_templates.framework;
+    let fw = &crate::mappings::script_templates().character.framework;
     let req = crate::mappings::require_template;
 
     // Emit one merged template function per name. `setup` is the mandatory FM
@@ -955,10 +893,10 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
             out.push_str(body);
             out.push('\n');
         }
-        out.push_str(req("framework.fn_close", &fw.fn_close));
+        out.push_str(req("character.framework.fn_close", &fw.fn_close));
     };
 
-    let mut out = req("framework.header", &fw.header).replace("{{char_name}}", &data.name);
+    let mut out = req("character.framework.header", &fw.header).replace("{{char_name}}", &data.name);
 
     // Instance variables carried over from the SSF2 XxxExt class (its
     // Slot/Const traits — `public var foo:T;`). Emitted as Fraymakers
@@ -968,7 +906,7 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     // Wrapped wrappers expose `.get() / .set(v) / .inc() / .dec()`.
     let var_types = crate::api_mappings::infer_ext_var_types(&data.ext_vars, &data.ext_var_inits);
     if !data.ext_vars.is_empty() {
-        out.push_str(&req("framework.instance_vars_comment", &fw.instance_vars_comment)
+        out.push_str(&req("character.framework.instance_vars_comment", &fw.instance_vars_comment)
             .replace("{{char_name}}", &data.name));
         for v in &data.ext_vars {
             let (factory, default) = match var_types.get(v).copied().unwrap_or(crate::api_mappings::ExtVarType::Object) {
@@ -976,13 +914,13 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
                 crate::api_mappings::ExtVarType::Int    => ("makeInt", "0"),
                 crate::api_mappings::ExtVarType::Object => ("makeObject", "null"),
             };
-            out.push_str(&req("framework.ext_var_decl", &fw.ext_var_decl)
+            out.push_str(&req("character.framework.ext_var_decl", &fw.ext_var_decl)
                 .replace("{{name}}", v).replace("{{factory}}", factory).replace("{{default}}", default));
         }
         out.push('\n');
     }
 
-    out.push_str(req("framework.general_functions_begin", &fw.general_functions_begin));
+    out.push_str(req("character.framework.general_functions_begin", &fw.general_functions_begin));
 
     // initialize — extend the template's setup with iinit-derived
     // `self.<var> = <expr>;` assignments for each ext_var, but SKIP any name
@@ -990,7 +928,7 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     // something is already set in initialize then skip that").
     let init_body_text = template_bodies.get("initialize").map(|s| s.as_str()).unwrap_or("");
     let mut init_setup = String::from(
-        req("framework.link_frames_listener", &fw.link_frames_listener)
+        req("character.framework.link_frames_listener", &fw.link_frames_listener)
     );
     for (name, expr) in &data.ext_var_inits {
         // Skip names the SSF2 initialize body already covers — match both
@@ -1009,7 +947,7 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
                 | (Some(crate::api_mappings::ExtVarType::Object), "null"),
             );
             if !default_already_matches {
-                init_setup.push_str(&req("framework.ext_var_init_assign", &fw.ext_var_init_assign)
+                init_setup.push_str(&req("character.framework.ext_var_init_assign", &fw.ext_var_init_assign)
                     .replace("{{name}}", name).replace("{{expr}}", expr));
             }
         }
@@ -1025,21 +963,21 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     // onTeardown body is preserved.
     let teardown_setup = crate::api_mappings::voice_teardown_cleanup(emit_voice);
 
-    emit_tpl(&mut out, req("framework.initialize_header", &fw.initialize_header),
-        req("framework.initialize_sig", &fw.initialize_sig), &init_setup, "initialize");
-    emit_tpl(&mut out, "", req("framework.update_sig", &fw.update_sig), "", "update");
+    emit_tpl(&mut out, req("character.framework.initialize_header", &fw.initialize_header),
+        req("character.framework.initialize_sig", &fw.initialize_sig), &init_setup, "initialize");
+    emit_tpl(&mut out, "", req("character.framework.update_sig", &fw.update_sig), "", "update");
     emit_tpl(&mut out,
-        req("framework.input_update_hook_header", &fw.input_update_hook_header),
-        req("framework.input_update_hook_sig", &fw.input_update_hook_sig),
+        req("character.framework.input_update_hook_header", &fw.input_update_hook_header),
+        req("character.framework.input_update_hook_sig", &fw.input_update_hook_sig),
         "", "inputUpdateHook");
-    emit_tpl(&mut out, req("framework.handle_link_frames_header", &fw.handle_link_frames_header),
-        req("framework.handle_link_frames_sig", &fw.handle_link_frames_sig), "", "handleLinkFrames");
-    emit_tpl(&mut out, "", req("framework.onteardown_sig", &fw.onteardown_sig), &teardown_setup, "onTeardown");
+    emit_tpl(&mut out, req("character.framework.handle_link_frames_header", &fw.handle_link_frames_header),
+        req("character.framework.handle_link_frames_sig", &fw.handle_link_frames_sig), "", "handleLinkFrames");
+    emit_tpl(&mut out, "", req("character.framework.onteardown_sig", &fw.onteardown_sig), &teardown_setup, "onTeardown");
 
-    out.push_str(req("framework.general_functions_end", &fw.general_functions_end));
+    out.push_str(req("character.framework.general_functions_end", &fw.general_functions_end));
 
     if !regular_ext.is_empty() {
-        out.push_str(req("framework.decompiled_ext_header", &fw.decompiled_ext_header));
+        out.push_str(req("character.framework.decompiled_ext_header", &fw.decompiled_ext_header));
         for script in &regular_ext {
             let translated = crate::api_mappings::translate_ssf2_to_fm(&script.code);
             out.push_str(&translated);
@@ -1106,8 +1044,8 @@ fn extract_fn_body(code: &str) -> Option<String> {
 
 fn generate_jab_scripts() -> String {
     crate::mappings::require_template(
-        "jab.chain_helpers",
-        &crate::mappings::api_commands().script_templates.jab.chain_helpers,
+        "character.jab.chain_helpers",
+        &crate::mappings::script_templates().character.jab.chain_helpers,
     ).to_string()
 }
 
@@ -1504,18 +1442,18 @@ fn generate_projectile_script(
     entity_id: &str,
     extra_states: &[entity_gen::ProjectileStateData],
 ) -> String {
-    let t = &crate::mappings::api_commands().script_templates.projectile;
+    let t = &crate::mappings::script_templates().projectile.script;
     let req = crate::mappings::require_template;
     if extra_states.is_empty() {
         // Single-state: standard template
-        req("projectile.single_state", &t.single_state).replace("{{entity_id}}", entity_id)
+        req("projectile.script.single_state", &t.single_state).replace("{{entity_id}}", entity_id)
     } else {
         // Multi-state: use Fraymakers local state machine instead of fake PStates
         // Each SSF2 frame label becomes an LState that drives animation switching.
-        let mut lstate_prep = String::from(req("projectile.lstate_idle_prep", &t.lstate_idle_prep));
+        let mut lstate_prep = String::from(req("projectile.script.lstate_idle_prep", &t.lstate_idle_prep));
         let mut update_branches = String::new();
-        let line_tpl = req("projectile.lstate_prep_line", &t.lstate_prep_line);
-        let branch_tpl = req("projectile.update_branch", &t.update_branch);
+        let line_tpl = req("projectile.script.lstate_prep_line", &t.lstate_prep_line);
+        let branch_tpl = req("projectile.script.update_branch", &t.update_branch);
         for state in extra_states {
             let fm = entity_gen::ssf2_proj_label_to_fm_anim(&state.label);
             let lname = match state.label.as_str() {
@@ -1528,7 +1466,7 @@ fn generate_projectile_script(
                 .replace("{{lstate_name}}", lname)
                 .replace("{{frame_count}}", &state.frame_count.to_string()));
         }
-        req("projectile.multi_state", &t.multi_state)
+        req("projectile.script.multi_state", &t.multi_state)
             .replace("{{entity_id}}", entity_id)
             .replace("{{lstate_prep}}", &lstate_prep)
             .replace("{{update_branches}}", &update_branches)
@@ -1607,24 +1545,23 @@ fn projectile_anim_names(proj: &entity_gen::ProjectileInfo) -> ProjectileAnims {
 }
 
 fn generate_projectile_animation_stats(proj: &entity_gen::ProjectileInfo) -> String {
+    let t = &crate::mappings::script_templates().projectile.stats;
+    let req = crate::mappings::require_template;
     let anims = projectile_anim_names(proj);
     let mut lines: Vec<String> = Vec::new();
     for (i, n) in anims.all.iter().enumerate() {
         // Mark the destroy animation with resetId:false to prevent
         // hit-id churn on state change (per template convention).
         if n == &anims.destroy && i > 0 {
-            lines.push(format!("    {n}: {{ xSpeedConservation: 0, ySpeedConservation: 0, resetId: false }}"));
+            lines.push(req("projectile.stats.proj_anim_entry_destroy", &t.proj_anim_entry_destroy)
+                .replace("{{name}}", n));
         } else {
-            lines.push(format!("    {n}: {{ endType: AnimationEndType.NONE }}"));
+            lines.push(req("projectile.stats.proj_anim_entry_normal", &t.proj_anim_entry_normal)
+                .replace("{{name}}", n));
         }
     }
-    format!(
-"// Animation stats for projectile (names from SSF2 inner-sprite FrameLabel tags)
-{{
-{body}
-}}
-",
-        body = lines.join(",\n"))
+    req("projectile.stats.proj_anim_wrapper", &t.proj_anim_wrapper)
+        .replace("{{body}}", &lines.join(",\n"))
 }
 
 /// ProjectileStats.hx — physics, geometry, and state → animation mapping.
@@ -1684,6 +1621,8 @@ fn generate_projectile_stats(
     proj: &entity_gen::ProjectileInfo,
     ssf2_match: Option<&crate::abc_parser::ProjectileData>,
 ) -> String {
+    let t = &crate::mappings::script_templates().projectile.stats;
+    let req = crate::mappings::require_template;
     let content_id = format!("{}Projectile", entity_id);
     let anims = projectile_anim_names(proj);
 
@@ -1710,7 +1649,8 @@ fn generate_projectile_stats(
                 for (ssf2_key, fm_field) in physics_map {
                     if taken.contains(fm_field) { continue; }
                     if let Some(v) = d.stats.get(*ssf2_key) {
-                        out.push(format!("    {}: {},", fm_field, fmt_num(*v)));
+                        out.push(req("projectile.stats.proj_stats_physics_line", &t.proj_stats_physics_line)
+                            .replace("{{field}}", fm_field).replace("{{value}}", &fmt_num(*v)));
                         taken.insert(fm_field);
                     }
                 }
@@ -1722,12 +1662,13 @@ fn generate_projectile_stats(
                     .collect();
                 for (k, v) in &d.stats {
                     if !mapped_ssf2.contains(k.as_str()) {
-                        todos.push(format!("    // TODO: SSF2 {}: {} — no ProjectileStats mapping", k, fmt_num(*v)));
+                        todos.push(req("projectile.stats.proj_stats_todo_line", &t.proj_stats_todo_line)
+                            .replace("{{key}}", k).replace("{{value}}", &fmt_num(*v)));
                     }
                 }
-                (out, todos, "// Values pulled from SSF2 getProjectileStats() (best-effort key match — verify per projectile).\n".to_string())
+                (out, todos, req("projectile.stats.proj_stats_source_matched", &t.proj_stats_source_matched).to_string())
             }
-            _ => (vec![], vec![], "// SSF2 source had no matching projectile-stats entry — defaults below.\n".to_string()),
+            _ => (vec![], vec![], req("projectile.stats.proj_stats_source_default", &t.proj_stats_source_default).to_string()),
         };
 
     // Always emit the scaffolding defaults for fields SSF2 didn't supply.
@@ -1744,44 +1685,21 @@ fn generate_projectile_stats(
         .collect();
     for (k, v) in scaffolding {
         if !provided.contains(*k) {
-            physics_lines.push(format!("    {}: {},", k, v));
+            physics_lines.push(req("projectile.stats.proj_stats_physics_line", &t.proj_stats_physics_line)
+                .replace("{{field}}", k).replace("{{value}}", v));
         }
     }
     physics_lines.sort();
     todo_lines.sort();
 
-    let body = format!(
-"// Projectile stats for {entity_id}
-{source_note}{{
-    spriteContent: self.getResource().getContent(\"{content_id}\"),
-    stateTransitionMapOverrides: [
-        PState.ACTIVE => {{ animation: \"{active}\" }},
-        PState.DESTROYING => {{ animation: \"{destroy}\" }}
-    ],
-    shadows: true,
-{physics}
-{todos}
-    floorHeadPosition: 15,
-    floorHipWidth: 16,
-    floorHipXOffset: 0,
-    floorHipYOffset: 0,
-    floorFootPosition: 0,
-    aerialHeadPosition: 15,
-    aerialHipWidth: 16,
-    aerialHipXOffset: 0,
-    aerialHipYOffset: 0,
-    aerialFootPosition: 0
-}}
-",
-        entity_id = entity_id,
-        source_note = source_note,
-        content_id = content_id,
-        physics = physics_lines.join("\n"),
-        todos = if todo_lines.is_empty() { String::new() } else { todo_lines.join("\n") + "\n" },
-        active = anims.active,
-        destroy = anims.destroy,
-    );
-    body.replace("{{", "{").replace("}}", "}")
+    req("projectile.stats.proj_stats_body", &t.proj_stats_body)
+        .replace("{{entity_id}}", entity_id)
+        .replace("{{source_note}}", &source_note)
+        .replace("{{content_id}}", &content_id)
+        .replace("{{active}}", &anims.active)
+        .replace("{{destroy}}", &anims.destroy)
+        .replace("{{physics}}", &physics_lines.join("\n"))
+        .replace("{{todos}}", &if todo_lines.is_empty() { String::new() } else { todo_lines.join("\n") + "\n" })
 }
 
 /// ProjectileHitboxStats.hx — pulls real hitbox values from SSF2's
@@ -1795,6 +1713,8 @@ fn generate_projectile_hitbox_stats(
     proj: &entity_gen::ProjectileInfo,
     ssf2_match: Option<&crate::abc_parser::ProjectileData>,
 ) -> String {
+    let t = &crate::mappings::script_templates().projectile.stats;
+    let req = crate::mappings::require_template;
     let mapping = crate::mappings::character_hitbox_stats();
     let anims = projectile_anim_names(proj);
 
@@ -1821,14 +1741,14 @@ fn generate_projectile_hitbox_stats(
             parts.push("directionalInfluence: false".to_string());
             parts.push("reflectable: true".to_string());
             (
-                format!("hitbox0: {{ {} }}", parts.join(", ")),
-                "// Values pulled from SSF2 getProjectileStats() (best-effort key match — verify per projectile).\n// SSF2→FM field names come from mappings/character/hitbox_stats.jsonc (shared canon).\n".to_string(),
+                req("projectile.stats.proj_hitbox_idle_matched", &t.proj_hitbox_idle_matched)
+                    .replace("{{parts}}", &parts.join(", ")),
+                req("projectile.stats.proj_hitbox_source_matched", &t.proj_hitbox_source_matched).to_string(),
             )
         }
         None => (
-            "hitbox0: { damage: 6, knockbackGrowth: 30, baseKnockback: 65, angle: 0, reversibleAngle: true, directionalInfluence: false, reflectable: true }"
-                .to_string(),
-            "// TODO: no matching SSF2 projectile-stats entry found — values below are scaffolding placeholders. Tune to match SSF2.\n".to_string(),
+            req("projectile.stats.proj_hitbox_idle_default", &t.proj_hitbox_idle_default).to_string(),
+            req("projectile.stats.proj_hitbox_source_default", &t.proj_hitbox_source_default).to_string(),
         ),
     };
 
@@ -1842,23 +1762,17 @@ fn generate_projectile_hitbox_stats(
     let mut anim_blocks: Vec<String> = Vec::new();
     for name in &anims.all {
         if name == &anims.active {
-            anim_blocks.push(format!("    {name}: {{\n        {idle_body}\n    }}",
-                idle_body = idle_body));
+            anim_blocks.push(req("projectile.stats.proj_hitbox_active_block", &t.proj_hitbox_active_block)
+                .replace("{{name}}", name).replace("{{idle_body}}", &idle_body));
         } else {
-            anim_blocks.push(format!("    {name}: {{}}"));
+            anim_blocks.push(req("projectile.stats.proj_hitbox_empty_block", &t.proj_hitbox_empty_block)
+                .replace("{{name}}", name));
         }
     }
-    let body = format!(
-"// Hitbox stats for {entity_id}
-{source_note}{{
-{blocks}
-}}
-",
-        entity_id = entity_id,
-        source_note = source_note,
-        blocks = anim_blocks.join(",\n"),
-    );
-    body.replace("{{", "{").replace("}}", "}")
+    req("projectile.stats.proj_hitbox_body", &t.proj_hitbox_body)
+        .replace("{{entity_id}}", entity_id)
+        .replace("{{source_note}}", &source_note)
+        .replace("{{blocks}}", &anim_blocks.join(",\n"))
 }
 
 /// Format a float like SSF2 would have written it: integers stay integers,
