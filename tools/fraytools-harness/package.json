@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "Tier-3 render harness — drives the user's local FrayTools install over the Chrome DevTools Protocol to load a converted entity and capture how FrayTools actually renders it. Contains NO FrayTools code; it only invokes an existing install.",
-  "bin": { "fraytools-render": "render-entity.js" },
+  "bin": {
+    "fraytools-render":  "render-entity.js",
+    "fraytools-harness": "harness.js"
+  },
   "dependencies": {
     "chrome-remote-interface": "^0.33.0"
   }
