@@ -267,9 +267,17 @@ End to end, one `ssf2_converter` invocation does this (`src/main.rs`):
 [2] swf_parser::parse            SWF → { version, symbols (id→class name),
     │                                    abc_blocks (raw ABC bytecode) }
     ▼
-[3] detect_char_names            Scan ABC for `XxxExt` classes (MarioExt, FoxExt…)
-    │                            → list of character ids to process.
-    │                            (--name overrides; filename is last-resort fallback)
+[3] detect_char_names            Walk `Main`'s constructor:
+    │                            `self.register("characters", [self.getX(), …])`
+    │                            → list of character ids to process. The id
+    │                            comes from each method name (strip `get`,
+    │                            lowercase). `Main`'s constructor is the
+    │                            SSF's canonical "table of contents".
+    │                            Fallback path (defensive, for one release):
+    │                            enumerate `Main`'s instance `get*` methods.
+    │                            (`--name` overrides; filename is the
+    │                            last-resort fallback for misc.ssf-style SWFs.)
+    │                            See docs/constructor_walk_detection.md.
     │
     ├─ (once) extract_costumes_to_temp:
     │     misc.ssf → ssf::decompress → swf_parser::parse →
@@ -334,7 +342,18 @@ process_character():
        └─ conversion_stats.json
     │
 [11] write_conversion_log        Snapshot api_mappings::snapshot_conversion_log()
-                                 → <char>/conversion_log.json (unknown + ssf2_only counts).
+                                 → <char>/conversion_log.json with:
+                                   - character (the derived id),
+                                   - unknown + ssf2_only counts,
+                                   - ssf2_source: { package_id, package_guid,
+                                     source_method } (always present when
+                                     `Main` exists); adds parent_normal_stats_id
+                                     + note for transformations (Giga Bowser,
+                                     Wario Man — bundles whose cData.normalStats_id
+                                     mismatches the derived id),
+                                   - validation_warnings (Tier 1 soft logs:
+                                     empty stats/attacks, char_name not in
+                                     declared roster, id ≠ filename stem).
                                  Used by the SwiftUI "Unhandled Calls" popup.
 ```
 
@@ -368,20 +387,42 @@ Sizes are approximate (Rust LOC). Modules are grouped by pipeline role.
 
 ### 5.1 Entry point & wiring
 
-#### `main.rs` (~340 LOC)
+#### `main.rs` (~440 LOC)
 CLI definition (`clap`), logging setup, and the top-level orchestration in
 `fn main` + `process_character`. Key functions:
 - `extract_costumes_to_temp(misc_ssf)` — extracts every character's costume data
   from `misc.ssf` into a temp JSON cache; drops noise (`unknown` key, <10
   costumes). The temp file is deleted after the run.
-- `detect_char_names(swf, input)` — finds every `XxxExt` ABC class and lowercases
-  the prefix; reconciles truncated names against the filename (`CaptainExt` +
-  `captainfalcon.ssf` → `captainfalcon`).
+- `detect_char_names(swf, input)` — walks `Main`'s constructor for
+  `register("characters", [self.getX(), …])` and derives an id per array
+  entry (strip `get`, lowercase, preserve `_` in the source method name —
+  `getGigaBowser` → `gigabowser`, `getWario_Man` → `wario_man`). The
+  constructor is the SSF's canonical roster; sub-characters (Sheik in
+  zelda.ssf, Giga Bowser in bowser.ssf, Wario Man in wario.ssf) drop out
+  naturally as additional array elements. See
+  [`docs/constructor_walk_detection.md`](docs/constructor_walk_detection.md).
+  - **Fallback** when the constructor walk returns empty:
+    enumerate `Main`'s instance `get*` methods directly (path 2's original
+    detection). Survives for one release as a defensive net for a
+    hypothetical future SSF whose roster is built dynamically.
+- `derive_id_from_getter(name)` — the strip-`get` + lowercase rule; the
+  fallback enumeration's id-derivation. Also lives in `abc_parser` as
+  `derive_id_from_bundle_method_name` (the walker calls into it). Both
+  collapse into one identity when the fallback is removed.
 - `process_character(...)` — runs pipeline steps [4]–[10] for one character;
   every stage is wrapped so a failure logs a warning and continues with a
-  default rather than aborting the whole run.
+  default rather than aborting the whole run. Lifts the package metadata
+  (`abc_parser::extract_main_package_metadata`) once per call and runs the
+  Tier 1 validation pass (`run_tier1_validation`).
+- `run_tier1_validation(...)` — soft-log warnings for: empty attacks map,
+  all-default stats block, char_name not in the declared roster, or
+  Main.id ≠ filename stem. Never hard-fails the run; the warnings land in
+  `conversion_log.json :: validation_warnings`.
 - `write_conversion_log(...)` — writes `<char_dir>/conversion_log.json` with
-  the per-character `unknown` / `ssf2_only` snapshot from `api_mappings`.
+  the per-character `unknown` / `ssf2_only` snapshot from `api_mappings`,
+  plus the `ssf2_source` block (`package_id`, `package_guid`,
+  `source_method`; adds `parent_normal_stats_id` + `note` for transformation
+  characters) and `validation_warnings`.
 
 #### `lib.rs`
 Just `pub mod` declarations. Exists so the 17 binaries in `src/bin/` can
@@ -427,31 +468,71 @@ stats exposed as variables (so e.g. `aerialSpeedCap` can be defined as
 
 ### 5.3 ABC (ActionScript bytecode) layer
 
-#### `abc_parser.rs` (~2500 LOC — largest module)
+#### `abc_parser.rs` (~2400 LOC — largest module)
 A complete AVM2/ABC parser written from scratch. Parses the ABC constant pool
 (ints, uints, doubles, strings, namespaces, multinames), `Method`s, `Class`es,
 `Trait`s, `Script`s and `MethodBody`s into `AbcFile`. Beyond plain parsing it
 contains a lot of *semantic* extraction tuned to SSF2's code shape:
-- `extract_character(abc, char_name)` — the main entry. Pulls the character's
-  attacks, stats, frame scripts, the **xframe map** (frame-method → SSF2
-  animation name), Ext-class instance vars (`ext_vars`) and their iinit-derived
-  initial values (`ext_var_inits`), and per-projectile stats from
-  `getProjectileStats()`.
+
+**Character data — Stage A (stats / attacks / projectiles) via `Main::get<X>()`:**
+- `find_bundle_method(abc, char_name)` — locates the `Main` instance method
+  whose name lowercased-after-`get` matches `char_name`. Returns `(body,
+  method_name)`. Used by both detection (via the constructor walker — see
+  below) and Stage A extraction.
+- `extract_character(abc, char_name)` — the main entry. Locates the bundle
+  method body via `find_bundle_method`, runs the three stage-A extractors on
+  it (`extract_attack_objects`, `extract_projectile_objects`,
+  `extract_ssf2_stats`), and records `derived_from` (`DerivedFrom { parent_normal_stats_id, source_method }`)
+  when `cData.normalStats_id` mismatches `char_name`. Then Stage B walks the
+  Ext class (frame scripts, ext_methods, ext_vars + iinit-derived init values)
+  and per-character `_fla.*` sub-classes for helper methods.
 - `extract_attack_objects` / `extract_hitboxes_from_val` — recovers attack
-  tables by interpreting bytecode with a small stack machine (`StackVal`).
+  tables by interpreting bytecode with the shared `scan_method` +
+  `AbcVisitor` stack interpreter (`StackVal`).
 - `extract_projectile_objects` — pulls flat-scalar physics fields + nested
-  `attackBoxes` from `getProjectileStats()`. Keys are SSF2 projectile names.
+  `attackBoxes` from the bundle's `pData` object. Keys are SSF2 projectile names.
 - `extract_ssf2_stats` / `extract_stats_from_body` — two strategies (in
-  fallback order) for finding the character's stat object.
+  fallback order) for finding the character's stat object inside the bundle
+  body.
+- `extract_normal_stats_id` — linear-scans a method body for
+  `pushstring "normalStats_id" ; pushstring VALUE` and returns the VALUE.
+  Drives transformation detection.
+
+**Detection / package metadata — Main constructor walker:**
+- `extract_main_package_metadata(abc) -> Option<MainPackageMetadata>` —
+  locates Main's iinit and pulls `id`, `guid`, and the `characters` array
+  in one pass. The array is `Vec<(derived_id, method_name)>` — the
+  derived ids drive detection, the method names drive Stage A lookup.
+- `derive_id_from_bundle_method_name(name)` — the shared id-derivation
+  rule: strip `get`, lowercase the remainder, preserve `_`. Mirrored
+  by `main.rs::derive_id_from_getter` for the fallback enumeration; both
+  collapse when the fallback is removed.
+- `MainPackageMetadata { id, guid, characters }` — the SSF's "table of
+  contents" lifted out of Main's iinit. Fed into
+  `conversion_log.json :: ssf2_source` (in `main.rs`); never lands on
+  `CharacterData` (per-character data has no use for the package id/guid).
+- `DerivedFrom { parent_normal_stats_id, source_method }` — populated on
+  `ExtractedCharacter` when a bundle's cData.normalStats_id mismatches its
+  derived id; forwarded to `CharacterData.derived_from` and drives the
+  CharacterStats.hx TODO transformation banner.
+
+**Shared walker plumbing:**
+- `scan_method<V: AbcVisitor>` + the `AbcVisitor` trait — single shared
+  AVM2 stack simulator that drives `AttackVisitor`, `ProjectileVisitor`,
+  `StatsVisitor`, and `CostumeVisitor`. (Reuses the §1.3 unification from
+  `codebase_analysis.md` — commit `21562ab6`.)
+- `scan_register_string_arg` / `scan_register_characters_array` /
+  `skip_opcode_operands` — small dedicated bytecode walkers used by
+  `extract_main_package_metadata` and `extract_normal_stats_id`. Live
+  alongside `scan_method` but don't model the stack — they only need
+  pattern recognition.
+
+**Other extractors:**
 - `scan_all_costume_methods` / `decode_costume_objects` — recovers per-character
   costume tables from `misc.ssf` (Pattern A: `paletteSwap: { colors,
   replacements }`; Pattern B: `{ name, colors }`).
 - `extract_xframe_name` / `is_root_xframe_method` — maps internal frame methods
   to animation labels via `self.xframe = "..."` assignments in their bytecode.
-
-> The `extract_costume_data` / `extract_costume_data_from_apply_palette` /
-> `extract_largest_numeric_object` / `extract_frame_actions` functions are
-> dead-code legacy variants — see `docs/codebase_analysis.md` §2.2.
 
 #### `decompiler.rs` (~1700 LOC)
 Turns ABC method bytecode into readable, Haxe-ish source. This is a real
@@ -472,7 +553,10 @@ decompiler, not a disassembler:
 #### `extractor.rs`
 The bridge between the raw ABC data and the generator. Defines the central
 `CharacterData` struct (`attacks`, `stats`, `animations`, `scripts`, `ext_vars`,
-`ext_var_inits`, `projectile_data`, `ssf2_to_fm_anim`) and supporting types.
+`ext_var_inits`, `projectile_data`, `ssf2_to_fm_anim`, `derived_from`) and
+supporting types. `derived_from: Option<DerivedFrom>` is populated when the
+character is a transformation / alternate form (Giga Bowser, Wario Man) and
+drives the TODO transformation banner in `CharacterStats.hx`.
 - `extract(swf, char_name)` — drives `abc_parser`, converts the results, dedupes
   raw SSF2 names against known-FM names, and seeds split sub-animations
   (`jab1`/`jab2`/…).
@@ -740,6 +824,9 @@ reproducible.
 These are **reverse-engineering / debugging tools**, not part of the conversion.
 Each builds to its own executable in `target/release/`. They were the workbench
 used to figure the formats out and remain useful when a conversion looks wrong.
+Roughly grouped by what they investigate:
+
+**SWF format inspection (the original toolset):**
 
 | Binary | Purpose |
 |---|---|
@@ -757,13 +844,28 @@ used to figure the formats out and remain useful when a conversion looks wrong.
 | `dump_stage` | Stage / root timeline inspection |
 | `dump_costumes` | Costume tables from `misc.ssf` |
 | `dump_aerial_down_frames` | Targeted debug for the aerial-down animation |
-| `dump_trail_matrices` | Trail-effect matrix inspection (used during the rotation/pivot/skew work) |
+| `dump_trail_matrices` | Trail-effect matrix inspection (rotation/pivot/skew work) |
 | `check_shape_bitmap` | Inspect a shape's bitmap fill + fill matrix |
 | `what_is_id` | Identify what a numeric SWF character id refers to |
 
-Typical use: `./target/release/dump_image_placement ../ssf2-ssfs/mario.ssf
-"FAir_42"`. (There is no longer a standalone `extract_costumes` binary —
-costume extraction is in-process inside `ssf2_converter`.)
+**Path 2 / sub-character / constructor-walk investigation:**
+
+| Binary | Purpose |
+|---|---|
+| `audit_main_iinit` | Corpus audit: extract `register("id"/"guid"/"characters")` per SSF; produced the data backing `docs/constructor_walk_detection.md` |
+| `audit_main_gets` | Corpus audit: every `Main::get*` instance method, with bundle-shape classification |
+| `find_transformations` | Find SSFs with multiple bundles sharing a normalStats_id (Giga Bowser, Wario Man) |
+| `find_get_callers` | Who calls `Main::get<X>()` across the SWF (used to confirm only iinit calls them) |
+| `decompile_main_iinit` | One-shot decompile of a single SSF's `Main` constructor |
+| `dump_main_class` | Full dump of `Main`'s trait list for a given SSF |
+| `find_char_sources` | Earlier-iteration probe: scan all bodies for `normalStats_id` + bundle-shape markers; classifies INLINE vs BUNDLE |
+| `diff_inline_vs_bundle` | Dump `<X>Ext::get*Stats` + `Main::get<X>()` decompiled bodies to disk for hand-diffing |
+| `dump_getzelda` / `dump_zeldaext` / `zelda_method_diff` / `zelda_method_hashes` | The Sheik investigation — confirmed that `Main::getSheik` exists with no `SheikExt` |
+| `dump_misc` | Summary of `misc.ssf`'s content (no `Main` class, just costume / shared data) |
+| `find_char_mcs` | Find character-like MovieClip timelines (≥30 `frame*` methods) |
+| `grep_classes` / `scan_all_classes` / `scan_ext` | Class-name corpus searches |
+
+Typical use: `./target/release/dump_image_placement ../ssf2-ssfs/mario.ssf "FAir_42"` or `./target/release/audit_main_iinit`. (There is no longer a standalone `extract_costumes` binary — costume extraction is in-process inside `ssf2_converter`.)
 
 ---
 
@@ -1015,13 +1117,27 @@ character packages.** Evidence in the repo:
   `characters/naruto/`, `characters/jigglypuff/`, `characters/samus/`,
   `characters/bandanadee/`, `characters/captainfalcon/`, … — full
   conversions of most of the roster.
-- 47 SSF2 inputs available in the sibling `../ssf2-ssfs/`.
+- 46 SSF2 character inputs (plus `misc.ssf`) in the sibling
+  `../ssf2-ssfs/`. The converter emits **47 character packages** because
+  `zelda.ssf` ships both Zelda and Sheik, `bowser.ssf` ships both Bowser
+  and Giga Bowser, and `wario.ssf` ships both Wario and Wario Man — all
+  six are registered peers in their SSFs' `Main::<init>` rosters.
 
 What is solid:
 
 - `.ssf` → SWF decompression, SWF parsing, ABC parsing.
+- **Constructor-walk character detection** from `Main`'s iinit
+  `register("characters", […])` array; sub-characters (Sheik, Giga
+  Bowser, Wario Man) fall out naturally; transformations carry a
+  `derived_from` marker that drives a TODO banner in
+  `CharacterStats.hx` and metadata in `conversion_log.json`. Tier 1
+  validation hooks (empty stats / id ≠ filename / declared-vs-extracted)
+  emit soft logs to `conversion_log.json :: validation_warnings`.
 - Character / stats / attack / frame-script / projectile-stat / ext-var
-  extraction from ABC.
+  extraction from ABC. Stats / attacks / projectiles come from the
+  `Main::get<X>()` bundle method body (Stage A); behavior code (frame
+  scripts, ext methods, ext vars + iinit-derived inits) comes from the
+  matching `<X>Ext` class (Stage B).
 - The AS3 decompiler (CFG reconstruction, structured control flow,
   short-circuit `&&` / `||` collapsing, loop counter renaming).
 - Bitmap extraction → PNG, sprite `.meta` generation.
@@ -1070,9 +1186,10 @@ What is solid:
    was the canary that drove the rotation work; some animations may still
    need a focused pass.
 
-3. **One `.ssf` still fails conversion outright.** A single character file
-   in the roster trips a hard error not covered by the per-stage
-   `unwrap_or_else` fallbacks. Tracked separately; not yet diagnosed.
+3. **One `.ssf` still fails conversion outright.** Historically one
+   character file in the roster tripped a hard error; needs re-check
+   against the current code now that path 2 + the constructor walker
+   have landed. Tracked separately; not yet re-confirmed.
 
 4. **Vector-only effect sprites are silently skipped.** Effects whose
    visuals are pure-vector shapes with solid-colour fills (e.g. some
@@ -1103,22 +1220,35 @@ What is solid:
 
 10. **Robustness.** `process_character` swallows per-stage errors and
     continues with defaults — good for batch runs, but means a partly-broken
-    character can be produced without an obvious failure. Always check
+    character can be produced without an obvious failure. The new Tier 1
+    validation pass surfaces the most common silent regressions
+    (empty stats, empty attacks, declared-vs-extracted mismatch) as
+    `conversion_log.json :: validation_warnings`. Always check
     `conversion_stats.json` and `conversion_log.json` after a run.
 
-11. **Multiple full SWF re-parses per character.** Most entry points
-    (`extract_xframe_scale`, `parse_sprite_boxes`, `extract_images`,
-    `discover_projectiles_and_head`, per-projectile and per-effect inner-
-    sprite extractors) all decompress + parse the raw `swf_data` buffer
-    independently. See `docs/codebase_analysis.md` §1.1 for the full count
-    and the proposed fix.
+11. **Transformation characters need manual FM-side wiring.** Giga
+    Bowser and Wario Man emit as standalone packages
+    (`characters/gigabowser/`, `characters/wario_man/`) because
+    Fraymakers has no native transformation API. The TODO banner in
+    `CharacterStats.hx` and the `ssf2_source` block in
+    `conversion_log.json` flag this; the content author must script the
+    swap manually in the parent character's `Script.hx`.
 
-12. **Dead-code surface.** ~350 lines of unused `build_method_map` /
-    `build_property_map` / `build_state_map` / `build_event_map` /
-    `build_hitbox_prop_map` / `load_api_methods_json` in
-    `api_mappings.rs`, plus ~250 lines of dead/duplicate costume + stat
-    extractors in `abc_parser.rs`. See `docs/codebase_analysis.md` §2.1
-    and §2.2.
+12. **`build_*_map` legacy block deferred.** ~350 lines of
+    `build_method_map` / `build_property_map` / `build_state_map` /
+    `build_event_map` / `build_hitbox_prop_map` /
+    `load_api_methods_json` in `api_mappings.rs` are marked TODO and
+    preserved until JSONC parity is confirmed (commit `43a13638`).
+    Once the JSONC tables are proven to fully replace them, delete the
+    block. The dead duplicate extractors in `abc_parser.rs` that
+    `docs/codebase_analysis.md` §2.2 flagged are already gone (commit
+    `7671defe`).
+
+13. **Path 2 enumeration fallback still present.** The fallback path
+    in `detect_char_names` (instance-method enumeration on Main) is
+    retained for one release as defence-in-depth against a future SSF
+    whose constructor builds the array dynamically. Slated for deletion
+    in a follow-up commit; track via the warn log when it fires.
 
 ---
 
@@ -1126,9 +1256,9 @@ What is solid:
 
 Roughly in the order a fresh agent should tackle them.
 
-1. **Fix the one failing `.ssf`.** Identify which character file fails;
-   trace the crash; either harden the path or skip the offending feature
-   gracefully so the full 47-char batch converts.
+1. **Re-check / fix the failing `.ssf`** (§11.3). Re-run the full
+   `../ssf2-ssfs/` corpus against the current converter; surface any
+   character that hard-fails and trace it.
 
 2. **Shape-only head rasterizer.** Add a minimal SWF shape rasterizer (or
    pull one from `ruffle`) so `donkeykong` / `fox` / `marth` menu portraits
@@ -1137,27 +1267,28 @@ Roughly in the order a fresh agent should tackle them.
 3. **Verify Mario in FrayTools.** Re-run mario, open in FrayTools, scrub
    frame by frame; tune any remaining placement / rotation / scale issues.
 
-4. **Land the SWF-parse-once refactor** from
-   `docs/codebase_analysis.md` §1.1. Drops per-character runtime
-   substantially on projectile-heavy chars; mechanical change.
-
-5. **Delete dead code.** Both `api_mappings.rs` §2.1 and `abc_parser.rs`
-   §2.2 from the analysis report. Pure clarity win.
-
-6. **Projectile behaviour.** Replace the `// TODO` stubs in the projectile
+4. **Projectile behaviour.** Replace the `// TODO` stubs in the projectile
    `<Pascal>Script.hx` generators with real translated logic (reuse the
    existing decompiler + JSONC rewriter pipeline).
 
-7. **Validate stat scaling** against a handful of hand-tuned reference
+5. **Validate stat scaling** against a handful of hand-tuned reference
    characters and tighten the `stats.jsonc :: multipliers`.
 
-8. **Batch-convert the full 47-character roster** from `../ssf2-ssfs/`,
+6. **Batch-convert the full 47-character roster** from `../ssf2-ssfs/`,
    triage which characters convert cleanly, and capture a per-character
-   status list.
+   status list. Use the new `validation_warnings` block in
+   `conversion_log.json` as a first-pass triage signal.
+
+7. **Sweep the `build_*_map` deferred block** (§11.12). Confirm JSONC
+   parity, delete the legacy code, simplify `api_mappings.rs` shape.
+
+8. **Delete the path 2 enumeration fallback** in `detect_char_names`
+   (§11.13) once a release has confirmed the constructor walker is
+   universal. Collapses `derive_id_from_getter` /
+   `derive_id_from_bundle_method_name` into one identity.
 
 9. **Housekeeping:** make `rebuild-sandbag.sh` path-relative; drop unused
-   `tokio`; fix the `infer_ext_var_types` floats-as-Int bug noted in
-   `docs/codebase_analysis.md` §3.7.
+   `tokio`.
 
 ---
 

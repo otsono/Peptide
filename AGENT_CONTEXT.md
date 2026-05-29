@@ -579,10 +579,11 @@ particular hasn't been re-verified frame by frame in FrayTools. Most characters
 look right; Mario was the canary that drove the rotation work and may need a
 focused pass.
 
-### One `.ssf` still fails conversion outright
-A single character file in the roster trips a hard error during conversion (not
-covered by the per-stage `unwrap_or_else` fallbacks). Tracked separately; not yet
-diagnosed.
+### One `.ssf` historically failed conversion outright
+A single character file in the roster historically tripped a hard error
+during conversion. Needs re-check against the current pipeline — path 2 +
+the constructor walker have changed enough of the detection path that this
+may already be resolved or may now surface differently.
 
 ### Frame-script / API translation is incomplete
 `mappings/commands.jsonc` covers the bulk of SSF2 API calls, but many remain in

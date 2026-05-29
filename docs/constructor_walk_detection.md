@@ -1,5 +1,16 @@
 # Constructor-walk detection — follow-up to path 2
 
+> **Status: implemented and shipped.** Commit `d8e328af` lands the
+> walker, the `MainPackageMetadata` plumbing, the `ssf2_source` block
+> in `conversion_log.json`, and the Tier 1 validation hooks. The path 2
+> instance-method enumeration survives as a defensive fallback for one
+> release (mentioned in §"Migration plan") and gets deleted in a
+> follow-up.
+>
+> Kept for architectural history. For the *current* design summary, see
+> [`DEVELOPMENT.md`](../DEVELOPMENT.md) §4 and §5.1.
+
+
 ## Why this exists
 
 Path 2 ([docs/path2_unification_plan.md](docs/path2_unification_plan.md))

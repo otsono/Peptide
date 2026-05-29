@@ -1,5 +1,37 @@
 # SSF2 → Fraymakers converter — codebase analysis
 
+> **Snapshot date / status banner — written pre-Phase-2 / pre-path-2,
+> updated against HEAD `d8e328af`:**
+>
+> Several large items in this audit have since been implemented or
+> deleted. Quick status by section so a reader doesn't act on stale
+> recommendations:
+>
+> - §1.1 / §1.2 *Parse the SWF once*: **done** (commit `5f34c666`).
+> - §1.3 *Unify the AVM2 stack simulators*: **done** (commit `21562ab6`).
+> - §1.5 / §1.7 *Per-multiname clones / `wrap_persistent_state` regex
+>   caching*: §1.7 **done** (commit `e7e62111`); §1.5 still open.
+> - §2.1 *Delete dead `build_*_map` block*: **DEFERRED** — the functions
+>   are marked TODO and survive until JSONC parity is confirmed
+>   (commit `43a13638`).
+> - §2.2 *Delete dead costume / stat extractors*: **done** (commit
+>   `7671defe`).
+> - §2.3 *Hand-rolled SWF tag walker in sound_extractor*: still open.
+> - §3.5 *`getproperty` mishandling*: **done** as part of the §1.3 visitor
+>   unification.
+> - §3.7 *`infer_ext_var_types` floats-as-Int*: **done** (Phase 2 bug fixes).
+> - §3.30 *entity_gen UUID collision*: still open; defensive comment
+>   added.
+> - The §0 orientation paragraph below still describes the *pre-path-2*
+>   detection ("finds the per-character `XxxExt` AS3 class"). Current
+>   detection walks `Main`'s constructor — see
+>   [`DEVELOPMENT.md`](../DEVELOPMENT.md) §4 and §5.1, and
+>   [`constructor_walk_detection.md`](constructor_walk_detection.md).
+>
+> Treat this document as a historical reference that's still useful for
+> the **shape** of the codebase, but verify any specific
+> recommendation against `git log` before acting on it.
+
 ## Orientation
 
 The converter is a single-binary Rust CLI (`ssf2_converter`) plus a SwiftUI wrapper. It opens an SSF2 `.ssf` (an SSF-wrapped, zlib-compressed SWF) and emits a Fraymakers character package (`.fraytools` project file, library tree of `.entity`, `.hx`, `.palettes`, sprites, sounds). The flow per character in [main.rs](src/main.rs):

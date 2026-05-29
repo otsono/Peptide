@@ -1,5 +1,21 @@
 # Path 1 → Path 2 architectural switch
 
+> **Status: implemented and shipped.** This document is the historical
+> pre-implementation plan that drove commits `71d2d39e` through
+> `de7b480e`. The path 1 (INLINE) extractor is gone; path 2 (BUNDLE)
+> is the only path that runs. Sub-characters (Sheik, Giga Bowser,
+> Wario Man) emit as peer character packages. The TODO transformation
+> banner ships in `CharacterStats.hx`.
+>
+> Detection has since been replaced by the constructor-walk approach
+> described in [`docs/constructor_walk_detection.md`](constructor_walk_detection.md);
+> the path 2 instance-method enumeration described in §1 below survives
+> only as a defensive fallback for one release.
+>
+> Kept for architectural history. For the *current* design, see
+> [`DEVELOPMENT.md`](../DEVELOPMENT.md) §5 + the constructor-walk doc.
+
+
 ## Background
 
 The converter currently has two parallel sources of character stats inside every
