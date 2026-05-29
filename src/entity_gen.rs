@@ -2070,6 +2070,13 @@ pub fn generate_effect_entity(
     // 30fps → 60fps: hold every keyframe for two frames.
     double_keyframe_lengths(&mut keyframes);
 
+    // FrayTools requires every entity to carry the FraymakersMetadata plugin
+    // with an objectType, and a non-null paletteMap. Without these, the entity
+    // editor throws "Invalid MetadataFieldType for value: null" and
+    // "Cannot read property 'paletteCollection' of null" → the whole effect
+    // renders as "Error rendering component". VFX entities use objectType
+    // "VFX" (they're spawned via match.createVfx); paletteMap may be filled in
+    // by the caller (haxe_gen) and defaults to {} otherwise.
     let entity = json!({
         "animations": animations,
         "export": true,
@@ -2077,9 +2084,14 @@ pub fn generate_effect_entity(
         "id": effect_id,
         "keyframes": keyframes,
         "layers": layers,
-        "paletteMap": Value::Null,
-        "pluginMetadata": {},
-        "plugins": [],
+        "paletteMap": {},
+        "pluginMetadata": {
+            "com.fraymakers.FraymakersMetadata": {
+                "objectType": "VFX",
+                "version": "0.1.0"
+            }
+        },
+        "plugins": ["com.fraymakers.FraymakersMetadata"],
         "symbols": symbols,
         "tags": [],
         "terrains": [],

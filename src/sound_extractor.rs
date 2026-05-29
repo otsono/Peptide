@@ -1,10 +1,11 @@
 /// Sound extraction from SSF2 .ssf files.
 ///
 /// SSF2 stores sounds as DefineSound tags (SWF format code 6 = Nellymoser).
-/// Fraymakers expects OGG Vorbis audio files with content-id based names.
+/// Fraymakers only supports WAV audio (with content-id based names); we emit
+/// `library/audio/<name>.wav` + `.wav.meta`.
 ///
 /// Pipeline:
-///   SWF DefineSound bytes → minimal FLV container → ffmpeg → OGG
+///   SWF DefineSound bytes → minimal FLV container → ffmpeg → WAV
 ///
 /// FLV is used as an intermediate because ffmpeg can't decode raw Nellymoser;
 /// it needs a container that carries the codec+rate metadata.

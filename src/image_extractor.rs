@@ -317,6 +317,52 @@ pub fn extract_images_from_swf(
         }
     }
 
+    // 2b. Rasterize VECTOR shapes (DefineShape with no bitmap fill, and
+    //     DefineMorphShape) to PNGs so vector-drawn SSF2 VFX — dust swirls,
+    //     sparks, trails, morphing waves — actually render in Fraymakers
+    //     (which only displays bitmaps). They masquerade as bitmaps: keyed by
+    //     the shape's own character id in `images` + `shape_to_bitmap`, with
+    //     `shape_pivot` set so the existing placement math positions them.
+    //     Morph shapes are rasterized at their mid ratio (single still); the
+    //     per-frame ratio animation is a future refinement.
+    let mut vec_count = 0usize;
+    for tag in &swf.tags {
+        match tag {
+            swf::Tag::DefineShape(shape) if !shape_to_bitmap.contains_key(&shape.id) => {
+                if let Some(r) = crate::vector_raster::rasterize_shape(
+                    &shape.shape_bounds, &shape.styles.fill_styles, &shape.styles.line_styles, &shape.shape,
+                ) {
+                    let sym = format!("{}_vec_{}", char_name, shape.id);
+                    let filename = format!("{}.png", sanitize_name(&sym));
+                    write_png(&sprites_dir.join(&filename), r.width, r.height, &r.rgba)?;
+                    images.insert(shape.id, ExtractedImage {
+                        bitmap_id: shape.id, symbol_name: sym, width: r.width, height: r.height,
+                        png_path: format!("library/sprites/{}", filename),
+                    });
+                    shape_to_bitmap.insert(shape.id, shape.id);
+                    shape_pivot.insert(shape.id, r.origin_px);
+                    vec_count += 1;
+                }
+            }
+            swf::Tag::DefineMorphShape(m) if !shape_to_bitmap.contains_key(&m.id) => {
+                if let Some(r) = crate::vector_raster::rasterize_morph(m, 0.5) {
+                    let sym = format!("{}_vec_{}", char_name, m.id);
+                    let filename = format!("{}.png", sanitize_name(&sym));
+                    write_png(&sprites_dir.join(&filename), r.width, r.height, &r.rgba)?;
+                    images.insert(m.id, ExtractedImage {
+                        bitmap_id: m.id, symbol_name: sym, width: r.width, height: r.height,
+                        png_path: format!("library/sprites/{}", filename),
+                    });
+                    shape_to_bitmap.insert(m.id, m.id);
+                    shape_pivot.insert(m.id, r.origin_px);
+                    vec_count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    log::info!("Rasterized {} vector shapes/morphs to PNGs", vec_count);
+
     log::info!("Extracted {} images to {}", images.len(), sprites_dir.display());
 
     // 3. xform_map is supplied by the caller so it's computed exactly

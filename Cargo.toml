@@ -22,6 +22,7 @@ bytes = "1.0"
 byteorder = "1.5"
 encoding_rs = "0.8"
 image = "0.25.10"
+tiny-skia = "0.11"
 sha1 = "0.10"
 stdio-override = { version = "0.1", optional = true }
 indicatif = "0.17"
