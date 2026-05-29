@@ -44,10 +44,21 @@ fn sheik_emits_full_package_from_zelda_ssf() {
     assert!(!stats_body.contains("TRANSFORMATION FORM"),
         "Sheik must not have the transformation TODO banner");
 
-    // conversion_log.json must NOT include ssf2_source for the same reason.
+    // conversion_log.json carries ssf2_source for every character now
+    // (package_id / package_guid / source_method always present), but
+    // Sheik must NOT carry the transformation overlay (parent_normal_stats_id
+    // + note) — her normalStats_id is `sheik`, matches her derived id.
     let log = std::fs::read_to_string(out.path().join("sheik/conversion_log.json")).unwrap();
-    assert!(!log.contains("ssf2_source"),
-        "Sheik's conversion_log.json must not include ssf2_source metadata");
+    assert!(log.contains("\"ssf2_source\""),
+        "Sheik's conversion_log.json should carry an ssf2_source block (package_id/guid/source_method)");
+    assert!(log.contains("\"source_method\": \"Main::getSheik\""),
+        "Sheik's ssf2_source must point at Main::getSheik");
+    assert!(log.contains("\"package_id\": \"zelda\""),
+        "Sheik's package_id is `zelda` — the SSF she ships in");
+    assert!(!log.contains("parent_normal_stats_id"),
+        "Sheik must NOT carry the transformation overlay (parent_normal_stats_id) — she's a peer character, not a Final-Smash form");
+    assert!(!log.contains("\"note\""),
+        "Sheik must NOT carry the transformation note");
 
     // HitboxStats.hx should mention one of her signature attacks
     // (needle / chain / lightarrow are the canonical Sheik moves).

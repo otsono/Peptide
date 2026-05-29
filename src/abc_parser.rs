@@ -1291,6 +1291,159 @@ pub fn find_bundle_method<'a>(abc: &'a AbcFile, char_name: &str)
     Some((body, getter.name.clone()))
 }
 
+/// Strip `get`, lowercase the remainder, preserve `_`. Returns None
+/// for an empty/missing suffix. Mirrors `main.rs::derive_id_from_getter`
+/// — kept in sync; both will collapse into one identity once the path 2
+/// enumeration fallback is removed in a follow-up commit.
+pub fn derive_id_from_bundle_method_name(method_name: &str) -> Option<String> {
+    let suffix = method_name.strip_prefix("get")?;
+    if suffix.is_empty() { return None; }
+    Some(suffix.to_lowercase())
+}
+
+/// Metadata declared by `Main`'s constructor — the SSF "table of contents".
+/// Populated by `extract_main_package_metadata` from a single iinit body
+/// walk. Used by detection (the `characters` list IS the roster) and by
+/// the conversion log (id/guid go into `ssf2_source`).
+#[derive(Debug, Clone, Default)]
+pub struct MainPackageMetadata {
+    /// Value of `register("id", ...)` — the SSF package id; matches the
+    /// filename stem in every observed corpus SSF. None if the id call
+    /// is absent (none observed) or the value didn't match the
+    /// expected string-literal shape.
+    pub id: Option<String>,
+    /// Value of `register("guid", ...)` — per-SSF UUID. Useful for
+    /// downstream traceability.
+    pub guid: Option<String>,
+    /// `(derived_id, method_name)` pairs collected from
+    /// `register("characters", [self.getX(), self.getY(), ...])`.
+    /// Order matches the array order in the iinit (which mirrors the
+    /// engine's roster order). Empty when the walk failed — callers
+    /// fall back to the path 2 instance-method enumeration.
+    pub characters: Vec<(String, String)>,
+}
+
+/// Read Main's constructor and pull out `id`, `guid`, and the
+/// `characters` array. Returns None if Main is absent.
+pub fn extract_main_package_metadata(abc: &AbcFile) -> Option<MainPackageMetadata> {
+    let main = abc.classes.iter().find(|c| c.name == "Main")?;
+    let body = abc.method_bodies.iter().find(|b| b.method_idx == main.constructor_idx)?;
+    Some(MainPackageMetadata {
+        id:         scan_register_string_arg(body, abc, "id"),
+        guid:       scan_register_string_arg(body, abc, "guid"),
+        characters: scan_register_characters_array(body, abc),
+    })
+}
+
+/// Walk a method body to find `pushstring KEY ; pushstring VALUE ;
+/// callpropvoid register, 2` and return `VALUE`. Used for the
+/// string-valued `register` keys (`id`, `guid`).
+fn scan_register_string_arg(body: &MethodBody, abc: &AbcFile, key: &str) -> Option<String> {
+    let key_idx = abc.strings.iter().position(|s| s == key)? as u32;
+    let bc = &body.bytecode;
+    let mut i = 0;
+    while i < bc.len() {
+        let op = bc[i];
+        if op == OP_PUSHSTRING {
+            let mut j = i + 1;
+            let s_idx = read_u30_at(bc, &mut j)?;
+            // The id/guid pattern is `pushstring KEY ; pushstring VALUE`
+            // back-to-back — value immediately follows.
+            if s_idx == key_idx && j < bc.len() && bc[j] == OP_PUSHSTRING {
+                let mut k = j + 1;
+                let v_idx = read_u30_at(bc, &mut k)?;
+                return abc.strings.get(v_idx as usize).cloned();
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+        skip_opcode_operands(op, bc, &mut i);
+    }
+    None
+}
+
+/// Walk a method body to find `pushstring "characters" ; ... ; newarray N`
+/// and collect every `callproperty` / `callpropvoid` whose multiname
+/// starts with `get` between those two points. Each collected name is
+/// folded through `derive_id_from_bundle_method_name` and paired with
+/// its raw method name.
+fn scan_register_characters_array(body: &MethodBody, abc: &AbcFile) -> Vec<(String, String)> {
+    let Some(key_idx) = abc.strings.iter()
+        .position(|s| s == "characters").map(|i| i as u32)
+    else { return Vec::new() };
+
+    let bc = &body.bytecode;
+    let mut i = 0;
+    while i < bc.len() {
+        let op = bc[i];
+        if op == OP_PUSHSTRING {
+            let mut j = i + 1;
+            let Some(s_idx) = read_u30_at(bc, &mut j) else { return Vec::new() };
+            if s_idx == key_idx {
+                // Walk forward, collecting getters, until newarray.
+                let mut k = j;
+                let mut out: Vec<(String, String)> = Vec::new();
+                while k < bc.len() {
+                    let op2 = bc[k];
+                    if op2 == OP_NEWARRAY {
+                        return out;
+                    }
+                    if op2 == OP_CALLPROPERTY || op2 == OP_CALLPROPVOID {
+                        let mut m = k + 1;
+                        let Some(mn_idx) = read_u30_at(bc, &mut m) else { break };
+                        // arg count — read + discard
+                        read_u30_at(bc, &mut m);
+                        let name = abc.multinames.get(mn_idx as usize)
+                            .map(|mn| mn.name.clone()).unwrap_or_default();
+                        if let Some(id) = derive_id_from_bundle_method_name(&name) {
+                            out.push((id, name));
+                        }
+                        k = m;
+                        continue;
+                    }
+                    k += 1;
+                    skip_opcode_operands(op2, bc, &mut k);
+                }
+                return out;
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+        skip_opcode_operands(op, bc, &mut i);
+    }
+    Vec::new()
+}
+
+/// Advance `i` past the operand bytes of the opcode whose byte was
+/// already consumed (so on entry, `i` points one past the opcode
+/// byte). Mirrors the dispatch in `scan_method`, kept thin enough to
+/// be the truth-source for the small dedicated walkers (constructor
+/// + normalStats_id) without dragging in the full AVM2 stack
+/// interpreter.
+fn skip_opcode_operands(op: u8, bc: &[u8], i: &mut usize) {
+    match op {
+        OP_PUSHDOUBLE | OP_PUSHSTRING | OP_PUSHINT | OP_PUSHUINT |
+        OP_COERCE     | OP_GETLEX     | OP_FINDPROPSTRICT | OP_FINDPROP |
+        OP_GETPROPERTY| OP_INITPROPERTY| OP_SETPROPERTY |
+        OP_GETLOCAL   | OP_SETLOCAL   | OP_NEWARRAY   | OP_NEWOBJECT => {
+            read_u30_at(bc, i);
+        }
+        OP_PUSHBYTE   => { if *i < bc.len() { *i += 1; } }
+        OP_PUSHSHORT  => { read_u30_at(bc, i); }
+        OP_CALLPROPERTY | OP_CALLPROPVOID | OP_CONSTRUCTPROP => {
+            read_u30_at(bc, i); read_u30_at(bc, i);
+        }
+        OP_CONSTRUCT => { read_u30_at(bc, i); }
+        OP_JUMP | OP_IFTRUE | OP_IFFALSE | OP_IFEQ | OP_IFNE | OP_IFLT |
+        OP_IFLE | OP_IFGT  | OP_IFGE    | OP_IFSTRICTEQ | OP_IFSTRICTNE => {
+            if *i + 3 <= bc.len() { *i += 3; }
+        }
+        _ => {}
+    }
+}
+
 /// Scan a method body for the literal string value of `normalStats_id`.
 /// The AVM2 pattern emitted by SSF2's source is:
 ///     pushstring "normalStats_id"

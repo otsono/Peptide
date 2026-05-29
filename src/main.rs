@@ -117,6 +117,7 @@ fn main() -> Result<()> {
         log::info!("─── Processing: {} ───", char_name);
         if let Err(e) = process_character(
             &swf_data, &swf, char_name, &args.output, costumes_path.as_deref(),
+            &args.input,
         ) {
             log::error!("Failed to process {}: {}", char_name, e);
         }
@@ -196,14 +197,24 @@ fn derive_id_from_getter(method_name: &str) -> Option<String> {
     Some(stripped.to_lowercase())
 }
 
-/// Detect all character names in a SWF by enumerating every `Main`
-/// instance method whose name starts with `get`. Returns derived ids in
-/// `Main`'s declared method order, deduplicated.
+/// Detect all character names in a SWF.
 ///
-/// Audited across the full 45-SSF corpus (`src/bin/audit_main_gets.rs`):
-/// every observed `Main::get*` method is a character bundle, no
-/// exceptions. The `Main` class exists solely to expose the character
-/// roster.
+/// Primary path — constructor walk
+/// ([docs/constructor_walk_detection.md](docs/constructor_walk_detection.md)):
+/// `Main`'s constructor literally lists the roster as
+/// `register("characters", [self.getX(), self.getY(), ...])`. We walk
+/// the iinit bytecode for that pattern and use the array as the
+/// canonical source. Audit confirms it's universal across the 45-SSF
+/// corpus, picks up zero dev-leftover orphans, and matches the path 2
+/// enumeration's output 1:1.
+///
+/// Fallback — instance-method enumeration
+/// ([docs/path2_unification_plan.md](docs/path2_unification_plan.md)
+/// §1): enumerate every `Main::get*` instance method. Used only when
+/// the constructor walk returns empty (defensive — handles a
+/// hypothetical future SSF whose constructor builds the array
+/// dynamically). Removed in a follow-up commit once we've confirmed
+/// nothing surprised us.
 ///
 /// Returns an empty vec for SWFs without a `Main` class (the misc.ssf
 /// case); the caller falls back to the filename stem.
@@ -213,12 +224,25 @@ fn detect_char_names(swf: &ssf2_converter::swf_parser::SwfFile, _input_path: &Pa
 
     for abc_bytes in &swf.abc_blocks {
         let Ok(abc) = abc_parser::parse(abc_bytes) else { continue };
+
+        // Primary: constructor walk.
+        if let Some(md) = abc_parser::extract_main_package_metadata(&abc) {
+            if !md.characters.is_empty() {
+                for (id, _method) in &md.characters {
+                    if seen.insert(id.clone()) { names.push(id.clone()); }
+                }
+                continue;
+            }
+            // Constructor present but characters[] empty / unparseable
+            // — fall through to enumeration with a warning.
+            log::warn!("constructor walk returned empty characters[] — falling back to instance-method enumeration");
+        }
+
+        // Fallback: enumerate Main's instance get* methods.
         let Some(main) = abc.classes.iter().find(|c| c.name == "Main") else { continue };
         for t in &main.instance_methods {
             if let Some(id) = derive_id_from_getter(&t.name) {
-                if seen.insert(id.clone()) {
-                    names.push(id);
-                }
+                if seen.insert(id.clone()) { names.push(id); }
             }
         }
     }
@@ -233,6 +257,7 @@ fn process_character(
     char_name: &str,
     output: &PathBuf,
     costumes: Option<&std::path::Path>,
+    input_path: &std::path::Path,
 ) -> Result<()> {
     // Fresh conversion log for this character — counts unknown / SSF2-only
     // calls so we can write conversion_log.json next to the exported files
@@ -254,6 +279,15 @@ fn process_character(
     let mut char_data = extractor::extract(swf, char_name)?;
     log::info!("Extracted: {} attacks, {} animations, {} ssf2→fm mappings",
         char_data.attacks.len(), char_data.animations.len(), char_data.ssf2_to_fm_anim.len());
+
+    // Lift Main's package metadata (id/guid/declared roster) once per
+    // character. Cheap — single iinit walk per ABC block. Per the
+    // constructor-walk plan, this lives in conversion_log.json only,
+    // not on CharacterData.
+    let package_metadata = swf.abc_blocks.iter()
+        .filter_map(|b| abc_parser::parse(b).ok())
+        .find_map(|abc| abc_parser::extract_main_package_metadata(&abc));
+    let validation = run_tier1_validation(char_name, &char_data, package_metadata.as_ref(), input_path);
 
     // Extract median xframe scale from root character MovieClip
     let (base_scale_x, base_scale_y) = sprite_parser::extract_xframe_scale_from_swf(&parsed_swf, char_name)
@@ -322,20 +356,83 @@ fn process_character(
         costumes, &sounds, &projectiles, &effects, head_sprite.as_ref(), &parsed_swf)?;
     log::info!("Generated Fraymakers files for {}", char_name);
 
-    write_conversion_log(&char_output_dir, char_name, &char_data)?;
+    write_conversion_log(&char_output_dir, char_name, &char_data,
+        package_metadata.as_ref(), &validation)?;
 
     Ok(())
+}
+
+/// Tier 1 validation warnings — soft logs only, never hard-fail. Emitted
+/// into `conversion_log.json.validation_warnings`. Three checks:
+///   1. Extracted stats / attacks are non-empty (catches silent
+///      extractor regressions).
+///   2. `char_name` appears in the constructor's declared `characters[]`
+///      (catches a `--name` override that targets a phantom).
+///   3. `register("id", ...)` matches the input filename stem
+///      (catches a renamed SSF — useful for traceability).
+fn run_tier1_validation(
+    char_name: &str,
+    char_data: &extractor::CharacterData,
+    md: Option<&abc_parser::MainPackageMetadata>,
+    input_path: &std::path::Path,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if char_data.attacks.is_empty() {
+        warnings.push("attacks map is empty — extractor produced no attack data".to_string());
+    }
+    // CharacterStats.default() is all zeros except max_jumps=2 and base_scale_*=1.
+    // A character whose stats are "almost defaults" indicates Stage A failed.
+    let s = &char_data.stats;
+    let stats_look_empty = s.weight == 0.0 && s.gravity == 0.0 && s.walk_speed == 0.0
+        && s.dash_speed == 0.0 && s.jump_height == 0.0;
+    if stats_look_empty {
+        warnings.push("stats look like defaults (weight=0, gravity=0, …) — Stage A may have failed".to_string());
+    }
+
+    if let Some(md) = md {
+        let declared: Vec<&str> = md.characters.iter().map(|(id, _)| id.as_str()).collect();
+        if !declared.is_empty() && !declared.contains(&char_name) {
+            warnings.push(format!(
+                "character {:?} not in Main's declared roster {:?} — likely a `--name` override against a phantom",
+                char_name, declared,
+            ));
+        }
+        if let (Some(id), Some(stem)) = (md.id.as_deref(), input_path.file_stem().and_then(|s| s.to_str())) {
+            let stem_lc = stem.to_lowercase();
+            if id.to_lowercase() != stem_lc {
+                warnings.push(format!(
+                    "Main.id {:?} disagrees with filename stem {:?} — file may have been renamed",
+                    id, stem_lc,
+                ));
+            }
+        }
+    }
+
+    if !warnings.is_empty() {
+        log::warn!("tier-1 validation: {} warning(s) for {}", warnings.len(), char_name);
+        for w in &warnings { log::warn!("  - {}", w); }
+    }
+    warnings
 }
 
 /// Write `<char_dir>/conversion_log.json` summarising calls that the
 /// converter couldn't fully map: `unknown` are genuine gaps (no entry in any
 /// commands.jsonc section), `ssf2_only` are calls we deliberately surfaced as
 /// `// [SSF2-only: …]` comments because they have no Fraymakers equivalent.
-/// For transformation characters (Giga Bowser, Wario Man), also includes
-/// `ssf2_source` so the SwiftUI popup can surface the parent identity.
+/// Also carries an `ssf2_source` block with the SSF package id/guid, the
+/// `Main::get<X>` source method, and (for transformation characters) the
+/// parent's normalStats_id + an explanatory note. Validation warnings
+/// land under `validation_warnings`.
 /// Written unconditionally so the SwiftUI GUI can show a post-conversion
 /// popup, and so CLI users get the same artifact alongside the character.
-fn write_conversion_log(char_dir: &std::path::Path, char_name: &str, char_data: &extractor::CharacterData) -> Result<()> {
+fn write_conversion_log(
+    char_dir: &std::path::Path,
+    char_name: &str,
+    char_data: &extractor::CharacterData,
+    md: Option<&abc_parser::MainPackageMetadata>,
+    validation_warnings: &[String],
+) -> Result<()> {
     let snap = ssf2_converter::api_mappings::snapshot_conversion_log();
     let to_entries = |m: std::collections::BTreeMap<String, usize>| -> Vec<serde_json::Value> {
         let mut v: Vec<(String, usize)> = m.into_iter().collect();
@@ -349,7 +446,42 @@ fn write_conversion_log(char_dir: &std::path::Path, char_name: &str, char_data: 
         "unknown": to_entries(snap.unknown),
         "ssf2_only": to_entries(snap.ssf2_only),
     });
-    if let Some(df) = &char_data.derived_from {
+
+    // ssf2_source: present whenever we have Main metadata (i.e. always
+    // for character SSFs; absent for misc.ssf-style packages). Always
+    // includes package_id / package_guid / source_method; adds the
+    // transformation overlay when normalStats_id mismatches the
+    // derived id.
+    if let Some(md) = md {
+        let source_method = md.characters.iter()
+            .find(|(id, _)| id == char_name)
+            .map(|(_, m)| format!("Main::{}", m));
+
+        let mut ssf2_source = serde_json::Map::new();
+        if let Some(id) = &md.id   { ssf2_source.insert("package_id".into(),   serde_json::json!(id)); }
+        if let Some(g)  = &md.guid { ssf2_source.insert("package_guid".into(), serde_json::json!(g));  }
+        if let Some(sm) = source_method {
+            ssf2_source.insert("source_method".into(), serde_json::json!(sm));
+        }
+        if let Some(df) = &char_data.derived_from {
+            ssf2_source.insert("parent_normal_stats_id".into(),
+                serde_json::json!(df.parent_normal_stats_id));
+            // For transformations, derived_from.source_method overrides
+            // any value we might have looked up from md.characters —
+            // they're identical, but derived_from is the authoritative
+            // path.
+            ssf2_source.insert("source_method".into(), serde_json::json!(df.source_method));
+            ssf2_source.insert("note".into(), serde_json::json!(
+                "Fraymakers has no native transformation API; \
+                 this character is emitted as a standalone package and \
+                 must be wired manually in the parent's Script.hx."
+            ));
+        }
+        payload.as_object_mut().unwrap()
+            .insert("ssf2_source".to_string(), serde_json::Value::Object(ssf2_source));
+    } else if let Some(df) = &char_data.derived_from {
+        // No Main metadata but we still got a derived_from from Stage A.
+        // Preserves the Step D behaviour for transformations.
         payload.as_object_mut().unwrap().insert(
             "ssf2_source".to_string(),
             serde_json::json!({
@@ -359,6 +491,13 @@ fn write_conversion_log(char_dir: &std::path::Path, char_name: &str, char_data: 
                     this character is emitted as a standalone package and \
                     must be wired manually in the parent's Script.hx.",
             }),
+        );
+    }
+
+    if !validation_warnings.is_empty() {
+        payload.as_object_mut().unwrap().insert(
+            "validation_warnings".to_string(),
+            serde_json::json!(validation_warnings),
         );
     }
     std::fs::create_dir_all(char_dir)?;
