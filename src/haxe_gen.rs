@@ -1040,6 +1040,19 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     // Frame scripts are embedded directly in the entity file via FRAME_SCRIPT layers.
     // They are no longer duplicated here.
 
+    // SSF2 sound triggers — playAttackSound(N) / playVoiceSound(N) helpers
+    // backed by the character's attackSound{N}_id / attackVoice{N}_id tables.
+    // Frame-script calls (self.playAttackSound(N) → bare playAttackSound(N) via
+    // commands.jsonc) resolve here. Attack/voice sections emit independently:
+    // each when its table is non-empty OR the character calls that function —
+    // the latter keeps a call-without-table (e.g. sandbag) bound to a defined,
+    // bounds-guarded no-op. Runs inside the generate() AvailableSounds guard so
+    // unmapped ids fall back to the silent placeholder.
+    let calls_attack = data.scripts.iter().any(|s| s.code.contains("playAttackSound("));
+    let calls_voice  = data.scripts.iter().any(|s| s.code.contains("playVoiceSound("));
+    out.push_str(&crate::api_mappings::generate_sound_helpers(
+        &data.attack_sounds, &data.voice_sounds, calls_attack, calls_voice));
+
     // Jab chain transition logic — only when the character actually has a
     // multi-hit combo. Single-jab characters get no chain boilerplate, so
     // nothing references the missing jab2/jab3 animations.

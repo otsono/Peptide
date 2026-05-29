@@ -33,6 +33,14 @@ pub struct CharacterData {
     /// SSF2 animation name → Fraymakers animation name
     /// Built from xframe_map + SSF2→Fraymakers name table
     pub ssf2_to_fm_anim: BTreeMap<String, String>,
+    /// SSF2 `attackSound{N}_id` table (1-based) backing `playAttackSound(N)`.
+    /// Emitted into Script.hx as the `_attackSounds` array + helper. See
+    /// `abc_parser::extract_indexed_string_fields`.
+    #[serde(default)]
+    pub attack_sounds: Vec<String>,
+    /// SSF2 `attackVoice{N}_id` table (1-based) backing `playVoiceSound(N)`.
+    #[serde(default)]
+    pub voice_sounds: Vec<String>,
     /// Populated when this character is a transformation / alternate
     /// form (Giga Bowser, Wario Man). Forwarded from
     /// `ExtractedCharacter.derived_from`. See path 2 plan §1.6.
@@ -116,6 +124,8 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
     let mut projectile_data: BTreeMap<String, abc_parser::ProjectileData> = BTreeMap::new();
     let mut xframe_map: XframeMap = BTreeMap::new();
     let mut derived_from: Option<abc_parser::DerivedFrom> = None;
+    let mut attack_sounds: Vec<String> = Vec::new();
+    let mut voice_sounds: Vec<String> = Vec::new();
 
     // Parse each ABC block (usually just one)
     for (block_idx, abc_data) in swf.abc_blocks.iter().enumerate() {
@@ -125,6 +135,8 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
             Ok(abc) => {
                 let extracted = abc_parser::extract_character(&abc, char_name)?;
                 if derived_from.is_none() { derived_from = extracted.derived_from.clone(); }
+                if attack_sounds.is_empty() { attack_sounds = extracted.attack_sounds.clone(); }
+                if voice_sounds.is_empty()  { voice_sounds  = extracted.voice_sounds.clone(); }
 
                 // Merge attacks
                 for (name, attack_data) in &extracted.attacks {
@@ -262,6 +274,8 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
         animations,
         scripts,
         ssf2_to_fm_anim,
+        attack_sounds,
+        voice_sounds,
         derived_from,
     })
 }

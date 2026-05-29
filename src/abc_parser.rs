@@ -162,6 +162,13 @@ pub struct ExtractedCharacter {
     pub ext_var_inits: Vec<(String, String)>,
     /// frame method name → SSF2 animation name (from self.xframe = "...")
     pub xframe_map: XframeMap,
+    /// SSF2 `attackSound{N}_id` values (1-based, contiguous) — the per-attack
+    /// SFX table indexed by `playAttackSound(N)`. Entries are SSF2 sound ids
+    /// (global ids like `brawl_swing_l` or per-character bank ids).
+    pub attack_sounds: Vec<String>,
+    /// SSF2 `attackVoice{N}_id` values (1-based, contiguous) — the voice/grunt
+    /// table indexed by `playVoiceSound(N)`. Voice playback does not overlap.
+    pub voice_sounds: Vec<String>,
     /// Populated when this character's bundle method's `cData.normalStats_id`
     /// disagrees with `char_name` — i.e. this is a transformation /
     /// alternate form of a parent character (Giga Bowser, Wario Man).
@@ -684,6 +691,8 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
     let mut frame_scripts: BTreeMap<String, Vec<FrameAction>> = BTreeMap::new();
     let mut ext_methods: BTreeMap<String, String> = BTreeMap::new();
     let mut xframe_map: XframeMap = BTreeMap::new();
+    let mut attack_sounds: Vec<String> = Vec::new();
+    let mut voice_sounds: Vec<String> = Vec::new();
 
     // ── Stage A: stats / attacks / projectiles from Main::get<X>() ─────
     let mut derived_from: Option<DerivedFrom> = None;
@@ -692,6 +701,13 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
         attacks     = extract_attack_objects(&body.bytecode, abc);
         projectiles = extract_projectile_objects(&body.bytecode, abc);
         stats       = extract_ssf2_stats(&body.bytecode, abc);
+
+        // SSF2 sound tables — the 1-based attackSound{N}_id / attackVoice{N}_id
+        // fields that playAttackSound(N) / playVoiceSound(N) index into.
+        attack_sounds = extract_indexed_string_fields(body, abc, "attackSound", "_id");
+        voice_sounds  = extract_indexed_string_fields(body, abc, "attackVoice", "_id");
+        log::info!("path-2: {} attack sound(s), {} voice sound(s)",
+            attack_sounds.len(), voice_sounds.len());
 
         // Detect transformation: cData.normalStats_id ≠ derived char_name.
         // Recorded as metadata; Fraymakers has no native transformation
@@ -1270,6 +1286,8 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
         ext_vars,
         ext_var_inits,
         xframe_map,
+        attack_sounds,
+        voice_sounds,
         derived_from,
     })
 }
@@ -1513,6 +1531,59 @@ pub fn extract_normal_stats_id(body: &MethodBody, abc: &AbcFile) -> Option<Strin
         i += 1;
     }
     None
+}
+
+/// Extract the string value of a single object-literal field from a bundle
+/// method body, using the same `pushstring <field-name>; … ; pushstring
+/// <value>` pattern as `extract_normal_stats_id`. Returns None if the field
+/// name isn't in the string pool, or isn't pushed in this body.
+fn extract_field_string(body: &MethodBody, abc: &AbcFile, field: &str) -> Option<String> {
+    let needle_idx = abc.strings.iter().position(|s| s == field)? as u32;
+    let bytes = &body.bytecode;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == OP_PUSHSTRING {
+            let mut j = i + 1;
+            if let Some(idx) = read_u30_at(bytes, &mut j) {
+                if idx == needle_idx {
+                    // Value is the next string pushed after the field name.
+                    let mut k = j;
+                    while k < bytes.len() {
+                        if bytes[k] == OP_PUSHSTRING {
+                            let mut m = k + 1;
+                            let v = read_u30_at(bytes, &mut m)?;
+                            return abc.strings.get(v as usize).cloned();
+                        }
+                        k += 1;
+                    }
+                    return None;
+                }
+                i = j; continue;
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Collect a contiguous 1-based run of indexed string fields from a bundle
+/// body: `{prefix}1{suffix}`, `{prefix}2{suffix}`, … stopping at the first
+/// index whose field isn't present in this body. Backs SSF2's
+/// `attackSound{N}_id` / `attackVoice{N}_id` sound tables (the targets of
+/// `playAttackSound(N)` / `playVoiceSound(N)`, both 1-based).
+pub fn extract_indexed_string_fields(
+    body: &MethodBody, abc: &AbcFile, prefix: &str, suffix: &str,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut n = 1usize;
+    loop {
+        let field = format!("{prefix}{n}{suffix}");
+        match extract_field_string(body, abc, &field) {
+            Some(v) => { out.push(v); n += 1; }
+            None => break,
+        }
+    }
+    out
 }
 
 /// Symbolic value pushed onto the simulated AVM2 stack by `scan_method`

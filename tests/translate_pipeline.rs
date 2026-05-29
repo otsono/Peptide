@@ -258,6 +258,118 @@ fn play_sound_drops_extra_args_and_keeps_handle_assignment() {
         "extra args dropped, assignment kept; got: {}", out);
 }
 
+// ─── generate_sound_helpers (playAttackSound / playVoiceSound) ───────────
+
+#[test]
+fn sound_helpers_empty_when_no_tables_and_no_calls() {
+    // No tables and no calls → emit nothing (no dead-code helpers).
+    let _g = AvailableSoundsGuard::install(std::collections::BTreeSet::new());
+    assert_eq!(generate_sound_helpers(&[], &[], false, false), "");
+}
+
+#[test]
+fn sound_helpers_call_without_table_emits_safe_noop() {
+    // A character can call playAttackSound(N) without declaring a table
+    // (sandbag): the helper must still be defined, with an empty array whose
+    // bounds guard makes every call a no-op.
+    let _g = AvailableSoundsGuard::install(std::collections::BTreeSet::new());
+    let out = generate_sound_helpers(&[], &[], true, true);
+    assert!(out.contains("var _attackSounds = [];"), "empty attack array; got:\n{}", out);
+    assert!(out.contains("var _voiceSounds = [];"), "empty voice array; got:\n{}", out);
+    assert!(out.contains("function playAttackSound(n)") && out.contains("function playVoiceSound(n)"),
+        "helpers still defined so bare calls resolve; got:\n{}", out);
+    assert!(out.contains("if (n < 1 || n > _attackSounds.length) return;"),
+        "bounds guard no-ops on empty table; got:\n{}", out);
+}
+
+#[test]
+fn sound_helpers_split_attack_only() {
+    // Attack table present, no voice table/calls → no voice section.
+    let _g = AvailableSoundsGuard::install(std::collections::BTreeSet::new());
+    let out = generate_sound_helpers(&["brawl_swing_l".to_string()], &[], false, false);
+    assert!(out.contains("function playAttackSound(n)"), "attack helper present; got:\n{}", out);
+    assert!(!out.contains("var _voiceSounds") && !out.contains("function playVoiceSound") && !out.contains("var _activeVoiceClip"),
+        "no voice section when there are no voice sounds or calls; got:\n{}", out);
+}
+
+#[test]
+fn sound_helpers_split_voice_only() {
+    let mut ids = std::collections::BTreeSet::new();
+    ids.insert("mario_grunt1".to_string());
+    let _g = AvailableSoundsGuard::install(ids);
+    let out = generate_sound_helpers(&[], &["mario_grunt1".to_string()], false, false);
+    assert!(out.contains("function playVoiceSound(n)") && out.contains("var _activeVoiceClip = null;"),
+        "voice helper present; got:\n{}", out);
+    assert!(!out.contains("var _attackSounds") && !out.contains("function playAttackSound"),
+        "no attack section when there are no attack sounds or calls; got:\n{}", out);
+}
+
+#[test]
+fn sound_helpers_arrays_resolver_and_voice_tracking() {
+    // mario-like: 3 attack globals (brawl_swing_l → WHOOSH_3) + 1 voice asset.
+    let mut ids = std::collections::BTreeSet::new();
+    ids.insert("mario_grunt1".to_string());
+    let _g = AvailableSoundsGuard::install(ids);
+    let attack = vec!["brawl_swing_l".to_string(), "brawl_swing_l".to_string()];
+    let voice = vec!["mario_grunt1".to_string()];
+    let out = generate_sound_helpers(&attack, &voice, false, false);
+
+    assert!(out.contains("var _attackSounds = [\"brawl_swing_l\", \"brawl_swing_l\"];"),
+        "attack array literal; got:\n{}", out);
+    assert!(out.contains("var _voiceSounds = [\"mario_grunt1\"];"),
+        "voice array literal; got:\n{}", out);
+    assert!(out.contains("var _activeVoiceClip = null;"), "voice tracker var; got:\n{}", out);
+    // Resolver switches on the string id; honors the global mapping.
+    assert!(out.contains("switch (id) {"), "resolver switches on id; got:\n{}", out);
+    assert!(out.contains("case \"brawl_swing_l\": return AudioClip.play(GlobalSfx.WHOOSH_3);"),
+        "global resolver case honors the mapping; got:\n{}", out);
+    assert!(out.contains("default: return AudioClip.play(self.getResource().getContent(id));"),
+        "default getContent case; got:\n{}", out);
+    // Resolver mirrors the FULL global_sound_map — cases exist even for globals
+    // this character doesn't use (single source of truth).
+    assert!(out.contains("case \"metal_land_l\": return AudioClip.play(GlobalSfx.LAND);"),
+        "resolver has a case for every global_sound_map entry; got:\n{}", out);
+    // Per-character asset id is NOT a case (handled by default).
+    assert!(!out.contains("case \"mario_grunt1\""),
+        "asset id should fall through to default, not a case; got:\n{}", out);
+    // Bounds-guard + no-overlap stop + clip tracking.
+    assert!(out.contains("if (n < 1 || n > _attackSounds.length) return;"),
+        "attack bounds guard; got:\n{}", out);
+    assert!(out.contains("if (_activeVoiceClip != null) { _activeVoiceClip.stop(); _activeVoiceClip = null; }"),
+        "voice no-overlap stop; got:\n{}", out);
+    assert!(out.contains("_activeVoiceClip = _playResolvedSound(_voiceSounds[n - 1]);"),
+        "voice play stores the clip handle; got:\n{}", out);
+}
+
+#[test]
+fn sound_helpers_placeholder_for_unmapped_id() {
+    // screw1 is neither in global_sound_map nor an extracted asset → placeholder.
+    let _g = AvailableSoundsGuard::install(std::collections::BTreeSet::new());
+    let out = generate_sound_helpers(&["screw1".to_string()], &[], false, false);
+    assert!(out.contains("\"_ssf2_placeholder\" /* TODO: SSF2 sound \"screw1\" has no FM equivalent */"),
+        "unmapped id → placeholder + visible TODO in the array; got:\n{}", out);
+    assert!(!out.contains("case \"screw1\""),
+        "unmapped id gets no resolver case (plays the placeholder via default); got:\n{}", out);
+}
+
+#[test]
+fn play_attack_sound_call_routed_to_bare_helper() {
+    // self.playAttackSound(N) → bare playAttackSound(N); not commented out.
+    let out = translate_ssf2_to_fm("self.playAttackSound(2);");
+    assert!(out.contains("playAttackSound(2)"), "call preserved; got: {}", out);
+    assert!(!out.contains("self.playAttackSound"), "self. receiver stripped; got: {}", out);
+    assert!(!out.contains("[SSF2-only"), "no longer commented out; got: {}", out);
+}
+
+#[test]
+fn play_voice_sound_call_routed_to_bare_helper() {
+    let out = translate_ssf2_to_fm("self.playVoiceSound(1);");
+    assert!(out.contains("playVoiceSound(1)"), "call preserved; got: {}", out);
+    assert!(!out.contains("self.playVoiceSound"), "self. receiver stripped; got: {}", out);
+    assert!(!out.contains("playAttackVoice"), "old playAttackVoice stub removed; got: {}", out);
+    assert!(!out.contains("[SSF2-only"), "not commented out; got: {}", out);
+}
+
 // ─── rewrite_attach_effect_calls ─────────────────────────────────────────
 
 #[test]
