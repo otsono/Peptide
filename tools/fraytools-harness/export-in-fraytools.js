@@ -87,9 +87,18 @@ function newestFra(buildDir) {
   return best;
 }
 
+function defaultFrayTools() {
+  if (process.platform === 'win32') {
+    const la = process.env.LOCALAPPDATA;
+    return la ? path.join(la, 'Programs', 'FrayTools', 'FrayTools.exe') : 'FrayTools.exe';
+  }
+  // macOS (and a reasonable Linux fallback).
+  return '/Applications/FrayTools.app/Contents/MacOS/FrayTools';
+}
+
 (async () => {
   const port      = parseInt(arg('port', '9222'), 10);
-  const ftBin     = arg('fraytools', '/Applications/FrayTools.app/Contents/MacOS/FrayTools');
+  const ftBin     = arg('fraytools', defaultFrayTools());
   const project   = arg('project');
   const settle    = parseInt(arg('settle', '6000'), 10);
   const timeoutMs = parseInt(arg('timeout', '120000'), 10);
