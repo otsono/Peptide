@@ -7,12 +7,15 @@
 //! Pipeline: SWF ShapeRecords → per-fill directed edges → stitched closed
 //! loops → tiny-skia paths → anti-aliased fill/stroke → straight RGBA.
 //!
-//! Fills: solid colors are exact; gradients are approximated by their average
-//! stop color (keeps the shape visible with roughly the right hue without a
-//! full gradient-space transform). Strokes use the line width + color.
+//! Fills: solid colors are exact; linear/radial/focal gradients render as
+//! real tiny-skia shaders using the SWF gradient matrix. Strokes use the line
+//! width + a solid color (averaged stops for gradient strokes).
 
-use swf::{Color, FillStyle, LineStyle, Rectangle, ShapeRecord, Twips};
-use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
+use swf::{Color, FillStyle, Gradient, GradientSpread, LineStyle, Matrix, Rectangle, ShapeRecord, Twips};
+use tiny_skia::{
+    FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, Point, RadialGradient,
+    Shader, SpreadMode, Stroke, Transform,
+};
 
 /// A rasterized vector shape.
 pub struct Raster {
@@ -147,8 +150,8 @@ pub fn rasterize_shape(
         for (&idx, edges) in &g.fill_edges {
             if idx == 0 || idx > g.fills.len() { continue; }
             let fill = &g.fills[idx - 1];
-            let color = match resolve_fill_color(fill) {
-                Some(c) => c,
+            let paint = match build_fill_paint(fill, min_x, min_y) {
+                Some(p) => p,
                 None => continue, // bitmap fill etc. — skip
             };
             let loops = stitch(edges);
@@ -168,9 +171,6 @@ pub fn rasterize_shape(
             }
             if !any { continue; }
             if let Some(path) = pb.finish() {
-                let mut paint = Paint::default();
-                paint.anti_alias = true;
-                paint.set_color_rgba8(color.0, color.1, color.2, color.3);
                 pixmap.fill_path(&path, &paint, FillRule::Winding, ident, None);
                 drew_anything = true;
             }
@@ -289,8 +289,87 @@ fn stitch(edges: &[DEdge]) -> Vec<Vec<DEdge>> {
     loops
 }
 
+/// Map the SWF gradient matrix to a tiny-skia shader transform that takes
+/// gradient-local twips → the pixel canvas (shifted so bounds.min = origin).
+///   shape_twip = M·grad_local;  pixel = shape_twip/20 − bounds.min
+fn grad_transform(m: &Matrix, min_x: f64, min_y: f64) -> Transform {
+    Transform::from_row(
+        (m.a.to_f64() / 20.0) as f32,
+        (m.b.to_f64() / 20.0) as f32,
+        (m.c.to_f64() / 20.0) as f32,
+        (m.d.to_f64() / 20.0) as f32,
+        (m.tx.to_pixels() - min_x) as f32,
+        (m.ty.to_pixels() - min_y) as f32,
+    )
+}
+
+fn grad_stops(g: &Gradient) -> Vec<GradientStop> {
+    g.records.iter().map(|r| GradientStop::new(
+        r.ratio as f32 / 255.0,
+        tiny_skia::Color::from_rgba8(r.color.r, r.color.g, r.color.b, r.color.a),
+    )).collect()
+}
+
+fn spread_mode(s: GradientSpread) -> SpreadMode {
+    match s {
+        GradientSpread::Pad => SpreadMode::Pad,
+        GradientSpread::Reflect => SpreadMode::Reflect,
+        GradientSpread::Repeat => SpreadMode::Repeat,
+    }
+}
+
+fn radial_shader(g: &Gradient, focal: f64, min_x: f64, min_y: f64) -> Option<Shader<'static>> {
+    // SWF radial: circle centred at (0,0), radius 16384 in gradient space;
+    // a focal point (FocalGradient) sits on the x-axis at focal*16384.
+    // tiny-skia two-point conical: start = focal circle (r=0), end = main circle.
+    RadialGradient::new(
+        Point::from_xy((focal * 16384.0) as f32, 0.0),
+        Point::from_xy(0.0, 0.0),
+        16384.0,
+        grad_stops(g),
+        spread_mode(g.spread),
+        grad_transform(&g.matrix, min_x, min_y),
+    )
+}
+
+/// Build a tiny-skia Paint for a fill: solid colour, or a real linear/radial
+/// gradient shader. None for bitmap fills (handled elsewhere).
+fn build_fill_paint(fill: &FillStyle, min_x: f64, min_y: f64) -> Option<Paint<'static>> {
+    let mut paint = Paint::default();
+    paint.anti_alias = true;
+    let shader = match fill {
+        FillStyle::Color(c) => {
+            paint.set_color_rgba8(c.r, c.g, c.b, c.a);
+            return Some(paint);
+        }
+        FillStyle::LinearGradient(g) => LinearGradient::new(
+            Point::from_xy(-16384.0, 0.0),
+            Point::from_xy(16384.0, 0.0),
+            grad_stops(g),
+            spread_mode(g.spread),
+            grad_transform(&g.matrix, min_x, min_y),
+        ),
+        FillStyle::RadialGradient(g) => radial_shader(g, 0.0, min_x, min_y),
+        FillStyle::FocalGradient { gradient, focal_point } => {
+            radial_shader(gradient, focal_point.to_f64(), min_x, min_y)
+        }
+        FillStyle::Bitmap { .. } => return None,
+    };
+    // If shader construction failed (degenerate matrix, single stop, etc.),
+    // fall back to averaged stop color so the shape still renders.
+    match shader {
+        Some(s) => paint.shader = s,
+        None => {
+            let (r, g, b, a) = resolve_fill_color(fill)?;
+            paint.set_color_rgba8(r, g, b, a);
+        }
+    }
+    Some(paint)
+}
+
 /// Solid color for a fill, or an average-stop approximation for gradients.
-/// None for bitmap fills (handled elsewhere).
+/// Used for STROKE colors (strokes keep the solid approximation; the fill
+/// path uses `build_fill_paint` for real gradients). None for bitmap fills.
 fn resolve_fill_color(fill: &FillStyle) -> Option<(u8, u8, u8, u8)> {
     match fill {
         FillStyle::Color(c) => Some((c.r, c.g, c.b, c.a)),

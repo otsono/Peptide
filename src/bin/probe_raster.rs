@@ -12,6 +12,27 @@ fn main() {
     let buf = swf::decompress_swf(&data[..]).unwrap();
     let swf = swf::parse_swf(&buf).unwrap();
 
+    // "list" mode: dump DefineShapes that have gradient fills (id, kind, size).
+    if args.get(2).map(|s| s == "list").unwrap_or(false) {
+        for tag in &swf.tags {
+            if let swf::Tag::DefineShape(s) = tag {
+                for f in &s.styles.fill_styles {
+                    let kind = match f {
+                        swf::FillStyle::LinearGradient(_) => "linear",
+                        swf::FillStyle::RadialGradient(_) => "radial",
+                        swf::FillStyle::FocalGradient { .. } => "focal",
+                        _ => continue,
+                    };
+                    let w = (s.shape_bounds.x_max.to_pixels() - s.shape_bounds.x_min.to_pixels()).round();
+                    let h = (s.shape_bounds.y_max.to_pixels() - s.shape_bounds.y_min.to_pixels()).round();
+                    println!("shape {} : {} gradient, {}x{}", s.id, kind, w, h);
+                    break;
+                }
+            }
+        }
+        return;
+    }
+
     for tag in &swf.tags {
         match tag {
             swf::Tag::DefineShape(s) if ids.contains(&s.id) => {
