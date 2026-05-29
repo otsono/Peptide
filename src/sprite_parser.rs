@@ -1178,3 +1178,68 @@ fn median_f64(sorted: &[f64]) -> f64 {
     if n == 0 { return 0.0; }
     if n % 2 == 1 { sorted[n / 2] } else { (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0 }
 }
+
+#[cfg(test)]
+mod matrix_to_box_tests {
+    use super::matrix_to_box;
+    use swf::{Matrix, Fixed16, Twips};
+
+    fn mat(a: f32, b: f32, c: f32, d: f32, tx: f32, ty: f32) -> Matrix {
+        Matrix {
+            a: Fixed16::from_f32(a),
+            b: Fixed16::from_f32(b),
+            c: Fixed16::from_f32(c),
+            d: Fixed16::from_f32(d),
+            tx: Twips::from_pixels(tx as f64),
+            ty: Twips::from_pixels(ty as f64),
+        }
+    }
+
+    fn approx(a: f64, b: f64) -> bool { (a - b).abs() < 0.5 }
+
+    #[test]
+    fn axis_aligned_box_unchanged() {
+        // a/d on the diagonal, b=c=0: width=|a|*bs, height=|d|*bs, rotation=0.
+        let (x, y, w, h, rot) = matrix_to_box(&mat(0.8, 0.0, 0.0, 0.5, 10.0, 20.0), 100.0);
+        assert!(approx(w, 80.0),  "w={}", w);
+        assert!(approx(h, 50.0),  "h={}", h);
+        assert!(approx(rot, 0.0), "rot={}", rot);
+        // center (10,20) → top-left (10-40, 20-25)
+        assert!(approx(x, -30.0), "x={}", x);
+        assert!(approx(y, -5.0),  "y={}", y);
+    }
+
+    #[test]
+    fn rotated_90_box_keeps_size_via_bc() {
+        // The sandbag aerial_down frames 7-8 bug: a≈0, d≈0, scale lives
+        // in b/c. The old a/d-only read returned 0×0; the fix recovers
+        // width=√(a²+b²)·bs, height=√(c²+d²)·bs.
+        // f7 hitBox: a=0, b=0.316, c=-0.745, d=0 → w=31.6 h=74.5 rot=90°.
+        let (_x, _y, w, h, rot) = matrix_to_box(&mat(0.0, 0.316, -0.745, 0.0, 0.0, 0.0), 100.0);
+        assert!(approx(w, 31.6), "w={}", w);
+        assert!(approx(h, 74.5), "h={}", h);
+        assert!(approx(rot, 90.0), "rot={}", rot);
+        assert!(w > 0.0 && h > 0.0, "box must NOT be degenerate");
+    }
+
+    #[test]
+    fn horizontal_flip_stays_rotation_zero() {
+        // Negative a with b=c=0 is a horizontal flip, not a rotation.
+        // The epsilon guard keeps rotation 0 (a rectangle is symmetric
+        // under reflection) so flipped boxes don't churn to rotation 180.
+        let (_x, _y, w, h, rot) = matrix_to_box(&mat(-0.8, 0.0, 0.0, 0.5, 0.0, 0.0), 100.0);
+        assert!(approx(w, 80.0), "w={}", w);
+        assert!(approx(h, 50.0), "h={}", h);
+        assert!(approx(rot, 0.0), "flip must stay rotation 0, got {}", rot);
+    }
+
+    #[test]
+    fn partial_rotation_decomposes() {
+        // 45°-ish rotation: a=d=cos, b=sin, c=-sin, uniform scale 1.0.
+        let s = std::f32::consts::FRAC_1_SQRT_2; // cos45 = sin45 ≈ 0.707
+        let (_x, _y, w, h, rot) = matrix_to_box(&mat(s, s, -s, s, 0.0, 0.0), 100.0);
+        assert!(approx(w, 100.0), "w={}", w);
+        assert!(approx(h, 100.0), "h={}", h);
+        assert!(approx(rot, 45.0), "rot={}", rot);
+    }
+}
