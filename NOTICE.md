@@ -1,0 +1,78 @@
+# Notice
+
+This project depends on the following open-source crates. Each is
+listed here with the licence under which it is distributed. Their
+attribution requirements (MIT, Apache-2.0, BSD-3-Clause, MPL-2.0) are
+met by this file when this project is redistributed.
+
+## SWF / Flash parsing
+
+* **`swf` 0.2** — part of the [Ruffle](https://github.com/ruffle-rs/ruffle)
+  project. MIT OR Apache-2.0. The converter's entire Flash-parsing
+  path (decompression, tag walking, ABC block extraction) is built on
+  top of this crate. ABC decompilation and SSF-wrapper handling are
+  written from scratch in this repo, but the SWF binary parsing
+  itself is `swf`'s.
+
+The repo previously shelled out to [JPEXS Free Flash Decompiler
+(FFDec)](https://github.com/jindrapetrik/jpexs-decompiler) (GPL-3.0)
+as a Flash decompiler. That dependency has been **removed** (see
+`DEVELOPMENT.md` §3 — "There is no external Rust runtime dependency
+for SWF decompression, bitmap decoding, or ABC parsing"). No GPL code
+is statically or dynamically linked.
+
+## All direct Rust dependencies
+
+(As of HEAD `7729ecda`.)
+
+| crate         | version  | licence                                    |
+|---------------|----------|--------------------------------------------|
+| anyhow        | 1.0      | MIT OR Apache-2.0                          |
+| byteorder     | 1.5      | Unlicense OR MIT                           |
+| bytes         | 1.11     | MIT                                        |
+| clap          | 4.6      | MIT OR Apache-2.0                          |
+| **colored**   | 2.2      | **MPL-2.0** — file-level copyleft; no modification needed for our use, but the source remains under MPL-2.0 |
+| **encoding_rs** | 0.8    | (Apache-2.0 OR MIT) **AND BSD-3-Clause** — combined |
+| env_logger    | 0.11     | MIT OR Apache-2.0                          |
+| fasteval      | 0.2      | MIT                                        |
+| flate2        | 1.1      | MIT OR Apache-2.0                          |
+| image         | 0.25     | MIT OR Apache-2.0                          |
+| indicatif     | 0.17     | MIT                                        |
+| log           | 0.4      | MIT OR Apache-2.0                          |
+| regex         | 1        | MIT OR Apache-2.0                          |
+| serde         | 1.0      | MIT OR Apache-2.0                          |
+| serde_json    | 1.0      | MIT OR Apache-2.0                          |
+| sha1          | 0.10     | MIT OR Apache-2.0                          |
+| sha2          | 0.10     | MIT OR Apache-2.0                          |
+| **swf**       | 0.2      | MIT OR Apache-2.0 (Ruffle)                 |
+| tempfile      | 3        | MIT OR Apache-2.0                          |
+| tokio         | 1.51     | MIT                                        |
+
+The MPL-2.0 (`colored`) and BSD-3-Clause (`encoding_rs`) licences
+require the licence text to travel with redistributions. Both licence
+texts are reproduced in full under each crate's published source
+repository; for a binary distribution of this converter, this `NOTICE.md`
+file together with the named source URLs satisfies the attribution
+requirement.
+
+## Asset and game data
+
+Original Super Smash Flash 2 character data, sprites, sounds, and
+costumes are © McLeodGaming. This tool is intended for personal mod
+development against assets the user already owns; no SSF2 game data
+is shipped in this repository (`.gitignore` excludes `*.ssf` /
+`misc.ssf`).
+
+Fraymakers asset format and FrayTools editor are © Fraymakers /
+[Fraymakers](https://www.fraymakersthegame.com/). The output produced
+by this tool is intended for use with FrayTools to develop custom
+characters; no Fraymakers engine code or proprietary tooling is
+included.
+
+## This project's own licence
+
+This repository does not currently declare a top-level licence. Code
+authored within this repo is therefore implicitly all-rights-reserved
+under the project's contributors. If you want to redistribute or fork
+this project beyond personal mod development, please reach out to the
+maintainers first.
