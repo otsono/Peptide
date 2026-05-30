@@ -234,3 +234,33 @@ how to build the resource object — disassemble 1838/1839 cleanly first.
 ## CHANNEL: corrupting reads (injecting EOF/``` fences, truncating). All
 sha-verified facts above are reliable; anything not sha-checked this session is
 suspect. Recommend restart before the bytecode-injection step.
+
+## ACCURACY FIX (sha-verified — supersedes the "shared single caller" claim)
+- addResource@18230 (-> poolHash; getPXFResource reads this) callers:
+    UgcUtil._onFileLoaded@17838  AND  ResourceManager.importManifest@18228.
+- cacheCharacterContent@18258 (-> pxfCharacterContentCache; getCharacterContent
+    reads this) caller: AbstractResource.finishLoading@1842.
+These are DIFFERENT chains; I conflated them earlier — disregard "addResource and
+cacheCharacterContent share one caller."
+SPAWN CRASH is on getPXFResource (poolHash) == null. poolHash is filled by exactly
+two funcs: _onFileLoaded (UGC async, stalls headless) and importManifest@18228
+(string says "disabled"). So the open question = how do BUILTINS get into poolHash
+if both poolHash-fillers are UGC/disabled? Possibilities to check next (clean
+channel): (a) importManifest is only conditionally disabled (need its real
+disasm — was being read when channel corrupted), (b) builtins use getCharacter
+Content's cache path and spawnPlayer for builtins doesn't hit the null because
+their poolHash entry comes from importManifest at boot. RESOLVE by cleanly
+disassembling importManifest@18228 + finding its caller chain at boot.
+
+## SESSION END STATE
+Channel corrupting bytecode-disasm reads (injecting EOF/```/'wait' into op
+streams; caught by canary+shasum). Stopping bytecode RE per discipline rule.
+Net verified progress this goal-run: 30+ commits; criteria #1 & #2 MET (sandbag
+converts clean; FrayTools boxes sub-px except low-sev itembox); root cause of
+#3-#6 block fully characterized (headless poolHash never populated for custom
+content); fix direction identified (synchronous loadFromBytes/importManifest
+path — exact primitive pending one clean disasm of importManifest@18228 + the
+loadFromBytes signature). Resume: restart for clean channel, disassemble
+importManifest@18228 and AbstractResource.load@1838/loadFromBytes@1839, then
+inject a synchronous "read custom .fra bytes -> register into poolHash" call at
+READY + namespace-agnostic pool resolver.
