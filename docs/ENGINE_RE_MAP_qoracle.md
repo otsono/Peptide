@@ -219,3 +219,42 @@ have. So (B) — nothing queued — is the more likely cause: findLocalUgc found
 .fra to fetch in the headless context. That points to option 2 (direct
 createFromBytes on the known custom/sandbag/sandbag.fra bytes) as the robust fix,
 OR fixing findLocalUgc's directory discovery for the headless launch.
+
+## BOTH (A) AND (B) FALSIFIED -> the bug is a KEY/REF MISMATCH (md5-stable)
+- (A) falsified: Main.update@17752 (md5 010ca9a0) op0 = Call CoreApp.update@17672,
+  which calls checkForMessages@17734 every frame. Thread results ARE pumped in our
+  headless boot. So it's not "threads never complete".
+- (B) falsified: findLocalUgc@17836 (md5 0af946bc) walks getApplicationDirectory
+  -> resolvePath("custom") -> getDirectoryListing, filtering .fra. custom/sandbag/
+  sandbag.fra exists, so it IS discovered + queued + constructed + pooled.
+
+So the resource IS constructed (f17 non-null on the constructed object) and pooled
+— but spawnPlayer's getPXFResource(charId) returns a DIFFERENT object (a stub) or
+finds nothing under the id it builds, and that returned object has null f17. =>
+KEY/REF MISMATCH between (the key the loaded resource is pooled under) and (the key
+spawnPlayer derives from playerConfig.character).
+
+spawnPlayer@2496: op1 GetThis PlayerConfig.character(f13) -> op2
+getResourceIdentifierString@18225(charRef) -> idStr -> op3 getPXFResource@18288
+(idStr). addResource@18230 pools under getFullyQualifiedResourceId@1788. If the
+fully-qualified id of the LOADED sandbag resource != the resource-identifier-string
+our `s`-handler stuffed into playerConfig.character, getPXFResource either misses
+(returns the stub created elsewhere) or returns a different entry.
+
+### Pinpoint (next reliable static step)
+1. Our `s`-handler builds the char ref via parseResourceIdentifier@18224 on
+   "global::sandbag.sandbag" (LAUNCHED echo). spawnPlayer derives the lookup id
+   from THAT ref via getResourceIdentifierString@18225.
+2. The LOADED resource is pooled under getFullyQualifiedResourceId@1788 of the
+   PXFResource that createFromBytes built from custom/sandbag/sandbag.fra — whose
+   namespace is whatever findLocalUgc/createFromBytes assigns to custom content
+   (likely "custom::sandbag.sandbag", NOT "global::").
+3. So `global::sandbag.sandbag` (what we pass) != the pooled key
+   (`custom::sandbag.sandbag`) -> getPXFResource(global::...) finds a DIFFERENT or
+   stub entry with null f17. THE EARLIER "all namespaces crash" TEST is the
+   counter-evidence to recheck: custom::sandbag.sandbag ALSO crashed 36adae25 —
+   if the pooled key were custom::, that form should have worked. So either the
+   pooled key is yet another form, OR createFromBytes wasn't actually reached.
+   RESOLVE BY: disasm createFromBytes@1882 to see the namespace/id it assigns +
+   the getFullyQualifiedResourceId it pools under; compare to all 3 tested forms.
+   This is the crux and is fully static-tracable (reliable channel).
