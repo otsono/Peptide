@@ -315,3 +315,41 @@ behavior; cargo build 0 errors. Once the resource loads, f17/f22 are non-null,
 spawnPlayer/setupStage succeed, the Match goes live, Match.elapsedFrames (type634
 f75) advances -> freeze oracle + telemetry (#6/#7) + move-drive via playCState
 (#4) all become reachable.
+
+## STRONGEST LEAD (md5-verified): loadUgc@17796 populates content maps
+fraymakers.util.$UgcUtil (md5 12dff3da, reproduced):
+  - loadUgc@17796 (argc=0) — loads UGC; body works on $UgcContent +
+    $ResourceManager + AbstractResource + StringMap (the per-type content maps).
+  - reloadUgcByContentIdentifiers@17832 (argc=1) — reload specific ids.
+  - unloadUgc@17833 (argc=2), _onFileLoaded@17838, _onFileLoadedError@17839.
+PXFResource per-type content-map field names (str 2111-2123): characterPxf
+ContentMap, stagePxfContentMap, itemPxfContentMap, etc. (f17 = character, f22 =
+stage, confirmed earlier by disasm).
+
+HYPOTHESIS (high-confidence, matches all verified evidence): our custom content
+sits in the pool (getPXFResource non-null → LAUNCHED) but loadUgc never populated
+its per-resource content map — so spawnPlayer's PXFResource.characterPxfContentMap
+(f17) is null. The harness summary claims inject_ready_flag already injects a
+loadUgc@17796 Call0 at boot; if so it may run BEFORE our custom content is
+registered, or load a different set. EITHER WAY the fix is to (re)load our content
+ids right before startMatch:
+  - call reloadUgcByContentIdentifiers@17832 with [our char id, stage id], OR
+  - call loadUgc@17796 after content registration and gate startMatch on its
+    completion.
+
+### Implementation note for the `s`-handler (connect_edit)
+After emit_resolve produces each ref, before FraymakersMode.startMatch@6227:
+inject a call to reloadUgcByContentIdentifiers@17832 (argc=1: an Array/collection
+of content-identifier strings) for the char+stage ids, then proceed. Verify:
+error.log md5 != 3537a487 (stage) and != 36adae25 (char); cargo build 0 errors;
+buzzwole control behaves identically to sandbag.
+(reloadUgcByContentIdentifiers arg type: disasm 17832 to get the exact collection
+type before building the call — do this on a healthy channel; this turn's channel
+re-corrupted mid-disasm.)
+
+### CHANNEL re-degraded
+Output corruption returned (duplicated/reordered grep results, stale headers,
+arithmetic-canary mismatch) while inspecting loadUgc's body and whether main.rs
+already calls it. Those two specific reads are UNTRUSTED. Everything with a
+reproduced md5 above (UgcUtil findexes, content-map field names, spawnPlayer/
+getCharacterContent chains) IS trusted.
