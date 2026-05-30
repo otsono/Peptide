@@ -226,3 +226,44 @@ sandbag conversion bug. sandbag's .fra may be fine.
 RECOMMEND: restart session to clear the channel and let the OS reap the wedged
 engine procs, then resume from "NEXT (engine side)" above. The FrayTools-side
 validation (task #3, compare_boxes) needs NO engine and can proceed independently.
+
+## SESSION 2 RESULTS (accurate, post-resume)
+WINS (verified, committed):
+- harness.js cold-launch fix (a1c9f4e2): ported waitForTarget from
+  export-in-fraytools.js. harness.js now runs end-to-end (sandbag idle →
+  4452-byte JSON, nav ok:store-dispatch, boxes+frame captured). render-entity.js
+  doesn't share the pattern (skip).
+- compare_boxes oracle builds + runs (target/release/compare_boxes
+  --ssf2 sandbag.ssf --char sandbag --json <h.json> [--tolerance px]).
+
+FRAYTOOLS VALIDATION — partial, NEEDS FOLLOW-UP:
+- sandbag IDLE frame0: harness reports 0 boxes (idle pose; maybe expected, maybe
+  missing hurtboxes — unresolved).
+- sandbag JAB: 8 frames; harness reported 0 boxes on frames 0 and 3 (loop got
+  truncated by the channel before frames 2/4/5 reported).
+- BUT the entity JSON on disk HAS 28 COLLISION_BOX layers (+64 IMAGE, 1
+  FRAME_SCRIPT). So boxes DO exist in the conversion. The harness extracting 0 on
+  these frames is EITHER a per-keyframe activation detail (boxes only on certain
+  frames) OR a harness box-extraction gap. UNRESOLVED — debug which on a healthy
+  channel: pick a frame known to have an active hitbox and confirm the harness
+  sees it; if not, fix harness.js box extraction. compare_boxes on idle was a
+  trivial 0/0 PASS (not meaningful).
+
+GOTCHA fixed: macOS has no `timeout` cmd — earlier "empty json" was just exit 127
+(command not found), not a harness bug. Use the Bash tool's own timeout instead.
+
+CORRECTED PRIORITY (healthy session):
+1. FrayTools box validation: find a sandbag attack frame with an active hitbox
+   (cross-ref HitboxStats.hx / the COLLISION_BOX keyframes), capture it, run
+   compare_boxes for a REAL geometry verdict. Fix harness extraction if it
+   misses boxes that are on-disk.
+2. Engine unblock: inject custom-content load (UgcUtil path → addResource@18230,
+   the only live pool-populator since importManifest@18228 is disabled) at/after
+   READY before startMatch, so getPXFResource(custom char) is non-null. Verify
+   buzzwole spawns, then sandbag.
+3. Then #6 input-dispatch, #7 physics, #8 capture, #9 iterate.
+
+ENV (still degraded): tool channel garbles/duplicates/truncates output (caught
+~6 corrupted reads via shasum/canary; mangled a dict + truncated a loop this
+round). 4 wedged `hl _conn.dat` procs (UNE, unkillable) from earlier boots.
+STRONGLY recommend a session restart before more delicate RE.
