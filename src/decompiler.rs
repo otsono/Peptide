@@ -1553,12 +1553,16 @@ fn guard_loop_termination(stmts: Vec<Stmt>) -> Vec<Stmt> {
     const COUNTERS: [&str; 4] = ["i", "j", "k", "l"];
 
     // Does `cond` look like `<counter> < <expr-with-.length>`? Return the counter.
+    // The lhs counter may be a renamed `GetLex("i")` OR an un-renamed `Local(n)`
+    // that only *renders* as "i" via the slot-name map (the latter is the common
+    // case for SSF2 array-walk loops, e.g. `while (i < effects.get().length)`).
+    // So we compare the RENDERED lhs against the counter names rather than
+    // requiring a specific AST node — this catches both forms.
     fn counter_of_cond(cond: &Expr) -> Option<String> {
         if let Expr::BinOp("<", l, r) = cond {
-            if let Expr::GetLex(name) = l.as_ref() {
-                if COUNTERS.contains(&name.as_str()) && expr_mentions_length(r) {
-                    return Some(name.clone());
-                }
+            let lname = l.render();
+            if COUNTERS.contains(&lname.as_str()) && expr_mentions_length(r) {
+                return Some(lname);
             }
         }
         None
