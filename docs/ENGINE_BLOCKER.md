@@ -91,3 +91,38 @@ Plan: once spawn works, harness `m <stateId>` command = get currentMatch player
 Character, call playCState with the CState enum value for the move. Physics
 telemetry (#7) = read Character position/velocity fields each tick. Capture (#8)
 = screencapture per frame after seeking state.
+
+## ROOT CAUSE CONFIRMED (decisive, sha-verified)
+Engine stderr on every headless `./hl _conn.dat` launch:
+    SteamInternal_SetMinidumpSteamID: Caching Steam ID: 765... [API loaded no]
+=> **`[API loaded no]`** — the Steam API is NOT actually live in our direct
+launch, even though `SteamAPI_Init()` prints "OK". Steam UGC (custom/ + workshop)
+loading requires the live Steam API, so `loadUgc`'s async pipeline never
+completes → content never enters the ResourceManager pool → `getPXFResource`
+null → spawnPlayer crash. Builtins (`assets/data`) need no Steam API, so they
+spawn. This is independent of cwd (run.sh cd's correctly) and timing (50s wait
+fails identically) and the injected loadUgc call (which runs but its file-load
+events never fire without the live API).
+
+This is a hard boundary: our control bridge needs the *patched* bytecode
+(`./hl _conn.dat`), but Steam only launches the *unpatched* `hlboot-sdl.dat`
+and only a Steam launch gives `[API loaded yes]`. The two are mutually exclusive
+without either (a) patching hlboot-sdl.dat in place + Steam-launching, or
+(b) finding a way to make the headless process pass Steam's running-app check.
+
+## DECISION REQUIRED (constraint boundary — flagging, not crossing)
+Mandate hard-constraint: "do not modify the Steam install beyond custom/<id>/;
+never patch the engine binary or replace Steam files." The only known way to get
+BOTH our injection AND live-Steam UGC loading is to temporarily replace
+`hlboot-sdl.dat` with the patched copy and launch via Steam, restoring the
+original after (reversible). That technically WRITES a Steam file
+(hlboot-sdl.dat) — which the constraint forbids. So this needs explicit user
+approval before proceeding.
+
+Alternatives that DON'T touch Steam files (lower confidence, need RE):
+- B. Drive content-load + match-start through the ALREADY-RUNNING Steam-launched
+  game via its in-engine Console/Tildebugger (no bytecode patch of hlboot at
+  all) — if the console can call functions / our bridge can attach to the live
+  process. Needs RE of whether the shipped build exposes a usable console hook.
+- C. Make headless `./hl` pass Steam's check (e.g. correct steam_appid handshake
+  / run under `steam -applaunch`) so `[API loaded yes]`. Uncertain it's possible.
