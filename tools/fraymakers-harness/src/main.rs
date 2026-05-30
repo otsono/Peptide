@@ -751,6 +751,11 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let sandbag_path_g = add_string_const(code, "/Users/jimmy/Library/Application Support/Steam/steamapps/common/Fraymakers/custom/sandbag/sandbag.fra");
     let l_prefix_g = add_string_const(code, "L:");
     let l_fail_g = add_string_const(code, "L:FAIL\n");
+    let l_cmapnull_g = add_string_const(code, " CMAP:NULL\n");
+    let sandbag_pkgid_g = add_string_const(code, "sandbag.sandbag");
+    let key_sb_g = add_string_const(code, " KEY=sandbag\n");
+    let key_sbsb_g = add_string_const(code, " KEY=sandbag.sandbag\n");
+    let key_unknown_g = add_string_const(code, " KEY=?\n");
     eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer
     // (added by the always-subscribed gameStarted handler); menuContainer is a
@@ -1326,10 +1331,36 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(getpxf_fn), arg0: rr(57) });  // PXFResource | null
     let idx_l_jfail = ops.len();
     ops.push(Opcode::JNull { reg: rr(60), offset: 0 });                  // null -> L:FAIL
-    // L:OK -> "L:" + fqid + "\n"
+    // L:OK -> "L:" + fqid + (" CMAP:OK" | " CMAP:NULL") + already-newlined status
     ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(l_prefix_g) });
     ops.push(Opcode::Call2 { dst: rr(58), fun: RefFun(str_add), arg0: rr(53), arg1: rr(57) });
-    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(nl_g) });
+    // diagnostic: is the loaded PXFResource's characterPxfContentMap populated?
+    ops.push(Opcode::Field { dst: rr(63), obj: rr(60), field: RefField(char_cmap_field) });
+    let idx_l_cmap_jnull = ops.len();
+    ops.push(Opcode::JNull { reg: rr(63), offset: 0 });                  // null cmap -> CMAP:NULL
+    // probe the actual content key: exists(cmap,"sandbag")? then exists(cmap,"sandbag.sandbag")?
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });
+    ops.push(Opcode::Call2 { dst: rr(64), fun: RefFun(sm_exists), arg0: rr(63), arg1: rr(55) });
+    let idx_l_probe1_jfalse = ops.len();
+    ops.push(Opcode::JFalse { cond: rr(64), offset: 0 });                // not "sandbag" -> probe2
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(key_sb_g) });
+    let idx_l_probe1_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_l_probe2 = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_pkgid_g) });
+    ops.push(Opcode::Call2 { dst: rr(64), fun: RefFun(sm_exists), arg0: rr(63), arg1: rr(55) });
+    let idx_l_probe2_jfalse = ops.len();
+    ops.push(Opcode::JFalse { cond: rr(64), offset: 0 });                // not "sandbag.sandbag" -> unknown
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(key_sbsb_g) });
+    let idx_l_probe2_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_l_probe_unknown = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(key_unknown_g) });
+    let idx_l_probe_unknown_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_l_cmap_null = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(l_cmapnull_g) });
+    let idx_l_cmap_done = ops.len();
     ops.push(Opcode::Call2 { dst: rr(58), fun: RefFun(str_add), arg0: rr(58), arg1: rr(53) });
     ops.push(Opcode::Null { dst: rr(15) });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(58), arg2: rr(15) });
@@ -1453,6 +1484,12 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // l-command jumps ('l' no-match -> m-check; getPXFResource null -> L:FAIL; done -> m-check)
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_l] { *offset = idx_m_check as i32 - idx_jne_l as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_l_jfail] { *offset = idx_l_fail as i32 - idx_l_jfail as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_l_cmap_jnull] { *offset = idx_l_cmap_null as i32 - idx_l_cmap_jnull as i32 - 1; }
+    if let Opcode::JFalse { offset, .. } = &mut ops[idx_l_probe1_jfalse] { *offset = idx_l_probe2 as i32 - idx_l_probe1_jfalse as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_probe1_jdone] { *offset = idx_l_cmap_done as i32 - idx_l_probe1_jdone as i32 - 1; }
+    if let Opcode::JFalse { offset, .. } = &mut ops[idx_l_probe2_jfalse] { *offset = idx_l_probe_unknown as i32 - idx_l_probe2_jfalse as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_probe2_jdone] { *offset = idx_l_cmap_done as i32 - idx_l_probe2_jdone as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_probe_unknown_jdone] { *offset = idx_l_cmap_done as i32 - idx_l_probe_unknown_jdone as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_jdone] { *offset = idx_m_check as i32 - idx_l_jdone as i32 - 1; }
     // k diagnostic (directoriesToLoad) jumps
     if let Opcode::JNull { offset, .. } = &mut ops[idx_k_dirs_null] { *offset = idx_k_after_dirs as i32 - idx_k_dirs_null as i32 - 1; }
