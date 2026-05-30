@@ -81,3 +81,13 @@ Steam-gated too.
    `getPXFResource` non-null. Verify buzzwole-style is out of scope; verify
    **sandbag spawns** (no error.log). Then proceed to criteria #4–6
    (moves via internal funcs, animation capture, physics telemetry).
+
+## Task #6 prep (internal move dispatch) — found statically
+Character move API (pxf.entity.$Character), the "drive moves WITHOUT keypresses" lever:
+- playCState@6801 (argc 2)  — entity.playCState(CState.X); converted Script.hx
+  already uses this (e.g. CState.JAB2). PRIMARY lever.
+- setState@6758 (argc 3), toState@6772 (argc 2), updateState@6755, playAnimation@6743
+Plan: once spawn works, harness `m <stateId>` command = get currentMatch player
+Character, call playCState with the CState enum value for the move. Physics
+telemetry (#7) = read Character position/velocity fields each tick. Capture (#8)
+= screencapture per frame after seeking state.
