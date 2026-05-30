@@ -203,3 +203,34 @@ correct on the FrayTools side (boxes sub-px). Getting custom content into a
 headless match needs either: (a) more RE to find+invoke the builtin sync loader
 for our file, or (b) the reversible-hlboot-swap + Steam launch (writes a Steam
 file; needs approval). This is a deep engine-internals effort beyond quick fixes.
+
+## *** BREAKTHROUGH: the synchronous loader path (sha-verified core) ***
+Both addResource@18230 AND cacheCharacterContent@18258 have the SAME single
+caller: pxf.io.AbstractResource::finishLoading@1842. So there is ONE unified
+registrar — finishLoading — that populates BOTH poolHash (getPXFResource) and the
+type cache (pxfCharacterContentCache that getCharacterContent reads). Builtins
+reach finishLoading and complete; our custom .fra's async read never fires it
+headless.
+
+finishLoading@1842 is invoked by AbstractResource::{load@1838, loadFromBytes@1839,
+onChunkLoaded@1840}. **loadFromBytes@1839 is the SYNCHRONOUS path**: bytes in →
+finishLoading → addResource + caches. No async, no event loop, no Steam.
+
+### THE FIX (next session, healthy channel)
+Inject at READY (before `s`):
+  1. read custom/sandbag/sandbag.fra into bytes (sys.io.File.getBytes or the
+     engine's FileObject read — both exist),
+  2. construct an AbstractResource (or the PXFResource subtype) for it,
+  3. call loadFromBytes@1839 (or load@1838) → finishLoading registers it
+     synchronously into poolHash + the character cache,
+  4. ensure the namespace it registers under matches what `s` resolves; simplest
+     is to make the resolver do a pool registry-search by content-id (the
+     currently-disabled hung path — fix its iterator) so namespace doesn't matter.
+Then getPXFResource(sandbag) is non-null → spawnPlayer succeeds → criteria #3-#6
+unblock (playCState@6801 move driver, telemetry, capture).
+RE remaining: exact signature of loadFromBytes@1839 (args: bytes? path? meta?) and
+how to build the resource object — disassemble 1838/1839 cleanly first.
+
+## CHANNEL: corrupting reads (injecting EOF/``` fences, truncating). All
+sha-verified facts above are reliable; anything not sha-checked this session is
+suspect. Recommend restart before the bytecode-injection step.
