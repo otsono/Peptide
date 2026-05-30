@@ -1530,6 +1530,128 @@ fn decompile_closure(method_idx: u32, abc: &AbcFile) -> Expr {
     Expr::Closure(params, stmts)
 }
 
+/// Guarantee counter `while` loops terminate.
+///
+/// SSF2 AS3 commonly mutated an array *during* iteration via `arr.splice(i, 1)`
+/// (which shrinks the array, so the remove branch intentionally does NOT do
+/// `i++`). Our decompiler drops the splice when mapping the API, leaving a loop
+/// like:
+///
+///   while (i < arr.length) {
+///     if (arr[i] == null) { i = i + 1; }   // null path advances
+///     else { ...removeChild...; }          // remove path does NOT advance
+///   }
+///
+/// With the splice gone, the remove path neither advances `i` nor shrinks the
+/// array → infinite loop → engine freeze. (AS3→Haxe loop forms differ; see
+/// haxedev as3-to-haxe guide.) This pass restores progress: for a counter
+/// `while (i < ….length)` whose body is a single if/else where exactly one
+/// branch advances `i`, append `i = i + 1;` to the branch that lacks it. The
+/// guard is only added when a path is genuinely missing the advance, so correct
+/// loops are never double-stepped.
+fn guard_loop_termination(stmts: Vec<Stmt>) -> Vec<Stmt> {
+    const COUNTERS: [&str; 4] = ["i", "j", "k", "l"];
+
+    // Does `cond` look like `<counter> < <expr-with-.length>`? Return the counter.
+    fn counter_of_cond(cond: &Expr) -> Option<String> {
+        if let Expr::BinOp("<", l, r) = cond {
+            if let Expr::GetLex(name) = l.as_ref() {
+                if COUNTERS.contains(&name.as_str()) && expr_mentions_length(r) {
+                    return Some(name.clone());
+                }
+            }
+        }
+        None
+    }
+    fn expr_mentions_length(e: &Expr) -> bool {
+        match e {
+            Expr::GetProperty(_, p) => p == "length",
+            Expr::Call(o, m, _) => m == "length" || expr_mentions_length(o),
+            Expr::GetLex(s) => s.ends_with(".length") || s.contains(".length"),
+            Expr::BinOp(_, a, b) => expr_mentions_length(a) || expr_mentions_length(b),
+            _ => false,
+        }
+    }
+    // Does this statement list advance `name` on its straight-line path, or
+    // splice the iterated collection (which makes not-advancing correct)?
+    fn advances_counter(body: &[Stmt], name: &str) -> bool {
+        body.iter().any(|s| stmt_advances(s, name))
+    }
+    fn stmt_advances(s: &Stmt, name: &str) -> bool {
+        match s {
+            // `i = i + 1` is emitted as Stmt::Expr(GetLex("i = i + 1")) by
+            // rename_loop_counters; also accept any reassignment of the counter
+            // and any `.splice(` (array shrink).
+            Stmt::Expr(Expr::GetLex(code)) => {
+                let c = code.replace(' ', "");
+                c.starts_with(&format!("{name}={name}"))   // i=i+1 / i=i-1
+                    || c.starts_with(&format!("{name}++"))
+                    || c.starts_with(&format!("{name}--"))
+                    || code.contains(".splice(")
+            }
+            Stmt::Expr(e) | Stmt::Return(Some(e)) => expr_has_splice(e),
+            // A nested if where BOTH branches advance also counts.
+            Stmt::If(_, t, el) => {
+                !el.is_empty() && advances_counter(t, name) && advances_counter(el, name)
+            }
+            _ => false,
+        }
+    }
+    fn expr_has_splice(e: &Expr) -> bool {
+        match e {
+            Expr::Call(o, m, args) => m == "splice" || expr_has_splice(o)
+                || args.iter().any(expr_has_splice),
+            Expr::GetProperty(o, _) => expr_has_splice(o),
+            Expr::BinOp(_, a, b) => expr_has_splice(a) || expr_has_splice(b),
+            _ => false,
+        }
+    }
+    fn incr_stmt(name: &str) -> Stmt {
+        Stmt::Expr(Expr::GetLex(format!("{name} = {name} + 1")))
+    }
+
+    fn fix_body(body: Vec<Stmt>) -> Vec<Stmt> {
+        body.into_iter().map(fix_stmt).collect()
+    }
+    fn fix_stmt(s: Stmt) -> Stmt {
+        match s {
+            Stmt::While(cond, body) => {
+                let body = fix_body(body); // recurse into nested loops first
+                if let Some(name) = counter_of_cond(&cond) {
+                    if !advances_counter(&body, &name) {
+                        // Body doesn't advance the counter on its straight-line
+                        // path. If it's a single if/else, patch the branch(es)
+                        // that lack the advance; otherwise append to the body.
+                        let patched = if body.len() == 1 {
+                            if let Stmt::If(c, t, e) = &body[0] {
+                                let mut t = t.clone();
+                                let mut e = e.clone();
+                                if !advances_counter(&t, &name) { t.push(incr_stmt(&name)); }
+                                // Only patch a non-empty else; an empty else means
+                                // "fall through" and appending to body is safer.
+                                if !e.is_empty() && !advances_counter(&e, &name) {
+                                    e.push(incr_stmt(&name));
+                                }
+                                Some(vec![Stmt::If(c.clone(), t, e)])
+                            } else { None }
+                        } else { None };
+                        let body = match patched {
+                            Some(b) => b,
+                            None => { let mut b = body; b.push(incr_stmt(&name)); b }
+                        };
+                        return Stmt::While(cond, body);
+                    }
+                }
+                Stmt::While(cond, body)
+            }
+            Stmt::If(c, t, e) => Stmt::If(c, fix_body(t), fix_body(e)),
+            other => other,
+        }
+    }
+
+    stmts.into_iter().map(fix_stmt).collect()
+}
+
 /// Rename loop-counter locals (_vN initialized to 0 before a While) to i/j/k.
 fn rename_loop_counters(stmts: Vec<Stmt>) -> Vec<Stmt> {
     use std::collections::HashMap;
@@ -1676,6 +1798,7 @@ pub fn decompile_method(
     }).collect();
     let stmts = collapse_duplicate_ifs(stmts);
     let stmts = rename_loop_counters(stmts);
+    let stmts = guard_loop_termination(stmts);
 
     let param_str = params.join(", ");
     let mut out = format!("function {}({}) {{\n", name, param_str);
