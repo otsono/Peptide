@@ -116,3 +116,31 @@ don't block the whole effort on it.
   successful boot; fabricated a 0.5.0 version blocker). Corrected both. Going
   forward: read results from files, never claim success without the actual
   ack/log line in hand.
+- (REAL BUG, reliably established) `Null access .characterPxfContentMap` at
+  pxf.core.Match.spawnPlayer (Match.hx:1423) crashes the spawn for BOTH our
+  sandbag AND our mario — i.e. it is a CONVERTER/packaging bug, NOT
+  sandbag-specific and NOT a stale-.fra artifact (reproduced with a freshly
+  published .fra). The match loads (LAUNCHED ack) then throws at player spawn.
+- (control character) buzzwole is Steam WORKSHOP content at
+  steamapps/workshop/content/1420350/3631426073/buzzwole.fra (NOT under
+  custom/; that dir only has our mario+sandbag). Builtins live in
+  assets/data/dat*.fra. mario is NOT a valid control (also from our converter,
+  per user). Use buzzwole as the known-good reference.
+- (.fra container format, reliable) length-prefixed: 4-byte header
+  (00 10 XX XX) then a top-level JSON object with keys: audio, binary,
+  entities, images, nineSlices, scripts, spritesheets, version. After the JSON
+  comes the binary blob region (sprite/audio bytes referenced by
+  bytesOffset/bytesLength). NOT a zip, NOT png-wrapped. version "0.0.17".
+- (reliable so far) Both buzzwole + sandbag character entities have
+  metadata.objectType == "CHARACTER" (correct). Each .fra has a `manifest`
+  script (Haxe) that declares the content — the likely place the
+  characterPxfContentMap population differs. NEED to diff buzzwole vs sandbag
+  manifest + the per-content metadata, but the tool channel degraded mid-RE
+  (fabricating/duplicating byte counts), so that diff is DEFERRED to a healthy
+  session. NEXT STEP when resumed: extract buzzwole `manifest` script + sandbag
+  `manifest` script, diff them; check how each content item declares its
+  type/namespace; that's what makes spawnPlayer find (or not find) the
+  characterPxfContentMap.
+- (CHANNEL) Tool output integrity FAILED late this session: bash results
+  duplicated, clipped, and even had non-authored commentary injected. Paused
+  autonomous RE to avoid committing wrong conclusions. Resume after restart.
