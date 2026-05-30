@@ -59,3 +59,28 @@ are unverifiable):
 Branch fraymakers-match-harness. The code changes above are committed/on disk and
 build. Steam install: hlboot untouched (read-only patch source), fixed
 sandbag.fra installed, no leftover _conn.dat.
+
+## CORRECTION (grep-verified, canary-matched): resolver change REGRESSED launching
+Reliable signal (grep '^<< LAUNCHED' across run serve.logs, canary 39203 matched):
+  OLD binary (pre 5b5e1dd4): fp_fixed/fp_buggy/fp_stagefix/ctl_* all LAUNCHED=1.
+  NEW binary (post 5b5e1dd4): rig_A/rig_B/rig_BZ/rig_QDIAG all LAUNCHED=0.
+So the resolver content-map-namespace change did NOT fix the crash — it stopped
+the match from launching at all (the s-handler no longer emits a LAUNCHED ack).
+The "post-fix: no error.log, engine alive 26s" I read as success actually means
+NOTHING LAUNCHED (no launch → no spawnPlayer → no crash). Commit 5b5e1dd4's
+"crash fixed" claim is therefore FALSE and is retracted.
+
+Likely cause: a jump-offset bug in the per-prefix branches added to emit_resolve
+(the JNull(resource)->next-prefix / Field(cmap)+JNotNull->accept wiring), causing
+the s-handler to fault or never complete the launch. The intent (accept only a
+prefix whose content map is non-null) is right; the bytecode wiring is wrong.
+
+True baseline (both broken): OLD = launches then crashes (characterPxfContentMap
+null); NEW = does not launch. Neither is a working match.
+
+### Corrected next step
+Fix emit_resolve's added branches (verify every jump offset; unit-trace the op
+indices), OR revert 5b5e1dd4 to restore launching and re-do the namespace fix
+carefully. Success oracle (reliable): serve.log has '<< LAUNCHED' AND error.log
+is absent (no characterPxfContentMap/stagePxfContentMap crash). Verify by reading
+the files yourself; cross-check counts with grep + a numeric canary.
