@@ -287,3 +287,31 @@ VERIFY ANY ATTEMPT BY: error.log md5 != 3537a487 (stage) AND != 36adae25 (char).
 Control: buzzwole must behave identically to sandbag (it's the resolver, not the
 char). cargo build must be 0-error (build is a reliable signal even when live
 runs fabricate).
+
+## ROOT CAUSE CONFIRMED (full md5-verified chain) — and why getCharacterContent won't fix it
+spawnPlayer@2496 (md5 7439a5bc):
+  op1 PlayerConfig.character (f13) -> charRef
+  op2 getResourceIdentifierString@18225(charRef) -> idStr
+  op3 getPXFResource@18288(idStr) -> PXFResource  (NON-null: it's in the pool)
+  op5 PXFResource.characterPxfContentMap (f17) -> NULL -> crash
+getCharacterContent@18292 (md5 cf7eb9aa) reads pxfCharacterContentCache =
+RM-statics field 29 (a DIFFERENT map from the per-resource f17). So calling
+getCharacterContent does NOT populate the PXFResource.f17 that spawnPlayer needs.
+
+CONCLUSION (verified): the per-resource characterPxfContentMap (f17) is filled
+only when that resource's CONTENT IS ACTUALLY LOADED. Our resource sits in the
+pool unloaded — getPXFResource returns it (LAUNCHED) but its f17 is null. The
+fix is to make ResourceManager.load@18242 actually load OUR char+stage. startMatch
+@18315 already calls queueResourcesFromMatchSettings(closure, statics f8) then
+load@18242; the queue must not be enqueuing our ids -> our synthetic MatchSettings/
+PlayerConfig doesn't expose the char id the way the real CSS/menu flow does.
+
+### THE turnkey task (single fix unblocks #4/#5/#6)
+Disasm the queueResourcesFromMatchSettings closure (MatchController statics f8,
+set in init@18313) to find which MatchSettings/PlayerConfig field(s) it reads to
+build the load queue, then make the `s`-handler populate exactly those. Verify:
+error.log md5 != 3537a487 (stage) and != 36adae25 (char); buzzwole == sandbag
+behavior; cargo build 0 errors. Once the resource loads, f17/f22 are non-null,
+spawnPlayer/setupStage succeed, the Match goes live, Match.elapsedFrames (type634
+f75) advances -> freeze oracle + telemetry (#6/#7) + move-drive via playCState
+(#4) all become reachable.
