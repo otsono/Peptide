@@ -145,14 +145,16 @@ so any further effort is pure wasted time.
 |---|---|---|
 | `p` | ping / liveness | `PONG` (`main.rs:572`) |
 | `c` | console passthrough — `Tildebugger.console.runCommand("help")` | `RAN` (`main.rs:568`) |
-| `s <char> <stage> <assist>` | **start match** — `createMode` a real `TrainingMode`, then `FraymakersMode.startMatch({characters, matchSettings, pauseMenu})`. Runs the engine's own offline-match flow (gates transition, menu teardown). | `LAUNCHED` (`main.rs:596`, `681`) |
+| `s <char> <stage> <assist>` | **start match (self-bootstrapping)** — first runs the custom-load core itself (idempotent: skipped if `getPXFResource("private::sandbag")` is already non-null, e.g. a prior `l`), then `createMode` a real `TrainingMode` and `FraymakersMode.startMatch({characters, matchSettings, pauseMenu})`. **No prior `l` needed** — `s sandbag thespire commandervideoassist` works in one swoop. Runs the engine's own offline-match flow (gates transition, menu teardown). | `LAUNCHED <char> <stage> <assist>` |
 | `q` | is a match live? (`_matches` length / `currentMatch`) | `Q:MATCH_LIVE` / `Q:NO_MATCH` / `Q:MATCHES_NONEMPTY` (`main.rs:685`) |
 | `k` | dump pool keys + UGC-discovery diagnostics (reveals the real namespace of headless-loaded content) | `K:...`, `K:DIRS_QUEUED>0/=0` (`main.rs:689`) |
 | `l` | **synchronous custom-`.fra` load** (headless, main thread) — see recipe below | `L:...`, `SPR:1`/`SPR:0` (`main.rs:738`) |
 | `m` | **move-dispatch** — `Character.toState(CState.JAB)` on player-0 (internal state-machine dispatch, **not** key-press simulation) | `M:JAB` / `M:NOMATCH` (`main.rs:716`) |
 | `t` | **telemetry/state readback** — `Character.getStateName()` on player-0 | `T:<state>` / `T:NOMATCH` (`main.rs:735`) |
 
-Short-name resolution (`s`/`l`): a bare `sandbag` (no `::`) is tried against `custom::`, `public::`, `global::` prefixes in order; first existing resource wins (`main.rs:637`). Or pass a full `namespace::package.id`.
+Short-name resolution (`s`/`l`): a bare `sandbag` (no `::`) is tried against `private::`, `custom::`, `public::`, `global::` prefixes in order; first existing resource wins (`main.rs:637`). `private::` is first so a bare name resolves to headless-loaded custom content (where `l` and `s`'s self-bootstrap register it). Or pass a full `namespace::package.id`.
+
+**Multi-command sessions:** `run.sh` sends one command per boot, but `m`/`t`/`q` probes need the *same* live match (a reboot loses it). Use `runseq.sh <boot_wait_s> <gap_s> "cmd1" "cmd2" …` to feed a gapped sequence into one engine session. `boot_wait_s` ~32 (engine boot→READY ≈ 30s); `gap_s` 6–9. Env: `FRAY_ENGINE_LOG=<file>` captures engine stdout, `FRAY_TAIL` extra hold after the last command. Example: `./runseq.sh 32 6 "s sandbag thespire commandervideoassist" "p" "q" "t" "m" "t"`.
 
 `fray_patch` read-only inspection subcommands (for re-deriving findices — **always re-verify**): `dis <findex>`, `typefields <type>`, `fnsof <type>`, `fninfo <findex>`, `callers <findex>`, `strgrep <s>`, `whoref <s>`, `inspect`.
 
