@@ -783,6 +783,7 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let sprite_entity_t = 746usize;      // pxf.structs.PXFSpriteEntity
     let cse_arg3_t = 108usize;           // cacheSpriteEntity 3rd arg type
     let star_g = add_string_const(code, "*");
+    let ns_sandbag_g = add_string_const(code, "private::sandbag.sandbag");
     eprintln!("sprite-fix: get_DataAsPxf={get_data_as_pxf} cacheEntity={cache_sprite_entity} smGet={sm_get} entityMap.f={pxf_entitymap_field} requiredMediaIds.f={reqmedia_field}");
     eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer
@@ -1374,8 +1375,14 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let idx_l_ent_jnull = ops.len();
     ops.push(Opcode::JNull { reg: rr(28), offset: 0 });
     ops.push(Opcode::UnsafeCast { dst: rr(74), src: rr(28) });           // -> PXFSpriteEntity (t746)
-    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) }); // bare key
     ops.push(Opcode::Null { dst: rr(75) });                              // 3rd arg (t108)
+    // re-cache under all 3 candidate spriteContent key formats (we don't know which the
+    // buried-vfx uses: bare, package.id, or namespaced); cacheSpriteEntity just sets a map entry.
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });    // "sandbag"
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_pkgid_g) }); // "sandbag.sandbag"
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(ns_sandbag_g) });    // "private::sandbag.sandbag"
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
     let idx_l_skip_recache = ops.len();
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(add_resource), arg0: rr(71) });
