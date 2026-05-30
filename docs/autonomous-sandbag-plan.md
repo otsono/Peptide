@@ -144,3 +144,23 @@ don't block the whole effort on it.
 - (CHANNEL) Tool output integrity FAILED late this session: bash results
   duplicated, clipped, and even had non-authored commentary injected. Paused
   autonomous RE to avoid committing wrong conclusions. Resume after restart.
+
+## SESSION 2 — FrayTools box validation COMPLETE (criterion #2)
+Engine-free, via fixed harness.js + compare_boxes oracle, 6 frames across 5 moves:
+  idle f0, jab f2, jab f4, tilt_forward f4, strong_forward f6, aerial_neutral f3
+RESULT: EVERY hurt/hit/body box PASSES sub-2px vs SSF2 source. The ONLY failing
+box on every frame is the ITEM_BOX (drift ~3.7px, X-anchor). So sandbag's box
+geometry conversion is sound; one isolated rotated-itembox-anchor bug remains.
+- itembox is the rotated-affine case (θ=9.7° even at idle); bake at
+  entity_gen.rs:642-661 doesn't invert collision_box_anchor cleanly when (x,y)
+  rotate with the pivot. Low severity (pickup range, not hit detection). Known
+  churny area (see git log / docs/fraytools_internals.md). DEFERRED — not worth
+  blocking the mandate's engine work on 3.7px.
+Full data: docs/sandbag_box_validation.txt.
+Criterion #2 (FrayTools layout match) = MET for the gameplay-critical boxes.
+
+## HARNESS FIXES SHIPPED THIS EFFORT (both verified)
+- export-in-fraytools.js: waitForTarget cold-launch fix (d9005a06)
+- harness.js: same fix ported (f174f77e)
+Both eliminate the "No inspectable targets" race. render-entity.js has the same
+pattern but is legacy/unused — port if ever needed.
