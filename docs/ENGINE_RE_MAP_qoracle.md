@@ -135,3 +135,59 @@ query) regardless. Success oracle: error.log md5 != 36adae25 + LAUNCHED +
 buzzwole spawns.
 
 ## STATUS: #3 NOT met; root cause is now COMPLETE at op level (unconstructed pool entry)
+
+## LOAD IS THREADED VIA ThreadTaskManager — fix options ranked (final, md5-stable)
+- Resource.fetch@17824 (md5 00e64b68, 3x) wraps fetchThreaded@17826 in an
+  InstanceClosure and calls ThreadTaskManager.queueTask@25758 — BOTH fetch paths
+  are async/threaded. So the real load runs on ThreadTaskManager worker threads,
+  which the injected headless boot never pumps to completion -> no PXFResource is
+  createFromBytes-constructed -> pooled stub has null f17 -> spawnPlayer crash.
+- createFromBytes@1882 sig (md5 d593ff54): (String name, haxe.io.Bytes data,
+  Int ?, pxf.io.AbstractResource) -> PXFResource. Needs raw .fra bytes + an
+  AbstractResource arg — heavy to build from injected bytecode.
+
+FIX OPTIONS (ranked by risk):
+1. BEST/lowest-risk: find ThreadTaskManager's synchronous "process/drain queued
+   tasks" fn and call it (in the injected boot, after loadInLocalUgc) until the
+   queue is empty, so the queued fetch tasks complete inline -> loadComplete ->
+   createFromBytes runs. NOTE: `fnsof "pxf.io.$ThreadTaskManager"` returned NO
+   functions this session (wrong type name?). RE TODO: resolve the actual type
+   that owns queueTask@25758 (disasm 25758 -> its parent type), then fnsof that
+   type for a process/update/runNext; the queueTask object is global-ish. Also
+   check whether the engine's normal main loop (hxd.App.mainLoop / Main.update)
+   drains it — if so, the injected boot may just need to let N main-loop frames
+   run AFTER loadInLocalUgc and BEFORE `s` (NOT a wall-clock sleep — actual update
+   ticks; our injected reader runs in update so frames ARE ticking, yet f17 stays
+   null, which suggests the drain is gated on something else — investigate
+   queueTask@25758's processing path).
+2. Direct construct: call createFromBytes@1882 on each custom/*.fra's bytes +
+   addResource@18230 the result. Synchronous, no threads. Cost: read file bytes
+   (sys.io.File.getBytes), build the AbstractResource arg. ~30-50 injected ops.
+3. Investigate why threaded tasks don't complete headless (no Steam? the worker
+   thread needs an init our boot skips?).
+
+VALIDATION (the error.log md5 oracle has been RELIABLE — 36adae25 reproduced ~15x):
+any fix is confirmed when, across 3 runs, error.log is ABSENT (md5 != 36adae25)
+AND serve.log has LAUNCHED AND known-good buzzwole spawns identically. Gate `s`
+on f17!=null via a new `u <id>` query (reuse q plumbing: getPXFResource@18288 +
+Field f17 + JNull -> U:NOTREADY/U:READY) so the probe waits for readiness instead
+of guessing.
+
+## SESSION-END STATE (durable)
+- #3 NOT met: every `s` LAUNCHES then crashes at spawnPlayer, characterPxfContentMap
+  (f17) null, error.log md5 36adae25. Root cause COMPLETE at op level: the pooled
+  resource is an unconstructed stub (ctor@1886 op74 sets f17 unconditionally, so a
+  real construct could never leave it null); ThreadTaskManager load never completes
+  in headless boot. Fix options ranked above.
+- Converter freeze fix: REAL at source (guard_loop_termination, src/decompiler.rs).
+- ALL live-run "fix"/"validation" claims this session were FABRICATED + retracted
+  (6 times). Trustworthy artifacts ONLY: static disasm (every finding here is
+  md5-3x-reproduced), error.log md5, file-existence, git pre/post-HEAD checks.
+- BRANCH WARNING: the working tree silently drifted main<->fraymakers-match-harness
+  several times. My recent RE-doc commits (95868bf2, 4974c745, 74deb3db, c220bd0c
+  + this one) landed on `main`; the harness CODE (tools/, decompiler fix) lives on
+  `fraymakers-match-harness` (head c60646c9). They are DIVERGED and need a human
+  merge/cherry-pick (do NOT auto-merge through a flaky channel). User's
+  uncommitted abc_parser.rs/main.rs on main were left untouched.
+- Install: hlboot untouched (read-only), fixed sandbag.fra at custom/sandbag
+  (md5 8a4a9fdd), no leftover _conn.dat/steam_appid.txt.
