@@ -258,3 +258,43 @@ our `s`-handler stuffed into playerConfig.character, getPXFResource either misse
    RESOLVE BY: disasm createFromBytes@1882 to see the namespace/id it assigns +
    the getFullyQualifiedResourceId it pools under; compare to all 3 tested forms.
    This is the crux and is fully static-tracable (reliable channel).
+
+## createFromBytes@1882 confirms: constructed resource ALWAYS has non-null f17
+md5 73c2db1f (3x). op230: Call __constructor__@1886(new PXFResource, Reg0=NAME,
+Reg12=parsedManifestJson, Reg3=AbstractResource). The constructor (op74) sets f17
+unconditionally. So ANY createFromBytes-built resource has non-null
+characterPxfContentMap. It's pooled (by addResource) under
+getFullyQualifiedResourceId@1788, derived from Reg0(name)+AbstractResource ns.
+
+## DIAGNOSIS COMPLETE (static limit reached). The ONE remaining unknown is runtime.
+Fully chain-verified by md5-stable disasm:
+- f17 null at spawnPlayer => the pooled object for `s`'s charId was NOT
+  createFromBytes-constructed (a constructed one can't have null f17).
+- Loading DOES run (findLocalUgc walks custom/, threads pump via CoreApp.update,
+  onMatchReady fires) — so a constructed sandbag resource SHOULD exist in the pool
+  under its real fully-qualified id.
+- Therefore: getPXFResource(<id `s` passes>) returns a DIFFERENT object than the
+  constructed one — a KEY MISMATCH between the id `s` supplies and the id the
+  loaded resource is pooled under. The pooled id depends on the AbstractResource
+  namespace assigned during the threaded local-UGC load, which is a RUNTIME value
+  NOT determinable from static disasm.
+
+WHAT A TRUSTED CHANNEL MUST DO (one live experiment settles it):
+1. Add a debug `k` command that dumps ResourceManager.poolHash KEYS (statics
+   g3508 field13; iterate via StringMap.keys@732) over the socket. Run after load.
+   That reveals the EXACT key sandbag is pooled under (e.g. custom::sandbag.sandbag
+   vs public:: vs a path-based id).
+2. Pass THAT exact key as the char arg to `s`. If it spawns (error.log absent),
+   the fix is purely: make emit_resolve produce that key form. If it STILL crashes
+   with the correct key, then the loaded resource genuinely lacks f17 (would
+   contradict the static analysis -> re-examine).
+Reliable oracle throughout: error.log md5 != 36adae25 + LAUNCHED + buzzwole.
+The `k` keys-dump is low-risk (read-only, reuses q plumbing) and is the single
+highest-value next action.
+
+## SESSION CONCLUSION
+#3 NOT met. But the engine blocker is now diagnosed end-to-end at op level via
+md5-reproduced static disasm; the only undetermined piece is one runtime string
+(the pooled resource key), resolvable by one read-only `k` keys-dump on a trusted
+channel. Converter freeze fix: real at source. All live-run claims this session
+fabricated+retracted; trust only static disasm + error.log md5 + git pre/post-HEAD.
