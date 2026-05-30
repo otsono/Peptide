@@ -19,19 +19,33 @@ with a FRESHLY published .fra (not a stale-file artifact). Affects BOTH our
 **sandbag AND our mario** → it's a converter/packaging OR harness-load-path bug,
 NOT sandbag-specific.
 
-**DECISIVE TEST RESULT (buzzwole):** `s buzzwole thespire ...` →
-`<< LAUNCHED custom::buzzwole.buzzwole`, and **NO error.log** — buzzwole
-SPAWNED CLEAN through the exact same harness `s` path that crashes our
-sandbag+mario. STRONG signal that the bug is in **our .fra PACKAGING**, not the
-harness load path. CAVEAT: read on a corrupting tool channel (stray tags, clipped
-lines), and `custom::buzzwole.buzzwole` is an unexplained anomaly (buzzwole is
-workshop content, not in custom/ — yet it resolved+loaded under custom::).
-RE-VERIFY this result first thing on a healthy channel before fully trusting it.
-If it holds: focus on why our .fra doesn't populate characterPxfContentMap that a
-clean external .fra does — diff per-content-item declarations / the
-cacheCharacterContent keying.
+**DECISIVE TEST RESULT (buzzwole) — sha-verified, TRUST THIS:**
+`s buzzwole thespire ...` → `<< LAUNCHED global::buzzwole.buzzwole ...`
+(sha ce33215f) and **error.log PRESENT (1178 bytes), same characterPxfContentMap
+null**. So buzzwole — a known-good external character — **ALSO crashes** via our
+harness `s` path. (A FIRST read of this log was channel-corrupted and falsely
+showed "custom::buzzwole" + "no error.log"; the checksummed re-read is the truth.
+Commit 8636ec83's message states the WRONG conclusion — ignore it.)
 
-(superseded) Earlier framing of this test:
+**CORRECTED CONCLUSION:** the bug is almost certainly in **our injected
+startMatch path (fraymakers-harness), NOT our .fra packaging.** Evidence:
+- buzzwole + sandbag + mario (all NON-builtin) crash identically at spawn.
+- Builtin `commandervideo` spawned fine earlier via the same `s` command
+  (rendered a real match) — and resolved to `public::commandervideo...`.
+- Everything that crashes resolved to `global::X.X` (the resolver's last-resort
+  prefix; custom:: and public:: existence checks failed, so it fell through to
+  global:: — which is WRONG for custom/workshop content, but more importantly the
+  content was never actually LOADED before spawn).
+THEORY: builtins are already resident, so spawn finds their characterPxfContentMap;
+custom/workshop characters must be loaded on-demand, and our injected startMatch
+skips the resource-load/queue step the real menu flow does
+(queueResourcesFromMatchSettings / ResourceManager.load → onMatchReady). Spawn
+then derefs a null content map. FIX likely harness-side: queue + await the
+character (and stage/assist) resource load before startMatch, mirroring the menu
+path. ALSO fix the resolver so custom content resolves to custom:: (and workshop
+to its real namespace) instead of falling through to global::.
+
+(superseded / earlier framing of this test:)
 `./run.sh "s buzzwole thespire commandervideo.commandervideoassist"` —
 background task `bvg5wq8ng`, log at `/tmp/claude-501/buzz_boot.log`.
 - If buzzwole ALSO crashes with the same null → the bug is our **injected
@@ -112,13 +126,24 @@ Long-term notes in
 — esp. `project_fraymakers-match-launch.md` (harness internals, findexes) and
 `project_fraymakers-engine-internals.md`.
 
-## Immediate next steps on resume
-1. Read `/tmp/claude-501/buzz_boot.log` + engine error.log → classify the bug
-   (packaging vs harness-load-path) per the decisive test above.
-2. If harness-load-path: inspect how the normal menu flow loads character
-   resources before spawn (queueResourcesFromMatchSettings@... / ResourceManager
-   load) and replicate in the injected `s` path before startMatch fires.
-3. If packaging: diff how characterPxfContentMap gets populated — compare a
-   builtin/buzzwole .fra's character content declaration vs ours at the
-   per-content-item level (the cacheCharacterContent path keys off content type).
-4. Re-confirm whether the tool channel is healthy before doing more binary RE.
+## Immediate next steps on resume (CONCLUSION ALREADY REACHED — see above)
+The classify-the-bug test is DONE: buzzwole (external known-good) ALSO crashes →
+bug is the **harness injected startMatch path not loading custom content before
+spawn**, not our packaging. So:
+1. RE the real menu→match flow's resource-load step: how
+   `queueResourcesFromMatchSettings` / `ResourceManager.load` populate the
+   character content caches (characterPxfContentMap) before `onMatchReady` fires
+   spawn. Our injected `s` path calls startMatch but skips this load/queue.
+   (We already use the REAL TrainingMode + FraymakersMode.startMatch@6227 per
+   memory `project_fraymakers-match-launch.md` — re-check whether that path is
+   actually being taken, or whether the bare MatchController.startMatch is used,
+   which would skip mode-level resource queueing.)
+2. Make the injected path queue+await the character/stage/assist resources, then
+   start the match (mirror the menu flow).
+3. Fix the short-name resolver namespace: custom content → `custom::`, workshop →
+   its namespace; stop falling through to `global::` (that's why everything
+   non-builtin resolved to global::X.X and failed to load).
+4. THEN re-test sandbag — its packaging may well be fine.
+5. Tool channel was corrupting reads (fabricated a whole log result here).
+   Verify health (echo a known arithmetic canary, shasum suspect files) before
+   trusting any binary/log RE.
