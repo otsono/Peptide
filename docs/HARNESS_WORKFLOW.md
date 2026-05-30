@@ -124,6 +124,21 @@ What `run.sh` does each run (Steam sandbox wipes anything added to the install d
 
 Port: `run.sh` randomizes to 18000–19999; `frayremote`'s built-in default is `17999`. The patched engine waits for content load (title "press any button" state), dials the socket (auth handshake), then processes commands per-frame on the main/render thread.
 
+### Don't stall on closing old Fraymakers engine instances
+
+Orphaned `hl` processes from earlier harness boots occasionally wedge into
+uninterruptible sleep (`ps` shows `STAT` containing `U`, e.g. `UNE`). In that
+state they ignore `SIGKILL` entirely and only clear on a full Mac restart.
+Crucially, **a wedged orphan does not block a new engine from launching** — it
+just sits there consuming nothing. Waiting on it, though, blocks the harness
+forever.
+
+**Rule: the "kill prior instance" step gets a hard 2-second budget — then move on.**
+If `kill -9` hasn't reaped the process within ~2s, treat it as wedged, ignore
+it, and launch the new engine anyway. Do **not** loop, retry, escalate, or wait
+it out — there is no command that clears a `U`-state process short of a reboot,
+so any further effort is pure wasted time.
+
 ### Commands (verified in `src/main.rs` — dispatched on the first byte)
 
 | Cmd | Meaning | Ack / readback |
