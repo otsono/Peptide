@@ -171,3 +171,37 @@ sandbag-derived key. Hypotheses for next iteration:
 3. The entity IS cached but lacks animation/tile data (preload built metadata only) — less likely
    since getSprite-non-null should let Vfx build the animation.
 NEXT STEP: extend `l` to report statsProps.spriteContent (t1975.f15 -> t1937.f86) — decisive.
+
+## *** RESOLVED: Character.hx:769 buried-VFX null fixed — load path COMPLETE ***
+The buried-character Vfx (`m_buriedCharacterVfx`, Character field 234, built at Character.hx:762)
+reads `spriteContent = statsProps.spriteContent`, and `Vfx.__constructor__@4671` op58-60 only
+builds the `.animation` (field 37) when `getSprite(spriteContent)` is non-null — else it jumps to
+the "Vfx id not found" warning, leaving `.animation` null → crash at line 769. RE of the key:
+`CharacterStats.hx:5` sets `spriteContent: self.getResource().getContent("sandbag")`, and
+`getContent@2185`→`getFullyQualifiedContentId@1789` = `getFullyQualifiedResourceId(res)` + `"."` +
+`id` = `"private::sandbag"` + `.` + `sandbag` = **`"private::sandbag.sandbag"`**. (Note: statsProps
+is built by the char's stats SCRIPT at spawn, so it is NULL at `l`-load time — a runtime probe of
+it during `l` is useless; the value had to be derived analytically.)
+- Root cause of the persisting crash: the `l` re-cache sourced the entity from
+  `PXFResource.entityMap.get("sandbag")`, which was **null** (entityMap not keyed that way / left
+  empty), so every `cacheSpriteEntity(...)` was silently skipped. The `requiredMediaIds=["*"]`
+  preload that gave SPR:1 was also **flaky** (SPR:1 once, SPR:0 on reruns).
+- Fix (this commit): in `l`, loop `cacheSpriteEntityData@1601(pxf, idx)` over
+  `PXFResource.entities[0..len]` (field 8; deterministic, no UnsafeCast — takes an Int index) to
+  build every sprite entity into `entityMap[entity.#2]`, then `entityMap.get("sandbag")` →
+  `cacheSpriteEntity` under all 3 key formats incl. the load-bearing `"private::sandbag.sandbag"`.
+- VERIFIED live (sc_test.sh): `l` then `s private::sandbag.sandbag thespire commandervideoassist`
+  → SPR:1, LAUNCHED, **no error.log (no Character.hx:769 null), engine stays ALIVE**. The four-
+  session headless custom-load + spawn blocker is fully resolved.
+Key findexes added: cacheSpriteEntityData=1601, getContent=2185, getFullyQualifiedContentId=1789,
+getSprite=18302, Vfx.__constructor__=4671 (animation guard at op58-60/field37),
+Character.m_buriedCharacterVfx=field234 (built Character.hx:762). PXFResource.entities=field8.
+
+## Harness state at this commit (resume point for next session)
+`tools/fraymakers-harness/src/main.rs` patches `fraymakers.Main.update` with a per-frame command
+handler over a loopback socket; commands: `l` (sync custom-.fra load + deterministic sprite-entity
+build/cache — see above), `s <char> <stage> <assist>` (launch match + spawnPlayer), `m` (drive
+move via Character.toState), `t` (state telemetry), `q` (match-live query), `k`/diagnostics.
+Test driver: `tools/fraymakers-harness/sc_test.sh` (boots engine, sends `l`+`s`, asserts via
+error.log/serve.log — file-based oracle). NEXT: loop-translation work (drive a move sequence +
+assert state transitions across the 47-char corpus); state-readback (`t`/`q`) verification deferred.

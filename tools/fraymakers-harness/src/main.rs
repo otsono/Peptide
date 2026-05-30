@@ -774,6 +774,11 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // _data.entityMap + the namespaced sprite cache; then re-cache the "sandbag" entity under the
     // BARE key (Character ctor looks up the bare spriteContent). No risky direct preload calls.
     let get_data_as_pxf = require_fn(code, "get_DataAsPxf", Some("pxf.io.AbstractResource"))?;
+    // Deterministic sprite-entity builder: cacheSpriteEntityData(pxf, idx:Int) builds entities[idx]
+    // into PXFResource.entityMap[entity.#2] (its id) — synchronous, no UnsafeCast, no flaky preload.
+    let cache_sprite_entity_data = require_fn(code, "cacheSpriteEntityData", Some("pxf.structs.PXFResource"))?;
+    let pxf_entities_field = find_field(code, pxfres_t, "entities")
+        .ok_or_else(|| anyhow::anyhow!("PXFResource.entities field not found"))?;
     let cache_sprite_entity = require_fn(code, "cacheSpriteEntity", Some("pxf.io.$ResourceManager"))?;
     let sm_get = require_fn(code, "get", Some("haxe.ds.StringMap"))?;
     let pxf_entitymap_field = find_field(code, pxfres_t, "entityMap")
@@ -783,6 +788,11 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let sprite_entity_t = 746usize;      // pxf.structs.PXFSpriteEntity
     let cse_arg3_t = 108usize;           // cacheSpriteEntity 3rd arg type
     let star_g = add_string_const(code, "*");
+    // The buried-character Vfx (Character.hx:762) reads spriteContent = statsProps.spriteContent,
+    // whose runtime value is getResource().getContent("sandbag") = getFullyQualifiedResourceId(res)
+    // + "." + "sandbag" = "private::sandbag.sandbag" (RE: getContent@2185 -> getFQContentId@1789).
+    // We already re-cache under that key below — the bug was sourcing the entity from entityMap.get
+    // (null), so the re-cache never ran. Fixed to source from getPXFSpriteEntity (SPR:1 non-null).
     let ns_sandbag_g = add_string_const(code, "private::sandbag.sandbag");
     eprintln!("sprite-fix: get_DataAsPxf={get_data_as_pxf} cacheEntity={cache_sprite_entity} smGet={sm_get} entityMap.f={pxf_entitymap_field} requiredMediaIds.f={reqmedia_field}");
     eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
@@ -1365,8 +1375,22 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // synchronous read+decode (main thread): fetchThreaded -> File.getBytes -> createFromBytes -> set_DataAsPxf
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: rr(71) });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: rr(71) }); // runs preload closure
-    // re-cache the "sandbag" sprite entity under the BARE key (Character looks up bare spriteContent)
-    ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(get_data_as_pxf), arg0: rr(71) });
+    // Deterministically build every sprite entity into PXFResource.entityMap (the flaky
+    // requiredMediaIds=["*"] preload sometimes leaves it empty -> SPR:0 -> crash). Loop
+    // cacheSpriteEntityData(pxf, idx) over entities[0..len]; each call sets entityMap[entity.#2].
+    ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(get_data_as_pxf), arg0: rr(71) }); // PXFResource
+    ops.push(Opcode::Field { dst: rr(66), obj: rr(60), field: RefField(pxf_entities_field) }); // entities (ArrayObj)
+    ops.push(Opcode::Field { dst: rr(39), obj: rr(66), field: RefField(0) }); // .length (Int)
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(zero_idx) });            // idx = 0
+    let idx_l_bld_loop = ops.len();
+    let idx_l_bld_jge = ops.len();
+    ops.push(Opcode::JSGte { a: rr(16), b: rr(39), offset: 0 });             // idx >= len -> build_done
+    ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(cache_sprite_entity_data), arg0: rr(60), arg1: rr(16) });
+    ops.push(Opcode::Incr { dst: rr(16) });
+    let idx_l_bld_jback = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                                 // -> build_loop
+    let idx_l_bld_done = ops.len();
+    // entity = entityMap.get("sandbag")  (built above; "sandbag" = the main sprite's id)
     ops.push(Opcode::Field { dst: rr(63), obj: rr(60), field: RefField(pxf_entitymap_field) }); // entityMap
     let idx_l_emap_jnull = ops.len();
     ops.push(Opcode::JNull { reg: rr(63), offset: 0 });
@@ -1376,8 +1400,8 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::JNull { reg: rr(28), offset: 0 });
     ops.push(Opcode::UnsafeCast { dst: rr(74), src: rr(28) });           // -> PXFSpriteEntity (t746)
     ops.push(Opcode::Null { dst: rr(75) });                              // 3rd arg (t108)
-    // re-cache under all 3 candidate spriteContent key formats (we don't know which the
-    // buried-vfx uses: bare, package.id, or namespaced); cacheSpriteEntity just sets a map entry.
+    // re-cache under all 3 candidate spriteContent key formats (the buried-vfx uses the namespaced
+    // "private::sandbag.sandbag"; the other two are harmless); cacheSpriteEntity just sets a map entry.
     ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });    // "sandbag"
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
     ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_pkgid_g) }); // "sandbag.sandbag"
@@ -1567,6 +1591,9 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_probe_unknown_jdone] { *offset = idx_l_cmap_done as i32 - idx_l_probe_unknown_jdone as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_l_spr_jnull] { *offset = idx_l_spr_null as i32 - idx_l_spr_jnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_spr_jdone] { *offset = idx_l_spr_done as i32 - idx_l_spr_jdone as i32 - 1; }
+    // entity-build loop jumps (idx>=len -> done; tail -> loop)
+    if let Opcode::JSGte { offset, .. } = &mut ops[idx_l_bld_jge] { *offset = idx_l_bld_done as i32 - idx_l_bld_jge as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_bld_jback] { *offset = idx_l_bld_loop as i32 - idx_l_bld_jback as i32 - 1; }
     // bare sprite re-cache guards (null entityMap / missing entity -> skip)
     if let Opcode::JNull { offset, .. } = &mut ops[idx_l_emap_jnull] { *offset = idx_l_skip_recache as i32 - idx_l_emap_jnull as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_l_ent_jnull] { *offset = idx_l_skip_recache as i32 - idx_l_ent_jnull as i32 - 1; }
