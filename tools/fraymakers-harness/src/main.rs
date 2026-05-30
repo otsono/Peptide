@@ -1221,7 +1221,7 @@ fn inject_ready_flag(
         (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4), Reg(base + 5));
     use hlbc::types::{RefField, RefFun, RefGlobal};
     let mut ops = vec![
-        Opcode::Bool { dst: r_b, value: ValBool(true) },
+        Opcode::Bool { dst: r_b, value: hlbc::types::ValBool(true) },
         Opcode::SetGlobal { global: RefGlobal(g_ready), src: r_b },
         Opcode::GetGlobal { dst: r_sock, global: RefGlobal(g_sock) },
     ];
