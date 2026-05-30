@@ -126,3 +126,32 @@ Alternatives that DON'T touch Steam files (lower confidence, need RE):
   process. Needs RE of whether the shipped build exposes a usable console hook.
 - C. Make headless `./hl` pass Steam's check (e.g. correct steam_appid handshake
   / run under `steam -applaunch`) so `[API loaded yes]`. Uncertain it's possible.
+
+## UPDATE: loadInLocalUgc also fails headless — UGC pipeline is async-stalled
+Switched the injection from loadUgc@17796 to loadInLocalUgc@17842 (local-only,
+no Steam, no guards: findLocalUgc scans custom/ → addDirToLoadQueue per dir).
+RESULT (sha-verified): identical failure — global::sandbag.sandbag, spawn crash,
+[API loaded no]. So it's NOT the guards or the subscribed/Steam path. The local
+.fra READ pipeline (addDirToLoadQueue@17837: getDirectoryListing → per-file
+async read with a Trap/event callback _onFileLoaded → addResource) never
+completes its file-read events in the headless process.
+
+KEY: builtins in assets/data/dat*.fra DO load headless → they must use a
+DIFFERENT, synchronous boot loader, NOT the UgcUtil async pipeline. Per the
+user's insight ("a .fra is a .fra; mirror how existing content loads"), the
+next move is to find the assets/data loader and route sandbag through it:
+  - Find what reads assets/data/dat*.fra at boot (NOT UgcUtil). Likely a
+    ResourceManager bulk/synchronous import in Main::onLoaded/nextLoadStep.
+  - Either (a) point/extend it to also read custom/sandbag/sandbag.fra, or
+    (b) call the same low-level "read .fra file → AbstractResource → addResource"
+    primitive directly from our injection (synchronous), bypassing UgcUtil.
+  - Then ensure the namespace matches: local callback assigns
+    LOCAL_NAMESPACE_<name>; either replicate that or use whatever namespace the
+    synchronous import assigns, and make the resolver find it (the registry
+    pool-search path — currently disabled because it HUNG; fix the iteration).
+
+## Namespace finding (sha-verified)
+Local UGC content is registered under namespace `LOCAL_NAMESPACE + "_" + cleanName`
+(ResourceManager.LOCAL_NAMESPACE static, field 11; cleanName = dirname with
+[^a-zA-Z0-9_- ] stripped). So even once loaded, `custom::`/`global::` resolution
+is WRONG — must resolve via pool registry-search by content-id, not namespace guess.

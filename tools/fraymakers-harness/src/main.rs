@@ -1172,7 +1172,7 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     inject_press_start(code, 21850, 21860)?;
     // Then signal READY from MainMenu's constructor (now reached via the advance).
     let menu_ready_g = add_string_const(code, "READY\n");
-    inject_ready_flag(code, 18549, g_ready, g_sock, out_field, write_str, flush, menu_ready_g, sock_t, out_t, str_t, enc_t, 17796)?;
+    inject_ready_flag(code, 18549, g_ready, g_sock, out_field, write_str, flush, menu_ready_g, sock_t, out_t, str_t, enc_t, 17842)?;
     Ok(())
 }
 
@@ -1232,7 +1232,7 @@ fn inject_ready_flag(
     let mut ops = vec![
         // Kick off custom-content (UGC) loading. Our injected boot path
         // (Title.start → MainMenu) bypasses Main::launchScreen, which is what
-        // normally calls UgcUtil.loadUgc — so custom/ + workshop .fra files are
+        // normally calls UgcUtil.loadUgc; we use loadInLocalUgc@17842 (local-only, no Steam/guards) — so custom/ + workshop .fra files are
         // never added to the ResourceManager pool, and spawning a custom char
         // null-derefs characterPxfContentMap. loadUgc@argc0 scans custom/ async;
         // it's idempotent (guarded by beforeFirstLoad/activelyLoading). The
