@@ -1550,53 +1550,64 @@ fn decompile_closure(method_idx: u32, abc: &AbcFile) -> Expr {
 /// guard is only added when a path is genuinely missing the advance, so correct
 /// loops are never double-stepped.
 fn guard_loop_termination(stmts: Vec<Stmt>) -> Vec<Stmt> {
-    const COUNTERS: [&str; 4] = ["i", "j", "k", "l"];
-
-    // Does `cond` look like `<counter> < <expr-with-.length>`? Return the counter.
-    // The lhs counter may be a renamed `GetLex("i")` OR an un-renamed `Local(n)`
-    // that only *renders* as "i" via the slot-name map (the latter is the common
-    // case for SSF2 array-walk loops, e.g. `while (i < effects.get().length)`).
-    // So we compare the RENDERED lhs against the counter names rather than
-    // requiring a specific AST node — this catches both forms.
+    // Does `cond` look like `<counter> < <bound>` / `<counter> <= <bound>` where
+    // <counter> is a bare local-variable identifier? Return the counter's rendered
+    // name. We accept ANY simple identifier — both the i/j/k/l names produced by
+    // rename_loop_counters AND un-renamed `_vN` locals that keep their slot name
+    // (these arise when the counter is initialized to a non-zero value like
+    // `_v4 = 1`, or not immediately before the `while`, or inside a branch — cases
+    // rename_loop_counters skips) — and ANY right-hand bound (a `.length`, a
+    // constant like `< 8`, or an expression like `< _v6 + 200`). Restricting the
+    // lhs to a bare identifier keeps us to genuine local counters and never touches
+    // property/array-based conditions (e.g. `self.index < n`), which we can't
+    // safely auto-advance.
     fn counter_of_cond(cond: &Expr) -> Option<String> {
-        if let Expr::BinOp("<", l, r) = cond {
-            let lname = l.render();
-            if COUNTERS.contains(&lname.as_str()) && expr_mentions_length(r) {
-                return Some(lname);
+        if let Expr::BinOp(op, l, _r) = cond {
+            if *op == "<" || *op == "<=" {
+                let lname = l.render();
+                if is_simple_ident(&lname) {
+                    return Some(lname);
+                }
             }
         }
         None
     }
-    fn expr_mentions_length(e: &Expr) -> bool {
-        match e {
-            Expr::GetProperty(_, p) => p == "length",
-            Expr::Call(o, m, _) => m == "length" || expr_mentions_length(o),
-            Expr::GetLex(s) => s.ends_with(".length") || s.contains(".length"),
-            Expr::BinOp(_, a, b) => expr_mentions_length(a) || expr_mentions_length(b),
-            _ => false,
+    fn is_simple_ident(s: &str) -> bool {
+        let mut cs = s.chars();
+        match cs.next() {
+            Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+            _ => return false,
         }
+        s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
-    // True if the body's LAST statement unconditionally advances `name` (so a
-    // correct `for`-style loop `while (i<n) { …; i = i + 1 }` is not touched), or
-    // anywhere splices the iterated array (legitimate AS3 mutate-in-place, which
-    // makes a missing increment correct). We check the LAST statement (not "any")
-    // because the broken loops end with an if/else; only correctly-formed loops
-    // put the advance as the final straight-line statement.
-    fn ends_with_counter_advance(body: &[Stmt], name: &str) -> bool {
-        if body.iter().any(|s| stmt_has_splice(s)) {
+    // True if the loop body manages its own termination, so we must NOT inject an
+    // increment: either it splices the iterated array (legitimate AS3
+    // mutate-in-place), or SOME top-level (straight-line, unconditional) statement
+    // assigns the counter. Checking top-level — not just the last statement, and
+    // not statements nested in branches — means a correctly-formed loop that
+    // advances the counter anywhere unconditionally is left untouched (no
+    // double-step), while a loop whose only advance is inside an if/else branch
+    // (like removeAllEffects, which spins forever on the non-advancing branch) is
+    // still guarded.
+    fn body_self_advances(body: &[Stmt], name: &str) -> bool {
+        if body.iter().any(stmt_has_splice) {
             return true; // array shrinks each iter → terminates without i++
         }
-        matches!(body.last(), Some(s) if stmt_is_advance(s, name))
+        body.iter().any(|s| stmt_assigns_name(s, name))
     }
-    fn stmt_is_advance(s: &Stmt, name: &str) -> bool {
+    fn stmt_assigns_name(s: &Stmt, name: &str) -> bool {
         match s {
-            // `i = i + 1` is emitted as Stmt::Expr(GetLex("i = i + 1")).
+            // Renamed counters + the injected guard: Stmt::Expr(GetLex("i = i + 1")).
             Stmt::Expr(Expr::GetLex(code)) => {
                 let c = code.replace(' ', "");
-                c.starts_with(&format!("{name}={name}"))
+                c.starts_with(&format!("{name}="))
                     || c.starts_with(&format!("{name}++"))
                     || c.starts_with(&format!("{name}--"))
             }
+            // Un-renamed `_vN` local writes: Stmt::VarDecl(n, _) renders as `_vN = …`.
+            Stmt::VarDecl(n, _) => format!("_v{n}") == name,
+            // Activation-slot named variables.
+            Stmt::NamedAssign(nm, _) => nm == name,
             _ => false,
         }
     }
@@ -1660,7 +1671,7 @@ fn guard_loop_termination(stmts: Vec<Stmt>) -> Vec<Stmt> {
                     // for-loops (last statement already advances) and array-splice
                     // loops are detected by ends_with_counter_advance and left
                     // untouched, so we never double-step a working loop.
-                    if !ends_with_counter_advance(&body, &name) {
+                    if !body_self_advances(&body, &name) {
                         let mut body = body;
                         body.push(incr_stmt(&name));
                         return Stmt::While(cond, body);
@@ -1835,4 +1846,83 @@ pub fn decompile_method(
     out.push_str(&render_stmts(&stmts, 1));
     out.push_str("}\n\n");
     out
+}
+
+#[cfg(test)]
+mod loop_guard_tests {
+    use super::{guard_loop_termination, render_stmts, Expr, Stmt};
+
+    fn lt(lhs: Expr, rhs: Expr) -> Expr {
+        Expr::BinOp("<", Box::new(lhs), Box::new(rhs))
+    }
+    fn render(stmts: Vec<Stmt>) -> String {
+        let guarded = guard_loop_termination(stmts);
+        render_stmts(&guarded, 0)
+    }
+    fn count(hay: &str, needle: &str) -> usize {
+        hay.matches(needle).count()
+    }
+
+    // An un-renamed `_vN` counter with a CONSTANT bound (`while (_v4 < 8)`) and an
+    // empty body would spin forever — the bytecode lost the increment. The guard
+    // must inject `_v4 = _v4 + 1`. This is the exact pacman/link/peach freeze class
+    // that the old i/j/k/l + `.length`-only matcher missed.
+    #[test]
+    fn vn_counter_constant_bound_gets_guarded() {
+        let body = vec![Stmt::If(Expr::Bool(true), vec![], vec![])];
+        let loop_ = Stmt::While(lt(Expr::Local(4), Expr::Num(8.0)), body);
+        let out = render(vec![loop_]);
+        assert!(out.contains("_v4 = _v4 + 1"), "missing injected advance:\n{out}");
+    }
+
+    // `while (_v7 < _v6 + 200)` — non-`.length`, non-constant bound — must also be
+    // guarded (the peach case).
+    #[test]
+    fn vn_counter_expression_bound_gets_guarded() {
+        let bound = Expr::BinOp("+", Box::new(Expr::Local(6)), Box::new(Expr::Num(200.0)));
+        let loop_ = Stmt::While(lt(Expr::Local(7), bound), vec![Stmt::If(Expr::Bool(true), vec![], vec![])]);
+        let out = render(vec![loop_]);
+        assert!(out.contains("_v7 = _v7 + 1"), "missing injected advance:\n{out}");
+    }
+
+    // A loop whose only advance is INSIDE a branch (removeAllEffects: spins forever
+    // on the non-advancing path) is still guarded — exactly one extra advance is
+    // appended at the top level.
+    #[test]
+    fn branch_only_advance_gets_top_level_guard() {
+        let body = vec![Stmt::If(
+            Expr::Bool(true),
+            vec![Stmt::Expr(Expr::GetLex("i = i + 1".into()))],
+            vec![],
+        )];
+        let loop_ = Stmt::While(lt(Expr::GetLex("i".into()), Expr::GetLex("arr.length".into())), body);
+        let out = render(vec![loop_]);
+        assert_eq!(count(&out, "i = i + 1"), 2, "expected branch advance + injected guard:\n{out}");
+    }
+
+    // A correctly-formed loop that advances the counter at the TOP level (even when
+    // the advance is not the LAST statement) must NOT be double-stepped.
+    #[test]
+    fn self_advancing_loop_not_double_stepped() {
+        let body = vec![
+            Stmt::Expr(Expr::GetLex("i = i + 1".into())),
+            Stmt::Expr(Expr::GetLex("doStuff(i)".into())),
+        ];
+        let loop_ = Stmt::While(lt(Expr::GetLex("i".into()), Expr::GetLex("n".into())), body);
+        let out = render(vec![loop_]);
+        assert_eq!(count(&out, "i = i + 1"), 1, "working loop was double-stepped:\n{out}");
+    }
+
+    // A property/array-based condition (`self.index < n`) is NOT a bare-identifier
+    // counter — we can't safely auto-advance it, so it's left untouched.
+    #[test]
+    fn property_condition_left_untouched() {
+        let cond = lt(
+            Expr::GetProperty(Box::new(Expr::This), "index".into()),
+            Expr::GetLex("n".into()),
+        );
+        let loop_ = Stmt::While(cond, vec![Stmt::Expr(Expr::GetLex("tick()".into()))]);
+        let out = render(vec![loop_]);
+        assert!(!out.contains("+ 1"), "property-conditioned loop should be untouched:\n{out}");
+    }
 }
