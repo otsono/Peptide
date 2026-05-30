@@ -267,3 +267,17 @@ ENV (still degraded): tool channel garbles/duplicates/truncates output (caught
 ~6 corrupted reads via shasum/canary; mangled a dict + truncated a loop this
 round). 4 wedged `hl _conn.dat` procs (UNE, unkillable) from earlier boots.
 STRONGLY recommend a session restart before more delicate RE.
+
+## CORRECTION + REAL RESULT (verified, sha-stable)
+The harness.js fix WORKS. sandbag idle frame0 extracted 4 boxes cleanly (my
+earlier "0 boxes" lines were channel corruption). First real compare_boxes verdict:
+  hurtbox0 HURT_BOX drift 0.000px PASS
+  hurtbox1 HURT_BOX drift 0.001px PASS
+  itembox0 ITEM_BOX drift 3.716px FAIL  (ft_anchor_x -14.316 vs ssf2 -10.600)
+=> Hurtbox geometry is PERFECT (sub-px). The bug is ITEMBOX X-anchoring (~3.7px).
+   entity has 406 COLLISION_BOX layers across 107 anims — plenty to validate.
+   harness.js commit is f174f77e (verified end-to-end).
+Note: probe_itembox.rs + dump_collision_box.rs diagnostics exist in src/bin.
+NEXT: find itembox anchor calc in entity_gen.rs / fraytools_transform.rs; the
+itembox pivot/anchor X is off while hurtboxes are exact — likely an itembox-
+specific pivot or offset term. compare_boxes FAIL points at entity_gen.
