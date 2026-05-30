@@ -27,6 +27,9 @@ printf '1420350' > "$APPID"
 # Command stream: start the match, then a `q` heartbeat every 3s for ~33s.
 # Each line goes through stdin; the sleeps keep stdin open so serve stays live.
 {
+  # NOTE: both 'battlefield' and 'st_battlefield' crash setupStage with
+  # 'Null access .stagePxfContentMap' (the resolved stage's content map is null).
+  # A working stage ref is still UNKNOWN — override via FRAY_STAGE once found.
   echo "s sandbag ${FRAY_STAGE:-st_battlefield} none"
   for n in $(seq 1 11); do sleep 3; echo "q $n"; done
   sleep 2
