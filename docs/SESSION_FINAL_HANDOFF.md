@@ -133,3 +133,62 @@ key as the char arg to `s`.
 - Tools: tools/make_buggy_fra.py (reconstruct pre-freeze-fix .fra for A/B),
   tools/patch_fra_loops.py (.fra loop patcher).
 EOF
+
+## TURNKEY FIX RECIPE for emit_resolve bare-name path (verified building blocks)
+Goal: bare `sandbag` must resolve to the resource ACTUALLY pooled (whose cmap
+contains the id), not a namespace guess. Replace the hanging StringMap key-iter
+in emit_resolve's registry-search (src/main.rs ~line 816-833) with a POOL ARRAY
+index-loop. All indices/findexes below are md5-verified this session.
+
+Bind once near the other resolvers (~line 617):
+  let getfqid_fn = require_fn(code, "getFullyQualifiedResourceId",
+      Some("pxf.io.AbstractResource"))?;   // findex 1788
+Verified facts:
+  - ResourceManager statics: global 3508; field 12 = `pool` (hl.types.ArrayObj of
+    resources); field 13 = poolHash. (typefields md5 ea941e79.)
+  - ArrayObj: field 0 = length (Int), field 1 = array (NativeArray).
+  - getPXFResource@18288 (getpxf_fn), exists@730/sm_exists on StringMap,
+    parseResourceIdentifier@18224, getFullyQualifiedResourceId@1788.
+  - cmap_field is the per-type content map passed into emit_resolve (char=17/
+    stage=22). r(60) is pxfres_t-typed; r(63) StringMap; r(57)/r(58) String;
+    r(16)/r(39) Int scratch.
+
+Replace the bare-name body (from `let rs_loop` through the parseResId-on-key
+"FOUND" block) with, in pseudo-ops:
+  GetGlobal r65 = g3508
+  Field     r50 = r65.pool            (field 12; r50 is ArrayObj-typed — reuse a
+                                        free ArrayObj reg, e.g. add one to add_regs)
+  Field     r48 = r50.length          (field 0, Int)  [use an Int reg]
+  Int       rI  = 0                   (loop counter; use r16)
+  LOOP:
+    JSGte rI, r48 -> RS_NOTFOUND      (exhausted -> prefix fallback)
+    Field rArr = r50.array            (field 1)
+    GetArray r60 = rArr[rI]           (resource, pxfres_t)
+    Incr  rI
+    JNull r60 -> LOOP                 (skip null)
+    Field r63 = r60.cmap_field        (f17/f22)
+    JNull r63 -> LOOP                 (skip if no content map)
+    Call2 r64 = sm_exists(r63, r(name))
+    JFalse r64 -> LOOP               (id not in this resource's map)
+    // FOUND: out = parseResourceIdentifier(getFullyQualifiedResourceId(r60), null)
+    Call1 r57 = getfqid_fn(r60)
+    Call2 r(out) = parseResourceIdentifier@18224(r57, r38)   (r38 = null)
+    JAlways -> l_done
+Keep RS_NOTFOUND/l_prefix/l_done as-is. DELETE j_skipreg (the JAlways that
+currently bypasses registry search) so bare names use this loop. Index-loop over
+an array is the known-safe pattern (the s-handler's parts.array + GetArray and the
+q-handler's _matches use it); it does NOT hang like the StringMap key-iterator.
+
+VALIDATION (md5 oracle, reliable; reproduce 3x): rebuild (cargo 0 err), then
+`s sandbag thespire none` after ~14s load delay. SUCCESS = error.log md5 is
+NEITHER 36adae25 NOR 3537a487, serve.log has LAUNCHED, AND buzzwole (bare) also
+spawns. If still 36adae25: the pooled resource genuinely lacks the id in its cmap
+(then dump pool via a `k` cmd to inspect). Tools: tools/make_buggy_fra.py for the
+freeze A/B once spawning works.
+
+WHY NOT DONE IN-SESSION: authoring this ~20-op jump-wired block requires a clean
+read of the exact existing block to Edit against; the tool channel garbled that
+read repeatedly this session, and a misread caused an earlier jump-offset
+regression (reverted e7fe0584). With only the md5 live-oracle trustworthy and the
+source-read unreliable, attempting the edit now risks another bad commit. Recipe
+is complete + verified for a healthy channel.
