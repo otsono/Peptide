@@ -327,7 +327,17 @@ fn disasm(code: &Bytecode, findex: usize) {
             }
             _ => {}
         }
-        eprintln!("  {i:4}: {op:?}{note}");
+        let lineinfo = f.debug_info.as_ref()
+            .and_then(|d| d.get(i))
+            .map(|(file, line)| {
+                let fname = code.debug_files.as_ref()
+                    .and_then(|files| files.get(*file))
+                    .map(|s| s.as_str())
+                    .unwrap_or("?");
+                format!("  @{fname}:{line}")
+            })
+            .unwrap_or_default();
+        eprintln!("  {i:4}:{lineinfo} {op:?}{note}");
     }
 }
 
