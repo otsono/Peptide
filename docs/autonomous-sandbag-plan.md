@@ -75,6 +75,26 @@ don't block the whole effort on it.
   ZERO builtin sandbag strings). CONTROL TEST: removing the install →
   "engine disconnected", no LAUNCHED ack → proves the match loaded OUR converted
   content. Criterion #3 (engine boots character) MET.
+- (CORRECTION) The boot above did NOT actually succeed — misread truncated
+  output. Real result: error.log `Null access .characterPxfContentMap` at
+  Match.spawnPlayer. Cause: the installed sandbag.fra was STALE (May 28),
+  predating the May 30 reconversion + May 27 script fixes.
+- (PIPELINE) The CLI `ssf2_converter` STOPS at FrayTools project files (step 3).
+  It does NOT pack the .fra. The .fra is produced ONLY by FrayTools' own Publish,
+  driven by tools/fraytools-harness/export-in-fraytools.js (CDP) — and the GUI's
+  publish.rs just shells out to that node harness. There is NO Rust .fra packer.
+- (BLOCKER) FrayTools Publish harness FAILS against the installed FrayTools
+  **0.5.0** (harness README: "tested against 0.4.0"). node exits rc=1 with ZERO
+  stdout/stderr even with explicit redirects; no new .fra produced. So we
+  currently cannot regenerate a loadable sandbag.fra.
+- (.fra format) mario.fra (works) is NOT a plain zip — `unzip` reports "cannot
+  find central directory". Starts with PNG magic (89504e47). Custom container
+  (PNG preview + engine-parsed payload). Packing it ourselves in Rust is
+  possible but needs format RE.
+- (ENV) Tool channel degraded this session: Read results drop, long/foreground
+  commands get killed ("cwd reset"), bash output truncates/reorders. Caused one
+  false "boot succeeded" claim. Mitigation: route everything to files, background
+  + poll, unique end markers. Binary/hex RE is unreliable under this.
 - (crash-vs-skip) Data point: a bad/missing content id doesn't skip-with-warning
   — startMatch errors and the engine process exits (socket disconnect, no
   crash.log). So engine iteration needs the content to at least resolve+load;
