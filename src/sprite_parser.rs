@@ -659,9 +659,9 @@ fn apply_fallbacks(result: &mut BTreeMap<String, AnimationBoxData>) {
         // Airborne/misc states
         ("fly",               "jump_aerial"),
         ("swim",              "fall"),
-        ("ladder",            "idle"),
+        ("ladder",            "stand"),
         ("wall_stick",        "fall"),
-        ("special",           "idle"),
+        ("special",           "stand"),
         ("carry",             "grab"),
         // Landing variants
         ("land_heavy",        "land"),
@@ -669,14 +669,14 @@ fn apply_fallbacks(result: &mut BTreeMap<String, AnimationBoxData>) {
         // Win/lose/respawn
         ("victory",           "taunt"),
         ("defeat",            "hurt"),
-        ("respawn",           "idle"),
+        ("respawn",           "stand"),
         // Special air variants
         ("special_down_air",  "special_down"),
         ("special_neutral_air", "special_neutral"),
         ("special_side_air",  "special_side"),
         ("special_up_air",    "special_up"),
         // Item variants
-        ("item_float",        "idle"),
+        ("item_float",        "stand"),
         ("item_screw",        "special_up"),
     ];
 

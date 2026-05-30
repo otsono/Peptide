@@ -161,22 +161,25 @@ pub fn split_animations(
                 }
             }
 
-            // ── Idle: idle / idle_bored (uncrouch NOT extracted from idle) ─────
-            "idle" => {
+            // ── Stand: stand / idle_bored (uncrouch NOT extracted from stand) ──
+            // FM's canonical standing-state animation is "stand" (CState.STAND),
+            // NOT "idle". The bored flavor segment stays "idle_bored" (extra anim,
+            // no state references it).
+            "stand" => {
                 let bored_f = label_map.get("bored")
                     .or_else(|| label_map.get("blink"))
                     .copied();
                 let uncrouch_f = label_map.get("uncrouch").copied();
                 if let Some(bf) = bored_f {
                     let idle_end = bf;
-                    // idle loops at its own end
-                    push_split(&mut out, "idle",       anim_name, 0,   idle_end, &labels, true, Some(0));
+                    // stand loops at its own end
+                    push_split(&mut out, "stand",      anim_name, 0,   idle_end, &labels, true, Some(0));
                     // bored: from bored label to uncrouch (or end)
                     let bored_end = uncrouch_f.unwrap_or(total);
                     push_split(&mut out, "idle_bored", anim_name, bf, bored_end, &labels, false, None);
-                    // uncrouch NOT emitted from idle — crouch_out comes from crouch anim
+                    // uncrouch NOT emitted from stand — crouch_out comes from crouch anim
                 } else {
-                    push_split(&mut out, "idle", anim_name, 0, uncrouch_f.unwrap_or(total), &labels, true, Some(0));
+                    push_split(&mut out, "stand", anim_name, 0, uncrouch_f.unwrap_or(total), &labels, true, Some(0));
                 }
             }
 
