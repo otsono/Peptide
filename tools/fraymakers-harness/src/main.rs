@@ -626,11 +626,25 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // namespace prefixes tried in order for bare names (custom content first)
     let ns_prefixes: Vec<usize> = ["custom::", "public::", "global::"]
         .iter().map(|p| add_string_const(code, p)).collect();
-    // registry search: iterate ResourceManager.poolHash (all loaded resources) and
-    // check each resource's per-type plain StringMap content map for the bare id.
+    // registry search: scan ResourceManager.pool (ArrayObj, f12) by index.
+    // Index-loop is safe (no iterator-object hang). Pool is the ordered array that
+    // addResource pushes every loaded resource onto (verified: addResource op44
+    // hl.types.ArrayObj::push@89 on pool, md5 1b65af22). poolHash (f13) still
+    // exists for getPXFResource lookups; we use pool for our safe iteration.
     let rm_statics_t = code.globals[3508].0; // pxf.io.$ResourceManager statics
     let poolhash_field = find_field(code, rm_statics_t, "poolHash")
         .ok_or_else(|| anyhow::anyhow!("poolHash field not found"))?;
+    let pool_field = find_field(code, rm_statics_t, "pool")
+        .ok_or_else(|| anyhow::anyhow!("pool field not found on RM statics"))?;
+    // getFullyQualifiedResourceId@1788 (on AbstractResource): returns the
+    // poolHash key for a given resource, so we can build the correct resolved ref.
+    let getfqid_fn = require_fn(code, "getFullyQualifiedResourceId", Some("pxf.io.AbstractResource"))?;
+    // get_Loaded@1839: only fully-loaded resources have gone through createFromBytes
+    // and have f17 set; unloaded stubs have null f17 and would crash on Field read.
+    let get_loaded_fn = require_fn(code, "get_Loaded", Some("pxf.io.AbstractResource"))?;
+    // AbstractResource type (394): safe intermediate type for GetArray from pool.
+    let absres_t = require_type(code, "pxf.io.AbstractResource")?;
+    eprintln!("pool: pool_field={pool_field} getfqid={getfqid_fn} get_loaded={get_loaded_fn} absres_t={absres_t}");
     let sm_keys = require_fn(code, "keys", Some("haxe.ds.StringMap"))?;
     let sm_exists = require_fn(code, "exists", Some("haxe.ds.StringMap"))?;
     let keysiter_t = {
@@ -775,8 +789,9 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // 48 mode (mode_t=3522) 49 modeConfig virtual (1194) 50 startMatch config virtual (4482)
     // 51 Bytes scratch (bytes_t2) 52 ArrayObj split parts (38) 53 String scratch (delim/arg) 54 dyn element
     // 55 name 56 pkgid 57 candidate 58 resId (all String) 59 null<i32> 60 PXFResource (existence check)
-    // 61 keys-iterator 62 key(String) 63 contentMap(StringMap) 64 bool 65 RM statics
-    let base = add_regs(f, &[7, 7, sock_t, host_t, 3, out_t, 0, 3, 3, 7, sock_t, handle_t, 3, 3, str_t, enc_t, 3, bytes_t, 3, 3, 3, 3, nulli32_t, tilde_t, console_t, 669, 669, 4366, 9, 1957, 2536, 8, 11, 38, 4366, 675, 668, 6738, 13, 3, dmr_field_t, ms_statics_t, 669, mc_statics_t, match_t, core_statics_t, container_t, h2dobj_t, mode_t, 1194, 4482, bytes_t2, 38, str_t, 0, str_t, str_t, str_t, str_t, nulli32_t2, pxfres_t, keysiter_t, str_t, stringmap_t, 7, rm_statics_t]);
+    // 61 keys-iterator(unused) 62 key(String) 63 contentMap(StringMap) 64 bool 65 RM statics
+    // 66 pool (ArrayObj=38); 67 pool.array (NativeArray=11); 68 pool elem (absres_t=394)
+    let base = add_regs(f, &[7, 7, sock_t, host_t, 3, out_t, 0, 3, 3, 7, sock_t, handle_t, 3, 3, str_t, enc_t, 3, bytes_t, 3, 3, 3, 3, nulli32_t, tilde_t, console_t, 669, 669, 4366, 9, 1957, 2536, 8, 11, 38, 4366, 675, 668, 6738, 13, 3, dmr_field_t, ms_statics_t, 669, mc_statics_t, match_t, core_statics_t, container_t, h2dobj_t, mode_t, 1194, 4482, bytes_t2, 38, str_t, 0, str_t, str_t, str_t, str_t, nulli32_t2, pxfres_t, keysiter_t, str_t, stringmap_t, 7, rm_statics_t, 38, 11, absres_t]);
     let rr = |i: u32| Reg(base + i);
     let (r_done, r_true, r_sock, r_host, r_port, r_out, r_ret, r_ip, r_byte, r_blockf, r_sock2, r_handle, r_c, r_zero) =
         (rr(0), rr(1), rr(2), rr(3), rr(4), rr(5), rr(6), rr(7), rr(8), rr(9), rr(10), rr(11), rr(12), rr(13));
@@ -806,48 +821,16 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
         ops.push(Opcode::Int { dst: r(39), ptr: RefInt(zero_idx) });
         let j_pkgname = ops.len();
         ops.push(Opcode::JSGte { a: r(16), b: r(39), offset: 0 });
-        // BARE NAME (no "." ): the registry-search loop below hangs (iterator
-        // semantics bug), so skip it and use prefix-expansion (x -> <ns>::x.x),
-        // which resolves characters/stages reliably. Bare assists (package != id)
-        // must be given in `package.id` form. Registry search kept below (dead)
-        // for later revival via a non-hanging iteration.
-        let j_skipreg = ops.len();
-        ops.push(Opcode::JAlways { offset: 0 });                         // -> RS_NOTFOUND (prefix path)
-        // ---- registry search: scan poolHash, find a resource whose cmap has `name` ----
-        ops.push(Opcode::GetGlobal { dst: r(65), global: RefGlobal(3508) });
-        ops.push(Opcode::Field { dst: r(63), obj: r(65), field: RefField(poolhash_field) });
-        ops.push(Opcode::Call1 { dst: r(61), fun: RefFun(sm_keys), arg0: r(63) });
-        let rs_loop = ops.len();
-        ops.push(Opcode::CallMethod { dst: r(64), field: RefField(0), args: vec![r(61)] }); // hasNext
-        let j_notfound = ops.len();
-        ops.push(Opcode::JFalse { cond: r(64), offset: 0 });            // -> RS_NOTFOUND
-        ops.push(Opcode::CallMethod { dst: r(62), field: RefField(1), args: vec![r(61)] }); // next -> key
-        ops.push(Opcode::Call1 { dst: r(60), fun: RefFun(getpxf_fn), arg0: r(62) });
-        let j_res_ok = ops.len();
-        ops.push(Opcode::JNotNull { reg: r(60), offset: 0 });           // resource ok -> check cmap
-        let j_back1 = ops.len();
-        ops.push(Opcode::JAlways { offset: 0 });                        // null resource -> loop
-        let l_check_cmap = ops.len();
-        ops.push(Opcode::Field { dst: r(63), obj: r(60), field: RefField(cmap_field) });
-        let j_cmap_ok = ops.len();
-        ops.push(Opcode::JNotNull { reg: r(63), offset: 0 });           // cmap ok -> exists
-        let j_back2 = ops.len();
-        ops.push(Opcode::JAlways { offset: 0 });                        // null cmap -> loop
-        let l_check_exists = ops.len();
-        ops.push(Opcode::Call2 { dst: r(64), fun: RefFun(sm_exists), arg0: r(63), arg1: r(name) });
-        let j_found = ops.len();
-        ops.push(Opcode::JTrue { cond: r(64), offset: 0 });             // found -> build ref
-        let j_back3 = ops.len();
-        ops.push(Opcode::JAlways { offset: 0 });                        // not in this resource -> loop
-        // FOUND: out = parseResId(key + "." + name)
-        let l_found = ops.len();
-        ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(dot_g) });
-        ops.push(Opcode::Call2 { dst: r(57), fun: RefFun(str_add), arg0: r(62), arg1: r(53) });
-        ops.push(Opcode::Call2 { dst: r(57), fun: RefFun(str_add), arg0: r(57), arg1: r(name) });
-        ops.push(Opcode::Call2 { dst: r(out), fun: RefFun(18224), arg0: r(57), arg1: r(38) });
-        let j_found_done = ops.len();
-        ops.push(Opcode::JAlways { offset: 0 });                        // -> DONE
-        // RS_NOTFOUND: pkgid = name + "." + name, then prefix path
+        // BARE NAME (no "."): prefix expansion + cmap check.
+        // For each namespace prefix (custom::, public::, global::), build the full id,
+        // call getPXFResource to get a properly-typed PXFResource (r(60)), read
+        // cmap_field from it (safe because getPXFResource returns pxfres_t). Accept
+        // only if both resource AND cmap are non-null — this rejects stubs that loaded
+        // under a different namespace without a populated content map. Last prefix
+        // (global::) is always accepted as-is (fallback).
+        // Jump wiring: each null check for prefix k jumps to the START of prefix k+1.
+        // Collected in jump_to_next_prefix and patched below after all starts are known.
+        // RS_NOTFOUND: pkgid = name + "." + name
         let l_notfound = ops.len();
         ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(dot_g) });
         ops.push(Opcode::Call2 { dst: r(56), fun: RefFun(str_add), arg0: r(name), arg1: r(53) });
@@ -858,27 +841,32 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
         let l_pkgname = ops.len();
         ops.push(Opcode::Mov { dst: r(56), src: r(name) });
         // L_PREFIX: try each namespace prefix with pkgid in r56.
-        // (Reverted to the ORIGINAL accept-on-resource-non-null logic: the
-        // content-map-aware variant regressed launching — LAUNCHED 1->0, grep-
-        // verified — likely a jump-offset bug in the added per-prefix branches.
-        // Baseline behavior restored: launches, then crashes at spawnPlayer on the
-        // null characterPxfContentMap for global:: stubs. The namespace fix must
-        // be redone carefully with op-index tracing; see docs/INTEGRITY_HALT.md +
-        // docs/ENGINE_RE_MAP_qoracle.md. cmap_field stays in the signature for the
-        // eventual correct fix.)
-        let _ = cmap_field;
+        // getPXFResource returns pxfres_t → Field on cmap_field is safe (no cast needed).
         let l_prefix = ops.len();
         let mut found_pref = vec![];
+        let mut prefix_starts = vec![];
+        // (j_op, target_prefix_index): j_op is a JNull that should jump to prefix[target_prefix_index]
+        let mut jump_to_next_prefix: Vec<(usize, usize)> = vec![];
         let n = nsp.len();
         for (k, &pref) in nsp.iter().enumerate() {
+            let prefix_start = ops.len();
+            prefix_starts.push(prefix_start);
             ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(pref) });
             ops.push(Opcode::Call2 { dst: r(57), fun: RefFun(str_add), arg0: r(53), arg1: r(56) });
             ops.push(Opcode::Call2 { dst: r(out), fun: RefFun(18224), arg0: r(57), arg1: r(38) });
             if k + 1 < n {
                 ops.push(Opcode::Call1 { dst: r(58), fun: RefFun(getresid_fn), arg0: r(out) });
                 ops.push(Opcode::Call1 { dst: r(60), fun: RefFun(getpxf_fn), arg0: r(58) });
+                let j_res_null = ops.len();
+                ops.push(Opcode::JNull { reg: r(60), offset: 0 });      // null resource -> next prefix
+                jump_to_next_prefix.push((j_res_null, k + 1));
+                // r(60) is pxfres_t (returned by getPXFResource) — safe to read cmap_field.
+                ops.push(Opcode::Field { dst: r(63), obj: r(60), field: RefField(cmap_field) });
+                let j_cmap_null = ops.len();
+                ops.push(Opcode::JNull { reg: r(63), offset: 0 });      // null cmap -> next prefix
+                jump_to_next_prefix.push((j_cmap_null, k + 1));
                 let jf = ops.len();
-                ops.push(Opcode::JNotNull { reg: r(60), offset: 0 });
+                ops.push(Opcode::JAlways { offset: 0 });                 // cmap non-null -> DONE
                 found_pref.push(jf);
             }
         }
@@ -900,17 +888,15 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
         };
         set(ops, j_full, l_full);
         set(ops, j_pkgname, l_pkgname);
-        set(ops, j_skipreg, l_notfound);
-        set(ops, j_notfound, l_notfound);
-        set(ops, j_res_ok, l_check_cmap);
-        set(ops, j_back1, rs_loop);
-        set(ops, j_cmap_ok, l_check_exists);
-        set(ops, j_back2, rs_loop);
-        set(ops, j_found, l_found);
-        set(ops, j_back3, rs_loop);
-        set(ops, j_found_done, l_done);
         set(ops, j_to_prefix, l_prefix);
         set(ops, j_nsdone, l_done);
+        // Patch prefix null-jumps to point to the start of the next prefix's code.
+        // prefix_starts[k] is the op-index of the first op in prefix k's block.
+        for (j_op, target_k) in jump_to_next_prefix {
+            if let Some(&tgt) = prefix_starts.get(target_k) {
+                set(ops, j_op, tgt);
+            }
+        }
         for jf in found_pref { set(ops, jf, l_done); }
     };
     // ---- once-guard + connect + auth handshake (runs a single time) ----
