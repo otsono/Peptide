@@ -680,6 +680,15 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // Reveals the ACTUAL namespace used by the headless UGC load path.
     let k_idx = add_int(code, 'k' as i32);
     let k_prefix_g = add_string_const(code, "K:");
+    // diagnostics: did the local-UGC discovery queue/install any dirs?
+    let k_dirs_pos_g = add_string_const(code, "K:DIRS_QUEUED>0\n");
+    let k_dirs_zero_g = add_string_const(code, "K:DIRS_QUEUED=0\n");
+    let k_inst_pos_g = add_string_const(code, "K:INSTALLED>0\n");
+    let k_inst_zero_g = add_string_const(code, "K:INSTALLED=0\n");
+    let _ = (k_inst_pos_g, k_inst_zero_g); // reserved for a follow-up installedUgc probe
+    // UgcUtil statics g3449: directoriesToLoad=field 11 (ArrayObj),
+    // installedUgc=field 10 (an object whose field 3 is an ArrayObj of items).
+    let ugc_statics_g = 3449usize;
     // Diagnostic: currentMatch (statics f6) is null right after `s` even when the
     // match is alive, because it's only set in onMatchReady. _matches (statics
     // f13, an ArrayObj) is pushed in the same onMatchReady, so its length tells us
@@ -694,6 +703,28 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let match_t = find_type(code, "pxf.core.Match")
         .ok_or_else(|| anyhow::anyhow!("pxf.core.Match type not found"))?;
     eprintln!("query: $MatchController statics t={mc_statics_t} currentMatch field={cm_field} Match t={match_t}");
+    // ---- move-dispatch + telemetry API (commands 'm' / 't') — resolved by name ----
+    // Drive a move on the live player-0 Character via its own state machine
+    // (Character.toState), and read its current state name (Character.getStateName)
+    // — internal-function dispatch, NOT key-press simulation.
+    let char_entity_t = require_type(code, "pxf.entity.Character")?;
+    let to_state = require_fn(code, "toState", Some("pxf.entity.Character"))?;
+    let get_state_name = require_fn(code, "getStateName", Some("pxf.entity.Character"))?;
+    let cstate_statics_t = find_type(code, "pxf.entity.$CState")
+        .ok_or_else(|| anyhow::anyhow!("pxf.entity.$CState type not found"))?;
+    let cstate_global = code.globals.iter().position(|g| g.0 == cstate_statics_t)
+        .ok_or_else(|| anyhow::anyhow!("$CState statics global not found"))?;
+    let jab_field = find_field(code, cstate_statics_t, "JAB")
+        .ok_or_else(|| anyhow::anyhow!("CState.JAB field not found"))?;
+    let characters_field = find_field(code, match_t, "characters")
+        .ok_or_else(|| anyhow::anyhow!("Match.characters field not found"))?;
+    let m_idx = add_int(code, 'm' as i32);
+    let t_idx = add_int(code, 't' as i32);
+    let m_ack_g = add_string_const(code, "M:JAB\n");
+    let m_nomatch_g = add_string_const(code, "M:NOMATCH\n");
+    let t_prefix_g = add_string_const(code, "T:");
+    let t_nomatch_g = add_string_const(code, "T:NOMATCH\n");
+    eprintln!("move/telemetry: Character t={char_entity_t} toState={to_state} getStateName={get_state_name} CState t={cstate_statics_t} g={cstate_global} JAB.field={jab_field} characters.field={characters_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer
     // (added by the always-subscribed gameStarted handler); menuContainer is a
     // sibling painted on top. Hiding menuContainer's h2d display object reveals
@@ -795,7 +826,8 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // 55 name 56 pkgid 57 candidate 58 resId (all String) 59 null<i32> 60 PXFResource (existence check)
     // 61 keys-iterator(unused) 62 key(String) 63 contentMap(StringMap) 64 bool 65 RM statics
     // 66 pool (ArrayObj=38); 67 pool.array (NativeArray=11); 68 pool elem (absres_t=394)
-    let base = add_regs(f, &[7, 7, sock_t, host_t, 3, out_t, 0, 3, 3, 7, sock_t, handle_t, 3, 3, str_t, enc_t, 3, bytes_t, 3, 3, 3, 3, nulli32_t, tilde_t, console_t, 669, 669, 4366, 9, 1957, 2536, 8, 11, 38, 4366, 675, 668, 6738, 13, 3, dmr_field_t, ms_statics_t, 669, mc_statics_t, match_t, core_statics_t, container_t, h2dobj_t, mode_t, 1194, 4482, bytes_t2, 38, str_t, 0, str_t, str_t, str_t, str_t, nulli32_t2, pxfres_t, keysiter_t, str_t, stringmap_t, 7, rm_statics_t, 38, 11, absres_t]);
+    // 69 Character (char_entity_t); 70 $CState statics (cstate_statics_t)
+    let base = add_regs(f, &[7, 7, sock_t, host_t, 3, out_t, 0, 3, 3, 7, sock_t, handle_t, 3, 3, str_t, enc_t, 3, bytes_t, 3, 3, 3, 3, nulli32_t, tilde_t, console_t, 669, 669, 4366, 9, 1957, 2536, 8, 11, 38, 4366, 675, 668, 6738, 13, 3, dmr_field_t, ms_statics_t, 669, mc_statics_t, match_t, core_statics_t, container_t, h2dobj_t, mode_t, 1194, 4482, bytes_t2, 38, str_t, 0, str_t, str_t, str_t, str_t, nulli32_t2, pxfres_t, keysiter_t, str_t, stringmap_t, 7, rm_statics_t, 38, 11, absres_t, char_entity_t, cstate_statics_t]);
     let rr = |i: u32| Reg(base + i);
     let (r_done, r_true, r_sock, r_host, r_port, r_out, r_ret, r_ip, r_byte, r_blockf, r_sock2, r_handle, r_c, r_zero) =
         (rr(0), rr(1), rr(2), rr(3), rr(4), rr(5), rr(6), rr(7), rr(8), rr(9), rr(10), rr(11), rr(12), rr(13));
@@ -1184,6 +1216,24 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let idx_jne_k = ops.len();
     ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });            // not 'k' -> L_ORIG
     ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    // diagnostic: UgcUtil.directoriesToLoad (g3449 f11, ArrayObj) length > 0?
+    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(ugc_statics_g) });
+    ops.push(Opcode::Field { dst: rr(66), obj: rr(65), field: RefField(11) }); // directoriesToLoad
+    let idx_k_dirs_null = ops.len();
+    ops.push(Opcode::JNull { reg: rr(66), offset: 0 });                  // null -> skip dirs report
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(66), field: RefField(0) }); // .length
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    let idx_k_dirs_jle = ops.len();
+    ops.push(Opcode::JSLte { a: rr(16), b: rr(39), offset: 0 });          // <=0 -> dirs_zero
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(k_dirs_pos_g) });
+    let idx_k_dirs_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_k_dirs_zero = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(k_dirs_zero_g) });
+    let idx_k_dirs_done = ops.len();
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    let idx_k_after_dirs = ops.len();
     // pool = RM.pool (field 12)
     ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(3508) });
     ops.push(Opcode::Field { dst: rr(66), obj: rr(65), field: RefField(pool_field) });
@@ -1215,7 +1265,94 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::JAlways { offset: 0 });                              // -> k_loop
     let idx_k_done = ops.len();
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
-    // k handler done; fall through to L_ORIG
+    // k handler done; fall through to the 'm' check.
+
+    // ---- 'm' command: drive a move (JAB) on the live player-0 Character ----
+    // Walk MatchController.currentMatch -> Match.characters[0], then call the
+    // Character's own state machine: toState(char, CState.JAB, null). Internal-
+    // function dispatch (no key-press). Reports M:JAB / M:NOMATCH.
+    let idx_m_check = ops.len();
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(m_idx) });
+    let idx_jne_m = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });            // not 'm' -> t-check
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) }); // currentMatch
+    let idx_m_jnomatch = ops.len();
+    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                   // no match -> M:NOMATCH
+    ops.push(Opcode::Field { dst: rr(66), obj: rr(44), field: RefField(characters_field) }); // characters (ArrayObj)
+    let idx_m_jnochars = ops.len();
+    ops.push(Opcode::JNull { reg: rr(66), offset: 0 });
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(66), field: RefField(0) }); // .length
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    let idx_m_jempty = ops.len();
+    ops.push(Opcode::JSLte { a: rr(16), b: rr(39), offset: 0 });          // empty -> M:NOMATCH
+    ops.push(Opcode::Field { dst: rr(67), obj: rr(66), field: RefField(1) }); // .array
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::GetArray { dst: rr(28), array: rr(67), index: rr(16) }); // characters[0]
+    let idx_m_jnull_elem = ops.len();
+    ops.push(Opcode::JNull { reg: rr(28), offset: 0 });
+    ops.push(Opcode::UnsafeCast { dst: rr(69), src: rr(28) });            // -> Character
+    ops.push(Opcode::GetGlobal { dst: rr(70), global: RefGlobal(cstate_global) });
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(70), field: RefField(jab_field) }); // CState.JAB (Int)
+    ops.push(Opcode::Null { dst: rr(38) });                              // null animName
+    ops.push(Opcode::Call3 { dst: rr(64), fun: RefFun(to_state), arg0: rr(69), arg1: rr(16), arg2: rr(38) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(m_ack_g) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_m_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                             // -> L_ORIG
+    let idx_m_nomatch = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(m_nomatch_g) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    // (m_nomatch falls through into the 't' check, which rejects 'm' -> L_ORIG)
+
+    // ---- 't' command: telemetry — report player-0 Character state name ----
+    // currentMatch -> characters[0] -> getStateName(char). Reports T:<state> /
+    // T:NOMATCH. Sampled across frames, this detects progress vs. a frozen state.
+    let idx_t_check = ops.len();
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(t_idx) });
+    let idx_jne_t = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });            // not 't' -> L_ORIG
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });
+    let idx_t_jnomatch = ops.len();
+    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });
+    ops.push(Opcode::Field { dst: rr(66), obj: rr(44), field: RefField(characters_field) });
+    let idx_t_jnochars = ops.len();
+    ops.push(Opcode::JNull { reg: rr(66), offset: 0 });
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(66), field: RefField(0) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    let idx_t_jempty = ops.len();
+    ops.push(Opcode::JSLte { a: rr(16), b: rr(39), offset: 0 });
+    ops.push(Opcode::Field { dst: rr(67), obj: rr(66), field: RefField(1) });
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::GetArray { dst: rr(28), array: rr(67), index: rr(16) });
+    let idx_t_jnull_elem = ops.len();
+    ops.push(Opcode::JNull { reg: rr(28), offset: 0 });
+    ops.push(Opcode::UnsafeCast { dst: rr(69), src: rr(28) });
+    ops.push(Opcode::Call1 { dst: rr(57), fun: RefFun(get_state_name), arg0: rr(69) }); // String
+    let idx_t_jnull_name = ops.len();
+    ops.push(Opcode::JNull { reg: rr(57), offset: 0 });
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(t_prefix_g) });
+    ops.push(Opcode::Call2 { dst: rr(58), fun: RefFun(str_add), arg0: rr(53), arg1: rr(57) });
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(nl_g) });
+    ops.push(Opcode::Call2 { dst: rr(58), fun: RefFun(str_add), arg0: rr(58), arg1: rr(53) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(58), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_t_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                             // -> L_ORIG
+    let idx_t_nomatch = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(t_nomatch_g) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    // t handler done; fall through to L_ORIG
 
     // L_ORIG = first original op after the prepended block (index n).
     let n = ops.len() as i32;
@@ -1235,13 +1372,32 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     if let Opcode::JNull { offset, .. } = &mut ops[idx_q_jm_null] { *offset = idx_q_truly_none as i32 - idx_q_jm_null as i32 - 1; }
     if let Opcode::JSLte { offset, .. } = &mut ops[idx_q_jm_empty] { *offset = idx_q_truly_none as i32 - idx_q_jm_empty as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_q_jm_done] { *offset = n - idx_q_jm_done as i32 - 1; }
-    // k-command jumps
-    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_k] { *offset = n - idx_jne_k as i32 - 1; }
+    // k-command jumps ('k' no-match now routes to the 'm' check, not L_ORIG)
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_k] { *offset = idx_m_check as i32 - idx_jne_k as i32 - 1; }
+    // k diagnostic (directoriesToLoad) jumps
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_k_dirs_null] { *offset = idx_k_after_dirs as i32 - idx_k_dirs_null as i32 - 1; }
+    if let Opcode::JSLte { offset, .. } = &mut ops[idx_k_dirs_jle] { *offset = idx_k_dirs_zero as i32 - idx_k_dirs_jle as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_k_dirs_jdone] { *offset = idx_k_dirs_done as i32 - idx_k_dirs_jdone as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_k_jnull_pool] { *offset = idx_k_done as i32 - idx_k_jnull_pool as i32 - 1; }
     if let Opcode::JSGte { offset, .. } = &mut ops[idx_k_jge] { *offset = idx_k_done as i32 - idx_k_jge as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_k_jnull_elem] { *offset = idx_k_loop as i32 - idx_k_jnull_elem as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_k_jnull_fqid] { *offset = idx_k_loop as i32 - idx_k_jnull_fqid as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_k_jback] { *offset = idx_k_loop as i32 - idx_k_jback as i32 - 1; }
+    // m-command jumps ('m' no-match -> t-check; failures -> M:NOMATCH; success -> L_ORIG)
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_m] { *offset = idx_t_check as i32 - idx_jne_m as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_m_jnomatch] { *offset = idx_m_nomatch as i32 - idx_m_jnomatch as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_m_jnochars] { *offset = idx_m_nomatch as i32 - idx_m_jnochars as i32 - 1; }
+    if let Opcode::JSLte { offset, .. } = &mut ops[idx_m_jempty] { *offset = idx_m_nomatch as i32 - idx_m_jempty as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_m_jnull_elem] { *offset = idx_m_nomatch as i32 - idx_m_jnull_elem as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_m_jdone] { *offset = n - idx_m_jdone as i32 - 1; }
+    // t-command jumps ('t' no-match -> L_ORIG; failures -> T:NOMATCH; success -> L_ORIG)
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_t] { *offset = n - idx_jne_t as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnomatch] { *offset = idx_t_nomatch as i32 - idx_t_jnomatch as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnochars] { *offset = idx_t_nomatch as i32 - idx_t_jnochars as i32 - 1; }
+    if let Opcode::JSLte { offset, .. } = &mut ops[idx_t_jempty] { *offset = idx_t_nomatch as i32 - idx_t_jempty as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnull_elem] { *offset = idx_t_nomatch as i32 - idx_t_jnull_elem as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnull_name] { *offset = idx_t_nomatch as i32 - idx_t_jnull_name as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_t_jdone] { *offset = n - idx_t_jdone as i32 - 1; }
     insert_ops_front(f, ops);
     eprintln!("connect_edit: injected {n} ops into update@{update_fx} (console+startMatch dispatch); port={port}");
 
@@ -1315,17 +1471,16 @@ fn inject_ready_flag(
         // calls UgcUtil.loadUgc. We call loadInLocalUgc@17842 (no-arg, no guards)
         // which scans getCwd()/custom async.
         //
-        // KNOWN LIMITATION (verified via the `k` pool-key dump, reliable): NEITHER
-        // loadInLocalUgc@17842 NOR the full loadUgc@17796(true) actually adds
-        // custom/*.fra to the ResourceManager pool in this headless boot — after
-        // 45s the pool holds only `private::common` (a builtin loaded
-        // synchronously via importManifest). The threaded local-UGC load
-        // (addDirToLoadQueue → load@1845 → fetch → ThreadTaskManager.queueTask →
-        // [worker thread] fetchThreaded → loadComplete → finishLoading →
-        // addResource) is not completing for our dir. This is the open blocker
-        // for #3 via the harness; the converter output itself is fine (it loads
-        // correctly under a normal Steam launch, where launchScreen runs the full
-        // load path with the thread system fully initialised).
+        // The threaded local-UGC load (addDirToLoadQueue → load@1845 → fetch →
+        // ThreadTaskManager.queueTask@25758 = deque_push) only ENQUEUES tasks; a
+        // worker thread spawned by ThreadTaskManager.init@25781 (HaxeThread.create
+        // running the deque_pop@26003 loop) must drain them. init is normally
+        // called from CoreEngine.init@17729. We call init@25781 (no args) FIRST,
+        // defensively, so the worker thread exists to drain our queued .fra loads
+        // even if our headless boot path skipped the normal init. (Verified: the
+        // ONLY function that pops the task deque is init's spawned worker; without
+        // it the `k` pool-key dump showed only private::common, never custom.)
+        Opcode::Call0 { dst: r_ret, fun: RefFun(25781) },
         Opcode::Call0 { dst: r_ret, fun: RefFun(load_ugc) },
         Opcode::Bool { dst: r_b, value: hlbc::types::ValBool(true) },
         Opcode::SetGlobal { global: RefGlobal(g_ready), src: r_b },
