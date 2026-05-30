@@ -190,3 +190,39 @@ RECOMMENDATION: restart session (clears channel + lets the OS reap the wedged
 procs after the engine fully dies), then resume from hypotheses above. The
 FrayTools-side validation (task #3) is doable now without engine boots if
 preferred.
+
+## CONFIRMED ROOT CAUSE (sha-verified disasm of spawnPlayer@2496)
+spawnPlayer does:
+    character = playerConfig.character            (PlayerConfig field 13)
+    resId     = getResourceIdentifierString(character)   (@18225)
+    pxfRes    = getPXFResource(resId)             (@18288)   <-- returns NULL
+    chMap     = pxfRes.characterPxfContentMap     (field 17) <-- NULL ACCESS crash
+    content   = chMap.get(character.#0)
+=> getPXFResource returns null => the character's RESOURCE is not in the
+   ResourceManager pool. Builtins (commandervideo => public::) are in the pool
+   (loaded from assets/data) so they spawn. Our custom/workshop content is NEVER
+   loaded into the pool in the harness boot path — which ALSO explains why the
+   resolver fell through to global:: (every namespace existence check failed).
+THE FIX IS HARNESS-SIDE: load/import the custom character resource into the
+ResourceManager pool before startMatch (the normal title-load path does this for
+custom content, gated/region we haven't pinned). This is a build-out, NOT a
+sandbag conversion bug. sandbag's .fra may be fine.
+
+## NEXT (engine side), when env is healthy:
+- Find the custom-content loader: callers of addResource@18230 / the title
+  `custom_content_loading` state handler / importManifest replacement. Wire that
+  load into the injected `s` path (or trigger it once at READY) so custom/workshop
+  resources enter the pool. Then re-test buzzwole (must spawn) THEN sandbag.
+- Fix resolver namespaces (custom:: for custom/, proper ns for workshop) once
+  content is actually in the pool to check against.
+
+## STOPPING AUTONOMOUS IN-ENGINE RE NOW — environment not trustworthy
+- Tool channel corrupted output 5+ times this session (duplicated/triplicated
+  lines, fabricated a log result that flipped a conclusion into commit 8636ec83,
+  later corrected). Verified each via shasum/canary. Doing more bytecode RE
+  through this risks shipping wrong fixes.
+- 4 `hl _conn.dat` procs wedged in uninterruptible sleep (UNE, unkillable) from
+  background boots — pollute the machine until reboot/syscall-return.
+RECOMMEND: restart session to clear the channel and let the OS reap the wedged
+engine procs, then resume from "NEXT (engine side)" above. The FrayTools-side
+validation (task #3, compare_boxes) needs NO engine and can proceed independently.
