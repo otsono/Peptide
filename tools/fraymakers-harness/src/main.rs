@@ -849,21 +849,39 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
         // L_PKGNAME: pkgid = name (caller already gave package.id)
         let l_pkgname = ops.len();
         ops.push(Opcode::Mov { dst: r(56), src: r(name) });
-        // L_PREFIX: try each namespace prefix with pkgid in r56
+        // L_PREFIX: try each namespace prefix with pkgid in r56.
+        // FIX (content-map null crash): the previous version accepted a prefix as
+        // soon as getPXFResource != null. But `global::X.X` resolves to a REGISTRY
+        // STUB whose resource is non-null yet whose per-type content map
+        // (cmap_field: characterPxfContentMap f17 / stagePxfContentMap f22) is
+        // NULL — so spawnPlayer/setupStage later null-deref it. Now we accept a
+        // prefix only if BOTH the resource AND its content map are non-null, so we
+        // pick the namespace under which the content is ACTUALLY loaded. If none
+        // qualifies, `out` retains the last-parsed (global::) ref as a last resort
+        // (same as before — no worse than the old behavior).
         let l_prefix = ops.len();
-        let mut found_pref = vec![];
+        let mut found_pref = vec![];          // JNotNull(cmap) -> l_done (accept)
+        let mut skip_jumps: Vec<usize> = vec![]; // JNull(resource) -> next prefix
+        let mut iter_start: Vec<usize> = vec![];
         let n = nsp.len();
-        for (k, &pref) in nsp.iter().enumerate() {
+        for &pref in nsp.iter() {
+            iter_start.push(ops.len());
             ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(pref) });
             ops.push(Opcode::Call2 { dst: r(57), fun: RefFun(str_add), arg0: r(53), arg1: r(56) });
             ops.push(Opcode::Call2 { dst: r(out), fun: RefFun(18224), arg0: r(57), arg1: r(38) });
-            if k + 1 < n {
-                ops.push(Opcode::Call1 { dst: r(58), fun: RefFun(getresid_fn), arg0: r(out) });
-                ops.push(Opcode::Call1 { dst: r(60), fun: RefFun(getpxf_fn), arg0: r(58) });
-                let jf = ops.len();
-                ops.push(Opcode::JNotNull { reg: r(60), offset: 0 });
-                found_pref.push(jf);
-            }
+            ops.push(Opcode::Call1 { dst: r(58), fun: RefFun(getresid_fn), arg0: r(out) });
+            ops.push(Opcode::Call1 { dst: r(60), fun: RefFun(getpxf_fn), arg0: r(58) });
+            // resource null -> try next prefix (also guards the Field below)
+            let j_skip = ops.len();
+            ops.push(Opcode::JNull { reg: r(60), offset: 0 });
+            skip_jumps.push(j_skip);
+            // content map non-null -> accept this ref (out already set)
+            ops.push(Opcode::Field { dst: r(63), obj: r(60), field: RefField(cmap_field) });
+            let jf = ops.len();
+            ops.push(Opcode::JNotNull { reg: r(63), offset: 0 });
+            found_pref.push(jf);
+            // else fall through to next prefix (out gets overwritten next iter;
+            // after the last prefix, out keeps the last-parsed ref as fallback)
         }
         let j_nsdone = ops.len();
         ops.push(Opcode::JAlways { offset: 0 });
@@ -876,6 +894,7 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
             match &mut ops[at] {
                 Opcode::JSGte { offset, .. } | Opcode::JFalse { offset, .. }
                 | Opcode::JTrue { offset, .. } | Opcode::JNotNull { offset, .. }
+                | Opcode::JNull { offset, .. }
                 | Opcode::JAlways { offset, .. } => *offset = off,
                 _ => unreachable!(),
             }
