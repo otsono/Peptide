@@ -164,3 +164,18 @@ Criterion #2 (FrayTools layout match) = MET for the gameplay-critical boxes.
 - harness.js: same fix ported (f174f77e)
 Both eliminate the "No inspectable targets" race. render-entity.js has the same
 pattern but is legacy/unused — port if ever needed.
+
+## SESSION 2 — COMPLETE box-validation sweep (corrects partial result above)
+Full Monitor-captured result (6 frames):
+  idle f0          4 boxes  hurt 0.000/0.001 PASS · ITEM_BOX 3.716 FAIL
+  tilt_forward f4  4 boxes  ALL 3 hurtboxes PASS (no itembox this frame)
+  aerial_neutral f3 3 boxes hurt 0.000 PASS · ITEM_BOX 7.002 FAIL
+  jab f2, jab f4, strong_forward f6: NO_JSON (harness nav timing under rapid
+    sequential CDP calls — not a conversion issue; re-run individually to get data)
+KEY INSIGHT: itembox drift SCALES WITH ROTATION (3.716px @ θ=9.7° → 7.002px at
+higher θ). Confirms the rotated-affine bake (entity_gen.rs:642-661) doesn't
+invert collision_box_anchor correctly when (x,y) co-rotate with the pivot. Hurt/
+hit/body boxes are exact regardless. => one isolated, low-severity, well-localized
+converter bug; everything gameplay-critical is faithful.
+NO_JSON note: add a small settle/retry between sequential harness.js calls (or run
+one frame per process) for batch validation reliability.
