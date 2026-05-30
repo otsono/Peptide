@@ -10,15 +10,17 @@
 /// FLV is used as an intermediate because ffmpeg can't decode raw Nellymoser;
 /// it needs a container that carries the codec+rate metadata.
 
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, Context};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
 // ─── Sound format constants ───────────────────────────────────────────────────
 
+const FMT_UNCOMPRESSED: u8 = 0;  // raw PCM, native (big) endian
 const FMT_ADPCM:       u8 = 1;
 const FMT_MP3:         u8 = 2;
+const FMT_UNCOMPRESSED_LE: u8 = 3;  // raw PCM, little endian (WAV-native)
 const FMT_NELLYMOSER8: u8 = 5;  // 8kHz mono only
 const FMT_NELLYMOSER:  u8 = 6;  // variable rate
 
@@ -38,6 +40,10 @@ pub struct SoundEntry {
     pub fmt:          u8,
     /// Sample rate in Hz (5512, 11025, 22050, 44100)
     pub sample_rate:  u32,
+    /// True for 16-bit samples, false for 8-bit (uncompressed formats only)
+    pub bits16:       bool,
+    /// True for stereo, false for mono
+    pub stereo:       bool,
     /// Total sample count
     pub sample_count: u32,
     /// Raw codec bytes (no SWF header)
@@ -86,8 +92,8 @@ pub fn parse_sounds(swf: &[u8]) -> Result<Vec<SoundEntry>> {
                     let flags       = swf[pos+2];
                     let fmt         = (flags >> 4) & 0xf;
                     let rate_idx    = (flags >> 2) & 0x3;
-                    let _bits16     = (flags >> 1) & 1;
-                    let _stereo     = flags & 1;
+                    let bits16      = ((flags >> 1) & 1) == 1;
+                    let stereo      = (flags & 1) == 1;
                     let sample_count = u32::from_le_bytes([
                         swf[pos+3], swf[pos+4], swf[pos+5], swf[pos+6]
                     ]);
@@ -98,6 +104,8 @@ pub fn parse_sounds(swf: &[u8]) -> Result<Vec<SoundEntry>> {
                         name: String::new(),
                         fmt,
                         sample_rate,
+                        bits16,
+                        stereo,
                         sample_count,
                         data,
                     });
@@ -145,8 +153,50 @@ pub fn convert_to_wav(entry: &SoundEntry, out_path: &Path) -> Result<()> {
         FMT_NELLYMOSER | FMT_NELLYMOSER8 => convert_nellymoser_to_wav(entry, out_path),
         FMT_MP3   => convert_mp3_to_wav(entry, out_path),
         FMT_ADPCM => convert_via_flv(entry, out_path),
+        FMT_UNCOMPRESSED | FMT_UNCOMPRESSED_LE => convert_pcm_to_wav(entry, out_path),
         other => bail!("Unsupported sound format {} for '{}'", other, entry.name),
     }
+}
+
+/// Write raw uncompressed PCM (SWF format 0 = big-endian, format 3 = little-endian)
+/// directly to a WAV file. WAV is little-endian PCM, so format 3 copies verbatim;
+/// format 0 16-bit samples are byte-swapped to LE.
+fn convert_pcm_to_wav(entry: &SoundEntry, out_path: &Path) -> Result<()> {
+    let channels: u16 = if entry.stereo { 2 } else { 1 };
+    let bits_per_sample: u16 = if entry.bits16 { 16 } else { 8 };
+
+    // Normalise sample bytes to little-endian for WAV.
+    let mut pcm = entry.data.clone();
+    if entry.fmt == FMT_UNCOMPRESSED && entry.bits16 {
+        // Native-endian Flash PCM is big-endian; swap 16-bit sample byte pairs.
+        for pair in pcm.chunks_exact_mut(2) {
+            pair.swap(0, 1);
+        }
+    }
+
+    let byte_rate = entry.sample_rate * channels as u32 * bits_per_sample as u32 / 8;
+    let block_align = channels * bits_per_sample / 8;
+    let data_len = pcm.len() as u32;
+
+    let mut wav = Vec::with_capacity(44 + pcm.len());
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());      // PCM fmt chunk size
+    wav.extend_from_slice(&1u16.to_le_bytes());        // audioFormat = PCM
+    wav.extend_from_slice(&channels.to_le_bytes());
+    wav.extend_from_slice(&entry.sample_rate.to_le_bytes());
+    wav.extend_from_slice(&byte_rate.to_le_bytes());
+    wav.extend_from_slice(&block_align.to_le_bytes());
+    wav.extend_from_slice(&bits_per_sample.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.extend_from_slice(&pcm);
+
+    std::fs::write(out_path, &wav)
+        .with_context(|| format!("write PCM WAV '{}'", entry.name))?;
+    Ok(())
 }
 
 fn convert_nellymoser_to_wav(entry: &SoundEntry, out_path: &Path) -> Result<()> {
