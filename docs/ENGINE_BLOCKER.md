@@ -155,3 +155,25 @@ Local UGC content is registered under namespace `LOCAL_NAMESPACE + "_" + cleanNa
 (ResourceManager.LOCAL_NAMESPACE static, field 11; cleanName = dirname with
 [^a-zA-Z0-9_- ] stripped). So even once loaded, `custom::`/`global::` resolution
 is WRONG — must resolve via pool registry-search by content-id, not namespace guess.
+
+## RESUME POINT (channel corrupting reads — paused mid-RE)
+Confirmed synchronous boot loader path (sha-verified up to here):
+- Main boot: CoreEngine::preLoad@17866 → ResourceManager.queueRequiredResources@18234
+- The data manifest "manifest.json" (string idx 40744, const-global 9341) is read
+  by exactly ONE function: findex 26465 (const-global ref). THIS is the builtin/
+  assets-data content registrar — the synchronous, no-Steam path that works headless.
+NEXT (on a HEALTHY channel — verify with canary+shasum first):
+  1. Disassemble findex 26465 cleanly (it was mid-dump when the tool channel began
+     injecting fake EOF/markdown text — do NOT trust that read). Find how it turns
+     manifest entries into resources + calls addResource@18230, and what namespace
+     it assigns.
+  2. Mirror that for custom/sandbag: either extend the manifest scan to include
+     custom/<id>/<id>.fra, or call the same file→AbstractResource→addResource
+     primitive directly from our injection (synchronous), at READY before `s`.
+  3. Fix the resolver to find pooled content by content-id registry search
+     (namespace-agnostic) — the disabled hung path; fix its iterator.
+  4. Verify sandbag spawns (no error.log), THEN proceed #6 (playCState move driver),
+     #7 telemetry, #8 capture, #9 iterate.
+Current injection state: inject_ready_flag calls loadInLocalUgc@17842 (proven
+insufficient headless — leave or revert to 17796; neither loads content. The real
+fix is the manifest-reader path above, not the UgcUtil pipeline).
