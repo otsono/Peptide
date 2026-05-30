@@ -353,3 +353,55 @@ arithmetic-canary mismatch) while inspecting loadUgc's body and whether main.rs
 already calls it. Those two specific reads are UNTRUSTED. Everything with a
 reproduced md5 above (UgcUtil findexes, content-map field names, spawnPlayer/
 getCharacterContent chains) IS trusted.
+
+## ✅ BUG FOUND IN OUR OWN HARNESS CODE (md5-verified disasm + source)
+loadUgc@17796 disasm (md5 5e1815a8, reproduced) — the engine's FULL UGC load:
+  op6-12  : set status = STATUS_LOADING (UgcUtil statics field 7)
+  op14-21 : fire CustomContentEvent.LOAD_START on m_localBus
+  op22    : loadInLocalUgc@17842   (scans custom/ — local, no Steam)
+  op23    : loadInSubscribedUgc@17843 (workshop — Steam)
+  op24    : _checkIfAllDirectoriesLoaded@17840 (FINALIZER)
+
+OUR harness (tools/fraymakers-harness/src/main.rs):
+  - line 1175: inject_ready_flag(..., 17842)  // passes loadInLocalUgc, not loadUgc
+  - line 1250: Opcode::Call0 { fun: RefFun(load_ugc_fn) }  // the ONLY load op
+  - comment (1235): "normally calls UgcUtil.loadUgc; we use loadInLocalUgc@17842
+    (local-only, no Steam/guards)".
+
+So we inject ONLY `loadInLocalUgc@17842` and SKIP: the STATUS_LOADING flag, the
+LOAD_START event, and the `_checkIfAllDirectoriesLoaded@17840` finalizer. That
+partial path registers resources in the pool (getPXFResource non-null → LAUNCHED)
+but never runs the finalization that populates the per-resource content maps
+(characterPxfContentMap f17 / stagePxfContentMap f22) → spawnPlayer/setupStage
+null-deref. THIS is the root cause, in our code, fully explained by md5-verified
+evidence.
+
+## THE FIX (precise, keeps "no Steam") — turnkey for inject_ready_flag
+Replace the single `Call0(loadInLocalUgc@17842)` with a local-only replica of
+loadUgc@17796's body — everything EXCEPT loadInSubscribedUgc@17843 (the Steam
+one):
+  1. set UgcUtil.status (statics g3449? — verify global; field 7) = STATUS_LOADING
+     (field 45) [optional but matches engine flow]
+  2. (optional) fire LOAD_START as ops 14-21 do
+  3. Call0 loadInLocalUgc@17842        (already present)
+  4. Call0 _checkIfAllDirectoriesLoaded@17840   ← THE MISSING FINALIZER
+Minimal first attempt: just ADD step 4 (Call0 17840) right after the existing
+17842 call — thread 17840 in as a new param to inject_ready_flag, mirroring how
+17842 (load_ugc_fn) is already threaded. If that alone doesn't populate the maps
+(because the finalizer needs the STATUS/LOAD_START state first), add steps 1-2.
+ALTERNATIVELY the simplest possible: pass 17796 (full loadUgc) instead of 17842 —
+but that pulls in loadInSubscribedUgc (Steam); only use if the local-only replica
+proves too fiddly and Steam is acceptable.
+
+VERIFY (objective, fabrication-proof): rebuild (cargo build 0 errors = reliable),
+then run freeze_probe.sh and control_probe.sh buzzwole on stage `thespire`;
+SUCCESS = engine error.log md5 is NEITHER 3537a487 (stage null) NOR 36adae25
+(char null). Then Match.elapsedFrames (type634 f75) advances → freeze oracle +
+telemetry (#6/#7) + move-drive (#4) unblocked.
+
+WHY NOT DONE THIS SESSION: this is a multi-op bytecode injection whose only real
+validation is a LIVE engine run, and this session's tool channel has repeatedly
+fabricated live-run output (3 fake A/Bs + more, all retracted). Committing an
+untested injection that merely COMPILES would risk shipping a wrong "fix" — the
+exact failure mode corrected throughout this session. The fix is specified to
+op-level precision above; execute + live-verify on a healthy channel.
