@@ -675,134 +675,10 @@ fn generate_animation_stats(data: &CharacterData, splits: &[crate::anim_splitter
     // ── Base FM template: animations with hand-tuned properties ──────────────
     // These are the standard Fraymakers character-template entries.
     // Order and grouping match the official template.
-    let template: Vec<(&str, &str)> = vec![
-        // MOTIONS
-        ("stand", ""),
-        ("stand_turn", ""),
-        ("walk_in", ""),
-        ("walk_loop", ""),
-        ("walk_out", ""),
-        ("dash", ""),
-        ("run", ""),
-        ("run_turn", ""),
-        ("skid", ""),
-        ("jump_squat", ""),
-        ("jump_in", ""),
-        ("jump_midair", ""),
-        ("jump_out", ""),
-        ("fall_loop", ""),
-        ("fall_special", ""),
-        ("land_light", ""),
-        ("land_heavy", ""),
-        ("crouch_in", ""),
-        ("crouch_loop", ""),
-        ("crouch_out", ""),
-        // AIRDASHES
-        ("airdash_up", ""),
-        ("airdash_down", ""),
-        ("airdash_forward", ""),
-        ("airdash_back", ""),
-        ("airdash_forward_up", ""),
-        ("airdash_forward_down", ""),
-        ("airdash_back_up", ""),
-        ("airdash_back_down", ""),
-        ("airdash_freefall", ""),
-        ("airdash_freefall_whiff", ""),
-        // DEFENSE
-        ("shield_in", ""),
-        ("shield_loop", ""),
-        ("shield_hurt", ""),
-        ("shield_out", ""),
-        ("parry_in", ""),
-        ("parry_success", ""),
-        ("parry_fail", ""),
-        ("roll", ""),
-        ("spot_dodge", ""),
-        // ASSIST CALL
-        ("assist_call", ""),
-        ("assist_call_air", ""),
-        // LIGHT ATTACKS
-        ("jab1", ""),
-        ("jab2", ""),
-        ("jab3", ""),
-        ("dash_attack", "xSpeedConservation: 1"),
-        ("tilt_forward", ""),
-        ("tilt_up", ""),
-        ("tilt_down", ""),
-        // STRONG ATTACKS
-        ("strong_forward_in", ""),
-        ("strong_forward_charge", ""),
-        ("strong_forward_attack", ""),
-        ("strong_up_in", ""),
-        ("strong_up_charge", ""),
-        ("strong_up_attack", ""),
-        ("strong_down_in", ""),
-        ("strong_down_charge", ""),
-        ("strong_down_attack", ""),
-        // AERIAL ATTACKS
-        ("aerial_neutral", "landAnimation:\"aerial_neutral_land\""),
-        ("aerial_forward", "landAnimation:\"aerial_forward_land\""),
-        ("aerial_back", "landAnimation:\"aerial_back_land\""),
-        ("aerial_up", "landAnimation:\"aerial_up_land\""),
-        ("aerial_down", "landAnimation:\"aerial_down_land\", xSpeedConservation: 0.5, ySpeedConservation: 0.5, gravityMultiplier:0, allowMovement: false"),
-        // AERIAL ATTACK LANDING
-        ("aerial_neutral_land", ""),
-        ("aerial_forward_land", ""),
-        ("aerial_back_land", ""),
-        ("aerial_up_land", ""),
-        ("aerial_down_land", "xSpeedConservation: 0"),
-        // SPECIAL ATTACKS
-        ("special_neutral", ""),
-        ("special_neutral_air", ""),
-        ("special_up", "leaveGroundCancel:false, xSpeedConservation:0.5, ySpeedConservation:0.5, allowMovement: true, nextState:CState.FALL_SPECIAL"),
-        ("special_up_air", "leaveGroundCancel:false, xSpeedConservation:0.5, ySpeedConservation:0.5, nextState:CState.FALL_SPECIAL, landType:LandType.TOUCH"),
-        ("special_down", "allowFastFall:false, allowTurnOnFirstFrame: true, leaveGroundCancel:false, xSpeedConservation:0, ySpeedConservation:0"),
-        ("special_down_loop", "endType:AnimationEndType.LOOP"),
-        ("special_down_endlag", ""),
-        ("special_down_air", "allowFastFall:false, allowTurnOnFirstFrame: true, leaveGroundCancel:false, xSpeedConservation:0, ySpeedConservation:0, landType:LandType.LINK_FRAMES, landAnimation:\"special_down\""),
-        ("special_down_air_loop", "endType:AnimationEndType.LOOP, landType:LandType.LINK_FRAMES, landAnimation:\"special_down_loop\""),
-        ("special_down_air_endlag", "landType:LandType.LINK_FRAMES, landAnimation:\"special_down\""),
-        ("special_side", "allowFastFall: false, allowTurnOnFirstFrame: true, leaveGroundCancel:false, landType:LandType.TOUCH, landAnimation: \"land_heavy\", singleUse:true"),
-        ("special_side_air", "allowFastFall: false, allowTurnOnFirstFrame: true, leaveGroundCancel:false, landType:LandType.TOUCH, landAnimation: \"land_heavy\", singleUse:true"),
-        // THROWS
-        ("grab", ""),
-        ("grab_hold", ""),
-        ("throw_forward", ""),
-        ("throw_back", ""),
-        ("throw_up", ""),
-        ("throw_down", ""),
-        // HURT ANIMATIONS
-        ("hurt_light_low", ""),
-        ("hurt_light_middle", ""),
-        ("hurt_light_high", ""),
-        ("hurt_medium", ""),
-        ("hurt_heavy", ""),
-        ("hurt_thrown", ""),
-        ("tumble", ""),
-        // CRASH
-        ("crash_bounce", ""),
-        ("crash_loop", ""),
-        ("crash_get_up", ""),
-        ("crash_attack", ""),
-        ("crash_roll", ""),
-        // LEDGE
-        ("ledge_in", ""),
-        ("ledge_loop", ""),
-        ("ledge_roll_in", ""),
-        ("ledge_roll", ""),
-        ("ledge_climb_in", ""),
-        ("ledge_climb", ""),
-        ("ledge_attack_in", ""),
-        ("ledge_attack", ""),
-        ("ledge_jump_in", ""),
-        ("ledge_jump", ""),
-        // MISC
-        ("revival", ""),
-        ("emote", ""),
-    ];
+    let template = crate::mappings::character_animation_template();
 
     // Collect template names for dedup
-    let template_names: BTreeSet<&str> = template.iter().map(|(n, _)| *n).collect();
+    let template_names: BTreeSet<&str> = template.iter().map(|e| e.name.as_str()).collect();
 
     let t = &crate::mappings::script_templates().character.stats;
     let req = crate::mappings::require_template;
@@ -812,9 +688,9 @@ fn generate_animation_stats(data: &CharacterData, splits: &[crate::anim_splitter
 
     // Emit template entries (the template Vec is data — stays in Rust). `body`
     // is the `{}` / `{props}` object literal assembled here.
-    for (name, props) in &template {
-        let body = if props.is_empty() { "{}".to_string() } else { format!("{{{}}}", props) };
-        out.push_str(&entry_tpl.replace("{{name}}", name).replace("{{body}}", &body));
+    for e in template {
+        let body = if e.props.is_empty() { "{}".to_string() } else { format!("{{{}}}", e.props) };
+        out.push_str(&entry_tpl.replace("{{name}}", &e.name).replace("{{body}}", &body));
     }
 
     // Emit split animations not already in template

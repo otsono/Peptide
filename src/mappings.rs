@@ -24,6 +24,8 @@ const DEFAULT_CHARACTER_STATS: &str =
     include_str!("../mappings/character/stats.jsonc");
 const DEFAULT_CHARACTER_HITBOX_STATS: &str =
     include_str!("../mappings/character/hitbox_stats.jsonc");
+const DEFAULT_CHARACTER_ANIMATION_TEMPLATE: &str =
+    include_str!("../mappings/character/animation_template.jsonc");
 // API command conversions are universal, not character-scoped, so this file
 // lives at the top of mappings/ rather than under mappings/character/.
 const DEFAULT_API_COMMANDS: &str =
@@ -675,6 +677,23 @@ pub fn character_stats() -> &'static StatMappings {
     static CACHE: OnceLock<StatMappings> = OnceLock::new();
     CACHE.get_or_init(|| {
         load("mappings/character/stats.jsonc", DEFAULT_CHARACTER_STATS)
+    })
+}
+
+/// One Fraymakers character-template animation + its AnimationStats.hx property
+/// overrides. `props` is the object-literal body (empty = `{}`). Ordered list
+/// loaded from `mappings/character/animation_template.jsonc`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AnimTemplateEntry {
+    pub name: String,
+    #[serde(default)]
+    pub props: String,
+}
+
+pub fn character_animation_template() -> &'static Vec<AnimTemplateEntry> {
+    static CACHE: OnceLock<Vec<AnimTemplateEntry>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        load("mappings/character/animation_template.jsonc", DEFAULT_CHARACTER_ANIMATION_TEMPLATE)
     })
 }
 
