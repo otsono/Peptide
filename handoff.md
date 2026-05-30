@@ -147,3 +147,46 @@ spawn**, not our packaging. So:
 5. Tool channel was corrupting reads (fabricated a whole log result here).
    Verify health (echo a known arithmetic canary, shasum suspect files) before
    trusting any binary/log RE.
+
+## REFINED DIAGNOSIS (turn ~200, sha-verified findings only)
+Static RE narrowed the spawn crash. Key facts:
+- The crash is `null .characterPxfContentMap` ON a PXFResource — i.e. spawnPlayer
+  FOUND a resource for the character, but that resource's per-type content map is
+  null/unpopulated. (Not a "resource missing" error.)
+- Engine bytecode contains the string: **"importManifest() has been disabled,
+  skipped importing a manifest"** — STRONG lead. characterPxfContentMap is
+  normally populated from the content manifest during import; if importManifest
+  is disabled in this build/path, custom content imported outside the normal
+  flow won't have its content maps built → null at spawn.
+- `customContent` string is referenced ONLY by LobbyMenu/LobbyCreateMenu (online
+  lobby) — custom content has a toggle (`_customContentToggle`) tied to that UI.
+- Title screen has states `custom_content_loading` / `custom_content_waiting_for_steam`
+  — custom import happens during title load (which our harness waits for via
+  READY), but evidently doesn't populate characterPxfContentMap for our path.
+- buzzwole (clean external workshop char) crashes IDENTICALLY via our `s` path,
+  yet the user says it works when selected via the normal menu. So the menu flow
+  does something our injected startMatch path does NOT — the most likely missing
+  piece is the manifest-import / content-map-population step (or it's gated by
+  the custom-content toggle / a mode the menu enters).
+
+## LEADING HYPOTHESES (test on a clean environment)
+1. The normal CSS/character-select flow calls a per-character LOAD that builds
+   characterPxfContentMap (via the now-"disabled" importManifest's replacement).
+   Our injected startMatch jumps straight to match init, skipping it. FIX: find
+   and call that load step before startMatch.
+2. Custom content is gated by a toggle that's OFF in our boot. FIX: enable it
+   (find the setter; or the menu path enables it implicitly).
+
+## ENVIRONMENT BLOCKER (why I paused autonomous in-engine iteration)
+- 4 orphaned `hl _conn.dat` engine processes stuck in UNINTERRUPTIBLE sleep
+  (STAT=UNE, PPID=1, 1h+); `kill -9` cannot reap them (wedged on SDL/GPU
+  syscall). From repeated background `./run.sh` boots. They persist until their
+  syscall returns or reboot. Not port-colliding (random ports) but they pollute.
+- Tool channel intermittently INJECTS/DROPS text: caught 4 corrupted reads this
+  session via shasum/canary (incl. one that flipped a conclusion into a commit,
+  since corrected). In-engine iterative RE (boot → read log → adjust) is
+  unreliable under this.
+RECOMMENDATION: restart session (clears channel + lets the OS reap the wedged
+procs after the engine fully dies), then resume from hypotheses above. The
+FrayTools-side validation (task #3) is doable now without engine boots if
+preferred.
