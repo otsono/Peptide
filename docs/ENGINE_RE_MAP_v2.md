@@ -75,3 +75,28 @@ SPECIAL_UP=89, SPECIAL_DOWN=90, GRAB=96. (Reference call pattern: `fallFromLedge
 Key findexes: toState=4497, setState=4493, getStateName=4491, CState.constToString=19270,
 isFacingLeft=682, fallFromLedge=4276 (ref). CState statics global=3946, Match type=634,
 Character type=783.
+
+## spawnPlayer load requirement (RE, high confidence, 2026-05-30)
+`pxf.core.Match.spawnPlayer@2496(Match, PlayerConfig)->Character`: after id resolve
+(`getResourceIdentifierString@18225`) it calls `getPXFResource@18288`, NullChecks it
+(op4), reads PXFResource field 17 `characterPxfContentMap` + NullChecks (op5-6),
+`StringMap.get@729(map, charId)` (op10, UNCHECKED), feeds entry to
+`ClassFactory.createCharacter` (op15). Uses the resource-LOCAL map, NOT the
+`pxfCharacterContentCache` (field 29) cache — so `cacheCharacterContent@18258`/
+`getCharacterContent@18292` do NOT help spawn.
+- `getPXFResource@18288` returns null unless: resource exists in pool AND
+  `get_ResType@1813`==PXF AND `get_Data@1814` (AbstractResource field 8 `_data`)
+  non-null. `addResource@18230` writes only poolHash/pool (never `_data`) → **addResource
+  alone is INSUFFICIENT** (crashes at spawnPlayer op4).
+- `_data` (the PXFResource w/ characterPxfContentMap) is set by `set_DataAsPxf@1826`,
+  populated during the .fra parse/load (`load@1845`→fetch→`finishLoading@1842`), NOT by
+  addResource/cacheCharacterContent. The char-id entry inside the map must exist (op10
+  unchecked → empty map only moves the crash into createCharacter).
+- **Approach:** builtins reach `_data` via `load@18242`/fetch and that path COMPLETES
+  headless (commandervideo spawns); only the UGC worker-thread queue (loadInLocalUgc →
+  ThreadTaskManager) stalls. So route a custom .fra Resource through the builtin
+  `load@18242` path (verified next), not loadInLocalUgc.
+Key findexes: spawnPlayer=2496, getPXFResource=18288, getResourceByID=18287,
+get_Data=1814 (_data=AbsRes field8), get_ResType=1813, get_Loaded=1839 (field15),
+set_DataAsPxf=1826, load(RM)=18242, load(AbsRes)=1845, finishLoading=1842,
+PXFResource.characterPxfContentMap = type 393 field 17.
