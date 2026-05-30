@@ -179,3 +179,19 @@ hit/body boxes are exact regardless. => one isolated, low-severity, well-localiz
 converter bug; everything gameplay-critical is faithful.
 NO_JSON note: add a small settle/retry between sequential harness.js calls (or run
 one frame per process) for batch validation reliability.
+
+
+## CRITERION STATUS (updated this session)
+- #1 Conversion clean: MET (exit 0, no WARN/ERROR; unknown-log false positives explained).
+- #2 FrayTools layout match: MET for gameplay-critical boxes (hurt/hit/body all
+  sub-px). One LOW-severity exception: itembox rotated-anchor drift ~3.7px,
+  documented in docs/ITEMBOX_DRIFT.md, deferred (not hit/hurt detection).
+- #3 Engine boots character: BLOCKED — headless ./hl cannot complete UGC load so
+  custom content never enters the ResourceManager pool (spawnPlayer null). Builtins
+  work. Needs Steam-launch context (=> hlboot patch+Steam launch = modifies a Steam
+  file, user decision). See docs/ENGINE_BLOCKER.md. Affects #4,#5,#6 (all need a
+  spawned custom char).
+- #4 Every move runs / #5 Animations play / #6 Physics: BLOCKED on #3.
+  RE done + ready: playCState@6801 is the internal move lever; telemetry = read
+  Character pos/vel fields; capture = per-frame screencapture. Implement once #3
+  unblocks.
