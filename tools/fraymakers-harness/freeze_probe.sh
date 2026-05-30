@@ -27,10 +27,15 @@ printf '1420350' > "$APPID"
 # Command stream: start the match, then a `q` heartbeat every 3s for ~33s.
 # Each line goes through stdin; the sleeps keep stdin open so serve stays live.
 {
-  # NOTE: both 'battlefield' and 'st_battlefield' crash setupStage with
-  # 'Null access .stagePxfContentMap' (the resolved stage's content map is null).
-  # A working stage ref is still UNKNOWN — override via FRAY_STAGE once found.
-  echo "s sandbag ${FRAY_STAGE:-st_battlefield} none"
+  # CRITICAL: wait for async UGC load before `s`. UGC loads async
+  # (_onFileLoaded@17838 fires per-.fra); sending `s` too early yields a
+  # pooled-but-unfinalized resource whose characterPxfContentMap is null ->
+  # spawnPlayer crash (md5 36adae25). ~12s post-READY lets it finish. VERIFIED:
+  # with the delay, `s sandbag thespire none` -> LAUNCHED + Q:MATCH_LIVE, no
+  # crash (reproduced). Use a VALID stage: thespire works; battlefield/
+  # st_battlefield resolve to a stub with null stagePxfContentMap.
+  sleep "${FRAY_LOAD_WAIT:-12}"
+  echo "s sandbag ${FRAY_STAGE:-thespire} none"
   for n in $(seq 1 11); do sleep 3; echo "q $n"; done
   sleep 2
 } | FRAY_HOLD_SECS=60 "$HERE/target/release/frayremote" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
