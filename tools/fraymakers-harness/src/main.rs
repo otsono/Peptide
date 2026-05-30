@@ -893,8 +893,6 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
         Opcode::JTrue { cond: r_done, offset: 0 },                      // 1 -> L_RECV (patched)
         Opcode::Bool { dst: r_true, value: true },             // 2
         Opcode::SetGlobal { global: RefGlobal(g_done), src: r_true },   // 3
-        Opcode::Bool { dst: r_blockf, value: false },          // init g_launched=false
-        Opcode::SetGlobal { global: RefGlobal(g_launched), src: r_blockf },
         Opcode::Call0 { dst: r_ret, fun: RefFun(socket_init) },
         Opcode::New { dst: r_sock },
         Opcode::Call1 { dst: r_ret, fun: RefFun(sock_init_method), arg0: r_sock },
@@ -1099,8 +1097,6 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::ToVirtual { dst: rr(50), src: rr(27) });          // -> config virtual@4482
     // mode.startMatch(config)  — runs the engine's offline-match flow (gates, menu suspend/restore)
     ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(mode_start_match), arg0: rr(48), arg1: rr(50) });
-    ops.push(Opcode::Bool { dst: rr(1), value: true });       // mark launched (one-shot guard)
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_launched), src: rr(1) });
     let _ = (one_idx, launched_g);
     // ack: "LAUNCHED <charId> <stageId> <assistId>\n" — echoes resolved content ids
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(launched2_g) });
@@ -1156,7 +1152,6 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // 's' falls through to the 'q' check; route 'not s' there too, then 'q' to L_ORIG.
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_s] { *offset = idx_q_check as i32 - idx_jne_s as i32 - 1; }
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_q] { *offset = n - idx_jne_q as i32 - 1; }
-    if let Opcode::JTrue { offset, .. } = &mut ops[idx_jlaunched] { *offset = idx_q_check as i32 - idx_jlaunched as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_q_jnull] { *offset = idx_q_nomatch as i32 - idx_q_jnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_q_jdone] { *offset = n - idx_q_jdone as i32 - 1; }
     insert_ops_front(f, ops);
