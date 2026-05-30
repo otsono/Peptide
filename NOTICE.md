@@ -73,6 +73,13 @@ by this tool is intended for use with FrayTools to develop custom
 characters; no Fraymakers engine code or proprietary tooling is
 included.
 
+## Bundled fonts
+
+The cross-platform GUI (`ssf2-converter-gui`) embeds the **Roboto** font
+(Regular / Medium / Bold) under `ssf2-converter-gui/assets/`. Roboto is
+© Google, licensed under the **Apache License 2.0**, which permits
+redistribution with attribution (satisfied by this notice).
+
 ## This project's own licence
 
 This project is licensed under the **MIT License** — see

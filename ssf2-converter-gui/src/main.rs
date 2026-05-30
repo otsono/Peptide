@@ -23,33 +23,59 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
 
-/// macOS-system accent blue.
+/// macOS-system accent blue (same in dark mode).
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x0A, 0x84, 0xFF);
-/// Window background (light gray, like a macOS sheet) and card surface (white).
-const BG: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xF2, 0xF7);
-const CARD: egui::Color32 = egui::Color32::from_rgb(0xFF, 0xFF, 0xFF);
-const HAIRLINE: egui::Color32 = egui::Color32::from_rgb(0xDE, 0xDE, 0xE3);
-const OK_GREEN: egui::Color32 = egui::Color32::from_rgb(0x30, 0xA8, 0x4F);
-const ERR_RED: egui::Color32 = egui::Color32::from_rgb(0xD0, 0x46, 0x46);
+/// Deep near-black window background + elevated card surface for a premium,
+/// high-contrast dark look. Cards sit a step above the backdrop.
+const BG: egui::Color32 = egui::Color32::from_rgb(0x0E, 0x0E, 0x12);
+const CARD: egui::Color32 = egui::Color32::from_rgb(0x1B, 0x1B, 0x21);
+const HAIRLINE: egui::Color32 = egui::Color32::from_rgb(0x2E, 0x2E, 0x36);
+const HEADER_BG: egui::Color32 = egui::Color32::from_rgb(0x15, 0x15, 0x1A);
+const TEXT: egui::Color32 = egui::Color32::from_rgb(0xEC, 0xEC, 0xF0);
+/// Blue tint behind the drop zone while a file is hovering.
+const DROP_HOVER: egui::Color32 = egui::Color32::from_rgb(0x16, 0x26, 0x40);
+const OK_GREEN: egui::Color32 = egui::Color32::from_rgb(0x32, 0xD7, 0x4B);
+const ERR_RED: egui::Color32 = egui::Color32::from_rgb(0xFF, 0x45, 0x3A);
 
-/// Clean, light, SwiftUI-ish styling — generous spacing, rounded widgets,
+/// Clean, dark, SwiftUI-ish styling — generous spacing, rounded widgets,
 /// system-blue accent, comfortable type scale. Pure egui, no extra crates.
 fn setup_style(ctx: &egui::Context) {
     use egui::{FontFamily::Proportional, FontFamily::Monospace, FontId, TextStyle};
+
+    // Bundle Roboto (Apache-2.0 — static .ttf, not a crate dep): Regular as the
+    // primary proportional font, Bold under a named "bold" family for headings.
+    // egui's default Ubuntu-Light + emoji fonts stay as fallbacks (✓ / 📦 / ⬇).
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("Roboto".to_owned(),
+        egui::FontData::from_static(include_bytes!("../assets/Roboto-Regular.ttf")));
+    fonts.font_data.insert("Roboto-Medium".to_owned(),
+        egui::FontData::from_static(include_bytes!("../assets/Roboto-Medium.ttf")));
+    fonts.font_data.insert("Roboto-Bold".to_owned(),
+        egui::FontData::from_static(include_bytes!("../assets/Roboto-Bold.ttf")));
+    fonts.families.entry(Proportional).or_default().insert(0, "Roboto".to_owned());
+    fonts.families.insert(egui::FontFamily::Name("bold".into()),
+        vec!["Roboto-Bold".to_owned(), "Roboto".to_owned()]);
+    fonts.families.insert(egui::FontFamily::Name("medium".into()),
+        vec!["Roboto-Medium".to_owned(), "Roboto".to_owned()]);
+    ctx.set_fonts(fonts);
+
     let mut style = (*ctx.style()).clone();
-    style.visuals = egui::Visuals::light();
+    style.visuals = egui::Visuals::dark();
     style.visuals.panel_fill = BG;
     style.visuals.window_fill = CARD;
-    style.visuals.extreme_bg_color = CARD;
+    style.visuals.extreme_bg_color = BG;
     style.visuals.hyperlink_color = ACCENT;
-    style.visuals.selection.bg_fill = egui::Color32::from_rgb(0xD3, 0xE6, 0xFF);
+    // Crisp label/button text (but leave weak() + colored labels to their own hues).
+    style.visuals.widgets.noninteractive.fg_stroke.color = TEXT;
+    style.visuals.widgets.inactive.fg_stroke.color = TEXT;
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(0x0A, 0x46, 0x86);
     style.visuals.selection.stroke = egui::Stroke::new(1.0, ACCENT);
-    style.visuals.window_rounding = egui::Rounding::same(12.0);
+    style.visuals.window_rounding = egui::Rounding::same(14.0);
     style.visuals.window_shadow = egui::epaint::Shadow {
-        offset: egui::vec2(0.0, 4.0), blur: 24.0, spread: 0.0,
-        color: egui::Color32::from_black_alpha(40),
+        offset: egui::vec2(0.0, 6.0), blur: 32.0, spread: 0.0,
+        color: egui::Color32::from_black_alpha(90),
     };
-    // Rounded, calm widget surfaces.
+    // Rounded, calm widget surfaces; subtle elevation on buttons.
     let round = egui::Rounding::same(8.0);
     for w in [
         &mut style.visuals.widgets.noninteractive,
@@ -60,19 +86,27 @@ fn setup_style(ctx: &egui::Context) {
     ] {
         w.rounding = round;
     }
-    // Comfortable spacing.
-    style.spacing.item_spacing = egui::vec2(10.0, 10.0);
-    style.spacing.button_padding = egui::vec2(14.0, 7.0);
-    style.spacing.interact_size.y = 30.0;
-    // Type scale.
+    style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(0x2A, 0x2A, 0x31);
+    style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0x34, 0x34, 0x3C);
+    // Generous, airy spacing for a premium feel.
+    style.spacing.item_spacing = egui::vec2(12.0, 12.0);
+    style.spacing.button_padding = egui::vec2(16.0, 9.0);
+    style.spacing.interact_size.y = 32.0;
+    // Type scale — bold Roboto headings, clean regular body.
+    let bold = egui::FontFamily::Name("bold".into());
     style.text_styles = [
-        (TextStyle::Heading,   FontId::new(22.0, Proportional)),
+        (TextStyle::Heading,   FontId::new(27.0, bold.clone())),
         (TextStyle::Body,      FontId::new(14.5, Proportional)),
-        (TextStyle::Button,    FontId::new(14.5, Proportional)),
+        (TextStyle::Button,    FontId::new(14.5, egui::FontFamily::Name("medium".into()))),
         (TextStyle::Small,     FontId::new(12.0, Proportional)),
         (TextStyle::Monospace, FontId::new(12.5, Monospace)),
     ].into();
     ctx.set_style(style);
+}
+
+/// A bold Roboto `FontId` for emphasised titles/labels at a given size.
+fn bold(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("bold".into()))
 }
 
 /// A white, rounded "card" surface with a hairline border and inner padding —
@@ -80,9 +114,13 @@ fn setup_style(ctx: &egui::Context) {
 fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::none()
         .fill(CARD)
-        .rounding(egui::Rounding::same(10.0))
+        .rounding(egui::Rounding::same(12.0))
         .stroke(egui::Stroke::new(1.0, HAIRLINE))
-        .inner_margin(egui::Margin::same(16.0))
+        .inner_margin(egui::Margin::same(18.0))
+        .shadow(egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 2.0), blur: 14.0, spread: 0.0,
+            color: egui::Color32::from_black_alpha(70),
+        })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
@@ -418,11 +456,12 @@ impl eframe::App for App {
 
         egui::TopBottomPanel::top("header")
             .frame(egui::Frame::none()
-                .fill(CARD)
-                .inner_margin(egui::Margin { left: 24.0, right: 24.0, top: 16.0, bottom: 14.0 }))
+                .fill(HEADER_BG)
+                .inner_margin(egui::Margin { left: 26.0, right: 26.0, top: 18.0, bottom: 16.0 }))
             .show(ctx, |ui| {
-                ui.heading(egui::RichText::new("SSF2 → Fraymakers").color(ACCENT));
-                ui.label(egui::RichText::new("Character Converter").weak());
+                ui.heading(egui::RichText::new("tsonconvert").color(ACCENT));
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new("SSF2 to Fraymakers character converter").weak());
             });
 
         egui::CentralPanel::default()
@@ -489,7 +528,7 @@ impl App {
                         ui.horizontal(|ui| {
                             let name = Path::new(&self.prefs.misc_ssf).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                             ui.colored_label(OK_GREEN, name).on_hover_text(&self.prefs.misc_ssf);
-                            if ui.small_button("✕").on_hover_text("Clear").clicked() { self.prefs.misc_ssf.clear(); self.prefs.save(); }
+                            if ui.small_button("Clear").on_hover_text("Revert to auto-detect").clicked() { self.prefs.misc_ssf.clear(); self.prefs.save(); }
                         });
                     }
                     if ui.button("Set…").clicked() {
@@ -503,13 +542,11 @@ impl App {
                     // ── FrayTools ──
                     ui.label(egui::RichText::new("FrayTools").strong());
                     if self.prefs.fraytools_path.is_empty() {
-                        ui.label(egui::RichText::new("not set").italics().weak());
+                        ui.label(egui::RichText::new("not detected").italics().weak())
+                            .on_hover_text("Auto-detected at launch when FrayTools is in a standard location; otherwise set it here.");
                     } else {
-                        ui.horizontal(|ui| {
-                            let name = Path::new(&self.prefs.fraytools_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                            ui.colored_label(OK_GREEN, name).on_hover_text(&self.prefs.fraytools_path);
-                            if ui.small_button("✕").on_hover_text("Clear").clicked() { self.prefs.fraytools_path.clear(); self.prefs.save(); }
-                        });
+                        let name = Path::new(&self.prefs.fraytools_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        ui.colored_label(OK_GREEN, name).on_hover_text(&self.prefs.fraytools_path);
                     }
                     if ui.button(if self.prefs.fraytools_path.is_empty() { "Set…" } else { "Change…" }).clicked() {
                         let mut dlg = rfd::FileDialog::new();
@@ -528,7 +565,7 @@ impl App {
     fn idle_view(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let hovering = self.hovering_file;
         let (stroke, fill, icon_col) = if hovering {
-            (egui::Stroke::new(2.0, ACCENT), egui::Color32::from_rgb(0xEC, 0xF4, 0xFF), ACCENT)
+            (egui::Stroke::new(2.0, ACCENT), DROP_HOVER, ACCENT)
         } else {
             (egui::Stroke::new(1.5, HAIRLINE), CARD, ui.visuals().weak_text_color())
         };
@@ -545,7 +582,7 @@ impl App {
                         ui.vertical_centered(|ui| {
                             ui.label(egui::RichText::new("⬇").size(46.0).color(icon_col));
                             ui.add_space(12.0);
-                            ui.label(egui::RichText::new("Drop an SSF file here").size(17.0).strong());
+                            ui.label(egui::RichText::new("Drop an SSF file here").font(bold(18.0)));
                             ui.add_space(4.0);
                             ui.label(egui::RichText::new("or").weak());
                             ui.add_space(12.0);
@@ -565,7 +602,7 @@ impl App {
         ui.vertical_centered(|ui| {
             ui.add(egui::Spinner::new().size(34.0).color(ACCENT));
             ui.add_space(16.0);
-            ui.label(egui::RichText::new("Converting…").size(16.0).strong());
+            ui.label(egui::RichText::new("Converting…").font(bold(17.0)));
             ui.add_space(6.0);
             ui.label(egui::RichText::new(status).weak());
         });
@@ -576,7 +613,7 @@ impl App {
             ui.add_space(16.0);
             ui.label(egui::RichText::new("✓").size(48.0).color(egui::Color32::from_rgb(60, 170, 60)));
             ui.add_space(6.0);
-            ui.label(egui::RichText::new(format!("Converted {character}!")).size(20.0).strong());
+            ui.label(egui::RichText::new(format!("Converted {character}!")).font(bold(22.0)));
             ui.label(egui::RichText::new(output_path).monospace().weak());
             ui.add_space(10.0);
         });
@@ -634,7 +671,7 @@ impl App {
             ui.add_space(16.0);
             ui.label(egui::RichText::new("✕").size(48.0).color(egui::Color32::from_rgb(200, 70, 70)));
             ui.add_space(6.0);
-            ui.label(egui::RichText::new("Conversion Failed").size(20.0).strong());
+            ui.label(egui::RichText::new("Conversion Failed").font(bold(22.0)));
             ui.colored_label(egui::Color32::from_rgb(200, 70, 70), message);
             ui.add_space(10.0);
         });
@@ -737,11 +774,11 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([720.0, 600.0])
             .with_min_inner_size([600.0, 480.0])
-            .with_title("SSF2 → Fraymakers Converter"),
+            .with_title("tsonconvert"),
         ..Default::default()
     };
     eframe::run_native(
-        "SSF2 → Fraymakers Converter",
+        "tsonconvert",
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
