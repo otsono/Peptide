@@ -48,7 +48,7 @@ pub fn split_animations(
             .collect();
 
         // Helper: find frame for a label, defaulting to end of animation
-        let lf = |lbl: &str| -> u16 { *label_map.get(lbl).unwrap_or(&total) };
+        let _lf = |lbl: &str| -> u16 { *label_map.get(lbl).unwrap_or(&total) };
 
         match anim_name.as_str() {
 
@@ -100,7 +100,7 @@ pub fn split_animations(
                 } else if label_map.contains_key("grabbed") {
                     // samus-style: grabbed comes before dashgrab
                     let gb_f  = label_map["grabbed"];
-                    let loop_f = label_map.get("loop").copied().unwrap_or(gb_f);
+                    let _loop_f = label_map.get("loop").copied().unwrap_or(gb_f);
                     let atk_f  = label_map.get("attack").copied().unwrap_or(total);
                     let dg_f   = label_map.get("dashgrab").copied().unwrap_or(atk_f);
                     push_split(&mut out, "grab",        anim_name, 0,     gb_f,  &labels, false, None);
@@ -116,7 +116,7 @@ pub fn split_animations(
             "run" => {
                 // Pattern A: run, dash, turn  (mario/captainfalcon/naruto)
                 // Pattern B: run, run, turn   (jigglypuff/link/samus) — first 'run' is loop
-                let first_label = labels.first().map(|(l, _)| l.as_str()).unwrap_or("");
+                let _first_label = labels.first().map(|(l, _)| l.as_str()).unwrap_or("");
                 let has_dash = label_map.contains_key("dash");
                 let turn_f = label_map.get("turn").copied();
 

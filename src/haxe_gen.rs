@@ -405,7 +405,7 @@ fn fmt(v: f64) -> String {
 
 // ─── HitboxStats.hx ─────────────────────────────────────────────────────────
 
-fn generate_hitbox_stats(data: &CharacterData, char_id: &str) -> String {
+fn generate_hitbox_stats(data: &CharacterData, _char_id: &str) -> String {
     let attack_lookup: std::collections::BTreeMap<_, _> = data.attacks.iter()
         .map(|a| (a.name.as_str(), a))
         .collect();
