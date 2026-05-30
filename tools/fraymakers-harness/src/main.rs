@@ -676,6 +676,10 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let q_idx = add_int(code, 'q' as i32);
     let q_nomatch_g = add_string_const(code, "Q:NO_MATCH\n");
     let q_live_g = add_string_const(code, "Q:MATCH_LIVE\n");
+    // 'k' command: dump pool keys (getFullyQualifiedResourceId for each pool element).
+    // Reveals the ACTUAL namespace used by the headless UGC load path.
+    let k_idx = add_int(code, 'k' as i32);
+    let k_prefix_g = add_string_const(code, "K:");
     // Diagnostic: currentMatch (statics f6) is null right after `s` even when the
     // match is alive, because it's only set in onMatchReady. _matches (statics
     // f13, an ArrayObj) is pushed in the same onMatchReady, so its length tells us
@@ -1170,6 +1174,49 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
 
+    // ---- 'k' command: dump pool keys to find actual namespace ----
+    // Iterate RM.pool (ArrayObj f12), call getFullyQualifiedResourceId on each element,
+    // write "K:<fqid>\n" for each. Uses GetArray into dynobj register (type 9 = rr(28))
+    // + UnsafeCast to absres_t (394 = rr(68)) before calling getfqid — the same pattern
+    // used by addDirToLoadQueue ops 47-50 (GetArray→dynobj→UnsafeCast→concrete call).
+    let idx_k_check = ops.len();
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(k_idx) });
+    let idx_jne_k = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });            // not 'k' -> L_ORIG
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    // pool = RM.pool (field 12)
+    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(3508) });
+    ops.push(Opcode::Field { dst: rr(66), obj: rr(65), field: RefField(pool_field) });
+    let idx_k_jnull_pool = ops.len();
+    ops.push(Opcode::JNull { reg: rr(66), offset: 0 });                   // null pool -> k_done
+    ops.push(Opcode::Field { dst: rr(39), obj: rr(66), field: RefField(0) }); // pool.length
+    ops.push(Opcode::Field { dst: rr(67), obj: rr(66), field: RefField(1) }); // pool.array
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(zero_idx) });          // counter=0
+    let idx_k_loop = ops.len();
+    let idx_k_jge = ops.len();
+    ops.push(Opcode::JSGte { a: rr(16), b: rr(39), offset: 0 });          // done -> k_done
+    ops.push(Opcode::GetArray { dst: rr(28), array: rr(67), index: rr(16) }); // pool[i] → dynobj
+    ops.push(Opcode::Incr { dst: rr(16) });                               // counter++
+    let idx_k_jnull_elem = ops.len();
+    ops.push(Opcode::JNull { reg: rr(28), offset: 0 });                   // null elem -> loop
+    // UnsafeCast dynobj → AbstractResource (type 394 = absres_t), safe since pool has AbstractResource
+    ops.push(Opcode::UnsafeCast { dst: rr(68), src: rr(28) });
+    ops.push(Opcode::Call1 { dst: rr(57), fun: RefFun(getfqid_fn), arg0: rr(68) }); // getfqid
+    let idx_k_jnull_fqid = ops.len();
+    ops.push(Opcode::JNull { reg: rr(57), offset: 0 });                   // null fqid -> loop
+    // write "K:" + fqid + "\n"
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(k_prefix_g) });
+    ops.push(Opcode::Call2 { dst: rr(58), fun: RefFun(str_add), arg0: rr(53), arg1: rr(57) });
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(nl_g) });
+    ops.push(Opcode::Call2 { dst: rr(58), fun: RefFun(str_add), arg0: rr(58), arg1: rr(53) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(58), arg2: rr(15) });
+    let idx_k_jback = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                              // -> k_loop
+    let idx_k_done = ops.len();
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    // k handler done; fall through to L_ORIG
+
     // L_ORIG = first original op after the prepended block (index n).
     let n = ops.len() as i32;
     if let Opcode::JTrue { offset, .. } = &mut ops[1] { *offset = idx_recv as i32 - 2; }
@@ -1178,9 +1225,9 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     if let Opcode::JSLt { offset, .. } = &mut ops[idx_jslt] { *offset = n - idx_jslt as i32 - 1; }
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_p] { *offset = idx_c_check as i32 - idx_jne_p as i32 - 1; }
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_c] { *offset = idx_s_check as i32 - idx_jne_c as i32 - 1; }
-    // 's' falls through to the 'q' check; route 'not s' there too, then 'q' to L_ORIG.
+    // 's' falls through to the 'q' check; route 'not s' there too; 'q' routes to 'k'; 'k' to L_ORIG.
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_s] { *offset = idx_q_check as i32 - idx_jne_s as i32 - 1; }
-    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_q] { *offset = n - idx_jne_q as i32 - 1; }
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_q] { *offset = idx_k_check as i32 - idx_jne_q as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_q_jnull] { *offset = idx_q_nomatch as i32 - idx_q_jnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_q_jdone] { *offset = n - idx_q_jdone as i32 - 1; }
     // _matches diagnostic branch wiring: null/empty -> truly-none; non-empty path
@@ -1188,6 +1235,13 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     if let Opcode::JNull { offset, .. } = &mut ops[idx_q_jm_null] { *offset = idx_q_truly_none as i32 - idx_q_jm_null as i32 - 1; }
     if let Opcode::JSLte { offset, .. } = &mut ops[idx_q_jm_empty] { *offset = idx_q_truly_none as i32 - idx_q_jm_empty as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_q_jm_done] { *offset = n - idx_q_jm_done as i32 - 1; }
+    // k-command jumps
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_k] { *offset = n - idx_jne_k as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_k_jnull_pool] { *offset = idx_k_done as i32 - idx_k_jnull_pool as i32 - 1; }
+    if let Opcode::JSGte { offset, .. } = &mut ops[idx_k_jge] { *offset = idx_k_done as i32 - idx_k_jge as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_k_jnull_elem] { *offset = idx_k_loop as i32 - idx_k_jnull_elem as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_k_jnull_fqid] { *offset = idx_k_loop as i32 - idx_k_jnull_fqid as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_k_jback] { *offset = idx_k_loop as i32 - idx_k_jback as i32 - 1; }
     insert_ops_front(f, ops);
     eprintln!("connect_edit: injected {n} ops into update@{update_fx} (console+startMatch dispatch); port={port}");
 
