@@ -63,6 +63,19 @@ Corpus-wide verification:
 
 3. **Unconverted inputs (informational):** `chibirobo.ssf` and `dedede.ssf` exist in `ssf2-ssfs/` with no output dir — never converted. Not a cleanup concern.
 
+## Broader sweep: `~/.openclaw/workspace-diva/` (2026-05-30)
+
+Checked the wider `workspace-diva` folder for stray converter exports. **Result: none found — no action taken.**
+
+Subdirectories and their nature:
+- `queen-out-dashboard/` — Next.js app (`package.json`). Unrelated; not touched.
+- `app/lib/` — TypeScript (`deadline-types.ts`, `show-utils.ts`). Unrelated.
+- `memory/` — dated markdown logs. Unrelated.
+- top level — markdown docs (AGENTS.md, MEMORY.md, QUEEN-OUT-*, etc.).
+
+Searched the entire tree for every converter signature and found **zero** matches:
+`*.fraytools`, `characters/` dirs, `*/scripts/Character`, `*/library/sounds`, `*.entity`, `conversion_stats.json`, `*.hx`, `manifest.json.meta`, `costumes.palettes`, `*.ssf`. The converter has never written into `workspace-diva`. All converter output lives under `workspace-main/ssf2-fraymakers-converter/characters/` (cleaned above).
+
 ## Recommendation
 
 To prevent recurrence, the converter could wipe (or `library/`-scope clean) each char's output dir at the start of a run. Currently it merges into whatever exists, which is what let these renames accumulate.
