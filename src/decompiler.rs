@@ -1572,28 +1572,36 @@ fn guard_loop_termination(stmts: Vec<Stmt>) -> Vec<Stmt> {
             _ => false,
         }
     }
-    // Does this statement list advance `name` on its straight-line path, or
-    // splice the iterated collection (which makes not-advancing correct)?
-    fn advances_counter(body: &[Stmt], name: &str) -> bool {
-        body.iter().any(|s| stmt_advances(s, name))
+    // True if the body's LAST statement unconditionally advances `name` (so a
+    // correct `for`-style loop `while (i<n) { …; i = i + 1 }` is not touched), or
+    // anywhere splices the iterated array (legitimate AS3 mutate-in-place, which
+    // makes a missing increment correct). We check the LAST statement (not "any")
+    // because the broken loops end with an if/else; only correctly-formed loops
+    // put the advance as the final straight-line statement.
+    fn ends_with_counter_advance(body: &[Stmt], name: &str) -> bool {
+        if body.iter().any(|s| stmt_has_splice(s)) {
+            return true; // array shrinks each iter → terminates without i++
+        }
+        matches!(body.last(), Some(s) if stmt_is_advance(s, name))
     }
-    fn stmt_advances(s: &Stmt, name: &str) -> bool {
+    fn stmt_is_advance(s: &Stmt, name: &str) -> bool {
         match s {
-            // `i = i + 1` is emitted as Stmt::Expr(GetLex("i = i + 1")) by
-            // rename_loop_counters; also accept any reassignment of the counter
-            // and any `.splice(` (array shrink).
+            // `i = i + 1` is emitted as Stmt::Expr(GetLex("i = i + 1")).
             Stmt::Expr(Expr::GetLex(code)) => {
                 let c = code.replace(' ', "");
-                c.starts_with(&format!("{name}={name}"))   // i=i+1 / i=i-1
+                c.starts_with(&format!("{name}={name}"))
                     || c.starts_with(&format!("{name}++"))
                     || c.starts_with(&format!("{name}--"))
-                    || code.contains(".splice(")
             }
+            _ => false,
+        }
+    }
+    fn stmt_has_splice(s: &Stmt) -> bool {
+        match s {
+            Stmt::Expr(Expr::GetLex(code)) => code.contains(".splice("),
             Stmt::Expr(e) | Stmt::Return(Some(e)) => expr_has_splice(e),
-            // A nested if where BOTH branches advance also counts.
-            Stmt::If(_, t, el) => {
-                !el.is_empty() && advances_counter(t, name) && advances_counter(el, name)
-            }
+            Stmt::VarDecl(_, e) | Stmt::NamedAssign(_, e) => expr_has_splice(e),
+            Stmt::If(_, t, el) => t.iter().chain(el).any(stmt_has_splice),
             _ => false,
         }
     }
@@ -1613,38 +1621,71 @@ fn guard_loop_termination(stmts: Vec<Stmt>) -> Vec<Stmt> {
     fn fix_body(body: Vec<Stmt>) -> Vec<Stmt> {
         body.into_iter().map(fix_stmt).collect()
     }
+    // Recurse into closures (event-handler lambdas) so loops nested inside them
+    // are guarded too — many SSF2 array-walk loops live in closures, not at the
+    // top level of a function.
+    fn fix_expr(e: Expr) -> Expr {
+        match e {
+            Expr::Closure(params, body) => Expr::Closure(params, fix_body(body)),
+            Expr::Call(o, m, args) => Expr::Call(
+                Box::new(fix_expr(*o)), m, args.into_iter().map(fix_expr).collect()),
+            Expr::New(c, args) => Expr::New(c, args.into_iter().map(fix_expr).collect()),
+            Expr::GetProperty(o, p) => Expr::GetProperty(Box::new(fix_expr(*o)), p),
+            Expr::BinOp(op, a, b) => Expr::BinOp(op, Box::new(fix_expr(*a)), Box::new(fix_expr(*b))),
+            Expr::UnOp(op, a) => Expr::UnOp(op, Box::new(fix_expr(*a))),
+            Expr::Array(items) => Expr::Array(items.into_iter().map(fix_expr).collect()),
+            Expr::Object(pairs) => Expr::Object(
+                pairs.into_iter().map(|(k, v)| (k, fix_expr(v))).collect()),
+            other => other,
+        }
+    }
     fn fix_stmt(s: Stmt) -> Stmt {
         match s {
             Stmt::While(cond, body) => {
                 let body = fix_body(body); // recurse into nested loops first
                 if let Some(name) = counter_of_cond(&cond) {
                     if !advances_counter(&body, &name) {
-                        // Body doesn't advance the counter on its straight-line
-                        // path. If it's a single if/else, patch the branch(es)
-                        // that lack the advance; otherwise append to the body.
-                        let patched = if body.len() == 1 {
+                        // The loop body has no path that unconditionally advances
+                        // the counter (the AS3 splice/increment was lost) → it can
+                        // spin forever. Make it terminate.
+                        //
+                        // SPLICE-STYLE case: body is a single if/else, BOTH branches
+                        // non-empty, and exactly ONE branch already advances (e.g.
+                        // `if (x==null) i++; else { removeChild }`). Here the intent
+                        // is "advance on every branch", so add the increment ONLY to
+                        // the branch(es) that lack it — avoids double-stepping.
+                        let splice_style = body.len() == 1 && matches!(&body[0],
+                            Stmt::If(_, t, e)
+                                if !t.is_empty() && !e.is_empty()
+                                    && (advances_counter(t, &name) ^ advances_counter(e, &name)));
+                        if splice_style {
                             if let Stmt::If(c, t, e) = &body[0] {
                                 let mut t = t.clone();
                                 let mut e = e.clone();
                                 if !advances_counter(&t, &name) { t.push(incr_stmt(&name)); }
-                                // Only patch a non-empty else; an empty else means
-                                // "fall through" and appending to body is safer.
-                                if !e.is_empty() && !advances_counter(&e, &name) {
-                                    e.push(incr_stmt(&name));
-                                }
-                                Some(vec![Stmt::If(c.clone(), t, e)])
-                            } else { None }
-                        } else { None };
-                        let body = match patched {
-                            Some(b) => b,
-                            None => { let mut b = body; b.push(incr_stmt(&name)); b }
-                        };
+                                if !advances_counter(&e, &name) { e.push(incr_stmt(&name)); }
+                                return Stmt::While(cond, vec![Stmt::If(c.clone(), t, e)]);
+                            }
+                        }
+                        // GENERAL case (empty else, multi-statement body, or no
+                        // branch advances): append a single unconditional advance to
+                        // the END of the loop body. Always terminates; never
+                        // double-steps because we only reach here when NO path
+                        // already advances unconditionally.
+                        let mut body = body;
+                        body.push(incr_stmt(&name));
                         return Stmt::While(cond, body);
                     }
                 }
                 Stmt::While(cond, body)
             }
             Stmt::If(c, t, e) => Stmt::If(c, fix_body(t), fix_body(e)),
+            // Recurse into closures held by Expr-bearing statements.
+            Stmt::Expr(e) => Stmt::Expr(fix_expr(e)),
+            Stmt::VarDecl(n, e) => Stmt::VarDecl(n, fix_expr(e)),
+            Stmt::NamedAssign(n, e) => Stmt::NamedAssign(n, fix_expr(e)),
+            Stmt::SetProp(o, n, v) => Stmt::SetProp(fix_expr(o), n, fix_expr(v)),
+            Stmt::Return(opt) => Stmt::Return(opt.map(fix_expr)),
             other => other,
         }
     }
