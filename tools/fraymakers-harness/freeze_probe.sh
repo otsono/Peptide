@@ -27,7 +27,7 @@ printf '1420350' > "$APPID"
 # Command stream: start the match, then a `q` heartbeat every 3s for ~33s.
 # Each line goes through stdin; the sleeps keep stdin open so serve stays live.
 {
-  echo "s sandbag battlefield none"
+  echo "s sandbag ${FRAY_STAGE:-st_battlefield} none"
   for n in $(seq 1 11); do sleep 3; echo "q $n"; done
   sleep 2
 } | FRAY_HOLD_SECS=60 "$HERE/target/release/frayremote" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
