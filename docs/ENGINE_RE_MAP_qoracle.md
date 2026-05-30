@@ -191,3 +191,31 @@ of guessing.
   uncommitted abc_parser.rs/main.rs on main were left untouched.
 - Install: hlboot untouched (read-only), fixed sandbag.fra at custom/sandbag
   (md5 8a4a9fdd), no leftover _conn.dat/steam_appid.txt.
+
+## FINAL LINK: thread results are pumped by CoreApp.update@17672 (md5-stable)
+checkForMessages@17734 (md5 999d16ca, 3x) reads worker-thread messages
+(HaxeThread.readMessage@2684) and is called by pxf.core.CoreApp::update@17672 —
+the engine's per-frame loop. So in a NORMAL run, each frame CoreApp.update pumps
+thread load results -> loadComplete -> createFromBytes -> f17 populated.
+
+Our injected reader lives in fraymakers.Main.update@17752 (NOT CoreApp.update).
+After 30s the match still crashes with f17 null, which means ONE of:
+  (A) CoreApp.update@17672 is NOT running in our headless boot (our
+      inject_press_start/inject_ready_flag path reaches MainMenu but maybe not the
+      CoreApp frame loop that pumps threads), OR
+  (B) findLocalUgc@17836 found/queued NO files in headless (so there's nothing for
+      checkForMessages to complete; _checkIfAllDirectoriesLoaded sees 0 -> fires
+      onMatchReady immediately with nothing constructed).
+DISCRIMINATOR (next reliable step): does Main.update@17752 (where we inject) and
+CoreApp.update@17672 both run per frame? Check if Main.update calls CoreApp.update
+(or hxd.App.mainLoop calls both). If (A): our boot needs to let CoreApp.update
+run, or call checkForMessages@17734 ourselves each injected frame until load done.
+If (B): findLocalUgc's dir scan fails headless (path/Steam) -> nothing queued ->
+must construct via createFromBytes directly (option 2).
+
+Quick test to distinguish (no new bytecode): the existing harness sends nothing
+that would pump CoreApp; if simply running MORE real frames fixed it, 30s would
+have. So (B) — nothing queued — is the more likely cause: findLocalUgc found no
+.fra to fetch in the headless context. That points to option 2 (direct
+createFromBytes on the known custom/sandbag/sandbag.fra bytes) as the robust fix,
+OR fixing findLocalUgc's directory discovery for the headless launch.
