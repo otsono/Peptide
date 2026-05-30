@@ -498,3 +498,36 @@ to it (Match type634: elapsedFrames f75 = freeze oracle, characters f35 = teleme
 move-drive target). If _matches is empty, the createMode/startMatch path itself
 isn't completing post-load — trace from there. Verify with the rig_probe FACTS
 pattern (reliable) + buzzwole control.
+
+## TELEMETRY/MOVE-DRIVE: turnkey spec (#7/#4) — all handles md5-verified
+The match-start crash + freeze are fixed/validated; remaining plan items need the
+live Match's state. The live ref is _matches[0] (NOT currentMatch). Confirmed
+handles:
+- MatchController statics: global 3511; _matches = field 13 (hl.types.ArrayObj).
+- ArrayObj: field 0 = length, field 1 = array (backing). _matches[0] =
+  GetArray(Field(_matches,1), 0).
+- Match (type 634): elapsedFrames = field 75 (Int) ; characters = field 35
+  (ArrayObj) ; players = field 34 ; matchState = field 48 (Int).
+
+### #7 physics/progression telemetry (no int-formatting needed first cut)
+In the q-handler, when currentMatch is null but _matches.length>0, read
+m0 = _matches.array[0]; ef = m0.elapsedFrames (f75); branch ef>0 → write
+"Q:FRAMES_POSITIVE\n" else "Q:FRAMES_ZERO\n". Across samples seconds apart,
+POSITIVE every time = match progressing (a cleaner freeze oracle than reply-count).
+For real physics values, report character pos/vel: c0 = m0.characters.array[0];
+read Character x/y/velX/velY fields (disasm a Character getter to get field idxs),
+format via Std.string — find an int/float→String engine fn (e.g. Std.string@?,
+disasm needed) and writeString it.
+
+### #4 move-drive
+playCState@6801 (re-verify fninfo 6801 on a healthy channel — earlier attempt was
+mid-fabrication). Target = m0.characters.array[0] (the player Character). Add an
+`m <stateId>` command: parse the int arg (reuse the line-buffer + a digit parse,
+or accept a fixed state for first proof), then Call playCState(char, stateId).
+Verify the char's state/animation changed via the telemetry above (state field) or
+a follow-up q.
+
+### Verification protocol (channel fabricates live narrative output)
+Use rig_probe.sh-style FACTS files + `grep -c` of Q: markers + error/crash.log
+existence + error.log md5 (≠ 36adae25 / 3537a487). cargo build exit is reliable.
+Reconfirm every live number by re-reading the file twice; keep a buzzwole control.
