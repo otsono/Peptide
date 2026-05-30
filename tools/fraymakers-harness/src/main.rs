@@ -798,6 +798,13 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
         ops.push(Opcode::Int { dst: r(39), ptr: RefInt(zero_idx) });
         let j_pkgname = ops.len();
         ops.push(Opcode::JSGte { a: r(16), b: r(39), offset: 0 });
+        // BARE NAME (no "." ): the registry-search loop below hangs (iterator
+        // semantics bug), so skip it and use prefix-expansion (x -> <ns>::x.x),
+        // which resolves characters/stages reliably. Bare assists (package != id)
+        // must be given in `package.id` form. Registry search kept below (dead)
+        // for later revival via a non-hanging iteration.
+        let j_skipreg = ops.len();
+        ops.push(Opcode::JAlways { offset: 0 });                         // -> RS_NOTFOUND (prefix path)
         // ---- registry search: scan poolHash, find a resource whose cmap has `name` ----
         ops.push(Opcode::GetGlobal { dst: r(65), global: RefGlobal(3508) });
         ops.push(Opcode::Field { dst: r(63), obj: r(65), field: RefField(poolhash_field) });
@@ -875,6 +882,7 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
         };
         set(ops, j_full, l_full);
         set(ops, j_pkgname, l_pkgname);
+        set(ops, j_skipreg, l_notfound);
         set(ops, j_notfound, l_notfound);
         set(ops, j_res_ok, l_check_cmap);
         set(ops, j_back1, rs_loop);
