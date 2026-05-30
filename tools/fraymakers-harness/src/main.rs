@@ -769,6 +769,21 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let get_sprite_entity = require_fn(code, "getPXFSpriteEntity", Some("pxf.io.$ResourceManager"))?;
     let spr_ok_g = add_string_const(code, "SPR:1\n");
     let spr_null_g = add_string_const(code, "SPR:0\n");
+    // sprite-entity fix (safe approach B): set RM.requiredMediaIds=["*"] before fetchThreaded so
+    // the engine's OWN media-preload closure (run by finishLoading) preloads all entities into
+    // _data.entityMap + the namespaced sprite cache; then re-cache the "sandbag" entity under the
+    // BARE key (Character ctor looks up the bare spriteContent). No risky direct preload calls.
+    let get_data_as_pxf = require_fn(code, "get_DataAsPxf", Some("pxf.io.AbstractResource"))?;
+    let cache_sprite_entity = require_fn(code, "cacheSpriteEntity", Some("pxf.io.$ResourceManager"))?;
+    let sm_get = require_fn(code, "get", Some("haxe.ds.StringMap"))?;
+    let pxf_entitymap_field = find_field(code, pxfres_t, "entityMap")
+        .ok_or_else(|| anyhow::anyhow!("PXFResource.entityMap field not found"))?;
+    let reqmedia_field = find_field(code, rm_statics_t, "requiredMediaIds")
+        .ok_or_else(|| anyhow::anyhow!("requiredMediaIds field not found"))?;
+    let sprite_entity_t = 746usize;      // pxf.structs.PXFSpriteEntity
+    let cse_arg3_t = 108usize;           // cacheSpriteEntity 3rd arg type
+    let star_g = add_string_const(code, "*");
+    eprintln!("sprite-fix: get_DataAsPxf={get_data_as_pxf} cacheEntity={cache_sprite_entity} smGet={sm_get} entityMap.f={pxf_entitymap_field} requiredMediaIds.f={reqmedia_field}");
     eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer
     // (added by the always-subscribed gameStarted handler); menuContainer is a
@@ -873,7 +888,7 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // 66 pool (ArrayObj=38); 67 pool.array (NativeArray=11); 68 pool elem (absres_t=394)
     // 69 Character (char_entity_t); 70 $CState statics (cstate_statics_t)
     // 71 Resource (resource_t); 72 $ResourceType statics (rt_statics_t); 73 enc Ref<ResourceType> (t241)
-    let base = add_regs(f, &[7, 7, sock_t, host_t, 3, out_t, 0, 3, 3, 7, sock_t, handle_t, 3, 3, str_t, enc_t, 3, bytes_t, 3, 3, 3, 3, nulli32_t, tilde_t, console_t, 669, 669, 4366, 9, 1957, 2536, 8, 11, 38, 4366, 675, 668, 6738, 13, 3, dmr_field_t, ms_statics_t, 669, mc_statics_t, match_t, core_statics_t, container_t, h2dobj_t, mode_t, 1194, 4482, bytes_t2, 38, str_t, 0, str_t, str_t, str_t, str_t, nulli32_t2, pxfres_t, keysiter_t, str_t, stringmap_t, 7, rm_statics_t, 38, 11, absres_t, char_entity_t, cstate_statics_t, resource_t, rt_statics_t, enc241_t]);
+    let base = add_regs(f, &[7, 7, sock_t, host_t, 3, out_t, 0, 3, 3, 7, sock_t, handle_t, 3, 3, str_t, enc_t, 3, bytes_t, 3, 3, 3, 3, nulli32_t, tilde_t, console_t, 669, 669, 4366, 9, 1957, 2536, 8, 11, 38, 4366, 675, 668, 6738, 13, 3, dmr_field_t, ms_statics_t, 669, mc_statics_t, match_t, core_statics_t, container_t, h2dobj_t, mode_t, 1194, 4482, bytes_t2, 38, str_t, 0, str_t, str_t, str_t, str_t, nulli32_t2, pxfres_t, keysiter_t, str_t, stringmap_t, 7, rm_statics_t, 38, 11, absres_t, char_entity_t, cstate_statics_t, resource_t, rt_statics_t, enc241_t, sprite_entity_t, cse_arg3_t]);
     let rr = |i: u32| Reg(base + i);
     let (r_done, r_true, r_sock, r_host, r_port, r_out, r_ret, r_ip, r_byte, r_blockf, r_sock2, r_handle, r_c, r_zero) =
         (rr(0), rr(1), rr(2), rr(3), rr(4), rr(5), rr(6), rr(7), rr(8), rr(9), rr(10), rr(11), rr(12), rr(13));
@@ -1335,9 +1350,34 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::Field { dst: rr(16), obj: rr(72), field: RefField(pxf_field) }); // PXF (Int)
     ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_type_field), src: rr(16) });
     let _ = res_filepath_field; // (ctor already set _filePath from arg2)
+    // set RM.requiredMediaIds = ["*"] so loadMedia's preload closure (run by finishLoading)
+    // actually preloads our entities into _data.entityMap (empty headless otherwise -> SPR:0).
+    ops.push(Opcode::Type { dst: rr(31), ty: RT(13) });                  // String element type
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) }); // alloc_array<String>(1)
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(star_g) });
+    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(53) });
+    ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) }); // wrap -> ArrayObj
+    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(3508) });    // RM statics
+    ops.push(Opcode::SetField { obj: rr(65), field: RefField(reqmedia_field), src: rr(33) });
     // synchronous read+decode (main thread): fetchThreaded -> File.getBytes -> createFromBytes -> set_DataAsPxf
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: rr(71) });
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: rr(71) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: rr(71) }); // runs preload closure
+    // re-cache the "sandbag" sprite entity under the BARE key (Character looks up bare spriteContent)
+    ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(get_data_as_pxf), arg0: rr(71) });
+    ops.push(Opcode::Field { dst: rr(63), obj: rr(60), field: RefField(pxf_entitymap_field) }); // entityMap
+    let idx_l_emap_jnull = ops.len();
+    ops.push(Opcode::JNull { reg: rr(63), offset: 0 });
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });
+    ops.push(Opcode::Call2 { dst: rr(28), fun: RefFun(sm_get), arg0: rr(63), arg1: rr(55) }); // entity (dyn)
+    let idx_l_ent_jnull = ops.len();
+    ops.push(Opcode::JNull { reg: rr(28), offset: 0 });
+    ops.push(Opcode::UnsafeCast { dst: rr(74), src: rr(28) });           // -> PXFSpriteEntity (t746)
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) }); // bare key
+    ops.push(Opcode::Null { dst: rr(75) });                              // 3rd arg (t108)
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
+    let idx_l_skip_recache = ops.len();
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(add_resource), arg0: rr(71) });
     // verify: getPXFResource(getFullyQualifiedResourceId(res)) non-null?
     ops.push(Opcode::Call1 { dst: rr(57), fun: RefFun(getfqid_fn), arg0: rr(71) }); // fqid string
@@ -1520,6 +1560,9 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_probe_unknown_jdone] { *offset = idx_l_cmap_done as i32 - idx_l_probe_unknown_jdone as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_l_spr_jnull] { *offset = idx_l_spr_null as i32 - idx_l_spr_jnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_spr_jdone] { *offset = idx_l_spr_done as i32 - idx_l_spr_jdone as i32 - 1; }
+    // bare sprite re-cache guards (null entityMap / missing entity -> skip)
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_l_emap_jnull] { *offset = idx_l_skip_recache as i32 - idx_l_emap_jnull as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_l_ent_jnull] { *offset = idx_l_skip_recache as i32 - idx_l_ent_jnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_jdone] { *offset = idx_m_check as i32 - idx_l_jdone as i32 - 1; }
     // k diagnostic (directoriesToLoad) jumps
     if let Opcode::JNull { offset, .. } = &mut ops[idx_k_dirs_null] { *offset = idx_k_after_dirs as i32 - idx_k_dirs_null as i32 - 1; }
