@@ -209,6 +209,76 @@ pub fn extract_xframe_transforms(
     extract_xframe_transforms_from_swf(&swf, char_name, ssf2_to_fm)
 }
 
+/// Count `"stance"`-named PlaceObjects in a sprite's timeline. The root
+/// character MovieClip places its `stance` sub-sprite once per animation
+/// frame, so this count is ~70-80 for the root and ≤1 for projectiles/effects.
+fn count_stance_placements(sprite: &swf::Sprite) -> usize {
+    sprite.tags.iter().filter(|t| {
+        if let swf::Tag::PlaceObject(po) = t {
+            po.name.as_ref()
+                .map(|s| s.as_bytes() == b"stance")
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    }).count()
+}
+
+/// Identify the root character timeline MovieClip's sprite id.
+///
+/// Most characters export it under a symbol whose name equals the character id
+/// (e.g. `mario`, `Sandbag`), but several use a variant the exact-match misses:
+/// `sonicremastered`, `nessbase`, `meta_knight`, `dkong`, `falcon`,
+/// `black_mage`, `giga_bowser`, `Wario_Man`. The signal that a sprite IS a root
+/// timeline is its number of `"stance"` PlaceObjects — the root places the
+/// stance sub-sprite once per animation frame (~70-80), far more than any
+/// projectile or effect.
+///
+/// A root timeline places its stance sub-sprite once per animation frame, so it
+/// carries dozens of `"stance"` placements (the observed roster range is 40-80).
+/// Flash-generated `_fla.` sub-animation clips, even long ones like
+/// `captainfalcon_fla.Revival_32` (150 frames), place stance ~once. This hard
+/// threshold filters those out before any name matching — without it, a sub-clip
+/// whose name starts with the character id would out-score the real root.
+const MIN_ROOT_STANCES: usize = 15;
+///
+/// Among the surviving genuine roots, pick the best by a name-affinity score so
+/// multi-character SSFs (bowser+giga_bowser, zelda+sheik, wario+Wario_Man)
+/// assign each form its OWN root rather than whichever has the most stances:
+///   3 = exact name, or name with `_`/spaces stripped (meta_knight→metaknight,
+///       giga_bowser→gigabowser, Wario_Man→warioman)
+///   2 = one name is a prefix of the other (ness→nessbase, sonic→sonicremastered)
+///   1 = no name relation (dkong, falcon) — wins only as the lone root in its SWF
+/// Ties at equal score are broken by stance count.
+fn find_root_sprite_id(
+    swf: &swf::Swf<'_>,
+    sym_names: &BTreeMap<u16, String>,
+    char_lower: &str,
+) -> Option<u16> {
+    // (score, stance_count, id), maximised lexicographically.
+    let mut best: Option<(u8, usize, u16)> = None;
+    for tag in &swf.tags {
+        if let swf::Tag::DefineSprite(sprite) = tag {
+            let count = count_stance_placements(sprite);
+            if count < MIN_ROOT_STANCES { continue; }
+            let sym_lower = sym_names.get(&sprite.id).cloned().unwrap_or_default().to_lowercase();
+            let sym_norm: String = sym_lower.chars().filter(|c| *c != '_' && *c != ' ').collect();
+            let score: u8 = if sym_lower == char_lower || sym_norm == char_lower {
+                3
+            } else if sym_lower.starts_with(char_lower) || char_lower.starts_with(&sym_lower) {
+                2
+            } else {
+                1
+            };
+            let cand = (score, count, sprite.id);
+            if best.map(|b| cand > b).unwrap_or(true) {
+                best = Some(cand);
+            }
+        }
+    }
+    best.map(|(_, _, id)| id)
+}
+
 /// Same as `extract_xframe_transforms` but operates on an already-parsed
 /// SWF. Use this when the caller has access to the parsed `swf::Swf` and
 /// wants to avoid the redundant `decompress_swf` + `parse_swf` round-trip.
@@ -230,12 +300,12 @@ pub fn extract_xframe_transforms_from_swf(
     }
 
     let char_lower = char_name.to_lowercase();
+    let root_id = find_root_sprite_id(swf, &sym_names, &char_lower);
     let mut result: BTreeMap<String, XframeTransform> = BTreeMap::new();
 
     for tag in &swf.tags {
         if let swf::Tag::DefineSprite(sprite) = tag {
-            let sym = sym_names.get(&sprite.id).cloned().unwrap_or_default();
-            if sym.to_lowercase() != char_lower { continue; }
+            if Some(sprite.id) != root_id { continue; }
 
             // Walk the root MC, tracking the current xframe label and the last
             // stance PlaceObject matrix seen.
@@ -1189,14 +1259,16 @@ pub fn extract_xframe_scale_from_swf(
     }
 
     let char_lower = char_name.to_lowercase();
+    let root_id = find_root_sprite_id(swf, &sym_names, &char_lower);
     let mut scale_xs: Vec<f64> = Vec::new();
     let mut scale_ys: Vec<f64> = Vec::new();
 
     for tag in &swf.tags {
         if let swf::Tag::DefineSprite(sprite) = tag {
+            // Match the root character sprite (identified by stance-placement
+            // count, since some chars name it e.g. `dkong`/`falcon` not the id).
+            if Some(sprite.id) != root_id { continue; }
             let sym = sym_names.get(&sprite.id).cloned().unwrap_or_default();
-            // Match the root character sprite (exact name match, not _fla. sub-sprites)
-            if sym.to_lowercase() != char_lower { continue; }
 
             log::info!("Found root character MovieClip: id={} sym='{}' ({} frames)",
                 sprite.id, sym, sprite.num_frames);
