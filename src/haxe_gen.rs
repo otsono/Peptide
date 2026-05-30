@@ -415,22 +415,15 @@ fn generate_hitbox_stats(data: &CharacterData, _char_id: &str) -> String {
     let mut out = req("character.stats.hitbox_header", &t.hitbox_header)
         .replace("{{char_name}}", &data.name);
 
-    let sections: &[(&str, &[&str])] = &[
-        ("LIGHT ATTACKS",  &["jab1","jab2","jab3","dash_attack","tilt_forward","tilt_up","tilt_down"]),
-        ("STRONG ATTACKS", &["strong_forward_attack","strong_up_attack","strong_down_attack"]),
-        ("AERIAL ATTACKS", &["aerial_neutral","aerial_forward","aerial_back","aerial_up","aerial_down"]),
-        ("SPECIAL ATTACKS",&["special_neutral","special_neutral_air","special_side","special_side_air","special_up","special_up_air","special_down","special_down_air"]),
-        ("THROWS",         &["throw_up","throw_down","throw_forward","throw_back"]),
-        ("MISC ATTACKS",   &["ledge_attack","crash_attack","emote"]),
-    ];
+    let tables = crate::mappings::character_stats_tables();
+    let standard: std::collections::HashSet<&str> = tables.hitbox_sections.iter()
+        .flat_map(|s| s.moves.iter().map(|m| m.as_str())).collect();
 
-    let standard: std::collections::HashSet<&str> = sections.iter()
-        .flat_map(|(_, moves)| moves.iter().copied()).collect();
-
-    for (section, moves) in sections {
+    for sec in &tables.hitbox_sections {
         out.push_str(&req("character.stats.hitbox_section_comment", &t.hitbox_section_comment)
-            .replace("{{section}}", section));
-        for &move_name in *moves {
+            .replace("{{section}}", &sec.section));
+        for move_name in &sec.moves {
+            let move_name = move_name.as_str();
             if let Some(attack) = attack_lookup.get(move_name) {
                 out.push_str(&format_attack(move_name, &attack.hitboxes, false));
             } else if move_name == "emote" {
@@ -455,18 +448,16 @@ fn generate_hitbox_stats(data: &CharacterData, _char_id: &str) -> String {
     out
 }
 
-fn guess_limb(move_name: &str) -> &'static str {
-    let m = move_name;
-    if m.contains("throw")    { return "AttackLimb.BODY"; }
-    if m.contains("down")     { return "AttackLimb.FOOT"; }
-    if m.contains("aerial")   { return "AttackLimb.FOOT"; }
-    if m.contains("tilt_up") || m.contains("strong_up") { return "AttackLimb.FIST"; }
-    if m.contains("neutral")  { return "AttackLimb.FOOT"; }
-    if m.contains("jab")      { return "AttackLimb.FIST"; }
-    if m.contains("tilt") || m.contains("forward") { return "AttackLimb.FIST"; }
-    if m.contains("special")  { return "AttackLimb.FIST"; }
-    if m.contains("ledge") || m.contains("crash") { return "AttackLimb.FOOT"; }
-    "AttackLimb.FIST"
+fn guess_limb(move_name: &str) -> String {
+    // Ordered substring rules from mappings/character/stats_tables.jsonc;
+    // first match wins, else the default.
+    let lr = &crate::mappings::character_stats_tables().limb_rules;
+    for rule in &lr.rules {
+        if rule.contains.iter().any(|s| move_name.contains(s.as_str())) {
+            return rule.limb.clone();
+        }
+    }
+    lr.default.clone()
 }
 
 fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool) -> String {
@@ -502,7 +493,7 @@ fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool) -> String {
                 .replace("{{hitstun}}", &hitstun.to_string()));
         }
         out.push_str(&req("character.stats.hitbox_field_close", &t.hitbox_field_close)
-            .replace("{{limb}}", limb));
+            .replace("{{limb}}", &limb));
     }
     out.push_str(req("character.stats.hitbox_attack_close", &t.hitbox_attack_close));
     out
@@ -513,7 +504,7 @@ fn format_attack_todo(name: &str) -> String {
     crate::mappings::require_template(
         "character.stats.hitbox_todo_attack",
         &crate::mappings::script_templates().character.stats.hitbox_todo_attack,
-    ).replace("{{name}}", name).replace("{{limb}}", limb)
+    ).replace("{{name}}", name).replace("{{limb}}", &limb)
 }
 
 // ─── CharacterStats.hx ───────────────────────────────────────────────────────
@@ -603,63 +594,38 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
 
     // Flat-constant sections — every value comes from stats.json `constants`.
     out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "ENVIRONMENTAL COLLISION BODY (ECB) STATS"));
-    for (f, anno) in [
-        ("floorHeadPosition", " /*TODO*/"),
-        ("floorHipWidth", " /*TODO*/"),
-        ("floorHipXOffset", ""),
-        ("floorHipYOffset", ""),
-        ("floorFootPosition", ""),
-        ("aerialHeadPosition", " /*TODO*/"),
-        ("aerialHipWidth", " /*TODO*/"),
-        ("aerialHipXOffset", ""),
-        ("aerialHipYOffset", ""),
-        ("aerialFootPosition", " /*TODO*/"),
-    ] {
-        out.push_str(&req("character.stats.char_stats_field_anno", &t.char_stats_field_anno).replace("{{field}}", f).replace("{{value}}", &c(f)).replace("{{anno}}", anno));
+    let tables = crate::mappings::character_stats_tables();
+    for fa in &tables.stats_fields.ecb {
+        out.push_str(&req("character.stats.char_stats_field_anno", &t.char_stats_field_anno).replace("{{field}}", &fa.field).replace("{{value}}", &c(&fa.field)).replace("{{anno}}", &fa.anno));
     }
     out.push('\n');
 
     out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "CAMERA BOX STATS"));
-    for f in ["cameraBoxOffsetX", "cameraBoxOffsetY", "cameraBoxWidth", "cameraBoxHeight"] {
+    for f in tables.stats_fields.camera.iter().map(|s| s.as_str()) {
         out.push_str(&req("character.stats.char_stats_field_plain", &t.char_stats_field_plain).replace("{{field}}", f).replace("{{value}}", &c(f)));
     }
     out.push('\n');
 
     out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "ROLL AND LEDGE JUMP STATS"));
-    for f in [
-        "techRollSpeed", "techRollSpeedStartFrame", "techRollSpeedLength",
-        "dodgeRollSpeed", "dodgeRollSpeedStartFrame", "dodgeRollSpeedLength",
-        "getupRollSpeed", "getupRollSpeedStartFrame", "getupRollSpeedLength",
-        "ledgeRollSpeed", "ledgeRollSpeedStartFrame", "ledgeRollSpeedLength",
-        "ledgeJumpXSpeed", "ledgeJumpYSpeed",
-    ] {
+    for f in tables.stats_fields.roll.iter().map(|s| s.as_str()) {
         out.push_str(&req("character.stats.char_stats_field_plain", &t.char_stats_field_plain).replace("{{field}}", f).replace("{{value}}", &c(f)));
     }
     out.push('\n');
 
     out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "AIRDASH STATS"));
-    for f in ["airdashInitialSpeed", "airdashSpeedCap", "airdashAccelMultiplier", "airdashCancelSpeedConservation"] {
+    for f in tables.stats_fields.airdash.iter().map(|s| s.as_str()) {
         out.push_str(&req("character.stats.char_stats_field_plain", &t.char_stats_field_plain).replace("{{field}}", f).replace("{{value}}", &c(f)));
     }
     out.push('\n');
 
     out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "SHIELD STATS"));
-    for f in [
-        "shieldCrossupThreshold", "shieldFrontNineSliceContent", "shieldFrontXOffset",
-        "shieldFrontYOffset", "shieldFrontWidth", "shieldFrontHeight",
-        "shieldBackNineSliceContent", "shieldBackXOffset", "shieldBackYOffset",
-        "shieldBackWidth", "shieldBackHeight",
-    ] {
+    for f in tables.stats_fields.shield.iter().map(|s| s.as_str()) {
         out.push_str(&req("character.stats.char_stats_field_plain", &t.char_stats_field_plain).replace("{{field}}", f).replace("{{value}}", &c(f)));
     }
     out.push('\n');
 
     out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "VOICE STATS"));
-    for f in [
-        "attackVoiceIds", "hurtLightVoiceIds", "hurtMediumVoiceIds", "hurtHeavyVoiceIds", "koVoiceIds",
-        "attackVoiceSilenceRate", "hurtLightSilenceRate", "hurtMediumSilenceRate",
-        "hurtHeavySilenceRate", "koVoiceSilenceRate",
-    ] {
+    for f in tables.stats_fields.voice.iter().map(|s| s.as_str()) {
         out.push_str(&req("character.stats.char_stats_field_plain", &t.char_stats_field_plain).replace("{{field}}", f).replace("{{value}}", &c(f)));
     }
 
@@ -1505,16 +1471,8 @@ fn generate_projectile_stats(
     // SSF2 physics field name → FM ProjectileStats field name. The set
     // is small and most names align; this table handles the few that
     // need renaming. Unknown SSF2 keys are emitted as `// TODO: …`.
-    let physics_map: &[(&str, &str)] = &[
-        ("gravity",            "gravity"),
-        ("friction",           "friction"),
-        ("terminalVelocity",   "terminalVelocity"),
-        ("groundSpeedCap",     "groundSpeedCap"),
-        ("aerialSpeedCap",     "aerialSpeedCap"),
-        ("aerialFriction",     "aerialFriction"),
-        ("xSpeed",             "groundSpeedCap"),  // proxy: SSF2 starting xSpeed ≈ cap
-        ("ySpeed",             "aerialSpeedCap"),
-    ];
+    // SSF2 physics key → FM field map + scaffolding defaults (mappings/projectile_tables.jsonc).
+    let ptables = crate::mappings::projectile_tables();
 
     // Build the physics lines from SSF2 data where available.
     let (mut physics_lines, mut todo_lines, source_note): (Vec<String>, Vec<String>, String) =
@@ -1522,19 +1480,19 @@ fn generate_projectile_stats(
             Some(d) if !d.stats.is_empty() => {
                 let mut taken: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
                 let mut out: Vec<String> = Vec::new();
-                for (ssf2_key, fm_field) in physics_map {
-                    if taken.contains(fm_field) { continue; }
-                    if let Some(v) = d.stats.get(*ssf2_key) {
+                for pm in &ptables.physics_map {
+                    if taken.contains(pm.fm.as_str()) { continue; }
+                    if let Some(v) = d.stats.get(pm.ssf2.as_str()) {
                         out.push(req("projectile.stats.proj_stats_physics_line", &t.proj_stats_physics_line)
-                            .replace("{{field}}", fm_field).replace("{{value}}", &fmt_num(*v)));
-                        taken.insert(fm_field);
+                            .replace("{{field}}", &pm.fm).replace("{{value}}", &fmt_num(*v)));
+                        taken.insert(pm.fm.as_str());
                     }
                 }
                 // Surface any SSF2 stat keys we didn't map as TODOs
                 let mut todos: Vec<String> = Vec::new();
-                let mapped_ssf2: std::collections::BTreeSet<&str> = physics_map.iter()
-                    .filter(|(_, fm)| taken.contains(fm))
-                    .map(|(s, _)| *s)
+                let mapped_ssf2: std::collections::BTreeSet<&str> = ptables.physics_map.iter()
+                    .filter(|pm| taken.contains(pm.fm.as_str()))
+                    .map(|pm| pm.ssf2.as_str())
                     .collect();
                 for (k, v) in &d.stats {
                     if !mapped_ssf2.contains(k.as_str()) {
@@ -1548,21 +1506,13 @@ fn generate_projectile_stats(
         };
 
     // Always emit the scaffolding defaults for fields SSF2 didn't supply.
-    let scaffolding: &[(&str, &str)] = &[
-        ("gravity",          "0.7"),
-        ("friction",         "0"),
-        ("terminalVelocity", "20"),
-        ("groundSpeedCap",   "11"),
-        ("aerialSpeedCap",   "11"),
-        ("aerialFriction",   "0"),
-    ];
     let provided: std::collections::BTreeSet<String> = physics_lines.iter()
         .filter_map(|l| l.split(':').next().map(|s| s.trim().to_string()))
         .collect();
-    for (k, v) in scaffolding {
-        if !provided.contains(*k) {
+    for fv in &ptables.scaffolding {
+        if !provided.contains(&fv.field) {
             physics_lines.push(req("projectile.stats.proj_stats_physics_line", &t.proj_stats_physics_line)
-                .replace("{{field}}", k).replace("{{value}}", v));
+                .replace("{{field}}", &fv.field).replace("{{value}}", &fv.value));
         }
     }
     physics_lines.sort();

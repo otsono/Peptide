@@ -26,6 +26,10 @@ const DEFAULT_CHARACTER_HITBOX_STATS: &str =
     include_str!("../mappings/character/hitbox_stats.jsonc");
 const DEFAULT_CHARACTER_ANIMATION_TEMPLATE: &str =
     include_str!("../mappings/character/animation_template.jsonc");
+const DEFAULT_CHARACTER_STATS_TABLES: &str =
+    include_str!("../mappings/character/stats_tables.jsonc");
+const DEFAULT_PROJECTILE_TABLES: &str =
+    include_str!("../mappings/projectile_tables.jsonc");
 // API command conversions are universal, not character-scoped, so this file
 // lives at the top of mappings/ rather than under mappings/character/.
 const DEFAULT_API_COMMANDS: &str =
@@ -694,6 +698,67 @@ pub fn character_animation_template() -> &'static Vec<AnimTemplateEntry> {
     static CACHE: OnceLock<Vec<AnimTemplateEntry>> = OnceLock::new();
     CACHE.get_or_init(|| {
         load("mappings/character/animation_template.jsonc", DEFAULT_CHARACTER_ANIMATION_TEMPLATE)
+    })
+}
+
+// ─── Stats-codegen data tables (moved out of Rust) ───────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HitboxSection { pub section: String, #[serde(default)] pub moves: Vec<String> }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FieldAnno { pub field: String, #[serde(default)] pub anno: String }
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct StatsFields {
+    pub ecb: Vec<FieldAnno>,
+    pub camera: Vec<String>,
+    pub roll: Vec<String>,
+    pub airdash: Vec<String>,
+    pub shield: Vec<String>,
+    pub voice: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LimbRule { #[serde(default)] pub contains: Vec<String>, pub limb: String }
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct LimbRules { pub default: String, pub rules: Vec<LimbRule> }
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CharacterStatsTables {
+    pub hitbox_sections: Vec<HitboxSection>,
+    pub stats_fields: StatsFields,
+    pub limb_rules: LimbRules,
+}
+
+pub fn character_stats_tables() -> &'static CharacterStatsTables {
+    static CACHE: OnceLock<CharacterStatsTables> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        load("mappings/character/stats_tables.jsonc", DEFAULT_CHARACTER_STATS_TABLES)
+    })
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PhysMap { pub ssf2: String, pub fm: String }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FieldValue { pub field: String, pub value: String }
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProjectileTables {
+    pub physics_map: Vec<PhysMap>,
+    pub scaffolding: Vec<FieldValue>,
+}
+
+pub fn projectile_tables() -> &'static ProjectileTables {
+    static CACHE: OnceLock<ProjectileTables> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        load("mappings/projectile_tables.jsonc", DEFAULT_PROJECTILE_TABLES)
     })
 }
 
