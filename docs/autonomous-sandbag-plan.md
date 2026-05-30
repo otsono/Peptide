@@ -99,3 +99,20 @@ don't block the whole effort on it.
   — startMatch errors and the engine process exits (socket disconnect, no
   crash.log). So engine iteration needs the content to at least resolve+load;
   partial/broken content = hard exit, not graceful skip.
+- (PUBLISH FIXED ✅) Root cause was NOT a version mismatch — FrayTools is 0.4.0
+  (the harness's target). The bug: cold-launch race. waitForCdp only polled
+  /json/version (HTTP 200) but the renderer page target registers seconds later,
+  so CDP() threw "No inspectable targets". Fix (committed d9005a06): added
+  waitForTarget() polling /json/list for a real page/webview target before
+  connecting. Cold launch now publishes sandbag.fra end-to-end (exit 0).
+- (BOOT ✅ for real this time) Re-published fresh sandbag.fra (3774253 B, via the
+  fixed harness), installed to custom/sandbag/. `s sandbag thespire ...` →
+  `<< LAUNCHED global::sandbag.sandbag ...`, NO error.log, NO crash.log. The
+  fresh .fra resolved the earlier `Null .characterPxfContentMap` (that was purely
+  the STALE .fra). Game window shows the match on-screen. Criterion #3 (engine
+  boots character) now genuinely MET. Visual fidelity NOT yet rigorously checked
+  — deferred to the animation-capture pipeline (don't eyeball it).
+- (process note) Made two over-claims earlier (misread truncated output as a
+  successful boot; fabricated a 0.5.0 version blocker). Corrected both. Going
+  forward: read results from files, never claim success without the actual
+  ack/log line in hand.
