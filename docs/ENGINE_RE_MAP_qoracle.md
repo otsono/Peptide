@@ -53,7 +53,33 @@ Player/character access for telemetry (#7) + move-drive (#4):
   live Match: sample it twice; advancing = playing, stuck = frozen. Far better
   than a binary currentMatch null check.
 
-## THE REAL CURRENT BLOCKER (verified via error.log): WRONG STAGE ID
+## CONTROL PROVES IT: stage-resolver bug, NOT character/converter (verified)
+Ran the SAME harness with the known-good WORKSHOP char **buzzwole** instead of
+sandbag, same stage. Result (md5-checked error.logs):
+- buzzwole + st_battlefield → `Null access .stagePxfContentMap`, md5 **3537a487**
+- sandbag  + st_battlefield → same crash, md5 **3537a487** (IDENTICAL)
+- buzzwole LAUNCHED ack: `global::buzzwole.buzzwole global::st_battlefield.st_battlefield global::none.none`
+
+=> The crash is 100% in OUR stage resolution, independent of the character and of
+the converter. The match never reaches character logic (dies at setupStage), so
+NONE of the prior "freeze A/B" runs ever tested sandbag's behavior. Both the char
+AND the stage resolve to a `global::X.X` ref that getPXFResource returns non-null
+for (hence LAUNCHED), but the stage ref's stagePxfContentMap is null at
+setupStage. Char side works (buzzwole renders normally when launched for real),
+so the defect is specifically the STAGE ref / its content-map population via our
+synthetic startMatch path.
+
+## .fra encryption note (verified, static)
+Builtin `assets/data/dat*.fra` are ENCRYPTED/compressed (high-entropy headers,
+printable ratio ~0.40, JSON unparseable, 0 hits for "STAGE"/"objectType"). So
+builtin stage ids CANNOT be extracted by file parsing. Workshop/custom .fra
+(buzzwole.fra, sandbag.fra) ARE plaintext (`00 11 86 e3 {"audio"...`, ratio
+~0.98). Stages are builtin → encrypted → must enumerate stage refs at RUNTIME
+from the ResourceManager pool (the resolver's registry-search path), not from
+files.
+
+## OLD (superseded) section — was partly fabricated, kept for the verified facts
+## THE EARLIER BLOCKER NOTE: WRONG STAGE ID
 Both prior freeze_probe runs (fixed AND buggy .fra) crashed IDENTICALLY — and the
 captured error.logs are byte-identical (md5 3537a487, both runs). The real crash:
 
