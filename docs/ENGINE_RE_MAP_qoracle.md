@@ -252,3 +252,38 @@ must ensure each resolved content id is actually loaded into those caches before
 startMatch (or use the engine's own queue that does so). Verify each attempt by
 error.log md5: success = NEITHER 3537a487 NOR 36adae25 (match reaches a live
 Match; then Match.elapsedFrames field 75 = the freeze oracle, unblocking #4/#6/#7).
+
+## CONTENT-LOAD FIX SPEC (md5-verified disasm; turnkey for next session)
+Pinpointed the exact null deref (dis 2496, md5 7439a5bc, reproduced):
+  pxf.core.Match.spawnPlayer@2496:
+    op3: getPXFResource@18288(charId) -> Reg2 (PXFResource)   [NON-null: resolves]
+    op5: Reg2.characterPxfContentMap (PXFResource field 17)   [NULL -> crash]
+So the PXFResource is IN the pool (getPXFResource non-null, hence our LAUNCHED
+ack) but its characterPxfContentMap (f17) was never populated. The stage path is
+the analogous f22 (stagePxfContentMap) read in setupStage@2491.
+
+Populating fns (per match-launch memory, to re-verify by disasm on a healthy
+channel before wiring): getCharacterContent@18292 (reads/fills
+pxfCharacterContentCache, RM statics field 29); getStageContent@18297
+(pxfStageContentCache, field 34). These are keyed by content-id string.
+
+PROPOSED FIX (in connect_edit `s`-handler, after emit_resolve builds each ref):
+  for each resolved content-id string (char, stage, assist), emit a call to the
+  matching getXContent so the engine loads that content into its cache + populates
+  the PXFResource's per-type content map, BEFORE FraymakersMode.startMatch@6227.
+  i.e. the resolver currently only proves existence (getPXFResource != null); it
+  must additionally TRIGGER THE LOAD. Open question to settle by disasm: whether
+  getCharacterContent itself populates characterPxfContentMap, or whether the
+  proper path is ResourceManager.load@18242 on a queue that includes our ids
+  (startMatch@18315 already calls load@18242 via the queueResources closure at ops
+  56-59 — so the more likely real fix is that our synthetic MatchSettings/
+  PlayerConfig doesn't put the char id where queueResourcesFromMatchSettings reads
+  it, so load enqueues nothing for our char). NEXT: disasm the queueResources
+  closure (set as MatchController statics field 8 in init@18313) to see which
+  MatchSettings/PlayerConfig field it reads for the character id, then ensure the
+  `s`-handler writes the id into exactly that field.
+
+VERIFY ANY ATTEMPT BY: error.log md5 != 3537a487 (stage) AND != 36adae25 (char).
+Control: buzzwole must behave identically to sandbag (it's the resolver, not the
+char). cargo build must be 0-error (build is a reliable signal even when live
+runs fabricate).
