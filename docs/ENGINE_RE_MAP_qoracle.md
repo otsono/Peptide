@@ -531,3 +531,39 @@ a follow-up q.
 Use rig_probe.sh-style FACTS files + `grep -c` of Q: markers + error/crash.log
 existence + error.log md5 (≠ 36adae25 / 3537a487). cargo build exit is reliable.
 Reconfirm every live number by re-reading the file twice; keep a buzzwole control.
+
+## NAMESPACE THEORY FALSIFIED (reliable md5, reproduced) — content map null for ALL ids
+Tested all three id forms for the character, thespire stage, error.log md5 from file:
+  bare `sandbag`               -> LAUNCHED global::sandbag.sandbag,  crash 36adae25
+  `public::sandbag.sandbag`    -> LAUNCHED public::sandbag.sandbag,  crash 36adae25
+  `custom::sandbag.sandbag`    -> LAUNCHED custom::sandbag.sandbag,  crash 36adae25
+All LAUNCHED=1, all crash IDENTICALLY at spawnPlayer (characterPxfContentMap null,
+md5 36adae25). So the namespace/resolver is NOT the cause — even the explicit
+full id with the correct namespace crashes. getPXFResource returns non-null for
+every form (hence LAUNCHED), but the per-type content map (f17) is null in all
+cases. The "resolver picks global:: stub" theory (commits 5b5e1dd4 etc.) is
+FALSIFIED. (My resolver edit was both a regression AND aimed at a non-cause; the
+revert e7fe0584 was still correct — it restored launching.)
+
+## CONVERGED ROOT CAUSE: headless boot never fully loads UGC content maps
+Cross-referencing every reliable result:
+- buzzwole (known-good WORKSHOP char) crashes identically to sandbag (36adae25).
+- All namespaces crash identically.
+- Two load-path fixes (add _checkIfAllDirectoriesLoaded@17840; full loadUgc@17796)
+  left 36adae25 unchanged.
+=> The defect is NOT content-specific, NOT namespace-specific, NOT a single
+missing load call. Our injected headless boot (inject_press_start + inject_ready_
+flag → loadInLocalUgc) registers resources in the pool (getPXFResource works) but
+the FULL content-map population that the real menu/CSS flow performs never
+completes. getPXFResource(id).characterPxfContentMap (f17) stays null for
+everything. This is the genuine remaining blocker for #3 (and thus #4/#5/#7).
+
+### Where to look next (healthy channel; file/grep/md5-verifiable steps exist)
+1. Disasm how f17 (characterPxfContentMap) is ASSIGNED — find the function with
+   `SetField ... RefField(17)` on a PXFResource (fnsof/dis scan, md5-stable). That
+   call is what our boot path skips. Wire it (or its caller) into inject_ready_flag.
+2. Compare: in a NORMAL Steam launch (menu→CSS→match), f17 is populated. Identify
+   the menu/CSS step that does it (likely per-content load callback _onFileLoaded@
+   17838 building the maps) and ensure our headless path reaches it.
+3. Success oracle (reliable): error.log md5 != 36adae25 AND serve.log has LAUNCHED.
+Buzzwole is the control: any real fix must make BUZZWOLE spawn too.
