@@ -769,21 +769,6 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let get_sprite_entity = require_fn(code, "getPXFSpriteEntity", Some("pxf.io.$ResourceManager"))?;
     let spr_ok_g = add_string_const(code, "SPR:1\n");
     let spr_null_g = add_string_const(code, "SPR:0\n");
-    // sprite-entity media preload + bare re-cache (fixes Character.hx:769 buried-vfx null):
-    // the engine caches sprite entities under "namespace::id.entity" but Character looks
-    // them up by the bare spriteContent ("sandbag"), so we preload then re-cache bare.
-    let get_data_as_pxf = require_fn(code, "get_DataAsPxf", Some("pxf.io.AbstractResource"))?;
-    let preload_sprite_entity = require_fn(code, "preloadPxfSpriteEntity", Some("pxf.io.AbstractResource"))?;
-    let cache_sprite_entity = require_fn(code, "cacheSpriteEntity", Some("pxf.io.$ResourceManager"))?;
-    let sm_get = require_fn(code, "get", Some("haxe.ds.StringMap"))?;
-    let pxf_entities_field = find_field(code, pxfres_t, "entities")
-        .ok_or_else(|| anyhow::anyhow!("PXFResource.entities field not found"))?;
-    let pxf_entitymap_field = find_field(code, pxfres_t, "entityMap")
-        .ok_or_else(|| anyhow::anyhow!("PXFResource.entityMap field not found"))?;
-    let entity_desc_t = 3958usize;       // preloadPxfSpriteEntity 2nd arg (entity descriptor)
-    let sprite_entity_t = 746usize;      // pxf.structs.PXFSpriteEntity
-    let cse_arg3_t = 108usize;           // cacheSpriteEntity 3rd arg type
-    eprintln!("sprite-preload: get_DataAsPxf={get_data_as_pxf} preloadEntity={preload_sprite_entity} cacheEntity={cache_sprite_entity} smGet={sm_get} entities.f={pxf_entities_field} entityMap.f={pxf_entitymap_field}");
     eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer
     // (added by the always-subscribed gameStarted handler); menuContainer is a
@@ -888,7 +873,7 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // 66 pool (ArrayObj=38); 67 pool.array (NativeArray=11); 68 pool elem (absres_t=394)
     // 69 Character (char_entity_t); 70 $CState statics (cstate_statics_t)
     // 71 Resource (resource_t); 72 $ResourceType statics (rt_statics_t); 73 enc Ref<ResourceType> (t241)
-    let base = add_regs(f, &[7, 7, sock_t, host_t, 3, out_t, 0, 3, 3, 7, sock_t, handle_t, 3, 3, str_t, enc_t, 3, bytes_t, 3, 3, 3, 3, nulli32_t, tilde_t, console_t, 669, 669, 4366, 9, 1957, 2536, 8, 11, 38, 4366, 675, 668, 6738, 13, 3, dmr_field_t, ms_statics_t, 669, mc_statics_t, match_t, core_statics_t, container_t, h2dobj_t, mode_t, 1194, 4482, bytes_t2, 38, str_t, 0, str_t, str_t, str_t, str_t, nulli32_t2, pxfres_t, keysiter_t, str_t, stringmap_t, 7, rm_statics_t, 38, 11, absres_t, char_entity_t, cstate_statics_t, resource_t, rt_statics_t, enc241_t, entity_desc_t, sprite_entity_t, cse_arg3_t]);
+    let base = add_regs(f, &[7, 7, sock_t, host_t, 3, out_t, 0, 3, 3, 7, sock_t, handle_t, 3, 3, str_t, enc_t, 3, bytes_t, 3, 3, 3, 3, nulli32_t, tilde_t, console_t, 669, 669, 4366, 9, 1957, 2536, 8, 11, 38, 4366, 675, 668, 6738, 13, 3, dmr_field_t, ms_statics_t, 669, mc_statics_t, match_t, core_statics_t, container_t, h2dobj_t, mode_t, 1194, 4482, bytes_t2, 38, str_t, 0, str_t, str_t, str_t, str_t, nulli32_t2, pxfres_t, keysiter_t, str_t, stringmap_t, 7, rm_statics_t, 38, 11, absres_t, char_entity_t, cstate_statics_t, resource_t, rt_statics_t, enc241_t]);
     let rr = |i: u32| Reg(base + i);
     let (r_done, r_true, r_sock, r_host, r_port, r_out, r_ret, r_ip, r_byte, r_blockf, r_sock2, r_handle, r_c, r_zero) =
         (rr(0), rr(1), rr(2), rr(3), rr(4), rr(5), rr(6), rr(7), rr(8), rr(9), rr(10), rr(11), rr(12), rr(13));
@@ -1352,42 +1337,6 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let _ = res_filepath_field; // (ctor already set _filePath from arg2)
     // synchronous read+decode (main thread): fetchThreaded -> File.getBytes -> createFromBytes -> set_DataAsPxf
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: rr(71) });
-    // --- sprite-entity media preload: preloadPxfSpriteEntity(res, ent) for each pxf.entities[i] ---
-    // (builds spritesheets + entityMap + namespaced sprite cache). Without this the buried-
-    // character Vfx in Character ctor has a null animation -> Character.hx:769 crash.
-    ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(get_data_as_pxf), arg0: rr(71) }); // pxf
-    ops.push(Opcode::Field { dst: rr(66), obj: rr(60), field: RefField(pxf_entities_field) }); // entities ArrayObj
-    let idx_l_pre_jnull = ops.len();
-    ops.push(Opcode::JNull { reg: rr(66), offset: 0 });                  // no entities -> after_preload
-    ops.push(Opcode::Field { dst: rr(39), obj: rr(66), field: RefField(0) }); // .length
-    ops.push(Opcode::Field { dst: rr(67), obj: rr(66), field: RefField(1) }); // .array
-    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(zero_idx) });        // i=0
-    let idx_l_pre_loop = ops.len();
-    let idx_l_pre_jge = ops.len();
-    ops.push(Opcode::JSGte { a: rr(16), b: rr(39), offset: 0 });         // i>=len -> after_preload
-    ops.push(Opcode::GetArray { dst: rr(28), array: rr(67), index: rr(16) }); // ent
-    ops.push(Opcode::Incr { dst: rr(16) });
-    let idx_l_pre_jnull_elem = ops.len();
-    ops.push(Opcode::JNull { reg: rr(28), offset: 0 });                  // null ent -> loop
-    ops.push(Opcode::UnsafeCast { dst: rr(74), src: rr(28) });           // -> entity descriptor (t3958)
-    ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(preload_sprite_entity), arg0: rr(71), arg1: rr(74) });
-    let idx_l_pre_jback = ops.len();
-    ops.push(Opcode::JAlways { offset: 0 });                             // -> loop
-    let idx_l_after_preload = ops.len();
-    // --- re-cache the "sandbag" entity under the BARE key (Character looks it up bare) ---
-    ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(get_data_as_pxf), arg0: rr(71) });
-    ops.push(Opcode::Field { dst: rr(63), obj: rr(60), field: RefField(pxf_entitymap_field) }); // entityMap StringMap
-    let idx_l_emap_jnull = ops.len();
-    ops.push(Opcode::JNull { reg: rr(63), offset: 0 });                  // null map -> skip recache
-    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });
-    ops.push(Opcode::Call2 { dst: rr(28), fun: RefFun(sm_get), arg0: rr(63), arg1: rr(55) }); // entity (dyn)
-    let idx_l_ent_jnull = ops.len();
-    ops.push(Opcode::JNull { reg: rr(28), offset: 0 });                  // no "sandbag" entity -> skip
-    ops.push(Opcode::UnsafeCast { dst: rr(75), src: rr(28) });           // -> PXFSpriteEntity (t746)
-    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) }); // bare key
-    ops.push(Opcode::Null { dst: rr(76) });                              // 3rd arg (t108)
-    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(75), arg2: rr(76) });
-    let idx_l_skip_recache = ops.len();
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: rr(71) });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(add_resource), arg0: rr(71) });
     // verify: getPXFResource(getFullyQualifiedResourceId(res)) non-null?
@@ -1571,13 +1520,6 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_probe_unknown_jdone] { *offset = idx_l_cmap_done as i32 - idx_l_probe_unknown_jdone as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_l_spr_jnull] { *offset = idx_l_spr_null as i32 - idx_l_spr_jnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_spr_jdone] { *offset = idx_l_spr_done as i32 - idx_l_spr_jdone as i32 - 1; }
-    // sprite-preload loop + bare re-cache jumps
-    if let Opcode::JNull { offset, .. } = &mut ops[idx_l_pre_jnull] { *offset = idx_l_after_preload as i32 - idx_l_pre_jnull as i32 - 1; }
-    if let Opcode::JSGte { offset, .. } = &mut ops[idx_l_pre_jge] { *offset = idx_l_after_preload as i32 - idx_l_pre_jge as i32 - 1; }
-    if let Opcode::JNull { offset, .. } = &mut ops[idx_l_pre_jnull_elem] { *offset = idx_l_pre_loop as i32 - idx_l_pre_jnull_elem as i32 - 1; }
-    if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_pre_jback] { *offset = idx_l_pre_loop as i32 - idx_l_pre_jback as i32 - 1; }
-    if let Opcode::JNull { offset, .. } = &mut ops[idx_l_emap_jnull] { *offset = idx_l_skip_recache as i32 - idx_l_emap_jnull as i32 - 1; }
-    if let Opcode::JNull { offset, .. } = &mut ops[idx_l_ent_jnull] { *offset = idx_l_skip_recache as i32 - idx_l_ent_jnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_jdone] { *offset = idx_m_check as i32 - idx_l_jdone as i32 - 1; }
     // k diagnostic (directoriesToLoad) jumps
     if let Opcode::JNull { offset, .. } = &mut ops[idx_k_dirs_null] { *offset = idx_k_after_dirs as i32 - idx_k_dirs_null as i32 - 1; }
