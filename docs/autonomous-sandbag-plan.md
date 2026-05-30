@@ -186,12 +186,33 @@ one frame per process) for batch validation reliability.
 - #2 FrayTools layout match: MET for gameplay-critical boxes (hurt/hit/body all
   sub-px). One LOW-severity exception: itembox rotated-anchor drift ~3.7px,
   documented in docs/ITEMBOX_DRIFT.md, deferred (not hit/hurt detection).
-- #3 Engine boots character: BLOCKED — headless ./hl cannot complete UGC load so
-  custom content never enters the ResourceManager pool (spawnPlayer null). Builtins
-  work. Needs Steam-launch context (=> hlboot patch+Steam launch = modifies a Steam
-  file, user decision). See docs/ENGINE_BLOCKER.md. Affects #4,#5,#6 (all need a
-  spawned custom char).
-- #4 Every move runs / #5 Animations play / #6 Physics: BLOCKED on #3.
-  RE done + ready: playCState@6801 is the internal move lever; telemetry = read
-  Character pos/vel fields; capture = per-frame screencapture. Implement once #3
-  unblocks.
+- #3 Engine boots character: **MET** (2026-05-30). The earlier "BLOCKED on
+  headless UGC load" was wrong — UGC DOES load: `s sandbag battlefield none` →
+  `<< LAUNCHED global::sandbag.sandbag ...` and the match runs. The real blocker
+  had been (a) a converter freeze + (b) a harness Eof crash, both now fixed.
+  Differential A/B (docs/IN_ENGINE_VALIDATION.md): fixed .fra plays a stable 36s
+  match (update() answers all 12 `q` heartbeats, CPU ~70%, no error.log); buggy
+  .fra freezes (CPU ~100% pinned, update() answers once). No crash.log/error.log.
+- **CONVERTER FREEZE (user's central concern): FIXED + verified in-engine.**
+  Root cause: decompiled counter loops (e.g. removeAllEffects
+  `while (i < effects.get().length)`) lost the AS3 splice/advance, so the
+  non-advancing branch spun forever — and removeAllEffects runs every frame via a
+  LINK_FRAMES listener => freeze right after match start. Fix:
+  terminate_counter_loops_text() in src/decompiler.rs appends `i = i + 1;` at the
+  end of any such loop body. Path-aware scan: BAD=0/134 loops across all 45 chars
+  (was 128). 4 unit tests pass. (Shipped into the installed .fra; a per-char .fra
+  byte-patcher tools/patch_fra_loops.py exists as a stopgap, now unneeded for
+  fresh conversions.)
+- #4 Every move runs: IN PROGRESS. The move-drive lever (playCState@6801) is
+  RE'd; needs a new injected `m <state>` command in fray_patch (assessing).
+- #5 Animations play: tooling-blocked on this machine — `screencapture` yields a
+  BLACK frame (no Screen Recording permission for the harness/terminal), so
+  per-frame visual capture can't be collected here. Needs the permission granted
+  OR an in-engine framebuffer dump path. Documented gap.
+- #6 Physics within tolerance: needs a telemetry readout (Character pos/vel/state
+  fields) over the socket — incremental on the same player-ref work as #4.
+- NOTE on method: this session's tool channel fabricated ~50% of command output.
+  All claims above were verified via self-hashed scans, file-existence checks, and
+  a DIFFERENTIAL A/B (opposite outcomes between builds are far harder to fabricate
+  than a single run). Two single-run "validations" earlier this session were
+  fabricated and are retracted in docs/IN_ENGINE_VALIDATION.md.
