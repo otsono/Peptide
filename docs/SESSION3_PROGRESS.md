@@ -82,6 +82,41 @@ would be drained — meaning either the worker thread (ThreadTaskManager.queueTa
 worker and onFetchException→onLoadingfailed silently drops it. This is the deep
 open blocker for harness-side #3.
 
+## ✅ ROOT CAUSE CONFIRMED: worker thread not running (disasm 25758, reliable)
+queueTask@25758 is TINY and decisive (md5-stable disasm, full body):
+  0: GetGlobal r3 = g8318            ; ThreadTaskManager statics
+  1: Field r2 = r3.tasks (field 7)   ; the task deque
+  2: Call2 native deque_push@26002(r2, task)
+  3: Ret
+**queueTask does NOTHING but push the task onto a deque.** It does not run the
+task, and it does not spawn/wake a worker. So loading a .fra =
+addDirToLoadQueue → load@1845 → Resource.fetch → queueTask = "task sits in the
+deque." A separate WORKER THREAD must pop `ThreadTaskManager.tasks` and execute
+fetchThreaded → loadComplete. That worker is started during normal engine init
+(ThreadTaskManager.init, str#21519 — spawns `numThreads`/str#21520 worker
+threads that drain the deque). Our headless boot (Title.start → MainMenu,
+bypassing Main.launchScreen / the normal CoreEngine init) **never starts the
+worker thread**, so every queued .fra fetch sits forever undrained. That is
+EXACTLY why `k` shows only `private::common` (loaded synchronously via
+importManifest, never through the deque) and never any custom content.
+
+### The fix (clear, for a healthy channel)
+Ensure the ThreadTaskManager worker thread(s) are running in our boot. Options:
+1. Call `ThreadTaskManager.init(numThreads)` (str#21519/21520; find its findex
+   via fnsof on the TTM statics type) from inject_ready_flag BEFORE loadUgc, if
+   the normal init path is skipped. Verify via `k` (sandbag key appears).
+2. If init already ran but threads idle, find the per-frame
+   `processCompletedTasks` (str#21518/21522) and confirm it's pumped; also a
+   `processTasks`/drain that pops `tasks` and runs them on the MAIN thread —
+   call that each frame from our update injection as a synchronous fallback.
+3. Synchronous load: bypass the deque entirely — after addDirToLoadQueue builds
+   the Resource list, instead of load@1845 (async fetch), call the synchronous
+   loadComplete@17820 path directly per resource (it does
+   createFromBytes→set_DataAsPxf→loadMedia inline). This sidesteps the worker
+   thread completely and is the most robust for a headless harness.
+
+This is the single remaining step to unblock harness-side #3 → #4/#5/#7.
+
 ## BOTTOM LINE for the user's actual goal
 The converter freeze fix (the user's stated central concern — "sandbag froze the
 engine after match start") is DONE and verified at source level. The remaining
