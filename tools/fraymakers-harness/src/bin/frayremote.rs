@@ -166,10 +166,22 @@ fn serve(port: u16, token: Option<&str>) {
         }
     }
 
-    // stdin -> socket
+    // stdin -> socket. The FIRST command fires the instant READY arrives
+    // (event-driven, no artificial pre-delay). FRAY_CMD_GAP (seconds, may be
+    // fractional) paces SUBSEQUENT commands so a piped multi-command sequence
+    // doesn't all flush at once — callers dump every command immediately and
+    // let us space them, instead of sleeping before READY.
+    let cmd_gap = std::env::var("FRAY_CMD_GAP").ok()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|g| *g > 0.0);
     let stdin = std::io::stdin();
+    let mut first = true;
     for line in stdin.lock().lines() {
         let Ok(mut l) = line else { break };
+        if !first {
+            if let Some(g) = cmd_gap { thread::sleep(Duration::from_secs_f64(g)); }
+        }
+        first = false;
         eprintln!("frayremote: SENT {l:?}");
         l.push('\n');
         if write_half.write_all(l.as_bytes()).is_err() {
