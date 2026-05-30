@@ -101,3 +101,37 @@ key mismatch is the bug — independent of timing/namespace. NEXT (reliable stat
 grep importContent disasm for `SetField .* RefField(17)` and trace the obj reg.
 
 ## STATUS: #3 NOT met; timing fix retracted; cause narrowed to f17-write-vs-lookup
+
+## ✅ BEDROCK ROOT CAUSE (md5-stable, op-level): pooled resource is UNCONSTRUCTED
+PXFResource.__constructor__@1886 (md5 0508e900, 2x) op74:
+  SetThis field RefField(17) src = new StringMap()  [UNCONDITIONAL]
+i.e. EVERY constructed PXFResource gets a non-null (empty) characterPxfContentMap;
+ops 62-89 set f13..f22 (all the per-type content maps) to fresh StringMaps the
+same way. importContent@1600 only READS f17 (op544) to add entries.
+
+=> f17==null at spawnPlayer is IMPOSSIBLE for a constructed PXFResource. So the
+object getPXFResource(charId) returns is NOT a @1886-constructed PXFResource — it
+is a non-null STUB/bare object (passes the resolver's !=null check → LAUNCHED) with
+f17 defaulting to null. Construction (createFromBytes@1882 → ctor@1886) is
+SYNCHRONOUS, so if it had run f17 would be non-null regardless of timing — which is
+why NO delay (12s/30s) helps. createFromBytes simply NEVER RAN for our content in
+the headless path; onMatchReady fires because _checkIfAllDirectoriesLoaded sees
+zero outstanding fetches (findLocalUgc/fetchThreaded produced no constructed
+resources in our injected boot).
+
+This is consistent with EVERY reliable observation: buzzwole identical (not
+content-specific), all namespaces identical, all timings identical, load
+"completes" yet f17 null.
+
+## THE FIX (now unambiguous)
+The headless boot must actually CONSTRUCT our content as PXFResources before `s`:
+ensure findLocalUgc@17836 → fetchThreaded@17826 → loadComplete@17820 →
+createFromBytes@1882 runs to completion for custom/sandbag (and pools the
+RESULT). Options: (a) make the injected boot drive fetchThreaded synchronously
+for the local dir; (b) call createFromBytes@1882 directly on the .fra bytes +
+addResource the result; (c) find why fetchThreaded's threads don't run/complete
+headless (no Steam? event loop?) and fix that. Gate `s` on f17!=null (the `u`
+query) regardless. Success oracle: error.log md5 != 36adae25 + LAUNCHED +
+buzzwole spawns.
+
+## STATUS: #3 NOT met; root cause is now COMPLETE at op level (unconstructed pool entry)
