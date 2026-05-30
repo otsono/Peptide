@@ -773,7 +773,7 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let (r_done, r_true, r_sock, r_host, r_port, r_out, r_ret, r_ip, r_byte, r_blockf, r_sock2, r_handle, r_c, r_zero) =
         (rr(0), rr(1), rr(2), rr(3), rr(4), rr(5), rr(6), rr(7), rr(8), rr(9), rr(10), rr(11), rr(12), rr(13));
 
-    use hlbc::types::{RefFun, RefField, RefInt, RefGlobal};
+    use hlbc::types::{RefFun, RefField, RefInt, RefGlobal, ValBool};
     // Emit a content-id resolver into `ops`: reads the String in reg `name`, writes
     // a content-ref (669) into reg `out`. If the name already has "::" it's parsed
     // as a full id; otherwise it's expanded to package.id (bare "x" -> "x.x") and
@@ -891,7 +891,7 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let mut ops = vec![
         Opcode::GetGlobal { dst: r_done, global: RefGlobal(g_done) },   // 0
         Opcode::JTrue { cond: r_done, offset: 0 },                      // 1 -> L_RECV (patched)
-        Opcode::Bool { dst: r_true, value: true },             // 2
+        Opcode::Bool { dst: r_true, value: ValBool(true) },             // 2
         Opcode::SetGlobal { global: RefGlobal(g_done), src: r_true },   // 3
         Opcode::Call0 { dst: r_ret, fun: RefFun(socket_init) },
         Opcode::New { dst: r_sock },
@@ -903,7 +903,7 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
         Opcode::Call3 { dst: r_ret, fun: RefFun(connect), arg0: r_sock, arg1: r_host, arg2: r_port },
         Opcode::SetGlobal { global: RefGlobal(g_sock), src: r_sock },
         // setBlocking(false) so the per-frame recv never blocks the render loop
-        Opcode::Bool { dst: r_blockf, value: false },
+        Opcode::Bool { dst: r_blockf, value: ValBool(false) },
         Opcode::Call2 { dst: r_ret, fun: RefFun(set_blocking), arg0: r_sock, arg1: r_blockf },
         Opcode::Field { dst: r_out, obj: r_sock, field: RefField(out_field) },
     ];
@@ -941,7 +941,7 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let idx_jnomatch = ops.len();
     ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                // no match yet -> recv
     ops.push(Opcode::Call0 { dst: r_ret, fun: RefFun(19543) });        // destroyAllActiveMenus
-    ops.push(Opcode::Bool { dst: rr(1), value: true });
+    ops.push(Opcode::Bool { dst: rr(1), value: ValBool(true) });
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_shown), src: rr(1) });
     let idx_after_reveal = ops.len();
     if let Opcode::JTrue { offset, .. } = &mut ops[idx_jshown] { *offset = idx_after_reveal as i32 - idx_jshown as i32 - 1; }
@@ -973,7 +973,7 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::GetGlobal { dst: rr(23), global: RefGlobal(tilde_global) });
     ops.push(Opcode::Field { dst: rr(24), obj: rr(23), field: RefField(console_field) });
     // enable the console first so its log display exists (handleCommand echoes to it)
-    ops.push(Opcode::Bool { dst: rr(9), value: true });
+    ops.push(Opcode::Bool { dst: rr(9), value: ValBool(true) });
     ops.push(Opcode::Call2 { dst: rr(1), fun: RefFun(set_enabled), arg0: rr(24), arg1: rr(9) });
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(help_g) });
     ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(run_command), arg0: rr(24), arg1: rr(14) });
@@ -1221,7 +1221,7 @@ fn inject_ready_flag(
         (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4), Reg(base + 5));
     use hlbc::types::{RefField, RefFun, RefGlobal};
     let mut ops = vec![
-        Opcode::Bool { dst: r_b, value: true },
+        Opcode::Bool { dst: r_b, value: ValBool(true) },
         Opcode::SetGlobal { global: RefGlobal(g_ready), src: r_b },
         Opcode::GetGlobal { dst: r_sock, global: RefGlobal(g_sock) },
     ];
