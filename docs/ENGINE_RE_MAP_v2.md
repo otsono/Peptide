@@ -138,3 +138,21 @@ animation when getSprite is non-null, else logs "Vfx id not found".
   pxfSpriteEntityCache=RM field24.
 NEXT: why finishLoading's media callback didn't populate pxfSpriteEntityCache for our resource
 (+ the concrete fix). RE running (wf after whggctm7d).
+
+## Sprite-preload fix attempt #1 CRASHED (reverted c83b73bf via 6b2f1a50)
+Attempt: after fetchThreaded, loop `preloadPxfSpriteEntity@1852(res, UnsafeCast<t3958>(entities[i]))`
+over pxf.entities, then `cacheSpriteEntity@18255("sandbag", entityMap.get("sandbag"), null)`.
+RESULT: engine died DURING `l` (no L: ack, no error.log = native segfault). Prime suspect:
+UnsafeCast of `pxf.entities[i]` to t3958 is wrong (entities[] elements may not be t3958), or
+calling preloadPxfSpriteEntity directly (outside its closure context) derefs something unset.
+Reverted to known-good `l` (load + probes: L:private::sandbag KEY=sandbag SPR:0).
+SAFER NEXT APPROACH (no risky UnsafeCast): the entity is built by `cacheSpriteEntityData@1601(pxf, idx:Int)`
+— takes the PXFResource + an Int index (NO UnsafeCast). Loop idx 0..entities.length calling
+cacheSpriteEntityData(pxf, idx) to populate `entityMap` (keyed bare by entity .#2 per fn1601),
+then `cacheSpriteEntity@18255("sandbag", entityMap.get("sandbag"), null)` for the bare key.
+(Spritesheet tiles via preloadPxfSpritesheets are likely only needed for rendering, not for
+getSprite-non-null / Vfx.animation creation — verify.) ALTERNATIVELY set RM.requiredMediaIds
+(g3508 f41) = ["*"] + res._preloadMedia(f13)=true before fetchThreaded so the engine's own
+closure preloads all entities, then still do the bare re-cache. Either way the bare re-cache is
+load-bearing. Confirm entity descriptor type before any UnsafeCast (fninfo/typefields the
+entities[] element type) to avoid the segfault.
