@@ -1172,7 +1172,7 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     inject_press_start(code, 21850, 21860)?;
     // Then signal READY from MainMenu's constructor (now reached via the advance).
     let menu_ready_g = add_string_const(code, "READY\n");
-    inject_ready_flag(code, 18549, g_ready, g_sock, out_field, write_str, flush, menu_ready_g, sock_t, out_t, str_t, enc_t)?;
+    inject_ready_flag(code, 18549, g_ready, g_sock, out_field, write_str, flush, menu_ready_g, sock_t, out_t, str_t, enc_t, 17796)?;
     Ok(())
 }
 
@@ -1220,6 +1220,7 @@ fn inject_ready_flag(
     code: &mut Bytecode, ctor_findex: usize, g_ready: usize, g_sock: usize,
     out_field: usize, write_str: usize, flush: usize, marker_g: usize,
     sock_t: usize, out_t: usize, str_t: usize, enc_t: usize,
+    load_ugc: usize,
 ) -> anyhow::Result<()> {
     let fidx = function_index_by_findex(code, ctor_findex)
         .ok_or_else(|| anyhow::anyhow!("ctor @{ctor_findex} not found"))?;
@@ -1229,6 +1230,14 @@ fn inject_ready_flag(
         (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4), Reg(base + 5));
     use hlbc::types::{RefField, RefFun, RefGlobal};
     let mut ops = vec![
+        // Kick off custom-content (UGC) loading. Our injected boot path
+        // (Title.start → MainMenu) bypasses Main::launchScreen, which is what
+        // normally calls UgcUtil.loadUgc — so custom/ + workshop .fra files are
+        // never added to the ResourceManager pool, and spawning a custom char
+        // null-derefs characterPxfContentMap. loadUgc@argc0 scans custom/ async;
+        // it's idempotent (guarded by beforeFirstLoad/activelyLoading). The
+        // harness then waits (FRAY_POST_READY_DELAY) before sending `s`.
+        Opcode::Call0 { dst: r_ret, fun: RefFun(load_ugc) },
         Opcode::Bool { dst: r_b, value: hlbc::types::ValBool(true) },
         Opcode::SetGlobal { global: RefGlobal(g_ready), src: r_b },
         Opcode::GetGlobal { dst: r_sock, global: RefGlobal(g_sock) },
