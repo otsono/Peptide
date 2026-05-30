@@ -117,3 +117,24 @@ worker). VERIFIED live:
   (Character.hx:769) ← FraymakersCharacter ctor:271 ← FraymakersClassFactory.createCharacter:96
   ← spawnPlayer:1424. A content sub-field our manual load left unpopulated (full trace:
   docs/sandbag_spawn_crash.log). RE in progress to pin the null + the extra load step.
+
+## Character.hx:769 crash root cause (RE high-conf) + SPR:0 confirmed
+The null at Character.hx:769 = `m_buriedCharacterVfx.animation` (Vfx field 37). The Vfx
+is non-null but its `.animation` is null because `ResourceManager.getSprite(spriteContent)`
+(spriteContent = statsProps.spriteContent = "sandbag") returns null → `pxfSpriteEntityCache`
+(RM static field 24) has no "sandbag" entry. `Vfx.__constructor__@4671` only builds the
+animation when getSprite is non-null, else logs "Vfx id not found".
+- Cache populated only by `cacheSpriteEntity@18255` ← `preloadPxfSpriteEntity@1852` ←
+  the `_mediaLoadCallback` closure (findex 25757) installed in AbstractResource field 26 by
+  `loadMedia@1865`, RUN by `finishLoading@1842` (op0-5 CallClosure field26).
+- Our `l` command does fetchThreaded(→loadComplete→loadMedia installs field26) THEN
+  finishLoading (should run it) THEN addResource. **But `l` probe reports SPR:0** —
+  getPXFSpriteEntity("sandbag") null after load. So the preload either didn't run, found no
+  sprite media in the PXFResource, or cached under a different (namespaced) key.
+- Key findexes: getSprite=18302, getPXFSpriteEntity=18289, cacheSpriteEntity=18255,
+  preloadPxfSpriteEntity=1852, _mediaLoadCallback closure=25757, loadMedia=1865,
+  Character.__constructor__=5108, Vfx.__constructor__=4671, spawnVfx=2507, Vfx.animation=field37,
+  Character.m_buriedCharacterVfx=field234, statsProps.spriteContent=t1937 field86,
+  pxfSpriteEntityCache=RM field24.
+NEXT: why finishLoading's media callback didn't populate pxfSpriteEntityCache for our resource
+(+ the concrete fix). RE running (wf after whggctm7d).
