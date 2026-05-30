@@ -182,9 +182,35 @@ fn main() {
     let all_anim_data = sprite_parser::parse_sprite_boxes(&swf_data, &char_name, &empty)
         .unwrap_or_else(|e| die(&format!("parse_sprite_boxes: {}", e)));
 
-    // Find the matching SSF2 animation (by fm_name).
-    let ssf2_anim: Option<&AnimationBoxData> = all_anim_data.values()
-        .find(|a| a.fm_name == report.animation);
+    // Resolve the SSF2 animation behind this FrayTools animation. Many FM
+    // animations are *split* sub-animations of one SSF2 sprite (e.g.
+    // strong_forward_attack is sliced from "strong_forward" starting at the
+    // `attack` label). The entity generator does this via `split_animations`;
+    // we apply the SAME mapping here so split sub-animations compare against
+    // their source boxes + frame offset instead of silently SKIPping.
+    //
+    // `split_animations` only reads the *keys* of its source_anims map, so a
+    // synthetic map built from the parsed box-data keys is sufficient.
+    let synthetic_sources: BTreeMap<String, ssf2_converter::extractor::AnimationInfo> =
+        all_anim_data.keys()
+            .map(|k| (k.clone(), ssf2_converter::extractor::AnimationInfo {
+                name: k.clone(), frames: 0, speed: 0.0,
+            }))
+            .collect();
+    let splits = ssf2_converter::anim_splitter::split_animations(&synthetic_sources, &all_anim_data);
+    let split = splits.iter().find(|s| s.fm_name == report.animation);
+
+    // Source animation name + frame offset (in SSF2 frame units) for this FM
+    // animation. For a split, that's the recorded source_anim + start_frame;
+    // otherwise fall back to a direct fm_name match (offset 0).
+    let (source_anim_name, source_frame_offset): (Option<String>, u16) = match split {
+        Some(s) => (Some(s.source_anim.clone()), s.start_frame),
+        None => (all_anim_data.values()
+            .find(|a| a.fm_name == report.animation)
+            .map(|a| a.fm_name.clone()), 0),
+    };
+    let ssf2_anim: Option<&AnimationBoxData> = source_anim_name.as_ref()
+        .and_then(|n| all_anim_data.values().find(|a| a.fm_name == *n));
 
     if ssf2_anim.is_none() {
         eprintln!("WARN: animation \"{}\" not found in SSF2 source. Available fm_names:",
@@ -193,14 +219,21 @@ fn main() {
             eprintln!("  {} (ssf2: {})", a.fm_name, a.ssf2_name);
         }
         eprintln!("Continuing with anchor-only verification (no SSF2 comparison).");
+    } else if let Some(ref src) = source_anim_name {
+        if *src != report.animation {
+            println!("Split mapping: {} → SSF2 \"{}\" + {} frame offset",
+                report.animation, src, source_frame_offset);
+        }
     }
 
     // SSF2 runs at 30fps; FrayTools runs at 60fps. entity_gen doubles every
     // keyframe length (`double_keyframe_lengths`) so entity frame N corresponds
     // to SSF2 frame N/2.  Use integer division — both entity frames 0 and 1
     // are the "same" SSF2 frame 0, frames 2 and 3 are SSF2 frame 1, etc.
+    // For split sub-animations, add the source-frame offset (the label frame
+    // the split starts at, in SSF2 units).
     const FRAME_SCALE: usize = 2;
-    let ssf2_frame = (report.frame / FRAME_SCALE) as u16;
+    let ssf2_frame = source_frame_offset + (report.frame / FRAME_SCALE) as u16;
 
     let ssf2_frame_boxes: &[sprite_parser::FrameBox] = ssf2_anim
         .and_then(|a| a.frames.get(&ssf2_frame))
