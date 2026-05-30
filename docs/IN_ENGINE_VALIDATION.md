@@ -119,3 +119,38 @@ q-branch no longer runs (or no longer reads a fresh line). This must be fixed
 before ANY in-engine freeze/telemetry claim. Debug: does `q` work BEFORE `s`
 (send q first)? If yes, `s` breaks the reader; if no, the reader only ran for the
 one buffered command. Verify with grep '^<< Q:' counts; do NOT trust narrative.
+
+## ✅ #3 MET FOR REAL — crash was TIMING; sandbag spawns into a LIVE match
+Date: 2026-05-30 (final). Reproduced 2x, file-verified (error.log absence checked
+via both `ls` and `test -f`; success oracle = LAUNCHED + no error.log + Q:MATCH_LIVE).
+
+The characterPxfContentMap-null crash (md5 36adae25) was NOT namespace, NOT a
+missing load call, NOT content-specific — it was TIMING. UGC loads ASYNC:
+_onFileLoaded@17838 fires per-.fra when each finishes (op0 addResource@18230, op27
+_checkIfAllDirectoriesLoaded@17840). The harness sent `s` ~1s after boot, BEFORE
+sandbag.fra's _onFileLoaded had fired, so getPXFResource returned a
+pooled-but-not-yet-finalized resource with a null content map → spawnPlayer crash.
+
+FIX: wait for async UGC load to complete before sending `s`. With a ~12s
+post-READY delay:
+  s sandbag thespire none -> LAUNCHED public::sandbag.sandbag public::thespire... 
+  q x8 -> Q:MATCH_LIVE x8 (currentMatch non-null = live match, update() ticking)
+  NO error.log, NO crash.log, engine alive. Reproduced (run1 + run2 identical).
+
+So all the earlier "fixes" (resolver namespace, load finalizer) were chasing a
+non-cause; the resolver change was reverted (e7fe0584). The ONLY change needed is
+the delay. (Bare `sandbag` also works with the delay; namespace was never the
+issue — the earlier "all namespaces crash" runs were all at the too-short delay.)
+
+### Freeze A/B caveat (honest)
+An IDLE sandbag does NOT trigger removeAllEffects (its LINK_FRAMES loop only spins
+when effects exist + a state change fires). So idle `s`+`q` cannot distinguish
+buggy from fixed .fra (buggy at delay 12 also showed 8x MATCH_LIVE — no freeze
+observed, because nothing populated the effects list). The converter freeze fix
+remains verified at SOURCE level; its in-engine trigger requires move-drive (#4)
+to spawn effects/state-changes. Match-start + live match are now proven.
+
+### Harness fix
+rig_probe.sh / freeze_probe.sh must send `s` only after ~12s post-READY (or gate
+on a load-complete signal). frayremote `send` mode already has FRAY_POST_READY_DELAY;
+`serve` mode needs the delay in the command stream (sleep before `s`).
