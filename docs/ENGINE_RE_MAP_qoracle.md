@@ -469,3 +469,32 @@ NEXT (healthy channel): instrument the resolver to report, per candidate prefix,
 getPXFResource!=null AND f17!=null; pass the prefix whose f17 is non-null. Verify
 err md5 != 36adae25/3537a487 + buzzwole control + 0-err build. Keep runs to a
 minimum and cross-check every md5 by re-reading the file twice.
+
+## ✅✅ MATCH-START CRASH FIXED + COMMITTED (9f3aa3c2) — verified, reproduced 3x
+Root cause (confirmed): emit_resolve accepted a namespace as soon as
+getPXFResource != null, so it fell through to `global::X.X` — a registry STUB
+whose per-type content map (f17/f22) is null -> spawnPlayer/setupStage crash.
+Fix: accept a prefix only if its resource's cmap_field is ALSO non-null, so we
+pick the namespace where content is actually loaded (custom::).
+
+VERIFIED (rig_probe.sh FACTS files, reliable; sandbag A+B + buzzwole control):
+  before: LAUNCHED global::sandbag.sandbag; crash 36adae25 @ spawnPlayer; dead ~10-20s
+  after:  LAUNCHED custom::sandbag.sandbag; NO error.log; NO crash.log; ALIVE@26s
+  buzzwole control: LAUNCHED custom::buzzwole.buzzwole; alive; no crash.
+The 36adae25 / 3537a487 crashes are GONE. This is the real #3 unblock.
+
+## REMAINING: q still returns NO_MATCH (engine alive, no crash) — q-oracle / match-live
+With the crash gone, q (reads MatchController.currentMatch, g3511 f6) still returns
+NO_MATCH across 10 samples while the engine stays alive. Two possibilities:
+  (a) the match object isn't being created (we're sitting on the menu, alive), OR
+  (b) currentMatch is populated elsewhere / nulled and q reads the wrong ref.
+TESTED + REVERTED (no effect): adding _checkIfAllDirectoriesLoaded@17840 after
+loadInLocalUgc (finalizer hypothesis) — Q_LIVE stayed 0. So onMatchReady firing
+is NOT gated on that finalizer.
+NEXT: enhance q to ALSO report MatchController._matches.length (g3511 f13) and/or
+read elapsedFrames from _matches[0] — distinguishes "match object exists" (b) from
+"no match started" (a). If _matches has an entry, switch the live-match ref/oracle
+to it (Match type634: elapsedFrames f75 = freeze oracle, characters f35 = telemetry/
+move-drive target). If _matches is empty, the createMode/startMatch path itself
+isn't completing post-load — trace from there. Verify with the rig_probe FACTS
+pattern (reliable) + buzzwole control.
