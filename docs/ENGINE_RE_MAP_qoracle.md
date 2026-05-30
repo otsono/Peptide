@@ -216,3 +216,39 @@ contained injected commentary like "wait this output looks off"). Trustworthy
 this session: `md5 -q` of files, file-existence errors, and static disasm whose
 md5 reproduces across reruns. NOT trustworthy: narrative Read output of live logs,
 and any single live-run reading.
+
+## DECISIVE CORRECTION (verified md5) — thespire is VALID; real blocker = char content map
+Commit 3efec8a6 wrongly said "thespire all crash 3537a487" — that was fabricated.
+VERIFIED via reliable `md5 -q`/byte-count/first-line (these signals stayed honest
+while narrative Reads were fabricated):
+
+| char\stage      | battlefield/st_battlefield | thespire / public::thespire.thespire |
+|-----------------|----------------------------|--------------------------------------|
+| sandbag         | 3537a487 (stagePxf null)   | **36adae25 (characterPxf null @ spawnPlayer)** |
+| buzzwole (good) | 3537a487 (stagePxf null)   | **36adae25 (characterPxf null @ spawnPlayer)** |
+
+(36adae25 = 1178 bytes, first line `Null access .characterPxfContentMap`,
+`Match.spawnPlayer Match.hx:1423 ← Match.init:608 ← onMatchReady:479`.)
+
+CONCLUSIONS (all md5-verified):
+1. `thespire` IS a valid stage: it passes setupStage and reaches spawnPlayer.
+   `battlefield`/`st_battlefield` are NOT valid (die earlier at setupStage).
+2. The spawnPlayer crash is IDENTICAL for sandbag and known-good buzzwole → it is
+   NOT the converter and NOT sandbag-specific. It's OUR startMatch resolver: the
+   char PXFResource resolves (getPXFResource non-null → LAUNCHED) and the resource
+   loads (onMatchReady fires), but its characterPxfContentMap (PXFResource field
+   17) is never populated. Same root class as the stage map (field 22).
+3. Therefore the plan's "#3 engine boots character = MET" (and my commit
+   eaaab165) is WRONG: the LAUNCHED ack only means the ref resolved; the match
+   then crashes at spawnPlayer. #3 is NOT met.
+
+### The actual fix (single root cause for both stage & char content maps)
+Our resolver builds a ref via getPXFResource but never LOADS that content into its
+type-specific map. Per match-launch memory: getCharacterContent@18292 reads
+RM.pxfCharacterContentCache (field 29) and getStageContent@18297 reads
+pxfStageContentCache (field 34); these caches are keyed by content-id string and
+are what populate characterPxfContentMap/stagePxfContentMap. So the `s`-handler
+must ensure each resolved content id is actually loaded into those caches before
+startMatch (or use the engine's own queue that does so). Verify each attempt by
+error.log md5: success = NEITHER 3537a487 NOR 36adae25 (match reaches a live
+Match; then Match.elapsedFrames field 75 = the freeze oracle, unblocking #4/#6/#7).
