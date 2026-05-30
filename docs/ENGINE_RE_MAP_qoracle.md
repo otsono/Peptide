@@ -69,3 +69,35 @@ mechanism-level: threaded async UGC load not finished before `s`. The fix is a
 load-ready GATE (`u` query polling f17), specified above to op-level. Code+live
 validation needs a trusted channel (live-run reads fabricated this session;
 static disasm — all md5-reproduced — is what every finding above rests on).
+
+## ⚠️ TIMING ROOT-CAUSE FALSIFIED (reliable md5) — delay 30s still crashes 36adae25
+delay_probe.sh 30 (error.log md5 derived twice, both 36adae25): LAUNCHED=1,
+Q:NO_MATCH, error.log PRESENT md5 36adae25, engine died. 30s >> thread completion
+time, so the "threads not finished before s" theory (commit 4974c745) is WRONG.
+Crucially the trace shows onMatchReady@18319 FIRES (via ResourceManager._checkFinished
+@788) — so UGC load DID complete — yet getPXFResource(charId).characterPxfContentMap
+(f17) is null at spawnPlayer. Content finishes loading but f17 stays null.
+
+## EVERY theory now falsified by the reliable error.log oracle
+namespace (bare/public::/custom::), load-finalizer (_checkIfAllDirectoriesLoaded),
+load-method (full loadUgc@17796), and timing (12s, 30s) — ALL crash 36adae25.
+
+## The dominant, under-weighted clue: buzzwole (known-good) crashes IDENTICALLY
+buzzwole is a real workshop char that works in normal Steam Fraymakers, yet in OUR
+harness its f17 is also null (same 36adae25). => our injected headless boot's
+content path is fundamentally NOT equivalent to the real menu/launchScreen path,
+for ANY content. So f17 is populated somewhere in the REAL path that our boot
+bypasses — even though loadUgc/_onFileLoaded/onMatchReady all run.
+
+## Genuine remaining question (static-tracable): does importContent's f17 write
+## land on the resource getPXFResource later returns?
+importContent@1600 op544 = `GetThis field RefField(17)` — it READS f17 on `this`
+(the PXFResource being imported). Need: find the SetField RefField(17) (the WRITE)
+in importContent (op544 was a read; the write is elsewhere in its 1096 lines), and
+confirm whether the imported resource == the one addResource@18230 pools under the
+getFullyQualifiedResourceId key spawnPlayer looks up. If importContent builds f17
+on a resource that is NOT the pooled one (or under a different qualified id), that
+key mismatch is the bug — independent of timing/namespace. NEXT (reliable static):
+grep importContent disasm for `SetField .* RefField(17)` and trace the obj reg.
+
+## STATUS: #3 NOT met; timing fix retracted; cause narrowed to f17-write-vs-lookup
