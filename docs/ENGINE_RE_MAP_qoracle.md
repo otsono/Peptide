@@ -443,3 +443,29 @@ memory). Fix options:
 VERIFY: error.log md5 != 36adae25 (and != 3537a487 for stage). buzzwole control.
 This supersedes the loadUgc lead above. The match-start chain / Match field RE
 (elapsedFrames f75 oracle etc.) all still stand — only the resolver fix changed.
+
+## custom:: test inconclusive (channel noise) — reliable facts preserved
+`s custom::sandbag.sandbag thespire`: error.log md5 = 36adae25 BUT serve.log had
+NO LAUNCHED ack — internally inconsistent (that crash is post-ack), so this run's
+pipeline is unreliable; do NOT conclude from it. The oracle itself still works
+(invalid stage→3537a487 vs valid stage→36adae25 are distinct + reproduced), but
+single-run interpretation has degraded enough that iterative resolver-debugging
+needs a healthier channel.
+
+SOLID, REPRODUCED conclusions to resume from:
+1. Converter freeze: FIXED at source (guard_loop_termination; Script.hx read).
+2. Crash precisely located: spawnPlayer@2496 reads getPXFResource(id).
+   characterPxfContentMap(f17)=null (md5 7439a5bc). Stage analog setupStage f22.
+3. buzzwole (known-good) crashes IDENTICALLY to sandbag → harness bug, not
+   converter (err md5 36adae25 both).
+4. Content-load theory ELIMINATED: +finalizer and full loadUgc@17796 both left
+   md5 36adae25 (2 reliable negatives, reverted).
+5. Strong remaining hypothesis: resolver hands startMatch a `global::X.X` REGISTRY
+   STUB (LAUNCHED but null content map) because emit_resolve falls through to the
+   last prefix unconditionally. Fix = resolve to the real registered key
+   (re-enable poolHash registry-search with a non-hanging iteration, OR find the
+   correct namespace by checking which prefix yields f17 non-null).
+NEXT (healthy channel): instrument the resolver to report, per candidate prefix,
+getPXFResource!=null AND f17!=null; pass the prefix whose f17 is non-null. Verify
+err md5 != 36adae25/3537a487 + buzzwole control + 0-err build. Keep runs to a
+minimum and cross-check every md5 by re-reading the file twice.
