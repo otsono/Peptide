@@ -567,3 +567,24 @@ everything. This is the genuine remaining blocker for #3 (and thus #4/#5/#7).
    17838 building the maps) and ensure our headless path reaches it.
 3. Success oracle (reliable): error.log md5 != 36adae25 AND serve.log has LAUNCHED.
 Buzzwole is the control: any real fix must make BUZZWOLE spawn too.
+
+## ✅ f17 (characterPxfContentMap) MECHANISM FOUND (3x-identical disasm)
+- importContent@1600 (md5 b1b0ee17, 3x): references RefField(17) (the per-type
+  content map) at op544. Callers of 1600 = ONLY PXFResource.__constructor__@1886.
+- PXFResource.$ methods: createFromBytes@1882, __constructor__@1886,
+  registerContentType@1880, afterImportContent@1881, importContent@1600.
+=> The per-resource content map (f17) is populated at PXFResource CONSTRUCTION
+from the .fra bytes: createFromBytes@1882 -> __constructor__@1886 -> importContent
+@1600 (parses manifest, fills f17). addResource@18230 only puts the resource in
+poolHash (getPXFResource works) — it does NOT construct/import.
+
+CONCLUSION: our headless boot makes getPXFResource succeed (resource pooled) but
+the resource was added WITHOUT a completed createFromBytes/importContent, so f17
+is null -> spawnPlayer crash. The fix must ensure our content goes through
+createFromBytes@1882 (or that importContent ran) before `s`.
+NEXT (reliable static steps): (1) callers of createFromBytes@1882 — which load
+path constructs PXFResources, and does loadInLocalUgc@17842 reach it? (2) compare
+to what _onFileLoaded@17838 op0 addResource receives — is its arg a
+fully-constructed (imported) resource or a bare one? If _onFileLoaded's resource
+WAS createFromBytes'd, then f17 should be set and the issue is timing/wrong-pool;
+if not, the construct path is skipped in headless boot.
