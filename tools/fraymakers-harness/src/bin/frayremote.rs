@@ -12,7 +12,7 @@
 //!                                          replies for a short window, exit
 //!                                          (for scripted / automated tests)
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::thread;
@@ -111,21 +111,49 @@ fn serve(port: u16, token: Option<&str>) {
     let (reader, mut write_half) = await_engine(port, token);
 
     // socket -> stdout; signal once the engine reports READY.
+    //
+    // ROBUSTNESS: read RAW BYTES and lossy-decode each line, instead of
+    // `reader.lines()` (which yields Err and aborts the loop the moment the
+    // engine emits a non-UTF8 byte). Critically, on a read error or EOF we do
+    // NOT std::process::exit — exiting closes our socket, and the engine's
+    // injected per-frame write then faults with `Eof` in Main.update and CRASHES
+    // the whole engine mid-match. Keeping the process (and thus the socket) alive
+    // lets the engine keep running so a match can actually be observed.
     let (ready_tx, ready_rx) = mpsc::channel::<()>();
+    let mut byte_reader = reader;
     thread::spawn(move || {
-        for line in reader.lines() {
-            match line {
-                Ok(l) => {
-                    println!("<< {l}");
-                    if l.contains("READY") {
-                        let _ = ready_tx.send(());
+        let mut buf: Vec<u8> = Vec::with_capacity(256);
+        let mut one = [0u8; 1];
+        loop {
+            match byte_reader.read(&mut one) {
+                Ok(0) => {
+                    // Clean EOF: engine closed its write side. Do NOT exit; the
+                    // engine may still be running and writing — hold our socket.
+                    eprintln!("frayremote: engine closed read stream (holding socket open)");
+                    break;
+                }
+                Ok(_) => {
+                    if one[0] == b'\n' {
+                        let line = String::from_utf8_lossy(&buf);
+                        let line = line.trim_end_matches('\r');
+                        println!("<< {line}");
+                        if line.contains("READY") {
+                            let _ = ready_tx.send(());
+                        }
+                        buf.clear();
+                    } else {
+                        buf.push(one[0]);
                     }
                 }
-                Err(_) => break,
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    // Transient/decode-ish error: keep the socket alive, stop
+                    // mirroring. NEVER exit here (see comment above).
+                    eprintln!("frayremote: read error (holding socket open)");
+                    break;
+                }
             }
         }
-        eprintln!("frayremote: engine disconnected");
-        std::process::exit(0);
     });
 
     // Always wait for READY before accepting any input.
@@ -149,6 +177,31 @@ fn serve(port: u16, token: Option<&str>) {
             break;
         }
         let _ = write_half.flush();
+    }
+
+    // CRITICAL: stdin EOF (e.g. a piped command list finished) must NOT close the
+    // socket — that would Eof-crash the engine's per-frame write. Hold the socket
+    // open until the engine itself goes away. FRAY_HOLD_SECS bounds the wait so a
+    // scripted run still terminates; default is long enough for a match.
+    let hold = std::env::var("FRAY_HOLD_SECS").ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(600);
+    eprintln!("frayremote: stdin closed; holding socket open up to {hold}s (engine keeps running)");
+    let mut probe = [0u8; 1];
+    let deadline = Duration::from_secs(hold);
+    let step = Duration::from_millis(250);
+    let mut waited = Duration::ZERO;
+    // Keep the write half alive; periodically check the engine is still there by
+    // attempting a zero-impact write of nothing (flush). If the engine vanished,
+    // the flush/write eventually errors and we exit.
+    while waited < deadline {
+        thread::sleep(step);
+        waited += step;
+        if write_half.write_all(&[]).is_err() || write_half.flush().is_err() {
+            eprintln!("frayremote: engine gone; exiting");
+            break;
+        }
+        let _ = &mut probe; // reserved for future liveness ping
     }
 }
 
