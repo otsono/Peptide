@@ -258,12 +258,11 @@ impl App {
             }
         };
 
-        // Auto-detect misc.ssf next to the input if not explicitly set.
+        // misc.ssf must be selected manually — no auto-detection.
         let misc: Option<String> = if !self.prefs.misc_ssf.is_empty() {
             Some(self.prefs.misc_ssf.clone())
         } else {
-            let sibling = input.with_file_name("misc.ssf");
-            sibling.is_file().then(|| sibling.to_string_lossy().into_owned())
+            None
         };
 
         let output = PathBuf::from(&self.prefs.output_dir);
@@ -523,12 +522,12 @@ impl App {
                     // ── misc.ssf ──
                     ui.label(egui::RichText::new("misc.ssf").strong());
                     if self.prefs.misc_ssf.is_empty() {
-                        ui.label(egui::RichText::new("auto-detect").italics().weak());
+                        ui.label(egui::RichText::new("not set").italics().weak());
                     } else {
                         ui.horizontal(|ui| {
                             let name = Path::new(&self.prefs.misc_ssf).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                             ui.colored_label(OK_GREEN, name).on_hover_text(&self.prefs.misc_ssf);
-                            if ui.small_button("Clear").on_hover_text("Revert to auto-detect").clicked() { self.prefs.misc_ssf.clear(); self.prefs.save(); }
+                            if ui.small_button("Clear").on_hover_text("Clear selection").clicked() { self.prefs.misc_ssf.clear(); self.prefs.save(); }
                         });
                     }
                     if ui.button("Set…").clicked() {
