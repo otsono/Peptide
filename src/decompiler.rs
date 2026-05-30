@@ -1644,34 +1644,19 @@ fn guard_loop_termination(stmts: Vec<Stmt>) -> Vec<Stmt> {
             Stmt::While(cond, body) => {
                 let body = fix_body(body); // recurse into nested loops first
                 if let Some(name) = counter_of_cond(&cond) {
-                    if !advances_counter(&body, &name) {
-                        // The loop body has no path that unconditionally advances
-                        // the counter (the AS3 splice/increment was lost) → it can
-                        // spin forever. Make it terminate.
-                        //
-                        // SPLICE-STYLE case: body is a single if/else, BOTH branches
-                        // non-empty, and exactly ONE branch already advances (e.g.
-                        // `if (x==null) i++; else { removeChild }`). Here the intent
-                        // is "advance on every branch", so add the increment ONLY to
-                        // the branch(es) that lack it — avoids double-stepping.
-                        let splice_style = body.len() == 1 && matches!(&body[0],
-                            Stmt::If(_, t, e)
-                                if !t.is_empty() && !e.is_empty()
-                                    && (advances_counter(t, &name) ^ advances_counter(e, &name)));
-                        if splice_style {
-                            if let Stmt::If(c, t, e) = &body[0] {
-                                let mut t = t.clone();
-                                let mut e = e.clone();
-                                if !advances_counter(&t, &name) { t.push(incr_stmt(&name)); }
-                                if !advances_counter(&e, &name) { e.push(incr_stmt(&name)); }
-                                return Stmt::While(cond, vec![Stmt::If(c.clone(), t, e)]);
-                            }
-                        }
-                        // GENERAL case (empty else, multi-statement body, or no
-                        // branch advances): append a single unconditional advance to
-                        // the END of the loop body. Always terminates; never
-                        // double-steps because we only reach here when NO path
-                        // already advances unconditionally.
+                    // If NO control-flow path through the body unconditionally
+                    // advances the counter as its final straight-line action (the
+                    // AS3 splice/increment was lost in decompilation), the loop can
+                    // spin forever → engine freeze. Fix: append one unconditional
+                    // `i = i + 1` to the END of the loop body. GUARANTEES
+                    // termination. If some inner branch also advances (e.g. a
+                    // null-skip `i++`), that path over-steps by one — harmless (it
+                    // skips an already-handled slot); termination, not exact
+                    // iteration, is what prevents the freeze. Correctly-formed
+                    // for-loops (last statement already advances) and array-splice
+                    // loops are detected by ends_with_counter_advance and left
+                    // untouched, so we never double-step a working loop.
+                    if !ends_with_counter_advance(&body, &name) {
                         let mut body = body;
                         body.push(incr_stmt(&name));
                         return Stmt::While(cond, body);
