@@ -662,9 +662,17 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let q_idx = add_int(code, 'q' as i32);
     let q_nomatch_g = add_string_const(code, "Q:NO_MATCH\n");
     let q_live_g = add_string_const(code, "Q:MATCH_LIVE\n");
+    // Diagnostic: currentMatch (statics f6) is null right after `s` even when the
+    // match is alive, because it's only set in onMatchReady. _matches (statics
+    // f13, an ArrayObj) is pushed in the same onMatchReady, so its length tells us
+    // whether a Match object actually exists yet. This disambiguates "match live,
+    // q reads the wrong ref" (matches>0) from "match never started" (matches==0).
+    let q_matches_g = add_string_const(code, "Q:MATCHES_NONEMPTY\n");
     let mc_statics_t = code.globals[3511].0; // pxf.controllers.$MatchController statics
     let cm_field = find_field(code, mc_statics_t, "currentMatch")
         .ok_or_else(|| anyhow::anyhow!("currentMatch field not found"))?;
+    let matches_field = find_field(code, mc_statics_t, "_matches")
+        .ok_or_else(|| anyhow::anyhow!("_matches field not found"))?;
     let match_t = find_type(code, "pxf.core.Match")
         .ok_or_else(|| anyhow::anyhow!("pxf.core.Match type not found"))?;
     eprintln!("query: $MatchController statics t={mc_statics_t} currentMatch field={cm_field} Match t={match_t}");
@@ -1161,8 +1169,25 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
     let idx_q_jdone = ops.len();
     ops.push(Opcode::JAlways { offset: 0 });                            // -> L_ORIG
-    // no match:
+    // currentMatch null: check _matches.length to tell "match exists" from "none".
     let idx_q_nomatch = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::Field { dst: rr(45), obj: rr(43), field: RefField(matches_field) }); // _matches (ArrayObj)
+    let idx_q_jm_null = ops.len();
+    ops.push(Opcode::JNull { reg: rr(45), offset: 0 });                 // _matches null -> NO_MATCH
+    ops.push(Opcode::Field { dst: rr(46), obj: rr(45), field: RefField(0) }); // ArrayObj.length
+    ops.push(Opcode::Int { dst: rr(47), ptr: RefInt(zero_idx) });
+    let idx_q_jm_empty = ops.len();
+    ops.push(Opcode::JSLte { a: rr(46), b: rr(47), offset: 0 });        // length<=0 -> NO_MATCH
+    // _matches non-empty: a Match object exists even though currentMatch is null.
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(q_matches_g) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_q_jm_done = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                            // -> L_ORIG
+    // truly no match:
+    let idx_q_truly_none = ops.len();
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(q_nomatch_g) });
     ops.push(Opcode::Null { dst: rr(15) });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
@@ -1181,6 +1206,11 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_q] { *offset = n - idx_jne_q as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_q_jnull] { *offset = idx_q_nomatch as i32 - idx_q_jnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_q_jdone] { *offset = n - idx_q_jdone as i32 - 1; }
+    // _matches diagnostic branch wiring: null/empty -> truly-none; non-empty path
+    // falls through then JAlways -> L_ORIG.
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_q_jm_null] { *offset = idx_q_truly_none as i32 - idx_q_jm_null as i32 - 1; }
+    if let Opcode::JSLte { offset, .. } = &mut ops[idx_q_jm_empty] { *offset = idx_q_truly_none as i32 - idx_q_jm_empty as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_q_jm_done] { *offset = n - idx_q_jm_done as i32 - 1; }
     insert_ops_front(f, ops);
     eprintln!("connect_edit: injected {n} ops into update@{update_fx} (console+startMatch dispatch); port={port}");
 
