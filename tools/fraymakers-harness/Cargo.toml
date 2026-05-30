@@ -1,0 +1,18 @@
+[package]
+name = "fraymakers_harness"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "fray_patch"
+path = "src/main.rs"
+
+[[bin]]
+name = "frayremote"
+path = "src/bin/frayremote.rs"
+
+[dependencies]
+hlbc = "=0.7.0"
+anyhow = "1.0"
+
+[workspace]

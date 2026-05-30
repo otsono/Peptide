@@ -66,6 +66,38 @@ async function waitForCdp(port, timeoutMs) {
   return false;
 }
 
+/** Fetch /json/list and resolve to the parsed array (or [] on any failure). */
+function cdpTargets(port) {
+  return new Promise(resolve => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/json/list', timeout: 800 },
+      res => {
+        let body = '';
+        res.on('data', d => { body += d; });
+        res.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve([]); } });
+      });
+    req.on('error', () => resolve([]));
+    req.on('timeout', () => { req.destroy(); resolve([]); });
+  });
+}
+
+/**
+ * Wait until at least one inspectable page/webview target exists — NOT just the
+ * HTTP endpoint. On a cold launch the /json/version endpoint answers 200 well
+ * before the renderer registers a page target, so `CDP({port})` would fail with
+ * "No inspectable targets". Returns the chosen target, or null on timeout.
+ */
+async function waitForTarget(port, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const targets = await cdpTargets(port);
+    const page = targets.find(t =>
+      (t.type === 'page' || t.type === 'webview') && t.webSocketDebuggerUrl);
+    if (page) return page;
+    await sleep(500);
+  }
+  return null;
+}
+
 /** Newest .fra file under <dir>, or null. Returns { file, mtimeMs }. */
 function newestFra(buildDir) {
   let best = null;
@@ -121,9 +153,16 @@ function defaultFrayTools() {
     console.error(`attaching to existing FrayTools on port ${port}`);
   }
 
+  // The HTTP endpoint answering 200 does NOT mean a page target exists yet — on a
+  // cold launch the renderer registers its target a few seconds later. Wait for an
+  // actual inspectable page/webview before connecting, else CDP() throws
+  // "No inspectable targets". (This was the cold-launch publish failure.)
+  const target = await waitForTarget(port, 30000);
+  if (!target) die('no inspectable FrayTools page target appeared');
+
   let client;
   try {
-    client = await CDP({ port });
+    client = await CDP({ port, target });
     const { Runtime } = client;
     const ev = async (expr) => {
       const { result, exceptionDetails } = await Runtime.evaluate({

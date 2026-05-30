@@ -116,6 +116,38 @@ async function waitForCdp(port, timeoutMs) {
   return false;
 }
 
+/** Fetch /json/list and resolve to the parsed array (or [] on any failure). */
+function cdpTargets(port) {
+  return new Promise(resolve => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/json/list', timeout: 800 },
+      res => {
+        let body = '';
+        res.on('data', d => { body += d; });
+        res.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve([]); } });
+      });
+    req.on('error', () => resolve([]));
+    req.on('timeout', () => { req.destroy(); resolve([]); });
+  });
+}
+
+/**
+ * Wait for an inspectable page/webview target — NOT just the HTTP endpoint. On a
+ * cold launch /json/version answers 200 before the renderer registers a page
+ * target, so CDP() would throw "No inspectable targets". Returns the chosen
+ * target or null on timeout.
+ */
+async function waitForTarget(port, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const targets = await cdpTargets(port);
+    const page = targets.find(t =>
+      (t.type === 'page' || t.type === 'webview') && t.webSocketDebuggerUrl);
+    if (page) return page;
+    await sleep(500);
+  }
+  return null;
+}
+
 // ── FrayTools transform math (mirrors fraytools_transform.rs) ─────────────────
 // Used to compute `rendered_anchor` for each box — the on-screen position
 // of the box's pivot point after FrayTools applies its rotation.
@@ -395,9 +427,14 @@ async function seekToFrame(ev, frameN) {
     console.error(`attaching to existing FrayTools on port ${port}`);
   }
 
+  // Wait for an actual inspectable page target before connecting (cold launch
+  // registers the renderer target seconds after the HTTP endpoint is up).
+  const target = await waitForTarget(port, 30000);
+  if (!target) die('no inspectable FrayTools page target appeared');
+
   let client;
   try {
-    client = await CDP({ port });
+    client = await CDP({ port, target });
     const { Runtime, Page } = client;
     await Page.enable();
 
