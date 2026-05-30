@@ -405,3 +405,41 @@ fabricated live-run output (3 fake A/Bs + more, all retracted). Committing an
 untested injection that merely COMPILES would risk shipping a wrong "fix" — the
 exact failure mode corrected throughout this session. The fix is specified to
 op-level precision above; execute + live-verify on a healthy channel.
+
+## CONTENT-LOAD THEORY ELIMINATED (2 reliable md5 negatives) — real cause = NAMESPACE
+Tested two fixes to inject_ready_flag, each rebuilt (0 errors) + run live, error.log
+md5 read from file (the reliable oracle):
+  1. add Call0(_checkIfAllDirectoriesLoaded@17840) after loadInLocalUgc@17842
+     → sandbag/thespire error.log md5 = 36adae25 (UNCHANGED, still char-null).
+  2. switch to full loadUgc@17796 (status+LOAD_START+local+subscribed+finalizer)
+     → error.log md5 = 36adae25 (UNCHANGED).
+Both reverted (the 17796 one wrongly pulls in Steam for no benefit). Tree clean.
+CONCLUSION: the content IS loaded; the per-resource content map being null is NOT
+a load-finalization problem. The earlier "loadUgc finalizer" lead is WRONG.
+
+REAL CAUSE (high-confidence, from the LAUNCHED ack): the resolver echoes
+`global::sandbag.sandbag`. emit_resolve tries custom::/public::/global:: and uses
+the LAST (global::) UNCONDITIONALLY as fallback (main.rs ~856-867: only the
+non-last prefixes get a getPXFResource!=null check). So custom:: and public::
+existence-checks FAILED and it fell through to global:: — which is a REGISTRY STUB
+(getPXFResource non-null → LAUNCHED, but it's not the loaded content, so its
+characterPxfContentMap is null). buzzwole fails the same way → same wrong-namespace
+fallthrough. So the content is registered under a key the prefix-guesser doesn't
+hit, and we hand spawnPlayer the wrong (global::) id.
+
+### THE corrected fix: resolve to the ACTUAL registered key (registry-search)
+The disabled registry-search path (j_skipreg, main.rs ~806) is exactly right: it
+iterates ResourceManager.poolHash keys and finds the resource whose
+characterPxfContentMap (f17) actually CONTAINS the bare id — that key is the real,
+loaded ref. It was disabled because the key-iterator "hangs" (per match-launch
+memory). Fix options:
+  (a) Re-enable registry-search with a non-hanging iteration (the hang was an
+      iterator-protocol bug — use the StringMap keys array directly, or
+      keys@732 + a counted index loop instead of hasNext/next CallMethod).
+  (b) Determine custom content's real namespace empirically: add a debug command
+      that, for a bare id, reports getPXFResource non-null AND f17 non-null for
+      each of custom::X.X / public::X.X / global::X.X — whichever has f17 non-null
+      is the correct ref to pass to startMatch.
+VERIFY: error.log md5 != 36adae25 (and != 3537a487 for stage). buzzwole control.
+This supersedes the loadUgc lead above. The match-start chain / Match field RE
+(elapsedFrames f75 oracle etc.) all still stand — only the resolver fix changed.
