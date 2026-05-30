@@ -184,6 +184,20 @@ fn send_once(port: u16, token: Option<&str>, cmd: &str) {
             }
         }
     }
+    // Optional delay AFTER READY before sending the command. READY fires from the
+    // MainMenu constructor, but custom/workshop content (UGC) loads ASYNC during
+    // the title sequence and may not be in the ResourceManager pool yet. Sending
+    // `s <custom char>` too early => getPXFResource() null => spawnPlayer crash.
+    // FRAY_POST_READY_DELAY (seconds) lets UGC finish before we send.
+    if let Ok(d) = std::env::var("FRAY_POST_READY_DELAY") {
+        if let Ok(secs) = d.trim().parse::<f64>() {
+            if secs > 0.0 {
+                eprintln!("frayremote: post-READY delay {secs}s (let UGC load)…");
+                thread::sleep(Duration::from_millis((secs * 1000.0) as u64));
+            }
+        }
+    }
+
     let mut payload = cmd.to_string();
     payload.push('\n');
     write_half.write_all(payload.as_bytes()).expect("write");
