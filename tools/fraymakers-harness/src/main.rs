@@ -725,6 +725,33 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let t_prefix_g = add_string_const(code, "T:");
     let t_nomatch_g = add_string_const(code, "T:NOMATCH\n");
     eprintln!("move/telemetry: Character t={char_entity_t} toState={to_state} getStateName={get_state_name} CState t={cstate_statics_t} g={cstate_global} JAB.field={jab_field} characters.field={characters_field}");
+    // ---- 'l' command: synchronous custom-.fra load (headless, no worker thread) ----
+    // The async UGC/worker path stalls headless; instead we build a PXF Resource and
+    // call Resource.fetchThreaded directly on the main thread (it's synchronous inside:
+    // File.getBytes -> PXFResource.createFromBytes -> set_DataAsPxf), then finishLoading
+    // + addResource. getPXFResource then returns it with _data populated (spawnPlayer's
+    // requirement). See docs/ENGINE_RE_MAP_v2.md.
+    let resource_t = require_type(code, "pxf.io.Resource")?;
+    let resource_ctor = 17827usize; // pxf.io.$Resource.__constructor__ (Resource,String id,String path,t241 enc) — verified this build
+    let fetch_threaded = require_fn(code, "fetchThreaded", Some("pxf.io.Resource"))?;
+    let finish_loading = require_fn(code, "finishLoading", Some("pxf.io.AbstractResource"))?;
+    let add_resource = require_fn(code, "addResource", Some("pxf.io.$ResourceManager"))?;
+    let rt_statics_t = find_type(code, "pxf.io.$ResourceType")
+        .ok_or_else(|| anyhow::anyhow!("pxf.io.$ResourceType type not found"))?;
+    let rt_global = code.globals.iter().position(|g| g.0 == rt_statics_t)
+        .ok_or_else(|| anyhow::anyhow!("$ResourceType statics global not found"))?;
+    let pxf_field = find_field(code, rt_statics_t, "PXF")
+        .ok_or_else(|| anyhow::anyhow!("ResourceType.PXF field not found"))?;
+    let res_filepath_field = require_field(code, "pxf.io.AbstractResource", "_filePath")?;
+    let res_type_field = require_field(code, "pxf.io.AbstractResource", "_type")?;
+    let res_isabs_field = require_field(code, "pxf.io.AbstractResource", "_isAbsolute")?;
+    let enc241_t = 241usize; // 4th ctor arg type (Ref<ResourceType>); passed null
+    let l_idx = add_int(code, 'l' as i32);
+    let sandbag_id_g = add_string_const(code, "sandbag");
+    let sandbag_path_g = add_string_const(code, "/Users/jimmy/Library/Application Support/Steam/steamapps/common/Fraymakers/custom/sandbag/sandbag.fra");
+    let l_prefix_g = add_string_const(code, "L:");
+    let l_fail_g = add_string_const(code, "L:FAIL\n");
+    eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer
     // (added by the always-subscribed gameStarted handler); menuContainer is a
     // sibling painted on top. Hiding menuContainer's h2d display object reveals
@@ -827,7 +854,8 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // 61 keys-iterator(unused) 62 key(String) 63 contentMap(StringMap) 64 bool 65 RM statics
     // 66 pool (ArrayObj=38); 67 pool.array (NativeArray=11); 68 pool elem (absres_t=394)
     // 69 Character (char_entity_t); 70 $CState statics (cstate_statics_t)
-    let base = add_regs(f, &[7, 7, sock_t, host_t, 3, out_t, 0, 3, 3, 7, sock_t, handle_t, 3, 3, str_t, enc_t, 3, bytes_t, 3, 3, 3, 3, nulli32_t, tilde_t, console_t, 669, 669, 4366, 9, 1957, 2536, 8, 11, 38, 4366, 675, 668, 6738, 13, 3, dmr_field_t, ms_statics_t, 669, mc_statics_t, match_t, core_statics_t, container_t, h2dobj_t, mode_t, 1194, 4482, bytes_t2, 38, str_t, 0, str_t, str_t, str_t, str_t, nulli32_t2, pxfres_t, keysiter_t, str_t, stringmap_t, 7, rm_statics_t, 38, 11, absres_t, char_entity_t, cstate_statics_t]);
+    // 71 Resource (resource_t); 72 $ResourceType statics (rt_statics_t); 73 enc Ref<ResourceType> (t241)
+    let base = add_regs(f, &[7, 7, sock_t, host_t, 3, out_t, 0, 3, 3, 7, sock_t, handle_t, 3, 3, str_t, enc_t, 3, bytes_t, 3, 3, 3, 3, nulli32_t, tilde_t, console_t, 669, 669, 4366, 9, 1957, 2536, 8, 11, 38, 4366, 675, 668, 6738, 13, 3, dmr_field_t, ms_statics_t, 669, mc_statics_t, match_t, core_statics_t, container_t, h2dobj_t, mode_t, 1194, 4482, bytes_t2, 38, str_t, 0, str_t, str_t, str_t, str_t, nulli32_t2, pxfres_t, keysiter_t, str_t, stringmap_t, 7, rm_statics_t, 38, 11, absres_t, char_entity_t, cstate_statics_t, resource_t, rt_statics_t, enc241_t]);
     let rr = |i: u32| Reg(base + i);
     let (r_done, r_true, r_sock, r_host, r_port, r_out, r_ret, r_ip, r_byte, r_blockf, r_sock2, r_handle, r_c, r_zero) =
         (rr(0), rr(1), rr(2), rr(3), rr(4), rr(5), rr(6), rr(7), rr(8), rr(9), rr(10), rr(11), rr(12), rr(13));
@@ -1265,7 +1293,55 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::JAlways { offset: 0 });                              // -> k_loop
     let idx_k_done = ops.len();
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
-    // k handler done; fall through to the 'm' check.
+    // k handler done; fall through to the 'l' check.
+
+    // ---- 'l' command: synchronous custom-.fra load (sandbag), bypassing the worker thread ----
+    // Build a PXF Resource for custom/sandbag/sandbag.fra and call fetchThreaded directly
+    // (sync read+decode+set_DataAsPxf), then finishLoading + addResource. Ack "L:<fqid>" if
+    // getPXFResource then finds it, else "L:FAIL".
+    let idx_l_check = ops.len();
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(l_idx) });
+    let idx_jne_l = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });            // not 'l' -> m-check
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    // r71 = new Resource("sandbag", <abs .fra path>, null)
+    ops.push(Opcode::New { dst: rr(71) });
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });
+    ops.push(Opcode::GetGlobal { dst: rr(56), global: RefGlobal(sandbag_path_g) });
+    ops.push(Opcode::Null { dst: rr(73) });                              // null enc (t241)
+    ops.push(Opcode::Call4 { dst: r_ret, fun: RefFun(resource_ctor), arg0: rr(71), arg1: rr(55), arg2: rr(56), arg3: rr(73) });
+    // force _isAbsolute = true (use _filePath verbatim) and _type = ResourceType.PXF
+    ops.push(Opcode::Bool { dst: rr(64), value: ValBool(true) });
+    ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_isabs_field), src: rr(64) });
+    ops.push(Opcode::GetGlobal { dst: rr(72), global: RefGlobal(rt_global) });
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(72), field: RefField(pxf_field) }); // PXF (Int)
+    ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_type_field), src: rr(16) });
+    let _ = res_filepath_field; // (ctor already set _filePath from arg2)
+    // synchronous read+decode (main thread): fetchThreaded -> File.getBytes -> createFromBytes -> set_DataAsPxf
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: rr(71) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: rr(71) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(add_resource), arg0: rr(71) });
+    // verify: getPXFResource(getFullyQualifiedResourceId(res)) non-null?
+    ops.push(Opcode::Call1 { dst: rr(57), fun: RefFun(getfqid_fn), arg0: rr(71) }); // fqid string
+    ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(getpxf_fn), arg0: rr(57) });  // PXFResource | null
+    let idx_l_jfail = ops.len();
+    ops.push(Opcode::JNull { reg: rr(60), offset: 0 });                  // null -> L:FAIL
+    // L:OK -> "L:" + fqid + "\n"
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(l_prefix_g) });
+    ops.push(Opcode::Call2 { dst: rr(58), fun: RefFun(str_add), arg0: rr(53), arg1: rr(57) });
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(nl_g) });
+    ops.push(Opcode::Call2 { dst: rr(58), fun: RefFun(str_add), arg0: rr(58), arg1: rr(53) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(58), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_l_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                             // -> m-check (continue chain)
+    let idx_l_fail = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(l_fail_g) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    // (l_fail falls through into the 'm' check, which rejects 'l')
 
     // ---- 'm' command: drive a move (JAB) on the live player-0 Character ----
     // Walk MatchController.currentMatch -> Match.characters[0], then call the
@@ -1372,8 +1448,12 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     if let Opcode::JNull { offset, .. } = &mut ops[idx_q_jm_null] { *offset = idx_q_truly_none as i32 - idx_q_jm_null as i32 - 1; }
     if let Opcode::JSLte { offset, .. } = &mut ops[idx_q_jm_empty] { *offset = idx_q_truly_none as i32 - idx_q_jm_empty as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_q_jm_done] { *offset = n - idx_q_jm_done as i32 - 1; }
-    // k-command jumps ('k' no-match now routes to the 'm' check, not L_ORIG)
-    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_k] { *offset = idx_m_check as i32 - idx_jne_k as i32 - 1; }
+    // k-command jumps ('k' no-match now routes to the 'l' check, not L_ORIG)
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_k] { *offset = idx_l_check as i32 - idx_jne_k as i32 - 1; }
+    // l-command jumps ('l' no-match -> m-check; getPXFResource null -> L:FAIL; done -> m-check)
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_l] { *offset = idx_m_check as i32 - idx_jne_l as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_l_jfail] { *offset = idx_l_fail as i32 - idx_l_jfail as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_jdone] { *offset = idx_m_check as i32 - idx_l_jdone as i32 - 1; }
     // k diagnostic (directoriesToLoad) jumps
     if let Opcode::JNull { offset, .. } = &mut ops[idx_k_dirs_null] { *offset = idx_k_after_dirs as i32 - idx_k_dirs_null as i32 - 1; }
     if let Opcode::JSLte { offset, .. } = &mut ops[idx_k_dirs_jle] { *offset = idx_k_dirs_zero as i32 - idx_k_dirs_jle as i32 - 1; }
