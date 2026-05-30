@@ -50,6 +50,21 @@ spawnPlayer null-derefs.
   UNCONDITIONALLY (all content maps f11..f22). So a CONSTRUCTED PXFResource
   ALWAYS has non-null f17. f17==null ⟺ resource never constructed ⟺ never loaded.
 
+## findLocalUgc scans `<appdir>/assets/custom` (VERIFIED, disasm 17836)
+getApplicationDirectory@1659 = `directory(sys_exe_path())`. Under our direct
+`cd $FM && ./hl _conn.dat` launch, sys_exe_path = `$FM/hl`, so appdir = `$FM/`.
+findLocalUgc@17836 ops 19-24: getApplicationDirectory → resolvePath("assets") →
+resolvePath("custom") → localUgcDir. So it scans **`$FM/assets/custom/`**, NOT
+`$FM/custom/`. Our content is installed at `$FM/custom/sandbag/`.
+
+TEST (reliable, k-line grep): copied sandbag.fra+meta.json to
+`$FM/assets/custom/sandbag/` and re-ran `k` after 45s. Pool STILL contained only
+`K:private::common` — sandbag did NOT load even from the correct scan dir. So
+the path mismatch is real but NOT the sole blocker: the load is additionally
+async/gated (the threaded fetch→loadComplete→addResource never completed for our
+dir in the window, OR findLocalUgc's per-dir logic — subscriptions check at op
+27, isDirectory gates — skipped it). assets/custom test placement was cleaned up.
+
 ## Why sandbag isn't in the pool (hypotheses, to verify next — RELIABLE steps)
 The `k` dump (only private::common) proves the load didn't happen. Candidates:
 1. **findLocalUgc scans the wrong directory.** It uses
