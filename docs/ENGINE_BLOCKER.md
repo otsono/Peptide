@@ -177,3 +177,29 @@ NEXT (on a HEALTHY channel — verify with canary+shasum first):
 Current injection state: inject_ready_flag calls loadInLocalUgc@17842 (proven
 insufficient headless — leave or revert to 17796; neither loads content. The real
 fix is the manifest-reader path above, not the UgcUtil pipeline).
+
+## CORRECTION: findex 26465 is NOT the manifest reader
+26465 is a Type::initClass registration function that merely references the
+"manifest.json" string constant — whoref matched the const-global, not a real
+reader. Disregard the "26465 = manifest reader" note above. The actual builtin
+loader still needs to be found. Better search strategies for next session:
+- callers of addResource@18230 OTHER than UgcUtil._onFileLoaded@17838 (there were
+  only 2 callers total; the other was UgcUtil. So builtins may ALSO go through
+  _onFileLoaded — meaning assets/data uses the SAME pipeline but completes,
+  while custom/ stalls. If so, the difference is WHERE/HOW the file read is
+  driven, not the registrar.)
+- Re-examine: addResource callers = {UgcUtil._onFileLoaded@17838, UgcUtil.init
+  @17830-area}. If addResource has NO non-UGC caller, then builtins are loaded
+  some other way (preloaded bundle / different pool). Check getCharacterContent@
+  18292 reads pxfCharacterContentCache (field 29) — find what POPULATES field 29
+  for builtins (maybe a separate cache from poolHash). That cache-populator is
+  the real target.
+
+## HONEST SUMMARY FOR USER
+Headless ./hl cannot load custom OR workshop content via any UGC entry point
+tried (async pipeline stalls; [API loaded no]). Builtins work via a different
+mechanism not yet pinpointed. The conversion itself (sandbag .fra) is validated
+correct on the FrayTools side (boxes sub-px). Getting custom content into a
+headless match needs either: (a) more RE to find+invoke the builtin sync loader
+for our file, or (b) the reversible-hlboot-swap + Steam launch (writes a Steam
+file; needs approval). This is a deep engine-internals effort beyond quick fixes.
