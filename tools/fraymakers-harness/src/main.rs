@@ -766,6 +766,9 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let key_sb_g = add_string_const(code, " KEY=sandbag\n");
     let key_sbsb_g = add_string_const(code, " KEY=sandbag.sandbag\n");
     let key_unknown_g = add_string_const(code, " KEY=?\n");
+    let get_sprite_entity = require_fn(code, "getPXFSpriteEntity", Some("pxf.io.$ResourceManager"))?;
+    let spr_ok_g = add_string_const(code, "SPR:1\n");
+    let spr_null_g = add_string_const(code, "SPR:0\n");
     eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer
     // (added by the always-subscribed gameStarted handler); menuContainer is a
@@ -1375,6 +1378,21 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::Null { dst: rr(15) });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(58), arg2: rr(15) });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    // probe: did the media-preload populate pxfSpriteEntityCache for "sandbag"? (the
+    // buried-character Vfx in Character ctor null-crashes when getSprite(id) is null)
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });
+    ops.push(Opcode::Call1 { dst: rr(28), fun: RefFun(get_sprite_entity), arg0: rr(55) });
+    let idx_l_spr_jnull = ops.len();
+    ops.push(Opcode::JNull { reg: rr(28), offset: 0 });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(spr_ok_g) });
+    let idx_l_spr_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_l_spr_null = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(spr_null_g) });
+    let idx_l_spr_done = ops.len();
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
     let idx_l_jdone = ops.len();
     ops.push(Opcode::JAlways { offset: 0 });                             // -> m-check (continue chain)
     let idx_l_fail = ops.len();
@@ -1500,6 +1518,8 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     if let Opcode::JFalse { offset, .. } = &mut ops[idx_l_probe2_jfalse] { *offset = idx_l_probe_unknown as i32 - idx_l_probe2_jfalse as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_probe2_jdone] { *offset = idx_l_cmap_done as i32 - idx_l_probe2_jdone as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_probe_unknown_jdone] { *offset = idx_l_cmap_done as i32 - idx_l_probe_unknown_jdone as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_l_spr_jnull] { *offset = idx_l_spr_null as i32 - idx_l_spr_jnull as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_spr_jdone] { *offset = idx_l_spr_done as i32 - idx_l_spr_jdone as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_l_jdone] { *offset = idx_m_check as i32 - idx_l_jdone as i32 - 1; }
     // k diagnostic (directoriesToLoad) jumps
     if let Opcode::JNull { offset, .. } = &mut ops[idx_k_dirs_null] { *offset = idx_k_after_dirs as i32 - idx_k_dirs_null as i32 - 1; }
