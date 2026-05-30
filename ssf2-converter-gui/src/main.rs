@@ -21,6 +21,83 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
+// ─── Theme ────────────────────────────────────────────────────────────────────
+
+/// macOS-system accent blue.
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x0A, 0x84, 0xFF);
+/// Window background (light gray, like a macOS sheet) and card surface (white).
+const BG: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xF2, 0xF7);
+const CARD: egui::Color32 = egui::Color32::from_rgb(0xFF, 0xFF, 0xFF);
+const HAIRLINE: egui::Color32 = egui::Color32::from_rgb(0xDE, 0xDE, 0xE3);
+const OK_GREEN: egui::Color32 = egui::Color32::from_rgb(0x30, 0xA8, 0x4F);
+const ERR_RED: egui::Color32 = egui::Color32::from_rgb(0xD0, 0x46, 0x46);
+
+/// Clean, light, SwiftUI-ish styling — generous spacing, rounded widgets,
+/// system-blue accent, comfortable type scale. Pure egui, no extra crates.
+fn setup_style(ctx: &egui::Context) {
+    use egui::{FontFamily::Proportional, FontFamily::Monospace, FontId, TextStyle};
+    let mut style = (*ctx.style()).clone();
+    style.visuals = egui::Visuals::light();
+    style.visuals.panel_fill = BG;
+    style.visuals.window_fill = CARD;
+    style.visuals.extreme_bg_color = CARD;
+    style.visuals.hyperlink_color = ACCENT;
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(0xD3, 0xE6, 0xFF);
+    style.visuals.selection.stroke = egui::Stroke::new(1.0, ACCENT);
+    style.visuals.window_rounding = egui::Rounding::same(12.0);
+    style.visuals.window_shadow = egui::epaint::Shadow {
+        offset: egui::vec2(0.0, 4.0), blur: 24.0, spread: 0.0,
+        color: egui::Color32::from_black_alpha(40),
+    };
+    // Rounded, calm widget surfaces.
+    let round = egui::Rounding::same(8.0);
+    for w in [
+        &mut style.visuals.widgets.noninteractive,
+        &mut style.visuals.widgets.inactive,
+        &mut style.visuals.widgets.hovered,
+        &mut style.visuals.widgets.active,
+        &mut style.visuals.widgets.open,
+    ] {
+        w.rounding = round;
+    }
+    // Comfortable spacing.
+    style.spacing.item_spacing = egui::vec2(10.0, 10.0);
+    style.spacing.button_padding = egui::vec2(14.0, 7.0);
+    style.spacing.interact_size.y = 30.0;
+    // Type scale.
+    style.text_styles = [
+        (TextStyle::Heading,   FontId::new(22.0, Proportional)),
+        (TextStyle::Body,      FontId::new(14.5, Proportional)),
+        (TextStyle::Button,    FontId::new(14.5, Proportional)),
+        (TextStyle::Small,     FontId::new(12.0, Proportional)),
+        (TextStyle::Monospace, FontId::new(12.5, Monospace)),
+    ].into();
+    ctx.set_style(style);
+}
+
+/// A white, rounded "card" surface with a hairline border and inner padding —
+/// the building block of the layout (mirrors SwiftUI grouped sections).
+fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::none()
+        .fill(CARD)
+        .rounding(egui::Rounding::same(10.0))
+        .stroke(egui::Stroke::new(1.0, HAIRLINE))
+        .inner_margin(egui::Margin::same(16.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        })
+        .inner
+}
+
+/// Filled, system-blue primary call-to-action button.
+fn accent_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.add(egui::Button::new(egui::RichText::new(text).color(egui::Color32::WHITE).strong())
+        .fill(ACCENT)
+        .min_size(egui::vec2(150.0, 34.0))
+        .rounding(egui::Rounding::same(8.0)))
+}
+
 // ─── Conversion log (mirror of conversion_log.json written by the converter) ────
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,7 +162,8 @@ struct App {
 }
 
 impl App {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        setup_style(&cc.egui_ctx);
         let mut prefs = Prefs::load();
         if prefs.output_dir.is_empty() {
             // Default output: ~/Documents/FraymakersCharacters (cross-platform).
@@ -338,41 +416,36 @@ impl eframe::App for App {
         self.fraymakers_prompt(ctx);
         self.log_window(ctx);
 
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.heading("SSF2 → Fraymakers");
-                    ui.label(egui::RichText::new("Character Converter").weak());
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.vertical(|ui| {
-                        self.picker_row(ui, "misc.ssf", PickerKind::Misc);
-                        self.picker_row(ui, "Output", PickerKind::Output);
-                        self.picker_row(ui, "FrayTools", PickerKind::FrayTools);
-                    });
-                });
+        egui::TopBottomPanel::top("header")
+            .frame(egui::Frame::none()
+                .fill(CARD)
+                .inner_margin(egui::Margin { left: 24.0, right: 24.0, top: 16.0, bottom: 14.0 }))
+            .show(ctx, |ui| {
+                ui.heading(egui::RichText::new("SSF2 → Fraymakers").color(ACCENT));
+                ui.label(egui::RichText::new("Character Converter").weak());
             });
-            ui.add_space(8.0);
-        });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match &self.stage {
-                Stage::Idle => self.idle_view(ctx, ui),
-                Stage::Converting { status } => {
-                    let status = status.clone();
-                    Self::converting_view(ui, &status);
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(BG).inner_margin(egui::Margin::same(20.0)))
+            .show(ctx, |ui| {
+                self.settings_card(ui);
+                ui.add_space(16.0);
+                match &self.stage {
+                    Stage::Idle => self.idle_view(ctx, ui),
+                    Stage::Converting { status } => {
+                        let status = status.clone();
+                        Self::converting_view(ui, &status);
+                    }
+                    Stage::Success { character, output_path, log } => {
+                        let (c, o, l) = (character.clone(), output_path.clone(), log.clone());
+                        self.success_view(ctx, ui, &c, &o, &l);
+                    }
+                    Stage::Failure { message, log } => {
+                        let (m, l) = (message.clone(), log.clone());
+                        self.failure_view(ui, &m, &l);
+                    }
                 }
-                Stage::Success { character, output_path, log } => {
-                    let (c, o, l) = (character.clone(), output_path.clone(), log.clone());
-                    self.success_view(ctx, ui, &c, &o, &l);
-                }
-                Stage::Failure { message, log } => {
-                    let (m, l) = (message.clone(), log.clone());
-                    self.failure_view(ui, &m, &l);
-                }
-            }
-        });
+            });
 
         // Handle dropped files (.ssf).
         let dropped: Vec<PathBuf> = ctx.input(|i| {
@@ -385,89 +458,102 @@ impl eframe::App for App {
     }
 }
 
-#[derive(Clone, Copy)]
-enum PickerKind { Misc, Output, FrayTools }
-
 impl App {
-    fn picker_row(&mut self, ui: &mut egui::Ui, label: &str, kind: PickerKind) {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{label}:")).weak());
-            match kind {
-                PickerKind::Misc => {
-                    if self.prefs.misc_ssf.is_empty() {
-                        ui.label(egui::RichText::new("auto-detect").italics().weak());
-                    } else {
-                        let name = Path::new(&self.prefs.misc_ssf).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        ui.colored_label(egui::Color32::from_rgb(60, 160, 60), name);
-                        if ui.small_button("✕").clicked() { self.prefs.misc_ssf.clear(); self.prefs.save(); }
-                    }
-                    if ui.button("Set").clicked() {
-                        if let Some(f) = rfd::FileDialog::new().add_filter("SSF", &["ssf"]).pick_file() {
-                            self.prefs.misc_ssf = f.to_string_lossy().into_owned();
-                            self.prefs.save();
-                        }
-                    }
-                }
-                PickerKind::Output => {
-                    let name = Path::new(&self.prefs.output_dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.prefs.output_dir.clone());
+    /// Settings grouped in a clean card: aligned label / value / action columns.
+    fn settings_card(&mut self, ui: &mut egui::Ui) {
+        card(ui, |ui| {
+            egui::Grid::new("settings_grid")
+                .num_columns(3)
+                .spacing(egui::vec2(16.0, 12.0))
+                .min_col_width(70.0)
+                .show(ui, |ui| {
+                    // ── Output ──
+                    ui.label(egui::RichText::new("Output").strong());
+                    let name = Path::new(&self.prefs.output_dir).file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| self.prefs.output_dir.clone());
                     ui.label(name).on_hover_text(&self.prefs.output_dir);
-                    if ui.button("Change").clicked() {
+                    if ui.button("Change…").clicked() {
                         if let Some(d) = rfd::FileDialog::new().pick_folder() {
                             self.prefs.output_dir = d.to_string_lossy().into_owned();
                             self.prefs.save();
                         }
                     }
-                }
-                PickerKind::FrayTools => {
+                    ui.end_row();
+
+                    // ── misc.ssf ──
+                    ui.label(egui::RichText::new("misc.ssf").strong());
+                    if self.prefs.misc_ssf.is_empty() {
+                        ui.label(egui::RichText::new("auto-detect").italics().weak());
+                    } else {
+                        ui.horizontal(|ui| {
+                            let name = Path::new(&self.prefs.misc_ssf).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            ui.colored_label(OK_GREEN, name).on_hover_text(&self.prefs.misc_ssf);
+                            if ui.small_button("✕").on_hover_text("Clear").clicked() { self.prefs.misc_ssf.clear(); self.prefs.save(); }
+                        });
+                    }
+                    if ui.button("Set…").clicked() {
+                        if let Some(f) = rfd::FileDialog::new().add_filter("SSF", &["ssf"]).pick_file() {
+                            self.prefs.misc_ssf = f.to_string_lossy().into_owned();
+                            self.prefs.save();
+                        }
+                    }
+                    ui.end_row();
+
+                    // ── FrayTools ──
+                    ui.label(egui::RichText::new("FrayTools").strong());
                     if self.prefs.fraytools_path.is_empty() {
                         ui.label(egui::RichText::new("not set").italics().weak());
                     } else {
-                        let name = Path::new(&self.prefs.fraytools_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        ui.colored_label(egui::Color32::from_rgb(60, 160, 60), name).on_hover_text(&self.prefs.fraytools_path);
-                        if ui.small_button("✕").clicked() { self.prefs.fraytools_path.clear(); self.prefs.save(); }
+                        ui.horizontal(|ui| {
+                            let name = Path::new(&self.prefs.fraytools_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            ui.colored_label(OK_GREEN, name).on_hover_text(&self.prefs.fraytools_path);
+                            if ui.small_button("✕").on_hover_text("Clear").clicked() { self.prefs.fraytools_path.clear(); self.prefs.save(); }
+                        });
                     }
-                    if ui.button(if self.prefs.fraytools_path.is_empty() { "Set" } else { "Change" }).clicked() {
+                    if ui.button(if self.prefs.fraytools_path.is_empty() { "Set…" } else { "Change…" }).clicked() {
                         let mut dlg = rfd::FileDialog::new();
-                        if cfg!(target_os = "macos") {
-                            dlg = dlg.add_filter("App", &["app"]);
-                        } else if cfg!(windows) {
-                            dlg = dlg.add_filter("Executable", &["exe"]);
-                        }
+                        if cfg!(target_os = "macos") { dlg = dlg.add_filter("App", &["app"]); }
+                        else if cfg!(windows) { dlg = dlg.add_filter("Executable", &["exe"]); }
                         if let Some(f) = dlg.pick_file() {
                             self.prefs.fraytools_path = f.to_string_lossy().into_owned();
                             self.prefs.save();
                         }
                     }
-                }
-            }
+                    ui.end_row();
+                });
         });
     }
 
     fn idle_view(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let hovering = self.hovering_file;
+        let (stroke, fill, icon_col) = if hovering {
+            (egui::Stroke::new(2.0, ACCENT), egui::Color32::from_rgb(0xEC, 0xF4, 0xFF), ACCENT)
+        } else {
+            (egui::Stroke::new(1.5, HAIRLINE), CARD, ui.visuals().weak_text_color())
+        };
         egui::Frame::none()
-            .stroke(egui::Stroke::new(2.0, if hovering { ui.visuals().selection.stroke.color } else { ui.visuals().weak_text_color() }))
-            .rounding(16.0)
-            .inner_margin(32.0)
+            .fill(fill)
+            .stroke(stroke)
+            .rounding(egui::Rounding::same(14.0))
+            .inner_margin(egui::Margin::same(24.0))
             .show(ui, |ui| {
                 ui.allocate_ui_with_layout(
-                    ui.available_size(),
+                    egui::vec2(ui.available_width(), ui.available_height().max(200.0)),
                     egui::Layout::centered_and_justified(egui::Direction::TopDown),
                     |ui| {
                         ui.vertical_centered(|ui| {
-                            ui.add_space(40.0);
-                            ui.label(egui::RichText::new("⬇").size(48.0));
+                            ui.label(egui::RichText::new("⬇").size(46.0).color(icon_col));
                             ui.add_space(12.0);
-                            ui.label(egui::RichText::new("Drop an SSF file here").size(18.0).strong());
-                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new("Drop an SSF file here").size(17.0).strong());
+                            ui.add_space(4.0);
                             ui.label(egui::RichText::new("or").weak());
-                            ui.add_space(10.0);
-                            if ui.add(egui::Button::new("Choose File…").min_size(egui::vec2(140.0, 32.0))).clicked() {
+                            ui.add_space(12.0);
+                            if accent_button(ui, "Choose File…").clicked() {
                                 if let Some(f) = rfd::FileDialog::new().add_filter("SSF", &["ssf"]).pick_file() {
                                     self.start_conversion(ctx, f);
                                 }
                             }
-                            ui.add_space(40.0);
                         });
                     },
                 );
@@ -475,9 +561,9 @@ impl App {
     }
 
     fn converting_view(ui: &mut egui::Ui, status: &str) {
+        ui.add_space(60.0);
         ui.vertical_centered(|ui| {
-            ui.add_space(120.0);
-            ui.add(egui::Spinner::new().size(36.0));
+            ui.add(egui::Spinner::new().size(34.0).color(ACCENT));
             ui.add_space(16.0);
             ui.label(egui::RichText::new("Converting…").size(16.0).strong());
             ui.add_space(6.0);
@@ -495,8 +581,10 @@ impl App {
             ui.add_space(10.0);
         });
 
-        egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
-            ui.add(egui::Label::new(egui::RichText::new(log).monospace().small()).wrap());
+        card(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(log).monospace().small()).wrap());
+            });
         });
 
         ui.add_space(10.0);
@@ -527,7 +615,7 @@ impl App {
                 if ui.button("Unhandled Calls…").clicked() { self.show_log_window = true; }
             }
             let can_export = self.resolved_fraytools_exe().is_some() && self.export != ExportStage::Running;
-            if ui.add_enabled(can_export, egui::Button::new("Export in FrayTools"))
+            if ui.add_enabled(can_export, egui::Button::new(egui::RichText::new("Export in FrayTools").color(egui::Color32::WHITE).strong()).fill(ACCENT).rounding(egui::Rounding::same(8.0)))
                 .on_hover_text(if self.resolved_fraytools_exe().is_none() { "Set your FrayTools path first" } else { "Open in FrayTools and publish the .fra" })
                 .clicked()
             {
@@ -550,8 +638,10 @@ impl App {
             ui.colored_label(egui::Color32::from_rgb(200, 70, 70), message);
             ui.add_space(10.0);
         });
-        egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-            ui.add(egui::Label::new(egui::RichText::new(if log.is_empty() { "(no output)" } else { log }).monospace().small()).wrap());
+        card(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(if log.is_empty() { "(no output)" } else { log }).monospace().small()).wrap());
+            });
         });
         ui.add_space(10.0);
         ui.vertical_centered(|ui| {
