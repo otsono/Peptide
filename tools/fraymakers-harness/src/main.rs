@@ -1311,12 +1311,21 @@ fn inject_ready_flag(
     use hlbc::types::{RefField, RefFun, RefGlobal};
     let mut ops = vec![
         // Kick off custom-content (UGC) loading. Our injected boot path
-        // (Title.start → MainMenu) bypasses Main::launchScreen, which is what
-        // normally calls UgcUtil.loadUgc; we use loadInLocalUgc@17842 (local-only, no Steam/guards) — so custom/ + workshop .fra files are
-        // never added to the ResourceManager pool, and spawning a custom char
-        // null-derefs characterPxfContentMap. loadUgc@argc0 scans custom/ async;
-        // it's idempotent (guarded by beforeFirstLoad/activelyLoading). The
-        // harness then waits (FRAY_POST_READY_DELAY) before sending `s`.
+        // (Title.start → MainMenu) bypasses Main::launchScreen, which normally
+        // calls UgcUtil.loadUgc. We call loadInLocalUgc@17842 (no-arg, no guards)
+        // which scans getCwd()/custom async.
+        //
+        // KNOWN LIMITATION (verified via the `k` pool-key dump, reliable): NEITHER
+        // loadInLocalUgc@17842 NOR the full loadUgc@17796(true) actually adds
+        // custom/*.fra to the ResourceManager pool in this headless boot — after
+        // 45s the pool holds only `private::common` (a builtin loaded
+        // synchronously via importManifest). The threaded local-UGC load
+        // (addDirToLoadQueue → load@1845 → fetch → ThreadTaskManager.queueTask →
+        // [worker thread] fetchThreaded → loadComplete → finishLoading →
+        // addResource) is not completing for our dir. This is the open blocker
+        // for #3 via the harness; the converter output itself is fine (it loads
+        // correctly under a normal Steam launch, where launchScreen runs the full
+        // load path with the thread system fully initialised).
         Opcode::Call0 { dst: r_ret, fun: RefFun(load_ugc) },
         Opcode::Bool { dst: r_b, value: hlbc::types::ValBool(true) },
         Opcode::SetGlobal { global: RefGlobal(g_ready), src: r_b },

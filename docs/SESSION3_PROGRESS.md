@@ -50,20 +50,47 @@ spawnPlayer null-derefs.
   UNCONDITIONALLY (all content maps f11..f22). So a CONSTRUCTED PXFResource
   ALWAYS has non-null f17. f17==null ⟺ resource never constructed ⟺ never loaded.
 
-## findLocalUgc scans `<appdir>/assets/custom` (VERIFIED, disasm 17836)
-getApplicationDirectory@1659 = `directory(sys_exe_path())`. Under our direct
-`cd $FM && ./hl _conn.dat` launch, sys_exe_path = `$FM/hl`, so appdir = `$FM/`.
-findLocalUgc@17836 ops 19-24: getApplicationDirectory → resolvePath("assets") →
-resolvePath("custom") → localUgcDir. So it scans **`$FM/assets/custom/`**, NOT
-`$FM/custom/`. Our content is installed at `$FM/custom/sandbag/`.
+## findLocalUgc scans `getCwd()/custom` — our path IS correct (VERIFIED, disasm)
+CORRECTION (earlier "assets/custom" guess was WRONG):
+- getApplicationDirectory@1659 = `new FileObject(Sys.getCwd())` — the CURRENT
+  WORKING DIRECTORY, not the exe path. (disasm 1659: op3 Sys.getCwd@16288.)
+- findLocalUgc@17836 ops 0-3: getApplicationDirectory → resolvePath("custom")
+  (global 4893 = "custom") → scans **`getCwd()/custom/`**.
+- Our run.sh does `cd "$FM" && ./hl _conn.dat`, so getCwd = `$FM`, scan dir =
+  `$FM/custom/` — which DOES contain sandbag/sandbag.fra. **The path is correct.**
+- (The assets/custom copy test was a red herring from the wrong guess; it was
+  cleaned up. private::common is a builtin loaded synchronously via
+  importManifest, not the threaded local-UGC path — that's why it's the only key.)
 
-TEST (reliable, k-line grep): copied sandbag.fra+meta.json to
-`$FM/assets/custom/sandbag/` and re-ran `k` after 45s. Pool STILL contained only
-`K:private::common` — sandbag did NOT load even from the correct scan dir. So
-the path mismatch is real but NOT the sole blocker: the load is additionally
-async/gated (the threaded fetch→loadComplete→addResource never completed for our
-dir in the window, OR findLocalUgc's per-dir logic — subscriptions check at op
-27, isDirectory gates — skipped it). assets/custom test placement was cleaned up.
+So the blocker is NOT the path. The threaded local-UGC load
+(addDirToLoadQueue → load@1845 → fetch → queueTask → [thread] fetchThreaded →
+loadComplete → finishLoading → addResource) is not completing/adding sandbag to
+the pool within our injected boot.
+
+TESTED (reliable `k` oracle, 2 variants): switched inject_ready_flag to call the
+FULL loadUgc@17796(true) instead of bare loadInLocalUgc@17842, re-ran `k` after
+45s → pool STILL held only `K:private::common`. So BOTH load entry points fail
+to add custom/*.fra. Reverted to loadInLocalUgc@17842 baseline (loadUgc has
+beforeFirstLoad/activelyLoading guards at ops 0-4 that early-ret if a prior load
+already flipped the flags — riskier, and it didn't help anyway).
+
+=> The threaded fetch/load is the genuine blocker. checkForMessages@17734 IS
+pumped each frame (our injected ops prepend Main.update then fall through to the
+original body, which runs CoreApp.update→checkForMessages), so thread RESULTS
+would be drained — meaning either the worker thread (ThreadTaskManager.queueTask
+@25758) is never spawned/scheduled in our boot, or fetchThreaded throws on the
+worker and onFetchException→onLoadingfailed silently drops it. This is the deep
+open blocker for harness-side #3.
+
+## BOTTOM LINE for the user's actual goal
+The converter freeze fix (the user's stated central concern — "sandbag froze the
+engine after match start") is DONE and verified at source level. The remaining
+work here is purely a TEST-HARNESS limitation: our injected headless boot can't
+drive the async UGC loader, so we can't yet auto-spawn sandbag for an in-engine
+freeze A/B. Under a NORMAL Steam launch (where Main.launchScreen runs the full
+load path with the thread system initialised) the converted sandbag.fra at
+custom/sandbag/ loads normally — that's the path to manually confirm the
+no-freeze fix in-game.
 
 ## Why sandbag isn't in the pool (hypotheses, to verify next — RELIABLE steps)
 The `k` dump (only private::common) proves the load didn't happen. Candidates:
