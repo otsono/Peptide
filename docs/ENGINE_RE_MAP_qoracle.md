@@ -151,3 +151,29 @@ in main.rs: require_fn/require_field/find_type, add_int/add_string_const,
 direct Opcode push + jump-offset patching (see the `s`/`q` handlers ~lines
 994–1162). Get the Character via Match(field-6-or-_matches).characters[0]
 (field 35).
+
+## NEXT STEP (actionable, needs healthy channel) — fix stage resolution
+Verified facts to build on:
+- Char resolves+renders via `global::<id>.<id>` (buzzwole, sandbag both fine).
+- Stage `global::st_battlefield.st_battlefield` resolves to a non-null resource
+  but its stagePxfContentMap is null at Match.setupStage → crash (md5 3537a487).
+- src/main.rs has NO `global::` literal; the resolver prefix-expands at runtime
+  (tries custom::/public::/global:: and picks the first whose getPXFResource is
+  non-null). For stages that picks a ref whose content map was never loaded.
+- Builtin stages are in ENCRYPTED dat*.fra (can't parse ids from files).
+
+To fix, on a healthy channel:
+1. Disassemble the resolver block in connect_edit (the `s`-handler token-resolve
+   path, ~lines 1044+) to see exactly how the stage token becomes a ref, and how
+   the char path differs (char works, stage doesn't — compare the two).
+2. Determine builtin stages' real content namespace: either
+   (a) re-enable the registry-search path (poolHash iterate, currently bypassed
+       via j_skipreg per match-launch memory) to find the live stage ref by id, or
+   (b) find the engine getter that loads a stage's PXF content (analogous to
+       getCharacterContent@18292 / getStageContent@18297 from memory) and call it
+       so stagePxfContentMap populates before setupStage, or
+   (c) pass a full `namespace::package.id` for a builtin stage and confirm via
+       error.log that 3537a487 is gone.
+3. Cross-check with buzzwole (known-good) as the control each time.
+Only after the stage loads does the match reach character logic; then
+elapsedFrames (Match field 75) gives a real freeze oracle, unblocking #4/#6/#7.
