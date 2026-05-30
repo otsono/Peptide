@@ -100,3 +100,20 @@ Key findexes: spawnPlayer=2496, getPXFResource=18288, getResourceByID=18287,
 get_Data=1814 (_data=AbsRes field8), get_ResType=1813, get_Loaded=1839 (field15),
 set_DataAsPxf=1826, load(RM)=18242, load(AbsRes)=1845, finishLoading=1842,
 PXFResource.characterPxfContentMap = type 393 field 17.
+
+## *** BREAKTHROUGH: custom .fra loads + spawns headless (2026-05-30) ***
+The `l` harness command (commit f3ed22d6) builds a PXF Resource and calls
+`Resource.fetchThreaded@17826` DIRECTLY on the main thread (bypassing the dead UGC
+worker). VERIFIED live:
+- `L:private::sandbag KEY=sandbag` — getPXFResource non-null (`_data` populated),
+  characterPxfContentMap populated, keyed by bare `sandbag`. Engine stable after.
+- IDs: poolHash key = `private::sandbag` (namespace::id); content-map key = `sandbag`.
+  So the correct launch arg is the 3-part `private::sandbag.sandbag`
+  (parseResourceIdentifier → resourceId `private::sandbag` + contentId `sandbag`).
+- `s private::sandbag.sandbag thespire commandervideoassist` → **LAUNCHED**; match inits,
+  onMatchReady→spawnPlayer FINDS the content entry and calls createCharacter. This is
+  past the 4-session "resource not in pool" blocker.
+- NEW crash (deeper, tractable): `Null access` in `pxf.entity.Character.__constructor__`
+  (Character.hx:769) ← FraymakersCharacter ctor:271 ← FraymakersClassFactory.createCharacter:96
+  ← spawnPlayer:1424. A content sub-field our manual load left unpopulated (full trace:
+  docs/sandbag_spawn_crash.log). RE in progress to pin the null + the extra load step.
