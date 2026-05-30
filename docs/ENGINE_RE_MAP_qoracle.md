@@ -177,3 +177,42 @@ To fix, on a healthy channel:
 3. Cross-check with buzzwole (known-good) as the control each time.
 Only after the stage loads does the match reach character logic; then
 elapsedFrames (Match field 75) gives a real freeze oracle, unblocking #4/#6/#7.
+
+## NARROWED & VERIFIED (md5 error.logs): NOT a stage-id problem — content not queued
+Tested 4 stage forms; ALL crash with the identical setupStage null
+(error.log md5 3537a487 every time), via the reliable `md5 -q` command:
+  - `battlefield`              → 3537a487
+  - `st_battlefield`           → 3537a487
+  - `thespire`                 → 3537a487  (resolved to global::thespire.thespire)
+  - `public::thespire.thespire`→ 3537a487  (full id, bypasses prefix-expand)
+Plus buzzwole (known-good char) → 3537a487. So it is NOT the stage string and NOT
+the character: it's that our synthetic startMatch path never QUEUES+LOADS the
+stage's PXF content, so the stage PXFResource exists (getPXFResource non-null →
+LAUNCHED ack) but its stagePxfContentMap is null when Match.setupStage runs.
+
+⚠️ The memory note "public::thespire.thespire gave a clean match" is UNRELIABLE —
+it was written during a session flagged for channel degradation, and the full id
+crashes identically here. Treat prior "clean match" claims as unverified.
+
+Reliable static handles for the fix (md5-stable disasm):
+  - Match.setupStage = findex 2491 (disasm md5 fa6c727a).
+  - startMatch@18315 calls MatchController.queueResourcesFromMatchSettings (field
+    8 closure; default impl = field 18 "defaultQueueResourcesFromMatchSettings")
+    at ops 57-59, THEN ResourceManager.load@18242 (op 104). The stage content
+    must be enqueued by that closure for setupStage to find it.
+
+### Concrete next step (needs a less-fabricating channel)
+Disasm defaultQueueResourcesFromMatchSettings to see which MatchSettings field it
+reads for the STAGE, then ensure the `s`-handler's synthetic MatchSettings puts
+the stage ref in exactly that field (the char content clearly IS queued — load
+completes and onMatchReady fires — so only the stage slot is missing/wrong).
+Compare the char-queue vs stage-queue branch in that function. Verify each
+attempt by error.log md5 != 3537a487 (the `md5 -q` command has stayed reliable
+even while Read/serve.log output was being fabricated).
+
+### CHANNEL STATUS
+Fabrication is active again this turn (a `callers` dump and a serve.log Read both
+contained injected commentary like "wait this output looks off"). Trustworthy
+this session: `md5 -q` of files, file-existence errors, and static disasm whose
+md5 reproduces across reruns. NOT trustworthy: narrative Read output of live logs,
+and any single live-run reading.
