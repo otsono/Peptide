@@ -633,8 +633,11 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     };
     let colon2_g = add_string_const(code, "::");
     let dot_g = add_string_const(code, ".");
-    // namespace prefixes tried in order for bare names (custom content first)
-    let ns_prefixes: Vec<usize> = ["custom::", "public::", "global::"]
+    // namespace prefixes tried in order for bare names. private:: comes first so a
+    // bare `s sandbag` resolves to the headless-loaded custom resource (the self-
+    // bootstrap load + the `l` command both register it under private::sandbag);
+    // built-in chars aren't in private::, so they harmlessly fall through to the rest.
+    let ns_prefixes: Vec<usize> = ["private::", "custom::", "public::", "global::"]
         .iter().map(|p| add_string_const(code, p)).collect();
     // registry search: scan ResourceManager.pool (ArrayObj, f12) by index.
     // Index-loop is safe (no iterator-object hang). Pool is the ordered array that
@@ -794,6 +797,9 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // We already re-cache under that key below — the bug was sourcing the entity from entityMap.get
     // (null), so the re-cache never ran. Fixed to source from getPXFSpriteEntity (SPR:1 non-null).
     let ns_sandbag_g = add_string_const(code, "private::sandbag.sandbag");
+    // resource-identifier (NOT content id) form, for the idempotence probe in the
+    // self-bootstrapping 's' command: getPXFResource(this) non-null ⇒ already loaded.
+    let res_resid_g = add_string_const(code, "private::sandbag");
     eprintln!("sprite-fix: get_DataAsPxf={get_data_as_pxf} cacheEntity={cache_sprite_entity} smGet={sm_get} entityMap.f={pxf_entitymap_field} requiredMediaIds.f={reqmedia_field}");
     eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer
@@ -1114,6 +1120,80 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::GetGlobal { dst: rr(9), global: RefGlobal(g_launched) });
     let idx_jlaunched = ops.len();
     ops.push(Opcode::JTrue { cond: rr(9), offset: 0 });                // already launched -> q_check
+    // ---- self-bootstrap: ensure the custom sandbag resource is loaded ----------
+    // 's' used to require a prior 'l'; now it loads the .fra itself. The load is the
+    // functional core of the 'l' handler (construct Resource -> fetchThreaded ->
+    // finishLoading -> cacheSpriteEntityData over entities -> re-cache sprite under
+    // the 3 spriteContent key forms -> addResource), with the diagnostic acks
+    // dropped. Idempotent: getPXFResource("private::sandbag") non-null (e.g. a prior
+    // 'l', or a previous frame's re-delivered 's') skips the whole block.
+    ops.push(Opcode::GetGlobal { dst: rr(58), global: RefGlobal(res_resid_g) });
+    ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(getpxf_fn), arg0: rr(58) });
+    let idx_s_load_jskip = ops.len();
+    ops.push(Opcode::JNotNull { reg: rr(60), offset: 0 });             // already loaded -> L_SKIP_LOAD
+    // r71 = new Resource("sandbag", <abs .fra path>, null); force _isAbsolute + _type=PXF
+    ops.push(Opcode::New { dst: rr(71) });
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });
+    ops.push(Opcode::GetGlobal { dst: rr(56), global: RefGlobal(sandbag_path_g) });
+    ops.push(Opcode::Null { dst: rr(73) });
+    ops.push(Opcode::Call4 { dst: r_ret, fun: RefFun(resource_ctor), arg0: rr(71), arg1: rr(55), arg2: rr(56), arg3: rr(73) });
+    ops.push(Opcode::Bool { dst: rr(64), value: ValBool(true) });
+    ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_isabs_field), src: rr(64) });
+    ops.push(Opcode::GetGlobal { dst: rr(72), global: RefGlobal(rt_global) });
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(72), field: RefField(pxf_field) });
+    ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_type_field), src: rr(16) });
+    // RM.requiredMediaIds = ["*"] so finishLoading's preload populates entityMap
+    ops.push(Opcode::Type { dst: rr(31), ty: RT(13) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(star_g) });
+    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(53) });
+    ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) });
+    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(3508) });
+    ops.push(Opcode::SetField { obj: rr(65), field: RefField(reqmedia_field), src: rr(33) });
+    // synchronous read+decode+construct (populates characterPxfContentMap), then preload
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: rr(71) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: rr(71) });
+    // build every sprite entity: cacheSpriteEntityData(pxf, idx) for idx in 0..entities.length
+    ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(get_data_as_pxf), arg0: rr(71) });
+    ops.push(Opcode::Field { dst: rr(66), obj: rr(60), field: RefField(pxf_entities_field) });
+    ops.push(Opcode::Field { dst: rr(39), obj: rr(66), field: RefField(0) });   // .length
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(zero_idx) });
+    let idx_sl_loop = ops.len();
+    let idx_sl_jge = ops.len();
+    ops.push(Opcode::JSGte { a: rr(16), b: rr(39), offset: 0 });        // idx >= len -> build_done
+    ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(cache_sprite_entity_data), arg0: rr(60), arg1: rr(16) });
+    ops.push(Opcode::Incr { dst: rr(16) });
+    let idx_sl_jback = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                           // -> build_loop
+    let idx_sl_done = ops.len();
+    // re-cache the main sprite entity under all 3 spriteContent key forms (buried-VFX fix)
+    ops.push(Opcode::Field { dst: rr(63), obj: rr(60), field: RefField(pxf_entitymap_field) });
+    let idx_sl_emap_jnull = ops.len();
+    ops.push(Opcode::JNull { reg: rr(63), offset: 0 });                // null entityMap -> addres
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });
+    ops.push(Opcode::Call2 { dst: rr(28), fun: RefFun(sm_get), arg0: rr(63), arg1: rr(55) });
+    let idx_sl_ent_jnull = ops.len();
+    ops.push(Opcode::JNull { reg: rr(28), offset: 0 });                // null entity -> addres
+    ops.push(Opcode::UnsafeCast { dst: rr(74), src: rr(28) });
+    ops.push(Opcode::Null { dst: rr(75) });
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_pkgid_g) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(ns_sandbag_g) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
+    let idx_sl_addres = ops.len();
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(add_resource), arg0: rr(71) });
+    let idx_sl_skip = ops.len();
+    // patch self-bootstrap jumps
+    if let Opcode::JNotNull { offset, .. } = &mut ops[idx_s_load_jskip] { *offset = idx_sl_skip as i32 - idx_s_load_jskip as i32 - 1; }
+    if let Opcode::JSGte  { offset, .. } = &mut ops[idx_sl_jge]   { *offset = idx_sl_done as i32 - idx_sl_jge as i32 - 1; }
+    if let Opcode::JAlways{ offset, .. } = &mut ops[idx_sl_jback] { *offset = idx_sl_loop as i32 - idx_sl_jback as i32 - 1; }
+    if let Opcode::JNull  { offset, .. } = &mut ops[idx_sl_emap_jnull] { *offset = idx_sl_addres as i32 - idx_sl_emap_jnull as i32 - 1; }
+    if let Opcode::JNull  { offset, .. } = &mut ops[idx_sl_ent_jnull]  { *offset = idx_sl_addres as i32 - idx_sl_ent_jnull as i32 - 1; }
+    // ---- end self-bootstrap (L_SKIP_LOAD) -------------------------------------
     // refs: parseResourceIdentifier(fullId, null) -> content-ref@669
     ops.push(Opcode::Null { dst: rr(38) });                            // null namespace
     // ---- read the rest of the line ("s <char> <stage> <assist>") into g_buf ----
