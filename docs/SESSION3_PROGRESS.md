@@ -117,6 +117,28 @@ Ensure the ThreadTaskManager worker thread(s) are running in our boot. Options:
 
 This is the single remaining step to unblock harness-side #3 → #4/#5/#7.
 
+### DEAD END (verified, do NOT retry): findex 25764 is NOT a task drainer
+Disassembled 25764 hoping it was ThreadTaskManager.processSynchronously — it is
+NOT. It's a CAMERA-MODE DEBUG command (parses "free"/"locked"/"normal",
+set_Mode/lockedX/Y, logs `"Camera Mode = [c=#..."` via Tildebugger.log). Calling
+it per-frame is useless for loading. Also `fnsof 2534` (the type from queueTask's
+reg3) returned ZERO methods — so the ThreadTaskManager statics type id is NOT
+2534, and the real init/drain findexes are still UNKNOWN. Before attempting the
+fix, FIRST correctly identify the TTM statics type (disasm queueTask@25758 shows
+GetGlobal g8318 → that global's type IS the TTM statics; resolve it via the
+globals table, then fnsof THAT type) and find its init/processCompleted methods.
+Do NOT guess findexes — every guessed findex this session was wrong.
+
+RECOMMENDED next approach (most robust, avoids the whole thread question):
+Option 3 — synchronous load. In our boot, after content discovery, for the
+sandbag Resource call loadComplete@17820 directly (it does
+createFromBytes→set_DataAsPxf→loadMedia inline on the calling thread, no deque).
+This needs a constructed Resource object with its FileObject(field37) set to
+custom/sandbag/sandbag.fra; addDirToLoadQueue@17837 ops 63-78 show exactly how to
+build one (new Resource, ctor@17827 with ResType.PXF, set_Namespace/Required/
+IsAbsolute). Build that Resource ourselves with an absolute path and call
+loadComplete on it, then addResource@18230. All on the main thread, fully headless.
+
 ## BOTTOM LINE for the user's actual goal
 The converter freeze fix (the user's stated central concern — "sandbag froze the
 engine after match start") is DONE and verified at source level. The remaining
