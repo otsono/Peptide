@@ -57,7 +57,7 @@ Corpus-wide verification:
 
 ## Open items surfaced (no action taken — need your call)
 
-1. **`characters/deespear/` — orphan (1,901 files, all old-converter, May 26–27).** There is **no `deespear.ssf` input** in `ssf2-ssfs/`, so it cannot be regenerated or regen-diffed. It still has the stale `library/scripts/Character/` and `library/sounds/` layout. **Decision needed:** delete the whole orphan dir, or keep it? (It can't be recreated.)
+1. **`characters/deespear/` — orphan (1,901 files, all old-converter, May 26–27). RESOLVED: deleted in full** (user decision). There was **no `deespear.ssf` input** in `ssf2-ssfs/`, so it could not be regenerated or regen-diffed; the entire dir was pre-rename stale output and unrecoverable. Removed. Corpus is now **44 char dirs, all current-converter output**.
 
 2. **Steam install — clean, no action needed.** `~/Library/Application Support/Steam/steamapps/common/Fraymakers/custom/` contains only `mario/` and `sandbag/`, each just `<char>.fra` + `meta.json` (2 files). No raw converter output, nothing stale. (Left untouched per user-data rule regardless.)
 
