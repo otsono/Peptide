@@ -156,3 +156,18 @@ getSprite-non-null / Vfx.animation creation — verify.) ALTERNATIVELY set RM.re
 closure preloads all entities, then still do the bare re-cache. Either way the bare re-cache is
 load-bearing. Confirm entity descriptor type before any UnsafeCast (fninfo/typefields the
 entities[] element type) to avoid the segfault.
+
+## Sprite-cache fix B: SPR:1 achieved, spawn STILL crashes (Character.hx:769)
+requiredMediaIds=["*"] before fetchThreaded made the engine's preload closure populate the
+sprite cache (SPR:1 = getPXFSpriteEntity("sandbag") non-null, commit 34baf752). Re-cached the
+entity under "sandbag"/"sandbag.sandbag"/"private::sandbag.sandbag". Character.hx:769 STILL
+null-crashes on m_buriedCharacterVfx.animation. => the buried-vfx spriteContent is NOT a
+sandbag-derived key. Hypotheses for next iteration:
+1. spriteContent is a base-game SHARED sprite id (a generic "buried" effect) that isn't loaded
+   in our headless boot (pool had only private::common) — would need that base content loaded.
+2. The exact value is only knowable at runtime: read it via the loaded content entry —
+   characterPxfContentMap.get("sandbag") (t1975) .field15 statsProps (t1937) .field86 spriteContent (String).
+   Add an `l` probe to report it, then cache the entity under THAT key (or load that base sprite).
+3. The entity IS cached but lacks animation/tile data (preload built metadata only) — less likely
+   since getSprite-non-null should let Vfx build the animation.
+NEXT STEP: extend `l` to report statsProps.spriteContent (t1975.f15 -> t1937.f86) — decisive.
