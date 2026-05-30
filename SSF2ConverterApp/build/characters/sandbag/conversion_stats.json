@@ -3,7 +3,7 @@
   "attacks_extracted": 28,
   "char_id": "sandbag",
   "display_name": "sandbag",
-  "frame_scripts": 444,
+  "frame_scripts": 584,
   "ssf2_to_fm_anim": {
     "a": "jab",
     "a_air": "aerial_neutral",
