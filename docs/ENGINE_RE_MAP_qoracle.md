@@ -298,3 +298,13 @@ md5-reproduced static disasm; the only undetermined piece is one runtime string
 (the pooled resource key), resolvable by one read-only `k` keys-dump on a trusted
 channel. Converter freeze fix: real at source. All live-run claims this session
 fabricated+retracted; trust only static disasm + error.log md5 + git pre/post-HEAD.
+
+## custom:: RE-CONFIRMED on reverted baseline binary (md5 oracle reliable)
+custom::sandbag.sandbag + 14s load delay -> ERR_MD5=36adae25 (LAUNCHED echoed
+custom::sandbag.sandbag). So ALL id forms (bare/public/custom/global) x (no delay/
+12s/14s/30s) crash identically. The pooled-resource key is none of these guessed
+forms, OR getPXFResource returns a stub for ANY id (the loaded resource is keyed
+under something our guesses never hit). Only the read-only `k` poolHash-keys dump
+(next-action above) can reveal the actual key. (Narrative/grep output still
+fabricates; ERR_MD5 from `md5 -q error.log` remains the one reliable live signal,
+36adae25 reproduced ~16x.)
