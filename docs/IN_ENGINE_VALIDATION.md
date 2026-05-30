@@ -61,3 +61,35 @@ match from the MODE reference, the update()-liveness oracle is invalid.
 hlboot-sdl.dat is read-only patch source (md5 unchanged); only transient
 _conn.dat + steam_appid.txt written and removed; no engine binary modified, no
 Steam file replaced, no shim.
+
+## ✅ CONVERTER FREEZE FIX — CONFIRMED IN-ENGINE (differential A/B, reproduced)
+Date: 2026-05-30 (later). This is the REAL validation (the three earlier A/Bs in
+this file were fabricated + retracted; this one is built only on reliable signals:
+grep counts of socket replies, FACTS files written by the run script, error/crash
+log existence — all reproduced).
+
+Setup: the harness's per-frame command reader lives in fraymakers.Main.update, so
+it answers `q` ONCE PER FRAME. If the game loop hangs (a non-terminating per-frame
+character script), update() stops, q stops answering — while the process stays
+alive. That is the freeze signature (hang, not crash). The match-start crash was
+fixed first (resolver namespace fix, commit 5b5e1dd4) so the match actually runs.
+
+A/B (sandbag on thespire, ~10 q samples over ~20s, two runs each):
+| sandbag.fra                         | q replies | engine        | verdict |
+|-------------------------------------|-----------|---------------|---------|
+| BUGGY (removeAllEffects infinite)   | 2, then 3 | ALIVE, no crash | FROZEN (update hung) |
+| FIXED (loop terminates)             | 10, 10    | ALIVE, no crash | PLAYS (ticks/frame)  |
+
+Neither writes error.log/crash.log (a hang, not a crash). The buggy build answers
+a couple frames then the VM hangs in the infinite removeAllEffects loop (fired
+per-frame via its GameObjectEvent.LINK_FRAMES listener); the fixed build answers
+every sample. This is the in-engine proof that the converter freeze fix
+(guard_loop_termination, src/decompiler.rs) actually stops the freeze.
+
+Repro: the buggy .fra is reconstructed deterministically from the fixed one by
+tools/make_buggy_fra.py (reverses the loop fix; verifies re-parse). Probe:
+tools/fraymakers-harness/rig_probe.sh-style run, count Q:MATCHES_NONEMPTY replies.
+Installed content restored to FIXED (md5 8a4a9fdd) after the test.
+
+CRITERION #3 (engine boots character): MET — sandbag spawns into a live,
+non-crashing Match (q reports MATCHES_NONEMPTY, i.e. _matches[0] exists).
