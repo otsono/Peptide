@@ -79,13 +79,26 @@ determine.
 Add a read-only `k` socket command that dumps ResourceManager.poolHash KEYS, run
 it after load, to see the ACTUAL key sandbag is pooled under. Then pass that exact
 key as the char arg to `s`.
-- Plumbing already in src/main.rs: rm_statics_t (global 3508), poolHash field
-  (poolhash_field), StringMap.keys@732 (sm_keys), keysiter_t, and a working
-  poolHash key-iterator already exists in emit_resolve's registry-search loop
-  (~lines 808-833: GetGlobal 3508 -> Field poolHash -> sm_keys -> CallMethod
-  proto#0 hasNext / proto#1 next). Model `k` on that: iterate keys, concat with
-  "\n", writeString over the socket, flush. Add a `k` branch in the dispatch
-  chain next to `q` (~line 1147), mirroring the JNotEq routing.
+- Plumbing in src/main.rs: rm_statics_t (global 3508), poolHash field
+  (poolhash_field), StringMap.keys@732 (sm_keys), keysiter_t.
+- ⚠️ CAVEAT — the registry-search loop in emit_resolve (~lines 808-833: GetGlobal
+  3508 -> Field poolHash -> sm_keys -> CallMethod proto#0 hasNext / proto#1 next)
+  HANGS the engine (see its own comment: "the registry-search loop below hangs
+  (iterator semantics bug)"; it's why j_skipreg bypasses it). DO NOT model `k` on
+  that hasNext/next CallMethod iterator as-is — it will hang. Use a non-hanging
+  key enumeration instead. Options to RE first (static, reliable):
+    * haxe.ds.StringMap likely has a fields-array / `keysArray`-style accessor or
+      an internal `keys`/`_keys` field that can be read + index-looped (avoid the
+      iterator-object protocol that hangs). Disasm StringMap (find_type
+      "haxe.ds.StringMap") + its keys@732 to see what it returns, and whether a
+      plain Array of keys is reachable to index-loop with GetArray.
+    * Or read poolHash differently: the ResourceManager also has `pool`
+      (ArrayObj of resources) — iterate that array by index (GetArray, like the
+      _matches[0] code does) and call getFullyQualifiedResourceId@1788 on each to
+      print its key. Array-index iteration is known-safe (used elsewhere); the
+      StringMap *iterator object* is what hangs.
+  Then add a `k` branch in the dispatch chain next to `q` (~line 1147), mirroring
+  the JNotEq routing; build each key string with str_add + "\n", writeString, flush.
 - VERIFY: build (cargo, 0 errors). Then run, read poolHash keys; the sandbag entry
   reveals the real namespace/id. Pass it to `s`. SUCCESS = error.log md5 is
   NEITHER 36adae25 NOR 3537a487, AND serve.log has LAUNCHED, AND buzzwole (with
