@@ -211,6 +211,11 @@ pub fn generate_entity(
         let frame_count = split_len.max(1);
         let anim_id = uuid(char_id, &format!("anim_{}", anim_name));
         let mut anim_layer_ids: Vec<String> = Vec::new();
+        // IMAGE layers are collected separately so they can be emitted FIRST in
+        // the final layer list. In FrayTools, lower index = drawn first = behind;
+        // putting image layers before the collision boxes (hurt/hit/body/item/etc.)
+        // keeps the sprite behind the boxes so they stay visible when editing.
+        let mut anim_image_layer_ids: Vec<String> = Vec::new();
 
         // ── 1. LABEL layer ────────────────────────────────────────────────────
         // Frame 0 always gets the FM animation name as a label.
@@ -899,14 +904,19 @@ pub fn generate_entity(
                     "locked": false,
                     "pluginMetadata": {}
                 }));
-                anim_layer_ids.push(img_layer_id);
+                anim_image_layer_ids.push(img_layer_id);
             }
         }
+
+        // Emit IMAGE layers first (drawn behind), then the collision/label/script
+        // layers, preserving relative order within each group.
+        let mut ordered_layer_ids = anim_image_layer_ids;
+        ordered_layer_ids.extend(anim_layer_ids);
 
         animations.push(json!({
             "$id": anim_id,
             "name": anim_name,
-            "layers": anim_layer_ids,
+            "layers": ordered_layer_ids,
             "pluginMetadata": {}
         }));
     }
