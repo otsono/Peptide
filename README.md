@@ -47,7 +47,8 @@ A single conversion pulls an entire SSF2 character across to Fraymakers, end to 
 - **Desktop app** — a cross-platform GUI (`ssf2-converter-gui`): drag-and-drop a
   `.ssf`, watch a progress bar, and get a summary of any unhandled calls — no
   terminal required. On macOS, `./make-app.sh` wraps it in a double-clickable
-  `SSF2 Converter.app`.
+  `SSF2 Converter.app`; on Windows, `./make-win.sh` cross-compiles the `.exe`
+  build (or build natively with `cargo build --release`).
 - **Editable conversion config** — JSONC mapping tables in `mappings/` drive API
   translation, stat scaling, animation names, and hitbox-field mapping. Tune the
   conversion by editing data, not recompiling code.

@@ -65,10 +65,19 @@ The GUI is the bundle executable and `ssf2_converter` rides alongside it in
 `Contents/MacOS/` (the GUI finds the CLI as a sibling). Drop an `AppIcon.icns`
 at the repo root before running to give the app a custom icon.
 
-### Windows notes
+### Windows build
 
-- Build with the MSVC toolchain (`rustup default stable-x86_64-pc-windows-msvc`)
-  or cross-compile from another OS with the appropriate target + linker.
+Two ways to produce the Windows `.exe`:
+
+- **Natively on Windows** (most reliable): install Rust with the MSVC toolchain
+  (`rustup default stable-x86_64-pc-windows-msvc`), then `cargo build --release`.
+  The two binaries land in `target\release\`.
+- **Cross-compile from macOS/Linux**: from the repo root run `../make-win.sh` —
+  it stages `ssf2-converter-gui.exe` + `ssf2_converter.exe` into `dist/windows/`.
+  It uses `cargo-xwin` (MSVC ABI) if installed, else `mingw-w64` (GNU ABI), and
+  prints the exact install command if neither is present.
+
+Notes:
 - The `windows_subsystem = "windows"` attribute means release builds run with
   no console window.
 - The **Export in FrayTools** feature additionally needs Node.js installed and

@@ -95,6 +95,7 @@ ssf2-fraymakers-converter/
 ├── LICENSE                   MIT License
 ├── NOTICE.md                 Dependency attribution (Ruffle swf crate, etc.)
 ├── make-app.sh               macOS: build the GUI + wrap it in dist/SSF2 Converter.app
+├── make-win.sh               Cross-compile the Windows .exe build into dist/windows/
 ├── rebuild-sandbag.sh        Quick: rebuild release binary + convert sandbag.ssf
 ├── .gitignore                Ignores *.ssf, *.swf, /target, characters/
 │
@@ -266,6 +267,22 @@ give it a custom icon. `dist/` is git-ignored.
 
 On Windows/Linux no bundle is needed — `target/release/ssf2-converter-gui` is
 directly runnable; ship it next to `ssf2_converter`.
+
+**Windows build.** The GUI is pure `egui`/`eframe` with
+`windows_subsystem = "windows"` already set (release builds run with no console
+window), so it builds for Windows cleanly. Two ways:
+
+- *Natively on Windows* (most reliable): install Rust with the MSVC toolchain
+  (`rustup default stable-x86_64-pc-windows-msvc`), then `cargo build --release`.
+  Ship `target\release\ssf2-converter-gui.exe` + `ssf2_converter.exe` together.
+- *Cross-compile from macOS/Linux*: `./make-win.sh` stages both `.exe` files into
+  `dist/windows/`. It prefers `cargo-xwin` (MSVC ABI) and falls back to
+  `mingw-w64` (GNU ABI); if neither toolchain is installed it prints the exact
+  install command (`cargo install cargo-xwin` + `brew install llvm`, or
+  `brew install mingw-w64`).
+
+Either way the GUI finds `ssf2_converter.exe` as a sibling, so keep the two
+`.exe` files in the same folder.
 
 (The earlier native macOS SwiftUI app and `build-app.sh` were removed in favour
 of this single cross-platform GUI; `make-app.sh` is its `.app` packager.)
