@@ -103,6 +103,28 @@
   }
   #send:hover{background:var(--clay-deep);}
   #send:active{transform:translateY(1px);}
+  /* ── reconnect modal ────────────────────────────────── */
+  .overlay{position:fixed;inset:0;background:rgba(15,15,14,.55);backdrop-filter:blur(3px);
+    display:none;align-items:center;justify-content:center;z-index:50;animation:fade .15s ease;}
+  .overlay.show{display:flex;}
+  @keyframes fade{from{opacity:0;}to{opacity:1;}}
+  .modal{background:var(--surface);border:1px solid var(--border);border-radius:16px;
+    padding:26px 26px 22px;max-width:380px;width:84%;box-shadow:var(--shadow-pop);
+    text-align:center;animation:pop .18s ease;}
+  @keyframes pop{from{opacity:0;transform:translateY(8px) scale(.98);}to{opacity:1;transform:none;}}
+  .modal .icon{width:46px;height:46px;border-radius:50%;background:var(--err-bg);
+    display:flex;align-items:center;justify-content:center;margin:0 auto 15px;font-size:22px;}
+  .modal h2{margin:0 0 7px;font-size:18px;font-weight:650;letter-spacing:-.01em;}
+  .modal p{margin:0 0 18px;color:var(--muted);font-size:14px;line-height:1.5;}
+  .modal .err{color:var(--err-ink);font-size:13px;margin:-8px 0 14px;}
+  .btn-primary{border:none;background:var(--clay);color:#fff;font:inherit;font-weight:600;
+    font-size:15px;padding:11px 22px;border-radius:11px;cursor:pointer;width:100%;
+    transition:background .15s;display:inline-flex;align-items:center;justify-content:center;gap:9px;}
+  .btn-primary:hover{background:var(--clay-deep);}
+  .btn-primary:disabled{opacity:.7;cursor:default;}
+  .spin{width:15px;height:15px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;
+    border-radius:50%;animation:spin .7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
   /* scrollbar */
   #scroll::-webkit-scrollbar{width:10px;}
   #scroll::-webkit-scrollbar-thumb{background:#454440;border-radius:6px;border:3px solid var(--paper);}
@@ -130,6 +152,16 @@
       <button id="send">Send</button>
     </div>
   </div></div>
+
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <div class="icon">🔌</div>
+      <h2 id="m-title">Connection lost</h2>
+      <p id="m-msg">Fraymakers disconnected. Re-patch and boot it again to reconnect.</p>
+      <div class="err" id="m-err"></div>
+      <button class="btn-primary" id="reconnect">Reconnect</button>
+    </div>
+  </div>
 
 <script>
   const $ = (id)=>document.getElementById(id);
@@ -216,6 +248,30 @@
   });
   // simpler enter handling
   $("input").onkeydown=(e)=>{ if(e.key==="Enter"){ const v=$("input").value; $("input").value=""; send(v); } };
+
+  // ── reconnect modal ──────────────────────────────────
+  const overlay=$("overlay"), reBtn=$("reconnect"), mErr=$("m-err");
+  function setReconnecting(on){
+    reBtn.disabled=on;
+    reBtn.innerHTML = on ? '<span class="spin"></span>Reconnecting…' : 'Reconnect';
+  }
+  window.onDisconnected=function(){
+    setStatus(false); spawned=false; mErr.textContent=""; setReconnecting(false);
+    overlay.classList.add("show");
+  };
+  window.onReconnecting=function(){ setReconnecting(true); mErr.textContent=""; };
+  window.onReconnected=function(p, ch){
+    if(p) port=p; if(ch) charName=ch; spawned=false; setStatus(true);
+    setReconnecting(false); overlay.classList.remove("show");
+    add("system","Reconnected — booting "+charName+"…");
+  };
+  window.onReconnectFailed=function(msg){
+    setReconnecting(false); mErr.textContent=msg||"Reconnect failed. Try again.";
+  };
+  reBtn.onclick=function(){
+    setReconnecting(true);
+    if(window.ipc && window.ipc.postMessage) window.ipc.postMessage("@@reconnect");
+  };
 
   window.addEventListener("DOMContentLoaded",()=>$("input").focus());
   $("input").focus();
