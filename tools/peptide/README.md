@@ -50,6 +50,24 @@ patches the bytecode into the install dir, launches the engine, and bridges the
 command — cleaning up `_conn.dat` afterward. Override the install path with
 `FRAY_DIR=...`.
 
+## Match settings (`match_settings.conf`)
+
+Headless matches default to **999 lives, no timer**. Tune this without touching
+Rust by editing [`match_settings.conf`](match_settings.conf) (`key = value`,
+`#` comments):
+
+```
+lives = 999   # stock count per player
+time  = 0     # match timer in seconds (0 = unlimited)
+```
+
+The file is baked into the binary at build time *and* read from disk at patch
+time, so an edited copy takes effect on the next `./run.sh` with **no rebuild**.
+Resolution order: `$PEPTIDE_MATCH_SETTINGS` → `match_settings.conf` next to the
+`peptide` binary → the repo's `tools/peptide/match_settings.conf` → `./match_settings.conf`
+→ the built-in default. (Maps to the engine's `MatchSettingsConfig` `lives`/`time`
+fields via the `matchSettings` virtual.)
+
 ## Status / known issues
 
 See `memory/project_fraymakers-match-launch.md` for the full RE map and the

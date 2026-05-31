@@ -466,6 +466,59 @@ fn add_int(code: &mut Bytecode, val: i32) -> usize {
     i
 }
 
+// ---- headless match settings (data-file driven) -----------------------------
+
+/// Built-in default for the headless `s`-command match settings. An on-disk
+/// copy overrides this so values can be tweaked WITHOUT recompiling.
+const MATCH_SETTINGS_DEFAULT: &str = include_str!("../match_settings.conf");
+
+/// Resolve the headless match settings → `(lives, time)`. Reads the first
+/// existing override file (`$PEPTIDE_MATCH_SETTINGS`, then `match_settings.conf`
+/// next to the binary, then `./match_settings.conf`), falling back to the
+/// baked-in default. See `tools/peptide/match_settings.conf`.
+fn load_match_settings() -> (i32, i32) {
+    let mut text = MATCH_SETTINGS_DEFAULT.to_string();
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("PEPTIDE_MATCH_SETTINGS") {
+        candidates.push(p.into());
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            // target/release/peptide → tools/peptide/match_settings.conf
+            candidates.push(dir.join("../../match_settings.conf"));
+            candidates.push(dir.join("match_settings.conf"));
+        }
+    }
+    candidates.push(std::path::PathBuf::from("match_settings.conf"));
+    for c in &candidates {
+        if let Ok(s) = std::fs::read_to_string(c) {
+            eprintln!("match-settings: loaded override {}", c.display());
+            text = s;
+            break;
+        }
+    }
+    parse_match_settings(&text)
+}
+
+/// Parse `key = value` lines (with `#` comments). Missing keys keep their
+/// built-in defaults (lives=999, time=0).
+fn parse_match_settings(text: &str) -> (i32, i32) {
+    let (mut lives, mut time) = (999i32, 0i32);
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() { continue; }
+        if let Some((k, v)) = line.split_once('=') {
+            let v = v.trim();
+            match k.trim() {
+                "lives" => if let Ok(n) = v.parse::<i32>() { lives = n; },
+                "time"  => if let Ok(n) = v.parse::<i32>() { time = n; },
+                _ => {}
+            }
+        }
+    }
+    (lives, time)
+}
+
 fn require_type(code: &Bytecode, name: &str) -> anyhow::Result<usize> {
     find_type(code, name).ok_or_else(|| anyhow::anyhow!("type not found: {name}"))
 }
@@ -654,10 +707,11 @@ fn connect_edit(
     let characters_str = add_string(code, "characters");
     let matchsettings_str = add_string(code, "matchSettings");
     let pausemenu_str = add_string(code, "pauseMenu");
-    // Headless matches run with 999 lives + no timer. Both fields exist in the
-    // matchSettings virtual schema (t675: field 8 "lives", field 24 "time") and
-    // importJSON@5460 copies them into the real MatchSettingsConfig (lives f16,
-    // time f19) during _offlineMatchStart.
+    // Headless match settings (lives + timer) come from match_settings.conf
+    // (see load_match_settings). Both fields exist in the matchSettings virtual
+    // schema (t675: field 8 "lives", field 24 "time") and importJSON@5460 copies
+    // them into the real MatchSettingsConfig (lives f16, time f19) during
+    // _offlineMatchStart.
     let lives_str = add_string(code, "lives");
     let time_str = add_string(code, "time");
     let create_mode = require_fn(code, "createMode", Some("fraymakers.util.$FraymakersClassFactory"))?;
@@ -672,7 +726,10 @@ fn connect_edit(
     let str_split = require_fn(code, "split", Some("String"))?;
     let space_g = add_string_const(code, " ");
     let buf_cap_idx = add_int(code, 512);
-    let lives999_idx = add_int(code, 999); // headless matches: 999 stock
+    let (cfg_lives, cfg_time) = load_match_settings();
+    eprintln!("match-settings: lives={cfg_lives} time={cfg_time}");
+    let lives_idx = add_int(code, cfg_lives);
+    let time_idx = add_int(code, cfg_time);
     let nl_idx = add_int(code, '\n' as i32);
     let two_idx = add_int(code, 2);
     let three_idx = add_int(code, 3);
@@ -1460,12 +1517,12 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(41), global: RefGlobal(ms_global) });
     ops.push(Opcode::Field { dst: rr(40), obj: rr(41), field: RefField(dmr_field) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(matchrules_str), src: rr(40) });
-    // 999 lives + no timer (time=0). Same Int->ToDyn->DynSet path the `port`
-    // field uses above; rr39 = int scratch, rr28 = dyn scratch (both free here).
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(lives999_idx) });
+    // lives + timer from match_settings.conf. Same Int->ToDyn->DynSet path the
+    // `port` field uses above; rr39 = int scratch, rr28 = dyn scratch (free here).
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(lives_idx) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(lives_str), src: rr(28) });
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(time_idx) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(time_str), src: rr(28) });
     ops.push(Opcode::ToVirtual { dst: rr(35), src: rr(34) });          // -> matchSettings virtual@675
