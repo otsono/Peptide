@@ -542,6 +542,7 @@
     // survives that pass (e.g. non-literal first arg, nested-brace props,
     // dynamic effect names) falls through here for manual port.
     { "name": "attachEffect",                    "note": "regex_replacements rewrites literal-string forms; this catches non-literal/nested cases for manual port" },
+    { "name": "forceAttack",                      "note": "SSF2 buffers a raw attack input (e.g. forceAttack(\"b\",1)); FM has no script input-buffer analog — comment out (was emitted as an undefined self.forceAttack call). Manual port: drive the intended move via self.toState(CState.X)" },
     { "name": "clearEffectsOnStateChange",       "note": "VFX lifecycle is owned by the Vfx instance / event listeners in FM — no global clear" },
     { "name": "addEffectToList",                 "note": "already partially handled above; this catches the remainder" },
 
