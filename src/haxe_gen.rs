@@ -424,8 +424,19 @@ fn generate_hitbox_stats(data: &CharacterData, _char_id: &str) -> String {
             .replace("{{section}}", &sec.section));
         for move_name in &sec.moves {
             let move_name = move_name.as_str();
-            if let Some(attack) = attack_lookup.get(move_name) {
-                out.push_str(&format_attack(move_name, &attack.hitboxes, false));
+            // SSF2 stores a split combo (jab1/2/3, strong _in/_charge/_attack) as ONE
+            // attack keyed by the base move; the FM timeline splits it into several named
+            // sub-animations. Direct lookup only finds the base name, so fall back to it
+            // for the sub-names — otherwise jab2/jab3 etc. emit 0-damage placeholders and
+            // are non-functional in-engine. (Per-segment fidelity is a deeper follow-up;
+            // inheriting the base attack's hitboxes is far closer to SSF2 than zero.)
+            let direct = attack_lookup.get(move_name).copied();
+            let base = base_attack_name(move_name);
+            let inherited = direct.is_none() && base.is_some();
+            let found = direct.or_else(|| base.as_deref().and_then(|b| attack_lookup.get(b).copied()));
+            if let Some(attack) = found {
+                out.push_str(&format_attack(move_name, &attack.hitboxes, false,
+                    if inherited { base.as_deref() } else { None }));
             } else if move_name == "emote" {
                 out.push_str(req("character.stats.hitbox_emote", &t.hitbox_emote));
             } else {
@@ -440,7 +451,7 @@ fn generate_hitbox_stats(data: &CharacterData, _char_id: &str) -> String {
     if !extras.is_empty() {
         out.push_str(req("character.stats.hitbox_extras_header", &t.hitbox_extras_header));
         for attack in extras {
-            out.push_str(&format_attack(&attack.name, &attack.hitboxes, true));
+            out.push_str(&format_attack(&attack.name, &attack.hitboxes, true, None));
         }
     }
 
@@ -460,13 +471,43 @@ fn guess_limb(move_name: &str) -> String {
     lr.default.clone()
 }
 
-fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool) -> String {
+/// Base move that carries the SSF2 hitbox stats for a split sub-animation name,
+/// or None if `move_name` isn't a split sub-name. SSF2 keeps the whole combo as a
+/// single attack under the base name; the FM split produces extra names that must
+/// inherit those stats. Kept in lockstep with the anim_splitter's split rules.
+fn base_attack_name(move_name: &str) -> Option<String> {
+    // jabN (N >= 2) inherits jab1 (the SSF2 `a` attack carries the combo's hitboxes).
+    if let Some(rest) = move_name.strip_prefix("jab") {
+        if rest.parse::<u32>().map(|n| n >= 2).unwrap_or(false) {
+            return Some("jab1".to_string());
+        }
+    }
+    // strong_*_in / strong_*_charge inherit strong_*_attack (the hit-bearing phase,
+    // which is the name normalize_attack_name emits for the SSF2 strong attack).
+    for suf in ["_in", "_charge"] {
+        if let Some(stem) = move_name.strip_suffix(suf) {
+            if stem.starts_with("strong_") {
+                return Some(format!("{stem}_attack"));
+            }
+        }
+    }
+    None
+}
+
+fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool, inherited_from: Option<&str>) -> String {
     let t = &crate::mappings::script_templates().character.stats;
     let req = crate::mappings::require_template;
     let limb = guess_limb(name);
     let prefix = if is_extra { "\t// SSF2: " } else { "\t" };
-    let mut out = req("character.stats.hitbox_attack_open", &t.hitbox_attack_open)
-        .replace("{{prefix}}", prefix).replace("{{name}}", name);
+    let mut out = String::new();
+    if let Some(base) = inherited_from {
+        // Make the inheritance explicit so a modder knows these values were copied
+        // from the base move (SSF2 stored the combo as one attack) and may want
+        // per-hit tuning.
+        out.push_str(&format!("\t// stats inherited from {base} (SSF2 stores this combo as one attack — tune per-hit if needed)\n"));
+    }
+    out.push_str(&req("character.stats.hitbox_attack_open", &t.hitbox_attack_open)
+        .replace("{{prefix}}", prefix).replace("{{name}}", name));
     // Frame-count fields are doubled for the 30fps -> 60fps timing change.
     // Which fields are frame counts is driven by the `isframe` flags in
     // mappings/character/hitbox_stats.json (see crate::mappings), the same
