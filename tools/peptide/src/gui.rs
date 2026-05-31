@@ -136,7 +136,14 @@ fn boot_new(writer: SharedWriter, cleanup: SharedCleanup, conn: SharedConn,
     }
     if let Ok(mut g) = writer.lock() { *g = None; }
 
-    match crate::ui::patch_and_launch() {
+    // Stream the bytecode preflight progress into the boot modal as a real bar.
+    let pp = proxy.clone();
+    let on_progress = move |done: usize, total: usize, label: &str| {
+        let _ = pp.send_event(Ev::Js(format!(
+            "window.onPatchProgress && onPatchProgress({}, {}, {})",
+            done, total, js_str(label))));
+    };
+    match crate::ui::patch_and_launch_with_progress(Some(&on_progress)) {
         Ok((port, token, mut guard)) => match crate::ui::reawait(port, &token, 30) {
             Some((reader, w)) => {
                 if let Ok(mut g) = writer.lock() { *g = Some(w); }

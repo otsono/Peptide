@@ -183,6 +183,40 @@ sequence into one engine session (boot→READY ≈ 30s, so `boot_wait_s` ≈ 32,
 `dis <findex>`, `typefields <type>`, `fnsof <type>`, `fninfo <findex>`,
 `callers <findex>`, `strgrep <s>`, `whoref <s>`, `inspect`.
 
+### 3.0 Surviving Fraymakers updates (the version-compatibility gate)
+
+Every Fraymakers update is a full HashLink **recompile** that renumbers function
+indices, field slots, and type indices. Peptide is built so a new build is a
+fast, self-diagnosing turnaround rather than an archaeology dig. The rules (full
+write-up + version-bump checklist in
+[`tools/peptide/README.md`](tools/peptide/README.md) "Surviving Fraymakers updates"):
+
+1. **Resolve by name, not index** — `find_fn`/`require_fn`, `find_type`, `find_field`, `find_native`. Names survive a recompile; pinned integers silently point at the wrong function.
+2. **Fail loudly, never fall back to a pinned index** — a missing name aborts the patch instead of corrupting it.
+3. **Prefer hscript over hand-emitted bytecode** — logic in [`prelude.hsx`](tools/peptide/prelude.hsx) runs through the engine's own interpreter and is immune to index drift.
+4. **Avoid mid-function opcode injection** — use `insert_ops_front`/`insert_ops_end` or hscript.
+
+Every engine symbol the patcher needs is declared once in
+[`tools/peptide/src/manifest.rs`](tools/peptide/src/manifest.rs). **`doctor`** is
+the preflight that reads it:
+
+```bash
+# read-only: resolve every depended-on engine symbol against a bytecode file
+peptide "<install>/hlboot-sdl.dat" _ doctor
+```
+
+It prints a grouped checklist (`[ ok ] name #findex` / `[MISS] name MISSING
+(CRITICAL) — why`) and a summary (`71/71 resolved · 0 critical missing`). Run it
+first against any new Fraymakers build to see exactly what (if anything) moved.
+The live `connect` patch runs the **same** check at its top — rendering a progress
+bar while resolving — and **aborts before mutating any opcode** if a critical
+symbol is missing, so an incompatible build fails loudly instead of producing a
+broken `_conn.dat`. In the GUI the bar shows in the boot modal ("Verifying engine
+N/71"); in CLI/TUI it draws on stderr. **Version-bump loop:** run `doctor` → for
+each `[MISS]`, find the new name with the inspection modes above and update both
+`manifest.rs` and the `require_*` call in `connect_edit` → repeat until clean →
+then the in-engine spawn-test below.
+
 ### 3.1 How custom content loads headless (the resolved blocker)
 
 For a long stretch, custom/UGC content would not load in the direct `./hl`

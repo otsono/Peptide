@@ -232,6 +232,26 @@ pub fn clear_live() {
     let _ = err.flush();
 }
 
+/// Machine-parseable progress line, emitted to stderr when the patcher runs as a
+/// subprocess (non-TTY) — e.g. spawned by the GUI/TUI boot path, which captures
+/// stderr and renders the bar in the connection modal. Format (stable, parse it
+/// by prefix): `@@PFP <done> <total> <label>`.
+pub const PROGRESS_PREFIX: &str = "@@PFP";
+/// Final machine summary line: `@@PFR <ok> <missing_critical> <missing_warn>`.
+pub const RESULT_PREFIX: &str = "@@PFR";
+
+pub fn emit_machine_progress(done: usize, total: usize, label: &str) {
+    let mut err = std::io::stderr();
+    let _ = writeln!(err, "{PROGRESS_PREFIX} {done} {total} {label}");
+    let _ = err.flush();
+}
+
+pub fn emit_machine_result(ok: usize, miss_crit: usize, miss_warn: usize) {
+    let mut err = std::io::stderr();
+    let _ = writeln!(err, "{RESULT_PREFIX} {ok} {miss_crit} {miss_warn}");
+    let _ = err.flush();
+}
+
 /// Print the grouped doctor checklist to stderr. This is the "what the doctor
 /// shows" output — emitted after the live bar during a patch, and on its own for
 /// the standalone `doctor` mode.
@@ -291,4 +311,69 @@ pub fn summarize(statuses: &[SymStatus]) -> (usize, usize, usize) {
         }
     }
     (ok, miss_crit, miss_warn)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_is_grouped_contiguously() {
+        // render_report only prints a group header on change, so all symbols of a
+        // group must be contiguous or the checklist would split a group in two.
+        let mut seen: Vec<&str> = Vec::new();
+        let mut last = "";
+        for sym in MANIFEST {
+            if sym.group != last {
+                assert!(
+                    !seen.contains(&sym.group),
+                    "group {:?} is not contiguous in MANIFEST",
+                    sym.group
+                );
+                seen.push(sym.group);
+                last = sym.group;
+            }
+        }
+    }
+
+    #[test]
+    fn fn_and_field_entries_have_a_parent() {
+        for sym in MANIFEST {
+            match sym.kind {
+                Kind::Fn | Kind::Field => assert!(
+                    sym.parent.is_some(),
+                    "{} needs a parent type",
+                    sym.label()
+                ),
+                Kind::Type | Kind::Native => assert!(sym.parent.is_none()),
+            }
+        }
+    }
+
+    #[test]
+    fn labels_render_per_kind() {
+        let f = Symbol { kind: Kind::Fn, name: "execute", parent: Some("hscript.Interp"), group: "g", why: "", critical: true };
+        assert_eq!(f.label(), "hscript.Interp::execute");
+        let fld = Symbol { kind: Kind::Field, name: "body", parent: Some("pxf.entity.Character"), group: "g", why: "", critical: true };
+        assert_eq!(fld.label(), "pxf.entity.Character.body");
+        let n = Symbol { kind: Kind::Native, name: "socket_init", parent: None, group: "g", why: "", critical: true };
+        assert_eq!(n.label(), "native socket_init");
+        let t = Symbol { kind: Kind::Type, name: "sys.net.Socket", parent: None, group: "g", why: "", critical: true };
+        assert_eq!(t.label(), "sys.net.Socket");
+    }
+
+    #[test]
+    fn summarize_counts_each_bucket() {
+        let mk = |resolved, critical| SymStatus {
+            group: "g", label: "x".into(), why: "", critical, resolved,
+        };
+        let statuses = vec![
+            mk(Some(1), true),  // ok
+            mk(Some(2), false), // ok
+            mk(None, true),     // critical miss
+            mk(None, false),    // warn
+            mk(None, false),    // warn
+        ];
+        assert_eq!(summarize(&statuses), (2, 1, 2));
+    }
 }

@@ -123,6 +123,14 @@
   .modal p:empty{margin:0;}
   .modal .err{color:var(--err-ink);font-size:13px;margin:-8px 0 14px;}
   .modal .err:empty{margin:0;}
+  /* bytecode-preflight progress bar (shown only while patching the engine) */
+  .patchbar{display:none;margin:-4px 0 16px;}
+  .patchbar.show{display:block;}
+  .patchbar-track{height:7px;border-radius:5px;background:var(--border);overflow:hidden;}
+  .patchbar-fill{height:100%;width:0;border-radius:5px;background:var(--clay);
+    transition:width .18s ease;}
+  .patchbar-label{margin-top:8px;font-size:12px;color:var(--muted);font-family:ui-monospace,
+    SFMono-Regular,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .m-actions{display:flex;flex-direction:column;gap:9px;}
   .m-actions:empty{display:none;}
   .btn-primary,.btn-ghost{font:inherit;font-weight:600;font-size:15px;padding:11px 22px;
@@ -172,6 +180,10 @@
       <div class="icon">🔌</div>
       <h2 id="m-title">Reconnecting to Fraymakers…</h2>
       <p id="m-msg"></p>
+      <div class="patchbar" id="patchbar">
+        <div class="patchbar-track"><div class="patchbar-fill" id="patchbar-fill"></div></div>
+        <div class="patchbar-label" id="patchbar-label"></div>
+      </div>
       <div class="err" id="m-err"></div>
       <div class="m-actions" id="m-actions"></div>
     </div>
@@ -266,8 +278,13 @@
   // ── connection flow: on a drop, a blocking modal greys the whole UI and walks through
   //    reconnect → one more try → "open it?" (Quick / Regular Boot) → connecting.
   const overlay=$("overlay"), modal=$("modal"), mTitle=$("m-title"), mMsg=$("m-msg"),
-        mErr=$("m-err"), actions=$("m-actions");
+        mErr=$("m-err"), actions=$("m-actions"),
+        patchbar=$("patchbar"), patchFill=$("patchbar-fill"), patchLabel=$("patchbar-label");
   let flowState="idle"; // idle | re1 | re2 | prompt | booting
+
+  function resetPatchbar(){
+    patchbar.classList.remove("show"); patchFill.style.width="0"; patchLabel.textContent="";
+  }
 
   function blockUi(on){
     document.body.classList.toggle("blocked", on);
@@ -277,10 +294,12 @@
   function modalWorking(title, msg){
     modal.classList.add("working"); modal.classList.remove("prompt");
     mTitle.textContent=title; mMsg.textContent=msg||""; mErr.textContent=""; actions.innerHTML="";
+    resetPatchbar();
     overlay.classList.add("show"); blockUi(true);
   }
   function modalPrompt(err){
     modal.classList.remove("working"); modal.classList.add("prompt");
+    resetPatchbar();
     mTitle.textContent="Fraymakers doesn’t seem to be open";
     mMsg.textContent="Do you want to open it?"; mErr.textContent=err||""; actions.innerHTML="";
     const quick=document.createElement("button");
@@ -290,8 +309,20 @@
     actions.appendChild(quick); actions.appendChild(reg);
     overlay.classList.add("show"); blockUi(true);
   }
-  function hideModal(){ overlay.classList.remove("show"); blockUi(false); }
+  function hideModal(){ overlay.classList.remove("show"); blockUi(false); resetPatchbar(); }
   function ipcSend(m){ if(window.ipc && window.ipc.postMessage) window.ipc.postMessage(m); }
+
+  // The patcher streams its bytecode-symbol preflight here (done/total + the symbol
+  // it's resolving). Shown as a real progress bar inside the boot modal so a patch
+  // (incl. a slow one on a new Fraymakers build) is visible, not a frozen spinner.
+  window.onPatchProgress=function(done, total, label){
+    if(flowState!=="booting") return;
+    patchbar.classList.add("show");
+    const pct = total>0 ? Math.round(done*100/total) : 0;
+    patchFill.style.width = pct+"%";
+    patchLabel.textContent = "Verifying engine "+done+"/"+total+(label?("  ·  "+label):"");
+    if(done>=total && total>0){ mMsg.textContent="Engine verified — launching…"; }
+  };
 
   function startReconnect(){
     flowState="re1";

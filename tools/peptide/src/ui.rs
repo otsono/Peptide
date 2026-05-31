@@ -168,6 +168,19 @@ fn io_err(msg: &str) -> std::io::Error {
 /// Err (instead of exiting) so callers can recover with a boot prompt. hlboot-sdl.dat is
 /// never modified.
 pub fn patch_and_launch() -> std::io::Result<(u16, String, Cleanup)> {
+    patch_and_launch_with_progress(None)
+}
+
+/// Like `patch_and_launch`, but streams the patcher's manifest-preflight progress to
+/// `on_progress` (done, total, label) so a UI can render a live patching bar. The
+/// patcher emits `@@PFP <done> <total> <label>` lines (see manifest::PROGRESS_PREFIX)
+/// on stderr when run non-interactively; we parse them here. A `None` callback keeps
+/// the old silent behavior.
+pub fn patch_and_launch_with_progress(
+    // Called synchronously on THIS thread as each preflight line is read, so it
+    // needs no Send/Sync bound (the GUI's wry proxy isn't Send).
+    on_progress: Option<&dyn Fn(usize, usize, &str)>,
+) -> std::io::Result<(u16, String, Cleanup)> {
     let fray_dir: PathBuf = match std::env::var_os("FRAY_DIR") {
         Some(d) => PathBuf::from(d),
         None => default_install_dir()
@@ -195,16 +208,44 @@ pub fn patch_and_launch() -> std::io::Result<(u16, String, Cleanup)> {
 
     // patch a throwaway _conn.dat (bake the default char so a bare `spawn` works)
     std::fs::write(&appid, b"1420350")?;
-    let patch_ok = Command::new(&patcher)
+    // Capture stderr so we can both (a) parse the preflight progress lines for the UI
+    // bar and (b) surface the doctor checklist on a patch failure (a new Fraymakers
+    // build that moved a critical symbol aborts here with a precise reason).
+    let mut child = Command::new(&patcher)
         .args([boot.as_os_str(), conn.as_os_str(),
                std::ffi::OsStr::new("connect"), std::ffi::OsStr::new(&port.to_string()),
                std::ffi::OsStr::new(&token), std::ffi::OsStr::new(&char_name),
                std::ffi::OsStr::new(&stage), std::ffi::OsStr::new(&assist)])
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
+        .stdout(Stdio::null()).stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| io_err(&format!("failed to spawn the patcher {}: {e}", patcher.display())))?;
+    let mut tail: Vec<String> = Vec::new(); // last lines, for an error message
+    if let Some(err) = child.stderr.take() {
+        for line in BufReader::new(err).lines().map_while(Result::ok) {
+            if let Some(rest) = line.strip_prefix(crate::manifest::PROGRESS_PREFIX) {
+                // "@@PFP <done> <total> <label>"
+                let mut it = rest.trim().splitn(3, ' ');
+                if let (Some(d), Some(t)) = (it.next(), it.next()) {
+                    if let (Ok(done), Ok(total)) = (d.parse::<usize>(), t.parse::<usize>()) {
+                        if let Some(cb) = on_progress {
+                            cb(done, total, it.next().unwrap_or("").trim());
+                        }
+                    }
+                }
+                continue;
+            }
+            if line.starts_with(crate::manifest::RESULT_PREFIX) { continue; }
+            tail.push(line);
+            if tail.len() > 40 { tail.remove(0); }
+        }
+    }
+    let patch_ok = child.wait().map(|s| s.success()).unwrap_or(false);
     if !patch_ok {
         let _ = std::fs::remove_file(&appid);
-        return Err(io_err(&format!("failed to patch the engine (is {} present?)", patcher.display())));
+        let why = tail.iter().rev().find(|l| l.contains("preflight") || l.contains("MISSING") || l.contains("Error"))
+            .cloned()
+            .unwrap_or_else(|| format!("is {} present?", patcher.display()));
+        return Err(io_err(&format!("failed to patch the engine — {why}")));
     }
     let _ = std::fs::remove_file(fray_dir.join("error.log"));
 
