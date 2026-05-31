@@ -654,6 +654,12 @@ fn connect_edit(
     let characters_str = add_string(code, "characters");
     let matchsettings_str = add_string(code, "matchSettings");
     let pausemenu_str = add_string(code, "pauseMenu");
+    // Headless matches run with 999 lives + no timer. Both fields exist in the
+    // matchSettings virtual schema (t675: field 8 "lives", field 24 "time") and
+    // importJSON@5460 copies them into the real MatchSettingsConfig (lives f16,
+    // time f19) during _offlineMatchStart.
+    let lives_str = add_string(code, "lives");
+    let time_str = add_string(code, "time");
     let create_mode = require_fn(code, "createMode", Some("fraymakers.util.$FraymakersClassFactory"))?;
     let mode_start_match = require_fn(code, "startMatch", Some("fraymakers.core.FraymakersMode"))?;
     let mode_t = find_type(code, "fraymakers.core.FraymakersMode")
@@ -666,6 +672,7 @@ fn connect_edit(
     let str_split = require_fn(code, "split", Some("String"))?;
     let space_g = add_string_const(code, " ");
     let buf_cap_idx = add_int(code, 512);
+    let lives999_idx = add_int(code, 999); // headless matches: 999 stock
     let nl_idx = add_int(code, '\n' as i32);
     let two_idx = add_int(code, 2);
     let three_idx = add_int(code, 3);
@@ -1453,6 +1460,14 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(41), global: RefGlobal(ms_global) });
     ops.push(Opcode::Field { dst: rr(40), obj: rr(41), field: RefField(dmr_field) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(matchrules_str), src: rr(40) });
+    // 999 lives + no timer (time=0). Same Int->ToDyn->DynSet path the `port`
+    // field uses above; rr39 = int scratch, rr28 = dyn scratch (both free here).
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(lives999_idx) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
+    ops.push(Opcode::DynSet { obj: rr(34), field: RS(lives_str), src: rr(28) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
+    ops.push(Opcode::DynSet { obj: rr(34), field: RS(time_str), src: rr(28) });
     ops.push(Opcode::ToVirtual { dst: rr(35), src: rr(34) });          // -> matchSettings virtual@675
     // config = { characters, matchSettings, pauseMenu: null } (virtual@4482)
     ops.push(Opcode::New { dst: rr(27) });                             // dynobj (4366)
