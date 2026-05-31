@@ -593,13 +593,21 @@ fn prerender_skewed_frames(
                 let wy = cubic(sy - yf);
                 let (x0, y0) = (xf as i64 - 1, yf as i64 - 1);
                 let mut acc = [0.0f64; 4];
+                // Anti-ringing: track the per-channel min/max of the 16 source taps and clamp
+                // the result into that range. Catmull-Rom's negative lobes overshoot at
+                // light/dark edges, producing pixels LIGHTER than any nearby source pixel; once
+                // palette-snapped those become the lightest costume colour → scattered light
+                // "noise" speckles all over a recoloured sprite (seen on jab). Clamping kills it.
+                let mut mn = [f64::MAX; 4];
+                let mut mx = [f64::MIN; 4];
                 for (j, &wyj) in wy.iter().enumerate() {
                     for (i, &wxi) in wx.iter().enumerate() {
                         let w = wxi * wyj;
                         let c = sample(x0 + i as i64, y0 + j as i64);
-                        for k in 0..4 { acc[k] += c[k] * w; }
+                        for k in 0..4 { acc[k] += c[k] * w; mn[k] = mn[k].min(c[k]); mx[k] = mx[k].max(c[k]); }
                     }
                 }
+                for k in 0..4 { acc[k] = acc[k].clamp(mn[k], mx[k]); }
                 acc
             };
             // Bicubic-resample every destination pixel into a premultiplied
@@ -619,12 +627,11 @@ fn prerender_skewed_frames(
                 }
             }
 
-            // Mild unsharp mask in premultiplied space: a small Gaussian blur
-            // (sigma 0.9) is subtracted back in at 45% strength, lifting edge
-            // contrast so the result reads sharper and the sprites' thin dark
-            // outlines stay dark. Working premultiplied, with the same [0,alpha]
-            // clamp below, keeps the sharpen from fringing at transparent edges.
-            const UNSHARP_AMOUNT: f64 = 0.45;
+            // Unsharp mask DISABLED (amount 0): it lifts edge contrast by overshooting, which
+            // re-introduces the lighter-than-source pixels the anti-ringing clamp above just
+            // removed — and those snap to the lightest costume colour, speckling recoloured
+            // sprites. The clamped bicubic already keeps outlines crisp without it.
+            const UNSHARP_AMOUNT: f64 = 0.0;
             let gauss: Vec<f64> = {
                 let sigma = 0.9_f64;
                 let radius = (sigma * 3.0).ceil() as i64;
