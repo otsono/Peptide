@@ -32,29 +32,23 @@ citations (see commit history for the audit run).
   underflow emitted an invalid-Haxe receiver; a `commands.jsonc` rule collapses
   `/* ? */.self.` → `self.`. *(same commit)*
 
-All four were regression-tested in-engine: mario (jab/strong_forward/special_up/
-aerial_down) and sandbag (jab/tilt_forward/special_neutral) spawn, animate, and
-dispatch with no crash after the changes.
+- **`getGlobalVariable`/`setGlobalVariable` → makeX persistent state.** Was
+  mis-mapped to `get/updateAnimationStatsMetadata` (per-animation metadata, NOT
+  persistent state, and not a real FM API — absent from the template). Now the
+  extractor collects each string key as a persistent ext var (`var name =
+  self.makeInt(0)/makeBool(false)` — Int if used numerically, else Bool; hscript
+  is dynamic so the kind only sets the pre-first-set default) and `commands.jsonc`
+  regex rules rewrite the calls to `name.get()/name.set(v)`. **Verified in-engine:**
+  mario `canStartRise`→makeBool, `standtime`→makeInt; special_up/down + idle run,
+  no crash. *(commit: get/setGlobalVariable → makeX)*
+
+All five fixes were regression-tested in-engine: mario (jab/strong_forward/
+special_up/special_down/aerial_down + idle) and sandbag (jab/tilt_forward/
+special_neutral) spawn, animate, and dispatch with no crash; a 3-character batch
+(kirby/luigi/link) re-verified no broad breakage.
 
 ## OPEN — high impact
 
-- **`getGlobalVariable`/`setGlobalVariable` → wrong API.** Currently mapped to
-  `get/updateAnimationStatsMetadata` (per-animation metadata, NOT persistent
-  per-character state, and not in the FM template API). SSF2 globals are
-  string-keyed persistent vars. **Correct fix:** route them into the existing
-  `makeX` persistent-state system the converter already uses for ext-class
-  instance vars — `var name = self.makeInt(0)/makeBool(false)/makeObject(null)`
-  + `name.get()/.set()`. Affects mario's `canStartRise` (up-special gate),
-  `standtime` (stand timer), `crouchdown`. *Not a crash in observed play* (those
-  paths ran without faulting), so it's a semantic-fidelity gap. **Deferred
-  deliberately**: the fix needs per-var type inference and has high blast radius
-  (a wrong type → Script.hx won't load for many characters), so it must land with
-  full-corpus re-verification, not rushed. Plan: detect the names post-translate,
-  infer type (Bool for boolean-context / true-false sets, else Int), add to
-  `ext_vars`/`ext_var_inits`, rewrite calls to `.get()/.set()`. Files:
-  `mappings/commands.jsonc` (get/setGlobalVariable lines), `extractor.rs`
-  (implicit-var detection block — add a sibling global-var pass), `haxe_gen.rs`
-  (makeX emission already handles ext_vars).
 - **Deeper `/* ? */` fix (stack-threading).** The interim text rule only handles
   the `.self.` receiver case; lost *conditions* (`if (/* ? */)` in mario's
   `continueCombo`) and `/* ? */.self.forceAttack` need the real fix: thread the
