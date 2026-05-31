@@ -65,9 +65,11 @@ pub const MOVES: &[(&str, &str)] = &[
     ("tilt_forward",    "TILT_FORWARD"),
     ("tilt_up",         "TILT_UP"),
     ("tilt_down",       "TILT_DOWN"),
-    ("strong_forward",  "STRONG_FORWARD"),
-    ("strong_up",       "STRONG_UP"),
-    ("strong_down",     "STRONG_DOWN"),
+    // Strongs (smashes) are 3-phase in CState (_IN -> _CHARGE -> _ATTACK); _IN is the
+    // entry point that drives the whole move, so the friendly name maps there.
+    ("strong_forward",  "STRONG_FORWARD_IN"),
+    ("strong_up",       "STRONG_UP_IN"),
+    ("strong_down",     "STRONG_DOWN_IN"),
     ("aerial_neutral",  "AERIAL_NEUTRAL"),
     ("aerial_forward",  "AERIAL_FORWARD"),
     ("aerial_back",     "AERIAL_BACK"),
@@ -135,7 +137,10 @@ pub fn translate(line: &str) -> Translated {
         return match rest.first() {
             None => Translated::Wire("m".to_string()), // bare move = jab
             Some(mv) => match move_ordinal(mv) {
-                Some(ord) => Translated::Wire(format!("m {ord}")),
+                // Wire selector = 'A' + ordinal (a single printable byte the engine
+                // compares directly — no integer parsing engine-side). See main.rs
+                // move-dispatch. ordinal stays < 26 (MOVES is short), so 'A'..'Z'.
+                Some(ord) => Translated::Wire(format!("m {}", (b'A' + ord as u8) as char)),
                 None => Translated::Error(format!(
                     "unknown move {mv:?}. moves: {}",
                     MOVES.iter().map(|(m, _)| *m).collect::<Vec<_>>().join(", ")
@@ -221,11 +226,13 @@ mod tests {
     }
 
     #[test]
-    fn move_resolves_to_ordinal() {
+    fn move_resolves_to_letter_selector() {
         assert_eq!(wire("move"), "m");                  // bare = jab
-        assert_eq!(wire("move jab"), "m 0");
-        assert_eq!(wire("move special_neutral"), format!("m {}", move_ordinal("special_neutral").unwrap()));
+        assert_eq!(wire("move jab"), "m A");            // ordinal 0 -> 'A'
+        let ord = move_ordinal("special_neutral").unwrap();
+        assert_eq!(wire("move special_neutral"), format!("m {}", (b'A' + ord as u8) as char));
         assert!(matches!(translate("move flibble"), Translated::Error(_)));
+        assert!(MOVES.len() <= 26, "selector encoding assumes < 26 moves");
     }
 
     #[test]

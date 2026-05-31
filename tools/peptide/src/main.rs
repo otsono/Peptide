@@ -5,6 +5,10 @@ mod asm;
 #[allow(unused_imports)]
 use asm::Asm;
 
+// Shared friendly-command vocabulary. The patcher uses MOVES to generate the
+// move-dispatch jump table; the bridge uses it to translate move names. One table.
+mod commands;
+
 use hlbc::opcodes::Opcode;
 use hlbc::types::{Reg, RefString};
 use hlbc::Bytecode;
@@ -852,7 +856,24 @@ fn connect_edit(
     let m_idx = add_int(code, 'm' as i32);
     let t_idx = add_int(code, 't' as i32);
     let m_ack_g = add_string_const(code, "M:JAB\n");
+    let m_ok_g = add_string_const(code, "M:OK\n"); // generic move-dispatch ack (move-by-name)
     let m_nomatch_g = add_string_const(code, "M:NOMATCH\n");
+    // Move-by-name dispatch table. The client (bridge) sends `m <letter>` where the
+    // selector byte = 'A' + ordinal (ordinal = index into commands::MOVES). We resolve
+    // each move's CState field by NAME here (robust to findex/field drift), so the
+    // engine-side jump table is GENERATED from the same shared table the client uses —
+    // not hand-written per move. A move whose CState field is absent in this build
+    // falls back to JAB (logged) so the dispatch never reads a bogus field.
+    let space_idx = add_int(code, ' ' as i32);
+    let negone_idx = add_int(code, -1);
+    let move_fields: Vec<(usize, usize)> = commands::MOVES.iter().enumerate().map(|(i, (mv, fld))| {
+        let fidx = find_field(code, cstate_statics_t, fld).unwrap_or_else(|| {
+            eprintln!("move-dispatch: CState.{fld} (move {mv:?}) not found — falling back to JAB");
+            jab_field
+        });
+        (add_int(code, 'A' as i32 + i as i32), fidx) // (letter int-pool idx, CState field idx)
+    }).collect();
+    eprintln!("move-dispatch: {} moves resolved (selector 'A'..); see commands::MOVES", move_fields.len());
     let t_prefix_g = add_string_const(code, "T:");
     let anim_prefix_g = add_string_const(code, "ANIM:"); // per-frame state-change telemetry
     let t_nomatch_g = add_string_const(code, "T:NOMATCH\n");
@@ -1833,48 +1854,106 @@ fn connect_edit(
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
     // (l_fail falls through into the 'm' check, which rejects 'l')
 
-    // ---- 'm' command: drive a move (JAB) on the live player-0 Character ----
-    // Walk MatchController.currentMatch -> Match.characters[0], then call the
-    // Character's own state machine: toState(char, CState.JAB, null). Internal-
-    // function dispatch (no key-press). Reports M:JAB / M:NOMATCH.
+    // ---- 'm' command: drive a move BY NAME on the live player-0 Character ----
+    // Wire form: `m <letter>` where letter = 'A' + ordinal (ordinal indexes
+    // commands::MOVES; the bridge does the name→letter mapping). Bare `m` (no
+    // arg) = JAB. We walk MatchController.currentMatch -> Match.characters[0],
+    // drain the rest of the line to read the selector byte, pick the CState via a
+    // GENERATED jump table (one JEq arm per move, built from move_fields above),
+    // and call the Character's own state machine toState(char, CState.X, null) —
+    // internal dispatch, NOT key-press. Reports M:OK / M:NOMATCH.
     let idx_m_check = ops.len();
     ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(m_idx) });
     let idx_jne_m = ops.len();
     ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });            // not 'm' -> t-check
-    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
-    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
-    ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) }); // currentMatch
-    let idx_m_jnomatch = ops.len();
-    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                   // no match -> M:NOMATCH
-    ops.push(Opcode::Field { dst: rr(66), obj: rr(44), field: RefField(characters_field) }); // characters (ArrayObj)
-    let idx_m_jnochars = ops.len();
-    ops.push(Opcode::JNull { reg: rr(66), offset: 0 });
-    ops.push(Opcode::Field { dst: rr(16), obj: rr(66), field: RefField(0) }); // .length
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
-    let idx_m_jempty = ops.len();
-    ops.push(Opcode::JSLte { a: rr(16), b: rr(39), offset: 0 });          // empty -> M:NOMATCH
-    ops.push(Opcode::Field { dst: rr(67), obj: rr(66), field: RefField(1) }); // .array
-    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(zero_idx) });
-    ops.push(Opcode::GetArray { dst: rr(28), array: rr(67), index: rr(16) }); // characters[0]
-    let idx_m_jnull_elem = ops.len();
-    ops.push(Opcode::JNull { reg: rr(28), offset: 0 });
-    ops.push(Opcode::UnsafeCast { dst: rr(69), src: rr(28) });            // -> Character
-    ops.push(Opcode::GetGlobal { dst: rr(70), global: RefGlobal(cstate_global) });
-    ops.push(Opcode::Field { dst: rr(16), obj: rr(70), field: RefField(jab_field) }); // CState.JAB (Int)
-    ops.push(Opcode::Null { dst: rr(38) });                              // null animName
-    ops.push(Opcode::Call3 { dst: rr(64), fun: RefFun(to_state), arg0: rr(69), arg1: rr(16), arg2: rr(38) });
-    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(m_ack_g) });
-    ops.push(Opcode::Null { dst: rr(15) });
-    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
-    let idx_m_jdone = ops.len();
-    ops.push(Opcode::JAlways { offset: 0 });                             // -> L_ORIG
-    let idx_m_nomatch = ops.len();
-    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(m_nomatch_g) });
-    ops.push(Opcode::Null { dst: rr(15) });
-    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
-    // (m_nomatch falls through into the 't' check, which rejects 'm' -> L_ORIG)
+    {
+        // Self-contained Asm block: all branches are internal labels (Asm resolves
+        // every offset at build time, so a mis-jump is a compile error, not an
+        // engine crash). On completion it falls off its end into the 't' check,
+        // which rejects the still-'m' command byte and routes to L_ORIG.
+        let mut a = Asm::new(f.regs.len() as u32);
+        let nomatch = a.label();
+        let dispatch = a.label();
+        let drain_loop = a.label();
+        let drain_done = a.label();
+        let after = a.label();
+        let r_mc    = a.reg(mc_statics_t);
+        let r_cm    = a.reg(match_t);
+        let r_chars = a.reg(38);             // ArrayObj
+        let r_len   = a.reg(3);
+        let r_one   = a.reg(3);
+        let r_z     = a.reg(3);
+        let r_arr   = a.reg(11);             // NativeArray
+        let r_elem  = a.reg(9);              // dyn
+        let r_char  = a.reg(char_entity_t);
+        let r_sel   = a.reg(3);              // selector byte (-1 = none)
+        let r_chr   = a.reg(3);              // recv scratch
+        let r_tmp   = a.reg(3);
+        let r_cs    = a.reg(cstate_statics_t);
+        let r_state = a.reg(3);
+        // output = sock2.output
+        a.op(Opcode::Field { dst: rr(5), obj: rr(10), field: RefField(out_field) });
+        // walk to player-0 Character
+        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(3511) });
+        a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
+        a.jnull(r_cm, nomatch);
+        a.op(Opcode::Field { dst: r_chars, obj: r_cm, field: RefField(characters_field) });
+        a.jnull(r_chars, nomatch);
+        a.op(Opcode::Field { dst: r_len, obj: r_chars, field: RefField(0) }); // .length
+        a.op(Opcode::Int { dst: r_one, ptr: RefInt(one_idx) });
+        a.jslt(r_len, r_one, nomatch);       // length < 1 -> no player
+        a.op(Opcode::Field { dst: r_arr, obj: r_chars, field: RefField(1) }); // .array
+        a.op(Opcode::Int { dst: r_z, ptr: RefInt(zero_idx) });
+        a.op(Opcode::GetArray { dst: r_elem, array: r_arr, index: r_z });
+        a.jnull(r_elem, nomatch);
+        a.op(Opcode::UnsafeCast { dst: r_char, src: r_elem });
+        // drain the rest of the line, keeping the last non-space byte as the selector
+        a.op(Opcode::Int { dst: r_sel, ptr: RefInt(negone_idx) });
+        a.place(drain_loop);
+        a.op(Opcode::Call1 { dst: r_chr, fun: RefFun(recv_char), arg0: rr(11) });
+        a.op(Opcode::Int { dst: r_tmp, ptr: RefInt(zero_idx) });
+        a.jslt(r_chr, r_tmp, drain_done);    // <0 (no more data) -> done
+        a.op(Opcode::Int { dst: r_tmp, ptr: RefInt(nl_idx) });
+        a.jeq(r_chr, r_tmp, drain_done);     // '\n' -> done
+        a.op(Opcode::Int { dst: r_tmp, ptr: RefInt(space_idx) });
+        a.jeq(r_chr, r_tmp, drain_loop);     // ' ' -> skip
+        a.op(Opcode::Mov { dst: r_sel, src: r_chr }); // record selector
+        a.jalways(drain_loop);
+        a.place(drain_done);
+        // default state = CState.JAB, then the generated selector chain may override
+        a.op(Opcode::GetGlobal { dst: r_cs, global: RefGlobal(cstate_global) });
+        a.op(Opcode::Field { dst: r_state, obj: r_cs, field: RefField(jab_field) });
+        let set_labels: Vec<_> = move_fields.iter().map(|_| a.label()).collect();
+        for ((letter_idx, _fld), &lbl) in move_fields.iter().zip(set_labels.iter()) {
+            a.op(Opcode::Int { dst: r_tmp, ptr: RefInt(*letter_idx) });
+            a.jeq(r_sel, r_tmp, lbl);        // selector == 'A'+i -> set move i
+        }
+        a.jalways(dispatch);                 // no match -> keep JAB default
+        for ((_letter, fld), &lbl) in move_fields.iter().zip(set_labels.iter()) {
+            a.place(lbl);
+            a.op(Opcode::Field { dst: r_state, obj: r_cs, field: RefField(*fld) });
+            a.jalways(dispatch);
+        }
+        a.place(dispatch);
+        a.op(Opcode::Null { dst: rr(38) });  // null animName (String)
+        a.op(Opcode::Call3 { dst: rr(6), fun: RefFun(to_state), arg0: r_char, arg1: r_state, arg2: rr(38) });
+        a.op(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(m_ok_g) });
+        a.op(Opcode::Null { dst: rr(15) });
+        a.op(Opcode::Call3 { dst: rr(6), fun: RefFun(write_str), arg0: rr(5), arg1: rr(14), arg2: rr(15) });
+        a.op(Opcode::Call1 { dst: rr(6), fun: RefFun(flush), arg0: rr(5) });
+        a.jalways(after);
+        a.place(nomatch);
+        a.op(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(m_nomatch_g) });
+        a.op(Opcode::Null { dst: rr(15) });
+        a.op(Opcode::Call3 { dst: rr(6), fun: RefFun(write_str), arg0: rr(5), arg1: rr(14), arg2: rr(15) });
+        a.op(Opcode::Call1 { dst: rr(6), fun: RefFun(flush), arg0: rr(5) });
+        a.place(after);
+        let (a_ops, a_regs) = a.finish();
+        add_regs(f, &a_regs);
+        ops.extend(a_ops);
+    }
+    // (m handler falls through into the 't' check, which rejects 'm' -> L_ORIG)
+    let _ = (m_ack_g, jab_field); // m_ack_g retained for ABI stability; jab_field used above
 
     // ---- 't' command: telemetry — report player-0 Character state name ----
     // currentMatch -> characters[0] -> getStateName(char). Reports T:<state> /
@@ -1967,13 +2046,10 @@ fn connect_edit(
     if let Opcode::JNull { offset, .. } = &mut ops[idx_k_jnull_elem] { *offset = idx_k_loop as i32 - idx_k_jnull_elem as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_k_jnull_fqid] { *offset = idx_k_loop as i32 - idx_k_jnull_fqid as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_k_jback] { *offset = idx_k_loop as i32 - idx_k_jback as i32 - 1; }
-    // m-command jumps ('m' no-match -> t-check; failures -> M:NOMATCH; success -> L_ORIG)
+    // m-command outer jump only ('m' no-match -> t-check). The handler body is now a
+    // self-contained Asm block whose internal branches are resolved by Asm::finish(),
+    // so there are no m_* external fixups to patch here anymore.
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_m] { *offset = idx_t_check as i32 - idx_jne_m as i32 - 1; }
-    if let Opcode::JNull { offset, .. } = &mut ops[idx_m_jnomatch] { *offset = idx_m_nomatch as i32 - idx_m_jnomatch as i32 - 1; }
-    if let Opcode::JNull { offset, .. } = &mut ops[idx_m_jnochars] { *offset = idx_m_nomatch as i32 - idx_m_jnochars as i32 - 1; }
-    if let Opcode::JSLte { offset, .. } = &mut ops[idx_m_jempty] { *offset = idx_m_nomatch as i32 - idx_m_jempty as i32 - 1; }
-    if let Opcode::JNull { offset, .. } = &mut ops[idx_m_jnull_elem] { *offset = idx_m_nomatch as i32 - idx_m_jnull_elem as i32 - 1; }
-    if let Opcode::JAlways { offset, .. } = &mut ops[idx_m_jdone] { *offset = n - idx_m_jdone as i32 - 1; }
     // t-command jumps ('t' no-match -> L_ORIG; failures -> T:NOMATCH; success -> L_ORIG)
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_t] { *offset = n - idx_jne_t as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnomatch] { *offset = idx_t_nomatch as i32 - idx_t_jnomatch as i32 - 1; }
