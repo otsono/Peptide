@@ -912,6 +912,12 @@ fn connect_edit(
     let hs_interp_ctor = find_fn(code, "__constructor__", Some("hscript.$Interp")).unwrap_or(2235);
     let hs_execute = require_fn(code, "execute", Some("hscript.Interp"))?;
     let hs_setvar = require_fn(code, "setVar", Some("hscript.Interp"))?;
+    // The engine NEVER runs a bare interp: Main::init registers FraymakersScriptGlobals.
+    // applyInterpreterGlobals as the globals-callback, and runs every program through
+    // ApiScript.interpretScript (resets depth/declared, runs exprReturn, TRAPS errors).
+    // We mirror that exactly so our top-scope interp is "loaded + ready" like the engine's.
+    let hs_apply_globals = find_fn(code, "applyInterpreterGlobals", Some("fraymakers.api.$FraymakersScriptGlobals")).unwrap_or(18218);
+    let hs_interp_script = find_fn(code, "interpretScript", Some("pxf.api.$ApiScript")).unwrap_or(2202);
     let eval_p0_g = add_string_const(code, "p0");  // bound to player-0 Character before each eval
     let eval_cs_g = add_string_const(code, "CS");  // bound to the CState statics (move-id source)
     let hs_parser_t = require_type(code, "hscript.Parser")?;
@@ -1120,6 +1126,11 @@ fn connect_edit(
     // connect_edit; the `s` command may be sent repeatedly to start successive matches.
     let g_launched = code.globals.len();
     code.globals.push(hlbc::types::RefType(7)); // Bool
+    // Persistent top-scope hscript interpreter: created ONCE (with applyInterpreterGlobals
+    // -> the engine's global API), reused for every `e`. Null until first eval. This is the
+    // single engine-linked interp into which all commands eventually move as one hscript file.
+    let g_interp = code.globals.len();
+    code.globals.push(hlbc::types::RefType(506)); // hscript.Interp
 
     // Inject into the per-frame update (post-boot), NOT onLoaded: networking
     // string/host calls SIGSEGV during early config-load, but are fine once the
@@ -1394,13 +1405,22 @@ fn connect_edit(
     // expr = parser.parseString(scriptLine, null)
     ops.push(Opcode::Null { dst: rr(15) });
     ops.push(Opcode::Call3 { dst: e_expr, fun: RefFun(hs_parse), arg0: e_parser, arg1: rr(14), arg2: rr(15) });
-    // interp = new hscript.Interp(); interp.__constructor__()
+    // ---- get-or-create the PERSISTENT top-scope interp, loaded with the engine's global
+    // API via applyInterpreterGlobals (CState/HitboxStats/events/… — exactly how Main::init
+    // readies every script). Created once, reused for every eval; this is the single
+    // engine-linked interp all commands eventually move into as one hscript file. ----
+    let _ = (hs_execute, eval_cs_g);
+    ops.push(Opcode::GetGlobal { dst: e_interp, global: RefGlobal(g_interp) });
+    let idx_e_haveinterp = ops.len();
+    ops.push(Opcode::JNotNull { reg: e_interp, offset: 0 });            // already built -> reuse
     ops.push(Opcode::New { dst: e_interp });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_interp_ctor), arg0: e_interp });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_apply_globals), arg0: e_interp }); // load engine API
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_interp), src: e_interp });
+    let idx_e_interp_ready = ops.len();
+    if let Opcode::JNotNull { offset, .. } = &mut ops[idx_e_haveinterp] { *offset = idx_e_interp_ready as i32 - idx_e_haveinterp as i32 - 1; }
     // ---- bind p0 = MatchController.currentMatch.characters[0] (as Dynamic; null if no match) ----
-    // so scripts can reach the live character: `p0.toState(...)`, `p0.body.x`, etc. hscript
-    // treats it as Dynamic and Reflects on it at runtime — the same way character scripts use `self`.
-    let _ = eval_cs_g;
+    // so scripts can reach the live character: `p0.toState(...)`, `p0.body.x`, etc.
     ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
     ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });   // currentMatch
     let idx_e_p0null = ops.len();
@@ -1421,8 +1441,10 @@ fn connect_edit(
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_p0null] { *offset = idx_e_bindnull as i32 - idx_e_p0null as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_chnull] { *offset = idx_e_bindnull as i32 - idx_e_chnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_p0done] { *offset = idx_e_setp0 as i32 - idx_e_p0done as i32 - 1; }
-    // result = interp.execute(expr)
-    ops.push(Opcode::Call2 { dst: e_result, fun: RefFun(hs_execute), arg0: e_interp, arg1: e_expr });
+    // result = ApiScript.interpretScript(expr, interp) — the engine's own run-a-program:
+    // resets depth/declared, runs exprReturn, and TRAPS parse/runtime errors (returns null
+    // instead of crashing the frame). This is what makes the interp "ready to accept commands".
+    ops.push(Opcode::Call2 { dst: e_result, fun: RefFun(hs_interp_script), arg0: e_expr, arg1: e_interp });
     // out = "E:" + Std.string(result) + "\n"
     ops.push(Opcode::Call1 { dst: rr(53), fun: RefFun(std_string), arg0: e_result });
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_prefix_g) });
