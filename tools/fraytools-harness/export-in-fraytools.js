@@ -195,13 +195,15 @@ function defaultFrayTools() {
     try { spawn('pkill', ['-f', `remote-debugging-port=${port}`], { stdio: 'ignore' }).unref(); } catch {}
     const qDeadline = Date.now() + 15000;
     while (Date.now() < qDeadline) { if (!(await cdpUp(port))) break; await sleep(500); }
-    await sleep(1500);  // let the debug port fully release before relaunch
+    await sleep(3000);  // let the old process fully exit + release the debug port before relaunch
   }
   console.error(`launching FrayTools (${ftBin}) with --remote-debugging-port=${port}`);
   {
     const child = spawn(ftBin, [`--remote-debugging-port=${port}`], { detached: true, stdio: 'ignore' });
     child.unref();
-    if (!(await waitForCdp(port, 20000))) die('CDP never came up');
+    // Cold start (especially right after a quit) can take a while to bind the debug port;
+    // give it generous headroom so an export doesn't fail spuriously needing a manual retry.
+    if (!(await waitForCdp(port, 45000))) die('CDP never came up');
   }
 
   // The HTTP endpoint answering 200 does NOT mean a page target exists yet — on a
