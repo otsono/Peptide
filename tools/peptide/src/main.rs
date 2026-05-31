@@ -9,7 +9,8 @@ use asm::Asm;
 // move-dispatch jump table; the bridge uses it to translate move names. One table.
 mod commands;
 mod bridge; // headless TCP runtime (serve / send_once)
-mod ui; // the console UI + cross-platform launcher
+mod ui; // terminal console (ratatui) + cross-platform launcher
+mod gui; // graphical chat window (egui/eframe) — the default
 
 use hlbc::opcodes::Opcode;
 use hlbc::types::{Reg, RefString};
@@ -23,8 +24,12 @@ fn main() -> anyhow::Result<()> {
     // rest of main) runs only when arg1 is a path (e.g. `peptide <in> <out> connect …`),
     // not a mode word — so `peptide` with no args opens the UI.
     match args.get(1).map(|s| s.as_str()) {
-        None | Some("ui") => {
-            ui::launch()?;
+        None | Some("ui") | Some("gui") => {
+            gui::launch()?; // graphical chat window (default)
+            return Ok(());
+        }
+        Some("tui") => {
+            ui::launch()?; // terminal console (ratatui)
             return Ok(());
         }
         Some("headless") | Some("serve") => {

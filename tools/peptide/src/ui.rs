@@ -85,7 +85,7 @@ fn pseudo_seed() -> u32 {
 }
 
 /// Removes the throwaway files + kills the engine when the UI exits (including panic).
-struct Cleanup {
+pub struct Cleanup {
     conn: PathBuf,
     appid: PathBuf,
     engine: Option<Child>,
@@ -105,7 +105,7 @@ impl Drop for Cleanup {
 /// engine copy (via the sibling `peptide` binary), boot it, and run the console.
 /// hlboot-sdl.dat is never modified. Tested on macOS; Windows/Linux use cfg! defaults
 /// and honor FRAY_DIR / FRAY_ENGINE / FRAY_BOOT / FRAY_CHAR overrides.
-pub fn launch() -> std::io::Result<()> {
+pub fn boot() -> std::io::Result<(BufReader<TcpStream>, TcpStream, u16, Cleanup)> {
     let fray_dir: PathBuf = match std::env::var_os("FRAY_DIR") {
         Some(d) => PathBuf::from(d),
         None => default_install_dir().unwrap_or_else(|| {
@@ -166,9 +166,17 @@ pub fn launch() -> std::io::Result<()> {
         eprintln!("peptide-ui: failed to launch the engine ({}).", fray_dir.join(engine_bin).display());
         std::process::exit(1);
     }
-    let _guard = Cleanup { conn: conn.clone(), appid: appid.clone(), engine };
+    let guard = Cleanup { conn: conn.clone(), appid: appid.clone(), engine };
 
-    run(port, Some(&token)) // owns the terminal until the user quits; _guard cleans up
+    // bind + wait for the engine to dial in, then hand the live connection back to the caller.
+    let (reader, writer) = await_engine(port, Some(&token));
+    Ok((reader, writer, port, guard))
+}
+
+/// Boot the engine + console UI (terminal). The GUI uses `boot()` directly.
+pub fn launch() -> std::io::Result<()> {
+    let (reader, writer, port, _guard) = boot()?;
+    run_with(reader, writer, port) // owns the terminal until the user quits; _guard cleans up
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -284,8 +292,7 @@ const PALETTE: &[(&str, &str)] = &[
     ("exit", "shut the engine down"),
 ];
 
-pub fn run(port: u16, token: Option<&str>) -> std::io::Result<()> {
-    let (reader, writer) = await_engine(port, token);
+fn run_with(reader: BufReader<TcpStream>, writer: TcpStream, port: u16) -> std::io::Result<()> {
 
     // socket -> channel (raw lines); dedup repeated ANIM frames.
     let (tx, rx): (mpsc::Sender<String>, Receiver<String>) = mpsc::channel();
