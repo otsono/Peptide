@@ -2,8 +2,9 @@
 # Batch export + in-engine spawn-test a set of characters. Records PASS/FAIL.
 # PASS = reached ANIM:STAND after spawn, move jab returned M:OK, no rosetta crash.
 set -u
-cd /Users/jimmy/.openclaw/workspace-main/ssf2-fraymakers-converter
-RESULTS=/tmp/batch_results.txt
+# repo root = two dirs up from this script (tools/peptide/ -> repo root)
+cd "$(cd "$(dirname "$0")/../.." && pwd)"
+RESULTS="${BATCH_RESULTS:-/tmp/batch_results.txt}"
 : > "$RESULTS"
 for c in "$@"; do
   # 1. ensure fresh source (already converted in the earlier batch, but regen is cheap+deterministic)
