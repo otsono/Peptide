@@ -384,6 +384,22 @@
         "xSpeedCap":          "updateAnimationStats.groundSpeedCap",
         "xSpeedDecay":        "updateAnimationStats.friction",
         "xSpeedDecayAir":     "updateAnimationStats.aerialFriction",
+        // CharacterAnimationStats / AnimationStats boolean flags — confirmed against the
+        // Fraymakers API docs (CharacterAnimationStats: allowFastFall/allowJump/allowTurn/
+        // doubleJumpCancel; AnimationStats: interruptible/autoRotate). Set via the same
+        // updateAnimationStats({...}) path that already carries allowMovement.
+        "allowFastFall":         "updateAnimationStats.allowFastFall",
+        "allowJump":             "updateAnimationStats.allowJump",
+        "jumpCancelAttack":      "updateAnimationStats.allowJump",
+        "allowTurn":             "updateAnimationStats.allowTurn",
+        "allowFullInterrupt":    "updateAnimationStats.interruptible",
+        "doubleJumpCancelAttack":"updateAnimationStats.doubleJumpCancel",
+        "rotate":                "updateAnimationStats.autoRotate",
+        // disableJump is the inverse of allowJump.
+        "disableJump": {
+          "target": "updateAnimationStats.allowJump",
+          "value_map": { "true": "false", "false": "true" }
+        },
         // Object-form entries — value-conditional + skip rules.
         //
         // canFallOff: only `true` maps cleanly (player can drop through
@@ -400,17 +416,14 @@
         // means "no override" — silently drop so it doesn't pollute the
         // output. Other values surface as the default TODO comment.
         "air_ease": { "skip_if_value": "-1" }
-        // Other observed SSF2 fields with no clean FM equivalent surface
-        // as `// TODO:` lines per call site: air_ease, allowJump,
-        // allowDoubleJump, allowFastFall, allowFullInterrupt, allowRun,
-        // allowTurn, airCancel, airCancelSpecial, atk_id, canFallOff,
-        // cancelSoundOnEnd, cancelVoiceOnEnd, disableJump,
-        // doubleJumpCancelAttack, facedLedgesOnly, heavyArmor, hit_ease,
-        // IASA, invincible, jumpCancelAttack, ledgeFrame, linkFrames,
-        // refreshRate, rocket, rotate, secondaryAttack, superArmor,
-        // allowControlGround. Several (superArmor/heavyArmor/invincible)
-        // would route to FM AnimationStats.bodyStatus but require a
-        // bool→enum conversion that can't be a flat text rename.
+        // Still-unmapped SSF2 fields (surface as `// TODO:` per call site): air_ease,
+        // hit_ease (aerial/hit drift ease — no direct FM speed-stat equivalent), airCancel,
+        // airCancelSpecial (cancel-into-aerial windows — no clean FM flag), allowDoubleJump,
+        // allowRun, allowControlGround, atk_id, cancelSoundOnEnd, cancelVoiceOnEnd,
+        // facedLedgesOnly, IASA, ledgeFrame, linkFrames, refreshRate, rocket, secondaryAttack.
+        // bodyStatus group (superArmor/heavyArmor/invincible) needs a bool→BodyStatus-enum
+        // conversion (e.g. superArmor→BodyStatus.ARMOR); left for a value-map pass once the
+        // exact BodyStatus enum member names are confirmed.
       }
     }
   },
