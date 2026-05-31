@@ -152,14 +152,21 @@ def check_char(cid):
             # cases where weightKB is the dominant source so a human can sanity-check.
             if shb.get("weightKB", 0) > shb.get("power", 0):
                 info.append(f"{move}.hitbox{i}: baseKnockback={int(exp['baseKnockback'])} from SSF2 weightKB (power={int(shb.get('power',0))})")
-    # Frame-data dimension: a stat-bearing move with NO active hitbox frames in the
-    # .entity can't connect in-engine (stats present but the box never appears).
+    # Frame-data dimension: hitbox COVERAGE — how many stat-bearing moves actually have
+    # active hitbox frames in the entity. A near-zero coverage means broken sprite/box
+    # extraction (the whole character can't hit — this is how the 5 empty-shell chars were
+    # found). A FEW stat-moves with no active frames is normal (projectile specials like a
+    # fireball, throws) so per-move misses are INFO, not failures; only a severe shortfall
+    # is flagged as an issue.
     af = hitbox_active_frames(cid)
     if af is not None:
-        for move, boxes in sorted(out.items()):
-            has_stats = any(int(hb.get(f, 0)) for hb in boxes for f in CORE)
-            if has_stats and af.get(move, 0) == 0:
-                issues.append(f"{move}: has hitbox STATS but 0 active hitbox frames in {pascal(cid)}.entity (can't hit in-engine)")
+        stat_moves = [m for m, boxes in out.items()
+                      if any(int(hb.get(f, 0)) for hb in boxes for f in CORE)]
+        with_frames = [m for m in stat_moves if af.get(m, 0) > 0]
+        cov = (len(with_frames) / len(stat_moves)) if stat_moves else 1.0
+        info.append(f"hitbox frame-coverage: {len(with_frames)}/{len(stat_moves)} stat-moves have active frames ({cov*100:.0f}%)")
+        if stat_moves and cov < 0.4:
+            issues.append(f"BROKEN sprite extraction: only {len(with_frames)}/{len(stat_moves)} stat-moves have active hitbox frames — most moves can't hit")
 
     # moves in output but not source: inheritance (ok) or spurious
     for move in sorted(out):

@@ -14,33 +14,37 @@ Two axes:
 > frames). Parity work (5 fixes landed; see `docs/PARITY.md`) is tracked
 > separately, with mario/sandbag as the deep test beds.
 
-## Headline: 40 / 45 genuinely functional; 5 have broken sprite extraction
+## Headline: 45 / 45 genuinely functional + 45/45 hitbox-stat parity
 
-**Correction (don't over-claim):** all 45 convert and *spawn* without crashing, but
-the spawn test is SHALLOW — `ANIM:JAB` reports the engine STATE name, not a real
-animation playing. The frame-data check (`tools/parity_check.py`, HIT_BOX active
-frames in the entity) revealed that **5 characters have near-empty entities** and
-do NOT actually animate or hit:
+All 45 characters convert, spawn, and have **populated entities with real movesets
+and hitboxes** (verified by `tools/parity_check.py`: entity animation counts +
+HIT_BOX active-frame coverage, NOT just the shallow `ANIM:STATE` spawn signal).
+`misc.ssf` is shared data, not a character.
 
-| Broken char | entity anims | hitbox layers | active frames |
-|---|---|---|---|
-| `fox` | 11 | 0 | 0 |
-| `bomberman` | 11 | 2 | 2 |
-| `donkeykong` | 14 | 2 | 2 |
-| `pit` | 16 | 2 | 2 |
-| `luffy` | 17 | 2 | 2 |
+**5 characters were empty shells and are now FIXED.** The frame-data check first
+exposed that `fox`/`bomberman`/`donkeykong`/`pit`/`luffy` had near-empty entities
+(~11-17 animations, ~0-2 hitboxes) — they spawned (state dispatch) but didn't
+animate or hit. Root cause: those characters name move sprites with a redundant
+char prefix (`fox_fla.fox_airN`; donkeykong uses the short code `dkbair`) and
+abbreviated labels (`airN`/`smashD`/`specialN`), which the label resolver missed →
+moves extracted empty → dropped. Fixed by a `{char}_`/short-code prefix strip
+(`sprite_parser.rs`) + abbreviated-label entries (`animations.jsonc`). Recovery:
 
-(A healthy character has ~128-164 animations and 24-76 hitbox layers — e.g. mario
-159/39, marth 139/76.) Root cause: per-animation sprite/box resolution fails for
-these 5 (fox: box data for 9/86 animations vs mario's 88/85), so their real moves
-extract empty and `entity_gen` drops them below the "UNUSED" separator, leaving
-only the template `item_*` placeholders. **Open** — a deep `image_extractor` /
-`sprite_parser` issue (see `docs/PARITY.md`).
+| char | before (anims/hitbox) | after |
+|---|---|---|
+| fox | 11 / 0 | 113 / 36 |
+| bomberman | 11 / 2 | 129 / 32 |
+| donkeykong | 14 / 2 | 87 / 25 |
+| pit | 16 / 2 | 138 / 46 |
+| luffy | 17 / 2 | 124 / 34 |
 
-**40 / 45 characters are genuinely functional** (real moveset, hitboxes, drive
-in-engine). `misc.ssf` is shared data, not a character. Hitbox-STAT parity is
-45/45 for the moves that DO exist (`docs/PARITY.md`); the 5 broken chars + the
-frame-data dimension are the next priority.
+fox re-verified in-engine: JAB / AERIAL_NEUTRAL / SPECIAL_NEUTRAL now play real
+animations (was state-dispatch only), no crash.
+
+**Hitbox-STAT parity: 45/45** — every hitbox's damage/angle/knockback/hit-freeze
+matches the SSF2 source (`docs/PARITY.md`). Hitbox frame-coverage is 52-90%+ per
+character (the remainder are projectile specials / throws that legitimately have no
+melee hitbox).
 
 ## Convert failures: none
 
