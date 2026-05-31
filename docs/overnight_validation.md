@@ -28,6 +28,15 @@ user's local Fraymakers engine via the Peptide harness (`tools/peptide`).
 - **Decompiler**: stack-threading on both branch arms (recovered `/* ? */` lost
   exprs) + the OOM fix (chibirobo/dedede). 47 lib tests pass throughout.
 
+**P2 (modder features) shipped this session:** `recipe.sh` (shareable command
+scripts), `ab_compare.sh` (golden behavioral-signature regression check), crash
+diagnostics (the bridge dumps the last ~16 events when the engine stream ends),
+animation scrubbing (`step`/`play` — pause + frame-step + resume), and `track
+<move>` (in-engine self-momentum trajectory — verified dash_attack vx 12.86→0,
++140px). Plus the earlier `loop`/`snapshot`/`anim`/`physics`. The `.hl` spike ran
+(haxe installed, toolchain works) and established the merge-linker as the real next
+project. Full done/deferred breakdown of every P1+P2 item: `docs/P1_P2_STATUS.md`.
+
 Full parity status + remaining dimensions: `docs/PARITY.md`. Per-character:
 `docs/character_status.md`.
 
