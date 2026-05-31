@@ -50,7 +50,7 @@ pub fn launch() -> std::io::Result<()> {
     let conn: SharedConn = Arc::new(Mutex::new((port, token)));
     spawn_reader(reader, event_loop.create_proxy());
 
-    let char_name = std::env::var("FRAY_CHAR").unwrap_or_else(|_| "sandbag".into());
+    let char_name = crate::config::Config::load().char_name();
     let init = format!("window.__PORT__={port}; window.__CHAR__={};", js_str(&char_name));
 
     let ipc_writer = writer.clone();

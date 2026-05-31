@@ -46,6 +46,8 @@ use asm::Asm;
 mod commands;
 mod manifest; // engine-symbol dependency table + doctor/preflight progress UI
 mod convert; // `peptide convert` — in-process SSF2 → Fraymakers conversion (folded-in converter)
+mod config; // persisted config (Fraymakers/FrayTools paths, current char) + env-override resolvers
+mod platform; // cross-platform path discovery + FrayTools publish-folder editing (ported from the egui GUI)
 mod bridge; // headless TCP runtime (serve / send_once)
 mod ui; // terminal console (ratatui) + cross-platform launcher
 mod gui; // graphical chat window (egui/eframe) — the default

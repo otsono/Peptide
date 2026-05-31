@@ -99,18 +99,8 @@ fn engine_invocation() -> (&'static str, Option<&'static str>) {
     { ("hl", Some("LD_LIBRARY_PATH")) }
 }
 
-/// Best-effort default Steam install path for Fraymakers per OS. Always overridable
-/// with FRAY_DIR.
-fn default_install_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    { std::env::var_os("HOME").map(|h| PathBuf::from(h)
-        .join("Library/Application Support/Steam/steamapps/common/Fraymakers")) }
-    #[cfg(target_os = "windows")]
-    { Some(PathBuf::from(r"C:\Program Files (x86)\Steam\steamapps\common\Fraymakers")) }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    { std::env::var_os("HOME").map(|h| PathBuf::from(h)
-        .join(".steam/steam/steamapps/common/Fraymakers")) }
-}
+// The per-OS default Fraymakers install path now lives in
+// `platform::default_fraymakers_root`, read through `config::Config`.
 
 fn pseudo_seed() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -181,22 +171,22 @@ pub fn patch_and_launch_with_progress(
     // needs no Send/Sync bound (the GUI's wry proxy isn't Send).
     on_progress: Option<&dyn Fn(usize, usize, &str)>,
 ) -> std::io::Result<(u16, String, Cleanup)> {
-    let fray_dir: PathBuf = match std::env::var_os("FRAY_DIR") {
-        Some(d) => PathBuf::from(d),
-        None => default_install_dir()
-            .ok_or_else(|| io_err("could not determine the Fraymakers install path (set FRAY_DIR)"))?,
-    };
-    let boot_name = std::env::var("FRAY_BOOT").unwrap_or_else(|_| "hlboot-sdl.dat".to_string());
+    // Read launch settings through the persisted config (env vars still win —
+    // see Config's resolver methods — then the saved config, then defaults).
+    let cfg = crate::config::Config::load();
+    let fray_dir: PathBuf = cfg.fraymakers_root()
+        .ok_or_else(|| io_err("could not determine the Fraymakers install path (set it in Setup or FRAY_DIR)"))?;
+    let boot_name = cfg.boot_name();
     let boot = fray_dir.join(&boot_name);
     let conn = fray_dir.join("_conn.dat");
     let appid = fray_dir.join("steam_appid.txt");
     if !boot.exists() {
-        return Err(io_err(&format!("{} not found (set FRAY_DIR to your Fraymakers install)", boot.display())));
+        return Err(io_err(&format!("{} not found (set the Fraymakers install in Setup or FRAY_DIR)", boot.display())));
     }
 
-    let char_name = std::env::var("FRAY_CHAR").unwrap_or_else(|_| "sandbag".into());
-    let stage = std::env::var("FRAY_STAGE").unwrap_or_else(|_| "thespire".into());
-    let assist = std::env::var("FRAY_ASSIST").unwrap_or_else(|_| "commandervideoassist".into());
+    let char_name = cfg.char_name();
+    let stage = cfg.stage();
+    let assist = cfg.assist();
 
     let seed = pseudo_seed();
     let port: u16 = 18000 + (seed % 2000) as u16;

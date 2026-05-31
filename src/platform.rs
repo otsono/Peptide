@@ -1,83 +1,22 @@
-//! Cross-platform host integration: locating the converter binary, `node`,
-//! the FrayTools executable, the Fraymakers install, and editing a converted
-//! character's FrayTools publish settings.
+//! Cross-platform host integration: locating the FrayTools executable, the
+//! Fraymakers install, and editing a converted character's FrayTools publish
+//! settings.
 //!
 //! All paths are computed per-OS (Windows / macOS / Linux). FrayTools stores
 //! publish-folder paths with forward slashes (it's an Electron/Node app), so
 //! the relative path we emit always uses `/` regardless of host.
+//!
+//! Ported from the old egui converter GUI's `platform.rs`. The sidecar-binary
+//! and Node-harness helpers are gone: conversion is in-process now and the
+//! FrayTools driver is pure-Rust CDP (`fraytools.rs`), so there is no
+//! `ssf2_converter` binary and no `node` to locate.
+
+// Some helpers (publish-folder editing, relative_path, find_project_file) are
+// wired into the UI's convert/frayhook screens in Phase 5; allow them to sit
+// unused until then rather than churn the warning surface.
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-
-// ─── ssf2_converter sidecar binary ─────────────────────────────────────────────
-
-/// The `ssf2_converter` CLI binary, expected next to this GUI executable
-/// (they share the workspace `target/` dir in dev, and ship together).
-pub fn converter_bin() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    let name = if cfg!(windows) { "ssf2_converter.exe" } else { "ssf2_converter" };
-    let cand = dir.join(name);
-    cand.is_file().then_some(cand)
-}
-
-// ─── node + the FrayTools export harness ────────────────────────────────────────
-
-/// Locate the `node` executable. GUI apps don't always inherit a useful PATH,
-/// so we check common install locations first, then walk PATH ourselves.
-pub fn find_node() -> Option<PathBuf> {
-    let exe = if cfg!(windows) { "node.exe" } else { "node" };
-
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if cfg!(windows) {
-        if let Ok(pf) = std::env::var("ProgramFiles") {
-            candidates.push(Path::new(&pf).join("nodejs").join(exe));
-        }
-        if let Ok(la) = std::env::var("LOCALAPPDATA") {
-            candidates.push(Path::new(&la).join("Programs").join("nodejs").join(exe));
-        }
-    } else {
-        for p in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
-            candidates.push(PathBuf::from(p));
-        }
-    }
-    for c in &candidates {
-        if c.is_file() {
-            return Some(c.clone());
-        }
-    }
-
-    if let Ok(path) = std::env::var("PATH") {
-        let sep = if cfg!(windows) { ';' } else { ':' };
-        for dir in path.split(sep) {
-            if dir.is_empty() {
-                continue;
-            }
-            let cand = Path::new(dir).join(exe);
-            if cand.is_file() {
-                return Some(cand);
-            }
-        }
-    }
-    None
-}
-
-/// Locate `tools/fraytools-harness/export-in-fraytools.js` by walking up from
-/// this executable (dev: it's in the repo) — returns None if not found.
-pub fn find_export_script() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let mut dir = exe.parent()?.to_path_buf();
-    for _ in 0..10 {
-        let cand = dir.join("tools/fraytools-harness/export-in-fraytools.js");
-        if cand.is_file() {
-            return Some(cand);
-        }
-        match dir.parent() {
-            Some(p) => dir = p.to_path_buf(),
-            None => break,
-        }
-    }
-    None
-}
 
 // ─── FrayTools executable ────────────────────────────────────────────────────────
 
@@ -146,6 +85,13 @@ fn fraymakers_root_raw() -> Option<PathBuf> {
 /// The Fraymakers Steam install dir, if it exists on this machine.
 pub fn fraymakers_root() -> Option<PathBuf> {
     fraymakers_root_raw().filter(|d| d.is_dir())
+}
+
+/// The per-OS default Fraymakers install path, whether or not it exists yet.
+/// Used by `Config::fraymakers_root` as the last-resort default (the harness
+/// used to read this from `ui.rs::default_install_dir`).
+pub fn default_fraymakers_root() -> Option<PathBuf> {
+    fraymakers_root_raw()
 }
 
 /// `custom/<CharacterName>` under the Fraymakers install (not necessarily
