@@ -283,16 +283,15 @@ spot-checked across the same categories. See "stale-`.fra` trap" below — mario
 earlier post-INTRO crash was a 3-day-old published `.fra`, not a live converter
 bug; a fresh export boots and drives clean.
 
-**Corpus convert status (47 `.ssf`): 44 convert clean, 2 fail, 1 n/a.**
-`chibirobo` and `dedede` are **killed with SIGKILL (exit 137 = OOM)** within ~1s
-of entering image/animation extraction (right after `animations.jsonc` loads,
-*before* the "Animation image mappings" line). SIGKILL — not a panic or
-stack-overflow (which would be SIGSEGV/SIGABRT) — points to a **runaway heap
-allocation**, not infinite recursion. Both are large characters (87–89 frame
-methods / sub-MCs). The skew-bake path is already dimension-guarded (`>4096 →
-skip`), so the culprit is likely elsewhere in `build_anim_frame_images` (e.g. a
-pathological effect-sprite compose). Needs a peak-allocation probe to localize —
-**open**.
+**Corpus convert status: 45/45 characters convert (`misc.ssf` = shared data, not
+a character).** The two former failures (`chibirobo`, `dedede`) were a decompiler
+OOM: a mis-parsed CFG range made `decode_range` read a garbage near-`u32::MAX`
+argc/count for call/construct/newarray/newobject opcodes and allocate a ~240 GB
+`Vec<Expr>` → SIGKILL/137. **Fixed** by clamping every `(0..argc/count).pop()`
+loop to the operand-stack depth (`src/decompiler.rs`). Localized with the gated
+memory-limit allocator now in `src/main.rs` (`CONV_MEM_LIMIT_MB`, default-off):
+it makes `alloc` return null past a cap so Rust's alloc-error handler aborts with
+the offending size + backtrace — reusable for any future OOM.
 
 **Verified functional in-engine this session (spawn → STAND, drive moves,
 animate, no crash) — 11 characters:** `sandbag`, `mario`, `kirby`, `bowser`,

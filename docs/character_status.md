@@ -14,28 +14,29 @@ Two axes:
 > frames). Parity work (5 fixes landed; see `docs/PARITY.md`) is tracked
 > separately, with mario/sandbag as the deep test beds.
 
-## Headline: 43 / 45 characters drive in-engine, 0 crashes
+## Headline: 45 / 45 characters drive in-engine, 0 crashes
 
-Every character that converts also spawns, reaches STAND, and dispatches moves
-without crashing. The only failures are 2 convert-time OOMs.
+**Every SSF2 character converts AND spawns, reaches STAND, and dispatches moves
+with no crash.** (`misc.ssf` is the shared costume/palette data file, not a
+character.) Full corpus at the P0 bar; functional-parity refinement (5 fixes
+landed) continues on mario/sandbag — see `docs/PARITY.md`.
 
-## Convert failures (2)
+## Convert failures: none
 
-- **`chibirobo`** — SIGKILL/137 (OOM) entering the extractor's animation-build
-  phase (after `animations.jsonc` loads, before the "Total: attacks" summary);
-  runaway heap allocation, not stack recursion. Open (needs an instrumented run
-  to localize — see `TESTING.md` §5).
-- **`dedede`** — same OOM signature. Both are large characters (87–89 frame
-  methods / sub-MCs).
+`chibirobo` and `dedede` previously SIGKILL'd (240 GB alloc) — a decompiler bug
+on their large methods where a mis-parsed CFG range fed a garbage near-`u32::MAX`
+argc/count to the call/construct/newarray pop-loops. **Fixed** by clamping every
+pop-loop to the operand-stack depth (`src/decompiler.rs`); both now convert and
+drive in-engine (chibirobo, dedede PASS).
 
-## In-engine PASS (43)
+## In-engine PASS (45)
 
 Deep / hand-verified (drive moves + physics + anim):
 `sandbag` (reference), `mario` (full 18-move sweep + physics + anim — deepest),
 `kirby`, `bowser`, `fox`.
 
 Batch-verified (spawn + jab + special_neutral [+ more], no crash):
-`marth`, `falco`, `captainfalcon`, `donkeykong`, `bomberman`, `blackmage`,
+`chibirobo`, `dedede`, `marth`, `falco`, `captainfalcon`, `donkeykong`, `bomberman`, `blackmage`,
 `bandanadee`, `gameandwatch`, `ganondorf`, `goku`, `isaac`, `jigglypuff`,
 `krystal`, `link`, `lloyd`, `lucario`, `luffy`, `luigi`, `megaman`, `metaknight`,
 `naruto`, `ness`, `pacman`, `peach`, `pichu`, `pikachu`, `pit`, `rayman`,
