@@ -373,17 +373,63 @@ pub fn generate_palettes_and_remap(
     costumes_json: Option<&Path>,
 ) -> anyhow::Result<PaletteResult> {
     // Try real SSF2 data first
-    if let Some(json_path) = costumes_json {
-        if let Some(costumes) = load_ssf2_costumes(json_path, char_name) {
-            log::info!("palette_gen: using real SSF2 costume data ({} costumes) for {}", costumes.len(), char_name);
-            return build_from_ssf2(char_id, char_name, &costumes);
-        } else {
-            log::warn!("palette_gen: '{}' not found in {}, falling back to k-means",
-                char_name, json_path.display());
+    let result = if let Some(costumes) = costumes_json
+        .and_then(|json_path| load_ssf2_costumes(json_path, char_name))
+    {
+        log::info!("palette_gen: using real SSF2 costume data ({} costumes) for {}", costumes.len(), char_name);
+        build_from_ssf2(char_id, char_name, &costumes)?
+    } else {
+        if costumes_json.is_some() {
+            log::warn!("palette_gen: '{}' not found in costumes json, falling back to k-means", char_name);
         }
-    }
+        log::info!("palette_gen: using k-means sprite sampling for {}", char_name);
+        build_from_sprites(char_id, char_name, sprites_dir)?
+    };
 
-    // Fallback: sample sprites
-    log::info!("palette_gen: using k-means sprite sampling for {}", char_name);
-    build_from_sprites(char_id, char_name, sprites_dir)
+    // Snap every baked skew_* bitmap to the costume color array. The skew bake's bicubic
+    // resampling introduces colours that aren't in the costume palette (e.g. (96,94,105) on
+    // sandbag's jab), and Fraymakers' palette-swap can't map a non-costume colour → the
+    // sprite flickers. Snapping each pixel to the nearest costume colour keeps every skew
+    // bitmap fully inside the swappable palette. (skew_* are the stretched/skewed Image-layer
+    // character bitmaps; vector-rendered effects are never baked to skew_* files.)
+    // The costume color array is the "colors" list in the generated palettes JSON.
+    let costume_colors: Vec<u32> = serde_json::from_str::<Value>(&result.palettes_json).ok()
+        .and_then(|v| v.get("colors").and_then(|c| c.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.get("color").and_then(|s| s.as_str()))
+                .filter_map(|s| u32::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).ok())
+                .collect()
+        }))
+        .unwrap_or_default();
+    snap_skew_bitmaps_to_palette(sprites_dir, &costume_colors);
+    Ok(result)
+}
+
+/// Snap every `skew_*.png` bitmap's opaque pixels to the nearest colour in the costume
+/// color array (`colors` is ARGB). Alpha is left untouched.
+fn snap_skew_bitmaps_to_palette(sprites_dir: &Path, colors: &[u32]) {
+    let palette: Vec<[u8; 3]> = colors.iter()
+        .map(|&argb| [((argb >> 16) & 0xFF) as u8, ((argb >> 8) & 0xFF) as u8, (argb & 0xFF) as u8])
+        .collect();
+    if palette.is_empty() { return; }
+    let entries = match fs::read_dir(sprites_dir) { Ok(e) => e, Err(_) => return };
+    let mut snapped = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !(name.starts_with("skew_") && name.ends_with(".png")) { continue; }
+        let mut img = match image::open(&path) { Ok(i) => i.to_rgba8(), Err(_) => continue };
+        let mut changed = false;
+        for px in img.pixels_mut() {
+            if px.0[3] == 0 { continue; }
+            let rgb = [px.0[0], px.0[1], px.0[2]];
+            let c = palette[nearest(&rgb, &palette)];
+            if c != rgb { px.0[0] = c[0]; px.0[1] = c[1]; px.0[2] = c[2]; changed = true; }
+        }
+        if changed && img.save(&path).is_ok() { snapped += 1; }
+    }
+    if snapped > 0 {
+        log::info!("palette_gen: snapped {} skew bitmap(s) to the {}-colour costume palette",
+            snapped, palette.len());
+    }
 }

@@ -163,7 +163,11 @@ pub fn split_animations(
             "jump" => {
                 let fwd_end = label_map.get("backflip").copied().unwrap_or(total);
                 let js = jump_startup.min(fwd_end);
-                // jump_squat: grounded startup frames.
+                // jump_squat: grounded startup frames. The slice is `jumpStartup` SOURCE
+                // (30fps) frames; the global 30->60fps doubling later makes the final
+                // jump_squat 2 x jumpStartup engine frames.
+                eprintln!("anim: jump_squat = {} source frames (SSF2 jumpStartup={}) -> {} engine frames (2x)",
+                    js, jump_startup, js * 2);
                 if js > 0 { push_split(&mut out, "jump_squat", anim_name, 0, js, &labels, false, None); }
                 // Remaining airborne frames, divided into thirds (rounded).
                 let rem = fwd_end.saturating_sub(js);
