@@ -5,6 +5,43 @@ for validating the rest of the corpus. It records WHAT was checked, HOW, and the
 commits/tooling that prove it. All runtime checks were performed live against the
 user's local Fraymakers engine via the Peptide harness (`tools/peptide`).
 
+## Morning summary (read this first)
+
+**Headline results:**
+- **sandbag + mario fully drivable in-engine** — every move dispatches, animates,
+  and recovers; physics + animation-frame readbacks work; no crashes. mario got
+  the deepest sweep (all 18 moves).
+- **45 / 45 SSF2 characters convert AND drive in-engine, 0 crashes** (full corpus
+  at the P0 bar; `misc.ssf` is shared data, not a character). See
+  `docs/character_status.md`.
+- **6 converter bugs fixed** (all regression-tested): 5 SSF2 functional-parity
+  fixes on top of P0 + the decompiler OOM that had blocked chibirobo/dedede. See
+  `docs/PARITY.md`.
+
+**Peptide is now a human-facing tool** (full-word commands, was single letters):
+`spawn`, `move <name>`, `state`, `physics`, `anim`, `loop <move>`, `query`,
+`load`, `keys`, `console`, `ping`, `exit`, `help` — with single-letter aliases and
+plain-English reply glosses. The drive→observe→iterate loop works end-to-end (and
+was used to find + verify the parity fixes). Modder guide: `docs/MODDER_GUIDE.md`;
+layering + the greenlit `.hl` direction: `docs/PEPTIDE_ARCHITECTURE.md`; feature
+roadmap (hitbox live-tuning, `verify`, dummy opponent): `docs/PEPTIDE_FUTURE.md`.
+
+**What's NOT done (the real "100%" parity bar):** P0 (boots/animates/no-crash) is
+met corpus-wide, but exact SSF2 behavioral parity (per-move damage/knockback/
+angles/active-frames, item system, CPU AI, physics-stat tuning) is only partially
+in. Five high-confidence parity fixes landed; the remaining items — deeper
+`/* ? */` stack-threading, per-segment hitbox values, `forceAttack`, friction
+tuning — are catalogued with plans in `docs/PARITY.md`. They were deferred as
+either broad/regression-risky (not worth risking the pristine 45/45 state at
+session end) or empirical-tuning problems. The `verify <move>` harness (diff
+in-engine behavior vs the SSF2 reference) is the recommended next build to turn
+parity from eyeballing into a pass/fail suite.
+
+Full chronological timeline: `docs/overnight_session_log.md`. Engine RE map +
+command reference: `TESTING.md`.
+
+---
+
 ## How to reproduce
 
 ```
