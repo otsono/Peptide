@@ -33,6 +33,19 @@ faithfully PRESERVED but not yet mapped to FM's special-angle codes (a move with
 sentinel angle launches at that raw value in-engine; correct FM mapping is a
 follow-up — needs the SSF2 sentinel→FM-angle table).
 
+## Sprite/animation extraction: 5 empty-shell characters recovered
+
+The frame-data check exposed that 5 characters (`fox`, `bomberman`, `donkeykong`,
+`pit`, `luffy`) had near-empty entities — they spawned but had no real moveset or
+hitboxes (the shallow spawn test missed this: `ANIM:X` is the state name). Cause:
+their move sprites carry a redundant char prefix + abbreviated labels
+(`fox_fla.fox_airN`, donkeykong `dkbair`) that the label resolver missed → moves
+extracted empty → dropped. Fixed via a `{char}_`/short-code prefix strip
+(`sprite_parser.rs::extract_ssf2_anim_name`) + abbreviated `label_to_ssf2` entries.
+All 5 recovered to full movesets (fox 11→113 anims / 0→36 hitboxes; pit 16→138/46;
+etc.); fox verified animating real moves in-engine. **45/45 characters now have
+populated entities** — see `docs/character_status.md`.
+
 ## FIXED this session
 
 - **Split sub-animations were 0-damage.** `jab2`/`jab3` (and `strong_*_in/charge`)
