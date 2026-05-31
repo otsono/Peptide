@@ -344,7 +344,7 @@ fn process_character(
 ) -> Result<Option<ProcessedCharacter>> {
     // Fresh conversion log for this character — counts unknown / SSF2-only
     // calls so we can write conversion_log.json next to the exported files
-    // and surface them in the SwiftUI popup.
+    // and surface them in the GUI popup.
     ssf2_converter::api_mappings::reset_conversion_log();
 
     // Parse the SWF exactly once for the duration of this character. Every
@@ -497,7 +497,7 @@ fn process_character(
 /// Assemble the per-character `ssf2_source` + `validation_warnings`
 /// payload used inside the multi-char project log's `characters: [...]`
 /// array. Mirrors the single-character `write_conversion_log` shape so
-/// the SwiftUI popup can handle both: it can branch on whether the
+/// the GUI popup can handle both: it can branch on whether the
 /// top-level log has a `characters` array.
 fn build_conversion_log_block(
     char_name: &str,
@@ -648,7 +648,7 @@ fn run_tier1_validation(
 /// `Main::get<X>` source method, and (for transformation characters) the
 /// parent's normalStats_id + an explanatory note. Validation warnings
 /// land under `validation_warnings`.
-/// Written unconditionally so the SwiftUI GUI can show a post-conversion
+/// Written unconditionally so the GUI can show a post-conversion
 /// popup, and so CLI users get the same artifact alongside the character.
 fn write_conversion_log(
     char_dir: &std::path::Path,
