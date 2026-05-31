@@ -12,12 +12,13 @@
 # Env: FRAY_DIR install path; FRAY_TAIL hold after last cmd (default 3);
 #      FRAY_READY_BUDGET seconds allotted for boot→READY before the first
 #      command can fire (engine-lifetime budget only; the command still fires at
-#      the REAL READY, not after this delay). Default 16 (fast skip-title boot).
+#      the REAL READY, not after this delay). Default 16 — the skip-title +
+#      filtered-required-load boot reaches READY in ~4.5s, so this is slack.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 FRAY_DIR="${FRAY_DIR:-/Users/jimmy/Library/Application Support/Steam/steamapps/common/Fraymakers}"
 GAP="${1:?gap_s}"; shift
-# Fast-boot defaults: the skip-title/skip-custom-load boot reaches READY in ~12s, so the
+# Fast-boot defaults: skip-title + filtered required-load reaches READY in ~4.5s, so the
 # old 45s budget + 6s tail were mostly idle waiting. Override via env if a run needs more.
 TAIL="${FRAY_TAIL:-3}"
 READY_BUDGET="${FRAY_READY_BUDGET:-16}"

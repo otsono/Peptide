@@ -1834,6 +1834,82 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // READY write lands. `s` then dispatches into the match with no menu ever shown.
     let menu_ready_g = add_string_const(code, "READY\n");
     inject_ready_flag(code, 17746, g_ready, g_sock, out_field, write_str, flush, menu_ready_g, sock_t, out_t, str_t, enc_t, 17842)?;
+    // FAST BOOT (deeper): filter the boot required-resources load to skip public:: base
+    // content (the ~10.6s of base-character renders we don't need for a 1-char training
+    // match). Keeps global:: (hscript/vfx/vsmode) + private:: (common/fonts). The match's
+    // stage/assist load on demand at startMatch.
+    inject_required_filter(code)?;
+    Ok(())
+}
+
+/// Filter `pxf.io.$ResourceManager::queueRequiredResources@18234` so the boot load skips
+/// `public::` resources (base-character renders — the bulk of the slow second load). We
+/// insert a 6-op test right after the loop's `get_Required` check (op22): if the resource's
+/// fqid starts with "public::", jump to the loop-tail (skip queuing it). Mid-function
+/// insertion is jump-safe here because only THREE jumps span op22 (op6 loop-exit, op21
+/// not-required, op121 loop-back); we adjust exactly those by ±N. All build-specific op
+/// indices are asserted before patching so a layout change fails loudly instead of
+/// silently corrupting control flow.
+fn inject_required_filter(code: &mut Bytecode) -> anyhow::Result<()> {
+    use hlbc::types::{RefFun, RefGlobal, RefInt};
+    let getfqid = require_fn(code, "getFullyQualifiedResourceId", Some("pxf.io.AbstractResource"))?;
+    let indexof = require_fn(code, "indexOf", Some("String"))?;
+    // 3rd arg (startIndex: Null<Int>) type of String.indexOf
+    let startidx_t = {
+        let ci = function_index_by_findex(code, indexof)
+            .ok_or_else(|| anyhow::anyhow!("indexOf fn missing"))?;
+        code.types[code.functions[ci].t.0].get_type_fun()
+            .and_then(|tf| tf.args.get(2)).map(|a| a.0)
+            .ok_or_else(|| anyhow::anyhow!("indexOf startIndex arg type missing"))?
+    };
+    let pub_g = add_string_const(code, "public::");
+    // Allow-list substrings: a public:: resource is KEPT if its fqid contains one of these
+    // (the match's stage/assist). Everything else public:: (base-character renders — the
+    // bulk) is skipped. NOTE: hardcoded to the harness's current stage/assist; generalize
+    // to the `s` args when scaling. The match's char is private:: (kept by the != public::
+    // test) and loaded on demand anyway.
+    let the_g = add_string_const(code, "thespire");
+    let cva_g = add_string_const(code, "commandervideoassist");
+    let zero_c = add_int(code, 0);
+    let qfi = function_index_by_findex(code, 18234)
+        .ok_or_else(|| anyhow::anyhow!("queueRequiredResources@18234 not found"))?;
+    // scratch regs: r_str(String), r_null(startidx_t), r_idx(Int), r_zero(Int)
+    let base = add_regs(&mut code.functions[qfi], &[13, startidx_t, 3, 3]);
+    let (r_str, r_null, r_idx, r_zero) = (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3));
+    // KEEP if: NOT public:: (fall through), OR fqid contains "thespire"/"commandervideoassist".
+    // Else SKIP -> loop-tail. KEEP is the fall-through (original op22, now op35); the 3
+    // conditional jumps target it (offsets 7/4/1); the final JAlways targets the loop-tail.
+    let filt = vec![
+        Opcode::Call1 { dst: Reg(13), fun: RefFun(getfqid), arg0: Reg(9) },                          // 22: fqid
+        Opcode::GetGlobal { dst: r_str, global: RefGlobal(pub_g) },                                   // 23
+        Opcode::Null { dst: r_null },                                                                 // 24
+        Opcode::Call3 { dst: r_idx, fun: RefFun(indexof), arg0: Reg(13), arg1: r_str, arg2: r_null }, // 25
+        Opcode::Int { dst: r_zero, ptr: RefInt(zero_c) },                                             // 26
+        Opcode::JNotEq { a: r_idx, b: r_zero, offset: 7 },                                            // 27: not public:: -> KEEP(35)
+        Opcode::GetGlobal { dst: r_str, global: RefGlobal(the_g) },                                   // 28
+        Opcode::Call3 { dst: r_idx, fun: RefFun(indexof), arg0: Reg(13), arg1: r_str, arg2: r_null }, // 29
+        Opcode::JSGte { a: r_idx, b: r_zero, offset: 4 },                                             // 30: contains thespire -> KEEP(35)
+        Opcode::GetGlobal { dst: r_str, global: RefGlobal(cva_g) },                                   // 31
+        Opcode::Call3 { dst: r_idx, fun: RefFun(indexof), arg0: Reg(13), arg1: r_str, arg2: r_null }, // 32
+        Opcode::JSGte { a: r_idx, b: r_zero, offset: 1 },                                             // 33: contains cva -> KEEP(35)
+        Opcode::JAlways { offset: 99 },                                                               // 34: public:: non-match -> loop-tail(134)
+    ];
+    let n = filt.len() as i32; // 13
+    let f = &mut code.functions[qfi];
+    // Assert + adjust the three jumps that span the insertion point (op22).
+    match &mut f.ops[6]   { Opcode::JSGte  { offset, .. } => *offset += n, o => anyhow::bail!("qrr op6 not JSGte: {o:?}") }
+    match &mut f.ops[21]  { Opcode::JFalse { offset, .. } => *offset += n, o => anyhow::bail!("qrr op21 not JFalse: {o:?}") }
+    match &mut f.ops[121] { Opcode::JAlways{ offset, .. } => *offset -= n, o => anyhow::bail!("qrr op121 not JAlways: {o:?}") }
+    let at = 22usize;
+    for (i, op) in filt.into_iter().enumerate() { f.ops.insert(at + i, op); }
+    if let Some(dbg) = f.debug_info.as_mut() {
+        let fill = dbg.get(at).copied().unwrap_or((0, 0));
+        for _ in 0..(n as usize) { dbg.insert(at, fill); }
+    }
+    if let Some(assigns) = f.assigns.as_mut() {
+        for (_nm, pos) in assigns.iter_mut() { if *pos >= at { *pos += n as usize; } }
+    }
+    eprintln!("inject_required_filter: queueRequiredResources@18234 — skip public:: in boot load");
     Ok(())
 }
 
