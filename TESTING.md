@@ -378,14 +378,17 @@ confirmation.
 The reference sweep, the template for the rest of the roster. Convert clean, then:
 
 ```
-node tools/fraytools-harness/harness.js \
+peptide harness \
   --project "$PWD/characters/sandbag/sandbag.fraytools" \
   --entity entities/Sandbag.entity --animation <anim> --frame <n> \
   --out-json /tmp/box.json --port 9222
-cargo run --release --bin compare_boxes -- \
+cargo run -p ssf2_converter --features dev-tools --bin compare_boxes -- \
   --ssf2 ../ssf2-ssfs/sandbag.ssf \
   --char sandbag --json /tmp/box.json --tolerance 2.0
 ```
+
+(The legacy `node tools/fraytools-harness/harness.js` does the same thing and
+remains as a reference; `compare_boxes` is a `dev-tools`-gated diagnostic bin.)
 
 FrayTools renders only **static** collision layers (hurt / item / body); hitboxes
 are runtime script data and don't appear here (validated at runtime instead, §5).
