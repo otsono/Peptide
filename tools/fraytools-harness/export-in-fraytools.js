@@ -186,14 +186,22 @@ function defaultFrayTools() {
   const before = newestFra(buildDir);
   const baselineMtime = before ? before.mtimeMs : 0;
 
-  // 1. Attach or launch FrayTools.
-  if (!(await cdpUp(port))) {
-    console.error(`launching FrayTools (${ftBin}) with --remote-debugging-port=${port}`);
+  // 1. (Re)launch FrayTools fresh.
+  // The in-place "reopen the already-open project" path intermittently loses the React
+  // controller for good (the post-open re-stash never recovers), whereas a COLD launch +
+  // fresh open is reliable. So if FrayTools is already running, quit it first and cold-launch.
+  if (await cdpUp(port)) {
+    console.error('FrayTools already running — quitting it for a clean cold relaunch');
+    try { spawn('pkill', ['-f', `remote-debugging-port=${port}`], { stdio: 'ignore' }).unref(); } catch {}
+    const qDeadline = Date.now() + 15000;
+    while (Date.now() < qDeadline) { if (!(await cdpUp(port))) break; await sleep(500); }
+    await sleep(1500);  // let the debug port fully release before relaunch
+  }
+  console.error(`launching FrayTools (${ftBin}) with --remote-debugging-port=${port}`);
+  {
     const child = spawn(ftBin, [`--remote-debugging-port=${port}`], { detached: true, stdio: 'ignore' });
     child.unref();
     if (!(await waitForCdp(port, 20000))) die('CDP never came up');
-  } else {
-    console.error(`attaching to existing FrayTools on port ${port}`);
   }
 
   // The HTTP endpoint answering 200 does NOT mean a page target exists yet — on a
