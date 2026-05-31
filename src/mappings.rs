@@ -89,7 +89,13 @@ pub struct StatMappings {
     /// strings or arrays — kept as raw JSON so each is written Haxe-literally).
     #[serde(default)]
     pub constants: BTreeMap<String, serde_json::Value>,
+    /// Global SSF2 → Fraymakers size multiplier applied to baseScaleX / baseScaleY.
+    /// SSF2 sprites are ~1.9× smaller than Fraymakers' scale; edit in stats.jsonc.
+    #[serde(default = "default_size_multiplier")]
+    pub size_multiplier: f64,
 }
+
+fn default_size_multiplier() -> f64 { 1.9 }
 
 impl StatMappings {
     /// SSF2 key names to try for a Fraymakers stat field, in priority order.

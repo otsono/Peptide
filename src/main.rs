@@ -390,9 +390,13 @@ fn process_character(
             log::warn!("extract_xframe_scale failed: {}, defaulting to 1.0", e);
             (1.0, 1.0)
         });
-    char_data.stats.base_scale_x = base_scale_x;
-    char_data.stats.base_scale_y = base_scale_y;
-    log::info!("Character base scale: scaleX={:.4}, scaleY={:.4}", base_scale_x, base_scale_y);
+    // Apply the global SSF2 → Fraymakers size multiplier (SSF2 sprites are ~1.9× smaller).
+    // The factor lives in mappings/character/stats.jsonc :: size_multiplier for easy editing.
+    let size_mult = mappings::character_stats().size_multiplier;
+    char_data.stats.base_scale_x = base_scale_x * size_mult;
+    char_data.stats.base_scale_y = base_scale_y * size_mult;
+    log::info!("Character base scale: scaleX={:.4}, scaleY={:.4} (raw {:.4}/{:.4} × {} size multiplier)",
+        char_data.stats.base_scale_x, char_data.stats.base_scale_y, base_scale_x, base_scale_y, size_mult);
 
     // Root MC transforms — computed once and shared between sprite-box
     // extraction and image extraction (both used to compute their own

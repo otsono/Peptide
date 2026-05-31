@@ -7,8 +7,33 @@
 // JSONC: // comments and trailing commas are allowed.
 // ─────────────────────────────────────────────────────────────────────────
 {
+  // size_multiplier: global SSF2 → Fraymakers size factor multiplied into
+  // baseScaleX / baseScaleY (SSF2 sprites render ~1.9× smaller than Fraymakers).
+  "size_multiplier": 1.9,
+
   // field_keys: the SSF2 stat key names to try (in order) for each
   // Fraymakers stat field; the first key present in the SWF data wins.
+  // ── SSF2 CharacterStat → Fraymakers GameObjectStats/CharacterStats mapping ──
+  //   weight1            -> weight                (GameObjectStats)
+  //   gravity            -> gravity               (GameObjectStats)
+  //   max_ySpeed         -> terminalVelocity      (GameObjectStats, via fall_speed)
+  //   fastFallSpeed      -> fastFallSpeed         (CharacterStats)
+  //   norm_xSpeed        -> walkSpeedCap          (CharacterStats, via walk_speed)
+  //   max_xSpeed         -> dashSpeed             (CharacterStats, via dash_speed)
+  //   accel_rate_air     -> aerialSpeedAcceleration (GameObjectStats, via air_mobility)
+  //   decel_rate_air     -> aerialFriction        (GameObjectStats, via air_friction)
+  //   max_jump           -> doubleJumps count     (max_jumps, +1 offset)
+  //   jumpSpeed          -> jumpSpeed             (CharacterStats, via jump_height)
+  //   jumpSpeedMidair    -> doubleJumpSpeeds[]    (CharacterStats, via double_jump_height)
+  //   shortHopSpeed      -> shortHopSpeed         (CharacterStats)
+  //   accel_rate         -> walkSpeedAcceleration (CharacterStats)
+  //   decel_rate         -> friction              (GameObjectStats)
+  //   accel_start        -> walkSpeedInitial      (CharacterStats)
+  //   accel_start_dash   -> runSpeedInitial       (CharacterStats)
+  //   dodgeSpeed         -> dodgeRollSpeed        (CharacterStats)
+  //   jumpStartup        -> (internal only — jump-squat frame count, not an FM stat)
+  // No clean FM equivalent (left unmapped): max_jumpSpeed, groundToAirMultiplier,
+  //   dodgeDecel, roll_speed, roll_decay, max_projectile, width, height.
   "field_keys": {
     "weight": ["weight1", "weight"],
     "gravity": ["gravity"],
