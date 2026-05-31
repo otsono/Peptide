@@ -41,8 +41,9 @@
     { "from": ".getControls()", "to": ".getHeldControls()" },
     { "from": ".setXSpeed(", "to": ".setXVelocity(" },
     { "from": ".setYSpeed(", "to": ".setYVelocity(" },
-    { "from": ".getXSpeed()", "to": ".getXVelocity()" },
-    { "from": ".getYSpeed()", "to": ".getYVelocity()" },
+    // NOTE: getXSpeed()/getYSpeed() are kept as-is (Fraymakers' facing-relative speed
+    // getters); they are NOT renamed to get*Velocity(). Only the X/Y getters — the Net
+    // variants still map to getNet*Velocity() in the decompiler.
 
     // FM API renames — confirmed against Fraymakers/api-types-plugin (the
     // authoritative TS declarations of every class+method) and real usage in
