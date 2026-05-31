@@ -198,33 +198,53 @@ fn serve(port: u16, token: Option<&str>) {
     let cmd_gap = std::env::var("FRAY_CMD_GAP").ok()
         .and_then(|s| s.trim().parse::<f64>().ok())
         .filter(|g| *g > 0.0);
+    // Write one wire line + flush; false if the socket is gone.
+    fn send_wire(w: &mut TcpStream, wire: &str) -> bool {
+        let mut line = wire.to_string();
+        line.push('\n');
+        w.write_all(line.as_bytes()).is_ok() && w.flush().is_ok()
+    }
     let stdin = std::io::stdin();
     let mut first = true;
-    for line in stdin.lock().lines() {
+    'outer: for line in stdin.lock().lines() {
         let Ok(raw) = line else { break };
         // Translate the friendly command ("spawn sandbag", "move special_neutral")
-        // into the engine wire line ("s sandbag", "m 13"). `help` and bad input
-        // are handled here and never reach the engine.
-        let mut wire = match translate(&raw) {
-            Translated::Wire(w) => w,
+        // into the engine wire line(s). `help` and bad input are handled here and
+        // never reach the engine; `loop` expands to a repeated client-side send.
+        match translate(&raw) {
             Translated::Client(text) => { print!("{text}"); continue; }
             Translated::Error(msg) => { eprintln!("peptide-bridge: {msg}"); continue; }
-        };
-        if !first {
-            if let Some(g) = cmd_gap { thread::sleep(Duration::from_secs_f64(g)); }
+            Translated::Wire(wire) => {
+                if !first {
+                    if let Some(g) = cmd_gap { thread::sleep(Duration::from_secs_f64(g)); }
+                }
+                first = false;
+                if wire == raw.trim() {
+                    eprintln!("peptide-bridge: SENT {wire:?}");
+                } else {
+                    eprintln!("peptide-bridge: SENT {wire:?}  (from {:?})", raw.trim());
+                }
+                if !send_wire(&mut write_half, &wire) {
+                    eprintln!("peptide-bridge: write failed (engine gone?)");
+                    break;
+                }
+            }
+            Translated::Repeat { wire, count, gap_ms } => {
+                eprintln!("peptide-bridge: LOOP {wire:?} x{count} every {gap_ms}ms  (from {:?})", raw.trim());
+                if !first {
+                    if let Some(g) = cmd_gap { thread::sleep(Duration::from_secs_f64(g)); }
+                }
+                first = false;
+                for i in 0..count {
+                    if i > 0 { thread::sleep(Duration::from_millis(gap_ms)); }
+                    eprintln!("peptide-bridge: SENT {wire:?} ({}/{count})", i + 1);
+                    if !send_wire(&mut write_half, &wire) {
+                        eprintln!("peptide-bridge: write failed (engine gone?)");
+                        break 'outer;
+                    }
+                }
+            }
         }
-        first = false;
-        if wire == raw.trim() {
-            eprintln!("peptide-bridge: SENT {wire:?}");
-        } else {
-            eprintln!("peptide-bridge: SENT {wire:?}  (from {:?})", raw.trim());
-        }
-        wire.push('\n');
-        if write_half.write_all(wire.as_bytes()).is_err() {
-            eprintln!("peptide-bridge: write failed (engine gone?)");
-            break;
-        }
-        let _ = write_half.flush();
     }
 
     // CRITICAL: stdin EOF (e.g. a piped command list finished) must NOT close the
@@ -258,6 +278,12 @@ fn send_once(port: u16, token: Option<&str>, cmd: &str) {
     // Translate the friendly command up front; `help`/errors never open a socket.
     let cmd = match translate(cmd) {
         Translated::Wire(w) => w,
+        // `send` is the one-shot scripted path; loop is an interactive/serve feature.
+        // Degrade gracefully: fire the move once and note it.
+        Translated::Repeat { wire, .. } => {
+            eprintln!("peptide-bridge: 'loop' sends once in one-shot mode — use serve/runseq for repetition");
+            wire
+        }
         Translated::Client(text) => { print!("{text}"); return; }
         Translated::Error(msg) => { eprintln!("peptide-bridge: {msg}"); std::process::exit(2); }
     };

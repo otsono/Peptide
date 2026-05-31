@@ -35,6 +35,8 @@ pub const COMMANDS: &[Cmd] = &[
           args: "<char> [stage] [assist]",       help: "start a match with <char> (loads custom content if needed); stage/assist default to thespire/commandervideoassist" },
     Cmd { name: "move",    aliases: &["attack", "m"],       wire: 'm',
           args: "[move-name]",                   help: "drive a move on player 0 via the engine state machine (no arg = jab). See `help` move list below" },
+    Cmd { name: "loop",    aliases: &["repeat"],            wire: '\0',
+          args: "<move> [count]",                help: "re-dispatch a move on an interval (client-side; default 8x) — for sustained observation / live tuning" },
     Cmd { name: "state",   aliases: &["status", "t"],       wire: 't',
           args: "",                              help: "report player 0's current state name (T:<state>)" },
     Cmd { name: "query",   aliases: &["matchlive", "q"],    wire: 'q',
@@ -104,6 +106,9 @@ pub fn move_ordinal(name: &str) -> Option<usize> {
 pub enum Translated {
     /// Send this exact line to the engine.
     Wire(String),
+    /// Send `wire` to the engine `count` times, sleeping `gap_ms` between sends
+    /// (client-orchestrated repetition — e.g. `loop`). Zero engine bytecode.
+    Repeat { wire: String, count: u32, gap_ms: u64 },
     /// Handled client-side; print this text, send nothing.
     Client(String),
     /// Could not translate; print this error, send nothing.
@@ -131,6 +136,24 @@ pub fn translate(line: &str) -> Translated {
         // input still works, but tell the user `help` exists.
         return Translated::Wire(line.to_string());
     };
+
+    if cmd.name == "loop" {
+        // `loop <move> [count]` — re-dispatch a move on an interval (client-side).
+        let Some(mv) = rest.first() else {
+            return Translated::Error("usage: loop <move> [count]".to_string());
+        };
+        let Some(ord) = move_ordinal(mv) else {
+            return Translated::Error(format!("unknown move {mv:?}. moves: {}",
+                MOVES.iter().map(|(m, _)| *m).collect::<Vec<_>>().join(", ")));
+        };
+        // count clamped to a sane ceiling so a typo can't spin forever.
+        let count = rest.get(1).and_then(|c| c.parse::<u32>().ok()).unwrap_or(8).clamp(1, 200);
+        return Translated::Repeat {
+            wire: format!("m {}", (b'A' + ord as u8) as char),
+            count,
+            gap_ms: 800,
+        };
+    }
 
     if cmd.wire == '\0' {
         // `help`
