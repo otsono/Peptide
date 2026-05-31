@@ -19,6 +19,10 @@ pub struct ExtractedImage {
     pub width: u32,
     pub height: u32,
     pub png_path: String, // relative path within character output dir
+    /// True if this image was rasterized from a vector DefineShape/Morph (usually an
+    /// effect), false for a real character bitmap (DefineBits). The skew-bake palette
+    /// re-snap only applies to character bitmaps, never vector-rendered effects.
+    pub is_vector: bool,
 }
 
 /// Maps shape/character IDs to bitmap IDs (DefineShape → bitmap fill ID)
@@ -281,6 +285,7 @@ pub fn extract_images_from_swf(
                             width: w,
                             height: h,
                             png_path: format!("library/sprites/{}", filename),
+                            is_vector: false,
                         });
                     }
                     Err(e) => {
@@ -306,6 +311,7 @@ pub fn extract_images_from_swf(
                             width: w,
                             height: h,
                             png_path: format!("library/sprites/{}", filename),
+                            is_vector: false,
                         });
                     }
                     Err(e) => {
@@ -367,6 +373,7 @@ pub fn extract_images_from_swf(
                     images.insert(shape.id, ExtractedImage {
                         bitmap_id: shape.id, symbol_name: sym, width: r.width, height: r.height,
                         png_path: format!("library/sprites/{}", filename),
+                        is_vector: true,
                     });
                     shape_to_bitmap.insert(shape.id, shape.id);
                     shape_pivot.insert(shape.id, r.origin_px);
@@ -382,6 +389,7 @@ pub fn extract_images_from_swf(
                     images.insert(m.id, ExtractedImage {
                         bitmap_id: m.id, symbol_name: sym, width: r.width, height: r.height,
                         png_path: format!("library/sprites/{}", filename),
+                        is_vector: true,
                     });
                     shape_to_bitmap.insert(m.id, m.id);
                     shape_pivot.insert(m.id, r.origin_px);
@@ -688,14 +696,19 @@ fn prerender_skewed_frames(
             // that drift off the source sprite's palette. Snap every baked pixel's
             // RGB to the nearest colour actually present in the SOURCE bitmap (alpha
             // left untouched) so the result stays palette-accurate / colour-swappable.
-            // Skipped if the source isn't palettized (too many distinct colours).
-            {
+            // Skipped if the source isn't palettized (too many distinct colours), and
+            // ONLY for character bitmaps — never vector-rendered effects (is_vector).
+            // The palette is built from near-OPAQUE source pixels (alpha >= 250):
+            // antialiased / semi-transparent edge blends aren't real palette colours, so
+            // excluding them stops a stray blend from becoming a snap target (the spurious
+            // extra colour seen on e.g. jab).
+            if !src_img.is_vector {
                 const MAX_PALETTE: usize = 4096;
                 let mut palette: Vec<[u8; 3]> = Vec::new();
                 let mut seen: std::collections::HashSet<[u8; 3]> = std::collections::HashSet::new();
                 let mut too_many = false;
                 for p in src.pixels() {
-                    if p.0[3] >= 8 {
+                    if p.0[3] >= 250 {
                         let rgb = [p.0[0], p.0[1], p.0[2]];
                         if seen.insert(rgb) {
                             palette.push(rgb);
@@ -751,6 +764,7 @@ fn prerender_skewed_frames(
                 width: dst_w,
                 height: dst_h,
                 png_path: format!("library/sprites/{}", filename),
+                is_vector: src_img.is_vector,
             });
             let v = (new_id, new_sym, dst_w, dst_h, min_x, min_y);
             cache.insert(cache_key, v.clone());
