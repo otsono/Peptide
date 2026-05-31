@@ -263,6 +263,14 @@ pub fn help_text() -> String {
     out.push_str("  state                         read player 0 state\n");
     out.push_str("  move special_neutral          drive neutral-special\n");
     out.push_str("  exit                          shut the engine down\n");
+    out.push_str("\nCLI modes (run as `peptide <mode> …`, not engine commands):\n");
+    out.push_str("  (no args) | gui               open the Peptide window (default)\n");
+    out.push_str("  tui                           terminal console\n");
+    out.push_str("  convert <file.ssf> [opts]     SSF2 → Fraymakers conversion (peptide convert --help)\n");
+    out.push_str("  export  --project <.fraytools>   drive FrayTools Publish → build the .fra\n");
+    out.push_str("  render  --entity <rel> [...]     render an entity to PNG via FrayTools\n");
+    out.push_str("  harness --entity <rel> [...]     extract box geometry + PNG + JSON report\n");
+    out.push_str("  headless | send \"<cmd>\"        TCP bridge runtime / one-shot command\n");
     out
 }
 

@@ -45,6 +45,7 @@ use asm::Asm;
 // move-dispatch jump table; the bridge uses it to translate move names. One table.
 mod commands;
 mod manifest; // engine-symbol dependency table + doctor/preflight progress UI
+mod convert; // `peptide convert` — in-process SSF2 → Fraymakers conversion (folded-in converter)
 mod bridge; // headless TCP runtime (serve / send_once)
 mod ui; // terminal console (ratatui) + cross-platform launcher
 mod gui; // graphical chat window (egui/eframe) — the default
@@ -99,6 +100,12 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(2);
             });
             bridge::send_once(bridge::parse_port(&args), bridge::parse_token(&args).as_deref(), &cmd);
+            return Ok(());
+        }
+        Some("convert") => {
+            // Fold-in of the old ssf2_converter binary: run an SSF2 → Fraymakers
+            // conversion in-process (the converter is now a library crate).
+            convert::run_cli(&args[2..])?;
             return Ok(());
         }
         Some("export") => {
