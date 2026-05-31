@@ -42,6 +42,29 @@ After this hook, NEW handlers are just script strings sent from the client — n
 patcher rebuild, no opcodes. The socket/connect/ready bootstrap and the `s`
 match-launch handler remain bytecode (the irreducible "hooks").
 
+## Status — UPDATED (top-scope interp working)
+
+**PROVEN in-engine (branch `hscript-eval-hook`):** a PERSISTENT top-scope interpreter,
+created once and loaded with the engine's global API via `applyInterpreterGlobals`
+(fn 18218), programs run through `ApiScript.interpretScript` (fn 2202, which resets
+depth/declared, runs exprReturn, and traps errors):
+- `eval 1 + 2` -> `E:3`        (pure)
+- `eval CState.JAB` -> `E:63`  (engine API loaded!)
+- `eval CState.STAND` -> `E:2`
+- `eval HitboxStats` -> `E:fraymakers.entity.stats.$FraymakersHitboxStats`
+- ping/eval interleave cleanly; no crash.
+
+The earlier bug (user-diagnosed): the hook used a BARE `new Interp()` with no init, so
+it could only do arithmetic. Fixed by mirroring how `Main::init` readies scripts.
+
+**Match-dependent paths (spawn, p0 binding) NOT yet verified** — but for an
+ENVIRONMENT reason, not a code one: heavy match-launch (GPU) fails once enough stuck
+`UE` `hl` procs accumulate (saw 21, from spawn/kill test cycling). Light commands
+(eval/ping, no GPU) keep working throughout, and clean baseline spawned 3/3 earlier
+at lower proc counts. So spawn needs a REBOOT to test reliably; the eval architecture
+itself is sound (dispatch routing for s/p/e all verified correct in the disassembly).
+
+### Old status (superseded)
 ## Status
 
 **PROVEN in-engine (commits on branch `hscript-eval-hook`):**
