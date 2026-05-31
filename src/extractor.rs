@@ -295,6 +295,45 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
         }
     }
 
+    // SSF2 get/setGlobalVariable("name"[, v]) are string-keyed PERSISTENT per-character
+    // variables. Collect each distinct key as a persistent-state ext var so a
+    // `var name = self.makeInt(0)/makeBool(false)` declaration is emitted; the calls
+    // themselves are rewritten to name.get()/name.set(v) by the commands.jsonc regex
+    // rules. Init kind: Int when the var is used numerically (set to an int literal, or
+    // its get() sits next to an arithmetic / numeric-comparison operator), else Bool
+    // (most SSF2 globals are flags). hscript is dynamically typed, so the wrapper kind
+    // only sets the value seen BEFORE the first set — picking the right default matters,
+    // the get/set themselves work regardless.
+    {
+        let get_re = regex::Regex::new(r#"getGlobalVariable\(\s*"(\w+)"\s*\)"#).unwrap();
+        let set_re = regex::Regex::new(r#"setGlobalVariable\(\s*"(\w+)"\s*,\s*(-?\d+\b)?"#).unwrap();
+        let num_ctx = regex::Regex::new(
+            r#"getGlobalVariable\(\s*"(\w+)"\s*\)\s*(?:[-+*/]|[<>]=?|[!=]=)\s*-?\d|-?\d\s*(?:[-+*/]|[<>]=?|[!=]=)\s*(?:self\.)?getGlobalVariable\(\s*"(\w+)"\s*\)|(?:self\.)?getGlobalVariable\(\s*"(\w+)"\s*\)\s*[-+*/]"#
+        ).unwrap();
+        let mut names: std::collections::BTreeSet<String> = Default::default();
+        let mut numeric: std::collections::BTreeSet<String> = Default::default();
+        for s in &scripts {
+            for c in get_re.captures_iter(&s.code) { names.insert(c[1].to_string()); }
+            for c in set_re.captures_iter(&s.code) {
+                names.insert(c[1].to_string());
+                if c.get(2).is_some() { numeric.insert(c[1].to_string()); }
+            }
+            for c in num_ctx.captures_iter(&s.code) {
+                for i in 1..=3 { if let Some(m) = c.get(i) { numeric.insert(m.as_str().to_string()); } }
+            }
+        }
+        for name in names {
+            if ext_vars.contains(&name) { continue; }
+            let init = if numeric.contains(&name) { "0" } else { "false" };
+            log::info!("global var '{}' (SSF2 get/setGlobalVariable) -> persistent {} wrapper",
+                name, if init == "0" { "Int" } else { "Bool" });
+            if !ext_var_inits.iter().any(|(n, _)| n == &name) {
+                ext_var_inits.push((name.clone(), init.to_string()));
+            }
+            ext_vars.push(name);
+        }
+    }
+
     // Resolve var/function NAME COLLISIONS: a name that is BOTH a persistent instance var
     // and one of the char's own functions cannot coexist at Script.hx top level (and makes
     // `self.<name>` ambiguous). Rename the FUNCTION (its definition + calls — `<name>(`) to
