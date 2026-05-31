@@ -917,6 +917,16 @@ fn connect_edit(
     let a_slash_g = add_string_const(code, "/");
     let a_nomatch_g = add_string_const(code, "A:NOMATCH\n");
     eprintln!("anim: Animation t={anim_t} char.anim.f={char_anim_f} name={anim_name_f} cur={anim_cur_f} total={anim_total_f}");
+    // ---- 'f' (anim frame-step) + 'g' (anim resume): animation scrubbing ----
+    // `step` pauses playback (Character.pauseAnimationPlayback) and advances one
+    // frame via Animation.playFrame(anim, currentFrame+1), then reports A:<name>
+    // frame cur/total — frame-by-frame inspection of a move. `play` resumes.
+    let f_idx = add_int(code, 'f' as i32);
+    let g_idx = add_int(code, 'g' as i32);
+    let pause_field = require_field(code, "pxf.entity.Character", "pauseAnimationPlayback")?;
+    let play_frame = require_fn(code, "playFrame", Some("pxf.components.Animation"))?;
+    let g_ack_g = add_string_const(code, "PLAY\n");
+    eprintln!("scrub: pauseAnimationPlayback.f={pause_field} playFrame={play_frame}");
     let t_prefix_g = add_string_const(code, "T:");
     let anim_prefix_g = add_string_const(code, "ANIM:"); // per-frame state-change telemetry
     let t_nomatch_g = add_string_const(code, "T:NOMATCH\n");
@@ -2223,7 +2233,119 @@ fn connect_edit(
         add_regs(f, &a_regs);
         ops.extend(a_ops);
     }
-    // (a handler falls through to L_ORIG)
+    // (a handler falls through to the 'f' (frame-step) check)
+
+    // ---- 'f' command: animation frame-step (pause + advance one frame + report) ----
+    let idx_f_check = ops.len();
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(f_idx) });
+    let idx_jne_f = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });            // not 'f' -> g-check
+    {
+        let mut a = Asm::new(f.regs.len() as u32);
+        let nomatch = a.label();
+        let after = a.label();
+        let r_mc = a.reg(mc_statics_t); let r_cm = a.reg(match_t); let r_chs = a.reg(38);
+        let r_len = a.reg(3); let r_one = a.reg(3); let r_z = a.reg(3);
+        let r_arr = a.reg(11); let r_el = a.reg(9); let r_char = a.reg(char_entity_t);
+        let r_anim = a.reg(anim_t); let r_name = a.reg(str_t); let r_int = a.reg(3);
+        let r_dyn = a.reg(9); let r_str = a.reg(str_t); let r_acc = a.reg(str_t); let r_lbl = a.reg(str_t);
+        let r_true = a.reg(7); let r_rv = a.reg(0);
+        a.op(Opcode::Field { dst: rr(5), obj: rr(10), field: RefField(out_field) });
+        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(3511) });
+        a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
+        a.jnull(r_cm, nomatch);
+        a.op(Opcode::Field { dst: r_chs, obj: r_cm, field: RefField(characters_field) });
+        a.jnull(r_chs, nomatch);
+        a.op(Opcode::Field { dst: r_len, obj: r_chs, field: RefField(0) });
+        a.op(Opcode::Int { dst: r_one, ptr: RefInt(one_idx) });
+        a.jslt(r_len, r_one, nomatch);
+        a.op(Opcode::Field { dst: r_arr, obj: r_chs, field: RefField(1) });
+        a.op(Opcode::Int { dst: r_z, ptr: RefInt(zero_idx) });
+        a.op(Opcode::GetArray { dst: r_el, array: r_arr, index: r_z });
+        a.jnull(r_el, nomatch);
+        a.op(Opcode::UnsafeCast { dst: r_char, src: r_el });
+        // pause playback, then advance one frame via playFrame(anim, currentFrame+1)
+        a.op(Opcode::Bool { dst: r_true, value: ValBool(true) });
+        a.op(Opcode::SetField { obj: r_char, field: RefField(pause_field), src: r_true });
+        a.op(Opcode::Field { dst: r_anim, obj: r_char, field: RefField(char_anim_f) });
+        a.jnull(r_anim, nomatch);
+        a.op(Opcode::Field { dst: r_int, obj: r_anim, field: RefField(anim_cur_f) });
+        a.op(Opcode::Incr { dst: r_int });
+        a.op(Opcode::Call2 { dst: r_rv, fun: RefFun(play_frame), arg0: r_anim, arg1: r_int });
+        // report A:<name> frame <cur>/<total> (re-read after the step)
+        a.op(Opcode::Field { dst: r_name, obj: r_anim, field: RefField(anim_name_f) });
+        a.jnull(r_name, nomatch);
+        a.op(Opcode::GetGlobal { dst: r_acc, global: RefGlobal(a_pre_g) });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_name });
+        a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(a_frame_g) });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+        a.op(Opcode::Field { dst: r_int, obj: r_anim, field: RefField(anim_cur_f) });
+        a.op(Opcode::ToDyn { dst: r_dyn, src: r_int });
+        a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+        a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(a_slash_g) });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+        a.op(Opcode::Field { dst: r_int, obj: r_anim, field: RefField(anim_total_f) });
+        a.op(Opcode::ToDyn { dst: r_dyn, src: r_int });
+        a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+        a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(nl_g) });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+        a.op(Opcode::Null { dst: rr(15) });
+        a.op(Opcode::Call3 { dst: rr(6), fun: RefFun(write_str), arg0: rr(5), arg1: r_acc, arg2: rr(15) });
+        a.op(Opcode::Call1 { dst: rr(6), fun: RefFun(flush), arg0: rr(5) });
+        a.jalways(after);
+        a.place(nomatch);
+        a.op(Opcode::GetGlobal { dst: r_acc, global: RefGlobal(a_nomatch_g) });
+        a.op(Opcode::Null { dst: rr(15) });
+        a.op(Opcode::Call3 { dst: rr(6), fun: RefFun(write_str), arg0: rr(5), arg1: r_acc, arg2: rr(15) });
+        a.op(Opcode::Call1 { dst: rr(6), fun: RefFun(flush), arg0: rr(5) });
+        a.place(after);
+        let (a_ops, a_regs) = a.finish();
+        add_regs(f, &a_regs);
+        ops.extend(a_ops);
+    }
+    // ---- 'g' command: resume animation playback ----
+    let idx_g_check = ops.len();
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(g_idx) });
+    let idx_jne_g = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });            // not 'g' -> L_ORIG
+    {
+        let mut a = Asm::new(f.regs.len() as u32);
+        let nomatch = a.label();
+        let after = a.label();
+        let r_mc = a.reg(mc_statics_t); let r_cm = a.reg(match_t); let r_chs = a.reg(38);
+        let r_len = a.reg(3); let r_one = a.reg(3); let r_z = a.reg(3);
+        let r_arr = a.reg(11); let r_el = a.reg(9); let r_char = a.reg(char_entity_t);
+        let r_false = a.reg(7); let r_acc = a.reg(str_t);
+        a.op(Opcode::Field { dst: rr(5), obj: rr(10), field: RefField(out_field) });
+        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(3511) });
+        a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
+        a.jnull(r_cm, nomatch);
+        a.op(Opcode::Field { dst: r_chs, obj: r_cm, field: RefField(characters_field) });
+        a.jnull(r_chs, nomatch);
+        a.op(Opcode::Field { dst: r_len, obj: r_chs, field: RefField(0) });
+        a.op(Opcode::Int { dst: r_one, ptr: RefInt(one_idx) });
+        a.jslt(r_len, r_one, nomatch);
+        a.op(Opcode::Field { dst: r_arr, obj: r_chs, field: RefField(1) });
+        a.op(Opcode::Int { dst: r_z, ptr: RefInt(zero_idx) });
+        a.op(Opcode::GetArray { dst: r_el, array: r_arr, index: r_z });
+        a.jnull(r_el, nomatch);
+        a.op(Opcode::UnsafeCast { dst: r_char, src: r_el });
+        a.op(Opcode::Bool { dst: r_false, value: ValBool(false) });
+        a.op(Opcode::SetField { obj: r_char, field: RefField(pause_field), src: r_false });
+        a.place(nomatch);   // either way, just ack PLAY (resume is idempotent / no-match harmless)
+        a.op(Opcode::GetGlobal { dst: r_acc, global: RefGlobal(g_ack_g) });
+        a.op(Opcode::Null { dst: rr(15) });
+        a.op(Opcode::Call3 { dst: rr(6), fun: RefFun(write_str), arg0: rr(5), arg1: r_acc, arg2: rr(15) });
+        a.op(Opcode::Call1 { dst: rr(6), fun: RefFun(flush), arg0: rr(5) });
+        a.place(after);
+        let _ = after;
+        let (a_ops, a_regs) = a.finish();
+        add_regs(f, &a_regs);
+        ops.extend(a_ops);
+    }
+    // (g handler falls through to L_ORIG)
 
     // L_ORIG = first original op after the prepended block (index n).
     let n = ops.len() as i32;
@@ -2280,7 +2402,10 @@ fn connect_edit(
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_t] { *offset = idx_v_check as i32 - idx_jne_t as i32 - 1; }
     // 'v' (physics) -> 'a' (animation) -> L_ORIG. Both bodies are self-contained Asm blocks.
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_v] { *offset = idx_a_check as i32 - idx_jne_v as i32 - 1; }
-    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_a] { *offset = n - idx_jne_a as i32 - 1; }
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_a] { *offset = idx_f_check as i32 - idx_jne_a as i32 - 1; }
+    // 'f' (frame-step) -> 'g' (resume) -> L_ORIG. Self-contained Asm blocks.
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_f] { *offset = idx_g_check as i32 - idx_jne_f as i32 - 1; }
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_g] { *offset = n - idx_jne_g as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnomatch] { *offset = idx_t_nomatch as i32 - idx_t_jnomatch as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnochars] { *offset = idx_t_nomatch as i32 - idx_t_jnochars as i32 - 1; }
     if let Opcode::JSLte { offset, .. } = &mut ops[idx_t_jempty] { *offset = idx_t_nomatch as i32 - idx_t_jempty as i32 - 1; }

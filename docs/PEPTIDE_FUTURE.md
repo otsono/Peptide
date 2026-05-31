@@ -60,9 +60,11 @@ Decomposed into commands (see "Building blocks" below): `spawn` + `dummy` →
 - **`anim`** — current animation name + frame index/total. **[done]** Reads the
   Animation component (`A:<name> frame <cur>/<total>`). The observation half of
   the loop.
-- **`anim step [n]`** — frame-by-frame scrub: advance the animation one frame
-  (pause playback), report what's active each frame. **[planned]** Needs engine
-  animation-playback control (`pauseAnimationPlayback` is a known Character field).
+- **`step` / `play`** — frame-by-frame scrub. **[done]** `step` sets
+  `pauseAnimationPlayback` + advances one frame via `Animation.playFrame(anim,
+  currentFrame+1)` and reports `A:<name> frame cur/total`; `play` resumes. Verified:
+  stand 59→60→61 (held), then play resumes. (Per-frame active-hitbox readback during
+  a scrub still wants the `.hl` hitbox dump.)
 - **`hitresult`** — after a hit lands: damage dealt, victim knockback
   distance + launch angle (sampled over the next K frames), hitstun frames.
   **[planned]** Requires `dummy`. This is the "is it a good angle / would it
