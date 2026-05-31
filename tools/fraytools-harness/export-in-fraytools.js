@@ -48,6 +48,29 @@ function arg(name, def) {
 
 function die(msg) { console.error('ERROR:', msg); process.exit(1); }
 
+/**
+ * Ensure the project's `publishFolders` includes `folderPath` (e.g. the Fraymakers
+ * custom/<char> dir), so FrayTools' "Publish All" lands the .fra straight in the game —
+ * not just ./build. The converter regenerates publishFolders as just `./build`, so this
+ * must run on every export. Edits the .fraytools on disk (FrayTools re-reads it on the
+ * reopen below). Returns true if it added the folder.
+ */
+function ensurePublishFolder(projectFile, projectDir, folderPath) {
+  let proj;
+  try { proj = JSON.parse(fs.readFileSync(projectFile, 'utf8')); }
+  catch (e) { console.error('WARN: could not read project to set publishFolders:', e.message); return false; }
+  if (!Array.isArray(proj.publishFolders)) proj.publishFolders = [];
+  const target = path.resolve(folderPath);
+  const has = proj.publishFolders.some(f =>
+    f && typeof f.path === 'string' && path.resolve(projectDir, f.path) === target);
+  if (has) return false;
+  try { fs.mkdirSync(folderPath, { recursive: true }); } catch {}
+  proj.publishFolders.push({ id: 'fraymakers0', path: folderPath });
+  fs.writeFileSync(projectFile, JSON.stringify(proj, null, 2));
+  console.error(`added Fraymakers publish folder: ${folderPath}`);
+  return true;
+}
+
 function cdpUp(port) {
   return new Promise(resolve => {
     const req = http.get({ host: '127.0.0.1', port, path: '/json/version', timeout: 800 },
@@ -139,6 +162,14 @@ function defaultFrayTools() {
 
   const projectDir = path.dirname(project);
   const buildDir   = path.join(projectDir, 'build');
+
+  // Ensure the game's custom/<char> dir is a publish target (re-added every export
+  // because the converter rewrites publishFolders to just ./build).
+  const fraymakersRoot = arg('fraymakers-root',
+    path.join(process.env.HOME || '', 'Library/Application Support/Steam/steamapps/common/Fraymakers'));
+  const charId = path.basename(project).replace(/\.fraytools$/, '');
+  const fraymakersCustom = path.join(fraymakersRoot, 'custom', charId);
+  ensurePublishFolder(project, projectDir, fraymakersCustom);
   // Baseline: newest .fra before we publish, so we can detect a NEW one.
   const before = newestFra(buildDir);
   const baselineMtime = before ? before.mtimeMs : 0;
@@ -189,18 +220,17 @@ function defaultFrayTools() {
     if (stash !== 'ok') die(`could not locate FrayTools controller: ${stash}`);
 
     // 3. Open the project if it isn't already loaded.
+    // ALWAYS (re)open the project — even if already open — so FrayTools reloads the
+    // fresh on-disk source + the publishFolders we just edited. Publishing from a stale
+    // in-memory copy was silently shipping the OLD converted scripts.
     const cur = await ev(`(()=>{ try { return window.__ctrl.getLibraryDirectory().getPath(); } catch(e){ return null; } })()`);
     const projRoot = project.replace(/\/[^/]+\.fraytools$/, '');
-    if (!cur || !cur.startsWith(projRoot)) {
-      console.error(`opening project: ${project}`);
-      await ev(`window.__ctrl.openProject(${JSON.stringify(project)})`);
-      await sleep(settle);
-      // Re-stash — a project load can remount the controller.
-      stash = await ev(stashJs);
-      if (stash !== 'ok') die(`controller lost after openProject: ${stash}`);
-    } else {
-      console.error('project already open');
-    }
+    console.error(cur && cur.startsWith(projRoot) ? `reopening project (reload from disk): ${project}` : `opening project: ${project}`);
+    await ev(`window.__ctrl.openProject(${JSON.stringify(project)})`);
+    await sleep(settle);
+    // Re-stash — a project load can remount the controller.
+    stash = await ev(stashJs);
+    if (stash !== 'ok') die(`controller lost after openProject: ${stash}`);
 
     // 4. Trigger FrayTools' publish via "Publish All".
     // The Publish dialog has two actions: "Publish" (force mode, primary
