@@ -39,6 +39,7 @@
     { "from": ".refreshAttackID()", "to": ".reactivateHitboxes()" },
     { "from": ".updateAttackBoxStats(", "to": ".updateHitboxStats(" },
     { "from": ".getControls()", "to": ".getHeldControls()" },
+    { "from": ".gotoAndStop(", "to": ".playFrameLabel(" },
     { "from": ".setXSpeed(", "to": ".setXVelocity(" },
     { "from": ".setYSpeed(", "to": ".setYVelocity(" },
     // NOTE: getXSpeed()/getYSpeed() are kept as-is (Fraymakers' facing-relative speed
