@@ -404,6 +404,37 @@ pub fn generate_entity(
                 }
             }
 
+            // ── Frame-script post-processing (per-animation) ─────────────────────
+            // (4) Freefall / special-fall states carry no frame scripts.
+            if matches!(split.fm_name.as_str(),
+                "airdash_freefall" | "airdash_freefall_whiff" | "fall_special") {
+                frame_code.clear();
+            }
+            if frame_count >= 1 {
+                let last = frame_count - 1;
+                // (5) Strip self.endAnimation() from the last two frames — the animation
+                //     already ends there; an explicit endAnimation just cuts it short.
+                for f in [last, last.saturating_sub(1)] {
+                    if let Some(code) = frame_code.get_mut(&f) {
+                        *code = code.replace("self.endAnimation();", "").replace("self.endAnimation()", "");
+                    }
+                }
+                // (6) Move any code on the second-to-last frame onto the final frame.
+                if frame_count >= 2 {
+                    let second_last = frame_count - 2;
+                    if let Some(moved) = frame_code.remove(&second_last) {
+                        let moved = moved.trim().to_string();
+                        if !moved.is_empty() {
+                            let e = frame_code.entry(last).or_default();
+                            *e = if e.trim().is_empty() { moved }
+                                 else { format!("{}\n{}", moved, e.trim_start()) };
+                        }
+                    }
+                }
+                // Drop entries emptied by the endAnimation strip so they become blank frames.
+                frame_code.retain(|_, c| !c.trim().is_empty());
+            }
+
             // Build keyframe sequence: for each frame with code, emit a 1-frame
             // script keyframe. Fill gaps with blank keyframes. After the last
             // script frame, fill remaining frames with a blank keyframe.
