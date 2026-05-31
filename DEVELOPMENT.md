@@ -94,7 +94,6 @@ ssf2-fraymakers-converter/
 ├── TESTING.md                Validation harnesses + engine RE map + validation status
 ├── LICENSE                   MIT License
 ├── NOTICE.md                 Dependency attribution (Ruffle swf crate, etc.)
-├── build-app.sh              Build Rust + Swift, assemble the macOS .app, launch it
 ├── rebuild-sandbag.sh        Quick: rebuild release binary + convert sandbag.ssf
 ├── .gitignore                Ignores *.ssf, *.swf, /target, characters/
 │
@@ -132,7 +131,6 @@ ssf2-fraymakers-converter/
 │   └── peptide/               Drives the user's Fraymakers engine via patched bytecode + loopback TCP
 │
 ├── ssf2-converter-gui/        Cross-platform (egui) GUI wrapper
-├── SSF2ConverterApp/          Native macOS SwiftUI GUI wrapper
 │   ├── Package.swift
 │   └── Sources/SSF2ConverterApp/{App.swift, ContentView.swift}
 │
@@ -165,10 +163,8 @@ separately.
 - **`ffmpeg`** on `PATH` — used at runtime for sound conversion (Nellymoser / MP3 /
   ADPCM → WAV). If `ffmpeg` is absent the conversion still completes; sound
   extraction is skipped with a warning.
-- **Swift 5.9 + Xcode command-line tools** — only if you want to build the macOS
-  GUI app. Core conversion does not need it.
-- **macOS 13+** — only for the GUI app. The Rust converter itself is platform-
-  agnostic (it has been developed and run on macOS).
+- The cross-platform GUI (`ssf2-converter-gui`) needs only Rust — no extra
+  toolchain or OS-specific SDK. The converter itself is platform-agnostic.
 
 There is **no external Rust runtime dependency** for SWF decompression, bitmap
 decoding, or ABC parsing — those all happen in-process (`src/ssf.rs`,
@@ -236,30 +232,26 @@ re-converts `sandbag.ssf`, then prints a sprite count.
 > moves, edit that line. `sandbag` is the standard smoke-test character
 > (small, simple) — keep using it for fast iteration.
 
-### 3.5 Build & run the macOS GUI app
+### 3.5 The desktop GUI app
+
+The cross-platform GUI lives in `ssf2-converter-gui/` (Rust + `egui`). Build and
+run it from its own directory (see
+[`ssf2-converter-gui/README.md`](ssf2-converter-gui/README.md) for specifics):
 
 ```bash
-./build-app.sh
+cargo run --release --manifest-path ssf2-converter-gui/Cargo.toml
 ```
 
-This script: (1) `cargo build --release`, (2) `swift build -c release` in
-`SSF2ConverterApp/`, (3) assembles `SSF2ConverterApp/build/SSF2ConverterApp.app`
-with an `Info.plist` and **both** executables inside `Contents/MacOS/`
-(the SwiftUI app *and* the `ssf2_converter` binary it shells out to), then
-launches it.
+It is a thin wrapper around the `ssf2_converter` binary: drag-and-drop (or pick) a
+`.ssf`, it runs the converter as a child process, animates a progress bar, and
+shows success/failure with the captured log. It auto-detects a sibling
+`misc.ssf`, lets the user override the output dir, and reads
+`<output>/<char>/conversion_log.json` to display an "Unhandled Calls" popup
+summarising the `unknown` / `ssf2_only` counts after every run. The GUI adds
+**no conversion logic** — all behaviour lives in the Rust binary.
 
-The GUI (`SSF2ConverterApp/Sources/SSF2ConverterApp/`) is intentionally thin:
-
-- `App.swift` — `@main` SwiftUI `App` + an `AppDelegate` that forces a normal
-  foreground window.
-- `ContentView.swift` — a drag-and-drop / file-picker window. On drop it runs
-  the bundled `ssf2_converter` binary as a child `Process`, animates a progress
-  bar, and shows success/failure with the captured log. It auto-detects a sibling
-  `misc.ssf`, lets the user override the output dir, and reads
-  `<output>/<char>/conversion_log.json` to display an "Unhandled Calls" popup
-  summarising the `unknown` / `ssf2_only` counts after every run.
-
-The GUI adds **no conversion logic** — all behaviour lives in the Rust binary.
+(The earlier native macOS SwiftUI app and `build-app.sh` were removed in favour
+of this single cross-platform GUI.)
 
 ---
 
@@ -364,7 +356,7 @@ process_character():
                                    - validation_warnings (Tier 1 soft logs:
                                      empty stats/attacks, char_name not in
                                      declared roster, id ≠ filename stem).
-                                 Used by the SwiftUI "Unhandled Calls" popup.
+                                 Used by the GUI "Unhandled Calls" popup.
 ```
 
 Three sub-systems are worth calling out:
@@ -735,7 +727,7 @@ appear in **any** `commands.jsonc` section (`replacements`,
 `regex_replacements`, `passthrough_fm_apis`, `ssf2_only`, `frame_params`,
 `call_splits` source methods) into `ConversionLog::unknown`. The combined
 log lands in `<char>/conversion_log.json` at the end of the run and drives
-the SwiftUI "Unhandled Calls" popup.
+the GUI "Unhandled Calls" popup.
 
 ### 5.6 Generation layer
 
@@ -1236,7 +1228,7 @@ What is solid:
 - Empty-animation dropping (with a jab-aware keep-list).
 - `Menu.entity` with broadened head-sprite detection (`_head`, `_icon`;
   excludes `_hud`).
-- Conversion log + SwiftUI "Unhandled Calls" popup.
+- Conversion log + GUI "Unhandled Calls" popup.
 - The macOS SwiftUI GUI wrapper.
 
 ---

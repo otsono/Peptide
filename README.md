@@ -44,9 +44,9 @@ A single conversion pulls an entire SSF2 character across to Fraymakers, end to 
 
 - **`ssf2_converter`** — the core command-line converter (Rust). The one tool you
   need to go from `.ssf` to a FrayTools package.
-- **Desktop apps** — a cross-platform GUI (`ssf2-converter-gui`) and a native macOS
-  SwiftUI app (`SSF2ConverterApp`): drag-and-drop a `.ssf`, watch a progress bar,
-  and get a summary of any unhandled calls — no terminal required.
+- **Desktop app** — a cross-platform GUI (`ssf2-converter-gui`): drag-and-drop a
+  `.ssf`, watch a progress bar, and get a summary of any unhandled calls — no
+  terminal required.
 - **Editable conversion config** — JSONC mapping tables in `mappings/` drive API
   translation, stat scaling, animation names, and hitbox-field mapping. Tune the
   conversion by editing data, not recompiling code.
