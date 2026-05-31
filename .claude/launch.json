@@ -4,7 +4,7 @@
     {
       "name": "peptide-ui",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8777", "--directory", "tools/peptide/src"],
+      "runtimeArgs": ["-m", "http.server", "8777", "--directory", "src"],
       "port": 8777
     }
   ]

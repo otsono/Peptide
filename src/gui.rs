@@ -33,6 +33,15 @@ type SharedConn = Arc<Mutex<(u16, String)>>; // the live session's port + auth t
 const RECONNECT: &str = "@@reconnect";     // TCP back into the current session
 const BOOT_QUICK: &str = "@@boot:quick";   // launch a fresh engine, auto-spawn for testing
 const BOOT_REGULAR: &str = "@@boot:regular"; // launch a fresh engine, no auto-spawn
+// Screen-router verbs (Home / Setup / Converter / FrayTools Hook). Heavy work
+// (conversion, FrayTools CDP, file dialogs) runs on a worker thread and posts
+// results back via Ev::Js — never block the tao event loop.
+const PICK_DIR_PREFIX: &str = "@@pick:dir:";       // @@pick:dir:<replyFn>
+const PICK_FILE_PREFIX: &str = "@@pick:file:";     // @@pick:file:<replyFn>[:<ext>]
+const SETUP_SAVE_PREFIX: &str = "@@setup:save:";   // @@setup:save:<json>
+const CONVERT_PREFIX: &str = "@@convert:start:";   // @@convert:start:<json>
+const PUBLISH_PREFIX: &str = "@@publish:add:";      // @@publish:add:<json {char, output}>
+const FRAY_PREFIX: &str = "@@fray:";                // @@fray:export|render|harness:<json>
 
 pub fn launch() -> std::io::Result<()> {
     let event_loop = EventLoopBuilder::<Ev>::with_user_event().build();
@@ -43,15 +52,15 @@ pub fn launch() -> std::io::Result<()> {
         .build(&event_loop)
         .map_err(|e| io(&e.to_string()))?;
 
-    // initial connection
-    let (reader, w, port, token, c) = crate::ui::boot()?;
-    let writer: SharedWriter = Arc::new(Mutex::new(Some(w)));
-    let cleanup: SharedCleanup = Arc::new(Mutex::new(Some(c)));
-    let conn: SharedConn = Arc::new(Mutex::new((port, token)));
-    spawn_reader(reader, event_loop.create_proxy());
+    // No eager engine boot: the window opens to Setup (first run) or Home, and the
+    // engine is launched lazily only when the user picks "Launch Peptide". The
+    // shared engine handles start empty and are filled by boot_new/reconnect.
+    let writer: SharedWriter = Arc::new(Mutex::new(None));
+    let cleanup: SharedCleanup = Arc::new(Mutex::new(None));
+    let conn: SharedConn = Arc::new(Mutex::new((0, String::new())));
 
     let char_name = crate::config::Config::load().char_name();
-    let init = format!("window.__PORT__={port}; window.__CHAR__={};", js_str(&char_name));
+    let init = format!("window.__CHAR__={};", js_str(&char_name));
 
     let ipc_writer = writer.clone();
     let ipc_cleanup = cleanup.clone();
@@ -69,6 +78,7 @@ pub fn launch() -> std::io::Result<()> {
                 RECONNECT => { thread::spawn(move || reconnect_existing(w, cn, px, ch)); }
                 BOOT_QUICK => { thread::spawn(move || boot_new(w, cl, cn, px, ch, true)); }
                 BOOT_REGULAR => { thread::spawn(move || boot_new(w, cl, cn, px, ch, false)); }
+                other if other.starts_with("@@") => handle_screen_verb(other, &ipc_proxy),
                 _ => handle_command(&body, &ipc_writer, &ipc_proxy),
             }
         })
@@ -79,7 +89,9 @@ pub fn launch() -> std::io::Result<()> {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::NewEvents(StartCause::Init) => {
-                let _ = webview.evaluate_script("window.setStatus && setStatus(false)");
+                // Route the page to Setup or Home based on the persisted config.
+                let _ = webview.evaluate_script(&format!(
+                    "window.bootRoute && bootRoute({})", config_json()));
             }
             Event::UserEvent(Ev::Line(line)) => {
                 let _ = webview.evaluate_script(&format!("window.onLine && onLine({})", js_str(&line)));
@@ -100,6 +112,236 @@ pub fn launch() -> std::io::Result<()> {
 
 fn io(msg: &str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Other, msg.to_string())
+}
+
+/// A small JSON blob describing the current config + setup state, passed to the
+/// page's `bootRoute` so it can open Setup (first run / incomplete) or Home.
+fn config_json() -> String {
+    let cfg = crate::config::Config::load();
+    let s = |v: &str| js_str(v);
+    let frayroot = cfg.fraymakers_root().map(|p| p.display().to_string()).unwrap_or_default();
+    let frayexe = cfg.fraytools_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    format!(
+        "{{\"setupComplete\":{},\"currentChar\":{},\"fraymakersRoot\":{},\"fraytoolsPath\":{},\
+          \"fraytoolsExe\":{},\"outputDir\":{},\"miscSsf\":{}}}",
+        cfg.setup_complete(),
+        s(&cfg.char_name()),
+        s(&frayroot),
+        s(&cfg.fraytools_path),
+        s(&frayexe),
+        s(&cfg.output_dir().display().to_string()),
+        s(&cfg.misc_ssf),
+    )
+}
+
+/// Dispatch a screen-router control message. Everything that blocks (file
+/// dialogs, conversion, FrayTools CDP) runs on a worker thread that posts results
+/// back via Ev::Js — the tao event loop must never block.
+fn handle_screen_verb(verb: &str, proxy: &EventLoopProxy<Ev>) {
+    if let Some(rest) = verb.strip_prefix(PICK_DIR_PREFIX) {
+        let (reply, px) = (rest.to_string(), proxy.clone());
+        thread::spawn(move || pick_path(true, &reply, "", &px));
+    } else if let Some(rest) = verb.strip_prefix(PICK_FILE_PREFIX) {
+        // <replyFn>[:<ext>]
+        let mut it = rest.splitn(2, ':');
+        let reply = it.next().unwrap_or("").to_string();
+        let ext = it.next().unwrap_or("").to_string();
+        let px = proxy.clone();
+        thread::spawn(move || pick_path(false, &reply, &ext, &px));
+    } else if let Some(json) = verb.strip_prefix(SETUP_SAVE_PREFIX) {
+        let (json, px) = (json.to_string(), proxy.clone());
+        thread::spawn(move || save_setup(&json, &px));
+    } else if let Some(json) = verb.strip_prefix(CONVERT_PREFIX) {
+        let (json, px) = (json.to_string(), proxy.clone());
+        thread::spawn(move || run_convert(&json, &px));
+    } else if let Some(json) = verb.strip_prefix(PUBLISH_PREFIX) {
+        let (json, px) = (json.to_string(), proxy.clone());
+        thread::spawn(move || add_publish_folder(&json, &px));
+    } else if let Some(rest) = verb.strip_prefix(FRAY_PREFIX) {
+        // export:<json> | render:<json> | harness:<json>
+        let (rest, px) = (rest.to_string(), proxy.clone());
+        thread::spawn(move || run_fraytools(&rest, &px));
+    }
+    // Unknown @@verbs are ignored (forward-compat with the page).
+}
+
+/// Minimal JSON-string-field extractor for the small, flat objects the page
+/// sends (`{"k":"v",...}`). Avoids pulling serde_json's Value into the hot path
+/// and is enough for our known keys. Returns the unescaped string value for `key`.
+fn json_str_field(json: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let i = json.find(&needle)? + needle.len();
+    let rest = &json[i..];
+    let colon = rest.find(':')?;
+    let after = rest[colon + 1..].trim_start();
+    let mut chars = after.chars();
+    if chars.next()? != '"' { return None; }
+    let mut out = String::new();
+    let mut esc = false;
+    for c in chars {
+        if esc { out.push(c); esc = false; continue; }
+        match c {
+            '\\' => esc = true,
+            '"' => return Some(out),
+            _ => out.push(c),
+        }
+    }
+    None
+}
+
+/// Open a native folder/file picker (rfd) and call back the named JS function with
+/// the chosen path (or empty string if cancelled).
+fn pick_path(dir: bool, reply_fn: &str, ext: &str, proxy: &EventLoopProxy<Ev>) {
+    let chosen = if dir {
+        rfd::FileDialog::new().pick_folder()
+    } else {
+        let mut d = rfd::FileDialog::new();
+        if !ext.is_empty() { d = d.add_filter(ext, &[ext]); }
+        d.pick_file()
+    };
+    let path = chosen.map(|p| p.display().to_string()).unwrap_or_default();
+    // Guard the reply-fn name to a safe identifier so we never inject arbitrary JS.
+    if reply_fn.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !reply_fn.is_empty() {
+        let _ = proxy.send_event(Ev::Js(format!(
+            "window.{f} && {f}({p})", f = reply_fn, p = js_str(&path))));
+    }
+}
+
+/// Persist the setup form (`{fraymakersRoot, fraytoolsPath, currentChar,
+/// outputDir, miscSsf}`) and report back whether setup is now complete.
+fn save_setup(json: &str, proxy: &EventLoopProxy<Ev>) {
+    let mut cfg = crate::config::Config::load();
+    if let Some(v) = json_str_field(json, "fraymakersRoot") { cfg.fraymakers_root = v; }
+    if let Some(v) = json_str_field(json, "fraytoolsPath")  { cfg.fraytools_path = v; }
+    if let Some(v) = json_str_field(json, "currentChar")    { cfg.current_char = v; }
+    if let Some(v) = json_str_field(json, "outputDir")      { cfg.output_dir = v; }
+    if let Some(v) = json_str_field(json, "miscSsf")        { cfg.misc_ssf = v; }
+    cfg.save();
+    let _ = proxy.send_event(Ev::Js(format!(
+        "window.onSetupSaved && onSetupSaved({})", config_json())));
+}
+
+/// Run an in-process conversion (`{input, output?, name?, miscSsf?}`) on this
+/// worker thread, reporting progress + the result back to the convert screen.
+fn run_convert(json: &str, proxy: &EventLoopProxy<Ev>) {
+    use ssf2_converter::{run_conversion, ConvertOptions};
+    let Some(input) = json_str_field(json, "input").filter(|s| !s.is_empty()) else {
+        let _ = proxy.send_event(Ev::Js(
+            "window.onConvertError && onConvertError(\"no input file selected\")".into()));
+        return;
+    };
+    let cfg = crate::config::Config::load();
+    let mut opts = ConvertOptions::new(&input);
+    opts.output = json_str_field(json, "output").filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from).unwrap_or_else(|| cfg.output_dir());
+    opts.name = json_str_field(json, "name").filter(|s| !s.is_empty());
+    opts.misc_ssf = json_str_field(json, "miscSsf").filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| if cfg.misc_ssf.is_empty() { None } else { Some(std::path::PathBuf::from(&cfg.misc_ssf)) });
+
+    let _ = proxy.send_event(Ev::Js(format!(
+        "window.onConvertProgress && onConvertProgress({})",
+        js_str(&format!("Converting {}…", input)))));
+
+    match run_conversion(opts) {
+        Ok(summary) => {
+            // Build a JSON result: project dir, chars, .fraytools files, warnings.
+            let files: Vec<String> = summary.fraytools_files.iter()
+                .map(|p| p.display().to_string()).collect();
+            let result = format!(
+                "{{\"projectDir\":{},\"characters\":{},\"files\":{},\"warnings\":{}}}",
+                js_str(&summary.project_dir.display().to_string()),
+                js_array(&summary.characters),
+                js_array(&files),
+                js_array(&summary.warnings),
+            );
+            let _ = proxy.send_event(Ev::Js(format!(
+                "window.onConvertDone && onConvertDone({result})")));
+        }
+        Err(e) => {
+            let _ = proxy.send_event(Ev::Js(format!(
+                "window.onConvertError && onConvertError({})", js_str(&e.to_string()))));
+        }
+    }
+}
+
+/// Add the Fraymakers `custom/<Char>` folder to a converted character's
+/// `.fraytools` publishFolders (`{char, output}`), reporting the result.
+fn add_publish_folder(json: &str, proxy: &EventLoopProxy<Ev>) {
+    let cfg = crate::config::Config::load();
+    let char_name = json_str_field(json, "char").filter(|s| !s.is_empty())
+        .unwrap_or_else(|| cfg.char_name());
+    let output = json_str_field(json, "output").filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from).unwrap_or_else(|| cfg.output_dir());
+    let char_dir = output.join(&char_name);
+    match crate::platform::ensure_fraymakers_publish_folder(&char_name, &char_dir) {
+        Ok(rel) => {
+            let _ = proxy.send_event(Ev::Js(format!(
+                "window.onPublishResult && onPublishResult(true, {})",
+                js_str(&format!("Added publish folder: {rel}")))));
+        }
+        Err(e) => {
+            let _ = proxy.send_event(Ev::Js(format!(
+                "window.onPublishResult && onPublishResult(false, {})", js_str(&e))));
+        }
+    }
+}
+
+/// Drive the FrayTools CDP harness for the Hook screen. `rest` is
+/// `export:<json>` | `render:<json>` | `harness:<json>` where json carries the
+/// flags (project / entity / animation / frame). Reuses the same fraytools::*
+/// entry points the CLI uses, by assembling an argv.
+fn run_fraytools(rest: &str, proxy: &EventLoopProxy<Ev>) {
+    let mut it = rest.splitn(2, ':');
+    let action = it.next().unwrap_or("");
+    let json = it.next().unwrap_or("{}");
+
+    // Build an argv: ["peptide", "<action>", "--project", P, "--entity", E, ...].
+    let mut argv: Vec<String> = vec!["peptide".into(), action.into()];
+    let mut push = |flag: &str, key: &str| {
+        if let Some(v) = json_str_field(json, key) {
+            if !v.is_empty() { argv.push(flag.into()); argv.push(v); }
+        }
+    };
+    push("--project", "project");
+    push("--entity", "entity");
+    push("--animation", "animation");
+    push("--frame", "frame");
+    push("--out", "out");
+    push("--fraytools", "fraytools");
+
+    let _ = proxy.send_event(Ev::Js(format!(
+        "window.onFrayProgress && onFrayProgress({})",
+        js_str(&format!("Running FrayTools {action}…")))));
+
+    let res = match action {
+        "export" => crate::fraytools::export(&argv),
+        "render" => crate::fraytools::render(&argv),
+        "harness" => crate::fraytools::harness(&argv),
+        _ => Err(anyhow::anyhow!("unknown FrayTools action {action:?}")),
+    };
+    match res {
+        Ok(()) => {
+            let _ = proxy.send_event(Ev::Js(format!(
+                "window.onFrayResult && onFrayResult(true, {})",
+                js_str(&format!("FrayTools {action} finished")))));
+        }
+        Err(e) => {
+            let _ = proxy.send_event(Ev::Js(format!(
+                "window.onFrayResult && onFrayResult(false, {})", js_str(&e.to_string()))));
+        }
+    }
+}
+
+/// JSON array of strings for evaluate_script payloads.
+fn js_array(items: &[String]) -> String {
+    let mut s = String::from("[");
+    for (i, it) in items.iter().enumerate() {
+        if i > 0 { s.push(','); }
+        s.push_str(&js_str(it));
+    }
+    s.push(']');
+    s
 }
 
 /// Try to TCP back into the running session: re-bind the last port + token and wait a few
