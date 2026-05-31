@@ -194,6 +194,51 @@ manual cache. That eliminates the eviction/reload race at its source. The `Asm` 
 `T:STAND` the character is stable and the full moveset can be driven in that one session.
 The freeze fix + box-geometry validation stand regardless; the converter output is correct.
 
+### RELIABILITY DOSSIER — exhaustive (every approach tried + result)
+
+Goal: 100% reliable headless spawn (currently ~40% — buried-VFX `Character.hx:769`
+null at the async ctor). Four RE agents + ~20 live test cycles. **Conclusively, no
+resource/cache/flag manipulation fixes it:**
+
+| Approach | Result |
+|---|---|
+| baseline (sync load + manual cacheSpriteEntity, no flags) | ~40% (2/5) |
+| `set_Required(true)` after load | ~baseline (1/5, noise) |
+| `set_Required`+`set_PreloadMedia` after load | crash (REQ:1 PRE:1 **confirmed via readback**, still wiped) |
+| same flags set BEFORE fetchThreaded | crash (order irrelevant) |
+| flags before + DROP manual recache (rely on finishLoading's load-owned f26 closure) | crash (**NSPR:1 confirmed** — load-owned entry present, still wiped) |
+| `queueResources(["private::sandbag"])` | WORSE (1/8 — triggers an async reload that races) |
+| direct `queueHash.set` (flush-exempt, no reload) | crash |
+| per-frame recache (every re-delivered `s`) | WORSE (0/6) |
+
+**Conclusive finding:** the sprite-cache key `private::sandbag.sandbag` is present
+right after `startMatch` (`NSPR:1`, even load-owned with `Required`+`PreloadMedia`
+both confirmed set), then nulled inside the ASYNC `onMatchReady → Match.init →
+spawnPlayer → ctor` flow, atomically (no `update` frame between → per-frame recache
+can't intervene), as a 40/60 timing race. This **refutes** the RE-prescribed
+`flushUnusedResources` theory (a load-owned, Required+PreloadMedia entry would be
+spared). The wipe is a flag-ignoring path (full cache reset or a per-key uncache from
+a load cycle) that 4 static-RE passes could not locate.
+
+**The principled fix is architectural, NOT a bytecode pin** (and per the hard
+constraints we must NOT patch the engine's cache logic as a workaround): load sandbag
+through the engine's OWN UGC pipeline so its working content lifecycle owns the cache.
+`k` confirms the engine already QUEUES `custom/sandbag/` at boot (`DIRS_QUEUED>0`); the
+async load just stalls on the worker thread headless. RE recipe (agent ace2ece9):
+load under the real UGC namespace `<LOCAL_NAMESPACE>_sandbag` (`set_Namespace@1793`,
+RM.LOCAL_NAMESPACE = g3508 f11) + `addResource` + `postLoadFraProcess@17847`, and
+launch with `<LOCAL_NAMESPACE>_sandbag::sandbag.sandbag`. Reading LOCAL_NAMESPACE at
+runtime is the next concrete step (one careful diagnostic; an earlier attempt
+mis-fired). Alternatively: runtime-trace the wipe by instrumenting
+`uncacheSpriteEntity@18272` / detecting a field-24 reset (needs second-function
+injection — a new harness capability; the `Asm` helper now makes that safe to author).
+
+**Tooling delivered for this:** `src/asm.rs` (label/register helper) eliminates the
+hand-bytecode jump/register errors, so the architectural fix or the runtime trace can
+be authored reliably. **The freeze fix + box-geometry validation stand regardless —
+the converter output is correct; this is purely a harness headless-load reliability
+gap.** Validation of the moveset can proceed retry-based (~2–3 spawns) in the interim.
+
 ## 4. Runtime: drive every move + physics ⬜ (blocked on spawn reliability)
 
 ## 5. Animation playthrough (frame-state capture) ⬜
