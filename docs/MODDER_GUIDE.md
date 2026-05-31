@@ -136,10 +136,13 @@ reference), and live stat tuning. Built incrementally on the commands above.
 
 ```
 cd tools/peptide
-./run-ui.sh
+cargo build --release          # first time only
+./target/release/peptide-ui    # boots Fraymakers + opens the console
 ```
 
-Boots Fraymakers and opens a full-screen console (built on ratatui). Type a command
+`peptide-ui` is a single cross-platform executable (macOS/Linux/Windows) — it patches a
+throwaway copy of the engine, boots it, and opens a full-screen console (built on ratatui).
+Override the install path with `FRAY_DIR` if Steam isn't in the default location. Type a command
 at the bottom, press Enter, and replies stream into the color-coded scrollback above:
 
 - **Tab** — command palette (pick a starter command)

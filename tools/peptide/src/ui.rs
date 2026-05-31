@@ -7,8 +7,10 @@
 //! Launched by run-ui.sh, which patches + boots the engine and then runs
 //! `peptide-bridge ui`. This module owns the terminal once the engine connects.
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -22,10 +24,160 @@ use ratatui::Frame;
 
 use crate::commands::{translate, Translated};
 
-/// How the engine launcher (run-ui.sh) tells us the spawn defaults, just for the
-/// quick-start hint. Optional.
 fn env_char() -> Option<String> {
     std::env::var("FRAY_CHAR").ok().filter(|s| !s.is_empty())
+}
+
+// ─────────────────────────── connection (shared) ───────────────────────────
+
+/// We're the TCP server (the injected engine code is the client). Bind localhost,
+/// wait for the engine to dial in, optionally check the AUTH token.
+pub fn await_engine(port: u16, token: Option<&str>) -> (BufReader<TcpStream>, TcpStream) {
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {
+        eprintln!("peptide-ui: cannot bind 127.0.0.1:{port}: {e}");
+        std::process::exit(1);
+    });
+    eprintln!("peptide-ui: waiting for Fraymakers to connect on :{port}…");
+    loop {
+        let (stream, _peer) = listener.accept().expect("accept failed");
+        let writer = stream.try_clone().expect("clone");
+        let mut reader = BufReader::new(stream);
+        match token {
+            None => return (reader, writer),
+            Some(expected) => {
+                let mut first = String::new();
+                if reader.read_line(&mut first).is_ok()
+                    && first.trim().strip_prefix("AUTH ").map(str::trim) == Some(expected)
+                {
+                    return (reader, writer);
+                }
+                eprintln!("peptide-ui: rejected unauthenticated peer; still listening");
+            }
+        }
+    }
+}
+
+// ─────────────────────────── cross-platform launch ─────────────────────────
+
+/// Per-OS engine binary + the env var that points the dynamic loader at the
+/// install dir (so the engine finds its bundled libs / DLLs).
+fn engine_invocation() -> (&'static str, Option<&'static str>) {
+    #[cfg(target_os = "windows")]
+    { ("hl.exe", None) } // current_dir is enough for DLL resolution on Windows
+    #[cfg(target_os = "macos")]
+    { ("hl", Some("DYLD_LIBRARY_PATH")) }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    { ("hl", Some("LD_LIBRARY_PATH")) }
+}
+
+/// Best-effort default Steam install path for Fraymakers per OS. Always overridable
+/// with FRAY_DIR.
+fn default_install_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    { std::env::var_os("HOME").map(|h| PathBuf::from(h)
+        .join("Library/Application Support/Steam/steamapps/common/Fraymakers")) }
+    #[cfg(target_os = "windows")]
+    { Some(PathBuf::from(r"C:\Program Files (x86)\Steam\steamapps\common\Fraymakers")) }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    { std::env::var_os("HOME").map(|h| PathBuf::from(h)
+        .join(".steam/steam/steamapps/common/Fraymakers")) }
+}
+
+fn pseudo_seed() -> u32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(12345);
+    n ^ (std::process::id().wrapping_mul(2654435761))
+}
+
+/// Removes the throwaway files + kills the engine when the UI exits (including panic).
+struct Cleanup {
+    conn: PathBuf,
+    appid: PathBuf,
+    engine: Option<Child>,
+}
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        if let Some(c) = &mut self.engine {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        let _ = std::fs::remove_file(&self.conn);
+        let _ = std::fs::remove_file(&self.appid);
+    }
+}
+
+/// Self-contained, cross-platform entry point: locate Fraymakers, patch a throwaway
+/// engine copy (via the sibling `peptide` binary), boot it, and run the console.
+/// hlboot-sdl.dat is never modified. Tested on macOS; Windows/Linux use cfg! defaults
+/// and honor FRAY_DIR / FRAY_ENGINE / FRAY_BOOT / FRAY_CHAR overrides.
+pub fn launch() -> std::io::Result<()> {
+    let fray_dir: PathBuf = match std::env::var_os("FRAY_DIR") {
+        Some(d) => PathBuf::from(d),
+        None => default_install_dir().unwrap_or_else(|| {
+            eprintln!("peptide-ui: could not determine the Fraymakers install path. Set FRAY_DIR.");
+            std::process::exit(1);
+        }),
+    };
+    let boot_name = std::env::var("FRAY_BOOT").unwrap_or_else(|_| "hlboot-sdl.dat".to_string());
+    let boot = fray_dir.join(&boot_name);
+    let conn = fray_dir.join("_conn.dat");
+    let appid = fray_dir.join("steam_appid.txt");
+    if !boot.exists() {
+        eprintln!("peptide-ui: {} not found.\n  Set FRAY_DIR to your Fraymakers install (saw: {}).",
+            boot.display(), fray_dir.display());
+        std::process::exit(1);
+    }
+
+    let char_name = std::env::var("FRAY_CHAR").unwrap_or_else(|_| "sandbag".into());
+    let stage = std::env::var("FRAY_STAGE").unwrap_or_else(|_| "thespire".into());
+    let assist = std::env::var("FRAY_ASSIST").unwrap_or_else(|_| "commandervideoassist".into());
+
+    let seed = pseudo_seed();
+    let port: u16 = 18000 + (seed % 2000) as u16;
+    let token = format!("fray-{seed:x}");
+
+    // the sibling patcher binary (same dir as this executable)
+    let patcher = {
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("peptide-ui"));
+        let dir = exe.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+        let name = if cfg!(windows) { "peptide.exe" } else { "peptide" };
+        dir.join(name)
+    };
+
+    // patch a throwaway _conn.dat (bake the default char so a bare `spawn` works)
+    std::fs::write(&appid, b"1420350")?;
+    let patch_ok = Command::new(&patcher)
+        .args([boot.as_os_str(), conn.as_os_str(),
+               std::ffi::OsStr::new("connect"), std::ffi::OsStr::new(&port.to_string()),
+               std::ffi::OsStr::new(&token), std::ffi::OsStr::new(&char_name),
+               std::ffi::OsStr::new(&stage), std::ffi::OsStr::new(&assist)])
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+    if !patch_ok {
+        let _ = std::fs::remove_file(&appid);
+        eprintln!("peptide-ui: failed to patch the engine (is {} present?)", patcher.display());
+        std::process::exit(1);
+    }
+    let _ = std::fs::remove_file(fray_dir.join("error.log"));
+
+    // boot the patched engine. We bind the port (await_engine) immediately after, well
+    // before the engine finishes loading + dials in, so there's no race.
+    let (engine_bin, lib_var) = engine_invocation();
+    let mut cmd = Command::new(fray_dir.join(engine_bin));
+    cmd.arg("_conn.dat").current_dir(&fray_dir).stdout(Stdio::null()).stderr(Stdio::null());
+    if let Some(var) = lib_var {
+        cmd.env(var, ".");
+    }
+    let engine = cmd.spawn().ok();
+    if engine.is_none() {
+        let _ = std::fs::remove_file(&conn);
+        let _ = std::fs::remove_file(&appid);
+        eprintln!("peptide-ui: failed to launch the engine ({}).", fray_dir.join(engine_bin).display());
+        std::process::exit(1);
+    }
+    let _guard = Cleanup { conn: conn.clone(), appid: appid.clone(), engine };
+
+    run(port, Some(&token)) // owns the terminal until the user quits; _guard cleans up
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -142,8 +294,7 @@ const PALETTE: &[(&str, &str)] = &[
 ];
 
 pub fn run(port: u16, token: Option<&str>) -> std::io::Result<()> {
-    eprintln!("peptide-ui: launching Fraymakers and waiting for it to connect…");
-    let (reader, writer) = crate::await_engine(port, token);
+    let (reader, writer) = await_engine(port, token);
 
     // socket -> channel (raw lines); dedup repeated ANIM frames.
     let (tx, rx): (mpsc::Sender<String>, Receiver<String>) = mpsc::channel();

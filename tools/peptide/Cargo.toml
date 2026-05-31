@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "peptide-bridge"
 path = "src/bin/peptide-bridge.rs"
 
+[[bin]]
+name = "peptide-ui"
+path = "src/bin/peptide-ui.rs"
+
 [dependencies]
 hlbc = "=0.7.0"
 anyhow = "1.0"

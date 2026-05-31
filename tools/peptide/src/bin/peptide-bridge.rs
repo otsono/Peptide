@@ -13,7 +13,7 @@
 //!                                          (for scripted / automated tests)
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -47,7 +47,8 @@ fn main() {
         "help" | "-h" | "--help" => print!("{}", commands::help_text()),
         "serve" => serve(port, token.as_deref()),
         "ui" => {
-            if let Err(e) = ui::run(port, token.as_deref()) {
+            // self-contained: boots the engine + runs the console (see ui::launch).
+            if let Err(e) = ui::launch() {
                 eprintln!("peptide-ui error: {e}");
                 std::process::exit(1);
             }
@@ -92,34 +93,7 @@ fn parse_token(args: &[String]) -> Option<String> {
 /// impostor process from driving the engine over the loopback port. Callers
 /// must bind BEFORE launching the engine so the port can't be squatted.
 fn await_engine(port: u16, token: Option<&str>) -> (BufReader<TcpStream>, TcpStream) {
-    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {
-        eprintln!("peptide-bridge: cannot bind 127.0.0.1:{port}: {e}");
-        std::process::exit(1);
-    });
-    eprintln!("peptide-bridge: listening on 127.0.0.1:{port} — waiting for Fraymakers…");
-    loop {
-        let (stream, peer) = listener.accept().expect("accept failed");
-        let writer = stream.try_clone().expect("clone");
-        let mut reader = BufReader::new(stream);
-        match token {
-            None => {
-                eprintln!("peptide-bridge: engine connected from {peer} (no auth)");
-                return (reader, writer);
-            }
-            Some(expected) => {
-                // The first line must be `AUTH <token>`. Keep the same buffered
-                // reader afterwards so no read-ahead bytes are lost.
-                let mut first = String::new();
-                if reader.read_line(&mut first).is_ok()
-                    && first.trim().strip_prefix("AUTH ").map(str::trim) == Some(expected)
-                {
-                    eprintln!("peptide-bridge: engine authenticated from {peer}");
-                    return (reader, writer);
-                }
-                eprintln!("peptide-bridge: rejected unauthenticated peer {peer}; first line = {first:?}; still listening");
-            }
-        }
-    }
+    ui::await_engine(port, token)
 }
 
 /// Interactive bridge: stdin <-> socket, line based.
