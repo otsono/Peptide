@@ -96,6 +96,20 @@ Decomposed into commands (see "Building blocks" below): `spawn` + `dummy` →
   reports divergence. Drives the converter-fix loop.
 
 ### Mod-dev quality-of-life (broader)
+- **Engine re-dial (live reconnect)** — **[planned]** Make the GUI's
+  "Reconnecting to Fraymakers…" step actually recover a *running* engine, not just
+  fall through to the boot prompt. Today the injected client dials Peptide exactly
+  once (the `g_done` connect-once guard) and, worse, its per-frame write FAULTS with
+  `Eof` and crashes the whole engine the moment Peptide's socket drops — so after a
+  disconnect there is never a live-but-detached engine to reconnect to. To enable
+  reconnect-to-existing: (a) make the per-frame send resilient — catch/ignore the
+  socket error instead of faulting, null `g_sock`; (b) on a null/errored socket,
+  reset `g_done` so the next frame re-dials. Then `ui::reawait(port, token, secs)`
+  (already shipped) re-binds the old port and the surviving engine reconnects.
+  Scope: hand-written HashLink bytecode in `Main.update` — risky (control-flow
+  sensitive; see the "append checks at END of dispatch" lesson), so gate it behind
+  the eval-hook/`.hl` migration if that lands first. GUI side (staged blocking modal
+  → reconnect → retry → Quick/Regular Boot) is **[done]**.
 - **State-machine introspection** — current state + legal transitions + "why is
   it stuck" (e.g. can't cancel into X). **[planned]**
 - **Crash diagnostics** — **[done]** the bridge buffers the last ~16 meaningful
