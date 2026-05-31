@@ -12,6 +12,16 @@ Everything here was reverse-engineered from first principles during development.
 > assets to the repo — see [`NOTICE.md`](NOTICE.md) "Reverse-engineering &
 > copyright boundary".
 
+> **Structure note (current).** **Peptide is the parent product** and the single
+> shipping binary at the repo root (`src/`, package `peptide`). The SSF2 →
+> Fraymakers converter is now a **library crate** at `crates/ssf2-converter/`
+> (still package-named `ssf2_converter`); conversion runs in-process via
+> `run_conversion` / `peptide convert <file.ssf>` — there is no standalone
+> converter binary and no egui GUI. Parts of this file predate that move and may
+> say "the converter" / `ssf2_converter input.ssf`; read those as the library
+> crate and `peptide convert …`. Peptide specifics:
+> [`docs/PEPTIDE_README.md`](docs/PEPTIDE_README.md).
+
 Cross-reference: [`DEVELOPMENT.md`](DEVELOPMENT.md) covers build / pipeline / modules and
 the current set of mapping JSONC files; this file covers the **input** and **output**
 formats themselves.
