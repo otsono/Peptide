@@ -281,6 +281,18 @@ spot-checked across the same categories. See "stale-`.fra` trap" below — mario
 earlier post-INTRO crash was a 3-day-old published `.fra`, not a live converter
 bug; a fresh export boots and drives clean.
 
+**Corpus convert status (47 `.ssf`): 44 convert clean, 2 fail, 1 n/a.**
+`chibirobo` and `dedede` are **killed with SIGKILL (exit 137 = OOM)** within ~1s
+of entering image/animation extraction (right after `animations.jsonc` loads,
+*before* the "Animation image mappings" line). SIGKILL — not a panic or
+stack-overflow (which would be SIGSEGV/SIGABRT) — points to a **runaway heap
+allocation**, not infinite recursion. Both are large characters (87–89 frame
+methods / sub-MCs). The skew-bake path is already dimension-guarded (`>4096 →
+skip`), so the culprit is likely elsewhere in `build_anim_frame_images` (e.g. a
+pathological effect-sprite compose). Needs a peak-allocation probe to localize —
+**open**. The other 44 (incl. mario, sandbag, kirby) convert and the spot-checked
+ones boot.
+
 **The stale-`.fra` trap (re-export before trusting any runtime result).**
 `characters/` and the published `.fra` are git-ignored, so an old `.fra` in
 `custom/<id>/` silently survives converter changes. Mario was crashing the engine
