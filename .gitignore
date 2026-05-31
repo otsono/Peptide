@@ -22,6 +22,7 @@ docs/*
 !docs/overnight_validation.md
 !docs/PARITY.md
 !docs/P1_P2_STATUS.md
+!docs/PEPTIDE_HSCRIPT.md
 
 # macOS .app bundle output from make-app.sh
 dist/
