@@ -44,9 +44,12 @@ def pascal(cid):
     return cid[:1].upper() + cid[1:]
 
 def parse_hitbox_stats(path):
-    """Parse HitboxStats.hx -> {move: [ {field: number, ...}, ... ]} (per hitbox)."""
+    """Parse HitboxStats.hx -> ({move: [hitbox fields]}, extras_set).
+    extras_set = moves emitted in the commented `// SSF2: <name>:` extras section
+    (present-but-inactive: the converter couldn't map them to a standard move)."""
     txt = open(path).read()
-    # strip // comments so commented placeholders don't parse as data
+    extras = set(re.findall(r"//\s*SSF2:\s*(\w+)\s*:", txt))
+    # strip // comments so commented placeholders don't parse as active data
     txt = re.sub(r"//[^\n]*", "", txt)
     out = {}
     # move blocks: `name: {  hitbox0: {...}, hitbox1: {...} }`
@@ -61,7 +64,7 @@ def parse_hitbox_stats(path):
                 fields[f.group(1)] = float(f.group(2))
             boxes.append(fields)
         out[name] = boxes
-    return out
+    return out, extras
 
 def expected_fm(hb):
     """Map one raw SSF2 hitbox dict -> expected FM field values."""
@@ -76,7 +79,7 @@ def expected_fm(hb):
     return {
         "damage": int(g("damage")),
         "angle": int(g("direction", "angle")),
-        "baseKnockback": int(g("power")),
+        "baseKnockback": int(g("power", "weightKB")),  # max(power, weightKB) — see hitbox_stats.jsonc
         "knockbackGrowth": int(g("kbConstant")),
         "hitstop": frame(hb.get("hitStun", -1)),
         "selfHitstop": frame(hb.get("selfHitStun", -1)),
@@ -95,12 +98,15 @@ def check_char(cid):
     if not os.path.exists(hx):
         print(f"[{cid}] SKIP — no {hx}")
         return None
-    out = parse_hitbox_stats(hx)
+    out, extras = parse_hitbox_stats(hx)
     issues = []
     info = []
     for move, src_boxes in sorted(src.items()):
         if move not in out:
-            issues.append(f"{move}: in SSF2 source ({len(src_boxes)} hitbox(es)) but MISSING from HitboxStats.hx")
+            if move in extras:
+                info.append(f"{move}: SSF2 source present but emitted in the commented extras section (not mapped to a standard FM move — review)")
+            else:
+                issues.append(f"{move}: in SSF2 source ({len(src_boxes)} hitbox(es)) but MISSING from HitboxStats.hx")
             continue
         out_boxes = out[move]
         for i, shb in enumerate(src_boxes):
@@ -115,8 +121,10 @@ def check_char(cid):
                     issues.append(f"{move}.hitbox{i}.{fld}: expected {e}, missing in output")
                 elif int(got[fld]) != e:
                     issues.append(f"{move}.hitbox{i}.{fld}: SSF2->expected {e}, output {int(got[fld])}")
-            if "weightKB" in shb and shb["weightKB"] != 0:
-                info.append(f"{move}.hitbox{i}: SSF2 weightKB={shb['weightKB']} (no FM mapping — baseKnockback uses power={int(exp['baseKnockback'])} only)")
+            # weightKB now folds into baseKnockback (max(power, weightKB)); note the
+            # cases where weightKB is the dominant source so a human can sanity-check.
+            if shb.get("weightKB", 0) > shb.get("power", 0):
+                info.append(f"{move}.hitbox{i}: baseKnockback={int(exp['baseKnockback'])} from SSF2 weightKB (power={int(shb.get('power',0))})")
     # moves in output but not source: inheritance (ok) or spurious
     for move in sorted(out):
         if move in src:
