@@ -108,3 +108,29 @@ dummy/hitresult/parity logic as scripts (no new bytecode).
 - `dummy`   → script that builds/positions a 2nd fighter (needs match-launch class
   registration; investigate whether the interp's `resolve` reaches arbitrary classes)
 - All handler scripts live client-side (peptide-bridge) as readable Haxe strings.
+
+## Commands ported to hscript + eval-by-default (DONE)
+
+The per-command bytecode handlers (`m`/`t`/`v`/`a`/`f`/`g`) are ported to hscript in
+`tools/peptide/prelude.hsx` — `state()`, `physics()`, `anim()`, `move(stateId)`,
+`step()`, `play()`, plus `getCharacters()` and a `match` facade. The prelude is loaded
+ONCE into the engine-scoped interp (after `applyInterpreterGlobals`). Each function
+reads the per-eval-bound scope and returns the exact old wire string.
+
+**Per-eval scope** (bound by the eval hook before each command):
+- `p0` = player-0 Character (`p1` = null until 2-player/dummy), `characters` = raw ArrayObj,
+  `CState`/`HitboxStats`/… via `applyInterpreterGlobals`.
+- `match` is an hscript **facade** (`getCharacters()`/`getCharacter(i)`/`characterCount()`)
+  because `pxf.core.Match` has no RTTI — its fields/methods don't reflect. `getCharacters()`
+  returns a NATIVE hscript array `[p0,…]` (the raw ArrayObj's `.length`/`Std.string` are
+  garbage); printing it bare prints each character's string.
+
+**Bridge routing** (`commands.rs::translate`): friendly readback/scrub commands become
+hscript calls (`state`→`e state()`, `move jab`→`e move(CState.JAB)`); **any unrecognized
+input is run as hscript through the eval hook** (`match.getCharacters()`, `p0.body.x`,
+`1+2` → `e <expr>`). Only match-launch + diagnostics stay single-byte wire protocol
+(`spawn`/`exit`/`ping`/`console`/`keys`/`load`/`query`).
+
+To add or change a command: edit `prelude.hsx` (readable Haxe) — no patcher rebuild for
+logic-only changes beyond re-embedding the file. The dead `m`/`t`/`v`/`a`/`f`/`g` bytecode
+handlers can be deleted in a later cleanup (the bridge no longer sends those bytes).
