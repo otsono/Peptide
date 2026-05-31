@@ -330,6 +330,13 @@ pub fn generate_entity(
                                     let body = crate::api_mappings::translate_ssf2_to_fm(&body);
                                     let var_types = crate::api_mappings::infer_ext_var_types(
                                         &data.ext_vars, &data.ext_var_inits);
+                                    // (1) own script-function refs `self.<fn>` -> bare `<fn>`
+                                    // (frame scripts share Script.hx's scope), then
+                                    // (2) instance-var refs -> persistent .get()/.set().
+                                    let ext_methods: Vec<String> = data.scripts.iter()
+                                        .filter(|s| s.is_ext_method).map(|s| s.name.clone())
+                                        .filter(|n| !data.ext_vars.contains(n)).collect();
+                                    let body = crate::api_mappings::rewrite_own_method_refs(&body, &ext_methods);
                                     let body = crate::api_mappings::wrap_persistent_state(
                                         &body, &var_types);
                                     frame_code.insert(local_frame, body);

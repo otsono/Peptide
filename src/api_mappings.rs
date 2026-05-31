@@ -1816,6 +1816,24 @@ fn neutralize_getter_callbacks(code: String) -> String {
     re_evt.replace_all(&code, format!("${{1}}{}${{2}}", no_op)).into_owned()
 }
 
+/// Rewrite references to the character's OWN script functions from `self.<fn>` to bare
+/// `<fn>`. In Fraymakers, frame scripts share Script.hx's scope, so a character's own
+/// functions are called/referenced WITHOUT `self.` (the template does
+/// `addTimer(.., specialDown_checkLoop)`, no `self.`). `self.<fn>` instead resolves to a
+/// nonexistent Character member (null) — e.g. as a timer/event callback it becomes a null
+/// that crashes IntervalTimer.process / event dispatch. FM API methods (toState,
+/// setYVelocity, …) are NOT in `methods`, so they keep their `self.` prefix.
+pub fn rewrite_own_method_refs(code: &str, methods: &[String]) -> String {
+    use regex::Regex;
+    if methods.is_empty() { return code.to_string(); }
+    // longest name first so `self.moveUp` isn't partially matched as `self.move`
+    let mut names: Vec<&String> = methods.iter().filter(|m| !m.is_empty()).collect();
+    names.sort_by_key(|m| std::cmp::Reverse(m.len()));
+    let alt = names.iter().map(|m| regex::escape(m)).collect::<Vec<_>>().join("|");
+    let re = Regex::new(&format!(r"\bself\.({})\b", alt)).unwrap();
+    re.replace_all(code, "$1").into_owned()
+}
+
 /// Per-name compiled regex bundle used by `wrap_persistent_state`.
 struct PersistentStateRegexes {
     inc:  regex::Regex,

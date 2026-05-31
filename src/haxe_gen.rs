@@ -859,10 +859,16 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     // Full-script post-pass: fix paired setIntangibility calls
     out = crate::api_mappings::fix_intangibility_pairs(&out);
 
-    // Full-script post-pass: rewrite SSF2 instance-variable references
-    // into Fraymakers persistent-state wrappers (`.get()/.set()/.inc()/
-    // .dec()`). Frame scripts embedded in the entity get the same rewrite
-    // in entity_gen so cross-file references stay consistent.
+    // Full-script post-pass. ORDER matters:
+    //  (1) own-function refs `self.<fn>` -> bare `<fn>` (frame scripts share this scope),
+    //  (2) instance-var refs `self.<var>` -> persistent wrappers (.get()/.set()/.inc()/.dec()).
+    // Frame scripts embedded in the entity get the same two rewrites in entity_gen so
+    // cross-file references stay consistent. FM API methods (self.toState, …) are untouched.
+    // own FUNCTION names only — exclude any that's also a persistent var (e.g. a name that
+    // is both a slot trait and a method), so `self.<var>` stays for the var-wrap pass.
+    let ext_methods: Vec<String> = data.scripts.iter().filter(|s| s.is_ext_method)
+        .map(|s| s.name.clone()).filter(|n| !data.ext_vars.contains(n)).collect();
+    out = crate::api_mappings::rewrite_own_method_refs(&out, &ext_methods);
     out = crate::api_mappings::wrap_persistent_state(&out, &var_types);
 
     out

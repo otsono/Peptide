@@ -790,6 +790,7 @@ fn connect_edit(
     let m_ack_g = add_string_const(code, "M:JAB\n");
     let m_nomatch_g = add_string_const(code, "M:NOMATCH\n");
     let t_prefix_g = add_string_const(code, "T:");
+    let anim_prefix_g = add_string_const(code, "ANIM:"); // per-frame state-change telemetry
     let t_nomatch_g = add_string_const(code, "T:NOMATCH\n");
     eprintln!("move/telemetry: Character t={char_entity_t} toState={to_state} getStateName={get_state_name} CState t={cstate_statics_t} g={cstate_global} JAB.field={jab_field} characters.field={characters_field}");
     // ---- 'l' command: synchronous custom-.fra load (headless, no worker thread) ----
@@ -1980,6 +1981,49 @@ fn connect_edit(
     if headless {
         inject_required_filter(code)?;
     }
+    // Animation/state telemetry: hook Character.toState's exit so each completed state
+    // transition emits "ANIM:<state>" over the harness socket (event-driven — fires exactly
+    // on a change, no per-frame polling). Pinpoints which move was active at a crash.
+    inject_anim_telemetry(code, to_state, g_sock, out_field, write_str, flush,
+        get_state_name, str_add, anim_prefix_g, nl_g, sock_t, out_t, str_t, enc_t)?;
+    Ok(())
+}
+
+/// Hook the exit of `pxf.entity.Character::toState` so every COMPLETED state transition
+/// emits "ANIM:<stateName>\n" to the harness socket. Inserted before the function's final
+/// Ret, so it runs on the success path (state set) — guard early-returns (rejected
+/// transitions) don't reach it, which is correct (no change to report). reg0 = the Character.
+fn inject_anim_telemetry(
+    code: &mut Bytecode, to_state: usize, g_sock: usize, out_field: usize, write_str: usize,
+    flush: usize, get_state_name: usize, str_add: usize, anim_prefix_g: usize, nl_g: usize,
+    sock_t: usize, out_t: usize, str_t: usize, enc_t: usize,
+) -> anyhow::Result<()> {
+    use hlbc::types::{RefField, RefFun, RefGlobal};
+    let fidx = function_index_by_findex(code, to_state)
+        .ok_or_else(|| anyhow::anyhow!("Character.toState@{to_state} not found"))?;
+    let f = &mut code.functions[fidx];
+    let base = add_regs(f, &[sock_t, out_t, str_t, str_t, enc_t, 0]);
+    let (r_sock, r_out, r_name, r_msg, r_null, r_ret) =
+        (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4), Reg(base + 5));
+    let mut ops = vec![
+        Opcode::GetGlobal { dst: r_sock, global: RefGlobal(g_sock) },          // 0
+        Opcode::JNull { reg: r_sock, offset: 0 },                              // 1 -> skip (not connected)
+        Opcode::Field { dst: r_out, obj: r_sock, field: RefField(out_field) }, // 2
+        Opcode::Call1 { dst: r_name, fun: RefFun(get_state_name), arg0: Reg(0) }, // 3 (reg0 = char)
+        Opcode::JNull { reg: r_name, offset: 0 },                              // 4 -> skip
+        Opcode::GetGlobal { dst: r_msg, global: RefGlobal(anim_prefix_g) },     // 5
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: r_name }, // 6
+        Opcode::GetGlobal { dst: r_name, global: RefGlobal(nl_g) },             // 7 (reuse r_name for "\n")
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: r_name }, // 8
+        Opcode::Null { dst: r_null },                                          // 9
+        Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: r_msg, arg2: r_null }, // 10
+        Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out },         // 11
+    ];
+    let skip = ops.len() as i32; // 12 — falls through to the function's Ret
+    if let Opcode::JNull { offset, .. } = &mut ops[1] { *offset = skip - 1 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[4] { *offset = skip - 4 - 1; }
+    insert_ops_end(f, ops);
+    eprintln!("connect_edit: anim telemetry hooked into Character.toState@{to_state}");
     Ok(())
 }
 

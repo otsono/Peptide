@@ -261,6 +261,59 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
         true
     });
 
+    // Detect IMPLICIT instance vars: `self.X = ...` in the translated script bodies (Script.hx
+    // functions + frame scripts) where X is neither a declared ext_var nor one of the char's
+    // own functions. SSF2 base-class / dynamically-assigned vars (speed, bounceSpeed, charge,
+    // …) aren't slot/const traits on the char class, so without this they'd be emitted as
+    // undefined `self.X` (e.g. `self.speed`) and crash at runtime. Construct + wrap them as
+    // persistent state like the declared vars. A clean literal RHS drives type inference.
+    {
+        let own_fns: std::collections::BTreeSet<&str> =
+            scripts.iter().filter(|s| s.is_ext_method).map(|s| s.name.as_str()).collect();
+        let re = regex::Regex::new(r"self\.([A-Za-z_]\w*)\s*=\s*([^=;][^;]*)").unwrap();
+        let mut implicit: std::collections::BTreeMap<String, Option<String>> = Default::default();
+        for s in &scripts {
+            for cap in re.captures_iter(&s.code) {
+                let name = cap[1].to_string();
+                if ext_vars.contains(&name) || own_fns.contains(name.as_str()) { continue; }
+                let rhs = cap[2].trim().to_string();
+                let is_lit = matches!(rhs.as_str(), "true" | "false") || rhs.parse::<i64>().is_ok();
+                let e = implicit.entry(name).or_insert(None);
+                if is_lit && e.is_none() { *e = Some(rhs); }
+            }
+        }
+        for (name, lit) in implicit {
+            log::info!("implicit instance var '{}' (used but not declared) — constructing as persistent state", name);
+            if let Some(rhs) = lit {
+                if !ext_var_inits.iter().any(|(n, _)| n == &name) { ext_var_inits.push((name.clone(), rhs)); }
+            }
+            ext_vars.push(name);
+        }
+    }
+
+    // Resolve var/function NAME COLLISIONS: a name that is BOTH a persistent instance var
+    // and one of the char's own functions cannot coexist at Script.hx top level (and makes
+    // `self.<name>` ambiguous). Rename the FUNCTION (its definition + calls — `<name>(`) to
+    // `<name>_2`, leaving the VAR with the bare name (wrapped to .get()/.set()). Function
+    // CALLS are `<name>(`; var accesses are `<name>` / `<name>.get()`, so the `(` cleanly
+    // distinguishes them.
+    {
+        let var_set: std::collections::BTreeSet<String> = ext_vars.iter().cloned().collect();
+        let collisions: std::collections::BTreeSet<String> = scripts.iter()
+            .filter(|s| s.is_ext_method && var_set.contains(&s.name))
+            .map(|s| s.name.clone())
+            .collect();
+        for name in &collisions {
+            let new_name = format!("{}_2", name);
+            log::info!("name collision '{}' (instance var + function) — renaming the function to '{}'", name, new_name);
+            let re = regex::Regex::new(&format!(r"\b{}\(", regex::escape(name))).unwrap();
+            for s in &mut scripts {
+                s.code = re.replace_all(&s.code, format!("{}(", new_name)).into_owned();
+                if s.is_ext_method && &s.name == name { s.name = new_name.clone(); }
+            }
+        }
+    }
+
     log::info!("Total: {} attacks, {} animations, {} ssf2→fm mappings extracted",
         attacks.len(), animations.len(), ssf2_to_fm_anim.len());
 

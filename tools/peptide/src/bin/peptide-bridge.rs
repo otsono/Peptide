@@ -124,6 +124,8 @@ fn serve(port: u16, token: Option<&str>) {
     thread::spawn(move || {
         let mut buf: Vec<u8> = Vec::with_capacity(256);
         let mut one = [0u8; 1];
+        // The engine emits "ANIM:<state>" EVERY frame; dedup so only changes print.
+        let mut last_anim = String::new();
         loop {
             match byte_reader.read(&mut one) {
                 Ok(0) => {
@@ -136,7 +138,15 @@ fn serve(port: u16, token: Option<&str>) {
                     if one[0] == b'\n' {
                         let line = String::from_utf8_lossy(&buf);
                         let line = line.trim_end_matches('\r');
-                        println!("<< {line}");
+                        // Suppress repeated per-frame ANIM lines; print only on change.
+                        if let Some(a) = line.strip_prefix("ANIM:") {
+                            if a != last_anim {
+                                last_anim = a.to_string();
+                                println!("<< {line}");
+                            }
+                        } else {
+                            println!("<< {line}");
+                        }
                         if line.contains("READY") {
                             let _ = ready_tx.send(());
                         }
