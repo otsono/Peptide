@@ -101,7 +101,7 @@
 
     { "from": ".resetJumps()", "to": ".preLand()" },
 
-    { "from": ".resetMovement()", "to": ".setXVelocity(0, false); self.setYVelocity(0, false)" },
+    { "from": ".resetMovement()", "to": ".setXVelocity(0); self.setYVelocity(0)" },
     { "from": ".safeMove(", "to": ".move(" },
 
     { "from": ".isOnGround()", "to": ".isOnFloor()" },

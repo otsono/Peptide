@@ -189,17 +189,25 @@ impl Expr {
                         }
                     }
                 }
-                // The velocity setters take a 2nd boolean flag whose polarity is INVERTED
-                // between SSF2 (setXSpeed/setYSpeed) and Fraymakers (setXVelocity/setYVelocity).
-                // Flip an existing flag so the converted call matches the original; if SSF2
-                // omitted it, emit an explicit `false` (the converted default Fraymakers wants).
-                if matches!(method.as_str(),
-                    "setXSpeed" | "setYSpeed" | "setXVelocity" | "setYVelocity") {
-                    if rendered.len() >= 2 {
-                        rendered[1] = invert_bool_arg(&rendered[1]);
-                    } else if rendered.len() == 1 {
-                        rendered.push("false".to_string());
+                // SSF2 velocity setters -> Fraymakers. setXSpeed's boolean 2nd flag controls
+                // whether the speed is oriented to the character's facing: an explicit `false`
+                // uses the raw value as-is, while an omitted flag (or `true`) orients it through
+                // flipX (Entity.flipX(v) negates v when facing left). setYSpeed never flips and
+                // drops any flag. Calls ALREADY named setXVelocity/setYVelocity are passed
+                // through untouched — only the SSF2 setXSpeed/setYSpeed names are remapped here.
+                match method.as_str() {
+                    "setXSpeed" if !rendered.is_empty() => {
+                        // false 2nd arg => raw; omitted or any other (incl. true) => flip-to-facing
+                        let raw = rendered.len() >= 2 && rendered[1].trim() == "false";
+                        let value = rendered[0].clone();
+                        rendered = if raw {
+                            vec![value]
+                        } else {
+                            vec![format!("self.flipX({})", value)]
+                        };
                     }
+                    "setYSpeed" => { rendered.truncate(1); }  // never flips, no flag
+                    _ => {}
                 }
                 let arg_str = rendered.join(", ");
                 // Check if obj is self and method is an API call
@@ -285,17 +293,6 @@ fn is_callback_ref(s: &str) -> bool {
     let mut chars = s.chars();
     let first_ok = chars.next().map_or(false, |c| c.is_ascii_alphabetic() || c == '_');
     first_ok && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
-}
-
-/// Invert a velocity setter's boolean 2nd argument. SSF2's setXSpeed/setYSpeed flag is
-/// the opposite polarity of Fraymakers' setXVelocity/setYVelocity flag, so a literal
-/// false↔true is flipped and any other expression is negated with `!(…)`.
-fn invert_bool_arg(s: &str) -> String {
-    match s.trim() {
-        "false" => "true".to_string(),
-        "true"  => "false".to_string(),
-        other   => format!("!({})", other),
-    }
 }
 
 fn render_closure(params: &[String], stmts: &[Stmt], depth: usize) -> String {
