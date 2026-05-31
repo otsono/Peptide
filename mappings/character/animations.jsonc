@@ -174,7 +174,9 @@
     "upspecialair": "b_up_air",
     "uspecial": "b_up",
     "uspecialair": "b_up_air",
-    "screwattack": "b_up",
+    // screwattack is NOT the up-special in Fraymakers — it stays as its own (unused)
+    // animation rather than overwriting special_up (which must come from b_up).
+    "screwattack": "screwattack",
     "downspecial": "b_down",
     "downb": "b_down",
     "downbair": "b_down_air",
