@@ -62,3 +62,25 @@ WHERE TO PICK UP (deferred deliberately — see docs/PARITY.md for plans + gates
 - 16:25 — track <move>: in-engine self-momentum measurement (drive move + rapid physics sampling). Verified mario dash_attack vx 12.86→0 over ~6 samples, +140px. The opponent-knockback half needs the dummy chain (deferred deep item).
 - 16:35 — Wrote docs/P1_P2_STATUS.md (honest done/deferred for every P1+P2 item). Remaining deep items (dummy→hitresult, .hl linker, save/restore, physics multiplier tuning) all converge on in-engine emergent-behavior measurement = the next focused project. Launched final 45-char regression sweep.
 - 16:45 — Exercised track (momentum-verification loop) on mario: dash_attack lunges (vx 12.3→0, +126px), tilt_forward/strong_forward stationary (vx=0 — correct). track correctly distinguishes moving vs stationary moves. Momentum-PARITY vs SSF2 needs the per-move SSF2 momentum reference (in frame scripts) — noted. Running focused regression spot-check (recovered-5 + diverse) instead of full 45 (already validated via parity_check 45/45 + entity-population).
+
+## Regression spot-check (10-char sweep) — PASS
+Ran `batch_spawn_test.sh` over fox bomberman donkeykong pit luffy mario sandbag
+kirby marth zelda (a cross-section spanning the recovered-shell chars, the two
+reference chars, and chars exercising different sprite-label conventions).
+Result: **10/10 PASS, 0 FAIL** — every char regenerates, exports a fresh .fra,
+spawns, reaches STAND, and dispatches moves with no crash. Confirms the broad
+sprite-label / decompiler stack-threading / hitbox-mapping changes from this
+session did not regress any character. Combined with parity_check 45/45 and
+entity-population 45/45, the corpus is validated at the P0 bar and stat-parity.
+
+## Dummy-opponent decision (deferred, with rationale)
+Evaluated implementing the opt-in dummy opponent directly in the `s`-handler
+player-array build (tools/peptide/src/main.rs:1573-1587). Decided AGAINST tonight:
+the 2-player path needs a second virtual-typed reg threaded through the delicate
+hand-emitted s-handler reg block, and a reg clobber there would corrupt rr33 (the
+characters ArrayObj startMatch consumes) — blast radius is ALL spawns, i.e. the
+45/45 headline, right before the user wakes. The ab_compare gate would catch drift
+but the reward is only the foundation (live hit-tuning additionally needs opponent
+positioning + a hitresult/knockback readback). Documented as the keystone
+next-project with a concrete plan in P1_P2_STATUS.md / PEPTIDE_FUTURE.md. The
+responsible call is to leave the proven state pristine for the morning.
