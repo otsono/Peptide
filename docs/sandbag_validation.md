@@ -162,10 +162,28 @@ Two RE agents investigated the reliable-spawn fix:
   construction frame), not eviction — OR the hand-bytecode additions themselves perturbing
   timing. The hand-emitted-bytecode path is the limiting factor (matches the memory TODO).
 
-**Conclusion:** reliable headless spawn needs either (a) the Rust authoring helper to
-build a correct version without bytecode fragility, then deeper RE into the population
-race, or (b) accept retry-based validation (~2–3 spawns to win the race). The freeze fix
-and box-geometry validation stand regardless; the converter output is correct.
+**Conclusion (DECISIVE, data-backed):** reliable headless spawn is NOT achievable by
+bytecode pinning. Measured reliability:
+- baseline (synchronous load + manual recache, no pin): ~40% (2/5)
+- + `set_Required`: ~1/5 · + per-frame recache: 0/6 · + `queueResources`+`set_Required`: **1/8**
+
+Every op added to the load path DEGRADES below baseline. Root cause (diagnosed): the
+`Asm`-built **NSPR probe proved the recache is reliable** — after `l` (no startMatch),
+both `SPR:1` (bare key) and `NSPR:1` (namespaced buried-VFX key) every run (5/5). So it's
+EVICTION, not population. But the eviction fix backfires: `queueResources` adds sandbag to
+the match load queue, which makes `startMatch`'s `load` *re-load* it ASYNC, widening the
+race vs the async character ctor. The synchronous-headless-load architecture fundamentally
+fights the engine's async content lifecycle; no in-`update` bytecode pin wins it.
+
+**The real reliability fix is architectural** (future work): load sandbag through the
+engine's OWN async UGC path (register under `custom::` and let `startMatch`'s content
+queue load it like the real game), instead of the synchronous `fetchThreaded` shortcut +
+manual cache. That eliminates the eviction/reload race at its source. The `Asm` helper
+(committed cbcad5e2) is the durable authoring foundation for that work.
+
+**For validation NOW:** retry the spawn (~2–3 boots to win the 40% race); once at
+`T:STAND` the character is stable and the full moveset can be driven in that one session.
+The freeze fix + box-geometry validation stand regardless; the converter output is correct.
 
 ## 4. Runtime: drive every move + physics ⬜ (blocked on spawn reliability)
 
