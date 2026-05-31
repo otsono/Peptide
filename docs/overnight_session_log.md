@@ -46,3 +46,8 @@ WHERE TO PICK UP (deferred deliberately — see docs/PARITY.md for plans + gates
    spike first (PEPTIDE_ARCHITECTURE caveat). Turns parity from eyeballing into
    pass/fail.
 3. Per-segment hitbox values, physics-stat tuning (empirical), item/CPU systems.
+
+## P1 PARITY WORK (resumed — bar is SSF2 functional equivalence, not P0)
+- 12:30 — Built the parity-measurement harness: DUMP_PARITY raw-SSF2 dump + tools/parity_check.py (diffs SSF2 source vs converter HitboxStats under the documented mapping). haxe NOT installed → .hl path toolchain-blocked; used Rust + the static conversion-fidelity check (highest-signal tractable path).
+- 12:45 — Found + fixed 2 P1 hitbox-stat bugs via the harness: (1) baseKnockback now folds SSF2 weightKB (mario special_up had weightKB=120,power=0 → was 0 knockback in-engine); (2) field mapping maxes over PRESENT keys only (absent key's 0.0 was clobbering SSF2 negative special-angle sentinels like direction=-2 → output 0). 
+- 12:55 — FULL-CORPUS HITBOX-STAT PARITY: 45/45 characters PARITY OK (damage/angle/baseKnockback/knockbackGrowth/hit-freeze all match SSF2 source). 33 test targets green. link special_down (angle -2) re-verified in-engine, no crash. Commits 924d631a, 6000c472. Next parity dimensions: frame data (active frames/startup/recovery), special-angle sentinel→FM mapping, Branch-arm stack-threading for decompiler outliers.

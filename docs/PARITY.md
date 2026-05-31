@@ -11,6 +11,28 @@ status. Methodology: a 4-agent read-only audit cross-referenced the generated
 official FM character template. Findings below are grounded in file:line
 citations (see commit history for the audit run).
 
+## P1 hitbox-stat parity: 45/45 characters (achieved)
+
+`tools/parity_check.py` reports **all 45 characters PARITY OK** — every hitbox's
+`damage` / `angle` / `baseKnockback` / `knockbackGrowth` / `hitstop` / `selfHitstop`
+/ `hitstun` matches the SSF2 source (dumped via `DUMP_PARITY=1`). This is the
+hitbox-STATS dimension of functional equivalence. Three fixes got it there:
+1. split sub-anims inherit base hitbox stats (jab2/3 were 0-damage);
+2. `baseKnockback` folds in SSF2 `weightKB` (weight-KB moves were 0-knockback —
+   mario `special_up` weightKB=120, etc.);
+3. the field mapping maxes over PRESENT source keys only (an absent sibling key's
+   0.0 was clobbering present NEGATIVE values — SSF2 special-angle sentinels like
+   `direction=-2` were output as 0). 45/45 verified; link's `special_down`
+   (angle -2) drives in-engine, no crash.
+
+**Still NOT covered (next parity dimensions):** frame data — hitbox ACTIVE frame
+range + startup/active/recovery — lives in the `.entity` collision-box keyframes +
+animation lengths, not `HitboxStats.hx`; comparing those to SSF2's frame timing is
+a separate harness pass. And SSF2 special-angle sentinels (-1/-2/-3…) are now
+faithfully PRESERVED but not yet mapped to FM's special-angle codes (a move with a
+sentinel angle launches at that raw value in-engine; correct FM mapping is a
+follow-up — needs the SSF2 sentinel→FM-angle table).
+
 ## FIXED this session
 
 - **Split sub-animations were 0-damage.** `jab2`/`jab3` (and `strong_*_in/charge`)
