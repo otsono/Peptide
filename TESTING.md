@@ -290,8 +290,15 @@ allocation**, not infinite recursion. Both are large characters (87–89 frame
 methods / sub-MCs). The skew-bake path is already dimension-guarded (`>4096 →
 skip`), so the culprit is likely elsewhere in `build_anim_frame_images` (e.g. a
 pathological effect-sprite compose). Needs a peak-allocation probe to localize —
-**open**. The other 44 (incl. mario, sandbag, kirby) convert and the spot-checked
-ones boot.
+**open**.
+
+**Verified functional in-engine this session (spawn → STAND, drive moves,
+animate, clean physics, no crash): `sandbag`, `mario`, `kirby`, `bowser`,
+`fox`.** Each was regenerated from the current converter, re-exported via
+FrayTools, and driven with `spawn` + `move <name>` + `physics`. mario was the
+deep sweep (full 18-move set); the other four were spot-checked across jab /
+special / grab categories. This validates the generic load+drive pipeline across
+characters, not just the two reference ones.
 
 **The stale-`.fra` trap (re-export before trusting any runtime result).**
 `characters/` and the published `.fra` are git-ignored, so an old `.fra` in
