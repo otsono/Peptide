@@ -43,8 +43,17 @@ Decomposed into commands (see "Building blocks" below): `spawn` + `dummy` →
   accurate than separate `state`/`physics` calls (single-frame consistency).
 - **`hitbox` / `boxes`** — for the current frame, dump every active hit/hurt box:
   index, x/y/w/h, damage, angle, base KB, KB growth, active-frame window.
-  **[next]** The modder's core debugging view. Reads the character's runtime
-  hitbox component; layer-2 if expressible as field reads, else `.hl`.
+  **[research → `.hl`]** The modder's core debugging view. RE lead: the engine
+  has `Character.getHitboxStats` / `getHitboxStatsProps` (strings 5240/5241) and
+  `pxf.entity.stats.HitboxStats` (5314) — reading them means walking a NESTED
+  per-anim/per-hitbox stats structure, not flat field reads. That exceeds the
+  "simple field-read" bar for a Rust-generated Asm block (layer 2), so it should
+  be the FIRST feature built via the **Haxe→`.hl`** path (layer 2→`.hl` in
+  PEPTIDE_ARCHITECTURE). NOTE: HashLink bytecode is monolithic — a runtime
+  `.hl`-module loader likely isn't available, so the migration probably means
+  **merging** a compiled `.hl` into the engine bytecode at patch time (type/findex
+  index remapping across two modules). That feasibility spike is the real
+  prerequisite and is a sizable RE task — scope it deliberately, don't rush it.
 - **`anim`** — current animation name + frame index/total. **[done]** Reads the
   Animation component (`A:<name> frame <cur>/<total>`). The observation half of
   the loop.

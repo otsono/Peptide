@@ -72,6 +72,19 @@ This keeps the fragile hand-bytecode surface from growing, which is the stabilit
 win the project is optimizing for. See `docs/PEPTIDE_FUTURE.md` for the feature
 roadmap that will exercise this path.
 
+**`.hl` feasibility caveat (must spike before committing).** HashLink bytecode is
+a *monolithic* file; there is (as far as known) no runtime "load another `.hl`
+module" facility. So "load via bootstrap" most likely means **merging** a Haxe-
+compiled `.hl` into the engine bytecode *at patch time* — appending its functions/
+types/strings and remapping every findex / type index / string index so the two
+modules' tables don't collide, then wiring the injected dispatch skeleton to call
+the merged-in entry points. `hlbc` (already a dependency) gives read/write access
+to all those tables, so it's mechanically possible, but the index-remapping is
+non-trivial and needs a dedicated feasibility spike (start with merging a
+one-function `.hl` that returns a constant and calling it from the dispatch)
+before any feature depends on it. Until that spike succeeds, complex features stay
+on the Rust-generated-`Asm` path (layer 2) or are deferred.
+
 ## IP boundary
 
 Peptide contains **no** Fraymakers code, bytecode, strings, or assets. It reads
