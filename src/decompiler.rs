@@ -189,6 +189,15 @@ impl Expr {
                         }
                     }
                 }
+                // The velocity setters take a 2nd boolean flag whose polarity is INVERTED
+                // between SSF2 (setXSpeed/setYSpeed) and Fraymakers (setXVelocity/setYVelocity).
+                // Flip it so the converted call has the same effect as the original.
+                if matches!(method.as_str(),
+                    "setXSpeed" | "setYSpeed" | "setXVelocity" | "setYVelocity") {
+                    if let Some(second) = rendered.get_mut(1) {
+                        *second = invert_bool_arg(second);
+                    }
+                }
                 let arg_str = rendered.join(", ");
                 // Check if obj is self and method is an API call
                 let obj_str = obj.render();
@@ -273,6 +282,17 @@ fn is_callback_ref(s: &str) -> bool {
     let mut chars = s.chars();
     let first_ok = chars.next().map_or(false, |c| c.is_ascii_alphabetic() || c == '_');
     first_ok && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
+/// Invert a velocity setter's boolean 2nd argument. SSF2's setXSpeed/setYSpeed flag is
+/// the opposite polarity of Fraymakers' setXVelocity/setYVelocity flag, so a literal
+/// false↔true is flipped and any other expression is negated with `!(…)`.
+fn invert_bool_arg(s: &str) -> String {
+    match s.trim() {
+        "false" => "true".to_string(),
+        "true"  => "false".to_string(),
+        other   => format!("!({})", other),
+    }
 }
 
 fn render_closure(params: &[String], stmts: &[Stmt], depth: usize) -> String {
