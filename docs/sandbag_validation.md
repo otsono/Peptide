@@ -92,9 +92,32 @@ output — the rotated-affine itembox anchor now lands at 0.002–0.006px.
 
 ---
 
-## 3. Fraymakers boot + spawn ⏳
+## 3. Fraymakers boot + spawn ⏳ (freeze FIXED; intermittent buried-VFX race)
 
-(pending — see below)
+Boot + socket verified (`PONG`). `s` is self-bootstrapping (commit 9c0d3d05):
+`./runseq.sh <gap_s> "s sandbag thespire commandervideoassist" t t t` — fires at
+engine READY (event-driven), LAUNCHES with no prior `l`.
+
+**Freeze FIXED (commit 0ab59180):** the standing animation was named `idle`;
+Fraymakers' `CState.STAND` resolves the `stand` animation, so its absence hung
+the engine main loop at character construction. Renaming `idle`→`stand`
+(+`walk`/`fall`/etc. canonicalization pending) unfroze it. Sandbag now reaches
+`Q:MATCH_LIVE` and `T:INTRO`→`T:STAND` (live state readback verified).
+
+**KNOWN ISSUE — buried-VFX sprite-cache eviction race (~40% spawn success):**
+`Character.__constructor__` (Character.hx:769) builds a "buried" VFX from
+`statsProps.spriteContent` (`private::sandbag.sandbag`) via
+`getSprite`→`pxfSpriteEntityCache`. `FraymakersMode.startMatch` calls
+`ResourceManager.load`→`flushUnusedResources`, which evicts our headless-loaded
+sprite-entity cache **before** the async `onMatchReady`→`spawnPlayer`→ctor reads
+it → `Null access`. Confirmed: `l` alone gives `SPR:1` reliably (cache populated);
+only match-start eviction makes it null. This is a **harness** headless-load
+limitation, not a converter bug — the converter output is correct (verified when
+the race is won: clean `T:STAND`). RE: `docs/` (createCharacter/buried-VFX agents).
+Three bytecode mitigations (set_Required, per-frame recache) tried — all made it
+worse; the hand-emitted-bytecode path has hit the ceiling flagged in
+`memory/project_fraymakers-engine-internals.md` (migrate to pre-compiled `.hl`
+before adding more). Current workaround: retry spawn until `T:STAND` (~2-3x).
 
 ## 4. Runtime: drive every move + physics ⬜
 
