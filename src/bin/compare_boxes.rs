@@ -197,7 +197,7 @@ fn main() {
                 name: k.clone(), frames: 0, speed: 0.0,
             }))
             .collect();
-    let splits = ssf2_converter::anim_splitter::split_animations(&synthetic_sources, &all_anim_data);
+    let splits = ssf2_converter::anim_splitter::split_animations(&synthetic_sources, &all_anim_data, 0);
     let split = splits.iter().find(|s| s.fm_name == report.animation);
 
     // Source animation name + frame offset (in SSF2 frame units) for this FM

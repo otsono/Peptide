@@ -79,6 +79,9 @@ pub struct CharacterStats {
     pub jump_height:      f64,
     pub double_jump_height: f64,
     pub air_friction:     f64,
+    /// SSF2 `jumpStartup` stat: # of grounded frames before the jump launches
+    /// (the jump-squat duration). Used to slice jump_squat off the jump animation.
+    pub jump_startup:     f64,
     /// Median scaleX from the root character MovieClip's xframe PlaceObject entries
     pub base_scale_x:     f64,
     /// Median scaleY from the root character MovieClip's xframe PlaceObject entries
@@ -105,6 +108,7 @@ impl Default for CharacterStats {
             weight: 100.0, gravity: 0.0, fall_speed: 0.0, fast_fall_speed: 0.0,
             walk_speed: 0.0, dash_speed: 0.0, air_mobility: 0.0,
             max_jumps: 2, jump_height: 0.0, double_jump_height: 0.0, air_friction: 0.0,
+            jump_startup: 0.0,
             base_scale_x: 1.0, base_scale_y: 1.0,
         }
     }
@@ -469,6 +473,9 @@ fn convert_stats(vals: &BTreeMap<String, f64>) -> CharacterStats {
         jump_height:        get("jump_height"),
         double_jump_height: get("double_jump_height"),
         air_friction:       get("air_friction"),
+        // Internal-only (NOT a Fraymakers stat): raw SSF2 jumpStartup frame count,
+        // used solely to slice jump_squat off the front of the jump animation.
+        jump_startup:       vals.get("jumpStartup").copied().unwrap_or(0.0),
         // base_scale_x/y are set later from sprite_parser::extract_xframe_scale
         base_scale_x:       1.0,
         base_scale_y:       1.0,

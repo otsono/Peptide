@@ -32,6 +32,7 @@ pub struct SplitAnim {
 pub fn split_animations(
     source_anims: &BTreeMap<String, crate::extractor::AnimationInfo>,
     sprite_boxes: &BTreeMap<String, AnimationBoxData>,
+    jump_startup: u16,
 ) -> Vec<SplitAnim> {
     let mut out: Vec<SplitAnim> = Vec::new();
 
@@ -139,15 +140,34 @@ pub fn split_animations(
                 }
             }
 
-            // ── Jump: forward / back ───────────────────────────────────────────
+            // ── Jump: jump_squat + jump_in / jump_loop / jump_out (+ jump_back) ──
+            // SSF2 has no jump-squat animation; the character holds the start of its
+            // jump sprite for `jumpStartup` grounded frames. So we slice the first
+            // `jumpStartup` frames off the front as `jump_squat`, then divide the
+            // remaining airborne portion into thirds → jump_in / jump_loop / jump_out
+            // (jump_loop is the looping middle). If the sprite has a `backflip` label,
+            // only the forward portion [0, backflip) is split this way; [backflip, end)
+            // stays as jump_back.
             "jump" => {
-                if let Some(&bf) = label_map.get("backflip") {
-                    // frames before backflip = forward jump (includes any 'done' tail)
-                    let back_end = total;
-                    push_split(&mut out, "jump",      anim_name, 0,   bf,       &labels, false, None);
-                    push_split(&mut out, "jump_back", anim_name, bf,  back_end, &labels, false, None);
+                let fwd_end = label_map.get("backflip").copied().unwrap_or(total);
+                let js = jump_startup.min(fwd_end);
+                // jump_squat: grounded startup frames.
+                if js > 0 { push_split(&mut out, "jump_squat", anim_name, 0, js, &labels, false, None); }
+                // Remaining airborne frames, divided into thirds (rounded).
+                let rem = fwd_end.saturating_sub(js);
+                if rem == 0 {
+                    // No airborne frames to split — emit the whole forward part as jump_in.
+                    push_split(&mut out, "jump_in", anim_name, js, fwd_end, &labels, false, None);
                 } else {
-                    push_full(&mut out, anim_name, total, &labels);
+                    let third = ((rem as f32) / 3.0).round().max(1.0) as u16;
+                    let in_end   = (js + third).min(fwd_end);
+                    let loop_end = (js + 2 * third).min(fwd_end);
+                    push_split(&mut out, "jump_in",   anim_name, js,       in_end,   &labels, false, None);
+                    push_split(&mut out, "jump_loop", anim_name, in_end,   loop_end, &labels, true,  Some(0));
+                    push_split(&mut out, "jump_out",  anim_name, loop_end, fwd_end,  &labels, false, None);
+                }
+                if fwd_end < total {
+                    push_split(&mut out, "jump_back", anim_name, fwd_end, total, &labels, false, None);
                 }
             }
 

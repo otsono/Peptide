@@ -191,7 +191,7 @@ pub fn generate_entity(
     // ── Apply animation splits ────────────────────────────────────────────────
     // The splitter expands multi-label SSF2 animations into separate FM animations.
     // Each SplitAnim carries (fm_name, source_anim, start_frame, end_frame, loop info).
-    let split_anims = crate::anim_splitter::split_animations(&data.animations, sprite_boxes);
+    let split_anims = crate::anim_splitter::split_animations(&data.animations, sprite_boxes, data.stats.jump_startup.round().max(0.0) as u16);
 
     for split in &split_anims {
         let anim_name = &split.fm_name;
