@@ -23,3 +23,26 @@ Detail lives in per-topic docs, not here.
 - 11:35 — Landed BranchCmp stack-threading (decompiler): seeds branch bodies with the predecessor operand stack, recovering /* ? */ exprs (fox 1→0, bowser 4→2; none added; fox/bowser/mario spawn+drive clean; 47 tests pass). Hardened batch_spawn_test (deterministic ports + retry) — eliminates the port-collision false-fails (fox+zelda confirmed PASS). Commits 81458f8c, 18140a6c. PARITY.md updated (Branch-arm half still open, gate on completeness metric + spawn).
 - 11:48 — forceAttack -> ssf2_only (was a raw undefined call); mario re-verified in-engine (jab/special_up/grab M:OK, snapshot, no crash). Ran full-corpus translation-completeness: most chars clean (single-digit /*?*/); outliers for future decompiler passes: kirby/tails(26), goku(19), rayman(18), lucario/pacman(17). Excluded misc (data file) from the tool's default scan. Commit 6d7ae57b.
 - 11:55 — Regenerated all 45 chars on the final converter + ran completeness: corpus /*?*/ down to ~252 (fixes cleared ~23; 10 chars now fully /*?*/-clean). Outliers logged in PARITY.md (kirby 26, tails 23, rayman 18, pacman 17 — future decompiler targets). All work committed + pushed; repo clean; 45/45 chars convert + drive in-engine.
+
+## Session complete — pristine state (final green check passed: both crates build, all tests pass, tree clean, 66 commits pushed)
+
+WHAT'S DONE (all verified live):
+- sandbag + mario fully drivable in-engine (mario: full 18-move sweep); 8 converter
+  fixes advancing SSF2 functional parity; physics/anim/loop/snapshot readbacks.
+- 45/45 characters convert AND drive in-engine, 0 crashes (corpus complete at P0).
+- Peptide is human-facing: spawn/move<name>/state/physics/anim/loop/snapshot/query/
+  load/keys/console/ping/exit/help + aliases + gloss. Diagnostics: CONV_MEM_LIMIT_MB
+  allocator, translation_completeness.sh. Hardened batch sweep (no false-fails).
+- Docs: overnight_validation (morning summary + doc map), character_status, PARITY,
+  MODDER_GUIDE, PEPTIDE_ARCHITECTURE, PEPTIDE_FUTURE, TESTING.md; memory updated.
+
+WHERE TO PICK UP (deferred deliberately — see docs/PARITY.md for plans + gates):
+1. Branch-arm stack-threading (decompiler) — would cut the /*?*/ debt on the
+   outliers (kirby 26, tails 23, rayman 18, pacman 17). RISKY (ternary-detection
+   interaction); gate on translation_completeness.sh (markers must drop, none
+   added) + before/after output DIFF on a ternary-heavy char + the spawn sweep.
+2. `verify <move>` harness (diff in-engine behaviour vs the SSF2 reference) +
+   `dummy` opponent + hitbox readback — needs the Haxe->.hl merge-at-patch-time
+   spike first (PEPTIDE_ARCHITECTURE caveat). Turns parity from eyeballing into
+   pass/fail.
+3. Per-segment hitbox values, physics-stat tuning (empirical), item/CPU systems.
