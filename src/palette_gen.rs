@@ -475,12 +475,9 @@ fn snap_skew_bitmaps_to_palette(sprites_dir: &Path, colors: &[u32], changeable: 
         if !fixed_set.is_empty() && !changeable_palette.is_empty() {
             fix_fixed_mis_snaps(&mut img, &fixed_set, &changeable_palette);
         }
-        // Despeckle: bicubic + unsharp leave scattered single-pixel palette outliers in
-        // smooth gradients (invisible in the default skin, but high-contrast once recoloured).
-        // Replace each opaque pixel that's isolated (its colour matches <=1 of its opaque
-        // 8-neighbours, in an interior of >=5 opaque neighbours) with the neighbourhood's most
-        // common colour. Coherent regions and thin outlines (>=2 like neighbours) are kept.
-        despeckle(&mut img);
+        // NOTE: no despeckle — it flattened fine shading gradients (lost detail). The fixed-
+        // ramp fix above is the only recolorability correction; the bicubic detail is kept.
+        let _ = despeckle;
         if img.save(&path).is_ok() { snapped += 1; }
     }
     if snapped > 0 {
