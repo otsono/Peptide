@@ -1331,6 +1331,27 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let idx_jne_q = ops.len();
     ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });          // not 'q' -> L_ORIG
     ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    // DIAGNOSTIC: report the buried-VFX key's cache status every q, to watch the
+    // post-startMatch eviction timeline frame-by-frame (q is callable repeatedly).
+    {
+        let mut a = Asm::new(f.regs.len() as u32);
+        let l_null = a.label();
+        let l_done = a.label();
+        a.op(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(ns_sandbag_g) });
+        a.op(Opcode::Call1 { dst: rr(28), fun: RefFun(get_sprite_entity), arg0: rr(55) });
+        a.jnull(rr(28), l_null);
+        a.op(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(nspr_ok_g) });
+        a.jalways(l_done);
+        a.place(l_null);
+        a.op(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(nspr_null_g) });
+        a.place(l_done);
+        a.op(Opcode::Null { dst: rr(15) });
+        a.op(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+        a.op(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+        let (a_ops, a_regs) = a.finish();
+        add_regs(f, &a_regs);
+        ops.extend(a_ops);
+    }
     ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
     ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) }); // currentMatch
     let idx_q_jnull = ops.len();
