@@ -130,6 +130,43 @@ exists in Script.hx) to the `effects` instance var. Only triggers when a smash i
 charged — not on spawn/idle. Fix is in the ActionScript→hscript callback
 resolution. DEFERRED until basic spawn/moveset validation is reliable.
 
-## 4. Runtime: drive every move + physics ⬜
+### Move dispatch + state readback VERIFIED (on a successful spawn)
+
+On a spawn that wins the buried-VFX race, the converter's character is functional:
+```
+./runseq.sh 3 "s sandbag thespire commandervideoassist" t m t t
+  → T:INTRO  M:JAB  T:STAND  T:STAND
+```
+- State machine works: spawns → `INTRO` → settles to `STAND`.
+- Move dispatch works: `m` = `Character.toState(CState.JAB)` acks `M:JAB`.
+- State readback works: `t` = `getStateName()`.
+So the converter output is runtime-correct; the only blocker to full validation is
+**spawn reliability** (the buried-VFX race, ~40%).
+
+### Durable-path research outcome (2026-05-30)
+
+Two RE agents investigated the reliable-spawn fix:
+- **`.hl` migration is counterproductive** (rejected): `haxe`/`hl` not installed; it's a
+  1–2 week bytecode-linker effort that STILL requires by-name engine-symbol relinking and
+  adds an extern-layout-drift failure mode. Recommendation: a ~1–2 day **Rust label/
+  register helper** over the existing `hlbc` emission (kills jump-offset + register-alloc
+  errors) is the right authoring foundation.
+- **Engine-native pin found**: `startMatch` spares match content from
+  `flushUnusedResources` by putting it in `queueHash` via `queueResources@18233`;
+  `set_Required@1832` is a pure field-10 write. **But** implementing
+  `queueResources(["private::sandbag"]) + set_Required(true)` after `addResource` did NOT
+  improve reliability in practice (still ~baseline, same Character.hx:769 crash) — and
+  every bytecode tweak (set_Required / per-frame recache / queueResources) measured at
+  ~15–40% (small-sample noise) with no real gain. This points to the true cause being the
+  **sprite-cache POPULATION race** (our re-cache entry not reliably created at the async
+  construction frame), not eviction — OR the hand-bytecode additions themselves perturbing
+  timing. The hand-emitted-bytecode path is the limiting factor (matches the memory TODO).
+
+**Conclusion:** reliable headless spawn needs either (a) the Rust authoring helper to
+build a correct version without bytecode fragility, then deeper RE into the population
+race, or (b) accept retry-based validation (~2–3 spawns to win the race). The freeze fix
+and box-geometry validation stand regardless; the converter output is correct.
+
+## 4. Runtime: drive every move + physics ⬜ (blocked on spawn reliability)
 
 ## 5. Animation playthrough (frame-state capture) ⬜
