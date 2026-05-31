@@ -191,8 +191,13 @@ function defaultFrayTools() {
   // controller for good (the post-open re-stash never recovers), whereas a COLD launch +
   // fresh open is reliable. So if FrayTools is already running, quit it first and cold-launch.
   if (await cdpUp(port)) {
-    console.error('FrayTools already running — quitting it for a clean cold relaunch');
-    try { spawn('pkill', ['-f', `remote-debugging-port=${port}`], { stdio: 'ignore' }).unref(); } catch {}
+    console.error('FrayTools already running — force-killing it for a clean cold relaunch');
+    // SIGKILL (-9), NOT a graceful SIGTERM: a graceful quit pops FrayTools' "Are you sure
+    // you want to quit?" confirmation dialog, which nothing answers — so the process never
+    // exits, keeps holding the debug port, and the relaunch then fails with "CDP never came
+    // up". SIGKILL terminates immediately with no dialog. (We don't need FrayTools to save
+    // state on the way out.)
+    try { spawn('pkill', ['-9', '-f', `remote-debugging-port=${port}`], { stdio: 'ignore' }).unref(); } catch {}
     const qDeadline = Date.now() + 15000;
     while (Date.now() < qDeadline) { if (!(await cdpUp(port))) break; await sleep(500); }
     await sleep(3000);  // let the old process fully exit + release the debug port before relaunch
