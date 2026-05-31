@@ -419,6 +419,12 @@ fn snap_skew_bitmaps_to_palette(sprites_dir: &Path, colors: &[u32]) {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if !(name.starts_with("skew_") && name.ends_with(".png")) { continue; }
         let mut img = match image::open(&path) { Ok(i) => i.to_rgba8(), Err(_) => continue };
+        // Edge-colour bleed: copy the nearest SOLID (alpha>=250) pixel's RGB into the
+        // antialiased (0<alpha<250) edge pixels, so the edge inherits the body colour
+        // instead of the light bicubic blend it would otherwise carry (which snaps to the
+        // lightest costume colour → light "speckle" along the silhouette when recoloured).
+        // Alpha is preserved, so the edge still antialiases — just in the body's hue.
+        bleed_edges(&mut img);
         let mut changed = false;
         for px in img.pixels_mut() {
             if px.0[3] == 0 { continue; }
@@ -426,10 +432,47 @@ fn snap_skew_bitmaps_to_palette(sprites_dir: &Path, colors: &[u32]) {
             let c = palette[nearest(&rgb, &palette)];
             if c != rgb { px.0[0] = c[0]; px.0[1] = c[1]; px.0[2] = c[2]; changed = true; }
         }
-        if changed && img.save(&path).is_ok() { snapped += 1; }
+        if img.save(&path).is_ok() { snapped += 1; }
+        let _ = changed;
     }
     if snapped > 0 {
         log::info!("palette_gen: snapped {} skew bitmap(s) to the {}-colour costume palette",
             snapped, palette.len());
+    }
+}
+
+/// Dilate the RGB of SOLID pixels (alpha >= 250) outward into the antialiased fringe
+/// (0 < alpha < 250) so each edge pixel takes its nearest solid neighbour's colour. Alpha is
+/// untouched (the silhouette antialiasing is preserved); only the colour the fringe carries
+/// changes, so it no longer reads as a light blend. Iterates a few rings to cover thick edges.
+fn bleed_edges(img: &mut image::RgbaImage) {
+    let (w, h) = img.dimensions();
+    let (w, h) = (w as i64, h as i64);
+    let mut filled: Vec<bool> = img.pixels().map(|p| p.0[3] >= 250).collect();
+    for _ in 0..8 {
+        let snap_rgb: Vec<[u8; 3]> = img.pixels().map(|p| [p.0[0], p.0[1], p.0[2]]).collect();
+        let prev_filled = filled.clone();
+        let mut any = false;
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) as usize;
+                if prev_filled[i] { continue; }
+                if img.get_pixel(x as u32, y as u32).0[3] == 0 { continue; } // fully transparent
+                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || ny < 0 || nx >= w || ny >= h { continue; }
+                    let ni = (ny * w + nx) as usize;
+                    if prev_filled[ni] {
+                        let n = snap_rgb[ni];
+                        let p = img.get_pixel_mut(x as u32, y as u32);
+                        p.0[0] = n[0]; p.0[1] = n[1]; p.0[2] = n[2]; // keep this pixel's own alpha
+                        filled[i] = true;
+                        any = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !any { break; }
     }
 }
