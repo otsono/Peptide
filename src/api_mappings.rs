@@ -2354,6 +2354,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_global_variable_rewrite() {
+        // SSF2 get/setGlobalVariable -> Fraymakers makeX wrapper .get()/.set().
+        let out = translate_ssf2_to_fm(concat!(
+            "self.setGlobalVariable(\"canStartRise\", true);\n",
+            "if (self.getGlobalVariable(\"canStartRise\")) { return; }\n",
+            "self.setGlobalVariable(\"standtime\", self.getGlobalVariable(\"standtime\") - 1);\n",
+        ));
+        assert!(out.contains("canStartRise.set(true)"), "set not rewritten: {out}");
+        assert!(out.contains("canStartRise.get()"), "get not rewritten: {out}");
+        assert!(out.contains("standtime.set(standtime.get() - 1)"), "nested get/set not rewritten: {out}");
+        assert!(!out.contains("GlobalVariable"), "raw GlobalVariable call left in output: {out}");
+        assert!(!out.contains("AnimationStatsMetadata"), "old wrong mapping still present: {out}");
+    }
+
+    #[test]
+    fn test_uncomment_local_fn_calls() {
+        // A call commented [SSF2-only: NAME] is restored iff NAME is a local function.
+        let code = concat!(
+            "function jumpToContinue(arg0) {\n",
+            "\tself.removeEventListener(EntityEvent.COLLIDE_FLOOR, jumpToContinue);\n",
+            "}\n",
+            "function setLandingLag(arg0) {\n",
+            "\t\t\t// [SSF2-only: jumpToContinue] jumpToContinue();\n",
+            "\t\t\t// [SSF2-only: tossItem] self.tossItem(270);\n",
+            "}\n",
+        );
+        let out = uncomment_local_fn_calls(code);
+        // jumpToContinue is defined locally -> restored (indent preserved, marker gone)
+        assert!(out.contains("\t\t\tjumpToContinue();"), "local-fn call not restored: {out}");
+        assert!(!out.contains("[SSF2-only: jumpToContinue]"), "marker not removed");
+        // tossItem is NOT defined locally -> stays commented
+        assert!(out.contains("[SSF2-only: tossItem] self.tossItem(270)"), "non-local wrongly restored");
+    }
+
+    #[test]
     fn test_basic_translations() {
         let input = concat!(
             "self.self.endAttack();\n",

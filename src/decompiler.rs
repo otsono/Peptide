@@ -1925,6 +1925,30 @@ pub fn decompile_method(
 }
 
 #[cfg(test)]
+mod make_if_tests {
+    use super::{make_if, render_stmts, Expr, Stmt};
+
+    #[test]
+    fn empty_then_is_negated_and_swapped() {
+        // if (x != 0) {} else { return; }  ->  if (x == 0) { return; }
+        let cond = Expr::BinOp("!=", Box::new(Expr::GetLex("x".into())), Box::new(Expr::Num(0.0)));
+        let rendered = render_stmts(&[make_if(cond, vec![], vec![Stmt::Return(None)])], 0);
+        assert!(rendered.contains("=="), "condition not flipped to ==: {rendered}");
+        assert!(!rendered.contains("!="), "stale != left: {rendered}");
+        assert!(!rendered.contains("else"), "empty-then else not dropped: {rendered}");
+    }
+
+    #[test]
+    fn normal_if_unchanged() {
+        // Non-empty then is left as-is (no spurious negation).
+        let cond = Expr::BinOp("==", Box::new(Expr::GetLex("y".into())), Box::new(Expr::Num(1.0)));
+        let rendered = render_stmts(&[make_if(cond, vec![Stmt::Return(None)], vec![])], 0);
+        assert!(rendered.contains("=="), "condition altered: {rendered}");
+        assert!(!rendered.contains("!="), "spurious negation: {rendered}");
+    }
+}
+
+#[cfg(test)]
 mod loop_guard_tests {
     use super::{guard_loop_termination, render_stmts, Expr, Stmt};
 

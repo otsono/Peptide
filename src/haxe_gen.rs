@@ -1670,3 +1670,23 @@ fn fmt_num(v: f64) -> String {
         s.to_string()
     }
 }
+
+#[cfg(test)]
+mod hitbox_split_tests {
+    use super::base_attack_name;
+
+    #[test]
+    fn split_sub_anims_map_to_their_base_attack() {
+        // jabN (N>=2) inherits jab1; strong _in/_charge inherit _attack.
+        assert_eq!(base_attack_name("jab2").as_deref(), Some("jab1"));
+        assert_eq!(base_attack_name("jab3").as_deref(), Some("jab1"));
+        assert_eq!(base_attack_name("strong_forward_in").as_deref(), Some("strong_forward_attack"));
+        assert_eq!(base_attack_name("strong_up_charge").as_deref(), Some("strong_up_attack"));
+        assert_eq!(base_attack_name("strong_down_in").as_deref(), Some("strong_down_attack"));
+        // Non-split / base names have no fallback.
+        assert_eq!(base_attack_name("jab1"), None);
+        assert_eq!(base_attack_name("tilt_forward"), None);
+        assert_eq!(base_attack_name("dash_attack"), None);
+        assert_eq!(base_attack_name("strong_forward_attack"), None);
+    }
+}
