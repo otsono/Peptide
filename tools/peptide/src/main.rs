@@ -874,6 +874,33 @@ fn connect_edit(
         (add_int(code, 'A' as i32 + i as i32), fidx) // (letter int-pool idx, CState field idx)
     }).collect();
     eprintln!("move-dispatch: {} moves resolved (selector 'A'..); see commands::MOVES", move_fields.len());
+    // ---- 'v' command: physics/vitals readback (criterion #6 numeric telemetry) ----
+    // Reads player-0 Character body.x/y, physics.currentVelocityX/Y, damage._damage —
+    // all Float (t6) — boxes each via ToDyn and formats with Std.string, then writes
+    // one "P: x=.. y=.. vx=.. vy=.. dmg=..\n" line. Resolved by name (drift-robust).
+    let v_idx = add_int(code, 'v' as i32);
+    let std_string = find_fn(code, "string", Some("$Std"))
+        .or_else(|| find_fn(code, "string", Some("Std")))
+        .unwrap_or(5791); // $Std::string(Dynamic):String
+    let body_t = require_type(code, "pxf.components.Body")?;
+    let physics_t = require_type(code, "pxf.components.Physics")?;
+    let damage_t = require_type(code, "pxf.components.Damage")?;
+    let char_body_f = require_field(code, "pxf.entity.Character", "body")?;
+    let char_physics_f = require_field(code, "pxf.entity.Character", "physics")?;
+    let char_damage_f = require_field(code, "pxf.entity.Character", "damage")?;
+    let body_x_f = find_field(code, body_t, "x").ok_or_else(|| anyhow::anyhow!("Body.x"))?;
+    let body_y_f = find_field(code, body_t, "y").ok_or_else(|| anyhow::anyhow!("Body.y"))?;
+    let phys_vx_f = find_field(code, physics_t, "currentVelocityX").ok_or_else(|| anyhow::anyhow!("Physics.currentVelocityX"))?;
+    let phys_vy_f = find_field(code, physics_t, "currentVelocityY").ok_or_else(|| anyhow::anyhow!("Physics.currentVelocityY"))?;
+    let dmg_f = find_field(code, damage_t, "_damage").ok_or_else(|| anyhow::anyhow!("Damage._damage"))?;
+    let p_pre_g = add_string_const(code, "P:");
+    let p_x_g = add_string_const(code, " x=");
+    let p_y_g = add_string_const(code, " y=");
+    let p_vx_g = add_string_const(code, " vx=");
+    let p_vy_g = add_string_const(code, " vy=");
+    let p_dmg_g = add_string_const(code, " dmg=");
+    let p_nomatch_g = add_string_const(code, "P:NOMATCH\n");
+    eprintln!("physics: Std.string={std_string} body.f={char_body_f} physics.f={char_physics_f} damage.f={char_damage_f}");
     let t_prefix_g = add_string_const(code, "T:");
     let anim_prefix_g = add_string_const(code, "ANIM:"); // per-frame state-change telemetry
     let t_nomatch_g = add_string_const(code, "T:NOMATCH\n");
@@ -1997,7 +2024,113 @@ fn connect_edit(
     ops.push(Opcode::Null { dst: rr(15) });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
-    // t handler done; fall through to L_ORIG
+    // t handler done; fall through to the 'v' (physics) check.
+
+    // ---- 'v' command: physics/vitals readback ----
+    let idx_v_check = ops.len();
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(v_idx) });
+    let idx_jne_v = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });            // not 'v' -> L_ORIG
+    {
+        // Self-contained Asm block: walk to player 0, format five Floats via
+        // Std.string, write one "P: x=.. y=.. vx=.. vy=.. dmg=..\n" line.
+        let mut a = Asm::new(f.regs.len() as u32);
+        let nomatch = a.label();
+        let after = a.label();
+        let r_mc   = a.reg(mc_statics_t);
+        let r_cm   = a.reg(match_t);
+        let r_chs  = a.reg(38);
+        let r_len  = a.reg(3);
+        let r_one  = a.reg(3);
+        let r_z    = a.reg(3);
+        let r_arr  = a.reg(11);
+        let r_el   = a.reg(9);
+        let r_char = a.reg(char_entity_t);
+        // One correctly-typed reg per component: HL computes a Field's byte offset from
+        // the reg's STATIC type, so a Body-typed reg can't be reused to read Physics/Damage
+        // fields (it read uninitialized memory → garbage velocities).
+        let r_body = a.reg(body_t);
+        let r_phys = a.reg(physics_t);
+        let r_dmg  = a.reg(damage_t);
+        let r_f    = a.reg(6);               // Float scratch
+        let r_dyn  = a.reg(9);               // boxed Float
+        let r_str  = a.reg(str_t);           // Std.string result
+        let r_acc  = a.reg(str_t);           // accumulator
+        let r_lbl  = a.reg(str_t);
+        a.op(Opcode::Field { dst: rr(5), obj: rr(10), field: RefField(out_field) });
+        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(3511) });
+        a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
+        a.jnull(r_cm, nomatch);
+        a.op(Opcode::Field { dst: r_chs, obj: r_cm, field: RefField(characters_field) });
+        a.jnull(r_chs, nomatch);
+        a.op(Opcode::Field { dst: r_len, obj: r_chs, field: RefField(0) });
+        a.op(Opcode::Int { dst: r_one, ptr: RefInt(one_idx) });
+        a.jslt(r_len, r_one, nomatch);
+        a.op(Opcode::Field { dst: r_arr, obj: r_chs, field: RefField(1) });
+        a.op(Opcode::Int { dst: r_z, ptr: RefInt(zero_idx) });
+        a.op(Opcode::GetArray { dst: r_el, array: r_arr, index: r_z });
+        a.jnull(r_el, nomatch);
+        a.op(Opcode::UnsafeCast { dst: r_char, src: r_el });
+        // acc = "P:"
+        a.op(Opcode::GetGlobal { dst: r_acc, global: RefGlobal(p_pre_g) });
+        // helper closure: append `label` then Std.string(<comp>.field)
+        // (emitted inline below per value; Rust can't borrow `a` in a closure cleanly here)
+        // x = body.x
+        a.op(Opcode::Field { dst: r_body, obj: r_char, field: RefField(char_body_f) });
+        a.op(Opcode::Field { dst: r_f, obj: r_body, field: RefField(body_x_f) });
+        a.op(Opcode::ToDyn { dst: r_dyn, src: r_f });
+        a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
+        a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(p_x_g) });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+        // y = body.y
+        a.op(Opcode::Field { dst: r_f, obj: r_body, field: RefField(body_y_f) });
+        a.op(Opcode::ToDyn { dst: r_dyn, src: r_f });
+        a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
+        a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(p_y_g) });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+        // vx = physics.currentVelocityX
+        a.op(Opcode::Field { dst: r_phys, obj: r_char, field: RefField(char_physics_f) });
+        a.op(Opcode::Field { dst: r_f, obj: r_phys, field: RefField(phys_vx_f) });
+        a.op(Opcode::ToDyn { dst: r_dyn, src: r_f });
+        a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
+        a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(p_vx_g) });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+        // vy = physics.currentVelocityY
+        a.op(Opcode::Field { dst: r_f, obj: r_phys, field: RefField(phys_vy_f) });
+        a.op(Opcode::ToDyn { dst: r_dyn, src: r_f });
+        a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
+        a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(p_vy_g) });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+        // dmg = damage._damage
+        a.op(Opcode::Field { dst: r_dmg, obj: r_char, field: RefField(char_damage_f) });
+        a.op(Opcode::Field { dst: r_f, obj: r_dmg, field: RefField(dmg_f) });
+        a.op(Opcode::ToDyn { dst: r_dyn, src: r_f });
+        a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
+        a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(p_dmg_g) });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+        // + "\n" and write
+        a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(nl_g) });
+        a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+        a.op(Opcode::Null { dst: rr(15) });
+        a.op(Opcode::Call3 { dst: rr(6), fun: RefFun(write_str), arg0: rr(5), arg1: r_acc, arg2: rr(15) });
+        a.op(Opcode::Call1 { dst: rr(6), fun: RefFun(flush), arg0: rr(5) });
+        a.jalways(after);
+        a.place(nomatch);
+        a.op(Opcode::GetGlobal { dst: r_acc, global: RefGlobal(p_nomatch_g) });
+        a.op(Opcode::Null { dst: rr(15) });
+        a.op(Opcode::Call3 { dst: rr(6), fun: RefFun(write_str), arg0: rr(5), arg1: r_acc, arg2: rr(15) });
+        a.op(Opcode::Call1 { dst: rr(6), fun: RefFun(flush), arg0: rr(5) });
+        a.place(after);
+        let (a_ops, a_regs) = a.finish();
+        add_regs(f, &a_regs);
+        ops.extend(a_ops);
+    }
+    // (v handler falls through to L_ORIG)
 
     // L_ORIG = first original op after the prepended block (index n).
     let n = ops.len() as i32;
@@ -2051,7 +2184,9 @@ fn connect_edit(
     // so there are no m_* external fixups to patch here anymore.
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_m] { *offset = idx_t_check as i32 - idx_jne_m as i32 - 1; }
     // t-command jumps ('t' no-match -> L_ORIG; failures -> T:NOMATCH; success -> L_ORIG)
-    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_t] { *offset = n - idx_jne_t as i32 - 1; }
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_t] { *offset = idx_v_check as i32 - idx_jne_t as i32 - 1; }
+    // 'v' (physics) outer jump: not 'v' -> L_ORIG. Body is a self-contained Asm block.
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_v] { *offset = n - idx_jne_v as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnomatch] { *offset = idx_t_nomatch as i32 - idx_t_jnomatch as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnochars] { *offset = idx_t_nomatch as i32 - idx_t_jnochars as i32 - 1; }
     if let Opcode::JSLte { offset, .. } = &mut ops[idx_t_jempty] { *offset = idx_t_nomatch as i32 - idx_t_jempty as i32 - 1; }
