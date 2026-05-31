@@ -37,12 +37,38 @@ characters vs. stages), or you can pass a full `namespace::package.id`.
   Also has read-only inspection modes: `dis <findex>`, `typefields <type>`,
   `fnsof <type>`, `fninfo <findex>`, `callers <findex>`, `strgrep <s>`,
   `whoref <s>`, `inspect`.
-- `peptide-bridge serve|send --port <p> --token <t> ["<cmd>"]` — loopback bridge.
+- `peptide-bridge serve|send|help --port <p> --token <t> ["<cmd>"]` — loopback bridge.
+
+## Commands (human-facing)
+
+You drive the engine with **full-word commands**; the bridge translates them to
+the engine's terse wire protocol. Run `peptide-bridge help` (no engine needed)
+to print the list. The single-letter wire bytes still work as aliases, so old
+scripts keep running.
+
+| Command | Aliases | Args | Does |
+|---|---|---|---|
+| `spawn` | start, launch, s | `<char> [stage] [assist]` | start a match (loads custom content) |
+| `move` | attack, m | `[move-name]` | drive a move on player 0 (no arg = jab) |
+| `state` | status, t | | report player 0's state name |
+| `query` | matchlive, q | | is a match live? |
+| `load` | l | | synchronous custom-`.fra` load probe |
+| `keys` | pool, k | | dump resource-pool keys |
+| `console` | c | | run the engine console `help` |
+| `ping` | p | | liveness (PONG) |
+| `exit` | quit, stop, x | | clean engine shutdown |
+| `help` | h, ? | | print this list (client-side) |
+
+`move <name>` accepts the Fraymakers move vocabulary (`jab`, `tilt_down`,
+`aerial_forward`, `special_neutral`, …); see `help` for the full set. The
+friendly vocabulary lives in one place — [`src/commands.rs`](src/commands.rs) —
+shared by the bridge and the patcher, so a future GUI can wrap it directly.
 
 ## Quick start
 
 ```
-./run.sh "s commandervideo thespire commandervideoassist" 20
+./run.sh "spawn sandbag thespire commandervideoassist" 20   # friendly
+./run.sh "s commandervideo thespire commandervideoassist" 20 # wire bytes still work
 ```
 
 `run.sh` is self-contained: it writes `steam_appid.txt`, builds the bins,

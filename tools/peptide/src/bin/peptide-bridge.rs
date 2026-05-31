@@ -18,6 +18,12 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+// Shared friendly-command vocabulary (single source of truth; see commands.rs).
+// The bin lives in src/bin/, so the module file is one dir up.
+#[path = "../commands.rs"]
+mod commands;
+use commands::{translate, gloss, Translated};
+
 const DEFAULT_PORT: u16 = 17999;
 
 fn parse_port(args: &[String]) -> u16 {
@@ -35,6 +41,7 @@ fn main() {
 
     let token = parse_token(&args);
     match mode {
+        "help" | "-h" | "--help" => print!("{}", commands::help_text()),
         "serve" => serve(port, token.as_deref()),
         "send" => {
             // The command is the first positional arg (skip --flag and its value).
@@ -139,13 +146,20 @@ fn serve(port: u16, token: Option<&str>) {
                         let line = String::from_utf8_lossy(&buf);
                         let line = line.trim_end_matches('\r');
                         // Suppress repeated per-frame ANIM lines; print only on change.
+                        // Append a plain-English gloss to recognized reply lines
+                        // (additive — the raw line is preserved so scripts that
+                        // match on it, e.g. READY/ANIM detection, still work).
+                        let pretty = match gloss(line) {
+                            Some(g) => format!("<< {line:<28} ({g})"),
+                            None => format!("<< {line}"),
+                        };
                         if let Some(a) = line.strip_prefix("ANIM:") {
                             if a != last_anim {
                                 last_anim = a.to_string();
-                                println!("<< {line}");
+                                println!("{pretty}");
                             }
                         } else {
-                            println!("<< {line}");
+                            println!("{pretty}");
                         }
                         if line.contains("READY") {
                             let _ = ready_tx.send(());
@@ -187,14 +201,26 @@ fn serve(port: u16, token: Option<&str>) {
     let stdin = std::io::stdin();
     let mut first = true;
     for line in stdin.lock().lines() {
-        let Ok(mut l) = line else { break };
+        let Ok(raw) = line else { break };
+        // Translate the friendly command ("spawn sandbag", "move special_neutral")
+        // into the engine wire line ("s sandbag", "m 13"). `help` and bad input
+        // are handled here and never reach the engine.
+        let mut wire = match translate(&raw) {
+            Translated::Wire(w) => w,
+            Translated::Client(text) => { print!("{text}"); continue; }
+            Translated::Error(msg) => { eprintln!("peptide-bridge: {msg}"); continue; }
+        };
         if !first {
             if let Some(g) = cmd_gap { thread::sleep(Duration::from_secs_f64(g)); }
         }
         first = false;
-        eprintln!("peptide-bridge: SENT {l:?}");
-        l.push('\n');
-        if write_half.write_all(l.as_bytes()).is_err() {
+        if wire == raw.trim() {
+            eprintln!("peptide-bridge: SENT {wire:?}");
+        } else {
+            eprintln!("peptide-bridge: SENT {wire:?}  (from {:?})", raw.trim());
+        }
+        wire.push('\n');
+        if write_half.write_all(wire.as_bytes()).is_err() {
             eprintln!("peptide-bridge: write failed (engine gone?)");
             break;
         }
@@ -229,6 +255,13 @@ fn serve(port: u16, token: Option<&str>) {
 
 /// Scripted: send one command, print whatever comes back for a short window.
 fn send_once(port: u16, token: Option<&str>, cmd: &str) {
+    // Translate the friendly command up front; `help`/errors never open a socket.
+    let cmd = match translate(cmd) {
+        Translated::Wire(w) => w,
+        Translated::Client(text) => { print!("{text}"); return; }
+        Translated::Error(msg) => { eprintln!("peptide-bridge: {msg}"); std::process::exit(2); }
+    };
+    let cmd = cmd.as_str();
     let (reader, mut write_half) = await_engine(port, token);
 
     let (tx, rx) = mpsc::channel::<String>();
@@ -279,10 +312,13 @@ fn send_once(port: u16, token: Option<&str>, cmd: &str) {
     write_half.flush().ok();
     eprintln!("peptide-bridge: sent {cmd:?}");
 
-    // Drain replies for ~1.5s of quiet.
+    // Drain replies for ~1.5s of quiet, glossing recognized lines.
     loop {
         match rx.recv_timeout(Duration::from_millis(1500)) {
-            Ok(l) => println!("<< {l}"),
+            Ok(l) => match gloss(&l) {
+                Some(g) => println!("<< {l:<28} ({g})"),
+                None => println!("<< {l}"),
+            },
             Err(_) => break,
         }
     }
