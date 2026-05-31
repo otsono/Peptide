@@ -25,7 +25,19 @@ pub struct SplitAnim {
     pub loop_tail: bool,
     /// Frame within this split at which the loop starts (relative to split start)
     pub loop_frame: Option<u16>,
+    /// After the [start_frame, end_frame) slice, append this many frames taken from the
+    /// HEAD of the source (frames 0..append_head_frames). Used to make a loop seamless when
+    /// the loop's entry frames were peeled off into a separate intro animation: e.g. a
+    /// walk_loop sliced from [walk_in_len, total) appends [0, walk_in_len) so the full cycle
+    /// plays starting just after the lean-in. 0 = no appended frames (the common case).
+    pub append_head_frames: u16,
 }
+
+// Fraymakers template intro/outro slice lengths, in SOURCE (pre-doubling, 30fps) frames =
+// round(template_60fps_len / 2): walk_in/walk_out (template 3) -> 2, fall_in (template 6) -> 3.
+const WALK_IN_FRAMES: u16 = 2;
+const WALK_OUT_FRAMES: u16 = 2;
+const FALL_IN_FRAMES: u16 = 3;
 
 /// Produce the list of output animations for a character.
 /// Returns one `SplitAnim` per Fraymakers animation to emit.
@@ -343,30 +355,51 @@ pub fn split_animations(
                 }
             }
 
-            // ── Fall: loop at 'loop'/'redo' start, or split off uspecFall ─────
-            // The Fraymakers slot is `fall_loop` (fall_in is aliased from it below).
-            "fall" | "swim" | "wall_stick" => {
-                let out_name = if anim_name == "fall" { "fall_loop" } else { anim_name.as_str() };
-                let is_fall = anim_name == "fall";
-                let loop_f = label_map.get("loop")
-                    .or_else(|| label_map.get("redo"))
-                    .copied();
+            // ── Fall: fall_in (entry) / fall_loop (seamless cycle) [+ fall_special] ──
+            // Same scheme as walk: peel FALL_IN_FRAMES (template 6 -> 3 source) as fall_in, the
+            // rest loops as fall_loop with the peeled head frames appended. A uspecFall label
+            // splits the helpless tail off as fall_special.
+            "fall" => {
+                let fi = FALL_IN_FRAMES.min(total.saturating_sub(1));
                 let uspec_f = label_map.get("uspecFall").copied();
-                if let Some(uf) = uspec_f {
-                    push_split(&mut out, out_name,     anim_name, 0,  uf,    &labels, true, loop_f);
-                    push_split(&mut out, "fall_special", anim_name, uf, total, &labels, true, Some(0));
-                } else if let Some(lf) = loop_f {
-                    push_split(&mut out, out_name, anim_name, 0, total, &labels, true, Some(lf));
+                let loop_end = uspec_f.unwrap_or(total);
+                if fi >= 1 { push_split(&mut out, "fall_in", anim_name, 0, fi, &labels, false, None); }
+                if loop_end > fi {
+                    push_split(&mut out, "fall_loop", anim_name, fi, loop_end, &labels, true, Some(0));
+                    if let Some(s) = out.last_mut() { s.append_head_frames = fi; }
                 } else {
-                    // No loop label — a fall still loops in place; swim/wall_stick keep prior behavior.
-                    push_split(&mut out, out_name, anim_name, 0, total, &labels, is_fall, if is_fall { Some(0) } else { None });
+                    push_split(&mut out, "fall_loop", anim_name, 0, total, &labels, true, Some(0));
+                }
+                if let Some(uf) = uspec_f {
+                    push_split(&mut out, "fall_special", anim_name, uf, total, &labels, true, Some(0));
                 }
             }
 
-            // ── Walk: emit the looping walk cycle as walk_loop (walk_in/out aliased) ──
-            "walk" => {
+            // ── Swim / wall-stick: loop at 'loop'/'redo', else full ──────────────
+            "swim" | "wall_stick" => {
                 let loop_f = label_map.get("loop").or_else(|| label_map.get("redo")).copied();
-                push_split(&mut out, "walk_loop", anim_name, 0, total, &labels, true, Some(loop_f.unwrap_or(0)));
+                if let Some(lf) = loop_f {
+                    push_split(&mut out, anim_name, anim_name, 0, total, &labels, true, Some(lf));
+                } else {
+                    push_full(&mut out, anim_name, total, &labels);
+                }
+            }
+
+            // ── Walk: walk_in (lean-in) / walk_loop (seamless cycle) / walk_out (from land) ──
+            // Template lengths are 60fps; our source is 30fps (doubled later), so the slice
+            // lengths are template_len/2 (walk_in 3 -> 2, walk_out 3 -> 2). walk_loop takes the
+            // remaining frames and appends the peeled head frames so the full cycle plays
+            // seamlessly starting just after the lean-in. walk_out reuses the start of `land`.
+            "walk" => {
+                let wi = WALK_IN_FRAMES.min(total.saturating_sub(1));
+                if wi >= 1 { push_split(&mut out, "walk_in", anim_name, 0, wi, &labels, false, None); }
+                if total > wi {
+                    push_split(&mut out, "walk_loop", anim_name, wi, total, &labels, true, Some(0));
+                    if let Some(s) = out.last_mut() { s.append_head_frames = wi; }
+                } else {
+                    push_split(&mut out, "walk_loop", anim_name, 0, total, &labels, true, Some(0));
+                }
+                push_split(&mut out, "walk_out", "land", 0, WALK_OUT_FRAMES, &[], false, None);
             }
 
             // ── Buried / dizzy: loop at tail ──────────────────────────────────
@@ -545,11 +578,6 @@ pub fn split_animations(
         ("ledge_jump",    "jump_in"),
         ("wall_jump_in",  "jump_squat"),
         ("wall_jump",     "jump_in"),
-        // Fall entry + walk in/out reuse the looping versions (SSF2 has no distinct
-        // transition sprites).
-        ("fall_in",   "fall_loop"),
-        ("walk_in",   "walk_loop"),
-        ("walk_out",  "walk_loop"),
         // Knockdown (SSF2 'crash') sequence: bounce is the source; the lie/getup/roll
         // slots reuse it (SSF2 has no distinct sprites for each phase).
         ("crash_loop",   "crash_bounce"),
@@ -585,6 +613,7 @@ fn push_full(out: &mut Vec<SplitAnim>, name: &str, total: u16, labels: &[(String
         labels:      labels.to_vec(),
         loop_tail:   false,
         loop_frame:  None,
+        append_head_frames: 0,
     });
 }
 
@@ -612,5 +641,6 @@ fn push_split(
         labels,
         loop_tail,
         loop_frame,
+        append_head_frames: 0,
     });
 }
