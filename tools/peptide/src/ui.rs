@@ -1,11 +1,6 @@
-//! peptide-ui — a friendly full-screen console for driving Fraymakers.
-//!
-//! Type commands (or raw hscript) at the bottom; the engine's replies stream into
-//! the scrollback above, color-coded and glossed. Built for beginners: a command
-//! palette (Tab), inline hints, history (↑/↓), and a help panel (F1).
-//!
-//! Launched by run-ui.sh, which patches + boots the engine and then runs
-//! `peptide-bridge ui`. This module owns the terminal once the engine connects.
+//! ui — the friendly full-screen console for driving Fraymakers (the default mode of
+//! the `peptide` binary; `ui::launch` boots the engine and runs it). Color-coded
+//! scrollback, command palette (Tab), history (up/down), scroll (PgUp/PgDn), help (F1).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -645,4 +640,60 @@ fn draw_help(f: &mut Frame) {
         .border_style(Style::default().fg(Color::Green))
         .title(" help ".green().bold());
     f.render_widget(Paragraph::new(text).block(block).wrap(Wrap { trim: false }), area);
+}
+
+#[cfg(test)]
+mod demo {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn dump(buf: &ratatui::buffer::Buffer) -> String {
+        let a = buf.area;
+        let mut s = String::new();
+        for y in 0..a.height {
+            for x in 0..a.width {
+                let sym = buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ");
+                s.push_str(if sym.is_empty() { " " } else { sym });
+            }
+            s.push('\n');
+        }
+        s
+    }
+
+    #[test]
+    fn render_demo() {
+        let mut app = App::new(19794);
+        app.ready = true;
+        app.char_name = Some("sandbag".into());
+        app.push("› spawn sandbag".into(), Kind::Sent);
+        app.engine_line("LAUNCHED private::sandbag.sandbag public::thespire.thespire");
+        app.engine_line("ANIM:INTRO");
+        app.engine_line("ANIM:STAND");
+        app.push("› physics".into(), Kind::Sent);
+        app.engine_line("E:P: x=-130 y=73 vx=0 vy=0 dmg=0");
+        app.push("› move jab".into(), Kind::Sent);
+        app.engine_line("ANIM:JAB");
+        app.engine_line("E:M:OK");
+        app.push("› match.getCharacters()".into(), Kind::Sent);
+        app.engine_line("E:[fraymakers.entity.FraymakersCharacter]");
+        app.push("› )(oops".into(), Kind::Sent);
+        app.engine_line("E:ERR: hscript:1: Unexpected token: \")\"");
+        app.input = "p0.getStateName()".into();
+
+        let mut term = Terminal::new(TestBackend::new(92, 24)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        println!("\n===== MAIN VIEW =====\n{}", dump(term.backend().buffer()));
+
+        let mut p = App::new(19794);
+        p.ready = true; p.char_name = Some("sandbag".into());
+        p.show_palette = true; p.palette_sel = 4;
+        term.draw(|f| draw(f, &p)).unwrap();
+        println!("\n===== Tab: COMMAND PALETTE =====\n{}", dump(term.backend().buffer()));
+
+        let mut h = App::new(19794);
+        h.ready = true; h.show_help = true;
+        term.draw(|f| draw(f, &h)).unwrap();
+        println!("\n===== F1: HELP =====\n{}", dump(term.backend().buffer()));
+    }
 }
