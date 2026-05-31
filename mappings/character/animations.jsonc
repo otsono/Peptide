@@ -181,6 +181,7 @@
     "speciald": "b_down",
     "specialdair": "b_down_air",
     "combo": "a",
+    "dasha": "a_forward",
 
     "neutralb": "b",
     "neutralspecial": "b",

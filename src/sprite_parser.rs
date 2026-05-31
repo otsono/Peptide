@@ -814,19 +814,31 @@ pub fn extract_ssf2_anim_name(
     // Strip trailing _NNN
     let stripped = strip_numeric_suffix(local);
 
-    // Some characters (fox, …) name their move sprites "{char}_fla.{char}_{move}"
-    // (a REDUNDANT char prefix inside the label, e.g. "fox_fla.fox_airN") instead of
-    // "{char}_fla.{Move}" (mario's "mario_fla.NAir"). Strip a leading "{char}_" so the
-    // label maps. Case-insensitive; only strips when the prefix is actually present, so
-    // mario-style labels (no prefix) are unaffected.
+    // Some characters name their move sprites with a REDUNDANT char prefix inside the
+    // label instead of "{char}_fla.{Move}" (mario's "mario_fla.NAir"):
+    //   fox:        "fox_fla.fox_airN"   → strip "fox_"  → "airN"
+    //   donkeykong: "donkeykong_fla.dkbair" → strip "dk" → "bair" (in-game short code)
+    // Strip the longest matching prefix so the label resolves. Case-insensitive; only
+    // strips when actually present, so mario-style labels are unaffected.
     let stripped = {
         let lc = stripped.to_ascii_lowercase();
-        let pfx = format!("{}_", char_lower.to_ascii_lowercase());
-        if lc.starts_with(&pfx) && stripped.len() > pfx.len() {
-            &stripped[pfx.len()..]
-        } else {
-            stripped
+        // Candidate prefixes, longest first: "{char}_", then the char's short code.
+        let cl = char_lower.to_ascii_lowercase();
+        let mut prefixes = vec![format!("{cl}_")];
+        // In-game short codes for characters whose sprite labels use them (the label
+        // has no underscore separator, e.g. "dkbair"). Extend as more are found.
+        if let Some(sc) = match cl.as_str() {
+            "donkeykong" => Some("dk"),
+            _ => None,
+        } { prefixes.push(sc.to_string()); }
+        let mut s = stripped;
+        for pfx in &prefixes {
+            if lc.starts_with(pfx.as_str()) && stripped.len() > pfx.len() {
+                s = &stripped[pfx.len()..];
+                break;
+            }
         }
+        s
     };
 
     // Try direct match against SSF2 anim names (case-insensitive)
