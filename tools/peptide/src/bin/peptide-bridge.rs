@@ -267,8 +267,10 @@ fn serve(port: u16, token: Option<&str>) {
                     if let Some(g) = cmd_gap { thread::sleep(Duration::from_secs_f64(g)); }
                 }
                 first = false;
+                // Tight pacing so a `track` samples physics across a move's brief
+                // active window (the engine reads ~1 command/frame ≈ 16ms).
                 for (i, w) in wires.iter().enumerate() {
-                    if i > 0 { thread::sleep(Duration::from_millis(150)); }
+                    if i > 0 { thread::sleep(Duration::from_millis(60)); }
                     eprintln!("peptide-bridge: SENT {w:?}");
                     if !send_wire(&mut write_half, w) {
                         eprintln!("peptide-bridge: write failed (engine gone?)");

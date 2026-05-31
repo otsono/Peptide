@@ -51,6 +51,8 @@ pub const COMMANDS: &[Cmd] = &[
           args: "",                              help: "resume player 0 animation playback after step/pause (PLAY)" },
     Cmd { name: "snapshot", aliases: &["snap"],              wire: '\0',
           args: "",                              help: "one-shot readback bundle: state + physics + animation (client-side; sends t, v, a)" },
+    Cmd { name: "track",   aliases: &[],                     wire: '\0',
+          args: "<move> [samples]",              help: "drive a move then rapid-sample physics (default 6) — captures the move's velocity/position trajectory (self-momentum)" },
     Cmd { name: "load",    aliases: &["l"],                 wire: 'l',
           args: "",                              help: "synchronous custom-.fra load probe (diagnostic; spawn does this itself)" },
     Cmd { name: "keys",    aliases: &["pool", "k"],         wire: 'k',
@@ -149,6 +151,22 @@ pub fn translate(line: &str) -> Translated {
     if cmd.name == "snapshot" {
         // Bundle the three readbacks (state, physics, animation) into one command.
         return Translated::Sequence(vec!["t".into(), "v".into(), "a".into()]);
+    }
+
+    if cmd.name == "track" {
+        // Drive a move, then rapid-sample physics to capture its velocity/position
+        // trajectory (self-momentum). Client-side: m <sel> followed by N `v` reads.
+        let Some(mv) = rest.first() else {
+            return Translated::Error("usage: track <move> [samples]".to_string());
+        };
+        let Some(ord) = move_ordinal(mv) else {
+            return Translated::Error(format!("unknown move {mv:?}. moves: {}",
+                MOVES.iter().map(|(m, _)| *m).collect::<Vec<_>>().join(", ")));
+        };
+        let n = rest.get(1).and_then(|c| c.parse::<u32>().ok()).unwrap_or(6).clamp(1, 60);
+        let mut seq = vec![format!("m {}", (b'A' + ord as u8) as char)];
+        for _ in 0..n { seq.push("v".to_string()); }
+        return Translated::Sequence(seq);
     }
 
     if cmd.name == "loop" {

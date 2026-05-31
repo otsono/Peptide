@@ -74,6 +74,13 @@ Decomposed into commands (see "Building blocks" below): `spawn` + `dummy` →
   `dummy` + `loop` + boundary detection; likely a layer-3 (client) driver loop
   over engine primitives, not new bytecode.
 
+- **`track <move> [samples]`** — **[done]** drives a move then rapid-samples
+  physics (60ms pacing) to capture its velocity/position trajectory — the move's
+  SELF-momentum. Verified: mario dash_attack vx 12.86→0 over ~6 samples, +140px.
+  In-engine behavioral measurement of own-movement WITHOUT a dummy. (Opponent
+  knockback still needs the dummy chain.) NOTE: vertical-rise moves read vy=0 —
+  physics reads currentVelocityY; some moves use y_velocity (field choice to revisit).
+
 ### Iteration
 - **Stat hot-reload** — re-read `HitboxStats.hx` / `Stats.hx` into the running
   match so the next move uses new values without a full re-export. **[research]**
