@@ -163,6 +163,17 @@ fn main() -> anyhow::Result<()> {
             }
             return Ok(());
         }
+        "methods" => {
+            // list every function whose parent type name contains <needle>
+            let needle = args.get(4).cloned().unwrap();
+            for f in &code.functions {
+                let pn = f.parent.and_then(|rt| type_name_of(&code, rt)).unwrap_or("");
+                if pn.contains(&needle) {
+                    eprintln!("  {:6} {}::{}", f.findex.0, pn, s(&code, f.name));
+                }
+            }
+            return Ok(());
+        }
         "connect" => {
             // peptide <in> <out> connect <port> <token> [<char> [<stage> [<assist>]]]
             // The socket bridge + command dispatch (s/t/q/x/c/p) are ALWAYS installed.
@@ -1314,6 +1325,21 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(space_g) });
     ops.push(Opcode::Call2 { dst: rr(52), fun: RefFun(str_split), arg0: rr(14), arg1: rr(53) });
     ops.push(Opcode::Field { dst: rr(32), obj: rr(52), field: RefField(1) }); // parts.array
+    // ---- close any live match before starting a new one (multi-`s` re-launch) ----
+    // Reset the menu-reveal one-shot so THIS launch's loading menu is also dismissed once
+    // its match goes live (the reveal logic at the top of the dispatch re-fires next frame).
+    ops.push(Opcode::Bool { dst: rr(9), value: ValBool(false) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_shown), src: rr(9) });
+    // MatchController.cleanupMatch@18325(currentMatch): removes it from _matches, kills its
+    // events, nulls currentMatch, tears down its entities. First launch -> currentMatch null
+    // -> skipped. Without this, successive `s` commands stacked matches (old ones never closed).
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });            // MatchController statics
+    ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) }); // currentMatch
+    let idx_jnocm = ops.len();
+    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                              // none -> skip cleanup
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(18325), arg0: rr(44) });        // cleanupMatch(currentMatch)
+    let idx_after_cleanup = ops.len();
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_jnocm] { *offset = idx_after_cleanup as i32 - idx_jnocm as i32 - 1; }
     // ---- create a real TrainingMode: createMode({ resource: <trainingmode ref> }) ----
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(mode_fullid) });
     ops.push(Opcode::Call2 { dst: rr(25), fun: RefFun(18224), arg0: rr(14), arg1: rr(38) }); // mode resource ref
