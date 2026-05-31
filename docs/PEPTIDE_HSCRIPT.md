@@ -57,12 +57,15 @@ depth/declared, runs exprReturn, and traps errors):
 The earlier bug (user-diagnosed): the hook used a BARE `new Interp()` with no init, so
 it could only do arithmetic. Fixed by mirroring how `Main::init` readies scripts.
 
-**Match-dependent paths (spawn, p0 binding) NOT yet verified** — but for an
-ENVIRONMENT reason, not a code one: heavy match-launch (GPU) fails once enough stuck
-`UE` `hl` procs accumulate (saw 21, from spawn/kill test cycling). Light commands
-(eval/ping, no GPU) keep working throughout, and clean baseline spawned 3/3 earlier
-at lower proc counts. So spawn needs a REBOOT to test reliably; the eval architecture
-itself is sound (dispatch routing for s/p/e all verified correct in the disassembly).
+**Spawn regression — FOUND + FIXED (it was the eval hook, not the env).** Inserting the
+`e` command check into the MIDDLE of the dispatch chain (before `x`) broke the `s` handler
+at runtime, even though every jump offset recomputed correctly. Proven by back-to-back
+(branch mute / main launches, same moment) and bisect (no-jump insertions launch; any
+jump inserted mid-chain goes mute). FIX: append the `e` check at the END of the chain so
+`x->p->c->s->...->g` stays byte-identical to baseline (`g` no-match -> `e` check, `e`
+no-match -> L_ORIG). VERIFIED end-to-end: spawn->LAUNCHED, move/physics/anim/play/query
+all respond, eval CState.JAB->E:63 / CState.STAND->E:2, no crash. Likely an HL JIT
+control-flow/basic-block sensitivity to inserting a branch mid-chain.
 
 ### Old status (superseded)
 ## Status
