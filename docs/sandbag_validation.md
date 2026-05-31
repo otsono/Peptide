@@ -119,6 +119,17 @@ worse; the hand-emitted-bytecode path has hit the ceiling flagged in
 `memory/project_fraymakers-engine-internals.md` (migrate to pre-compiled `.hl`
 before adding more). Current workaround: retry spawn until `T:STAND` (~2-3x).
 
+### Deferred converter bug — IntervalTimer null callback (charge states)
+
+Charge frame scripts emit `self.addTimer(8, -1, effects.get())` (e.g.
+`strong_forward_charge`, `strong_up_charge`, `item_smash_charge`). The 3rd arg
+is the timer *callback* but `effects.get()` is the effects **Array**, so when the
+timer fires `pxf.util.IntervalTimer.process` (IntervalTimer.hx:73) null-derefs.
+The abc_parser mis-resolved the SSF2 callback (likely `updateCharge`, which
+exists in Script.hx) to the `effects` instance var. Only triggers when a smash is
+charged — not on spawn/idle. Fix is in the ActionScript→hscript callback
+resolution. DEFERRED until basic spawn/moveset validation is reliable.
+
 ## 4. Runtime: drive every move + physics ⬜
 
 ## 5. Animation playthrough (frame-state capture) ⬜
