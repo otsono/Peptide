@@ -23,8 +23,12 @@ fn animations_table_loads() {
         "`stand` must be in the SSF2→FM animation table");
     assert!(a.ssf2_to_fm.contains_key("a_air"),
         "`a_air` must be in the SSF2→FM animation table");
-    // stand → idle is the FM canonical name.
-    assert_eq!(a.ssf2_to_fm.get("stand").map(String::as_str), Some("idle"));
+    // Fraymakers' canonical standing-state animation is named `stand`
+    // (CState.STAND; see the official character template's AnimationStats.hx,
+    // which defines `stand: {}` and has no `idle` motion). SSF2's `idle`
+    // sprite label is already normalized to the SSF2 anim name `stand` in
+    // the earlier label_to_ssf2 stage, so ssf2_to_fm maps `stand → stand`.
+    assert_eq!(a.ssf2_to_fm.get("stand").map(String::as_str), Some("stand"));
 }
 
 #[test]
