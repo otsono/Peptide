@@ -1,6 +1,10 @@
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
+mod asm;
+#[allow(unused_imports)]
+use asm::Asm;
+
 use hlbc::opcodes::Opcode;
 use hlbc::types::{Reg, RefString};
 use hlbc::Bytecode;
@@ -772,6 +776,10 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let get_sprite_entity = require_fn(code, "getPXFSpriteEntity", Some("pxf.io.$ResourceManager"))?;
     let spr_ok_g = add_string_const(code, "SPR:1\n");
     let spr_null_g = add_string_const(code, "SPR:0\n");
+    // NSPR probe: is the *namespaced* buried-VFX key (private::sandbag.sandbag) cached?
+    // (SPR probes the bare "sandbag" key; the buried-VFX ctor reads the namespaced one.)
+    let nspr_ok_g = add_string_const(code, "NSPR:1\n");
+    let nspr_null_g = add_string_const(code, "NSPR:0\n");
     // sprite-entity fix (safe approach B): set RM.requiredMediaIds=["*"] before fetchThreaded so
     // the engine's OWN media-preload closure (run by finishLoading) preloads all entities into
     // _data.entityMap + the namespaced sprite cache; then re-cache the "sandbag" entity under the
@@ -1544,6 +1552,28 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::Null { dst: rr(15) });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    // NSPR probe (built via the Asm label helper — first adoption): is the namespaced
+    // buried-VFX key cached after load? Self-contained block, reuses scratch regs, no
+    // new registers; all jumps internal so it splices into the op stream cleanly.
+    {
+        let mut a = Asm::new(f.regs.len() as u32);
+        let l_null = a.label();
+        let l_done = a.label();
+        a.op(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(ns_sandbag_g) });
+        a.op(Opcode::Call1 { dst: rr(28), fun: RefFun(get_sprite_entity), arg0: rr(55) });
+        a.jnull(rr(28), l_null);
+        a.op(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(nspr_ok_g) });
+        a.jalways(l_done);
+        a.place(l_null);
+        a.op(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(nspr_null_g) });
+        a.place(l_done);
+        a.op(Opcode::Null { dst: rr(15) });
+        a.op(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+        a.op(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+        let (a_ops, a_regs) = a.finish();
+        add_regs(f, &a_regs); // no reg() calls -> empty, no-op (keeps the pattern explicit)
+        ops.extend(a_ops);
+    }
     let idx_l_jdone = ops.len();
     ops.push(Opcode::JAlways { offset: 0 });                             // -> m-check (continue chain)
     let idx_l_fail = ops.len();
