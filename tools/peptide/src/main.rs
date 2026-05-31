@@ -925,6 +925,19 @@ fn connect_edit(
     // The command implementations, in hscript (ported from bytecode). Loaded ONCE into
     // the interp after applyInterpreterGlobals; every friendly command calls into these.
     let prelude_g = add_string_const(code, include_str!("../prelude.hsx"));
+    // Bound into scope so the prelude's __eval() can parse+run the user command inside an
+    // hscript try/catch (crash-proofing): __interp = the interp itself, __parser = a Parser,
+    // __cmd = the raw user command line (set per-eval).
+    let eval_interp_g = add_string_const(code, "__interp");
+    let eval_parser_g = add_string_const(code, "__parser");
+    let eval_cmd_g = add_string_const(code, "__cmd");
+    // Crash-proofing: the eval hook wraps parse+exprReturn in a Trap. On ANY error it
+    // logs to the engine (Sys.println -> engine log) and returns "ERR: <msg>" to Peptide.
+    let err_prefix_g = add_string_const(code, "ERR: ");
+    let err_log_prefix_g = add_string_const(code, "[peptide] eval error: ");
+    let hs_expr_return = find_fn(code, "exprReturn", Some("hscript.Interp")).unwrap_or(2216);
+    let sys_println = find_fn(code, "println", Some("$Sys")).unwrap_or(16301);
+    let hs_arr_ctor: usize = 262; // ArrayObj ctor used to reset Interp.declared (see ApiScript.interpretScript)
     let eval_cs_g = add_string_const(code, "CS");  // bound to the CState statics (move-id source)
     let hs_parser_t = require_type(code, "hscript.Parser")?;
     let hs_interp_t = require_type(code, "hscript.Interp")?;
@@ -2454,6 +2467,13 @@ fn connect_edit(
     ops.push(Opcode::Null { dst: rr(15) });
     ops.push(Opcode::Call3 { dst: e_expr, fun: RefFun(hs_parse), arg0: e_parser, arg1: rr(14), arg2: rr(15) });
     ops.push(Opcode::Call2 { dst: e_result, fun: RefFun(hs_interp_script), arg0: e_expr, arg1: e_interp });
+    // bind __interp = the interp itself, __parser = this parser (both reused by __eval()).
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_interp_g) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: e_interp });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_parser_g) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: e_parser });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
     let idx_e_interp_ready = ops.len();
     if let Opcode::JNotNull { offset, .. } = &mut ops[idx_e_haveinterp] { *offset = idx_e_interp_ready as i32 - idx_e_haveinterp as i32 - 1; }
     // ---- bind p0 = MatchController.currentMatch.characters[0] (as Dynamic; null if no match) ----
@@ -2493,17 +2513,53 @@ fn connect_edit(
     ops.push(Opcode::Null { dst: rr(28) });
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_p1_g) });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
-    // parse the command line (saved in rr55) now that the interp + prelude + bindings are ready
+    // ---- crash-proof eval: parse + run inside a Trap. On ANY error (parse OR runtime)
+    // log to the engine (Sys.println -> engine log) AND return "ERR: <msg>" to Peptide.
+    // Uses exprReturn (throws on error, unlike interpretScript which swallows) with the
+    // same depth/declared reset, so the interpreter can never crash the game frame. ----
+    let _ = (hs_interp_script, eval_interp_g, eval_parser_g, eval_cmd_g);
+    let idx_eval_trap = ops.len();
+    ops.push(Opcode::Trap { exc: e_result, offset: 0 });                 // exception -> L_CATCH (patched)
     ops.push(Opcode::New { dst: e_parser });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_parser_ctor), arg0: e_parser });
     ops.push(Opcode::Null { dst: rr(15) });
     ops.push(Opcode::Call3 { dst: e_expr, fun: RefFun(hs_parse), arg0: e_parser, arg1: rr(55), arg2: rr(15) });
-    // result = ApiScript.interpretScript(expr, interp) — the engine's own run-a-program:
-    // resets depth/declared, runs exprReturn, and TRAPS parse/runtime errors (returns null
-    // instead of crashing the frame). This is what makes the interp "ready to accept commands".
-    ops.push(Opcode::Call2 { dst: e_result, fun: RefFun(hs_interp_script), arg0: e_expr, arg1: e_interp });
-    // out = "E:" + Std.string(result) + "\n"
-    ops.push(Opcode::Call1 { dst: rr(53), fun: RefFun(std_string), arg0: e_result });
+    // guard: a null expr would make exprReturn segfault (uncatchable) — skip it.
+    let idx_eval_jnotnull = ops.len();
+    ops.push(Opcode::JNotNull { reg: e_expr, offset: 0 });               // expr != null -> run it
+    ops.push(Opcode::Null { dst: e_result });                            // null/empty -> result null
+    let idx_eval_jrun_done = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                             // -> after run
+    let idx_eval_run = ops.len();
+    // reset interp (depth=0, declared=new ArrayObj) — same as ApiScript.interpretScript
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::SetField { obj: e_interp, field: RefField(3), src: rr(39) });   // .depth = 0
+    ops.push(Opcode::New { dst: rr(33) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_arr_ctor), arg0: rr(33) });
+    ops.push(Opcode::SetField { obj: e_interp, field: RefField(5), src: rr(33) });   // .declared = new
+    ops.push(Opcode::Call2 { dst: e_result, fun: RefFun(hs_expr_return), arg0: e_interp, arg1: e_expr });
+    let idx_eval_after_run = ops.len();
+    ops.push(Opcode::Call1 { dst: rr(53), fun: RefFun(std_string), arg0: e_result }); // rr53 = result string
+    ops.push(Opcode::EndTrap { exc: e_result });                         // normal path: pop trap
+    let idx_eval_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                             // -> L_WRITE (patched)
+    let idx_eval_catch = ops.len();
+    ops.push(Opcode::EndTrap { exc: e_result });                         // catch: pop trap (e_result = exception)
+    ops.push(Opcode::Call1 { dst: rr(53), fun: RefFun(std_string), arg0: e_result }); // exception -> string
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(err_prefix_g) });
+    ops.push(Opcode::Call2 { dst: rr(53), fun: RefFun(str_add), arg0: rr(14), arg1: rr(53) }); // "ERR: " + msg
+    // engine-log it: Sys.println("[peptide] eval error: " + msg)
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(err_log_prefix_g) });
+    ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(14), arg1: rr(53) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(56) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(sys_println), arg0: rr(28) });
+    let idx_eval_write = ops.len();
+    // wire the internal jumps
+    if let Opcode::JNotNull { offset, .. } = &mut ops[idx_eval_jnotnull] { *offset = idx_eval_run as i32 - idx_eval_jnotnull as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_eval_jrun_done] { *offset = idx_eval_after_run as i32 - idx_eval_jrun_done as i32 - 1; }
+    if let Opcode::Trap { offset, .. } = &mut ops[idx_eval_trap] { *offset = idx_eval_catch as i32 - idx_eval_trap as i32; } // catch = trap + offset
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_eval_jdone] { *offset = idx_eval_write as i32 - idx_eval_jdone as i32 - 1; }
+    // out = "E:" + rr53 + "\n"  (rr53 = result or "ERR: ..." string)
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_prefix_g) });
     ops.push(Opcode::Call2 { dst: rr(53), fun: RefFun(str_add), arg0: rr(14), arg1: rr(53) });
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_nl_g) });
