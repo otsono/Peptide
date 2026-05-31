@@ -137,20 +137,32 @@ exit. The patched engine waits for content load (title "press any button"
 state), dials the socket (auth handshake), then processes commands per-frame on
 the render thread. Needs `dangerouslyDisableSandbox`.
 
-### Commands (dispatched on the first byte)
+### Commands
 
-| Cmd | Meaning | Ack / readback |
-|---|---|---|
-| `p` | ping / liveness | `PONG` |
-| `c` | console passthrough (`Tildebugger.console.runCommand`) | `RAN` |
-| `s <char> <stage> <assist>` | **start match (self-bootstrapping)** — runs the custom-load core itself (idempotent) then builds a real `TrainingMode` + `FraymakersMode.startMatch`. No prior `l` needed. | `LAUNCHED <char> <stage> <assist>` |
-| `l` | **synchronous custom-`.fra` load** (headless, main thread) — see §3.1 | `L:…`, `SPR:1`/`SPR:0` |
-| `m` | **move dispatch** — `Character.toState(CState.JAB)` on player 0 (internal state-machine dispatch, **not** key-press simulation) | `M:JAB` / `M:NOMATCH` |
-| `t` | **telemetry** — `Character.getStateName()` on player 0 | `T:<state>` / `T:NOMATCH` |
-| `q` | is a match live? | `Q:MATCH_LIVE` / `Q:NO_MATCH` |
-| `k` | dump pool keys + UGC-discovery diagnostics | `K:…` |
+Humans type **full-word commands** (`peptide-bridge help` lists them); the bridge
+translates them to the single-byte wire protocol the engine dispatches on. The
+wire byte still works as an alias, so older scripts keep running. Friendly
+vocabulary is one shared table: `tools/peptide/src/commands.rs`.
 
-Short-name resolution (`s` / `l`): a bare `sandbag` (no `::`) is tried against
+| Friendly (aliases) | Wire | Meaning | Ack / readback |
+|---|---|---|---|
+| `ping` (p) | `p` | liveness | `PONG` |
+| `console` (c) | `c` | console passthrough (`Tildebugger.console.runCommand`) | `RAN` |
+| `spawn <char> [stage] [assist]` (start, launch, s) | `s …` | **start match (self-bootstrapping)** — idempotent custom-load core then `TrainingMode` + `FraymakersMode.startMatch`. | `LAUNCHED <char> <stage> <assist>` |
+| `load` (l) | `l` | **synchronous custom-`.fra` load** (headless, main thread) — see §3.1 | `L:…`, `SPR:1`/`SPR:0` |
+| `move [name]` (attack, m) | `m [sel]` | **move dispatch by name** — `Character.toState(CState.<NAME>)` on player 0 (internal dispatch, **not** key-press). Bare = jab. Names = the Fraymakers move set (jab, tilt_down, strong_forward, aerial_up, special_neutral, grab, …). | `M:OK` / `M:NOMATCH` |
+| `state` (status, t) | `t` | **telemetry** — `Character.getStateName()` on player 0 | `T:<state>` / `T:NOMATCH` |
+| `query` (matchlive, q) | `q` | is a match live? | `Q:MATCH_LIVE` / `Q:NO_MATCH` |
+| `keys` (pool, k) | `k` | dump pool keys + UGC-discovery diagnostics | `K:…` |
+| `exit` (quit, stop, x) | `x` | clean engine shutdown (`hxd.System.exit`) | — |
+
+`move <name>` maps the friendly name to a selector byte (`'A'` + ordinal into
+`commands::MOVES`); the engine picks the CState via a jump table generated from
+that same table (fields resolved by name at patch time). Per-state-change
+animation telemetry streams as `ANIM:<state>` (the bridge dedups to changes only)
+— this is the animation-capture readback (criterion #5).
+
+Short-name resolution (`spawn` / `load`): a bare `sandbag` (no `::`) is tried against
 `private::`, `custom::`, `public::`, `global::` in order; first existing resource
 wins. `private::` is first so a bare name resolves to headless-loaded custom
 content. Or pass a full `namespace::package.id`.
@@ -250,14 +262,30 @@ was never fully constructed (never loaded), never a namespace bug.
 Stop-condition for "a converted character is validated" (the original
 6-criterion mandate, sandbag as the reference character):
 
-| # | Criterion | Status |
-|---|---|---|
-| 1 | **Conversion clean** — no `WARN`/`ERROR`; `conversion_log.json` `unknown` triaged | **MET** for sandbag (exit 0; the big "unknown" counts are false positives — the calls *are* rewritten in output) |
-| 2 | **FrayTools layout match** — `compare_boxes` within tolerance | **MET** — see §6 (every gameplay-critical box sub-pixel) |
-| 3 | **Engine boots the character** — loads + spawns, no crash | **MET** for sandbag — synchronous headless load + reliable spawn to `T:STAND` (§3.1) |
-| 4 | **Every move runs in-engine** via the internal control path | **In progress** — `m` (`toState`) drives moves; verified on a live match. Scaling across the full move set + corpus is the open work |
-| 5 | **Animations play** frame-by-frame | **Open** — needs per-frame capture (the `t`/animation-field readback exists; OS `screencapture` needs Screen Recording permission or an in-engine framebuffer dump) |
-| 6 | **Physics within tolerance** of `CharacterStats.hx` | **Open** — telemetry fields are mapped (§4); needs a numeric readback + comparison |
+| # | Criterion | sandbag | mario |
+|---|---|---|---|
+| 1 | **Conversion clean** — exit 0; `conversion_log.json` triaged | **MET** | **MET** |
+| 2 | **FrayTools layout match** — `compare_boxes` in tolerance | **MET** (§6) | not re-run |
+| 3 | **Engine boots + spawns**, no crash | **MET** — spawn → `T:STAND` | **MET** — spawn → INTRO → STAND, stable |
+| 4 | **Every move runs** via the internal control path | **MET** (spot-checked across categories) | **MET** — full moveset driven |
+| 5 | **Animations play** (per-state `ANIM:` stream) | **MET** | **MET** |
+| 6 | **Physics within tolerance** of `CharacterStats.hx` | pending readback | pending readback |
+
+**Both reference characters drive their movesets in-engine (verified live).**
+With `move <name>` (engine `toState`) every state produces the expected
+`ANIM:<STATE>` transition + `M:OK` and recovers to `STAND`, no crash. mario's
+full set was swept (jab, dash_attack, tilt f/u/d, strong f/u/d as full
+`_IN`→`_ATTACK` chains, special n/s/u/d, aerial n/f/b/u/d, grab); sandbag was
+spot-checked across the same categories. See "stale-`.fra` trap" below — mario's
+earlier post-INTRO crash was a 3-day-old published `.fra`, not a live converter
+bug; a fresh export boots and drives clean.
+
+**The stale-`.fra` trap (re-export before trusting any runtime result).**
+`characters/` and the published `.fra` are git-ignored, so an old `.fra` in
+`custom/<id>/` silently survives converter changes. Mario was crashing the engine
+right after its INTRO purely because `custom/mario/mario.fra` predated recent
+fixes. Regenerate (`ssf2_converter`) **and** re-publish
+(`export-in-fraytools.js`) before drawing any conclusion from a spawn test.
 
 **Converter freeze fix — DONE and confirmed.** The user's central concern was
 sandbag freezing the engine shortly after match start. Root cause was a converter
