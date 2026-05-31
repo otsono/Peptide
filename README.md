@@ -149,25 +149,17 @@ binary or in the working directory) overrides without recompiling.
 
 ## Documentation
 
-- [`DEVELOPMENT.md`](DEVELOPMENT.md) — developer guide: build, pipeline, modules, current
-  status, known issues, and next steps.
+- [`DEVELOPMENT.md`](DEVELOPMENT.md) — developer guide: build, pipeline, modules,
+  current status, known issues, the code-quality backlog, and architectural history.
 - [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md) — authoritative SSF2 / Fraymakers format
   reference. Read this when working on `entity_gen.rs`, `image_extractor.rs`, or
   `sprite_parser.rs`.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — module → doc-section mapping + the
   per-change checklist. Read before landing a substantial change so the docs
   stay current.
-- [`docs/codebase_analysis.md`](docs/codebase_analysis.md) — optimization /
-  cleanup / bug audit with file-and-line refs. Carries a "what's been done
-  since" status banner at the top.
-- [`docs/path2_unification_plan.md`](docs/path2_unification_plan.md) +
-  [`docs/constructor_walk_detection.md`](docs/constructor_walk_detection.md)
-  — historical pre-implementation plans for the path 1 → path 2 migration
-  and the constructor-walk detection that followed. Implemented; kept for
-  architectural history.
-- [`docs/anim_split_rules.json`](docs/anim_split_rules.json) — historical reference for
-  the multi-label split patterns (the splitter logic itself now lives in
-  `src/anim_splitter.rs` as hardcoded match arms, not loaded from this file).
+- [`TESTING.md`](TESTING.md) — the FrayTools-side and Fraymakers-engine-side
+  validation harnesses, the end-to-end iteration loop, the engine RE map, and
+  in-engine validation status.
 
 ## Licence
 

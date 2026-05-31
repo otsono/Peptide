@@ -11,3 +11,7 @@ __pycache__/
 /target
 # Generated binary/image assets inside character output — track .hx, .json, .entity etc but not media
 characters/
+
+# Scratch / working notes — gitignored. Promote anything others would
+# benefit from into the top-level docs (see CONTRIBUTING.md).
+docs/

@@ -36,7 +36,7 @@ linked section is where to put it.
 |---|---|
 | `src/main.rs` (CLI, `detect_char_names`, `process_character`, `write_conversion_log`) | DEVELOPMENT §3.3, §4, §5.1; README §"Usage" if CLI flags change |
 | `src/extractor.rs` (`CharacterData` struct) | DEVELOPMENT §5.4 |
-| `src/abc_parser.rs` (Stage A bundle extraction, constructor walker, normalStats_id) | DEVELOPMENT §5.3; `docs/constructor_walk_detection.md` if detection logic shifts |
+| `src/abc_parser.rs` (Stage A bundle extraction, constructor walker, normalStats_id) | DEVELOPMENT §5.3; §14 "Architectural history" if detection logic shifts |
 | `src/decompiler.rs` | DEVELOPMENT §5.3 |
 | `src/sprite_parser.rs` (box geometry, xframe transforms) | DEVELOPMENT §5.4; AGENT_CONTEXT §"Collision Boxes" |
 | `src/image_extractor.rs` (PNG / placement / skew bake / projectile-and-head discovery) | DEVELOPMENT §5.4; AGENT_CONTEXT §"Image Sprites" |
@@ -69,10 +69,9 @@ The convention:
 
 Three places usually need an edit:
 
-1. **DEVELOPMENT §11** — strike or update the entry.
+1. **DEVELOPMENT §11** — strike or update the entry (including the
+   "Code-quality backlog" subsection if it was an audit item).
 2. **DEVELOPMENT §12** — strike the corresponding next-step.
-3. **`docs/codebase_analysis.md`** top-of-doc status banner — flip the
-   item to "done" with the commit SHA.
 
 ## Tooling
 
@@ -106,13 +105,26 @@ gates.
 
 ## Architectural history
 
-Implemented design plans live in `docs/` with a "Status: implemented"
-header at the top — see `docs/path2_unification_plan.md` and
-`docs/constructor_walk_detection.md`. Keep these. They document *why*
-the code looks the way it does today, which is exactly what a fresh
-agent or contributor needs when reading the source cold.
+Why the code looks the way it does today lives in **`DEVELOPMENT.md` §14
+"Architectural history"** (the path 1 → path 2 stat-extraction switch, the
+constructor-walk detection, and the multi-character project layout). That's
+exactly what a fresh agent or contributor needs when reading the source cold.
 
-If you write a new substantial design plan, follow the same pattern:
-plan in `docs/<name>.md`, implement, then prepend the
-"Status: implemented" header pointing back at `DEVELOPMENT.md` for the
-current-state summary.
+When you land a substantial design change, add a short condensed entry to
+§14 — the *why* and the commit SHAs. Keep the **permanent** docs at the repo
+top level; use the `docs/` folder only for *scratch* (see below), and promote
+anything durable up before it gets lost.
+
+## Scratch notes (`docs/`)
+
+`docs/` is a **gitignored scratch space** for working notes during a task —
+investigation logs, RE findings mid-flight, status snapshots, throwaway plans.
+Nothing in it is tracked or ships.
+
+The rule: **if a note in `docs/` would help anyone else** — a fact, a gotcha, an
+RE finding, a design decision, a "what's still open" — **promote it into the
+relevant top-level doc** (README / DEVELOPMENT / AGENT_CONTEXT / TESTING /
+CONTRIBUTING / NOTICE), then the scratch note can be deleted. Don't let durable
+knowledge accumulate only in `docs/`, because the next person (or agent) cloning
+the repo never sees it. `docs/README.md` restates this for anyone who opens the
+folder directly.

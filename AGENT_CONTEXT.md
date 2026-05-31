@@ -474,6 +474,88 @@ in `api_mappings.rs`.
 
 ---
 
+## How FrayTools renders what we emit (render internals)
+
+An independent specification of how **FrayTools 0.4.0** interprets the `.entity`
+files we produce, derived by black-box observation + reading the minified
+`app.asar` bundle. It exists so placement / rotation / timing bugs become
+provable from documented behaviour instead of guesswork — the same
+reverse-engineering-for-interoperability practice that produced the SWF/entity
+notes above.
+
+> **IP boundary.** Everything here is described in our own words from observed
+> *behaviour*. No FrayTools source, strings, or assets are quoted or committed.
+> The bundle is extracted locally (`npx @electron/asar extract`, never committed);
+> domain property names survive minification because they are JSON keys, so the
+> logic around them is followable. FrayTools is McLeodGaming proprietary software.
+
+Confidence: **[observed]** = read from the bundle logic; **[inferred]** = deduced
+from behaviour + our round-trip results (confirm with a probe before relying on it).
+
+- **Stored space is Y-down; FrayTools negates Y at render time. [observed]**
+  The per-keyframe screen-position builder computes the render position's Y as
+  the negation of the stored keyframe `y` (and pivot Y). So the stored `.entity`
+  `y` is Y-down — exactly what the converter emits (negative = above the foot).
+  Don't double-apply the negation.
+
+- **Transform order: place, then rotate the pivot offset, then translate. [observed]**
+  `calculateAbsolutePivotPosition(position, pivotOffset, angleDeg)`: for a non-360
+  angle it converts the pivot offset to polar, adds the angle, converts back, and
+  adds to `position`. The caller passes rotation **negated**; combined with the Y
+  negation the net on-screen convention is **clockwise-positive** — which is what
+  the converter emits (no negation, normalised to `[0, 360)`). Scale is folded
+  into the box dimensions / pivot before this step, not applied as a separate stage.
+
+- **Rotation is honored only for rotation-capable box types. [observed — load-bearing]**
+  FrayTools rotates `ItemBox` and custom collision boxes, but treats hurt / hit /
+  grab / shield / reflect / absorb / ledge / grab-hold boxes as **axis-aligned** —
+  a non-zero `rotation` on those is ignored. The converter therefore collapses
+  rotation into the containing AABB (`w·|cosθ|+h·|sinθ|`, `w·|sinθ|+h·|cosθ|`,
+  `rotation = 0`) for every non-rotation-capable type and keeps rotation only for
+  `ItemBox` — unified in `sprite_parser::finalize_box_geometry` +
+  `BoxType::supports_rotation()` (commits `7172bfcc`, `8ac39d49`, `d16ecfa9`).
+  *Open:* SSF2's lone `customBox` (bandanadee) currently maps to `HURT_BOX` and is
+  AABB-collapsed — correct for a hurtbox; promoting it to a rotatable FM custom box
+  needs the FM custom-box type string (plugin-side, not in the local bundle).
+
+- **COLLISION_BOX pivot is NOT multiplied by scale; other types ARE. [observed]**
+  A COLLISION_BOX's `scaleX`/`scaleY` *are* its width/height in pixels, so its
+  `pivotX`/`pivotY` are already in final pixel units; IMAGE pivots get multiplied
+  by `scaleX`/`scaleY`. The converter emits COLLISION_BOX with `scaleX = width`,
+  `scaleY = height`, `pivotX = width/2`, `pivotY = height/2` — consistent.
+
+- **Keyframe `length` drives duration. [observed]** Timelines lay out purely by
+  sequential keyframe `length`; a keyframe occupies `length` frames before the
+  next. This is why 30→60 fps doubling works by doubling every keyframe `length`
+  in lockstep (`entity_gen::double_keyframe_lengths`). LINEAR is the dominant
+  tween; EASE_IN/EASE_OUT exist but are rare — LINEAR/none is the safe default.
+
+- **The manifest is the registry; `.meta` sidecars bind id↔file. [observed]**
+  `library/manifest.json :: content[]` entries reference flat string ids
+  (`objectStatsId`, `scriptId`, `costumesId`, …); each asset's `.meta` sidecar
+  declares its `guid` + `id`, and the id (not the filename) is what the manifest
+  matches. So a script is found via its `.hx.meta` `id`, not its path. The
+  `.fraytools` file holds **project settings only** (frame rate, palette shader
+  mode, plugins, publish folders) — no content list. (`.fraytools` `version` 12,
+  entity `version` 14 — independent schemas.)
+
+- **Palette swap uses an RG-map shader. [observed]** A base palette + per-costume
+  replacement map interpreted via a red/green-channel lookup; the converter emits
+  `paletteShaderMode: "RG_MAP"` in the `.fraytools` and a `paletteMap` /
+  `paletteCollection` pair per entity.
+
+- **Layer/symbol vocabulary [observed]:** `IMAGE`, `COLLISION_BOX`,
+  `COLLISION_BODY`, `POINT`, `LABEL`, `FRAME_SCRIPT` — exactly the set the
+  converter emits.
+
+**Still guesswork (confirm with a render diff before treating as load-bearing):**
+runtime frame indexing 0- vs 1-based (the editor's "Frame: N" display is 1-based;
+the harness uses 0-based `SET_FRAME` — see `TESTING.md`); whether the per-frame
+COLLISION_BODY diamond expectation matches our AABB-of-hurtboxes approximation;
+and the exact RG-map channel math.
+
+---
+
 ## Coordinate System
 
 Both SSF2 and Fraymakers use **y-down** screen coordinates (positive y = down).
@@ -508,10 +590,9 @@ the Rust source) to fix animation-name mapping.
 Some SSF2 sprites pack multiple FM animations into one timeline separated by internal
 FrameLabel tags (e.g. a "Jab" sprite contains jab1 / jab2 / jab3 / jab4; a "Strong"
 sprite contains in/charge/attack). The splitter lives in `src/anim_splitter.rs` (and
-`sprite_parser::sub_anim_splits` for the sprite-level equivalent). For historical
-reference of which label patterns drive which splits, see
-[`docs/anim_split_rules.json`](docs/anim_split_rules.json) — the Rust splitter no
-longer loads that file; the patterns are hardcoded match arms in `anim_splitter.rs`.
+`sprite_parser::sub_anim_splits` for the sprite-level equivalent). The label patterns
+that drive which splits are **hardcoded match arms** in `anim_splitter.rs` — there is
+no external rules file.
 
 ---
 

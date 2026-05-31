@@ -18,12 +18,12 @@ met by this file when this project is redistributed.
   written from scratch in this repo, but the SWF binary parsing
   itself is `swf`'s.
 
-The repo previously shelled out to [JPEXS Free Flash Decompiler
-(FFDec)](https://github.com/jindrapetrik/jpexs-decompiler) (GPL-3.0)
-as a Flash decompiler. That dependency has been **removed** (see
-`DEVELOPMENT.md` §3 — "There is no external Rust runtime dependency
-for SWF decompression, bitmap decoding, or ABC parsing"). No GPL code
-is statically or dynamically linked.
+All Flash decompilation — SWF decompression, bitmap decoding, and ABC
+(ActionScript bytecode) parsing — happens **in-process** in this repo's
+own Rust code (`src/ssf.rs`, `src/swf_parser.rs`, `src/abc_parser.rs`,
+`src/decompiler.rs`), built only on the `swf` crate above. There is no
+external decompiler dependency and **no GPL code** is statically or
+dynamically linked (see `DEVELOPMENT.md` §3).
 
 ## All direct Rust dependencies
 
