@@ -12,6 +12,7 @@ mod manifest; // engine-symbol dependency table + doctor/preflight progress UI
 mod bridge; // headless TCP runtime (serve / send_once)
 mod ui; // terminal console (ratatui) + cross-platform launcher
 mod gui; // graphical chat window (egui/eframe) — the default
+mod fraytools; // drive FrayTools over CDP: export .fra / render / harness (ported from Node)
 
 use hlbc::opcodes::Opcode;
 use hlbc::types::{Reg, RefString};
@@ -53,6 +54,21 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(2);
             });
             bridge::send_once(bridge::parse_port(&args), bridge::parse_token(&args).as_deref(), &cmd);
+            return Ok(());
+        }
+        Some("export") => {
+            // Drive FrayTools' Publish to build the game-ready .fra (was: node export-in-fraytools.js).
+            fraytools::export(&args)?;
+            return Ok(());
+        }
+        Some("render") => {
+            // Open an entity on the stage + capture the canvas PNG (was: node render-entity.js).
+            fraytools::render(&args)?;
+            return Ok(());
+        }
+        Some("harness") => {
+            // Navigate + extract box geometry + PNG + JSON report (was: node harness.js).
+            fraytools::harness(&args)?;
             return Ok(());
         }
         Some("help") | Some("-h") | Some("--help") => {
@@ -608,8 +624,12 @@ fn doctor(code: &Bytecode) -> Vec<manifest::SymStatus> {
     let mut out = Vec::with_capacity(total);
     for (i, sym) in MANIFEST.iter().enumerate() {
         let label = sym.label();
+        // TTY -> in-place live bar; non-TTY (e.g. spawned by the GUI/TUI boot) ->
+        // machine-parseable lines the parent captures to drive its own progress bar.
         if tty {
             manifest::render_live(i, total, &label);
+        } else {
+            manifest::emit_machine_progress(i, total, &label);
         }
         let resolved = match sym.kind {
             Kind::Fn => find_fn(code, sym.name, sym.parent),
@@ -631,6 +651,8 @@ fn doctor(code: &Bytecode) -> Vec<manifest::SymStatus> {
     if tty {
         manifest::render_live(total, total, "done");
         manifest::clear_live();
+    } else {
+        manifest::emit_machine_progress(total, total, "done");
     }
     out
 }
@@ -645,7 +667,10 @@ fn run_preflight(code: &Bytecode) -> anyhow::Result<()> {
         &statuses,
         &format!("Peptide preflight — Fraymakers bytecode v{}", code.version),
     );
-    let (_ok, miss_crit, _warn) = manifest::summarize(&statuses);
+    let (ok, miss_crit, warn) = manifest::summarize(&statuses);
+    if !manifest::is_tty() {
+        manifest::emit_machine_result(ok, miss_crit, warn);
+    }
     if miss_crit > 0 {
         anyhow::bail!(
             "preflight: {miss_crit} critical engine symbol(s) missing — this Fraymakers \
