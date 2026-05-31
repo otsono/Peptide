@@ -1,7 +1,7 @@
 # Engine RE map for the q-oracle / move-drive / telemetry work (#4,#6,#7)
 
 Date: 2026-05-30. All findexes/fields below were obtained from
-`fray_patch <hlboot-sdl.dat> <out> {dis,fninfo,fnsof,typefields,strgrep} ...` and
+`peptide <hlboot-sdl.dat> <out> {dis,fninfo,fnsof,typefields,strgrep} ...` and
 VERIFIED stable: the same static-input inspection produced byte-identical output
 across reruns (md5-equal), and fabricated editorial annotations grepped as 0
 occurrences. (Static disassembly on this machine's tool channel is reliable;
@@ -362,7 +362,7 @@ loadUgc@17796 disasm (md5 5e1815a8, reproduced) — the engine's FULL UGC load:
   op23    : loadInSubscribedUgc@17843 (workshop — Steam)
   op24    : _checkIfAllDirectoriesLoaded@17840 (FINALIZER)
 
-OUR harness (tools/fraymakers-harness/src/main.rs):
+OUR harness (tools/peptide/src/main.rs):
   - line 1175: inject_ready_flag(..., 17842)  // passes loadInLocalUgc, not loadUgc
   - line 1250: Opcode::Call0 { fun: RefFun(load_ugc_fn) }  // the ONLY load op
   - comment (1235): "normally calls UgcUtil.loadUgc; we use loadInLocalUgc@17842

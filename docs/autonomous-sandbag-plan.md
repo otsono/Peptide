@@ -38,7 +38,7 @@ don't block the whole effort on it.
 
 1. Convert: `./rebuild-sandbag.sh` (or `ssf2_converter sandbag.ssf`).
 2. FrayTools pass: `tools/fraytools-harness/harness.js` + `compare_boxes`.
-3. Publish to Fraymakers custom content; boot via `tools/fraymakers-harness`.
+3. Publish to Fraymakers custom content; boot via `tools/peptide`.
 4. Drive moves via internal functions; capture animation + telemetry.
 5. Diff against expectations; fix the converter (Rust) — never hand-edit output.
 6. Repeat.
@@ -48,7 +48,7 @@ don't block the whole effort on it.
 - No Fraymakers/FrayTools source, binaries, or assets in the repo. RE notes in
   our own words only. Harness may shell out to the user's local Steam install.
 - Do not modify the Steam install beyond writing to `custom/<id>/` mods folder.
-  Never patch the engine binary or replace Steam files. (The fraymakers-harness
+  Never patch the engine binary or replace Steam files. (The peptide
   reads hlboot-sdl.dat as a patch source and writes only transient _conn.dat +
   steam_appid.txt, removed after each run — that's allowed; in-place engine
   edits are NOT.)

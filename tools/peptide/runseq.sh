@@ -3,12 +3,12 @@
 #
 # run.sh sends a single command per boot; m/t/q probes need the SAME live
 # engine (a match doesn't survive a reboot). This feeds a command sequence to
-# frayremote, which dispatches the FIRST command the instant the engine signals
+# peptide-bridge, which dispatches the FIRST command the instant the engine signals
 # READY (event-driven, no artificial pre-delay) and paces SUBSEQUENT commands by
 # <gap_s> so each command's per-frame effect settles before the next fires.
 #
 # Usage:  ./runseq.sh <gap_s> "cmd1" "cmd2" ...
-#   gap_s : seconds between successive commands (frayremote-side, after READY).
+#   gap_s : seconds between successive commands (peptide-bridge-side, after READY).
 # Env: FRAY_DIR install path; FRAY_TAIL hold after last cmd (default 3);
 #      FRAY_READY_BUDGET seconds allotted for boot→READY before the first
 #      command can fire (engine-lifetime budget only; the command still fires at
@@ -47,16 +47,16 @@ trap cleanup EXIT INT TERM
 # Reap any killable stale engine/bridge from a prior run BEFORE launching a fresh one
 # (sequential runs only; wedged U-state orphans can't be reaped but consume nothing).
 pkill -TERM -f 'hl _conn.dat'   2>/dev/null || true
-pkill -TERM -f 'frayremote serve' 2>/dev/null || true
+pkill -TERM -f 'peptide-bridge serve' 2>/dev/null || true
 sleep 0.3
 
-[ -x "$HERE/target/release/fray_patch" ] || cargo build --release --manifest-path "$HERE/Cargo.toml" >/dev/null 2>&1
+[ -x "$HERE/target/release/peptide" ] || cargo build --release --manifest-path "$HERE/Cargo.toml" >/dev/null 2>&1
 printf '1420350' > "$APPID"
 # Automated harness defaults to headless fast-boot (skip Title/menus + filter required load).
 # Set FRAY_HEADLESS to anything other than "headless" (e.g. FRAY_HEADLESS=normal) for a normal
 # boot — the socket bridge + command dispatch still work, the game just shows the title.
 HEADLESS_ARG="${FRAY_HEADLESS:-headless}"
-"$HERE/target/release/fray_patch" "$BOOT" "$CONN" connect "$PORT" "$TOK" "$HEADLESS_ARG" >/dev/null 2>&1
+"$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" "$HEADLESS_ARG" >/dev/null 2>&1
 
 # Engine-lifetime CAP (we poll-wait for the clean 'x' exit and break early, so this is
 # only an upper bound). +1 command for the auto-appended 'x' exit.
@@ -64,14 +64,14 @@ NCMD=$#
 TOTAL=$(( READY_BUDGET + ((NCMD + 1) * GAP) + TAIL + 2 ))
 
 # Feeder: dump ALL user commands, then an 'x' to cleanly exit the engine (hxd.System.exit)
-# so it shuts itself down — no kill -9, no wedged orphan. frayremote holds them until READY,
+# so it shuts itself down — no kill -9, no wedged orphan. peptide-bridge holds them until READY,
 # fires cmd1 at READY, then paces the rest (incl. 'x' last) by FRAY_CMD_GAP.
 feeder() {
   for c in "$@"; do printf '%s\n' "$c"; done
   printf 'x\n'     # clean engine exit after the user commands
-  sleep "$TOTAL"   # keep the pipe open so frayremote's holder doesn't see EOF early
+  sleep "$TOTAL"   # keep the pipe open so peptide-bridge's holder doesn't see EOF early
 }
-feeder "$@" | FRAY_CMD_GAP="$GAP" "$HERE/target/release/frayremote" serve --port "$PORT" --token "$TOK" &
+feeder "$@" | FRAY_CMD_GAP="$GAP" "$HERE/target/release/peptide-bridge" serve --port "$PORT" --token "$TOK" &
 BR=$!
 sleep 0.7
 

@@ -1,4 +1,4 @@
-//! frayremote — harness-side control bridge for Fraymakers.
+//! peptide-bridge — harness-side control bridge for Fraymakers.
 //!
 //! The injected engine code is a TCP *client* (this build's HashLink std has no
 //! socket_listen/accept), so THIS program is the server: it binds a localhost
@@ -7,8 +7,8 @@
 //!   - lines the engine sends   -> printed to stdout (prefixed with "<< ")
 //!
 //! Modes:
-//!   frayremote serve [--port N]            interactive CLI (default)
-//!   frayremote send  [--port N] "<cmd>"    connect, send one command, print
+//!   peptide-bridge serve [--port N]            interactive CLI (default)
+//!   peptide-bridge send  [--port N] "<cmd>"    connect, send one command, print
 //!                                          replies for a short window, exit
 //!                                          (for scripted / automated tests)
 
@@ -49,7 +49,7 @@ fn main() {
                 break;
             }
             let cmd = cmd.unwrap_or_else(|| {
-                eprintln!("usage: frayremote send [--port N] [--token T] \"<command>\"");
+                eprintln!("usage: peptide-bridge send [--port N] [--token T] \"<command>\"");
                 std::process::exit(2);
             });
             send_once(port, token.as_deref(), &cmd);
@@ -77,17 +77,17 @@ fn parse_token(args: &[String]) -> Option<String> {
 /// must bind BEFORE launching the engine so the port can't be squatted.
 fn await_engine(port: u16, token: Option<&str>) -> (BufReader<TcpStream>, TcpStream) {
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| {
-        eprintln!("frayremote: cannot bind 127.0.0.1:{port}: {e}");
+        eprintln!("peptide-bridge: cannot bind 127.0.0.1:{port}: {e}");
         std::process::exit(1);
     });
-    eprintln!("frayremote: listening on 127.0.0.1:{port} — waiting for Fraymakers…");
+    eprintln!("peptide-bridge: listening on 127.0.0.1:{port} — waiting for Fraymakers…");
     loop {
         let (stream, peer) = listener.accept().expect("accept failed");
         let writer = stream.try_clone().expect("clone");
         let mut reader = BufReader::new(stream);
         match token {
             None => {
-                eprintln!("frayremote: engine connected from {peer} (no auth)");
+                eprintln!("peptide-bridge: engine connected from {peer} (no auth)");
                 return (reader, writer);
             }
             Some(expected) => {
@@ -97,10 +97,10 @@ fn await_engine(port: u16, token: Option<&str>) -> (BufReader<TcpStream>, TcpStr
                 if reader.read_line(&mut first).is_ok()
                     && first.trim().strip_prefix("AUTH ").map(str::trim) == Some(expected)
                 {
-                    eprintln!("frayremote: engine authenticated from {peer}");
+                    eprintln!("peptide-bridge: engine authenticated from {peer}");
                     return (reader, writer);
                 }
-                eprintln!("frayremote: rejected unauthenticated peer {peer}; first line = {first:?}; still listening");
+                eprintln!("peptide-bridge: rejected unauthenticated peer {peer}; first line = {first:?}; still listening");
             }
         }
     }
@@ -129,7 +129,7 @@ fn serve(port: u16, token: Option<&str>) {
                 Ok(0) => {
                     // Clean EOF: engine closed its write side. Do NOT exit; the
                     // engine may still be running and writing — hold our socket.
-                    eprintln!("frayremote: engine closed read stream (holding socket open)");
+                    eprintln!("peptide-bridge: engine closed read stream (holding socket open)");
                     break;
                 }
                 Ok(_) => {
@@ -149,7 +149,7 @@ fn serve(port: u16, token: Option<&str>) {
                 Err(_) => {
                     // Transient/decode-ish error: keep the socket alive, stop
                     // mirroring. NEVER exit here (see comment above).
-                    eprintln!("frayremote: read error (holding socket open)");
+                    eprintln!("peptide-bridge: read error (holding socket open)");
                     break;
                 }
             }
@@ -157,11 +157,11 @@ fn serve(port: u16, token: Option<&str>) {
     });
 
     // Always wait for READY before accepting any input.
-    eprintln!("frayremote: waiting for engine READY…");
+    eprintln!("peptide-bridge: waiting for engine READY…");
     match ready_rx.recv_timeout(Duration::from_secs(60)) {
-        Ok(()) => eprintln!("frayremote: engine is READY — enter commands:"),
+        Ok(()) => eprintln!("peptide-bridge: engine is READY — enter commands:"),
         Err(_) => {
-            eprintln!("frayremote: timed out waiting for READY");
+            eprintln!("peptide-bridge: timed out waiting for READY");
             return;
         }
     }
@@ -182,10 +182,10 @@ fn serve(port: u16, token: Option<&str>) {
             if let Some(g) = cmd_gap { thread::sleep(Duration::from_secs_f64(g)); }
         }
         first = false;
-        eprintln!("frayremote: SENT {l:?}");
+        eprintln!("peptide-bridge: SENT {l:?}");
         l.push('\n');
         if write_half.write_all(l.as_bytes()).is_err() {
-            eprintln!("frayremote: write failed (engine gone?)");
+            eprintln!("peptide-bridge: write failed (engine gone?)");
             break;
         }
         let _ = write_half.flush();
@@ -198,7 +198,7 @@ fn serve(port: u16, token: Option<&str>) {
     let hold = std::env::var("FRAY_HOLD_SECS").ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(600);
-    eprintln!("frayremote: stdin closed; holding socket open up to {hold}s (engine keeps running)");
+    eprintln!("peptide-bridge: stdin closed; holding socket open up to {hold}s (engine keeps running)");
     let mut probe = [0u8; 1];
     let deadline = Duration::from_secs(hold);
     let step = Duration::from_millis(250);
@@ -210,7 +210,7 @@ fn serve(port: u16, token: Option<&str>) {
         thread::sleep(step);
         waited += step;
         if write_half.write_all(&[]).is_err() || write_half.flush().is_err() {
-            eprintln!("frayremote: engine gone; exiting");
+            eprintln!("peptide-bridge: engine gone; exiting");
             break;
         }
         let _ = &mut probe; // reserved for future liveness ping
@@ -233,18 +233,18 @@ fn send_once(port: u16, token: Option<&str>, cmd: &str) {
     // ALWAYS wait for the engine's "READY" line (title screen / welcome announcer
     // = all .fra content loaded) before sending any command. Sending earlier runs
     // engine code mid-load, which crashes.
-    eprintln!("frayremote: waiting for engine READY…");
+    eprintln!("peptide-bridge: waiting for engine READY…");
     loop {
         match rx.recv_timeout(Duration::from_secs(60)) {
             Ok(l) => {
                 println!("<< {l}");
                 if l.contains("READY") {
-                    eprintln!("frayremote: engine is READY");
+                    eprintln!("peptide-bridge: engine is READY");
                     break;
                 }
             }
             Err(_) => {
-                eprintln!("frayremote: timed out waiting for READY — aborting send");
+                eprintln!("peptide-bridge: timed out waiting for READY — aborting send");
                 return;
             }
         }
@@ -257,7 +257,7 @@ fn send_once(port: u16, token: Option<&str>, cmd: &str) {
     if let Ok(d) = std::env::var("FRAY_POST_READY_DELAY") {
         if let Ok(secs) = d.trim().parse::<f64>() {
             if secs > 0.0 {
-                eprintln!("frayremote: post-READY delay {secs}s (let UGC load)…");
+                eprintln!("peptide-bridge: post-READY delay {secs}s (let UGC load)…");
                 thread::sleep(Duration::from_millis((secs * 1000.0) as u64));
             }
         }
@@ -267,7 +267,7 @@ fn send_once(port: u16, token: Option<&str>, cmd: &str) {
     payload.push('\n');
     write_half.write_all(payload.as_bytes()).expect("write");
     write_half.flush().ok();
-    eprintln!("frayremote: sent {cmd:?}");
+    eprintln!("peptide-bridge: sent {cmd:?}");
 
     // Drain replies for ~1.5s of quiet.
     loop {

@@ -6,12 +6,12 @@ physics/state → assert** — then scale to all 47 characters.
 
 ## What exists (verified this session)
 
-- **Patcher `fray_patch`** (`src/main.rs`, 1451 lines): parses `hlboot-sdl.dat` via
+- **Patcher `peptide`** (`src/main.rs`, 1451 lines): parses `hlboot-sdl.dat` via
   `hlbc`, injects a per-frame dispatch block into `fraymakers.Main.update`, writes a
   patched `_conn.dat`. Resolves most engine fns **by name** (`require_fn`) — robust to
   findex drift. Inspection modes: `dis/fninfo/fnsof/typefields/callers/whoref/strgrep/inspect`.
-  Invocation: `fray_patch <in.dat> <out.dat> <mode> <arg>` (output on stderr).
-- **`frayremote`** (`src/bin/frayremote.rs`): loopback TCP bridge (serve/send).
+  Invocation: `peptide <in.dat> <out.dat> <mode> <arg>` (output on stderr).
+- **`peptide-bridge`** (`src/bin/peptide-bridge.rs`): loopback TCP bridge (serve/send).
 - **Command surface today:** `p` ping · `c` console (h2d.Console.runCommand) · `s`
   start match (real FraymakersMode.startMatch — **works for builtins**) · `q` match-live
   query · `k` pool-key dump. Plus a `cmap-check` prefix probe.

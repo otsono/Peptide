@@ -66,7 +66,7 @@ Steam-gated too.
 ## Status of the run when this was written
 - Tool channel was corrupting output (truncation, mangled grep/disasm, `EOF`
   artifacts) — could not safely do delicate edits to the 1300-line bytecode
-  patcher (`tools/fraymakers-harness/src/main.rs`). Stopped bytecode surgery to
+  patcher (`tools/peptide/src/main.rs`). Stopped bytecode surgery to
   avoid shipping unverifiable patches.
 - Verified wins committed this session: both FrayTools CDP harness cold-launch
   fixes (`export-in-fraytools.js`, `harness.js`), FrayTools box-geometry

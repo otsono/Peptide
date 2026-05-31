@@ -14,14 +14,14 @@ trap cleanup EXIT INT TERM
 printf '1420350' > "$APPID"
 
 # Patch with the new resolver
-"$HERE/target/release/fray_patch" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
+"$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
 echo "PATCH_EXIT=$?" >> "$OUT/FACTS.txt"
 
 # Serve: hold socket open with 14s pre-s delay (let async UGC load finish), then q x6
 ( sleep 14; echo "s sandbag thespire none"; sleep 2; \
   for i in 1 2 3 4 5 6; do echo "q"; sleep 1; done; \
   sleep 5 ) \
-  | "$HERE/target/release/frayremote" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
+  | "$HERE/target/release/peptide-bridge" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
 BR=$!
 sleep 0.8
 rm -f "$FRAY_DIR/error.log" "$FRAY_DIR/crash.log"

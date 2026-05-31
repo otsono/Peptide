@@ -28,7 +28,7 @@ showed "custom::buzzwole" + "no error.log"; the checksummed re-read is the truth
 Commit 8636ec83's message states the WRONG conclusion — ignore it.)
 
 **CORRECTED CONCLUSION:** the bug is almost certainly in **our injected
-startMatch path (fraymakers-harness), NOT our .fra packaging.** Evidence:
+startMatch path (peptide), NOT our .fra packaging.** Evidence:
 - buzzwole + sandbag + mario (all NON-builtin) crash identically at spawn.
 - Builtin `commandervideo` spawned fine earlier via the same `s` command
   (rendered a real match) — and resolved to `public::commandervideo...`.
@@ -98,7 +98,7 @@ into `custom/buzzwole/` to test it the same way as sandbag.
    criteria for "100% done") + a detailed progress log. READ THIS DOC FIRST on
    resume; it has the full chronology including my corrected mistakes.
 
-`tools/fraymakers-harness/run.sh` is the engine launcher — additive flow
+`tools/peptide/run.sh` is the engine launcher — additive flow
 (recreates _conn.dat + steam_appid.txt each run, never modifies hlboot-sdl.dat,
 restores nothing because it adds nothing permanent). Usage:
 `./run.sh "s <char> <stage> <assist>" [secs]`. Needs `dangerouslyDisableSandbox`.

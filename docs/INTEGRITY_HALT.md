@@ -13,7 +13,7 @@ TRUSTWORTHY (diffable / reproduced-by-md5 / git is stable on disk):
 - src/decompiler.rs: `guard_loop_termination` — the converter freeze fix
   (non-terminating counter loops, e.g. removeAllEffects, get an appended
   `i = i + 1`). Verified by direct read of regenerated Script.hx. Builds clean.
-- tools/fraymakers-harness/src/main.rs changes:
+- tools/peptide/src/main.rs changes:
   * emit_resolve: accept a namespace prefix only if its resource's per-type
     content map (cmap_field) is non-null (avoid the global:: registry stub).
   * q-handler: on currentMatch==null, also check _matches (statics f13).
@@ -37,7 +37,7 @@ are unverifiable):
 ## What a human (or a healthy channel) should do to finish #4/#5/#7
 
 1. In a TRUSTED terminal, run a match and READ THE FILES YOURSELF:
-     cd tools/fraymakers-harness && cargo build --release
+     cd tools/peptide && cargo build --release
      ./run.sh "s sandbag thespire none" 25
    Then open, with your own eyes:
      - "$FRAY_DIR/error.log"  — crash? which null (.characterPxfContentMap /

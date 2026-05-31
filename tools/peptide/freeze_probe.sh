@@ -22,7 +22,7 @@ cleanup(){ rm -f "$CONN" "$APPID" 2>/dev/null; kill -9 "${ENG:-0}" "${BR:-0}" 2>
 trap cleanup EXIT INT TERM
 
 printf '1420350' > "$APPID"
-"$HERE/target/release/fray_patch" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
+"$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
 
 # Command stream: start the match, then a `q` heartbeat every 3s for ~33s.
 # Each line goes through stdin; the sleeps keep stdin open so serve stays live.
@@ -38,7 +38,7 @@ printf '1420350' > "$APPID"
   echo "s sandbag ${FRAY_STAGE:-thespire} none"
   for n in $(seq 1 11); do sleep 3; echo "q $n"; done
   sleep 2
-} | FRAY_HOLD_SECS=60 "$HERE/target/release/frayremote" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
+} | FRAY_HOLD_SECS=60 "$HERE/target/release/peptide-bridge" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
 BR=$!
 sleep 0.8
 rm -f "$FRAY_DIR/error.log"

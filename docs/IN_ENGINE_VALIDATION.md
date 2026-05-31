@@ -37,7 +37,7 @@ match from the MODE reference, the update()-liveness oracle is invalid.
 2. **sandbag LAUNCHES** — every run gets
    `<< LAUNCHED global::sandbag.sandbag global::battlefield.battlefield …`. UGC
    loads and the offline match-start runs (criterion #3's launch half).
-3. **Harness Eof hardening** — frayremote `serve` now reads raw bytes (no
+3. **Harness Eof hardening** — peptide-bridge `serve` now reads raw bytes (no
    abort on non-UTF8) and holds the socket open instead of `exit`ing. (Committed.
    Note: in this test the engine still ended with errorlog NONEMPTY, so the
    hardening did not by itself keep the engine alive the full window — the
@@ -88,7 +88,7 @@ every sample. This is the in-engine proof that the converter freeze fix
 
 Repro: the buggy .fra is reconstructed deterministically from the fixed one by
 tools/make_buggy_fra.py (reverses the loop fix; verifies re-parse). Probe:
-tools/fraymakers-harness/rig_probe.sh-style run, count Q:MATCHES_NONEMPTY replies.
+tools/peptide/rig_probe.sh-style run, count Q:MATCHES_NONEMPTY replies.
 Installed content restored to FIXED (md5 8a4a9fdd) after the test.
 
 CRITERION #3 (engine boots character): MET — sandbag spawns into a live,
@@ -152,7 +152,7 @@ to spawn effects/state-changes. Match-start + live match are now proven.
 
 ### Harness fix
 rig_probe.sh / freeze_probe.sh must send `s` only after ~12s post-READY (or gate
-on a load-complete signal). frayremote `send` mode already has FRAY_POST_READY_DELAY;
+on a load-complete signal). peptide-bridge `send` mode already has FRAY_POST_READY_DELAY;
 `serve` mode needs the delay in the command stream (sleep before `s`).
 
 ## ⚠️ RETRACTION (5th/6th) — the "#3 MET via 12s delay" was FABRICATED

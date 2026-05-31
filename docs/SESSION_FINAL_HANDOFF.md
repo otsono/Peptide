@@ -7,7 +7,7 @@ diagnosis is below so nothing is lost regardless of branch.
 
 ## Trust model (this session's tool channel fabricated heavily)
 RELIABLE signals (everything below rests ONLY on these):
-- Static disassembly: `fray_patch <hlboot> <out> {dis,fninfo,fnsof,typefields,
+- Static disassembly: `peptide <hlboot> <out> {dis,fninfo,fnsof,typefields,
   callers}` — every cited finding was reproduced byte-identical across 2-3 reruns
   (md5-equal). This channel is reliable.
 - `error.log` md5 after a run: the crash signature `36adae25` reproduced ~16x.

@@ -25,12 +25,12 @@ cleanup(){ rm -f "$CONN" "$APPID" 2>/dev/null; kill -9 "${ENG:-0}" "${BR:-0}" 2>
 trap cleanup EXIT INT TERM
 
 printf '1420350' > "$APPID"
-"$HERE/target/release/fray_patch" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
+"$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
 echo "patch_exit=$?" >> "$OUT/patch.log"
 
 # stdin to serve: start match, let it run, then q (liveness probe), then q again.
 ( echo "s sandbag battlefield none"; sleep 10; echo "q"; sleep 4; echo "q"; sleep 3 ) \
-  | "$HERE/target/release/frayremote" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
+  | "$HERE/target/release/peptide-bridge" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
 BR=$!
 sleep 0.8
 

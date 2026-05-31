@@ -12,7 +12,7 @@ use hlbc::Bytecode;
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("usage: fray_patch <input.dat> <output.dat> [mode]");
+        eprintln!("usage: peptide <input.dat> <output.dat> [mode]");
         eprintln!("  mode: roundtrip (default) | probe");
         std::process::exit(2);
     }
@@ -164,7 +164,7 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         "connect" => {
-            // fray_patch <in> <out> connect <port> <token> [headless]
+            // peptide <in> <out> connect <port> <token> [headless]
             // The socket bridge + command dispatch (s/t/q/x/c/p) are ALWAYS installed. The
             // "headless" arg additionally enables fast-boot: skip the Title/menus
             // (no-op launchScreen) and filter the boot required-load to skip public:: base

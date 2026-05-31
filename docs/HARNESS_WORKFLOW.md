@@ -10,7 +10,7 @@ There are **two** harnesses, doing two different jobs:
 | Harness | Dir | Drives | Transport | Answers |
 |---|---|---|---|---|
 | FrayTools (Tier 3) | `tools/fraytools-harness/` | the user's FrayTools editor | Chrome DevTools Protocol | "does it render/lay out right? publish me a `.fra`" |
-| Fraymakers | `tools/fraymakers-harness/` | the user's Fraymakers engine | patched bytecode + loopback TCP | "does it behave at runtime? load/spawn/move/read state" |
+| Fraymakers | `tools/peptide/` | the user's Fraymakers engine | patched bytecode + loopback TCP | "does it behave at runtime? load/spawn/move/read state" |
 
 ---
 
@@ -103,9 +103,9 @@ For **visual/layout** validation (box geometry, rendered pivots) use `harness.js
 
 ## 3. The Fraymakers harness — engine driver
 
-Code: `tools/fraymakers-harness/` — Rust. Two bins:
-- **`fray_patch`** (`src/main.rs`, ~1800 lines) — parses the engine's HashLink bytecode (`hlbc` crate), injects a per-frame dispatch block into `fraymakers.Main.update`, writes a patched copy. Also has read-only inspection subcommands.
-- **`frayremote`** (`src/bin/frayremote.rs`) — the loopback TCP **server/bridge** (the injected engine code is the TCP *client*).
+Code: `tools/peptide/` — Rust. Two bins:
+- **`peptide`** (`src/main.rs`, ~1800 lines) — parses the engine's HashLink bytecode (`hlbc` crate), injects a per-frame dispatch block into `fraymakers.Main.update`, writes a patched copy. Also has read-only inspection subcommands.
+- **`peptide-bridge`** (`src/bin/peptide-bridge.rs`) — the loopback TCP **server/bridge** (the injected engine code is the TCP *client*).
 
 ### Boot model (`run.sh`)
 
@@ -116,13 +116,13 @@ Code: `tools/fraymakers-harness/` — Rust. Two bins:
 
 What `run.sh` does each run (Steam sandbox wipes anything added to the install dir, so it **recreates everything every time** and never mutates the pristine engine):
 
-1. `fray_patch hlboot-sdl.dat _conn.dat connect <port> <token>` — patch a **copy**. `hlboot-sdl.dat` is the patch **source**, never written.
+1. `peptide hlboot-sdl.dat _conn.dat connect <port> <token>` — patch a **copy**. `hlboot-sdl.dat` is the patch **source**, never written.
 2. Write `steam_appid.txt` (so a direct `./hl` launch doesn't bounce through Steam).
-3. Start `frayremote serve --port <port> --token <token>`, queue the command on its stdin.
+3. Start `peptide-bridge serve --port <port> --token <token>`, queue the command on its stdin.
 4. `cd "$FRAY_DIR" && DYLD_LIBRARY_PATH=. ./hl _conn.dat` — launch the patched copy.
 5. On exit, delete `_conn.dat` + `steam_appid.txt`, kill procs.
 
-Port: `run.sh` randomizes to 18000–19999; `frayremote`'s built-in default is `17999`. The patched engine waits for content load (title "press any button" state), dials the socket (auth handshake), then processes commands per-frame on the main/render thread.
+Port: `run.sh` randomizes to 18000–19999; `peptide-bridge`'s built-in default is `17999`. The patched engine waits for content load (title "press any button" state), dials the socket (auth handshake), then processes commands per-frame on the main/render thread.
 
 ### Don't stall on closing old Fraymakers engine instances
 
@@ -156,7 +156,7 @@ Short-name resolution (`s`/`l`): a bare `sandbag` (no `::`) is tried against `pr
 
 **Multi-command sessions:** `run.sh` sends one command per boot, but `m`/`t`/`q` probes need the *same* live match (a reboot loses it). Use `runseq.sh <boot_wait_s> <gap_s> "cmd1" "cmd2" …` to feed a gapped sequence into one engine session. `boot_wait_s` ~32 (engine boot→READY ≈ 30s); `gap_s` 6–9. Env: `FRAY_ENGINE_LOG=<file>` captures engine stdout, `FRAY_TAIL` extra hold after the last command. Example: `./runseq.sh 32 6 "s sandbag thespire commandervideoassist" "p" "q" "t" "m" "t"`.
 
-`fray_patch` read-only inspection subcommands (for re-deriving findices — **always re-verify**): `dis <findex>`, `typefields <type>`, `fnsof <type>`, `fninfo <findex>`, `callers <findex>`, `strgrep <s>`, `whoref <s>`, `inspect`.
+`peptide` read-only inspection subcommands (for re-deriving findices — **always re-verify**): `dis <findex>`, `typefields <type>`, `fnsof <type>`, `fninfo <findex>`, `callers <findex>`, `strgrep <s>`, `whoref <s>`, `inspect`.
 
 ### Minimal-boot recipe — loading a custom character headless (the `l` command)
 
@@ -188,7 +188,7 @@ node tools/fraytools-harness/export-in-fraytools.js \
   --project "$PWD/characters/<id>/<id>.fraytools"
 
 # 4. Boot the Fraymakers harness, dispatch, observe
-cd tools/fraymakers-harness
+cd tools/peptide
 ./run.sh "s <id> thespire <assist>" 20     # spawn into a real match
 #   or, for the headless synchronous load path:  ./run.sh "l" 20
 #   then probe:  ./run.sh "t" 8   (read state)   ./run.sh "m" 8  (drive a move)
@@ -209,7 +209,7 @@ What the harness exposes **today** (player-0 of the live match):
 - `t` — current state **name** via `Character.getStateName()` (`main.rs:722`).
 - `m` — drive a state transition via `Character.toState(CState.JAB)` (`main.rs:721`) — internal dispatch, deterministic, no input simulation.
 
-**Extending it (the bytecode-authoring pattern).** The injector in `fray_patch` (`src/main.rs`, the `connect`/`connect_edit` path) is the template for adding probes:
+**Extending it (the bytecode-authoring pattern).** The injector in `peptide` (`src/main.rs`, the `connect`/`connect_edit` path) is the template for adding probes:
 1. Resolve engine symbols **by name**, never by hardcoded findex: `require_fn(code, "<method>", Some("<Type>"))`, `find_field(code, ty, "<field>")`, `find_type` / `require_type`. (Hardcoded findices like the `resource_ctor`/global-index constants are build-specific and must be re-verified — `dis`/`fninfo`/`strgrep` are for exactly that.)
 2. Allocate constants: `add_string_const` (real String objects), `add_int`, `add_string`.
 3. Emit opcodes into `Main.update` and wire the jump table (see the `m`/`t`/`l` handler jump comments at `main.rs:1583`–`1626`). New command = new first-byte branch with its own ack string.
@@ -242,7 +242,7 @@ To read **position/velocity** (not yet exposed), add a `t`-style readback: resol
 | `docs/cleanup_report.md` | The stale-output purge (7,297 files); the rename history that causes the stale trap. |
 | `docs/autonomous-sandbag-plan.md` | Older but useful: the sandbag end-to-end plan + stop condition (build out both harnesses to validate a port). |
 | `handoff.md` (repo root) | Latest session handoff state. |
-| `tools/fraymakers-harness/README.md` | Boot model, IP boundary, command quick-start. |
+| `tools/peptide/README.md` | Boot model, IP boundary, command quick-start. |
 | `tools/fraytools-harness/README.md` | Publish + box-geometry harness usage (⚠ its converter CLI flags are stale — see §1). |
 | `memory/project_fraymakers-engine-internals.md` | The full RE narrative: injection vectors, the timing breakthrough, the hscript-launcher conclusion. |
 

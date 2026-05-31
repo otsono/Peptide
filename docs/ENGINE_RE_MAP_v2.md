@@ -198,10 +198,10 @@ getSprite=18302, Vfx.__constructor__=4671 (animation guard at op58-60/field37),
 Character.m_buriedCharacterVfx=field234 (built Character.hx:762). PXFResource.entities=field8.
 
 ## Harness state at this commit (resume point for next session)
-`tools/fraymakers-harness/src/main.rs` patches `fraymakers.Main.update` with a per-frame command
+`tools/peptide/src/main.rs` patches `fraymakers.Main.update` with a per-frame command
 handler over a loopback socket; commands: `l` (sync custom-.fra load + deterministic sprite-entity
 build/cache — see above), `s <char> <stage> <assist>` (launch match + spawnPlayer), `m` (drive
 move via Character.toState), `t` (state telemetry), `q` (match-live query), `k`/diagnostics.
-Test driver: `tools/fraymakers-harness/sc_test.sh` (boots engine, sends `l`+`s`, asserts via
+Test driver: `tools/peptide/sc_test.sh` (boots engine, sends `l`+`s`, asserts via
 error.log/serve.log — file-based oracle). NEXT: loop-translation work (drive a move sequence +
 assert state transitions across the 47-char corpus); state-readback (`t`/`q`) verification deferred.

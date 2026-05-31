@@ -27,7 +27,7 @@ Root cause fully diagnosed (see docs/ENGINE_RE_MAP_qoracle.md):
   in emit_resolve's registry-search with a POOL ARRAY index-loop (safe pattern)
   that finds the resource whose characterPxfContentMap(f17) contains the id,
   then resolves to its true fully-qualified id.
-- NEXT ACTION: implement that recipe in tools/fraymakers-harness/src/main.rs
+- NEXT ACTION: implement that recipe in tools/peptide/src/main.rs
   ~lines 808-833.
 
 ### Converter freeze fix — DONE (source-verified)

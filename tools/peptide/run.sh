@@ -33,14 +33,14 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # 1. Build our tools if needed (dev iteration lives here, in the repo).
-[ -x "$HERE/target/release/fray_patch" ] || cargo build --release --manifest-path "$HERE/Cargo.toml" >/dev/null 2>&1
+[ -x "$HERE/target/release/peptide" ] || cargo build --release --manifest-path "$HERE/Cargo.toml" >/dev/null 2>&1
 
 # 2. (Re)create the added files every run — never assume they survived a restart.
 printf '1420350' > "$APPID"
-"$HERE/target/release/fray_patch" "$BOOT" "$CONN" connect "$PORT" "$TOK" >/dev/null 2>&1
+"$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" >/dev/null 2>&1
 
 # 3. Start the loopback bridge and queue the command.
-( printf '%s\n' "$CMD"; sleep "$SECS" ) | "$HERE/target/release/frayremote" serve --port "$PORT" --token "$TOK" &
+( printf '%s\n' "$CMD"; sleep "$SECS" ) | "$HERE/target/release/peptide-bridge" serve --port "$PORT" --token "$TOK" &
 BR=$!
 sleep 0.7
 

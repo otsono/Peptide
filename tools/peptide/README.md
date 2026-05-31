@@ -17,12 +17,12 @@ proprietary software; its bytecode (`hlboot-sdl.dat`), any patched output
 
 ## How it works
 
-`fray_patch` parses the engine's HashLink bytecode (via the `hlbc` crate),
+`peptide` parses the engine's HashLink bytecode (via the `hlbc` crate),
 injects a small per-frame block into `fraymakers.Main.update`, and writes a
 patched `_conn.dat`. When run, the patched engine:
 
 1. waits for content load (the title screen's "press any button" state),
-2. dials a loopback TCP socket back to `frayremote` (auth handshake first), and
+2. dials a loopback TCP socket back to `peptide-bridge` (auth handshake first), and
 3. on receiving `s <char> <stage> <assist>`, builds a real `TrainingMode` and
    calls the engine's own offline match-start flow (gates transition + menu
    teardown), so the match renders exactly as it would from the menus.
@@ -33,11 +33,11 @@ characters vs. stages), or you can pass a full `namespace::package.id`.
 
 ## Bins
 
-- `fray_patch <in.dat> <out.dat> connect <port> <token>` — patch the bytecode.
+- `peptide <in.dat> <out.dat> connect <port> <token>` — patch the bytecode.
   Also has read-only inspection modes: `dis <findex>`, `typefields <type>`,
   `fnsof <type>`, `fninfo <findex>`, `callers <findex>`, `strgrep <s>`,
   `whoref <s>`, `inspect`.
-- `frayremote serve|send --port <p> --token <t> ["<cmd>"]` — loopback bridge.
+- `peptide-bridge serve|send --port <p> --token <t> ["<cmd>"]` — loopback bridge.
 
 ## Quick start
 
