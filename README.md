@@ -1,6 +1,67 @@
 # ssf2-to-fraymakers
 
-Converts Super Smash Flash 2 character data to [Fraymakers](https://www.fraymakersthegame.com/) mod format.
+**Turn a Super Smash Flash 2 character into a ready-to-open Fraymakers mod — automatically.**
+
+Point this tool at a single SSF2 `.ssf` file and it reverse-engineers the whole
+character and writes a complete, FrayTools-compatible
+[Fraymakers](https://www.fraymakersthegame.com/) character package — sprites,
+animations, collision boxes, costumes, sounds, projectiles, effects, menu
+portraits, and decompiled gameplay logic. No manual asset ripping, no rebuilding
+timelines by hand, no copy-pasting stat tables. One command in, a FrayTools
+project out.
+
+## What it does
+
+A single conversion pulls an entire SSF2 character across to Fraymakers, end to end:
+
+- **Sprites & animations** — extracts every animation frame to a PNG and rebuilds
+  the full animation timelines, with per-frame placement (position, rotation,
+  scale, flip) faithfully reproduced. Sheared frames Flash could draw but FrayTools
+  can't are pre-baked so they still look right.
+- **Collision data** — per-frame hitboxes, hurtboxes, and grab / ledge / reflect /
+  absorb / grab-hold boxes, plus an auto-fitted ECB body diamond — validated
+  sub-pixel against the SSF2 source.
+- **Gameplay logic** — a from-scratch ActionScript (AVM2/ABC) decompiler
+  reconstructs the character's frame scripts and behaviour into readable Haxe,
+  rewritten to the Fraymakers API.
+- **Stats & hitboxes** — movement physics and per-attack hitbox data land in
+  clean, data-driven `.hx` files.
+- **Costumes & palettes** — all ~15 SSF2 costumes per character become Fraymakers
+  palettes (with a k-means palette fallback when `misc.ssf` isn't available).
+- **Sounds** — character audio extracted to WAV (Nellymoser / MP3 / ADPCM via
+  `ffmpeg`).
+- **Projectiles & effects** — discovered automatically and emitted as their own
+  entities, wired back into the character's scripts.
+- **Menu & CSS portraits** — character-select head and HUD portrait variants.
+- **30 → 60 fps** — SSF2 runs at 30 fps, Fraymakers at 60; every timing value is
+  doubled in lockstep so playback speed is preserved exactly.
+- **Deterministic output** — every GUID is derived from the character id, so
+  re-running the converter is reproducible and diffs reflect real changes, not churn.
+- **Multi-character SSFs** — files that ship a pair (Zelda + Sheik, Bowser + Giga
+  Bowser, Wario + Wario Man) convert into a single shared FrayTools project.
+
+## What's in the repo
+
+- **`ssf2_converter`** — the core command-line converter (Rust). The one tool you
+  need to go from `.ssf` to a FrayTools package.
+- **Desktop apps** — a cross-platform GUI (`ssf2-converter-gui`) and a native macOS
+  SwiftUI app (`SSF2ConverterApp`): drag-and-drop a `.ssf`, watch a progress bar,
+  and get a summary of any unhandled calls — no terminal required.
+- **Editable conversion config** — JSONC mapping tables in `mappings/` drive API
+  translation, stat scaling, animation names, and hitbox-field mapping. Tune the
+  conversion by editing data, not recompiling code.
+- **Validation harnesses** (`tools/`) — automation that drives the user's own
+  FrayTools (box geometry + one-click publish) and the Fraymakers engine (load /
+  spawn / drive-a-move / read state) to prove a converted character actually works.
+  See [`TESTING.md`](TESTING.md).
+- **Diagnostic toolkit** — ~17 `dump_*` / `check_*` SWF- and format-inspection
+  binaries used to reverse-engineer and debug conversions.
+
+---
+
+# Developer guide
+
+Everything below is for building, running, and hacking on the converter.
 
 ## Requirements
 
@@ -169,6 +230,10 @@ Dependency attribution (the Ruffle `swf` crate and others) is collected in
 
 ## Notes
 
-- Original SSF2 character data © McLeodGaming — this tool is for mod development only.
+- Original SSF2 character data © McLeodGaming; Fraymakers / FrayTools © Fraymakers.
+  This tool is for personal mod development against assets you already own. Never
+  commit or publish their source, bytecode, or assets — see [`NOTICE.md`](NOTICE.md)
+  "Reverse-engineering & copyright boundary".
 - Test inputs (`*.ssf`, `misc.ssf`) are deliberately not in this repo (`.gitignore`
   excludes them). They live in a sibling `ssf2-ssfs/` directory.
+```
