@@ -992,6 +992,25 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
             if k + 1 < n {
                 ops.push(Opcode::Call1 { dst: r(58), fun: RefFun(getresid_fn), arg0: r(out) });
                 ops.push(Opcode::Call1 { dst: r(60), fun: RefFun(getpxf_fn), arg0: r(58) });
+                // LOAD-ON-DEMAND: getpxf null means the resource is in the pool (constructed
+                // by importManifest) but its media was skipped by the boot required-load
+                // filter (all public::). Load it synchronously — getResourceByID(resid,null)
+                // -> cast to Resource -> fetchThreaded (sync read+decode) -> finishLoading —
+                // then re-getpxf. r58 is the canonical pool key, so this matches whatever the
+                // resolver would look up. Already-loaded resources (e.g. the self-bootstrapped
+                // char) skip via the JNotNull guard; ids not in the pool skip via JNull.
+                let j_already = ops.len();
+                ops.push(Opcode::JNotNull { reg: r(60), offset: 0 });   // already loaded -> skip load
+                ops.push(Opcode::Call2 { dst: r(68), fun: RefFun(18287), arg0: r(58), arg1: r(38) }); // getResourceByID
+                let j_notpool = ops.len();
+                ops.push(Opcode::JNull { reg: r(68), offset: 0 });      // not in pool -> skip load
+                ops.push(Opcode::UnsafeCast { dst: r(71), src: r(68) }); // AbstractResource -> Resource
+                ops.push(Opcode::Call1 { dst: r(6), fun: RefFun(fetch_threaded), arg0: r(71) });
+                ops.push(Opcode::Call1 { dst: r(6), fun: RefFun(finish_loading), arg0: r(71) });
+                ops.push(Opcode::Call1 { dst: r(60), fun: RefFun(getpxf_fn), arg0: r(58) }); // re-fetch
+                let l_loaded = ops.len();
+                if let Opcode::JNotNull { offset, .. } = &mut ops[j_already] { *offset = l_loaded as i32 - j_already as i32 - 1; }
+                if let Opcode::JNull    { offset, .. } = &mut ops[j_notpool] { *offset = l_loaded as i32 - j_notpool as i32 - 1; }
                 let j_res_null = ops.len();
                 ops.push(Opcode::JNull { reg: r(60), offset: 0 });      // null resource -> next prefix
                 jump_to_next_prefix.push((j_res_null, k + 1));
@@ -1278,10 +1297,10 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     emit_resolve(&mut ops, 55, 26, char_cmap_field); // char ref
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(two_idx) });
     ops.push(Opcode::GetArray { dst: rr(55), array: rr(32), index: rr(39) });
-    emit_resolve(&mut ops, 55, 25, stage_cmap_field); // stage ref
+    emit_resolve(&mut ops, 55, 25, stage_cmap_field); // stage ref (loads on demand)
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(three_idx) });
     ops.push(Opcode::GetArray { dst: rr(55), array: rr(32), index: rr(39) });
-    emit_resolve(&mut ops, 55, 42, assist_cmap_field); // assist ref
+    emit_resolve(&mut ops, 55, 42, assist_cmap_field); // assist ref (loads on demand)
     let idx_s_jargsdone = ops.len();
     ops.push(Opcode::JAlways { offset: 0 });                            // -> L_AFTERREFS
     let idx_s_const = ops.len();
@@ -1834,10 +1853,11 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // READY write lands. `s` then dispatches into the match with no menu ever shown.
     let menu_ready_g = add_string_const(code, "READY\n");
     inject_ready_flag(code, 17746, g_ready, g_sock, out_field, write_str, flush, menu_ready_g, sock_t, out_t, str_t, enc_t, 17842)?;
-    // FAST BOOT (deeper): filter the boot required-resources load to skip public:: base
+    // FAST BOOT (deeper): filter the boot required-resources load to skip ALL public:: base
     // content (the ~10.6s of base-character renders we don't need for a 1-char training
     // match). Keeps global:: (hscript/vfx/vsmode) + private:: (common/fonts). The match's
-    // stage/assist load on demand at startMatch.
+    // stage/assist (also public::) are loaded on demand by the `s` handler from its args
+    // (getResourceByID + fetchThreaded), so this is generic — no hardcoded resource names.
     inject_required_filter(code)?;
     Ok(())
 }
@@ -1863,38 +1883,25 @@ fn inject_required_filter(code: &mut Bytecode) -> anyhow::Result<()> {
             .ok_or_else(|| anyhow::anyhow!("indexOf startIndex arg type missing"))?
     };
     let pub_g = add_string_const(code, "public::");
-    // Allow-list substrings: a public:: resource is KEPT if its fqid contains one of these
-    // (the match's stage/assist). Everything else public:: (base-character renders — the
-    // bulk) is skipped. NOTE: hardcoded to the harness's current stage/assist; generalize
-    // to the `s` args when scaling. The match's char is private:: (kept by the != public::
-    // test) and loaded on demand anyway.
-    let the_g = add_string_const(code, "thespire");
-    let cva_g = add_string_const(code, "commandervideoassist");
     let zero_c = add_int(code, 0);
     let qfi = function_index_by_findex(code, 18234)
         .ok_or_else(|| anyhow::anyhow!("queueRequiredResources@18234 not found"))?;
     // scratch regs: r_str(String), r_null(startidx_t), r_idx(Int), r_zero(Int)
     let base = add_regs(&mut code.functions[qfi], &[13, startidx_t, 3, 3]);
     let (r_str, r_null, r_idx, r_zero) = (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3));
-    // KEEP if: NOT public:: (fall through), OR fqid contains "thespire"/"commandervideoassist".
-    // Else SKIP -> loop-tail. KEEP is the fall-through (original op22, now op35); the 3
-    // conditional jumps target it (offsets 7/4/1); the final JAlways targets the loop-tail.
+    // SKIP if the fqid starts with "public::" (jump to loop-tail). The match's stage/assist
+    // are ALSO public:: but the `s` handler loads them on demand (getResourceByID +
+    // fetchThreaded), so we can skip the entire public:: namespace generically here — no
+    // hardcoded resource names. The char is private:: (loaded by the self-bootstrap).
     let filt = vec![
-        Opcode::Call1 { dst: Reg(13), fun: RefFun(getfqid), arg0: Reg(9) },                          // 22: fqid
+        Opcode::Call1 { dst: Reg(13), fun: RefFun(getfqid), arg0: Reg(9) },                          // 22: fqid (reg9 = loop resource)
         Opcode::GetGlobal { dst: r_str, global: RefGlobal(pub_g) },                                   // 23
         Opcode::Null { dst: r_null },                                                                 // 24
         Opcode::Call3 { dst: r_idx, fun: RefFun(indexof), arg0: Reg(13), arg1: r_str, arg2: r_null }, // 25
         Opcode::Int { dst: r_zero, ptr: RefInt(zero_c) },                                             // 26
-        Opcode::JNotEq { a: r_idx, b: r_zero, offset: 7 },                                            // 27: not public:: -> KEEP(35)
-        Opcode::GetGlobal { dst: r_str, global: RefGlobal(the_g) },                                   // 28
-        Opcode::Call3 { dst: r_idx, fun: RefFun(indexof), arg0: Reg(13), arg1: r_str, arg2: r_null }, // 29
-        Opcode::JSGte { a: r_idx, b: r_zero, offset: 4 },                                             // 30: contains thespire -> KEEP(35)
-        Opcode::GetGlobal { dst: r_str, global: RefGlobal(cva_g) },                                   // 31
-        Opcode::Call3 { dst: r_idx, fun: RefFun(indexof), arg0: Reg(13), arg1: r_str, arg2: r_null }, // 32
-        Opcode::JSGte { a: r_idx, b: r_zero, offset: 1 },                                             // 33: contains cva -> KEEP(35)
-        Opcode::JAlways { offset: 99 },                                                               // 34: public:: non-match -> loop-tail(134)
+        Opcode::JEq { a: r_idx, b: r_zero, offset: 99 },                                              // 27: indexOf==0 (starts public::) -> loop-tail(127)
     ];
-    let n = filt.len() as i32; // 13
+    let n = filt.len() as i32; // 6
     let f = &mut code.functions[qfi];
     // Assert + adjust the three jumps that span the insertion point (op22).
     match &mut f.ops[6]   { Opcode::JSGte  { offset, .. } => *offset += n, o => anyhow::bail!("qrr op6 not JSGte: {o:?}") }
