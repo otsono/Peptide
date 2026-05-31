@@ -72,7 +72,7 @@ fn find_next_pushed_string(abc: &abc_parser::AbcFile, body: &abc_parser::MethodB
 
 fn main() {
     let ssfs_dir = env::args().nth(1).unwrap_or_else(||
-        "/Users/jimmy/.openclaw/workspace-main/ssf2-ssfs".to_string());
+        "../ssf2-ssfs".to_string());
 
     let mut files: Vec<_> = std::fs::read_dir(&ssfs_dir).unwrap()
         .filter_map(|e| e.ok())

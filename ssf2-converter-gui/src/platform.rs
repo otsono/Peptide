@@ -246,10 +246,10 @@ mod tests {
         // The exact case verified end-to-end on macOS: project at
         // /tmp/mario_ft/mario publishing into the Steam Fraymakers custom dir.
         let base = Path::new("/tmp/mario_ft/mario");
-        let target = Path::new("/Users/jimmy/Library/Application Support/Steam/steamapps/common/Fraymakers/custom/mario");
+        let target = Path::new("/Users/example/Library/Application Support/Steam/steamapps/common/Fraymakers/custom/mario");
         assert_eq!(
             relative_path(base, target),
-            "../../../Users/jimmy/Library/Application Support/Steam/steamapps/common/Fraymakers/custom/mario"
+            "../../../Users/example/Library/Application Support/Steam/steamapps/common/Fraymakers/custom/mario"
         );
     }
 

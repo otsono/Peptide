@@ -8,7 +8,7 @@ use std::io::Cursor;
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(||
-        "/Users/jimmy/.openclaw/workspace-main/ssf2-ssfs/sandbag.ssf".to_string());
+        "../ssf2-ssfs/sandbag.ssf".to_string());
     let data = std::fs::read(&path).expect("read");
     let buf = swf::decompress_swf(Cursor::new(&data)).expect("decompress");
     let swf = swf::parse_swf(&buf).expect("parse");

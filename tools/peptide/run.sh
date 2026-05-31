@@ -13,7 +13,7 @@
 #   FRAY_DIR env overrides the Fraymakers install path.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-FRAY_DIR="${FRAY_DIR:-/Users/jimmy/Library/Application Support/Steam/steamapps/common/Fraymakers}"
+FRAY_DIR="${FRAY_DIR:-$HOME/Library/Application Support/Steam/steamapps/common/Fraymakers}"
 CMD="${1:-s commandervideo thespire commandervideoassist}"
 SECS="${2:-20}"
 PORT="${FRAY_PORT:-$(( (RANDOM % 2000) + 18000 ))}"

@@ -16,7 +16,7 @@
 #      filtered-required-load boot reaches READY in ~4.5s, so this is slack.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-FRAY_DIR="${FRAY_DIR:-/Users/jimmy/Library/Application Support/Steam/steamapps/common/Fraymakers}"
+FRAY_DIR="${FRAY_DIR:-$HOME/Library/Application Support/Steam/steamapps/common/Fraymakers}"
 GAP="${1:?gap_s}"; shift
 # Fast-boot defaults: skip-title + filtered required-load reaches READY in ~4.5s, so the
 # old 45s budget + 6s tail were mostly idle waiting. Override via env if a run needs more.

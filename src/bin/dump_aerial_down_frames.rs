@@ -4,7 +4,7 @@ use std::path::Path;
 fn main() {
     env_logger::init();
     
-    let raw = std::fs::read("/Users/jimmy/.openclaw/workspace-main/ssf2-ssfs/sandbag.ssf").unwrap();
+    let raw = std::fs::read("../ssf2-ssfs/sandbag.ssf").unwrap();
     let swf_data = ssf2_converter::ssf::decompress(&raw).unwrap();
     let swf = swf_parser::parse(&swf_data).unwrap();
     let char_data = extractor::extract(&swf, "sandbag").unwrap();

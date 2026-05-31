@@ -14,7 +14,7 @@
 #   Assumes the .fra under test is already installed at custom/sandbag/.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-FRAY_DIR="${FRAY_DIR:-/Users/jimmy/Library/Application Support/Steam/steamapps/common/Fraymakers}"
+FRAY_DIR="${FRAY_DIR:-$HOME/Library/Application Support/Steam/steamapps/common/Fraymakers}"
 LABEL="${1:-run}"
 OUT="/tmp/claude-501/ft_${LABEL}"
 mkdir -p "$OUT"

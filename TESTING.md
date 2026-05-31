@@ -41,7 +41,7 @@ $EDITOR src/<...>.rs
 
 # 2. Rebuild + regenerate the target character
 cargo build --release
-./target/release/ssf2_converter ~/.openclaw/workspace-main/ssf2-ssfs/<id>.ssf
+./target/release/ssf2_converter ../ssf2-ssfs/<id>.ssf
 #    → ./characters/<id>/   (⚠ verify it is FRESH — see §6 stale-output trap)
 
 # 3. Publish via the FrayTools harness → .fra lands in Fraymakers' custom/<id>/
@@ -100,7 +100,7 @@ kill FrayTools and let the script cold-launch a fresh instance.
 
 ```
 cargo run --release --bin compare_boxes -- \
-  --ssf2 ~/.openclaw/workspace-main/ssf2-ssfs/<id>.ssf \
+  --ssf2 ../ssf2-ssfs/<id>.ssf \
   --char <id> --json /tmp/box.json [--tolerance 2.0]
 ```
 
@@ -290,7 +290,7 @@ node tools/fraytools-harness/harness.js \
   --entity entities/Sandbag.entity --animation <anim> --frame <n> \
   --out-json /tmp/box.json --port 9222
 cargo run --release --bin compare_boxes -- \
-  --ssf2 ~/.openclaw/workspace-main/ssf2-ssfs/sandbag.ssf \
+  --ssf2 ../ssf2-ssfs/sandbag.ssf \
   --char sandbag --json /tmp/box.json --tolerance 2.0
 ```
 

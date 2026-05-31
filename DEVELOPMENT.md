@@ -143,10 +143,14 @@ ssf2-fraymakers-converter/
 (`.gitignore` excludes `*.ssf`). They sit in a **sibling directory**:
 
 ```
-~/.openclaw/workspace-main/
+<workspace>/
 ├── ssf2-fraymakers-converter/   ← this repo
 └── ssf2-ssfs/                   ← 47 SSF2 character .ssf files + misc.ssf
 ```
+
+So from the repo root the inputs are reachable as `../ssf2-ssfs` — the relative
+path the CLI examples, `rebuild-sandbag.sh`, and the `src/bin/` diagnostic
+defaults all use.
 
 `ssf2-ssfs/` contains the full SSF2 roster (`mario.ssf`, `fox.ssf`, `link.ssf`,
 `bowser.ssf`, …) plus **`misc.ssf`** (the shared file that holds costume palette
@@ -227,10 +231,9 @@ re-converts `sandbag.ssf`, then prints a sprite count.
 ./rebuild-sandbag.sh
 ```
 
-> ⚠️ **Hardcoded path.** The script has an absolute path baked in:
-> `/Users/jimmy/.openclaw/workspace-main/ssf2-ssfs/sandbag.ssf`. If the repo
-> moves, edit that line. `sandbag` is the standard smoke-test character
-> (small, simple) — keep using it for fast iteration.
+> **Input path.** The script reads `../ssf2-ssfs/sandbag.ssf` (relative to the
+> repo root), so run it from the repo root. `sandbag` is the standard smoke-test
+> character (small, simple) — keep using it for fast iteration.
 
 ### 3.5 The desktop GUI app
 

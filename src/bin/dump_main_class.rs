@@ -7,7 +7,7 @@ use std::env;
 
 fn main() {
     let path = env::args().nth(1).unwrap_or_else(|| {
-        "/Users/jimmy/.openclaw/workspace-main/ssf2-ssfs/zelda.ssf".to_string()
+        "../ssf2-ssfs/zelda.ssf".to_string()
     });
     let bytes = std::fs::read(&path).expect("read");
     let swf_bytes = ssf::decompress(&bytes).expect("decompress");

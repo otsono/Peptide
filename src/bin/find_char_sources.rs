@@ -42,7 +42,7 @@ fn encode_u30(mut v: u32) -> Vec<u8> {
 
 fn main() {
     let ssfs_dir = env::args().nth(1).unwrap_or_else(|| {
-        "/Users/jimmy/.openclaw/workspace-main/ssf2-ssfs".to_string()
+        "../ssf2-ssfs".to_string()
     });
     let only_ssf = env::args().nth(2); // optional: limit to one file
 

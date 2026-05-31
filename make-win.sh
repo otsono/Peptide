@@ -21,6 +21,19 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 OUT="$REPO/dist/windows"
 cd "$REPO"
 
+# cargo-xwin shells out to `lld-link` (from Homebrew's `lld` package) and needs
+# rustup's `cargo`. A non-login shell may not have these on PATH, so prepend the
+# common locations when they exist (portable across the brew prefix on Apple
+# Silicon / Intel / Linux).
+if command -v brew >/dev/null 2>&1; then
+    BREW_PREFIX="$(brew --prefix 2>/dev/null || true)"
+    for d in "$BREW_PREFIX/opt/lld/bin" "$BREW_PREFIX/opt/llvm/bin"; do
+        [ -d "$d" ] && PATH="$d:$PATH"
+    done
+fi
+[ -d "$HOME/.cargo/bin" ] && PATH="$HOME/.cargo/bin:$PATH"
+export PATH
+
 have() { command -v "$1" >/dev/null 2>&1; }
 
 build_msvc() {

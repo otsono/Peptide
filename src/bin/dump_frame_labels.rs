@@ -2,7 +2,7 @@ use std::io::Cursor;
 use std::collections::BTreeMap;
 
 fn main() {
-    let ssf_data = std::fs::read("/Users/jimmy/.openclaw/workspace-main/ssf2-ssfs/sandbag.ssf").unwrap();
+    let ssf_data = std::fs::read("../ssf2-ssfs/sandbag.ssf").unwrap();
     let swf_buf = swf::decompress_swf(Cursor::new(&ssf_data)).unwrap();
     let swf = swf::parse_swf(&swf_buf).unwrap();
 

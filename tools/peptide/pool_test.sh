@@ -5,7 +5,7 @@
 # Run: ./pool_test.sh [label]
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-FRAY_DIR="${FRAY_DIR:-/Users/jimmy/Library/Application Support/Steam/steamapps/common/Fraymakers}"
+FRAY_DIR="${FRAY_DIR:-$HOME/Library/Application Support/Steam/steamapps/common/Fraymakers}"
 LABEL="${1:-test}"; OUT="/tmp/pool_test_${LABEL}"; mkdir -p "$OUT"; rm -f "$OUT"/*
 PORT="$(( (RANDOM % 2000) + 19000 ))"; TOK="fray-$RANDOM$RANDOM"
 BOOT="$FRAY_DIR/hlboot-sdl.dat"; CONN="$FRAY_DIR/_conn.dat"; APPID="$FRAY_DIR/steam_appid.txt"
