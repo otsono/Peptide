@@ -1362,104 +1362,6 @@ fn connect_edit(
     let idx_jslt = ops.len();
     ops.push(Opcode::JSLt { a: r_c, b: r_zero, offset: 0 });            // no data (c<0) -> L_ORIG
     let _ = write_byte;
-    // ---- 'e' (eval): parse + execute an hscript string, write "E:<result>\n". SPIKE:
-    // a hardcoded script ("1 + 2") proves the in-engine hscript pipeline end-to-end;
-    // the socket-driven arbitrary-script form follows once this is green. This single
-    // hook is the foundation that replaces the per-command bytecode handlers. ----
-    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(e_idx) });
-    let idx_jne_e = ops.len();
-    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });          // not 'e' -> L_AFTER_E ('x' check)
-    let _ = eval_script_g;
-    // ---- read the rest of the line ("e <script…>") into g_buf, then getString -> rr14 ----
-    // (mirrors the proven `s`-handler drain: accumulate bytes until '\n' or EOF.)
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_blen), src: rr(39) });
-    let idx_e_drain = ops.len();
-    ops.push(Opcode::Call1 { dst: r_c, fun: RefFun(recv_char), arg0: r_handle });
-    ops.push(Opcode::Int { dst: r_zero, ptr: RefInt(zero_idx) });
-    let idx_e_jslt = ops.len();
-    ops.push(Opcode::JSLt { a: r_c, b: r_zero, offset: 0 });            // no more data -> getString
-    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(nl_idx) });
-    let idx_e_jeq = ops.len();
-    ops.push(Opcode::JEq { a: r_c, b: rr(16), offset: 0 });             // '\n' -> getString
-    ops.push(Opcode::GetGlobal { dst: rr(51), global: RefGlobal(g_buf) });
-    ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_blen) });
-    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(bytes_set), arg0: rr(51), arg1: rr(39), arg2: r_c });
-    ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_blen) });
-    ops.push(Opcode::Incr { dst: rr(39) });
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_blen), src: rr(39) });
-    let idx_e_jback = ops.len();
-    ops.push(Opcode::JAlways { offset: 0 });                            // -> drain
-    let idx_e_getstr = ops.len();
-    ops.push(Opcode::GetGlobal { dst: rr(51), global: RefGlobal(g_buf) });
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
-    ops.push(Opcode::GetGlobal { dst: rr(16), global: RefGlobal(g_blen) });
-    ops.push(Opcode::Null { dst: rr(15) });
-    ops.push(Opcode::Call4 { dst: rr(14), fun: RefFun(bytes_getstring), arg0: rr(51), arg1: rr(39), arg2: rr(16), arg3: rr(15) });
-    if let Opcode::JSLt { offset, .. } = &mut ops[idx_e_jslt] { *offset = idx_e_getstr as i32 - idx_e_jslt as i32 - 1; }
-    if let Opcode::JEq  { offset, .. } = &mut ops[idx_e_jeq]  { *offset = idx_e_getstr as i32 - idx_e_jeq as i32 - 1; }
-    if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_jback] { *offset = idx_e_drain as i32 - idx_e_jback as i32 - 1; }
-    // parser = new hscript.Parser(); parser.__constructor__()
-    ops.push(Opcode::New { dst: e_parser });
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_parser_ctor), arg0: e_parser });
-    // expr = parser.parseString(scriptLine, null)
-    ops.push(Opcode::Null { dst: rr(15) });
-    ops.push(Opcode::Call3 { dst: e_expr, fun: RefFun(hs_parse), arg0: e_parser, arg1: rr(14), arg2: rr(15) });
-    // ---- get-or-create the PERSISTENT top-scope interp, loaded with the engine's global
-    // API via applyInterpreterGlobals (CState/HitboxStats/events/… — exactly how Main::init
-    // readies every script). Created once, reused for every eval; this is the single
-    // engine-linked interp all commands eventually move into as one hscript file. ----
-    let _ = (hs_execute, eval_cs_g);
-    ops.push(Opcode::GetGlobal { dst: e_interp, global: RefGlobal(g_interp) });
-    let idx_e_haveinterp = ops.len();
-    ops.push(Opcode::JNotNull { reg: e_interp, offset: 0 });            // already built -> reuse
-    ops.push(Opcode::New { dst: e_interp });
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_interp_ctor), arg0: e_interp });
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_apply_globals), arg0: e_interp }); // load engine API
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_interp), src: e_interp });
-    let idx_e_interp_ready = ops.len();
-    if let Opcode::JNotNull { offset, .. } = &mut ops[idx_e_haveinterp] { *offset = idx_e_interp_ready as i32 - idx_e_haveinterp as i32 - 1; }
-    // ---- bind p0 = MatchController.currentMatch.characters[0] (as Dynamic; null if no match) ----
-    // so scripts can reach the live character: `p0.toState(...)`, `p0.body.x`, etc.
-    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
-    ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });   // currentMatch
-    let idx_e_p0null = ops.len();
-    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                                // no match -> p0 = null
-    ops.push(Opcode::Field { dst: rr(33), obj: rr(44), field: RefField(characters_field) }); // ArrayObj
-    let idx_e_chnull = ops.len();
-    ops.push(Opcode::JNull { reg: rr(33), offset: 0 });
-    ops.push(Opcode::Field { dst: rr(32), obj: rr(33), field: RefField(1) });          // .array (native)
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
-    ops.push(Opcode::GetArray { dst: rr(28), array: rr(32), index: rr(39) });          // characters[0] -> Dynamic
-    let idx_e_p0done = ops.len();
-    ops.push(Opcode::JAlways { offset: 0 });                                           // -> setVar
-    let idx_e_bindnull = ops.len();
-    ops.push(Opcode::Null { dst: rr(28) });
-    let idx_e_setp0 = ops.len();
-    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_p0_g) });
-    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
-    if let Opcode::JNull { offset, .. } = &mut ops[idx_e_p0null] { *offset = idx_e_bindnull as i32 - idx_e_p0null as i32 - 1; }
-    if let Opcode::JNull { offset, .. } = &mut ops[idx_e_chnull] { *offset = idx_e_bindnull as i32 - idx_e_chnull as i32 - 1; }
-    if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_p0done] { *offset = idx_e_setp0 as i32 - idx_e_p0done as i32 - 1; }
-    // result = ApiScript.interpretScript(expr, interp) — the engine's own run-a-program:
-    // resets depth/declared, runs exprReturn, and TRAPS parse/runtime errors (returns null
-    // instead of crashing the frame). This is what makes the interp "ready to accept commands".
-    ops.push(Opcode::Call2 { dst: e_result, fun: RefFun(hs_interp_script), arg0: e_expr, arg1: e_interp });
-    // out = "E:" + Std.string(result) + "\n"
-    ops.push(Opcode::Call1 { dst: rr(53), fun: RefFun(std_string), arg0: e_result });
-    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_prefix_g) });
-    ops.push(Opcode::Call2 { dst: rr(53), fun: RefFun(str_add), arg0: rr(14), arg1: rr(53) });
-    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_nl_g) });
-    ops.push(Opcode::Call2 { dst: rr(53), fun: RefFun(str_add), arg0: rr(53), arg1: rr(14) });
-    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
-    ops.push(Opcode::Null { dst: rr(15) });
-    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(53), arg2: rr(15) });
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
-    let idx_e_jdone = ops.len();
-    ops.push(Opcode::JAlways { offset: 0 });                            // -> L_ORIG (patched in the n-block)
-    // not-'e' jumps to the next op (the 'x' check pushed right below)
-    let idx_after_e = ops.len();
-    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_e] { *offset = idx_after_e as i32 - idx_jne_e as i32 - 1; }
     // dispatch: 'x' -> clean engine exit (no kill -9 wedge); 'p' -> PONG ; 'c' -> ...
     ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(x_idx) });
     ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 1 });          // not 'x' -> skip exit (fall to 'p')
@@ -2484,6 +2386,105 @@ fn connect_edit(
     }
     // (g handler falls through to L_ORIG)
 
+    // ---- 'e' (eval) APPENDED at the end of the dispatch chain (after 'g'), so the
+    // proven x->p->c->s->...->g chain is byte-identical to baseline. 'e' no-match -> L_ORIG. ----
+    let idx_e_check = ops.len();
+    // ---- 'e' (eval): parse + execute an hscript string, write "E:<result>\n". SPIKE:
+    // a hardcoded script ("1 + 2") proves the in-engine hscript pipeline end-to-end;
+    // the socket-driven arbitrary-script form follows once this is green. This single
+    // hook is the foundation that replaces the per-command bytecode handlers. ----
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(e_idx) });
+    let idx_jne_e = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });          // not 'e' -> L_AFTER_E ('x' check)
+    let _ = eval_script_g;
+    // ---- read the rest of the line ("e <script…>") into g_buf, then getString -> rr14 ----
+    // (mirrors the proven `s`-handler drain: accumulate bytes until '\n' or EOF.)
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_blen), src: rr(39) });
+    let idx_e_drain = ops.len();
+    ops.push(Opcode::Call1 { dst: r_c, fun: RefFun(recv_char), arg0: r_handle });
+    ops.push(Opcode::Int { dst: r_zero, ptr: RefInt(zero_idx) });
+    let idx_e_jslt = ops.len();
+    ops.push(Opcode::JSLt { a: r_c, b: r_zero, offset: 0 });            // no more data -> getString
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(nl_idx) });
+    let idx_e_jeq = ops.len();
+    ops.push(Opcode::JEq { a: r_c, b: rr(16), offset: 0 });             // '\n' -> getString
+    ops.push(Opcode::GetGlobal { dst: rr(51), global: RefGlobal(g_buf) });
+    ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_blen) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(bytes_set), arg0: rr(51), arg1: rr(39), arg2: r_c });
+    ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_blen) });
+    ops.push(Opcode::Incr { dst: rr(39) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_blen), src: rr(39) });
+    let idx_e_jback = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                            // -> drain
+    let idx_e_getstr = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(51), global: RefGlobal(g_buf) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::GetGlobal { dst: rr(16), global: RefGlobal(g_blen) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call4 { dst: rr(14), fun: RefFun(bytes_getstring), arg0: rr(51), arg1: rr(39), arg2: rr(16), arg3: rr(15) });
+    if let Opcode::JSLt { offset, .. } = &mut ops[idx_e_jslt] { *offset = idx_e_getstr as i32 - idx_e_jslt as i32 - 1; }
+    if let Opcode::JEq  { offset, .. } = &mut ops[idx_e_jeq]  { *offset = idx_e_getstr as i32 - idx_e_jeq as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_jback] { *offset = idx_e_drain as i32 - idx_e_jback as i32 - 1; }
+    // parser = new hscript.Parser(); parser.__constructor__()
+    ops.push(Opcode::New { dst: e_parser });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_parser_ctor), arg0: e_parser });
+    // expr = parser.parseString(scriptLine, null)
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: e_expr, fun: RefFun(hs_parse), arg0: e_parser, arg1: rr(14), arg2: rr(15) });
+    // ---- get-or-create the PERSISTENT top-scope interp, loaded with the engine's global
+    // API via applyInterpreterGlobals (CState/HitboxStats/events/… — exactly how Main::init
+    // readies every script). Created once, reused for every eval; this is the single
+    // engine-linked interp all commands eventually move into as one hscript file. ----
+    let _ = (hs_execute, eval_cs_g);
+    ops.push(Opcode::GetGlobal { dst: e_interp, global: RefGlobal(g_interp) });
+    let idx_e_haveinterp = ops.len();
+    ops.push(Opcode::JNotNull { reg: e_interp, offset: 0 });            // already built -> reuse
+    ops.push(Opcode::New { dst: e_interp });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_interp_ctor), arg0: e_interp });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_apply_globals), arg0: e_interp }); // load engine API
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_interp), src: e_interp });
+    let idx_e_interp_ready = ops.len();
+    if let Opcode::JNotNull { offset, .. } = &mut ops[idx_e_haveinterp] { *offset = idx_e_interp_ready as i32 - idx_e_haveinterp as i32 - 1; }
+    // ---- bind p0 = MatchController.currentMatch.characters[0] (as Dynamic; null if no match) ----
+    // so scripts can reach the live character: `p0.toState(...)`, `p0.body.x`, etc.
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });   // currentMatch
+    let idx_e_p0null = ops.len();
+    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                                // no match -> p0 = null
+    ops.push(Opcode::Field { dst: rr(33), obj: rr(44), field: RefField(characters_field) }); // ArrayObj
+    let idx_e_chnull = ops.len();
+    ops.push(Opcode::JNull { reg: rr(33), offset: 0 });
+    ops.push(Opcode::Field { dst: rr(32), obj: rr(33), field: RefField(1) });          // .array (native)
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::GetArray { dst: rr(28), array: rr(32), index: rr(39) });          // characters[0] -> Dynamic
+    let idx_e_p0done = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                                           // -> setVar
+    let idx_e_bindnull = ops.len();
+    ops.push(Opcode::Null { dst: rr(28) });
+    let idx_e_setp0 = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_p0_g) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_e_p0null] { *offset = idx_e_bindnull as i32 - idx_e_p0null as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_e_chnull] { *offset = idx_e_bindnull as i32 - idx_e_chnull as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_p0done] { *offset = idx_e_setp0 as i32 - idx_e_p0done as i32 - 1; }
+    // result = ApiScript.interpretScript(expr, interp) — the engine's own run-a-program:
+    // resets depth/declared, runs exprReturn, and TRAPS parse/runtime errors (returns null
+    // instead of crashing the frame). This is what makes the interp "ready to accept commands".
+    ops.push(Opcode::Call2 { dst: e_result, fun: RefFun(hs_interp_script), arg0: e_expr, arg1: e_interp });
+    // out = "E:" + Std.string(result) + "\n"
+    ops.push(Opcode::Call1 { dst: rr(53), fun: RefFun(std_string), arg0: e_result });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_prefix_g) });
+    ops.push(Opcode::Call2 { dst: rr(53), fun: RefFun(str_add), arg0: rr(14), arg1: rr(53) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_nl_g) });
+    ops.push(Opcode::Call2 { dst: rr(53), fun: RefFun(str_add), arg0: rr(53), arg1: rr(14) });
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(53), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_e_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                            // -> L_ORIG (patched in the n-block)
+
     // L_ORIG = first original op after the prepended block (index n).
     let n = ops.len() as i32;
     if let Opcode::JTrue { offset, .. } = &mut ops[1] { *offset = idx_recv as i32 - 2; }
@@ -2543,7 +2544,8 @@ fn connect_edit(
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_a] { *offset = idx_f_check as i32 - idx_jne_a as i32 - 1; }
     // 'f' (frame-step) -> 'g' (resume) -> L_ORIG. Self-contained Asm blocks.
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_f] { *offset = idx_g_check as i32 - idx_jne_f as i32 - 1; }
-    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_g] { *offset = n - idx_jne_g as i32 - 1; }
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_g] { *offset = idx_e_check as i32 - idx_jne_g as i32 - 1; } // g no-match -> 'e' check
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_e] { *offset = n - idx_jne_e as i32 - 1; } // 'e' no-match -> L_ORIG
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnomatch] { *offset = idx_t_nomatch as i32 - idx_t_jnomatch as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnochars] { *offset = idx_t_nomatch as i32 - idx_t_jnochars as i32 - 1; }
     if let Opcode::JSLte { offset, .. } = &mut ops[idx_t_jempty] { *offset = idx_t_nomatch as i32 - idx_t_jempty as i32 - 1; }
