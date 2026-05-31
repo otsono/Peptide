@@ -919,6 +919,11 @@ fn connect_edit(
     let hs_apply_globals = find_fn(code, "applyInterpreterGlobals", Some("fraymakers.api.$FraymakersScriptGlobals")).unwrap_or(18218);
     let hs_interp_script = find_fn(code, "interpretScript", Some("pxf.api.$ApiScript")).unwrap_or(2202);
     let eval_p0_g = add_string_const(code, "p0");  // bound to player-0 Character before each eval
+    let eval_match_g = add_string_const(code, "match"); // bound to MatchController.currentMatch each eval
+    let eval_chars_g = add_string_const(code, "characters"); // bound to the live character ArrayObj each eval
+    // The command implementations, in hscript (ported from bytecode). Loaded ONCE into
+    // the interp after applyInterpreterGlobals; every friendly command calls into these.
+    let prelude_g = add_string_const(code, include_str!("../prelude.hsx"));
     let eval_cs_g = add_string_const(code, "CS");  // bound to the CState statics (move-id source)
     let hs_parser_t = require_type(code, "hscript.Parser")?;
     let hs_interp_t = require_type(code, "hscript.Interp")?;
@@ -2426,12 +2431,9 @@ fn connect_edit(
     if let Opcode::JSLt { offset, .. } = &mut ops[idx_e_jslt] { *offset = idx_e_getstr as i32 - idx_e_jslt as i32 - 1; }
     if let Opcode::JEq  { offset, .. } = &mut ops[idx_e_jeq]  { *offset = idx_e_getstr as i32 - idx_e_jeq as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_jback] { *offset = idx_e_drain as i32 - idx_e_jback as i32 - 1; }
-    // parser = new hscript.Parser(); parser.__constructor__()
-    ops.push(Opcode::New { dst: e_parser });
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_parser_ctor), arg0: e_parser });
-    // expr = parser.parseString(scriptLine, null)
-    ops.push(Opcode::Null { dst: rr(15) });
-    ops.push(Opcode::Call3 { dst: e_expr, fun: RefFun(hs_parse), arg0: e_parser, arg1: rr(14), arg2: rr(15) });
+    // Save the command line: rr14 is reused by the prelude load + p0/characters bindings
+    // below, so we parse the command AFTER the interp is ready, from this saved copy.
+    ops.push(Opcode::Mov { dst: rr(55), src: rr(14) });
     // ---- get-or-create the PERSISTENT top-scope interp, loaded with the engine's global
     // API via applyInterpreterGlobals (CState/HitboxStats/events/… — exactly how Main::init
     // readies every script). Created once, reused for every eval; this is the single
@@ -2444,15 +2446,31 @@ fn connect_edit(
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_interp_ctor), arg0: e_interp });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_apply_globals), arg0: e_interp }); // load engine API
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_interp), src: e_interp });
+    // load the hscript prelude (the ported command implementations) into the interp, once.
+    ops.push(Opcode::New { dst: e_parser });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_parser_ctor), arg0: e_parser });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(prelude_g) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: e_expr, fun: RefFun(hs_parse), arg0: e_parser, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call2 { dst: e_result, fun: RefFun(hs_interp_script), arg0: e_expr, arg1: e_interp });
     let idx_e_interp_ready = ops.len();
     if let Opcode::JNotNull { offset, .. } = &mut ops[idx_e_haveinterp] { *offset = idx_e_interp_ready as i32 - idx_e_haveinterp as i32 - 1; }
     // ---- bind p0 = MatchController.currentMatch.characters[0] (as Dynamic; null if no match) ----
     // so scripts can reach the live character: `p0.toState(...)`, `p0.body.x`, etc.
     ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
     ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });   // currentMatch
+    // NOTE: `match` is an hscript facade defined in the prelude (pxf.core.Match has no
+    // RTTI so its fields/methods don't reflect); we bind the reliable `characters` array
+    // below and the facade reads it. eval_match_g kept for reference.
+    let _ = eval_match_g;
     let idx_e_p0null = ops.len();
     ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                                // no match -> p0 = null
     ops.push(Opcode::Field { dst: rr(33), obj: rr(44), field: RefField(characters_field) }); // ArrayObj
+    // bind `characters` = the live character ArrayObj (reliable: field-index nav, hscript
+    // handles Array natively — characters[0], characters.length, characters[0].getStateName()).
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(33) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_chars_g) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
     let idx_e_chnull = ops.len();
     ops.push(Opcode::JNull { reg: rr(33), offset: 0 });
     ops.push(Opcode::Field { dst: rr(32), obj: rr(33), field: RefField(1) });          // .array (native)
@@ -2468,6 +2486,11 @@ fn connect_edit(
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_p0null] { *offset = idx_e_bindnull as i32 - idx_e_p0null as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_chnull] { *offset = idx_e_bindnull as i32 - idx_e_chnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_p0done] { *offset = idx_e_setp0 as i32 - idx_e_p0done as i32 - 1; }
+    // parse the command line (saved in rr55) now that the interp + prelude + bindings are ready
+    ops.push(Opcode::New { dst: e_parser });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_parser_ctor), arg0: e_parser });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: e_expr, fun: RefFun(hs_parse), arg0: e_parser, arg1: rr(55), arg2: rr(15) });
     // result = ApiScript.interpretScript(expr, interp) — the engine's own run-a-program:
     // resets depth/declared, runs exprReturn, and TRAPS parse/runtime errors (returns null
     // instead of crashing the frame). This is what makes the interp "ready to accept commands".

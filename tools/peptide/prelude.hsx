@@ -1,0 +1,58 @@
+// Peptide command implementations — ported from hand-emitted HashLink bytecode
+// into hscript. Loaded ONCE into the engine-scoped interpreter (after
+// applyInterpreterGlobals) by the `e`/eval hook; every friendly command the bridge
+// sends is just a call into one of these.
+//
+// Scope bound PER-EVAL by the eval hook (so these read the live state at call time):
+//   p0         = player-0 Character (FraymakersCharacter)
+//   characters = the live character ArrayObj for the current match
+//   CState     = the state-id enum (CState.JAB, CState.STAND, ...) via applyInterpreterGlobals
+//
+// Each function returns the exact wire string the old bytecode handler wrote, so the
+// bridge's reply glosses keep working unchanged (T:/P:/A:/M:OK/PLAY).
+
+state = function() {
+  return "T:" + p0.getStateName();
+};
+
+physics = function() {
+  return "P: x=" + p0.body.x + " y=" + p0.body.y
+       + " vx=" + p0.physics.currentVelocityX + " vy=" + p0.physics.currentVelocityY
+       + " dmg=" + p0.damage._damage;
+};
+
+anim = function() {
+  var a = p0.animation;
+  return "A:" + a.currentAnimation + " frame " + a.currentFrame + "/" + a.totalFrames;
+};
+
+// move drives a CState by id; the bridge sends move(CState.<NAME>) (name resolved
+// from commands::MOVES). Mirrors the old `m` jump-table handler.
+move = function(stateId) {
+  p0.toState(stateId);
+  return "M:OK";
+};
+
+// frame scrub: step pauses + advances one frame; play resumes.
+step = function() {
+  p0.pauseAnimationPlayback = true;
+  p0.animation.playFrame(p0.animation.currentFrame + 1);
+  return anim();
+};
+
+play = function() {
+  p0.pauseAnimationPlayback = false;
+  return "PLAY";
+};
+
+// the live character list. `match.getCharacters()` and the bare `getCharacters()`
+// both resolve here (match is an hscript facade since pxf.core.Match has no RTTI).
+getCharacters = function() {
+  return characters;
+};
+
+match = {
+  getCharacters: function() { return characters; },
+  getCharacter: function(i) { return characters[i]; },
+  characterCount: function() { return characters == null ? 0 : characters.length; }
+};
