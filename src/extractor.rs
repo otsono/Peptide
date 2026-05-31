@@ -491,10 +491,14 @@ fn convert_hitboxes(raw: &[BTreeMap<String, f64>]) -> Vec<Hitbox> {
     // mappings/character/hitbox_stats.json (see crate::mappings).
     let cfg = crate::mappings::character_hitbox_stats();
     raw.iter().map(|obj| {
-        // Value of a Fraymakers field = max over its SSF2 source keys
-        // (an absent key counts as 0.0).
+        // Value of a Fraymakers field = max over its SSF2 source keys that are
+        // PRESENT. Only-present is load-bearing: SSF2 uses NEGATIVE values as
+        // special-angle sentinels (e.g. direction=-2), and if an absent sibling
+        // key (e.g. "angle") defaulted to 0.0 it would win the max() and clobber
+        // the real negative value to 0 (wrong launch direction). Absent keys must
+        // not participate. If no source key is present, the field is 0.0.
         let v = |fm: &str| cfg.keys_for(fm).iter()
-            .map(|k| obj.get(k).copied().unwrap_or(0.0))
+            .filter_map(|k| obj.get(k).copied())
             .reduce(f64::max)
             .unwrap_or(0.0);
         Hitbox {
