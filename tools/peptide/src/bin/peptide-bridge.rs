@@ -24,6 +24,9 @@ use std::time::Duration;
 mod commands;
 use commands::{translate, gloss, Translated};
 
+#[path = "../ui.rs"]
+mod ui;
+
 const DEFAULT_PORT: u16 = 17999;
 
 fn parse_port(args: &[String]) -> u16 {
@@ -43,6 +46,12 @@ fn main() {
     match mode {
         "help" | "-h" | "--help" => print!("{}", commands::help_text()),
         "serve" => serve(port, token.as_deref()),
+        "ui" => {
+            if let Err(e) = ui::run(port, token.as_deref()) {
+                eprintln!("peptide-ui error: {e}");
+                std::process::exit(1);
+            }
+        }
         "send" => {
             // The command is the first positional arg (skip --flag and its value).
             let mut cmd: Option<String> = None;

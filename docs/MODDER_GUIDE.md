@@ -131,3 +131,26 @@ frame-coverage. All 45 characters currently pass. For move *momentum*, drive
 `loop <move>` (repeat a move), `dummy` (spawn a hit target), `hitbox` (dump active
 box stats for the current frame), `verify <move>` (diff behavior vs the SSF2
 reference), and live stat tuning. Built incrementally on the commands above.
+
+## The console UI (recommended for interactive use)
+
+```
+cd tools/peptide
+./run-ui.sh
+```
+
+Boots Fraymakers and opens a full-screen console (built on ratatui). Type a command
+at the bottom, press Enter, and replies stream into the color-coded scrollback above:
+
+- **Tab** — command palette (pick a starter command)
+- **↑ / ↓** — command history
+- **PgUp / PgDn** — scroll the output
+- **F1** — help panel
+- **Esc / Ctrl+C** — quit (shuts the engine down cleanly)
+
+Everything you can type in the CLI works here, including raw hscript:
+`match.getCharacters()`, `p0.getStateName()`, `p0.body.x`, `Engine.log("hi")`. Errors
+never crash the engine — they show in the scrollback (red) and in `Engine.log`.
+
+Use the headless `run.sh` / `runseq.sh` for scripted/automated runs; use `run-ui.sh`
+for interactive exploration.
