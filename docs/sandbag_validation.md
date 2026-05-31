@@ -175,6 +175,15 @@ the match load queue, which makes `startMatch`'s `load` *re-load* it ASYNC, wide
 race vs the async character ctor. The synchronous-headless-load architecture fundamentally
 fights the engine's async content lifecycle; no in-`update` bytecode pin wins it.
 
+**Direct observation (NSPR-in-q probe, commit c17aaec5):** after `startMatch`, the buried-VFX
+key IS cached (`NSPR:1`) while the match loads (`Q:NO_MATCH`); then the ASYNC
+`onMatchReady → Match.init → spawnPlayer → ctor` reads the SAME key and gets null ~60% of
+the time (40/60 RACE). So `startMatch`'s flush is NOT the culprit. Neither `set_Required`
+(field 10) NOR a direct `queueHash.set` (field 17) prevents it — so the loss does NOT honor
+the `flushUnusedResources` exemptions. The cache entry is removed/cleared *inside*
+`onMatchReady`/`Match.init`, atomically with construction (no `update` frame between, so
+per-frame recache can't intervene). RE agent investigating the exact clear mechanism.
+
 **The real reliability fix is architectural** (future work): load sandbag through the
 engine's OWN async UGC path (register under `custom::` and let `startMatch`'s content
 queue load it like the real game), instead of the synchronous `fetchThreaded` shortcut +
