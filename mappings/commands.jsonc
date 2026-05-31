@@ -17,6 +17,12 @@
     { "from": "self.self = /* ? */;", "to": "// self reference (implicit in FM)" },
     { "from": "self.self = /* ? */", "to": "self" },
     { "from": "self.self.", "to": "self." },
+    // A cross-block stack underflow in the decompiler can leave a dangling
+    // "/* ? */." receiver before a self-call (e.g. "/* ? */.self.foo(...)").
+    // The intended receiver is self; collapse it so the emit is valid Haxe.
+    // (Deeper fix = thread the predecessor operand stack into branch bodies;
+    // tracked as a follow-up — this rule keeps output compilable meanwhile.)
+    { "from": "/* ? */.self.", "to": "self." },
     { "from": "&& self.self)", "to": ")" },
     { "from": "if (true && self.self)", "to": "if (true)" },
     { "from": "|| self.self)", "to": ")" },

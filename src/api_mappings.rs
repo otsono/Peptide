@@ -1984,13 +1984,22 @@ pub fn comment_out_unknown_calls(code: &str) -> String {
         .map(|e| (format!(".{}(", e.name), e.name.as_str()))
         .collect();
 
+    // Names defined as local functions in THIS script are NOT SSF2-only — a call
+    // to a real local function is valid and must not be commented out (e.g. mario
+    // defines `function jumpToContinue(...)` and also uses it as a COLLIDE_FLOOR
+    // listener; commenting its direct call broke the landing/continue transition).
+    let local_fns: std::collections::HashSet<String> = {
+        let re = regex::Regex::new(r"(?m)^\s*function\s+(\w+)\s*\(").unwrap();
+        re.captures_iter(code).map(|c| c[1].to_string()).collect()
+    };
+
     let lines: Vec<&str> = code.lines().collect();
     let mut out = Vec::with_capacity(lines.len());
     let mut ssf2_hits: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.starts_with("//") { out.push(line.to_string()); continue; }
-        let hit = markers.iter().find(|(m, _)| line.contains(m));
+        let hit = markers.iter().find(|(m, name)| line.contains(m) && !local_fns.contains(*name));
         if let Some((_, name)) = hit {
             let indent = &line[..line.len() - line.trim_start().len()];
             out.push(format!("{}// [SSF2-only: {}] {}", indent, name, trimmed));
@@ -2012,6 +2021,34 @@ pub fn comment_out_unknown_calls(code: &str) -> String {
         }
     }
     log_unknown_calls(&joined, cfg);
+    joined
+}
+
+/// Un-comment `// [SSF2-only: NAME] <stmt>` lines where NAME is actually defined
+/// as a local `function NAME(...)` in the ASSEMBLED script. comment_out_unknown_calls
+/// runs per-method, so it can't see a sibling function definition and wrongly flags a
+/// valid call to a real local function (e.g. mario's `jumpToContinue`, also used as a
+/// COLLIDE_FLOOR listener). This whole-file post-pass restores those calls.
+pub fn uncomment_local_fn_calls(code: &str) -> String {
+    let def_re = regex::Regex::new(r"(?m)^\s*function\s+(\w+)\s*\(").unwrap();
+    let locals: std::collections::HashSet<String> =
+        def_re.captures_iter(code).map(|c| c[1].to_string()).collect();
+    if locals.is_empty() { return code.to_string(); }
+    let line_re = regex::Regex::new(r"^(\s*)// \[SSF2-only: (\w+)\] (.*)$").unwrap();
+    let mut restored = 0usize;
+    let mut joined = code.lines().map(|line| {
+        if let Some(c) = line_re.captures(line) {
+            if locals.contains(&c[2]) {
+                restored += 1;
+                return format!("{}{}", &c[1], &c[3]);
+            }
+        }
+        line.to_string()
+    }).collect::<Vec<_>>().join("\n");
+    if code.ends_with('\n') { joined.push('\n'); }
+    if restored > 0 {
+        log::info!("uncomment_local_fn_calls: restored {} call(s) to locally-defined functions", restored);
+    }
     joined
 }
 

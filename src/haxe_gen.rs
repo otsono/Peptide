@@ -912,6 +912,11 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     out = crate::api_mappings::rewrite_own_method_refs(&out, &ext_methods);
     out = crate::api_mappings::wrap_persistent_state(&out, &var_types);
 
+    // Whole-file pass: a call commented as [SSF2-only: NAME] is valid after all if
+    // NAME is defined as a local function here (comment_out runs per-method and
+    // can't see sibling defs). Restore those calls.
+    out = crate::api_mappings::uncomment_local_fn_calls(&out);
+
     out
 }
 
