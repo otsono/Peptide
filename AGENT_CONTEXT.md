@@ -4,6 +4,14 @@ This document is the authoritative reference for AI agents working on this codeb
 Both SSF2's SWF format and Fraymakers' entity format are largely undocumented.
 Everything here was reverse-engineered from first principles during development.
 
+> **Copyright boundary — do not paste, do not publish.** SSF2 (© McLeodGaming)
+> and Fraymakers / FrayTools (© Fraymakers) are proprietary. Everything in this
+> file is described **in our own words** for interoperability; the JSON shapes
+> below are **illustrative examples we authored**, not copied from any copyrighted
+> file. Never add verbatim third-party source, bytecode, decompiled output, or
+> assets to the repo — see [`NOTICE.md`](NOTICE.md) "Reverse-engineering &
+> copyright boundary".
+
 Cross-reference: [`DEVELOPMENT.md`](DEVELOPMENT.md) covers build / pipeline / modules and
 the current set of mapping JSONC files; this file covers the **input** and **output**
 formats themselves.

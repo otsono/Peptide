@@ -10,6 +10,13 @@ drive the user's *local* installs and speak standard protocols. Everything they
 touch (the engine bytecode, patched copies, `.fra` packages, `node_modules/`)
 stays on the user's machine and is git-ignored.
 
+> **Copyright boundary — never publish.** The engine RE map below names methods,
+> fields, and types as **facts** for interoperability, described in our own words.
+> Never commit or publish the Fraymakers engine bytecode/Haxe/disassembly,
+> FrayTools bundle code, SSF2 AS3, decompiled output, or any of their assets —
+> they are copyrighted. See [`NOTICE.md`](NOTICE.md) "Reverse-engineering &
+> copyright boundary".
+
 | Harness | Dir | Drives | Transport | Answers |
 |---|---|---|---|---|
 | **FrayTools** | `tools/fraytools-harness/` | the user's FrayTools editor | Chrome DevTools Protocol | "does it render / lay out right? publish me a `.fra`" |

@@ -4,6 +4,17 @@ A working agreement for keeping the code, tests, and docs in sync as
 the project evolves. The intent is light-touch: small habits that catch
 the routine drift, not bureaucratic gates.
 
+## Copyright boundary (read first)
+
+SSF2 (© McLeodGaming) and Fraymakers / FrayTools (© Fraymakers) are
+proprietary. **Never commit or publish their source, bytecode, decompiled
+output, disassembly, stack traces, assets, or extracted strings** — not in
+code, not in docs, not in commit messages. Reverse-engineering notes are fine
+**in our own words** for interoperability; paraphrase, never paste. Full policy
+in [`NOTICE.md`](NOTICE.md) "Reverse-engineering & copyright boundary". The
+git-ignored `docs/` scratch folder is still subject to this — it just isn't the
+place durable notes belong (see "Scratch notes" below).
+
 ## Quick checklist (do before opening a PR / pushing a branch)
 
 Three questions, in order:

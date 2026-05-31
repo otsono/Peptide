@@ -73,6 +73,33 @@ by this tool is intended for use with FrayTools to develop custom
 characters; no Fraymakers engine code or proprietary tooling is
 included.
 
+## Reverse-engineering & copyright boundary — NEVER PUBLISH
+
+SSF2 (© McLeodGaming), and Fraymakers / FrayTools (© Fraymakers) are
+**proprietary, copyrighted software**. This repository reverse-engineers
+their file formats and behaviour **for interoperability only**, and it does
+so by describing observations **in our own words**.
+
+The following must **never be committed, published, or redistributed** in
+this repo (or anywhere), because they are copyrighted third-party material:
+
+- **Source code, bytecode, or disassembly** from FrayTools (`app.asar` /
+  bundle JS), the Fraymakers engine (`hlboot-sdl.dat` / HashLink bytecode /
+  Haxe source / `.hx:line` stack traces), or SSF2 (AS3 / ABC bytecode).
+- **Decompiled output of their code** pasted verbatim (it is a derivative work
+  of their copyrighted source).
+- **Their assets or data files** — `.ssf` / `.swf` / `misc.ssf`, `.fra`
+  packages, sprites, sounds, palettes, or any extracted strings.
+
+These are all git-ignored (`*.ssf`, `*.swf`, `characters/`, `tools/**/node_modules`,
+the `docs/` scratch folder, etc.) and stay only on the user's machine.
+
+What this repo **may** contain: our own Rust/JS/docs, format descriptions and
+RE notes written in our own words, symbol *names* cited as facts for interop,
+and **illustrative** schema examples we authored (e.g. the `.entity` JSON
+shapes in `AGENT_CONTEXT.md`) — never copied from a specific copyrighted file.
+If you add RE notes, paraphrase; do not paste.
+
 ## Bundled fonts
 
 The cross-platform GUI (`ssf2-converter-gui`) embeds the **Roboto** font
