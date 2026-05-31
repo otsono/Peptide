@@ -50,6 +50,21 @@ cargo build --release -p ssf2-converter-gui
 For distribution, ship `ssf2-converter-gui[.exe]` and `ssf2_converter[.exe]`
 in the same folder.
 
+### macOS — double-clickable app
+
+From the repo root, `../make-app.sh` builds both binaries and wraps them in a
+`dist/SSF2 Converter.app` bundle (a normal Finder app: name, dock icon, `.ssf`
+association), ad-hoc-codesigned so it launches without a Gatekeeper prompt:
+
+```sh
+./make-app.sh            # build + assemble dist/SSF2 Converter.app + launch
+./make-app.sh --no-open  # build + assemble only
+```
+
+The GUI is the bundle executable and `ssf2_converter` rides alongside it in
+`Contents/MacOS/` (the GUI finds the CLI as a sibling). Drop an `AppIcon.icns`
+at the repo root before running to give the app a custom icon.
+
 ### Windows notes
 
 - Build with the MSVC toolchain (`rustup default stable-x86_64-pc-windows-msvc`)

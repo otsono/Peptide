@@ -14,3 +14,6 @@ characters/
 # Scratch / working notes — gitignored. Promote anything others would
 # benefit from into the top-level docs (see CONTRIBUTING.md).
 docs/
+
+# macOS .app bundle output from make-app.sh
+dist/

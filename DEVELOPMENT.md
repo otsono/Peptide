@@ -94,6 +94,7 @@ ssf2-fraymakers-converter/
 ├── TESTING.md                Validation harnesses + engine RE map + validation status
 ├── LICENSE                   MIT License
 ├── NOTICE.md                 Dependency attribution (Ruffle swf crate, etc.)
+├── make-app.sh               macOS: build the GUI + wrap it in dist/SSF2 Converter.app
 ├── rebuild-sandbag.sh        Quick: rebuild release binary + convert sandbag.ssf
 ├── .gitignore                Ignores *.ssf, *.swf, /target, characters/
 │
@@ -246,10 +247,28 @@ shows success/failure with the captured log. It auto-detects a sibling
 `misc.ssf`, lets the user override the output dir, and reads
 `<output>/<char>/conversion_log.json` to display an "Unhandled Calls" popup
 summarising the `unknown` / `ssf2_only` counts after every run. The GUI adds
-**no conversion logic** — all behaviour lives in the Rust binary.
+**no conversion logic** — all behaviour lives in the Rust binary. It locates the
+`ssf2_converter` CLI as a sibling next to its own executable, so the two must
+ship in the same directory.
+
+**Double-clickable macOS app.** `./make-app.sh` builds both binaries and wraps
+them in `dist/SSF2 Converter.app` — a normal Finder app (name, dock icon,
+`.ssf` file association) with the GUI as the bundle executable and
+`ssf2_converter` alongside it in `Contents/MacOS/`. It ad-hoc-codesigns the
+bundle so Gatekeeper allows a locally-built app to launch, and opens it on
+success (`--no-open` to just build). Drop an `AppIcon.icns` at the repo root to
+give it a custom icon. `dist/` is git-ignored.
+
+```bash
+./make-app.sh            # build + assemble dist/SSF2 Converter.app + launch
+./make-app.sh --no-open  # build + assemble only (packaging / CI)
+```
+
+On Windows/Linux no bundle is needed — `target/release/ssf2-converter-gui` is
+directly runnable; ship it next to `ssf2_converter`.
 
 (The earlier native macOS SwiftUI app and `build-app.sh` were removed in favour
-of this single cross-platform GUI.)
+of this single cross-platform GUI; `make-app.sh` is its `.app` packager.)
 
 ---
 
