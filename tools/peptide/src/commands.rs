@@ -112,6 +112,13 @@ pub fn move_ordinal(name: &str) -> Option<usize> {
     MOVES.iter().position(|(m, _)| *m == n)
 }
 
+/// Map a friendly move name to its `CState.<FIELD>` hscript expression
+/// (e.g. "jab" -> "CState.JAB", "strong_forward" -> "CState.STRONG_FORWARD_IN").
+pub fn move_cstate(name: &str) -> Option<String> {
+    let n = name.to_ascii_lowercase();
+    MOVES.iter().find(|(m, _)| *m == n).map(|(_, field)| format!("CState.{field}"))
+}
+
 /// Outcome of translating one friendly line.
 pub enum Translated {
     /// Send this exact line to the engine.
@@ -144,79 +151,83 @@ pub fn translate(line: &str) -> Translated {
     let head = parts.next().unwrap_or("");
     let rest: Vec<&str> = parts.collect();
 
-    let Some(cmd) = lookup(head) else {
-        // Unknown leading token: pass through unchanged so raw/forward-compatible
-        // input still works, but tell the user `help` exists.
-        return Translated::Wire(line.to_string());
-    };
+    // Friendly commands are recognized here; EVERYTHING ELSE is treated as a raw
+    // hscript expression and run through the eval hook (`e <expr>`). So a user can type
+    // `match.getCharacters()` or `p0.body.x` directly and it just evaluates.
+    if let Some(cmd) = lookup(head) {
+        match cmd.name {
+            "help" => return Translated::Client(help_text()),
 
-    if cmd.name == "snapshot" {
-        // Bundle the three readbacks (state, physics, animation) into one command.
-        return Translated::Sequence(vec!["t".into(), "v".into(), "a".into()]);
+            // Bootstrap / diagnostic commands kept as single-byte wire protocol (NOT
+            // ported to hscript): match launch, clean exit, liveness, console, resource
+            // dumps, load probe, match-live query.
+            "spawn" | "exit" | "ping" | "console" | "keys" | "load" | "query" => {
+                let mut wire = cmd.wire.to_string();
+                if !rest.is_empty() { wire.push(' '); wire.push_str(&rest.join(" ")); }
+                return Translated::Wire(wire);
+            }
+
+            // Readback/scrub commands — IMPLEMENTED IN hscript (prelude.hsx), invoked via eval.
+            "state"   => return Translated::Wire("e state()".into()),
+            "physics" => return Translated::Wire("e physics()".into()),
+            "anim"    => return Translated::Wire("e anim()".into()),
+            "step"    => return Translated::Wire("e step()".into()),
+            "play"    => return Translated::Wire("e play()".into()),
+
+            "move" => {
+                let call = match rest.first() {
+                    None => "move(CState.JAB)".to_string(), // bare move = jab
+                    Some(mv) => match move_cstate(mv) {
+                        Some(cs) => format!("move({cs})"),
+                        None => return Translated::Error(format!(
+                            "unknown move {mv:?}. moves: {}",
+                            MOVES.iter().map(|(m, _)| *m).collect::<Vec<_>>().join(", "))),
+                    },
+                };
+                return Translated::Wire(format!("e {call}"));
+            }
+
+            "snapshot" => return Translated::Sequence(vec![
+                "e state()".into(), "e physics()".into(), "e anim()".into()]),
+
+            "track" => {
+                let Some(mv) = rest.first() else {
+                    return Translated::Error("usage: track <move> [samples]".to_string());
+                };
+                let Some(cs) = move_cstate(mv) else {
+                    return Translated::Error(format!("unknown move {mv:?}. moves: {}",
+                        MOVES.iter().map(|(m, _)| *m).collect::<Vec<_>>().join(", ")));
+                };
+                let n = rest.get(1).and_then(|c| c.parse::<u32>().ok()).unwrap_or(6).clamp(1, 60);
+                let mut seq = vec![format!("e move({cs})")];
+                for _ in 0..n { seq.push("e physics()".to_string()); }
+                return Translated::Sequence(seq);
+            }
+
+            "loop" => {
+                let Some(mv) = rest.first() else {
+                    return Translated::Error("usage: loop <move> [count]".to_string());
+                };
+                let Some(cs) = move_cstate(mv) else {
+                    return Translated::Error(format!("unknown move {mv:?}. moves: {}",
+                        MOVES.iter().map(|(m, _)| *m).collect::<Vec<_>>().join(", ")));
+                };
+                let count = rest.get(1).and_then(|c| c.parse::<u32>().ok()).unwrap_or(8).clamp(1, 200);
+                return Translated::Repeat { wire: format!("e move({cs})"), count, gap_ms: 800 };
+            }
+
+            // `eval <hscript>` — explicit form; also the implicit default below.
+            "eval" => {
+                return Translated::Wire(if rest.is_empty() { "e".into() }
+                                        else { format!("e {}", rest.join(" ")) });
+            }
+            _ => {}
+        }
     }
 
-    if cmd.name == "track" {
-        // Drive a move, then rapid-sample physics to capture its velocity/position
-        // trajectory (self-momentum). Client-side: m <sel> followed by N `v` reads.
-        let Some(mv) = rest.first() else {
-            return Translated::Error("usage: track <move> [samples]".to_string());
-        };
-        let Some(ord) = move_ordinal(mv) else {
-            return Translated::Error(format!("unknown move {mv:?}. moves: {}",
-                MOVES.iter().map(|(m, _)| *m).collect::<Vec<_>>().join(", ")));
-        };
-        let n = rest.get(1).and_then(|c| c.parse::<u32>().ok()).unwrap_or(6).clamp(1, 60);
-        let mut seq = vec![format!("m {}", (b'A' + ord as u8) as char)];
-        for _ in 0..n { seq.push("v".to_string()); }
-        return Translated::Sequence(seq);
-    }
-
-    if cmd.name == "loop" {
-        // `loop <move> [count]` — re-dispatch a move on an interval (client-side).
-        let Some(mv) = rest.first() else {
-            return Translated::Error("usage: loop <move> [count]".to_string());
-        };
-        let Some(ord) = move_ordinal(mv) else {
-            return Translated::Error(format!("unknown move {mv:?}. moves: {}",
-                MOVES.iter().map(|(m, _)| *m).collect::<Vec<_>>().join(", ")));
-        };
-        // count clamped to a sane ceiling so a typo can't spin forever.
-        let count = rest.get(1).and_then(|c| c.parse::<u32>().ok()).unwrap_or(8).clamp(1, 200);
-        return Translated::Repeat {
-            wire: format!("m {}", (b'A' + ord as u8) as char),
-            count,
-            gap_ms: 800,
-        };
-    }
-
-    if cmd.wire == '\0' {
-        // `help`
-        return Translated::Client(help_text());
-    }
-
-    if cmd.name == "move" {
-        return match rest.first() {
-            None => Translated::Wire("m".to_string()), // bare move = jab
-            Some(mv) => match move_ordinal(mv) {
-                // Wire selector = 'A' + ordinal (a single printable byte the engine
-                // compares directly — no integer parsing engine-side). See main.rs
-                // move-dispatch. ordinal stays < 26 (MOVES is short), so 'A'..'Z'.
-                Some(ord) => Translated::Wire(format!("m {}", (b'A' + ord as u8) as char)),
-                None => Translated::Error(format!(
-                    "unknown move {mv:?}. moves: {}",
-                    MOVES.iter().map(|(m, _)| *m).collect::<Vec<_>>().join(", ")
-                )),
-            },
-        };
-    }
-
-    // Generic: replace the head with its wire byte, keep the rest of the args.
-    let mut wire = cmd.wire.to_string();
-    if !rest.is_empty() {
-        wire.push(' ');
-        wire.push_str(&rest.join(" "));
-    }
-    Translated::Wire(wire)
+    // Unknown head OR a bare hscript expression (`match.getCharacters()`, `p0.body.x`,
+    // `1 + 2`, …) — run the whole line through the eval hook.
+    Translated::Wire(format!("e {line}"))
 }
 
 /// A friendly gloss for an engine reply line (additive — callers keep the raw
@@ -269,37 +280,48 @@ mod tests {
     }
 
     #[test]
-    fn friendly_names_map_to_wire_bytes() {
+    fn bootstrap_commands_stay_wire_bytes() {
+        // match-launch + diagnostics are NOT ported to hscript — kept as wire protocol.
         assert_eq!(wire("spawn sandbag thespire x"), "s sandbag thespire x");
-        assert_eq!(wire("state"), "t");
         assert_eq!(wire("query"), "q");
         assert_eq!(wire("ping"), "p");
         assert_eq!(wire("exit"), "x");
         assert_eq!(wire("keys"), "k");
-    }
-
-    #[test]
-    fn aliases_and_bare_letters_pass_through() {
         assert_eq!(wire("start sandbag"), "s sandbag");
-        assert_eq!(wire("s sandbag"), "s sandbag"); // bare wire letter unchanged
-        assert_eq!(wire("status"), "t");
         assert_eq!(wire("quit"), "x");
     }
 
     #[test]
-    fn move_resolves_to_letter_selector() {
-        assert_eq!(wire("move"), "m");                  // bare = jab
-        assert_eq!(wire("move jab"), "m A");            // ordinal 0 -> 'A'
-        let ord = move_ordinal("special_neutral").unwrap();
-        assert_eq!(wire("move special_neutral"), format!("m {}", (b'A' + ord as u8) as char));
+    fn ported_commands_route_through_eval() {
+        // readback/scrub commands now call their hscript implementations via eval.
+        assert_eq!(wire("state"), "e state()");
+        assert_eq!(wire("status"), "e state()");
+        assert_eq!(wire("physics"), "e physics()");
+        assert_eq!(wire("anim"), "e anim()");
+        assert_eq!(wire("play"), "e play()");
+    }
+
+    #[test]
+    fn move_routes_to_hscript_call() {
+        assert_eq!(wire("move"), "e move(CState.JAB)");            // bare = jab
+        assert_eq!(wire("move jab"), "e move(CState.JAB)");
+        assert_eq!(wire("move strong_forward"), "e move(CState.STRONG_FORWARD_IN)");
         assert!(matches!(translate("move flibble"), Translated::Error(_)));
-        assert!(MOVES.len() <= 26, "selector encoding assumes < 26 moves");
+    }
+
+    #[test]
+    fn raw_hscript_passes_through_eval() {
+        // anything unrecognized is treated as hscript and run through the eval hook.
+        assert_eq!(wire("match.getCharacters()"), "e match.getCharacters()");
+        assert_eq!(wire("p0.body.x"), "e p0.body.x");
+        assert_eq!(wire("1 + 2"), "e 1 + 2");
+        assert_eq!(wire("eval CState.JAB"), "e CState.JAB");
     }
 
     #[test]
     fn snapshot_expands_to_sequence() {
         match translate("snapshot") {
-            Translated::Sequence(w) => assert_eq!(w, vec!["t", "v", "a"]),
+            Translated::Sequence(w) => assert_eq!(w, vec!["e state()", "e physics()", "e anim()"]),
             _ => panic!("snapshot should be a Sequence"),
         }
         assert!(matches!(translate("snap"), Translated::Sequence(_)));
@@ -312,7 +334,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_passes_through() {
-        assert_eq!(wire("somethingnew arg"), "somethingnew arg");
+    fn unknown_routes_to_eval() {
+        // unrecognized input is treated as hscript and run through the eval hook
+        assert_eq!(wire("somethingnew arg"), "e somethingnew arg");
     }
 }
