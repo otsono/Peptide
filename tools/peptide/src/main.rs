@@ -164,17 +164,25 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         "connect" => {
-            // peptide <in> <out> connect <port> <token> [headless]
-            // The socket bridge + command dispatch (s/t/q/x/c/p) are ALWAYS installed. The
-            // "headless" arg additionally enables fast-boot: skip the Title/menus
-            // (no-op launchScreen) and filter the boot required-load to skip public:: base
-            // content. WITHOUT it the game boots normally (title + full content load) and you
-            // can still drive it over TCP — headless does not trigger unless explicitly asked.
+            // peptide <in> <out> connect <port> <token> [<char> [<stage> [<assist>]]]
+            // The socket bridge + command dispatch (s/t/q/x/c/p) are ALWAYS installed.
+            // Providing a CHARACTER triggers HEADLESS fast-boot: skip the Title/menus
+            // (no-op launchScreen) + filter the boot required-load to skip public:: base
+            // content, and bake that char (+ optional stage/assist) as the launch default.
+            // With NO character the game boots normally (title + full content load) and is
+            // just a TCP bridge — headless does not trigger unless a character is given.
             let port: u16 = args.get(4).and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("connect mode needs <port>"))?;
             let token = args.get(5).cloned().unwrap_or_default();
-            let headless = args.get(6).map(|s| s == "headless").unwrap_or(false);
-            connect_edit(&mut code, port, &token, headless)?;
+            let char_name = args.get(6).cloned();
+            let stage_name = args.get(7).cloned();
+            let assist_name = args.get(8).cloned();
+            let headless = char_name.is_some();
+            // install dir = parent of the boot file, used to build custom/<char>/<char>.fra
+            let install_dir = std::path::Path::new(input).parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            connect_edit(&mut code, port, &token, headless, char_name, stage_name, assist_name, &install_dir)?;
         }
         other => anyhow::bail!("unknown mode: {other}"),
     }
@@ -523,7 +531,25 @@ fn send_string_loop(
 
 /// Phase 1a: at onLoaded, connect a client socket to 127.0.0.1:<port> and send
 /// `AUTH <token>` + a hello line. Proves socket injection + the auth handshake.
-fn connect_edit(code: &mut Bytecode, port: u16, token: &str, headless: bool) -> anyhow::Result<()> {
+fn connect_edit(
+    code: &mut Bytecode, port: u16, token: &str, headless: bool,
+    char_name: Option<String>, stage_name: Option<String>, assist_name: Option<String>,
+    install_dir: &str,
+) -> anyhow::Result<()> {
+    // Character/stage/assist baked as launch defaults. The char drives the self-bootstrap
+    // (a custom .fra at <install>/custom/<char>/<char>.fra) and the bare-`s`/auto-launch
+    // defaults; stage/assist default to the harness's standard pair. All are generic —
+    // no hardcoded "sandbag" — derived from the injector args (sandbag is just the default).
+    let cname = char_name.as_deref().unwrap_or("sandbag");
+    let sname = stage_name.as_deref().unwrap_or("thespire");
+    let aname = assist_name.as_deref().unwrap_or("commandervideoassist");
+    let char_path = format!("{install_dir}/custom/{cname}/{cname}.fra");
+    let char_pkgid = format!("{cname}.{cname}");
+    let char_ns_key = format!("private::{cname}.{cname}");
+    let char_resid = format!("private::{cname}");
+    let stage_fqid = format!("public::{sname}.{sname}");
+    let assist_fqid = format!("public::{aname}.{aname}");
+    eprintln!("peptide: char={cname} stage={sname} assist={aname} headless={headless} path={char_path}");
     // Resolve everything by name (version-robust). Constructors have empty
     // names, so pin their findexes but verify their signatures.
     let sock_t = require_type(code, "sys.net.Socket")?;
@@ -689,12 +715,14 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str, headless: bool) -> 
         .ok_or_else(|| anyhow::anyhow!("stagePxfContentMap field not found"))?;
     let assist_cmap_field = char_cmap_field;
     eprintln!("resolve: indexOf={indexof_fn} getResId={getresid_fn} getPXF={getpxf_fn} poolHash={poolhash_field} keys={sm_keys} exists={sm_exists} iter_t={keysiter_t} cmaps(char={char_cmap_field},assist={assist_cmap_field},stage={stage_cmap_field})");
-    // fullIds must be REAL String objects (parseResourceIdentifier regex-matches them)
-    let stage_fullid = add_string_const(code, "public::thespire.thespire");
-    let char_fullid = add_string_const(code, "public::commandervideo.commandervideo");
+    // fullIds must be REAL String objects (parseResourceIdentifier regex-matches them).
+    // Baked from the injector args (bare-`s`/auto-launch defaults): char -> the
+    // self-bootstrapped custom char (private::<char>), stage/assist -> public:: ids.
+    let stage_fullid = add_string_const(code, &stage_fqid);
+    let char_fullid = add_string_const(code, &char_resid);
     // The HUD's DamageCounter generates an assist sprite per player; a null assist
     // null-derefs .namespace in getContentIdentifierString. Supply a real assist.
-    let assist_fullid = add_string_const(code, "public::commandervideo.commandervideoassist");
+    let assist_fullid = add_string_const(code, &assist_fqid);
     let assist_str = add_string(code, "assist");
     let launched_g = add_string_const(code, "LAUNCHED\n");
     let launched2_g = add_string_const(code, "LAUNCHED "); // verbose ack prefix
@@ -775,14 +803,14 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str, headless: bool) -> 
     let res_isabs_field = require_field(code, "pxf.io.AbstractResource", "_isAbsolute")?;
     let enc241_t = 241usize; // 4th ctor arg type (Ref<ResourceType>); passed null
     let l_idx = add_int(code, 'l' as i32);
-    let sandbag_id_g = add_string_const(code, "sandbag");
-    let sandbag_path_g = add_string_const(code, "/Users/jimmy/Library/Application Support/Steam/steamapps/common/Fraymakers/custom/sandbag/sandbag.fra");
+    let sandbag_id_g = add_string_const(code, cname);
+    let sandbag_path_g = add_string_const(code, &char_path);
     let l_prefix_g = add_string_const(code, "L:");
     let l_fail_g = add_string_const(code, "L:FAIL\n");
     let l_cmapnull_g = add_string_const(code, " CMAP:NULL\n");
-    let sandbag_pkgid_g = add_string_const(code, "sandbag.sandbag");
-    let key_sb_g = add_string_const(code, " KEY=sandbag\n");
-    let key_sbsb_g = add_string_const(code, " KEY=sandbag.sandbag\n");
+    let sandbag_pkgid_g = add_string_const(code, &char_pkgid);
+    let key_sb_g = add_string_const(code, &format!(" KEY={cname}\n"));
+    let key_sbsb_g = add_string_const(code, &format!(" KEY={char_pkgid}\n"));
     let key_unknown_g = add_string_const(code, " KEY=?\n");
     let get_sprite_entity = require_fn(code, "getPXFSpriteEntity", Some("pxf.io.$ResourceManager"))?;
     let spr_ok_g = add_string_const(code, "SPR:1\n");
@@ -818,10 +846,10 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str, headless: bool) -> 
     // + "." + "sandbag" = "private::sandbag.sandbag" (RE: getContent@2185 -> getFQContentId@1789).
     // We already re-cache under that key below — the bug was sourcing the entity from entityMap.get
     // (null), so the re-cache never ran. Fixed to source from getPXFSpriteEntity (SPR:1 non-null).
-    let ns_sandbag_g = add_string_const(code, "private::sandbag.sandbag");
+    let ns_sandbag_g = add_string_const(code, &char_ns_key);
     // resource-identifier (NOT content id) form, for the idempotence probe in the
     // self-bootstrapping 's' command: getPXFResource(this) non-null ⇒ already loaded.
-    let res_resid_g = add_string_const(code, "private::sandbag");
+    let res_resid_g = add_string_const(code, &char_resid);
     eprintln!("sprite-fix: get_DataAsPxf={get_data_as_pxf} cacheEntity={cache_sprite_entity} smGet={sm_get} entityMap.f={pxf_entitymap_field} requiredMediaIds.f={reqmedia_field}");
     eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer

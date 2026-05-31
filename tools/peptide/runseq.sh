@@ -52,11 +52,18 @@ sleep 0.3
 
 [ -x "$HERE/target/release/peptide" ] || cargo build --release --manifest-path "$HERE/Cargo.toml" >/dev/null 2>&1
 printf '1420350' > "$APPID"
-# Automated harness defaults to headless fast-boot (skip Title/menus + filter required load).
-# Set FRAY_HEADLESS to anything other than "headless" (e.g. FRAY_HEADLESS=normal) for a normal
-# boot — the socket bridge + command dispatch still work, the game just shows the title.
-HEADLESS_ARG="${FRAY_HEADLESS:-headless}"
-"$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" "$HEADLESS_ARG" >/dev/null 2>&1
+# Headless fast-boot (skip Title/menus + filter required load) is triggered by passing a
+# CHARACTER to the injector. Defaults to sandbag (the harness's standard target) on thespire
+# with commandervideoassist; override via FRAY_CHAR / FRAY_STAGE / FRAY_ASSIST. Set
+# FRAY_CHAR="" for a non-headless, TCP-only boot (normal title, no fast-boot, no auto-launch).
+CHAR="${FRAY_CHAR-sandbag}"
+STAGE="${FRAY_STAGE:-thespire}"
+ASSIST="${FRAY_ASSIST:-commandervideoassist}"
+if [ -n "$CHAR" ]; then
+  "$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" "$CHAR" "$STAGE" "$ASSIST" >/dev/null 2>&1
+else
+  "$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" >/dev/null 2>&1
+fi
 
 # Engine-lifetime CAP (we poll-wait for the clean 'x' exit and break early, so this is
 # only an upper bound). +1 command for the auto-appended 'x' exit.
