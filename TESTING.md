@@ -154,6 +154,8 @@ vocabulary is one shared table: `tools/peptide/src/commands.rs`.
 | `state` (status, t) | `t` | **telemetry** — `Character.getStateName()` on player 0 | `T:<state>` / `T:NOMATCH` |
 | `query` (matchlive, q) | `q` | is a match live? | `Q:MATCH_LIVE` / `Q:NO_MATCH` |
 | `physics` (phys, vitals, v) | `v` | player 0 position / velocity / damage (`Std.string` of Body + Physics + Damage floats) | `P: x=.. y=.. vx=.. vy=.. dmg=..` |
+| `anim` (animation, a) | `a` | player 0 current animation + frame index/total (Animation component) | `A:<name> frame <cur>/<total>` |
+| `loop <move> [count]` (repeat) | — | **client-side**: re-dispatch a move `count`× (default 8) at 800ms intervals — sustained observation / live tuning. No engine bytecode. | repeated `M:OK` + ANIM stream |
 | `keys` (pool, k) | `k` | dump pool keys + UGC-discovery diagnostics | `K:…` |
 | `exit` (quit, stop, x) | `x` | clean engine shutdown (`hxd.System.exit`) | — |
 

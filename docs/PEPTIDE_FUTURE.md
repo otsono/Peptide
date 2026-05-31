@@ -25,11 +25,11 @@ Decomposed into commands (see "Building blocks" below): `spawn` + `dummy` →
 ### Driving
 - **`spawn <char>`** — start a match. **[done]**
 - **`move <name>`** — drive any move via the engine state machine. **[done]**
-- **`loop <move> [interval]`** — re-dispatch a move every N frames until
-  `stop`. **[next]** Design for repeatability + interruption from the start: a
-  `g_loop_move` global (selector + interval + countdown) checked each frame in
-  the existing per-frame dispatch; `stop`/`loop none` clears it. Pure layer-2
-  (Rust-generated), small.
+- **`loop <move> [count]`** — re-dispatch a move on an interval. **[done]**
+  Shipped CLIENT-side (layer 3): the bridge re-sends the move's wire command
+  `count`× (default 8) at 800ms intervals — zero engine bytecode, the safest
+  layer per the architecture doc. A frame-exact engine-side variant (per-frame
+  `g_loop` global) remains possible later if sub-frame timing precision is needed.
 - **`dummy [char] [pos]`** — spawn a second fighter as a hit target. **[planned]**
   The `s`-handler already builds a 1-player match; extend the players array to 2
   (CPU/idle behavior on P1). Needed for any hit/knockback measurement.
@@ -45,10 +45,12 @@ Decomposed into commands (see "Building blocks" below): `spawn` + `dummy` →
   index, x/y/w/h, damage, angle, base KB, KB growth, active-frame window.
   **[next]** The modder's core debugging view. Reads the character's runtime
   hitbox component; layer-2 if expressible as field reads, else `.hl`.
-- **`anim step [n]` / `anim info`** — frame-by-frame scrub: advance the animation
-  one frame (pause playback), report frame index + what's active each frame.
-  **[planned]** Needs engine animation-playback control (`pauseAnimationPlayback`
-  is a known Character field).
+- **`anim`** — current animation name + frame index/total. **[done]** Reads the
+  Animation component (`A:<name> frame <cur>/<total>`). The observation half of
+  the loop.
+- **`anim step [n]`** — frame-by-frame scrub: advance the animation one frame
+  (pause playback), report what's active each frame. **[planned]** Needs engine
+  animation-playback control (`pauseAnimationPlayback` is a known Character field).
 - **`hitresult`** — after a hit lands: damage dealt, victim knockback
   distance + launch angle (sampled over the next K frames), hitstun frames.
   **[planned]** Requires `dummy`. This is the "is it a good angle / would it
