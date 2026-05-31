@@ -6,11 +6,13 @@
 //!   - lines you type on stdin  -> sent to the engine
 //!   - lines the engine sends   -> printed to stdout (prefixed with "<< ")
 //!
-//! Modes:
-//!   peptide-bridge serve [--port N]            interactive CLI (default)
+//! Modes (the console UI is the DEFAULT; headless is opt-in):
+//!   peptide-bridge                             boot the engine + open the console UI
+//!   peptide-bridge headless [--port N]         interactive stdin<->socket bridge
 //!   peptide-bridge send  [--port N] "<cmd>"    connect, send one command, print
 //!                                          replies for a short window, exit
 //!                                          (for scripted / automated tests)
+//! (`serve` remains a hidden alias for `headless`, used by run.sh / runseq.sh.)
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -39,13 +41,22 @@ fn parse_port(args: &[String]) -> u16 {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let mode = args.get(1).map(|s| s.as_str()).unwrap_or("serve");
     let port = parse_port(&args);
-
     let token = parse_token(&args);
+
+    // DEFAULT is the full-screen console UI. Headless modes are opt-in:
+    //   peptide-bridge                       -> ui (boots the engine + console)
+    //   peptide-bridge headless [--port N]   -> interactive stdin<->socket bridge
+    //   peptide-bridge send [--port N] "cmd" -> one-shot (for scripts)
+    // (`serve` stays as a hidden alias for `headless`, used by run.sh / runseq.sh.)
+    let mode = match args.get(1).map(|s| s.as_str()) {
+        None => "ui",
+        Some("-h") | Some("--help") | Some("help") => "help",
+        Some(m) if m.starts_with('-') => "ui", // flags only, no mode word -> default
+        Some(m) => m,
+    };
     match mode {
-        "help" | "-h" | "--help" => print!("{}", commands::help_text()),
-        "serve" => serve(port, token.as_deref()),
+        "help" => print!("{}", commands::help_text()),
         "ui" => {
             // self-contained: boots the engine + runs the console (see ui::launch).
             if let Err(e) = ui::launch() {
@@ -53,6 +64,7 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "headless" | "serve" => serve(port, token.as_deref()),
         "send" => {
             // The command is the first positional arg (skip --flag and its value).
             let mut cmd: Option<String> = None;
@@ -72,7 +84,7 @@ fn main() {
             send_once(port, token.as_deref(), &cmd);
         }
         other => {
-            eprintln!("unknown mode: {other} (use 'serve' or 'send')");
+            eprintln!("unknown mode: {other}\n  peptide-bridge            (default: console UI)\n  peptide-bridge headless   (interactive stdin bridge)\n  peptide-bridge send \"cmd\" (one-shot)");
             std::process::exit(2);
         }
     }
