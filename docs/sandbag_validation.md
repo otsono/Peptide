@@ -92,7 +92,23 @@ output — the rotated-affine itembox anchor now lands at 0.002–0.006px.
 
 ---
 
-## 3. Fraymakers boot + spawn ⏳ (freeze FIXED; intermittent buried-VFX race)
+## 3. Fraymakers boot + spawn ✅ (freeze FIXED; buried-VFX race FIXED — 100% spawn)
+
+**SOLVED (commit 4f5c33e7): 8/8 consecutive clean spawns to `T:STAND`** (was ~40%).
+Root cause (RE-proven): NOT a cache reset/eviction (no field-24 writer exists;
+no-op'ing `uncacheSpriteEntity` didn't help) — a populate-vs-consume RACE: the async
+per-resource PXF preload caches the sprite key only when the resource finishes
+loading, and `onMatchReady`'s Character ctor (buried-VFX, Character.hx:769) sometimes
+reads it first → `getSprite` null → crash.
+Fix: `getPXFSpriteEntity@18289` rewritten so a cache MISS falls back to the loaded
+char's key (`g_loaded_spritekey`, set by the load) instead of returning null. Generic
+(reads the global, not a sandbag literal) + guarded (null global → original behavior).
+NOTE: the harness *load* is still sandbag-specific (it builds the resource from a
+hardcoded `custom/sandbag/sandbag.fra` path/id); generalizing the load to build its
+path/key from the `s` argument is the remaining step for `s <anychar>` / the 47-char
+corpus.
+
+### (historical) buried-VFX race investigation
 
 Boot + socket verified (`PONG`). `s` is self-bootstrapping (commit 9c0d3d05):
 `./runseq.sh <gap_s> "s sandbag thespire commandervideoassist" t t t` — fires at
