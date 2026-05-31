@@ -161,6 +161,26 @@
     "upair": "a_air_up",
     "dair": "a_air_down",
     "downair": "a_air_down",
+    // fox-style abbreviated move labels: "{char}_fla.{char}_airN" → (prefix-stripped)
+    // "airN" → normalized "airn". Mirror the nair/fair/… targets above. These short
+    // keys don't collide with other characters' full-word labels.
+    "airn": "a_air",
+    "airf": "a_air_forward",
+    "airb": "a_air_backward",
+    "airu": "a_air_up",
+    "aird": "a_air_down",
+    "smashs": "a_forwardsmash",
+    "smashu": "a_up",
+    "smashd": "a_down",
+    "specialn": "b",
+    "specialnair": "b_air",
+    "specials": "b_forward",
+    "specialsair": "b_forward_air",
+    "specialu": "b_up",
+    "specialuair": "b_up_air",
+    "speciald": "b_down",
+    "specialdair": "b_down_air",
+    "combo": "a",
 
     "neutralb": "b",
     "neutralspecial": "b",
