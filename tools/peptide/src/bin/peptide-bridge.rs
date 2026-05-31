@@ -133,12 +133,22 @@ fn serve(port: u16, token: Option<&str>) {
         let mut one = [0u8; 1];
         // The engine emits "ANIM:<state>" EVERY frame; dedup so only changes print.
         let mut last_anim = String::new();
+        // Crash-diagnostics ring buffer: the last few meaningful events (state /
+        // animation transitions, move acks, physics) so that when the engine stream
+        // ends — especially on a crash — we can show what the character was doing.
+        let mut history: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+        let dump_history = |h: &std::collections::VecDeque<String>| {
+            if h.is_empty() { return; }
+            eprintln!("peptide-bridge: ── last {} engine events before stream ended (crash context) ──", h.len());
+            for ev in h { eprintln!("peptide-bridge:    {ev}"); }
+        };
         loop {
             match byte_reader.read(&mut one) {
                 Ok(0) => {
                     // Clean EOF: engine closed its write side. Do NOT exit; the
                     // engine may still be running and writing — hold our socket.
                     eprintln!("peptide-bridge: engine closed read stream (holding socket open)");
+                    dump_history(&history);
                     break;
                 }
                 Ok(_) => {
@@ -153,13 +163,19 @@ fn serve(port: u16, token: Option<&str>) {
                             Some(g) => format!("<< {line:<28} ({g})"),
                             None => format!("<< {line}"),
                         };
+                        let mut emitted = true;
                         if let Some(a) = line.strip_prefix("ANIM:") {
                             if a != last_anim {
                                 last_anim = a.to_string();
                                 println!("{pretty}");
-                            }
+                            } else { emitted = false; }
                         } else {
                             println!("{pretty}");
+                        }
+                        // Buffer meaningful events for the crash-context dump.
+                        if emitted && line.starts_with(|c: char| c.is_ascii_uppercase()) && line.contains(':') {
+                            history.push_back(line.to_string());
+                            if history.len() > 16 { history.pop_front(); }
                         }
                         if line.contains("READY") {
                             let _ = ready_tx.send(());
@@ -174,6 +190,7 @@ fn serve(port: u16, token: Option<&str>) {
                     // Transient/decode-ish error: keep the socket alive, stop
                     // mirroring. NEVER exit here (see comment above).
                     eprintln!("peptide-bridge: read error (holding socket open)");
+                    dump_history(&history);
                     break;
                 }
             }

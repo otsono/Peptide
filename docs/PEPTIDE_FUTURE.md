@@ -89,9 +89,10 @@ Decomposed into commands (see "Building blocks" below): `spawn` + `dummy` →
 ### Mod-dev quality-of-life (broader)
 - **State-machine introspection** — current state + legal transitions + "why is
   it stuck" (e.g. can't cancel into X). **[planned]**
-- **Crash diagnostics** — on engine fault, surface last N state transitions +
-  current move + frame instead of a raw stack trace. **[planned]** The ANIM
-  stream already gives a transition history the bridge could buffer and dump.
+- **Crash diagnostics** — **[done]** the bridge buffers the last ~16 meaningful
+  events (state/anim transitions, move acks) and dumps them when the engine stream
+  ends (`── last N engine events before stream ended (crash context) ──`), so a
+  crash shows what the character was doing instead of a bare disconnect.
 - **A/B comparison** — **[done]** `tools/peptide/ab_compare.sh <char> <recipe>`
   distills a stable behavioral signature (anim states + move acks + position) and
   saves/diffs it as a golden — catches behavioral regressions across converter
