@@ -933,10 +933,12 @@ fn connect_edit(
     let eval_cmd_g = add_string_const(code, "__cmd");
     // Crash-proofing: the eval hook wraps parse+exprReturn in a Trap. On ANY error it
     // logs to the engine (Sys.println -> engine log) and returns "ERR: <msg>" to Peptide.
+    let eval_td_g = add_string_const(code, "__td"); // Tildebugger statics, for the Engine.log facade
     let err_prefix_g = add_string_const(code, "ERR: ");
     let err_log_prefix_g = add_string_const(code, "[peptide] eval error: ");
     let hs_expr_return = find_fn(code, "exprReturn", Some("hscript.Interp")).unwrap_or(2216);
-    let sys_println = find_fn(code, "println", Some("$Sys")).unwrap_or(16301);
+    // Tildebugger.log(msg, ?color, ?flag) — the engine console log that Engine.log uses.
+    let tilde_log = find_fn(code, "log", Some("pxf.core.$Tildebugger")).unwrap_or(17883);
     let hs_arr_ctor: usize = 262; // ArrayObj ctor used to reset Interp.declared (see ApiScript.interpretScript)
     let eval_cs_g = add_string_const(code, "CS");  // bound to the CState statics (move-id source)
     let hs_parser_t = require_type(code, "hscript.Parser")?;
@@ -2474,6 +2476,11 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_parser_g) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: e_parser });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
+    // bind __td = Tildebugger statics (so the prelude's Engine.log can call __td.log).
+    ops.push(Opcode::GetGlobal { dst: rr(23), global: RefGlobal(tilde_global) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(23) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_td_g) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
     let idx_e_interp_ready = ops.len();
     if let Opcode::JNotNull { offset, .. } = &mut ops[idx_e_haveinterp] { *offset = idx_e_interp_ready as i32 - idx_e_haveinterp as i32 - 1; }
     // ---- bind p0 = MatchController.currentMatch.characters[0] (as Dynamic; null if no match) ----
@@ -2548,11 +2555,11 @@ fn connect_edit(
     ops.push(Opcode::Call1 { dst: rr(53), fun: RefFun(std_string), arg0: e_result }); // exception -> string
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(err_prefix_g) });
     ops.push(Opcode::Call2 { dst: rr(53), fun: RefFun(str_add), arg0: rr(14), arg1: rr(53) }); // "ERR: " + msg
-    // engine-log it: Sys.println("[peptide] eval error: " + msg)
+    // engine-log it to the in-game console: Tildebugger.log("[peptide] eval error: "+msg, null, null)
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(err_log_prefix_g) });
     ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(14), arg1: rr(53) });
-    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(56) });
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(sys_println), arg0: rr(28) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(tilde_log), arg0: rr(56), arg1: rr(15), arg2: rr(15) });
     let idx_eval_write = ops.len();
     // wire the internal jumps
     if let Opcode::JNotNull { offset, .. } = &mut ops[idx_eval_jnotnull] { *offset = idx_eval_run as i32 - idx_eval_jnotnull as i32 - 1; }

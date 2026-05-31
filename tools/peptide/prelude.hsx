@@ -11,6 +11,14 @@
 // Each function returns the exact wire string the old bytecode handler wrote, so the
 // bridge's reply glosses keep working unchanged (T:/P:/A:/M:OK/PLAY).
 
+// Engine API facade — Engine.log(x) writes to the in-game console (the same sink the
+// eval hook uses to report errors). __td is the bound Tildebugger statics.
+Engine = {
+  log: function(msg) { __td.log("" + msg, null, null); return null; }
+};
+// `log(x)` shorthand also available globally.
+log = function(msg) { __td.log("" + msg, null, null); return "logged: " + msg; };
+
 state = function() {
   return "T:" + p0.getStateName();
 };
