@@ -412,12 +412,11 @@
           "value_map": { "true": "LandType.NORMAL" },
           "todo": "verify per call site (SSF2 canFallOff is bool; FM landType is an enum with more options)"
         },
-        // air_ease has no FM equivalent. The common SSF2 sentinel `-1`
-        // means "no override" — silently drop so it doesn't pollute the
-        // output. Other values surface as the default TODO comment.
-        "air_ease": { "skip_if_value": "-1" }
-        // Still-unmapped SSF2 fields (surface as `// TODO:` per call site): air_ease,
-        // hit_ease (aerial/hit drift ease — no direct FM speed-stat equivalent), airCancel,
+        // air_ease → AnimationStats.terminalVelocity. The SSF2 sentinel `-1`
+        // means "no override" and is dropped; any other value sets terminalVelocity.
+        "air_ease": { "target": "updateAnimationStats.terminalVelocity", "skip_if_value": "-1" }
+        // Still-unmapped SSF2 fields (surface as `// TODO:` per call site):
+        // hit_ease (no direct FM speed-stat equivalent), airCancel,
         // airCancelSpecial (cancel-into-aerial windows — no clean FM flag), allowDoubleJump,
         // allowRun, allowControlGround, atk_id, cancelSoundOnEnd, cancelVoiceOnEnd,
         // facedLedgesOnly, IASA, ledgeFrame, linkFrames, refreshRate, rocket, secondaryAttack.
