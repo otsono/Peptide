@@ -911,6 +911,9 @@ fn connect_edit(
     let hs_parse = require_fn(code, "parseString", Some("hscript.Parser"))?;
     let hs_interp_ctor = find_fn(code, "__constructor__", Some("hscript.$Interp")).unwrap_or(2235);
     let hs_execute = require_fn(code, "execute", Some("hscript.Interp"))?;
+    let hs_setvar = require_fn(code, "setVar", Some("hscript.Interp"))?;
+    let eval_p0_g = add_string_const(code, "p0");  // bound to player-0 Character before each eval
+    let eval_cs_g = add_string_const(code, "CS");  // bound to the CState statics (move-id source)
     let hs_parser_t = require_type(code, "hscript.Parser")?;
     let hs_interp_t = require_type(code, "hscript.Interp")?;
     // hscript.Expr is an unnamed enum (t396) — not name-resolvable; index confirmed by
@@ -1394,6 +1397,30 @@ fn connect_edit(
     // interp = new hscript.Interp(); interp.__constructor__()
     ops.push(Opcode::New { dst: e_interp });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_interp_ctor), arg0: e_interp });
+    // ---- bind p0 = MatchController.currentMatch.characters[0] (as Dynamic; null if no match) ----
+    // so scripts can reach the live character: `p0.toState(...)`, `p0.body.x`, etc. hscript
+    // treats it as Dynamic and Reflects on it at runtime — the same way character scripts use `self`.
+    let _ = eval_cs_g;
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });   // currentMatch
+    let idx_e_p0null = ops.len();
+    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                                // no match -> p0 = null
+    ops.push(Opcode::Field { dst: rr(33), obj: rr(44), field: RefField(characters_field) }); // ArrayObj
+    let idx_e_chnull = ops.len();
+    ops.push(Opcode::JNull { reg: rr(33), offset: 0 });
+    ops.push(Opcode::Field { dst: rr(32), obj: rr(33), field: RefField(1) });          // .array (native)
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::GetArray { dst: rr(28), array: rr(32), index: rr(39) });          // characters[0] -> Dynamic
+    let idx_e_p0done = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                                           // -> setVar
+    let idx_e_bindnull = ops.len();
+    ops.push(Opcode::Null { dst: rr(28) });
+    let idx_e_setp0 = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_p0_g) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_e_p0null] { *offset = idx_e_bindnull as i32 - idx_e_p0null as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_e_chnull] { *offset = idx_e_bindnull as i32 - idx_e_chnull as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_p0done] { *offset = idx_e_setp0 as i32 - idx_e_p0done as i32 - 1; }
     // result = interp.execute(expr)
     ops.push(Opcode::Call2 { dst: e_result, fun: RefFun(hs_execute), arg0: e_interp, arg1: e_expr });
     // out = "E:" + Std.string(result) + "\n"
