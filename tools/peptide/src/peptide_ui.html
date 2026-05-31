@@ -125,6 +125,13 @@
   .spin{width:15px;height:15px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;
     border-radius:50%;animation:spin .7s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
+  /* reconnect toast (auto-retry, no modal) */
+  .banner{position:fixed;top:60px;left:50%;transform:translateX(-50%) translateY(-10px);
+    background:var(--surface);border:1px solid var(--border);border-radius:999px;
+    padding:8px 17px;display:none;align-items:center;gap:10px;box-shadow:var(--shadow-pop);
+    z-index:40;opacity:0;transition:opacity .2s,transform .2s;font-size:13.5px;color:var(--ink);max-width:80%;}
+  .banner.show{display:inline-flex;opacity:1;transform:translateX(-50%) translateY(0);}
+  .banner .spin{border-color:rgba(204,120,92,.28);border-top-color:var(--clay);}
   /* scrollbar */
   #scroll::-webkit-scrollbar{width:10px;}
   #scroll::-webkit-scrollbar-thumb{background:#454440;border-radius:6px;border:3px solid var(--paper);}
@@ -152,6 +159,8 @@
       <button id="send">Send</button>
     </div>
   </div></div>
+
+  <div class="banner" id="banner"><span class="spin"></span><span id="banner-text">Reconnecting…</span></div>
 
   <div class="overlay" id="overlay">
     <div class="modal">
@@ -225,6 +234,7 @@
       const tok=(line.slice(8).trim().split(/\s+/)[0]||"");
       const id=(tok.split("::").pop()||tok).split(".")[0];
       if(id){ charName=id; setStatus(true); }
+      if(typeof autoRetries!=='undefined') autoRetries=0; // a launched match = stable; re-arm auto-retry
       add("engine","Match launched · "+charName);
       return;
     }
@@ -249,29 +259,54 @@
   // simpler enter handling
   $("input").onkeydown=(e)=>{ if(e.key==="Enter"){ const v=$("input").value; $("input").value=""; send(v); } };
 
-  // ── reconnect modal ──────────────────────────────────
-  const overlay=$("overlay"), reBtn=$("reconnect"), mErr=$("m-err");
+  // ── reconnect: auto-retry once, then offer the modal ──
+  const overlay=$("overlay"), reBtn=$("reconnect"), mErr=$("m-err"), banner=$("banner");
+  let reconnectState="idle", wasAuto=false, autoRetries=0, waitTimer=null;
+
   function setReconnecting(on){
     reBtn.disabled=on;
-    reBtn.innerHTML = on ? '<span class="spin"></span>Reconnecting…' : 'Reconnect';
+    reBtn.innerHTML = on ? '<span class="spin"></span>Booting Fraymakers…' : 'Reconnect';
   }
+  function showBanner(t){ document.getElementById("banner-text").textContent=t; banner.classList.add("show"); }
+  function hideBanner(){ banner.classList.remove("show"); }
+  function showModal(err){
+    document.getElementById("m-msg").textContent="Fraymakers disconnected. Re-patch and boot it again to reconnect.";
+    mErr.textContent=err||""; setReconnecting(false); overlay.classList.add("show");
+  }
+  function hideModal(){ overlay.classList.remove("show"); }
+  function bootingText(t){
+    if(banner.classList.contains("show")) document.getElementById("banner-text").textContent=t;
+    if(overlay.classList.contains("show")) document.getElementById("m-msg").textContent=t;
+  }
+  function startWait(){ clearWait(); waitTimer=setTimeout(()=>bootingText("Fraymakers is taking a while to boot…"),8000); }
+  function clearWait(){ if(waitTimer){clearTimeout(waitTimer);waitTimer=null;} }
+
+  function beginReconnect(auto){
+    reconnectState="active"; wasAuto=auto;
+    if(auto) showBanner("Reconnecting to Fraymakers…");
+    else { setReconnecting(true); document.getElementById("m-msg").textContent="Re-patching and booting Fraymakers…"; mErr.textContent=""; }
+    startWait();
+    if(window.ipc && window.ipc.postMessage) window.ipc.postMessage("@@reconnect");
+  }
+
   window.onDisconnected=function(){
-    setStatus(false); spawned=false; mErr.textContent=""; setReconnecting(false);
-    overlay.classList.add("show");
+    setStatus(false); spawned=false;
+    if(reconnectState==="active") return;
+    if(autoRetries<1){ autoRetries++; beginReconnect(true); } // silent auto-retry once
+    else showModal();                                         // then ask the user
   };
-  window.onReconnecting=function(){ setReconnecting(true); mErr.textContent=""; };
+  window.onReconnecting=function(){ bootingText("Booting Fraymakers…"); };
   window.onReconnected=function(p, ch){
     if(p) port=p; if(ch) charName=ch; spawned=false; setStatus(true);
-    setReconnecting(false); overlay.classList.remove("show");
+    clearWait(); reconnectState="idle"; hideBanner(); hideModal(); setReconnecting(false);
     add("system","Reconnected — booting "+charName+"…");
   };
   window.onReconnectFailed=function(msg){
-    setReconnecting(false); mErr.textContent=msg||"Reconnect failed. Try again.";
+    clearWait(); reconnectState="idle";
+    if(wasAuto){ hideBanner(); showModal(msg||"Couldn’t reach Fraymakers."); }
+    else { setReconnecting(false); mErr.textContent=msg||"Reconnect failed. Try again."; }
   };
-  reBtn.onclick=function(){
-    setReconnecting(true);
-    if(window.ipc && window.ipc.postMessage) window.ipc.postMessage("@@reconnect");
-  };
+  reBtn.onclick=function(){ beginReconnect(false); };
 
   window.addEventListener("DOMContentLoaded",()=>$("input").focus());
   $("input").focus();
