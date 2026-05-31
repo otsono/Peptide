@@ -901,6 +901,26 @@ fn connect_edit(
     let p_dmg_g = add_string_const(code, " dmg=");
     let p_nomatch_g = add_string_const(code, "P:NOMATCH\n");
     eprintln!("physics: Std.string={std_string} body.f={char_body_f} physics.f={char_physics_f} damage.f={char_damage_f}");
+    // ---- hscript eval pipeline ('e' command): the engine bundles full hscript — the
+    // same Parser + Interp that runs every character/assist script. `e` parses a script
+    // string and executes it, so handler logic is readable Haxe text instead of
+    // hand-emitted bytecode. SPIKE: a hardcoded script proves the in-engine pipeline;
+    // the socket-driven arbitrary-script form (and engine-class registration) follow. ----
+    let e_idx = add_int(code, 'e' as i32);
+    let hs_parser_ctor = find_fn(code, "__constructor__", Some("hscript.$Parser")).unwrap_or(2284);
+    let hs_parse = require_fn(code, "parseString", Some("hscript.Parser"))?;
+    let hs_interp_ctor = find_fn(code, "__constructor__", Some("hscript.$Interp")).unwrap_or(2235);
+    let hs_execute = require_fn(code, "execute", Some("hscript.Interp"))?;
+    let hs_parser_t = require_type(code, "hscript.Parser")?;
+    let hs_interp_t = require_type(code, "hscript.Interp")?;
+    // hscript.Expr is an unnamed enum (t396) — not name-resolvable; index confirmed by
+    // both parseString's return type and execute's 2nd arg. (Same hardcoded-index style
+    // as RT(1957)/alloc_array=256 elsewhere; re-derive if the engine build changes.)
+    let hs_expr_t: u32 = 396;
+    let eval_script_g = add_string_const(code, "1 + 2");
+    let eval_prefix_g = add_string_const(code, "E:");
+    let eval_nl_g = add_string_const(code, "\n");
+    eprintln!("eval: parseString={hs_parse} execute={hs_execute} Parser_t={hs_parser_t} Interp_t={hs_interp_t} Expr_t={hs_expr_t} parserCtor={hs_parser_ctor} interpCtor={hs_interp_ctor}");
     // ---- 'a' command: animation introspection (name + frame index/total) ----
     // Reads Character.animation -> currentAnimation (String) / currentFrame /
     // totalFrames (Int), writes "A:<name> frame <cur>/<total>". Lets the agent (and
@@ -1124,6 +1144,11 @@ fn connect_edit(
     // 71 Resource (resource_t); 72 $ResourceType statics (rt_statics_t); 73 enc Ref<ResourceType> (t241)
     let base = add_regs(f, &[7, 7, sock_t, host_t, 3, out_t, 0, 3, 3, 7, sock_t, handle_t, 3, 3, str_t, enc_t, 3, bytes_t, 3, 3, 3, 3, nulli32_t, tilde_t, console_t, 669, 669, 4366, 9, 1957, 2536, 8, 11, 38, 4366, 675, 668, 6738, 13, 3, dmr_field_t, ms_statics_t, 669, mc_statics_t, match_t, core_statics_t, container_t, h2dobj_t, mode_t, 1194, 4482, bytes_t2, 38, str_t, 0, str_t, str_t, str_t, str_t, nulli32_t2, pxfres_t, keysiter_t, str_t, stringmap_t, 7, rm_statics_t, 38, 11, absres_t, char_entity_t, cstate_statics_t, resource_t, rt_statics_t, enc241_t, sprite_entity_t, cse_arg3_t]);
     let rr = |i: u32| Reg(base + i);
+    // eval regs: hscript Parser, Interp, Expr (parseString result), Dynamic (execute result).
+    // Appended after the main block so every existing rr(i) index is unchanged.
+    let eval_regs_base = add_regs(f, &[hs_parser_t as usize, hs_interp_t as usize, hs_expr_t as usize, 9]);
+    let (e_parser, e_interp, e_expr, e_result) =
+        (Reg(eval_regs_base), Reg(eval_regs_base + 1), Reg(eval_regs_base + 2), Reg(eval_regs_base + 3));
     let (r_done, r_true, r_sock, r_host, r_port, r_out, r_ret, r_ip, r_byte, r_blockf, r_sock2, r_handle, r_c, r_zero) =
         (rr(0), rr(1), rr(2), rr(3), rr(4), rr(5), rr(6), rr(7), rr(8), rr(9), rr(10), rr(11), rr(12), rr(13));
 
@@ -1323,6 +1348,40 @@ fn connect_edit(
     let idx_jslt = ops.len();
     ops.push(Opcode::JSLt { a: r_c, b: r_zero, offset: 0 });            // no data (c<0) -> L_ORIG
     let _ = write_byte;
+    // ---- 'e' (eval): parse + execute an hscript string, write "E:<result>\n". SPIKE:
+    // a hardcoded script ("1 + 2") proves the in-engine hscript pipeline end-to-end;
+    // the socket-driven arbitrary-script form follows once this is green. This single
+    // hook is the foundation that replaces the per-command bytecode handlers. ----
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(e_idx) });
+    let idx_jne_e = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });          // not 'e' -> L_AFTER_E ('x' check)
+    // parser = new hscript.Parser(); parser.__constructor__()
+    ops.push(Opcode::New { dst: e_parser });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_parser_ctor), arg0: e_parser });
+    // expr = parser.parseString(script, null)
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_script_g) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: e_expr, fun: RefFun(hs_parse), arg0: e_parser, arg1: rr(14), arg2: rr(15) });
+    // interp = new hscript.Interp(); interp.__constructor__()
+    ops.push(Opcode::New { dst: e_interp });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_interp_ctor), arg0: e_interp });
+    // result = interp.execute(expr)
+    ops.push(Opcode::Call2 { dst: e_result, fun: RefFun(hs_execute), arg0: e_interp, arg1: e_expr });
+    // out = "E:" + Std.string(result) + "\n"
+    ops.push(Opcode::Call1 { dst: rr(53), fun: RefFun(std_string), arg0: e_result });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_prefix_g) });
+    ops.push(Opcode::Call2 { dst: rr(53), fun: RefFun(str_add), arg0: rr(14), arg1: rr(53) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_nl_g) });
+    ops.push(Opcode::Call2 { dst: rr(53), fun: RefFun(str_add), arg0: rr(53), arg1: rr(14) });
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(53), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_e_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                            // -> L_ORIG (patched in the n-block)
+    // not-'e' jumps to the next op (the 'x' check pushed right below)
+    let idx_after_e = ops.len();
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_e] { *offset = idx_after_e as i32 - idx_jne_e as i32 - 1; }
     // dispatch: 'x' -> clean engine exit (no kill -9 wedge); 'p' -> PONG ; 'c' -> ...
     ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(x_idx) });
     ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 1 });          // not 'x' -> skip exit (fall to 'p')
@@ -2353,6 +2412,7 @@ fn connect_edit(
     if let Opcode::JFalse { offset, .. } = &mut ops[idx_jready] { *offset = n - idx_jready as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_jnull] { *offset = n - idx_jnull as i32 - 1; }
     if let Opcode::JSLt { offset, .. } = &mut ops[idx_jslt] { *offset = n - idx_jslt as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_jdone] { *offset = n - idx_e_jdone as i32 - 1; } // 'e' eval done -> L_ORIG
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_p] { *offset = idx_c_check as i32 - idx_jne_p as i32 - 1; }
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_c] { *offset = idx_s_check as i32 - idx_jne_c as i32 - 1; }
     // 's' falls through to the 'q' check; route 'not s' there too; 'q' routes to 'k'; 'k' to L_ORIG.

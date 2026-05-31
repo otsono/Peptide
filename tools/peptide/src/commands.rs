@@ -33,6 +33,8 @@ pub const COMMANDS: &[Cmd] = &[
           args: "",                              help: "list these commands (client-side; sends nothing)" },
     Cmd { name: "spawn",   aliases: &["start", "launch", "s"], wire: 's',
           args: "<char> [stage] [assist]",       help: "start a match with <char> (loads custom content if needed); stage/assist default to thespire/commandervideoassist" },
+    Cmd { name: "eval",    aliases: &["e"],                  wire: 'e',
+          args: "[hscript]",                     help: "parse + execute an hscript string in the engine, print E:<result> (SPIKE: currently runs a hardcoded script)" },
     Cmd { name: "move",    aliases: &["attack", "m"],       wire: 'm',
           args: "[move-name]",                   help: "drive a move on player 0 via the engine state machine (no arg = jab). See `help` move list below" },
     Cmd { name: "loop",    aliases: &["repeat"],            wire: '\0',
