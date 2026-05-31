@@ -171,11 +171,11 @@ pub fn split_animations(
                 }
             }
 
-            // ── Jump aerial (double jump): forward / back ─────────────────────
-            "jump_aerial" => {
+            // ── Jump midair (double jump): forward / back ─────────────────────
+            "jump_midair" => {
                 if let Some(&bf) = label_map.get("backflip") {
-                    push_split(&mut out, "jump_aerial",      anim_name, 0,  bf,    &labels, false, None);
-                    push_split(&mut out, "jump_aerial_back", anim_name, bf, total, &labels, false, None);
+                    push_split(&mut out, "jump_midair",      anim_name, 0,  bf,    &labels, false, None);
+                    push_split(&mut out, "jump_midair_back", anim_name, bf, total, &labels, false, None);
                 } else {
                     push_full(&mut out, anim_name, total, &labels);
                 }
@@ -344,19 +344,29 @@ pub fn split_animations(
             }
 
             // ── Fall: loop at 'loop'/'redo' start, or split off uspecFall ─────
+            // The Fraymakers slot is `fall_loop` (fall_in is aliased from it below).
             "fall" | "swim" | "wall_stick" => {
+                let out_name = if anim_name == "fall" { "fall_loop" } else { anim_name.as_str() };
+                let is_fall = anim_name == "fall";
                 let loop_f = label_map.get("loop")
                     .or_else(|| label_map.get("redo"))
                     .copied();
                 let uspec_f = label_map.get("uspecFall").copied();
                 if let Some(uf) = uspec_f {
-                    push_split(&mut out, anim_name,     anim_name, 0,  uf,    &labels, true, loop_f);
+                    push_split(&mut out, out_name,     anim_name, 0,  uf,    &labels, true, loop_f);
                     push_split(&mut out, "fall_special", anim_name, uf, total, &labels, true, Some(0));
                 } else if let Some(lf) = loop_f {
-                    push_split(&mut out, anim_name, anim_name, 0, total, &labels, true, Some(lf));
+                    push_split(&mut out, out_name, anim_name, 0, total, &labels, true, Some(lf));
                 } else {
-                    push_full(&mut out, anim_name, total, &labels);
+                    // No loop label — a fall still loops in place; swim/wall_stick keep prior behavior.
+                    push_split(&mut out, out_name, anim_name, 0, total, &labels, is_fall, if is_fall { Some(0) } else { None });
                 }
+            }
+
+            // ── Walk: emit the looping walk cycle as walk_loop (walk_in/out aliased) ──
+            "walk" => {
+                let loop_f = label_map.get("loop").or_else(|| label_map.get("redo")).copied();
+                push_split(&mut out, "walk_loop", anim_name, 0, total, &labels, true, Some(loop_f.unwrap_or(0)));
             }
 
             // ── Buried / dizzy: loop at tail ──────────────────────────────────
@@ -503,6 +513,54 @@ pub fn split_animations(
         ("airdash_land",             "land_heavy"),
         ("airdash_land_uncanceled",  "land_heavy"),
         ("airdash_land_whiff",       "land_heavy"),
+        // Airdash freefall reuses the air-dodge pose.
+        ("airdash_freefall",         "airdodge"),
+        ("airdash_freefall_whiff",   "airdodge"),
+        // SSF2 has ONE hurt animation; Fraymakers splits it by knockback magnitude —
+        // reuse the single hurt for every hurt slot.
+        ("hurt_light_low",     "hurt"),
+        ("hurt_light_middle",  "hurt"),
+        ("hurt_light_high",    "hurt"),
+        ("hurt_medium",        "hurt"),
+        ("hurt_heavy",         "hurt"),
+        ("hurt_thrown",        "hurt"),
+        // Crouch exit reuses the crouch entry (SSF2 has no separate un-crouch sprite).
+        ("crouch_out",   "crouch_in"),
+        // Stand turn reuses the idle pose (SSF2 has no turn-in-place sprite).
+        ("stand_turn",   "stand"),
+        // Parry has no SSF2 equivalent — reuse the shield startup pose.
+        ("parry_in",      "shield_in"),
+        ("parry_success", "shield_in"),
+        ("parry_fail",    "shield_in"),
+        // Shield-hurt reuses the held-shield pose.
+        ("shield_hurt",  "shield_loop"),
+        // Emote (taunt) reuses an existing taunt.
+        ("emote",        "taunt_up"),
+        // Ledge wall/edge poses: reuse the ledge-lean (SSF2 'edgelean') for the
+        // hang in/loop slots when no dedicated split exists.
+        ("ledge_in",     "ledge_lean"),
+        ("ledge_loop",   "ledge_lean"),
+        // Ledge jump / wall jump reuse the jump startup + initial rise.
+        ("ledge_jump_in", "jump_squat"),
+        ("ledge_jump",    "jump_in"),
+        ("wall_jump_in",  "jump_squat"),
+        ("wall_jump",     "jump_in"),
+        // Fall entry + walk in/out reuse the looping versions (SSF2 has no distinct
+        // transition sprites).
+        ("fall_in",   "fall_loop"),
+        ("walk_in",   "walk_loop"),
+        ("walk_out",  "walk_loop"),
+        // Knockdown (SSF2 'crash') sequence: bounce is the source; the lie/getup/roll
+        // slots reuse it (SSF2 has no distinct sprites for each phase).
+        ("crash_loop",   "crash_bounce"),
+        ("crash_get_up", "crash_bounce"),
+        ("crash_roll",   "crash_bounce"),
+        ("crash_attack", "crash_bounce"),
+        // Special-fall (helpless) state animation.
+        ("fall_special", "helpless"),
+        // Assist call (Fraymakers-specific) — placeholder reuse of a neutral pose.
+        ("assist_call",     "stand"),
+        ("assist_call_air", "jump_in"),
     ];
     for (target, src) in SLOT_ALIASES {
         if out.iter().any(|s| s.fm_name == *target) { continue; }
