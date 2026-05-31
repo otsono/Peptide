@@ -153,6 +153,7 @@ vocabulary is one shared table: `tools/peptide/src/commands.rs`.
 | `move [name]` (attack, m) | `m [sel]` | **move dispatch by name** — `Character.toState(CState.<NAME>)` on player 0 (internal dispatch, **not** key-press). Bare = jab. Names = the Fraymakers move set (jab, tilt_down, strong_forward, aerial_up, special_neutral, grab, …). | `M:OK` / `M:NOMATCH` |
 | `state` (status, t) | `t` | **telemetry** — `Character.getStateName()` on player 0 | `T:<state>` / `T:NOMATCH` |
 | `query` (matchlive, q) | `q` | is a match live? | `Q:MATCH_LIVE` / `Q:NO_MATCH` |
+| `physics` (phys, vitals, v) | `v` | player 0 position / velocity / damage (`Std.string` of Body + Physics + Damage floats) | `P: x=.. y=.. vx=.. vy=.. dmg=..` |
 | `keys` (pool, k) | `k` | dump pool keys + UGC-discovery diagnostics | `K:…` |
 | `exit` (quit, stop, x) | `x` | clean engine shutdown (`hxd.System.exit`) | — |
 
@@ -269,7 +270,7 @@ Stop-condition for "a converted character is validated" (the original
 | 3 | **Engine boots + spawns**, no crash | **MET** — spawn → `T:STAND` | **MET** — spawn → INTRO → STAND, stable |
 | 4 | **Every move runs** via the internal control path | **MET** (spot-checked across categories) | **MET** — full moveset driven |
 | 5 | **Animations play** (per-state `ANIM:` stream) | **MET** | **MET** |
-| 6 | **Physics within tolerance** of `CharacterStats.hx` | pending readback | pending readback |
+| 6 | **Physics within tolerance** of `CharacterStats.hx` | readback live | readback live (dash_attack moves x −130→49) |
 
 **Both reference characters drive their movesets in-engine (verified live).**
 With `move <name>` (engine `toState`) every state produces the expected
