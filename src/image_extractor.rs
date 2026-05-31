@@ -623,7 +623,14 @@ fn prerender_skewed_frames(
                     let fy = dy as f64 + min_y;
                     let sx = inv_a * fx + inv_c * fy;
                     let sy = inv_b * fx + inv_d * fy;
-                    buf.push(bicubic(sx, sy));
+                    // Nearest-neighbour sampling: every output pixel is an EXACT source pixel,
+                    // so the baked sprite keeps the source's coherent palette regions (no
+                    // interpolation redistributing mid tones onto the lightest palette slot).
+                    // That's what keeps recolouring clean for this palette-swapped pixel art —
+                    // bicubic smoothing looked nicer in the default skin but speckled when
+                    // recoloured. (bicubic kept as a reference but unused.)
+                    let _ = bicubic;
+                    buf.push(sample(sx.round() as i64, sy.round() as i64));
                 }
             }
 
