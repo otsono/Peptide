@@ -6,13 +6,15 @@
 //! AnimationStats / HitboxStats / Script). Skipped silently if the
 //! corpus isn't on disk (matches `golden_sandbag.rs` pattern).
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use ssf2_converter::{run_conversion, ConvertOptions};
+use std::path::PathBuf;
 
-fn manifest_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")) }
-
+/// `ssf2-ssfs/` is a sibling of the repo root; the crate sits two levels below.
 fn zelda_ssf_path() -> PathBuf {
-    manifest_dir().parent().unwrap_or(Path::new(".")).join("ssf2-ssfs/zelda.ssf")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("ssf2-ssfs/zelda.ssf")
 }
 
 #[test]
@@ -26,13 +28,10 @@ fn sheik_emits_full_package_from_zelda_ssf() {
     let out = tempfile::tempdir().expect("tempdir");
     // Default: full SSF conversion. Stage B emits zelda+sheik into ONE
     // project at characters/zelda/. The --name override would route to
-    // single-character mode; we exercise the default multi-char path
-    // here.
-    let status = Command::new(env!("CARGO_BIN_EXE_ssf2_converter"))
-        .arg(&ssf)
-        .arg("-o").arg(out.path())
-        .status().expect("run converter");
-    assert!(status.success(), "converter exited non-zero for zelda.ssf");
+    // single-character mode; we exercise the default multi-char path here.
+    let mut opts = ConvertOptions::new(&ssf);
+    opts.output = out.path().to_path_buf();
+    run_conversion(opts).expect("run_conversion for zelda.ssf");
 
     // Stage B: zelda.ssf → ONE characters/zelda/ project containing both
     // characters. characters/sheik/ does NOT exist.

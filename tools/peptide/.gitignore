@@ -1,8 +1,0 @@
-/target
-# Engine artifacts — never commit Fraymakers bytecode or patched output
-*.dat
-_conn.dat
-*.fra
-hlboot*
-eng.log
-*.png

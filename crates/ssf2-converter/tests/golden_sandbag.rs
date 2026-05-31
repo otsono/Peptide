@@ -17,16 +17,20 @@
 //! see which outputs changed.
 
 use sha2::{Digest, Sha256};
+use ssf2_converter::{run_conversion, ConvertOptions};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// `ssf2-ssfs/` is a sibling of the repo root; the crate sits two levels below.
 fn sandbag_ssf_path() -> PathBuf {
-    manifest_dir().parent().unwrap_or(Path::new(".")).join("ssf2-ssfs/sandbag.ssf")
+    manifest_dir()
+        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("ssf2-ssfs/sandbag.ssf")
 }
 
 fn golden_hashes_path() -> PathBuf {
@@ -109,18 +113,10 @@ fn sandbag_conversion_matches_golden_hashes() {
     rm_rf(&tempdir);
     std::fs::create_dir_all(&tempdir).expect("mkdir tempdir");
 
-    // Locate the release binary built by the same workspace.
-    let bin = manifest_dir().join("target/release/ssf2_converter");
-    assert!(bin.exists(),
-        "release binary must be built first; expected at {}", bin.display());
-
-    let status = Command::new(&bin)
-        .arg(&ssf)
-        .arg("--output").arg(&tempdir)
-        .status()
-        .expect("spawn ssf2_converter");
-    assert!(status.success(),
-        "ssf2_converter exited non-zero converting sandbag");
+    // Convert in-process (was: spawn the release ssf2_converter binary).
+    let mut opts = ConvertOptions::new(&ssf);
+    opts.output = tempdir.clone();
+    run_conversion(opts).expect("run_conversion converting sandbag");
 
     let out_root = tempdir.join("sandbag");
     let observed = hash_text_outputs(&out_root);
@@ -169,7 +165,7 @@ fn sandbag_conversion_matches_golden_hashes() {
         msg.push('\n');
     }
     msg.push_str("To accept the new output as the baseline, regenerate hashes:\n");
-    msg.push_str("  ./target/release/ssf2_converter ../ssf2-ssfs/sandbag.ssf --output /tmp/sb && \\\n");
+    msg.push_str("  cargo run -p peptide -- convert ../ssf2-ssfs/sandbag.ssf --output /tmp/sb && \\\n");
     msg.push_str("  cd /tmp/sb/sandbag && \\\n");
     msg.push_str("  find . -type f \\( -name '*.hx' -o -name '*.entity' -o -name '*.json' -o -name '*.meta' \\\n");
     msg.push_str("       -o -name '*.palettes' -o -name '*.fraytools' \\) \\\n");

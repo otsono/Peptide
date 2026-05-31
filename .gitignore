@@ -23,6 +23,17 @@ docs/*
 !docs/PARITY.md
 !docs/P1_P2_STATUS.md
 !docs/PEPTIDE_HSCRIPT.md
+!docs/PEPTIDE_README.md
 
 # macOS .app bundle output from make-app.sh
 dist/
+
+# ── Peptide engine artifacts — never commit Fraymakers bytecode or patched output
+*.dat
+_conn.dat
+*.fra
+hlboot*
+eng.log
+# Peptide render/harness PNG dumps (converter sprite PNGs live under characters/,
+# already ignored above). No source PNGs are tracked in this repo.
+*.png

@@ -17,7 +17,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn ssf(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap_or(Path::new("."))
+    // ssf2-ssfs/ is a sibling of the repo root; the crate sits two levels below.
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
         .join(format!("ssf2-ssfs/{}.ssf", name))
 }
 

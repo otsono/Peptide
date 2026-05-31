@@ -9,8 +9,9 @@ use ssf2_converter::swf_parser;
 // optional — they no-op if the input files aren't present (a fresh checkout
 // on a machine without the SSF2 roster).
 fn ssfs_dir() -> std::path::PathBuf {
+    // ssf2-ssfs/ is a sibling of the repo root; the crate sits two levels below.
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
+        .parent().and_then(|p| p.parent())
         .unwrap_or(std::path::Path::new("."))
         .join("ssf2-ssfs")
 }

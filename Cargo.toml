@@ -1,38 +1,29 @@
+[workspace]
+members = ["crates/ssf2-converter"]
+resolver = "2"
+
 [package]
-name = "ssf2_converter"
+name = "peptide"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-name = "ssf2_converter"
-path = "src/lib.rs"
+[[bin]]
+name = "peptide"
+path = "src/main.rs"
 
 [dependencies]
-swf = "0.2"
-flate2 = "1.0"
+# ── Engine harness (bytecode patcher + webview UI + CDP FrayTools driver) ──
+hlbc = "=0.7.0"
+anyhow = "1.0"
+ratatui = "0.30.0"
+crossterm = "0.29.0"
+wry = "0.55.1"
+tao = "0.35.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.8"
-fasteval = "0.2"
-anyhow = "1.0"
-clap = { version = "4.0", features = ["derive"] }
-tokio = { version = "1.0", features = ["full"] }
-log = "0.4"
-env_logger = "0.11"
-bytes = "1.0"
-byteorder = "1.5"
-encoding_rs = "0.8"
-image = "0.25.10"
-tiny-skia = "0.11"
-sha1 = "0.10"
-stdio-override = { version = "0.1", optional = true }
-indicatif = "0.17"
-colored = "2.1"
-regex = "1"
-
-[dev-dependencies]
-sha2 = "0.10"
-tempfile = "3"
-
-[workspace]
-members = ["ssf2-converter-gui"]
+tungstenite = "0.21"
+# ── Config persistence + native file dialogs (ported from the old egui GUI) ──
+dirs = "5"
+rfd = "0.15"
+# ── In-process SSF2 → Fraymakers conversion (folded in; no more sidecar bin) ──
+ssf2_converter = { path = "crates/ssf2-converter" }

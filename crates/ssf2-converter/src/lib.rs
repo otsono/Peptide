@@ -18,3 +18,7 @@ pub mod mappings;
 pub mod project;
 pub mod fraytools_transform;
 pub mod vector_raster;
+
+// In-process conversion entry point (was the `ssf2_converter` binary's main()).
+pub mod convert;
+pub use convert::{run_conversion, ConversionSummary, ConvertOptions};

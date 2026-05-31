@@ -5,21 +5,21 @@
 //!
 //! Skipped silently if the corpus isn't on disk.
 
+use ssf2_converter::{run_conversion, ConvertOptions};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-fn manifest_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")) }
-
+/// `ssf2-ssfs/` is a sibling of the repo root; the crate sits two levels below.
 fn ssf_path(name: &str) -> PathBuf {
-    manifest_dir().parent().unwrap_or(Path::new("."))
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
         .join(format!("ssf2-ssfs/{}.ssf", name))
 }
 
 fn run_converter(ssf: &Path, out: &Path) {
-    let status = Command::new(env!("CARGO_BIN_EXE_ssf2_converter"))
-        .arg(ssf).arg("-o").arg(out)
-        .status().expect("run converter");
-    assert!(status.success(), "converter exited non-zero for {}", ssf.display());
+    let mut opts = ConvertOptions::new(ssf);
+    opts.output = out.to_path_buf();
+    run_conversion(opts).expect("run_conversion");
 }
 
 /// Asserts a transformation character's package is present in the

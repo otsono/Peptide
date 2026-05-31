@@ -21,6 +21,14 @@ use std::path::{Path, PathBuf};
 
 fn manifest_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")) }
 
+/// Repo root: the docs checked here (README.md, docs/*) live at the top level,
+/// two levels up from this crate (`<repo>/crates/ssf2-converter`).
+fn repo_root() -> PathBuf {
+    manifest_dir()
+        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 /// Top-level docs that must stay current. The `docs/` historical plan
 /// files are explicitly NOT in this list — they keep their old
 /// language with a "Status: implemented" banner pointing at the
@@ -116,7 +124,10 @@ const STALE_PATTERNS: &[StalePattern] = &[
     },
     StalePattern {
         needle: "scripts/Character/",
-        allowed_files: &["docs/multi_character_projects_plan.md"],
+        // DEVELOPMENT.md §14 documents the rename as an explicit "old → new"
+        // (`scripts/Character/` → `scripts/<Pascal>/`), which is legitimate
+        // historical context, not a stale instruction.
+        allowed_files: &["docs/multi_character_projects_plan.md", "DEVELOPMENT.md"],
         reason: "library/scripts/Character/ → library/scripts/<Pascal>/ (e.g. \
                  scripts/Mario/) in the Stage A universal rename (commit 388e6faf).",
     },
@@ -127,7 +138,7 @@ fn no_stale_terms_in_top_level_docs() {
     let mut failures: Vec<String> = Vec::new();
 
     for md in MD_FILES {
-        let path = manifest_dir().join(md);
+        let path = repo_root().join(md);
         let body = match fs::read_to_string(&path) {
             Ok(s) => s,
             Err(_) => {
@@ -179,7 +190,7 @@ fn historical_plan_docs_carry_status_banner() {
     for plan in &["docs/path2_unification_plan.md",
                   "docs/constructor_walk_detection.md"]
     {
-        let path = manifest_dir().join(plan);
+        let path = repo_root().join(plan);
         let body = match fs::read_to_string(&path) {
             Ok(s) => s,
             Err(_) => continue, // doc may have been intentionally removed

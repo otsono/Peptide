@@ -13,11 +13,15 @@
 //! Skipped silently if `../ssf2-ssfs/` isn't on disk.
 
 use ssf2_converter::*;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
-fn manifest_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")) }
-fn ssfs_dir() -> PathBuf { manifest_dir().parent().unwrap_or(Path::new(".")).join("ssf2-ssfs") }
+/// `ssf2-ssfs/` is a sibling of the repo root; the crate sits two levels below.
+fn ssfs_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("ssf2-ssfs")
+}
 
 #[test]
 fn id_derivation_rule_matches_corpus_method_names() {
@@ -168,10 +172,9 @@ fn package_metadata_lands_in_conversion_log() {
     if !sandbag.exists() { eprintln!("sandbag.ssf missing; skipping"); return; }
     let out = tempfile::tempdir().expect("tempdir");
 
-    let status = Command::new(env!("CARGO_BIN_EXE_ssf2_converter"))
-        .arg(&sandbag).arg("-o").arg(out.path())
-        .status().expect("run converter");
-    assert!(status.success(), "converter exited non-zero");
+    let mut opts = ConvertOptions::new(&sandbag);
+    opts.output = out.path().to_path_buf();
+    run_conversion(opts).expect("run_conversion");
 
     let log = std::fs::read_to_string(out.path().join("sandbag/conversion_log.json")).unwrap();
     assert!(log.contains("\"ssf2_source\""),

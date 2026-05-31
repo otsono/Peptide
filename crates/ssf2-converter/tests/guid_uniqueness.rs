@@ -13,9 +13,9 @@
 //!
 //! Skipped silently if `../ssf2-ssfs/sandbag.ssf` isn't on disk.
 
+use ssf2_converter::{run_conversion, ConvertOptions};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn manifest_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")) }
 
@@ -49,22 +49,23 @@ fn collect_guids(dir: &Path, out: &mut Vec<(String, String)>) {
 
 #[test]
 fn sandbag_guids_are_unique() {
-    let ssf = manifest_dir().parent().unwrap_or(Path::new("."))
+    let ssf = manifest_dir()
+        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
         .join("ssf2-ssfs/sandbag.ssf");
     if !ssf.exists() {
         eprintln!("skip: sandbag.ssf not available at {}", ssf.display());
         return;
     }
-    let bin = manifest_dir().join("target/release/ssf2_converter");
-    assert!(bin.exists(), "release binary must be built first; expected at {}", bin.display());
 
     let tempdir = std::env::temp_dir().join(format!("ssf2_guid_sandbag_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tempdir);
     std::fs::create_dir_all(&tempdir).expect("mkdir tempdir");
 
-    let status = Command::new(&bin).arg(&ssf).arg("--output").arg(&tempdir).status()
-        .expect("spawn ssf2_converter");
-    assert!(status.success(), "ssf2_converter exited non-zero converting sandbag");
+    // Convert in-process (was: spawn the release ssf2_converter binary).
+    let mut opts = ConvertOptions::new(&ssf);
+    opts.output = tempdir.clone();
+    run_conversion(opts).expect("run_conversion converting sandbag");
 
     let mut guids: Vec<(String, String)> = Vec::new();
     collect_guids(&tempdir.join("sandbag"), &mut guids);

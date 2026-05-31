@@ -3,20 +3,33 @@
 //! project shape, collision suffix rule, per-character menu naming,
 //! and project-level conversion log.
 
+use ssf2_converter::{run_conversion, ConvertOptions};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-fn manifest_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")) }
-fn ssf_path(name: &str) -> PathBuf {
-    manifest_dir().parent().unwrap_or(Path::new("."))
-        .join(format!("ssf2-ssfs/{}.ssf", name))
+/// The `ssf2-ssfs/` corpus is a sibling of the repo root; the crate now sits at
+/// `<repo>/crates/ssf2-converter`, so walk up two levels from the manifest dir.
+fn repo_parent() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
+fn ssf_path(name: &str) -> PathBuf {
+    repo_parent().join(format!("ssf2-ssfs/{}.ssf", name))
+}
+/// Run the converter in-process (was: spawn the removed `ssf2_converter` binary).
+/// `extra` accepts the old CLI flags `--name <X>` and `--per-character-projects`.
 fn run_converter(ssf: &Path, out: &Path, extra: &[&str]) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ssf2_converter"));
-    cmd.arg(ssf).arg("-o").arg(out);
-    for a in extra { cmd.arg(a); }
-    let status = cmd.status().expect("run converter");
-    assert!(status.success(), "converter exited non-zero for {}", ssf.display());
+    let mut opts = ConvertOptions::new(ssf);
+    opts.output = out.to_path_buf();
+    let mut it = extra.iter();
+    while let Some(a) = it.next() {
+        match *a {
+            "--name" | "-n" => opts.name = it.next().map(|s| s.to_string()),
+            "--per-character-projects" => opts.per_character_projects = true,
+            _ => {}
+        }
+    }
+    run_conversion(opts).expect("run_conversion");
 }
 
 #[test]
