@@ -902,9 +902,9 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str, headless: bool) -> 
     code.globals.push(hlbc::types::RefType(bytes_t2)); // haxe.io.Bytes
     let g_blen = code.globals.len();
     code.globals.push(hlbc::types::RefType(3)); // Int
-    // one-shot guard: the raw socket read currently re-delivers the buffered 's'
-    // line every frame (consumption quirk under investigation), so gate startMatch
-    // to a single launch per engine run (the harness relaunches per test anyway).
+    // Legacy one-shot guard global (now unused — see MULTI-LAUNCH note at the `s`
+    // handler). Retained so harness global indices stay stable across the rest of
+    // connect_edit; the `s` command may be sent repeatedly to start successive matches.
     let g_launched = code.globals.len();
     code.globals.push(hlbc::types::RefType(7)); // Bool
 
@@ -1169,11 +1169,14 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str, headless: bool) -> 
     let idx_jne_s = ops.len();
     ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });          // not 's' -> L_ORIG
     use hlbc::types::{RefString as RS, RefType as RT};
-    // one-shot guard: the non-consuming socket read re-delivers the line every
-    // frame, so only launch once per engine run (skip to q-check thereafter).
-    ops.push(Opcode::GetGlobal { dst: rr(9), global: RefGlobal(g_launched) });
-    let idx_jlaunched = ops.len();
-    ops.push(Opcode::JTrue { cond: rr(9), offset: 0 });                // already launched -> q_check
+    // MULTI-LAUNCH: no one-shot guard. `s` re-runs every time its byte arrives over
+    // TCP, so a single session can start successive matches with different args. The
+    // socket read consumes the line (the `s` drain loop below reads through the trailing
+    // '\n'), so one `s` runs exactly once; only a NEW `s` line re-launches. The
+    // self-bootstrap below is idempotent (getPXFResource skip) and createMode +
+    // startMatch re-initialize the match each time (verified: two launches, T:STAND, no
+    // crash). (Legacy g_launched guard global retained unused to keep global indices stable.)
+    let _ = g_launched;
     // ---- self-bootstrap: ensure the custom sandbag resource is loaded ----------
     // 's' used to require a prior 'l'; now it loads the .fra itself. The load is the
     // functional core of the 'l' handler (construct Resource -> fetchThreaded ->
