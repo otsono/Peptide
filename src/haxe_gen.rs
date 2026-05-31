@@ -511,39 +511,46 @@ fn format_attack_todo(name: &str) -> String {
 
 fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
     let s = &data.stats;
-    let todo = |v: f64| if v == 0.0 { " /*TODO*/" } else { "" };
-
-    // Convert SSF2 values to Fraymakers equivalents (scaling driven by the
-    // multipliers in mappings/character/stats.json).
-    let gravity       = if s.gravity > 0.0      { ssf2_gravity_to_fm(s.gravity) }      else { 0.0 };
-    let terminal_vel  = if s.fall_speed > 0.0   { ssf2_speed_to_fm(s.fall_speed) }     else { 0.0 };
-    let fast_fall     = if s.fast_fall_speed > 0.0 { ssf2_speed_to_fm(s.fast_fall_speed) } else { 0.0 };
-    let jump_speed    = if s.jump_height > 0.0  { ssf2_jump_to_fm(s.jump_height) }    else { 0.0 };
-    let dj_speed      = if s.double_jump_height > 0.0 { ssf2_jump_to_fm(s.double_jump_height) } else { 0.0 };
-    let walk_cap      = if s.walk_speed > 0.0   { ssf2_walk_to_fm(s.walk_speed) }     else { 0.0 };
-    let dash_speed    = if s.dash_speed > 0.0   { ssf2_dash_to_fm(s.dash_speed) }     else { 0.0 };
-    let aerial_fric   = if s.air_friction != 0.0 { ssf2_air_to_fm(s.air_friction) }   else { 0.0 };
-    let weight        = if s.weight > 0.0 { s.weight } else { 0.0 };
-
-    // offsets, derivations and flat constants all come from stats.json.
+    // flat constants + template physics defaults come from stats.jsonc.
     let cfg = crate::mappings::character_stats();
     let c = |k: &str| cfg.constant(k);
+    let c_num = |k: &str| c(k).parse::<f64>().unwrap_or(0.0);
 
-    // Derived stats — expression strings in stats.jsonc, compiled once and
-    // evaluated with the already-converted stats exposed as variables.
+    // Convert SSF2 values to Fraymakers equivalents (scaling driven by the multipliers in
+    // stats.jsonc). When SSF2 LACKS a value, fall back to the CHARACTER-TEMPLATE DEFAULT
+    // (not 0) so a converted character is never left with 0 weight/gravity/etc. — those
+    // zeros caused null/degenerate physics in-engine. The annotation flags template-sourced
+    // values so an author can see what wasn't derived from SSF2.
+    let dflt = " /*template default*/";
+    let (gravity, gravity_todo)            = if s.gravity > 0.0          { (ssf2_gravity_to_fm(s.gravity), "") }       else { (c_num("gravity"), dflt) };
+    let (terminal_vel, terminal_vel_todo)  = if s.fall_speed > 0.0       { (ssf2_speed_to_fm(s.fall_speed), "") }      else { (c_num("terminalVelocity"), dflt) };
+    let (fast_fall, fast_fall_todo)        = if s.fast_fall_speed > 0.0  { (ssf2_speed_to_fm(s.fast_fall_speed), "") } else { (c_num("fastFallSpeed"), dflt) };
+    let (jump_speed, jump_speed_todo)      = if s.jump_height > 0.0      { (ssf2_jump_to_fm(s.jump_height), "") }      else { (c_num("jumpSpeed"), dflt) };
+    let dj_speed      = if s.double_jump_height > 0.0 { ssf2_jump_to_fm(s.double_jump_height) } else { 0.0 };
+    let (walk_cap, walk_cap_todo)          = if s.walk_speed > 0.0       { (ssf2_walk_to_fm(s.walk_speed), "") }       else { (c_num("walkSpeedCap"), dflt) };
+    let (dash_speed, dash_speed_todo)      = if s.dash_speed > 0.0       { (ssf2_dash_to_fm(s.dash_speed), "") }       else { (c_num("dashSpeed"), dflt) };
+    let (aerial_fric, aerial_fric_todo)    = if s.air_friction != 0.0    { (ssf2_air_to_fm(s.air_friction), "") }      else { (c_num("aerialFriction"), dflt) };
+    let (weight, weight_todo)              = if s.weight > 0.0           { (s.weight, "") }                            else { (c_num("weight"), dflt) };
+
+    // Derived stats — expression strings in stats.jsonc, evaluated with the already-converted
+    // stats as variables. short_hop derives from jump_speed (template-defaulted above) so it
+    // is always sane; aerial_cap derives from SSF2 air mobility/friction, so if SSF2 had
+    // NEITHER, fall back to the template default rather than a near-zero derived value.
     let vars: std::collections::BTreeMap<String, f64> = [
         ("jump_speed".to_string(), jump_speed),
         ("air_mobility_raw".to_string(), s.air_mobility),
         ("aerial_friction".to_string(), aerial_fric),
     ].into_iter().collect();
-    let short_hop  = crate::mappings::evaluate_stat_derivation("shortHopSpeed", &vars).unwrap_or(0.0);
-    let aerial_cap = crate::mappings::evaluate_stat_derivation("aerialSpeedCap", &vars).unwrap_or(0.0);
+    let short_hop_d  = crate::mappings::evaluate_stat_derivation("shortHopSpeed", &vars).unwrap_or(0.0);
+    let aerial_cap_d = crate::mappings::evaluate_stat_derivation("aerialSpeedCap", &vars).unwrap_or(0.0);
+    let short_hop = if short_hop_d > 0.0 { short_hop_d } else { c_num("shortHopSpeed") };
+    let (aerial_cap, aerial_fric_cap_todo) = if s.air_mobility != 0.0 || s.air_friction != 0.0 { (aerial_cap_d, "") } else { (c_num("aerialSpeedCap"), dflt) };
 
-    // doubleJumpSpeeds: the real converted value, or the JSON fallback default.
+    // doubleJumpSpeeds: the real converted value, or the character-template default.
     let dj_array = if dj_speed > 0.0 {
         format!("[{}]", fmt(dj_speed))
     } else {
-        format!("[{}] /*TODO*/", c("doubleJumpSpeedFallback"))
+        format!("[{}]{}", c("doubleJumpSpeedFallback"), dflt)
     };
 
     // Transformation banner: when this character was extracted from a
@@ -571,26 +578,26 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
         .replace("{{char_id}}", char_id)
         .replace("{{base_scale_x}}", &fmt(s.base_scale_x))
         .replace("{{base_scale_y}}", &fmt(s.base_scale_y))
-        .replace("{{weight}}", &fmt(weight)).replace("{{weight_todo}}", todo(weight))
-        .replace("{{gravity}}", &fmt(gravity)).replace("{{gravity_todo}}", todo(gravity))
+        .replace("{{weight}}", &fmt(weight)).replace("{{weight_todo}}", weight_todo)
+        .replace("{{gravity}}", &fmt(gravity)).replace("{{gravity_todo}}", gravity_todo)
         .replace("{{short_hop}}", &fmt(short_hop))
-        .replace("{{jump_speed}}", &fmt(jump_speed)).replace("{{jump_speed_todo}}", todo(jump_speed))
+        .replace("{{jump_speed}}", &fmt(jump_speed)).replace("{{jump_speed_todo}}", jump_speed_todo)
         .replace("{{dj_array}}", &dj_array)
-        .replace("{{terminal_vel}}", &fmt(terminal_vel)).replace("{{terminal_vel_todo}}", todo(terminal_vel))
-        .replace("{{fast_fall}}", &fmt(fast_fall)).replace("{{fast_fall_todo}}", todo(fast_fall))
+        .replace("{{terminal_vel}}", &fmt(terminal_vel)).replace("{{terminal_vel_todo}}", terminal_vel_todo)
+        .replace("{{fast_fall}}", &fmt(fast_fall)).replace("{{fast_fall_todo}}", fast_fall_todo)
         .replace("{{friction}}", &c("friction"))
         .replace("{{walk_speed_initial}}", &c("walkSpeedInitial"))
         .replace("{{walk_speed_accel}}", &c("walkSpeedAcceleration"))
-        .replace("{{walk_cap}}", &fmt(walk_cap)).replace("{{walk_cap_todo}}", todo(walk_cap))
-        .replace("{{dash_speed}}", &fmt(dash_speed)).replace("{{dash_speed_todo}}", todo(dash_speed))
+        .replace("{{walk_cap}}", &fmt(walk_cap)).replace("{{walk_cap_todo}}", walk_cap_todo)
+        .replace("{{dash_speed}}", &fmt(dash_speed)).replace("{{dash_speed_todo}}", dash_speed_todo)
         .replace("{{run_speed_initial}}", &c("runSpeedInitial"))
         .replace("{{run_speed_accel}}", &c("runSpeedAcceleration"))
         .replace("{{run_speed_cap}}", &c("runSpeedCap"))
         .replace("{{ground_speed_accel}}", &c("groundSpeedAcceleration"))
         .replace("{{ground_speed_cap}}", &c("groundSpeedCap"))
         .replace("{{aerial_speed_accel}}", &c("aerialSpeedAcceleration"))
-        .replace("{{aerial_cap}}", &fmt(aerial_cap)).replace("{{aerial_cap_todo}}", todo(aerial_cap))
-        .replace("{{aerial_fric}}", &fmt(aerial_fric)).replace("{{aerial_fric_todo}}", todo(aerial_fric)));
+        .replace("{{aerial_cap}}", &fmt(aerial_cap)).replace("{{aerial_cap_todo}}", aerial_fric_cap_todo)
+        .replace("{{aerial_fric}}", &fmt(aerial_fric)).replace("{{aerial_fric_todo}}", aerial_fric_todo));
 
     // Flat-constant sections — every value comes from stats.json `constants`.
     out.push_str(&req("character.stats.char_stats_section_comment", &t.char_stats_section_comment).replace("{{title}}", "ENVIRONMENTAL COLLISION BODY (ECB) STATS"));

@@ -66,6 +66,20 @@
     "aerialSpeedAcceleration": 0.45,
     "doubleJumpSpeedFallback": 15.5,
 
+    // Character-template PHYSICS defaults — used as fallbacks when the SSF2 source
+    // lacks the value, so a converted character is never left with 0 weight/gravity/etc.
+    // (sourced from vendor/character-template/library/scripts/Character/CharacterStats.hx).
+    "weight": 100,
+    "gravity": 0.8,
+    "jumpSpeed": 15,
+    "terminalVelocity": 9.25,
+    "fastFallSpeed": 13.75,
+    "walkSpeedCap": 3.25,
+    "dashSpeed": 9.5,
+    "aerialFriction": 0.22,
+    "shortHopSpeed": 8.25,
+    "aerialSpeedCap": 6.5,
+
     // Environmental collision body (ECB)
     "floorHeadPosition": 86,
     "floorHipWidth": 29,

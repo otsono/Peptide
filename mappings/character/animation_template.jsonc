@@ -1,7 +1,7 @@
 // Ordered Fraymakers character-template animations + their AnimationStats.hx
 // property overrides. Order & grouping match the official character-template.
-// Emitted by haxe_gen::generate_animation_stats; `props` is the object-literal
-// body (empty = `{}`). Moved out of Rust so the list can change without a rebuild.
+// AUTO-SYNCED from vendor/character-template (library/scripts/Character/AnimationStats.hx).
+// Emitted by haxe_gen::generate_animation_stats; `props` is the object-literal body (empty = `{}`).
 [
   { "name": "stand", "props": "" },
   { "name": "stand_turn", "props": "" },
@@ -72,14 +72,14 @@
   { "name": "aerial_down_land", "props": "xSpeedConservation: 0" },
   { "name": "special_neutral", "props": "" },
   { "name": "special_neutral_air", "props": "" },
-  { "name": "special_up", "props": "leaveGroundCancel:false, xSpeedConservation:0.5, ySpeedConservation:0.5, allowMovement: true, nextState:CState.FALL_SPECIAL" },
-  { "name": "special_up_air", "props": "leaveGroundCancel:false, xSpeedConservation:0.5, ySpeedConservation:0.5, nextState:CState.FALL_SPECIAL, landType:LandType.TOUCH" },
-  { "name": "special_down", "props": "allowFastFall:false, allowTurnOnFirstFrame: true, leaveGroundCancel:false, xSpeedConservation:0, ySpeedConservation:0" },
-  { "name": "special_down_loop", "props": "endType:AnimationEndType.LOOP" },
-  { "name": "special_down_endlag", "props": "" },
-  { "name": "special_down_air", "props": "allowFastFall:false, allowTurnOnFirstFrame: true, leaveGroundCancel:false, xSpeedConservation:0, ySpeedConservation:0, landType:LandType.LINK_FRAMES, landAnimation:\"special_down\"" },
-  { "name": "special_down_air_loop", "props": "endType:AnimationEndType.LOOP, landType:LandType.LINK_FRAMES, landAnimation:\"special_down_loop\"" },
-  { "name": "special_down_air_endlag", "props": "landType:LandType.LINK_FRAMES, landAnimation:\"special_down\"" },
+  { "name": "special_up", "props": "leaveGroundCancel:false, xSpeedConservation:0.5, ySpeedConservation:0.5, allowMovement: true, groundSpeedCap: 5.5, aerialSpeedCap: 3.25, nextState:CState.FALL_SPECIAL" },
+  { "name": "special_up_air", "props": "leaveGroundCancel:false, xSpeedConservation:0.5, ySpeedConservation:0.5, groundSpeedCap: 5.5, aerialSpeedCap: 3.25, nextState:CState.FALL_SPECIAL, landType:LandType.TOUCH" },
+  { "name": "special_down", "props": "allowFastFall:false, allowTurnOnFirstFrame: true, leaveGroundCancel:false, xSpeedConservation:0, ySpeedConservation:0, gravityMultiplier:0.75" },
+  { "name": "special_down_loop", "props": "endType:AnimationEndType.LOOP, allowJump:true" },
+  { "name": "special_down_endlag", "props": "allowJump:true" },
+  { "name": "special_down_air", "props": "allowFastFall:false, allowTurnOnFirstFrame: true, leaveGroundCancel:false, xSpeedConservation:0, ySpeedConservation:0, gravityMultiplier:0.75, landType:LandType.LINK_FRAMES, landAnimation:\"special_down\"" },
+  { "name": "special_down_air_loop", "props": "endType:AnimationEndType.LOOP, allowJump:true, landType:LandType.LINK_FRAMES, landAnimation:\"special_down_loop\"" },
+  { "name": "special_down_air_endlag", "props": "allowJump:true, landType:LandType.LINK_FRAMES, landAnimation:\"special_down\"" },
   { "name": "special_side", "props": "allowFastFall: false, allowTurnOnFirstFrame: true, leaveGroundCancel:false, landType:LandType.TOUCH, landAnimation: \"land_heavy\", singleUse:true" },
   { "name": "special_side_air", "props": "allowFastFall: false, allowTurnOnFirstFrame: true, leaveGroundCancel:false, landType:LandType.TOUCH, landAnimation: \"land_heavy\", singleUse:true" },
   { "name": "grab", "props": "" },
