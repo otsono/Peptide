@@ -147,6 +147,72 @@ pub fn generate_meta(guid: &str) -> String {
 /// doubles every layer's span and every keyframe's start position in
 /// lockstep — image, collision-box, collision-body/ECB, frame-script and
 /// label layers all scale together and cannot fall out of sync.
+/// Fraymakers character-template animation order (docs 0.3.0). Used to (a) sort the
+/// character's template animations into template order and (b) decide which animations are
+/// "unused" — anything that is neither a template animation nor a direct (one-suffix) variant
+/// of one, e.g. grab_pummel_out (parent grab_pummel isn't a template anim) or star_ko.
+const TEMPLATE_ANIM_ORDER: &[&str] = &[
+    "revival", "intro", "stand", "stand_turn", "walk_in", "walk_loop",
+    "walk_out", "dash", "run", "run_turn", "skid", "jump_squat",
+    "jump_in", "jump_loop", "jump_midair", "jump_out", "fall_in", "fall_loop",
+    "land_light", "wall_jump_in", "wall_jump", "fall_special", "airdash_land", "airdash_freefall",
+    "airdash_freefall_whiff", "land_heavy", "airdash_land_uncanceled", "airdash_land_whiff", "crouch_in", "crouch_loop",
+    "crouch_out", "ledge_in", "ledge_loop", "ledge_climb_in", "ledge_climb", "ledge_roll_in",
+    "ledge_roll", "ledge_jump_in", "ledge_jump", "ledge_attack_in", "ledge_attack", "shield_in",
+    "shield_loop", "shield_hurt", "shield_out", "roll", "spot_dodge", "tech",
+    "tech_roll", "hurt_light_low", "hurt_light_middle", "hurt_light_high", "hurt_medium", "hurt_heavy",
+    "hurt_thrown", "tumble", "crash_bounce", "crash_loop", "crash_get_up", "crash_roll",
+    "crash_attack", "airdash_forward", "airdash_forward_up", "airdash_forward_down", "airdash_up", "airdash_down",
+    "airdash_back", "airdash_back_up", "airdash_back_down", "aerial_neutral", "aerial_neutral_land", "aerial_forward",
+    "aerial_forward_land", "aerial_back", "aerial_back_land", "aerial_down", "aerial_down_land", "aerial_up",
+    "aerial_up_land", "dash_attack", "jab1", "jab2", "jab3", "tilt_forward",
+    "tilt_up", "tilt_down", "parry_in", "parry_fail", "parry_success", "strong_forward_in",
+    "strong_forward_charge", "strong_forward_attack", "strong_up_in", "strong_up_charge", "strong_up_attack", "strong_down_in",
+    "strong_down_charge", "strong_down_attack", "assist_call", "assist_call_air", "special_neutral", "special_neutral_air",
+    "special_up", "special_up_air", "special_down", "special_down_loop", "special_down_endlag", "special_down_air",
+    "special_down_air_loop", "special_down_air_endlag", "special_side", "special_side_air", "grab", "grab_hold",
+    "throw_forward", "throw_back", "throw_up", "throw_down", "emote",
+];
+
+/// Reorder the entity's animations to match the character template, with all non-template,
+/// non-variant animations grouped under a "---UNUSED ANIMATIONS BELOW---" separator.
+fn reorder_animations(animations: &mut Vec<Value>, layers: &mut Vec<Value>, keyframes: &mut Vec<Value>, char_id: &str) {
+    let idx = |name: &str| TEMPLATE_ANIM_ORDER.iter().position(|t| *t == name);
+    let mut used: Vec<(usize, u8, Value)> = Vec::new();
+    let mut unused: Vec<Value> = Vec::new();
+    for a in animations.drain(..) {
+        let name = a.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        // A direct variant shares the template anim as its immediate prefix (one suffix removed):
+        // special_neutral_air→special_neutral, grab_pummel→grab. grab_pummel_out→grab_pummel (NOT a
+        // template anim) so it is NOT a variant and lands in UNUSED.
+        let parent_idx = name.rsplit_once('_').and_then(|(p, _)| idx(p));
+        if let Some(i) = idx(&name) {
+            used.push((i, 0, a));
+        } else if let Some(i) = parent_idx {
+            used.push((i, 1, a));
+        } else {
+            unused.push(a);
+        }
+    }
+    used.sort_by_key(|(i, t, _)| (*i, *t));
+    let mut out: Vec<Value> = used.into_iter().map(|(_, _, a)| a).collect();
+    if !unused.is_empty() {
+        let kf_id = uuid(char_id, "kf_unused_separator");
+        let layer_id = uuid(char_id, "layer_unused_separator");
+        let anim_id = uuid(char_id, "anim_unused_separator");
+        keyframes.push(json!({ "$id": kf_id, "type": "FRAME_SCRIPT", "length": 1, "code": "", "pluginMetadata": {} }));
+        layers.push(json!({ "$id": layer_id, "name": "Scripts", "type": "FRAME_SCRIPT",
+            "keyframes": [kf_id], "hidden": false, "locked": false, "language": "", "pluginMetadata": {} }));
+        out.push(json!({ "$id": anim_id, "name": "---UNUSED ANIMATIONS BELOW---",
+            "layers": [layer_id], "pluginMetadata": {} }));
+        let (ordered_count, unused_count) = (out.len() - 1, unused.len());
+        out.extend(unused);
+        log::info!("reorder: {} template-ordered animations, {} unused (below separator)",
+            ordered_count, unused_count);
+    }
+    *animations = out;
+}
+
 fn double_keyframe_lengths(keyframes: &mut [Value]) {
     for kf in keyframes {
         if let Some(len) = kf.get("length").and_then(Value::as_u64) {
@@ -1086,6 +1152,10 @@ pub fn generate_entity(
             log::info!("Dropped {} empty animation(s): {}", dropped_names.len(), dropped_names.join(", "));
         }
     }
+
+    // Order template animations per the character template; relegate everything that is
+    // neither a template animation nor a direct variant of one to an UNUSED section.
+    reorder_animations(&mut animations, &mut layers, &mut keyframes, char_id);
 
     let entity = json!({
         "animations": animations,
