@@ -92,7 +92,11 @@ Decomposed into commands (see "Building blocks" below): `spawn` + `dummy` →
 - **Crash diagnostics** — on engine fault, surface last N state transitions +
   current move + frame instead of a raw stack trace. **[planned]** The ANIM
   stream already gives a transition history the bridge could buffer and dump.
-- **A/B comparison** — run identical input sequences against two characters (or
+- **A/B comparison** — **[done]** `tools/peptide/ab_compare.sh <char> <recipe>`
+  distills a stable behavioral signature (anim states + move acks + position) and
+  saves/diffs it as a golden — catches behavioral regressions across converter
+  builds. Recipe scripting (`recipe.sh`) is also **[done]**.
+- **(orig) A/B comparison** — run identical input sequences against two characters (or
   two versions) and diff the readback. Regression testing for mod changes.
   **[planned]** Mostly a layer-3/shell driver over existing commands.
 - **Save/restore engine state** — snapshot the match to disk, restore later to
