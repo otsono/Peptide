@@ -130,6 +130,13 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
     let mut derived_from: Option<abc_parser::DerivedFrom> = None;
     let mut attack_sounds: Vec<String> = Vec::new();
     let mut voice_sounds: Vec<String> = Vec::new();
+    // Parity harness source-of-truth: when DUMP_PARITY is set, collect the RAW
+    // SSF2 hitbox values (SSF2 key names: damage/direction/power/kbConstant/…)
+    // per FM move name, before the SSF2→FM field mapping. Written to
+    // /tmp/parity_<char>_ssf2.json for tools/parity_check.py to diff against the
+    // generated HitboxStats.hx. (tools/parity_check.py documents the mapping.)
+    let dump_parity = std::env::var("DUMP_PARITY").is_ok();
+    let mut raw_attacks_dump: BTreeMap<String, Vec<BTreeMap<String, f64>>> = BTreeMap::new();
 
     // Parse each ABC block (usually just one)
     for (block_idx, abc_data) in swf.abc_blocks.iter().enumerate() {
@@ -146,6 +153,10 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
                 for (name, attack_data) in &extracted.attacks {
                     let hitboxes = convert_hitboxes(&attack_data.hitboxes);
                     all_attacks.entry(name.clone()).or_default().extend(hitboxes);
+                    if dump_parity {
+                        raw_attacks_dump.entry(name.clone()).or_default()
+                            .extend(attack_data.hitboxes.iter().cloned());
+                    }
                 }
 
                 // Use stats if found
@@ -203,6 +214,14 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
             Err(e) => {
                 log::warn!("Failed to parse ABC block {}: {}", block_idx, e);
             }
+        }
+    }
+
+    if dump_parity {
+        let path = format!("/tmp/parity_{}_ssf2.json", char_name);
+        if let Ok(j) = serde_json::to_string_pretty(&raw_attacks_dump) {
+            let _ = std::fs::write(&path, j);
+            log::info!("DUMP_PARITY: wrote raw SSF2 attack stats -> {}", path);
         }
     }
 
