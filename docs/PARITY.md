@@ -49,12 +49,16 @@ special_neutral) spawn, animate, and dispatch with no crash; a 3-character batch
 
 ## OPEN — high impact
 
-- **Deeper `/* ? */` fix (stack-threading).** The interim text rule only handles
-  the `.self.` receiver case; lost *conditions* (`if (/* ? */)` in mario's
-  `continueCombo`) and `/* ? */.self.forceAttack` need the real fix: thread the
-  predecessor block's residual operand stack into branch bodies
-  (`decompiler.rs` BranchCmp arm seeds no stack; Branch else seeds empty). Broad
-  change → needs full-corpus re-verification.
+- **Deeper `/* ? */` fix (stack-threading) — PARTIALLY DONE.** The **BranchCmp
+  arm** now seeds both branch bodies with the block's residual operand stack
+  (`decompiler.rs`), recovering receivers/exprs that previously underflowed to
+  `/* ? */`. Verified: `/* ? */` markers DROP (fox 1→0, bowser 4→2), none added,
+  fox/bowser/mario spawn+drive clean. **Still open:** the **Branch arm** (boolean
+  `iftrue`/`iffalse`) — mario's `continueCombo` `if (/* ? */)` is a Branch case,
+  not BranchCmp, so it's untouched. The Branch-else seeding interacts with the
+  ternary-detection heuristic (the empty-then/else-leftover length check), so it's
+  the riskier half; gate any attempt on `tools/translation_completeness.sh` (markers
+  must drop, none added) + the in-engine spawn sweep.
 - **Per-segment hitbox fidelity.** The jab fix inherits jab1's stats for
   jab2/jab3. Investigation: the extracted `Hitbox` struct carries NO activation
   frame (just damage/angle/KB/hitstop/hitstun), and SSF2's `attackBox`/`attackBox2`
