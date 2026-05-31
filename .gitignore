@@ -3,7 +3,6 @@
 __pycache__/
 *.pyc
 .DS_Store
-*/ffdec/
 
 
 # Added by cargo
