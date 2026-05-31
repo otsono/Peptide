@@ -392,26 +392,61 @@ pub fn generate_palettes_and_remap(
     // sprite flickers. Snapping each pixel to the nearest costume colour keeps every skew
     // bitmap fully inside the swappable palette. (skew_* are the stretched/skewed Image-layer
     // character bitmaps; vector-rendered effects are never baked to skew_* files.)
-    // The costume color array is the "colors" list in the generated palettes JSON.
-    let costume_colors: Vec<u32> = serde_json::from_str::<Value>(&result.palettes_json).ok()
-        .and_then(|v| v.get("colors").and_then(|c| c.as_array()).map(|arr| {
-            arr.iter()
-                .filter_map(|e| e.get("color").and_then(|s| s.as_str()))
-                .filter_map(|s| u32::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).ok())
-                .collect()
-        }))
-        .unwrap_or_default();
-    snap_skew_bitmaps_to_palette(sprites_dir, &costume_colors);
+    // The costume color array + which slots are CHANGEABLE (recolored by at least one costume
+    // map). Slots that no map ever changes are "fixed" (eyes/special); body pixels must not
+    // mis-snap onto those or they'd refuse to recolor. Parsed from the generated palettes JSON.
+    let parse_hex = |s: &str| u32::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).ok();
+    let (costume_colors, changeable): (Vec<u32>, Vec<bool>) =
+        match serde_json::from_str::<Value>(&result.palettes_json) {
+            Ok(v) => {
+                let colors: Vec<u32> = v.get("colors").and_then(|c| c.as_array()).map(|arr| {
+                    arr.iter().filter_map(|e| e.get("color").and_then(|s| s.as_str()))
+                        .filter_map(|s| parse_hex(s)).collect()
+                }).unwrap_or_default();
+                let mut chg_count = vec![0usize; colors.len()];
+                let mut nmaps = 0usize;
+                if let Some(maps) = v.get("maps").and_then(|m| m.as_array()) {
+                    for mp in maps {
+                        if let Some(cols) = mp.get("colors").and_then(|c| c.as_array()) {
+                            nmaps += 1;
+                            for (i, e) in cols.iter().enumerate() {
+                                if i >= colors.len() { break; }
+                                if let Some(t) = e.get("targetColor").and_then(|s| s.as_str()).and_then(parse_hex) {
+                                    // compare RGB (ignore alpha byte)
+                                    if (t & 0xFFFFFF) != (colors[i] & 0xFFFFFF) { chg_count[i] += 1; }
+                                }
+                            }
+                        }
+                    }
+                }
+                // A slot is CHANGEABLE if a MAJORITY of costumes recolour it. The fixed/eye
+                // ramp (recoloured by at most a couple of alt skins) counts as fixed, so body
+                // pixels that bicubic-blended onto it are corrected rather than left grey.
+                let chg: Vec<bool> = chg_count.iter().map(|&c| c * 2 > nmaps).collect();
+                (colors, chg)
+            }
+            Err(_) => (Vec::new(), Vec::new()),
+        };
+    snap_skew_bitmaps_to_palette(sprites_dir, &costume_colors, &changeable);
     Ok(result)
 }
 
 /// Snap every `skew_*.png` bitmap's opaque pixels to the nearest colour in the costume
-/// color array (`colors` is ARGB). Alpha is left untouched.
-fn snap_skew_bitmaps_to_palette(sprites_dir: &Path, colors: &[u32]) {
+/// color array (`colors` is ARGB). `changeable[i]` marks slots that at least one costume map
+/// recolours; slots no map ever changes are "fixed" (eyes/special). Alpha is untouched.
+fn snap_skew_bitmaps_to_palette(sprites_dir: &Path, colors: &[u32], changeable: &[bool]) {
     let palette: Vec<[u8; 3]> = colors.iter()
         .map(|&argb| [((argb >> 16) & 0xFF) as u8, ((argb >> 8) & 0xFF) as u8, (argb & 0xFF) as u8])
         .collect();
     if palette.is_empty() { return; }
+    // Fixed (never-recoloured) palette colours, and the changeable-only sub-palette.
+    let aligned = changeable.len() == palette.len();
+    let fixed_set: std::collections::HashSet<[u8; 3]> = if aligned {
+        palette.iter().zip(changeable).filter(|(_, &c)| !c).map(|(p, _)| *p).collect()
+    } else { std::collections::HashSet::new() };
+    let changeable_palette: Vec<[u8; 3]> = if aligned {
+        palette.iter().zip(changeable).filter(|(_, &c)| c).map(|(p, _)| *p).collect()
+    } else { palette.clone() };
     let entries = match fs::read_dir(sprites_dir) { Ok(e) => e, Err(_) => return };
     let mut snapped = 0usize;
     for entry in entries.flatten() {
@@ -425,19 +460,116 @@ fn snap_skew_bitmaps_to_palette(sprites_dir: &Path, colors: &[u32]) {
         // lightest costume colour → light "speckle" along the silhouette when recoloured).
         // Alpha is preserved, so the edge still antialiases — just in the body's hue.
         bleed_edges(&mut img);
-        let mut changed = false;
         for px in img.pixels_mut() {
             if px.0[3] == 0 { continue; }
             let rgb = [px.0[0], px.0[1], px.0[2]];
             let c = palette[nearest(&rgb, &palette)];
-            if c != rgb { px.0[0] = c[0]; px.0[1] = c[1]; px.0[2] = c[2]; changed = true; }
+            if c != rgb { px.0[0] = c[0]; px.0[1] = c[1]; px.0[2] = c[2]; }
         }
+        // Fix fixed-colour mis-snaps: the source palette has near-duplicate body vs fixed/eye
+        // greys (e.g. body (151,149,160) vs eye (148,148,152)). Bicubic blending makes some
+        // BODY pixels snap onto a FIXED colour, which then refuses to recolour → grey clusters
+        // on a recoloured body. Any fixed-colour pixel surrounded mostly by changeable colours
+        // is such a mis-snap → re-snap it to the nearest CHANGEABLE colour. Coherent fixed
+        // regions (real eyes — fixed neighbours) are preserved.
+        if !fixed_set.is_empty() && !changeable_palette.is_empty() {
+            fix_fixed_mis_snaps(&mut img, &fixed_set, &changeable_palette);
+        }
+        // Despeckle: bicubic + unsharp leave scattered single-pixel palette outliers in
+        // smooth gradients (invisible in the default skin, but high-contrast once recoloured).
+        // Replace each opaque pixel that's isolated (its colour matches <=1 of its opaque
+        // 8-neighbours, in an interior of >=5 opaque neighbours) with the neighbourhood's most
+        // common colour. Coherent regions and thin outlines (>=2 like neighbours) are kept.
+        despeckle(&mut img);
         if img.save(&path).is_ok() { snapped += 1; }
-        let _ = changed;
     }
     if snapped > 0 {
         log::info!("palette_gen: snapped {} skew bitmap(s) to the {}-colour costume palette",
             snapped, palette.len());
+    }
+}
+
+/// Re-snap fixed-colour pixels that sit in a changeable-colour region to the nearest CHANGEABLE
+/// palette colour. Fixes body pixels that bicubic-blended onto a near-duplicate fixed/eye grey
+/// (which wouldn't recolour). Pixels in a coherent fixed region (real eyes) are kept.
+fn fix_fixed_mis_snaps(img: &mut image::RgbaImage, fixed_set: &std::collections::HashSet<[u8; 3]>, changeable_palette: &[[u8; 3]]) {
+    let (w, h) = img.dimensions();
+    let (w, h) = (w as i64, h as i64);
+    // Iterate so a fixed-colour blob surrounded by body erodes from its boundary inward and
+    // fully clears (skew bitmaps are sheared limbs/body — they carry no coherent eye region;
+    // a real eye would be an all-fixed core with no changeable neighbours and is preserved).
+    for _ in 0..12 {
+        let snap: Vec<[u8; 4]> = img.pixels().map(|p| p.0).collect();
+        let mut any = false;
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) as usize;
+                if snap[i][3] == 0 { continue; }
+                let rgb = [snap[i][0], snap[i][1], snap[i][2]];
+                if !fixed_set.contains(&rgb) { continue; }
+                let (mut opaque, mut chg) = (0u32, 0u32);
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        if dx == 0 && dy == 0 { continue; }
+                        let (nx, ny) = (x + dx, y + dy);
+                        if nx < 0 || ny < 0 || nx >= w || ny >= h { continue; }
+                        let n = snap[(ny * w + nx) as usize];
+                        if n[3] == 0 { continue; }
+                        opaque += 1;
+                        if !fixed_set.contains(&[n[0], n[1], n[2]]) { chg += 1; }
+                    }
+                }
+                // Touching the body (>=3 changeable neighbours) → erode this fixed pixel to the
+                // nearest changeable colour. Interior eye pixels (all-fixed neighbours) stay.
+                if opaque >= 3 && chg >= 3 {
+                    let c = changeable_palette[nearest(&rgb, changeable_palette)];
+                    let p = img.get_pixel_mut(x as u32, y as u32);
+                    p.0[0] = c[0]; p.0[1] = c[1]; p.0[2] = c[2];
+                    any = true;
+                }
+            }
+        }
+        if !any { break; }
+    }
+}
+
+/// Remove isolated single-pixel palette outliers (speckle) while preserving coherent regions
+/// and thin outlines. A pixel is "speckle" if it has >= 5 opaque 8-neighbours yet <= 1 of them
+/// share its exact colour; such a pixel is replaced with the most common neighbour colour.
+/// Two passes catch small (2-3px) clusters. Operates on already-palette-snapped RGB.
+fn despeckle(img: &mut image::RgbaImage) {
+    let (w, h) = img.dimensions();
+    let (w, h) = (w as i64, h as i64);
+    for _ in 0..2 {
+        let snap: Vec<[u8; 4]> = img.pixels().map(|p| p.0).collect();
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) as usize;
+                if snap[i][3] == 0 { continue; }
+                let me = [snap[i][0], snap[i][1], snap[i][2]];
+                let mut counts: std::collections::HashMap<[u8; 3], u32> = std::collections::HashMap::new();
+                let (mut same, mut opaque) = (0u32, 0u32);
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        if dx == 0 && dy == 0 { continue; }
+                        let (nx, ny) = (x + dx, y + dy);
+                        if nx < 0 || ny < 0 || nx >= w || ny >= h { continue; }
+                        let n = snap[(ny * w + nx) as usize];
+                        if n[3] == 0 { continue; }
+                        opaque += 1;
+                        let rgb = [n[0], n[1], n[2]];
+                        *counts.entry(rgb).or_insert(0) += 1;
+                        if rgb == me { same += 1; }
+                    }
+                }
+                if opaque >= 5 && same <= 1 {
+                    if let Some((&rgb, _)) = counts.iter().max_by_key(|(_, c)| **c) {
+                        let p = img.get_pixel_mut(x as u32, y as u32);
+                        p.0[0] = rgb[0]; p.0[1] = rgb[1]; p.0[2] = rgb[2];
+                    }
+                }
+            }
+        }
     }
 }
 

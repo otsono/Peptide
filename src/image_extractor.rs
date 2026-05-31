@@ -623,22 +623,18 @@ fn prerender_skewed_frames(
                     let fy = dy as f64 + min_y;
                     let sx = inv_a * fx + inv_c * fy;
                     let sy = inv_b * fx + inv_d * fy;
-                    // Nearest-neighbour sampling: every output pixel is an EXACT source pixel,
-                    // so the baked sprite keeps the source's coherent palette regions (no
-                    // interpolation redistributing mid tones onto the lightest palette slot).
-                    // That's what keeps recolouring clean for this palette-swapped pixel art —
-                    // bicubic smoothing looked nicer in the default skin but speckled when
-                    // recoloured. (bicubic kept as a reference but unused.)
-                    let _ = bicubic;
-                    buf.push(sample(sx.round() as i64, sy.round() as i64));
+                    // Bicubic + unsharp is the base bake — it gives the clearest, smoothest
+                    // sheared image. Recolorability is handled downstream (anti-ringing clamp
+                    // above + the palette snap/despeckle in palette_gen), not by degrading the
+                    // sampler.
+                    buf.push(bicubic(sx, sy));
                 }
             }
 
-            // Unsharp mask DISABLED (amount 0): it lifts edge contrast by overshooting, which
-            // re-introduces the lighter-than-source pixels the anti-ringing clamp above just
-            // removed — and those snap to the lightest costume colour, speckling recoloured
-            // sprites. The clamped bicubic already keeps outlines crisp without it.
-            const UNSHARP_AMOUNT: f64 = 0.0;
+            // Unsharp mask: lifts edge contrast for a crisper base image. Its overshoot is
+            // bounded by the anti-ringing clamp on the bicubic taps, and the recolor speckle it
+            // would otherwise cause is cleaned by the palette despeckle in palette_gen.
+            const UNSHARP_AMOUNT: f64 = 0.45;
             let gauss: Vec<f64> = {
                 let sigma = 0.9_f64;
                 let radius = (sigma * 3.0).ceil() as i64;
