@@ -861,6 +861,18 @@ fn connect_edit(
     // resource-identifier (NOT content id) form, for the idempotence probe in the
     // self-bootstrapping 's' command: getPXFResource(this) non-null ⇒ already loaded.
     let res_resid_g = add_string_const(code, &char_resid);
+    // In-session generic char: the `s` handler builds the launch char's strings at RUNTIME
+    // from the command's parts[1] (falling back to the baked default char), so successive
+    // `s` commands can switch characters without re-injecting. These const pieces + mutable
+    // globals support that. customdir is derived from the install dir (no hardcoded path).
+    let customdir_g = add_string_const(code, &format!("{install_dir}/custom/"));
+    let slash_g = add_string_const(code, "/");
+    let frasuffix_g = add_string_const(code, ".fra");
+    let g_name = code.globals.len();  code.globals.push(hlbc::types::RefType(13)); // String: char name
+    let g_resid = code.globals.len(); code.globals.push(hlbc::types::RefType(13)); // String: private::<name>
+    let g_pkgid = code.globals.len(); code.globals.push(hlbc::types::RefType(13)); // String: <name>.<name>
+    let g_nskey = code.globals.len(); code.globals.push(hlbc::types::RefType(13)); // String: private::<name>.<name>
+    let g_path = code.globals.len();  code.globals.push(hlbc::types::RefType(13)); // String: <install>/custom/<name>/<name>.fra
     eprintln!("sprite-fix: get_DataAsPxf={get_data_as_pxf} cacheEntity={cache_sprite_entity} smGet={sm_get} entityMap.f={pxf_entitymap_field} requiredMediaIds.f={reqmedia_field}");
     eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer
@@ -1216,83 +1228,10 @@ fn connect_edit(
     // startMatch re-initialize the match each time (verified: two launches, T:STAND, no
     // crash). (Legacy g_launched guard global retained unused to keep global indices stable.)
     let _ = g_launched;
-    // ---- self-bootstrap: ensure the custom sandbag resource is loaded ----------
-    // 's' used to require a prior 'l'; now it loads the .fra itself. The load is the
-    // functional core of the 'l' handler (construct Resource -> fetchThreaded ->
-    // finishLoading -> cacheSpriteEntityData over entities -> re-cache sprite under
-    // the 3 spriteContent key forms -> addResource), with the diagnostic acks
-    // dropped. Idempotent: getPXFResource("private::sandbag") non-null (e.g. a prior
-    // 'l', or a previous frame's re-delivered 's') skips the whole block.
-    ops.push(Opcode::GetGlobal { dst: rr(58), global: RefGlobal(res_resid_g) });
-    ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(getpxf_fn), arg0: rr(58) });
-    let idx_s_load_jskip = ops.len();
-    ops.push(Opcode::JNotNull { reg: rr(60), offset: 0 });             // already loaded -> L_SKIP_LOAD
-    // r71 = new Resource("sandbag", <abs .fra path>, null); force _isAbsolute + _type=PXF
-    ops.push(Opcode::New { dst: rr(71) });
-    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });
-    ops.push(Opcode::GetGlobal { dst: rr(56), global: RefGlobal(sandbag_path_g) });
-    ops.push(Opcode::Null { dst: rr(73) });
-    ops.push(Opcode::Call4 { dst: r_ret, fun: RefFun(resource_ctor), arg0: rr(71), arg1: rr(55), arg2: rr(56), arg3: rr(73) });
-    ops.push(Opcode::Bool { dst: rr(64), value: ValBool(true) });
-    ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_isabs_field), src: rr(64) });
-    ops.push(Opcode::GetGlobal { dst: rr(72), global: RefGlobal(rt_global) });
-    ops.push(Opcode::Field { dst: rr(16), obj: rr(72), field: RefField(pxf_field) });
-    ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_type_field), src: rr(16) });
-    // RM.requiredMediaIds = ["*"] so finishLoading's preload populates entityMap
-    ops.push(Opcode::Type { dst: rr(31), ty: RT(13) });
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
-    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) });
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
-    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(star_g) });
-    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(53) });
-    ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) });
-    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(3508) });
-    ops.push(Opcode::SetField { obj: rr(65), field: RefField(reqmedia_field), src: rr(33) });
-    // synchronous read+decode+construct (populates characterPxfContentMap), then preload
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: rr(71) });
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: rr(71) });
-    // build every sprite entity: cacheSpriteEntityData(pxf, idx) for idx in 0..entities.length
-    ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(get_data_as_pxf), arg0: rr(71) });
-    ops.push(Opcode::Field { dst: rr(66), obj: rr(60), field: RefField(pxf_entities_field) });
-    ops.push(Opcode::Field { dst: rr(39), obj: rr(66), field: RefField(0) });   // .length
-    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(zero_idx) });
-    let idx_sl_loop = ops.len();
-    let idx_sl_jge = ops.len();
-    ops.push(Opcode::JSGte { a: rr(16), b: rr(39), offset: 0 });        // idx >= len -> build_done
-    ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(cache_sprite_entity_data), arg0: rr(60), arg1: rr(16) });
-    ops.push(Opcode::Incr { dst: rr(16) });
-    let idx_sl_jback = ops.len();
-    ops.push(Opcode::JAlways { offset: 0 });                           // -> build_loop
-    let idx_sl_done = ops.len();
-    // re-cache the main sprite entity under all 3 spriteContent key forms (buried-VFX fix)
-    ops.push(Opcode::Field { dst: rr(63), obj: rr(60), field: RefField(pxf_entitymap_field) });
-    let idx_sl_emap_jnull = ops.len();
-    ops.push(Opcode::JNull { reg: rr(63), offset: 0 });                // null entityMap -> addres
-    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });
-    ops.push(Opcode::Call2 { dst: rr(28), fun: RefFun(sm_get), arg0: rr(63), arg1: rr(55) });
-    let idx_sl_ent_jnull = ops.len();
-    ops.push(Opcode::JNull { reg: rr(28), offset: 0 });                // null entity -> addres
-    ops.push(Opcode::UnsafeCast { dst: rr(74), src: rr(28) });
-    ops.push(Opcode::Null { dst: rr(75) });
-    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) });
-    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
-    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_pkgid_g) });
-    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
-    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(ns_sandbag_g) });
-    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
-    let idx_sl_addres = ops.len();
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(add_resource), arg0: rr(71) });
-    // record the loaded char's sprite-cache key for the generic self-heal fallback
-    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(ns_sandbag_g) });
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_loaded_spritekey), src: rr(55) });
-    let idx_sl_skip = ops.len();
-    // patch self-bootstrap jumps
-    if let Opcode::JNotNull { offset, .. } = &mut ops[idx_s_load_jskip] { *offset = idx_sl_skip as i32 - idx_s_load_jskip as i32 - 1; }
-    if let Opcode::JSGte  { offset, .. } = &mut ops[idx_sl_jge]   { *offset = idx_sl_done as i32 - idx_sl_jge as i32 - 1; }
-    if let Opcode::JAlways{ offset, .. } = &mut ops[idx_sl_jback] { *offset = idx_sl_loop as i32 - idx_sl_jback as i32 - 1; }
-    if let Opcode::JNull  { offset, .. } = &mut ops[idx_sl_emap_jnull] { *offset = idx_sl_addres as i32 - idx_sl_emap_jnull as i32 - 1; }
-    if let Opcode::JNull  { offset, .. } = &mut ops[idx_sl_ent_jnull]  { *offset = idx_sl_addres as i32 - idx_sl_ent_jnull as i32 - 1; }
-    // ---- end self-bootstrap (L_SKIP_LOAD) -------------------------------------
+    // NOTE: the self-bootstrap (custom-char load) now runs AFTER the line is read + parts
+    // are split (below), so it can load the char NAMED in the `s` args (parts[1]) rather
+    // than a fixed baked char — enabling in-session character switching. See the
+    // "name-driven self-bootstrap" block further down.
     // refs: parseResourceIdentifier(fullId, null) -> content-ref@669
     ops.push(Opcode::Null { dst: rr(38) });                            // null namespace
     // ---- read the rest of the line ("s <char> <stage> <assist>") into g_buf ----
@@ -1325,6 +1264,117 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(space_g) });
     ops.push(Opcode::Call2 { dst: rr(52), fun: RefFun(str_split), arg0: rr(14), arg1: rr(53) });
     ops.push(Opcode::Field { dst: rr(32), obj: rr(52), field: RefField(1) }); // parts.array
+    // ---- name-driven self-bootstrap: load the custom char NAMED in parts[1] ------------
+    // Build this launch's char strings at RUNTIME: name = parts[1] (the `s` arg), or the
+    // baked default char for a bare `s`. Then resid=private::<name>, pkgid=<name>.<name>,
+    // nskey=private::<name>.<name>, path=<install>/custom/<name>/<name>.fra. This lets
+    // successive `s` commands switch characters in one session. The load is at `s`-dispatch
+    // time (not boot), so it adds no boot-time cost.
+    ops.push(Opcode::Field { dst: rr(39), obj: rr(52), field: RefField(0) });   // parts.length
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(two_idx) });
+    let idx_name_jdef = ops.len();
+    ops.push(Opcode::JSLt { a: rr(39), b: rr(16), offset: 0 });                 // <2 tokens -> default char
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::GetArray { dst: rr(55), array: rr(32), index: rr(39) });   // name = parts[1]
+    let idx_name_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_name_def = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(sandbag_id_g) }); // baked default name
+    let idx_name_done = ops.len();
+    if let Opcode::JSLt { offset, .. } = &mut ops[idx_name_jdef] { *offset = idx_name_def as i32 - idx_name_jdef as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_name_jdone] { *offset = idx_name_done as i32 - idx_name_jdone as i32 - 1; }
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_name), src: rr(55) });
+    // resid = "private::" + name
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(ns_prefixes[0]) });
+    ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(53), arg1: rr(55) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_resid), src: rr(56) });
+    // pkgid = name + "." + name
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(dot_g) });
+    ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(55), arg1: rr(53) });
+    ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(56), arg1: rr(55) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pkgid), src: rr(56) });
+    // nskey = "private::" + pkgid
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(ns_prefixes[0]) });
+    ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(53), arg1: rr(56) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_nskey), src: rr(56) });
+    // path = customdir + name + "/" + name + ".fra"
+    ops.push(Opcode::GetGlobal { dst: rr(56), global: RefGlobal(customdir_g) });
+    ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(56), arg1: rr(55) });
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(slash_g) });
+    ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(56), arg1: rr(53) });
+    ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(56), arg1: rr(55) });
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(frasuffix_g) });
+    ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(56), arg1: rr(53) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_path), src: rr(56) });
+    // self-bootstrap (idempotent): getPXFResource(resid) non-null -> skip the load.
+    ops.push(Opcode::GetGlobal { dst: rr(58), global: RefGlobal(g_resid) });
+    ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(getpxf_fn), arg0: rr(58) });
+    let idx_s_load_jskip = ops.len();
+    ops.push(Opcode::JNotNull { reg: rr(60), offset: 0 });             // already loaded -> L_SKIP_LOAD
+    ops.push(Opcode::New { dst: rr(71) });
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(g_name) });
+    ops.push(Opcode::GetGlobal { dst: rr(56), global: RefGlobal(g_path) });
+    ops.push(Opcode::Null { dst: rr(73) });
+    ops.push(Opcode::Call4 { dst: r_ret, fun: RefFun(resource_ctor), arg0: rr(71), arg1: rr(55), arg2: rr(56), arg3: rr(73) });
+    ops.push(Opcode::Bool { dst: rr(64), value: ValBool(true) });
+    ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_isabs_field), src: rr(64) });
+    ops.push(Opcode::GetGlobal { dst: rr(72), global: RefGlobal(rt_global) });
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(72), field: RefField(pxf_field) });
+    ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_type_field), src: rr(16) });
+    // RM.requiredMediaIds = ["*"] so finishLoading's preload populates entityMap
+    ops.push(Opcode::Type { dst: rr(31), ty: RT(13) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(star_g) });
+    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(53) });
+    ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) });
+    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(3508) });
+    ops.push(Opcode::SetField { obj: rr(65), field: RefField(reqmedia_field), src: rr(33) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: rr(71) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: rr(71) });
+    ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(get_data_as_pxf), arg0: rr(71) });
+    ops.push(Opcode::Field { dst: rr(66), obj: rr(60), field: RefField(pxf_entities_field) });
+    ops.push(Opcode::Field { dst: rr(39), obj: rr(66), field: RefField(0) });   // .length
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(zero_idx) });
+    let idx_sl_loop = ops.len();
+    let idx_sl_jge = ops.len();
+    ops.push(Opcode::JSGte { a: rr(16), b: rr(39), offset: 0 });        // idx >= len -> build_done
+    ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(cache_sprite_entity_data), arg0: rr(60), arg1: rr(16) });
+    ops.push(Opcode::Incr { dst: rr(16) });
+    let idx_sl_jback = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                           // -> build_loop
+    let idx_sl_done = ops.len();
+    // re-cache the main sprite entity under all 3 spriteContent key forms (buried-VFX fix)
+    ops.push(Opcode::Field { dst: rr(63), obj: rr(60), field: RefField(pxf_entitymap_field) });
+    let idx_sl_emap_jnull = ops.len();
+    ops.push(Opcode::JNull { reg: rr(63), offset: 0 });                // null entityMap -> addres
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(g_name) });
+    ops.push(Opcode::Call2 { dst: rr(28), fun: RefFun(sm_get), arg0: rr(63), arg1: rr(55) });
+    let idx_sl_ent_jnull = ops.len();
+    ops.push(Opcode::JNull { reg: rr(28), offset: 0 });                // null entity -> addres
+    ops.push(Opcode::UnsafeCast { dst: rr(74), src: rr(28) });
+    ops.push(Opcode::Null { dst: rr(75) });
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(g_name) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(g_pkgid) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(g_nskey) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
+    let idx_sl_addres = ops.len();
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(add_resource), arg0: rr(71) });
+    // record the loaded char's sprite-cache key for the generic self-heal fallback
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(g_nskey) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_loaded_spritekey), src: rr(55) });
+    let idx_sl_skip = ops.len();
+    if let Opcode::JNotNull { offset, .. } = &mut ops[idx_s_load_jskip] { *offset = idx_sl_skip as i32 - idx_s_load_jskip as i32 - 1; }
+    if let Opcode::JSGte  { offset, .. } = &mut ops[idx_sl_jge]   { *offset = idx_sl_done as i32 - idx_sl_jge as i32 - 1; }
+    if let Opcode::JAlways{ offset, .. } = &mut ops[idx_sl_jback] { *offset = idx_sl_loop as i32 - idx_sl_jback as i32 - 1; }
+    if let Opcode::JNull  { offset, .. } = &mut ops[idx_sl_emap_jnull] { *offset = idx_sl_addres as i32 - idx_sl_emap_jnull as i32 - 1; }
+    if let Opcode::JNull  { offset, .. } = &mut ops[idx_sl_ent_jnull]  { *offset = idx_sl_addres as i32 - idx_sl_ent_jnull as i32 - 1; }
+    // the self-bootstrap reused rr32 for the requiredMediaIds array; restore parts.array
+    // (rr52 survived) so the downstream char/stage/assist resolver still sees the tokens.
+    ops.push(Opcode::Field { dst: rr(32), obj: rr(52), field: RefField(1) }); // parts.array (restored)
     // ---- close any live match before starting a new one (multi-`s` re-launch) ----
     // Reset the menu-reveal one-shot so THIS launch's loading menu is also dismissed once
     // its match goes live (the reveal logic at the top of the dispatch re-fires next frame).
