@@ -191,11 +191,14 @@ impl Expr {
                 }
                 // The velocity setters take a 2nd boolean flag whose polarity is INVERTED
                 // between SSF2 (setXSpeed/setYSpeed) and Fraymakers (setXVelocity/setYVelocity).
-                // Flip it so the converted call has the same effect as the original.
+                // Flip an existing flag so the converted call matches the original; if SSF2
+                // omitted it, emit an explicit `false` (the converted default Fraymakers wants).
                 if matches!(method.as_str(),
                     "setXSpeed" | "setYSpeed" | "setXVelocity" | "setYVelocity") {
-                    if let Some(second) = rendered.get_mut(1) {
-                        *second = invert_bool_arg(second);
+                    if rendered.len() >= 2 {
+                        rendered[1] = invert_bool_arg(&rendered[1]);
+                    } else if rendered.len() == 1 {
+                        rendered.push("false".to_string());
                     }
                 }
                 let arg_str = rendered.join(", ");
