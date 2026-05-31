@@ -11,9 +11,15 @@ __pycache__/
 # Generated binary/image assets inside character output — track .hx, .json, .entity etc but not media
 characters/
 
-# Scratch / working notes — gitignored. Promote anything others would
-# benefit from into the top-level docs (see CONTRIBUTING.md).
-docs/
+# Scratch / working notes — gitignored by default. The dir is NOT fully ignored
+# (docs/* + negations) so intentionally-tracked docs can be re-included below.
+docs/*
+!docs/PEPTIDE_ARCHITECTURE.md
+!docs/PEPTIDE_FUTURE.md
+!docs/MODDER_GUIDE.md
+!docs/character_status.md
+!docs/overnight_session_log.md
+!docs/overnight_validation.md
 
 # macOS .app bundle output from make-app.sh
 dist/
