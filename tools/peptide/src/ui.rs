@@ -90,14 +90,21 @@ pub struct Cleanup {
     appid: PathBuf,
     engine: Option<Child>,
 }
-impl Drop for Cleanup {
-    fn drop(&mut self) {
-        if let Some(c) = &mut self.engine {
+impl Cleanup {
+    /// Kill the engine + remove the throwaway files. Idempotent. The GUI calls this on
+    /// window-close because its event loop exits the process (skipping Drop).
+    pub fn dispose(&mut self) {
+        if let Some(mut c) = self.engine.take() {
             let _ = c.kill();
             let _ = c.wait();
         }
         let _ = std::fs::remove_file(&self.conn);
         let _ = std::fs::remove_file(&self.appid);
+    }
+}
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        self.dispose();
     }
 }
 

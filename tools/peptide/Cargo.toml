@@ -12,6 +12,7 @@ hlbc = "=0.7.0"
 anyhow = "1.0"
 ratatui = "0.30.0"
 crossterm = "0.29.0"
-eframe = "0.34.3"
+wry = "0.55.1"
+tao = "0.35.3"
 
 [workspace]
