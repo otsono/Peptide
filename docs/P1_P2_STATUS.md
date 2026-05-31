@@ -33,6 +33,38 @@ crash) is done for 45/45 characters; this tracks the higher bars.
 | Save/restore engine state | **DEFERRED (deep)** | Needs the engine's match-serialization surface (unresearched). |
 | State-machine introspection | **PARTIAL** | The `ANIM:` stream + crash-context history already give the transition trace; "legal transitions / why stuck" is engine-internal. |
 
+## Resume-here: the dummy opponent (recon done this session)
+
+Concrete implementation notes from reading the full `s` handler
+(`tools/peptide/src/main.rs:1573-1608`) so this can resume cold:
+
+- The single-player array build is `main.rs:1581-1587`: `Type rr31=RT(1957)` →
+  `alloc_array(rr31, count=1)` → `SetArray rr32[0]=rr29` → `wrap → rr33`. `rr29` is
+  player-0 as `virtual@1957` (built from the `rr27` config dynobj at 1574-1580).
+  `rr33` (the `characters` ArrayObj) is what `startMatch` consumes at 1605.
+- To add player 1 (opt-in, gated on a new default-false `g_dummy` global set by a
+  `dummy` command): between 1580 and 1582, build a second config in `rr27` (it's
+  dead there — `rr29` already holds the player-0 virtual), with `port=1` (and the
+  same `rr26` char for a mirror dummy), `ToVirtual` it into a **second
+  virtual-typed reg**, then `alloc_array(...,2)`, `SetArray[0]=rr29`,
+  `SetArray[1]=<p1 virtual>`.
+- **The one real blocker:** `SetArray`'s `src` reg must be statically typed
+  `virtual@1957` (the array element type), same as `rr29`. The handler has no
+  confirmed second reg of that type. Either (a) add a new reg to the patched
+  function's reg table typed `@1957`, or (b) reuse `rr29`'s slot via a temp — both
+  need the reg-table edit verified. **This is the ~12-op change; it is small but
+  the reg-type correctness is load-bearing** (a wrong-typed `SetArray src` =
+  corrupt array = broken startMatch for ALL spawns, not just dummy).
+- **Mandatory gate before commit:** `ab_compare.sh sandbag <recipe>` must report
+  UNCHANGED with `g_dummy` OFF (proves the proven 1-player path is byte-equivalent
+  in behavior), THEN a 2-player spawn test with `g_dummy` ON. Revert on any drift.
+- After the dummy spawns: positioning (`SetField body.x` to place it in range) and
+  a post-hit readback (`hitresult` — the opponent's damage/knockback delta, same
+  component-read pattern as the proven `physics` handler but on player 1) complete
+  the live-tuning loop. `hitresult` is the safe-risk-class precursor (an additive
+  read handler like `physics`/`anim`, chained before `L_ORIG` — does NOT touch the
+  `s` handler, so it can be built/verified independently first).
+
 ## The honest bottom line
 
 P0 corpus-wide (45/45) and **P1 hitbox-stat parity corpus-wide (45/45)** are DONE
