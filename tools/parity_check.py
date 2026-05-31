@@ -88,6 +88,33 @@ def expected_fm(hb):
 
 CORE = ["damage", "angle", "baseKnockback", "knockbackGrowth"]  # gameplay-critical
 
+def hitbox_active_frames(cid):
+    """Parse <Char>.entity -> {animation_name: total active HIT_BOX frames}.
+    A hitbox is 'active' on a keyframe whose symbol is non-null. This is the
+    frame-data dimension: a move with stats but 0 active frames can't actually hit."""
+    ent = os.path.join(REPO, f"characters/{cid}/library/entities/{pascal(cid)}.entity")
+    if not os.path.exists(ent):
+        return None
+    d = json.load(open(ent))
+    layers = {l["$id"]: l for l in d.get("layers", [])}
+    kfs = {k["$id"]: k for k in d.get("keyframes", [])}
+    out = {}
+    for a in d.get("animations", []):
+        total = 0
+        for lid in a.get("layers", []):
+            l = layers.get(lid)
+            if not l or l.get("type") != "COLLISION_BOX":
+                continue
+            m = l.get("pluginMetadata", {}).get("com.fraymakers.FraymakersMetadata", {})
+            if m.get("collisionBoxType") != "HIT_BOX":
+                continue
+            for kid in l.get("keyframes", []):
+                k = kfs.get(kid, {})
+                if k.get("symbol") is not None:
+                    total += k.get("length", 1)
+        out[a["name"]] = total
+    return out
+
 def check_char(cid):
     ssf2_path = f"/tmp/parity_{cid}_ssf2.json"
     if not os.path.exists(ssf2_path):
@@ -125,6 +152,15 @@ def check_char(cid):
             # cases where weightKB is the dominant source so a human can sanity-check.
             if shb.get("weightKB", 0) > shb.get("power", 0):
                 info.append(f"{move}.hitbox{i}: baseKnockback={int(exp['baseKnockback'])} from SSF2 weightKB (power={int(shb.get('power',0))})")
+    # Frame-data dimension: a stat-bearing move with NO active hitbox frames in the
+    # .entity can't connect in-engine (stats present but the box never appears).
+    af = hitbox_active_frames(cid)
+    if af is not None:
+        for move, boxes in sorted(out.items()):
+            has_stats = any(int(hb.get(f, 0)) for hb in boxes for f in CORE)
+            if has_stats and af.get(move, 0) == 0:
+                issues.append(f"{move}: has hitbox STATS but 0 active hitbox frames in {pascal(cid)}.entity (can't hit in-engine)")
+
     # moves in output but not source: inheritance (ok) or spurious
     for move in sorted(out):
         if move in src:
