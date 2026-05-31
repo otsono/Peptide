@@ -56,9 +56,15 @@ special_neutral) spawn, animate, and dispatch with no crash; a 3-character batch
   (`decompiler.rs` BranchCmp arm seeds no stack; Branch else seeds empty). Broad
   change → needs full-corpus re-verification.
 - **Per-segment hitbox fidelity.** The jab fix inherits jab1's stats for
-  jab2/jab3; true SSF2 fidelity assigns each combo hit its own hitbox by frame
-  window (the anim_splitter already computes split frame ranges; carry the source
-  attack's per-frame hitbox activation into each split). Bigger change.
+  jab2/jab3. Investigation: the extracted `Hitbox` struct carries NO activation
+  frame (just damage/angle/KB/hitstop/hitstun), and SSF2's `attackBox`/`attackBox2`
+  are simultaneous boxes of the one combo attack — so true per-hit values would
+  need NEW extraction of hitbox activation frames from the SSF2 sprite timeline,
+  correlated to the anim_splitter's frame ranges. Bigger change. **Note the
+  interim is sound, not merely non-zero:** FM gates a hitbox by the animation's
+  COLLISION_BOX *layers*, so any inherited stat entry whose box isn't active on
+  jab2/jab3's frames is simply inert — the only approximation is the damage/KB
+  *values* (jab3's real SSF2 finisher is typically a bit stronger than jab1).
 - **`forceAttack`** (mario `grounded`) has no FM mapping; the auto-special-on-land
   branch is dead.
 
