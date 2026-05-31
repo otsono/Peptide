@@ -45,6 +45,8 @@ pub const COMMANDS: &[Cmd] = &[
           args: "",                              help: "player 0 position/velocity/damage (P: x=.. y=.. vx=.. vy=.. dmg=..)" },
     Cmd { name: "anim",    aliases: &["animation", "a"],     wire: 'a',
           args: "",                              help: "player 0 current animation + frame (A:<name> frame <cur>/<total>)" },
+    Cmd { name: "snapshot", aliases: &["snap"],              wire: '\0',
+          args: "",                              help: "one-shot readback bundle: state + physics + animation (client-side; sends t, v, a)" },
     Cmd { name: "load",    aliases: &["l"],                 wire: 'l',
           args: "",                              help: "synchronous custom-.fra load probe (diagnostic; spawn does this itself)" },
     Cmd { name: "keys",    aliases: &["pool", "k"],         wire: 'k',
@@ -109,6 +111,9 @@ pub enum Translated {
     /// Send `wire` to the engine `count` times, sleeping `gap_ms` between sends
     /// (client-orchestrated repetition — e.g. `loop`). Zero engine bytecode.
     Repeat { wire: String, count: u32, gap_ms: u64 },
+    /// Send these wire lines in order (client-orchestrated multi-command — e.g.
+    /// `snapshot` = t, v, a). Zero engine bytecode; groundwork for recipe scripting.
+    Sequence(Vec<String>),
     /// Handled client-side; print this text, send nothing.
     Client(String),
     /// Could not translate; print this error, send nothing.
@@ -136,6 +141,11 @@ pub fn translate(line: &str) -> Translated {
         // input still works, but tell the user `help` exists.
         return Translated::Wire(line.to_string());
     };
+
+    if cmd.name == "snapshot" {
+        // Bundle the three readbacks (state, physics, animation) into one command.
+        return Translated::Sequence(vec!["t".into(), "v".into(), "a".into()]);
+    }
 
     if cmd.name == "loop" {
         // `loop <move> [count]` — re-dispatch a move on an interval (client-side).
@@ -260,6 +270,15 @@ mod tests {
         assert_eq!(wire("move special_neutral"), format!("m {}", (b'A' + ord as u8) as char));
         assert!(matches!(translate("move flibble"), Translated::Error(_)));
         assert!(MOVES.len() <= 26, "selector encoding assumes < 26 moves");
+    }
+
+    #[test]
+    fn snapshot_expands_to_sequence() {
+        match translate("snapshot") {
+            Translated::Sequence(w) => assert_eq!(w, vec!["t", "v", "a"]),
+            _ => panic!("snapshot should be a Sequence"),
+        }
+        assert!(matches!(translate("snap"), Translated::Sequence(_)));
     }
 
     #[test]

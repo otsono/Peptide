@@ -244,6 +244,21 @@ fn serve(port: u16, token: Option<&str>) {
                     }
                 }
             }
+            Translated::Sequence(wires) => {
+                eprintln!("peptide-bridge: SEQ {wires:?}  (from {:?})", raw.trim());
+                if !first {
+                    if let Some(g) = cmd_gap { thread::sleep(Duration::from_secs_f64(g)); }
+                }
+                first = false;
+                for (i, w) in wires.iter().enumerate() {
+                    if i > 0 { thread::sleep(Duration::from_millis(150)); }
+                    eprintln!("peptide-bridge: SENT {w:?}");
+                    if !send_wire(&mut write_half, w) {
+                        eprintln!("peptide-bridge: write failed (engine gone?)");
+                        break 'outer;
+                    }
+                }
+            }
         }
     }
 
@@ -283,6 +298,10 @@ fn send_once(port: u16, token: Option<&str>, cmd: &str) {
         Translated::Repeat { wire, .. } => {
             eprintln!("peptide-bridge: 'loop' sends once in one-shot mode — use serve/runseq for repetition");
             wire
+        }
+        Translated::Sequence(wires) => {
+            eprintln!("peptide-bridge: 'snapshot'/sequence sends only the first cmd in one-shot mode — use serve/runseq for the full bundle");
+            wires.into_iter().next().unwrap_or_default()
         }
         Translated::Client(text) => { print!("{text}"); return; }
         Translated::Error(msg) => { eprintln!("peptide-bridge: {msg}"); std::process::exit(2); }
