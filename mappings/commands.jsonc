@@ -45,6 +45,18 @@
     // getters); they are NOT renamed to get*Velocity(). Only the X/Y getters — the Net
     // variants still map to getNet*Velocity() in the decompiler.
 
+    // SSF2 event constants -> Fraymakers event enums (same add/removeEventListener API).
+    // ORDER: CHAR_GRABBED before CHAR_GRAB (the latter is a prefix of the former).
+    { "from": "SSF2Event.GROUND_TOUCH",    "to": "EntityEvent.COLLIDE_FLOOR" },
+    { "from": "SSF2Event.ATTACK_CONNECT",  "to": "GameObjectEvent.HIT_DEALT" },
+    { "from": "SSF2Event.CHAR_HURT",       "to": "GameObjectEvent.HIT_RECEIVED" },
+    { "from": "SSF2Event.CHAR_GRABBED",    "to": "GameObjectEvent.GRAB_RECEIVED" },
+    { "from": "SSF2Event.CHAR_LEDGE_GRAB", "to": "CharacterEvent.LEDGE_GRAB" },
+    { "from": "SSF2Event.CHAR_GRAB",       "to": "GameObjectEvent.GRAB_DEALT" },
+    { "from": "SSF2Event.GAME_TICK_END",   "to": "match.TICK_END" },
+    // SSF2API.* event registration lives on `match` in Fraymakers.
+    { "from": "SSF2API.",                  "to": "match." },
+
     // FM API renames — confirmed against Fraymakers/api-types-plugin (the
     // authoritative TS declarations of every class+method) and real usage in
     // Fraymakers/character-template's Script.hx and character.entity.

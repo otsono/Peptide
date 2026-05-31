@@ -333,6 +333,35 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
         }
     }
 
+    // Synthesize SSF2 state-transition shortcut handlers (toLand / toCrashLand / toHelpless).
+    // Fraymakers has no such methods — each is just `self.toState(CState.X)`. They are used as
+    // add/removeEventListener callbacks, so they MUST be stable NAMED functions (an inline
+    // closure would make a later removeEventListener fail to match and leave a dangling
+    // listener). We emit a named function per referenced shortcut; rewrite_own_method_refs then
+    // strips `self.` from each call site (`self.toLand` -> bare `toLand`) so the listener and its
+    // remover both reference this one definition. The body's `self.toState(...)` is an FM
+    // built-in and is left untouched.
+    {
+        let shortcuts: [(&str, &str); 3] = [
+            ("toLand",      "CState.LAND"),
+            ("toCrashLand", "CState.CRASH_BOUNCE"),
+            ("toHelpless",  "CState.FALL_SPECIAL"),
+        ];
+        for (name, state) in shortcuts {
+            let re = regex::Regex::new(&format!(r"\b{}\b", name)).unwrap();
+            let referenced = scripts.iter().any(|s| re.is_match(&s.code));
+            let already_defined = scripts.iter().any(|s| s.is_ext_method && s.name == name);
+            if referenced && !already_defined {
+                scripts.push(ScriptInfo {
+                    name: name.to_string(),
+                    code: format!("function {}(arg0) {{\n\tself.toState({});\n}}", name, state),
+                    is_ext_method: true,
+                });
+                log::info!("synthesized state-shortcut handler {}() -> self.toState({})", name, state);
+            }
+        }
+    }
+
     log::info!("Total: {} attacks, {} animations, {} ssf2→fm mappings extracted",
         attacks.len(), animations.len(), ssf2_to_fm_anim.len());
 
