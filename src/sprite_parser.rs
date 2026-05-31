@@ -800,7 +800,7 @@ fn find_collision_box_base_size(swf: &swf::Swf, sym_names: &BTreeMap<u16, String
 /// Uses the ssf2_to_fm map to validate/match against known animation names.
 pub fn extract_ssf2_anim_name(
     sym: &str,
-    _char_lower: &str,
+    char_lower: &str,
     ssf2_to_fm: &BTreeMap<String, String>,
 ) -> Option<String> {
     // Symbol format: "{char}_fla.{AnimLabel}_{index}"
@@ -813,6 +813,21 @@ pub fn extract_ssf2_anim_name(
 
     // Strip trailing _NNN
     let stripped = strip_numeric_suffix(local);
+
+    // Some characters (fox, …) name their move sprites "{char}_fla.{char}_{move}"
+    // (a REDUNDANT char prefix inside the label, e.g. "fox_fla.fox_airN") instead of
+    // "{char}_fla.{Move}" (mario's "mario_fla.NAir"). Strip a leading "{char}_" so the
+    // label maps. Case-insensitive; only strips when the prefix is actually present, so
+    // mario-style labels (no prefix) are unaffected.
+    let stripped = {
+        let lc = stripped.to_ascii_lowercase();
+        let pfx = format!("{}_", char_lower.to_ascii_lowercase());
+        if lc.starts_with(&pfx) && stripped.len() > pfx.len() {
+            &stripped[pfx.len()..]
+        } else {
+            stripped
+        }
+    };
 
     // Try direct match against SSF2 anim names (case-insensitive)
     // Build a normalized version: "NAir" → "nair", then match against known patterns
