@@ -683,6 +683,44 @@ fn prerender_skewed_frames(
                 }
             }
 
+            // ── Palette re-snap ──────────────────────────────────────────────
+            // Bicubic resampling + the unsharp mask introduce interpolated colours
+            // that drift off the source sprite's palette. Snap every baked pixel's
+            // RGB to the nearest colour actually present in the SOURCE bitmap (alpha
+            // left untouched) so the result stays palette-accurate / colour-swappable.
+            // Skipped if the source isn't palettized (too many distinct colours).
+            {
+                const MAX_PALETTE: usize = 4096;
+                let mut palette: Vec<[u8; 3]> = Vec::new();
+                let mut seen: std::collections::HashSet<[u8; 3]> = std::collections::HashSet::new();
+                let mut too_many = false;
+                for p in src.pixels() {
+                    if p.0[3] >= 8 {
+                        let rgb = [p.0[0], p.0[1], p.0[2]];
+                        if seen.insert(rgb) {
+                            palette.push(rgb);
+                            if palette.len() > MAX_PALETTE { too_many = true; break; }
+                        }
+                    }
+                }
+                if !too_many && !palette.is_empty() {
+                    for px in dst.pixels_mut() {
+                        if px.0[3] == 0 { continue; }
+                        let (r, g, b) = (px.0[0] as i32, px.0[1] as i32, px.0[2] as i32);
+                        let mut best = palette[0];
+                        let mut best_d = i32::MAX;
+                        for c in &palette {
+                            let dr = r - c[0] as i32;
+                            let dg = g - c[1] as i32;
+                            let db = b - c[2] as i32;
+                            let d = dr * dr + dg * dg + db * db;
+                            if d < best_d { best_d = d; best = *c; if d == 0 { break; } }
+                        }
+                        px.0[0] = best[0]; px.0[1] = best[1]; px.0[2] = best[2];
+                    }
+                }
+            }
+
             let new_id = next_id;
             // Bail out cleanly if we'd overflow the u16 id namespace.
             // Wrapping back into 0 would collide with real shape ids.
