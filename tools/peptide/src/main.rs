@@ -1355,11 +1355,40 @@ fn connect_edit(
     ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(e_idx) });
     let idx_jne_e = ops.len();
     ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });          // not 'e' -> L_AFTER_E ('x' check)
+    let _ = eval_script_g;
+    // ---- read the rest of the line ("e <script…>") into g_buf, then getString -> rr14 ----
+    // (mirrors the proven `s`-handler drain: accumulate bytes until '\n' or EOF.)
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_blen), src: rr(39) });
+    let idx_e_drain = ops.len();
+    ops.push(Opcode::Call1 { dst: r_c, fun: RefFun(recv_char), arg0: r_handle });
+    ops.push(Opcode::Int { dst: r_zero, ptr: RefInt(zero_idx) });
+    let idx_e_jslt = ops.len();
+    ops.push(Opcode::JSLt { a: r_c, b: r_zero, offset: 0 });            // no more data -> getString
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(nl_idx) });
+    let idx_e_jeq = ops.len();
+    ops.push(Opcode::JEq { a: r_c, b: rr(16), offset: 0 });             // '\n' -> getString
+    ops.push(Opcode::GetGlobal { dst: rr(51), global: RefGlobal(g_buf) });
+    ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_blen) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(bytes_set), arg0: rr(51), arg1: rr(39), arg2: r_c });
+    ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_blen) });
+    ops.push(Opcode::Incr { dst: rr(39) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_blen), src: rr(39) });
+    let idx_e_jback = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                            // -> drain
+    let idx_e_getstr = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(51), global: RefGlobal(g_buf) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::GetGlobal { dst: rr(16), global: RefGlobal(g_blen) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call4 { dst: rr(14), fun: RefFun(bytes_getstring), arg0: rr(51), arg1: rr(39), arg2: rr(16), arg3: rr(15) });
+    if let Opcode::JSLt { offset, .. } = &mut ops[idx_e_jslt] { *offset = idx_e_getstr as i32 - idx_e_jslt as i32 - 1; }
+    if let Opcode::JEq  { offset, .. } = &mut ops[idx_e_jeq]  { *offset = idx_e_getstr as i32 - idx_e_jeq as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_jback] { *offset = idx_e_drain as i32 - idx_e_jback as i32 - 1; }
     // parser = new hscript.Parser(); parser.__constructor__()
     ops.push(Opcode::New { dst: e_parser });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_parser_ctor), arg0: e_parser });
-    // expr = parser.parseString(script, null)
-    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_script_g) });
+    // expr = parser.parseString(scriptLine, null)
     ops.push(Opcode::Null { dst: rr(15) });
     ops.push(Opcode::Call3 { dst: e_expr, fun: RefFun(hs_parse), arg0: e_parser, arg1: rr(14), arg2: rr(15) });
     // interp = new hscript.Interp(); interp.__constructor__()
