@@ -911,7 +911,7 @@ impl<'a> BlockDecoder<'a> {
                     let mn_idx = read_u30_at(self.bc, &mut pos);
                     let argc = read_u30_at(self.bc, &mut pos) as usize;
                     let name = self.multiname(mn_idx);
-                    let mut args: Vec<Expr> = (0..argc).map(|_| self.pop()).collect();
+                    let mut args: Vec<Expr> = (0..argc.min(self.stack.len())).map(|_| self.pop()).collect();
                     args.reverse();
                     let obj = self.pop();
                     // Collapse findpropstrict + callproperty with same name → self.name()
@@ -922,7 +922,7 @@ impl<'a> BlockDecoder<'a> {
                     let mn_idx = read_u30_at(self.bc, &mut pos);
                     let argc = read_u30_at(self.bc, &mut pos) as usize;
                     let name = self.multiname(mn_idx);
-                    let mut args: Vec<Expr> = (0..argc).map(|_| self.pop()).collect();
+                    let mut args: Vec<Expr> = (0..argc.min(self.stack.len())).map(|_| self.pop()).collect();
                     args.reverse();
                     let obj = self.pop();
                     let obj = collapse_findprop(obj, &name);
@@ -932,7 +932,7 @@ impl<'a> BlockDecoder<'a> {
                 OP_CALL => {
                     let _mn_idx = read_u30_at(self.bc, &mut pos); // always 0 for generic call
                     let argc = read_u30_at(self.bc, &mut pos) as usize;
-                    let mut args: Vec<Expr> = (0..argc).map(|_| self.pop()).collect();
+                    let mut args: Vec<Expr> = (0..argc.min(self.stack.len())).map(|_| self.pop()).collect();
                     args.reverse();
                     let _recv = self.pop();
                     let func = self.pop();
@@ -941,7 +941,7 @@ impl<'a> BlockDecoder<'a> {
                 OP_CALLMETHOD | OP_CALLSTATIC => {
                     let _idx = read_u30_at(self.bc, &mut pos);
                     let argc = read_u30_at(self.bc, &mut pos) as usize;
-                    let mut args: Vec<Expr> = (0..argc).map(|_| self.pop()).collect();
+                    let mut args: Vec<Expr> = (0..argc.min(self.stack.len())).map(|_| self.pop()).collect();
                     args.reverse();
                     let obj = self.pop();
                     self.stack.push(Expr::Call(Box::new(obj), "/* method */".into(), args));
@@ -950,7 +950,7 @@ impl<'a> BlockDecoder<'a> {
                     let mn_idx = read_u30_at(self.bc, &mut pos);
                     let argc = read_u30_at(self.bc, &mut pos) as usize;
                     let name = self.multiname(mn_idx);
-                    let mut args: Vec<Expr> = (0..argc).map(|_| self.pop()).collect();
+                    let mut args: Vec<Expr> = (0..argc.min(self.stack.len())).map(|_| self.pop()).collect();
                     args.reverse();
                     self.pop(); // receiver
                     self.stmts.push(Stmt::Expr(Expr::Call(Box::new(Expr::GetLex("super".into())), name, args)));
@@ -959,28 +959,34 @@ impl<'a> BlockDecoder<'a> {
                     let mn_idx = read_u30_at(self.bc, &mut pos);
                     let argc = read_u30_at(self.bc, &mut pos) as usize;
                     let name = self.multiname(mn_idx);
-                    let mut args: Vec<Expr> = (0..argc).map(|_| self.pop()).collect();
+                    let mut args: Vec<Expr> = (0..argc.min(self.stack.len())).map(|_| self.pop()).collect();
                     args.reverse();
                     self.pop();
                     self.stack.push(Expr::New(name, args));
                 }
                 OP_CONSTRUCT => {
                     let argc = read_u30_at(self.bc, &mut pos) as usize;
-                    let mut args: Vec<Expr> = (0..argc).map(|_| self.pop()).collect();
+                    let mut args: Vec<Expr> = (0..argc.min(self.stack.len())).map(|_| self.pop()).collect();
                     args.reverse();
                     let cls = self.pop();
                     self.stack.push(Expr::Call(Box::new(cls), "new".into(), args));
                 }
                 OP_CONSTRUCTSUPER => {
                     let argc = read_u30_at(self.bc, &mut pos) as usize;
-                    let mut args: Vec<Expr> = (0..argc).map(|_| self.pop()).collect();
+                    let mut args: Vec<Expr> = (0..argc.min(self.stack.len())).map(|_| self.pop()).collect();
                     args.reverse();
                     self.pop();
                     self.stmts.push(Stmt::Comment(format!("super({})", args.iter().map(|a| a.render()).collect::<Vec<_>>().join(", "))));
                 }
 
                 OP_NEWOBJECT => {
-                    let count = read_u30_at(self.bc, &mut pos) as usize;
+                    // newobject pops `count` key/value PAIRS off the stack — count can
+                    // never exceed half the current stack depth in valid bytecode. A
+                    // mis-parsed range (CFG-reconstruction edge case on complex methods,
+                    // e.g. chibirobo/dedede) can read garbage as a near-max-u30 count and
+                    // allocate ~hundreds of GB. Clamp to the available pairs.
+                    let raw = read_u30_at(self.bc, &mut pos) as usize;
+                    let count = raw.min(self.stack.len() / 2);
                     let mut pairs = Vec::new();
                     let mut items: Vec<Expr> = (0..count*2).map(|_| self.pop()).collect();
                     items.reverse();
@@ -992,7 +998,10 @@ impl<'a> BlockDecoder<'a> {
                     self.stack.push(Expr::Object(pairs));
                 }
                 OP_NEWARRAY => {
-                    let count = read_u30_at(self.bc, &mut pos) as usize;
+                    // newarray pops `count` items — bounded by the stack depth in valid
+                    // bytecode; clamp so a mis-parsed huge count can't OOM (see OP_NEWOBJECT).
+                    let raw = read_u30_at(self.bc, &mut pos) as usize;
+                    let count = raw.min(self.stack.len());
                     let mut items: Vec<Expr> = (0..count).map(|_| self.pop()).collect();
                     items.reverse();
                     self.stack.push(Expr::Array(items));

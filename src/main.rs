@@ -1,6 +1,41 @@
 use ssf2_converter::*;
 use ssf2_converter::sound_extractor;
 
+// ── Gated memory-limit allocator (diagnostic) ───────────────────────────────
+// Default-disabled (limit 0 → no behavior change). Set CONV_MEM_LIMIT_MB to a
+// number to cap live heap: once live bytes exceed the cap, alloc returns null so
+// Rust's alloc-error handler aborts with "memory allocation of N bytes failed"
+// (N = the allocation that tipped over) and, under RUST_BACKTRACE=1, the site.
+// Used to localize the chibirobo/dedede convert-time OOM. The atomics add a
+// negligible load on each (de)alloc and are inert when the limit is 0.
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+struct LimitAlloc;
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+static LIMIT: AtomicUsize = AtomicUsize::new(0); // bytes; 0 = disabled
+
+unsafe impl GlobalAlloc for LimitAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let lim = LIMIT.load(Relaxed);
+        if lim != 0 {
+            let prev = LIVE.fetch_add(layout.size(), Relaxed);
+            if prev + layout.size() > lim {
+                LIVE.fetch_sub(layout.size(), Relaxed);
+                return std::ptr::null_mut(); // → handle_alloc_error aborts with the size
+            }
+        }
+        System.alloc(layout)
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if LIMIT.load(Relaxed) != 0 { LIVE.fetch_sub(layout.size(), Relaxed); }
+        System.dealloc(ptr, layout);
+    }
+}
+
+#[global_allocator]
+static GLOBAL: LimitAlloc = LimitAlloc;
+
 use clap::Parser;
 use anyhow::{Result, Context};
 use std::path::PathBuf;
@@ -44,6 +79,14 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+    // Diagnostic heap cap (see LimitAlloc). CONV_MEM_LIMIT_MB=2000 caps live heap
+    // at 2 GB; unset/0 disables (normal operation).
+    if let Ok(mb) = std::env::var("CONV_MEM_LIMIT_MB") {
+        if let Ok(n) = mb.trim().parse::<usize>() {
+            LIMIT.store(n.saturating_mul(1024 * 1024), Relaxed);
+            if n > 0 { eprintln!("CONV_MEM_LIMIT_MB={n} → live-heap cap {n} MB", ); }
+        }
+    }
     let args = Args::parse();
 
     if args.verbose {
