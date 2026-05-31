@@ -792,6 +792,9 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
         .ok_or_else(|| anyhow::anyhow!("PXFResource.entities field not found"))?;
     let cache_sprite_entity = require_fn(code, "cacheSpriteEntity", Some("pxf.io.$ResourceManager"))?;
     let sm_get = require_fn(code, "get", Some("haxe.ds.StringMap"))?;
+    // pxfSpriteEntityCache field (g3508) — for the getPXFSpriteEntity self-heal patch.
+    let spritecache_field = find_field(code, code.globals[3508].0, "pxfSpriteEntityCache")
+        .ok_or_else(|| anyhow::anyhow!("pxfSpriteEntityCache field not found"))?;
     let pxf_entitymap_field = find_field(code, pxfres_t, "entityMap")
         .ok_or_else(|| anyhow::anyhow!("PXFResource.entityMap field not found"))?;
     let reqmedia_field = find_field(code, rm_statics_t, "requiredMediaIds")
@@ -875,6 +878,11 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // (MainMenu/Local Play/etc.) so the match scene underneath becomes visible.
     let g_shown = code.globals.len();
     code.globals.push(hlbc::types::RefType(7)); // Bool
+    // Loaded-character sprite-cache key (e.g. "private::<id>.<id>"), set by the load
+    // for WHATEVER char `s` loads. The getPXFSpriteEntity self-heal falls back to this
+    // on a cache miss — generic, not sandbag-specific. Null until a char is loaded.
+    let g_loaded_spritekey = code.globals.len();
+    code.globals.push(hlbc::types::RefType(13)); // String
     // line-command buffer: "startMatch" takes runtime args (char/stage/assist) sent
     // over the socket. We accumulate the arg bytes into a haxe.io.Bytes scratch
     // buffer, then getString() it into a real String to split + parse.
@@ -1194,6 +1202,9 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: rr(55), arg1: rr(74), arg2: rr(75) });
     let idx_sl_addres = ops.len();
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(add_resource), arg0: rr(71) });
+    // record the loaded char's sprite-cache key for the generic self-heal fallback
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(ns_sandbag_g) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_loaded_spritekey), src: rr(55) });
     let idx_sl_skip = ops.len();
     // patch self-bootstrap jumps
     if let Opcode::JNotNull { offset, .. } = &mut ops[idx_s_load_jskip] { *offset = idx_sl_skip as i32 - idx_s_load_jskip as i32 - 1; }
@@ -1755,6 +1766,36 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_t_jdone] { *offset = n - idx_t_jdone as i32 - 1; }
     insert_ops_front(f, ops);
     eprintln!("connect_edit: injected {n} ops into update@{update_fx} (console+startMatch dispatch); port={port}");
+    // ---- getPXFSpriteEntity self-heal (RELIABLE SPAWN) ------------------------
+    // RE proof: there is NO cache reset/removal — the buried-VFX null is a populate-
+    // vs-consume RACE (the async per-resource PXF preload caches the sprite key only
+    // when sandbag's resource finishes loading; onMatchReady's ctor sometimes wins).
+    // Our headless load reliably caches "private::sandbag.sandbag" (NSPR:1, never
+    // removed). So: rewrite getPXFSpriteEntity@18289 to, on ANY cache miss, fall back
+    // to that always-present entry — converting the race into a guaranteed hit for
+    // sandbag's sprite. Reuses the function's own regs (0=key,1=val,2=map,3=RM,4=ret);
+    // the original body becomes unreachable (we always Ret).
+    {
+        let mut a = Asm::new(0); // reuses the fn's own regs (0-4); allocates none
+        let l_ret = a.label();
+        a.op(Opcode::GetGlobal { dst: Reg(3), global: RefGlobal(3508) });
+        a.op(Opcode::Field { dst: Reg(2), obj: Reg(3), field: RefField(spritecache_field) });
+        a.op(Opcode::Call2 { dst: Reg(1), fun: RefFun(sm_get), arg0: Reg(2), arg1: Reg(0) });
+        a.jnotnull(Reg(1), l_ret);                       // hit -> return it
+        // miss: fall back to the loaded char's key (generic — set by the load; null if none)
+        a.op(Opcode::GetGlobal { dst: Reg(0), global: RefGlobal(g_loaded_spritekey) });
+        a.jnull(Reg(0), l_ret);                          // no loaded char -> return null (orig behavior)
+        a.op(Opcode::Call2 { dst: Reg(1), fun: RefFun(sm_get), arg0: Reg(2), arg1: Reg(0) });
+        a.place(l_ret);
+        a.op(Opcode::UnsafeCast { dst: Reg(4), src: Reg(1) });
+        a.op(Opcode::Ret { ret: Reg(4) });
+        let (a_ops, a_regs) = a.finish();
+        let gfi = function_index_by_findex(code, get_sprite_entity)
+            .ok_or_else(|| anyhow::anyhow!("getPXFSpriteEntity@{get_sprite_entity} not found"))?;
+        add_regs(&mut code.functions[gfi], &a_regs);
+        insert_ops_front(&mut code.functions[gfi], a_ops);
+        eprintln!("connect_edit: getPXFSpriteEntity@{get_sprite_entity} self-heal (miss -> private::sandbag.sandbag)");
+    }
 
     // When content loads (Title.customContentLoaded@21850 — title now shows
     // "press any button"), auto-trigger the EXACT press-any-button handler
