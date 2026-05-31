@@ -130,9 +130,7 @@ ssf2-fraymakers-converter/
 │   ├── fraytools-harness/     Drives the user's FrayTools editor over CDP (publish + box geometry)
 │   └── peptide/               Drives the user's Fraymakers engine via patched bytecode + loopback TCP
 │
-├── ssf2-converter-gui/        Cross-platform (egui) GUI wrapper
-│   ├── Package.swift
-│   └── Sources/SSF2ConverterApp/{App.swift, ContentView.swift}
+├── ssf2-converter-gui/        Cross-platform (egui) GUI wrapper (Rust + egui)
 │
 ├── characters/                Converter OUTPUT (`*.hx`, `*.json`, `*.entity` tracked;
 │                              binary/image media git-ignored). Sample runs present.
@@ -1229,7 +1227,7 @@ What is solid:
 - `Menu.entity` with broadened head-sprite detection (`_head`, `_icon`;
   excludes `_hud`).
 - Conversion log + GUI "Unhandled Calls" popup.
-- The macOS SwiftUI GUI wrapper.
+- The cross-platform (`egui`) GUI wrapper (`ssf2-converter-gui`).
 
 ---
 

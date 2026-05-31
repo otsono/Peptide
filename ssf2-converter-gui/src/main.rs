@@ -1,7 +1,7 @@
 //! Cross-platform GUI for the SSF2 → Fraymakers converter.
 //!
 //! A pure-Rust egui/eframe app (Windows / macOS / Linux) that mirrors the
-//! macOS SwiftUI app: drag-and-drop an .ssf, convert it (by shelling out to
+//! cross-platform egui app: drag-and-drop an .ssf, convert it (by shelling out to
 //! the bundled `ssf2_converter` binary), optionally publish straight into the
 //! Fraymakers custom-content folder, and export the .fra via the FrayTools
 //! harness.

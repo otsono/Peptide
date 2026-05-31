@@ -1,9 +1,9 @@
 # SSF2 → Fraymakers Converter — cross-platform GUI
 
 A pure-Rust [egui/eframe](https://github.com/emilk/egui) desktop app that runs
-on **Windows, macOS, and Linux**. It mirrors the macOS SwiftUI app
-(`../SSF2ConverterApp/`) but ships as a single self-contained executable with
-no runtime dependencies (no WebView2, no Electron, no bundled browser).
+on **Windows, macOS, and Linux**, shipping as a single self-contained executable
+with no runtime dependencies (no WebView2, no Electron, no bundled browser). This
+is the one and only GUI for the converter on every platform.
 
 ## What it does
 
@@ -60,10 +60,3 @@ in the same folder.
   the `tools/fraytools-harness/` `node_modules` present
   (`cd tools/fraytools-harness && npm install`). Conversion itself does not
   need Node.
-
-## Relationship to the SwiftUI app
-
-`../SSF2ConverterApp/` remains the macOS-native build (SwiftUI can't target
-Windows). This egui app is the cross-platform equivalent and is the path
-forward for Windows/Linux users. Both shell out to the same `ssf2_converter`
-binary and the same FrayTools harness, so behavior is identical.
