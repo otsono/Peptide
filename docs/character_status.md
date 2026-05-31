@@ -14,12 +14,33 @@ Two axes:
 > frames). Parity work (5 fixes landed; see `docs/PARITY.md`) is tracked
 > separately, with mario/sandbag as the deep test beds.
 
-## Headline: 45 / 45 characters drive in-engine, 0 crashes
+## Headline: 40 / 45 genuinely functional; 5 have broken sprite extraction
 
-**Every SSF2 character converts AND spawns, reaches STAND, and dispatches moves
-with no crash.** (`misc.ssf` is the shared costume/palette data file, not a
-character.) Full corpus at the P0 bar; functional-parity refinement (5 fixes
-landed) continues on mario/sandbag — see `docs/PARITY.md`.
+**Correction (don't over-claim):** all 45 convert and *spawn* without crashing, but
+the spawn test is SHALLOW — `ANIM:JAB` reports the engine STATE name, not a real
+animation playing. The frame-data check (`tools/parity_check.py`, HIT_BOX active
+frames in the entity) revealed that **5 characters have near-empty entities** and
+do NOT actually animate or hit:
+
+| Broken char | entity anims | hitbox layers | active frames |
+|---|---|---|---|
+| `fox` | 11 | 0 | 0 |
+| `bomberman` | 11 | 2 | 2 |
+| `donkeykong` | 14 | 2 | 2 |
+| `pit` | 16 | 2 | 2 |
+| `luffy` | 17 | 2 | 2 |
+
+(A healthy character has ~128-164 animations and 24-76 hitbox layers — e.g. mario
+159/39, marth 139/76.) Root cause: per-animation sprite/box resolution fails for
+these 5 (fox: box data for 9/86 animations vs mario's 88/85), so their real moves
+extract empty and `entity_gen` drops them below the "UNUSED" separator, leaving
+only the template `item_*` placeholders. **Open** — a deep `image_extractor` /
+`sprite_parser` issue (see `docs/PARITY.md`).
+
+**40 / 45 characters are genuinely functional** (real moveset, hitboxes, drive
+in-engine). `misc.ssf` is shared data, not a character. Hitbox-STAT parity is
+45/45 for the moves that DO exist (`docs/PARITY.md`); the 5 broken chars + the
+frame-data dimension are the next priority.
 
 ## Convert failures: none
 
