@@ -171,7 +171,7 @@ separately.
 - **`ffmpeg`** on `PATH` — used at runtime for sound conversion (Nellymoser / MP3 /
   ADPCM → WAV). If `ffmpeg` is absent the conversion still completes; sound
   extraction is skipped with a warning.
-- The cross-platform GUI (`ssf2-converter-gui`) needs only Rust — no extra
+- The desktop app is the `peptide` binary itself (a system webview) — no extra
   toolchain or OS-specific SDK. The converter itself is platform-agnostic.
 
 There is **no external Rust runtime dependency** for SWF decompression, bitmap
@@ -452,8 +452,10 @@ CLI definition (`clap`), logging setup, and the top-level orchestration in
   characters) and `validation_warnings`.
 
 #### `lib.rs`
-Just `pub mod` declarations. Exists so the 17 binaries in `src/bin/` can
-`use ssf2_converter::*`. The crate is **both** a library and a binary.
+`pub mod` declarations + the `run_conversion` re-export. Every module is public
+so the diagnostic binaries in `src/bin/` can `use ssf2_converter::*`. The crate is
+a **library**; conversion is driven by `peptide convert` or `run_conversion`, not
+a standalone binary.
 
 ### 5.2 SSF / SWF / mapping layer
 
@@ -1253,8 +1255,8 @@ What is solid:
 - Empty-animation dropping (with a jab-aware keep-list).
 - `Menu.entity` with broadened head-sprite detection (`_head`, `_icon`;
   excludes `_hud`).
-- Conversion log + GUI "Unhandled Calls" popup.
-- The cross-platform (`egui`) GUI wrapper (`ssf2-converter-gui`).
+- Conversion log + the converter screen's warnings panel.
+- Peptide as the single-binary parent product (webview UI; converter folded in as a library).
 
 ---
 

@@ -41,15 +41,14 @@ $EDITOR src/<...>.rs
 
 # 2. Rebuild + regenerate the target character
 cargo build --release
-./target/release/ssf2_converter ../ssf2-ssfs/<id>.ssf
+./target/release/peptide convert ../ssf2-ssfs/<id>.ssf
 #    → ./characters/<id>/   (⚠ verify it is FRESH — see §6 stale-output trap)
 
-# 3. Publish via the FrayTools harness → .fra lands in Fraymakers' custom/<id>/
-node tools/fraytools-harness/export-in-fraytools.js \
+# 3. Publish to .fra → lands in Fraymakers' custom/<id>/
+./target/release/peptide export \
   --project "$PWD/characters/<id>/<id>.fraytools"
 
 # 4. Boot the Fraymakers harness, dispatch, observe
-cd tools/peptide
 ./run.sh "s <id> thespire <assist>" 20     # spawn into a real match
 #   then probe:  ./run.sh "t" 8  (read state)   ./run.sh "m" 8  (drive a move)
 
