@@ -261,9 +261,9 @@ Stop-condition for "a converted character is validated" (the original
 
 **Converter freeze fix — DONE and confirmed.** The user's central concern was
 sandbag freezing the engine shortly after match start. Root cause was a converter
-bug: a decompiled counter loop (`removeAllEffects`'s `while (i < effects.get().length)`)
-whose non-null branch never advanced `i` — the AS3 original mutated the array via
-`splice`, which the decompiler dropped. Fired every frame via a `LINK_FRAMES`
+bug: the converter's decompiler emitted a counter loop (in sandbag's
+`removeAllEffects`) whose non-null branch never advanced the index — the original
+mutated the array as it iterated, an advance the decompiler dropped. Fired every frame via a `LINK_FRAMES`
 listener, it hung the game loop. Fixed by `guard_loop_termination` in
 `src/decompiler.rs` (see DEVELOPMENT §5.3) and verified by reading the regenerated
 `Script.hx`. The engine harness now loads + spawns sandbag with no freeze; a
@@ -272,11 +272,11 @@ fires, which an idle pose doesn't trigger) is the remaining in-engine
 confirmation.
 
 **Open / deferred converter bugs surfaced during validation:**
-- **IntervalTimer null callback (charge states).** Charge frame scripts emit
-  `self.addTimer(8, -1, effects.get())` — the 3rd arg should be the timer
-  *callback* but `effects.get()` is the effects Array, so the timer null-derefs
-  when it fires (only on a charged smash). The `abc_parser` mis-resolved the SSF2
-  callback to the `effects` var; the fix is in the AS3→hscript callback resolution.
+- **IntervalTimer null callback (charge states).** Charge frame scripts emit an
+  add-timer call whose third argument should be the timer *callback* but is instead
+  the effects array, so the timer null-derefs when it fires (only on a charged
+  smash). The `abc_parser` mis-resolved the SSF2 callback to the effects variable;
+  the fix is in the AS3→hscript callback resolution.
 
 ---
 

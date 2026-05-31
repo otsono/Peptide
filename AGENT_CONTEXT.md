@@ -85,8 +85,8 @@ Each character animation lives in a named `DefineSprite`:
 
 The character's main timeline (root) is a DefineSprite whose `SymbolClass` name matches
 the character id exactly (e.g. `mario`, `fox`). Frame labels on the root MC drive the
-`xframe` map: SSF2 frame methods like `frame14` set `self.xframe = "a_air"`, which the
-extractor recovers from the ABC bytecode.
+`xframe` map: SSF2 frame methods assign an animation label to an `xframe` field, which
+the extractor recovers from the ABC bytecode.
 
 ### Root MC Transform
 

@@ -542,7 +542,7 @@ contains a lot of *semantic* extraction tuned to SSF2's code shape:
   costume tables from `misc.ssf` (Pattern A: `paletteSwap: { colors,
   replacements }`; Pattern B: `{ name, colors }`).
 - `extract_xframe_name` / `is_root_xframe_method` — maps internal frame methods
-  to animation labels via `self.xframe = "..."` assignments in their bytecode.
+  to animation labels via their `xframe`-field assignments in the bytecode.
 
 #### `decompiler.rs` (~1700 LOC)
 Turns ABC method bytecode into readable, Haxe-ish source. This is a real
