@@ -42,6 +42,8 @@ You type full words; single-letter wire codes still work as aliases.
 | `anim` | print player 0 current animation + frame (`A:<name> frame <cur>/<total>`) |
 | `loop <move> [count]` | re-dispatch a move repeatedly (default 8×) for sustained observation / live tuning |
 | `snapshot` | one bundle of state + physics + animation (`t`+`v`+`a`) |
+| `step` / `play` | frame-step: pause + advance the animation one frame (`step`), resume (`play`) — scrub through a move |
+| `track <move> [n]` | drive a move then rapid-sample physics — capture its velocity/position trajectory (self-momentum) |
 | `query` | is a match live? |
 | `keys` | dump the loaded resource keys |
 | `exit` | cleanly shut the engine down |
@@ -98,6 +100,22 @@ spawn-drives each character, recording PASS/FAIL (PASS = launched + reached STAN
 commands (plus `#!char`/`#!stage`/`#!gap` directives) driven into one engine
 session. Reusable + shareable (e.g. `recipes/mario_moveset.recipe`). The
 scriptable form of a manual `runseq.sh` sequence.
+
+## A/B regression check (golden behavioral signature)
+
+`tools/peptide/ab_compare.sh <char> <recipe> --save` captures a character's
+behavioral signature (anim states + move acks + resting position, timing noise
+normalized out) as a golden; re-running without `--save` diffs against it and
+exits non-zero on drift. Use it to catch behavioral regressions after a converter
+change, or to A/B two builds of the same character.
+
+## Parity verification (does it behave like SSF2?)
+
+`DUMP_PARITY=1 ./target/release/ssf2_converter ../ssf2-ssfs/<id>.ssf` dumps the
+raw SSF2 hitbox values; `tools/parity_check.py <id>` diffs them against the
+generated `HitboxStats.hx` (damage/angle/knockback/hit-freeze) + reports hitbox
+frame-coverage. All 45 characters currently pass. For move *momentum*, drive
+`track <move>` and compare the velocity trajectory to SSF2. See `docs/PARITY.md`.
 
 ## Where things are
 
