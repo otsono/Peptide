@@ -421,6 +421,48 @@ pub fn split_animations(
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     out.retain(|s| seen.insert(s.fm_name.clone()));
 
+    // ── Base-before-variant guarantee ────────────────────────────────────────
+    // A variant animation (special_down_loop, item_throw_back, …) is only valid if
+    // its BASE (special_down, item_throw) also exists — the engine reaches a variant
+    // from its base via CState / landAnimation / script flow, so a variant whose base
+    // is absent is broken. For every emitted variant whose base is MISSING, synthesize
+    // the base from the variant's own frames so the base is intact.
+    //
+    // Canonical suffix-only groups (strong_*_in/_charge/_attack) intentionally have NO
+    // base, so `_in`/`_charge`/`_attack` are NOT treated as base-requiring suffixes, and
+    // any base that has those siblings is skipped. Iterates to a fixpoint (a synthesized
+    // base may itself be a variant, e.g. item_throw_air → item_throw), capped for safety.
+    const BASE_SUFFIXES: &[&str] = &["_loop", "_endlag", "_out", "_back", "_forward", "_up", "_down", "_land", "_hold", "_air"];
+    for _ in 0..6 {
+        let emitted: std::collections::HashSet<String> = out.iter().map(|s| s.fm_name.clone()).collect();
+        let mut to_add: Vec<SplitAnim> = Vec::new();
+        for s in &out {
+            for suf in BASE_SUFFIXES {
+                let Some(base) = s.fm_name.strip_suffix(suf) else { continue };
+                if base.is_empty() || emitted.contains(base) { break; }
+                // Only synthesize a base that is a REAL source animation (i.e. SSF2 had it,
+                // e.g. item_throw ⟵ "toss"). Directional/charge GROUPS whose canonical form
+                // is suffix-only — aerial_*, throw_*, tilt_* — have no base animation and
+                // their prefix is not a source key, so they are skipped here.
+                if !source_anims.contains_key(base) { break; }
+                // Skip bases whose canonical form is the _in/_loop/_out (or _in/_charge/_attack)
+                // set — the real entry already exists (crouch_in, shield_in, strong_forward_in),
+                // so no bare base is needed. item_throw has no such sibling → it is synthesized.
+                if emitted.contains(&format!("{base}_in"))
+                    || emitted.contains(&format!("{base}_charge"))
+                    || emitted.contains(&format!("{base}_attack")) { break; }
+                if to_add.iter().any(|a| a.fm_name == base) { break; }
+                let mut b = s.clone();
+                b.fm_name = base.to_string();
+                eprintln!("anim base-fill: synthesized missing base '{}' for variant '{}'", base, s.fm_name);
+                to_add.push(b);
+                break; // one base per variant name
+            }
+        }
+        if to_add.is_empty() { break; }
+        out.extend(to_add);
+    }
+
     out
 }
 
