@@ -314,6 +314,25 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
         }
     }
 
+    // Drop any character-defined `flipX`. Fraymakers provides Entity.flipX(v:Float):Float as a
+    // built-in (negates v when facing left); SSF2 characters that define their own `flipX` are
+    // just reimplementing it. Removing the definition takes `flipX` out of the char's own-method
+    // set, so rewrite_own_method_refs keeps every reference as `self.flipX(...)` — binding to the
+    // engine implementation instead of a local copy. Any bare `flipX(` left over (e.g. a lex-call
+    // the decompiler didn't qualify) is requalified to `self.flipX(` so nothing dangles.
+    {
+        let had_flipx = scripts.iter().any(|s| s.is_ext_method && s.name == "flipX");
+        if had_flipx {
+            scripts.retain(|s| !(s.is_ext_method && s.name == "flipX"));
+            // Requalify any bare flipX( call to self.flipX( (skip ones already qualified with `.`).
+            let re = regex::Regex::new(r"(^|[^.\w])flipX\(").unwrap();
+            for s in &mut scripts {
+                s.code = re.replace_all(&s.code, "${1}self.flipX(").into_owned();
+            }
+            log::info!("removed character-defined flipX — all references now use the engine's self.flipX");
+        }
+    }
+
     log::info!("Total: {} attacks, {} animations, {} ssf2→fm mappings extracted",
         attacks.len(), animations.len(), ssf2_to_fm_anim.len());
 
