@@ -18,7 +18,11 @@ cd "$(cd "$(dirname "$0")/.." && pwd)"
 chars=("$@")
 if [ ${#chars[@]} -eq 0 ]; then
   chars=()
-  for d in characters/*/; do [ -d "${d}library/scripts" ] && chars+=("$(basename "$d")"); done
+  for d in characters/*/; do
+    id="$(basename "$d")"
+    [ "$id" = "misc" ] && continue           # misc.ssf is shared data, not a character
+    [ -d "${d}library/scripts" ] && chars+=("$id")
+  done
 fi
 printf "%-16s %6s %6s %6s\n" "character" "/*?*/" "SSF2" "TODO"
 printf "%-16s %6s %6s %6s\n" "---------" "-----" "----" "----"
