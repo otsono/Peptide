@@ -155,6 +155,59 @@ fn double_keyframe_lengths(keyframes: &mut [Value]) {
     }
 }
 
+/// Remove a redundant trailing `return;` (the SSF2 returnvoid) from a frame-script body.
+/// Only strips when `return` is a standalone final token, never an early `return` mid-script.
+fn strip_trailing_return(body: &str) -> String {
+    let t = body.trim_end();
+    if let Some(pre) = t.strip_suffix("return;") {
+        if pre.is_empty() || !pre.chars().last().map_or(false, |c| c.is_alphanumeric() || c == '_') {
+            return pre.trim_end().to_string();
+        }
+    }
+    body.to_string()
+}
+
+/// Frame-doubling holds every keyframe for two frames, which also stretches each 1-frame
+/// SCRIPT keyframe to two — making the script's frame span ambiguous. A frame script must
+/// fire on exactly ONE frame, so after doubling we split every non-blank FRAME_SCRIPT
+/// keyframe into a 1-frame script followed by a blank keyframe holding the remainder (so
+/// total timing is preserved and the script is always followed by a blank or the anim end).
+fn enforce_one_frame_scripts(layers: &mut [Value], keyframes: &mut Vec<Value>, char_id: &str) {
+    let mut new_blanks: Vec<Value> = Vec::new();
+    let mut counter = 0usize;
+    for layer in layers.iter_mut() {
+        if layer.get("type").and_then(Value::as_str) != Some("FRAME_SCRIPT") { continue; }
+        let layer_id = layer.get("$id").and_then(Value::as_str).unwrap_or("").to_string();
+        let ids: Vec<String> = match layer.get("keyframes").and_then(Value::as_array) {
+            Some(a) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+            None => continue,
+        };
+        let mut new_ids: Vec<String> = Vec::with_capacity(ids.len());
+        for id in ids {
+            new_ids.push(id.clone());
+            if let Some(kf) = keyframes.iter_mut().find(|k| k.get("$id").and_then(Value::as_str) == Some(&id)) {
+                let has_code = !kf.get("code").and_then(Value::as_str).unwrap_or("").is_empty();
+                let len = kf.get("length").and_then(Value::as_u64).unwrap_or(1);
+                if has_code && len > 1 {
+                    kf["length"] = json!(1);
+                    let blank_id = uuid(char_id, &format!("kf_script_pad_{}_{}", layer_id, counter));
+                    counter += 1;
+                    new_blanks.push(json!({
+                        "$id": blank_id,
+                        "type": "FRAME_SCRIPT",
+                        "length": len - 1,
+                        "code": "",
+                        "pluginMetadata": {}
+                    }));
+                    new_ids.push(blank_id);
+                }
+            }
+        }
+        layer["keyframes"] = json!(new_ids);
+    }
+    keyframes.extend(new_blanks);
+}
+
 pub fn generate_entity(
     data: &CharacterData,
     char_id: &str,
@@ -339,6 +392,10 @@ pub fn generate_entity(
                                     let body = crate::api_mappings::rewrite_own_method_refs(&body, &ext_methods);
                                     let body = crate::api_mappings::wrap_persistent_state(
                                         &body, &var_types);
+                                    // Drop a redundant trailing `return;` — a frame script
+                                    // is a statement block, not a function, so the final
+                                    // `return;` (from the SSF2 returnvoid) is noise.
+                                    let body = strip_trailing_return(&body);
                                     frame_code.insert(local_frame, body);
                                 }
                             }
@@ -930,6 +987,9 @@ pub fn generate_entity(
 
     // 30fps → 60fps: hold every keyframe for two frames (see fn docs).
     double_keyframe_lengths(&mut keyframes);
+    // Re-collapse each script keyframe to a single frame (+ trailing blank) so frame
+    // scripts fire exactly once, not across the doubled 2-frame span.
+    enforce_one_frame_scripts(&mut layers, &mut keyframes, char_id);
 
     // Drop animations whose image timeline is entirely blank (no IMAGE
     // keyframe carries a symbol). Empty stubs clutter the FrayTools editor

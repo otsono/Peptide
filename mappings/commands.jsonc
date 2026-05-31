@@ -204,6 +204,12 @@
       "replacement": "Random.getValue() * 100",
       "note": "drop (min,max) args, fixed placeholder mapping"
     },
+    // updateAnimationStats/updateAttackStats({ autoCancel: BOOL }) → Common.setAutocancel(BOOL).
+    {
+      "pattern": "(?:self\\.)?(?:updateAnimationStats|updateAttackStats)\\(\\{\\s*autoCancel:\\s*(true|false)\\s*\\}\\)",
+      "replacement": "Common.setAutocancel($1)",
+      "note": "autoCancel toggle maps to the Common helper"
+    },
     // gotoAndPlay("LABEL") → playFrameLabel("LABEL"). Numeric form
     // gotoAndPlay(N) → playFrame(N) — included for completeness even though
     // no character currently uses it.
