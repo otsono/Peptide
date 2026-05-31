@@ -79,6 +79,26 @@ special_neutral) spawn, animate, and dispatch with no crash; a 3-character batch
 - Item system (`getItem`/`tossItem`/`pickupItem`/`activateItem`) has no FM
   equivalent — item moves are no-ops. (low for non-item characters)
 
+## Measuring parity progress (the safe metric)
+
+`tools/translation_completeness.sh` counts untranslated markers per character
+across generated output — `/* ? */` (decompiler couldn't recover an
+expr/condition/receiver), `[SSF2-only:` (no FM equivalent, commented out), and
+`/*TODO*/`/`TODO` (value punted to a default). Lower is better. It's the SAFE
+before/after gate for decompiler/mapping changes: a fix must REDUCE markers
+without adding new ones, and the in-engine spawn sweep must still pass — this lets
+broad changes (e.g. the deferred `/* ? */` stack-threading) be evaluated without
+hand-reading every script. Baseline spot-check (deep-validated chars are clean;
+`kirby`'s 26 `/* ? */` flags it as a decompiler-quality outlier / future target):
+
+```
+mario   /*?*/ 1   SSF2 2   TODO 18      (clean after the 5 parity fixes)
+sandbag /*?*/ 1   SSF2 3   TODO 12
+kirby   /*?*/ 26  SSF2 45  TODO 63      ← decompiler struggles; future parity pass
+```
+
+(`TODO` counts include the known `CharacterStats` physics-tuning placeholders.)
+
 ## How parity should be verified going forward
 
 Build a `verify <move>` Peptide command (see `docs/PEPTIDE_FUTURE.md`) that drives
