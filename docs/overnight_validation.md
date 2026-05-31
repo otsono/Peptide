@@ -7,6 +7,30 @@ user's local Fraymakers engine via the Peptide harness (`tools/peptide`).
 
 ## Morning summary (read this first)
 
+**P1 (SSF2 functional-equivalence) progress — the second half of the night:**
+- Built a **parity-measurement harness** (`DUMP_PARITY` raw-SSF2 dump +
+  `tools/parity_check.py`) that diffs every move's hitbox stats against the SSF2
+  source. (haxe isn't installed, so the `.hl` path was toolchain-blocked; the
+  static SSF2-source-vs-output check is the highest-signal tractable path and runs
+  with no engine.)
+- **45/45 characters: hitbox-STAT parity** — every hitbox's damage / angle /
+  baseKnockback / knockbackGrowth / hit-freeze matches the SSF2 source. Fixed via:
+  `weightKB` now folds into `baseKnockback` (weight-KB moves were 0-knockback), and
+  the field mapping maxes over PRESENT keys only (absent key's 0 was clobbering SSF2
+  negative special-angle sentinels).
+- **Recovered 5 empty-shell characters** — the parity harness's frame-data check
+  exposed that `fox`/`bomberman`/`donkeykong`/`pit`/`luffy` had near-empty entities
+  (~11-17 anims, 0-2 hitboxes): they *spawned* (P0) but didn't animate or hit. Root
+  cause was a sprite-label naming convention (`fox_fla.fox_airN`, donkeykong
+  `dkbair`). Fixed → all 5 now have full movesets (fox 11→113 anims/36 hitboxes);
+  all 5 re-verified animating real moves in-engine. **This closed the exact P0-vs-P1
+  gap** (the shallow spawn test was masking broken sprite extraction).
+- **Decompiler**: stack-threading on both branch arms (recovered `/* ? */` lost
+  exprs) + the OOM fix (chibirobo/dedede). 47 lib tests pass throughout.
+
+Full parity status + remaining dimensions: `docs/PARITY.md`. Per-character:
+`docs/character_status.md`.
+
 **Headline results:**
 - **sandbag + mario fully drivable in-engine** — every move dispatches, animates,
   and recovers; physics + animation-frame readbacks work; no crashes. mario got
