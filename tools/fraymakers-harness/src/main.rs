@@ -164,11 +164,17 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         "connect" => {
-            // fray_patch <in> <out> connect <port> <token>
+            // fray_patch <in> <out> connect <port> <token> [headless]
+            // The socket bridge + command dispatch (s/t/q/x/c/p) are ALWAYS installed. The
+            // "headless" arg additionally enables fast-boot: skip the Title/menus
+            // (no-op launchScreen) and filter the boot required-load to skip public:: base
+            // content. WITHOUT it the game boots normally (title + full content load) and you
+            // can still drive it over TCP — headless does not trigger unless explicitly asked.
             let port: u16 = args.get(4).and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("connect mode needs <port>"))?;
             let token = args.get(5).cloned().unwrap_or_default();
-            connect_edit(&mut code, port, &token)?;
+            let headless = args.get(6).map(|s| s == "headless").unwrap_or(false);
+            connect_edit(&mut code, port, &token, headless)?;
         }
         other => anyhow::bail!("unknown mode: {other}"),
     }
@@ -517,7 +523,7 @@ fn send_string_loop(
 
 /// Phase 1a: at onLoaded, connect a client socket to 127.0.0.1:<port> and send
 /// `AUTH <token>` + a hello line. Proves socket injection + the auth handshake.
-fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<()> {
+fn connect_edit(code: &mut Bytecode, port: u16, token: &str, headless: bool) -> anyhow::Result<()> {
     // Resolve everything by name (version-robust). Constructors have empty
     // names, so pin their findexes but verify their signatures.
     let sock_t = require_type(code, "sys.net.Socket")?;
@@ -1838,13 +1844,13 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // (which created the game/menu containers + MatchController + set updateLoopReady),
     // so `s` dispatches without ever reaching a menu. startMatch reuses the existing
     // gameContainer (created in configLoaded, before preLoad).
-    {
+    if headless {
         let lfi = function_index_by_findex(code, 17771)
             .ok_or_else(|| anyhow::anyhow!("launchScreen@17771 not found"))?;
         let lf = &mut code.functions[lfi];
         let vreg = add_regs(lf, &[0]); // void-typed scratch reg for the early Ret
         insert_ops_front(lf, vec![Opcode::Ret { ret: Reg(vreg) }]);
-        eprintln!("connect_edit: no-op'd launchScreen@17771 (skip Title + loadUgc)");
+        eprintln!("connect_edit: [headless] no-op'd launchScreen@17771 (skip Title + loadUgc)");
     }
     // Signal READY + set g_ready from Main.onLoaded@17746 — the onComplete of the
     // SECOND boot-load (required match content, incl. the TrainingMode mode resource,
@@ -1858,7 +1864,10 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     // match). Keeps global:: (hscript/vfx/vsmode) + private:: (common/fonts). The match's
     // stage/assist (also public::) are loaded on demand by the `s` handler from its args
     // (getResourceByID + fetchThreaded), so this is generic — no hardcoded resource names.
-    inject_required_filter(code)?;
+    // Headless-only: a normal boot needs the full content set for the menus/picker.
+    if headless {
+        inject_required_filter(code)?;
+    }
     Ok(())
 }
 

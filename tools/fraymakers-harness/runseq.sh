@@ -52,7 +52,11 @@ sleep 0.3
 
 [ -x "$HERE/target/release/fray_patch" ] || cargo build --release --manifest-path "$HERE/Cargo.toml" >/dev/null 2>&1
 printf '1420350' > "$APPID"
-"$HERE/target/release/fray_patch" "$BOOT" "$CONN" connect "$PORT" "$TOK" >/dev/null 2>&1
+# Automated harness defaults to headless fast-boot (skip Title/menus + filter required load).
+# Set FRAY_HEADLESS to anything other than "headless" (e.g. FRAY_HEADLESS=normal) for a normal
+# boot — the socket bridge + command dispatch still work, the game just shows the title.
+HEADLESS_ARG="${FRAY_HEADLESS:-headless}"
+"$HERE/target/release/fray_patch" "$BOOT" "$CONN" connect "$PORT" "$TOK" "$HEADLESS_ARG" >/dev/null 2>&1
 
 # Engine-lifetime CAP (we poll-wait for the clean 'x' exit and break early, so this is
 # only an upper bound). +1 command for the auto-appended 'x' exit.
