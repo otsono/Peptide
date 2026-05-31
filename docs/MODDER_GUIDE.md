@@ -30,7 +30,7 @@ is a plain-English gloss.
 
 ## Commands
 
-Run `./target/release/peptide-bridge help` (no engine needed) for the live list.
+Run `./target/release/peptide help` (no engine needed) for the live list.
 You type full words; single-letter wire codes still work as aliases.
 
 | Command | What it does |
@@ -137,10 +137,10 @@ reference), and live stat tuning. Built incrementally on the commands above.
 ```
 cd tools/peptide
 cargo build --release          # first time only
-./target/release/peptide-ui    # boots Fraymakers + opens the console
+./target/release/peptide    # boots Fraymakers + opens the console
 ```
 
-`peptide-ui` is a single cross-platform executable (macOS/Linux/Windows) — it patches a
+`peptide` is a single cross-platform executable (macOS/Linux/Windows) — it patches a
 throwaway copy of the engine, boots it, and opens a full-screen console (built on ratatui).
 Override the install path with `FRAY_DIR` if Steam isn't in the default location. Type a command
 at the bottom, press Enter, and replies stream into the color-coded scrollback above:

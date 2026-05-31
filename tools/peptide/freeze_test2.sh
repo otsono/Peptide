@@ -21,7 +21,7 @@ printf '1420350' > "$APPID"
 
 # Hold stdin open ~34s so serve stays alive and the socket never closes mid-run.
 ( echo "s sandbag battlefield none"; sleep 34 ) \
-  | "$HERE/target/release/peptide-bridge" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
+  | "$HERE/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
 BR=$!
 sleep 0.8
 rm -f "$FRAY_DIR/error.log"

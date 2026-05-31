@@ -30,7 +30,7 @@ echo "patch_exit=$?" >> "$OUT/patch.log"
 
 # stdin to serve: start match, let it run, then q (liveness probe), then q again.
 ( echo "s sandbag battlefield none"; sleep 10; echo "q"; sleep 4; echo "q"; sleep 3 ) \
-  | "$HERE/target/release/peptide-bridge" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
+  | "$HERE/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
 BR=$!
 sleep 0.8
 

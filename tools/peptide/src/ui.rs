@@ -136,13 +136,9 @@ pub fn launch() -> std::io::Result<()> {
     let port: u16 = 18000 + (seed % 2000) as u16;
     let token = format!("fray-{seed:x}");
 
-    // the sibling patcher binary (same dir as this executable)
-    let patcher = {
-        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("peptide-ui"));
-        let dir = exe.parent().map(|d| d.to_path_buf()).unwrap_or_default();
-        let name = if cfg!(windows) { "peptide.exe" } else { "peptide" };
-        dir.join(name)
-    };
+    // the patcher is THIS same binary: `peptide <boot> <out> connect …` (arg1 is a path,
+    // so it routes to the bytecode patcher, not back to a runtime mode).
+    let patcher = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("peptide"));
 
     // patch a throwaway _conn.dat (bake the default char so a bare `spawn` works)
     std::fs::write(&appid, b"1420350")?;

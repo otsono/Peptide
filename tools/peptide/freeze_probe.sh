@@ -38,7 +38,7 @@ printf '1420350' > "$APPID"
   echo "s sandbag ${FRAY_STAGE:-thespire} none"
   for n in $(seq 1 11); do sleep 3; echo "q $n"; done
   sleep 2
-} | FRAY_HOLD_SECS=60 "$HERE/target/release/peptide-bridge" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
+} | FRAY_HOLD_SECS=60 "$HERE/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
 BR=$!
 sleep 0.8
 rm -f "$FRAY_DIR/error.log"

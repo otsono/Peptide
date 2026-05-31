@@ -118,7 +118,7 @@ Code: `tools/peptide/` (Rust). Two bins:
 - **`peptide`** parses the engine's HashLink bytecode (`hlbc` crate), injects a
   per-frame dispatch block into `fraymakers.Main.update`, and writes a patched
   copy. Also has read-only inspection subcommands.
-- **`peptide-bridge`** is the loopback TCP server (the injected engine code is
+- **`peptide`** is the loopback TCP server (the injected engine code is
   the client).
 
 ### Boot model (`run.sh`)
@@ -132,14 +132,14 @@ Steam's sandbox wipes anything added to the install dir, so `run.sh` **recreates
 everything every run and never mutates the pristine engine**: it patches a *copy*
 of `hlboot-sdl.dat` → `_conn.dat` (the source is never written), writes
 `steam_appid.txt` so a direct `./hl` launch doesn't bounce through Steam, starts
-`peptide-bridge`, launches `./hl _conn.dat`, and deletes the transient files on
+`peptide`, launches `./hl _conn.dat`, and deletes the transient files on
 exit. The patched engine waits for content load (title "press any button"
 state), dials the socket (auth handshake), then processes commands per-frame on
 the render thread. Needs `dangerouslyDisableSandbox`.
 
 ### Commands
 
-Humans type **full-word commands** (`peptide-bridge help` lists them); the bridge
+Humans type **full-word commands** (`peptide help` lists them); the bridge
 translates them to the single-byte wire protocol the engine dispatches on. The
 wire byte still works as an alias, so older scripts keep running. Friendly
 vocabulary is one shared table: `tools/peptide/src/commands.rs`.

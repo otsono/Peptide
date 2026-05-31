@@ -37,10 +37,10 @@ for c in "$@"; do
   node tools/fraytools-harness/export-in-fraytools.js --project "$PWD/characters/$c/$c.fraytools" >/tmp/${c}_export.log 2>&1 || { echo "$c EXPORT_FAIL" >>"$RESULTS"; continue; }
   # 3. spawn + drive — deterministic per-char port (avoids the random-port collisions
   #    that produced false launched=0 fails); retry once on a port-bind collision.
-  pkill -f 'peptide-bridge serve' 2>/dev/null || true; sleep 0.3
+  pkill -f 'peptide serve' 2>/dev/null || true; sleep 0.3
   res=$(run_one "$c" $((20100 + i)))
   if [ "$res" = "RETRY" ]; then
-    pkill -f 'peptide-bridge serve' 2>/dev/null || true; sleep 1
+    pkill -f 'peptide serve' 2>/dev/null || true; sleep 1
     res=$(run_one "$c" $((20600 + i)))
     [ "$res" = "RETRY" ] && res="FAIL (port-collision x2)"
   fi

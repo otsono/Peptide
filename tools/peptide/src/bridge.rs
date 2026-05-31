@@ -1,18 +1,6 @@
-//! peptide-bridge — harness-side control bridge for Fraymakers.
-//!
-//! The injected engine code is a TCP *client* (this build's HashLink std has no
-//! socket_listen/accept), so THIS program is the server: it binds a localhost
-//! port, waits for the engine to dial in, then bridges a line-based protocol:
-//!   - lines you type on stdin  -> sent to the engine
-//!   - lines the engine sends   -> printed to stdout (prefixed with "<< ")
-//!
-//! Modes (the console UI is the DEFAULT; headless is opt-in):
-//!   peptide-bridge                             boot the engine + open the console UI
-//!   peptide-bridge headless [--port N]         interactive stdin<->socket bridge
-//!   peptide-bridge send  [--port N] "<cmd>"    connect, send one command, print
-//!                                          replies for a short window, exit
-//!                                          (for scripted / automated tests)
-//! (`serve` remains a hidden alias for `headless`, used by run.sh / runseq.sh.)
+//! bridge — headless runtime: the loopback TCP server that the injected engine
+//! dials into. `serve` is the interactive stdin<->socket bridge; `send_once` is a
+//! one-shot for scripts. Connection setup (await_engine) lives in `ui` and is shared.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -20,97 +8,24 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-// Shared friendly-command vocabulary (single source of truth; see commands.rs).
-// The bin lives in src/bin/, so the module file is one dir up.
-#[path = "../commands.rs"]
-mod commands;
-use commands::{translate, gloss, Translated};
-
-#[path = "../ui.rs"]
-mod ui;
+use crate::commands::{translate, gloss, Translated};
 
 const DEFAULT_PORT: u16 = 17999;
-
-fn parse_port(args: &[String]) -> u16 {
+pub fn parse_port(args: &[String]) -> u16 {
     args.iter()
         .position(|a| a == "--port")
         .and_then(|i| args.get(i + 1))
         .and_then(|p| p.parse().ok())
         .unwrap_or(DEFAULT_PORT)
 }
-
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let port = parse_port(&args);
-    let token = parse_token(&args);
-
-    // DEFAULT is the full-screen console UI. Headless modes are opt-in:
-    //   peptide-bridge                       -> ui (boots the engine + console)
-    //   peptide-bridge headless [--port N]   -> interactive stdin<->socket bridge
-    //   peptide-bridge send [--port N] "cmd" -> one-shot (for scripts)
-    // (`serve` stays as a hidden alias for `headless`, used by run.sh / runseq.sh.)
-    let mode = match args.get(1).map(|s| s.as_str()) {
-        None => "ui",
-        Some("-h") | Some("--help") | Some("help") => "help",
-        Some(m) if m.starts_with('-') => "ui", // flags only, no mode word -> default
-        Some(m) => m,
-    };
-    match mode {
-        "help" => print!("{}", commands::help_text()),
-        "ui" => {
-            // self-contained: boots the engine + runs the console (see ui::launch).
-            if let Err(e) = ui::launch() {
-                eprintln!("peptide-ui error: {e}");
-                std::process::exit(1);
-            }
-        }
-        "headless" | "serve" => serve(port, token.as_deref()),
-        "send" => {
-            // The command is the first positional arg (skip --flag and its value).
-            let mut cmd: Option<String> = None;
-            let mut i = 2;
-            while i < args.len() {
-                if args[i] == "--port" || args[i] == "--token" || args[i] == "--delay" {
-                    i += 2;
-                    continue;
-                }
-                cmd = Some(args[i].clone());
-                break;
-            }
-            let cmd = cmd.unwrap_or_else(|| {
-                eprintln!("usage: peptide-bridge send [--port N] [--token T] \"<command>\"");
-                std::process::exit(2);
-            });
-            send_once(port, token.as_deref(), &cmd);
-        }
-        other => {
-            eprintln!("unknown mode: {other}\n  peptide-bridge            (default: console UI)\n  peptide-bridge headless   (interactive stdin bridge)\n  peptide-bridge send \"cmd\" (one-shot)");
-            std::process::exit(2);
-        }
-    }
-}
-
-fn parse_token(args: &[String]) -> Option<String> {
+pub fn parse_token(args: &[String]) -> Option<String> {
     args.iter()
         .position(|a| a == "--token")
         .and_then(|i| args.get(i + 1))
         .cloned()
 }
-
-/// Bind (loopback only) and wait for the *authenticated* engine to connect.
-///
-/// Security: the listener binds 127.0.0.1 only (never reachable off-machine).
-/// If a token is required, the peer's first line must be `AUTH <token>`; any
-/// other connection is dropped and we keep listening. This prevents a local
-/// impostor process from driving the engine over the loopback port. Callers
-/// must bind BEFORE launching the engine so the port can't be squatted.
-fn await_engine(port: u16, token: Option<&str>) -> (BufReader<TcpStream>, TcpStream) {
-    ui::await_engine(port, token)
-}
-
-/// Interactive bridge: stdin <-> socket, line based.
-fn serve(port: u16, token: Option<&str>) {
-    let (reader, mut write_half) = await_engine(port, token);
+pub fn serve(port: u16, token: Option<&str>) {
+    let (reader, mut write_half) = crate::ui::await_engine(port, token);
 
     // socket -> stdout; signal once the engine reports READY.
     //
@@ -301,9 +216,7 @@ fn serve(port: u16, token: Option<&str>) {
         let _ = &mut probe; // reserved for future liveness ping
     }
 }
-
-/// Scripted: send one command, print whatever comes back for a short window.
-fn send_once(port: u16, token: Option<&str>, cmd: &str) {
+pub fn send_once(port: u16, token: Option<&str>, cmd: &str) {
     // Translate the friendly command up front; `help`/errors never open a socket.
     let cmd = match translate(cmd) {
         Translated::Wire(w) => w,
@@ -321,7 +234,7 @@ fn send_once(port: u16, token: Option<&str>, cmd: &str) {
         Translated::Error(msg) => { eprintln!("peptide-bridge: {msg}"); std::process::exit(2); }
     };
     let cmd = cmd.as_str();
-    let (reader, mut write_half) = await_engine(port, token);
+    let (reader, mut write_half) = crate::ui::await_engine(port, token);
 
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {

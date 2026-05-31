@@ -107,7 +107,7 @@ dummy/hitresult/parity logic as scripts (no new bytecode).
 - `move`    → bind `CS` = CState statics, `eval p0.toState(CS.JAB)` etc.
 - `dummy`   → script that builds/positions a 2nd fighter (needs match-launch class
   registration; investigate whether the interp's `resolve` reaches arbitrary classes)
-- All handler scripts live client-side (peptide-bridge) as readable Haxe strings.
+- All handler scripts live client-side (peptide) as readable Haxe strings.
 
 ## Commands ported to hscript + eval-by-default (DONE)
 

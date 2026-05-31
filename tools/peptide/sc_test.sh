@@ -15,7 +15,7 @@ printf '1420350' > "$APPID"
 echo "PATCH_EXIT=$?" >> "$OUT/FACTS.txt"
 ( sleep 12; echo "l"; sleep 4; echo "s private::sandbag.sandbag thespire commandervideoassist"; sleep 8; \
   for i in $(seq 1 12); do echo "q"; echo "t"; sleep 1; done; sleep 4 ) \
-  | "$HERE/target/release/peptide-bridge" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
+  | "$HERE/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
 BR=$!
 sleep 0.8
 rm -f "$FRAY_DIR/error.log" "$FRAY_DIR/crash.log"

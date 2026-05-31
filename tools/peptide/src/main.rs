@@ -8,6 +8,8 @@ use asm::Asm;
 // Shared friendly-command vocabulary. The patcher uses MOVES to generate the
 // move-dispatch jump table; the bridge uses it to translate move names. One table.
 mod commands;
+mod bridge; // headless TCP runtime (serve / send_once)
+mod ui; // the console UI + cross-platform launcher
 
 use hlbc::opcodes::Opcode;
 use hlbc::types::{Reg, RefString};
@@ -15,9 +17,55 @@ use hlbc::Bytecode;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
+
+    // ── Runtime modes ──────────────────────────────────────────────────────────
+    // The console UI is the DEFAULT. Headless is opt-in. The bytecode PATCHER (the
+    // rest of main) runs only when arg1 is a path (e.g. `peptide <in> <out> connect …`),
+    // not a mode word — so `peptide` with no args opens the UI.
+    match args.get(1).map(|s| s.as_str()) {
+        None | Some("ui") => {
+            ui::launch()?;
+            return Ok(());
+        }
+        Some("headless") | Some("serve") => {
+            bridge::serve(bridge::parse_port(&args), bridge::parse_token(&args).as_deref());
+            return Ok(());
+        }
+        Some("send") => {
+            let mut cmd: Option<String> = None;
+            let mut i = 2;
+            while i < args.len() {
+                if args[i] == "--port" || args[i] == "--token" || args[i] == "--delay" {
+                    i += 2;
+                    continue;
+                }
+                cmd = Some(args[i].clone());
+                break;
+            }
+            let cmd = cmd.unwrap_or_else(|| {
+                eprintln!("usage: peptide send [--port N] [--token T] \"<command>\"");
+                std::process::exit(2);
+            });
+            bridge::send_once(bridge::parse_port(&args), bridge::parse_token(&args).as_deref(), &cmd);
+            return Ok(());
+        }
+        Some("help") | Some("-h") | Some("--help") => {
+            print!("{}", commands::help_text());
+            return Ok(());
+        }
+        Some(m) if m.starts_with('-') => {
+            // a bare flag with no mode word -> default to the UI
+            ui::launch()?;
+            return Ok(());
+        }
+        _ => {} // arg1 is a path -> fall through to the bytecode patcher
+    }
+
+    // ── Bytecode patcher ───────────────────────────────────────────────────────
     if args.len() < 3 {
-        eprintln!("usage: peptide <input.dat> <output.dat> [mode]");
-        eprintln!("  mode: roundtrip (default) | probe");
+        eprintln!("usage: peptide <input.dat> <output.dat> [mode]   (the patcher)");
+        eprintln!("       peptide                                   (the console UI)");
+        eprintln!("       peptide headless | send \"<cmd>\" | help");
         std::process::exit(2);
     }
     let input = &args[1];

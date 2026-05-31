@@ -40,7 +40,7 @@ printf '1420350' > "$APPID"
 "$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" >/dev/null 2>&1
 
 # 3. Start the loopback bridge and queue the command.
-( printf '%s\n' "$CMD"; sleep "$SECS" ) | "$HERE/target/release/peptide-bridge" serve --port "$PORT" --token "$TOK" &
+( printf '%s\n' "$CMD"; sleep "$SECS" ) | "$HERE/target/release/peptide" serve --port "$PORT" --token "$TOK" &
 BR=$!
 sleep 0.7
 

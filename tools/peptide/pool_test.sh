@@ -21,7 +21,7 @@ echo "PATCH_EXIT=$?" >> "$OUT/FACTS.txt"
 ( sleep 14; echo "s sandbag thespire none"; sleep 2; \
   for i in 1 2 3 4 5 6; do echo "q"; sleep 1; done; \
   sleep 5 ) \
-  | "$HERE/target/release/peptide-bridge" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
+  | "$HERE/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
 BR=$!
 sleep 0.8
 rm -f "$FRAY_DIR/error.log" "$FRAY_DIR/crash.log"
