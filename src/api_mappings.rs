@@ -1795,7 +1795,25 @@ pub fn wrap_persistent_state(
         // remains for it to mis-match.
         result = res.read.replace_all(&result, format!("{}.get()", name)).into_owned();
     }
-    result
+    // After wrapping, an SSF2 instance var used as a timer/event CALLBACK now reads as
+    // `X.get()` — a value (e.g. the `effects` Array), not a function. Invoking it crashes
+    // IntervalTimer.process / event dispatch in Fraymakers (SSF2 tolerated it as a no-op).
+    // Replace such callbacks with a no-op closure.
+    neutralize_getter_callbacks(result)
+}
+
+/// Replace `X.get()` (an instance-var read) sitting in a timer/event CALLBACK position
+/// — `addTimer(dur, rep, X.get())` / `addEventListener(EVENT, X.get() [,opts])` — with a
+/// no-op closure. Such a callback is data, not a function, and crashes when invoked.
+fn neutralize_getter_callbacks(code: String) -> String {
+    use regex::Regex;
+    let no_op = "function(){} /*TODO: SSF2 used a non-function (instance var) as the callback here*/";
+    // addTimer: callback is the 3rd (last) arg
+    let re_timer = Regex::new(r"(addTimer\(\s*[^,()]+,\s*[^,()]+,\s*)[A-Za-z_][\w.]*\.get\(\)(\s*\))").unwrap();
+    let code = re_timer.replace_all(&code, format!("${{1}}{}${{2}}", no_op)).into_owned();
+    // addEventListener: callback is the 2nd arg (options may follow)
+    let re_evt = Regex::new(r"(addEventListener\(\s*[^,()]+,\s*)[A-Za-z_][\w.]*\.get\(\)(\s*[,)])").unwrap();
+    re_evt.replace_all(&code, format!("${{1}}{}${{2}}", no_op)).into_owned()
 }
 
 /// Per-name compiled regex bundle used by `wrap_persistent_state`.

@@ -163,11 +163,33 @@ impl Expr {
                 format!("{}.{}", obj.render(), name)
             }
             Expr::Call(obj, method, args) => {
-                let arg_str = args.iter().map(|a| a.render()).collect::<Vec<_>>().join(", ");
+                let mut rendered: Vec<String> = args.iter().map(|a| a.render()).collect();
                 // Array index access
                 if method == "[" {
-                    return format!("{}[{}]", obj.render(), arg_str);
+                    return format!("{}[{}]", obj.render(), rendered.join(", "));
                 }
+                // Neutralize a non-function callback passed to a timer/event API. SSF2
+                // tolerated a bad callback (silent no-op), but Fraymakers invokes it and
+                // crashes — e.g. the `effects` instance var rendered as `effects.get()`
+                // (an Array) passed to addTimer crashes IntervalTimer.process. The callback
+                // must be a function reference (self.foo / foo / function(){}); anything else
+                // is replaced with a no-op closure + a TODO.
+                let cb_idx = match method.as_str() {
+                    "addTimer" => Some(2),
+                    "addEventListener" | "removeEventListener" => Some(1),
+                    _ => None,
+                };
+                if let Some(i) = cb_idx {
+                    if let Some(cb) = rendered.get_mut(i) {
+                        if !is_callback_ref(cb) {
+                            *cb = format!(
+                                "function(){{}} /*TODO: SSF2 passed a non-function callback `{}` here; neutralized to avoid a runtime crash*/",
+                                cb.replace("*/", "* /")
+                            );
+                        }
+                    }
+                }
+                let arg_str = rendered.join(", ");
                 // Check if obj is self and method is an API call
                 let obj_str = obj.render();
                 if obj_str == "self" || obj_str == "this" {
@@ -232,6 +254,25 @@ pub enum Stmt {
     If(Expr, Vec<Stmt>, Vec<Stmt>),
     While(Expr, Vec<Stmt>),
     Comment(String),
+}
+
+/// Is a rendered expression usable as a function callback (for addTimer /
+/// addEventListener)? Accepts a function reference (`foo`, `self.foo`, `self.a.b`)
+/// or an inline closure (`function(...){...}`). Rejects anything that evaluates to
+/// a VALUE — a method call (`effects.get()`), array/object literal, number/string,
+/// or the `null`/`true`/`false` keywords — which would crash when invoked.
+fn is_callback_ref(s: &str) -> bool {
+    let s = s.trim();
+    if s.starts_with("function(") || s.starts_with("function (") {
+        return true;
+    }
+    if s.is_empty() || s == "null" || s == "true" || s == "false" {
+        return false;
+    }
+    // dotted identifier path only — no call `()`, index `[]`, or literal punctuation.
+    let mut chars = s.chars();
+    let first_ok = chars.next().map_or(false, |c| c.is_ascii_alphabetic() || c == '_');
+    first_ok && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
 fn render_closure(params: &[String], stmts: &[Stmt], depth: usize) -> String {
