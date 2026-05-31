@@ -103,6 +103,15 @@ kirby   /*?*/ 26  SSF2 45  TODO 63      ← decompiler struggles; future parity 
 
 (`TODO` counts include the known `CharacterStats` physics-tuning placeholders.)
 
+**Full-corpus baseline (final converter, all 8 fixes; run the tool for current
+numbers):** 45 characters, totals `/* ? */`≈252, `[SSF2-only]`≈420, `TODO`≈2125.
+Ten characters are fully `/* ? */`-clean (captainfalcon, donkeykong, fox,
+ganondorf, lloyd, metaknight, samus, simon, zamus, zelda). The decompiler-quality
+outliers worth a future focused pass (most lost exprs/conditions): `kirby` 26,
+`tails` 23, `rayman` 18, `pacman` 17, `goku`/`lucario` 15, `dedede` 14, `sonic`
+13, `yoshi` 11. These are where the still-open Branch-arm stack-threading + per-
+character decompiler edge cases would pay off most.
+
 ## How parity should be verified going forward
 
 Build a `verify <move>` Peptide command (see `docs/PEPTIDE_FUTURE.md`) that drives
