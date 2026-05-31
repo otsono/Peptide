@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -50,6 +50,40 @@ pub fn await_engine(port: u16, token: Option<&str>) -> (BufReader<TcpStream>, Tc
             }
         }
     }
+}
+
+/// Like `await_engine`, but bounded: bind `port` and wait at most `secs` for an engine to
+/// dial in (authenticating with `token`). Returns the live connection, or None on timeout
+/// — without killing anything. Used by the GUI to "TCP back into" a session and to bound
+/// the wait after a boot, so the page can drive its reconnect modal instead of blocking.
+pub fn reawait(port: u16, token: &str, secs: u64) -> Option<(BufReader<TcpStream>, TcpStream)> {
+    let listener = TcpListener::bind(("127.0.0.1", port)).ok()?;
+    listener.set_nonblocking(true).ok()?;
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < deadline {
+        match listener.accept() {
+            Ok((stream, _peer)) => {
+                stream.set_nonblocking(false).ok()?;
+                let writer = stream.try_clone().ok()?;
+                let mut reader = BufReader::new(stream);
+                // bound the auth read so a silent peer can't hang us past the deadline
+                let _ = reader.get_ref().set_read_timeout(Some(Duration::from_secs(2)));
+                let mut first = String::new();
+                let ok = reader.read_line(&mut first).is_ok()
+                    && first.trim().strip_prefix("AUTH ").map(str::trim) == Some(token);
+                let _ = reader.get_ref().set_read_timeout(None);
+                if ok {
+                    return Some((reader, writer));
+                }
+                // wrong/no token — drop this peer, keep listening until the deadline
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => break,
+        }
+    }
+    None
 }
 
 // ─────────────────────────── cross-platform launch ─────────────────────────
@@ -112,22 +146,39 @@ impl Drop for Cleanup {
 /// engine copy (via the sibling `peptide` binary), boot it, and run the console.
 /// hlboot-sdl.dat is never modified. Tested on macOS; Windows/Linux use cfg! defaults
 /// and honor FRAY_DIR / FRAY_ENGINE / FRAY_BOOT / FRAY_CHAR overrides.
-pub fn boot() -> std::io::Result<(BufReader<TcpStream>, TcpStream, u16, Cleanup)> {
+pub fn boot() -> std::io::Result<(BufReader<TcpStream>, TcpStream, u16, String, Cleanup)> {
+    let (port, token, guard) = patch_and_launch()?;
+    // bind + wait for the engine to dial in, then hand the live connection back.
+    match reawait(port, &token, 45) {
+        Some((reader, writer)) => Ok((reader, writer, port, token, guard)),
+        None => {
+            // guard drops here -> the engine that never connected is killed + cleaned up
+            Err(io_err("Fraymakers did not connect (timed out waiting on the engine)"))
+        }
+    }
+}
+
+fn io_err(msg: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, msg.to_string())
+}
+
+/// Patch a throwaway engine copy and launch it, returning the chosen port + token and a
+/// Cleanup guard owning the process. Does NOT wait for the engine to connect — the caller
+/// drives that via `reawait`, so a GUI can show progress while the engine loads. Returns
+/// Err (instead of exiting) so callers can recover with a boot prompt. hlboot-sdl.dat is
+/// never modified.
+pub fn patch_and_launch() -> std::io::Result<(u16, String, Cleanup)> {
     let fray_dir: PathBuf = match std::env::var_os("FRAY_DIR") {
         Some(d) => PathBuf::from(d),
-        None => default_install_dir().unwrap_or_else(|| {
-            eprintln!("peptide-ui: could not determine the Fraymakers install path. Set FRAY_DIR.");
-            std::process::exit(1);
-        }),
+        None => default_install_dir()
+            .ok_or_else(|| io_err("could not determine the Fraymakers install path (set FRAY_DIR)"))?,
     };
     let boot_name = std::env::var("FRAY_BOOT").unwrap_or_else(|_| "hlboot-sdl.dat".to_string());
     let boot = fray_dir.join(&boot_name);
     let conn = fray_dir.join("_conn.dat");
     let appid = fray_dir.join("steam_appid.txt");
     if !boot.exists() {
-        eprintln!("peptide-ui: {} not found.\n  Set FRAY_DIR to your Fraymakers install (saw: {}).",
-            boot.display(), fray_dir.display());
-        std::process::exit(1);
+        return Err(io_err(&format!("{} not found (set FRAY_DIR to your Fraymakers install)", boot.display())));
     }
 
     let char_name = std::env::var("FRAY_CHAR").unwrap_or_else(|_| "sandbag".into());
@@ -153,36 +204,31 @@ pub fn boot() -> std::io::Result<(BufReader<TcpStream>, TcpStream, u16, Cleanup)
         .status().map(|s| s.success()).unwrap_or(false);
     if !patch_ok {
         let _ = std::fs::remove_file(&appid);
-        eprintln!("peptide-ui: failed to patch the engine (is {} present?)", patcher.display());
-        std::process::exit(1);
+        return Err(io_err(&format!("failed to patch the engine (is {} present?)", patcher.display())));
     }
     let _ = std::fs::remove_file(fray_dir.join("error.log"));
 
-    // boot the patched engine. We bind the port (await_engine) immediately after, well
-    // before the engine finishes loading + dials in, so there's no race.
+    // boot the patched engine.
     let (engine_bin, lib_var) = engine_invocation();
     let mut cmd = Command::new(fray_dir.join(engine_bin));
     cmd.arg("_conn.dat").current_dir(&fray_dir).stdout(Stdio::null()).stderr(Stdio::null());
     if let Some(var) = lib_var {
         cmd.env(var, ".");
     }
-    let engine = cmd.spawn().ok();
-    if engine.is_none() {
-        let _ = std::fs::remove_file(&conn);
-        let _ = std::fs::remove_file(&appid);
-        eprintln!("peptide-ui: failed to launch the engine ({}).", fray_dir.join(engine_bin).display());
-        std::process::exit(1);
-    }
-    let guard = Cleanup { conn: conn.clone(), appid: appid.clone(), engine };
-
-    // bind + wait for the engine to dial in, then hand the live connection back to the caller.
-    let (reader, writer) = await_engine(port, Some(&token));
-    Ok((reader, writer, port, guard))
+    let engine = match cmd.spawn() {
+        Ok(child) => Some(child),
+        Err(_) => {
+            let _ = std::fs::remove_file(&conn);
+            let _ = std::fs::remove_file(&appid);
+            return Err(io_err(&format!("failed to launch the engine ({})", fray_dir.join(engine_bin).display())));
+        }
+    };
+    Ok((port, token, Cleanup { conn, appid, engine }))
 }
 
 /// Boot the engine + console UI (terminal). The GUI uses `boot()` directly.
 pub fn launch() -> std::io::Result<()> {
-    let (reader, writer, port, _guard) = boot()?;
+    let (reader, writer, port, _token, _guard) = boot()?;
     run_with(reader, writer, port) // owns the terminal until the user quits; _guard cleans up
 }
 

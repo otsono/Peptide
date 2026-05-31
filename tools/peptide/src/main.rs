@@ -8,6 +8,7 @@ use asm::Asm;
 // Shared friendly-command vocabulary. The patcher uses MOVES to generate the
 // move-dispatch jump table; the bridge uses it to translate move names. One table.
 mod commands;
+mod manifest; // engine-symbol dependency table + doctor/preflight progress UI
 mod bridge; // headless TCP runtime (serve / send_once)
 mod ui; // terminal console (ratatui) + cross-platform launcher
 mod gui; // graphical chat window (egui/eframe) — the default
@@ -90,6 +91,15 @@ fn main() -> anyhow::Result<()> {
 
     match mode {
         "roundtrip" => {}
+        "doctor" => {
+            // Preflight only: resolve the engine-symbol manifest, print the
+            // checklist, and exit. Writes nothing. Run this first against a new
+            // Fraymakers build to see exactly what (if anything) the patcher must
+            // be re-pointed at. Output arg is ignored (pass `_` or any path).
+            run_preflight(&code)?;
+            eprintln!("doctor: all critical engine symbols resolved — patcher is compatible with this build");
+            return Ok(());
+        }
         "probe" => probe_edit(&mut code, 17746)?, // fraymakers.Main.onLoaded@17746
         "inspect" => {
             inspect(&code);
@@ -587,6 +597,65 @@ fn require_field(code: &Bytecode, tname: &str, fname: &str) -> anyhow::Result<us
     find_field(code, ti, fname).ok_or_else(|| anyhow::anyhow!("field not found: {tname}.{fname}"))
 }
 
+/// Resolve every entry in `manifest::MANIFEST` against a loaded bytecode, using the
+/// SAME read-only resolvers the real patch uses (so the doctor can never disagree
+/// with `connect_edit` about whether a symbol exists). Renders a live progress bar
+/// when stderr is a TTY. Returns one `SymStatus` per symbol.
+fn doctor(code: &Bytecode) -> Vec<manifest::SymStatus> {
+    use manifest::{Kind, MANIFEST};
+    let total = MANIFEST.len();
+    let tty = manifest::is_tty();
+    let mut out = Vec::with_capacity(total);
+    for (i, sym) in MANIFEST.iter().enumerate() {
+        let label = sym.label();
+        if tty {
+            manifest::render_live(i, total, &label);
+        }
+        let resolved = match sym.kind {
+            Kind::Fn => find_fn(code, sym.name, sym.parent),
+            Kind::Native => find_native(code, sym.name),
+            Kind::Type => find_type(code, sym.name),
+            Kind::Field => sym
+                .parent
+                .and_then(|p| find_type(code, p))
+                .and_then(|ti| find_field(code, ti, sym.name)),
+        };
+        out.push(manifest::SymStatus {
+            group: sym.group,
+            label,
+            why: sym.why,
+            critical: sym.critical,
+            resolved,
+        });
+    }
+    if tty {
+        manifest::render_live(total, total, "done");
+        manifest::clear_live();
+    }
+    out
+}
+
+/// Run the manifest preflight, print the checklist, and ABORT if any critical
+/// engine symbol is missing — so a layout change in a new Fraymakers build fails
+/// loudly here, BEFORE any opcode is mutated, instead of silently corrupting the
+/// patched binary. Called at the top of `connect_edit` and by the `doctor` mode.
+fn run_preflight(code: &Bytecode) -> anyhow::Result<()> {
+    let statuses = doctor(code);
+    manifest::render_report(
+        &statuses,
+        &format!("Peptide preflight — Fraymakers bytecode v{}", code.version),
+    );
+    let (_ok, miss_crit, _warn) = manifest::summarize(&statuses);
+    if miss_crit > 0 {
+        anyhow::bail!(
+            "preflight: {miss_crit} critical engine symbol(s) missing — this Fraymakers \
+             build is not compatible with the current patcher (see the checklist above \
+             and DEVELOPMENT.md 'Surviving Fraymakers updates')"
+        );
+    }
+    Ok(())
+}
+
 /// Insert `ops` at the front of function `fidx`, keeping debug_info length in
 /// sync and clearing the (now stale) assigns table. Front insertion is safe for
 /// HL's relative jumps (source and target shift together).
@@ -671,6 +740,12 @@ fn connect_edit(
     let stage_fqid = format!("public::{sname}.{sname}");
     let assist_fqid = format!("public::{aname}.{aname}");
     eprintln!("peptide: char={cname} stage={sname} assist={aname} headless={headless} path={char_path}");
+    // Preflight: resolve the engine-symbol manifest first (read-only), show the
+    // progress bar + doctor checklist, and ABORT before mutating anything if a
+    // critical symbol is missing. This is the version-compatibility gate — a new
+    // Fraymakers build that moved/renamed a depended-on symbol fails loudly here
+    // instead of producing a corrupt patch.
+    run_preflight(code)?;
     // Resolve everything by name (version-robust). Constructors have empty
     // names, so pin their findexes but verify their signatures.
     let sock_t = require_type(code, "sys.net.Socket")?;

@@ -2,7 +2,7 @@
 //! the system webview (wry) — WKWebView on macOS, WebView2/Edge on Windows, WebKitGTK on
 //! Linux. The whole UI is HTML/CSS/JS (src/peptide_ui.html, Claude dark theme); this file
 //! is the glue: boot the engine, stream replies into the page, send the page's commands to
-//! the socket, and re-boot + reconnect on demand when the connection is lost.
+//! the socket, and drive the staged reconnect/boot flow when the connection is lost.
 
 use std::io::{BufReader, Read, Write};
 use std::net::TcpStream;
@@ -21,14 +21,18 @@ use crate::commands::{translate, Translated};
 
 /// Events pushed into the loop from worker threads, forwarded to the page.
 enum Ev {
-    Line(String),  // an engine reply line -> onLine(...)
-    Js(String),    // arbitrary JS to evaluate (status, modal, reconnect callbacks)
+    Line(String), // an engine reply line -> onLine(...)
+    Js(String),   // arbitrary JS to evaluate (status, modal, reconnect/boot callbacks)
 }
 
 type SharedWriter = Arc<Mutex<Option<TcpStream>>>;
 type SharedCleanup = Arc<Mutex<Option<crate::ui::Cleanup>>>;
+type SharedConn = Arc<Mutex<(u16, String)>>; // the live session's port + auth token
 
-const RECONNECT_CMD: &str = "@@reconnect";
+// IPC control messages (everything else is a user command -> translate).
+const RECONNECT: &str = "@@reconnect";     // TCP back into the current session
+const BOOT_QUICK: &str = "@@boot:quick";   // launch a fresh engine, auto-spawn for testing
+const BOOT_REGULAR: &str = "@@boot:regular"; // launch a fresh engine, no auto-spawn
 
 pub fn launch() -> std::io::Result<()> {
     let event_loop = EventLoopBuilder::<Ev>::with_user_event().build();
@@ -40,9 +44,10 @@ pub fn launch() -> std::io::Result<()> {
         .map_err(|e| io(&e.to_string()))?;
 
     // initial connection
-    let (reader, w, port, c) = crate::ui::boot()?;
+    let (reader, w, port, token, c) = crate::ui::boot()?;
     let writer: SharedWriter = Arc::new(Mutex::new(Some(w)));
     let cleanup: SharedCleanup = Arc::new(Mutex::new(Some(c)));
+    let conn: SharedConn = Arc::new(Mutex::new((port, token)));
     spawn_reader(reader, event_loop.create_proxy());
 
     let char_name = std::env::var("FRAY_CHAR").unwrap_or_else(|_| "sandbag".into());
@@ -50,18 +55,21 @@ pub fn launch() -> std::io::Result<()> {
 
     let ipc_writer = writer.clone();
     let ipc_cleanup = cleanup.clone();
+    let ipc_conn = conn.clone();
     let ipc_proxy = event_loop.create_proxy();
     let ipc_char = char_name.clone();
     let webview = WebViewBuilder::new()
         .with_html(include_str!("peptide_ui.html"))
         .with_initialization_script(&init)
         .with_ipc_handler(move |req: Request<String>| {
-            let body = req.body();
-            if body == RECONNECT_CMD {
-                let (w, c, p, ch) = (ipc_writer.clone(), ipc_cleanup.clone(), ipc_proxy.clone(), ipc_char.clone());
-                thread::spawn(move || reconnect(w, c, p, ch));
-            } else {
-                handle_command(body, &ipc_writer, &ipc_proxy);
+            let body = req.body().to_string();
+            let (w, cl, cn, px, ch) = (ipc_writer.clone(), ipc_cleanup.clone(), ipc_conn.clone(),
+                                       ipc_proxy.clone(), ipc_char.clone());
+            match body.as_str() {
+                RECONNECT => { thread::spawn(move || reconnect_existing(w, cn, px, ch)); }
+                BOOT_QUICK => { thread::spawn(move || boot_new(w, cl, cn, px, ch, true)); }
+                BOOT_REGULAR => { thread::spawn(move || boot_new(w, cl, cn, px, ch, false)); }
+                _ => handle_command(&body, &ipc_writer, &ipc_proxy),
             }
         })
         .build(&window)
@@ -94,33 +102,66 @@ fn io(msg: &str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Other, msg.to_string())
 }
 
-/// Re-patch + re-boot Fraymakers and swap the live connection in place. Runs on a worker
-/// thread (ui::boot blocks until the new engine dials in). Drives the page's modal.
-fn reconnect(writer: SharedWriter, cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>, char_name: String) {
-    let _ = proxy.send_event(Ev::Js("window.onReconnecting && onReconnecting()".into()));
-    // tear down the old engine first (same temp-file paths are reused by the new boot)
+/// Try to TCP back into the running session: re-bind the last port + token and wait a few
+/// seconds for the engine to dial in again (no relaunch). Succeeds only if a Fraymakers is
+/// alive and reconnects; otherwise the page advances its reconnect flow.
+fn reconnect_existing(writer: SharedWriter, conn: SharedConn, proxy: EventLoopProxy<Ev>, char_name: String) {
+    let (port, token) = conn.lock().ok().map(|g| g.clone()).unwrap_or((0, String::new()));
+    if port == 0 {
+        let _ = proxy.send_event(Ev::Js("window.onReconnectFailed && onReconnectFailed(\"no_session\")".into()));
+        return;
+    }
+    match crate::ui::reawait(port, &token, 4) {
+        Some((reader, w)) => {
+            if let Ok(mut g) = writer.lock() { *g = Some(w); }
+            spawn_reader(reader, proxy.clone());
+            // reconnecting to a live match -> don't auto-spawn (the character already exists)
+            let _ = proxy.send_event(Ev::Js(format!(
+                "window.onReconnected && onReconnected({}, {}, false)", port, js_str(&char_name))));
+        }
+        None => {
+            let _ = proxy.send_event(Ev::Js("window.onReconnectFailed && onReconnectFailed(\"no_session\")".into()));
+        }
+    }
+}
+
+/// Launch a fresh patched engine and wait (bounded) for it to connect. `quick` auto-spawns
+/// the test character on the page; regular boots clean for normal play. On failure the page
+/// returns to the "Fraymakers doesn't seem to be open" prompt.
+fn boot_new(writer: SharedWriter, cleanup: SharedCleanup, conn: SharedConn,
+            proxy: EventLoopProxy<Ev>, char_name: String, quick: bool) {
+    // tear down whatever was there (dead engine + temp files), then patch + launch anew.
     if let Some(mut c) = cleanup.lock().ok().and_then(|mut g| g.take()) {
         c.dispose();
     }
     if let Ok(mut g) = writer.lock() { *g = None; }
 
-    match crate::ui::boot() {
-        Ok((reader, w, port, c)) => {
-            if let Ok(mut g) = writer.lock() { *g = Some(w); }
-            if let Ok(mut g) = cleanup.lock() { *g = Some(c); }
-            spawn_reader(reader, proxy.clone());
-            let _ = proxy.send_event(Ev::Js(format!(
-                "window.onReconnected && onReconnected({}, {})", port, js_str(&char_name))));
-        }
+    match crate::ui::patch_and_launch() {
+        Ok((port, token, mut guard)) => match crate::ui::reawait(port, &token, 30) {
+            Some((reader, w)) => {
+                if let Ok(mut g) = writer.lock() { *g = Some(w); }
+                if let Ok(mut g) = cleanup.lock() { *g = Some(guard); }
+                if let Ok(mut g) = conn.lock() { *g = (port, token); }
+                spawn_reader(reader, proxy.clone());
+                let _ = proxy.send_event(Ev::Js(format!(
+                    "window.onReconnected && onReconnected({}, {}, {})",
+                    port, js_str(&char_name), if quick { "true" } else { "false" })));
+            }
+            None => {
+                guard.dispose(); // kill the engine that never dialed in
+                let _ = proxy.send_event(Ev::Js(
+                    "window.onBootFailed && onBootFailed(\"Fraymakers didn’t connect.\")".into()));
+            }
+        },
         Err(e) => {
             let _ = proxy.send_event(Ev::Js(format!(
-                "window.onReconnectFailed && onReconnectFailed({})", js_str(&e.to_string()))));
+                "window.onBootFailed && onBootFailed({})", js_str(&e.to_string()))));
         }
     }
 }
 
 /// Socket bytes -> lines -> event loop (-> page). Dedup repeated per-frame ANIM lines.
-/// On EOF/error the engine connection is gone -> tell the page to show the reconnect modal.
+/// On EOF/error the engine connection is gone -> tell the page to start its reconnect flow.
 fn spawn_reader(mut reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>) {
     thread::spawn(move || {
         let mut buf: Vec<u8> = Vec::with_capacity(256);
