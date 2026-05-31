@@ -41,6 +41,8 @@ pub const COMMANDS: &[Cmd] = &[
           args: "",                              help: "is a match live? (Q:MATCH_LIVE / Q:NO_MATCH)" },
     Cmd { name: "physics", aliases: &["phys", "vitals", "v"], wire: 'v',
           args: "",                              help: "player 0 position/velocity/damage (P: x=.. y=.. vx=.. vy=.. dmg=..)" },
+    Cmd { name: "anim",    aliases: &["animation", "a"],     wire: 'a',
+          args: "",                              help: "player 0 current animation + frame (A:<name> frame <cur>/<total>)" },
     Cmd { name: "load",    aliases: &["l"],                 wire: 'l',
           args: "",                              help: "synchronous custom-.fra load probe (diagnostic; spawn does this itself)" },
     Cmd { name: "keys",    aliases: &["pool", "k"],         wire: 'k',
