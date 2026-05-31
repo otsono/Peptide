@@ -61,13 +61,25 @@ function ensurePublishFolder(projectFile, projectDir, folderPath) {
   catch (e) { console.error('WARN: could not read project to set publishFolders:', e.message); return false; }
   if (!Array.isArray(proj.publishFolders)) proj.publishFolders = [];
   const target = path.resolve(folderPath);
-  const has = proj.publishFolders.some(f =>
-    f && typeof f.path === 'string' && path.resolve(projectDir, f.path) === target);
-  if (has) return false;
   try { fs.mkdirSync(folderPath, { recursive: true }); } catch {}
-  proj.publishFolders.push({ id: 'fraymakers0', path: folderPath });
+  // FrayTools resolves publishFolders[].path RELATIVE to the project dir (that's why the
+  // converter's `./build` entry works). An ABSOLUTE path here gets re-resolved against the
+  // project dir into a bogus nested location → the "Fraymakers folder doesn't exist" publish
+  // error. So always STORE the path relative to the project dir.
+  const relPath = path.relative(projectDir, folderPath);
+  const existing = proj.publishFolders.find(f =>
+    f && typeof f.path === 'string' && path.resolve(projectDir, f.path) === target);
+  if (existing) {
+    if (existing.path === relPath) return false;     // already correct
+    // Self-heal a stale ABSOLUTE (or otherwise non-relative) entry left by an older export.
+    existing.path = relPath;
+    fs.writeFileSync(projectFile, JSON.stringify(proj, null, 2));
+    console.error(`normalized Fraymakers publish folder to relative: ${relPath}`);
+    return true;
+  }
+  proj.publishFolders.push({ id: 'fraymakers0', path: relPath });
   fs.writeFileSync(projectFile, JSON.stringify(proj, null, 2));
-  console.error(`added Fraymakers publish folder: ${folderPath}`);
+  console.error(`added Fraymakers publish folder: ${relPath}`);
   return true;
 }
 
@@ -228,8 +240,18 @@ function defaultFrayTools() {
     console.error(cur && cur.startsWith(projRoot) ? `reopening project (reload from disk): ${project}` : `opening project: ${project}`);
     await ev(`window.__ctrl.openProject(${JSON.stringify(project)})`);
     await sleep(settle);
-    // Re-stash — a project load can remount the controller.
-    stash = await ev(stashJs);
+    // Re-stash — a project load REMOUNTS the controller (and can briefly tear down the
+    // React root / execution context). The remount frequently lags the openProject call
+    // by longer than `settle`, so a single check races it and reports "no controller".
+    // Poll until the controller reappears, tolerating transient ev() failures during the
+    // remount, instead of checking exactly once.
+    const restashDeadline = Date.now() + 60000;
+    stash = 'no controller';
+    while (Date.now() < restashDeadline) {
+      try { stash = await ev(stashJs); } catch (e) { stash = 'err:' + (e && e.message); }
+      if (stash === 'ok') break;
+      await sleep(1000);
+    }
     if (stash !== 'ok') die(`controller lost after openProject: ${stash}`);
 
     // 4. Trigger FrayTools' publish via "Publish All".
