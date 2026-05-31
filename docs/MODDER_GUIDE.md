@@ -92,6 +92,13 @@ spawn-drives each character, recording PASS/FAIL (PASS = launched + reached STAN
 + moves dispatched + no crash) to `/tmp/batch_results.txt` (override with
 `BATCH_RESULTS=`). Good for a regression sweep after a converter change.
 
+## Recipes (shareable scripts)
+
+`tools/peptide/recipe.sh <file>` runs a **recipe** — a text file of friendly
+commands (plus `#!char`/`#!stage`/`#!gap` directives) driven into one engine
+session. Reusable + shareable (e.g. `recipes/mario_moveset.recipe`). The
+scriptable form of a manual `runseq.sh` sequence.
+
 ## Where things are
 
 - Friendly command vocabulary: `tools/peptide/src/commands.rs` (one table, shared

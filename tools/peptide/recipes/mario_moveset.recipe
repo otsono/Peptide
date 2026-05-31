@@ -1,0 +1,12 @@
+# Mario moveset capture — drive every ground move + read state/anim.
+#!char mario
+#!gap 3
+spawn mario thespire commandervideoassist
+state
+move jab
+move tilt_forward
+move strong_forward
+move special_neutral
+snapshot
+move grab
+anim
