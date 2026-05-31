@@ -295,6 +295,21 @@ fn is_callback_ref(s: &str) -> bool {
     first_ok && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
+/// Build an `If`, normalizing the AVM2 "skip-the-body" branch shape. The compiler
+/// emits the NEGATION of the source condition with an empty then-branch and the
+/// body in the else (`if (x != 0) {} else { body }`). Detect that shape and emit
+/// the readable, correct-direction form `if (x == 0) { body }` by negating the
+/// condition and dropping the empty else. `Expr::render` already folds
+/// `!(a <cmp> b)` into the flipped comparison, so this stays clean. No-op when the
+/// then-branch is non-empty (a normal if / if-else).
+fn make_if(cond: Expr, then_b: Vec<Stmt>, else_b: Vec<Stmt>) -> Stmt {
+    if then_b.is_empty() && !else_b.is_empty() {
+        Stmt::If(Expr::UnOp("!", Box::new(cond)), else_b, vec![])
+    } else {
+        Stmt::If(cond, then_b, else_b)
+    }
+}
+
 fn render_closure(params: &[String], stmts: &[Stmt], depth: usize) -> String {
     let param_str = params.join(", ");
     if stmts.is_empty() {
@@ -1244,7 +1259,7 @@ impl<'a> StructuredDecoder<'a> {
                                 ));
                                 carry_stack = vec![ternary];
                             } else {
-                                result.push(Stmt::If(raw_cond, then_b, else_b));
+                                result.push(make_if(raw_cond, then_b, else_b));
                                 carry_stack = if !then_leftover.is_empty() { then_leftover } else { else_leftover };
                             }
                             cur = merge.unwrap_or(usize::MAX);
@@ -1273,7 +1288,7 @@ impl<'a> StructuredDecoder<'a> {
                         let else_b = if fallthrough != merge.unwrap_or(usize::MAX) {
                             self.decode_from(fallthrough, merge)
                         } else { vec![] };
-                        result.push(Stmt::If(cond, then_b, else_b));
+                        result.push(make_if(cond, then_b, else_b));
                         cur = merge.unwrap_or(usize::MAX);
                     }
                 }
