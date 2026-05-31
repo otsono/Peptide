@@ -45,14 +45,23 @@ play = function() {
   return "PLAY";
 };
 
-// the live character list. `match.getCharacters()` and the bare `getCharacters()`
-// both resolve here (match is an hscript facade since pxf.core.Match has no RTTI).
+// The live character list, as a NATIVE hscript array (the raw pxf.core.Match.characters
+// ArrayObj has no usable RTTI — .length/Std.string on it return garbage/hang — so we
+// build a fresh array from the per-eval-bound characters). Returning an Array (not a
+// string) lets callers chain: getCharacters()[0].getStateName(), getCharacters().length.
+// When printed bare, Std.string on a native char array prints each character's string.
+// (Single-player today binds p0; p1+ get added with the dummy-opponent feature.)
 getCharacters = function() {
-  return characters;
+  var a = [];
+  if (p0 != null) a.push(p0);
+  if (p1 != null) a.push(p1);
+  return a;
 };
 
+// `match` facade — pxf.core.Match has no RTTI, so we expose the useful bits over the
+// reliable bound values instead of the raw object.
 match = {
-  getCharacters: function() { return characters; },
-  getCharacter: function(i) { return characters[i]; },
-  characterCount: function() { return characters == null ? 0 : characters.length; }
+  getCharacters: function() { return getCharacters(); },
+  getCharacter: function(i) { return getCharacters()[i]; },
+  characterCount: function() { return getCharacters().length; }
 };

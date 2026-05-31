@@ -919,6 +919,7 @@ fn connect_edit(
     let hs_apply_globals = find_fn(code, "applyInterpreterGlobals", Some("fraymakers.api.$FraymakersScriptGlobals")).unwrap_or(18218);
     let hs_interp_script = find_fn(code, "interpretScript", Some("pxf.api.$ApiScript")).unwrap_or(2202);
     let eval_p0_g = add_string_const(code, "p0");  // bound to player-0 Character before each eval
+    let eval_p1_g = add_string_const(code, "p1");  // bound to player-1 Character (null until 2-player matches)
     let eval_match_g = add_string_const(code, "match"); // bound to MatchController.currentMatch each eval
     let eval_chars_g = add_string_const(code, "characters"); // bound to the live character ArrayObj each eval
     // The command implementations, in hscript (ported from bytecode). Loaded ONCE into
@@ -2486,6 +2487,12 @@ fn connect_edit(
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_p0null] { *offset = idx_e_bindnull as i32 - idx_e_p0null as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_chnull] { *offset = idx_e_bindnull as i32 - idx_e_chnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_p0done] { *offset = idx_e_setp0 as i32 - idx_e_p0done as i32 - 1; }
+    // bind p1 = null for now (the prelude's getCharacters() filters nulls; p1 becomes a
+    // real Character with the dummy-opponent feature). Keeps the prelude from referencing
+    // an unbound variable.
+    ops.push(Opcode::Null { dst: rr(28) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_p1_g) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
     // parse the command line (saved in rr55) now that the interp + prelude + bindings are ready
     ops.push(Opcode::New { dst: e_parser });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_parser_ctor), arg0: e_parser });
