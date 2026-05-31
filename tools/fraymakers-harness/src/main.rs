@@ -1852,13 +1852,18 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str, headless: bool) -> 
         insert_ops_front(lf, vec![Opcode::Ret { ret: Reg(vreg) }]);
         eprintln!("connect_edit: [headless] no-op'd launchScreen@17771 (skip Title + loadUgc)");
     }
-    // Signal READY + set g_ready from Main.onLoaded@17746 — the onComplete of the
-    // SECOND boot-load (required match content, incl. the TrainingMode mode resource,
-    // is loaded by now). This is BEFORE launchScreen (no-op'd) builds the Title, and the
-    // connect block (first update after preLoad) has already opened the socket, so the
-    // READY write lands. `s` then dispatches into the match with no menu ever shown.
+    // Signal READY + set g_ready. The hook point differs by mode so the harness's
+    // "wait for READY, then send commands" handshake fires at the right moment:
+    //   - headless: Main.onLoaded@17746 (onComplete of the second boot-load; the Title is
+    //     no-op'd, so this is the earliest point all match content exists). `s` then
+    //     dispatches straight into a match with no menu ever shown — the fast-boot flow.
+    //   - non-headless: the END of launchScreen@17771 — i.e. AFTER the Title has been built
+    //     and shown. This guarantees a normal boot is never preempted: READY (and therefore
+    //     any `s` the harness sends) only happens once the title is up. A match launches
+    //     only if `s` is explicitly sent, after the title — never auto-skipped.
     let menu_ready_g = add_string_const(code, "READY\n");
-    inject_ready_flag(code, 17746, g_ready, g_sock, out_field, write_str, flush, menu_ready_g, sock_t, out_t, str_t, enc_t, 17842)?;
+    let ready_hook = if headless { 17746 } else { 17771 };
+    inject_ready_flag(code, ready_hook, g_ready, g_sock, out_field, write_str, flush, menu_ready_g, sock_t, out_t, str_t, enc_t, 17842)?;
     // FAST BOOT (deeper): filter the boot required-resources load to skip ALL public:: base
     // content (the ~10.6s of base-character renders we don't need for a 1-char training
     // match). Keeps global:: (hscript/vfx/vsmode) + private:: (common/fonts). The match's
