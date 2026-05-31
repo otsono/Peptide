@@ -21,6 +21,7 @@ docs/*
 !docs/overnight_session_log.md
 !docs/overnight_validation.md
 !docs/PARITY.md
+!docs/P1_P2_STATUS.md
 
 # macOS .app bundle output from make-app.sh
 dist/
