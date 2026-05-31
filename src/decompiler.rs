@@ -1292,10 +1292,21 @@ impl<'a> StructuredDecoder<'a> {
                         result.push(Stmt::While(cond, body));
                         cur = fallthrough;
                     } else {
+                        // Seed both branch bodies with THIS block's residual operand
+                        // stack (what's left after the comparison popped its operands).
+                        // A value pushed before the branch (e.g. a `<root>` receiver for
+                        // a call in the body) lives there; without it the body decoder
+                        // underflows to Expr::Unknown and emits a dangling `/* ? */`
+                        // receiver/condition. (Previously these branches decoded from an
+                        // empty stack.) Strictly more faithful — the body genuinely
+                        // continues from the predecessor's stack state.
+                        let carry = dec.stack.clone();
                         let merge = self.find_merge(target, fallthrough);
-                        let then_b = self.decode_from(target, merge);
+                        let mut t_out = vec![];
+                        let then_b = self.decode_from_with_stack_out(target, merge, carry.clone(), &mut t_out);
                         let else_b = if fallthrough != merge.unwrap_or(usize::MAX) {
-                            self.decode_from(fallthrough, merge)
+                            let mut e_out = vec![];
+                            self.decode_from_with_stack_out(fallthrough, merge, carry, &mut e_out)
                         } else { vec![] };
                         result.push(make_if(cond, then_b, else_b));
                         cur = merge.unwrap_or(usize::MAX);
