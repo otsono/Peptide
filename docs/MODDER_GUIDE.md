@@ -41,6 +41,7 @@ You type full words; single-letter wire codes still work as aliases.
 | `physics` | print player 0 position / velocity / damage (`P: x=.. y=.. vx=.. vy=.. dmg=..`) |
 | `anim` | print player 0 current animation + frame (`A:<name> frame <cur>/<total>`) |
 | `loop <move> [count]` | re-dispatch a move repeatedly (default 8×) for sustained observation / live tuning |
+| `snapshot` | one bundle of state + physics + animation (`t`+`v`+`a`) |
 | `query` | is a match live? |
 | `keys` | dump the loaded resource keys |
 | `exit` | cleanly shut the engine down |

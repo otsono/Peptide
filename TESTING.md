@@ -156,6 +156,7 @@ vocabulary is one shared table: `tools/peptide/src/commands.rs`.
 | `physics` (phys, vitals, v) | `v` | player 0 position / velocity / damage (`Std.string` of Body + Physics + Damage floats) | `P: x=.. y=.. vx=.. vy=.. dmg=..` |
 | `anim` (animation, a) | `a` | player 0 current animation + frame index/total (Animation component) | `A:<name> frame <cur>/<total>` |
 | `loop <move> [count]` (repeat) | — | **client-side**: re-dispatch a move `count`× (default 8) at 800ms intervals — sustained observation / live tuning. No engine bytecode. | repeated `M:OK` + ANIM stream |
+| `snapshot` (snap) | — | **client-side**: one readback bundle — sends `t`, `v`, `a` in sequence (state + physics + animation). No engine bytecode. | `T:…` + `P:…` + `A:…` |
 | `keys` (pool, k) | `k` | dump pool keys + UGC-discovery diagnostics | `K:…` |
 | `exit` (quit, stop, x) | `x` | clean engine shutdown (`hxd.System.exit`) | — |
 

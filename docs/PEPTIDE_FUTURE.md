@@ -38,9 +38,12 @@ Decomposed into commands (see "Building blocks" below): `spawn` + `dummy` →
 - **`state`** — current CState name. **[done]**
 - **`physics`** — player 0 position / velocity / damage. **[done]**
 - **ANIM stream** — per-state-change `ANIM:<state>` telemetry. **[done]**
-- **`snapshot`** — one atomic line with BOTH fighters' position, velocity,
-  damage, current animation+frame, and the live hitbox set. **[planned]** More
-  accurate than separate `state`/`physics` calls (single-frame consistency).
+- **`snapshot`** — readback bundle. **[done, client-side]** Sends `t`+`v`+`a`
+  (state + physics + animation) as one command via the `Sequence` primitive. NOTE:
+  client-side means the three reads land on consecutive frames, not one atomic
+  frame; a true single-frame engine-side snapshot (+ BOTH fighters once a `dummy`
+  exists) is the future upgrade. The `Sequence` primitive is also the groundwork
+  for recipe scripting.
 - **`hitbox` / `boxes`** — for the current frame, dump every active hit/hurt box:
   index, x/y/w/h, damage, angle, base KB, KB growth, active-frame window.
   **[research → `.hl`]** The modder's core debugging view. RE lead: the engine
