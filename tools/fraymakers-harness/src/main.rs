@@ -568,12 +568,17 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
         .map(|fld| fld.t.0)
         .ok_or_else(|| anyhow::anyhow!("Socket.__s field type missing"))?;
     let hello_g = add_string_const(code, &hello); // real String object (GetGlobal)
+    let ready_g = add_string_const(code, "READY\n"); // sent right after connect (engine is match-ready by preLoad)
     let pong_g = add_string_const(code, "PONG\n");
     let help_g = add_string_const(code, "help"); // console command to run as a test
     let ran_g = add_string_const(code, "RAN\n");
     let zero_idx = add_int(code, 0);
     let one_idx = add_int(code, 1);
     let p_idx = add_int(code, 'p' as i32); // 'ping' command byte
+    let x_idx = add_int(code, 'x' as i32); // 'exit' command byte — clean engine shutdown
+    // hxd.System.exit (Heaps app exit): clean process shutdown so the harness can quit the
+    // engine WITHOUT `kill -9` mid-render (which leaves wedged U-state ./hl orphans on macOS).
+    let hxd_exit = require_fn(code, "exit", Some("hxd.$System"))?;
     let c_idx = add_int(code, 'c' as i32); // 'console' command byte
     let s_idx = add_int(code, 's' as i32); // 'start match' command byte
     let stage_str = add_string(code, "stage");
@@ -1059,6 +1064,11 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     ops.push(Opcode::Null { dst: rr(15) });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    // (READY + g_ready are NOT sent here — too early: the TrainingMode mode resource
+    // and other required match content aren't loaded until the second boot-load pass,
+    // whose onComplete is Main.onLoaded. We signal READY from onLoaded instead, after
+    // required content is loaded but before launchScreen builds the Title.)
+    let _ = ready_g;
     // allocate the line-command buffer once (haxe.io.Bytes.alloc(512))
     ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(buf_cap_idx) });
     ops.push(Opcode::Call1 { dst: rr(51), fun: RefFun(bytes_alloc), arg0: rr(16) });
@@ -1098,7 +1108,10 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
     let idx_jslt = ops.len();
     ops.push(Opcode::JSLt { a: r_c, b: r_zero, offset: 0 });            // no data (c<0) -> L_ORIG
     let _ = write_byte;
-    // dispatch: 'p' -> PONG ; 'c' -> runCommand(console,"help") + "RAN"
+    // dispatch: 'x' -> clean engine exit (no kill -9 wedge); 'p' -> PONG ; 'c' -> ...
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(x_idx) });
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 1 });          // not 'x' -> skip exit (fall to 'p')
+    ops.push(Opcode::Call0 { dst: r_ret, fun: RefFun(hxd_exit) });      // hxd.System.exit() — terminates
     ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(p_idx) });
     let idx_jne_p = ops.len();
     ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });          // not 'p' -> 'c' check
@@ -1797,14 +1810,30 @@ fn connect_edit(code: &mut Bytecode, port: u16, token: &str) -> anyhow::Result<(
         eprintln!("connect_edit: getPXFSpriteEntity@{get_sprite_entity} self-heal (miss -> private::sandbag.sandbag)");
     }
 
-    // When content loads (Title.customContentLoaded@21850 — title now shows
-    // "press any button"), auto-trigger the EXACT press-any-button handler
-    // Title.start@21860 (does all the prep + transition into the menu). Appended
-    // so it runs AFTER the title finishes setting itself up, like a real press.
-    inject_press_start(code, 21850, 21860)?;
-    // Then signal READY from MainMenu's constructor (now reached via the advance).
+    // FAST BOOT / SKIP TITLE+MENU: no-op launchScreen@17771 (the LAST boot load-step).
+    // It is the ONLY creator of the Title scene (showMenuById("Title")) AND the caller
+    // of UgcUtil.loadUgc (the slow "load ALL custom content" scan). Replacing its body
+    // with an immediate void Ret suppresses BOTH — no Title/MainMenu is ever built, and
+    // no custom content is bulk-loaded. The match-ready signal (READY + g_ready) is now
+    // emitted from the connect block on the first update() after CoreEngine.preLoad
+    // (which created the game/menu containers + MatchController + set updateLoopReady),
+    // so `s` dispatches without ever reaching a menu. startMatch reuses the existing
+    // gameContainer (created in configLoaded, before preLoad).
+    {
+        let lfi = function_index_by_findex(code, 17771)
+            .ok_or_else(|| anyhow::anyhow!("launchScreen@17771 not found"))?;
+        let lf = &mut code.functions[lfi];
+        let vreg = add_regs(lf, &[0]); // void-typed scratch reg for the early Ret
+        insert_ops_front(lf, vec![Opcode::Ret { ret: Reg(vreg) }]);
+        eprintln!("connect_edit: no-op'd launchScreen@17771 (skip Title + loadUgc)");
+    }
+    // Signal READY + set g_ready from Main.onLoaded@17746 — the onComplete of the
+    // SECOND boot-load (required match content, incl. the TrainingMode mode resource,
+    // is loaded by now). This is BEFORE launchScreen (no-op'd) builds the Title, and the
+    // connect block (first update after preLoad) has already opened the socket, so the
+    // READY write lands. `s` then dispatches into the match with no menu ever shown.
     let menu_ready_g = add_string_const(code, "READY\n");
-    inject_ready_flag(code, 18549, g_ready, g_sock, out_field, write_str, flush, menu_ready_g, sock_t, out_t, str_t, enc_t, 17842)?;
+    inject_ready_flag(code, 17746, g_ready, g_sock, out_field, write_str, flush, menu_ready_g, sock_t, out_t, str_t, enc_t, 17842)?;
     Ok(())
 }
 
@@ -1861,6 +1890,7 @@ fn inject_ready_flag(
     let (r_b, r_sock, r_out, r_str, r_enc, r_ret) =
         (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4), Reg(base + 5));
     use hlbc::types::{RefField, RefFun, RefGlobal};
+    let _ = load_ugc; // fast-boot: no longer called here (see note below)
     let mut ops = vec![
         // Kick off custom-content (UGC) loading. Our injected boot path
         // (Title.start → MainMenu) bypasses Main::launchScreen, which normally
@@ -1877,7 +1907,11 @@ fn inject_ready_flag(
         // ONLY function that pops the task deque is init's spawned worker; without
         // it the `k` pool-key dump showed only private::common, never custom.)
         Opcode::Call0 { dst: r_ret, fun: RefFun(25781) },
-        Opcode::Call0 { dst: r_ret, fun: RefFun(load_ugc) },
+        // FAST BOOT: do NOT call loadInLocalUgc here — that scanned custom/ and loaded
+        // EVERY custom character (the slow "loading all custom content" screen). We only
+        // need the ONE char `s` requests, which the `s`/`l` self-bootstrap loads
+        // synchronously on demand. Base/global content (vfx, stages, assists) is loaded
+        // by the normal config boot, not UGC, so it's unaffected. (Was: Call0 load_ugc.)
         Opcode::Bool { dst: r_b, value: hlbc::types::ValBool(true) },
         Opcode::SetGlobal { global: RefGlobal(g_ready), src: r_b },
         Opcode::GetGlobal { dst: r_sock, global: RefGlobal(g_sock) },
