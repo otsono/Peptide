@@ -463,6 +463,36 @@ pub fn split_animations(
         out.extend(to_add);
     }
 
+    // ── Slot aliases: reuse one emitted animation for additional template slots ──
+    // Several Fraymakers motion slots have no distinct SSF2 source and are meant to
+    // reuse another animation. For each (target_slot <- source_fm_name) pair, if the
+    // source animation was emitted and the target slot isn't already present, clone
+    // the source SplitAnim (same frames/labels) under the target name. Graceful: a
+    // character lacking the source simply doesn't get the alias.
+    const SLOT_ALIASES: &[(&str, &str)] = &[
+        // All 8 directional airdashes reuse the air-dodge animation.
+        ("airdash_up",            "airdodge"),
+        ("airdash_down",          "airdodge"),
+        ("airdash_forward",       "airdodge"),
+        ("airdash_back",          "airdodge"),
+        ("airdash_forward_up",    "airdodge"),
+        ("airdash_forward_down",  "airdodge"),
+        ("airdash_back_up",       "airdodge"),
+        ("airdash_back_down",     "airdodge"),
+        // Airdash landing-lag slots reuse the heavy-land animation.
+        ("airdash_land",             "land_heavy"),
+        ("airdash_land_uncanceled",  "land_heavy"),
+        ("airdash_land_whiff",       "land_heavy"),
+    ];
+    for (target, src) in SLOT_ALIASES {
+        if out.iter().any(|s| s.fm_name == *target) { continue; }
+        if let Some(mut a) = out.iter().find(|s| s.fm_name == *src).cloned() {
+            a.fm_name = target.to_string();
+            eprintln!("anim alias: '{}' <- reuse of '{}'", target, src);
+            out.push(a);
+        }
+    }
+
     out
 }
 
