@@ -1246,12 +1246,18 @@ impl<'a> StructuredDecoder<'a> {
                             result.push(Stmt::If(combined_cond, body, vec![]));
                             cur = body_merge.unwrap_or(usize::MAX);
                         } else {
-                            // Capture carry from then_b to propagate to merge block
+                            // Capture carry from then_b to propagate to merge block.
+                            // BOTH branches are seeded with the predecessor's residual
+                            // stack (saved_carry): a value pushed before the branch lives
+                            // there, and an empty else-seed left the else body underflowing
+                            // to /* ? */. Safe w.r.t. the ternary heuristic below: that only
+                            // fires when saved_carry is empty (else then_leftover.len()!=1),
+                            // in which case this seed is also empty — no behavior change.
                             let mut then_leftover = vec![];
-                            let then_b = self.decode_from_with_stack_out(then_start, merge, saved_carry, &mut then_leftover);
+                            let then_b = self.decode_from_with_stack_out(then_start, merge, saved_carry.clone(), &mut then_leftover);
                             let mut else_leftover = vec![];
                             let else_b = if else_start != merge.unwrap_or(usize::MAX) {
-                                self.decode_from_with_stack_out(else_start, merge, vec![], &mut else_leftover)
+                                self.decode_from_with_stack_out(else_start, merge, saved_carry, &mut else_leftover)
                             } else {
                                 vec![]
                             };
