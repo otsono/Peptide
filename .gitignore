@@ -20,6 +20,7 @@ docs/*
 !docs/character_status.md
 !docs/overnight_session_log.md
 !docs/overnight_validation.md
+!docs/PARITY.md
 
 # macOS .app bundle output from make-app.sh
 dist/
