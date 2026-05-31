@@ -1,107 +1,60 @@
 #!/usr/bin/env bash
+# Build Peptide for Windows (.exe) from macOS/Linux, or natively on Windows.
+# Peptide is a single binary (engine harness + converter + FrayTools driver).
 #
-# make-win.sh — cross-compile the Windows build of the converter + GUI from
-# macOS or Linux, and stage both .exe files in dist/windows/.
+# Cross-compiling needs one of:
+#   - cargo-xwin  (MSVC ABI; recommended)   cargo install cargo-xwin + LLVM
+#   - mingw-w64   (GNU ABI; fallback)        brew install mingw-w64
 #
-# Produces:
-#   dist/windows/ssf2-converter-gui.exe   (the GUI; no console window)
-#   dist/windows/ssf2_converter.exe       (the CLI it shells out to)
-#   dist/windows/README.txt               (ship-these-together note)
+# Runtime note: the webview UI uses WebView2. The WebView2 runtime ships with
+# Windows 10/11 by default; on older images install the Evergreen runtime.
 #
-# Ship those two .exe files in the SAME folder — the GUI finds the CLI as a
-# sibling. (If you build natively ON Windows instead, just run
-# `cargo build --release` and grab the two .exe from target\release\.)
-#
-# Toolchain: prefers cargo-xwin (targets the MSVC ABI, most compatible with
-# Windows). Falls back to the GNU ABI via mingw-w64 if cargo-xwin isn't
-# present. The script tells you exactly what to install if neither is set up.
+# Usage:
+#   ./make-win.sh            build peptide.exe into dist/windows/
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")" && pwd)"
-OUT="$REPO/dist/windows"
-cd "$REPO"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+cd "$HERE"
 
-# cargo-xwin shells out to `lld-link` (from Homebrew's `lld` package) and needs
-# rustup's `cargo`. A non-login shell may not have these on PATH, so prepend the
-# common locations when they exist (portable across the brew prefix on Apple
-# Silicon / Intel / Linux).
-if command -v brew >/dev/null 2>&1; then
-    BREW_PREFIX="$(brew --prefix 2>/dev/null || true)"
-    for d in "$BREW_PREFIX/opt/lld/bin" "$BREW_PREFIX/opt/llvm/bin"; do
-        [ -d "$d" ] && PATH="$d:$PATH"
-    done
-fi
-[ -d "$HOME/.cargo/bin" ] && PATH="$HOME/.cargo/bin:$PATH"
-export PATH
+OUT="dist/windows"
+BIN="peptide"
 
-have() { command -v "$1" >/dev/null 2>&1; }
+mkdir -p "$OUT"
 
-build_msvc() {
-    echo "→ Cross-compiling for x86_64-pc-windows-msvc (via cargo-xwin)…" >&2
-    rustup target add x86_64-pc-windows-msvc >/dev/null 2>&1 || true
-    cargo xwin build --release --target x86_64-pc-windows-msvc \
-        -p ssf2_converter --bin ssf2_converter >&2
-    cargo xwin build --release --target x86_64-pc-windows-msvc \
-        -p ssf2-converter-gui >&2
-    echo "x86_64-pc-windows-msvc"
-}
-
-build_gnu() {
-    echo "→ Cross-compiling for x86_64-pc-windows-gnu (via mingw-w64)…" >&2
-    rustup target add x86_64-pc-windows-gnu >/dev/null 2>&1 || true
-    cargo build --release --target x86_64-pc-windows-gnu \
-        -p ssf2_converter --bin ssf2_converter >&2
-    cargo build --release --target x86_64-pc-windows-gnu \
-        -p ssf2-converter-gui >&2
-    echo "x86_64-pc-windows-gnu"
-}
-
-if have cargo-xwin; then
-    TRIPLE="$(build_msvc)"
-elif have x86_64-w64-mingw32-gcc; then
-    TRIPLE="$(build_gnu)"
+# Pick a toolchain.
+TARGET=""
+MODE=""
+if command -v cargo-xwin >/dev/null 2>&1; then
+  TARGET="x86_64-pc-windows-msvc"
+  MODE="xwin"
+elif rustup target list --installed 2>/dev/null | grep -q x86_64-pc-windows-gnu; then
+  TARGET="x86_64-pc-windows-gnu"
+  MODE="gnu"
 else
-    cat >&2 <<'EOF'
-✗ No Windows cross-toolchain found. Install ONE of these, then re-run:
-
-  Option A — cargo-xwin (recommended; MSVC ABI):
-      cargo install cargo-xwin
-      # macOS also needs LLVM's lld linker:  brew install llvm
-      # (xwin downloads the Windows SDK on first build — a few hundred MB, cached)
-
-  Option B — mingw-w64 (GNU ABI):
-      brew install mingw-w64            # macOS
-      # or:  sudo apt install gcc-mingw-w64-x86-64   # Debian/Ubuntu
-
-Or just build natively ON a Windows machine:
-      rustup default stable-x86_64-pc-windows-msvc
-      cargo build --release
-      # → target\release\ssf2-converter-gui.exe + ssf2_converter.exe
-EOF
-    exit 1
+  echo "No Windows toolchain found. Install one of:" >&2
+  echo "  cargo install cargo-xwin   (MSVC ABI; recommended)" >&2
+  echo "  rustup target add x86_64-pc-windows-gnu + brew install mingw-w64" >&2
+  exit 1
 fi
 
-GUI="$REPO/target/$TRIPLE/release/ssf2-converter-gui.exe"
-CLI="$REPO/target/$TRIPLE/release/ssf2_converter.exe"
-for b in "$GUI" "$CLI"; do
-    [ -f "$b" ] || { echo "✗ missing build output: $b" >&2; exit 1; }
-done
+echo "==> Building peptide for $TARGET ($MODE)…"
 
-echo "→ Staging into dist/windows/…" >&2
-rm -rf "$OUT"; mkdir -p "$OUT"
-cp "$GUI" "$CLI" "$OUT/"
-cat > "$OUT/README.txt" <<'EOF'
-SSF2 -> Fraymakers Converter (Windows)
+if [ "$MODE" = "xwin" ]; then
+  cargo xwin build --release --target "$TARGET" -p peptide --bin peptide >&2
+else
+  cargo build --release --target "$TARGET" -p peptide --bin peptide >&2
+fi
 
-Keep these two files in the SAME folder:
-  ssf2-converter-gui.exe   <- double-click this (the GUI)
-  ssf2_converter.exe       <- the converter the GUI calls
+echo "==> Staging .exe into $OUT…"
+cp "target/$TARGET/release/$BIN.exe" "$OUT/" 2>/dev/null || true
 
-The GUI finds the converter next to itself, so don't separate them.
+cat <<DONE
 
-"Export in FrayTools" additionally needs Node.js installed.
-EOF
+Build complete. Windows file staged in:
+  $OUT/$BIN.exe
 
-echo "✓ Built ($TRIPLE):"
-echo "    $OUT/ssf2-converter-gui.exe"
-echo "    $OUT/ssf2_converter.exe"
+Run it by double-clicking peptide.exe (needs the WebView2 runtime, which is
+preinstalled on Windows 10/11). CLI modes work too: peptide.exe convert <file.ssf>
+DONE
+
+echo "    $OUT/$BIN.exe"

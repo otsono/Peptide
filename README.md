@@ -1,14 +1,43 @@
-# ssf2-to-fraymakers
+# Peptide
 
-**Turn a Super Smash Flash 2 character into a ready-to-open Fraymakers mod — automatically.**
+**A Fraymakers modding toolkit — test characters live, convert from SSF2, and drive FrayTools.**
 
-Point this tool at a single SSF2 `.ssf` file and it reverse-engineers the whole
-character and writes a complete, FrayTools-compatible
-[Fraymakers](https://www.fraymakersthegame.com/) character package — sprites,
-animations, collision boxes, costumes, sounds, projectiles, effects, menu
-portraits, and decompiled gameplay logic. No manual asset ripping, no rebuilding
-timelines by hand, no copy-pasting stat tables. One command in, a FrayTools
-project out.
+Peptide is one app (and one CLI) with three jobs:
+
+- **Launch Peptide** — boot [Fraymakers](https://www.fraymakersthegame.com/) and
+  drive a live match: spawn a character, run moves, read state, evaluate hscript —
+  to validate a conversion in the real engine.
+- **SSF2 → Fraymakers Converter** — turn a Super Smash Flash 2 `.ssf` into a
+  complete, FrayTools-compatible character package (sprites, animations, collision
+  boxes, costumes, sounds, projectiles, effects, menu art, decompiled logic).
+- **FrayTools Hook** — drive your local FrayTools over the DevTools protocol:
+  publish a project to `.fra`, render an entity, or extract box geometry.
+
+Launch the app (`peptide`) for the graphical experience — a first-run **Setup**
+captures where Fraymakers and FrayTools live and which character you're working
+on, then a home screen with those three buttons. Everything is scriptable from
+the CLI too (`peptide convert …`, `peptide export …`, …).
+
+## Quick start
+
+```bash
+cargo build --release            # builds the single `peptide` binary
+./target/release/peptide         # open the app (Setup on first run, then Home)
+
+# …or straight from the CLI:
+./target/release/peptide convert ../ssf2-ssfs/mario.ssf --output ./characters
+```
+
+A conversion lands in `./characters/mario/` as a ready-to-open FrayTools project.
+
+---
+
+## The converter
+
+Point the converter at a single SSF2 `.ssf` file and it reverse-engineers the
+whole character and writes a complete, FrayTools-compatible character package.
+No manual asset ripping, no rebuilding timelines by hand, no copy-pasting stat
+tables. One command in, a FrayTools project out.
 
 ## What it does
 
