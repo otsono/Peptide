@@ -30,7 +30,10 @@
     "a_forward": "dash_attack",
     "a_forward_tilt": "tilt_forward",
     "a_up_tilt": "tilt_up",
-    "a_down": "tilt_down",
+    // a_down is the down SMASH state (DownSmash_ sprite) → strong_down (split into
+    // _in/_charge/_attack by the strong arm). The down TILT lives in crouch_attack
+    // (DownTilt_ sprite) → tilt_down. label_to_ssf2 routes the sprites accordingly.
+    "a_down": "strong_down",
     "crouch_attack": "tilt_down",
     "a_forwardsmash": "strong_forward",
     "a_up": "strong_up",
@@ -136,13 +139,16 @@
     "ftilt": "a_forward_tilt",
     "uptilt": "a_up_tilt",
     "utilt": "a_up_tilt",
-    "downtilt": "a_down",
-    "dtilt": "a_down",
+    // Down TILT sprite (DownTilt_) -> the crouch_attack state -> tilt_down.
+    "downtilt": "crouch_attack",
+    "dtilt": "crouch_attack",
     "crouchattack": "crouch_attack",
     "forwardsmash": "a_forwardsmash",
     "fsmash": "a_forwardsmash",
     "upsmash": "a_up",
     "usmash": "a_up",
+    // Down SMASH sprite (DownSmash_, label "downsmash") -> the a_down state -> strong_down.
+    "downsmash": "a_down",
     "dsmash": "a_down",
 
     "nair": "a_air",
