@@ -19,10 +19,11 @@ place durable notes belong (see "Scratch notes" below).
 
 Three questions, in order:
 
-1. **Did you change `src/**`?**
+1. **Did you change `src/**` or `crates/**`?**
    Run `cargo test --release`. The `golden_sandbag` snapshot is the primary
    safety net — if its hashes change, you've changed character output and the
-   golden needs an explicit update (`tests/golden/sandbag_hashes.txt`).
+   golden needs an explicit update
+   (`crates/ssf2-converter/tests/golden/sandbag_hashes.txt`).
 
 2. **Did you touch one of the "hot files" below?**
    Check the doc section listed next to it. If the change shifts the
@@ -43,23 +44,28 @@ When you change one of these, scan the listed doc section in the same
 commit. If the change is significant enough to need a doc edit, the
 linked section is where to put it.
 
+The converter source is the `crates/ssf2-converter/` library; Peptide (engine
+harness, webview UI, bytecode patcher) is the root `src/`.
+
 | Hot file | Affected doc sections |
 |---|---|
-| `src/main.rs` (CLI, `detect_char_names`, `process_character`, `write_conversion_log`) | DEVELOPMENT §3.3, §4, §5.1; README §"Usage" if CLI flags change |
-| `src/extractor.rs` (`CharacterData` struct) | DEVELOPMENT §5.4 |
-| `src/abc_parser.rs` (Stage A bundle extraction, constructor walker, normalStats_id) | DEVELOPMENT §5.3; §14 "Architectural history" if detection logic shifts |
-| `src/decompiler.rs` | DEVELOPMENT §5.3 |
-| `src/sprite_parser.rs` (box geometry, xframe transforms) | DEVELOPMENT §5.4; AGENT_CONTEXT §"Collision Boxes" |
-| `src/image_extractor.rs` (PNG / placement / skew bake / projectile-and-head discovery) | DEVELOPMENT §5.4; AGENT_CONTEXT §"Image Sprites" |
-| `src/sound_extractor.rs` | DEVELOPMENT §5.4 |
-| `src/api_mappings.rs` (translation pipeline) | DEVELOPMENT §5.5; README §"Configuring the conversion" |
-| `src/mappings.rs` | DEVELOPMENT §5.2 |
-| `src/entity_gen.rs` | DEVELOPMENT §5.6; AGENT_CONTEXT §"Fraymakers Entity Format" |
-| `src/haxe_gen.rs` (output orchestrator + transformation banner) | DEVELOPMENT §5.6 |
-| `src/palette_gen.rs` | DEVELOPMENT §5.6; README §"How costumes work" |
-| `src/uuid_gen.rs` | DEVELOPMENT §5.6; AGENT_CONTEXT §"Top-Level Structure" if GUID seeding changes |
-| `mappings/commands.jsonc` | DEVELOPMENT §6.1; README §"Configuring the conversion" |
-| `mappings/character/*.jsonc` | DEVELOPMENT §6.2–§6.4 |
+| `crates/ssf2-converter/src/convert.rs` (orchestration: `detect_char_names`, `process_character`, `write_conversion_log`, `run_conversion`) | DEVELOPMENT §3.3, §4, §5.1 |
+| `src/convert.rs` (peptide `convert` CLI adapter) | DEVELOPMENT §3.3; README §"Usage" if CLI flags change |
+| `crates/ssf2-converter/src/extractor.rs` (`CharacterData` struct) | DEVELOPMENT §5.4 |
+| `crates/ssf2-converter/src/abc_parser.rs` (Stage A bundle extraction, constructor walker, normalStats_id) | DEVELOPMENT §5.3; §14 "Architectural history" if detection logic shifts |
+| `crates/ssf2-converter/src/decompiler.rs` | DEVELOPMENT §5.3 |
+| `crates/ssf2-converter/src/sprite_parser.rs` (box geometry, xframe transforms) | DEVELOPMENT §5.4; AGENT_CONTEXT §"Collision Boxes" |
+| `crates/ssf2-converter/src/image_extractor.rs` (PNG / placement / skew bake / projectile-and-head discovery) | DEVELOPMENT §5.4; AGENT_CONTEXT §"Image Sprites" |
+| `crates/ssf2-converter/src/sound_extractor.rs` | DEVELOPMENT §5.4 |
+| `crates/ssf2-converter/src/api_mappings.rs` (translation pipeline) | DEVELOPMENT §5.5; README §"Configuring the conversion" |
+| `crates/ssf2-converter/src/mappings.rs` | DEVELOPMENT §5.2 |
+| `crates/ssf2-converter/src/entity_gen.rs` | DEVELOPMENT §5.6; AGENT_CONTEXT §"Fraymakers Entity Format" |
+| `crates/ssf2-converter/src/haxe_gen.rs` (output orchestrator + transformation banner) | DEVELOPMENT §5.6 |
+| `crates/ssf2-converter/src/palette_gen.rs` | DEVELOPMENT §5.6; README §"How costumes work" |
+| `crates/ssf2-converter/src/uuid_gen.rs` | DEVELOPMENT §5.6; AGENT_CONTEXT §"Top-Level Structure" if GUID seeding changes |
+| Peptide root `src/` (gui.rs, peptide_ui.html, config.rs, platform.rs, manifest.rs, fraytools.rs) | docs/PEPTIDE_README.md; TESTING.md |
+| `crates/ssf2-converter/mappings/commands.jsonc` | DEVELOPMENT §6.1; README §"Configuring the conversion" |
+| `crates/ssf2-converter/mappings/character/*.jsonc` | DEVELOPMENT §6.2–§6.4 |
 | `src/bin/*` | DEVELOPMENT §5.7 (add a row to the table) |
 | `tests/*` | Update the test count in DEVELOPMENT §10 "current status" if the change is significant |
 

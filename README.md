@@ -1,14 +1,43 @@
-# ssf2-to-fraymakers
+# Peptide
 
-**Turn a Super Smash Flash 2 character into a ready-to-open Fraymakers mod — automatically.**
+**A Fraymakers modding toolkit — test characters live, convert from SSF2, and drive FrayTools.**
 
-Point this tool at a single SSF2 `.ssf` file and it reverse-engineers the whole
-character and writes a complete, FrayTools-compatible
-[Fraymakers](https://www.fraymakersthegame.com/) character package — sprites,
-animations, collision boxes, costumes, sounds, projectiles, effects, menu
-portraits, and decompiled gameplay logic. No manual asset ripping, no rebuilding
-timelines by hand, no copy-pasting stat tables. One command in, a FrayTools
-project out.
+Peptide is one app (and one CLI) with three jobs:
+
+- **Launch Peptide** — boot [Fraymakers](https://www.fraymakersthegame.com/) and
+  drive a live match: spawn a character, run moves, read state, evaluate hscript —
+  to validate a conversion in the real engine.
+- **SSF2 → Fraymakers Converter** — turn a Super Smash Flash 2 `.ssf` into a
+  complete, FrayTools-compatible character package (sprites, animations, collision
+  boxes, costumes, sounds, projectiles, effects, menu art, decompiled logic).
+- **FrayTools Hook** — drive your local FrayTools over the DevTools protocol:
+  publish a project to `.fra`, render an entity, or extract box geometry.
+
+Launch the app (`peptide`) for the graphical experience — a first-run **Setup**
+captures where Fraymakers and FrayTools live and which character you're working
+on, then a home screen with those three buttons. Everything is scriptable from
+the CLI too (`peptide convert …`, `peptide export …`, …).
+
+## Quick start
+
+```bash
+cargo build --release            # builds the single `peptide` binary
+./target/release/peptide         # open the app (Setup on first run, then Home)
+
+# …or straight from the CLI:
+./target/release/peptide convert ../ssf2-ssfs/mario.ssf --output ./characters
+```
+
+A conversion lands in `./characters/mario/` as a ready-to-open FrayTools project.
+
+---
+
+## The converter
+
+Point the converter at a single SSF2 `.ssf` file and it reverse-engineers the
+whole character and writes a complete, FrayTools-compatible character package.
+No manual asset ripping, no rebuilding timelines by hand, no copy-pasting stat
+tables. One command in, a FrayTools project out.
 
 ## What it does
 
@@ -42,62 +71,68 @@ A single conversion pulls an entire SSF2 character across to Fraymakers, end to 
 
 ## What's in the repo
 
-- **`ssf2_converter`** — the core command-line converter (Rust). The one tool you
-  need to go from `.ssf` to a FrayTools package.
-- **Desktop app** — a cross-platform GUI (`ssf2-converter-gui`): drag-and-drop a
-  `.ssf`, watch a progress bar, and get a summary of any unhandled calls — no
-  terminal required. On macOS, `./make-app.sh` wraps it in a double-clickable
-  `SSF2 Converter.app`; on Windows, `./make-win.sh` cross-compiles the `.exe`
-  build (or build natively with `cargo build --release`).
-- **Editable conversion config** — JSONC mapping tables in `mappings/` drive API
-  translation, stat scaling, animation names, and hitbox-field mapping. Tune the
-  conversion by editing data, not recompiling code.
-- **Validation harnesses** (`tools/`) — automation that drives the user's own
-  FrayTools (box geometry + one-click publish) and the Fraymakers engine (load /
-  spawn / drive-a-move / read state) to prove a converted character actually works.
-  See [`TESTING.md`](TESTING.md).
-- **Diagnostic toolkit** — ~17 `dump_*` / `check_*` SWF- and format-inspection
-  binaries used to reverse-engineer and debug conversions.
+- **`peptide`** — the whole product, one binary (Rust). It bundles the engine
+  harness (webview UI + bytecode patcher), the in-process converter, and the
+  FrayTools CDP driver. Run it for the app, or use its CLI modes.
+- **`crates/ssf2-converter`** — the SSF2 → Fraymakers converter, now a library
+  crate (`run_conversion`), driven by `peptide convert` and the app's converter
+  screen.
+- **Desktop app** — `./make-app.sh` wraps `peptide` in a double-clickable macOS
+  `Peptide.app`; `./make-win.sh` cross-compiles the Windows `peptide.exe` (or
+  build natively with `cargo build --release`).
+- **Editable conversion config** — JSONC mapping tables in
+  `crates/ssf2-converter/mappings/` drive API translation, stat scaling,
+  animation names, and hitbox-field mapping. Tune the conversion by editing data,
+  not recompiling code.
+- **Validation harnesses** — the engine harness (Launch Peptide: load / spawn /
+  drive-a-move / read state) and the FrayTools Hook (box geometry + one-click
+  publish) prove a converted character actually works. See [`TESTING.md`](TESTING.md).
+- **Diagnostic toolkit** — ~30 `dump_*` / `check_*` SWF- and format-inspection
+  binaries in the converter crate, gated behind the `dev-tools` feature.
 
 ---
 
 # Developer guide
 
-Everything below is for building, running, and hacking on the converter.
+Everything below is for building, running, and hacking on the toolkit.
 
 ## Requirements
 
-- Rust (stable) — required to build the converter.
+- Rust (stable) — required to build.
 - `ffmpeg` on `PATH` — required at runtime for sound conversion (Nellymoser / MP3 / ADPCM → WAV).
   If `ffmpeg` is missing, conversion still succeeds; sounds are skipped with a warning.
 
 ## Build
 
 ```bash
-cargo build --release
+cargo build --release   # → target/release/peptide (the single binary)
 ```
 
-Binaries land in `target/release/`:
-
-- `ssf2_converter` — the main character converter (this is the only binary you need).
-- ~17 `dump_*` / `check_*` diagnostic binaries — see [`DEVELOPMENT.md`](DEVELOPMENT.md) §"Diagnostic binaries".
+The SSF2 → Fraymakers converter is a **library** (`crates/ssf2-converter`), driven
+through `peptide convert`. The ~30 `dump_*` / `check_*` diagnostic binaries are
+gated out of the default build; build one on demand with
+`cargo run -p ssf2_converter --features dev-tools --bin <name>` (see
+[`DEVELOPMENT.md`](DEVELOPMENT.md) §"Diagnostic binaries").
 
 ## Usage
 
 ```bash
+# Open the app (Setup on first run, then the Home screen with the three buttons)
+./target/release/peptide
+
 # One-step conversion. Costumes are auto-extracted from misc.ssf if it's next to the input.
-./target/release/ssf2_converter ../ssf2-ssfs/mario.ssf
+./target/release/peptide convert ../ssf2-ssfs/mario.ssf
 
 # Explicit output dir + explicit misc.ssf path
-./target/release/ssf2_converter ../ssf2-ssfs/mario.ssf \
+./target/release/peptide convert ../ssf2-ssfs/mario.ssf \
     --output ./characters --misc-ssf ../ssf2-ssfs/misc.ssf
 
 # A specific character from a multi-character .ssf
-./target/release/ssf2_converter ../ssf2-ssfs/zelda.ssf --name sheik
+./target/release/peptide convert ../ssf2-ssfs/zelda.ssf --name sheik
 
 # Force a multi-character SSF to emit one project PER character
 # (the pre-merge layout) instead of one shared project
-./target/release/ssf2_converter ../ssf2-ssfs/zelda.ssf --per-character-projects
+./target/release/peptide convert ../ssf2-ssfs/zelda.ssf --per-character-projects
 ```
 
 Costume palettes are extracted in-process from `misc.ssf` (no separate step, no temp files left
@@ -130,7 +165,7 @@ characters/mario/
     │   ├── *.png.meta                     GUID sidecar per PNG
     │   └── palette_preview.png (+ .meta)
     ├── scripts/
-    │   ├── Mario/                         <Pascal>/ — was Character/
+    │   ├── Mario/                         <Pascal>/ (formerly the generic Character dir)
     │   │   ├── CharacterStats.hx          movement physics
     │   │   ├── HitboxStats.hx             per-attack hitbox data
     │   │   ├── AnimationStats.hx          animation flags

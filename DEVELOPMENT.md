@@ -84,58 +84,62 @@ is logged to `conversion_log.json`.
 ## 2. Repository layout
 
 ```
-ssf2-fraymakers-converter/
-├── Cargo.toml                Rust package manifest (package name: ssf2_converter)
+peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
+├── Cargo.toml                Workspace + the `peptide` package
 ├── Cargo.lock
 ├── README.md                 Short user-facing readme
 ├── AGENT_CONTEXT.md          Authoritative SSF2 / Fraymakers FORMAT reference
-├── DEVELOPMENT.md            ← this file
+├── DEVELOPMENT.md            ← this file (the converter library internals)
 ├── CONTRIBUTING.md           Hot-file → doc-section map + per-change checklist
 ├── TESTING.md                Validation harnesses + engine RE map + validation status
 ├── LICENSE                   MIT License
 ├── NOTICE.md                 Dependency attribution (Ruffle swf crate, etc.)
-├── make-app.sh               macOS: build the GUI + wrap it in dist/SSF2 Converter.app
-├── make-win.sh               Cross-compile the Windows .exe build into dist/windows/
-├── rebuild-sandbag.sh        Quick: rebuild release binary + convert sandbag.ssf
-├── .gitignore                Ignores *.ssf, *.swf, /target, characters/
+├── make-app.sh               macOS: build peptide + wrap it in dist/Peptide.app
+├── make-win.sh               Cross-compile the Windows peptide.exe into dist/windows/
+├── rebuild-sandbag.sh        Quick: rebuild peptide + convert sandbag.ssf
+├── .gitignore                Ignores *.ssf, *.swf, /target, characters/, engine artifacts
 │
-├── mappings/                  ← editable runtime config (JSONC)
-│   ├── commands.jsonc         universal SSF2 → FM API command conversions
-│   └── character/
-│       ├── animations.jsonc   SSF2 anim names ↔ FM anim names
-│       ├── stats.jsonc        CharacterStats.hx field keys / multipliers / derivations / constants
-│       └── hitbox_stats.jsonc HitboxStats.hx field mapping + isframe flags
+├── src/                       Peptide — engine harness, webview UI, bytecode patcher
+│   ├── main.rs                CLI dispatch (gui/tui/convert/export/render/harness/patcher) + allocator
+│   ├── convert.rs             `peptide convert` adapter → ssf2_converter::run_conversion
+│   ├── config.rs              persisted config + env-override resolvers
+│   ├── platform.rs            FrayTools/Fraymakers path discovery + publish-folder editing
+│   ├── gui.rs                 webview glue (wry/tao): screen router IPC, boot flow
+│   ├── peptide_ui.html        the UI (home / setup / converter / frayhook / console)
+│   ├── ui.rs / bridge.rs      ratatui TUI + headless TCP runtime + the launcher
+│   ├── manifest.rs            engine-symbol dependency table (doctor preflight)
+│   ├── fraytools.rs           FrayTools CDP driver (export / render / harness)
+│   └── asm.rs / commands.rs   opcode helpers + the friendly-command vocabulary
 │
-├── src/                       All Rust source (the converter itself)
-│   ├── main.rs                CLI entry point + pipeline orchestration
-│   ├── lib.rs                 pub mod declarations (so src/bin/ can `use ssf2_converter::*`)
-│   ├── ssf.rs                 .ssf → raw SWF decompression
-│   ├── swf_parser.rs          SWF tag parsing (thin wrapper over the Ruffle `swf` crate)
-│   ├── abc_parser.rs          AVM2/ABC bytecode parser + semantic extractors (~2500 LOC)
-│   ├── decompiler.rs          ABC bytecode → Haxe-ish source (~1700 LOC)
-│   ├── extractor.rs           Bridges abc_parser output into CharacterData
-│   ├── anim_splitter.rs       Splits multi-move SSF2 sprites into FM animations
-│   ├── sprite_parser.rs       Per-frame collision-box geometry from SWF timelines
-│   ├── image_extractor.rs     PNG extraction, per-frame image placement, skew baking,
-│   │                          projectile/effect/head discovery (~1800 LOC)
-│   ├── sound_extractor.rs     Audio extraction (Nellymoser / MP3 / ADPCM → WAV via ffmpeg)
-│   ├── palette_gen.rs         Costume palette generation
-│   ├── api_mappings.rs        Decompiled-Haxe rewriter pipeline (JSONC-driven, ~1900 LOC)
-│   ├── mappings.rs            JSONC loader + OnceLock-cached accessors for mappings/*.jsonc
-│   ├── entity_gen.rs          Fraymakers .entity JSON builder (~2000 LOC)
-│   ├── haxe_gen.rs            Top-level output orchestrator — writes the whole package
-│   ├── fraytools_project.rs   Emits the `<name>.fraytools` project file
-│   ├── uuid_gen.rs            Deterministic UUID v5 generation
-│   └── bin/                   17 diagnostic / reverse-engineering binaries
+├── crates/ssf2-converter/     The SSF2 → Fraymakers converter, as a library crate
+│   ├── Cargo.toml             package `ssf2_converter` (lib; dev bins gated by `dev-tools`)
+│   ├── src/
+│   │   ├── lib.rs             pub mod declarations + run_conversion re-export
+│   │   ├── convert.rs         run_conversion(ConvertOptions) — the in-process entry point
+│   │   ├── ssf.rs             .ssf → raw SWF decompression
+│   │   ├── swf_parser.rs      SWF tag parsing (thin wrapper over the Ruffle `swf` crate)
+│   │   ├── abc_parser.rs      AVM2/ABC bytecode parser + semantic extractors (~2500 LOC)
+│   │   ├── decompiler.rs      ABC bytecode → Haxe-ish source (~1700 LOC)
+│   │   ├── extractor.rs       Bridges abc_parser output into CharacterData
+│   │   ├── anim_splitter.rs   Splits multi-move SSF2 sprites into FM animations
+│   │   ├── sprite_parser.rs   Per-frame collision-box geometry from SWF timelines
+│   │   ├── image_extractor.rs PNG extraction, placement, skew baking, projectile/effect/head
+│   │   ├── sound_extractor.rs Audio extraction (Nellymoser / MP3 / ADPCM → WAV via ffmpeg)
+│   │   ├── palette_gen.rs      Costume palette generation
+│   │   ├── api_mappings.rs     Decompiled-Haxe rewriter pipeline (JSONC-driven, ~1900 LOC)
+│   │   ├── mappings.rs         JSONC loader + OnceLock-cached accessors for mappings/*.jsonc
+│   │   ├── entity_gen.rs       Fraymakers .entity JSON builder (~2000 LOC)
+│   │   ├── haxe_gen.rs         Top-level output orchestrator — writes the whole package
+│   │   ├── fraytools_project.rs  Emits the `<name>.fraytools` project file
+│   │   ├── uuid_gen.rs         Deterministic UUID v5 generation
+│   │   └── bin/               ~30 diagnostic binaries (gated: --features dev-tools)
+│   ├── mappings/              ← editable runtime config (JSONC), baked in via include_str!
+│   │   ├── commands.jsonc      universal SSF2 → FM API command conversions
+│   │   └── character/          animations.jsonc / stats.jsonc / hitbox_stats.jsonc
+│   └── tests/                 integration + golden tests
 │
-├── tools/                     Validation harnesses (see TESTING.md) — git-ignored node_modules
-│   ├── fraytools-harness/     Drives the user's FrayTools editor over CDP (publish + box geometry)
-│   └── peptide/               Drives the user's Fraymakers engine via patched bytecode + loopback TCP
-│
-├── ssf2-converter-gui/        Cross-platform (egui) GUI wrapper (Rust + egui)
-│
-├── characters/                Converter OUTPUT (`*.hx`, `*.json`, `*.entity` tracked;
-│                              binary/image media git-ignored). Sample runs present.
+├── tools/fraytools-harness/   Legacy Node FrayTools scripts (reference; superseded by peptide)
+├── characters/                Converter OUTPUT (`*.hx`, `*.json`, `*.entity` tracked; media ignored)
 └── target/                    Cargo build output (git-ignored)
 ```
 
@@ -167,29 +171,31 @@ separately.
 - **`ffmpeg`** on `PATH` — used at runtime for sound conversion (Nellymoser / MP3 /
   ADPCM → WAV). If `ffmpeg` is absent the conversion still completes; sound
   extraction is skipped with a warning.
-- The cross-platform GUI (`ssf2-converter-gui`) needs only Rust — no extra
+- The desktop app is the `peptide` binary itself (a system webview) — no extra
   toolchain or OS-specific SDK. The converter itself is platform-agnostic.
 
 There is **no external Rust runtime dependency** for SWF decompression, bitmap
 decoding, or ABC parsing — those all happen in-process (`src/ssf.rs`,
 `src/swf_parser.rs`, `src/abc_parser.rs`, `src/decompiler.rs`).
 
-### 3.2 Build the converter
+### 3.2 Build
 
 ```bash
 cargo build --release
 ```
 
-This produces, in `target/release/`:
-
-- **`ssf2_converter`** — the main CLI (this is `src/main.rs`; the binary takes
-  the package name from `Cargo.toml`).
-- 17 **diagnostic binaries** (one per file in `src/bin/`) — see [§5.6](#56-diagnostic-binaries-srcbin).
+This produces `target/release/peptide` — the single binary (engine harness +
+in-process converter + FrayTools driver). The converter is a **library**
+(`crates/ssf2-converter`), not its own binary. The ~30 **diagnostic binaries**
+live in the converter crate behind the `dev-tools` feature (see
+[§5.7](#57-diagnostic-binaries-srcbin)); they are excluded from the default build.
 
 ### 3.3 Run the converter (CLI)
 
+Conversion is a Peptide subcommand:
+
 ```
-ssf2_converter <FILE.ssf> [OPTIONS]
+peptide convert <FILE.ssf> [OPTIONS]
 
 Arguments:
   <FILE>                 Path to the .ssf file to convert
@@ -203,7 +209,10 @@ Options:
   -v, --verbose          Debug-level logging
 ```
 
-Costume extraction is **in-process** — `main.rs::extract_costumes_to_temp`
+The same conversion runs behind the app's **SSF2 → Fraymakers Converter** screen
+and programmatically via `ssf2_converter::run_conversion(ConvertOptions)`.
+
+Costume extraction is **in-process** — `convert.rs::extract_costumes_to_temp`
 unwraps `misc.ssf` and runs `abc_parser::scan_all_costume_methods` directly,
 writing a temporary JSON cache that's deleted after the run. There is no
 separate `extract_costumes` binary anymore.
@@ -212,10 +221,10 @@ Examples:
 
 ```bash
 # Convert mario; costumes auto-loaded from ssf2-ssfs/misc.ssf next to it
-./target/release/ssf2_converter ../ssf2-ssfs/mario.ssf
+./target/release/peptide convert ../ssf2-ssfs/mario.ssf
 
 # Explicit output dir + explicit misc.ssf
-./target/release/ssf2_converter ../ssf2-ssfs/fox.ssf \
+./target/release/peptide convert ../ssf2-ssfs/fox.ssf \
     --output ./characters --misc-ssf ../ssf2-ssfs/misc.ssf
 ```
 
@@ -235,66 +244,45 @@ re-converts `sandbag.ssf`, then prints a sprite count.
 > repo root), so run it from the repo root. `sandbag` is the standard smoke-test
 > character (small, simple) — keep using it for fast iteration.
 
-### 3.5 The desktop GUI app
+### 3.5 The desktop app
 
-The cross-platform GUI lives in `ssf2-converter-gui/` (Rust + `egui`). Build and
-run it from its own directory (see
-[`ssf2-converter-gui/README.md`](ssf2-converter-gui/README.md) for specifics):
+The graphical app **is** `peptide` — running the binary with no arguments opens
+the system-webview window (wry/tao; WKWebView on macOS, WebView2 on Windows,
+WebKitGTK on Linux). The whole UI is `src/peptide_ui.html`. On first run a
+**Setup** screen captures where Fraymakers and FrayTools live and the current
+character; after that a **Home** screen offers three buttons:
 
-```bash
-cargo run --release --manifest-path ssf2-converter-gui/Cargo.toml
-```
+- **Launch Peptide** — boot the engine and drive a live match (the console).
+- **SSF2 → Fraymakers Converter** — run a conversion in-process (a worker thread
+  calling `run_conversion`), with a progress bar and a result panel.
+- **FrayTools Hook** — publish to `.fra` / render an entity / extract box
+  geometry, driving FrayTools over CDP.
 
-It is a thin wrapper around the `ssf2_converter` binary: drag-and-drop (or pick) a
-`.ssf`, it runs the converter as a child process, animates a progress bar, and
-shows success/failure with the captured log. It auto-detects a sibling
-`misc.ssf`, lets the user override the output dir, and reads
-`<output>/<char>/conversion_log.json` to display an "Unhandled Calls" popup
-summarising the `unknown` / `ssf2_only` counts after every run. The GUI adds
-**no conversion logic** — all behaviour lives in the Rust binary. It locates the
-`ssf2_converter` CLI as a sibling next to its own executable, so the two must
-ship in the same directory.
+The webview glue lives in `src/gui.rs` (see [`docs/PEPTIDE_README.md`](docs/PEPTIDE_README.md)
+for the harness internals); there is no separate GUI crate anymore.
 
-**Double-clickable macOS app.** `./make-app.sh` builds both binaries and wraps
-them in `dist/SSF2 Converter.app` — a normal Finder app (name, dock icon,
-`.ssf` file association) with the GUI as the bundle executable and
-`ssf2_converter` alongside it in `Contents/MacOS/`. It ad-hoc-codesigns the
-bundle so Gatekeeper allows a locally-built app to launch, and opens it on
-success (`--no-open` to just build). Drop an `AppIcon.icns` at the repo root to
-give it a custom icon. `dist/` is git-ignored.
+**Double-clickable macOS app.** `./make-app.sh` builds the single `peptide`
+binary and wraps it in `dist/Peptide.app` — a normal Finder app (name, dock
+icon, `.ssf` association) with `peptide` as the bundle executable. It
+ad-hoc-codesigns the bundle so Gatekeeper allows a locally-built app to launch,
+and opens it on success (`--no-open` to just build). `dist/` is git-ignored.
 
 ```bash
-./make-app.sh            # build + assemble dist/SSF2 Converter.app + launch
+./make-app.sh            # build + assemble dist/Peptide.app + launch
 ./make-app.sh --no-open  # build + assemble only (packaging / CI)
 ```
 
-On Windows/Linux no bundle is needed — `target/release/ssf2-converter-gui` is
-directly runnable; ship it next to `ssf2_converter`.
-
-**Windows build.** The GUI is pure `egui`/`eframe` with
-`windows_subsystem = "windows"` already set (release builds run with no console
-window), so it builds for Windows cleanly. Two ways:
-
-- *Natively on Windows* (most reliable): install Rust with the MSVC toolchain
-  (`rustup default stable-x86_64-pc-windows-msvc`), then `cargo build --release`.
-  Ship `target\release\ssf2-converter-gui.exe` + `ssf2_converter.exe` together.
-- *Cross-compile from macOS/Linux*: `./make-win.sh` stages both `.exe` files into
-  `dist/windows/`. It prefers `cargo-xwin` (MSVC ABI) and falls back to
-  `mingw-w64` (GNU ABI); if neither toolchain is installed it prints the exact
-  install command (`cargo install cargo-xwin` + `brew install llvm`, or
-  `brew install mingw-w64`).
-
-Either way the GUI finds `ssf2_converter.exe` as a sibling, so keep the two
-`.exe` files in the same folder.
-
-(The earlier native macOS SwiftUI app and `build-app.sh` were removed in favour
-of this single cross-platform GUI; `make-app.sh` is its `.app` packager.)
+**Windows build.** `./make-win.sh` cross-compiles `peptide.exe` into
+`dist/windows/` (prefers `cargo-xwin` for the MSVC ABI, falls back to
+`mingw-w64`; prints the exact install command if neither toolchain is present),
+or build natively on Windows with `cargo build --release`. The webview uses the
+WebView2 runtime, which ships with Windows 10/11.
 
 ---
 
 ## 4. The conversion pipeline
 
-End to end, one `ssf2_converter` invocation does this (`src/main.rs`):
+End to end, one `run_conversion` call does this (`crates/ssf2-converter/src/convert.rs`):
 
 ```
  .ssf file
@@ -464,8 +452,10 @@ CLI definition (`clap`), logging setup, and the top-level orchestration in
   characters) and `validation_warnings`.
 
 #### `lib.rs`
-Just `pub mod` declarations. Exists so the 17 binaries in `src/bin/` can
-`use ssf2_converter::*`. The crate is **both** a library and a binary.
+`pub mod` declarations + the `run_conversion` re-export. Every module is public
+so the diagnostic binaries in `src/bin/` can `use ssf2_converter::*`. The crate is
+a **library**; conversion is driven by `peptide convert` or `run_conversion`, not
+a standalone binary.
 
 ### 5.2 SSF / SWF / mapping layer
 
@@ -1265,8 +1255,8 @@ What is solid:
 - Empty-animation dropping (with a jab-aware keep-list).
 - `Menu.entity` with broadened head-sprite detection (`_head`, `_icon`;
   excludes `_hud`).
-- Conversion log + GUI "Unhandled Calls" popup.
-- The cross-platform (`egui`) GUI wrapper (`ssf2-converter-gui`).
+- Conversion log + the converter screen's warnings panel.
+- Peptide as the single-binary parent product (webview UI; converter folded in as a library).
 
 ---
 

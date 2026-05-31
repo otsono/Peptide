@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Peptide</title>
+<style>
+  :root{
+    /* Claude dark — warm charcoal, cream text, clay accent */
+    --paper:#262624; --surface:#30302E; --ink:#F2F0E8; --muted:#9C978B;
+    --clay:#D17C5E; --clay-deep:#C06E52; --clay-soft:#3A2E28;
+    --border:#3C3B37; --chip:#33322E; --chip-hover:#3D3C37;
+    --code-bg:#1F1E1C; --code-ink:#D9D5C8;
+    --err-bg:#382826; --err-ink:#F0A192; --err-border:#553A35;
+    --ok:#5FB07A;
+    --shadow:0 1px 2px rgba(0,0,0,.28), 0 1px 3px rgba(0,0,0,.22);
+    --shadow-pop:0 10px 34px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{
+    background:var(--paper); color:var(--ink);
+    font-family:-apple-system,"Segoe UI",system-ui,"Helvetica Neue",sans-serif;
+    font-size:15px; line-height:1.5;
+    display:flex; flex-direction:column; height:100vh;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* ── header ─────────────────────────────────────────── */
+  header{
+    display:flex; align-items:center; gap:11px;
+    padding:13px 18px; border-bottom:1px solid var(--border);
+    background:rgba(38,38,36,.82); backdrop-filter:saturate(1.2) blur(6px);
+  }
+  .mark{
+    width:30px;height:30px;border-radius:9px;background:var(--clay);
+    color:#fff;font-weight:700;font-size:16px;
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 1px 2px rgba(165,90,60,.35);
+  }
+  .title{font-weight:650;font-size:17px;letter-spacing:-.01em;}
+  .subtitle{color:var(--muted);font-size:13px;margin-left:2px;}
+  .spacer{flex:1;}
+  .pill{
+    display:flex;align-items:center;gap:7px;
+    padding:5px 11px;border-radius:999px;background:var(--chip);
+    color:var(--muted);font-size:12.5px;font-weight:500;
+    transition:background .2s,color .2s;
+  }
+  .pill.live{background:#23302A;color:#8FCBA0;}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--muted);}
+  .pill.live .dot{background:var(--ok);box-shadow:0 0 0 3px rgba(91,164,111,.18);}
+  /* ── messages ───────────────────────────────────────── */
+  #scroll{flex:1;overflow-y:auto;padding:18px 20px 8px;}
+  #messages{display:flex;flex-direction:column;max-width:820px;margin:0 auto;}
+  @keyframes in{from{opacity:0;transform:translateY(5px);}to{opacity:1;transform:none;}}
+  /* group label — shown once per consecutive run of the same sender */
+  .who{font-size:11px;color:var(--muted);font-weight:600;letter-spacing:.06em;
+    text-transform:uppercase;margin:16px 2px 5px;animation:in .18s ease both;}
+  .who:first-child{margin-top:2px;}
+  /* engine / received: plain text directly on the background (Claude-Code style) */
+  .msg.engine{align-self:stretch;color:var(--ink);font-size:14.5px;line-height:1.55;
+    padding:2px 2px;margin-bottom:3px;animation:in .18s ease both;word-wrap:break-word;}
+  .msg.engine.err{color:var(--err-ink);}
+  /* sent: a clay bubble on the right */
+  .msg.you{align-self:flex-end;max-width:80%;background:var(--clay);color:#fff;
+    padding:9px 14px;border-radius:18px 18px 6px 18px;box-shadow:var(--shadow);
+    margin:6px 0 3px;font-size:14.5px;animation:in .18s ease both;}
+  .msg.system{align-self:center;color:var(--muted);font-size:13px;
+    padding:8px;max-width:90%;text-align:center;animation:in .18s ease both;}
+  /* code/value output */
+  .code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:12.8px;
+    background:var(--code-bg);color:var(--code-ink);border-radius:8px;
+    padding:7px 11px;margin:1px 0 3px;white-space:pre-wrap;word-break:break-word;
+    border:1px solid rgba(255,255,255,.04);}
+  .msg.engine.err .code{background:rgba(240,161,146,.08);color:var(--err-ink);
+    border-color:rgba(240,161,146,.14);}
+  /* ── composer ───────────────────────────────────────── */
+  .composer{padding:10px 18px 14px;border-top:1px solid var(--border);background:var(--paper);}
+  .composer .inner{max-width:820px;margin:0 auto;}
+  .chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:9px;}
+  .chip{
+    border:1px solid var(--border);background:var(--chip);color:var(--ink);
+    padding:5px 13px;border-radius:999px;font-size:13px;cursor:pointer;
+    transition:background .15s,transform .05s;
+  }
+  .chip:hover{background:var(--chip-hover);}
+  .chip:active{transform:translateY(1px);}
+  .inputrow{
+    display:flex;align-items:center;gap:8px;background:var(--surface);
+    border:1px solid var(--border);border-radius:14px;padding:6px 6px 6px 14px;
+    box-shadow:var(--shadow);transition:border-color .15s,box-shadow .15s;
+  }
+  .inputrow:focus-within{border-color:var(--clay);box-shadow:0 0 0 3px rgba(204,120,92,.14);}
+  #input{
+    flex:1;border:none;outline:none;background:none;color:var(--ink);
+    font:inherit;font-size:15px;padding:7px 0;
+  }
+  #input::placeholder{color:var(--muted);}
+  #send{
+    border:none;background:var(--clay);color:#fff;font:inherit;font-weight:600;
+    font-size:14px;padding:9px 18px;border-radius:10px;cursor:pointer;
+    transition:background .15s,transform .05s;
+  }
+  #send:hover{background:var(--clay-deep);}
+  #send:active{transform:translateY(1px);}
+  /* ── connection modal (greys + blocks the whole UI) ──── */
+  .overlay{position:fixed;inset:0;background:rgba(15,15,14,.62);backdrop-filter:blur(4px);
+    display:none;align-items:center;justify-content:center;z-index:50;animation:fade .15s ease;}
+  .overlay.show{display:flex;}
+  @keyframes fade{from{opacity:0;}to{opacity:1;}}
+  .modal{background:var(--surface);border:1px solid var(--border);border-radius:16px;
+    padding:28px 26px 22px;max-width:392px;width:84%;box-shadow:var(--shadow-pop);
+    text-align:center;animation:pop .18s ease;}
+  @keyframes pop{from{opacity:0;transform:translateY(8px) scale(.98);}to{opacity:1;transform:none;}}
+  .modal .icon{width:48px;height:48px;border-radius:50%;background:var(--err-bg);
+    display:none;align-items:center;justify-content:center;margin:0 auto 16px;font-size:23px;}
+  .modal.prompt .icon{display:flex;}
+  .modal .bigspin{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--clay);
+    border-radius:50%;margin:4px auto 18px;animation:spin .8s linear infinite;display:none;}
+  .modal.working .bigspin{display:block;}
+  .modal h2{margin:0 0 7px;font-size:18px;font-weight:650;letter-spacing:-.01em;}
+  .modal p{margin:0 0 18px;color:var(--muted);font-size:14px;line-height:1.5;}
+  .modal p:empty{margin:0;}
+  .modal .err{color:var(--err-ink);font-size:13px;margin:-8px 0 14px;}
+  .modal .err:empty{margin:0;}
+  /* bytecode-preflight progress bar (shown only while patching the engine) */
+  .patchbar{display:none;margin:-4px 0 16px;}
+  .patchbar.show{display:block;}
+  .patchbar-track{height:7px;border-radius:5px;background:var(--border);overflow:hidden;}
+  .patchbar-fill{height:100%;width:0;border-radius:5px;background:var(--clay);
+    transition:width .18s ease;}
+  .patchbar-label{margin-top:8px;font-size:12px;color:var(--muted);font-family:ui-monospace,
+    SFMono-Regular,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .m-actions{display:flex;flex-direction:column;gap:9px;}
+  .m-actions:empty{display:none;}
+  .btn-primary,.btn-ghost{font:inherit;font-weight:600;font-size:15px;padding:11px 22px;
+    border-radius:11px;cursor:pointer;width:100%;transition:background .15s,border-color .15s;
+    display:inline-flex;align-items:center;justify-content:center;gap:9px;}
+  .btn-primary{border:none;background:var(--clay);color:#fff;}
+  .btn-primary:hover{background:var(--clay-deep);}
+  .btn-ghost{background:transparent;border:1px solid var(--border);color:var(--ink);}
+  .btn-ghost:hover{border-color:var(--muted);background:rgba(255,255,255,.03);}
+  button:disabled{opacity:.7;cursor:default;}
+  .spin{width:15px;height:15px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;
+    border-radius:50%;animation:spin .7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  /* dim + lock the composer while the modal owns the screen */
+  body.blocked .composer{opacity:.4;pointer-events:none;filter:saturate(.6);}
+  /* scrollbar */
+  #scroll::-webkit-scrollbar{width:10px;}
+  #scroll::-webkit-scrollbar-thumb{background:#454440;border-radius:6px;border:3px solid var(--paper);}
+  #scroll::-webkit-scrollbar-thumb:hover{background:#54534D;}
+
+  /* ── screen router ─────────────────────────────────────── */
+  .screen{display:none;flex:1;overflow-y:auto;}
+  .screen.active{display:flex;flex-direction:column;}
+  .screen .wrap{width:100%;max-width:680px;margin:0 auto;padding:30px 24px 40px;}
+  .screen h1{font-size:23px;font-weight:680;letter-spacing:-.02em;margin:0 0 4px;}
+  .screen .lede{color:var(--muted);font-size:14px;margin:0 0 26px;}
+  .crumb{display:flex;align-items:center;gap:8px;margin-bottom:18px;}
+  .crumb button{font:inherit;font-size:13px;color:var(--muted);background:none;border:none;
+    cursor:pointer;padding:4px 8px;border-radius:7px;}
+  .crumb button:hover{background:var(--chip);color:var(--ink);}
+
+  /* home — three big buttons */
+  .home-grid{display:flex;flex-direction:column;gap:14px;margin-top:8px;}
+  .bigbtn{display:flex;flex-direction:column;align-items:flex-start;gap:5px;text-align:left;
+    border:1px solid var(--border);border-radius:15px;background:var(--surface);color:var(--ink);
+    padding:20px 22px;cursor:pointer;font:inherit;transition:border-color .15s,transform .08s,background .15s;}
+  .bigbtn:hover{border-color:var(--clay);background:var(--chip);}
+  .bigbtn:active{transform:translateY(1px);}
+  .bigbtn .bt{font-size:17px;font-weight:650;}
+  .bigbtn .bd{font-size:13px;color:var(--muted);}
+  .bigbtn.hero{padding:30px 24px;background:var(--clay-soft);border-color:var(--clay);}
+  .bigbtn.hero .bt{font-size:22px;}
+  .bigbtn.hero:hover{background:#43342c;}
+  .home-row{display:flex;gap:14px;}
+  .home-row .bigbtn{flex:1;}
+
+  /* forms (setup / convert / frayhook) */
+  .field{margin-bottom:16px;}
+  .field label{display:block;font-size:13px;font-weight:600;margin-bottom:6px;color:var(--ink);}
+  .field .hint{font-size:12px;color:var(--muted);margin-top:5px;}
+  .inrow{display:flex;gap:8px;}
+  .inrow input,.field input,.field select{flex:1;width:100%;font:inherit;font-size:14px;
+    padding:9px 11px;border-radius:9px;border:1px solid var(--border);
+    background:var(--code-bg);color:var(--ink);}
+  .inrow input:focus,.field input:focus{outline:none;border-color:var(--clay);}
+  .btn-sm{font:inherit;font-size:13px;font-weight:600;padding:9px 14px;border-radius:9px;
+    border:1px solid var(--border);background:var(--chip);color:var(--ink);cursor:pointer;white-space:nowrap;}
+  .btn-sm:hover{border-color:var(--muted);}
+  .badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;margin-left:8px;}
+  .badge.ok{background:#23302A;color:#8FCBA0;}
+  .badge.no{background:var(--err-bg);color:var(--err-ink);}
+  .form-actions{display:flex;gap:10px;margin-top:24px;}
+  .form-actions .btn-primary,.form-actions .btn-ghost{width:auto;padding:11px 26px;}
+  .tabs{display:flex;gap:6px;margin-bottom:20px;border-bottom:1px solid var(--border);}
+  .tab{font:inherit;font-size:14px;font-weight:600;padding:9px 15px;background:none;border:none;
+    color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;}
+  .tab.active{color:var(--ink);border-bottom-color:var(--clay);}
+  .panel{display:none;} .panel.active{display:block;}
+  .result{margin-top:20px;padding:14px 16px;border-radius:11px;background:var(--surface);
+    border:1px solid var(--border);font-size:13px;white-space:pre-wrap;}
+  .result:empty{display:none;}
+  .result .rfile{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--code-ink);}
+  .result .rwarn{color:var(--err-ink);}
+  .result .rok{color:var(--ok);}
+  .convbar{height:7px;border-radius:5px;background:var(--border);overflow:hidden;margin:14px 0 6px;display:none;}
+  .convbar.show{display:block;}
+  .convbar > i{display:block;height:100%;width:40%;background:var(--clay);border-radius:5px;
+    animation:slide 1.1s ease-in-out infinite;}
+  @keyframes slide{0%{margin-left:-40%;}100%{margin-left:100%;}}
+  .gear{font:inherit;font-size:13px;color:var(--muted);background:none;border:none;cursor:pointer;
+    padding:5px 9px;border-radius:7px;}
+  .gear:hover{background:var(--chip);color:var(--ink);}
+</style>
+</head>
+<body>
+  <header>
+    <div class="mark">P</div>
+    <div>
+      <span class="title">Peptide</span>
+      <span class="subtitle" id="subtitle">Fraymakers toolkit</span>
+    </div>
+    <div class="spacer"></div>
+    <button class="gear" id="gear" style="display:none">⚙ Setup</button>
+    <div class="pill" id="pill" style="display:none"><span class="dot"></span><span id="pilltext">connecting…</span></div>
+  </header>
+
+  <!-- ── HOME ───────────────────────────────────────────── -->
+  <section class="screen" id="screen-home">
+    <div class="wrap">
+      <h1>Peptide</h1>
+      <p class="lede">Your Fraymakers toolkit — test characters live, convert from SSF2, and drive FrayTools.</p>
+      <div class="home-grid">
+        <button class="bigbtn hero" onclick="goConsole()">
+          <span class="bt">Launch Peptide</span>
+          <span class="bd">Boot Fraymakers and drive a live match — spawn, move, read state, run hscript.</span>
+        </button>
+        <div class="home-row">
+          <button class="bigbtn" onclick="showScreen('convert')">
+            <span class="bt">SSF2 → Fraymakers Converter</span>
+            <span class="bd">Turn an SSF2 <code>.ssf</code> into a FrayTools character package.</span>
+          </button>
+          <button class="bigbtn" onclick="showScreen('frayhook')">
+            <span class="bt">FrayTools Hook</span>
+            <span class="bd">Publish to <code>.fra</code>, render an entity, or extract box geometry.</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── SETUP ──────────────────────────────────────────── -->
+  <section class="screen" id="screen-setup">
+    <div class="wrap">
+      <h1>Setup</h1>
+      <p class="lede">Tell Peptide where things live. Saved to your config; environment variables still override.</p>
+      <div class="field">
+        <label>Fraymakers install <span class="badge" id="b-fray">—</span></label>
+        <div class="inrow">
+          <input id="s-fraymakers" placeholder="…/Steam/steamapps/common/Fraymakers" />
+          <button class="btn-sm" onclick="pickDir('s-fraymakers')">Browse…</button>
+        </div>
+        <div class="hint">The Steam install folder containing <code>hlboot-sdl.dat</code>.</div>
+      </div>
+      <div class="field">
+        <label>FrayTools <span class="badge" id="b-fraytools">—</span></label>
+        <div class="inrow">
+          <input id="s-fraytools" placeholder="/Applications/FrayTools.app (or the executable)" />
+          <button class="btn-sm" onclick="pickFile('s-fraytools')">Browse…</button>
+        </div>
+        <div class="hint">The FrayTools app or executable — used by the FrayTools Hook.</div>
+      </div>
+      <div class="field">
+        <label>Current character <span class="badge" id="b-char">—</span></label>
+        <input id="s-char" placeholder="sandbag" />
+        <div class="hint">The active project, tracked by character name. Launch Peptide spawns this one.</div>
+      </div>
+      <div class="field">
+        <label>Output directory</label>
+        <div class="inrow">
+          <input id="s-output" placeholder="./characters" />
+          <button class="btn-sm" onclick="pickDir('s-output')">Browse…</button>
+        </div>
+        <div class="hint">Where conversions write character folders.</div>
+      </div>
+      <div class="form-actions">
+        <button class="btn-primary" onclick="saveSetup()">Save</button>
+        <button class="btn-ghost" id="setup-back" onclick="showScreen('home')">Back</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── CONVERTER ──────────────────────────────────────── -->
+  <section class="screen" id="screen-convert">
+    <div class="wrap">
+      <div class="crumb"><button onclick="showScreen('home')">← Home</button></div>
+      <h1>SSF2 → Fraymakers Converter</h1>
+      <p class="lede">Pick an SSF2 <code>.ssf</code> and convert it to a FrayTools character package.</p>
+      <div class="field">
+        <label>SSF2 file</label>
+        <div class="inrow">
+          <input id="c-input" placeholder="…/mario.ssf" />
+          <button class="btn-sm" onclick="pickFile('c-input','ssf')">Browse…</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>Output directory</label>
+        <div class="inrow">
+          <input id="c-output" placeholder="./characters" />
+          <button class="btn-sm" onclick="pickDir('c-output')">Browse…</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>Character name override <span class="hint" style="font-weight:400">(optional; for multi-character SSFs)</span></label>
+        <input id="c-name" placeholder="auto-detect" />
+      </div>
+      <div class="form-actions">
+        <button class="btn-primary" id="c-run" onclick="runConvert()">Convert</button>
+      </div>
+      <div class="convbar" id="c-bar"><i></i></div>
+      <div class="result" id="c-result"></div>
+    </div>
+  </section>
+
+  <!-- ── FRAYTOOLS HOOK ─────────────────────────────────── -->
+  <section class="screen" id="screen-frayhook">
+    <div class="wrap">
+      <div class="crumb"><button onclick="showScreen('home')">← Home</button></div>
+      <h1>FrayTools Hook</h1>
+      <p class="lede">Drive your local FrayTools over the DevTools protocol.</p>
+      <div class="tabs">
+        <button class="tab active" data-tab="export" onclick="frayTab('export')">Publish → .fra</button>
+        <button class="tab" data-tab="render" onclick="frayTab('render')">Render entity</button>
+        <button class="tab" data-tab="harness" onclick="frayTab('harness')">Box geometry</button>
+      </div>
+      <div class="panel active" id="fp-export">
+        <div class="field">
+          <label>Project (.fraytools)</label>
+          <div class="inrow">
+            <input id="f-export-project" placeholder="…/mario/mario.fraytools" />
+            <button class="btn-sm" onclick="pickFile('f-export-project','fraytools')">Browse…</button>
+          </div>
+        </div>
+        <div class="form-actions"><button class="btn-primary" onclick="runFray('export')">Publish All</button></div>
+      </div>
+      <div class="panel" id="fp-render">
+        <div class="field"><label>Project (.fraytools)</label>
+          <div class="inrow"><input id="f-render-project" placeholder="…/mario/mario.fraytools" />
+          <button class="btn-sm" onclick="pickFile('f-render-project','fraytools')">Browse…</button></div></div>
+        <div class="field"><label>Entity (relative under library/)</label>
+          <input id="f-render-entity" placeholder="entities/Mario.entity" /></div>
+        <div class="field"><label>Output PNG <span class="hint" style="font-weight:400">(optional)</span></label>
+          <input id="f-render-out" placeholder="…/mario.png" /></div>
+        <div class="form-actions"><button class="btn-primary" onclick="runFray('render')">Render</button></div>
+      </div>
+      <div class="panel" id="fp-harness">
+        <div class="field"><label>Project (.fraytools)</label>
+          <div class="inrow"><input id="f-harness-project" placeholder="…/mario/mario.fraytools" />
+          <button class="btn-sm" onclick="pickFile('f-harness-project','fraytools')">Browse…</button></div></div>
+        <div class="field"><label>Entity (relative under library/)</label>
+          <input id="f-harness-entity" placeholder="entities/Mario.entity" /></div>
+        <div class="field"><label>Animation <span class="hint" style="font-weight:400">(optional)</span></label>
+          <input id="f-harness-animation" placeholder="idle" /></div>
+        <div class="field"><label>Frame <span class="hint" style="font-weight:400">(optional)</span></label>
+          <input id="f-harness-frame" placeholder="0" /></div>
+        <div class="form-actions"><button class="btn-primary" onclick="runFray('harness')">Extract</button></div>
+      </div>
+      <div class="convbar" id="f-bar"><i></i></div>
+      <div class="result" id="f-result"></div>
+    </div>
+  </section>
+
+  <!-- ── CONSOLE (Launch Peptide) ───────────────────────── -->
+  <section class="screen" id="screen-console">
+    <div class="crumb" style="padding:10px 18px 0;margin:0;"><button onclick="showScreen('home')">← Home</button></div>
+    <div id="scroll"><div id="messages"></div></div>
+    <div class="composer"><div class="inner">
+      <div class="chips" id="chips"></div>
+      <div class="inputrow">
+        <input id="input" autocomplete="off" spellcheck="false"
+               placeholder="Message Peptide  —  a command, or raw hscript…" />
+        <button id="send">Send</button>
+      </div>
+    </div></div>
+  </section>
+
+  <div class="overlay" id="overlay">
+    <div class="modal working" id="modal">
+      <div class="bigspin"></div>
+      <div class="icon">🔌</div>
+      <h2 id="m-title">Reconnecting to Fraymakers…</h2>
+      <p id="m-msg"></p>
+      <div class="patchbar" id="patchbar">
+        <div class="patchbar-track"><div class="patchbar-fill" id="patchbar-fill"></div></div>
+        <div class="patchbar-label" id="patchbar-label"></div>
+      </div>
+      <div class="err" id="m-err"></div>
+      <div class="m-actions" id="m-actions"></div>
+    </div>
+  </div>
+
+<script>
+  const $ = (id)=>document.getElementById(id);
+  const messages = $("messages"), scroll = $("scroll");
+  let spawned = false, charName = (window.__CHAR__||"sandbag"), port = (window.__PORT__||0);
+  let CFG = {}; // last config snapshot from Rust (bootRoute / onSetupSaved)
+
+  // ── screen router ───────────────────────────────────────
+  const SUBTITLES = {
+    home:"Fraymakers toolkit", setup:"Setup", convert:"SSF2 → Fraymakers",
+    frayhook:"FrayTools Hook", console:"Fraymakers console",
+  };
+  let consoleBooted = false; // the engine is launched lazily on first console visit
+  function showScreen(name){
+    document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
+    const el=$("screen-"+name); if(el) el.classList.add("active");
+    $("subtitle").textContent = SUBTITLES[name] || "Fraymakers toolkit";
+    // header chrome: the live pill + gear only make sense off the home/setup screens
+    $("pill").style.display = (name==="console") ? "" : "none";
+    $("gear").style.display = (name==="home") ? "" : "none";
+    // The connection modal belongs to the console screen; navigating elsewhere
+    // dismisses it (the engine keeps running in the background regardless).
+    if(name!=="console" && typeof hideModal==="function"){ hideModal(); }
+    if(name==="setup") fillSetupForm();
+  }
+  function ipcSend(m){ if(window.ipc && window.ipc.postMessage) window.ipc.postMessage(m); }
+
+  // Rust calls this once at startup with the config snapshot → route to Setup or Home.
+  window.bootRoute = function(cfg){
+    CFG = cfg || {};
+    charName = CFG.currentChar || charName;
+    showScreen(CFG.setupComplete ? "home" : "setup");
+  };
+  $("gear").onclick = ()=>showScreen("setup");
+
+  // [Launch Peptide] → the console screen; boot the engine on first visit.
+  function goConsole(){
+    showScreen("console");
+    if(!consoleBooted){
+      consoleBooted = true;
+      flowState = "booting";
+      modalWorking("Connecting to Fraymakers…","Booting a session…");
+      ipcSend("@@boot:quick");
+    }
+    setStatus(false);
+    setTimeout(()=>{ const i=$("input"); if(i) i.focus(); }, 50);
+  }
+
+  // ── native pickers (rfd, via Rust) ──────────────────────
+  // Rust calls back a generated reply fn with the chosen path.
+  let _pickSeq = 0;
+  function pickInto(targetId, isDir, ext){
+    const fn = "__pick"+(_pickSeq++);
+    window[fn] = (p)=>{ if(p){ const t=$(targetId); if(t) t.value=p; revalidateSetup(); } delete window[fn]; };
+    if(isDir) ipcSend("@@pick:dir:"+fn);
+    else ipcSend("@@pick:file:"+fn+(ext?(":"+ext):""));
+  }
+  function pickDir(id){ pickInto(id, true, ""); }
+  function pickFile(id, ext){ pickInto(id, false, ext||""); }
+
+  const QUICK = [
+    ["Spawn","spawn"], ["State","state"], ["Physics","physics"],
+    ["Anim","anim"], ["Jab","move jab"], ["Up Special","move special_up"],
+    ["Characters","match.getCharacters()"], ["Help","help"],
+  ];
+  for(const [label,cmd] of QUICK){
+    const b=document.createElement("button"); b.className="chip"; b.textContent=label;
+    b.onclick=()=>send(cmd); $("chips").appendChild(b);
+  }
+
+  function atBottom(){ return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; }
+  function bump(){ scroll.scrollTop = scroll.scrollHeight; }
+
+  let lastSender = null;
+  function add(role, text, opts={}){
+    const stick = atBottom();
+    const sender = role==="you" ? "you" : (role==="system" ? "system" : "engine");
+    if(sender==="engine"){
+      if(lastSender!=="engine"){
+        const who=document.createElement("div"); who.className="who"; who.textContent="engine";
+        messages.appendChild(who);
+      }
+      const el=document.createElement("div");
+      el.className="msg engine"+(opts.error?" err":"");
+      if(opts.code){ const c=document.createElement("div"); c.className="code"; c.textContent=text; el.appendChild(c); }
+      else { el.textContent=text; }
+      messages.appendChild(el);
+    } else if(sender==="you"){
+      const el=document.createElement("div"); el.className="msg you"; el.textContent=text; messages.appendChild(el);
+    } else {
+      const el=document.createElement("div"); el.className="msg system"; el.textContent=text; messages.appendChild(el);
+    }
+    lastSender=sender;
+    if(stick) bump();
+  }
+
+  function setStatus(live){
+    const pill=$("pill");
+    pill.classList.toggle("live", live);
+    $("pilltext").textContent = live ? (charName + "  ·  :" + port) : "connecting…";
+  }
+
+  // engine → here (called by Rust via evaluate_script)
+  window.onLine = function(line){
+    if(line.startsWith("PORT:")){ port = line.slice(5).trim(); return; }
+    if(line.startsWith("SYS:ERR:")){ add("engine", line.slice(8), {code:true,error:true}); return; }
+    if(line.startsWith("SYS:")){ add("system", line.slice(4)); return; }
+    if(line.indexOf("HELLO_FROM_FRAYMAKERS")>=0) return;
+    if(line.indexOf("READY")>=0){
+      setStatus(true);
+      if(!spawned){ spawned=true; add("system","Engine ready — spawning "+charName+"…"); send("spawn"); }
+      return;
+    }
+    if(line.startsWith("LAUNCHED")){
+      const tok=(line.slice(8).trim().split(/\s+/)[0]||"");
+      const id=(tok.split("::").pop()||tok).split(".")[0];
+      if(id){ charName=id; setStatus(true); }
+      add("engine","Match launched · "+charName);
+      return;
+    }
+    const error = line.indexOf("ERR")>=0;
+    let body = line;
+    if(body.startsWith("E:")) body=body.slice(2);
+    if(body.startsWith("ERR: ")) body=body.slice(5);
+    const code = error || /^(P:|T:|A:|M:|E:)/.test(line) || line.startsWith("E:");
+    add("engine", body, {code, error});
+  };
+
+  function send(text){
+    text=(text||"").trim(); if(!text) return;
+    add("you", text);
+    if(window.ipc && window.ipc.postMessage) window.ipc.postMessage(text);
+  }
+
+  $("send").onclick=()=>{ const v=$("input").value; $("input").value=""; send(v); $("input").focus(); };
+  $("input").addEventListener("keydown",(e)=>{
+    if(e.key==="Enter"){ e.preventDefault(); $("input").value=""; send(e.target.value || $("input").dataset.last || e.target.defaultValue); }
+  });
+  // simpler enter handling
+  $("input").onkeydown=(e)=>{ if(e.key==="Enter"){ const v=$("input").value; $("input").value=""; send(v); } };
+
+  // ── setup screen ────────────────────────────────────────
+  function fillSetupForm(){
+    $("s-fraymakers").value = CFG.fraymakersRoot || "";
+    $("s-fraytools").value  = CFG.fraytoolsPath || "";
+    $("s-char").value       = CFG.currentChar || "";
+    $("s-output").value     = CFG.outputDir || "";
+    // first run (setup incomplete) hides the Back button — nowhere to go back to
+    $("setup-back").style.display = CFG.setupComplete ? "" : "none";
+    revalidateSetup();
+  }
+  function badge(id, ok){
+    const b=$(id); b.className="badge "+(ok?"ok":"no"); b.textContent = ok ? "✓ found" : "not found";
+  }
+  // Local heuristic validation for instant feedback; the authoritative check is
+  // Rust's setup_complete (returned by onSetupSaved).
+  function revalidateSetup(){
+    badge("b-fray", !!$("s-fraymakers").value.trim());
+    badge("b-fraytools", !!$("s-fraytools").value.trim());
+    badge("b-char", !!$("s-char").value.trim());
+  }
+  ["s-fraymakers","s-fraytools","s-char"].forEach(id=>{
+    const el=$(id); if(el) el.addEventListener("input", revalidateSetup);
+  });
+  function saveSetup(){
+    const payload = JSON.stringify({
+      fraymakersRoot: $("s-fraymakers").value.trim(),
+      fraytoolsPath:  $("s-fraytools").value.trim(),
+      currentChar:    $("s-char").value.trim(),
+      outputDir:      $("s-output").value.trim(),
+    });
+    ipcSend("@@setup:save:"+payload);
+  }
+  window.onSetupSaved = function(cfg){
+    CFG = cfg || CFG;
+    charName = CFG.currentChar || charName;
+    // Re-fill (picks up Rust-resolved exe paths) and advance to Home.
+    badge("b-fray", !!CFG.fraymakersRoot);
+    badge("b-fraytools", !!CFG.fraytoolsExe);
+    badge("b-char", !!CFG.currentChar);
+    showScreen("home");
+  };
+
+  // ── converter screen ────────────────────────────────────
+  function runConvert(){
+    const input = $("c-input").value.trim();
+    if(!input){ showResult("c-result", "Pick an SSF2 file first.", "warn"); return; }
+    $("c-run").disabled = true;
+    $("c-bar").classList.add("show");
+    $("c-result").innerHTML = "";
+    const payload = JSON.stringify({
+      input, output: $("c-output").value.trim(), name: $("c-name").value.trim(),
+    });
+    ipcSend("@@convert:start:"+payload);
+  }
+  window.onConvertProgress = function(msg){ showResult("c-result", msg||"Converting…"); };
+  window.onConvertError = function(msg){
+    $("c-run").disabled = false; $("c-bar").classList.remove("show");
+    showResult("c-result", "Conversion failed: "+msg, "warn");
+  };
+  window.onConvertDone = function(res){
+    $("c-run").disabled = false; $("c-bar").classList.remove("show");
+    res = res || {};
+    let html = "<span class='rok'>Converted "+(res.characters||[]).join(", ")+"</span>\n";
+    html += "into "+escapeHtml(res.projectDir||"")+"\n";
+    (res.files||[]).forEach(f=>{ html += "<span class='rfile'>"+escapeHtml(f)+"</span>\n"; });
+    if((res.warnings||[]).length){
+      html += "\n<span class='rwarn'>"+res.warnings.length+" warning(s):</span>\n";
+      res.warnings.forEach(w=>{ html += "<span class='rwarn'>  • "+escapeHtml(w)+"</span>\n"; });
+    }
+    // Offer to add the Fraymakers publish folder (so FrayTools publishes into the game).
+    const c=(res.characters||[])[0];
+    if(c){
+      html += "\n";
+      $("c-result").innerHTML = html;
+      const btn=document.createElement("button"); btn.className="btn-sm"; btn.style.marginTop="6px";
+      btn.textContent="Add Fraymakers publish folder";
+      btn.onclick=()=>{ btn.disabled=true; ipcSend("@@publish:add:"+JSON.stringify({char:c, output:$("c-output").value.trim()})); };
+      $("c-result").appendChild(btn);
+      return;
+    }
+    $("c-result").innerHTML = html;
+  };
+  window.onPublishResult = function(ok, msg){
+    const d=document.createElement("div"); d.className = ok?"rok":"rwarn"; d.textContent = msg;
+    $("c-result").appendChild(d);
+  };
+
+  // ── FrayTools Hook screen ───────────────────────────────
+  function frayTab(name){
+    document.querySelectorAll("#screen-frayhook .tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===name));
+    document.querySelectorAll("#screen-frayhook .panel").forEach(p=>p.classList.remove("active"));
+    $("fp-"+name).classList.add("active");
+  }
+  function runFray(action){
+    const g=(id)=>{ const e=$("f-"+action+"-"+id); return e?e.value.trim():""; };
+    const payload = {project:g("project")};
+    if(action!=="export"){ payload.entity=g("entity"); payload.out=g("out"); }
+    if(action==="harness"){ payload.animation=g("animation"); payload.frame=g("frame"); }
+    if(!payload.project){ showResult("f-result","Pick a .fraytools project first.","warn"); return; }
+    $("f-bar").classList.add("show"); $("f-result").innerHTML="";
+    ipcSend("@@fray:"+action+":"+JSON.stringify(payload));
+  }
+  window.onFrayProgress = function(msg){ showResult("f-result", msg||"Running…"); };
+  window.onFrayResult = function(ok, msg){
+    $("f-bar").classList.remove("show");
+    showResult("f-result", msg, ok?"ok":"warn");
+  };
+
+  function showResult(id, text, kind){
+    const el=$(id); if(!el) return;
+    el.innerHTML = "<span class='"+(kind==="warn"?"rwarn":(kind==="ok"?"rok":""))+"'>"+escapeHtml(text)+"</span>";
+  }
+  function escapeHtml(s){ return (s||"").replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+  // ── connection flow: on a drop, a blocking modal greys the whole UI and walks through
+  //    reconnect → one more try → "open it?" (Quick / Regular Boot) → connecting.
+  const overlay=$("overlay"), modal=$("modal"), mTitle=$("m-title"), mMsg=$("m-msg"),
+        mErr=$("m-err"), actions=$("m-actions"),
+        patchbar=$("patchbar"), patchFill=$("patchbar-fill"), patchLabel=$("patchbar-label");
+  let flowState="idle"; // idle | re1 | re2 | prompt | booting
+
+  function resetPatchbar(){
+    patchbar.classList.remove("show"); patchFill.style.width="0"; patchLabel.textContent="";
+  }
+
+  function blockUi(on){
+    document.body.classList.toggle("blocked", on);
+    $("input").disabled=on; $("send").disabled=on;
+    document.querySelectorAll("#chips button").forEach(b=>b.disabled=on);
+  }
+  function modalWorking(title, msg){
+    modal.classList.add("working"); modal.classList.remove("prompt");
+    mTitle.textContent=title; mMsg.textContent=msg||""; mErr.textContent=""; actions.innerHTML="";
+    resetPatchbar();
+    overlay.classList.add("show"); blockUi(true);
+  }
+  function modalPrompt(err){
+    modal.classList.remove("working"); modal.classList.add("prompt");
+    resetPatchbar();
+    mTitle.textContent="Fraymakers doesn’t seem to be open";
+    mMsg.textContent="Do you want to open it?"; mErr.textContent=err||""; actions.innerHTML="";
+    const quick=document.createElement("button");
+    quick.className="btn-primary"; quick.textContent="Quick Boot"; quick.onclick=()=>startBoot(true);
+    const reg=document.createElement("button");
+    reg.className="btn-ghost"; reg.textContent="Regular Boot"; reg.onclick=()=>startBoot(false);
+    actions.appendChild(quick); actions.appendChild(reg);
+    overlay.classList.add("show"); blockUi(true);
+  }
+  function hideModal(){ overlay.classList.remove("show"); blockUi(false); resetPatchbar(); }
+  function ipcSend(m){ if(window.ipc && window.ipc.postMessage) window.ipc.postMessage(m); }
+
+  // The patcher streams its bytecode-symbol preflight here (done/total + the symbol
+  // it's resolving). Shown as a real progress bar inside the boot modal so a patch
+  // (incl. a slow one on a new Fraymakers build) is visible, not a frozen spinner.
+  window.onPatchProgress=function(done, total, label){
+    if(flowState!=="booting") return;
+    patchbar.classList.add("show");
+    const pct = total>0 ? Math.round(done*100/total) : 0;
+    patchFill.style.width = pct+"%";
+    patchLabel.textContent = "Verifying engine "+done+"/"+total+(label?("  ·  "+label):"");
+    if(done>=total && total>0){ mMsg.textContent="Engine verified — launching…"; }
+  };
+
+  function startReconnect(){
+    flowState="re1";
+    modalWorking("Reconnecting to Fraymakers…","Looking for your most recent session…");
+    ipcSend("@@reconnect");
+  }
+  function startBoot(quick){
+    flowState="booting";
+    modalWorking("Connecting to Fraymakers…", quick?"Booting a fresh session…":"Launching Fraymakers…");
+    ipcSend(quick?"@@boot:quick":"@@boot:regular");
+  }
+
+  window.onDisconnected=function(){
+    setStatus(false);
+    // Only chase a dropped engine while the user is on the console screen — a drop
+    // is irrelevant on Home / Convert / FrayTools, and we never auto-booted there.
+    if(!$("screen-console").classList.contains("active")) return;
+    if(flowState!=="idle") return; // already walking the flow
+    startReconnect();
+  };
+  // a reconnect attempt found no session: first failure -> try once more; second -> the prompt
+  window.onReconnectFailed=function(reason){
+    if(flowState==="re1"){
+      flowState="re2";
+      modalWorking("Trying one more time…","Reconnecting to your Fraymakers session…");
+      ipcSend("@@reconnect");
+    } else {
+      flowState="prompt"; modalPrompt();
+    }
+  };
+  // boot launch failed / Fraymakers not found -> straight to "doesn't seem to be open"
+  window.onBootFailed=function(msg){ flowState="prompt"; modalPrompt(msg||""); };
+  window.onReconnected=function(p, ch, autospawn){
+    if(p) port=p; if(ch) charName=ch;
+    flowState="idle"; hideModal(); setStatus(true);
+    spawned = !autospawn; // quick boot re-arms auto-spawn; reconnect/regular leaves the match as-is
+    add("system","Connected to Fraymakers"+(charName?(" · "+charName):"")+".");
+  };
+
+  // Default screen before Rust calls bootRoute (e.g. the static :8777 preview,
+  // where window.ipc is absent). Real runs get routed by bootRoute immediately.
+  if(!CFG.setupComplete && !document.querySelector(".screen.active")){ showScreen("home"); }
+</script>
+</body>
+</html>

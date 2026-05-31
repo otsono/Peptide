@@ -30,7 +30,7 @@ is a plain-English gloss.
 
 ## Commands
 
-Run `./target/release/peptide-bridge help` (no engine needed) for the live list.
+Run `./target/release/peptide help` (no engine needed) for the live list.
 You type full words; single-letter wire codes still work as aliases.
 
 | Command | What it does |
@@ -131,3 +131,29 @@ frame-coverage. All 45 characters currently pass. For move *momentum*, drive
 `loop <move>` (repeat a move), `dummy` (spawn a hit target), `hitbox` (dump active
 box stats for the current frame), `verify <move>` (diff behavior vs the SSF2
 reference), and live stat tuning. Built incrementally on the commands above.
+
+## The console UI (recommended for interactive use)
+
+```
+cd tools/peptide
+cargo build --release          # first time only
+./target/release/peptide    # boots Fraymakers + opens the console
+```
+
+`peptide` is a single cross-platform executable (macOS/Linux/Windows) — it patches a
+throwaway copy of the engine, boots it, and opens a full-screen console (built on ratatui).
+Override the install path with `FRAY_DIR` if Steam isn't in the default location. Type a command
+at the bottom, press Enter, and replies stream into the color-coded scrollback above:
+
+- **Tab** — command palette (pick a starter command)
+- **↑ / ↓** — command history
+- **PgUp / PgDn** — scroll the output
+- **F1** — help panel
+- **Esc / Ctrl+C** — quit (shuts the engine down cleanly)
+
+Everything you can type in the CLI works here, including raw hscript:
+`match.getCharacters()`, `p0.getStateName()`, `p0.body.x`, `Engine.log("hi")`. Errors
+never crash the engine — they show in the scrollback (red) and in `Engine.log`.
+
+Use the headless `run.sh` / `runseq.sh` for scripted/automated runs; use `run-ui.sh`
+for interactive exploration.

@@ -102,10 +102,9 @@ If you add RE notes, paraphrase; do not paste.
 
 ## Bundled fonts
 
-The cross-platform GUI (`ssf2-converter-gui`) embeds the **Roboto** font
-(Regular / Medium / Bold) under `ssf2-converter-gui/assets/`. Roboto is
-© Google, licensed under the **Apache License 2.0**, which permits
-redistribution with attribution (satisfied by this notice).
+None. The Peptide UI is a system webview (WKWebView / WebView2 / WebKitGTK) and
+uses the host's system fonts — no fonts are bundled or redistributed. (The
+earlier egui desktop GUI, which embedded the Roboto font, has been removed.)
 
 ## This project's own licence
 

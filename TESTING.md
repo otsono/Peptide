@@ -41,15 +41,14 @@ $EDITOR src/<...>.rs
 
 # 2. Rebuild + regenerate the target character
 cargo build --release
-./target/release/ssf2_converter ../ssf2-ssfs/<id>.ssf
+./target/release/peptide convert ../ssf2-ssfs/<id>.ssf
 #    → ./characters/<id>/   (⚠ verify it is FRESH — see §6 stale-output trap)
 
-# 3. Publish via the FrayTools harness → .fra lands in Fraymakers' custom/<id>/
-node tools/fraytools-harness/export-in-fraytools.js \
+# 3. Publish to .fra → lands in Fraymakers' custom/<id>/
+./target/release/peptide export \
   --project "$PWD/characters/<id>/<id>.fraytools"
 
 # 4. Boot the Fraymakers harness, dispatch, observe
-cd tools/peptide
 ./run.sh "s <id> thespire <assist>" 20     # spawn into a real match
 #   then probe:  ./run.sh "t" 8  (read state)   ./run.sh "m" 8  (drive a move)
 
@@ -118,7 +117,7 @@ Code: `tools/peptide/` (Rust). Two bins:
 - **`peptide`** parses the engine's HashLink bytecode (`hlbc` crate), injects a
   per-frame dispatch block into `fraymakers.Main.update`, and writes a patched
   copy. Also has read-only inspection subcommands.
-- **`peptide-bridge`** is the loopback TCP server (the injected engine code is
+- **`peptide`** is the loopback TCP server (the injected engine code is
   the client).
 
 ### Boot model (`run.sh`)
@@ -132,14 +131,14 @@ Steam's sandbox wipes anything added to the install dir, so `run.sh` **recreates
 everything every run and never mutates the pristine engine**: it patches a *copy*
 of `hlboot-sdl.dat` → `_conn.dat` (the source is never written), writes
 `steam_appid.txt` so a direct `./hl` launch doesn't bounce through Steam, starts
-`peptide-bridge`, launches `./hl _conn.dat`, and deletes the transient files on
+`peptide`, launches `./hl _conn.dat`, and deletes the transient files on
 exit. The patched engine waits for content load (title "press any button"
 state), dials the socket (auth handshake), then processes commands per-frame on
 the render thread. Needs `dangerouslyDisableSandbox`.
 
 ### Commands
 
-Humans type **full-word commands** (`peptide-bridge help` lists them); the bridge
+Humans type **full-word commands** (`peptide help` lists them); the bridge
 translates them to the single-byte wire protocol the engine dispatches on. The
 wire byte still works as an alias, so older scripts keep running. Friendly
 vocabulary is one shared table: `tools/peptide/src/commands.rs`.
@@ -182,6 +181,40 @@ sequence into one engine session (boot→READY ≈ 30s, so `boot_wait_s` ≈ 32,
 `peptide` read-only inspection (for re-deriving findices — **always re-verify**):
 `dis <findex>`, `typefields <type>`, `fnsof <type>`, `fninfo <findex>`,
 `callers <findex>`, `strgrep <s>`, `whoref <s>`, `inspect`.
+
+### 3.0 Surviving Fraymakers updates (the version-compatibility gate)
+
+Every Fraymakers update is a full HashLink **recompile** that renumbers function
+indices, field slots, and type indices. Peptide is built so a new build is a
+fast, self-diagnosing turnaround rather than an archaeology dig. The rules (full
+write-up + version-bump checklist in
+[`tools/peptide/README.md`](tools/peptide/README.md) "Surviving Fraymakers updates"):
+
+1. **Resolve by name, not index** — `find_fn`/`require_fn`, `find_type`, `find_field`, `find_native`. Names survive a recompile; pinned integers silently point at the wrong function.
+2. **Fail loudly, never fall back to a pinned index** — a missing name aborts the patch instead of corrupting it.
+3. **Prefer hscript over hand-emitted bytecode** — logic in [`prelude.hsx`](tools/peptide/prelude.hsx) runs through the engine's own interpreter and is immune to index drift.
+4. **Avoid mid-function opcode injection** — use `insert_ops_front`/`insert_ops_end` or hscript.
+
+Every engine symbol the patcher needs is declared once in
+[`tools/peptide/src/manifest.rs`](tools/peptide/src/manifest.rs). **`doctor`** is
+the preflight that reads it:
+
+```bash
+# read-only: resolve every depended-on engine symbol against a bytecode file
+peptide "<install>/hlboot-sdl.dat" _ doctor
+```
+
+It prints a grouped checklist (`[ ok ] name #findex` / `[MISS] name MISSING
+(CRITICAL) — why`) and a summary (`71/71 resolved · 0 critical missing`). Run it
+first against any new Fraymakers build to see exactly what (if anything) moved.
+The live `connect` patch runs the **same** check at its top — rendering a progress
+bar while resolving — and **aborts before mutating any opcode** if a critical
+symbol is missing, so an incompatible build fails loudly instead of producing a
+broken `_conn.dat`. In the GUI the bar shows in the boot modal ("Verifying engine
+N/71"); in CLI/TUI it draws on stderr. **Version-bump loop:** run `doctor` → for
+each `[MISS]`, find the new name with the inspection modes above and update both
+`manifest.rs` and the `require_*` call in `connect_edit` → repeat until clean →
+then the in-engine spawn-test below.
 
 ### 3.1 How custom content loads headless (the resolved blocker)
 
@@ -345,14 +378,17 @@ confirmation.
 The reference sweep, the template for the rest of the roster. Convert clean, then:
 
 ```
-node tools/fraytools-harness/harness.js \
+peptide harness \
   --project "$PWD/characters/sandbag/sandbag.fraytools" \
   --entity entities/Sandbag.entity --animation <anim> --frame <n> \
   --out-json /tmp/box.json --port 9222
-cargo run --release --bin compare_boxes -- \
+cargo run -p ssf2_converter --features dev-tools --bin compare_boxes -- \
   --ssf2 ../ssf2-ssfs/sandbag.ssf \
   --char sandbag --json /tmp/box.json --tolerance 2.0
 ```
+
+(The legacy `node tools/fraytools-harness/harness.js` does the same thing and
+remains as a reference; `compare_boxes` is a `dev-tools`-gated diagnostic bin.)
 
 FrayTools renders only **static** collision layers (hurt / item / body); hitboxes
 are runtime script data and don't appear here (validated at runtime instead, §5).
