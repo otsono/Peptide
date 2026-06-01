@@ -39,7 +39,7 @@ i=0
 for c in "$@"; do
   i=$((i + 1))
   # 1. ensure fresh source (regen is cheap + deterministic)
-  ./target/release/peptide convert ../ssf2-ssfs/$c.ssf >/tmp/${c}_conv.log 2>&1 || { echo "$c CONVERT_FAIL" >>"$RESULTS"; continue; }
+  ./build/release/peptide convert ../ssf2-ssfs/$c.ssf >/tmp/${c}_conv.log 2>&1 || { echo "$c CONVERT_FAIL" >>"$RESULTS"; continue; }
   # 2. export via FrayTools
   node tools/fraytools-harness/export-in-fraytools.js --project "$PWD/characters/$c/$c.fraytools" >/tmp/${c}_export.log 2>&1 || { echo "$c EXPORT_FAIL" >>"$RESULTS"; continue; }
   # 3. spawn + drive — deterministic per-char port (avoids the random-port collisions

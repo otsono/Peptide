@@ -22,10 +22,10 @@ the CLI too (`peptide convert …`, `peptide export …`, …).
 
 ```bash
 cargo build --release            # builds the single `peptide` binary
-./target/release/peptide         # open the app (Setup on first run, then Home)
+./build/release/peptide         # open the app (Setup on first run, then Home)
 
 # …or straight from the CLI:
-./target/release/peptide convert ../ssf2-ssfs/mario.ssf --output ./characters
+./build/release/peptide convert ../ssf2-ssfs/mario.ssf --output ./characters
 ```
 
 A conversion lands in `./characters/mario/` as a ready-to-open FrayTools project.
@@ -105,7 +105,7 @@ Everything below is for building, running, and hacking on the toolkit.
 ## Build
 
 ```bash
-cargo build --release   # → target/release/peptide (the single binary)
+cargo build --release   # → build/release/peptide (the single binary)
 ```
 
 The SSF2 → Fraymakers converter is a **library** (`crates/ssf2-converter`), driven
@@ -118,21 +118,21 @@ gated out of the default build; build one on demand with
 
 ```bash
 # Open the app (Setup on first run, then the Home screen with the three buttons)
-./target/release/peptide
+./build/release/peptide
 
 # One-step conversion. Costumes are auto-extracted from misc.ssf if it's next to the input.
-./target/release/peptide convert ../ssf2-ssfs/mario.ssf
+./build/release/peptide convert ../ssf2-ssfs/mario.ssf
 
 # Explicit output dir + explicit misc.ssf path
-./target/release/peptide convert ../ssf2-ssfs/mario.ssf \
+./build/release/peptide convert ../ssf2-ssfs/mario.ssf \
     --output ./characters --misc-ssf ../ssf2-ssfs/misc.ssf
 
 # A specific character from a multi-character .ssf
-./target/release/peptide convert ../ssf2-ssfs/zelda.ssf --name sheik
+./build/release/peptide convert ../ssf2-ssfs/zelda.ssf --name sheik
 
 # Force a multi-character SSF to emit one project PER character
 # (the pre-merge layout) instead of one shared project
-./target/release/peptide convert ../ssf2-ssfs/zelda.ssf --per-character-projects
+./build/release/peptide convert ../ssf2-ssfs/zelda.ssf --per-character-projects
 ```
 
 Costume palettes are extracted in-process from `misc.ssf` (no separate step, no temp files left

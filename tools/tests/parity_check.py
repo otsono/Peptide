@@ -22,7 +22,7 @@ NOTE: SSF2 weightKB (weight-scaled knockback) currently has NO FM mapping — fl
 as INFO so a human can decide whether baseKnockback should fold it in.
 
 Usage:
-    DUMP_PARITY=1 ./target/release/ssf2_converter ../ssf2-ssfs/<char>.ssf
+    DUMP_PARITY=1 ./build/release/ssf2_converter ../ssf2-ssfs/<char>.ssf
     tools/parity_check.py <char> [<char> ...]
 Exit 0 if all checked characters pass; 1 if any divergence.
 """

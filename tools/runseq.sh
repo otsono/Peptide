@@ -51,7 +51,7 @@ pkill -TERM -f 'hl _conn.dat'   2>/dev/null || true
 pkill -TERM -f 'peptide serve' 2>/dev/null || true
 sleep 0.3
 
-[ -x "$ROOT/target/release/peptide" ] || cargo build --release --manifest-path "$ROOT/Cargo.toml" >/dev/null 2>&1
+[ -x "$ROOT/build/release/peptide" ] || cargo build --release --manifest-path "$ROOT/Cargo.toml" >/dev/null 2>&1
 printf '1420350' > "$APPID"
 # Headless fast-boot (skip Title/menus + filter required load) is triggered by passing a
 # CHARACTER to the injector. Defaults to sandbag (the harness's standard target) on thespire
@@ -61,15 +61,20 @@ CHAR="${FRAY_CHAR-sandbag}"
 STAGE="${FRAY_STAGE:-thespire}"
 ASSIST="${FRAY_ASSIST:-commandervideoassist}"
 if [ -n "$CHAR" ]; then
-  "$ROOT/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" "$CHAR" "$STAGE" "$ASSIST" >/dev/null 2>&1
+  "$ROOT/build/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" "$CHAR" "$STAGE" "$ASSIST" >/dev/null 2>&1
 else
-  "$ROOT/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" >/dev/null 2>&1
+  "$ROOT/build/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" >/dev/null 2>&1
 fi
 
 # Engine-lifetime CAP (we poll-wait for the clean 'x' exit and break early, so this is
 # only an upper bound). +1 command for the auto-appended 'x' exit.
 NCMD=$#
-TOTAL=$(( READY_BUDGET + ((NCMD + 1) * GAP) + TAIL + 2 ))
+# GAP may be fractional (e.g. 0.05 for frame-level sampling). Bash arithmetic is
+# integer-only, so round GAP UP to an integer just for the lifetime-cap math (the real,
+# fractional gap is still passed verbatim to FRAY_CMD_GAP below). This is only an upper
+# bound — the run breaks early the instant the engine exits.
+GAP_CEIL=$(awk -v g="$GAP" 'BEGIN{c=int(g); if(c<g)c++; if(c<1)c=1; print c}')
+TOTAL=$(( READY_BUDGET + ((NCMD + 1) * GAP_CEIL) + TAIL + 2 ))
 
 # Feeder: dump ALL user commands, then an 'x' to cleanly exit the engine (hxd.System.exit)
 # so it shuts itself down — no kill -9, no wedged orphan. peptide holds them until READY,
@@ -79,7 +84,7 @@ feeder() {
   printf 'x\n'     # clean engine exit after the user commands
   sleep "$TOTAL"   # keep the pipe open so peptide's holder doesn't see EOF early
 }
-feeder "$@" | FRAY_CMD_GAP="$GAP" "$ROOT/target/release/peptide" serve --port "$PORT" --token "$TOK" &
+feeder "$@" | FRAY_CMD_GAP="$GAP" "$ROOT/build/release/peptide" serve --port "$PORT" --token "$TOK" &
 BR=$!
 sleep 0.7
 

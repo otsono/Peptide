@@ -136,8 +136,8 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 │   └── tests/                 integration + golden tests
 │
 ├── tools/                     Build + engine-harness orchestration (shell + Node)
-│   ├── make-app.sh             macOS: build peptide + wrap it in dist/Peptide.app
-│   ├── make-win.sh             Cross-compile the Windows peptide.exe into dist/windows/
+│   ├── make-app.sh             macOS: build peptide + wrap it in build/Peptide.app
+│   ├── make-win.sh             Cross-compile the Windows peptide.exe into build/windows/
 │   ├── run.sh / runseq.sh      Boot Fraymakers + send one / a sequence of console commands
 │   ├── recipe.sh               Run a shareable .recipe (commands + #!char/#!gap directives)
 │   ├── rebuild-sandbag.sh      Quick: rebuild peptide + convert sandbag.ssf
@@ -193,7 +193,7 @@ decoding, or ABC parsing — those all happen in-process (`src/ssf.rs`,
 cargo build --release
 ```
 
-This produces `target/release/peptide` — the single binary (engine harness +
+This produces `build/release/peptide` — the single binary (engine harness +
 in-process converter + FrayTools driver). The converter is a **library**
 (`crates/ssf2-converter`), not its own binary. The ~30 **diagnostic binaries**
 live in the converter crate behind the `dev-tools` feature (see
@@ -230,10 +230,10 @@ Examples:
 
 ```bash
 # Convert mario; costumes auto-loaded from ssf2-ssfs/misc.ssf next to it
-./target/release/peptide convert ../ssf2-ssfs/mario.ssf
+./build/release/peptide convert ../ssf2-ssfs/mario.ssf
 
 # Explicit output dir + explicit misc.ssf
-./target/release/peptide convert ../ssf2-ssfs/fox.ssf \
+./build/release/peptide convert ../ssf2-ssfs/fox.ssf \
     --output ./characters --misc-ssf ../ssf2-ssfs/misc.ssf
 ```
 
@@ -271,18 +271,18 @@ The webview glue lives in `src/gui.rs` (see [`docs/PEPTIDE_README.md`](docs/PEPT
 for the harness internals); there is no separate GUI crate anymore.
 
 **Double-clickable macOS app.** `./tools/make-app.sh` builds the single `peptide`
-binary and wraps it in `dist/Peptide.app` — a normal Finder app (name, dock
+binary and wraps it in `build/Peptide.app` — a normal Finder app (name, dock
 icon, `.ssf` association) with `peptide` as the bundle executable. It
 ad-hoc-codesigns the bundle so Gatekeeper allows a locally-built app to launch,
-and opens it on success (`--no-open` to just build). `dist/` is git-ignored.
+and opens it on success (`--no-open` to just build). `build/` is git-ignored.
 
 ```bash
-./tools/make-app.sh            # build + assemble dist/Peptide.app + launch
+./tools/make-app.sh            # build + assemble build/Peptide.app + launch
 ./tools/make-app.sh --no-open  # build + assemble only (packaging / CI)
 ```
 
 **Windows build.** `./tools/make-win.sh` cross-compiles `peptide.exe` into
-`dist/windows/` (prefers `cargo-xwin` for the MSVC ABI, falls back to
+`build/windows/` (prefers `cargo-xwin` for the MSVC ABI, falls back to
 `mingw-w64`; prints the exact install command if neither toolchain is present),
 or build natively on Windows with `cargo build --release`. The webview uses the
 WebView2 runtime, which ships with Windows 10/11.
@@ -871,7 +871,7 @@ reproducible.
 ### 5.7 Diagnostic binaries (`src/bin/`)
 
 These are **reverse-engineering / debugging tools**, not part of the conversion.
-Each builds to its own executable in `target/release/`. They were the workbench
+Each builds to its own executable in `build/release/`. They were the workbench
 used to figure the formats out and remain useful when a conversion looks wrong.
 Roughly grouped by what they investigate:
 
@@ -914,7 +914,7 @@ Roughly grouped by what they investigate:
 | `find_char_mcs` | Find character-like MovieClip timelines (≥30 `frame*` methods) |
 | `grep_classes` / `scan_all_classes` / `scan_ext` | Class-name corpus searches |
 
-Typical use: `./target/release/dump_image_placement ../ssf2-ssfs/mario.ssf "FAir_42"` or `./target/release/audit_main_iinit`. (There is no longer a standalone `extract_costumes` binary — costume extraction is in-process inside `ssf2_converter`.)
+Typical use: `./build/release/dump_image_placement ../ssf2-ssfs/mario.ssf "FAir_42"` or `./build/release/audit_main_iinit`. (There is no longer a standalone `extract_costumes` binary — costume extraction is in-process inside `ssf2_converter`.)
 
 ---
 
@@ -1434,7 +1434,7 @@ Roughly in the order a fresh agent should tackle them.
   needed beyond a fresh run.
 - **Reach for the `dump_*` binaries** before guessing. They exist
   precisely so you can inspect a SWF without re-deriving the format.
-  Example: `./target/release/dump_collision_box ../ssf2-ssfs/mario.ssf
+  Example: `./build/release/dump_collision_box ../ssf2-ssfs/mario.ssf
   "a_air_forward"`.
 - **Inputs are the sibling `../ssf2-ssfs/` folder**, not in this repo
   (`.gitignore` excludes `*.ssf`). `misc.ssf` lives there too and is
@@ -1455,8 +1455,9 @@ Roughly in the order a fresh agent should tackle them.
 - **Reference resources** (from `AGENT_CONTEXT.md`): the official
   [Fraymakers character-template](https://github.com/Fraymakers/character-template)
   repo's `library/entities/character.entity` is ground truth for the
-  entity format; the [Fraymakers community
-  docs](https://github.com/aJewelofRarity/FraymakersDocs) and
+  entity format; the [Fraymakers API docs](https://shifterbit.github.io/fraymakers-api-docs/)
+  (community-run, high utility — the reference for engine
+  functions/scripts/classes) and
   [SSF2 modding docs](https://ssf2-modding.readthedocs.io/) cover the
   rest.
 - **The pipeline is fail-soft.** A stage that errors logs a warning and

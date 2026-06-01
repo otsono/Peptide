@@ -6,7 +6,7 @@
 # converter, and the FrayTools CDP driver. No sidecar binaries.
 #
 # Usage:
-#   ./make-app.sh            build + assemble dist/Peptide.app + launch it
+#   ./make-app.sh            build + assemble build/Peptide.app + launch it
 #   ./make-app.sh --no-open  build + assemble only (for packaging / CI)
 set -euo pipefail
 
@@ -23,7 +23,7 @@ BIN="peptide"
 echo "==> Building release binary ($BIN)…"
 cargo build --release -p peptide --bin peptide
 
-APP="dist/$APP_NAME.app"
+APP="build/$APP_NAME.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
@@ -55,7 +55,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # ---- the single peptide binary is the bundle executable ----
-cp "target/release/$BIN" "$APP/Contents/MacOS/$BIN"
+cp "build/release/$BIN" "$APP/Contents/MacOS/$BIN"
 chmod +x "$APP/Contents/MacOS/$BIN"
 
 # ---- runtime asset files (NOT embedded in the binary — read from disk next to it) ----

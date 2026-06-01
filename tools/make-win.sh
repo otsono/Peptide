@@ -10,14 +10,14 @@
 # Windows 10/11 by default; on older images install the Evergreen runtime.
 #
 # Usage:
-#   ./make-win.sh            build peptide.exe into dist/windows/
+#   ./make-win.sh            build peptide.exe into build/windows/
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 cd "$ROOT"
 
-OUT="dist/windows"
+OUT="build/windows"
 BIN="peptide"
 
 mkdir -p "$OUT"
@@ -47,7 +47,7 @@ else
 fi
 
 echo "==> Staging .exe into $OUT…"
-cp "target/$TARGET/release/$BIN.exe" "$OUT/" 2>/dev/null || true
+cp "build/$TARGET/release/$BIN.exe" "$OUT/" 2>/dev/null || true
 
 # ---- runtime asset files (NOT embedded — peptide.exe reads them from disk next
 # to itself; the converter reads mappings/ next to the .exe). Ship them alongside.

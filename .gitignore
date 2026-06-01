@@ -7,7 +7,7 @@ __pycache__/
 
 # Added by cargo
 
-/target
+/build
 # Generated binary/image assets inside character output — track .hx, .json, .entity etc but not media
 characters/
 
@@ -26,7 +26,7 @@ docs/*
 !docs/PEPTIDE_README.md
 
 # macOS .app bundle output from make-app.sh
-dist/
+
 
 # ── Peptide engine artifacts — never commit Fraymakers bytecode or patched output
 *.dat
