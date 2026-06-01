@@ -1412,6 +1412,20 @@ fn connect_edit(
     let g_interp = code.globals.len();
     code.globals.push(hlbc::types::RefType(506)); // hscript.Interp
 
+    // Injected HELD-control bitmask for the input-override handler ('i'). The
+    // epilogue appended to Character.updateGameInput ORs this into
+    // m_heldControls.buttons every frame and pulses its rising edge into
+    // m_pressedControls, so the engine's own InputResolver maps it to actions
+    // (NOT a synthetic keypress). 0 = no injection; an Int global defaults to 0.
+    let g_inject_held = code.globals.len();
+    code.globals.push(hlbc::types::RefType(3)); // Int
+    // 'i' (input) command byte + the ASCII/scale constants its decimal-mask parser needs.
+    let i_idx = add_int(code, 'i' as i32);
+    let i_zero_char = add_int(code, '0' as i32);
+    let i_nine_char = add_int(code, '9' as i32);
+    let i_ten = add_int(code, 10);
+    let i_ok_g = add_string_const(code, "I:OK\n");
+
     // Inject into the per-frame update (post-boot), NOT onLoaded: networking
     // string/host calls SIGSEGV during early config-load, but are fine once the
     // engine is fully up. The connect runs once (guard); the recv runs every frame.
@@ -2848,6 +2862,58 @@ fn connect_edit(
     let idx_e_jdone = ops.len();
     ops.push(Opcode::JAlways { offset: 0 });                            // -> L_ORIG (patched in the n-block)
 
+    // ---- 'i' (input): override player held controls — drives the engine's OWN
+    // input→action mapping, not a synthetic keypress. APPENDED at the END of the
+    // dispatch chain (after 'e') per the JIT-fragility rule: the proven
+    // x->p->c->s->...->g->e prefix (and its register indices) stays byte-identical,
+    // so s/e don't mis-JIT. Parses a decimal button bitmask from the rest of the line
+    // into g_inject_held; the Character.updateGameInput epilogue applies it every
+    // frame. 'i' no-match -> L_ORIG; a handled 'i' also falls through to L_ORIG (its
+    // byte + the rest of the line are consumed by the digit loop). ----
+    let idx_i_check = ops.len();
+    let i_b = add_regs(f, &[3, 3, 3]); // acc, digit, tmp (all Int)
+    let (r_acc, r_dig, r_tmp) = (Reg(i_b), Reg(i_b + 1), Reg(i_b + 2));
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(i_idx) });
+    let idx_jne_i = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });          // not 'i' -> L_ORIG
+    ops.push(Opcode::Int { dst: r_acc, ptr: RefInt(zero_idx) });        // acc = 0
+    let idx_i_loop = ops.len();
+    ops.push(Opcode::Call1 { dst: r_c, fun: RefFun(recv_char), arg0: r_handle });
+    ops.push(Opcode::Int { dst: r_tmp, ptr: RefInt(zero_idx) });
+    let idx_i_jneg = ops.len();
+    ops.push(Opcode::JSLt { a: r_c, b: r_tmp, offset: 0 });             // c<0 (EOF) -> done
+    ops.push(Opcode::Int { dst: r_tmp, ptr: RefInt(nl_idx) });
+    let idx_i_jnl = ops.len();
+    ops.push(Opcode::JEq { a: r_c, b: r_tmp, offset: 0 });              // '\n' -> done
+    ops.push(Opcode::Int { dst: r_tmp, ptr: RefInt(i_zero_char) });
+    let idx_i_jlt0 = ops.len();
+    ops.push(Opcode::JSLt { a: r_c, b: r_tmp, offset: 0 });             // c<'0' -> loop (skip non-digit)
+    ops.push(Opcode::Int { dst: r_tmp, ptr: RefInt(i_nine_char) });
+    let idx_i_jgt9 = ops.len();
+    ops.push(Opcode::JSGt { a: r_c, b: r_tmp, offset: 0 });             // c>'9' -> loop (skip non-digit)
+    // acc = acc*10 + (c - '0')
+    ops.push(Opcode::Int { dst: r_tmp, ptr: RefInt(i_zero_char) });
+    ops.push(Opcode::Sub { dst: r_dig, a: r_c, b: r_tmp });
+    ops.push(Opcode::Int { dst: r_tmp, ptr: RefInt(i_ten) });
+    ops.push(Opcode::Mul { dst: r_acc, a: r_acc, b: r_tmp });
+    ops.push(Opcode::Add { dst: r_acc, a: r_acc, b: r_dig });
+    let idx_i_jback = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                            // -> loop
+    let idx_i_done = ops.len();
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_inject_held), src: r_acc });
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(i_ok_g) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_i_after = ops.len(); // = L_ORIG (n): the next op after this last handler
+    if let Opcode::JNotEq  { offset, .. } = &mut ops[idx_jne_i]  { *offset = idx_i_after as i32 - idx_jne_i as i32 - 1; }
+    if let Opcode::JSLt    { offset, .. } = &mut ops[idx_i_jneg] { *offset = idx_i_done as i32 - idx_i_jneg as i32 - 1; }
+    if let Opcode::JEq     { offset, .. } = &mut ops[idx_i_jnl]  { *offset = idx_i_done as i32 - idx_i_jnl as i32 - 1; }
+    if let Opcode::JSLt    { offset, .. } = &mut ops[idx_i_jlt0] { *offset = idx_i_loop as i32 - idx_i_jlt0 as i32 - 1; }
+    if let Opcode::JSGt    { offset, .. } = &mut ops[idx_i_jgt9] { *offset = idx_i_loop as i32 - idx_i_jgt9 as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_i_jback]{ *offset = idx_i_loop as i32 - idx_i_jback as i32 - 1; }
+
     // L_ORIG = first original op after the prepended block (index n).
     let n = ops.len() as i32;
     if let Opcode::JTrue { offset, .. } = &mut ops[1] { *offset = idx_recv as i32 - 2; }
@@ -2908,7 +2974,7 @@ fn connect_edit(
     // 'f' (frame-step) -> 'g' (resume) -> L_ORIG. Self-contained Asm blocks.
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_f] { *offset = idx_g_check as i32 - idx_jne_f as i32 - 1; }
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_g] { *offset = idx_e_check as i32 - idx_jne_g as i32 - 1; } // g no-match -> 'e' check
-    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_e] { *offset = n - idx_jne_e as i32 - 1; } // 'e' no-match -> L_ORIG
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_e] { *offset = idx_i_check as i32 - idx_jne_e as i32 - 1; } // 'e' no-match -> 'i' check
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnomatch] { *offset = idx_t_nomatch as i32 - idx_t_jnomatch as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnochars] { *offset = idx_t_nomatch as i32 - idx_t_jnochars as i32 - 1; }
     if let Opcode::JSLte { offset, .. } = &mut ops[idx_t_jempty] { *offset = idx_t_nomatch as i32 - idx_t_jempty as i32 - 1; }
@@ -2917,6 +2983,13 @@ fn connect_edit(
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_t_jdone] { *offset = n - idx_t_jdone as i32 - 1; }
     insert_ops_front(f, ops);
     eprintln!("connect_edit: injected {n} ops into update@{update_fx} (console+startMatch dispatch); port={port}");
+
+    // ---- input-override epilogue: apply g_inject_held to live controls each frame ----
+    // The 'i' command sets g_inject_held; this makes Character.updateGameInput consume it
+    // (held |= mask, pressed |= rising-edge) right where the engine feeds m_heldControls /
+    // m_pressedControls — the SAME objects the InputResolver reads to trigger moves.
+    inject_input_override(code, g_inject_held)?;
+
     // ---- getPXFSpriteEntity self-heal (RELIABLE SPAWN) ------------------------
     // RE proof: there is NO cache reset/removal — the buried-VFX null is a populate-
     // vs-consume RACE (the async per-resource PXF preload caches the sprite key only
@@ -3182,6 +3255,64 @@ fn insert_ops_end(f: &mut hlbc::types::Function, ops: Vec<Opcode>) {
             }
         }
     }
+}
+
+/// Append a per-frame input-override epilogue to `Character.updateGameInput`.
+///
+/// The user-facing goal: drive a character's controls WITHOUT synthesizing keyboard /
+/// gamepad input — by writing the control state the engine itself maps to actions.
+/// `updateGameInput` is exactly that seam: every frame it copies `InputFeed`'s held /
+/// pressed `ControlsObject`s into the character's live `m_heldControls(147)` /
+/// `m_pressedControls(146)`, which the `InputResolver` then reads to fire moves
+/// (`resolveGroundedSpecialAttack`, …) and which `getHeldControls()` exposes to scripts.
+///
+/// Right after those copies, this epilogue:
+///   - `m_heldControls.buttons   |= g_inject_held`          (the injected held mask)
+///   - `m_pressedControls.buttons |= g_inject_held & ~m_heldControlsPrevious.buttons`
+/// The pressed term is a one-frame RISING edge (bits newly set vs. last frame's held,
+/// which the engine already stashed in `m_heldControlsPrevious(159)` earlier in this same
+/// function), so a persistently-held mask taps `pressed` once then stays in `held` — the
+/// natural button semantics, derived from a SINGLE held mask. A 0 mask is a no-op (OR 0).
+/// All field/type lookups resolve by NAME for build resilience.
+fn inject_input_override(code: &mut Bytecode, g_inject_held: usize) -> anyhow::Result<()> {
+    use hlbc::types::{RefField, RefGlobal, RefInt};
+    let upd = require_fn(code, "updateGameInput", Some("pxf.entity.Character"))?;
+    let co_t = require_type(code, "pxf.input.ControlsObject")?;
+    let f_held = require_field(code, "pxf.entity.Character", "m_heldControls")?;
+    let f_pressed = require_field(code, "pxf.entity.Character", "m_pressedControls")?;
+    let f_prevheld = require_field(code, "pxf.entity.Character", "m_heldControlsPrevious")?;
+    let f_buttons = require_field(code, "pxf.input.ControlsObject", "buttons")?;
+    let neg1 = add_int(code, -1); // ~x via Xor(x, -1)
+
+    let fidx = function_index_by_findex(code, upd)
+        .ok_or_else(|| anyhow::anyhow!("updateGameInput@{upd} not found"))?;
+    let f = &mut code.functions[fidx];
+    // Scratch regs: mask, held, btn, prev, pbtn, neg1, notprev, edge, pressed, pcbtn.
+    // ControlsObject-typed regs so HL computes the `buttons` field offset correctly.
+    let b = add_regs(f, &[3, co_t, 3, co_t, 3, 3, 3, 3, co_t, 3]);
+    let (r_mask, r_held, r_btn, r_prev, r_pbtn, r_neg1, r_notprev, r_edge, r_pressed, r_pcbtn) =
+        (Reg(b), Reg(b + 1), Reg(b + 2), Reg(b + 3), Reg(b + 4), Reg(b + 5), Reg(b + 6), Reg(b + 7), Reg(b + 8), Reg(b + 9));
+    let this = Reg(0); // updateGameInput(this:Character)
+    insert_ops_end(f, vec![
+        Opcode::GetGlobal { dst: r_mask, global: RefGlobal(g_inject_held) },
+        // m_heldControls.buttons |= mask
+        Opcode::Field { dst: r_held, obj: this, field: RefField(f_held) },
+        Opcode::Field { dst: r_btn, obj: r_held, field: RefField(f_buttons) },
+        Opcode::Or { dst: r_btn, a: r_btn, b: r_mask },
+        Opcode::SetField { obj: r_held, field: RefField(f_buttons), src: r_btn },
+        // m_pressedControls.buttons |= mask & ~(m_heldControlsPrevious.buttons)
+        Opcode::Field { dst: r_prev, obj: this, field: RefField(f_prevheld) },
+        Opcode::Field { dst: r_pbtn, obj: r_prev, field: RefField(f_buttons) },
+        Opcode::Int { dst: r_neg1, ptr: RefInt(neg1) },
+        Opcode::Xor { dst: r_notprev, a: r_pbtn, b: r_neg1 },
+        Opcode::And { dst: r_edge, a: r_mask, b: r_notprev },
+        Opcode::Field { dst: r_pressed, obj: this, field: RefField(f_pressed) },
+        Opcode::Field { dst: r_pcbtn, obj: r_pressed, field: RefField(f_buttons) },
+        Opcode::Or { dst: r_pcbtn, a: r_pcbtn, b: r_edge },
+        Opcode::SetField { obj: r_pressed, field: RefField(f_buttons), src: r_pcbtn },
+    ]);
+    eprintln!("inject_input_override: updateGameInput@{upd} epilogue (held|=mask, pressed|=rising-edge)");
+    Ok(())
 }
 
 /// Append `this.<startHandler>()` to a function whose reg0 is the same object —

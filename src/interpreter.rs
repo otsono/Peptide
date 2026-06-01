@@ -61,7 +61,48 @@ pub const COMMANDS: &[Cmd] = &[
           args: "",                              help: "run the engine's debug console `help` command (RAN) — a side-effecting call hscript can't make, so it stays a wire byte" },
     Cmd { name: "exit",    aliases: &["quit", "stop", "x"], wire: 'x',
           args: "",                              help: "cleanly shut the engine down (hxd.System.exit — no kill-9 orphan)" },
+    Cmd { name: "hold",    aliases: &["press", "keys", "input"], wire: 'i',
+          args: "<control[+control…]>",          help: "hold control inputs (e.g. hold down+special) — feeds the engine's input→action mapping, not a synthetic keypress" },
+    Cmd { name: "release", aliases: &["unpress"], wire: 'i',
+          args: "",                              help: "release all injected controls (sends mask 0)" },
 ];
+
+/// Control name → button bit (matches pxf.input.ControlsObject's bitmask, field
+/// `buttons`). The `i` command sends the OR of the named bits as a decimal mask;
+/// the engine ORs it into m_heldControls every frame and derives the pressed edge.
+/// Directional + the core action buttons are bits 0–7; the rest follow the engine's
+/// own ControlsObject layout. `shield` aliases SHIELD1.
+pub const CONTROLS: &[(&str, u32)] = &[
+    ("up", 0x1), ("down", 0x2), ("left", 0x4), ("right", 0x8),
+    ("attack", 0x10), ("special", 0x20), ("action", 0x40), ("jump", 0x80),
+    ("shield", 0x100), ("shield1", 0x100), ("shield2", 0x200),
+    ("grab", 0x400), ("emote", 0x800), ("taunt", 0x800), ("pause", 0x1000),
+    ("dash", 0x20000),
+];
+
+/// Parse a `hold`/`press` argument list into a button bitmask. Tokens are the
+/// control names in [`CONTROLS`], joined by spaces and/or `+` (so `down+special`,
+/// `down special`, and `0x22`/`34` all work). A bare integer (decimal or `0x`-hex)
+/// passes through as a raw mask. Returns an error string naming the bad token.
+pub fn controls_mask(tokens: &[&str]) -> Result<u32, String> {
+    let mut mask = 0u32;
+    for raw in tokens {
+        for tok in raw.split('+').filter(|t| !t.is_empty()) {
+            let t = tok.to_ascii_lowercase();
+            if let Some((_, bit)) = CONTROLS.iter().find(|(n, _)| *n == t) {
+                mask |= bit;
+            } else if let Some(hex) = t.strip_prefix("0x") {
+                mask |= u32::from_str_radix(hex, 16).map_err(|_| format!("bad control or mask: {tok:?}"))?;
+            } else if let Ok(n) = t.parse::<u32>() {
+                mask |= n;
+            } else {
+                let names: Vec<&str> = CONTROLS.iter().map(|(n, _)| *n).collect();
+                return Err(format!("unknown control {tok:?} (known: {})", names.join(", ")));
+            }
+        }
+    }
+    Ok(mask)
+}
 
 /// Move name → CState field NAME, in the order the engine's generated jump table
 /// expects. The client sends the table INDEX (the ordinal) as the `m` argument;
@@ -149,6 +190,21 @@ pub fn translate(line: &str) -> Translated {
                 return Translated::Wire(if rest.is_empty() { "e".into() }
                                         else { format!("e {}", rest.join(" ")) });
             }
+
+            // `hold`/`press <controls>` → resolve names to a button bitmask, send `i <mask>`.
+            // `release` → `i 0`. The engine ORs the mask into the live held controls each
+            // frame (and pulses the pressed edge), so its own input→action mapping fires.
+            "hold" => {
+                if rest.is_empty() {
+                    return Translated::Client(
+                        "usage: hold <control[+control…]>  (e.g. hold down+special). release = clear.\n".into());
+                }
+                return match controls_mask(&rest) {
+                    Ok(mask) => Translated::Wire(format!("i {mask}")),
+                    Err(e) => Translated::Client(format!("{e}\n")),
+                };
+            }
+            "release" => return Translated::Wire("i 0".into()),
             _ => {}
         }
     }
@@ -304,6 +360,7 @@ pub fn gloss(reply: &str) -> Option<String> {
     if let Some(s) = r.strip_prefix("LAUNCHED ") { return Some(format!("match launched: {}", body(s))); }
     if let Some(s) = r.strip_prefix("T:") { return Some(format!("state: {}", body(s))); }
     if let Some(s) = r.strip_prefix("M:") { return Some(format!("move dispatched: {}", body(s))); }
+    if let Some(s) = r.strip_prefix("I:") { return Some(format!("controls set: {}", body(s))); }
     match r {
         "Q:MATCH_LIVE" => Some("a match is live".into()),
         "Q:NO_MATCH"   => Some("no match running".into()),
@@ -426,6 +483,29 @@ mod tests {
             Translated::Wire(w) => w,
             Translated::Client(_) => panic!("expected Wire, got Client"),
         }
+    }
+
+    #[test]
+    fn controls_mask_parses_names_and_combos() {
+        assert_eq!(controls_mask(&["down"]).unwrap(), 0x2);
+        assert_eq!(controls_mask(&["down+special"]).unwrap(), 0x22);
+        assert_eq!(controls_mask(&["down", "special"]).unwrap(), 0x22); // space-joined
+        assert_eq!(controls_mask(&["right"]).unwrap(), 0x8);
+        assert_eq!(controls_mask(&["shield"]).unwrap(), 0x100);         // alias of shield1
+        assert_eq!(controls_mask(&["0x22"]).unwrap(), 0x22);            // raw hex
+        assert_eq!(controls_mask(&["34"]).unwrap(), 34);               // raw decimal
+        assert!(controls_mask(&["banana"]).is_err());
+    }
+
+    #[test]
+    fn hold_press_release_translate_to_input_byte() {
+        assert_eq!(wire("hold down+special"), "i 34");   // 0x2|0x20 = 34
+        assert_eq!(wire("press right"), "i 8");
+        assert_eq!(wire("hold up"), "i 1");
+        assert_eq!(wire("release"), "i 0");
+        // bad control is handled client-side (no wire), not sent to the engine
+        assert!(matches!(translate("hold banana"), Translated::Client(_)));
+        assert!(matches!(translate("hold"), Translated::Client(_))); // usage hint
     }
 
     #[test]
