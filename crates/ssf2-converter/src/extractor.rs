@@ -218,10 +218,11 @@ pub fn extract(swf: &SwfFile, char_name: &str) -> Result<CharacterData> {
     }
 
     if dump_parity {
-        let path = format!("/tmp/parity_{}_ssf2.json", char_name);
+        // Dev-only diagnostic (DUMP_PARITY); use the OS temp dir so it works on Windows too.
+        let path = std::env::temp_dir().join(format!("parity_{}_ssf2.json", char_name));
         if let Ok(j) = serde_json::to_string_pretty(&raw_attacks_dump) {
             let _ = std::fs::write(&path, j);
-            log::info!("DUMP_PARITY: wrote raw SSF2 attack stats -> {}", path);
+            log::info!("DUMP_PARITY: wrote raw SSF2 attack stats -> {}", path.display());
         }
     }
 

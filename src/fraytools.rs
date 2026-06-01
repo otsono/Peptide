@@ -148,7 +148,10 @@ pub fn render(args: &[String]) -> Result<()> {
     let ft_bin = arg(args, "fraytools").map(String::from).unwrap_or_else(default_fraytools);
     let project = arg(args, "project");
     let entity = arg(args, "entity").ok_or_else(|| anyhow!("--entity <relpath under library/> is required"))?;
-    let out = arg(args, "out").unwrap_or("/tmp/fraytools_render.png");
+    // Default into the OS temp dir (cross-platform — Windows has no /tmp).
+    let out: String = arg(args, "out").map(String::from).unwrap_or_else(|| {
+        std::env::temp_dir().join("fraytools_render.png").to_string_lossy().into_owned()
+    });
     let settle = arg_u64(args, "settle", 6000);
 
     let mut cdp = attach_or_launch(port, &ft_bin)?;
@@ -170,7 +173,7 @@ pub fn render(args: &[String]) -> Result<()> {
     thread::sleep(Duration::from_millis(settle));
 
     let png = capture_canvas(&mut cdp)?.ok_or_else(|| anyhow!("no stage canvas found"))?;
-    std::fs::write(out, &png)?;
+    std::fs::write(&out, &png)?;
     println!("{out}");
     Ok(())
 }
@@ -592,7 +595,11 @@ fn default_fraymakers_root() -> PathBuf {
     }
     #[cfg(target_os = "windows")]
     {
-        PathBuf::from("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Fraymakers")
+        // Derive the system drive instead of assuming C: (some installs are on D:, etc.).
+        let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+        PathBuf::from(format!(
+            "{drive}\\Program Files (x86)\\Steam\\steamapps\\common\\Fraymakers"
+        ))
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {

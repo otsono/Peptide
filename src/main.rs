@@ -633,9 +633,10 @@ const PEPTIDE_CRATE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 /// tried in order. The first that exists wins. Resolution:
 ///   1. `$PEPTIDE_ASSET_DIR/<rel>` (explicit override dir)
 ///   2. cwd-relative (`./<rel>`)
-///   3. next to the binary (`<exe-dir>/<rel>` — the packaged layout)
-///   4. `<exe-dir>/../../<rel>` (a `target/<profile>/<bin>` dev build → repo root)
-///   5. the peptide crate's source dir (`PEPTIDE_CRATE_DIR/<rel>` — source checkout)
+///   3. the packaged layout: a `data/` subfolder next to the binary (`<exe-dir>/data/<rel>`)
+///   4. legacy packaged layout: directly next to the binary (`<exe-dir>/<rel>`)
+///   5. `<exe-dir>/../../<rel>` (a `target/<profile>/<bin>` dev build → repo root)
+///   6. the peptide crate's source dir (`PEPTIDE_CRATE_DIR/<rel>` — source checkout)
 fn asset_candidate_paths(rel: &str) -> Vec<std::path::PathBuf> {
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(dir) = std::env::var("PEPTIDE_ASSET_DIR") {
@@ -644,7 +645,8 @@ fn asset_candidate_paths(rel: &str) -> Vec<std::path::PathBuf> {
     paths.push(std::path::PathBuf::from(rel));
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            paths.push(dir.join(rel));
+            paths.push(dir.join("data").join(rel)); // packaged: <exe-dir>/data/<rel>
+            paths.push(dir.join(rel));              // legacy: directly next to the binary
             if let Some(up) = dir.parent().and_then(|p| p.parent()) {
                 paths.push(up.join(rel));
             }

@@ -608,9 +608,10 @@ fn strip_jsonc(src: &str) -> String {
 /// wins. Resolution order:
 ///   1. `$PEPTIDE_MAPPINGS_DIR/<rel-without-leading-"mappings/">` (explicit override)
 ///   2. the current working directory (`./mappings/…`)
-///   3. next to the binary (`<exe-dir>/mappings/…` — the packaged layout)
-///   4. `<exe-dir>/../../mappings/…` (a `target/<profile>/<bin>` dev build)
-///   5. the converter crate's source dir (`CRATE_DIR/mappings/…` — dev/source checkout)
+///   3. the packaged layout: a `data/` subfolder next to the binary (`<exe-dir>/data/mappings/…`)
+///   4. legacy packaged layout: directly next to the binary (`<exe-dir>/mappings/…`)
+///   5. `<exe-dir>/../../mappings/…` (a `target/<profile>/<bin>` dev build)
+///   6. the converter crate's source dir (`CRATE_DIR/mappings/…` — dev/source checkout)
 fn candidate_paths(rel: &str) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
     // 1. explicit dir override — strip the leading "mappings/" so the env var
@@ -621,10 +622,12 @@ fn candidate_paths(rel: &str) -> Vec<PathBuf> {
     }
     // 2. cwd-relative
     paths.push(PathBuf::from(rel));
-    // 3/4. next to the binary, and a dev target/<profile>/<bin> layout
+    // 3/4/5. data/ subfolder next to the binary, directly next to it, and a dev
+    //        target/<profile>/<bin> layout.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            paths.push(dir.join(rel));
+            paths.push(dir.join("data").join(rel)); // packaged: <exe-dir>/data/mappings/…
+            paths.push(dir.join(rel));              // legacy: <exe-dir>/mappings/…
             if let Some(up) = dir.parent().and_then(|p| p.parent()) {
                 paths.push(up.join(rel));
             }
