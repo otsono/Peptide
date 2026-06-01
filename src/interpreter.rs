@@ -65,6 +65,8 @@ pub const COMMANDS: &[Cmd] = &[
           args: "<control[+control…]>",          help: "hold control inputs (e.g. hold down+special) — feeds the engine's input→action mapping, not a synthetic keypress" },
     Cmd { name: "release", aliases: &["unpress"], wire: 'i',
           args: "",                              help: "release all injected controls (sends mask 0)" },
+    Cmd { name: "seq",     aliases: &["play", "inputs"], wire: 'i',
+          args: "<controls:frames> …",           help: "play a frame-accurate input timeline (e.g. seq down+special:2 right:12) — one input per engine frame, auto-releases at the end" },
 ];
 
 /// Control name → button bit (matches pxf.input.ControlsObject's bitmask, field
@@ -79,6 +81,47 @@ pub const CONTROLS: &[(&str, u32)] = &[
     ("grab", 0x400), ("emote", 0x800), ("taunt", 0x800), ("pause", 0x1000),
     ("dash", 0x20000),
 ];
+
+/// Expand a `seq` timeline into one `i <mask>` wire line per engine frame.
+///
+/// The engine's command dispatcher processes exactly ONE command line per frame, so a
+/// burst of N `i` lines plays out as N consecutive frames of input — frame-accurate,
+/// paced by the engine itself (not by host timing). This is the replay-like surface for
+/// scripting multi-frame control tests.
+///
+/// Each token is a step `<controls>:<frames>` (or `<controls>*<frames>`; bare `<controls>`
+/// = 1 frame). `controls` is a `+`-joined control list (`down+special`), a raw mask
+/// (`34`/`0x22`), or one of `release`/`none`/`neutral`/empty for the 0 mask (held neutral).
+/// Steps are expanded to `frames` copies each and concatenated; a final `i 0` is appended
+/// so the character returns to neutral when the sequence ends. Total frames are capped.
+pub fn expand_sequence(tokens: &[&str]) -> Result<String, String> {
+    const MAX_FRAMES: usize = 4000;
+    let mut lines: Vec<String> = Vec::new();
+    for step in tokens {
+        let (ctrl, frames) = match step.split_once(':').or_else(|| step.split_once('*')) {
+            Some((c, n)) => {
+                let f: usize = n.trim().parse()
+                    .map_err(|_| format!("bad frame count in {step:?} (want <controls>:<frames>)"))?;
+                (c.trim(), f)
+            }
+            None => (step.trim(), 1),
+        };
+        if frames == 0 { return Err(format!("frame count must be >= 1 in {step:?}")); }
+        let mask = if ctrl.is_empty()
+            || matches!(ctrl.to_ascii_lowercase().as_str(), "release" | "none" | "neutral") {
+            0
+        } else {
+            controls_mask(&[ctrl])?
+        };
+        if lines.len() + frames > MAX_FRAMES {
+            return Err(format!("sequence too long (> {MAX_FRAMES} frames)"));
+        }
+        for _ in 0..frames { lines.push(format!("i {mask}")); }
+    }
+    if lines.is_empty() { return Err("empty sequence".into()); }
+    lines.push("i 0".into()); // auto-release: return to neutral at the end
+    Ok(lines.join("\n"))
+}
 
 /// Parse a `hold`/`press` argument list into a button bitmask. Tokens are the
 /// control names in [`CONTROLS`], joined by spaces and/or `+` (so `down+special`,
@@ -205,6 +248,19 @@ pub fn translate(line: &str) -> Translated {
                 };
             }
             "release" => return Translated::Wire("i 0".into()),
+
+            // `seq <controls:frames> …` → a frame-accurate input timeline: one `i <mask>`
+            // line per frame, which the engine plays one-per-frame (auto-releases at the end).
+            "seq" => {
+                if rest.is_empty() {
+                    return Translated::Client(
+                        "usage: seq <controls:frames> …  (e.g. seq down+special:2 right:12). One input per engine frame; auto-releases at the end.\n".into());
+                }
+                return match expand_sequence(&rest) {
+                    Ok(wire) => Translated::Wire(wire),
+                    Err(e) => Translated::Client(format!("{e}\n")),
+                };
+            }
             _ => {}
         }
     }
@@ -506,6 +562,22 @@ mod tests {
         // bad control is handled client-side (no wire), not sent to the engine
         assert!(matches!(translate("hold banana"), Translated::Client(_)));
         assert!(matches!(translate("hold"), Translated::Client(_))); // usage hint
+    }
+
+    #[test]
+    fn seq_expands_to_one_input_line_per_frame() {
+        // down+special for 2 frames, right for 3 frames, then auto-release.
+        let w = wire("seq down+special:2 right:3");
+        let lines: Vec<&str> = w.split('\n').collect();
+        assert_eq!(lines, vec!["i 34", "i 34", "i 8", "i 8", "i 8", "i 0"]);
+        // bare step = 1 frame; `release`/`neutral`/empty = mask 0.
+        assert_eq!(wire("seq attack release:2"), "i 16\ni 0\ni 0\ni 0");
+        // star separator + raw mask both work.
+        assert_eq!(wire("seq 0x8*2"), "i 8\ni 8\ni 0");
+        // errors are client-side (never sent to the engine).
+        assert!(matches!(translate("seq down:0"), Translated::Client(_)));   // 0 frames
+        assert!(matches!(translate("seq bogus:2"), Translated::Client(_)));  // bad control
+        assert!(matches!(translate("seq"), Translated::Client(_)));          // usage
     }
 
     #[test]

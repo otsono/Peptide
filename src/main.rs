@@ -3257,61 +3257,76 @@ fn insert_ops_end(f: &mut hlbc::types::Function, ops: Vec<Opcode>) {
     }
 }
 
-/// Append a per-frame input-override epilogue to `Character.updateGameInput`.
+/// Prepend a per-frame input override to the TOP of `Character.updateGameInput`.
 ///
 /// The user-facing goal: drive a character's controls WITHOUT synthesizing keyboard /
 /// gamepad input — by writing the control state the engine itself maps to actions.
-/// `updateGameInput` is exactly that seam: every frame it copies `InputFeed`'s held /
-/// pressed `ControlsObject`s into the character's live `m_heldControls(147)` /
-/// `m_pressedControls(146)`, which the `InputResolver` then reads to fire moves
-/// (`resolveGroundedSpecialAttack`, …) and which `getHeldControls()` exposes to scripts.
 ///
-/// Right after those copies, this epilogue:
-///   - `m_heldControls.buttons   |= g_inject_held`          (the injected held mask)
-///   - `m_pressedControls.buttons |= g_inject_held & ~m_heldControlsPrevious.buttons`
-/// The pressed term is a one-frame RISING edge (bits newly set vs. last frame's held,
-/// which the engine already stashed in `m_heldControlsPrevious(159)` earlier in this same
-/// function), so a persistently-held mask taps `pressed` once then stays in `held` — the
-/// natural button semantics, derived from a SINGLE held mask. A 0 mask is a no-op (OR 0).
-/// All field/type lookups resolve by NAME for build resilience.
+/// `updateGameInput` copies `InputFeed`'s held/pressed `ControlsObject`s into the live
+/// `m_heldControls(147)` / `m_pressedControls(146)` (its ip16-27), which the InputResolver
+/// reads to fire moves AND `getHeldControls()` copies for scripts (e.g. a character's
+/// `dashCheck`). The injection MUST land UPSTREAM of that copy: an earlier version OR-ed
+/// the mask in at the function's END, but the ip27 copy overwrites 147 with the device's
+/// (empty) controls earlier in the same frame, so anything reading 147 between ip27 and the
+/// end-epilogue (runInputUpdateHook, the timer/script path) saw an empty mask — the resolver
+/// (post-update) got it, but `getHeldControls()` in a same-frame timer did not.
+///
+/// So we prepend, modifying the InputFeed SOURCE before the copy:
+///   - `inputFeed._heldControls.buttons   |= g_inject_held`         (held mask)
+///   - `inputFeed._pressedControls.buttons |= g_inject_held & ~m_heldControls.buttons`
+/// `m_heldControls(147)` at the top of updateGameInput still holds LAST frame's value (the
+/// copy hasn't run yet), so the pressed term is a true one-frame RISING edge — a held mask
+/// taps `pressed` once then stays held. The engine's own copyFrom then propagates both into
+/// 146/147 for the WHOLE frame, so every consumer (resolver, scripts, timers) sees a
+/// consistent mask. Guarded on a null `inputFeed`; a 0 mask is a no-op. Resolves by NAME.
 fn inject_input_override(code: &mut Bytecode, g_inject_held: usize) -> anyhow::Result<()> {
     use hlbc::types::{RefField, RefGlobal, RefInt};
     let upd = require_fn(code, "updateGameInput", Some("pxf.entity.Character"))?;
     let co_t = require_type(code, "pxf.input.ControlsObject")?;
-    let f_held = require_field(code, "pxf.entity.Character", "m_heldControls")?;
-    let f_pressed = require_field(code, "pxf.entity.Character", "m_pressedControls")?;
-    let f_prevheld = require_field(code, "pxf.entity.Character", "m_heldControlsPrevious")?;
+    let if_t = require_type(code, "pxf.components.InputFeed")?;
+    let f_inputfeed = require_field(code, "pxf.entity.Character", "inputFeed")?;
+    let f_held = require_field(code, "pxf.entity.Character", "m_heldControls")?; // last-frame held at fn top
+    let f_if_held = require_field(code, "pxf.components.InputFeed", "_heldControls")?;
+    let f_if_pressed = require_field(code, "pxf.components.InputFeed", "_pressedControls")?;
     let f_buttons = require_field(code, "pxf.input.ControlsObject", "buttons")?;
     let neg1 = add_int(code, -1); // ~x via Xor(x, -1)
 
     let fidx = function_index_by_findex(code, upd)
         .ok_or_else(|| anyhow::anyhow!("updateGameInput@{upd} not found"))?;
     let f = &mut code.functions[fidx];
-    // Scratch regs: mask, held, btn, prev, pbtn, neg1, notprev, edge, pressed, pcbtn.
-    // ControlsObject-typed regs so HL computes the `buttons` field offset correctly.
-    let b = add_regs(f, &[3, co_t, 3, co_t, 3, 3, 3, 3, co_t, 3]);
-    let (r_mask, r_held, r_btn, r_prev, r_pbtn, r_neg1, r_notprev, r_edge, r_pressed, r_pcbtn) =
-        (Reg(b), Reg(b + 1), Reg(b + 2), Reg(b + 3), Reg(b + 4), Reg(b + 5), Reg(b + 6), Reg(b + 7), Reg(b + 8), Reg(b + 9));
+    // Scratch regs: mask, inputFeed, hc, hb, prev, pb, neg1, notprev, edge, pc, pcb.
+    // ControlsObject/InputFeed-typed regs so HL computes field offsets correctly.
+    let b = add_regs(f, &[3, if_t, co_t, 3, co_t, 3, 3, 3, 3, co_t, 3]);
+    let (r_mask, r_if, r_hc, r_hb, r_prev, r_pb, r_neg1, r_notprev, r_edge, r_pc, r_pcb) =
+        (Reg(b), Reg(b + 1), Reg(b + 2), Reg(b + 3), Reg(b + 4), Reg(b + 5), Reg(b + 6), Reg(b + 7), Reg(b + 8), Reg(b + 9), Reg(b + 10));
     let this = Reg(0); // updateGameInput(this:Character)
-    insert_ops_end(f, vec![
+    let mut ops = vec![
         Opcode::GetGlobal { dst: r_mask, global: RefGlobal(g_inject_held) },
-        // m_heldControls.buttons |= mask
-        Opcode::Field { dst: r_held, obj: this, field: RefField(f_held) },
-        Opcode::Field { dst: r_btn, obj: r_held, field: RefField(f_buttons) },
-        Opcode::Or { dst: r_btn, a: r_btn, b: r_mask },
-        Opcode::SetField { obj: r_held, field: RefField(f_buttons), src: r_btn },
-        // m_pressedControls.buttons |= mask & ~(m_heldControlsPrevious.buttons)
-        Opcode::Field { dst: r_prev, obj: this, field: RefField(f_prevheld) },
-        Opcode::Field { dst: r_pbtn, obj: r_prev, field: RefField(f_buttons) },
+        Opcode::Field { dst: r_if, obj: this, field: RefField(f_inputfeed) },
+        Opcode::JNull { reg: r_if, offset: 0 }, // [idx 2] no inputFeed -> skip (patched to end)
+        // inputFeed._heldControls.buttons |= mask
+        Opcode::Field { dst: r_hc, obj: r_if, field: RefField(f_if_held) },
+        Opcode::Field { dst: r_hb, obj: r_hc, field: RefField(f_buttons) },
+        Opcode::Or { dst: r_hb, a: r_hb, b: r_mask },
+        Opcode::SetField { obj: r_hc, field: RefField(f_buttons), src: r_hb },
+        // edge = mask & ~(m_heldControls.buttons)  [147 = LAST frame's held at fn top]
+        Opcode::Field { dst: r_prev, obj: this, field: RefField(f_held) },
+        Opcode::Field { dst: r_pb, obj: r_prev, field: RefField(f_buttons) },
         Opcode::Int { dst: r_neg1, ptr: RefInt(neg1) },
-        Opcode::Xor { dst: r_notprev, a: r_pbtn, b: r_neg1 },
+        Opcode::Xor { dst: r_notprev, a: r_pb, b: r_neg1 },
         Opcode::And { dst: r_edge, a: r_mask, b: r_notprev },
-        Opcode::Field { dst: r_pressed, obj: this, field: RefField(f_pressed) },
-        Opcode::Field { dst: r_pcbtn, obj: r_pressed, field: RefField(f_buttons) },
-        Opcode::Or { dst: r_pcbtn, a: r_pcbtn, b: r_edge },
-        Opcode::SetField { obj: r_pressed, field: RefField(f_buttons), src: r_pcbtn },
-    ]);
-    eprintln!("inject_input_override: updateGameInput@{upd} epilogue (held|=mask, pressed|=rising-edge)");
+        // inputFeed._pressedControls.buttons |= edge
+        Opcode::Field { dst: r_pc, obj: r_if, field: RefField(f_if_pressed) },
+        Opcode::Field { dst: r_pcb, obj: r_pc, field: RefField(f_buttons) },
+        Opcode::Or { dst: r_pcb, a: r_pcb, b: r_edge },
+        Opcode::SetField { obj: r_pc, field: RefField(f_buttons), src: r_pcb },
+    ];
+    // The null-inputFeed guard skips the rest of the prepended block (lands on the first
+    // original op, which insert_ops_front places right after this block).
+    let n = ops.len() as i32;
+    if let Opcode::JNull { offset, .. } = &mut ops[2] { *offset = n - 2 - 1; }
+    insert_ops_front(f, ops);
+    eprintln!("inject_input_override: updateGameInput@{upd} PREPEND (inputFeed held|=mask, pressed|=edge — upstream of the copy)");
     Ok(())
 }
 
