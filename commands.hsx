@@ -46,3 +46,24 @@ match = {
   getCharacter: function(i) { return getCharacters()[i]; },
   characterCount: function() { return getCharacters().length; }
 };
+
+// matchStatus() — the data behind Peptide's "matchStatus" TCP channel (a host-polled feed,
+// NOT chat). Returns "MATCHSTATUS:" + one record per active character, ";"-separated, each
+// "<id>|<damage>|<animation>". Robust to no live match (returns just "MATCHSTATUS:"). Every
+// field is null-guarded so the feed never throws (a thrown poll would land in chat).
+matchStatus = function() {
+  var cs = getCharacters();
+  var out = "MATCHSTATUS:";
+  var i = 0;
+  while (i < cs.length) {
+    var c = cs[i];
+    if (i > 0) out += ";";
+    var goc = (c != null) ? c.gameObjectContent : null;
+    var nm  = (goc != null && goc.id != null) ? goc.id : "?";
+    var dmg = (c != null && c.damage != null) ? c.damage._damage : 0;
+    var an  = (c != null && c.animation != null) ? c.animation.currentAnimation : "?";
+    out += nm + "|" + dmg + "|" + an;
+    i += 1;
+  }
+  return out;
+};

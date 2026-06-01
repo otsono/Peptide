@@ -835,10 +835,10 @@ fn connect_edit(
     // Character/stage/assist baked as launch defaults. The char drives the self-bootstrap
     // (a custom .fra at <install>/custom/<char>/<char>.fra) and the bare-`s`/auto-launch
     // Base-game defaults when an arg is omitted: character → impostor, stage →
-    // teststage (the training stage), assist → commandervideoassist. All generic —
+    // thespire (a real loadable stage), assist → commandervideoassist. All generic —
     // derived from the injector args; these are just the fallbacks.
     let cname = char_name.as_deref().unwrap_or("impostor");
-    let sname = stage_name.as_deref().unwrap_or("teststage");
+    let sname = stage_name.as_deref().unwrap_or("thespire");
     let aname = assist_name.as_deref().unwrap_or("commandervideoassist");
     let char_path = format!("{install_dir}/custom/{cname}/{cname}.fra");
     let char_pkgid = format!("{cname}.{cname}");

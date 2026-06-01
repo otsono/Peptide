@@ -179,6 +179,20 @@ pub fn translate(line: &str) -> Translated {
     Translated::Wire(format!("e {line}"))
 }
 
+// ── TCP channels ─────────────────────────────────────────────────────────────────
+// Some TCP lines belong to a side CHANNEL (a structured feed), not the chat. They are
+// routed by the GUI to the relevant widget and SUPPRESSED everywhere a human reads the
+// raw stream (the chat, the CLI). The first channel is `matchStatus` (host-polled).
+pub const MATCH_STATUS_TAG: &str = "MATCHSTATUS:";
+
+/// If `line` is a channel line, return `(channel_name, payload)`. The engine wraps eval
+/// replies as `E:<result>`, so a polled `e matchStatus()` arrives as `E:MATCHSTATUS:<…>`;
+/// we look through the `E:` prefix. Used by the GUI (to route) and the CLI (to suppress).
+pub fn channel_payload(line: &str) -> Option<(&'static str, &str)> {
+    let l = line.strip_prefix("E:").unwrap_or(line);
+    l.strip_prefix(MATCH_STATUS_TAG).map(|p| ("matchStatus", p))
+}
+
 /// A friendly gloss for an engine reply line (additive — callers keep the raw
 /// line and append this in parens). Returns None when there's nothing to add.
 pub fn gloss(reply: &str) -> Option<String> {

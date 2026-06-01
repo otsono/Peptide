@@ -61,6 +61,23 @@ pub fn launch() -> std::io::Result<()> {
     let cleanup: SharedCleanup = Arc::new(Mutex::new(None));
     let conn: SharedConn = Arc::new(Mutex::new((0, String::new())));
 
+    // matchStatus feed: poll the engine ~5×/s while connected. The reply (E:MATCHSTATUS:…)
+    // is routed to the status widgets by spawn_reader, NOT the chat. Host-driven so the
+    // engine needs no per-frame bytecode (commands.hsx::matchStatus does the gathering).
+    {
+        let poll_writer = writer.clone();
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_millis(200));
+            if let Ok(mut g) = poll_writer.lock() {
+                if let Some(s) = g.as_mut() {
+                    if s.write_all(b"e matchStatus()\n").and_then(|_| s.flush()).is_err() {
+                        // socket dropped — leave it; boot_new/reconnect installs a fresh one
+                    }
+                }
+            }
+        });
+    }
+
     let char_name = crate::config::Config::load().char_name();
     let init = format!("window.__CHAR__={};", js_str(&char_name));
 
@@ -575,6 +592,12 @@ fn spawn_reader(mut reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>) {
                         let line = String::from_utf8_lossy(&buf).trim_end_matches('\r').to_string();
                         buf.clear();
                         if line.contains("RESDIAG:") { resdiag.push(line); continue; } // enhanced log, not chat
+                        // Channel feeds (matchStatus, …) route to their widget, not the chat.
+                        if let Some((_ch, payload)) = crate::interpreter::channel_payload(&line) {
+                            let _ = proxy.send_event(Ev::Js(format!(
+                                "window.onMatchStatus && onMatchStatus({})", js_str(payload))));
+                            continue;
+                        }
                         if let Some(a) = line.strip_prefix("ANIM:") {
                             if a == last_anim { continue; }
                             last_anim = a.to_string();
