@@ -287,6 +287,25 @@ and opens it on success (`--no-open` to just build). `build/` is git-ignored.
 or build natively on Windows with `cargo build --release`. The webview uses the
 WebView2 runtime, which ships with Windows 10/11.
 
+**Linux build.** `./tools/make-linux.sh` builds `peptide` into `build/linux/`
+(with its `data/` assets alongside). Run it **natively on Linux** — wry links the
+system WebKitGTK + GTK3 dev libs, so cross-compiling from macOS isn't practical.
+Build deps (Debian/Ubuntu): `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev
+build-essential` (older distros: `libwebkit2gtk-4.0-dev`; Fedora:
+`webkit2gtk4.1-devel gtk3-devel`).
+
+> **Blank-screen note.** WebKitGTK's default DMABUF/GBM renderer paints nothing on
+> many setups (NVIDIA proprietary drivers, VMs/virtualized GPUs, some Wayland
+> sessions) — the window opens but the page never shows. `main()` defaults
+> `WEBKIT_DISABLE_DMABUF_RENDERER=1` on Linux to avoid this (set it yourself to
+> override). If a machine still renders blank, try `WEBKIT_DISABLE_COMPOSITING_MODE=1`.
+
+All three packagers stage the runtime data files (`peptide_ui.html`,
+`commands.hsx`, `match_settings.conf`, `mappings/`) into a `data/` folder next to
+the binary. If those are missing at launch the GUI shows a native error dialog
+(what's missing + where it looked) and exits, rather than crashing mid-open — see
+`missing_assets_report` in `src/main.rs`.
+
 ---
 
 ## 4. The conversion pipeline

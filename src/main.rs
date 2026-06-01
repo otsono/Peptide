@@ -58,6 +58,17 @@ use hlbc::types::{Reg, RefString};
 use hlbc::Bytecode;
 
 fn main() -> anyhow::Result<()> {
+    // WebKitGTK blank-screen workaround (Linux only). The default DMABUF/GBM
+    // renderer paints nothing on many setups (NVIDIA proprietary drivers, VMs /
+    // virtualized GPUs, some Wayland sessions) — the wry window opens but the page
+    // never shows, i.e. a blank screen. Disabling the DMABUF renderer falls back to
+    // a software/GLX path that renders correctly. Set before any GTK/webview init
+    // (the webview is built later in gui::launch). Respect an explicit user value.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     // Diagnostic heap cap (see LimitAlloc). CONV_MEM_LIMIT_MB=2000 caps live heap
     // at 2 GB; unset/0 disables (normal operation). Honored for `peptide convert`.
     if let Ok(mb) = std::env::var("CONV_MEM_LIMIT_MB") {
@@ -676,6 +687,38 @@ fn read_asset(rel: &str) -> String {
          Ship it next to the binary, run from the repo, or set PEPTIDE_ASSET_DIR.",
         tried.iter().map(|p| format!("  - {}", p.display())).collect::<Vec<_>>().join("\n")
     );
+}
+
+/// GUI-open preflight: verify the runtime data files peptide reads from disk are
+/// present, returning a friendly multi-line message (what's missing + where we
+/// looked) when any are absent. `None` => everything resolved. Lets the GUI show a
+/// native dialog and exit cleanly instead of `read_asset` panicking *after* the
+/// window already opened (which looks like a crash / blank flash to the user).
+pub fn missing_assets_report() -> Option<String> {
+    // The files the packagers stage into `data/` and that the GUI/engine read on
+    // open. The converter's `mappings/` dir has its own loud error at convert time.
+    const REQUIRED: &[&str] = &["peptide_ui.html", "commands.hsx", "match_settings.conf"];
+    let missing: Vec<&str> = REQUIRED
+        .iter()
+        .copied()
+        .filter(|rel| !asset_candidate_paths(rel).iter().any(|p| p.is_file()))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let mut msg = String::from("Peptide can't find its runtime data files:\n\n");
+    for rel in &missing {
+        msg.push_str(&format!("  •  {rel}\n"));
+    }
+    msg.push_str(
+        "\nThese ship in a `data/` folder next to the binary. Reinstall, rebuild \
+         with tools/make-linux.sh (or make-app.sh / make-win.sh), or point \
+         PEPTIDE_ASSET_DIR at the folder that holds them.\n\nLooked in:\n",
+    );
+    for p in asset_candidate_paths(missing[0]) {
+        msg.push_str(&format!("  -  {}\n", p.display()));
+    }
+    Some(msg)
 }
 
 /// Resolve the headless match settings → `(lives, time)`, reading

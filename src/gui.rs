@@ -46,6 +46,20 @@ const PROJECTS_LIST: &str = "@@projects:list";      // enumerate .fraytools proj
 const FRAY_PREFIX: &str = "@@fray:";                // @@fray:export|render|harness:<json>
 
 pub fn launch() -> std::io::Result<()> {
+    // Preflight the runtime data files BEFORE opening a window, so a missing
+    // peptide_ui.html / commands.hsx / match_settings.conf shows a friendly native
+    // dialog and exits cleanly — instead of read_asset panicking after the window
+    // is already up (which reads as a crash / blank flash, especially on a packaged
+    // build whose `data/` folder didn't ship).
+    if let Some(report) = crate::missing_assets_report() {
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Peptide — missing data files")
+            .set_description(&report)
+            .show();
+        return Err(io(&report));
+    }
+
     let event_loop = EventLoopBuilder::<Ev>::with_user_event().build();
     let window = WindowBuilder::new()
         .with_title("Peptide")

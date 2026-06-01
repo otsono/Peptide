@@ -78,8 +78,8 @@ A single conversion pulls an entire SSF2 character across to Fraymakers, end to 
   crate (`run_conversion`), driven by `peptide convert` and the app's converter
   screen.
 - **Desktop app** — `./tools/make-app.sh` wraps `peptide` in a double-clickable macOS
-  `Peptide.app`; `./tools/make-win.sh` cross-compiles the Windows `peptide.exe` (or
-  build natively with `cargo build --release`).
+  `Peptide.app`; `./tools/make-win.sh` cross-compiles the Windows `peptide.exe`;
+  `./tools/make-linux.sh` builds the Linux binary (run natively — see Build below).
 - **Editable conversion config** — JSONC mapping tables in
   `crates/ssf2-converter/mappings/` drive API translation, stat scaling,
   animation names, and hitbox-field mapping. Tune the conversion by editing data,
@@ -107,6 +107,20 @@ Everything below is for building, running, and hacking on the toolkit.
 ```bash
 cargo build --release   # → build/release/peptide (the single binary)
 ```
+
+Per-platform packagers (binary + a `data/` folder of runtime assets beside it):
+
+```bash
+./tools/make-app.sh      # macOS  → build/Peptide.app
+./tools/make-win.sh      # Windows → build/windows/peptide.exe (cross-compiles)
+./tools/make-linux.sh    # Linux  → build/linux/peptide (run natively on Linux)
+```
+
+**Linux build deps** (wry links system WebKitGTK + GTK3) — Debian/Ubuntu:
+`sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev build-essential`. If the GUI
+opens to a blank window, that's the WebKitGTK DMABUF renderer; Peptide defaults the
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` workaround on Linux (fallback:
+`WEBKIT_DISABLE_COMPOSITING_MODE=1`).
 
 The SSF2 → Fraymakers converter is a **library** (`crates/ssf2-converter`), driven
 through `peptide convert`. The ~30 `dump_*` / `check_*` diagnostic binaries are
