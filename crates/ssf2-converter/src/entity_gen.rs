@@ -455,8 +455,11 @@ pub fn generate_entity(
                                     // scripts all get the same 30→60fps
                                     // treatment from a single source of truth.
                                     let body = crate::api_mappings::translate_ssf2_to_fm(&body);
-                                    let var_types = crate::api_mappings::infer_ext_var_types(
+                                    let mut var_types = crate::api_mappings::infer_ext_var_types(
                                         &data.ext_vars, &data.ext_var_inits);
+                                    // Reserved names (self/match) are NOT wrapped — they
+                                    // resolve to the engine globals (mirrors haxe_gen).
+                                    for r in crate::api_mappings::RESERVED_EXT_VARS { var_types.remove(*r); }
                                     // (1) own script-function refs `self.<fn>` -> bare `<fn>`
                                     // (frame scripts share Script.hx's scope), then
                                     // (2) instance-var refs -> persistent .get()/.set().

@@ -25,10 +25,13 @@ fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// `ssf2-ssfs/` is a sibling of the repo root; the crate sits two levels below.
+/// `ssf2-ssfs/` is a sibling of the repo root. The crate manifest sits two
+/// levels below the repo root (`<repo>/crates/ssf2-converter`), so reaching the
+/// sibling means going up THREE levels: ssf2-converter → crates → repo →
+/// workspace, then into `ssf2-ssfs/`.
 fn sandbag_ssf_path() -> PathBuf {
     manifest_dir()
-        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
+        .ancestors().nth(3).map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ssf2-ssfs/sandbag.ssf")
 }

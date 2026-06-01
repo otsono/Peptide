@@ -794,11 +794,20 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     // `self.makeBool(false)` / `self.makeObject(null)`, with the kind
     // inferred from each var's init expression in `ext_var_inits`.
     // Wrapped wrappers expose `.get() / .set(v) / .inc() / .dec()`.
-    let var_types = crate::api_mappings::infer_ext_var_types(&data.ext_vars, &data.ext_var_inits);
+    let mut var_types = crate::api_mappings::infer_ext_var_types(&data.ext_vars, &data.ext_var_inits);
+    // An SSF2 ext var whose name collides with a RESERVED Fraymakers identifier must NOT be
+    // wrapped — emitting `var self = self.makeObject(null)` SHADOWS the real `self` API for
+    // the whole script, so every `self.foo()` in a function silently operates on a null
+    // wrapper (this is exactly what killed sandbag's down-special dashCheck). `self` (and the
+    // `match` global) already exist in scope; drop the wrapper so refs resolve to them, and
+    // strip them from var_types so the persistent-state pass leaves `self.x`/`match.x` alone.
+    for r in crate::api_mappings::RESERVED_EXT_VARS { var_types.remove(*r); }
+    let is_reserved = |n: &str| crate::api_mappings::RESERVED_EXT_VARS.contains(&n);
     if !data.ext_vars.is_empty() {
         out.push_str(&req("character.framework.instance_vars_comment", &fw.instance_vars_comment)
             .replace("{{char_name}}", &data.name));
         for v in &data.ext_vars {
+            if is_reserved(v) { continue; }
             let (factory, default) = match var_types.get(v).copied().unwrap_or(crate::api_mappings::ExtVarType::Object) {
                 crate::api_mappings::ExtVarType::Bool   => ("makeBool", "false"),
                 crate::api_mappings::ExtVarType::Int    => ("makeInt", "0"),
@@ -821,6 +830,7 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
         req("character.framework.link_frames_listener", &fw.link_frames_listener)
     );
     for (name, expr) in &data.ext_var_inits {
+        if is_reserved(name) { continue; } // reserved (self/match) — not a wrapped var
         // Skip names the SSF2 initialize body already covers — match both
         // the legacy `self.X = ` form (in case the merged body hasn't been
         // wrapped yet) and the new `X.set(` form.

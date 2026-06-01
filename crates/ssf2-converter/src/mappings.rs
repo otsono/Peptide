@@ -182,6 +182,12 @@ pub struct FrameParam {
     /// unchanged (e.g. 255 for the hitStun/hitLag "no override" sentinel).
     #[serde(default)]
     pub sentinel: Option<i64>,
+    /// Optional: when true, a literal `1` is left unchanged instead of doubled.
+    /// SSF2 plays at 30fps and FM at 60fps, so most frame counts double — but a
+    /// per-frame timer (`createTimer(1, …)`) should keep firing every engine
+    /// frame for responsiveness rather than becoming an every-other-frame poll.
+    #[serde(default)]
+    pub keep_one: bool,
 }
 
 /// A named API call carried by a passthrough or ssf2_only entry, with an

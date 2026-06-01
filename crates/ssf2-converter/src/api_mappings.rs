@@ -601,6 +601,11 @@ pub fn translate_ssf2_to_fm(code: &str) -> String {
         }
     }
 
+    // Translate the SSF2 "infinite timer" sentinel. Runs AFTER the literal
+    // replacements above have renamed createTimer → addTimer, so a single
+    // pass covers both spellings.
+    result = fix_timer_infinite_repeat(result);
+
     // Context-aware self.attachEffect(...) → match.createVfx(...) rewrite.
     // Needs the per-character effect→primary-animation map (set up by
     // haxe_gen::generate via `with_effect_animations`); a static regex
@@ -1724,6 +1729,15 @@ fn line_is_commented_at(code: &str, pos: usize) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtVarType { Bool, Int, Object }
 
+/// SSF2 ext-var names that collide with identifiers already in scope in a Fraymakers
+/// script and therefore must NOT be wrapped as persistent state. Wrapping one emits e.g.
+/// `var self = self.makeObject(null)`, which shadows the real reference for the rest of the
+/// file — silently breaking every `self.foo()` / `match.foo()` call (this is what killed
+/// sandbag's down-special: its `dashCheck` ran against a null `self`). These names are
+/// dropped from the wrapper declarations and left untouched by the persistent-state pass,
+/// so references resolve to the genuine engine-provided `self` / `match`.
+pub const RESERVED_EXT_VARS: &[&str] = &["self", "match"];
+
 /// Classify each ext_var as Bool / Int / Object based on its initial-value
 /// expression in `ext_var_inits`. Vars with no init expression — or whose
 /// init isn't a clean literal — fall back to Object (which can hold any
@@ -1818,6 +1832,32 @@ fn neutralize_getter_callbacks(code: String) -> String {
     // addEventListener: callback is the 2nd arg (options may follow)
     let re_evt = Regex::new(r"(addEventListener\(\s*[^,()]+,\s*)[A-Za-z_][\w.]*\.get\(\)(\s*[,)])").unwrap();
     re_evt.replace_all(&code, format!("${{1}}{}${{2}}", no_op)).into_owned()
+}
+
+/// Translate SSF2's "repeat forever" timer sentinel to Fraymakers' spelling.
+///
+/// SSF2's `createTimer`/`addTimer(delay, repeatCount, callback)` follows the
+/// AS3 `flash.utils.Timer` convention where a non-positive `repeatCount` (`0`
+/// is how SSF2 character scripts spell it) means "repeat indefinitely".
+/// Fraymakers reserves `-1` for an infinite timer; a literal `0` there fires
+/// zero/one time and then silently stops. A polling timer copied verbatim —
+/// e.g. sandbag's down-special `addTimer(2, 0, dashCheck)`, which keeps
+/// reading held controls until a direction is pressed and only then removes
+/// itself — therefore never polls, so the move applies no momentum and ignores
+/// button presses. Rewrite the `0` repeat count to `-1`.
+///
+/// A `0`-repeat timer is meaningless in Fraymakers (you would not register a
+/// timer to fire zero times), so every `0` we see here is an SSF2 infinite
+/// sentinel — the rewrite is unconditional and safe. Positive counts and an
+/// already-correct `-1` are left untouched.
+fn fix_timer_infinite_repeat(code: String) -> String {
+    use regex::Regex;
+    // addTimer( <delay> , 0 , …  →  addTimer( <delay> , -1 , …
+    // `[^,()]+` matches a simple delay arg (number or identifier), mirroring
+    // `neutralize_getter_callbacks`; it deliberately skips delays that contain
+    // a nested call (rare for a timer delay).
+    let re = Regex::new(r"(addTimer\(\s*[^,()]+,\s*)0(\s*,)").unwrap();
+    re.replace_all(&code, "${1}-1${2}").into_owned()
 }
 
 /// Rewrite references to the character's OWN script functions from `self.<fn>` to bare
@@ -2251,7 +2291,7 @@ pub fn load_api_methods_json(mappings_dir: &std::path::Path) -> Vec<(String, Str
 /// of `marker` (after optional spaces/tabs). Values `>= skip_at` are treated as
 /// sentinels and left unchanged; non-literal arguments (expressions, negatives)
 /// are skipped because no digits immediately follow the marker.
-fn double_int_after_marker(code: &str, marker: &str, skip_at: i64) -> String {
+fn double_int_after_marker(code: &str, marker: &str, skip_at: i64, keep_one: bool) -> String {
     let mut out = String::with_capacity(code.len() + 16);
     let bytes = code.as_bytes();
     let mut i = 0usize;
@@ -2269,6 +2309,7 @@ fn double_int_after_marker(code: &str, marker: &str, skip_at: i64) -> String {
             }
             if j > start {
                 match code[start..j].parse::<i64>() {
+                    Ok(1) if keep_one => out.push_str(&code[start..j]),
                     Ok(n) if n < skip_at => out.push_str(&(n * 2).to_string()),
                     _ => out.push_str(&code[start..j]),
                 }
@@ -2288,7 +2329,7 @@ fn double_int_after_marker(code: &str, marker: &str, skip_at: i64) -> String {
 /// bracket-depth tracking, so commas inside nested calls/arrays/objects don't
 /// miscount. Non-literal and negative arguments are left unchanged; a literal
 /// `>= skip_at` is treated as a sentinel and left unchanged.
-fn double_call_arg(code: &str, fn_name: &str, arg_idx: usize, skip_at: i64) -> String {
+fn double_call_arg(code: &str, fn_name: &str, arg_idx: usize, skip_at: i64, keep_one: bool) -> String {
     let marker = format!("{}(", fn_name);
     let bytes = code.as_bytes();
     let mut out = String::with_capacity(code.len() + 16);
@@ -2324,6 +2365,7 @@ fn double_call_arg(code: &str, fn_name: &str, arg_idx: usize, skip_at: i64) -> S
         while k < code.len() && bytes[k].is_ascii_digit() { k += 1; }
         if k > start {
             match code[start..k].parse::<i64>() {
+                Ok(1) if keep_one => out.push_str(&code[start..k]),
                 Ok(n) if n < skip_at => out.push_str(&(n * 2).to_string()),
                 _ => out.push_str(&code[start..k]),
             }
@@ -2345,8 +2387,8 @@ pub fn double_frame_counts(code: &str) -> String {
         if !p.isframe { continue; }
         let skip_at = p.sentinel.unwrap_or(i64::MAX);
         out = match p.kind.as_str() {
-            "field" => double_int_after_marker(&out, &format!("{}:", p.name), skip_at),
-            "call"  => double_call_arg(&out, &p.name, p.arg, skip_at),
+            "field" => double_int_after_marker(&out, &format!("{}:", p.name), skip_at, p.keep_one),
+            "call"  => double_call_arg(&out, &p.name, p.arg, skip_at, p.keep_one),
             _ => out, // unknown kind — leave untouched
         };
     }
@@ -2408,6 +2450,32 @@ mod tests {
         assert!(output.contains("angle: 45"), "direction: not renamed to angle:");
         assert!(output.contains("baseKnockback: 10"), "power: not renamed");
         assert!(output.contains("self.reactivateHitboxes()"), "refreshAttackID not translated");
+    }
+
+    #[test]
+    fn test_timer_infinite_repeat_translated() {
+        // SSF2's 0 = "repeat forever" must become Fraymakers' -1.
+        let out = translate_ssf2_to_fm("self.addTimer(2, 0, dashCheck);");
+        assert!(out.contains("addTimer(2, -1, dashCheck)"), "0 repeat not rewritten to -1: {out}");
+        // SSF2 createTimer is renamed to addTimer and its delay is 30→60fps
+        // doubled (52 → 104), then the repeat sentinel is fixed.
+        let out2 = translate_ssf2_to_fm("self.createTimer(52, 0, loopSound2);");
+        assert!(out2.contains("addTimer(104, -1, loopSound2)"), "createTimer 0 not rewritten: {out2}");
+        // Positive counts and an existing -1 are untouched; a 0 delay stays.
+        let out3 = translate_ssf2_to_fm("self.addTimer(0, 1, enable);\nself.addTimer(2, -1, poll);");
+        assert!(out3.contains("addTimer(0, 1, enable)"), "positive count or 0 delay altered: {out3}");
+        assert!(out3.contains("addTimer(2, -1, poll)"), "existing -1 altered: {out3}");
+    }
+
+    #[test]
+    fn test_timer_delay_one_kept_per_frame() {
+        // A per-frame SSF2 timer (createTimer delay 1) must stay at 1 — NOT
+        // double to 2 — so it keeps polling every engine frame.
+        let out = translate_ssf2_to_fm("self.createTimer(1, 0, dashCheck);");
+        assert!(out.contains("addTimer(1, -1, dashCheck)"), "delay 1 should stay 1: {out}");
+        // Larger delays still scale 30→60fps.
+        let out2 = translate_ssf2_to_fm("self.createTimer(3, 0, poll);");
+        assert!(out2.contains("addTimer(6, -1, poll)"), "delay 3 should double to 6: {out2}");
     }
 
     #[test]

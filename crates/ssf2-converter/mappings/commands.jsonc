@@ -5,6 +5,11 @@
 // sits at the top of mappings/ rather than under mappings/character/.
 // Loaded at runtime; built-in defaults are used if missing or malformed.
 // JSONC: // comments and trailing commas are allowed.
+//
+// API REFERENCE: the "Fraymakers/api-types-plugin" / "fraymakers-api.d.ts"
+// citations below are the raw TS declarations; the same API rendered as
+// browsable docs (functions/classes/scripts) lives at the community-run
+// https://shifterbit.github.io/fraymakers-api-docs/ — start there.
 // ─────────────────────────────────────────────────────────────────────────
 {
   // replacements: the ordered list of literal find→replace pairs applied to
@@ -68,6 +73,7 @@
     // FM API renames — confirmed against Fraymakers/api-types-plugin (the
     // authoritative TS declarations of every class+method) and real usage in
     // Fraymakers/character-template's Script.hx and character.entity.
+    // Also see the rendered docs: https://shifterbit.github.io/fraymakers-api-docs/
     { "from": ".getOpponents(",          "to": ".getFoes(" },
     { "from": ".getGrabbedOpponents(",   "to": ".getAllGrabbedFoes(" },
     { "from": ".getGrabbedOpponent(",    "to": ".getGrabbedFoe(" },
@@ -186,7 +192,8 @@
     { "from": "selfHitLag:",           "to": "selfHitstop:" },
     // High-frequency SSF2 hitbox-only names with direct FM equivalents.
     // Cross-checked against Fraymakers/api-types-plugin updateHitboxStats
-    // props. Counts indicate corpus-wide occurrences (45 chars scanned).
+    // props (also rendered at https://shifterbit.github.io/fraymakers-api-docs/).
+    // Counts indicate corpus-wide occurrences (45 chars scanned).
     { "from": "effectSound:",          "to": "hitSoundOverride:" },    // 225
     { "from": "effect_id:",            "to": "hitEffectOverride:" },   // 125
     { "from": "effect_ID:",            "to": "hitEffectOverride:" },   //   1
@@ -270,7 +277,8 @@
   //
   // FM target field reference: VfxStats constructor from
   // Fraymakers/api-types-plugin's fraymakers-api.d.ts (mirrors the
-  // Haxe VfxStatsProps typedef). Mappings were chosen by walking
+  // Haxe VfxStatsProps typedef; also rendered at
+  // https://shifterbit.github.io/fraymakers-api-docs/). Mappings were chosen by walking
   // through all 1,583 prop-bag attachEffect calls across 46 SSF2
   // characters and tallying every key:
   //   x:1161  y:1039  scaleX:740  scaleY:735  parentLock:321
@@ -323,7 +331,8 @@
   //
   // Coverage was picked from the corpus tally (most-used SSF2 global
   // names + best-fit FM constants from fraymakers-api.d.ts lines
-  // 2948–3064). Unmapped global_* names (e.g. `global_wind_wave`,
+  // 2948–3064; also rendered at https://shifterbit.github.io/fraymakers-api-docs/).
+  // Unmapped global_* names (e.g. `global_wind_wave`,
   // `global_bubbles`) fall through to the per-character `getContent`
   // path and use the `active` animation fallback — porters can either
   // add a mapping here or supply a local `<name>.entity`.
@@ -360,7 +369,7 @@
   // visible TODO comment in the frame-script Haxe.
   //
   // Constants are the verbatim members of the GlobalSfx class
-  // (Fraymakers/fraymakers-api-docs docs/classes/GlobalSfx.md). Best-fit
+  // (community API docs: https://shifterbit.github.io/fraymakers-api-docs/ -> classes/GlobalSfx). Best-fit
   // matches from the corpus tally of unmatched playSound ids across
   // mario/kirby/link/samus.
   "global_sound_map": {
@@ -392,7 +401,8 @@
         // takes no hitbox id; everything routed here ends up in a single
         // updateAnimationStats({ … }) call per source line.
         // Cross-checked against Fraymakers/api-types-plugin
-        // AnimationStatsProps (lines 796-835 of fraymakers-api.d.ts).
+        // AnimationStatsProps (lines 796-835 of fraymakers-api.d.ts; also
+        // rendered at https://shifterbit.github.io/fraymakers-api-docs/).
         //
         // Boolean flags
         "cancelWhenAirborne": "updateAnimationStats.leaveGroundCancel",
@@ -460,7 +470,9 @@
   // Optional 'sentinel': a value at/above which the parameter is left alone.
   "frame_params": [
     // createTimer(delay, repeatCount, callback) — only the delay (arg 0).
-    { "kind": "call",  "name": "createTimer",     "arg": 0, "isframe": true },
+    // keep_one: a per-frame timer (delay 1) keeps firing every engine frame
+    // rather than doubling to every-other-frame, preserving poll responsiveness.
+    { "kind": "call",  "name": "createTimer",     "arg": 0, "isframe": true, "keep_one": true },
     // hit-freeze / hitstun durations; 255 = "no override" sentinel, kept.
     { "kind": "field", "name": "hitStun",        "isframe": true, "sentinel": 255 },
     { "kind": "field", "name": "selfHitStun",    "isframe": true, "sentinel": 255 },
@@ -502,6 +514,7 @@
 
     // Confirmed against Fraymakers/api-types-plugin TS declarations + real
     // usage in Fraymakers/character-template (Script.hx + character.entity).
+    // Rendered docs: https://shifterbit.github.io/fraymakers-api-docs/
     // Position / transform
     { "name": "getX",                  "note": "Entity coordinate accessor — same name" },
     { "name": "getY",                  "note": "Entity coordinate accessor — same name" },
