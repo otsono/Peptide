@@ -301,15 +301,21 @@ build-essential` (older distros: `libwebkit2gtk-4.0-dev`; Fedora:
 > override). If a machine still renders blank, try `WEBKIT_DISABLE_COMPOSITING_MODE=1`.
 
 **Runtime data files.** Peptide reads `peptide_ui.html`, `commands.hsx`,
-`match_settings.conf`, and `mappings/` from disk (editable; never `include_str!`-
-embedded — a missing one must fail loudly, not ship a stale baked copy). `build.rs`
-stages them into `<target>/<profile>/data/` on every build (the same
-`<exe-dir>/data/` location `asset_candidate_paths` checks first), so even a plain
-`cargo build` output is self-sufficient as long as the `data/` sibling travels with
-the binary. The three packagers stage the same `data/` for their bundles. If the
-files are missing at launch the GUI shows a native error dialog (what's missing +
-where it looked) and exits cleanly, rather than `read_asset` panicking mid-open —
-see `missing_assets_report` in `src/main.rs`.
+`match_settings.conf`, and `mappings/` from disk (editable; not `include_str!`-baked
+as the primary source — a missing data file must fail loudly, not silently ship a
+stale baked copy). `build.rs` stages them into `<target>/<profile>/data/` on every
+build (the same `<exe-dir>/data/` location `asset_candidate_paths` checks first), so
+even a plain `cargo build` output is self-sufficient as long as the `data/` sibling
+travels with the binary. The three packagers stage the same `data/` for their bundles.
+
+`peptide_ui.html` is the one exception: it's the window's UI shell, so `read_ui_html`
+reads it from disk (an on-disk copy still WINS — editable, no stale-copy bug) but
+falls back to a copy `include_str!`-embedded at compile time when none is found. That
+guarantees the GUI always renders, even for a bare binary with no `data/`. The
+on-disk-only files (`commands.hsx`, `match_settings.conf`) are still required: if
+they're missing the GUI shows a native error dialog (what's missing + where it
+looked) and exits cleanly, rather than `read_asset` panicking mid-open — see
+`missing_assets_report` in `src/main.rs`.
 
 ---
 
