@@ -1,0 +1,1 @@
+import https://github.com/Fraymakers/character-template @ b23f663

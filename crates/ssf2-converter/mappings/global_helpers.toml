@@ -1,0 +1,16 @@
+# Global Haxe templates — frame-script helpers that run in ANY entity context
+# (character, projectile, …). `{{slot}}` placeholders are filled at codegen time.
+
+[playsound]
+
+# {{global_sfx}}
+global = 'AudioClip.play(GlobalSfx.{{global_sfx}})'
+
+# {{ssf2_id}}
+asset = 'AudioClip.play(self.getResource().getContent("{{ssf2_id}}"))'
+
+# {{placeholder_id}}
+placeholder_no_static_id = 'AudioClip.play(self.getResource().getContent("{{placeholder_id}}")) /* TODO: replace placeholder — original SSF2 playSound had no static string id */'
+
+# {{placeholder_id}}, {{ssf2_id}}
+placeholder_unmapped = 'AudioClip.play(self.getResource().getContent("{{placeholder_id}}")) /* TODO: replace placeholder — original SSF2 sound "{{ssf2_id}}" has no FM equivalent */'

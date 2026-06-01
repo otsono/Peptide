@@ -1,0 +1,5 @@
+# Build output lives in ./build (not the default ./target). The single binary lands at
+# build/release/peptide; tools/make-app.sh publishes build/Peptide.app alongside it.
+# Relative target-dir is resolved against this config file's directory (the repo root).
+[build]
+target-dir = "build"

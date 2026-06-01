@@ -1,0 +1,173 @@
+// ─────────────────────────────────────────────────────────────────────────
+// stats.jsonc — SSF2 → Fraymakers stat conversion (CHARACTER scope)
+//
+// Drives every value in the generated CharacterStats.hx. Loaded at runtime;
+// the converter falls back to its built-in defaults if this file is missing
+// or malformed. Edit any value/formula/comment here — no recompile needed.
+// JSONC: // comments and trailing commas are allowed.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  // size_multiplier: global SSF2 → Fraymakers size factor multiplied into
+  // baseScaleX / baseScaleY (SSF2 sprites render ~1.9× smaller than Fraymakers).
+  "size_multiplier": 1.9,
+
+  // field_keys: the SSF2 stat key names to try (in order) for each
+  // Fraymakers stat field; the first key present in the SWF data wins.
+  // ── SSF2 CharacterStat → Fraymakers GameObjectStats/CharacterStats mapping ──
+  //   weight1            -> weight                (GameObjectStats)
+  //   gravity            -> gravity               (GameObjectStats)
+  //   max_ySpeed         -> terminalVelocity      (GameObjectStats, via fall_speed)
+  //   fastFallSpeed      -> fastFallSpeed         (CharacterStats)
+  //   norm_xSpeed        -> walkSpeedCap          (CharacterStats, via walk_speed)
+  //   max_xSpeed         -> dashSpeed             (CharacterStats, via dash_speed)
+  //   accel_rate_air     -> aerialSpeedAcceleration (GameObjectStats, via air_mobility)
+  //   decel_rate_air     -> aerialFriction        (GameObjectStats, via air_friction)
+  //   max_jump           -> doubleJumps count     (max_jumps, +1 offset)
+  //   jumpSpeed          -> jumpSpeed             (CharacterStats, via jump_height)
+  //   jumpSpeedMidair    -> doubleJumpSpeeds[]    (CharacterStats, via double_jump_height)
+  //   shortHopSpeed      -> shortHopSpeed         (CharacterStats)
+  //   accel_rate         -> walkSpeedAcceleration (CharacterStats)
+  //   decel_rate         -> friction              (GameObjectStats)
+  //   accel_start        -> walkSpeedInitial      (CharacterStats)
+  //   accel_start_dash   -> runSpeedInitial       (CharacterStats)
+  //   dodgeSpeed         -> dodgeRollSpeed        (CharacterStats)
+  //   jumpStartup        -> (internal only — jump-squat frame count, not an FM stat)
+  // No clean FM equivalent (left unmapped): max_jumpSpeed, groundToAirMultiplier,
+  //   dodgeDecel, roll_speed, roll_decay, max_projectile, width, height.
+  "field_keys": {
+    "weight": ["weight1", "weight"],
+    "gravity": ["gravity"],
+    "fall_speed": ["max_ySpeed", "fallSpeed"],
+    "fast_fall_speed": ["fastFallSpeed"],
+    "walk_speed": ["norm_xSpeed", "walkSpeed"],
+    "dash_speed": ["max_xSpeed", "dashSpeed"],
+    "air_mobility": ["accel_rate_air", "airMobility"],
+    "max_jumps": ["max_jump", "maxJumps"],
+    "jump_height": ["jumpSpeed", "jumpHeight"],
+    "double_jump_height": ["jumpSpeedMidair", "doubleJumpHeight"],
+    "air_friction": ["decel_rate_air", "airFriction"],
+  },
+
+  // multipliers: scale a raw SSF2 value into Fraymakers units via
+  //   fm = max(floor, raw / divisor * target)
+  // The air_friction multiplier is applied to the absolute value.
+  "multipliers": {
+    "gravity":      { "divisor": 1.3,  "target": 0.84, "floor": 0.3 },
+    "speed":        { "divisor": 13.0, "target": 9.25, "floor": 0.5 },
+    "jump":         { "divisor": 17.4, "target": 15.0, "floor": 5.0 },
+    "walk":         { "divisor": 4.0,  "target": 3.25, "floor": 1.0 },
+    "dash":         { "divisor": 11.0, "target": 8.5,  "floor": 2.0 },
+    "air_friction": { "divisor": 0.15, "target": 0.20, "floor": 0.05 },
+  },
+
+  // offsets: integer offsets added to a stat after extraction.
+  // SSF2 max_jump counts midair jumps; Fraymakers maxJumps counts total.
+  "offsets": {
+    "max_jumps": 1,
+  },
+
+  // derivations: stats computed from other already-converted stats, written
+  // as plain expression strings. Available variables: jump_speed,
+  // air_mobility_raw, aerial_friction. Functions: max, min, clamp (plus the
+  // usual fasteval built-ins). Each expression is compiled once at load time.
+  "derivations": {
+    // short hop ~55% of the converted full-jump speed.
+    "shortHopSpeed":  "jump_speed * 0.55",
+    // aerial speed cap scaled from the stronger of air mobility / aerial friction.
+    "aerialSpeedCap": "max(air_mobility_raw, aerial_friction) * 5.0",
+  },
+
+  // constants: flat default values emitted verbatim into CharacterStats.hx.
+  // Numbers, strings and arrays are all allowed and render as Haxe literals.
+  "constants": {
+    "friction": 0.57,
+    "walkSpeedInitial": 1.0,
+    "walkSpeedAcceleration": 0.3,
+    "runSpeedInitial": 4.75,
+    "runSpeedAcceleration": 0.55,
+    "runSpeedCap": 7.5,
+    "groundSpeedAcceleration": 0.3,
+    "groundSpeedCap": 11,
+    "aerialSpeedAcceleration": 0.45,
+    "doubleJumpSpeedFallback": 15.5,
+
+    // Character-template PHYSICS defaults — used as fallbacks when the SSF2 source
+    // lacks the value, so a converted character is never left with 0 weight/gravity/etc.
+    // (sourced from vendor/character-template/library/scripts/Character/CharacterStats.hx).
+    "weight": 100,
+    "gravity": 0.8,
+    "jumpSpeed": 15,
+    "terminalVelocity": 9.25,
+    "fastFallSpeed": 13.75,
+    "walkSpeedCap": 3.25,
+    "dashSpeed": 9.5,
+    "aerialFriction": 0.22,
+    "shortHopSpeed": 8.25,
+    "aerialSpeedCap": 6.5,
+
+    // Environmental collision body (ECB)
+    "floorHeadPosition": 86,
+    "floorHipWidth": 29,
+    "floorHipXOffset": 0,
+    "floorHipYOffset": 0,
+    "floorFootPosition": 0,
+    "aerialHeadPosition": 86,
+    "aerialHipWidth": 29,
+    "aerialHipXOffset": 0,
+    "aerialHipYOffset": 0,
+    "aerialFootPosition": 25,
+
+    // Camera box
+    "cameraBoxOffsetX": 25,
+    "cameraBoxOffsetY": 75,
+    "cameraBoxWidth": 200,
+    "cameraBoxHeight": 250,
+
+    // Roll and ledge jump
+    "techRollSpeed": 18,
+    "techRollSpeedStartFrame": 14,
+    "techRollSpeedLength": 2,
+    "dodgeRollSpeed": 13,
+    "dodgeRollSpeedStartFrame": 6,
+    "dodgeRollSpeedLength": 2,
+    "getupRollSpeed": 15.5,
+    "getupRollSpeedStartFrame": 4,
+    "getupRollSpeedLength": 2,
+    "ledgeRollSpeed": 14,
+    "ledgeRollSpeedStartFrame": 2,
+    "ledgeRollSpeedLength": 2,
+    "ledgeJumpXSpeed": 2.5,
+    "ledgeJumpYSpeed": -10,
+
+    // Airdash
+    "airdashInitialSpeed": 11,
+    "airdashSpeedCap": 12.5,
+    "airdashAccelMultiplier": 0.4,
+    "airdashCancelSpeedConservation": 0.9,
+
+    // Shield
+    "shieldCrossupThreshold": 16,
+    "shieldFrontNineSliceContent": "global::vfx.vfx_shield_front",
+    "shieldFrontXOffset": 10.5,
+    "shieldFrontYOffset": 4,
+    "shieldFrontWidth": 53,
+    "shieldFrontHeight": 93,
+    "shieldBackNineSliceContent": "global::vfx.vfx_shield_back",
+    "shieldBackXOffset": 12.5,
+    "shieldBackYOffset": 4,
+    "shieldBackWidth": 49,
+    "shieldBackHeight": 93,
+
+    // Voice
+    "attackVoiceIds": [],
+    "hurtLightVoiceIds": [],
+    "hurtMediumVoiceIds": [],
+    "hurtHeavyVoiceIds": [],
+    "koVoiceIds": [],
+    "attackVoiceSilenceRate": 0.5,
+    "hurtLightSilenceRate": 1,
+    "hurtMediumSilenceRate": 0.5,
+    "hurtHeavySilenceRate": 0,
+    "koVoiceSilenceRate": 0,
+  },
+}

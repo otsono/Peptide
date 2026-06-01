@@ -1,0 +1,853 @@
+//! Peptide command interpreter — the host-side front end that takes our
+//! human-readable commands and translates them into the wire protocol read by
+//! the **bytecode command interpreter we patched into the game** (the dispatch
+//! chain injected by `connect_edit` in `main.rs`, which runs inside the engine's
+//! `update()` loop).
+//!
+//! Design split (see TESTING.md "Engine RE map"):
+//!   - The ENGINE-SIDE interpreter speaks a terse single-byte wire protocol: one
+//!     byte selects a handler in the patched-in bytecode (`s` = spawn/launch,
+//!     `x` = exit, `l` = load, `c` = console, `e` = run an hscript string). Only
+//!     `s` and `e` read a trailing argument line. That dispatch is hand-written
+//!     HashLink bytecode and is deliberately kept minimal.
+//!   - HUMANS (and the GUI) type full lines. THIS module is where the two meet:
+//!     `translate()` turns what you type into the wire line the patched engine
+//!     understands. A recognized command maps to its wire byte ("spawn sandbag"
+//!     -> "s sandbag", "exit" -> "x"); ANYTHING ELSE is treated as an hscript
+//!     expression and forwarded to the engine's `e` handler ("match.getCharacters()
+//!     [0].toState(CState.JAB)" -> "e match.getCharacters()[0].toState(CState.JAB)").
+//!     So this file is the vocabulary/routing layer ONLY — it never runs game
+//!     logic itself; the engine's bytecode interpreter (and the hscript it then
+//!     runs, see commands.hsx) does that on the other side of the socket.
+//!
+//! Both `peptide` (the patcher, which generates the move-dispatch jump table from
+//! `MOVES` for the still-present `m` bytecode handler) and `peptide-bridge` (the
+//! client that calls `translate()`) include this file, so the host-side command
+//! surface and the patched-in protocol can never drift apart.
+
+/// One human-facing command: the friendly name, its aliases, the single wire
+/// byte the engine dispatches on, a one-line argument summary, and a help blurb.
+pub struct Cmd {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    /// The wire byte the engine matches on. `'\0'` means handled entirely
+    /// client-side (e.g. `help`) and nothing is sent.
+    pub wire: char,
+    pub args: &'static str,
+    pub help: &'static str,
+}
+
+/// The friendly command set. Deliberately TINY: the real interface is `eval`
+/// (`e`) — every non-command line is run as hscript through the engine's own
+/// interpreter, which already exposes the full Fraymakers script API (CState,
+/// HitboxStats, Assist, MatchModifier, Announcer, …) plus live character access
+/// via `match.getCharacters()`. So instead of a per-feature command, you write
+/// the hscript directly:
+///     match.getCharacters()[0].getStateName()
+///     match.getCharacters()[0].toState(CState.SPECIAL_NEUTRAL)
+///     match.getCharacters()[0].damage._damage
+/// The earlier round of auto-player-0 sugar (state/move/physics/anim/…) was
+/// dropped in favour of this explicit, no-hidden-target model.
+pub const COMMANDS: &[Cmd] = &[
+    Cmd { name: "help",    aliases: &["h", "?"],            wire: '\0',
+          args: "",                              help: "list these commands + the hscript model (client-side; sends nothing)" },
+    Cmd { name: "spawn",   aliases: &["start", "launch", "s"], wire: 's',
+          args: "<char> [stage] [assist]",       help: "start a match with <char> (loads custom content if needed); stage/assist default to thespire/commandervideoassist" },
+    Cmd { name: "eval",    aliases: &["e"],                  wire: 'e',
+          args: "<hscript>",                     help: "run an hscript expression in the engine and print E:<result>. This is also the default for any unrecognized line." },
+    Cmd { name: "load",    aliases: &["l"],                 wire: 'l',
+          args: "",                              help: "synchronous custom-.fra load probe (diagnostic; spawn does this itself)" },
+    Cmd { name: "console", aliases: &["c"],                 wire: 'c',
+          args: "",                              help: "run the engine's debug console `help` command (RAN) — a side-effecting call hscript can't make, so it stays a wire byte" },
+    Cmd { name: "exit",    aliases: &["quit", "stop", "x"], wire: 'x',
+          args: "",                              help: "cleanly shut the engine down (hxd.System.exit — no kill-9 orphan)" },
+    Cmd { name: "hold",    aliases: &["press", "keys", "input"], wire: 'i',
+          args: "<control[+control…]>",          help: "hold control inputs (e.g. hold down+special) — feeds the engine's input→action mapping, not a synthetic keypress" },
+    Cmd { name: "release", aliases: &["unpress"], wire: 'i',
+          args: "",                              help: "release all injected controls (sends mask 0)" },
+    Cmd { name: "seq",     aliases: &["play", "inputs"], wire: 'i',
+          args: "<controls:frames> …",           help: "play a frame-accurate input timeline (e.g. seq down+special:2 right:12) — one input per engine frame, auto-releases at the end" },
+];
+
+/// Control name → button bit (matches pxf.input.ControlsObject's bitmask, field
+/// `buttons`). The `i` command sends the OR of the named bits as a decimal mask;
+/// the engine ORs it into m_heldControls every frame and derives the pressed edge.
+/// Directional + the core action buttons are bits 0–7; the rest follow the engine's
+/// own ControlsObject layout. `shield` aliases SHIELD1.
+pub const CONTROLS: &[(&str, u32)] = &[
+    ("up", 0x1), ("down", 0x2), ("left", 0x4), ("right", 0x8),
+    ("attack", 0x10), ("special", 0x20), ("action", 0x40), ("jump", 0x80),
+    ("shield", 0x100), ("shield1", 0x100), ("shield2", 0x200),
+    ("grab", 0x400), ("emote", 0x800), ("taunt", 0x800), ("pause", 0x1000),
+    ("dash", 0x20000),
+];
+
+/// Expand a `seq` timeline into one `i <mask>` wire line per engine frame.
+///
+/// The engine's command dispatcher processes exactly ONE command line per frame, so a
+/// burst of N `i` lines plays out as N consecutive frames of input — frame-accurate,
+/// paced by the engine itself (not by host timing). This is the replay-like surface for
+/// scripting multi-frame control tests.
+///
+/// Each token is a step `<controls>:<frames>` (or `<controls>*<frames>`; bare `<controls>`
+/// = 1 frame). `controls` is a `+`-joined control list (`down+special`), a raw mask
+/// (`34`/`0x22`), or one of `release`/`none`/`neutral`/empty for the 0 mask (held neutral).
+/// Steps are expanded to `frames` copies each and concatenated; a final `i 0` is appended
+/// so the character returns to neutral when the sequence ends. Total frames are capped.
+pub fn expand_sequence(tokens: &[&str]) -> Result<String, String> {
+    const MAX_FRAMES: usize = 4000;
+    let mut lines: Vec<String> = Vec::new();
+    for step in tokens {
+        let (ctrl, frames) = match step.split_once(':').or_else(|| step.split_once('*')) {
+            Some((c, n)) => {
+                let f: usize = n.trim().parse()
+                    .map_err(|_| format!("bad frame count in {step:?} (want <controls>:<frames>)"))?;
+                (c.trim(), f)
+            }
+            None => (step.trim(), 1),
+        };
+        if frames == 0 { return Err(format!("frame count must be >= 1 in {step:?}")); }
+        let mask = if ctrl.is_empty()
+            || matches!(ctrl.to_ascii_lowercase().as_str(), "release" | "none" | "neutral") {
+            0
+        } else {
+            controls_mask(&[ctrl])?
+        };
+        if lines.len() + frames > MAX_FRAMES {
+            return Err(format!("sequence too long (> {MAX_FRAMES} frames)"));
+        }
+        for _ in 0..frames { lines.push(format!("i {mask}")); }
+    }
+    if lines.is_empty() { return Err("empty sequence".into()); }
+    lines.push("i 0".into()); // auto-release: return to neutral at the end
+    Ok(lines.join("\n"))
+}
+
+/// Parse a `hold`/`press` argument list into a button bitmask. Tokens are the
+/// control names in [`CONTROLS`], joined by spaces and/or `+` (so `down+special`,
+/// `down special`, and `0x22`/`34` all work). A bare integer (decimal or `0x`-hex)
+/// passes through as a raw mask. Returns an error string naming the bad token.
+pub fn controls_mask(tokens: &[&str]) -> Result<u32, String> {
+    let mut mask = 0u32;
+    for raw in tokens {
+        for tok in raw.split('+').filter(|t| !t.is_empty()) {
+            let t = tok.to_ascii_lowercase();
+            if let Some((_, bit)) = CONTROLS.iter().find(|(n, _)| *n == t) {
+                mask |= bit;
+            } else if let Some(hex) = t.strip_prefix("0x") {
+                mask |= u32::from_str_radix(hex, 16).map_err(|_| format!("bad control or mask: {tok:?}"))?;
+            } else if let Ok(n) = t.parse::<u32>() {
+                mask |= n;
+            } else {
+                let names: Vec<&str> = CONTROLS.iter().map(|(n, _)| *n).collect();
+                return Err(format!("unknown control {tok:?} (known: {})", names.join(", ")));
+            }
+        }
+    }
+    Ok(mask)
+}
+
+/// Move name → CState field NAME, in the order the engine's generated jump table
+/// expects. The client sends the table INDEX (the ordinal) as the `m` argument;
+/// the engine resolves each CState field by NAME at patch time (robust to findex
+/// drift) and emits one comparison arm per entry, in this exact order. Keep the
+/// two in lockstep by sharing this one table.
+///
+/// Friendly names mirror the Fraymakers animation vocabulary so a modder can
+/// guess them (`tilt_down`, `aerial_forward`, `special_neutral`, …).
+pub const MOVES: &[(&str, &str)] = &[
+    ("jab",             "JAB"),
+    ("dash_attack",     "DASH_ATTACK"),
+    ("tilt_forward",    "TILT_FORWARD"),
+    ("tilt_up",         "TILT_UP"),
+    ("tilt_down",       "TILT_DOWN"),
+    // Strongs (smashes) are 3-phase in CState (_IN -> _CHARGE -> _ATTACK); _IN is the
+    // entry point that drives the whole move, so the friendly name maps there.
+    ("strong_forward",  "STRONG_FORWARD_IN"),
+    ("strong_up",       "STRONG_UP_IN"),
+    ("strong_down",     "STRONG_DOWN_IN"),
+    ("aerial_neutral",  "AERIAL_NEUTRAL"),
+    ("aerial_forward",  "AERIAL_FORWARD"),
+    ("aerial_back",     "AERIAL_BACK"),
+    ("aerial_up",       "AERIAL_UP"),
+    ("aerial_down",     "AERIAL_DOWN"),
+    ("special_neutral", "SPECIAL_NEUTRAL"),
+    ("special_side",    "SPECIAL_SIDE"),
+    ("special_up",      "SPECIAL_UP"),
+    ("special_down",    "SPECIAL_DOWN"),
+    ("grab",            "GRAB"),
+    ("stand",           "STAND"),
+    ("fall",            "FALL"),
+];
+
+/// Find the command whose name or alias matches `tok` (case-insensitive).
+pub fn lookup(tok: &str) -> Option<&'static Cmd> {
+    let t = tok.to_ascii_lowercase();
+    COMMANDS.iter().find(|c| c.name == t || c.aliases.iter().any(|a| *a == t))
+}
+
+/// Outcome of translating one friendly line.
+pub enum Translated {
+    /// Send this exact line to the engine.
+    Wire(String),
+    /// Handled client-side; print this text, send nothing.
+    Client(String),
+}
+
+/// Translate a friendly command line into the engine wire line.
+///
+/// - `help` / `?` → prints the help text, sends nothing.
+/// - a known friendly name (or its alias, or the bare wire letter) → rewritten
+///   to `<wire-byte> <args…>`; `move <name>` resolves the name to its ordinal.
+/// - anything else → passed through verbatim (forward-compatible: a raw wire
+///   line a human typed still reaches the engine untouched).
+pub fn translate(line: &str) -> Translated {
+    let line = line.trim();
+    if line.is_empty() {
+        return Translated::Wire(String::new());
+    }
+    let mut parts = line.split_whitespace();
+    let head = parts.next().unwrap_or("");
+    let rest: Vec<&str> = parts.collect();
+
+    // Only the irreducible commands are recognized here; EVERYTHING ELSE is an hscript
+    // expression run through the eval hook (`e <expr>`). So `match.getCharacters()[0].
+    // getStateName()`, `CState.JAB`, `1 + 2` etc. just evaluate — no per-feature command.
+    if let Some(cmd) = lookup(head) {
+        match cmd.name {
+            "help" => return Translated::Client(help_text()),
+
+            // Single-byte wire-protocol commands. spawn/exit/load are the irreducible
+            // bootstrap hooks. `console` stays here too: it's a side-effecting method call
+            // (h2d.Console.runCommand) the interp can't invoke — only field reads and
+            // Character-instance methods reflect through hscript — so its bytecode `c`
+            // handler remains the path.
+            "spawn" | "exit" | "load" | "console" => {
+                let mut wire = cmd.wire.to_string();
+                if !rest.is_empty() { wire.push(' '); wire.push_str(&rest.join(" ")); }
+                return Translated::Wire(wire);
+            }
+
+            // `eval <hscript>` — explicit form; the implicit default below does the same.
+            "eval" => {
+                return Translated::Wire(if rest.is_empty() { "e".into() }
+                                        else { format!("e {}", rest.join(" ")) });
+            }
+
+            // `hold`/`press <controls>` → resolve names to a button bitmask, send `i <mask>`.
+            // `release` → `i 0`. The engine ORs the mask into the live held controls each
+            // frame (and pulses the pressed edge), so its own input→action mapping fires.
+            "hold" => {
+                if rest.is_empty() {
+                    return Translated::Client(
+                        "usage: hold <control[+control…]>  (e.g. hold down+special). release = clear.\n".into());
+                }
+                return match controls_mask(&rest) {
+                    Ok(mask) => Translated::Wire(format!("i {mask}")),
+                    Err(e) => Translated::Client(format!("{e}\n")),
+                };
+            }
+            "release" => return Translated::Wire("i 0".into()),
+
+            // `seq <controls:frames> …` → a frame-accurate input timeline: one `i <mask>`
+            // line per frame, which the engine plays one-per-frame (auto-releases at the end).
+            "seq" => {
+                if rest.is_empty() {
+                    return Translated::Client(
+                        "usage: seq <controls:frames> …  (e.g. seq down+special:2 right:12). One input per engine frame; auto-releases at the end.\n".into());
+                }
+                return match expand_sequence(&rest) {
+                    Ok(wire) => Translated::Wire(wire),
+                    Err(e) => Translated::Client(format!("{e}\n")),
+                };
+            }
+            _ => {}
+        }
+    }
+
+    // Unknown head OR a bare hscript expression (`match.getCharacters()[0].toState(
+    // CState.JAB)`, `CState.JAB`, `1 + 2`, …) — run the whole line through the eval hook.
+    // collapse_multiline folds a pasted/typed multi-line snippet onto one physical line
+    // so it survives the newline-delimited engine wire (the `e` drain reads until '\n').
+    Translated::Wire(format!("e {}", collapse_multiline(line)))
+}
+
+/// Split one chat message into independent commands at BLANK lines.
+///
+/// A message is one or more commands. Consecutive lines form a single command; a blank
+/// line (whitespace only) ends it and starts the next. Each returned block is handed to
+/// `translate` on its own, so `spawn sandbag`, a blank line, then a `match.…` expression
+/// run as two separate wire commands with two separate replies.
+///
+/// The blank-line split is suppressed while inside a string literal, a `/* … */` block
+/// comment, or unbalanced `()`/`[]`/`{}` nesting — so a genuine multi-line statement (or a
+/// string/block that itself contains a blank line) is never torn apart. A bare single-line
+/// (or single multi-line) message returns exactly one block, preserving prior behaviour.
+pub fn split_commands(text: &str) -> Vec<String> {
+    enum St { Code, Str(char), Block }
+    let mut blocks: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut st = St::Code;
+    let mut escaped = false; // inside Str
+    let mut depth: i32 = 0;  // open ()/[]/{} nesting
+
+    for raw in text.split('\n') {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let at_top = matches!(st, St::Code) && depth <= 0;
+        if line.trim().is_empty() && at_top {
+            // separator: a blank line at the top level ends the current command.
+            if !cur.trim().is_empty() { blocks.push(cur.trim().to_string()); }
+            cur.clear();
+            continue;
+        }
+        if !cur.is_empty() { cur.push('\n'); }
+        cur.push_str(line);
+        // advance the string/comment/nesting scanner across this line.
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            match st {
+                St::Code => match c {
+                    '/' if chars.peek() == Some(&'/') => break, // line comment -> rest is inert
+                    '/' if chars.peek() == Some(&'*') => { chars.next(); st = St::Block; }
+                    '"' | '\'' => { escaped = false; st = St::Str(c); }
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth -= 1,
+                    _ => {}
+                },
+                St::Str(q) => {
+                    if escaped { escaped = false; }
+                    else if c == '\\' { escaped = true; }
+                    else if c == q { st = St::Code; }
+                }
+                St::Block => {
+                    if c == '*' && chars.peek() == Some(&'/') { chars.next(); st = St::Code; }
+                }
+            }
+        }
+    }
+    if !cur.trim().is_empty() { blocks.push(cur.trim().to_string()); }
+    blocks
+}
+
+/// Fold a (possibly multi-line) hscript snippet onto a single physical line so it can
+/// cross the newline-delimited engine wire — the engine's `e` drain reads bytes until a
+/// '\n', so any real newline in the payload would fragment one command into several.
+///
+/// hscript treats newlines as ordinary whitespace (statements are separated by `;`, never
+/// by line breaks), so this is semantics-preserving for the executable code:
+///   - newlines OUTSIDE a string literal collapse to a single space;
+///   - `//` line comments are dropped to end-of-line (they never execute anyway);
+///   - `/* … */` block comments are kept (their internal newlines become spaces);
+///   - a real newline INSIDE a string literal becomes the `\n` escape, preserving the
+///     string's meaning while keeping the wire frame intact;
+///   - string contents pass through verbatim with `\`-escapes respected, so a `\"` does
+///     not end the string and a `//` inside a string is not mistaken for a comment.
+fn collapse_multiline(src: &str) -> String {
+    if !src.contains('\n') && !src.contains('\r') {
+        return src.to_string(); // common case: already one line
+    }
+    enum St { Code, Str(char), Line, Block }
+    let mut out = String::with_capacity(src.len());
+    let mut chars = src.chars().peekable();
+    let mut st = St::Code;
+    let mut escaped = false; // only meaningful inside Str
+    while let Some(c) = chars.next() {
+        match st {
+            St::Code => match c {
+                '\r' => {}                                   // swallow; the '\n' is the separator
+                '\n' => out.push(' '),
+                '/' if chars.peek() == Some(&'/') => { chars.next(); st = St::Line; }
+                '/' if chars.peek() == Some(&'*') => { chars.next(); out.push_str("/*"); st = St::Block; }
+                '"' | '\'' => { out.push(c); escaped = false; st = St::Str(c); }
+                _ => out.push(c),
+            },
+            St::Str(q) => {
+                if escaped { out.push(c); escaped = false; }
+                else if c == '\\' { out.push(c); escaped = true; }
+                else if c == '\r' {}                          // swallow (\n handles it)
+                else if c == '\n' { out.push_str("\\n"); }    // real newline -> escape, keep meaning
+                else if c == q { out.push(c); st = St::Code; }
+                else { out.push(c); }
+            }
+            St::Line => { if c == '\n' { out.push(' '); st = St::Code; } } // else: drop comment text
+            St::Block => match c {
+                '*' if chars.peek() == Some(&'/') => { chars.next(); out.push_str("*/"); st = St::Code; }
+                '\r' => {}
+                '\n' => out.push(' '),
+                _ => out.push(c),
+            },
+        }
+    }
+    out
+}
+
+// ── TCP channels ─────────────────────────────────────────────────────────────────
+// Some TCP lines belong to a side CHANNEL (a structured feed), not the chat. They are
+// routed by the GUI to the relevant widget and SUPPRESSED everywhere a human reads the
+// raw stream (the chat, the CLI). The first channel is `matchStatus` (host-polled).
+pub const MATCH_STATUS_TAG: &str = "MATCHSTATUS:";
+/// `ICON:<slot>:<png-hex>` — a character's stock icon ripped from the engine (the host
+/// decodes the hex to a base64 data: URL for the matchStatus widget). Host-requested, not
+/// polled, so it lands once per character rather than every tick.
+pub const ICON_TAG: &str = "ICON:";
+
+/// If `line` is a channel line, return `(channel_name, payload)`. The engine wraps eval
+/// replies as `E:<result>`, so a polled `e matchStatus()` arrives as `E:MATCHSTATUS:<…>`;
+/// we look through the `E:` prefix. Used by the GUI (to route) and the CLI (to suppress).
+pub fn channel_payload(line: &str) -> Option<(&'static str, &str)> {
+    let l = line.strip_prefix("E:").unwrap_or(line);
+    if let Some(p) = l.strip_prefix(MATCH_STATUS_TAG) { return Some(("matchStatus", p)); }
+    if let Some(p) = l.strip_prefix(ICON_TAG) { return Some(("charIcon", p)); }
+    None
+}
+
+/// A friendly gloss for an engine reply line (additive — callers keep the raw
+/// line and append this in parens). Returns None when there's nothing to add.
+pub fn gloss(reply: &str) -> Option<String> {
+    let r = reply.trim();
+    // Eval-hook replies are wrapped as "E:<result>" — gloss the inner payload so
+    // hscript-ported commands read as friendly as the old wire-byte ones did
+    // (e.g. "E:Q:MATCH_LIVE" -> "a match is live", "E:PONG" -> "engine alive").
+    let r = r.strip_prefix("E:").unwrap_or(r);
+    let body = |s: &str| s.to_string();
+    // ANIM:/LAUNCHED come from the engine bootstrap + telemetry; the others gloss the
+    // replies of the still-present bytecode handlers (q/p/t/m) if a raw byte is sent.
+    if let Some(s) = r.strip_prefix("ANIM:") { return Some(format!("animation: {}", body(s))); }
+    if let Some(s) = r.strip_prefix("LAUNCHED ") { return Some(format!("match launched: {}", body(s))); }
+    if let Some(s) = r.strip_prefix("T:") { return Some(format!("state: {}", body(s))); }
+    if let Some(s) = r.strip_prefix("M:") { return Some(format!("move dispatched: {}", body(s))); }
+    if let Some(s) = r.strip_prefix("I:") { return Some(format!("controls set: {}", body(s))); }
+    match r {
+        "Q:MATCH_LIVE" => Some("a match is live".into()),
+        "Q:NO_MATCH"   => Some("no match running".into()),
+        "PONG"         => Some("engine alive".into()),
+        _ => None,
+    }
+}
+
+/// Build the crash modal's "Enhanced log" from the engine's `error.log` and the `RESDIAG:`
+/// breadcrumbs the patched engine emitted (the one fact `error.log` lacks — the failing
+/// resource id). HOST-SIDE — no engine bytecode (see AGENT_CONTEXT.md "keep logic OUT of
+/// bytecode"). Top = a plain-English translation; bottom = the abridged engine exception.
+/// Returns None when there's nothing to interpret.
+pub fn interpret_crash(error_log: &str, resdiag: &[String]) -> Option<String> {
+    let log = error_log.trim();
+    if log.is_empty() && resdiag.is_empty() { return None; }
+
+    // The failing resource id the engine reported: "RESDIAG: … resource id: <id>".
+    let id = resdiag.iter().rev()
+        .find_map(|l| l.split("resource id:").nth(1))
+        .map(|s| s.trim().to_string());
+    // Abridged exception + the deepest meaningful app frame (skip std/haxe/hxd plumbing).
+    let exc = log.lines().find(|l| l.contains("Exception:"))
+        .and_then(|l| l.split_once("Exception:").map(|x| x.1)).map(str::trim);
+    let frame = log.lines()
+        .filter(|l| l.contains("Called from") && (l.contains("pxf.") || l.contains("fraymakers.")))
+        .map(|l| l.trim_start_matches("Called from").trim())
+        .next();
+
+    let is_stage = log.contains("setupStage") || log.contains("stagePxfContentMap")
+        || resdiag.iter().any(|l| l.contains("stage failed"));
+
+    let mut out = String::new();
+    if is_stage {
+        out.push_str("Hmm… the stage didn't load.\n");
+        match &id {
+            Some(i) => out.push_str(&format!(
+                "{i} isn't a valid/loadable stage resource. Match.setupStage asked the \
+                 ResourceManager for it and it returned null.")),
+            None => out.push_str(
+                "The configured stage isn't a valid/loadable stage resource — Match.setupStage \
+                 asked the ResourceManager for it and it returned null."),
+        }
+    } else if log.contains(".namespace") || log.contains("getContentIdentifierString") {
+        out.push_str("Hmm… a resource didn't load.\n");
+        out.push_str("Something the match needs — a character, stage, or assist — didn't \
+                      resolve to a real resource.");
+        if let Some(i) = &id { out.push_str(&format!("\nLast resource reported: {i}.")); }
+    } else {
+        out.push_str("Hmm… Fraymakers crashed unexpectedly.");
+    }
+
+    if exc.is_some() || frame.is_some() {
+        out.push_str("\n\n");
+        if let Some(e) = exc { out.push_str(&format!("Engine exception: {e}\n")); }
+        if let Some(f) = frame { out.push_str(&format!("Crash site: {f}")); }
+    }
+    Some(out.trim_end().to_string())
+}
+
+/// The `help` listing.
+pub fn help_text() -> String {
+    let mut out = String::from("Peptide commands (friendly name [aliases] <args> — description):\n");
+    for c in COMMANDS {
+        let al = if c.aliases.is_empty() { String::new() } else { format!(" [{}]", c.aliases.join(", ")) };
+        out.push_str(&format!("  {:<8}{:<22} {:<26} {}\n", c.name, al, c.args, c.help));
+    }
+    out.push_str("\nEverything else is hscript, run in the engine's own interpreter via `e`.\n");
+    out.push_str("Live character access (explicit target — no hidden player 0):\n");
+    out.push_str("  match.getCharacters()                       all characters in the match\n");
+    out.push_str("  match.getCharacters().length                how many\n");
+    out.push_str("  match.getCharacters()[0].getStateName()     a character's current state\n");
+    out.push_str("  match.getCharacters()[0].toState(CState.SPECIAL_NEUTRAL)   drive a move\n");
+    out.push_str("  match.getCharacters()[0].body.x             read a field\n");
+    out.push_str("  match.getCharacters()[0].damage._damage     damage %\n");
+    out.push_str("\nThe full Fraymakers script API is in scope (same as character/mode scripts):\n");
+    out.push_str("  CState  CStateGroup  HitboxStats  StatusEffectType  EntityHitCondition\n");
+    out.push_str("  Assist  AssistEvent  MatchModifier  Announcer  GameMenus  Css  GlobalVfx\n");
+    out.push_str("  GlobalSfx  CameraShakeType  GraphicsSettings  DisplaySettings  Ai*Option …\n");
+    out.push_str("\nExamples:\n");
+    out.push_str("  spawn sandbag                 start a sandbag match (default stage/assist)\n");
+    out.push_str("  spawn mario thespire commandervideoassist\n");
+    out.push_str("  match.getCharacters()[0].getStateName()    read a character's state\n");
+    out.push_str("  CState.JAB                    inspect an API enum value\n");
+    out.push_str("  exit                          shut the engine down\n");
+    out.push_str("\nCLI modes (run as `peptide <mode> …`, not engine commands):\n");
+    out.push_str("  (no args) | gui               open the Peptide window (default)\n");
+    out.push_str("  tui                           terminal console\n");
+    out.push_str("  convert <file.ssf> [opts]     SSF2 → Fraymakers conversion (peptide convert --help)\n");
+    out.push_str("  export  --project <.fraytools>   drive FrayTools Publish → build the .fra\n");
+    out.push_str("  render  --entity <rel> [...]     render an entity to PNG via FrayTools\n");
+    out.push_str("  harness --entity <rel> [...]     extract box geometry + PNG + JSON report\n");
+    out.push_str("  headless | send \"<cmd>\"        TCP bridge runtime / one-shot command\n");
+    out.push_str("\nPersistent session (iterate on a char/fix; the engine keeps streaming back):\n");
+    out.push_str("  session [--char C | --full]   boot + hold a live engine, read commands from a control file\n");
+    out.push_str("  tell \"<command>\"              queue a command for the running session (e.g. tell \"spawn sandbag\")\n");
+    out.push_str("  log [-n N] [--follow]         print the session's mirrored engine replies\n");
+    out.push_str("  log --crash                   print the crash report (error.log + RESDIAG, interpreted)\n");
+    out
+}
+
+/// Host-owned **UI bridge** hscript — the matchStatus stock-icon feed.
+///
+/// These helpers must *execute* in-engine (they reflect over live engine objects:
+/// the DamageCounter, the SpriteApi, the h2d.TileGroup texture, the PaletteSwapShader),
+/// so they can't be Rust. But their only consumer is the host GUI's icon pipeline
+/// (`gui.rs::icon_data_url` decodes the hex + replays the palette), NOT the end user.
+/// So the *source* lives here, next to the host code that drives it, instead of in
+/// `commands.hsx` (which is reserved for end-user-facing script helpers). The patcher
+/// concatenates this onto `commands.hsx` so both are parsed into the same interp at boot
+/// (see `main.rs` where `commands.hsx` is read); behaviour is identical to before.
+///
+/// Requested by the GUI via `@@icon:<slot>` → `e iconFeed(<slot>)` → the `charIcon`
+/// channel. Emits PNG **hex** (an instance method — reflection-safe; a static Base64
+/// closure call crashes the engine) plus the palette-swap map; the host recolors.
+pub const UI_BRIDGE_HSX: &str = r#"
+// ─── peptide UI bridge (host-owned; see interpreter.rs::UI_BRIDGE_HSX) ───
+// matchStatus stock-icon feed. Defined in-engine but driven only by the host GUI.
+
+// iconRaw(c) — pull the character's STOCK icon straight out of the ENGINE as PNG hex. Works for
+// ANY character in the match, including ones with no FrayTools project on disk. The chain is pure
+// reflection over engine objects — ZERO bytecode: the character's DamageCounter
+// (get_fraymakersDamageCounter) -> getStockIconSprites().icons[0] (a pxf SpriteApi — note
+// getStockIconSprites lives on the API, not the entity, so we go through the DamageCounter exactly
+// as the engine does) -> __sprite__ -> _tileLayers[0].tile (the live texture; _bitmaps tiles are
+// sized-but-textureless) -> h3d.mat.Texture -> capturePixels -> crop -> toPNG -> toHex. (Hex, not
+// base64: toHex is an instance method, reflection-safe; a static Base64 closure call crashes the
+// engine. The host decodes the hex.) Returns "ERR:<where>" on a missing link; null-safe throughout.
+iconRaw = function(c) {
+  if (c == null) return "ERR:nochar";
+  var dc = c.get_fraymakersDamageCounter();
+  if (dc == null) return "ERR:nodc";
+  var sprs = dc.getStockIconSprites();
+  if (sprs == null) return "ERR:nosprs";
+  // Prefer the per-stock icon (icons[0]); fall back to the single compact icon.
+  var spr = null;
+  if (sprs.icons != null && sprs.icons.length > 0) spr = sprs.icons[0];
+  if (spr == null) spr = sprs.compactIcon;
+  if (spr == null) return "ERR:nospr";
+  var s = spr.__sprite__;
+  if (s == null) return "ERR:nosprite";
+  // The live texture is on a TileGroup in _tileLayers, NOT on _bitmaps (whose tiles are
+  // sized-but-textureless). _tileLayers[0].tile is a sub-rect of a power-of-two atlas tex.
+  var tl = s._tileLayers;
+  if (tl == null || tl.length == 0 || tl[0] == null) return "ERR:notl";
+  var tile = tl[0].tile;
+  if (tile == null) return "ERR:notile";
+  var tex = tile.innerTex;
+  if (tex == null) return "ERR:notex";
+  var full = tex.capturePixels(0, 0, null);
+  if (full == null) return "ERR:nopx";
+  // Pass the tile's own coords straight to sub() — hscript's `Std` is NOT bound in this interp,
+  // so Std.int() would throw; capturePixels/sub accept the tile's numeric fields directly.
+  var crop = full.sub(tile.x, tile.y, tile.width, tile.height);
+  if (crop == null) return "ERR:nocrop";
+  var png = crop.toPNG();
+  if (png == null) return "ERR:nopng";
+  // Emit the PNG as HEX (an instance method — reflection-safe, unlike a static Base64 closure
+  // call, which crashes the engine). The host decodes hex -> bytes -> base64 data: URL. The
+  // image still comes wholly from the engine; hex is just safe transport over the text socket.
+  return png.toHex();
+};
+
+// iconOf(c) — iconRaw, normalized: PNG hex on success, "" on a null/missing icon, or the raw
+// "ERR:<where>" marker during bring-up. The host turns the hex into a base64 data: URL.
+iconOf = function(c) {
+  var b = iconRaw(c);
+  if (b == null) return "";
+  return b;
+};
+
+// paletteOf(c) — the character's stock-icon palette as " <src>><dst>"-pairs (ARGB ints, signed).
+// The stock icon's recolor lives in a PaletteSwapShader added to the sprite (DamageCounter
+// ._charShader.__paletteSwapShader__.paletteMap), NOT baked into the base texture, so iconRaw
+// captures un-recolored art; the host replays this exact-color map over those pixels. "" if no
+// palette (then the host shows the base art unchanged). Null-safe throughout.
+paletteOf = function(c) {
+  var dc = (c != null) ? c.get_fraymakersDamageCounter() : null;
+  if (dc == null) return "";
+  var sh = dc._charShader;
+  if (sh == null) return "";
+  var ps = sh.__paletteSwapShader__;
+  if (ps == null) return "";
+  var pm = ps.paletteMap;
+  if (pm == null) return "";
+  var it = pm.keys();
+  var s = "";
+  while (it.hasNext()) { var k = it.next(); s = s + k + ">" + pm.get(k) + " "; }
+  return s;
+};
+
+// iconFeed(i) — the "charIcon" TCP channel: "ICON:<slot>:<png-hex>;<palette>" for the character in
+// match slot i (host-requested via @@icon:<i>, NOT polled, since a capture is comparatively
+// expensive). The host decodes the hex, applies <palette> (the swap map), and turns it into a
+// base64 data: URL. On any failure the hex is empty ("ICON:<i>:"), so the widget keeps its glyph.
+iconFeed = function(i) {
+  var cs = getCharacters();
+  if (i < 0 || i >= cs.length || cs[i] == null) return "ICON:" + i + ":";
+  var c = cs[i];
+  var h = iconRaw(c);
+  if (h == null || h.substr(0, 4) == "ERR:") return "ICON:" + i + ":";
+  return "ICON:" + i + ":" + h + ";" + paletteOf(c);
+};
+
+// iconDiag(c) — fully-guarded, never-throws introspection of the stock-icon chain. It walks the
+// per-stock icon (icons[0], falling back to compactIcon), then dumps every entry of BOTH the
+// sprite's _bitmaps and its _tileLayers (h2d.TileGroup), reporting each tile's size and whether a
+// texture is bound (innerTex). h2d.Bitmap tiles can be sized-but-textureless; the live texture
+// usually lives on a TileGroup's tile, so this run reveals exactly where to read pixels from.
+iconDiag = function(c) {
+  if (c == null) return "nochar";
+  var dc = c.get_fraymakersDamageCounter();
+  if (dc == null) return "dc=null";
+  var sprs = dc.getStockIconSprites();
+  if (sprs == null) return "sprs=null";
+  var out = "icons=" + (sprs.icons == null ? "?" : ("" + sprs.icons.length));
+  var spr = null;
+  if (sprs.icons != null && sprs.icons.length > 0) { spr = sprs.icons[0]; }
+  if (spr == null) { spr = sprs.compactIcon; out = out + " (compact)"; }
+  else { out = out + " (icons[0])"; }
+  if (spr == null) { return out + " noSpr"; }
+  var s = spr.__sprite__;
+  if (s == null) { return out + " sprite=null"; }
+  // ---- _bitmaps ----
+  var bm = s._bitmaps;
+  if (bm == null) { out = out + " bm=null"; }
+  else {
+    out = out + " bm=" + bm.length;
+    var i = 0;
+    while (i < bm.length) {
+      var bt = (bm[i] == null) ? null : bm[i].tile;
+      var btx = (bt == null) ? null : bt.innerTex;
+      out = out + " bm" + i + "=" + (bt == null ? "noTile" : (bt.width + "x" + bt.height)) + "/" + (btx == null ? "noTex" : ("TEX" + btx.width + "x" + btx.height));
+      i = i + 1;
+    }
+  }
+  // ---- _tileLayers (TileGroups; their .tile usually holds the real texture) ----
+  var tl = s._tileLayers;
+  if (tl == null) { out = out + " tl=null"; }
+  else {
+    out = out + " tl=" + tl.length;
+    var j = 0;
+    while (j < tl.length) {
+      var lt = (tl[j] == null) ? null : tl[j].tile;
+      var ltx = (lt == null) ? null : lt.innerTex;
+      out = out + " tl" + j + "=" + (lt == null ? "noTile" : (lt.width + "x" + lt.height)) + "/" + (ltx == null ? "noTex" : ("TEX" + ltx.width + "x" + ltx.height));
+      j = j + 1;
+    }
+  }
+  return out;
+};
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_payload_routes_matchstatus_and_icon() {
+        // through the E: prefix, and bare
+        assert_eq!(channel_payload("E:MATCHSTATUS:a|0|idle"), Some(("matchStatus", "a|0|idle")));
+        assert_eq!(channel_payload("MATCHSTATUS:"), Some(("matchStatus", "")));
+        assert_eq!(channel_payload("E:ICON:0:89504e47"), Some(("charIcon", "0:89504e47")));
+        assert_eq!(channel_payload("ICON:2:"), Some(("charIcon", "2:"))); // empty hex (graceful fail)
+        // not a channel -> goes to the chat
+        assert_eq!(channel_payload("E:hello"), None);
+        assert_eq!(channel_payload("LAUNCHED foo"), None);
+    }
+
+    fn wire(line: &str) -> String {
+        match translate(line) {
+            Translated::Wire(w) => w,
+            Translated::Client(_) => panic!("expected Wire, got Client"),
+        }
+    }
+
+    #[test]
+    fn controls_mask_parses_names_and_combos() {
+        assert_eq!(controls_mask(&["down"]).unwrap(), 0x2);
+        assert_eq!(controls_mask(&["down+special"]).unwrap(), 0x22);
+        assert_eq!(controls_mask(&["down", "special"]).unwrap(), 0x22); // space-joined
+        assert_eq!(controls_mask(&["right"]).unwrap(), 0x8);
+        assert_eq!(controls_mask(&["shield"]).unwrap(), 0x100);         // alias of shield1
+        assert_eq!(controls_mask(&["0x22"]).unwrap(), 0x22);            // raw hex
+        assert_eq!(controls_mask(&["34"]).unwrap(), 34);               // raw decimal
+        assert!(controls_mask(&["banana"]).is_err());
+    }
+
+    #[test]
+    fn hold_press_release_translate_to_input_byte() {
+        assert_eq!(wire("hold down+special"), "i 34");   // 0x2|0x20 = 34
+        assert_eq!(wire("press right"), "i 8");
+        assert_eq!(wire("hold up"), "i 1");
+        assert_eq!(wire("release"), "i 0");
+        // bad control is handled client-side (no wire), not sent to the engine
+        assert!(matches!(translate("hold banana"), Translated::Client(_)));
+        assert!(matches!(translate("hold"), Translated::Client(_))); // usage hint
+    }
+
+    #[test]
+    fn seq_expands_to_one_input_line_per_frame() {
+        // down+special for 2 frames, right for 3 frames, then auto-release.
+        let w = wire("seq down+special:2 right:3");
+        let lines: Vec<&str> = w.split('\n').collect();
+        assert_eq!(lines, vec!["i 34", "i 34", "i 8", "i 8", "i 8", "i 0"]);
+        // bare step = 1 frame; `release`/`neutral`/empty = mask 0.
+        assert_eq!(wire("seq attack release:2"), "i 16\ni 0\ni 0\ni 0");
+        // star separator + raw mask both work.
+        assert_eq!(wire("seq 0x8*2"), "i 8\ni 8\ni 0");
+        // errors are client-side (never sent to the engine).
+        assert!(matches!(translate("seq down:0"), Translated::Client(_)));   // 0 frames
+        assert!(matches!(translate("seq bogus:2"), Translated::Client(_)));  // bad control
+        assert!(matches!(translate("seq"), Translated::Client(_)));          // usage
+    }
+
+    #[test]
+    fn bootstrap_commands_stay_wire_bytes() {
+        // match-launch + clean exit + resource load are the irreducible bootstrap hooks;
+        // console is a side-effecting method call hscript can't invoke. All stay wire bytes.
+        assert_eq!(wire("spawn sandbag thespire x"), "s sandbag thespire x");
+        assert_eq!(wire("exit"), "x");
+        assert_eq!(wire("console"), "c");
+        assert_eq!(wire("load"), "l");
+        assert_eq!(wire("start sandbag"), "s sandbag");
+        assert_eq!(wire("quit"), "x");
+    }
+
+    #[test]
+    fn raw_hscript_passes_through_eval() {
+        // the dropped sugar commands + anything unrecognized are treated as hscript and
+        // run through the eval hook — this is the explicit, no-hidden-target model.
+        assert_eq!(wire("match.getCharacters()[0].getStateName()"),
+                   "e match.getCharacters()[0].getStateName()");
+        assert_eq!(wire("match.getCharacters()[0].toState(CState.JAB)"),
+                   "e match.getCharacters()[0].toState(CState.JAB)");
+        assert_eq!(wire("CState.JAB"), "e CState.JAB");
+        assert_eq!(wire("1 + 2"), "e 1 + 2");
+        assert_eq!(wire("eval CState.JAB"), "e CState.JAB");   // explicit eval == default
+    }
+
+    #[test]
+    fn multiline_hscript_collapses_to_one_wire_line() {
+        // A pasted/typed multi-line snippet must reach the engine as ONE '\n'-free line
+        // (the wire is newline-delimited); hscript separates statements with `;`, so
+        // folding line breaks to spaces is semantics-preserving.
+        assert_eq!(
+            wire("var c = match.getCharacters()[0];\nc.toState(CState.JAB);"),
+            "e var c = match.getCharacters()[0]; c.toState(CState.JAB);"
+        );
+        // CRLF (Windows clipboard) folds the same way — no stray '\r'.
+        assert_eq!(wire("a;\r\nb;"), "e a; b;");
+        // a single line is untouched (and never gets a sentinel).
+        assert_eq!(wire("1 + 2"), "e 1 + 2");
+    }
+
+    #[test]
+    fn multiline_drops_line_comments_and_keeps_strings_intact() {
+        // `//` comments must not swallow the following line once newlines collapse.
+        assert_eq!(wire("a;  // set a\nb;"), "e a;   b;");
+        // `//` and line breaks INSIDE a string literal are preserved (newline -> \n escape).
+        assert_eq!(wire("log(\"a//b\");"), "e log(\"a//b\");");
+        assert_eq!(wire("log(\"a\nb\");"), "e log(\"a\\nb\");");
+        // block comments survive; their internal newline becomes a space.
+        assert_eq!(wire("a;/* x\ny */b;"), "e a;/* x y */b;");
+    }
+
+    #[test]
+    fn split_commands_separates_on_blank_lines() {
+        // a blank line breaks one message into independent commands…
+        assert_eq!(
+            split_commands("spawn sandbag\n\nmatch.getCharacters()[0].getStateName()"),
+            vec!["spawn sandbag", "match.getCharacters()[0].getStateName()"]
+        );
+        // …several blanks / leading / trailing blanks collapse and are ignored.
+        assert_eq!(split_commands("\n\na\n\n\nb\n\n"), vec!["a", "b"]);
+        // no blank line -> exactly one block (single command, possibly multi-line).
+        assert_eq!(
+            split_commands("var c = match.getCharacters()[0];\nc.toState(CState.JAB);"),
+            vec!["var c = match.getCharacters()[0];\nc.toState(CState.JAB);"]
+        );
+        // empty / whitespace-only message -> no commands.
+        assert!(split_commands("   \n\n").is_empty());
+    }
+
+    #[test]
+    fn split_commands_keeps_multiline_statements_intact() {
+        // a blank line INSIDE open braces is not a separator (one statement).
+        assert_eq!(
+            split_commands("if (x) {\n\n  y;\n}"),
+            vec!["if (x) {\n\n  y;\n}"]
+        );
+        // a blank line inside a string literal is not a separator.
+        assert_eq!(split_commands("log(\"a\n\nb\")"), vec!["log(\"a\n\nb\")"]);
+        // and the multi-command case still feeds each block through translate cleanly.
+        let wires: Vec<String> = split_commands("1 + 2\n\nspawn sandbag")
+            .iter().map(|c| wire(c)).collect();
+        assert_eq!(wires, vec!["e 1 + 2", "s sandbag"]);
+    }
+
+    #[test]
+    fn help_is_client_side() {
+        assert!(matches!(translate("help"), Translated::Client(_)));
+        assert!(matches!(translate("?"), Translated::Client(_)));
+    }
+
+    #[test]
+    fn unknown_routes_to_eval() {
+        // unrecognized input is treated as hscript and run through the eval hook
+        assert_eq!(wire("somethingnew arg"), "e somethingnew arg");
+    }
+
+    #[test]
+    fn interpret_crash_stage_with_resdiag() {
+        let log = "Exception: Null access .stagePxfContentMap\n\
+                   Called from pxf.core.Match.setupStage (pxf/core/Match.hx line 1095)\n\
+                   Called from hxd.App.mainLoop (hxd/App.hx line 193)";
+        let resdiag = vec![
+            "RESDIAG: stage failed to load — Match.setupStage got null from getPXFResource for resource id: global::teststage".to_string()
+        ];
+        let out = interpret_crash(log, &resdiag).unwrap();
+        // top: plain-English translation with the failing id woven in
+        assert!(out.starts_with("Hmm… the stage didn't load."), "got: {out}");
+        assert!(out.contains("global::teststage isn't a valid/loadable stage resource"), "got: {out}");
+        // bottom: abridged exception + crash site (NOT the full stack)
+        assert!(out.contains("Engine exception: Null access .stagePxfContentMap"), "got: {out}");
+        assert!(out.contains("Crash site: pxf.core.Match.setupStage (pxf/core/Match.hx line 1095)"), "got: {out}");
+        assert!(!out.contains("mainLoop"), "abridged log should drop hxd plumbing: {out}");
+    }
+
+    #[test]
+    fn interpret_crash_empty_is_none() {
+        assert!(interpret_crash("", &[]).is_none());
+    }
+}

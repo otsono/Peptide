@@ -1,0 +1,26 @@
+// ─────────────────────────────────────────────────────────────────────────
+// hitbox_stats.jsonc — SSF2 → Fraymakers hitbox-stats conversion (CHARACTER)
+//
+// Describes how an SSF2 hitbox object becomes a Fraymakers HitboxStats.hx
+// hitbox entry. Loaded at runtime; built-in defaults are used if this file
+// is missing or malformed. JSONC: // comments and trailing commas allowed.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  // Each entry maps a Fraymakers field ('fm_field') to the SSF2 source
+  // key(s) it reads ('ssf2_keys'). When several keys are listed the
+  // converter takes the MAX of their values (an absent key counts as 0) —
+  // SSF2 may carry the launch angle in 'direction' or 'angle', and base
+  // knockback in 'power' or 'weightKB'. 'isframe: true' marks a frame-count
+  // field whose value is doubled for the 30fps → 60fps timing change (the
+  // same isframe flag commands.jsonc uses). The -1 "no override" sentinel
+  // handling stays in code — it is emit formatting, not conversion.
+  "fields": [
+    { "fm_field": "damage",          "ssf2_keys": ["damage"] },
+    { "fm_field": "angle",           "ssf2_keys": ["direction", "angle"] },
+    { "fm_field": "baseKnockback",   "ssf2_keys": ["power", "weightKB"] },
+    { "fm_field": "knockbackGrowth", "ssf2_keys": ["kbConstant"] },
+    { "fm_field": "hitstop",         "ssf2_keys": ["hitStun"],     "isframe": true },
+    { "fm_field": "selfHitstop",     "ssf2_keys": ["selfHitStun"], "isframe": true },
+    { "fm_field": "hitstun",         "ssf2_keys": ["hitLag"],      "isframe": true },
+  ],
+}
