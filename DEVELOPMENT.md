@@ -300,11 +300,16 @@ build-essential` (older distros: `libwebkit2gtk-4.0-dev`; Fedora:
 > `WEBKIT_DISABLE_DMABUF_RENDERER=1` on Linux to avoid this (set it yourself to
 > override). If a machine still renders blank, try `WEBKIT_DISABLE_COMPOSITING_MODE=1`.
 
-All three packagers stage the runtime data files (`peptide_ui.html`,
-`commands.hsx`, `match_settings.conf`, `mappings/`) into a `data/` folder next to
-the binary. If those are missing at launch the GUI shows a native error dialog
-(what's missing + where it looked) and exits, rather than crashing mid-open — see
-`missing_assets_report` in `src/main.rs`.
+**Runtime data files.** Peptide reads `peptide_ui.html`, `commands.hsx`,
+`match_settings.conf`, and `mappings/` from disk (editable; never `include_str!`-
+embedded — a missing one must fail loudly, not ship a stale baked copy). `build.rs`
+stages them into `<target>/<profile>/data/` on every build (the same
+`<exe-dir>/data/` location `asset_candidate_paths` checks first), so even a plain
+`cargo build` output is self-sufficient as long as the `data/` sibling travels with
+the binary. The three packagers stage the same `data/` for their bundles. If the
+files are missing at launch the GUI shows a native error dialog (what's missing +
+where it looked) and exits cleanly, rather than `read_asset` panicking mid-open —
+see `missing_assets_report` in `src/main.rs`.
 
 ---
 

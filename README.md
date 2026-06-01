@@ -105,10 +105,16 @@ Everything below is for building, running, and hacking on the toolkit.
 ## Build
 
 ```bash
-cargo build --release   # → build/release/peptide (the single binary)
+cargo build --release   # → build/release/peptide (+ build/release/data/)
 ```
 
-Per-platform packagers (binary + a `data/` folder of runtime assets beside it):
+Peptide reads its runtime assets from disk (they're editable and never embedded), so
+a build script stages them into a `data/` folder next to the binary on every build —
+`build/release/peptide` is runnable as long as you keep its sibling `build/release/data/`
+folder with it. (A bare binary copied away from that `data/` folder shows a "missing
+data files" dialog on launch.)
+
+Per-platform packagers bundle the binary + `data/` for distribution:
 
 ```bash
 ./tools/make-app.sh      # macOS  → build/Peptide.app
