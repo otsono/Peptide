@@ -57,6 +57,15 @@ PLIST
 cp "target/release/$BIN" "$APP/Contents/MacOS/$BIN"
 chmod +x "$APP/Contents/MacOS/$BIN"
 
+# ---- runtime asset files (NOT embedded in the binary — read from disk next to it) ----
+# peptide resolves these via asset_candidate_paths (exe-dir first); the converter
+# resolves mappings/ via candidate_paths (exe-dir/mappings first). Both must ride
+# in Contents/MacOS/ so a packaged app finds them.
+RES="$APP/Contents/MacOS"
+cp prelude.hsx match_settings.conf src/peptide_ui.html "$RES/"
+mkdir -p "$RES/mappings"
+cp -R crates/ssf2-converter/mappings/. "$RES/mappings/"
+
 # ---- ad-hoc codesign so Gatekeeper lets a local build run (WKWebView needs it) ----
 echo "==> Ad-hoc codesigning…"
 codesign --force --deep --sign - "$APP" 2>/dev/null || true

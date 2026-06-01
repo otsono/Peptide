@@ -1,13 +1,17 @@
 //! Runtime-loaded conversion mapping tables.
 //!
-//! Mapping data lives in editable JSONC files under `mappings/<category>/`
+//! Mapping data lives in editable JSONC/TOML files under `mappings/<category>/`
 //! (JSONC = JSON with `//` comments and trailing commas, so entries can be
-//! annotated). Today only the `character` category exists; stages and other
-//! future conversion targets get their own sibling directories. Each file is
-//! loaded at runtime so it — including derivation formulas and comments — can
-//! be tweaked without recompiling. If a file is missing or malformed the
-//! built-in defaults (embedded at compile time via `include_str!`) are used
-//! instead, so the converter always has a valid table.
+//! annotated). Every file is **read from disk at runtime** — including
+//! derivation formulas, helper-template Haxe, and comments — so it can be
+//! tweaked without recompiling. Nothing is baked into the binary; the files
+//! must be present at one of the resolved locations (see [`candidate_paths`]).
+//! If a required mapping file is missing or malformed, loading panics with the
+//! list of locations tried rather than silently using stale data.
+//!
+//! The mappings directory ships next to the binary in a packaged build, and is
+//! found via `CARGO_MANIFEST_DIR` in a dev/source checkout. Override the whole
+//! directory with the `PEPTIDE_MAPPINGS_DIR` environment variable.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -15,33 +19,10 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-// ─── Embedded defaults ──────────────────────────────────────────────────────
-// Guaranteed-valid fallback, also the source the on-disk files are copied from.
-
-const DEFAULT_CHARACTER_ANIMATIONS: &str =
-    include_str!("../mappings/character/animations.jsonc");
-const DEFAULT_CHARACTER_STATS: &str =
-    include_str!("../mappings/character/stats.jsonc");
-const DEFAULT_CHARACTER_HITBOX_STATS: &str =
-    include_str!("../mappings/character/hitbox_stats.jsonc");
-const DEFAULT_CHARACTER_ANIMATION_TEMPLATE: &str =
-    include_str!("../mappings/character/animation_template.jsonc");
-const DEFAULT_CHARACTER_STATS_TABLES: &str =
-    include_str!("../mappings/character/stats_tables.jsonc");
-const DEFAULT_PROJECTILE_TABLES: &str =
-    include_str!("../mappings/projectile_tables.jsonc");
-// API command conversions are universal, not character-scoped, so this file
-// lives at the top of mappings/ rather than under mappings/character/.
-const DEFAULT_API_COMMANDS: &str =
-    include_str!("../mappings/commands.jsonc");
-
-// Per-entity Script.hx template files (TOML). The Haxe lives in `'''…'''`
-// literal blocks, byte-for-byte; placeholders are `{{slot}}`.
-const DEFAULT_GLOBAL_HELPERS: &str     = include_str!("../mappings/global_helpers.toml");
-const DEFAULT_CHARACTER_HELPERS: &str  = include_str!("../mappings/character_helpers.toml");
-const DEFAULT_PROJECTILE_HELPERS: &str = include_str!("../mappings/projectile_helpers.toml");
-const DEFAULT_STAGE_HELPERS: &str      = include_str!("../mappings/stage_helpers.toml");
-const DEFAULT_ITEM_HELPERS: &str       = include_str!("../mappings/item_helpers.toml");
+/// The converter crate's source dir (`…/crates/ssf2-converter`), captured at
+/// compile time. Only used to *locate* the mappings files at runtime in a dev /
+/// source checkout — the file CONTENT is always read from disk, never embedded.
+const CRATE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 // ─── Schema ─────────────────────────────────────────────────────────────────
 
@@ -525,37 +506,21 @@ pub struct HelperTemplates {
 
 /// Like `load`, but for TOML template files (no comment-stripping needed —
 /// TOML has native comments; literal `'''` blocks preserve the Haxe verbatim).
-fn load_toml<T: for<'de> Deserialize<'de>>(rel: &str, embedded: &str) -> T {
-    for path in candidate_paths(rel) {
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match toml::from_str::<T>(&text) {
-                Ok(parsed) => {
-                    log::info!("Loaded template file {}", path.display());
-                    return parsed;
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Template file {} is malformed ({}); using built-in defaults",
-                        path.display(), e
-                    );
-                    break;
-                }
-            },
-            Err(_) => continue,
-        }
-    }
-    toml::from_str(embedded).expect("embedded default template TOML must be valid")
+fn load_toml<T: for<'de> Deserialize<'de>>(rel: &str) -> T {
+    let (text, path) = read_mapping_file(rel);
+    toml::from_str(&text)
+        .unwrap_or_else(|e| panic!("template file {} is malformed: {e}", path.display()))
 }
 
 /// The per-entity Script.hx templates, loaded once from the 5 TOML files.
 pub fn script_templates() -> &'static HelperTemplates {
     static CACHE: OnceLock<HelperTemplates> = OnceLock::new();
     CACHE.get_or_init(|| HelperTemplates {
-        global:     load_toml("mappings/global_helpers.toml",     DEFAULT_GLOBAL_HELPERS),
-        character:  load_toml("mappings/character_helpers.toml",  DEFAULT_CHARACTER_HELPERS),
-        projectile: load_toml("mappings/projectile_helpers.toml", DEFAULT_PROJECTILE_HELPERS),
-        stage:      load_toml("mappings/stage_helpers.toml",      DEFAULT_STAGE_HELPERS),
-        item:       load_toml("mappings/item_helpers.toml",       DEFAULT_ITEM_HELPERS),
+        global:     load_toml("mappings/global_helpers.toml"),
+        character:  load_toml("mappings/character_helpers.toml"),
+        projectile: load_toml("mappings/projectile_helpers.toml"),
+        stage:      load_toml("mappings/stage_helpers.toml"),
+        item:       load_toml("mappings/item_helpers.toml"),
     })
 }
 
@@ -632,46 +597,63 @@ fn strip_jsonc(src: &str) -> String {
     out
 }
 
-/// Candidate locations for a mapping file, tried in order. The first that
-/// exists and parses wins; this lets users drop an edited copy next to either
-/// the working directory or the binary.
+/// Candidate locations for a mapping file (`rel` is like
+/// `mappings/character/stats.jsonc`), tried in order. The first that exists
+/// wins. Resolution order:
+///   1. `$PEPTIDE_MAPPINGS_DIR/<rel-without-leading-"mappings/">` (explicit override)
+///   2. the current working directory (`./mappings/…`)
+///   3. next to the binary (`<exe-dir>/mappings/…` — the packaged layout)
+///   4. `<exe-dir>/../../mappings/…` (a `target/<profile>/<bin>` dev build)
+///   5. the converter crate's source dir (`CRATE_DIR/mappings/…` — dev/source checkout)
 fn candidate_paths(rel: &str) -> Vec<PathBuf> {
-    let mut paths = vec![PathBuf::from(rel)];
+    let mut paths: Vec<PathBuf> = Vec::new();
+    // 1. explicit dir override — strip the leading "mappings/" so the env var
+    //    points straight at a mappings dir.
+    if let Ok(dir) = std::env::var("PEPTIDE_MAPPINGS_DIR") {
+        let sub = rel.strip_prefix("mappings/").unwrap_or(rel);
+        paths.push(PathBuf::from(dir).join(sub));
+    }
+    // 2. cwd-relative
+    paths.push(PathBuf::from(rel));
+    // 3/4. next to the binary, and a dev target/<profile>/<bin> layout
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             paths.push(dir.join(rel));
-            // target/release/<bin> → repo root
             if let Some(up) = dir.parent().and_then(|p| p.parent()) {
                 paths.push(up.join(rel));
             }
         }
     }
+    // 5. the converter crate's source tree (absolute; always valid in a checkout)
+    paths.push(PathBuf::from(CRATE_DIR).join(rel));
     paths
 }
 
-/// Load and parse a JSONC mapping file, preferring an on-disk copy and
-/// falling back to the compiled-in default.
-fn load<T: for<'de> Deserialize<'de>>(rel: &str, embedded: &str) -> T {
-    for path in candidate_paths(rel) {
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<T>(&strip_jsonc(&text)) {
-                Ok(parsed) => {
-                    log::info!("Loaded mapping file {}", path.display());
-                    return parsed;
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Mapping file {} is malformed ({}); using built-in defaults",
-                        path.display(), e
-                    );
-                    break;
-                }
-            },
-            Err(_) => continue, // not at this location — keep looking
+/// Read a mapping/template file from disk, trying each candidate location.
+/// Returns the file text and the path it came from. Panics (with the list of
+/// locations tried) if the file is not found at any location — nothing is baked
+/// into the binary, so a missing mappings dir is a hard, loud error.
+fn read_mapping_file(rel: &str) -> (String, PathBuf) {
+    let tried = candidate_paths(rel);
+    for path in &tried {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            log::info!("Loaded mapping file {}", path.display());
+            return (text, path.clone());
         }
     }
-    serde_json::from_str(&strip_jsonc(embedded))
-        .expect("embedded default mapping JSONC must be valid")
+    panic!(
+        "mapping file {rel:?} not found. Tried:\n{}\n\
+         Ship the `mappings/` dir next to the binary, run from the repo, or set \
+         PEPTIDE_MAPPINGS_DIR.",
+        tried.iter().map(|p| format!("  - {}", p.display())).collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// Load and parse a JSONC mapping file from disk (no compiled-in fallback).
+fn load<T: for<'de> Deserialize<'de>>(rel: &str) -> T {
+    let (text, path) = read_mapping_file(rel);
+    serde_json::from_str(&strip_jsonc(&text))
+        .unwrap_or_else(|e| panic!("mapping file {} is malformed: {e}", path.display()))
 }
 
 // ─── Cached accessors ───────────────────────────────────────────────────────
@@ -679,14 +661,14 @@ fn load<T: for<'de> Deserialize<'de>>(rel: &str, embedded: &str) -> T {
 pub fn character_animations() -> &'static AnimationMappings {
     static CACHE: OnceLock<AnimationMappings> = OnceLock::new();
     CACHE.get_or_init(|| {
-        load("mappings/character/animations.jsonc", DEFAULT_CHARACTER_ANIMATIONS)
+        load("mappings/character/animations.jsonc")
     })
 }
 
 pub fn character_stats() -> &'static StatMappings {
     static CACHE: OnceLock<StatMappings> = OnceLock::new();
     CACHE.get_or_init(|| {
-        load("mappings/character/stats.jsonc", DEFAULT_CHARACTER_STATS)
+        load("mappings/character/stats.jsonc")
     })
 }
 
@@ -703,7 +685,7 @@ pub struct AnimTemplateEntry {
 pub fn character_animation_template() -> &'static Vec<AnimTemplateEntry> {
     static CACHE: OnceLock<Vec<AnimTemplateEntry>> = OnceLock::new();
     CACHE.get_or_init(|| {
-        load("mappings/character/animation_template.jsonc", DEFAULT_CHARACTER_ANIMATION_TEMPLATE)
+        load("mappings/character/animation_template.jsonc")
     })
 }
 
@@ -744,7 +726,7 @@ pub struct CharacterStatsTables {
 pub fn character_stats_tables() -> &'static CharacterStatsTables {
     static CACHE: OnceLock<CharacterStatsTables> = OnceLock::new();
     CACHE.get_or_init(|| {
-        load("mappings/character/stats_tables.jsonc", DEFAULT_CHARACTER_STATS_TABLES)
+        load("mappings/character/stats_tables.jsonc")
     })
 }
 
@@ -764,21 +746,21 @@ pub struct ProjectileTables {
 pub fn projectile_tables() -> &'static ProjectileTables {
     static CACHE: OnceLock<ProjectileTables> = OnceLock::new();
     CACHE.get_or_init(|| {
-        load("mappings/projectile_tables.jsonc", DEFAULT_PROJECTILE_TABLES)
+        load("mappings/projectile_tables.jsonc")
     })
 }
 
 pub fn character_hitbox_stats() -> &'static HitboxStatsMapping {
     static CACHE: OnceLock<HitboxStatsMapping> = OnceLock::new();
     CACHE.get_or_init(|| {
-        load("mappings/character/hitbox_stats.jsonc", DEFAULT_CHARACTER_HITBOX_STATS)
+        load("mappings/character/hitbox_stats.jsonc")
     })
 }
 
 pub fn api_commands() -> &'static ApiCommands {
     static CACHE: OnceLock<ApiCommands> = OnceLock::new();
     CACHE.get_or_init(|| {
-        load("mappings/commands.jsonc", DEFAULT_API_COMMANDS)
+        load("mappings/commands.jsonc")
     })
 }
 
