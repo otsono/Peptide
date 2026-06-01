@@ -17,7 +17,7 @@ use tao::window::WindowBuilder;
 use wry::http::Request;
 use wry::WebViewBuilder;
 
-use crate::interpreter::{translate, Translated};
+use crate::interpreter::{split_commands, translate, Translated};
 
 /// Events pushed into the loop from worker threads, forwarded to the page.
 enum Ev {
@@ -241,6 +241,19 @@ fn resolved_project_dir() -> Option<std::path::PathBuf> {
     let d = crate::config::Config::load().output_dir();
     let abs = if d.is_absolute() { d } else { std::env::current_dir().ok()?.join(d) };
     abs.is_dir().then_some(abs)
+}
+
+/// Resolve the `.fraytools` project FILE for a converted character, so the
+/// "isn't built yet" modal can publish it inline. Looks for the conversion's
+/// `<output>/<char>/<char>.fraytools`, then a top-level `<output>/<char>.fraytools`.
+/// `None` when no project exists (then we fall back to the generic boot-failed prompt).
+fn project_file_for(char_name: &str) -> Option<String> {
+    let dir = crate::config::Config::load().output_dir();
+    if let Some(p) = crate::platform::find_project_file(&dir.join(char_name)) {
+        return Some(p.display().to_string());
+    }
+    let top = dir.join(format!("{char_name}.fraytools"));
+    top.is_file().then(|| top.display().to_string())
 }
 
 /// Open a native folder/file picker (rfd) and call back the named JS function with
@@ -520,8 +533,22 @@ fn boot_new(writer: SharedWriter, cleanup: SharedCleanup, conn: SharedConn,
             }
         },
         Err(e) => {
-            let _ = proxy.send_event(Ev::Js(format!(
-                "window.onBootFailed && onBootFailed({})", js_str(&e.to_string()))));
+            let msg = e.to_string();
+            // The character has never been published — its `.fra` doesn't exist yet.
+            // This isn't a "Fraymakers isn't open" situation, so route it to a dedicated
+            // modal that can publish the project inline (Export Now) and then re-boot,
+            // but only when we can locate the `.fraytools` to publish.
+            match (msg.contains("isn't built yet"), project_file_for(&char_name)) {
+                (true, Some(project)) => {
+                    let _ = proxy.send_event(Ev::Js(format!(
+                        "window.onNotBuilt && onNotBuilt({}, {})",
+                        js_str(&char_name), js_str(&project))));
+                }
+                _ => {
+                    let _ = proxy.send_event(Ev::Js(format!(
+                        "window.onBootFailed && onBootFailed({})", js_str(&msg))));
+                }
+            }
         }
     }
 }
@@ -593,6 +620,11 @@ fn spawn_reader(mut reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>) {
 
 /// A command from the page: translate (friendly -> wire / hscript) and send it to the
 /// engine. Client/Error outcomes are echoed back to the page as SYS lines.
+///
+/// One chat message may hold several commands separated by blank lines; each is
+/// translated and dispatched on its own (in order), so they reach the engine as distinct
+/// wire frames with distinct replies. A single (multi-line) command is just the one-block
+/// case. See `interpreter::split_commands`.
 fn handle_command(text: &str, writer: &SharedWriter, proxy: &EventLoopProxy<Ev>) {
     let send = |w: &str| {
         if w.is_empty() { return; }
@@ -603,25 +635,27 @@ fn handle_command(text: &str, writer: &SharedWriter, proxy: &EventLoopProxy<Ev>)
             }
         }
     };
-    match translate(text) {
-        Translated::Wire(w) => send(&w),
-        Translated::Sequence(v) => for w in v { send(&w); },
-        Translated::Repeat { wire, count, gap_ms } => {
-            let w = writer.clone();
-            thread::spawn(move || {
-                for _ in 0..count {
-                    if let Ok(mut g) = w.lock() {
-                        match g.as_mut() {
-                            Some(s) => { if s.write_all(format!("{wire}\n").as_bytes()).is_err() { break; } let _ = s.flush(); }
-                            None => break,
+    for cmd in split_commands(text) {
+        match translate(&cmd) {
+            Translated::Wire(w) => send(&w),
+            Translated::Sequence(v) => for w in v { send(&w); },
+            Translated::Repeat { wire, count, gap_ms } => {
+                let w = writer.clone();
+                thread::spawn(move || {
+                    for _ in 0..count {
+                        if let Ok(mut g) = w.lock() {
+                            match g.as_mut() {
+                                Some(s) => { if s.write_all(format!("{wire}\n").as_bytes()).is_err() { break; } let _ = s.flush(); }
+                                None => break,
+                            }
                         }
+                        thread::sleep(Duration::from_millis(gap_ms));
                     }
-                    thread::sleep(Duration::from_millis(gap_ms));
-                }
-            });
+                });
+            }
+            Translated::Client(t) => { let _ = proxy.send_event(Ev::Line(format!("SYS:OUT:{}", t.trim_end_matches('\n')))); }
+            Translated::Error(e) => { let _ = proxy.send_event(Ev::Line(format!("SYS:ERR:{e}"))); }
         }
-        Translated::Client(t) => { let _ = proxy.send_event(Ev::Line(format!("SYS:{}", t.replace('\n', "   ")))); }
-        Translated::Error(e) => { let _ = proxy.send_event(Ev::Line(format!("SYS:ERR:{e}"))); }
     }
 }
 

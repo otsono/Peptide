@@ -176,7 +176,118 @@ pub fn translate(line: &str) -> Translated {
 
     // Unknown head OR a bare hscript expression (`match.getCharacters()[0].toState(
     // CState.JAB)`, `CState.JAB`, `1 + 2`, …) — run the whole line through the eval hook.
-    Translated::Wire(format!("e {line}"))
+    // collapse_multiline folds a pasted/typed multi-line snippet onto one physical line
+    // so it survives the newline-delimited engine wire (the `e` drain reads until '\n').
+    Translated::Wire(format!("e {}", collapse_multiline(line)))
+}
+
+/// Split one chat message into independent commands at BLANK lines.
+///
+/// A message is one or more commands. Consecutive lines form a single command; a blank
+/// line (whitespace only) ends it and starts the next. Each returned block is handed to
+/// `translate` on its own, so `spawn sandbag`, a blank line, then a `match.…` expression
+/// run as two separate wire commands with two separate replies.
+///
+/// The blank-line split is suppressed while inside a string literal, a `/* … */` block
+/// comment, or unbalanced `()`/`[]`/`{}` nesting — so a genuine multi-line statement (or a
+/// string/block that itself contains a blank line) is never torn apart. A bare single-line
+/// (or single multi-line) message returns exactly one block, preserving prior behaviour.
+pub fn split_commands(text: &str) -> Vec<String> {
+    enum St { Code, Str(char), Block }
+    let mut blocks: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut st = St::Code;
+    let mut escaped = false; // inside Str
+    let mut depth: i32 = 0;  // open ()/[]/{} nesting
+
+    for raw in text.split('\n') {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let at_top = matches!(st, St::Code) && depth <= 0;
+        if line.trim().is_empty() && at_top {
+            // separator: a blank line at the top level ends the current command.
+            if !cur.trim().is_empty() { blocks.push(cur.trim().to_string()); }
+            cur.clear();
+            continue;
+        }
+        if !cur.is_empty() { cur.push('\n'); }
+        cur.push_str(line);
+        // advance the string/comment/nesting scanner across this line.
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            match st {
+                St::Code => match c {
+                    '/' if chars.peek() == Some(&'/') => break, // line comment -> rest is inert
+                    '/' if chars.peek() == Some(&'*') => { chars.next(); st = St::Block; }
+                    '"' | '\'' => { escaped = false; st = St::Str(c); }
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth -= 1,
+                    _ => {}
+                },
+                St::Str(q) => {
+                    if escaped { escaped = false; }
+                    else if c == '\\' { escaped = true; }
+                    else if c == q { st = St::Code; }
+                }
+                St::Block => {
+                    if c == '*' && chars.peek() == Some(&'/') { chars.next(); st = St::Code; }
+                }
+            }
+        }
+    }
+    if !cur.trim().is_empty() { blocks.push(cur.trim().to_string()); }
+    blocks
+}
+
+/// Fold a (possibly multi-line) hscript snippet onto a single physical line so it can
+/// cross the newline-delimited engine wire — the engine's `e` drain reads bytes until a
+/// '\n', so any real newline in the payload would fragment one command into several.
+///
+/// hscript treats newlines as ordinary whitespace (statements are separated by `;`, never
+/// by line breaks), so this is semantics-preserving for the executable code:
+///   - newlines OUTSIDE a string literal collapse to a single space;
+///   - `//` line comments are dropped to end-of-line (they never execute anyway);
+///   - `/* … */` block comments are kept (their internal newlines become spaces);
+///   - a real newline INSIDE a string literal becomes the `\n` escape, preserving the
+///     string's meaning while keeping the wire frame intact;
+///   - string contents pass through verbatim with `\`-escapes respected, so a `\"` does
+///     not end the string and a `//` inside a string is not mistaken for a comment.
+fn collapse_multiline(src: &str) -> String {
+    if !src.contains('\n') && !src.contains('\r') {
+        return src.to_string(); // common case: already one line
+    }
+    enum St { Code, Str(char), Line, Block }
+    let mut out = String::with_capacity(src.len());
+    let mut chars = src.chars().peekable();
+    let mut st = St::Code;
+    let mut escaped = false; // only meaningful inside Str
+    while let Some(c) = chars.next() {
+        match st {
+            St::Code => match c {
+                '\r' => {}                                   // swallow; the '\n' is the separator
+                '\n' => out.push(' '),
+                '/' if chars.peek() == Some(&'/') => { chars.next(); st = St::Line; }
+                '/' if chars.peek() == Some(&'*') => { chars.next(); out.push_str("/*"); st = St::Block; }
+                '"' | '\'' => { out.push(c); escaped = false; st = St::Str(c); }
+                _ => out.push(c),
+            },
+            St::Str(q) => {
+                if escaped { out.push(c); escaped = false; }
+                else if c == '\\' { out.push(c); escaped = true; }
+                else if c == '\r' {}                          // swallow (\n handles it)
+                else if c == '\n' { out.push_str("\\n"); }    // real newline -> escape, keep meaning
+                else if c == q { out.push(c); st = St::Code; }
+                else { out.push(c); }
+            }
+            St::Line => { if c == '\n' { out.push(' '); st = St::Code; } } // else: drop comment text
+            St::Block => match c {
+                '*' if chars.peek() == Some(&'/') => { chars.next(); out.push_str("*/"); st = St::Code; }
+                '\r' => {}
+                '\n' => out.push(' '),
+                _ => out.push(c),
+            },
+        }
+    }
+    out
 }
 
 /// A friendly gloss for an engine reply line (additive — callers keep the raw
@@ -326,6 +437,65 @@ mod tests {
         assert_eq!(wire("CState.JAB"), "e CState.JAB");
         assert_eq!(wire("1 + 2"), "e 1 + 2");
         assert_eq!(wire("eval CState.JAB"), "e CState.JAB");   // explicit eval == default
+    }
+
+    #[test]
+    fn multiline_hscript_collapses_to_one_wire_line() {
+        // A pasted/typed multi-line snippet must reach the engine as ONE '\n'-free line
+        // (the wire is newline-delimited); hscript separates statements with `;`, so
+        // folding line breaks to spaces is semantics-preserving.
+        assert_eq!(
+            wire("var c = match.getCharacters()[0];\nc.toState(CState.JAB);"),
+            "e var c = match.getCharacters()[0]; c.toState(CState.JAB);"
+        );
+        // CRLF (Windows clipboard) folds the same way — no stray '\r'.
+        assert_eq!(wire("a;\r\nb;"), "e a; b;");
+        // a single line is untouched (and never gets a sentinel).
+        assert_eq!(wire("1 + 2"), "e 1 + 2");
+    }
+
+    #[test]
+    fn multiline_drops_line_comments_and_keeps_strings_intact() {
+        // `//` comments must not swallow the following line once newlines collapse.
+        assert_eq!(wire("a;  // set a\nb;"), "e a;   b;");
+        // `//` and line breaks INSIDE a string literal are preserved (newline -> \n escape).
+        assert_eq!(wire("log(\"a//b\");"), "e log(\"a//b\");");
+        assert_eq!(wire("log(\"a\nb\");"), "e log(\"a\\nb\");");
+        // block comments survive; their internal newline becomes a space.
+        assert_eq!(wire("a;/* x\ny */b;"), "e a;/* x y */b;");
+    }
+
+    #[test]
+    fn split_commands_separates_on_blank_lines() {
+        // a blank line breaks one message into independent commands…
+        assert_eq!(
+            split_commands("spawn sandbag\n\nmatch.getCharacters()[0].getStateName()"),
+            vec!["spawn sandbag", "match.getCharacters()[0].getStateName()"]
+        );
+        // …several blanks / leading / trailing blanks collapse and are ignored.
+        assert_eq!(split_commands("\n\na\n\n\nb\n\n"), vec!["a", "b"]);
+        // no blank line -> exactly one block (single command, possibly multi-line).
+        assert_eq!(
+            split_commands("var c = match.getCharacters()[0];\nc.toState(CState.JAB);"),
+            vec!["var c = match.getCharacters()[0];\nc.toState(CState.JAB);"]
+        );
+        // empty / whitespace-only message -> no commands.
+        assert!(split_commands("   \n\n").is_empty());
+    }
+
+    #[test]
+    fn split_commands_keeps_multiline_statements_intact() {
+        // a blank line INSIDE open braces is not a separator (one statement).
+        assert_eq!(
+            split_commands("if (x) {\n\n  y;\n}"),
+            vec!["if (x) {\n\n  y;\n}"]
+        );
+        // a blank line inside a string literal is not a separator.
+        assert_eq!(split_commands("log(\"a\n\nb\")"), vec!["log(\"a\n\nb\")"]);
+        // and the multi-command case still feeds each block through translate cleanly.
+        let wires: Vec<String> = split_commands("1 + 2\n\nspawn sandbag")
+            .iter().map(|c| wire(c)).collect();
+        assert_eq!(wires, vec!["e 1 + 2", "s sandbag"]);
     }
 
     #[test]

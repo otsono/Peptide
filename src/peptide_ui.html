@@ -70,7 +70,11 @@
   /* sent: a clay bubble on the right */
   .msg.you{align-self:flex-end;max-width:80%;background:var(--clay);color:#fff;
     padding:9px 14px;border-radius:18px 18px 6px 18px;box-shadow:var(--shadow);
-    margin:6px 0 3px;font-size:14.5px;animation:in .18s ease both;}
+    margin:6px 0 3px;font-size:14.5px;animation:in .18s ease both;
+    white-space:pre-wrap;word-break:break-word;}
+  /* a multi-line message is code — monospace it and widen the bubble */
+  .msg.you.multiline{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    font-size:12.8px;line-height:1.5;max-width:92%;}
   .msg.system{align-self:center;color:var(--muted);font-size:13px;
     padding:8px;max-width:90%;text-align:center;animation:in .18s ease both;}
   /* code/value output */
@@ -92,7 +96,7 @@
   .chip:hover{background:var(--chip-hover);}
   .chip:active{transform:translateY(1px);}
   .inputrow{
-    display:flex;align-items:center;gap:8px;background:var(--surface);
+    display:flex;align-items:flex-end;gap:8px;background:var(--surface);
     border:1px solid var(--border);border-radius:14px;padding:6px 6px 6px 14px;
     box-shadow:var(--shadow);transition:border-color .15s,box-shadow .15s;
   }
@@ -100,7 +104,10 @@
   #input{
     flex:1;border:none;outline:none;background:none;color:var(--ink);
     font:inherit;font-size:15px;padding:7px 0;
+    resize:none;line-height:1.45;max-height:200px;overflow-y:auto;
   }
+  /* a multi-line draft reads as code — monospace it so indentation lands true */
+  #input.multiline{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:13px;}
   #input::placeholder{color:var(--muted);}
   #send{
     border:none;background:var(--clay);color:#fff;font:inherit;font-weight:600;
@@ -454,8 +461,8 @@
     <div class="composer"><div class="inner">
       <div class="chips" id="chips"></div>
       <div class="inputrow">
-        <input id="input" autocomplete="off" spellcheck="false"
-               placeholder="Message Peptide  —  a command, or raw hscript…" />
+        <textarea id="input" rows="1" autocomplete="off" spellcheck="false"
+               placeholder="Message Peptide  —  a command, or raw hscript  (Shift+Enter for a new line)"></textarea>
         <button id="send">Send</button>
       </div>
     </div></div>
@@ -636,7 +643,9 @@
       else { el.textContent=text; }
       messages.appendChild(el);
     } else if(sender==="you"){
-      const el=document.createElement("div"); el.className="msg you"; el.textContent=text; messages.appendChild(el);
+      const el=document.createElement("div");
+      el.className="msg you"+(text.indexOf("\n")>=0?" multiline":""); // pre-wrap + mono for code
+      el.textContent=text; messages.appendChild(el);
     } else {
       const el=document.createElement("div"); el.className="msg system"; el.textContent=text; messages.appendChild(el);
     }
@@ -665,6 +674,7 @@
   window.onLine = function(line){
     if(line.startsWith("PORT:")){ port = line.slice(5).trim(); return; }
     if(line.startsWith("SYS:ERR:")){ add("engine", line.slice(8), {code:true,error:true}); return; }
+    if(line.startsWith("SYS:OUT:")){ add("engine", line.slice(8), {code:true}); return; }
     if(line.startsWith("SYS:")){ add("system", line.slice(4)); return; }
     if(line.indexOf("HELLO_FROM_FRAYMAKERS")>=0) return;
     if(line.indexOf("READY")>=0){
@@ -702,12 +712,24 @@
     if(window.ipc && window.ipc.postMessage) window.ipc.postMessage(text);
   }
 
-  $("send").onclick=()=>{ const v=$("input").value; $("input").value=""; send(v); $("input").focus(); };
-  $("input").addEventListener("keydown",(e)=>{
-    if(e.key==="Enter"){ e.preventDefault(); $("input").value=""; send(e.target.value || $("input").dataset.last || e.target.defaultValue); }
+  // Composer: a growing textarea. Enter sends; Shift+Enter inserts a newline, so
+  // multi-line hscript can be typed or pasted and sent as one message. (The wire is
+  // newline-delimited; Rust folds the snippet onto one line — see collapse_multiline.)
+  const inputEl = $("input");
+  function autogrow(){
+    inputEl.style.height = "auto";
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + "px";
+    inputEl.classList.toggle("multiline", inputEl.value.indexOf("\n") >= 0);
+  }
+  function submit(){
+    const v = inputEl.value; inputEl.value = ""; autogrow(); send(v); inputEl.focus();
+  }
+  $("send").onclick = submit;
+  inputEl.addEventListener("input", autogrow);
+  inputEl.addEventListener("keydown",(e)=>{
+    if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); submit(); }
+    // Shift+Enter falls through to the textarea's native newline insertion.
   });
-  // simpler enter handling
-  $("input").onkeydown=(e)=>{ if(e.key==="Enter"){ const v=$("input").value; $("input").value=""; send(v); } };
 
   // ── setup wizard (multi-step modal) ─────────────────────
   // One step per field, preceded by a welcome step. Back/Next walk the steps;
@@ -865,8 +887,26 @@
     $("f-bar").classList.add("show"); $("f-result").innerHTML="";
     ipcSend("@@fray:"+action+":"+JSON.stringify(payload));
   }
-  window.onFrayProgress = function(msg){ showResult("f-result", msg||"Running…"); };
+  window.onFrayProgress = function(msg){
+    // An inline publish from the "isn't built yet" modal narrates into the spinner,
+    // not the (hidden) Hook screen result line.
+    if(pendingBuildBoot){ if(msg) mMsg.textContent=msg; return; }
+    showResult("f-result", msg||"Running…");
+  };
   window.onFrayResult = function(ok, msg){
+    if(pendingBuildBoot){
+      pendingBuildBoot=false;
+      if(ok){
+        // The `.fra` now exists — pick the boot back up; READY auto-spawns into the chat.
+        add("system","Published “"+_buildChar+"” — launching…");
+        charName=_buildChar;
+        startBoot(true);
+      } else {
+        // Publish failed — back to the build prompt so they can retry or cancel.
+        modalNotBuilt(_buildChar, _buildProject, "Publish failed: "+(msg||"unknown error"));
+      }
+      return;
+    }
     $("f-bar").classList.remove("show");
     showResult("f-result", msg, ok?"ok":"warn");
   };
@@ -893,7 +933,7 @@
   function blockUi(on){ modalUp=on; refreshUi(); }
   // Dismiss an error/launch modal but STAY in the debugger. Leaves the game disconnected,
   // so the chat greys out and the "Launch game" bar appears.
-  function dismissModal(){ flowState="idle"; hideModal(); }
+  function dismissModal(){ flowState="idle"; pendingBuildBoot=false; hideModal(); }
   // The disconnected-bar "Launch game" button — offer Quick / Regular boot.
   function launchGame(){ flowState="prompt"; modalPrompt(); }
   function modalWorking(title, msg){
@@ -914,7 +954,46 @@
     actions.appendChild(quick); actions.appendChild(reg);
     overlay.classList.add("show"); blockUi(true);
   }
+  // The picked character has never been published to a `.fra`. Instead of the
+  // misleading "Fraymakers isn't open" prompt, offer to publish it right here:
+  // [Export Now] drives the FrayTools publish inline, then auto-continues the boot
+  // into the chat once the `.fra` exists. [Cancel] backs out to the disconnected bar.
+  let _buildChar="", _buildProject="", pendingBuildBoot=false;
+  function modalNotBuilt(ch, project, err){
+    flowState="notbuilt";
+    _buildChar=ch||charName; _buildProject=project||"";
+    modal.classList.remove("working"); modal.classList.add("prompt");
+    resetPatchbar();
+    mIcon.textContent="📦";
+    mTitle.textContent="“"+_buildChar+"” isn’t built yet";
+    mMsg.textContent="It needs to be published from FrayTools before it can launch. "
+                    +"Export it now and Peptide will continue into the chat automatically.";
+    mErr.textContent=err||"";
+    actions.innerHTML="";
+    const exportBtn=document.createElement("button");
+    exportBtn.className="btn-primary"; exportBtn.textContent="Export Now";
+    exportBtn.onclick=()=>exportThenBoot();
+    const cancel=document.createElement("button");
+    cancel.className="btn-ghost"; cancel.textContent="Cancel"; cancel.onclick=()=>dismissModal();
+    actions.appendChild(exportBtn); actions.appendChild(cancel);
+    overlay.classList.add("show"); blockUi(true);
+  }
+  // Publish _buildProject through the FrayTools hook (the same @@fray:export the Hook
+  // screen uses), showing the working spinner. onFrayResult routes back here while
+  // pendingBuildBoot is set: success → boot into the chat; failure → re-offer Export.
+  function exportThenBoot(){
+    if(!_buildProject){ modalNotBuilt(_buildChar, "", "No FrayTools project found to publish."); return; }
+    flowState="building"; pendingBuildBoot=true;
+    modalWorking("Publishing “"+_buildChar+"”…","Exporting in FrayTools — this can take a moment.");
+    ipcSend("@@fray:export:"+JSON.stringify({project:_buildProject}));
+  }
   function hideModal(){ overlay.classList.remove("show"); blockUi(false); resetPatchbar(); }
+  // boot hit a never-published character → the dedicated "isn't built yet" modal.
+  window.onNotBuilt=function(ch, project){
+    if(!$("screen-console").classList.contains("active")) return;
+    setStatus(false);
+    modalNotBuilt(ch, project, "");
+  };
   // The engine crashed — show its log (Enhanced = the patched-engine RESDIAG diagnostics,
   // default; Raw = the engine's error.log from Rust) with a toggle, and offer to relaunch.
   let _crashRaw="", _crashEnhanced="";

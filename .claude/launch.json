@@ -4,8 +4,26 @@
     {
       "name": "peptide-ui",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8777", "--directory", "src"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8777",
+        "--directory",
+        "src"
+      ],
       "port": 8777
+    },
+    {
+      "name": "peptide-setup-wt",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8799",
+        "--directory",
+        "/Users/jimmy/.openclaw/workspace-main/ssf2-setup-wt/src"
+      ],
+      "port": 8799
     }
   ]
 }
