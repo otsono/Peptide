@@ -100,13 +100,12 @@ pub fn launch() -> std::io::Result<()> {
     let ipc_conn = conn.clone();
     let ipc_proxy = event_loop.create_proxy();
     let ipc_char = char_name.clone();
-    // The UI HTML: an on-disk peptide_ui.html wins (editable), else the embedded
-    // compile-time copy — so the window always renders even for a bare binary with
-    // no data/ folder. wry's with_html borrows a &str, so the String must outlive
-    // the builder.
-    let ui_html = crate::read_ui_html();
+    // The UI HTML is embedded at compile time (include_str!) — the window's shell is
+    // always present and never read from disk, so the GUI always renders regardless
+    // of where the binary runs. wry's with_html takes a &str.
+    let ui_html = include_str!("peptide_ui.html");
     let webview = WebViewBuilder::new()
-        .with_html(&ui_html)
+        .with_html(ui_html)
         .with_initialization_script(&init)
         .with_ipc_handler(move |req: Request<String>| {
             let body = req.body().to_string();

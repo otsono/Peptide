@@ -111,7 +111,7 @@ cargo build --release   # → build/release/peptide (+ build/release/data/)
 Peptide reads its runtime assets from disk (they're editable), so a build script stages
 them into a `data/` folder next to the binary on every build — `build/release/peptide`
 is runnable as long as you keep its sibling `build/release/data/` folder with it. The UI
-HTML also has a compile-time embedded fallback, so the window always renders; a bare
+HTML is embedded in the binary at compile time, so the window always renders; a bare
 binary copied away from its `data/` folder still shows a "missing data files" dialog for
 the engine-required files (`commands.hsx`, `match_settings.conf`).
 

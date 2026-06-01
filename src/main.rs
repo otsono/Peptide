@@ -689,24 +689,6 @@ fn read_asset(rel: &str) -> String {
     );
 }
 
-/// The GUI shell HTML. Read from disk like every other asset (an on-disk copy still
-/// WINS, so editing `peptide_ui.html` next to the binary takes effect — no stale-
-/// baked-copy bug), but fall back to a copy embedded at compile time when none is
-/// found on disk. Unlike the other runtime data files, the HTML is the window's UI
-/// itself: embedding it guarantees the GUI always renders (never a blank/dead
-/// window) even for a bare binary detached from its `data/` folder. Logs which
-/// source it used so the fallback is never silent.
-pub fn read_ui_html() -> String {
-    for path in asset_candidate_paths("peptide_ui.html") {
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            eprintln!("peptide: loaded asset {}", path.display());
-            return text;
-        }
-    }
-    eprintln!("peptide: peptide_ui.html not found on disk — using the embedded copy");
-    include_str!("peptide_ui.html").to_string()
-}
-
 /// GUI-open preflight: verify the runtime data files peptide reads from disk are
 /// present, returning a friendly multi-line message (what's missing + where we
 /// looked) when any are absent. `None` => everything resolved. Lets the GUI show a

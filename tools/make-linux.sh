@@ -41,7 +41,7 @@ chmod +x "$OUT/$BIN"
 # stage everything into $OUT/data/.
 DATA="$OUT/data"
 mkdir -p "$DATA/mappings"
-cp commands.hsx match_settings.conf src/peptide_ui.html "$DATA/"
+cp commands.hsx match_settings.conf "$DATA/"   # peptide_ui.html is embedded in the binary
 cp -R crates/ssf2-converter/mappings/. "$DATA/mappings/"
 
 cat <<DONE

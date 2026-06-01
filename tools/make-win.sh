@@ -53,7 +53,7 @@ cp "build/$TARGET/release/$BIN.exe" "$OUT/" 2>/dev/null || true
 # the app and the converter check a `data/` subfolder next to the .exe first, so
 # stage everything into $OUT/data/.
 mkdir -p "$OUT/data/mappings"
-cp commands.hsx match_settings.conf src/peptide_ui.html "$OUT/data/" 2>/dev/null || true
+cp commands.hsx match_settings.conf "$OUT/data/" 2>/dev/null || true   # peptide_ui.html is embedded in the binary
 cp -R crates/ssf2-converter/mappings/. "$OUT/data/mappings/" 2>/dev/null || true
 
 cat <<DONE

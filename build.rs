@@ -29,10 +29,11 @@ fn main() {
     let data = profile_dir.join("data");
 
     // (source path relative to the crate root, destination rel under data/)
+    // peptide_ui.html is NOT staged — it's embedded in the binary (include_str! in
+    // gui.rs), never read from disk.
     let files = [
         ("commands.hsx", "commands.hsx"),
         ("match_settings.conf", "match_settings.conf"),
-        ("src/peptide_ui.html", "peptide_ui.html"),
     ];
     for (src_rel, dst_rel) in files {
         let src = manifest.join(src_rel);
