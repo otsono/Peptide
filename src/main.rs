@@ -1154,7 +1154,13 @@ fn connect_edit(
     let eval_chars_g = add_string_const(code, "characters"); // bound to the live character ArrayObj each eval
     // The command implementations, in hscript (ported from bytecode). Loaded ONCE into
     // the interp after applyInterpreterGlobals; every friendly command calls into these.
-    let commands_g = add_string_const(code, &read_asset("commands.hsx"));
+    // commands.hsx holds the end-user-facing helpers; the host-owned matchStatus icon
+    // bridge (driven only by the GUI) lives in interpreter::UI_BRIDGE_HSX and is appended
+    // here so both parse into the same interp at boot.
+    let commands_g = add_string_const(
+        code,
+        &format!("{}\n{}", read_asset("commands.hsx"), interpreter::UI_BRIDGE_HSX),
+    );
     // Bound into scope so commands.hsx's __eval() can parse+run the user command inside an
     // hscript try/catch (crash-proofing): __interp = the interp itself, __parser = a Parser,
     // __cmd = the raw user command line (set per-eval).

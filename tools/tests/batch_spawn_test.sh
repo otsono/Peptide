@@ -41,7 +41,7 @@ for c in "$@"; do
   # 1. ensure fresh source (regen is cheap + deterministic)
   ./build/release/peptide convert ../ssf2-ssfs/$c.ssf >/tmp/${c}_conv.log 2>&1 || { echo "$c CONVERT_FAIL" >>"$RESULTS"; continue; }
   # 2. export via FrayTools
-  node tools/fraytools-harness/export-in-fraytools.js --project "$PWD/characters/$c/$c.fraytools" >/tmp/${c}_export.log 2>&1 || { echo "$c EXPORT_FAIL" >>"$RESULTS"; continue; }
+  ./build/release/peptide export --project "$PWD/characters/$c/$c.fraytools" >/tmp/${c}_export.log 2>&1 || { echo "$c EXPORT_FAIL" >>"$RESULTS"; continue; }
   # 3. spawn + drive — deterministic per-char port (avoids the random-port collisions
   #    that produced false launched=0 fails); retry once on a port-bind collision.
   pkill -f 'peptide serve' 2>/dev/null || true; sleep 0.3

@@ -1,6 +1,6 @@
 //! compare_boxes — Tier-3 numeric oracle.
 //!
-//! Reads the JSON report produced by `tools/fraytools-harness/harness.js`
+//! Reads the JSON report produced by `peptide harness`
 //! and the original SSF2 source file, then computes — for every box in the
 //! FrayTools entity at the chosen animation / frame — how far the FrayTools
 //! rendered anchor is from where the SSF2 source says the box should be.
@@ -10,8 +10,8 @@
 //!
 //!   1. Edit converter (entity_gen.rs).
 //!   2. Run converter → entity JSON.
-//!   3. Open entity in FrayTools via render-entity.js.
-//!   4. Read entity + extract frame data via harness.js → out.json.
+//!   3. Open entity in FrayTools via `peptide render`.
+//!   4. Read entity + extract frame data via `peptide harness` → out.json.
 //!   5. Run compare_boxes → per-box drift report + PASS/FAIL.
 //!   6. If FAIL, go to step 1.
 //!
