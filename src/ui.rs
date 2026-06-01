@@ -158,7 +158,9 @@ fn io_err(msg: &str) -> std::io::Error {
 /// Err (instead of exiting) so callers can recover with a boot prompt. hlboot-sdl.dat is
 /// never modified.
 pub fn patch_and_launch() -> std::io::Result<(u16, String, Cleanup)> {
-    patch_and_launch_with_progress(None)
+    // Terminal/CLI keeps the headless fast-boot (bake the config char).
+    let c = crate::config::Config::load().char_name();
+    patch_and_launch_with_progress(None, Some(&c))
 }
 
 /// Like `patch_and_launch`, but streams the patcher's manifest-preflight progress to
@@ -170,6 +172,12 @@ pub fn patch_and_launch_with_progress(
     // Called synchronously on THIS thread as each preflight line is read, so it
     // needs no Send/Sync bound (the GUI's wry proxy isn't Send).
     on_progress: Option<&dyn Fn(usize, usize, &str)>,
+    // A character to bake for HEADLESS fast-boot (skip the Title; a bare `spawn`
+    // launches it) — used by the CLI/terminal. `None` = a FULL boot (Title + UGC
+    // load) that is just a live TCP bridge: the GUI uses this for BOTH Regular and
+    // Quick boot, and Quick then sends an explicit `spawn <char>` from the page once
+    // READY. (Full boot also avoids the headless filtered-load null-namespace crash.)
+    bake_char: Option<&str>,
 ) -> std::io::Result<(u16, String, Cleanup)> {
     // Read launch settings through the persisted config (env vars still win —
     // see Config's resolver methods — then the saved config, then defaults).
@@ -184,7 +192,15 @@ pub fn patch_and_launch_with_progress(
         return Err(io_err(&format!("{} not found (set the Fraymakers install in Setup or FRAY_DIR)", boot.display())));
     }
 
-    let char_name = cfg.char_name();
+    // A baked (headless) char must already be published to a `.fra`.
+    if let Some(c) = bake_char {
+        let fra = fray_dir.join("custom").join(c).join(format!("{c}.fra"));
+        if !fra.exists() {
+            return Err(io_err(&format!(
+                "{c} isn't built yet — no {}. Publish it in FrayTools Hook first, then launch.",
+                fra.display())));
+        }
+    }
     let stage = cfg.stage();
     let assist = cfg.assist();
 
@@ -196,16 +212,25 @@ pub fn patch_and_launch_with_progress(
     // so it routes to the bytecode patcher, not back to a runtime mode).
     let patcher = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("peptide"));
 
-    // patch a throwaway _conn.dat (bake the default char so a bare `spawn` works)
+    // patch a throwaway _conn.dat. Passing a char triggers headless fast-boot; with
+    // none, the engine does a full Title/UGC boot and is just a TCP bridge.
     std::fs::write(&appid, b"1420350")?;
     // Capture stderr so we can both (a) parse the preflight progress lines for the UI
     // bar and (b) surface the doctor checklist on a patch failure (a new Fraymakers
     // build that moved a critical symbol aborts here with a precise reason).
+    // connect <port> <token> [char stage assist] — the char/stage/assist trio is
+    // included ONLY for a headless bake; omitted for a full-boot TCP bridge.
+    let mut args: Vec<std::ffi::OsString> = vec![
+        boot.as_os_str().to_os_string(), conn.as_os_str().to_os_string(),
+        "connect".into(), port.to_string().into(), token.clone().into(),
+    ];
+    if let Some(c) = bake_char {
+        args.push(c.into());
+        args.push(stage.clone().into());
+        args.push(assist.clone().into());
+    }
     let mut child = Command::new(&patcher)
-        .args([boot.as_os_str(), conn.as_os_str(),
-               std::ffi::OsStr::new("connect"), std::ffi::OsStr::new(&port.to_string()),
-               std::ffi::OsStr::new(&token), std::ffi::OsStr::new(&char_name),
-               std::ffi::OsStr::new(&stage), std::ffi::OsStr::new(&assist)])
+        .args(&args)
         .stdout(Stdio::null()).stderr(Stdio::piped())
         .spawn()
         .map_err(|e| io_err(&format!("failed to spawn the patcher {}: {e}", patcher.display())))?;

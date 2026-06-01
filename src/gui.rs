@@ -39,8 +39,10 @@ const BOOT_REGULAR: &str = "@@boot:regular"; // launch a fresh engine, no auto-s
 const PICK_DIR_PREFIX: &str = "@@pick:dir:";       // @@pick:dir:<replyFn>
 const PICK_FILE_PREFIX: &str = "@@pick:file:";     // @@pick:file:<replyFn>[:<ext>]
 const SETUP_SAVE_PREFIX: &str = "@@setup:save:";   // @@setup:save:<json>
+const SETUP_RESET: &str = "@@setup:reset";         // clear config -> reopen first-run wizard
 const CONVERT_PREFIX: &str = "@@convert:start:";   // @@convert:start:<json>
 const PUBLISH_PREFIX: &str = "@@publish:add:";      // @@publish:add:<json {char, output}>
+const PROJECTS_LIST: &str = "@@projects:list";      // enumerate .fraytools projects (launch modal)
 const FRAY_PREFIX: &str = "@@fray:";                // @@fray:export|render|harness:<json>
 
 pub fn launch() -> std::io::Result<()> {
@@ -77,12 +79,21 @@ pub fn launch() -> std::io::Result<()> {
             let body = req.body().to_string();
             let (w, cl, cn, px, ch) = (ipc_writer.clone(), ipc_cleanup.clone(), ipc_conn.clone(),
                                        ipc_proxy.clone(), ipc_char.clone());
-            match body.as_str() {
-                RECONNECT => { thread::spawn(move || reconnect_existing(w, cn, px, ch)); }
-                BOOT_QUICK => { thread::spawn(move || boot_new(w, cl, cn, px, ch, true)); }
-                BOOT_REGULAR => { thread::spawn(move || boot_new(w, cl, cn, px, ch, false)); }
-                other if other.starts_with("@@") => handle_screen_verb(other, &ipc_proxy),
-                _ => handle_command(&body, &ipc_writer, &ipc_proxy),
+            let b = body.as_str();
+            if b == RECONNECT {
+                thread::spawn(move || reconnect_existing(w, cn, px, ch));
+            } else if b.starts_with(BOOT_QUICK) {
+                // @@boot:quick[:<char>] — the trailing char (the picked project) is
+                // baked as the launch default; absent -> fall back to the config char.
+                let chosen = boot_char(b, BOOT_QUICK).unwrap_or(ch);
+                thread::spawn(move || boot_new(w, cl, cn, px, chosen, true));
+            } else if b.starts_with(BOOT_REGULAR) {
+                let chosen = boot_char(b, BOOT_REGULAR).unwrap_or(ch);
+                thread::spawn(move || boot_new(w, cl, cn, px, chosen, false));
+            } else if b.starts_with("@@") {
+                handle_screen_verb(b, &ipc_proxy);
+            } else {
+                handle_command(&body, &ipc_writer, &ipc_proxy);
             }
         })
         .build(&window)
@@ -117,20 +128,46 @@ fn io(msg: &str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Other, msg.to_string())
 }
 
+/// Parse the optional `:<char>` suffix off a boot verb (`@@boot:quick:mario` ->
+/// `Some("mario")`, `@@boot:quick` -> `None`).
+fn boot_char(verb: &str, prefix: &str) -> Option<String> {
+    verb.strip_prefix(prefix)
+        .and_then(|r| r.strip_prefix(':'))
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// A small JSON blob describing the current config + setup state, passed to the
-/// page's `bootRoute` so it can open Setup (first run / incomplete) or Home.
+/// page's `bootRoute` so it can open the Setup wizard (first run / incomplete) or
+/// Home. Carries autodetect results so the wizard can pre-fill + badge the paths.
 fn config_json() -> String {
     let cfg = crate::config::Config::load();
     let s = |v: &str| js_str(v);
     let frayroot = cfg.fraymakers_root().map(|p| p.display().to_string()).unwrap_or_default();
     let frayexe = cfg.fraytools_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    // Autodetect for the wizard: did we find each tool on disk? And the path to
+    // pre-fill FrayTools with when the user hasn't set one yet.
+    let fraymakers_detected = crate::platform::fraymakers_root().is_some();
+    let fraytools_detected = crate::platform::detected_fraytools_path().is_some();
+    let fraytools_val = if !cfg.fraytools_path.is_empty() {
+        cfg.fraytools_path.clone()
+    } else {
+        crate::platform::detected_fraytools_path().map(|p| p.display().to_string()).unwrap_or_default()
+    };
     format!(
-        "{{\"setupComplete\":{},\"currentChar\":{},\"fraymakersRoot\":{},\"fraytoolsPath\":{},\
+        "{{\"configured\":{},\"setupComplete\":{},\"currentChar\":{},\"stage\":{},\"assist\":{},\
+          \"fraymakersRoot\":{},\
+          \"fraymakersDetected\":{},\"fraytoolsPath\":{},\"fraytoolsDetected\":{},\
           \"fraytoolsExe\":{},\"outputDir\":{},\"miscSsf\":{}}}",
+        cfg.configured,
         cfg.setup_complete(),
         s(&cfg.char_name()),
+        s(&cfg.stage()),
+        s(&cfg.assist()),
         s(&frayroot),
-        s(&cfg.fraytools_path),
+        fraymakers_detected,
+        s(&fraytools_val),
+        fraytools_detected,
         s(&frayexe),
         s(&cfg.output_dir().display().to_string()),
         s(&cfg.misc_ssf),
@@ -154,6 +191,12 @@ fn handle_screen_verb(verb: &str, proxy: &EventLoopProxy<Ev>) {
     } else if let Some(json) = verb.strip_prefix(SETUP_SAVE_PREFIX) {
         let (json, px) = (json.to_string(), proxy.clone());
         thread::spawn(move || save_setup(&json, &px));
+    } else if verb == SETUP_RESET {
+        let px = proxy.clone();
+        thread::spawn(move || reset_setup(&px));
+    } else if verb == PROJECTS_LIST {
+        let px = proxy.clone();
+        thread::spawn(move || list_projects(&px));
     } else if let Some(json) = verb.strip_prefix(CONVERT_PREFIX) {
         let (json, px) = (json.to_string(), proxy.clone());
         thread::spawn(move || run_convert(&json, &px));
@@ -192,6 +235,14 @@ fn json_str_field(json: &str, key: &str) -> Option<String> {
     None
 }
 
+/// The configured FrayTools project folder (`output_dir`) as an absolute, existing
+/// directory — for defaulting file pickers there. `None` if it doesn't exist.
+fn resolved_project_dir() -> Option<std::path::PathBuf> {
+    let d = crate::config::Config::load().output_dir();
+    let abs = if d.is_absolute() { d } else { std::env::current_dir().ok()?.join(d) };
+    abs.is_dir().then_some(abs)
+}
+
 /// Open a native folder/file picker (rfd) and call back the named JS function with
 /// the chosen path (or empty string if cancelled).
 fn pick_path(dir: bool, reply_fn: &str, ext: &str, proxy: &EventLoopProxy<Ev>) {
@@ -200,6 +251,13 @@ fn pick_path(dir: bool, reply_fn: &str, ext: &str, proxy: &EventLoopProxy<Ev>) {
     } else {
         let mut d = rfd::FileDialog::new();
         if !ext.is_empty() { d = d.add_filter(ext, &[ext]); }
+        // A `.fraytools` pick (launch / FrayTools Hook) opens in the configured
+        // project folder by default, since that's where projects live.
+        if ext == "fraytools" {
+            if let Some(start) = resolved_project_dir() {
+                d = d.set_directory(start);
+            }
+        }
         d.pick_file()
     };
     let path = chosen.map(|p| p.display().to_string()).unwrap_or_default();
@@ -210,18 +268,65 @@ fn pick_path(dir: bool, reply_fn: &str, ext: &str, proxy: &EventLoopProxy<Ev>) {
     }
 }
 
-/// Persist the setup form (`{fraymakersRoot, fraytoolsPath, currentChar,
-/// outputDir, miscSsf}`) and report back whether setup is now complete.
+/// Persist the setup wizard form (`{fraymakersRoot, fraytoolsPath, outputDir,
+/// miscSsf}`) and report back whether setup is now complete. Marks the config as
+/// `configured` so the first-run wizard doesn't reappear. The character is no
+/// longer a setup field — it's chosen at launch by picking a `.fraytools` project.
 fn save_setup(json: &str, proxy: &EventLoopProxy<Ev>) {
     let mut cfg = crate::config::Config::load();
     if let Some(v) = json_str_field(json, "fraymakersRoot") { cfg.fraymakers_root = v; }
     if let Some(v) = json_str_field(json, "fraytoolsPath")  { cfg.fraytools_path = v; }
-    if let Some(v) = json_str_field(json, "currentChar")    { cfg.current_char = v; }
     if let Some(v) = json_str_field(json, "outputDir")      { cfg.output_dir = v; }
     if let Some(v) = json_str_field(json, "miscSsf")        { cfg.misc_ssf = v; }
+    cfg.configured = true;
     cfg.save();
     let _ = proxy.send_event(Ev::Js(format!(
         "window.onSetupSaved && onSetupSaved({})", config_json())));
+}
+
+/// Clear the persisted config and re-route the page to the first-run wizard with
+/// freshly autodetected defaults (the Setup screen's "Reset to defaults" button).
+fn reset_setup(proxy: &EventLoopProxy<Ev>) {
+    crate::config::Config::reset();
+    let _ = proxy.send_event(Ev::Js(format!(
+        "window.bootRoute && bootRoute({})", config_json())));
+}
+
+/// Enumerate the converted `.fraytools` projects in the output dir for the launch
+/// modal: each `<output>/<char>/<char>.fraytools` (and any top-level `.fraytools`).
+/// Posts `onProjects([{char, path}, …])` back to the page.
+fn list_projects(proxy: &EventLoopProxy<Ev>) {
+    let dir = crate::config::Config::load().output_dir();
+    let mut items: Vec<(String, String)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            let proj = if p.is_dir() {
+                crate::platform::find_project_file(&p)
+            } else if p.extension().map(|x| x == "fraytools").unwrap_or(false) {
+                Some(p.clone())
+            } else {
+                None
+            };
+            if let Some(proj) = proj {
+                if let Some(stem) = proj.file_stem().map(|s| s.to_string_lossy().into_owned()) {
+                    // Show the folder that holds the .fraytools, relative as configured
+                    // (e.g. "./characters/mario"), not the full path to the file.
+                    let folder = proj.parent().unwrap_or(&proj).display().to_string();
+                    if !stem.is_empty() { items.push((stem, folder)); }
+                }
+            }
+        }
+    }
+    items.sort();
+    items.dedup();
+    let mut json = String::from("[");
+    for (i, (c, path)) in items.iter().enumerate() {
+        if i > 0 { json.push(','); }
+        json.push_str(&format!("{{\"char\":{},\"path\":{}}}", js_str(c), js_str(path)));
+    }
+    json.push(']');
+    let _ = proxy.send_event(Ev::Js(format!("window.onProjects && onProjects({json})")));
 }
 
 /// Run an in-process conversion (`{input, output?, name?, miscSsf?}`) on this
@@ -388,7 +493,11 @@ fn boot_new(writer: SharedWriter, cleanup: SharedCleanup, conn: SharedConn,
             "window.onPatchProgress && onPatchProgress({}, {}, {})",
             done, total, js_str(label))));
     };
-    match crate::ui::patch_and_launch_with_progress(Some(&on_progress)) {
+    // Quick boot = HEADLESS fast-boot (skip Title, bake the picked custom char); the page
+    // sends `spawn <char>` on READY. Regular boot = full (non-headless) Title/UGC boot that
+    // is just a live TCP bridge with no auto-spawn. Both keep active TCP.
+    let bake = if quick && !char_name.is_empty() { Some(char_name.as_str()) } else { None };
+    match crate::ui::patch_and_launch_with_progress(Some(&on_progress), bake) {
         Ok((port, token, mut guard)) => match crate::ui::reawait(port, &token, 30) {
             Some((reader, w)) => {
                 if let Ok(mut g) = writer.lock() { *g = Some(w); }
@@ -401,8 +510,13 @@ fn boot_new(writer: SharedWriter, cleanup: SharedCleanup, conn: SharedConn,
             }
             None => {
                 guard.dispose(); // kill the engine that never dialed in
-                let _ = proxy.send_event(Ev::Js(
-                    "window.onBootFailed && onBootFailed(\"Fraymakers didn’t connect.\")".into()));
+                // It may have crashed during boot — show the crash modal if it left a log.
+                thread::sleep(Duration::from_millis(450));
+                match read_crash_log() {
+                    Some(log) => { let _ = proxy.send_event(Ev::Js(crash_js(&log, &[]))); }
+                    None => { let _ = proxy.send_event(Ev::Js(
+                        "window.onBootFailed && onBootFailed(\"Fraymakers didn’t connect.\")".into())); }
+                }
             }
         },
         Err(e) => {
@@ -412,23 +526,55 @@ fn boot_new(writer: SharedWriter, cleanup: SharedCleanup, conn: SharedConn,
     }
 }
 
+/// Read the engine crash log (`<fraymakers>/error.log`) if the engine left one. The boot
+/// path deletes it before launch, so its presence after a drop means a real crash. Trimmed
+/// to a modal-friendly tail. `None` = no crash log (a clean/transient disconnect).
+fn read_crash_log() -> Option<String> {
+    let root = crate::config::Config::load().fraymakers_root()?;
+    let text = std::fs::read_to_string(root.join("error.log")).ok()?;
+    let t = text.trim();
+    if t.is_empty() { return None; }
+    Some(if t.len() > 1600 { format!("…{}", &t[t.len() - 1600..]) } else { t.to_string() })
+}
+
+/// The engine's connection ended. If it left a crash log, surface the crash modal with it;
+/// otherwise treat it as a transient drop and let the page run its reconnect flow.
+fn engine_gone(proxy: &EventLoopProxy<Ev>, resdiag: &[String]) {
+    // give the engine a moment to flush error.log after the socket closes
+    thread::sleep(Duration::from_millis(450));
+    match read_crash_log() {
+        Some(log) => { let _ = proxy.send_event(Ev::Js(crash_js(&log, resdiag))); }
+        None => { let _ = proxy.send_event(Ev::Js("window.onDisconnected && onDisconnected()".into())); }
+    }
+}
+
+/// Build the `onCrash(rawEngineLog, enhancedLog)` call. `enhancedLog` is the host-side
+/// Enhanced-log text (interpreter::interpret_crash), built from the intact engine log PLUS
+/// the engine's `RESDIAG:` breadcrumbs (the failing resource id). The two views are kept
+/// separate on the page: Enhanced (this) vs Engine log (the raw error.log).
+fn crash_js(log: &str, resdiag: &[String]) -> String {
+    let enhanced = crate::interpreter::interpret_crash(log, resdiag).unwrap_or_default();
+    format!("window.onCrash && onCrash({}, {})", js_str(log), js_str(&enhanced))
+}
+
 /// Socket bytes -> lines -> event loop (-> page). Dedup repeated per-frame ANIM lines.
-/// On EOF/error the engine connection is gone -> tell the page to start its reconnect flow.
+/// On EOF/error the engine connection is gone -> crash modal (if it crashed) or reconnect.
 fn spawn_reader(mut reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>) {
     thread::spawn(move || {
         let mut buf: Vec<u8> = Vec::with_capacity(256);
         let mut one = [0u8; 1];
         let mut last_anim = String::new();
+        // RESDIAG breadcrumbs go to Peptide's Enhanced (advanced) log, NOT the engine chat —
+        // captured here and handed to the crash diagnosis when the engine goes away.
+        let mut resdiag: Vec<String> = Vec::new();
         loop {
             match reader.read(&mut one) {
-                Ok(0) => {
-                    let _ = proxy.send_event(Ev::Js("window.onDisconnected && onDisconnected()".into()));
-                    break;
-                }
+                Ok(0) => { engine_gone(&proxy, &resdiag); break; }
                 Ok(_) => {
                     if one[0] == b'\n' {
                         let line = String::from_utf8_lossy(&buf).trim_end_matches('\r').to_string();
                         buf.clear();
+                        if line.contains("RESDIAG:") { resdiag.push(line); continue; } // enhanced log, not chat
                         if let Some(a) = line.strip_prefix("ANIM:") {
                             if a == last_anim { continue; }
                             last_anim = a.to_string();
@@ -439,10 +585,7 @@ fn spawn_reader(mut reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>) {
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    let _ = proxy.send_event(Ev::Js("window.onDisconnected && onDisconnected()".into()));
-                    break;
-                }
+                Err(_) => { engine_gone(&proxy, &resdiag); break; }
             }
         }
     });
