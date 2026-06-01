@@ -86,6 +86,25 @@ fn main() -> anyhow::Result<()> {
             bridge::serve(bridge::parse_port(&args), bridge::parse_token(&args).as_deref());
             return Ok(());
         }
+        Some("session") => {
+            // Long-lived daemon: boot/attach an engine, hold the TCP link, and
+            // process commands appended to a control file (peptide tell) while
+            // mirroring engine output to a log (peptide log). The canonical
+            // agent workflow for iterating on a character or a conversion fix —
+            // send an eval, read the reply, decide the next eval, same match.
+            bridge::session(&args[2..]);
+            return Ok(());
+        }
+        Some("tell") => {
+            // Queue one command for a running `peptide session`.
+            bridge::tell(&args[2..]);
+            return Ok(());
+        }
+        Some("log") => {
+            // Print (or --follow) a running session's mirrored engine output.
+            bridge::log(&args[2..]);
+            return Ok(());
+        }
         Some("send") => {
             let mut cmd: Option<String> = None;
             let mut i = 2;
@@ -1032,11 +1051,16 @@ fn connect_edit(
     // fullIds must be REAL String objects (parseResourceIdentifier regex-matches them).
     // Baked from the injector args (bare-`s`/auto-launch defaults): char -> the
     // self-bootstrapped custom char (private::<char>), stage/assist -> public:: ids.
-    let stage_fullid = add_string_const(code, &stage_fqid);
-    let char_fullid = add_string_const(code, &char_resid);
-    // The HUD's DamageCounter generates an assist sprite per player; a null assist
-    // null-derefs .namespace in getContentIdentifierString. Supply a real assist.
-    let assist_fullid = add_string_const(code, &assist_fqid);
+    // BARE default stage/assist names for slots the `s` caller omits. They must be
+    // resolved through emit_resolve's bare-name path so the on-demand loader runs:
+    // stage/assist are public:: base content that fast-boot filters out of the
+    // required-load, so a parse-only of the full `::` id would leave a null resource
+    // that getContentIdentifierString then null-derefs `.namespace`. (The char slot
+    // uses g_name — set + loaded by the name-driven self-bootstrap — so no bare char
+    // global is needed here.)
+    let stage_bare_g = add_string_const(code, sname);
+    let assist_bare_g = add_string_const(code, aname);
+    let _ = (&char_resid, &stage_fqid, &assist_fqid); // full ids no longer baked (resolve from bare)
     let assist_str = add_string(code, "assist");
     let launched_g = add_string_const(code, "LAUNCHED\n");
     let launched2_g = add_string_const(code, "LAUNCHED "); // verbose ack prefix
@@ -1831,40 +1855,51 @@ fn connect_edit(
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(resource_str), src: rr(25) });
     ops.push(Opcode::ToVirtual { dst: rr(49), src: rr(34) });          // -> modeConfig virtual@1194
     ops.push(Opcode::Call1 { dst: rr(48), fun: RefFun(create_mode), arg0: rr(49) }); // FraymakersMode
-    // ---- char/stage/assist refs: parse from args if 4+ tokens, else baked-in defaults ----
+    // ---- char/stage/assist refs: honor each `s` arg INDEPENDENTLY, falling back
+    // to the baked default for any slot the caller omitted. The old all-or-nothing
+    // "need 4 tokens or use ALL baked defaults" branch ignored partial args — e.g.
+    // `s mario` self-bootstrapped mario but launched the baked default char/stage/
+    // assist. Every slot resolves through emit_resolve (bare-name load-on-demand).
+    //
+    // CHAR: from g_name, which the name-driven self-bootstrap above already set to
+    // parts[1] (the `s` arg) or the baked default — and loaded. So this matches the
+    // char that was actually loaded, for both `s <char> …` and a bare `s`.
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(g_name) });
+    emit_resolve(&mut ops, 55, 26, char_cmap_field);
+    // STAGE: parts.length >= 3 ? parts[2] : baked stage default.
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(52), field: RefField(0) }); // parts.length
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(three_idx) });
+    let idx_stage_jdef = ops.len();
+    ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });             // <3 tokens -> default
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(two_idx) });
+    ops.push(Opcode::GetArray { dst: rr(55), array: rr(32), index: rr(39) }); // parts[2]
+    let idx_stage_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_stage_def = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(stage_bare_g) });
+    let idx_stage_done = ops.len();
+    if let Opcode::JSLt { offset, .. } = &mut ops[idx_stage_jdef] { *offset = idx_stage_def as i32 - idx_stage_jdef as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_stage_jdone] { *offset = idx_stage_done as i32 - idx_stage_jdone as i32 - 1; }
+    emit_resolve(&mut ops, 55, 25, stage_cmap_field); // stage ref (loads on demand)
+    // ASSIST: parts.length >= 4 ? parts[3] : baked assist default.
     ops.push(Opcode::Field { dst: rr(16), obj: rr(52), field: RefField(0) }); // parts.length
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(four_idx) });
-    let idx_s_jconst = ops.len();
-    ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });         // <4 tokens -> L_CONST
-    // L_ARGS: char=resolve(parts[1]), stage=resolve(parts[2]), assist=resolve(parts[3]).
-    // GetArray reads into a String reg (split backing is NativeArray<String>); the
-    // resolver expands bare names + tries namespaces.
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
-    ops.push(Opcode::GetArray { dst: rr(55), array: rr(32), index: rr(39) });
-    emit_resolve(&mut ops, 55, 26, char_cmap_field); // char ref
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(two_idx) });
-    ops.push(Opcode::GetArray { dst: rr(55), array: rr(32), index: rr(39) });
-    emit_resolve(&mut ops, 55, 25, stage_cmap_field); // stage ref (loads on demand)
+    let idx_assist_jdef = ops.len();
+    ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });             // <4 tokens -> default
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(three_idx) });
-    ops.push(Opcode::GetArray { dst: rr(55), array: rr(32), index: rr(39) });
+    ops.push(Opcode::GetArray { dst: rr(55), array: rr(32), index: rr(39) }); // parts[3]
+    let idx_assist_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_assist_def = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(55), global: RefGlobal(assist_bare_g) });
+    let idx_assist_done = ops.len();
+    if let Opcode::JSLt { offset, .. } = &mut ops[idx_assist_jdef] { *offset = idx_assist_def as i32 - idx_assist_jdef as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_assist_jdone] { *offset = idx_assist_done as i32 - idx_assist_jdone as i32 - 1; }
     emit_resolve(&mut ops, 55, 42, assist_cmap_field); // assist ref (loads on demand)
-    let idx_s_jargsdone = ops.len();
-    ops.push(Opcode::JAlways { offset: 0 });                            // -> L_AFTERREFS
-    let idx_s_const = ops.len();
-    // L_CONST: baked-in defaults
-    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(char_fullid) });
-    ops.push(Opcode::Call2 { dst: rr(26), fun: RefFun(18224), arg0: rr(14), arg1: rr(38) });
-    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(stage_fullid) });
-    ops.push(Opcode::Call2 { dst: rr(25), fun: RefFun(18224), arg0: rr(14), arg1: rr(38) });
-    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(assist_fullid) });
-    ops.push(Opcode::Call2 { dst: rr(42), fun: RefFun(18224), arg0: rr(14), arg1: rr(38) });
-    let idx_s_afterrefs = ops.len();
-    // patch the line-reader + ref-source jumps
+    // patch the line-reader jumps
     if let Opcode::JSLt { offset, .. } = &mut ops[idx_s_jslt] { *offset = idx_s_build as i32 - idx_s_jslt as i32 - 1; }
     if let Opcode::JEq { offset, .. } = &mut ops[idx_s_jeq] { *offset = idx_s_build as i32 - idx_s_jeq as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_s_jback] { *offset = idx_s_drain as i32 - idx_s_jback as i32 - 1; }
-    if let Opcode::JSLt { offset, .. } = &mut ops[idx_s_jconst] { *offset = idx_s_const as i32 - idx_s_jconst as i32 - 1; }
-    if let Opcode::JAlways { offset, .. } = &mut ops[idx_s_jargsdone] { *offset = idx_s_afterrefs as i32 - idx_s_jargsdone as i32 - 1; }
     // ---- player config data { character: rr26, assist: rr42, port: 0 } ----
     ops.push(Opcode::New { dst: rr(27) });
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(character_str), src: rr(26) });

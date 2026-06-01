@@ -418,6 +418,11 @@ pub fn help_text() -> String {
     out.push_str("  render  --entity <rel> [...]     render an entity to PNG via FrayTools\n");
     out.push_str("  harness --entity <rel> [...]     extract box geometry + PNG + JSON report\n");
     out.push_str("  headless | send \"<cmd>\"        TCP bridge runtime / one-shot command\n");
+    out.push_str("\nPersistent session (iterate on a char/fix; the engine keeps streaming back):\n");
+    out.push_str("  session [--char C | --full]   boot + hold a live engine, read commands from a control file\n");
+    out.push_str("  tell \"<command>\"              queue a command for the running session (e.g. tell \"spawn sandbag\")\n");
+    out.push_str("  log [-n N] [--follow]         print the session's mirrored engine replies\n");
+    out.push_str("  log --crash                   print the crash report (error.log + RESDIAG, interpreted)\n");
     out
 }
 

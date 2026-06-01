@@ -48,20 +48,35 @@ cargo build --release
 ./target/release/peptide export \
   --project "$PWD/characters/<id>/<id>.fraytools"
 
-# 4. Boot the Fraymakers harness, dispatch, observe
-./tools/run.sh "s <id> thespire <assist>" 20     # spawn into a real match
-#   then probe:  ./tools/run.sh "t" 8  (read state)   ./tools/run.sh "m" 8  (drive a move)
+# 4. Boot ONE persistent engine session, then drive + observe it iteratively
+./target/release/peptide session --full &        # boots + holds a live engine
+#   wait for "engine READY" in:  ./target/release/peptide log
+./target/release/peptide tell "spawn <id>"                       # start a real match
+./target/release/peptide tell "match.getCharacters()[0].getStateName()"   # read state
+./target/release/peptide tell "match.getCharacters()[0].toState(CState.JAB)"  # drive a move
+./target/release/peptide log -n 20                # read everything the engine streamed back
+./target/release/peptide tell "exit"             # clean shutdown when done
 
 # 5. Compare behaviour vs expected → fix in the converter (never hand-edit output) → repeat
 ```
+
+**The session IS the loop.** `peptide session` is the canonical way to test,
+iterate on, and analyze a converted character (and the conversion scripts): it
+boots the engine ONCE and HOLDS the TCP link open, so you send a command
+(`peptide tell …`), read the engine's reply (`peptide log`), decide the next
+command, and repeat — all against the *same* live match. That persistence is
+what lets the game keep streaming TCP messages back while you run evals. Full
+command surface in §3. (The old one-shot `tools/run.sh "<cmd>" <secs>` / fixed
+`tools/runseq.sh` paths still exist for scripted runs, but reboot the engine per
+invocation — use a session for interactive iteration.)
 
 **Which harness when:**
 - **FrayTools-side** (`harness.js` / `export-in-fraytools.js`) — visual/layout
   ground truth (box geometry, pivots, rendering) and producing the publishable
   `.fra`. Pair with `compare_boxes` for a numeric verdict.
-- **Fraymakers-side** (`tools/run.sh`) — runtime behaviour (loads, spawns, animates,
-  transitions state, responds to a move dispatch). This is where freeze / crash /
-  physics bugs surface.
+- **Fraymakers-side** (`peptide session`) — runtime behaviour (loads, spawns,
+  animates, transitions state, responds to a move dispatch). This is where
+  freeze / crash / physics bugs surface.
 
 **Branch note:** `main` holds the converter **and** the merged harness work.
 (Older `fraymakers-match-harness` / `steam-shim-experiments` branches are
@@ -120,21 +135,44 @@ Code: `src/` (Rust), with shell orchestration in `tools/`. Two bins:
 - **`peptide`** is the loopback TCP server (the injected engine code is
   the client).
 
-### Boot model (`tools/run.sh`)
+### Boot model — `peptide session` (canonical) + `tell` / `log`
+
+`peptide session` is the primary surface for interactive, agent-driven testing:
+one command boots a throwaway-patched engine, holds the loopback TCP link open,
+and runs a command loop you feed over time.
 
 ```
-./tools/run.sh "<command>" [seconds]          # FRAY_DIR=... overrides the install path
-./tools/run.sh "s sandbag thespire commandervideoassist" 20
+peptide session [--full | --char <id>] [--dir D]   # boot + hold a live engine (long-lived)
+peptide tell "<command>"                           # queue a command for the running session
+peptide log  [-n N] [--follow]                     # print/tail the engine replies it mirrored
 ```
 
-Steam's sandbox wipes anything added to the install dir, so `tools/run.sh` **recreates
-everything every run and never mutates the pristine engine**: it patches a *copy*
-of `hlboot-sdl.dat` → `_conn.dat` (the source is never written), writes
-`steam_appid.txt` so a direct `./hl` launch doesn't bounce through Steam, starts
-`peptide`, launches `./hl _conn.dat`, and deletes the transient files on
-exit. The patched engine waits for content load (title "press any button"
-state), dials the socket (auth handshake), then processes commands per-frame on
-the render thread. Needs `dangerouslyDisableSandbox`.
+- **`session`** patches a *copy* of `hlboot-sdl.dat` → `_conn.dat` (the pristine
+  boot file is never written), writes `steam_appid.txt`, launches `./hl _conn.dat`,
+  binds the loopback server, and waits for the engine to dial in + reach READY.
+  On clean exit (or `tell exit`) it kills the engine and removes the transient
+  files. Needs `dangerouslyDisableSandbox` (the engine's SDL/Metal window).
+  - `--full` = Title/UGC bridge boot, then drive it with `tell "spawn <id>"`
+    once READY (the reliable path; avoids the headless filtered-load crash).
+  - `--char <id>` = headless fast-boot baking that character.
+  - `--no-boot --port N --token T` = attach to an engine launched elsewhere.
+- **`tell`** appends one command to the session's control file; the daemon picks
+  it up within ~50ms, translates it, and sends it. Commands are the same friendly
+  vocabulary as everywhere else (`spawn`, `exit`, or any hscript expression).
+- **`log`** prints the mirrored engine output (the canonical record of replies);
+  `--follow` tails it live. Session state lives under `~/.peptide/session/`
+  (override with `--dir` or `PEPTIDE_SESSION_DIR` for parallel sessions).
+
+Why a session and not one-shots: it boots the engine ONCE and keeps it alive, so
+you can send → observe → decide → send again against the SAME match, and the game
+keeps streaming TCP back the whole time. The older one-shot `tools/run.sh
+"<cmd>" <secs>` and fixed-sequence `tools/runseq.sh` reboot per run — fine for
+scripted batches, wrong for iteration.
+
+**Wedge discipline:** a crashed engine can leave an uninterruptible (UE) `hl
+_conn.dat` orphan that `kill -9` can't reap (GPU/Metal wedge). Batch your checks
+into ONE session; if orphans pile up, the box needs a reboot before more boots
+behave. See `memory/project_peptide-env-wedge-lesson.md`.
 
 ### Commands
 
@@ -142,6 +180,17 @@ Humans type **full-word commands** (`peptide help` lists them); the bridge
 translates them to the single-byte wire protocol the engine dispatches on. The
 wire byte still works as an alias, so older scripts keep running. Friendly
 vocabulary is one shared table: `src/interpreter.rs`.
+
+> **Current model (supersedes the per-feature rows below).** The live command set
+> is deliberately tiny — `spawn`, `eval`, `load`, `console`, `exit` — and
+> **everything else is run as hscript** through the engine's own interpreter via
+> the `e` (eval) hook. So instead of `move`/`state`/`physics`/`anim` sugar you
+> write the call explicitly against the live match, e.g.
+> `match.getCharacters()[0].getStateName()`,
+> `match.getCharacters()[0].toState(CState.JAB)`,
+> `match.getCharacters()[0].body.x`. The full Fraymakers script API (CState,
+> HitboxStats, MatchModifier, …) is in scope. The table below documents the
+> still-present wire bytes for reference; prefer the hscript form.
 
 | Friendly (aliases) | Wire | Meaning | Ack / readback |
 |---|---|---|---|
