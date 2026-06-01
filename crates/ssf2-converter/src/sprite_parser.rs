@@ -806,7 +806,7 @@ pub fn extract_ssf2_anim_name(
     // Symbol format: "{char}_fla.{AnimLabel}_{index}"
     // e.g. "mario_fla.NAir_40" → local = "NAir_40" → strip suffix → "NAir" → normalize → "a_air"
     let local = if sym.contains('.') {
-        sym.split('.').last()?
+        sym.split('.').next_back()?
     } else {
         sym
     };

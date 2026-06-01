@@ -286,7 +286,7 @@ fn is_callback_ref(s: &str) -> bool {
     }
     // dotted identifier path only — no call `()`, index `[]`, or literal punctuation.
     let mut chars = s.chars();
-    let first_ok = chars.next().map_or(false, |c| c.is_ascii_alphabetic() || c == '_');
+    let first_ok = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
     first_ok && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
@@ -1164,7 +1164,7 @@ impl<'a> StructuredDecoder<'a> {
             dec.param_locals = self.param_locals.clone();
             dec.has_activation = !dec.activation_slots.is_empty();
             // Pre-seed stack from previous block (for dup-across-blocks patterns)
-            dec.stack = carry_stack.drain(..).collect();
+            dec.stack = std::mem::take(&mut carry_stack);
             let cond_expr = dec.decode_range(block.start, block.end);
             let stmts = dec.stmts;
             // Save leftover stack for next block (Fall/Jump only)
@@ -1481,7 +1481,7 @@ impl<'a> StructuredDecoder<'a> {
         let mut cur = start;
         for _ in 0..32 {
             if cur == exclude { return Some(cur); }
-            let block = match self.block_at(cur) { Some(b) => b, None => return None };
+            let block = self.block_at(cur)?;
             match &block.term {
                 Terminator::Fall(next) | Terminator::Jump(next) => {
                     let next = *next;
@@ -1799,7 +1799,7 @@ fn rename_loop_counters(stmts: Vec<Stmt>) -> Vec<Stmt> {
     for i in 0..stmts.len() {
         if let Stmt::VarDecl(n, Expr::Num(v)) = &stmts[i] {
             if *v == 0.0 {
-                let followed_by_while = stmts.get(i + 1).map_or(false, |s| matches!(s, Stmt::While(..)));
+                let followed_by_while = stmts.get(i + 1).is_some_and(|s| matches!(s, Stmt::While(..)));
                 if followed_by_while && name_idx < counter_names.len() {
                     counter_map.insert(*n, counter_names[name_idx].to_string());
                     name_idx += 1;

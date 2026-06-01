@@ -28,6 +28,11 @@ pub struct ExtractedImage {
 /// Maps shape/character IDs to bitmap IDs (DefineShape → bitmap fill ID)
 pub type ShapeToBitmapMap = BTreeMap<u16, u16>;
 
+/// One frame's stacked image layers: (depth, symbol_name, local placement matrix).
+type FrameLayers = Vec<(u16, String, ImageLocalMatrix)>;
+/// Per-sprite frame table: sprite id → its frames, each a list of image layers.
+type SpriteFrameTable = BTreeMap<u16, Vec<FrameLayers>>;
+
 /// Local placement matrix for an image within its sub-sprite (in SSF2 local pixel space).
 /// tx/ty are in pixels (already divided by 20 from twips).
 /// sx/sy are scale magnitudes (always positive).
@@ -812,16 +817,13 @@ fn build_anim_frame_images(
     // `effect_sprites`, but an *unnamed* sub-sprite placed directly in an
     // animation timeline (e.g. sandbag's item_homerun body movieclips) must
     // expand via `unnamed_frames`.
-    let (effect_sprites, unnamed_frames): (
-        BTreeMap<u16, Vec<Vec<(u16, String, ImageLocalMatrix)>>>,
-        BTreeMap<u16, Vec<Vec<(u16, String, ImageLocalMatrix)>>>,
-    ) = {
+    let (effect_sprites, unnamed_frames): (SpriteFrameTable, SpriteFrameTable) = {
         // Two-pass approach:
         // Pass 1: build inner unnamed sprite frame tables
         // Pass 2: for named effect sprites, inline the unnamed sub-sprites
 
         // First build all unnamed sprite frame tables
-        let mut unnamed_frames: BTreeMap<u16, Vec<Vec<(u16, String, ImageLocalMatrix)>>> = BTreeMap::new();
+        let mut unnamed_frames: SpriteFrameTable = BTreeMap::new();
         for (&sid, sprite) in &all_sprites {
             if symbols.contains_key(&sid) { continue; } // skip named ones
             let mut disp: BTreeMap<u16, (u16, String, ImageLocalMatrix)> = BTreeMap::new();
@@ -1335,7 +1337,7 @@ fn decode_jpeg3(jpeg: &swf::DefineBitsJpeg3) -> Result<(u32, u32, Vec<u8>)> {
     if !jpeg.alpha_data.is_empty() {
         use flate2::read::ZlibDecoder;
         use std::io::Read;
-        let mut decoder = ZlibDecoder::new(&jpeg.alpha_data[..]);
+        let mut decoder = ZlibDecoder::new(jpeg.alpha_data);
         let mut alpha = Vec::new();
         decoder.read_to_end(&mut alpha)?;
 
@@ -1419,7 +1421,7 @@ pub fn extract_projectile_frame_images_from_swf(
     // Pass 1: build sprite frame tables for ALL sprites (named and unnamed)
     // For unnamed sprites: resolve shape_id → bitmap_id → symbol_name via img_result.shape_to_bitmap.
     // For named sprites: use symbol names directly; these form inner animation sprites for projectiles.
-    let mut unnamed_frames: BTreeMap<u16, Vec<Vec<(u16, String, ImageLocalMatrix)>>> = BTreeMap::new();
+    let mut unnamed_frames: SpriteFrameTable = BTreeMap::new();
     for (&sid, sprite) in &all_sprites {
         let mut disp: BTreeMap<u16, (u16, String, ImageLocalMatrix)> = BTreeMap::new();
         let mut frames: Vec<Vec<(u16, String, ImageLocalMatrix)>> = Vec::new();

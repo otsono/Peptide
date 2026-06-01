@@ -35,13 +35,11 @@ pub struct PaletteResult {
 }
 
 // ─── SSF2 costume data (from extract_costumes binary output) ────────────────
-
-#[derive(Debug)]
-pub struct Ssf2Costume {
-    pub name:         String,
-    pub colors:       Vec<u32>,   // ARGB source colors (same across costumes)
-    pub replacements: Vec<u32>,   // ARGB replacement colors for this costume
-}
+//
+// Same shape and meaning as the costume payload `abc_parser` decodes straight
+// from the misc.ssf bytecode, so we reuse that one canonical type instead of
+// defining a parallel struct here.
+pub use crate::abc_parser::CostumeData as Ssf2Costume;
 
 /// Load costume data for a character from ssf2_costumes.json.
 /// Returns None if the file doesn't exist or the character isn't found.
@@ -120,12 +118,17 @@ fn build_from_ssf2(
         })
     }).collect();
 
-    // Build a map for each costume
+    // Build a map for each costume. The "Default" costume is forced to the front of
+    // the exported list (Fraymakers shows the first map as the character's default);
+    // a stable sort keeps every other costume in its original relative order.
+    let mut ordered: Vec<&Ssf2Costume> = costumes.iter().collect();
+    ordered.sort_by_key(|c| c.name != "Default");
+
     let mut maps: Vec<Value> = Vec::new();
     let base_map_id = det_uuid(&format!("{}::palette_map_base", char_id));
 
-    for (ci, costume) in costumes.iter().enumerate() {
-        let is_base = costume.name == "Default" || (ci == 0 && costumes.iter().all(|c| c.name != "Default"));
+    for (ci, costume) in ordered.iter().enumerate() {
+        let is_base = costume.name == "Default" || (ci == 0 && ordered.iter().all(|c| c.name != "Default"));
         let map_id = if is_base {
             base_map_id.clone()
         } else {
@@ -401,7 +404,7 @@ pub fn generate_palettes_and_remap(
             Ok(v) => {
                 let colors: Vec<u32> = v.get("colors").and_then(|c| c.as_array()).map(|arr| {
                     arr.iter().filter_map(|e| e.get("color").and_then(|s| s.as_str()))
-                        .filter_map(|s| parse_hex(s)).collect()
+                        .filter_map(&parse_hex).collect()
                 }).unwrap_or_default();
                 let mut chg_count = vec![0usize; colors.len()];
                 let mut nmaps = 0usize;

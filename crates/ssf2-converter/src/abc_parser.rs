@@ -518,13 +518,14 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
         classes.push(Class { name: full_name, super_name, instance_methods, class_methods: vec![], constructor_idx });
     }
 
-    // Class infos (static traits)
-    for i in 0..class_count {
+    // Class infos (static traits). One class_info per class, in order — the first
+    // loop pushed exactly `class_count` entries, so we can walk them directly.
+    for class in classes.iter_mut() {
         let _static_init = r.read_u30()?;
         let trait_count = r.read_u30()? as usize;
         for _ in 0..trait_count {
             if let Ok(t) = parse_trait(&mut r, &strings, &multinames) {
-                classes[i].class_methods.push(t);
+                class.class_methods.push(t);
             }
         }
     }
@@ -607,7 +608,7 @@ fn parse_trait(r: &mut Reader, _strings: &[String], multinames: &[Multiname]) ->
             if vindex != 0 { r.read_u8()?; } // vkind
             (0, slot_id)
         }
-        1 | 2 | 3 => { // Method, Getter, Setter
+        1..=3 => { // Method, Getter, Setter
             let _disp_id = r.read_u30()?;
             let method_idx = r.read_u30()?;
             (method_idx, 0)
@@ -729,7 +730,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
 
     // Build method name lookup: method_idx → name
     let mut method_names: BTreeMap<u32, String> = BTreeMap::new();
-    for (_body_idx, body) in abc.method_bodies.iter().enumerate() {
+    for body in abc.method_bodies.iter() {
         if let Some(method) = abc.methods.get(body.method_idx as usize) {
             if !method.name.is_empty() {
                 method_names.insert(body.method_idx, method.name.clone());
@@ -911,7 +912,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
                     action: code,
                     args: vec![],
                 }]);
-            } else if matches!(t.kind, 1 | 2 | 3) && !t.name.is_empty()
+            } else if matches!(t.kind, 1..=3) && !t.name.is_empty()
                 && !STAT_GETTERS.contains(&t.name.as_str())
                 && !ext_methods.contains_key(&t.name)
             {
@@ -955,7 +956,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
             if !belongs { continue; }
             if cn.contains("proj") || cn.contains("helper") { continue; }
             for t in &class.instance_methods {
-                if !matches!(t.kind, 1 | 2 | 3) { continue; }
+                if !matches!(t.kind, 1..=3) { continue; }
                 if t.name.is_empty() || t.name.starts_with("frame") { continue; }
                 if STAT_GETTERS.contains(&t.name.as_str()) { continue; }
                 if ext_methods.contains_key(&t.name) { continue; }
@@ -1137,7 +1138,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
                                         &params
                                     );
                                     let script_key = format!("{}__frame{}", anim_name, sub_f);
-                                    frame_scripts.entry(script_key).or_insert_with(Vec::new)
+                                    frame_scripts.entry(script_key).or_default()
                                         .push(FrameAction {
                                             frame: *sub_f,
                                             action: code,

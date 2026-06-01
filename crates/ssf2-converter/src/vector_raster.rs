@@ -180,10 +180,7 @@ pub fn rasterize_shape(
         for (idx, segs, start) in &g.strokes {
             if *idx == 0 || *idx > g.lines.len() { continue; }
             let line = &g.lines[*idx - 1];
-            let color = match resolve_fill_color(line.fill_style()) {
-                Some(c) => c,
-                None => (0, 0, 0, 255),
-            };
+            let color = resolve_fill_color(line.fill_style()).unwrap_or((0, 0, 0, 255));
             let mut pb = PathBuilder::new();
             pb.move_to(start.0 as f32, start.1 as f32);
             for s in segs {
@@ -193,11 +190,9 @@ pub fn rasterize_shape(
                 }
             }
             if let Some(path) = pb.finish() {
-                let mut paint = Paint::default();
-                paint.anti_alias = true;
+                let mut paint = Paint { anti_alias: true, ..Default::default() };
                 paint.set_color_rgba8(color.0, color.1, color.2, color.3);
-                let mut stroke = Stroke::default();
-                stroke.width = (line.width().to_pixels() as f32).max(1.0);
+                let stroke = Stroke { width: (line.width().to_pixels() as f32).max(1.0), ..Default::default() };
                 pixmap.stroke_path(&path, &paint, &stroke, ident, None);
                 drew_anything = true;
             }
@@ -335,8 +330,7 @@ fn radial_shader(g: &Gradient, focal: f64, min_x: f64, min_y: f64) -> Option<Sha
 /// Build a tiny-skia Paint for a fill: solid colour, or a real linear/radial
 /// gradient shader. None for bitmap fills (handled elsewhere).
 fn build_fill_paint(fill: &FillStyle, min_x: f64, min_y: f64) -> Option<Paint<'static>> {
-    let mut paint = Paint::default();
-    paint.anti_alias = true;
+    let mut paint = Paint { anti_alias: true, ..Default::default() };
     let shader = match fill {
         FillStyle::Color(c) => {
             paint.set_color_rgba8(c.r, c.g, c.b, c.a);

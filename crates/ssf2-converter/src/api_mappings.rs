@@ -545,13 +545,9 @@ fn is_isready_guard(trimmed: &str) -> bool {
 
 /// Strip one tab (or 4 spaces) from the start of a line.
 fn strip_one_tab(line: &str) -> &str {
-    if line.starts_with('\t') {
-        &line[1..]
-    } else if line.starts_with("    ") {
-        &line[4..]
-    } else {
-        line
-    }
+    line.strip_prefix('\t')
+        .or_else(|| line.strip_prefix("    "))
+        .unwrap_or(line)
 }
 
 /// Apply text-level SSF2→FM API translations to decompiled Haxe code.
@@ -633,7 +629,7 @@ thread_local! {
     /// top of `haxe_gen::generate`; read by `rewrite_play_sound_calls` to
     /// decide getContent("id") vs. placeholder. Empty outside a guard scope.
     static AVAILABLE_SOUNDS: std::cell::RefCell<std::collections::BTreeSet<String>>
-        = std::cell::RefCell::new(std::collections::BTreeSet::new());
+        = const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
 }
 
 /// RAII guard installing the per-character extracted-sound id set for the
@@ -865,7 +861,7 @@ thread_local! {
     /// (or we're outside a `with_effect_animations` scope) → all calls
     /// fall through to the `ssf2_only` marker.
     static EFFECT_PRIMARY_ANIMS: std::cell::RefCell<BTreeMap<String, String>>
-        = std::cell::RefCell::new(BTreeMap::new());
+        = const { std::cell::RefCell::new(BTreeMap::new()) };
 }
 
 /// RAII guard that installs an effect→primary-animation map on
@@ -1519,7 +1515,7 @@ fn resolve_detailed(
 ) -> FieldOutcome {
     if !value_map.is_empty() {
         match value_map.get(trimmed_value) {
-            Some(mapped_value) => match target.as_deref().and_then(|s| parse_target(s)) {
+            Some(mapped_value) => match target.as_deref().and_then(parse_target) {
                 Some((tm, ff)) => FieldOutcome::Route {
                     target_method: tm, fm_field: ff, value: mapped_value.clone(),
                     todo_note: todo.clone(),

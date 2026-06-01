@@ -126,7 +126,7 @@ pub fn relative_path(base: &Path, target: &Path) -> String {
     while i < b.len() && i < t.len() && b[i] == t[i] {
         i += 1;
     }
-    let mut comps: Vec<String> = std::iter::repeat("..".to_string()).take(b.len() - i).collect();
+    let mut comps: Vec<String> = std::iter::repeat_n("..".to_string(), b.len() - i).collect();
     comps.extend(t[i..].iter().cloned());
     if comps.is_empty() { ".".into() } else { comps.join("/") }
 }
@@ -166,7 +166,7 @@ pub fn ensure_fraymakers_publish_folder(char_name: &str, char_output_path: &Path
     // Already present? (same relative string, or resolves to the same dir)
     let custom_canon = custom_dir.to_string_lossy().replace('\\', "/");
     let already = folders.iter().any(|e| {
-        e.get("path").and_then(|p| p.as_str()).map_or(false, |p| {
+        e.get("path").and_then(|p| p.as_str()).is_some_and(|p| {
             if p == rel {
                 return true;
             }

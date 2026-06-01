@@ -226,7 +226,7 @@ fn double_keyframe_lengths(keyframes: &mut [Value]) {
 fn strip_trailing_return(body: &str) -> String {
     let t = body.trim_end();
     if let Some(pre) = t.strip_suffix("return;") {
-        if pre.is_empty() || !pre.chars().last().map_or(false, |c| c.is_alphanumeric() || c == '_') {
+        if pre.is_empty() || !pre.chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_') {
             return pre.trim_end().to_string();
         }
     }
@@ -291,7 +291,7 @@ pub fn generate_entity(
     // ── Build image asset GUID map (symbol_name → meta GUID) ──────────────────
     // Each image gets a deterministic GUID for its .meta file
     let mut image_guids: BTreeMap<String, String> = BTreeMap::new();
-    for (_, img) in &img_result.images {
+    for img in img_result.images.values() {
         let meta_guid = uuid(char_id, &format!("meta_{}", img.symbol_name));
         image_guids.insert(img.symbol_name.clone(), meta_guid);
     }
@@ -1216,7 +1216,7 @@ pub fn get_image_meta_guids(
     img_result: &ImageExtractionResult,
 ) -> BTreeMap<String, String> {
     let mut result = BTreeMap::new();
-    for (_, img) in &img_result.images {
+    for img in img_result.images.values() {
         let meta_guid = uuid(char_id, &format!("meta_{}", img.symbol_name));
         result.insert(img.png_path.clone(), meta_guid);
     }

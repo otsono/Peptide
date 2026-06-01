@@ -48,7 +48,7 @@ pub fn split_animations(
 ) -> Vec<SplitAnim> {
     let mut out: Vec<SplitAnim> = Vec::new();
 
-    for (anim_name, _anim_info) in source_anims {
+    for anim_name in source_anims.keys() {
         let sb = sprite_boxes.get(anim_name);
         let total = sb.map(|s| s.total_frames).unwrap_or(1);
         let labels: Vec<(String, u16)> = sb
