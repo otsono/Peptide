@@ -162,7 +162,40 @@
   .disco-launch{width:auto;white-space:nowrap;}
   /* greyed chat when not connected */
   #input:disabled,#send:disabled{opacity:.45;cursor:not-allowed;}
-  #chips button:disabled{opacity:.4;cursor:not-allowed;}
+  #match-status button:disabled{opacity:.45;cursor:not-allowed;}
+  /* matchStatus indicators (one per active character, above the chatbox) */
+  .match-status{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;}
+  .match-status:empty{display:none;}
+  .mstat{display:flex;align-items:center;gap:9px;padding:6px 13px 6px 7px;border-radius:999px;
+    border:1px solid var(--border);background:var(--bg);color:var(--ink);cursor:pointer;
+    font:inherit;text-align:left;transition:border-color .12s,background .12s;width:auto;}
+  .mstat:hover{border-color:var(--clay);background:var(--surface);}
+  .mstat-pic{width:30px;height:30px;border-radius:50%;background:var(--chip);display:flex;
+    align-items:center;justify-content:center;font-size:16px;flex-shrink:0;}
+  /* the engine-ripped stock icon (a tall portrait) cropped into the round pic, head-aligned */
+  img.mstat-pic{object-fit:cover;object-position:center top;}
+  .mstat-body{display:flex;flex-direction:column;line-height:1.25;}
+  .mstat-id{font-weight:650;font-size:13px;}
+  .mstat-meta{font-size:11.5px;color:var(--muted);}
+  .mstat-meta b{color:var(--clay);font-weight:650;}
+  /* per-character chat modal */
+  .char-modal{max-width:520px;text-align:left;}
+  .char-modal h2{margin:0 0 4px;}
+  .char-modal-sub{margin:0 0 14px;color:var(--muted);font-size:13px;}
+  .char-modal-sub code{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--code-ink);}
+  .char-msgs{display:flex;flex-direction:column;gap:5px;max-height:34vh;overflow:auto;
+    margin:0 0 12px;padding:4px 2px;}
+  .char-msgs:empty{display:none;}
+  .char-msg{font-size:13px;line-height:1.4;padding:6px 10px;border-radius:9px;max-width:90%;}
+  .char-msg.you{align-self:flex-end;background:var(--clay);color:#fff;
+    font-family:ui-monospace,Menlo,monospace;font-size:12px;}
+  .char-msg.engine{align-self:flex-start;background:var(--chip);color:var(--ink);
+    font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:pre-wrap;}
+  .char-inputrow{display:flex;align-items:stretch;gap:8px;}
+  .char-prefix{display:flex;align-items:center;padding:0 9px;border-radius:9px;background:var(--chip);
+    color:var(--muted);font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:nowrap;}
+  .char-inputrow input{flex:1;min-width:0;}
+  .char-inputrow button{width:auto;}
   .modal .err:empty{margin:0;}
   /* bytecode-preflight progress bar (shown only while patching the engine) */
   .patchbar{display:none;margin:-4px 0 16px;}
@@ -459,7 +492,7 @@
       <button class="btn-sm disco-launch" onclick="launchGame()">Launch game</button>
     </div>
     <div class="composer"><div class="inner">
-      <div class="chips" id="chips"></div>
+      <div class="match-status" id="match-status"></div>
       <div class="inputrow">
         <textarea id="input" rows="1" autocomplete="off" spellcheck="false"
                placeholder="Message Peptide  —  a command, or raw hscript  (Shift+Enter for a new line)"></textarea>
@@ -499,6 +532,21 @@
       <div class="m-actions-row">
         <button class="btn-primary" onclick="launchBrowse()">Browse…</button>
         <button class="btn-ghost" onclick="closeLaunchModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PER-CHARACTER CHAT (run hscript on one character) ─────────────── -->
+  <div class="overlay" id="char-overlay">
+    <div class="modal char-modal" id="char-modal">
+      <button class="modal-close" onclick="closeCharModal()">×</button>
+      <h2 id="char-modal-title">character</h2>
+      <p class="char-modal-sub">Commands run on <code id="char-modal-prefix">match.getCharacters()[0]</code> — type the rest (e.g. <code>toState(CState.JAB)</code> or <code>body.x</code>).</p>
+      <div class="char-msgs" id="char-msgs"></div>
+      <div class="char-inputrow">
+        <input id="char-input" autocomplete="off" spellcheck="false"
+               placeholder="toState(CState.JAB)  ·  damage._damage  ·  body.x" />
+        <button class="btn-primary" id="char-send" onclick="charSend()">Run</button>
       </div>
     </div>
   </div>
@@ -611,18 +659,90 @@
   }
 
   // Explicit-target hscript (the slimmed command model — no auto-player-0 sugar).
-  const QUICK = [
-    ["Spawn","spawn"],
-    ["State","match.getCharacters()[0].getStateName()"],
-    ["Position","match.getCharacters()[0].body.x"],
-    ["Damage","match.getCharacters()[0].damage._damage"],
-    ["Jab","match.getCharacters()[0].toState(CState.JAB)"],
-    ["Up Special","match.getCharacters()[0].toState(CState.SPECIAL_UP)"],
-    ["Characters","match.getCharacters()"], ["Help","help"],
-  ];
-  for(const [label,cmd] of QUICK){
-    const b=document.createElement("button"); b.className="chip"; b.textContent=label;
-    b.onclick=()=>send(cmd); $("chips").appendChild(b);
+  // ── matchStatus indicators (replace the old quick-command chips) ──────────
+  // One rounded button per active character, fed by the matchStatus TCP channel
+  // (Rust routes "MATCHSTATUS:<id|dmg|anim;…>" here; it never hits the chat). Robust
+  // to no live match — an empty payload just clears the row.
+  let lastStatus = null;
+  // Stock icons are ripped from the engine (PNG -> base64 data URL) and cached BY CHARACTER ID
+  // for the duration of ONE engine session (they're cleared on disconnect — a different
+  // Fraymakers session can have a different roster, or a character re-converted with a new
+  // icon). iconReq tracks which ids we've already asked for, so the 200ms status tick doesn't
+  // re-ask every frame. Both are reset in refreshUi() when the connection drops.
+  let iconById = {}, slotIds = [], iconReq = {};
+  window.onMatchStatus = function(payload){
+    if(payload === lastStatus) return;       // skip needless re-renders
+    lastStatus = payload;
+    renderMatchStatus(payload);
+  };
+  // Engine -> here: a ripped icon for the character currently in match slot `slot`.
+  window.onIcon = function(slot, url){
+    const id = slotIds[parseInt(slot,10)];
+    if(!id || !url) return;
+    iconById[id] = url;
+    renderMatchStatus(lastStatus);           // re-render so the new icon appears
+  };
+  function renderMatchStatus(payload){
+    const host = $("match-status"); if(!host) return;
+    host.innerHTML = "";
+    const recs = (payload||"").split(";").map(s=>s.trim()).filter(s=>s.length);
+    slotIds = [];
+    for(let i=0;i<recs.length;i++){
+      const p = recs[i].split("|");
+      const id = p[0]||"?", dmg = (Math.round(parseFloat(p[1]))||0), anim = p[2]||"?";
+      // Only fetch/cache icons for a known id — "?" is a transient/unknown character (a null
+      // id from the engine) and would otherwise collide in the by-id cache.
+      const known = !!id && id !== "?";
+      slotIds[i] = id;
+      const b = document.createElement("button");
+      b.className = "mstat"; b.title = "Run hscript on this character";
+      const icon = known ? iconById[id] : null;
+      const pic = icon
+        ? '<img class="mstat-pic" src="'+icon+'" alt="">'
+        : '<span class="mstat-pic">👤</span>';
+      b.innerHTML = pic
+        + '<span class="mstat-body"><span class="mstat-id">'+escapeHtml(id)+'</span>'
+        + '<span class="mstat-meta"><b>'+dmg+'%</b> · '+escapeHtml(anim)+'</span></span>';
+      const slot=i, cid=id;
+      b.onclick=()=>openCharModal(slot, cid);
+      host.appendChild(b);
+      // Kick an immediate request the first time we see this id (fast first paint).
+      if(known && !icon && !iconReq[id]){ iconReq[id]=true; ipcSend("@@icon:"+i); }
+    }
+  }
+  // Retry sweep: the very first request can land before the HUD texture is uploaded
+  // (iconRaw -> ERR:notex -> empty), so re-ask every few seconds for any visible character
+  // still missing an icon. Stops requesting an id as soon as it's cached.
+  setInterval(function(){
+    if(!connected) return;
+    for(let i=0;i<slotIds.length;i++){
+      const id=slotIds[i];
+      if(id && id!=="?" && !iconById[id]) ipcSend("@@icon:"+i);
+    }
+  }, 2500);
+
+  // ── per-character chat modal — run hscript on match.getCharacters()[slot] ──
+  let charSlot = null;
+  function openCharModal(slot, id){
+    charSlot = slot;
+    $("char-modal-title").textContent = id + "  ·  slot " + slot;
+    $("char-modal-prefix").textContent = "match.getCharacters()["+slot+"]";
+    $("char-input").value = "";
+    $("char-overlay").classList.add("show");
+    setTimeout(()=>{ const i=$("char-input"); if(i) i.focus(); }, 30);
+  }
+  function closeCharModal(){ charSlot=null; $("char-overlay").classList.remove("show"); }
+  function charSend(){
+    if(charSlot===null) return;
+    let v = $("char-input").value.trim(); if(!v) return;
+    $("char-input").value="";
+    const expr = (v.charAt(0)==="." || v.charAt(0)==="[") ? v : ("."+v);  // auto-prefix the dot
+    send("match.getCharacters()["+charSlot+"]"+expr);  // echoes to chat + mirrors into the modal
+  }
+  function charAdd(role, text){
+    const m=$("char-msgs"); if(!m) return;
+    const el=document.createElement("div"); el.className="char-msg "+role; el.textContent=text;
+    m.appendChild(el); m.scrollTop=m.scrollHeight;
   }
 
   function atBottom(){ return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; }
@@ -651,6 +771,8 @@
     }
     lastSender=sender;
     if(stick) bump();
+    // While the per-character modal is open, mirror the conversation into it.
+    if(charSlot!==null && (sender==="engine"||sender==="you")) charAdd(sender, text);
   }
 
   // connection state: `connected` = the engine socket is live; `modalUp` = an error/launch
@@ -659,7 +781,9 @@
   function refreshUi(){
     const dis = modalUp || !connected;
     $("input").disabled=dis; $("send").disabled=dis;
-    document.querySelectorAll("#chips button").forEach(b=>b.disabled=dis);
+    document.querySelectorAll("#match-status button").forEach(b=>b.disabled=dis);
+    // No live engine -> no live match: clear the status indicators (+ the char modal).
+    if(!connected){ const ms=$("match-status"); if(ms&&ms.children.length){ ms.innerHTML=""; lastStatus=null; } iconById={}; iconReq={}; slotIds=[]; closeCharModal(); }
     document.body.classList.toggle("blocked", modalUp);
     // Show the "not connected — launch the game" bar when disconnected and no modal is up.
     $("disco-bar").classList.toggle("show", !connected && !modalUp);
@@ -715,6 +839,8 @@
   // Composer: a growing textarea. Enter sends; Shift+Enter inserts a newline, so
   // multi-line hscript can be typed or pasted and sent as one message. (The wire is
   // newline-delimited; Rust folds the snippet onto one line — see collapse_multiline.)
+  // This composer also subsumes the earlier Enter-key fix (a duplicate handler that
+  // cleared the field before reading it, so Enter sent an empty string).
   const inputEl = $("input");
   function autogrow(){
     inputEl.style.height = "auto";
@@ -730,6 +856,9 @@
     if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); submit(); }
     // Shift+Enter falls through to the textarea's native newline insertion.
   });
+  // per-character modal (matchStatus widget): Enter runs, backdrop click closes
+  $("char-input").onkeydown=(e)=>{ if(e.key==="Enter") charSend(); };
+  $("char-overlay").addEventListener("click",(e)=>{ if(e.target===$("char-overlay")) closeCharModal(); });
 
   // ── setup wizard (multi-step modal) ─────────────────────
   // One step per field, preceded by a welcome step. Back/Next walk the steps;

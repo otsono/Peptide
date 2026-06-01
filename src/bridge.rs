@@ -65,6 +65,8 @@ pub fn serve(port: u16, token: Option<&str>) {
                     if one[0] == b'\n' {
                         let line = String::from_utf8_lossy(&buf);
                         let line = line.trim_end_matches('\r');
+                        // Channel feeds (matchStatus, …) are not for the CLI — drop them.
+                        if crate::interpreter::channel_payload(line).is_some() { buf.clear(); continue; }
                         // Suppress repeated per-frame ANIM lines; print only on change.
                         // Append a plain-English gloss to recognized reply lines
                         // (additive — the raw line is preserved so scripts that

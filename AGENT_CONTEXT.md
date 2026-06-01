@@ -22,25 +22,27 @@ Everything here was reverse-engineered from first principles during development.
 > crate and `peptide convert …`. Peptide specifics:
 > [`docs/PEPTIDE_README.md`](docs/PEPTIDE_README.md).
 
-> **Architecture convention — keep logic OUT of bytecode (read before every commit).**
+> **Architecture convention — minimum bytecode, maximum hscript (read before every commit).**
 > Hand-emitted HashLink bytecode in `src/main.rs` (`connect_edit` and its `inject_*`
 > helpers) is the most expensive and fragile code in the repo: a wrong register type or
 > jump offset silently corrupts the engine and can only be caught by launching the game.
-> So write **as little as possible** in bytecode. The rule, in priority order:
-> - **`src/interpreter.rs` (host-side Rust, runs in the Peptide process) — DEFAULT.**
->   Anything Peptide can do itself belongs here: translating commands, parsing the
->   engine's `error.log`, building crash diagnostics, flow decisions. Not bytecode.
-> - **`commands.hsx` (hscript, runs in the engine's own interpreter via the `e` hook) —
->   for USER-FACING in-engine behaviour.** New engine commands are an hscript function,
->   not a new bytecode handler.
-> - **Bytecode (`connect_edit`) — LAST RESORT, irreducible hooks only:** the socket
->   bootstrap, the per-frame command dispatch, the `s`/`x`/`l`/`c` wire handlers, and
->   the `e` eval hook. Nothing that could instead run host-side or as hscript.
+> So: **add only the minimum amount of bytecode needed to make a thing possible, and
+> implement as much of the actual behaviour as you can in `commands.hsx`.** Bytecode is
+> allowed — just keep it to the irreducible engine-side primitive that hscript/host can't
+> otherwise reach. Where each kind of logic belongs:
+> - **`commands.hsx` (hscript in the engine's own interpreter via the `e` hook) — the
+>   DEFAULT for engine-side behaviour.** Anything you can express by calling the script
+>   API or the bound values (p0/match/CState/…) goes here, not in bytecode.
+> - **`src/interpreter.rs` (host-side Rust, runs in the Peptide process)** for anything
+>   Peptide can do itself: translating commands, parsing `error.log`, building diagnostics,
+>   routing TCP channels, reading character files. No engine round-trip needed → host-side.
+> - **Bytecode (`connect_edit`/`inject_*`) — only the minimum primitive** hscript/host
+>   can't reach: the socket bootstrap, per-frame dispatch, the `s`/`x`/`l`/`c`/`e` hooks,
+>   binding a value into the eval scope, or pulling one fact the others genuinely can't get
+>   (e.g. the failing stage id in `inject_stage_diag`). Push everything ELSE up into hscript.
 >
-> Before adding anything to `connect_edit`/`inject_*`, ask: can this run host-side in
-> `interpreter.rs`, or as hscript in `commands.hsx`? If yes, it does **not** go in bytecode.
-> (Example: crash diagnostics parse `error.log` in `interpreter.rs` — they are NOT an
-> engine-side bytecode guard.)
+> Before adding to `connect_edit`/`inject_*`, ask: is this the *smallest* engine primitive
+> that unblocks the feature, with the rest done in `commands.hsx` / `interpreter.rs`?
 
 Cross-reference: [`DEVELOPMENT.md`](DEVELOPMENT.md) covers build / pipeline / modules and
 the current set of mapping JSONC files; this file covers the **input** and **output**

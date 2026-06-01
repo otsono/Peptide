@@ -61,6 +61,23 @@ pub fn launch() -> std::io::Result<()> {
     let cleanup: SharedCleanup = Arc::new(Mutex::new(None));
     let conn: SharedConn = Arc::new(Mutex::new((0, String::new())));
 
+    // matchStatus feed: poll the engine ~5×/s while connected. The reply (E:MATCHSTATUS:…)
+    // is routed to the status widgets by spawn_reader, NOT the chat. Host-driven so the
+    // engine needs no per-frame bytecode (commands.hsx::matchStatus does the gathering).
+    {
+        let poll_writer = writer.clone();
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_millis(200));
+            if let Ok(mut g) = poll_writer.lock() {
+                if let Some(s) = g.as_mut() {
+                    if s.write_all(b"e matchStatus()\n").and_then(|_| s.flush()).is_err() {
+                        // socket dropped — leave it; boot_new/reconnect installs a fresh one
+                    }
+                }
+            }
+        });
+    }
+
     let char_name = crate::config::Config::load().char_name();
     let init = format!("window.__CHAR__={};", js_str(&char_name));
 
@@ -90,6 +107,12 @@ pub fn launch() -> std::io::Result<()> {
             } else if b.starts_with(BOOT_REGULAR) {
                 let chosen = boot_char(b, BOOT_REGULAR).unwrap_or(ch);
                 thread::spawn(move || boot_new(w, cl, cn, px, chosen, false));
+            } else if let Some(slot) = b.strip_prefix("@@icon:") {
+                // Request a character's stock icon: run iconFeed(<slot>) on the engine; the
+                // reply (ICON:<slot>:<hex>) comes back through the charIcon channel -> onIcon.
+                if let Ok(n) = slot.trim().parse::<u32>() {
+                    handle_command(&format!("e iconFeed({n})"), &ipc_writer, &ipc_proxy);
+                }
             } else if b.starts_with("@@") {
                 handle_screen_verb(b, &ipc_proxy);
             } else {
@@ -584,13 +607,13 @@ fn crash_js(log: &str, resdiag: &[String]) -> String {
     format!("window.onCrash && onCrash({}, {})", js_str(log), js_str(&enhanced))
 }
 
-/// Socket bytes -> lines -> event loop (-> page). Dedup repeated per-frame ANIM lines.
+/// Socket bytes -> lines -> event loop (-> page). Routes channel feeds (matchStatus/charIcon)
+/// to their widgets and filters per-frame ANIM telemetry out of the chat (it's in the widget).
 /// On EOF/error the engine connection is gone -> crash modal (if it crashed) or reconnect.
 fn spawn_reader(mut reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>) {
     thread::spawn(move || {
         let mut buf: Vec<u8> = Vec::with_capacity(256);
         let mut one = [0u8; 1];
-        let mut last_anim = String::new();
         // RESDIAG breadcrumbs go to Peptide's Enhanced (advanced) log, NOT the engine chat —
         // captured here and handed to the crash diagnosis when the engine goes away.
         let mut resdiag: Vec<String> = Vec::new();
@@ -602,10 +625,30 @@ fn spawn_reader(mut reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>) {
                         let line = String::from_utf8_lossy(&buf).trim_end_matches('\r').to_string();
                         buf.clear();
                         if line.contains("RESDIAG:") { resdiag.push(line); continue; } // enhanced log, not chat
-                        if let Some(a) = line.strip_prefix("ANIM:") {
-                            if a == last_anim { continue; }
-                            last_anim = a.to_string();
+                        // Channel feeds (matchStatus, charIcon, …) route to their widget, not the chat.
+                        if let Some((ch, payload)) = crate::interpreter::channel_payload(&line) {
+                            match ch {
+                                "charIcon" => {
+                                    // payload = "<slot>:<png-hex>;<palette>" -> recolor + data: URL.
+                                    if let Some((slot, rest)) = payload.split_once(':') {
+                                        let (hex, palette) = rest.split_once(';').unwrap_or((rest, ""));
+                                        if let Some(url) = icon_data_url(hex, palette) {
+                                            let _ = proxy.send_event(Ev::Js(format!(
+                                                "window.onIcon && onIcon({}, {})", js_str(slot), js_str(&url))));
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    let _ = proxy.send_event(Ev::Js(format!(
+                                        "window.onMatchStatus && onMatchStatus({})", js_str(payload))));
+                                }
+                            }
+                            continue;
                         }
+                        // Per-transition animation + damage telemetry is shown live in the
+                        // matchStatus widgets (current animation and % per character), so it is
+                        // filtered out of the chat entirely rather than spamming the transcript.
+                        if line.starts_with("ANIM:") { continue; }
                         if proxy.send_event(Ev::Line(line)).is_err() { break; }
                     } else {
                         buf.push(one[0]);
@@ -659,6 +702,83 @@ fn handle_command(text: &str, writer: &SharedWriter, proxy: &EventLoopProxy<Ev>)
     }
 }
 
+/// Decode an engine-emitted PNG hex string (`haxe.io.Bytes.toHex`), apply the character's
+/// palette-swap map (`<src>><dst> …`, ARGB ints), and return a `data:image/png;base64,…` URL
+/// for the matchStatus icon. The base texture is captured un-recolored (the swap is a shader),
+/// so we replay the exact-color map here. `None` on malformed/empty hex.
+fn icon_data_url(hex: &str, palette: &str) -> Option<String> {
+    let bytes = hex_to_bytes(hex)?;
+    let png = recolor_png(&bytes, palette).unwrap_or(bytes);
+    Some(format!("data:image/png;base64,{}", base64_encode(&png)))
+}
+
+/// Hex string -> bytes. `None` on odd length, non-hex chars, or an implausibly short payload.
+fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
+    let h = hex.trim().as_bytes();
+    if h.len() < 16 || h.len() % 2 != 0 { return None; }
+    let mut bytes = Vec::with_capacity(h.len() / 2);
+    let mut i = 0;
+    while i < h.len() {
+        let hi = (h[i] as char).to_digit(16)?;
+        let lo = (h[i + 1] as char).to_digit(16)?;
+        bytes.push(((hi << 4) | lo) as u8);
+        i += 2;
+    }
+    Some(bytes)
+}
+
+/// Parse the palette feed (`"<src>><dst> <src>><dst> …"`, signed decimal ARGB ints) into an
+/// exact-color replacement map, dropping identity entries (src == dst — colors this palette
+/// leaves unchanged). Empty map => nothing to recolor.
+fn parse_palette(s: &str) -> std::collections::HashMap<u32, u32> {
+    let mut m = std::collections::HashMap::new();
+    for tok in s.split_whitespace() {
+        if let Some((a, b)) = tok.split_once('>') {
+            if let (Ok(src), Ok(dst)) = (a.parse::<i32>(), b.parse::<i32>()) {
+                let (s, d) = (src as u32, dst as u32);
+                if s != d { m.insert(s, d); }
+            }
+        }
+    }
+    m
+}
+
+/// Apply the palette map to a PNG: decode, replace each pixel whose ARGB matches a `src` with its
+/// `dst`, re-encode. Colors are `0xAARRGGBB` (alpha high byte). `None` (=> caller keeps the base
+/// PNG) when there's nothing to do or the image can't be decoded.
+fn recolor_png(png: &[u8], palette: &str) -> Option<Vec<u8>> {
+    let map = parse_palette(palette);
+    if map.is_empty() { return None; }
+    let mut rgba = image::load_from_memory(png).ok()?.to_rgba8();
+    for px in rgba.pixels_mut() {
+        let [r, g, b, a] = px.0;
+        let key = ((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+        if let Some(&d) = map.get(&key) {
+            px.0 = [((d >> 16) & 0xff) as u8, ((d >> 8) & 0xff) as u8, (d & 0xff) as u8, ((d >> 24) & 0xff) as u8];
+        }
+    }
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(rgba).write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(out.into_inner())
+}
+
+/// Minimal standard-alphabet base64 (no external dep) — for the icon data: URL.
+fn base64_encode(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for ch in data.chunks(3) {
+        let b0 = ch[0] as u32;
+        let b1 = *ch.get(1).unwrap_or(&0) as u32;
+        let b2 = *ch.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(if ch.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if ch.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
 /// Encode an arbitrary string as a safe JavaScript string literal.
 fn js_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -678,4 +798,48 @@ fn js_str(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::*;
+
+    fn png_1px(rgba: [u8; 4]) -> Vec<u8> {
+        let mut img = image::RgbaImage::new(1, 1);
+        img.put_pixel(0, 0, image::Rgba(rgba));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img).write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        buf.into_inner()
+    }
+
+    #[test]
+    fn parse_palette_skips_identity_and_garbage() {
+        // -1 is identity (white->white); -65536 (0xFFFF0000 red) -> -16711936 (0xFF00FF00 green).
+        let m = parse_palette("-1>-1 -65536>-16711936 junk 5>x");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m.get(&0xFFFF0000), Some(&0xFF00FF00));
+    }
+
+    #[test]
+    fn recolor_swaps_exact_argb_colors() {
+        let png = png_1px([0xFF, 0x00, 0x00, 0xFF]); // opaque red
+        let out = recolor_png(&png, "-65536>-16711936").unwrap(); // red -> green
+        let res = image::load_from_memory(&out).unwrap().to_rgba8();
+        assert_eq!(res.get_pixel(0, 0).0, [0x00, 0xFF, 0x00, 0xFF]); // now opaque green
+    }
+
+    #[test]
+    fn recolor_noop_without_palette_keeps_base() {
+        let png = png_1px([0x12, 0x34, 0x56, 0xFF]);
+        assert!(recolor_png(&png, "").is_none());          // empty map -> caller keeps base
+        assert!(recolor_png(&png, "-1>-1").is_none());     // only identity -> nothing to do
+    }
+
+    #[test]
+    fn icon_data_url_handles_bad_and_passthrough() {
+        assert!(icon_data_url("", "").is_none());          // empty hex
+        assert!(icon_data_url("zzzz", "").is_none());      // non-hex
+        let hexed: String = png_1px([1, 2, 3, 255]).iter().map(|b| format!("{b:02x}")).collect();
+        assert!(icon_data_url(&hexed, "").unwrap().starts_with("data:image/png;base64,"));
+    }
 }

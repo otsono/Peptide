@@ -124,13 +124,13 @@ impl Config {
         "impostor".to_string()
     }
 
-    /// Stage id. `FRAY_STAGE` env → config → "teststage" (the base-game training stage).
+    /// Stage id. `FRAY_STAGE` env → config → "thespire" (a real, loadable base-game stage).
     pub fn stage(&self) -> String {
         if let Ok(s) = std::env::var("FRAY_STAGE") {
             if !s.is_empty() { return s; }
         }
         if !self.stage.is_empty() { return self.stage.clone(); }
-        "teststage".to_string()
+        "thespire".to_string()
     }
 
     /// Assist id. `FRAY_ASSIST` env → config → "commandervideoassist".

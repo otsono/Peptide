@@ -835,10 +835,10 @@ fn connect_edit(
     // Character/stage/assist baked as launch defaults. The char drives the self-bootstrap
     // (a custom .fra at <install>/custom/<char>/<char>.fra) and the bare-`s`/auto-launch
     // Base-game defaults when an arg is omitted: character → impostor, stage →
-    // teststage (the training stage), assist → commandervideoassist. All generic —
+    // thespire (a real loadable stage), assist → commandervideoassist. All generic —
     // derived from the injector args; these are just the fallbacks.
     let cname = char_name.as_deref().unwrap_or("impostor");
-    let sname = stage_name.as_deref().unwrap_or("teststage");
+    let sname = stage_name.as_deref().unwrap_or("thespire");
     let aname = assist_name.as_deref().unwrap_or("commandervideoassist");
     let char_path = format!("{install_dir}/custom/{cname}/{cname}.fra");
     let char_pkgid = format!("{cname}.{cname}");
@@ -1169,6 +1169,15 @@ fn connect_edit(
     // Crash-proofing: the eval hook wraps parse+exprReturn in a Trap. On ANY error it
     // logs to the engine (Sys.println -> engine log) and returns "ERR: <msg>" to Peptide.
     let eval_td_g = add_string_const(code, "__td"); // Tildebugger statics, for the Engine.log facade
+    // __b64 = haxe.crypto.Base64.encode, bound as a CALLABLE (a static closure). It is the one
+    // engine static the interpreter can't name-resolve (`haxe.crypto.Base64` -> null in hscript),
+    // so the icon pipeline base64-encodes a PNG via __b64(bytes, true). Everything else in that
+    // pipeline (capturePixels / Pixels.sub / Pixels.toPNG) is reflection-reachable from hscript,
+    // so this single binding is the entire bytecode cost — "minimum bytecode, maximum hscript".
+    let eval_b64_g = add_string_const(code, "__b64");
+    let b64_encode_fn = find_fn(code, "encode", Some("haxe.crypto.$Base64")).unwrap_or(23211);
+    let b64_fn_t = code.functions[function_index_by_findex(code, b64_encode_fn)
+        .ok_or_else(|| anyhow::anyhow!("Base64.encode findex {b64_encode_fn} not found"))?].t.0;
     let err_prefix_g = add_string_const(code, "ERR: ");
     let err_log_prefix_g = add_string_const(code, "[peptide] eval error: ");
     let hs_expr_return = find_fn(code, "exprReturn", Some("hscript.Interp")).unwrap_or(2216);
@@ -1417,6 +1426,9 @@ fn connect_edit(
     // eval regs: hscript Parser, Interp, Expr (parseString result), Dynamic (execute result).
     // Appended after the main block so every existing rr(i) index is unchanged.
     let eval_regs_base = add_regs(f, &[hs_parser_t as usize, hs_interp_t as usize, hs_expr_t as usize, 9]);
+    // A register typed as Base64.encode's function type, so StaticClosure has a correctly-typed
+    // dst (it must be the HFun type, not Dynamic); we ToDyn it before setVar.
+    let r_b64fn = Reg(add_regs(f, &[b64_fn_t as usize]));
     let (e_parser, e_interp, e_expr, e_result) =
         (Reg(eval_regs_base), Reg(eval_regs_base + 1), Reg(eval_regs_base + 2), Reg(eval_regs_base + 3));
     let (r_done, r_true, r_sock, r_host, r_port, r_out, r_ret, r_ip, r_byte, r_blockf, r_sock2, r_handle, r_c, r_zero) =
@@ -2715,6 +2727,11 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(23), global: RefGlobal(tilde_global) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(23) });
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_td_g) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
+    // bind __b64 = Base64.encode (static closure) — see the eval_b64_g comment above.
+    ops.push(Opcode::StaticClosure { dst: r_b64fn, fun: RefFun(b64_encode_fn) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: r_b64fn });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_b64_g) });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
     let idx_e_interp_ready = ops.len();
     if let Opcode::JNotNull { offset, .. } = &mut ops[idx_e_haveinterp] { *offset = idx_e_interp_ready as i32 - idx_e_haveinterp as i32 - 1; }
