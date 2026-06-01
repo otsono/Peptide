@@ -102,33 +102,12 @@ pub fn lookup(tok: &str) -> Option<&'static Cmd> {
     COMMANDS.iter().find(|c| c.name == t || c.aliases.iter().any(|a| *a == t))
 }
 
-/// Ordinal (table index) of a move by friendly name, case-insensitive.
-pub fn move_ordinal(name: &str) -> Option<usize> {
-    let n = name.to_ascii_lowercase();
-    MOVES.iter().position(|(m, _)| *m == n)
-}
-
-/// Map a friendly move name to its `CState.<FIELD>` hscript expression
-/// (e.g. "jab" -> "CState.JAB", "strong_forward" -> "CState.STRONG_FORWARD_IN").
-pub fn move_cstate(name: &str) -> Option<String> {
-    let n = name.to_ascii_lowercase();
-    MOVES.iter().find(|(m, _)| *m == n).map(|(_, field)| format!("CState.{field}"))
-}
-
 /// Outcome of translating one friendly line.
 pub enum Translated {
     /// Send this exact line to the engine.
     Wire(String),
-    /// Send `wire` to the engine `count` times, sleeping `gap_ms` between sends
-    /// (client-orchestrated repetition — e.g. `loop`). Zero engine bytecode.
-    Repeat { wire: String, count: u32, gap_ms: u64 },
-    /// Send these wire lines in order (client-orchestrated multi-command — e.g.
-    /// `snapshot` = t, v, a). Zero engine bytecode; groundwork for recipe scripting.
-    Sequence(Vec<String>),
     /// Handled client-side; print this text, send nothing.
     Client(String),
-    /// Could not translate; print this error, send nothing.
-    Error(String),
 }
 
 /// Translate a friendly command line into the engine wire line.
@@ -445,9 +424,7 @@ mod tests {
     fn wire(line: &str) -> String {
         match translate(line) {
             Translated::Wire(w) => w,
-            other => panic!("expected Wire, got {}", match other {
-                Translated::Client(_) => "Client", Translated::Error(e) => return e, _ => "?",
-            }),
+            Translated::Client(_) => panic!("expected Wire, got Client"),
         }
     }
 

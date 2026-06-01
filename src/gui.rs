@@ -681,23 +681,7 @@ fn handle_command(text: &str, writer: &SharedWriter, proxy: &EventLoopProxy<Ev>)
     for cmd in split_commands(text) {
         match translate(&cmd) {
             Translated::Wire(w) => send(&w),
-            Translated::Sequence(v) => for w in v { send(&w); },
-            Translated::Repeat { wire, count, gap_ms } => {
-                let w = writer.clone();
-                thread::spawn(move || {
-                    for _ in 0..count {
-                        if let Ok(mut g) = w.lock() {
-                            match g.as_mut() {
-                                Some(s) => { if s.write_all(format!("{wire}\n").as_bytes()).is_err() { break; } let _ = s.flush(); }
-                                None => break,
-                            }
-                        }
-                        thread::sleep(Duration::from_millis(gap_ms));
-                    }
-                });
-            }
             Translated::Client(t) => { let _ = proxy.send_event(Ev::Line(format!("SYS:OUT:{}", t.trim_end_matches('\n')))); }
-            Translated::Error(e) => { let _ = proxy.send_event(Ev::Line(format!("SYS:ERR:{e}"))); }
         }
     }
 }

@@ -553,31 +553,11 @@ fn submit(app: &mut App, writer: &mut TcpStream) -> std::io::Result<()> {
 
     match translate(&line) {
         Translated::Wire(w) => send(writer, &w)?,
-        Translated::Sequence(v) => {
-            for w in v {
-                send(writer, &w)?;
-            }
-        }
-        Translated::Repeat { wire, count, gap_ms } => {
-            // fire on a background thread so the UI stays responsive
-            if let Ok(mut w) = writer.try_clone() {
-                thread::spawn(move || {
-                    for _ in 0..count {
-                        if w.write_all(format!("{wire}\n").as_bytes()).is_err() {
-                            break;
-                        }
-                        let _ = w.flush();
-                        thread::sleep(Duration::from_millis(gap_ms));
-                    }
-                });
-            }
-        }
         Translated::Client(text) => {
             for l in text.lines() {
                 app.sys(l);
             }
         }
-        Translated::Error(e) => app.push(e, Kind::Error),
     }
     Ok(())
 }

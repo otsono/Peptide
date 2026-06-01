@@ -35,88 +35,75 @@ pub fn parse_token(args: &[String]) -> Option<String> {
         .and_then(|i| args.get(i + 1))
         .cloned()
 }
-pub fn serve(port: u16, token: Option<&str>) {
-    let (reader, mut write_half) = crate::ui::await_engine(port, token);
-
-    // socket -> stdout; signal once the engine reports READY.
-    //
-    // ROBUSTNESS: read RAW BYTES and lossy-decode each line, instead of
-    // `reader.lines()` (which yields Err and aborts the loop the moment the
-    // engine emits a non-UTF8 byte). Critically, on a read error or EOF we do
-    // NOT std::process::exit — exiting closes our socket, and the engine's
-    // injected per-frame write then faults with `Eof` in Main.update and CRASHES
-    // the whole engine mid-match. Keeping the process (and thus the socket) alive
-    // lets the engine keep running so a match can actually be observed.
-    let (ready_tx, ready_rx) = mpsc::channel::<()>();
-    let mut byte_reader = reader;
-    thread::spawn(move || {
-        let mut buf: Vec<u8> = Vec::with_capacity(256);
-        let mut one = [0u8; 1];
-        // The engine emits "ANIM:<state>" EVERY frame; dedup so only changes print.
-        let mut last_anim = String::new();
-        // Crash-diagnostics ring buffer: the last few meaningful events (state /
-        // animation transitions, move acks, physics) so that when the engine stream
-        // ends — especially on a crash — we can show what the character was doing.
-        let mut history: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-        let dump_history = |h: &std::collections::VecDeque<String>| {
-            if h.is_empty() { return; }
-            eprintln!("peptide-bridge: ── last {} engine events before stream ended (crash context) ──", h.len());
-            for ev in h { eprintln!("peptide-bridge:    {ev}"); }
-        };
-        loop {
-            match byte_reader.read(&mut one) {
-                Ok(0) => {
-                    // Clean EOF: engine closed its write side. Do NOT exit; the
-                    // engine may still be running and writing — hold our socket.
-                    eprintln!("peptide-bridge: engine closed read stream (holding socket open)");
-                    dump_history(&history);
-                    break;
-                }
-                Ok(_) => {
-                    if one[0] == b'\n' {
-                        let line = String::from_utf8_lossy(&buf);
-                        let line = line.trim_end_matches('\r');
-                        // Channel feeds (matchStatus, …) are not for the CLI — drop them.
-                        if crate::interpreter::channel_payload(line).is_some() { buf.clear(); continue; }
-                        // Suppress repeated per-frame ANIM lines; print only on change.
-                        // Append a plain-English gloss to recognized reply lines
-                        // (additive — the raw line is preserved so scripts that
-                        // match on it, e.g. READY/ANIM detection, still work).
+/// Read the engine's byte stream, assemble newline-delimited lines, drop channel
+/// feeds (matchStatus/icons), dedup repeated per-frame ANIM lines, gloss the rest,
+/// and hand each surviving line to `emit(raw, pretty)`. Signals `ready_tx` on every
+/// READY line. Returns when the stream ends (EOF or read error) — the caller must
+/// NOT close the socket on return (that Eof-crashes the engine's per-frame write).
+///
+/// ROBUSTNESS: reads RAW BYTES + lossy-decodes, instead of `reader.lines()` (which
+/// aborts the moment the engine emits a non-UTF8 byte). Shared by `serve` (emits to
+/// stdout) and `session` (emits to the log file).
+fn pump_engine_lines(
+    mut reader: BufReader<TcpStream>,
+    ready_tx: &mpsc::Sender<()>,
+    mut emit: impl FnMut(&str, &str),
+) {
+    let mut buf: Vec<u8> = Vec::with_capacity(256);
+    let mut one = [0u8; 1];
+    let mut last_anim = String::new();
+    loop {
+        match reader.read(&mut one) {
+            Ok(0) => break, // clean EOF
+            Ok(_) => {
+                if one[0] == b'\n' {
+                    let line = String::from_utf8_lossy(&buf);
+                    let line = line.trim_end_matches('\r');
+                    // Channel feeds (matchStatus, icons) are not for the CLI/log — drop them.
+                    if crate::interpreter::channel_payload(line).is_none() {
                         let pretty = match gloss(line) {
                             Some(g) => format!("<< {line:<28} ({g})"),
                             None => format!("<< {line}"),
                         };
-                        let mut emitted = true;
-                        if let Some(a) = line.strip_prefix("ANIM:") {
-                            if a != last_anim {
-                                last_anim = a.to_string();
-                                println!("{pretty}");
-                            } else { emitted = false; }
-                        } else {
-                            println!("{pretty}");
-                        }
-                        // Buffer meaningful events for the crash-context dump.
-                        if emitted && line.starts_with(|c: char| c.is_ascii_uppercase()) && line.contains(':') {
-                            history.push_back(line.to_string());
-                            if history.len() > 16 { history.pop_front(); }
-                        }
-                        if line.contains("READY") {
-                            let _ = ready_tx.send(());
-                        }
-                        buf.clear();
-                    } else {
-                        buf.push(one[0]);
+                        // Suppress repeated per-frame ANIM lines; emit only on change.
+                        let show = match line.strip_prefix("ANIM:") {
+                            Some(a) if a == last_anim => false,
+                            Some(a) => { last_anim = a.to_string(); true }
+                            None => true,
+                        };
+                        if line.contains("READY") { let _ = ready_tx.send(()); }
+                        if show { emit(line, &pretty); }
                     }
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    // Transient/decode-ish error: keep the socket alive, stop
-                    // mirroring. NEVER exit here (see comment above).
-                    eprintln!("peptide-bridge: read error (holding socket open)");
-                    dump_history(&history);
-                    break;
+                    buf.clear();
+                } else {
+                    buf.push(one[0]);
                 }
             }
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break, // transient/decode error: stop mirroring, hold the socket
+        }
+    }
+}
+
+pub fn serve(port: u16, token: Option<&str>) {
+    let (reader, mut write_half) = crate::ui::await_engine(port, token);
+
+    // socket -> stdout; signal once the engine reports READY. Keep a small ring of
+    // the last meaningful events so a crash dump can show what was happening.
+    let (ready_tx, ready_rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let mut history: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+        pump_engine_lines(reader, &ready_tx, |raw, pretty| {
+            println!("{pretty}");
+            if raw.starts_with(|c: char| c.is_ascii_uppercase()) && raw.contains(':') {
+                history.push_back(raw.to_string());
+                if history.len() > 16 { history.pop_front(); }
+            }
+        });
+        eprintln!("peptide-bridge: engine stream ended (holding socket open)");
+        if !history.is_empty() {
+            eprintln!("peptide-bridge: ── last {} engine events before stream ended (crash context) ──", history.len());
+            for ev in &history { eprintln!("peptide-bridge:    {ev}"); }
         }
     });
 
@@ -140,14 +127,12 @@ pub fn serve(port: u16, token: Option<&str>) {
         .filter(|g| *g > 0.0);
     let stdin = std::io::stdin();
     let mut first = true;
-    'outer: for line in stdin.lock().lines() {
+    for line in stdin.lock().lines() {
         let Ok(raw) = line else { break };
-        // Translate the friendly command ("spawn sandbag", "move special_neutral")
-        // into the engine wire line(s). `help` and bad input are handled here and
-        // never reach the engine; `loop` expands to a repeated client-side send.
+        // Translate the friendly command into the engine wire line; `help` is
+        // handled here and never reaches the engine.
         match translate(&raw) {
             Translated::Client(text) => { print!("{text}"); continue; }
-            Translated::Error(msg) => { eprintln!("peptide-bridge: {msg}"); continue; }
             Translated::Wire(wire) => {
                 if !first {
                     if let Some(g) = cmd_gap { thread::sleep(Duration::from_secs_f64(g)); }
@@ -161,38 +146,6 @@ pub fn serve(port: u16, token: Option<&str>) {
                 if !send_wire(&mut write_half, &wire) {
                     eprintln!("peptide-bridge: write failed (engine gone?)");
                     break;
-                }
-            }
-            Translated::Repeat { wire, count, gap_ms } => {
-                eprintln!("peptide-bridge: LOOP {wire:?} x{count} every {gap_ms}ms  (from {:?})", raw.trim());
-                if !first {
-                    if let Some(g) = cmd_gap { thread::sleep(Duration::from_secs_f64(g)); }
-                }
-                first = false;
-                for i in 0..count {
-                    if i > 0 { thread::sleep(Duration::from_millis(gap_ms)); }
-                    eprintln!("peptide-bridge: SENT {wire:?} ({}/{count})", i + 1);
-                    if !send_wire(&mut write_half, &wire) {
-                        eprintln!("peptide-bridge: write failed (engine gone?)");
-                        break 'outer;
-                    }
-                }
-            }
-            Translated::Sequence(wires) => {
-                eprintln!("peptide-bridge: SEQ {wires:?}  (from {:?})", raw.trim());
-                if !first {
-                    if let Some(g) = cmd_gap { thread::sleep(Duration::from_secs_f64(g)); }
-                }
-                first = false;
-                // Tight pacing so a `track` samples physics across a move's brief
-                // active window (the engine reads ~1 command/frame ≈ 16ms).
-                for (i, w) in wires.iter().enumerate() {
-                    if i > 0 { thread::sleep(Duration::from_millis(60)); }
-                    eprintln!("peptide-bridge: SENT {w:?}");
-                    if !send_wire(&mut write_half, w) {
-                        eprintln!("peptide-bridge: write failed (engine gone?)");
-                        break 'outer;
-                    }
                 }
             }
         }
@@ -224,21 +177,10 @@ pub fn serve(port: u16, token: Option<&str>) {
     }
 }
 pub fn send_once(port: u16, token: Option<&str>, cmd: &str) {
-    // Translate the friendly command up front; `help`/errors never open a socket.
+    // Translate the friendly command up front; `help` never opens a socket.
     let cmd = match translate(cmd) {
         Translated::Wire(w) => w,
-        // `send` is the one-shot scripted path; loop is an interactive/serve feature.
-        // Degrade gracefully: fire the move once and note it.
-        Translated::Repeat { wire, .. } => {
-            eprintln!("peptide-bridge: 'loop' sends once in one-shot mode — use serve/runseq for repetition");
-            wire
-        }
-        Translated::Sequence(wires) => {
-            eprintln!("peptide-bridge: 'snapshot'/sequence sends only the first cmd in one-shot mode — use serve/runseq for the full bundle");
-            wires.into_iter().next().unwrap_or_default()
-        }
         Translated::Client(text) => { print!("{text}"); return; }
-        Translated::Error(msg) => { eprintln!("peptide-bridge: {msg}"); std::process::exit(2); }
     };
     let cmd = cmd.as_str();
     let (reader, mut write_half) = crate::ui::await_engine(port, token);
@@ -349,24 +291,9 @@ fn slog(log: &Arc<Mutex<std::fs::File>>, s: &str) {
 fn process_cmd(writer: &mut TcpStream, raw: &str, log: &Arc<Mutex<std::fs::File>>) {
     match translate(raw) {
         Translated::Client(text) => slog(log, &format!(">> (client) {}", text.trim_end())),
-        Translated::Error(msg) => slog(log, &format!(">> error: {msg}")),
         Translated::Wire(wire) => {
             slog(log, &format!(">> SENT {wire:?}  (from {:?})", raw.trim()));
             if !send_wire(writer, &wire) { slog(log, ">> write failed (engine gone?)"); }
-        }
-        Translated::Repeat { wire, count, gap_ms } => {
-            slog(log, &format!(">> LOOP {wire:?} x{count} every {gap_ms}ms  (from {:?})", raw.trim()));
-            for i in 0..count {
-                if i > 0 { thread::sleep(Duration::from_millis(gap_ms)); }
-                if !send_wire(writer, &wire) { slog(log, ">> write failed (engine gone?)"); break; }
-            }
-        }
-        Translated::Sequence(wires) => {
-            slog(log, &format!(">> SEQ {wires:?}  (from {:?})", raw.trim()));
-            for (i, w) in wires.iter().enumerate() {
-                if i > 0 { thread::sleep(Duration::from_millis(60)); }
-                if !send_wire(writer, w) { slog(log, ">> write failed (engine gone?)"); break; }
-            }
         }
     }
 }
@@ -425,8 +352,9 @@ pub fn session(args: &[String]) {
         "port={port}\ntoken={token}\ncontrol={}\nlog={}\npid={}\n",
         control.display(), logp.display(), std::process::id()));
 
-    // socket -> log (+ stdout); signal READY once the engine reports it.
-    // `resdiag` collects the engine's RESDIAG breadcrumbs (the failing resource
+    // socket -> log (+ stdout); signal READY once the engine reports it. Shares the
+    // reader with `serve` via pump_engine_lines; the emit closure mirrors each line
+    // to the log and collects the engine's RESDIAG breadcrumbs (the failing resource
     // id) so a crash report can name what didn't load — error.log alone can't.
     let done = Arc::new(AtomicBool::new(false));
     let resdiag = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -435,44 +363,15 @@ pub fn session(args: &[String]) {
         let log = Arc::clone(&log);
         let done = Arc::clone(&done);
         let resdiag = Arc::clone(&resdiag);
-        let mut byte_reader = reader;
         thread::spawn(move || {
-            let mut buf: Vec<u8> = Vec::with_capacity(256);
-            let mut one = [0u8; 1];
-            let mut last_anim = String::new();
-            loop {
-                match byte_reader.read(&mut one) {
-                    Ok(0) => { slog(&log, "<< [engine closed the connection]"); done.store(true, Relaxed); break; }
-                    Ok(_) => {
-                        if one[0] == b'\n' {
-                            let line = String::from_utf8_lossy(&buf);
-                            let line = line.trim_end_matches('\r');
-                            // Collect resource-load breadcrumbs for the crash report.
-                            if line.starts_with("RESDIAG") || line.contains("resource id:") {
-                                if let Ok(mut v) = resdiag.lock() { v.push(line.to_string()); }
-                            }
-                            // Channel feeds (matchStatus, icons) aren't for the log — drop them.
-                            if crate::interpreter::channel_payload(line).is_some() { buf.clear(); continue; }
-                            let pretty = match gloss(line) {
-                                Some(g) => format!("<< {line:<28} ({g})"),
-                                None => format!("<< {line}"),
-                            };
-                            // Suppress repeated per-frame ANIM lines; log only on change.
-                            if let Some(a) = line.strip_prefix("ANIM:") {
-                                if a != last_anim { last_anim = a.to_string(); slog(&log, &pretty); }
-                            } else {
-                                slog(&log, &pretty);
-                            }
-                            if line.contains("READY") { let _ = ready_tx.send(()); }
-                            buf.clear();
-                        } else {
-                            buf.push(one[0]);
-                        }
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(_) => { slog(&log, "<< [read error; engine gone]"); done.store(true, Relaxed); break; }
+            pump_engine_lines(reader, &ready_tx, |raw, pretty| {
+                if raw.starts_with("RESDIAG") || raw.contains("resource id:") {
+                    if let Ok(mut v) = resdiag.lock() { v.push(raw.to_string()); }
                 }
-            }
+                slog(&log, pretty);
+            });
+            slog(&log, "<< [engine stream ended]");
+            done.store(true, Relaxed);
         });
     }
 
