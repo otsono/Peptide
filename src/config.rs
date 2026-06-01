@@ -21,12 +21,17 @@ use crate::platform;
 #[serde(default)]
 pub struct Config {
     // ── Setup-screen fields ──────────────────────────────────────────────
+    /// True once the user has completed the setup wizard at least once. Drives
+    /// the first-run wizard: the GUI shows Setup until this is set, even if the
+    /// paths happen to autodetect, so the user can confirm/customize them.
+    pub configured: bool,
     /// Fraymakers Steam install dir (was the `FRAY_DIR` env var only).
     pub fraymakers_root: String,
     /// FrayTools path — a `.app` bundle on macOS or the executable elsewhere.
     pub fraytools_path: String,
-    /// The active project, tracked by character name. Output dir + `.fraytools`
-    /// path are derived from it.
+    /// Legacy: the active character. No longer a setup field — the character to
+    /// launch is chosen per-launch by picking a `.fraytools` project. Kept for
+    /// back-compat (config round-trips) and the `FRAY_CHAR`/CLI fallback path.
     pub current_char: String,
     /// Output directory for converted characters (per-char output = `<output>/<char>`).
     pub output_dir: String,
@@ -78,6 +83,14 @@ impl Config {
         config_path()
     }
 
+    /// Delete the persisted config so the next `load()` returns defaults — used by
+    /// the Setup screen's "Reset to defaults" button to reopen the first-run wizard.
+    pub fn reset() {
+        if let Some(p) = config_path() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
     // ── Resolvers (env override → config → default) ──────────────────────
     // The harness (ui.rs / gui.rs) reads through these so env vars keep working
     // for back-compat and scripting, persisted config fills the gap, and a
@@ -102,22 +115,22 @@ impl Config {
         platform::default_fraytools_exe()
     }
 
-    /// Active character. `FRAY_CHAR` env → config → "sandbag".
+    /// Active character. `FRAY_CHAR` env → config → "impostor" (base-game default).
     pub fn char_name(&self) -> String {
         if let Ok(c) = std::env::var("FRAY_CHAR") {
             if !c.is_empty() { return c; }
         }
         if !self.current_char.is_empty() { return self.current_char.clone(); }
-        "sandbag".to_string()
+        "impostor".to_string()
     }
 
-    /// Stage id. `FRAY_STAGE` env → config → "thespire".
+    /// Stage id. `FRAY_STAGE` env → config → "teststage" (the base-game training stage).
     pub fn stage(&self) -> String {
         if let Ok(s) = std::env::var("FRAY_STAGE") {
             if !s.is_empty() { return s; }
         }
         if !self.stage.is_empty() { return self.stage.clone(); }
-        "thespire".to_string()
+        "teststage".to_string()
     }
 
     /// Assist id. `FRAY_ASSIST` env → config → "commandervideoassist".
@@ -146,14 +159,14 @@ impl Config {
         PathBuf::from("./characters")
     }
 
-    /// True when every required setup field resolves to something usable:
-    /// Fraymakers root exists, FrayTools resolves to an existing exe, and a
-    /// current character is set.
+    /// True when the required setup paths resolve to something usable: the
+    /// Fraymakers root exists and FrayTools resolves to an existing exe. The
+    /// character is NOT part of setup anymore (it is chosen at launch time by
+    /// picking a `.fraytools` project), so it is not checked here.
     pub fn setup_complete(&self) -> bool {
         let fray_ok = self.fraymakers_root().map(|p| p.is_dir()).unwrap_or(false);
         let ft_ok = self.fraytools_exe().map(|p| p.is_file()).unwrap_or(false);
-        let char_ok = !self.char_name().is_empty();
-        fray_ok && ft_ok && char_ok
+        fray_ok && ft_ok
     }
 }
 
@@ -164,6 +177,7 @@ mod tests {
     #[test]
     fn round_trips_through_json() {
         let cfg = Config {
+            configured: true,
             fraymakers_root: "/games/Fraymakers".into(),
             fraytools_path: "/Applications/FrayTools.app".into(),
             current_char: "mario".into(),

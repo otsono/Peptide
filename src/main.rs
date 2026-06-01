@@ -834,10 +834,11 @@ fn connect_edit(
 ) -> anyhow::Result<()> {
     // Character/stage/assist baked as launch defaults. The char drives the self-bootstrap
     // (a custom .fra at <install>/custom/<char>/<char>.fra) and the bare-`s`/auto-launch
-    // defaults; stage/assist default to the harness's standard pair. All are generic —
-    // no hardcoded "sandbag" — derived from the injector args (sandbag is just the default).
-    let cname = char_name.as_deref().unwrap_or("sandbag");
-    let sname = stage_name.as_deref().unwrap_or("thespire");
+    // Base-game defaults when an arg is omitted: character → impostor, stage →
+    // teststage (the training stage), assist → commandervideoassist. All generic —
+    // derived from the injector args; these are just the fallbacks.
+    let cname = char_name.as_deref().unwrap_or("impostor");
+    let sname = stage_name.as_deref().unwrap_or("teststage");
     let aname = assist_name.as_deref().unwrap_or("commandervideoassist");
     let char_path = format!("{install_dir}/custom/{cname}/{cname}.fra");
     let char_pkgid = format!("{cname}.{cname}");
@@ -2955,6 +2956,76 @@ fn connect_edit(
     // on a change, no per-frame polling). Pinpoints which move was active at a crash.
     inject_anim_telemetry(code, to_state, g_sock, out_field, write_str, flush,
         get_state_name, str_add, anim_prefix_g, nl_g, sock_t, out_t, str_t, enc_t)?;
+    // Crash diagnostics, split per the "keep logic OUT of bytecode" convention
+    // (AGENT_CONTEXT.md): the ONLY thing that must be in bytecode is pulling the one fact
+    // `error.log` lacks — the resource id that was null. inject_stage_diag emits that id
+    // over the socket right before the (intentional) stage crash; all interpretation +
+    // formatting of the enhanced log is host-side in `interpreter::interpret_crash`.
+    inject_stage_diag(code, g_sock, out_field, write_str, flush, str_add, nl_g,
+        sock_t, out_t, str_t, enc_t)?;
+    Ok(())
+}
+
+/// MINIMAL engine-side crash diagnostic (the one fact `error.log` can't give us). The
+/// match-stage crash is `Match.setupStage` op74 `NullCheck Reg15`, where Reg15 =
+/// `getPXFResource(stageId)` (op73) and Reg8 = the stage's resource-id string (op72). The
+/// stack trace names `setupStage` but NOT the id, so we insert before op74: if Reg15 is
+/// null, emit `RESDIAG: … <stageId>` to the socket, then fall through to the (intentional)
+/// crash. Everything downstream — capturing + formatting the enhanced log — is host-side
+/// (`interpreter::interpret_crash`, the page's RESDIAG buffer). Op indices are asserted so
+/// a Fraymakers layout change fails loudly instead of corrupting control flow.
+fn inject_stage_diag(
+    code: &mut Bytecode,
+    g_sock: usize, out_field: usize, write_str: usize, flush: usize, str_add: usize, nl_g: usize,
+    sock_t: usize, out_t: usize, str_t: usize, enc_t: usize,
+) -> anyhow::Result<()> {
+    use hlbc::types::{RefField, RefFun, RefGlobal};
+    let diag_g = add_string_const(code,
+        "RESDIAG: stage failed to load — Match.setupStage got null from getPXFResource for resource id: ");
+    let fi = function_index_by_findex(code, 2491)
+        .ok_or_else(|| anyhow::anyhow!("Match.setupStage@2491 not found"))?;
+    // Verify the op layout at the insertion point before touching it.
+    match code.functions[fi].ops.get(73) {
+        Some(Opcode::Call1 { dst, fun, .. }) if dst.0 == 15 && fun.0 == 18288 => {}
+        o => anyhow::bail!("setupStage op73 not getPXFResource->r15: {o:?}"),
+    }
+    match code.functions[fi].ops.get(74) {
+        Some(Opcode::NullCheck { reg }) if reg.0 == 15 => {}
+        o => anyhow::bail!("setupStage op74 not NullCheck r15: {o:?}"),
+    }
+    let base = add_regs(&mut code.functions[fi], &[sock_t, out_t, str_t, str_t, enc_t, 0]);
+    let (r_sock, r_out, r_msg, r_nl, r_null, r_ret) =
+        (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4), Reg(base + 5));
+    let at = 74usize;
+    let mut ins = vec![
+        Opcode::JNotNull { reg: Reg(15), offset: 0 },                          // 0 -> op74 (stage ok)
+        Opcode::GetGlobal { dst: r_sock, global: RefGlobal(g_sock) },           // 1
+        Opcode::JNull { reg: r_sock, offset: 0 },                             // 2 -> op74 (not connected)
+        Opcode::Field { dst: r_out, obj: r_sock, field: RefField(out_field) },  // 3
+        Opcode::GetGlobal { dst: r_msg, global: RefGlobal(diag_g) },           // 4
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: Reg(8) }, // 5  (+ stage id)
+        Opcode::GetGlobal { dst: r_nl, global: RefGlobal(nl_g) },              // 6
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: r_nl }, // 7
+        Opcode::Null { dst: r_null },                                          // 8
+        Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: r_msg, arg2: r_null }, // 9
+        Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out },          // 10
+    ];
+    let n = ins.len() as i32; // 11 — original op74 lands at index at+n
+    if let Opcode::JNotNull { offset, .. } = &mut ins[0] { *offset = n - 1; }       // -> op74
+    if let Opcode::JNull   { offset, .. } = &mut ins[2] { *offset = n - 3; }        // -> op74
+    let f = &mut code.functions[fi];
+    // op66 JAlways spans the insertion (targets op131) -> +n.
+    match &mut f.ops[66] { Opcode::JAlways { offset, .. } => *offset += n,
+        o => anyhow::bail!("setupStage op66 not JAlways: {o:?}") }
+    for (i, op) in ins.into_iter().enumerate() { f.ops.insert(at + i, op); }
+    if let Some(dbg) = f.debug_info.as_mut() {
+        let fill = dbg.get(at).copied().unwrap_or((0, 0));
+        for _ in 0..(n as usize) { dbg.insert(at, fill); }
+    }
+    if let Some(assigns) = f.assigns.as_mut() {
+        for (_nm, pos) in assigns.iter_mut() { if *pos >= at { *pos += n as usize; } }
+    }
+    eprintln!("connect_edit: Match.setupStage stage-id crash diagnostic installed");
     Ok(())
 }
 

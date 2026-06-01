@@ -49,6 +49,12 @@
   .pill.live{background:#23302A;color:#8FCBA0;}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--muted);}
   .pill.live .dot{background:var(--ok);box-shadow:0 0 0 3px rgba(91,164,111,.18);}
+  /* selected project / character indicator (separate from the connection pill) */
+  .filepill{display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;
+    background:var(--chip);color:var(--ink);font:inherit;font-size:12.5px;font-weight:500;
+    border:none;cursor:pointer;transition:background .15s;}
+  .filepill:hover{background:var(--border);}
+  .filepill-ic{font-size:12px;opacity:.75;}
   /* ── messages ───────────────────────────────────────── */
   #scroll{flex:1;overflow-y:auto;padding:18px 20px 8px;}
   #messages{display:flex;flex-direction:column;max-width:820px;margin:0 auto;}
@@ -122,6 +128,34 @@
   .modal p{margin:0 0 18px;color:var(--muted);font-size:14px;line-height:1.5;}
   .modal p:empty{margin:0;}
   .modal .err{color:var(--err-ink);font-size:13px;margin:-8px 0 14px;}
+  .crashlog{display:none;text-align:left;max-height:200px;overflow:auto;margin:0 0 16px;
+    padding:11px 13px;background:var(--bg);border:1px solid var(--border);border-radius:9px;
+    font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);
+    white-space:pre-wrap;word-break:break-word;}
+  .crashlog.show{display:block;}
+  .crashlog-tabs{display:none;gap:6px;margin:0 0 8px;}
+  .crashlog-tabs.show{display:flex;}
+  .cl-tab{font:inherit;font-size:12px;font-weight:600;padding:5px 11px;border-radius:7px;
+    border:1px solid var(--border);background:var(--bg);color:var(--muted);cursor:pointer;width:auto;}
+  .cl-tab:hover{color:var(--ink);}
+  .cl-tab.active{background:var(--clay);border-color:var(--clay);color:#fff;}
+  /* modal dismiss (×) — close an error/launch modal and stay in the debugger */
+  .modal{position:relative;}
+  .modal-close{position:absolute;top:10px;right:12px;width:28px;height:28px;border:none;
+    background:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;border-radius:7px;
+    display:flex;align-items:center;justify-content:center;padding:0;}
+  .modal-close:hover{background:var(--chip);color:var(--ink);}
+  /* disconnected indicator above the composer */
+  .disco-bar{display:none;align-items:center;justify-content:space-between;gap:12px;
+    margin:0 18px;padding:9px 14px;border:1px solid var(--err-bg);border-radius:10px;
+    background:rgba(190,90,70,.10);font-size:13px;color:var(--ink);}
+  .disco-bar.show{display:flex;}
+  .disco-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--err-ink);
+    margin-right:5px;vertical-align:middle;}
+  .disco-launch{width:auto;white-space:nowrap;}
+  /* greyed chat when not connected */
+  #input:disabled,#send:disabled{opacity:.45;cursor:not-allowed;}
+  #chips button:disabled{opacity:.4;cursor:not-allowed;}
   .modal .err:empty{margin:0;}
   /* bytecode-preflight progress bar (shown only while patching the engine) */
   .patchbar{display:none;margin:-4px 0 16px;}
@@ -133,6 +167,33 @@
     SFMono-Regular,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .m-actions{display:flex;flex-direction:column;gap:9px;}
   .m-actions:empty{display:none;}
+  /* launch modal (project picker over Home) */
+  .m-actions-row{display:flex;gap:10px;justify-content:flex-end;}
+  .m-actions-row .btn-primary,.m-actions-row .btn-ghost{width:auto;}
+  .launch-list{display:flex;flex-direction:column;gap:7px;max-height:46vh;overflow:auto;
+    margin:2px 0 18px;text-align:left;}
+  .launch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:11px 14px;border:1px solid var(--border);border-radius:11px;background:var(--bg);
+    cursor:pointer;transition:border-color .12s,background .12s;}
+  .launch-row:hover{border-color:var(--clay);background:var(--surface);}
+  .launch-row .lr-name{font-weight:650;font-size:15px;}
+  .launch-row .lr-path{color:var(--muted);font-size:12px;font-family:ui-monospace,SFMono-Regular,
+    Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:58%;}
+  .launch-empty{color:var(--muted);font-size:13.5px;line-height:1.5;padding:6px 2px 16px;text-align:left;}
+  /* setup wizard (multi-step modal) */
+  .modal.wizard{max-width:520px;text-align:left;}
+  .wiz-dots{display:flex;gap:7px;justify-content:center;margin:2px 0 22px;}
+  .wiz-dot{width:8px;height:8px;border-radius:50%;background:var(--border);
+    transition:background .15s,width .15s;}
+  .wiz-dot.on{background:var(--clay);width:22px;border-radius:5px;}
+  .wiz-step{display:none;min-height:118px;}
+  .wiz-step.active{display:block;}
+  .wiz-step h2{display:flex;align-items:center;gap:10px;font-size:19px;}
+  .wiz-step p{margin:6px 0 4px;}
+  .wiz-step .inrow{margin-top:14px;}
+  .wiz-actions{display:flex;align-items:center;gap:10px;margin-top:24px;}
+  .wiz-actions .btn-primary,.wiz-actions .btn-ghost{width:auto;}
+  .wiz-spacer{flex:1;}
   .btn-primary,.btn-ghost{font:inherit;font-weight:600;font-size:15px;padding:11px 22px;
     border-radius:11px;cursor:pointer;width:100%;transition:background .15s,border-color .15s;
     display:inline-flex;align-items:center;justify-content:center;gap:9px;}
@@ -224,7 +285,9 @@
     </div>
     <div class="spacer"></div>
     <button class="gear" id="gear" style="display:none">⚙ Setup</button>
-    <div class="pill" id="pill" style="display:none"><span class="dot"></span><span id="pilltext">connecting…</span></div>
+    <button class="filepill" id="filepill" style="display:none" onclick="openLaunchModal()"
+            title="Switch the project / character to run"><span class="filepill-ic">📄</span><span id="filename">—</span></button>
+    <div class="pill" id="pill" style="display:none"><span class="dot"></span><span id="pilltext">Disconnected</span></div>
   </header>
 
   <!-- ── HOME ───────────────────────────────────────────── -->
@@ -251,46 +314,54 @@
     </div>
   </section>
 
-  <!-- ── SETUP ──────────────────────────────────────────── -->
-  <section class="screen" id="screen-setup">
-    <div class="wrap">
-      <h1>Setup</h1>
-      <p class="lede">Tell Peptide where things live. Saved to your config; environment variables still override.</p>
-      <div class="field">
-        <label>Fraymakers install <span class="badge" id="b-fray">—</span></label>
+  <!-- ── SETUP WIZARD (multi-step modal: welcome + one field per step) ────── -->
+  <div class="overlay" id="setup-overlay">
+    <div class="modal wizard" id="setup-modal">
+      <div class="wiz-dots" id="wiz-dots"></div>
+
+      <div class="wiz-step active" data-step="welcome">
+        <h2>Welcome to Peptide</h2>
+        <p>Let’s point Peptide at your tools — just a couple of folders and you’re ready.
+           We autodetected what we could; you can confirm or change each one.</p>
+      </div>
+
+      <div class="wiz-step" data-step="fraymakers">
+        <h2>Fraymakers install <span class="badge" id="b-fray">—</span></h2>
+        <p>The Steam folder containing <code>hlboot-sdl.dat</code>.</p>
         <div class="inrow">
           <input id="s-fraymakers" placeholder="…/Steam/steamapps/common/Fraymakers" />
           <button class="btn-sm" onclick="pickDir('s-fraymakers')">Browse…</button>
         </div>
-        <div class="hint">The Steam install folder containing <code>hlboot-sdl.dat</code>.</div>
       </div>
-      <div class="field">
-        <label>FrayTools <span class="badge" id="b-fraytools">—</span></label>
+
+      <div class="wiz-step" data-step="fraytools">
+        <h2>FrayTools <span class="badge" id="b-fraytools">—</span></h2>
+        <p>The FrayTools app or executable — used to publish/render and to open a project.</p>
         <div class="inrow">
           <input id="s-fraytools" placeholder="/Applications/FrayTools.app (or the executable)" />
           <button class="btn-sm" onclick="pickFile('s-fraytools')">Browse…</button>
         </div>
-        <div class="hint">The FrayTools app or executable — used by the FrayTools Hook.</div>
       </div>
-      <div class="field">
-        <label>Current character <span class="badge" id="b-char">—</span></label>
-        <input id="s-char" placeholder="sandbag" />
-        <div class="hint">The active project, tracked by character name. Launch Peptide spawns this one.</div>
-      </div>
-      <div class="field">
-        <label>Output directory</label>
+
+      <div class="wiz-step" data-step="output">
+        <h2>FrayTools project folder</h2>
+        <p>Where converted characters are written — and where Launch Peptide looks for
+           <code>.fraytools</code> projects to open.</p>
         <div class="inrow">
           <input id="s-output" placeholder="./characters" />
           <button class="btn-sm" onclick="pickDir('s-output')">Browse…</button>
         </div>
-        <div class="hint">Where conversions write character folders.</div>
       </div>
-      <div class="form-actions">
-        <button class="btn-primary" onclick="saveSetup()">Save</button>
-        <button class="btn-ghost" id="setup-back" onclick="showScreen('home')">Back</button>
+
+      <div class="wiz-actions">
+        <button class="btn-ghost" id="wiz-reset" onclick="resetSetup()"
+                title="Clear saved settings and start setup over">Reset to defaults</button>
+        <span class="wiz-spacer"></span>
+        <button class="btn-ghost" id="wiz-back" onclick="wizBack()">Back</button>
+        <button class="btn-primary" id="wiz-next" onclick="wizNext()">Next</button>
       </div>
     </div>
-  </section>
+  </div>
 
   <!-- ── CONVERTER ──────────────────────────────────────── -->
   <section class="screen" id="screen-convert">
@@ -306,7 +377,7 @@
         </div>
       </div>
       <div class="field">
-        <label>Output directory</label>
+        <label>FrayTools project folder</label>
         <div class="inrow">
           <input id="c-output" placeholder="./characters" />
           <button class="btn-sm" onclick="pickDir('c-output')">Browse…</button>
@@ -376,6 +447,10 @@
   <section class="screen" id="screen-console">
     <div class="crumb" style="padding:10px 18px 0;margin:0;"><button onclick="showScreen('home')">← Home</button></div>
     <div id="scroll"><div id="messages"></div></div>
+    <div class="disco-bar" id="disco-bar">
+      <span class="disco-msg"><span class="disco-dot"></span> Not connected — Fraymakers needs to be launched.</span>
+      <button class="btn-sm disco-launch" onclick="launchGame()">Launch game</button>
+    </div>
     <div class="composer"><div class="inner">
       <div class="chips" id="chips"></div>
       <div class="inputrow">
@@ -388,16 +463,36 @@
 
   <div class="overlay" id="overlay">
     <div class="modal working" id="modal">
+      <button class="modal-close" id="modal-close" onclick="dismissModal()"
+              title="Dismiss and stay in the debugger (the game stays disconnected)">×</button>
       <div class="bigspin"></div>
-      <div class="icon">🔌</div>
+      <div class="icon" id="m-icon">🔌</div>
       <h2 id="m-title">Reconnecting to Fraymakers…</h2>
       <p id="m-msg"></p>
+      <div class="crashlog-tabs" id="crashlog-tabs">
+        <button class="cl-tab active" id="cl-tab-enhanced" onclick="setCrashView('enhanced')">Enhanced log</button>
+        <button class="cl-tab" id="cl-tab-raw" onclick="setCrashView('raw')">Engine log</button>
+      </div>
+      <pre class="crashlog" id="m-crashlog"></pre>
       <div class="patchbar" id="patchbar">
         <div class="patchbar-track"><div class="patchbar-fill" id="patchbar-fill"></div></div>
         <div class="patchbar-label" id="patchbar-label"></div>
       </div>
       <div class="err" id="m-err"></div>
       <div class="m-actions" id="m-actions"></div>
+    </div>
+  </div>
+
+  <!-- ── LAUNCH WIZARD (modal over Home) ─────────────────── -->
+  <div class="overlay" id="launch-overlay">
+    <div class="modal" id="launch-modal">
+      <h2>Launch Peptide</h2>
+      <p>Choose a FrayTools project to open and spawn.</p>
+      <div class="launch-list" id="launch-list"></div>
+      <div class="m-actions-row">
+        <button class="btn-primary" onclick="launchBrowse()">Browse…</button>
+        <button class="btn-ghost" onclick="closeLaunchModal()">Cancel</button>
+      </div>
     </div>
   </div>
 
@@ -408,8 +503,9 @@
   let CFG = {}; // last config snapshot from Rust (bootRoute / onSetupSaved)
 
   // ── screen router ───────────────────────────────────────
+  // Setup is no longer a screen — it's the wizard MODAL (openSetupModal).
   const SUBTITLES = {
-    home:"Fraymakers toolkit", setup:"Setup", convert:"SSF2 → Fraymakers",
+    home:"Fraymakers toolkit", convert:"SSF2 → Fraymakers",
     frayhook:"FrayTools Hook", console:"Fraymakers console",
   };
   let consoleBooted = false; // the engine is launched lazily on first console visit
@@ -417,33 +513,73 @@
     document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
     const el=$("screen-"+name); if(el) el.classList.add("active");
     $("subtitle").textContent = SUBTITLES[name] || "Fraymakers toolkit";
-    // header chrome: the live pill + gear only make sense off the home/setup screens
+    // header chrome: the live pill + gear only make sense on certain screens
     $("pill").style.display = (name==="console") ? "" : "none";
+    $("filepill").style.display = (name==="console") ? "" : "none";
     $("gear").style.display = (name==="home") ? "" : "none";
     // The connection modal belongs to the console screen; navigating elsewhere
     // dismisses it (the engine keeps running in the background regardless).
     if(name!=="console" && typeof hideModal==="function"){ hideModal(); }
-    if(name==="setup") fillSetupForm();
+    if(name==="console" && typeof refreshUi==="function"){ refreshUi(); } // reflect connection state
   }
   function ipcSend(m){ if(window.ipc && window.ipc.postMessage) window.ipc.postMessage(m); }
 
-  // Rust calls this once at startup with the config snapshot → route to Setup or Home.
+  // Rust calls this once at startup (and after a reset) with the config snapshot.
+  // Home is always the backdrop; on first run (config never saved) the setup wizard
+  // modal opens over it so the user can confirm the autodetected paths.
   window.bootRoute = function(cfg){
     CFG = cfg || {};
-    charName = CFG.currentChar || charName;
-    showScreen(CFG.setupComplete ? "home" : "setup");
+    showScreen("home");
+    const ready = CFG.configured && CFG.setupComplete;
+    if(ready) closeSetupModal(); else openSetupModal();
   };
-  $("gear").onclick = ()=>showScreen("setup");
+  $("gear").onclick = ()=>openSetupModal();
 
-  // [Launch Peptide] → the console screen; boot the engine on first visit.
-  function goConsole(){
-    showScreen("console");
-    if(!consoleBooted){
-      consoleBooted = true;
-      flowState = "booting";
-      modalWorking("Connecting to Fraymakers…","Booting a session…");
-      ipcSend("@@boot:quick");
+  // [Launch Peptide] → always ask which FrayTools project to open, derive the
+  // character from it, then boot the engine for that character. Cancelling the
+  // picker leaves you on Home.
+  // [Launch Peptide] → a launch-wizard modal over Home that lists converted
+  // projects (and a Browse for any .fraytools). Selecting one boots that character.
+  function goConsole(){ openLaunchModal(); }
+  // Character id from a picked `.fraytools` path: the file stem (the conversion
+  // writes `<char>/<char>.fraytools`), e.g. "…/mario/mario.fraytools" → "mario".
+  function projectChar(path){
+    return (path.split(/[\\/]/).pop()||"").replace(/\.fraytools$/i,"");
+  }
+  // ── launch wizard modal ─────────────────────────────────
+  const launchOverlay=$("launch-overlay"), launchList=$("launch-list");
+  function openLaunchModal(){
+    launchList.innerHTML="";             // lazy: filled in by onProjects when results arrive
+    launchOverlay.classList.add("show");
+    ipcSend("@@projects:list");          // Rust → onProjects([...])
+  }
+  function closeLaunchModal(){ launchOverlay.classList.remove("show"); }
+  launchOverlay.addEventListener("click",(e)=>{ if(e.target===launchOverlay) closeLaunchModal(); });
+  window.onProjects = function(list){
+    list = list || [];
+    if(!list.length){ launchList.innerHTML=""; return; }   // nothing found → just show Browse below
+    launchList.innerHTML="";
+    for(const p of list){
+      const row=document.createElement("div"); row.className="launch-row"; row.title=p.path;
+      const name=document.createElement("div"); name.className="lr-name"; name.textContent=p.char;
+      const path=document.createElement("div"); path.className="lr-path"; path.textContent=p.path;
+      row.appendChild(name); row.appendChild(path);
+      row.onclick=()=>launchProject(p.char);
+      launchList.appendChild(row);
     }
+  };
+  function launchBrowse(){
+    pickFileCb("fraytools",(path)=>{ if(path) launchProject(projectChar(path)); });
+  }
+  function launchProject(ch){
+    if(!ch) return;
+    closeLaunchModal();
+    charName = ch;
+    showScreen("console");
+    consoleBooted = true;
+    flowState = "booting";
+    modalWorking("Connecting to Fraymakers…","Booting "+charName+"…");
+    ipcSend("@@boot:quick:"+charName);
     setStatus(false);
     setTimeout(()=>{ const i=$("input"); if(i) i.focus(); }, 50);
   }
@@ -459,10 +595,22 @@
   }
   function pickDir(id){ pickInto(id, true, ""); }
   function pickFile(id, ext){ pickInto(id, false, ext||""); }
+  // Callback variant: open a file picker and hand the chosen path (or "" if
+  // cancelled) to `cb`, instead of writing it into an input field.
+  function pickFileCb(ext, cb){
+    const fn = "__pick"+(_pickSeq++);
+    window[fn] = (p)=>{ try{ cb(p||""); } finally { delete window[fn]; } };
+    ipcSend("@@pick:file:"+fn+(ext?(":"+ext):""));
+  }
 
+  // Explicit-target hscript (the slimmed command model — no auto-player-0 sugar).
   const QUICK = [
-    ["Spawn","spawn"], ["State","state"], ["Physics","physics"],
-    ["Anim","anim"], ["Jab","move jab"], ["Up Special","move special_up"],
+    ["Spawn","spawn"],
+    ["State","match.getCharacters()[0].getStateName()"],
+    ["Position","match.getCharacters()[0].body.x"],
+    ["Damage","match.getCharacters()[0].damage._damage"],
+    ["Jab","match.getCharacters()[0].toState(CState.JAB)"],
+    ["Up Special","match.getCharacters()[0].toState(CState.SPECIAL_UP)"],
     ["Characters","match.getCharacters()"], ["Help","help"],
   ];
   for(const [label,cmd] of QUICK){
@@ -496,13 +644,24 @@
     if(stick) bump();
   }
 
-  function setStatus(live){
-    const pill=$("pill");
-    pill.classList.toggle("live", live);
-    $("pilltext").textContent = live ? (charName + "  ·  :" + port) : "connecting…";
+  // connection state: `connected` = the engine socket is live; `modalUp` = an error/launch
+  // modal is covering the console. The chat is usable ONLY when connected with no modal.
+  let connected=false, modalUp=false;
+  function refreshUi(){
+    const dis = modalUp || !connected;
+    $("input").disabled=dis; $("send").disabled=dis;
+    document.querySelectorAll("#chips button").forEach(b=>b.disabled=dis);
+    document.body.classList.toggle("blocked", modalUp);
+    // Show the "not connected — launch the game" bar when disconnected and no modal is up.
+    $("disco-bar").classList.toggle("show", !connected && !modalUp);
+    $("pill").classList.toggle("live", connected);
+    $("pilltext").textContent = connected ? "Connected" : (modalUp ? "Connecting…" : "Disconnected");
+    $("filename").textContent = charName || "—";
   }
+  function setStatus(live){ connected=live; refreshUi(); }
 
-  // engine → here (called by Rust via evaluate_script)
+  // engine → here (called by Rust via evaluate_script). RESDIAG diagnostics never reach the
+  // page — Rust captures them for the Enhanced log and keeps them out of the engine chat.
   window.onLine = function(line){
     if(line.startsWith("PORT:")){ port = line.slice(5).trim(); return; }
     if(line.startsWith("SYS:ERR:")){ add("engine", line.slice(8), {code:true,error:true}); return; }
@@ -510,7 +669,16 @@
     if(line.indexOf("HELLO_FROM_FRAYMAKERS")>=0) return;
     if(line.indexOf("READY")>=0){
       setStatus(true);
-      if(!spawned){ spawned=true; add("system","Engine ready — spawning "+charName+"…"); send("spawn"); }
+      // Spawn with char + stage + assist ALL explicit, matching the working CLI harness
+      // (`spawn sandbag thespire commandervideoassist`). The `s` handler fetch-loads each
+      // arg it's given; omitting stage/assist leaves them merely "baked" and unfetched,
+      // so their content-refs come back null → the engine's null-namespace crash.
+      if(!spawned){
+        spawned=true;
+        const st = CFG.stage || "teststage", asst = CFG.assist || "commandervideoassist";
+        add("system","Engine ready — spawning "+charName+"…");
+        send(charName ? ("spawn "+charName+" "+st+" "+asst) : "spawn");
+      }
       return;
     }
     if(line.startsWith("LAUNCHED")){
@@ -541,45 +709,99 @@
   // simpler enter handling
   $("input").onkeydown=(e)=>{ if(e.key==="Enter"){ const v=$("input").value; $("input").value=""; send(v); } };
 
-  // ── setup screen ────────────────────────────────────────
-  function fillSetupForm(){
+  // ── setup wizard (multi-step modal) ─────────────────────
+  // One step per field, preceded by a welcome step. Back/Next walk the steps;
+  // Next on the last step saves. First run can't be dismissed; a reopen (gear) can.
+  const SETUP_STEPS = ["welcome","fraymakers","fraytools","output"];
+  let setupStep = 0, setupFirst = true;
+  const setupOverlay = $("setup-overlay");
+
+  function openSetupModal(){
+    setupFirst = !CFG.configured;
+    setupStep = 0;
     $("s-fraymakers").value = CFG.fraymakersRoot || "";
-    $("s-fraytools").value  = CFG.fraytoolsPath || "";
-    $("s-char").value       = CFG.currentChar || "";
+    $("s-fraytools").value  = CFG.fraytoolsPath || "";   // pre-filled from autodetect by Rust
     $("s-output").value     = CFG.outputDir || "";
-    // first run (setup incomplete) hides the Back button — nowhere to go back to
-    $("setup-back").style.display = CFG.setupComplete ? "" : "none";
+    buildDots();
+    disarmReset();
+    renderStep();
+    setupOverlay.classList.add("show");
+  }
+  function closeSetupModal(){ setupOverlay.classList.remove("show"); }
+  // backdrop click dismisses only on a reopen (never on the mandatory first run)
+  setupOverlay.addEventListener("click",(e)=>{ if(e.target===setupOverlay && !setupFirst) closeSetupModal(); });
+
+  function buildDots(){
+    const d=$("wiz-dots"); d.innerHTML="";
+    SETUP_STEPS.forEach((_,i)=>{ const s=document.createElement("div"); s.className="wiz-dot"; d.appendChild(s); });
+  }
+  function renderStep(){
+    const name = SETUP_STEPS[setupStep], last = setupStep===SETUP_STEPS.length-1;
+    document.querySelectorAll("#setup-modal .wiz-step").forEach(s=>s.classList.toggle("active", s.dataset.step===name));
+    [...$("wiz-dots").children].forEach((dot,i)=>dot.classList.toggle("on", i===setupStep));
+    // Back ↔ Cancel on the first step; Next → Get started/Save on the last.
+    const back=$("wiz-back");
+    if(setupStep===0){ back.textContent="Cancel"; back.style.display = setupFirst ? "none" : ""; }
+    else { back.textContent="Back"; back.style.display=""; }
+    $("wiz-next").textContent = last ? (setupFirst ? "Get started" : "Save") : "Next";
+    // Reset only makes sense on a reopen, on the welcome step.
+    $("wiz-reset").style.display = (!setupFirst && setupStep===0) ? "" : "none";
+    disarmReset();
     revalidateSetup();
+    const inp = document.querySelector("#setup-modal .wiz-step.active input");
+    if(inp) setTimeout(()=>inp.focus(), 30);
   }
-  function badge(id, ok){
-    const b=$(id); b.className="badge "+(ok?"ok":"no"); b.textContent = ok ? "✓ found" : "not found";
+  function wizBack(){
+    if(setupStep===0){ if(!setupFirst) closeSetupModal(); return; }
+    setupStep--; renderStep();
   }
-  // Local heuristic validation for instant feedback; the authoritative check is
-  // Rust's setup_complete (returned by onSetupSaved).
+  function wizNext(){
+    if(setupStep < SETUP_STEPS.length-1){ setupStep++; renderStep(); }
+    else saveSetup();
+  }
+
+  // Two-click confirm (no reliance on native confirm() dialogs in the webview):
+  // first click arms + relabels, a second click within 3s clears the config.
+  let _resetArmed=false, _resetTimer=null;
+  function disarmReset(){
+    _resetArmed=false; if(_resetTimer){ clearTimeout(_resetTimer); _resetTimer=null; }
+    const b=$("wiz-reset"); if(b) b.textContent="Reset to defaults";
+  }
+  function resetSetup(){
+    const b=$("wiz-reset");
+    if(!_resetArmed){
+      _resetArmed=true; b.textContent="Click again to confirm";
+      _resetTimer=setTimeout(disarmReset, 3000);
+      return;
+    }
+    disarmReset();
+    ipcSend("@@setup:reset");   // Rust clears config + re-opens the wizard via bootRoute
+  }
+  function badge(id, ok, txt){
+    const b=$(id); if(!b) return;
+    b.className="badge "+(ok?"ok":"no"); b.textContent = ok ? (txt||"✓ found") : "not found";
+  }
+  // Local heuristic validation; the authoritative check is Rust's setup_complete.
+  // "detected" when autodetect filled the field; "✓ set" once the user edits.
   function revalidateSetup(){
-    badge("b-fray", !!$("s-fraymakers").value.trim());
-    badge("b-fraytools", !!$("s-fraytools").value.trim());
-    badge("b-char", !!$("s-char").value.trim());
+    const fr = $("s-fraymakers").value.trim(), ft = $("s-fraytools").value.trim();
+    badge("b-fray", !!fr, CFG.fraymakersDetected ? "✓ detected" : "✓ set");
+    badge("b-fraytools", !!ft, CFG.fraytoolsDetected ? "✓ detected" : "✓ set");
   }
-  ["s-fraymakers","s-fraytools","s-char"].forEach(id=>{
+  ["s-fraymakers","s-fraytools"].forEach(id=>{
     const el=$(id); if(el) el.addEventListener("input", revalidateSetup);
   });
   function saveSetup(){
     const payload = JSON.stringify({
       fraymakersRoot: $("s-fraymakers").value.trim(),
       fraytoolsPath:  $("s-fraytools").value.trim(),
-      currentChar:    $("s-char").value.trim(),
       outputDir:      $("s-output").value.trim(),
     });
     ipcSend("@@setup:save:"+payload);
   }
   window.onSetupSaved = function(cfg){
     CFG = cfg || CFG;
-    charName = CFG.currentChar || charName;
-    // Re-fill (picks up Rust-resolved exe paths) and advance to Home.
-    badge("b-fray", !!CFG.fraymakersRoot);
-    badge("b-fraytools", !!CFG.fraytoolsExe);
-    badge("b-char", !!CFG.currentChar);
+    closeSetupModal();
     showScreen("home");
   };
 
@@ -658,19 +880,22 @@
   // ── connection flow: on a drop, a blocking modal greys the whole UI and walks through
   //    reconnect → one more try → "open it?" (Quick / Regular Boot) → connecting.
   const overlay=$("overlay"), modal=$("modal"), mTitle=$("m-title"), mMsg=$("m-msg"),
-        mErr=$("m-err"), actions=$("m-actions"),
+        mErr=$("m-err"), actions=$("m-actions"), mIcon=$("m-icon"), mCrash=$("m-crashlog"),
         patchbar=$("patchbar"), patchFill=$("patchbar-fill"), patchLabel=$("patchbar-label");
-  let flowState="idle"; // idle | re1 | re2 | prompt | booting
+  let flowState="idle"; // idle | re1 | re2 | prompt | booting | crashed
 
   function resetPatchbar(){
     patchbar.classList.remove("show"); patchFill.style.width="0"; patchLabel.textContent="";
+    mCrash.classList.remove("show"); mCrash.textContent=""; mIcon.textContent="🔌";
+    $("crashlog-tabs").classList.remove("show");
   }
 
-  function blockUi(on){
-    document.body.classList.toggle("blocked", on);
-    $("input").disabled=on; $("send").disabled=on;
-    document.querySelectorAll("#chips button").forEach(b=>b.disabled=on);
-  }
+  function blockUi(on){ modalUp=on; refreshUi(); }
+  // Dismiss an error/launch modal but STAY in the debugger. Leaves the game disconnected,
+  // so the chat greys out and the "Launch game" bar appears.
+  function dismissModal(){ flowState="idle"; hideModal(); }
+  // The disconnected-bar "Launch game" button — offer Quick / Regular boot.
+  function launchGame(){ flowState="prompt"; modalPrompt(); }
   function modalWorking(title, msg){
     modal.classList.add("working"); modal.classList.remove("prompt");
     mTitle.textContent=title; mMsg.textContent=msg||""; mErr.textContent=""; actions.innerHTML="";
@@ -690,6 +915,43 @@
     overlay.classList.add("show"); blockUi(true);
   }
   function hideModal(){ overlay.classList.remove("show"); blockUi(false); resetPatchbar(); }
+  // The engine crashed — show its log (Enhanced = the patched-engine RESDIAG diagnostics,
+  // default; Raw = the engine's error.log from Rust) with a toggle, and offer to relaunch.
+  let _crashRaw="", _crashEnhanced="";
+  function setCrashView(mode){
+    $("cl-tab-enhanced").classList.toggle("active", mode==="enhanced");
+    $("cl-tab-raw").classList.toggle("active", mode==="raw");
+    mCrash.textContent = (mode==="raw") ? _crashRaw : _crashEnhanced;
+  }
+  function modalCrash(raw, interp){
+    flowState="crashed";
+    modal.classList.remove("working"); modal.classList.add("prompt");
+    resetPatchbar();
+    mIcon.textContent="💥";
+    mTitle.textContent="Fraymakers crashed";
+    mMsg.textContent="The engine stopped unexpectedly. You can relaunch it:";
+    mErr.textContent="";
+    // Engine log = the intact error.log. Enhanced = Peptide's host-side diagnosis
+    // (interpreter::interpret_crash): plain-English translation + abridged exception.
+    _crashRaw = raw || "(no engine crash log captured)";
+    _crashEnhanced = interp || "No enhanced diagnosis was available for this crash.";
+    $("crashlog-tabs").classList.add("show");
+    mCrash.classList.add("show");
+    setCrashView("enhanced");   // default to the enhanced log
+    actions.innerHTML="";
+    const quick=document.createElement("button");
+    quick.className="btn-primary"; quick.textContent="Quick Boot"; quick.onclick=()=>startBoot(true);
+    const reg=document.createElement("button");
+    reg.className="btn-ghost"; reg.textContent="Regular Boot"; reg.onclick=()=>startBoot(false);
+    actions.appendChild(quick); actions.appendChild(reg);
+    overlay.classList.add("show"); blockUi(true);
+  }
+  window.onCrash=function(raw, interp){
+    if(!$("screen-console").classList.contains("active")) return;
+    setStatus(false);
+    spawned=false;             // re-arm the auto-spawn for the next Quick Boot
+    modalCrash(raw||"", interp||"");
+  };
   function ipcSend(m){ if(window.ipc && window.ipc.postMessage) window.ipc.postMessage(m); }
 
   // The patcher streams its bytecode-symbol preflight here (done/total + the symbol
@@ -711,8 +973,11 @@
   }
   function startBoot(quick){
     flowState="booting";
-    modalWorking("Connecting to Fraymakers…", quick?"Booting a fresh session…":"Launching Fraymakers…");
-    ipcSend(quick?"@@boot:quick":"@@boot:regular");
+    modalWorking("Connecting to Fraymakers…", quick?("Booting "+charName+"…"):"Launching Fraymakers…");
+    // Carry the current character (the project picked at launch) so the reconnect-
+    // flow boot re-bakes the same one rather than the config default.
+    const suffix = charName ? (":"+charName) : "";
+    ipcSend((quick?"@@boot:quick":"@@boot:regular")+suffix);
   }
 
   window.onDisconnected=function(){

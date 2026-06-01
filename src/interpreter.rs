@@ -202,6 +202,58 @@ pub fn gloss(reply: &str) -> Option<String> {
     }
 }
 
+/// Build the crash modal's "Enhanced log" from the engine's `error.log` and the `RESDIAG:`
+/// breadcrumbs the patched engine emitted (the one fact `error.log` lacks — the failing
+/// resource id). HOST-SIDE — no engine bytecode (see AGENT_CONTEXT.md "keep logic OUT of
+/// bytecode"). Top = a plain-English translation; bottom = the abridged engine exception.
+/// Returns None when there's nothing to interpret.
+pub fn interpret_crash(error_log: &str, resdiag: &[String]) -> Option<String> {
+    let log = error_log.trim();
+    if log.is_empty() && resdiag.is_empty() { return None; }
+
+    // The failing resource id the engine reported: "RESDIAG: … resource id: <id>".
+    let id = resdiag.iter().rev()
+        .find_map(|l| l.split("resource id:").nth(1))
+        .map(|s| s.trim().to_string());
+    // Abridged exception + the deepest meaningful app frame (skip std/haxe/hxd plumbing).
+    let exc = log.lines().find(|l| l.contains("Exception:"))
+        .and_then(|l| l.splitn(2, "Exception:").nth(1)).map(str::trim);
+    let frame = log.lines()
+        .filter(|l| l.contains("Called from") && (l.contains("pxf.") || l.contains("fraymakers.")))
+        .map(|l| l.trim_start_matches("Called from").trim())
+        .next();
+
+    let is_stage = log.contains("setupStage") || log.contains("stagePxfContentMap")
+        || resdiag.iter().any(|l| l.contains("stage failed"));
+
+    let mut out = String::new();
+    if is_stage {
+        out.push_str("Hmm… the stage didn't load.\n");
+        match &id {
+            Some(i) => out.push_str(&format!(
+                "{i} isn't a valid/loadable stage resource. Match.setupStage asked the \
+                 ResourceManager for it and it returned null.")),
+            None => out.push_str(
+                "The configured stage isn't a valid/loadable stage resource — Match.setupStage \
+                 asked the ResourceManager for it and it returned null."),
+        }
+    } else if log.contains(".namespace") || log.contains("getContentIdentifierString") {
+        out.push_str("Hmm… a resource didn't load.\n");
+        out.push_str("Something the match needs — a character, stage, or assist — didn't \
+                      resolve to a real resource.");
+        if let Some(i) = &id { out.push_str(&format!("\nLast resource reported: {i}.")); }
+    } else {
+        out.push_str("Hmm… Fraymakers crashed unexpectedly.");
+    }
+
+    if exc.is_some() || frame.is_some() {
+        out.push_str("\n\n");
+        if let Some(e) = exc { out.push_str(&format!("Engine exception: {e}\n")); }
+        if let Some(f) = frame { out.push_str(&format!("Crash site: {f}")); }
+    }
+    Some(out.trim_end().to_string())
+}
+
 /// The `help` listing.
 pub fn help_text() -> String {
     let mut out = String::from("Peptide commands (friendly name [aliases] <args> — description):\n");
@@ -286,5 +338,28 @@ mod tests {
     fn unknown_routes_to_eval() {
         // unrecognized input is treated as hscript and run through the eval hook
         assert_eq!(wire("somethingnew arg"), "e somethingnew arg");
+    }
+
+    #[test]
+    fn interpret_crash_stage_with_resdiag() {
+        let log = "Exception: Null access .stagePxfContentMap\n\
+                   Called from pxf.core.Match.setupStage (pxf/core/Match.hx line 1095)\n\
+                   Called from hxd.App.mainLoop (hxd/App.hx line 193)";
+        let resdiag = vec![
+            "RESDIAG: stage failed to load — Match.setupStage got null from getPXFResource for resource id: global::teststage".to_string()
+        ];
+        let out = interpret_crash(log, &resdiag).unwrap();
+        // top: plain-English translation with the failing id woven in
+        assert!(out.starts_with("Hmm… the stage didn't load."), "got: {out}");
+        assert!(out.contains("global::teststage isn't a valid/loadable stage resource"), "got: {out}");
+        // bottom: abridged exception + crash site (NOT the full stack)
+        assert!(out.contains("Engine exception: Null access .stagePxfContentMap"), "got: {out}");
+        assert!(out.contains("Crash site: pxf.core.Match.setupStage (pxf/core/Match.hx line 1095)"), "got: {out}");
+        assert!(!out.contains("mainLoop"), "abridged log should drop hxd plumbing: {out}");
+    }
+
+    #[test]
+    fn interpret_crash_empty_is_none() {
+        assert!(interpret_crash("", &[]).is_none());
     }
 }

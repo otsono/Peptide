@@ -42,6 +42,20 @@ pub fn default_fraytools_exe() -> Option<PathBuf> {
     None
 }
 
+/// The user-facing FrayTools install path to display in Setup if one is found
+/// on disk: the `.app` bundle on macOS (what the user picks), the executable on
+/// Windows. Used to pre-fill + show a "detected" badge in the setup wizard.
+pub fn detected_fraytools_path() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let app = PathBuf::from("/Applications/FrayTools.app");
+        if app.exists() {
+            return Some(app);
+        }
+    }
+    default_fraytools_exe()
+}
+
 /// Resolve a user-picked FrayTools path to the actual executable. On macOS the
 /// user may pick the `.app` bundle; resolve to `Contents/MacOS/<name>`.
 /// On Windows/Linux they pick the executable directly.
