@@ -196,6 +196,74 @@ pub fn find_project_file(char_output_path: &Path) -> Option<PathBuf> {
         .find(|p| p.extension().map(|x| x == "fraytools").unwrap_or(false))
 }
 
+// ─── Windows console re-attach ───────────────────────────────────────────────
+
+/// Re-attach the process to its launching terminal's console and rebind the
+/// standard streams to it.
+///
+/// Release builds link as a GUI-subsystem app (`windows_subsystem = "windows"`)
+/// so launching the .exe never flashes a console window. The cost is that a CLI
+/// subcommand starts with no console and no valid std handles. Calling this from
+/// a CLI entry point hooks stdout/stderr/stdin back up to the cmd/PowerShell
+/// window that invoked us. It is a no-op when there is no parent console (e.g.
+/// double-clicked, or already attached as in a debug/console build).
+#[cfg(windows)]
+pub fn attach_parent_console() {
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Console::{
+        AttachConsole, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+        STD_OUTPUT_HANDLE,
+    };
+
+    // NUL-terminated UTF-16 for a CreateFileW path.
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    unsafe {
+        // Borrow the parent's console. Fails (returns 0) when launched without
+        // one, e.g. from Explorer — leave the (absent) handles as they are.
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            return;
+        }
+
+        // Rust's std fetches the OS std handles via GetStdHandle on each access,
+        // so pointing them at the console's CONOUT$/CONIN$ is enough for
+        // println!/eprintln!/stdin to work.
+        let conout = wide("CONOUT$");
+        let out = CreateFileW(
+            conout.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if out != INVALID_HANDLE_VALUE {
+            SetStdHandle(STD_OUTPUT_HANDLE, out);
+            SetStdHandle(STD_ERROR_HANDLE, out);
+        }
+
+        let conin = wide("CONIN$");
+        let inp = CreateFileW(
+            conin.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if inp != INVALID_HANDLE_VALUE {
+            SetStdHandle(STD_INPUT_HANDLE, inp);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

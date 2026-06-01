@@ -1,3 +1,10 @@
+// On Windows, link release builds as a GUI-subsystem app so launching the .exe
+// (double-click or from Explorer) does NOT pop up / flash a console window. CLI
+// subcommands re-attach to the launching terminal at runtime (see
+// platform::attach_parent_console). Debug builds keep the console subsystem so
+// `cargo run` output works without ceremony.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
@@ -68,6 +75,21 @@ fn main() -> anyhow::Result<()> {
     }
 
     let args: Vec<String> = std::env::args().collect();
+
+    // Windows: the .exe is linked as a GUI app (no console on launch), so CLI
+    // subcommands have no stdout/stderr until we re-attach to the terminal that
+    // launched us. The graphical UI modes (no arg / `ui` / `gui`) want no
+    // console; everything else is a CLI command and does.
+    #[cfg(windows)]
+    {
+        let gui_mode = matches!(
+            args.get(1).map(|s| s.as_str()),
+            None | Some("ui") | Some("gui")
+        );
+        if !gui_mode {
+            platform::attach_parent_console();
+        }
+    }
 
     // ── Runtime modes ──────────────────────────────────────────────────────────
     // The console UI is the DEFAULT. Headless is opt-in. The bytecode PATCHER (the
