@@ -444,7 +444,7 @@ fn process_character(
         head_sprite.as_ref().map(|h| h.name.as_str()).unwrap_or("none"));
 
     // Generate Fraymakers files.
-    haxe_gen::generate(&output.to_path_buf(), char_name, &char_pascal, &char_data, &sprite_boxes, &img_result,
+    haxe_gen::generate(output, char_name, &char_pascal, &char_data, &sprite_boxes, &img_result,
         costumes, &sounds, &projectiles, &effects, head_sprite.as_ref(), &parsed_swf,
         multi_char_slot)?;
     log::info!("Generated Fraymakers files for {}", char_name);

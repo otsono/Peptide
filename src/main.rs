@@ -815,35 +815,6 @@ fn add_regs(f: &mut hlbc::types::Function, types: &[usize]) -> u32 {
     base
 }
 
-/// Emit a loop that sends a String over an Output one byte at a time:
-/// `for i in 0..s.length { out.writeByte(s.bytes[i*2]); }`.
-/// Reads the low byte of each UTF-16 code unit (correct for ASCII) — sidesteps
-/// Bytes.ofString/utf16_to_utf8, which SIGSEGVs in this build. Self-contained
-/// relative jumps, so it can be spliced anywhere. String fields: bytes=0, length=1.
-#[allow(clippy::too_many_arguments)]
-fn send_string_loop(
-    r_str: Reg, r_out: Reg, r_ret: Reg,
-    r_len: Reg, r_bytes: Reg, r_idx: Reg, r_one: Reg, r_off: Reg, r_ch: Reg,
-    write_byte: usize, zero_idx: usize, one_idx: usize,
-) -> Vec<Opcode> {
-    use hlbc::types::{RefField, RefFun, RefInt};
-    vec![
-        Opcode::Field { dst: r_len, obj: r_str, field: RefField(1) },   // +0 len = s.length
-        Opcode::Field { dst: r_bytes, obj: r_str, field: RefField(0) }, // +1 bytes = s.bytes
-        Opcode::Int { dst: r_idx, ptr: RefInt(zero_idx) },             // +2 i = 0
-        Opcode::Int { dst: r_one, ptr: RefInt(one_idx) },              // +3 one = 1
-        Opcode::Label,                                                  // +4 LOOP
-        Opcode::JSGte { a: r_idx, b: r_len, offset: 5 },               // +5 if i>=len -> END(+11)
-        Opcode::Shl { dst: r_off, a: r_idx, b: r_one },                // +6 off = i*2
-        // GetI16 (UTF-16 unit) is what the engine's charCodeAt uses; GetI8 is
-        // mis-encoded/unused here. writeByte writes the low byte (ASCII).
-        Opcode::GetI16 { dst: r_ch, bytes: r_bytes, index: r_off },    // +7 ch = bytes[i*2]
-        Opcode::Call2 { dst: r_ret, fun: RefFun(write_byte), arg0: r_out, arg1: r_ch }, // +8
-        Opcode::Incr { dst: r_idx },                                    // +9 i++
-        Opcode::JAlways { offset: -7 },                                // +10 -> LOOP(+4)
-    ]
-}
-
 /// Phase 1a: at onLoaded, connect a client socket to 127.0.0.1:<port> and send
 /// `AUTH <token>` + a hello line. Proves socket injection + the auth handshake.
 fn connect_edit(
@@ -1308,7 +1279,7 @@ fn connect_edit(
     let ns_sandbag_g = add_string_const(code, &char_ns_key);
     // resource-identifier (NOT content id) form, for the idempotence probe in the
     // self-bootstrapping 's' command: getPXFResource(this) non-null ⇒ already loaded.
-    let res_resid_g = add_string_const(code, &char_resid);
+    let _res_resid_g = add_string_const(code, &char_resid);
     // In-session generic char: the `s` handler builds the launch char's strings at RUNTIME
     // from the command's parts[1] (falling back to the baked default char), so successive
     // `s` commands can switch characters without re-injecting. These const pieces + mutable
@@ -1495,7 +1466,7 @@ fn connect_edit(
         // Jump wiring: each null check for prefix k jumps to the START of prefix k+1.
         // Collected in jump_to_next_prefix and patched below after all starts are known.
         // RS_NOTFOUND: pkgid = name + "." + name
-        let l_notfound = ops.len();
+        let _l_notfound = ops.len();
         ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(dot_g) });
         ops.push(Opcode::Call2 { dst: r(56), fun: RefFun(str_add), arg0: r(name), arg1: r(53) });
         ops.push(Opcode::Call2 { dst: r(56), fun: RefFun(str_add), arg0: r(56), arg1: r(name) });
@@ -3330,19 +3301,6 @@ fn inject_input_override(code: &mut Bytecode, g_inject_held: usize) -> anyhow::R
     Ok(())
 }
 
-/// Append `this.<startHandler>()` to a function whose reg0 is the same object —
-/// runs the real press-any-button handler (Title.start) after the original body.
-fn inject_press_start(code: &mut Bytecode, fn_findex: usize, start_findex: usize) -> anyhow::Result<()> {
-    let fidx = function_index_by_findex(code, fn_findex)
-        .ok_or_else(|| anyhow::anyhow!("fn @{fn_findex} not found"))?;
-    let f = &mut code.functions[fidx];
-    let base = add_regs(f, &[0]); // void ret
-    use hlbc::types::RefFun;
-    insert_ops_end(f, vec![Opcode::Call1 { dst: Reg(base), fun: RefFun(start_findex), arg0: Reg(0) }]);
-    eprintln!("inject_press_start: Title.start@{start_findex} appended to @{fn_findex}");
-    Ok(())
-}
-
 /// Set g_ready=true at the start of MainMenu's constructor AND send a marker over
 /// the harness socket so we can see when the menu is built (= content loaded).
 #[allow(clippy::too_many_arguments)]
@@ -3398,33 +3356,6 @@ fn inject_ready_flag(
     insert_ops_front(f, ops);
     eprintln!("inject_ready_flag: patched ctor @{ctor_findex}");
     Ok(())
-}
-
-/// Find a constructor by matching its exact argument signature (arg0 is `this`).
-/// Constructors are named "__constructor__" (or empty) with no reliable parent
-/// link, so we match on arg types. Returns the function's own findex.
-fn verify_ctor(code: &Bytecode, type_name: &str, arg_type_names: &[&str]) -> anyhow::Result<usize> {
-    let want: Vec<usize> = arg_type_names
-        .iter()
-        .map(|n| if *n == "String" { Ok(13) } else { require_type(code, n) })
-        .collect::<anyhow::Result<_>>()?;
-    let mut found = None;
-    for f in &code.functions {
-        let name = s(code, f.name);
-        if name != "__constructor__" && !name.is_empty() {
-            continue;
-        }
-        if let Some(tf) = code.types[f.t.0].get_type_fun() {
-            let got: Vec<usize> = tf.args.iter().map(|a| a.0).collect();
-            if got == want {
-                if found.is_some() {
-                    anyhow::bail!("ambiguous constructor for {type_name} (args {arg_type_names:?})");
-                }
-                found = Some(f.findex.0);
-            }
-        }
-    }
-    found.ok_or_else(|| anyhow::anyhow!("constructor not found for {type_name} with args {arg_type_names:?}"))
 }
 
 /// M1: inject `throw "HARNESS_PROBE_OK"` at the very start of a function, to

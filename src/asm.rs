@@ -64,23 +64,15 @@ impl Asm {
     /// Emit a raw (non-branch) opcode.
     pub fn op(&mut self, op: Opcode) { self.ops.push(op); }
 
-    /// Number of ops emitted so far.
-    pub fn len(&self) -> usize { self.ops.len() }
-    pub fn is_empty(&self) -> bool { self.ops.is_empty() }
-
     fn branch(&mut self, l: Label, op: Opcode) {
         self.fixups.push((self.ops.len(), l.0));
         self.ops.push(op);
     }
     pub fn jalways(&mut self, l: Label) { self.branch(l, Opcode::JAlways { offset: 0 }); }
-    pub fn jtrue(&mut self, cond: Reg, l: Label) { self.branch(l, Opcode::JTrue { cond, offset: 0 }); }
-    pub fn jfalse(&mut self, cond: Reg, l: Label) { self.branch(l, Opcode::JFalse { cond, offset: 0 }); }
     pub fn jnull(&mut self, reg: Reg, l: Label) { self.branch(l, Opcode::JNull { reg, offset: 0 }); }
     pub fn jnotnull(&mut self, reg: Reg, l: Label) { self.branch(l, Opcode::JNotNull { reg, offset: 0 }); }
-    pub fn jsgte(&mut self, a: Reg, b: Reg, l: Label) { self.branch(l, Opcode::JSGte { a, b, offset: 0 }); }
     pub fn jslt(&mut self, a: Reg, b: Reg, l: Label) { self.branch(l, Opcode::JSLt { a, b, offset: 0 }); }
     pub fn jeq(&mut self, a: Reg, b: Reg, l: Label) { self.branch(l, Opcode::JEq { a, b, offset: 0 }); }
-    pub fn jnoteq(&mut self, a: Reg, b: Reg, l: Label) { self.branch(l, Opcode::JNotEq { a, b, offset: 0 }); }
 
     /// Resolve all label jumps to relative offsets and return `(ops, reg_types)`.
     /// `reg_types` go straight to `add_regs(f, &reg_types)`. Panics on an unplaced label.

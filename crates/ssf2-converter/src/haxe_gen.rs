@@ -216,10 +216,7 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
                     (vec![], std::collections::BTreeMap::new())
                 }
             };
-            let sb = match crate::sprite_parser::extract_boxes_for_sprite_id_from_swf(parsed_swf, state.inner_sprite_id) {
-                Ok(b) => b,
-                Err(_) => None,
-            };
+            let sb = crate::sprite_parser::extract_boxes_for_sprite_id_from_swf(parsed_swf, state.inner_sprite_id).unwrap_or_default();
             extra_states.push(entity_gen::ProjectileStateData {
                 label: state.label.clone(),
                 image_frames: sf,
@@ -1392,7 +1389,6 @@ fn generate_projectile_script(
 /// This is the projectile-side parallel to character xframe-label
 /// extraction the user explicitly asked for.
 struct ProjectileAnims {
-    spawn:   String,
     active:  String,
     destroy: String,
     /// All distinct animation names referenced by this projectile, in
@@ -1452,7 +1448,7 @@ fn projectile_anim_names(proj: &entity_gen::ProjectileInfo) -> ProjectileAnims {
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     all.retain(|n| seen.insert(n.clone()));
 
-    ProjectileAnims { spawn, active, destroy, all }
+    ProjectileAnims { active, destroy, all }
 }
 
 fn generate_projectile_animation_stats(proj: &entity_gen::ProjectileInfo) -> String {

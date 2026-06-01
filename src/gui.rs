@@ -148,7 +148,7 @@ pub fn launch() -> std::io::Result<()> {
 }
 
 fn io(msg: &str) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, msg.to_string())
+    std::io::Error::other(msg.to_string())
 }
 
 /// Parse the optional `:<char>` suffix off a boot verb (`@@boot:quick:mario` ->
@@ -699,7 +699,7 @@ fn icon_data_url(hex: &str, palette: &str) -> Option<String> {
 /// Hex string -> bytes. `None` on odd length, non-hex chars, or an implausibly short payload.
 fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
     let h = hex.trim().as_bytes();
-    if h.len() < 16 || h.len() % 2 != 0 { return None; }
+    if h.len() < 16 || !h.len().is_multiple_of(2) { return None; }
     let mut bytes = Vec::with_capacity(h.len() / 2);
     let mut i = 0;
     while i < h.len() {
@@ -749,7 +749,7 @@ fn recolor_png(png: &[u8], palette: &str) -> Option<Vec<u8>> {
 /// Minimal standard-alphabet base64 (no external dep) — for the icon data: URL.
 fn base64_encode(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for ch in data.chunks(3) {
         let b0 = ch[0] as u32;
         let b1 = *ch.get(1).unwrap_or(&0) as u32;

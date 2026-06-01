@@ -234,13 +234,10 @@ pub fn send_once(port: u16, token: Option<&str>, cmd: &str) {
     eprintln!("peptide-bridge: sent {cmd:?}");
 
     // Drain replies for ~1.5s of quiet, glossing recognized lines.
-    loop {
-        match rx.recv_timeout(Duration::from_millis(1500)) {
-            Ok(l) => match gloss(&l) {
-                Some(g) => println!("<< {l:<28} ({g})"),
-                None => println!("<< {l}"),
-            },
-            Err(_) => break,
+    while let Ok(l) = rx.recv_timeout(Duration::from_millis(1500)) {
+        match gloss(&l) {
+            Some(g) => println!("<< {l:<28} ({g})"),
+            None => println!("<< {l}"),
         }
     }
 }

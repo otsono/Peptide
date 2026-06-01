@@ -28,7 +28,7 @@ const NAMESPACE: [u8; 16] = [
 pub fn det_uuid(seed: &str) -> String {
     // SHA-1 hash of namespace bytes + seed bytes
     let mut hasher = Sha1::new();
-    hasher.update(&NAMESPACE);
+    hasher.update(NAMESPACE);
     hasher.update(seed.as_bytes());
     let hash = hasher.finalize();
 

@@ -440,7 +440,7 @@ pub fn interpret_crash(error_log: &str, resdiag: &[String]) -> Option<String> {
         .map(|s| s.trim().to_string());
     // Abridged exception + the deepest meaningful app frame (skip std/haxe/hxd plumbing).
     let exc = log.lines().find(|l| l.contains("Exception:"))
-        .and_then(|l| l.splitn(2, "Exception:").nth(1)).map(str::trim);
+        .and_then(|l| l.split_once("Exception:").map(|x| x.1)).map(str::trim);
     let frame = log.lines()
         .filter(|l| l.contains("Called from") && (l.contains("pxf.") || l.contains("fraymakers.")))
         .map(|l| l.trim_start_matches("Called from").trim())

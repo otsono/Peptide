@@ -149,7 +149,7 @@ pub fn boot() -> std::io::Result<(BufReader<TcpStream>, TcpStream, u16, String, 
 }
 
 fn io_err(msg: &str) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, msg.to_string())
+    std::io::Error::other(msg.to_string())
 }
 
 /// Patch a throwaway engine copy and launch it, returning the chosen port + token and a

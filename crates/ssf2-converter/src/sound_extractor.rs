@@ -65,7 +65,7 @@ pub fn parse_sounds(swf: &[u8]) -> Result<Vec<SoundEntry>> {
     if swf.len() < pos { bail!("SWF too short"); }
     let nb_bits = (swf[pos] >> 3) & 0x1f;
     let rect_bits = nb_bits as usize * 4 + 5;
-    pos += (rect_bits + 7) / 8 + 4;
+    pos += rect_bits.div_ceil(8) + 4;
 
     let mut sounds:  BTreeMap<u16, SoundEntry> = BTreeMap::new();
     let mut symbols: BTreeMap<u16, String>     = BTreeMap::new();
@@ -276,7 +276,7 @@ fn build_nellymoser_flv(entry: &SoundEntry) -> Vec<u8> {
         _     => 3,  // 44100
     };
     let fmt_nibble = if entry.fmt == FMT_NELLYMOSER8 { 5u8 } else { 6u8 };
-    let audio_hdr = (fmt_nibble << 4) | (rate_idx << 2) | (1 << 1) | 0;  // 16-bit, mono
+    let audio_hdr = (fmt_nibble << 4) | (rate_idx << 2) | (1 << 1);  // 16-bit, mono
 
     build_flv_from_chunks(audio_hdr, &entry.data, NELLY_FRAME_BYTES, NELLY_SAMPLES_FRAME, entry.sample_rate)
 }
@@ -288,7 +288,7 @@ fn build_generic_flv(entry: &SoundEntry) -> Vec<u8> {
         22050 => 2,
         _     => 3,
     };
-    let audio_hdr = (entry.fmt << 4) | (rate_idx << 2) | (1 << 1) | 0;
+    let audio_hdr = (entry.fmt << 4) | (rate_idx << 2) | (1 << 1);
     // For ADPCM: first chunk has an extra header byte; just send as one big tag
     build_flv_from_chunks(audio_hdr, &entry.data, entry.data.len().max(1), entry.sample_count, entry.sample_rate)
 }
