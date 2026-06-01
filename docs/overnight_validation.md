@@ -9,7 +9,7 @@ user's local Fraymakers engine via the Peptide harness (`src/` + `tools/`).
 
 **P1 (SSF2 functional-equivalence) progress — the second half of the night:**
 - Built a **parity-measurement harness** (`DUMP_PARITY` raw-SSF2 dump +
-  `tools/parity_check.py`) that diffs every move's hitbox stats against the SSF2
+  `tools/tests/parity_check.py`) that diffs every move's hitbox stats against the SSF2
   source. (haxe isn't installed, so the `.hl` path was toolchain-blocked; the
   static SSF2-source-vs-output check is the highest-signal tractable path and runs
   with no engine.)
@@ -29,7 +29,7 @@ user's local Fraymakers engine via the Peptide harness (`src/` + `tools/`).
   exprs) + the OOM fix (chibirobo/dedede). 47 lib tests pass throughout.
 
 **P2 (modder features) shipped this session:** `tools/recipe.sh` (shareable command
-scripts), `tools/ab_compare.sh` (golden behavioral-signature regression check), crash
+scripts), `tools/tests/ab_compare.sh` (golden behavioral-signature regression check), crash
 diagnostics (the bridge dumps the last ~16 events when the engine stream ends),
 animation scrubbing (`step`/`play` — pause + frame-step + resume), and `track
 <move>` (in-engine self-momentum trajectory — verified dash_attack vx 12.86→0,

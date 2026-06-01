@@ -11,10 +11,10 @@
 # decompiler or mappings: a fix should reduce the markers WITHOUT introducing new
 # ones, and the in-engine spawn sweep (batch_spawn_test.sh) should still pass.
 #
-# Usage: tools/translation_completeness.sh            # all converted characters
-#        tools/translation_completeness.sh mario kirby # specific ones
+# Usage: tools/tests/translation_completeness.sh            # all converted characters
+#        tools/tests/translation_completeness.sh mario kirby # specific ones
 set -u
-cd "$(cd "$(dirname "$0")/.." && pwd)"
+cd "$(cd "$(dirname "$0")/../.." && pwd)"
 chars=("$@")
 if [ ${#chars[@]} -eq 0 ]; then
   chars=()

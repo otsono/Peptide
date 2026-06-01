@@ -116,7 +116,7 @@ Decomposed into commands (see "Building blocks" below): `spawn` + `dummy` →
   events (state/anim transitions, move acks) and dumps them when the engine stream
   ends (`── last N engine events before stream ended (crash context) ──`), so a
   crash shows what the character was doing instead of a bare disconnect.
-- **A/B comparison** — **[done]** `tools/ab_compare.sh <char> <recipe>`
+- **A/B comparison** — **[done]** `tools/tests/ab_compare.sh <char> <recipe>`
   distills a stable behavioral signature (anim states + move acks + position) and
   saves/diffs it as a golden — catches behavioral regressions across converter
   builds. Recipe scripting (`tools/recipe.sh`) is also **[done]**.

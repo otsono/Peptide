@@ -7,12 +7,12 @@ crash) is done for 45/45 characters; this tracks the higher bars.
 
 | Item | Status | Notes |
 |---|---|---|
-| Parity-measurement harness | **DONE** | `DUMP_PARITY` raw-SSF2 dump + `tools/parity_check.py` (static SSF2-source-vs-output diff). Achieved the parity goal without `.hl`. |
+| Parity-measurement harness | **DONE** | `DUMP_PARITY` raw-SSF2 dump + `tools/tests/parity_check.py` (static SSF2-source-vs-output diff). Achieved the parity goal without `.hl`. |
 | Per-move reference specs | **DONE** (auto) | The `DUMP_PARITY` JSON IS the per-move SSF2 source-of-truth; `parity_check` maps SSF2→FM fields and diffs. |
 | Verify mario + sandbag, fix divergences | **DONE** | 45/45 chars **hitbox-STAT parity** (damage/angle/baseKnockback/knockbackGrowth/hit-freeze). Fixes: jab-split inheritance, `weightKB`→baseKnockback, present-keys mapping. |
 | Branch-arm stack-threading | **DONE** | Both BranchCmp + Branch arms seed branch bodies with the predecessor stack; recovered `/* ? */` lost exprs. |
 | 5 empty-shell characters | **DONE** (bonus) | The frame-data check exposed fox/bomberman/donkeykong/pit/luffy as empty shells; sprite-label fix recovered all 5 to full movesets (verified animating in-engine). |
-| Haxe→`.hl` spike | **SPIKED → deferred** | Toolchain works (haxe 4.3.7, `haxe -hl`, hlbc reads it). Blocker: a trivial Haxe = 322 functions, so "loading" into the engine = a full cross-module linker (index remap + dedup). A focused linker project — `hl_spike/README.md`. |
+| Haxe→`.hl` spike | **SPIKED → deferred** | Toolchain works (haxe 4.3.7, `haxe -hl`, hlbc reads it). Blocker: a trivial Haxe = 322 functions, so "loading" into the engine = a full cross-module linker (index remap + dedup). A focused linker project (the exploratory `hl_spike/` has since been removed). |
 | Physics-stat tuning | **DEFERRED (empirical)** | The SSF2-derived movement stats (gravity/fall/walk/jump/weight) ARE mapped + scaled; friction/accel/ECB are hand-tuned constants. Getting the FM scale FACTORS right needs in-engine SSF2-vs-converted comparison (the dummy/`.hl` measurement path), not a static fix. |
 | Frame-data: active-frame range | **PARTIAL** | Per-char hitbox COVERAGE done (caught the 5 shells). Exact active-frame-range comparison vs SSF2×2 is fiddly (30→60fps doubling + split-anim slicing + keyframe length-encoding) — low signal-to-noise; the coverage check already catches the load-bearing "doesn't activate" case. |
 
@@ -25,7 +25,7 @@ crash) is done for 45/45 characters; this tracks the higher bars.
 | `loop <move> [count]` | **DONE** | Client-side repeated dispatch. |
 | `snapshot` | **DONE** | state+physics+anim bundle (`Sequence`). |
 | Recipe scripting | **DONE** | `tools/recipe.sh` runs a `.recipe` file (commands + `#!char`/`#!gap`). |
-| A/B comparison | **DONE** | `tools/ab_compare.sh` golden behavioral-signature regression check. |
+| A/B comparison | **DONE** | `tools/tests/ab_compare.sh` golden behavioral-signature regression check. |
 | Crash diagnostics | **DONE** | Bridge dumps the last ~16 events when the engine stream ends. |
 | Animation scrubbing | **DONE** | `step` (pause+advance one frame via `playFrame`) + `play` (resume). |
 | Stat hot-reload | **PARTIAL** | The `spawn` handler already re-loads a fresh `.fra` in-session, so "edit → re-export → `spawn` again" IS the hot-reload loop today. A mid-match in-place stat re-read is unresearched. |
@@ -55,7 +55,7 @@ Concrete implementation notes from reading the full `s` handler
   need the reg-table edit verified. **This is the ~12-op change; it is small but
   the reg-type correctness is load-bearing** (a wrong-typed `SetArray src` =
   corrupt array = broken startMatch for ALL spawns, not just dummy).
-- **Mandatory gate before commit:** `tools/ab_compare.sh sandbag <recipe>` must report
+- **Mandatory gate before commit:** `tools/tests/ab_compare.sh sandbag <recipe>` must report
   UNCHANGED with `g_dummy` OFF (proves the proven 1-player path is byte-equivalent
   in behavior), THEN a 2-player spawn test with `g_dummy` ON. Revert on any drift.
 - After the dummy spawns: positioning (`SetField body.x` to place it in range) and

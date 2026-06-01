@@ -2,8 +2,8 @@
 # Batch export + in-engine spawn-test a set of characters. Records PASS/FAIL.
 # PASS = reached ANIM:STAND after spawn, move jab returned M:OK, no rosetta crash.
 set -u
-# repo root = one dir up from this script (tools/ -> repo root)
-cd "$(cd "$(dirname "$0")/.." && pwd)"
+# repo root = two dirs up from this script (tools/tests/ -> repo root)
+cd "$(cd "$(dirname "$0")/../.." && pwd)"
 RESULTS="${BATCH_RESULTS:-/tmp/batch_results.txt}"
 : > "$RESULTS"
 

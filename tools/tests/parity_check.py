@@ -28,7 +28,8 @@ Exit 0 if all checked characters pass; 1 if any divergence.
 """
 import json, re, sys, os
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# this file lives at <repo>/tools/tests/parity_check.py — three dirs up is the repo root
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def base_move(m):
     """Mirror src/haxe_gen.rs base_attack_name: split sub-anims inherit a base."""

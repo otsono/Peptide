@@ -139,10 +139,14 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 │   ├── make-app.sh             macOS: build peptide + wrap it in dist/Peptide.app
 │   ├── make-win.sh             Cross-compile the Windows peptide.exe into dist/windows/
 │   ├── run.sh / runseq.sh      Boot Fraymakers + send one / a sequence of console commands
-│   ├── recipe.sh ab_compare.sh Run a command recipe; capture/diff a golden behavior signature
-│   ├── batch_spawn_test.sh     Batch export + in-engine spawn-test a set of characters
+│   ├── recipe.sh               Run a shareable .recipe (commands + #!char/#!gap directives)
 │   ├── rebuild-sandbag.sh      Quick: rebuild peptide + convert sandbag.ssf
-│   ├── freeze_*/pool_test/sc_test.sh   One-off engine probes for past bug investigations
+│   ├── tests/                  Test + parity harnesses and golden fixtures
+│   │   ├── ab_compare.sh        Capture/diff a golden behavior signature (regression gate)
+│   │   ├── batch_spawn_test.sh  Batch export + in-engine spawn-test a set of characters
+│   │   ├── parity_check.py      Static SSF2-source-vs-output hitbox-parity diff
+│   │   ├── translation_completeness.sh  Per-character untranslated-marker dashboard
+│   │   └── recipes/             .recipe scripts + .golden behavior signatures
 │   └── fraytools-harness/      Legacy Node FrayTools scripts (reference; superseded by peptide)
 ├── characters/                Converter OUTPUT (`*.hx`, `*.json`, `*.entity` tracked; media ignored)
 └── target/                    Cargo build output (git-ignored)

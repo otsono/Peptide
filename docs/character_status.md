@@ -17,7 +17,7 @@ Two axes:
 ## Headline: 45 / 45 genuinely functional + 45/45 hitbox-stat parity
 
 All 45 characters convert, spawn, and have **populated entities with real movesets
-and hitboxes** (verified by `tools/parity_check.py`: entity animation counts +
+and hitboxes** (verified by `tools/tests/parity_check.py`: entity animation counts +
 HIT_BOX active-frame coverage, NOT just the shallow `ANIM:STATE` spawn signal).
 `misc.ssf` is shared data, not a character.
 
@@ -74,7 +74,7 @@ LAUNCHED + JAB + SPECIAL_NEUTRAL, no crash.)
 
 ## How to reproduce / extend
 
-`docs/MODDER_GUIDE.md` (the iteration loop) and `tools/batch_spawn_test.sh`
+`docs/MODDER_GUIDE.md` (the iteration loop) and `tools/tests/batch_spawn_test.sh`
 (unattended sweep: regen → export → spawn-drive → PASS/FAIL). Always re-export
 before trusting a result (the stale-`.fra` trap). Pass `FRAY_PORT=<n>` /
 `BATCH_RESULTS=<file>` to avoid port collisions across concurrent runs.

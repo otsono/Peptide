@@ -87,7 +87,7 @@ stale output. (This caused a phantom "mario crash" that was just a 3-day-old
 
 ## Batch-testing many characters
 
-`tools/batch_spawn_test.sh <id> <id> …` regenerates, exports, and
+`tools/tests/batch_spawn_test.sh <id> <id> …` regenerates, exports, and
 spawn-drives each character, recording PASS/FAIL (PASS = launched + reached STAND
 + moves dispatched + no crash) to `/tmp/batch_results.txt` (override with
 `BATCH_RESULTS=`). Good for a regression sweep after a converter change.
@@ -96,12 +96,12 @@ spawn-drives each character, recording PASS/FAIL (PASS = launched + reached STAN
 
 `tools/recipe.sh <file>` runs a **recipe** — a text file of friendly
 commands (plus `#!char`/`#!stage`/`#!gap` directives) driven into one engine
-session. Reusable + shareable (e.g. `recipes/mario_moveset.recipe`). The
+session. Reusable + shareable (e.g. `tools/tests/recipes/mario_moveset.recipe`). The
 scriptable form of a manual `tools/runseq.sh` sequence.
 
 ## A/B regression check (golden behavioral signature)
 
-`tools/ab_compare.sh <char> <recipe> --save` captures a character's
+`tools/tests/ab_compare.sh <char> <recipe> --save` captures a character's
 behavioral signature (anim states + move acks + resting position, timing noise
 normalized out) as a golden; re-running without `--save` diffs against it and
 exits non-zero on drift. Use it to catch behavioral regressions after a converter
@@ -110,7 +110,7 @@ change, or to A/B two builds of the same character.
 ## Parity verification (does it behave like SSF2?)
 
 `DUMP_PARITY=1 ./target/release/ssf2_converter ../ssf2-ssfs/<id>.ssf` dumps the
-raw SSF2 hitbox values; `tools/parity_check.py <id>` diffs them against the
+raw SSF2 hitbox values; `tools/tests/parity_check.py <id>` diffs them against the
 generated `HitboxStats.hx` (damage/angle/knockback/hit-freeze) + reports hitbox
 frame-coverage. All 45 characters currently pass. For move *momentum*, drive
 `track <move>` and compare the velocity trajectory to SSF2. See `docs/PARITY.md`.

@@ -13,7 +13,7 @@ citations (see commit history for the audit run).
 
 ## P1 hitbox-stat parity: 45/45 characters (achieved)
 
-`tools/parity_check.py` reports **all 45 characters PARITY OK** — every hitbox's
+`tools/tests/parity_check.py` reports **all 45 characters PARITY OK** — every hitbox's
 `damage` / `angle` / `baseKnockback` / `knockbackGrowth` / `hitstop` / `selfHitstop`
 / `hitstun` matches the SSF2 source (dumped via `DUMP_PARITY=1`). This is the
 hitbox-STATS dimension of functional equivalence. Three fixes got it there:
@@ -92,7 +92,7 @@ special_neutral) spawn, animate, and dispatch with no crash; a 3-character batch
   `iftrue`/`iffalse`) — mario's `continueCombo` `if (/* ? */)` is a Branch case,
   not BranchCmp, so it's untouched. The Branch-else seeding interacts with the
   ternary-detection heuristic (the empty-then/else-leftover length check), so it's
-  the riskier half; gate any attempt on `tools/translation_completeness.sh` (markers
+  the riskier half; gate any attempt on `tools/tests/translation_completeness.sh` (markers
   must drop, none added) + the in-engine spawn sweep.
 - **Per-segment hitbox fidelity.** The jab fix inherits jab1's stats for
   jab2/jab3. Investigation: the extracted `Hitbox` struct carries NO activation
@@ -120,7 +120,7 @@ special_neutral) spawn, animate, and dispatch with no crash; a 3-character batch
 
 ## Measuring parity progress (the safe metric)
 
-`tools/translation_completeness.sh` counts untranslated markers per character
+`tools/tests/translation_completeness.sh` counts untranslated markers per character
 across generated output — `/* ? */` (decompiler couldn't recover an
 expr/condition/receiver), `[SSF2-only:` (no FM equivalent, commented out), and
 `/*TODO*/`/`TODO` (value punted to a default). Lower is better. It's the SAFE
