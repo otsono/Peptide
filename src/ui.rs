@@ -17,7 +17,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::commands::{translate, Translated};
+use crate::interpreter::{translate, Translated};
 
 fn env_char() -> Option<String> {
     std::env::var("FRAY_CHAR").ok().filter(|s| !s.is_empty())

@@ -1,0 +1,290 @@
+//! Peptide command interpreter — the host-side front end that takes our
+//! human-readable commands and translates them into the wire protocol read by
+//! the **bytecode command interpreter we patched into the game** (the dispatch
+//! chain injected by `connect_edit` in `main.rs`, which runs inside the engine's
+//! `update()` loop).
+//!
+//! Design split (see TESTING.md "Engine RE map"):
+//!   - The ENGINE-SIDE interpreter speaks a terse single-byte wire protocol: one
+//!     byte selects a handler in the patched-in bytecode (`s` = spawn/launch,
+//!     `x` = exit, `l` = load, `c` = console, `e` = run an hscript string). Only
+//!     `s` and `e` read a trailing argument line. That dispatch is hand-written
+//!     HashLink bytecode and is deliberately kept minimal.
+//!   - HUMANS (and the GUI) type full lines. THIS module is where the two meet:
+//!     `translate()` turns what you type into the wire line the patched engine
+//!     understands. A recognized command maps to its wire byte ("spawn sandbag"
+//!     -> "s sandbag", "exit" -> "x"); ANYTHING ELSE is treated as an hscript
+//!     expression and forwarded to the engine's `e` handler ("match.getCharacters()
+//!     [0].toState(CState.JAB)" -> "e match.getCharacters()[0].toState(CState.JAB)").
+//!     So this file is the vocabulary/routing layer ONLY — it never runs game
+//!     logic itself; the engine's bytecode interpreter (and the hscript it then
+//!     runs, see commands.hsx) does that on the other side of the socket.
+//!
+//! Both `peptide` (the patcher, which generates the move-dispatch jump table from
+//! `MOVES` for the still-present `m` bytecode handler) and `peptide-bridge` (the
+//! client that calls `translate()`) include this file, so the host-side command
+//! surface and the patched-in protocol can never drift apart.
+
+/// One human-facing command: the friendly name, its aliases, the single wire
+/// byte the engine dispatches on, a one-line argument summary, and a help blurb.
+pub struct Cmd {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    /// The wire byte the engine matches on. `'\0'` means handled entirely
+    /// client-side (e.g. `help`) and nothing is sent.
+    pub wire: char,
+    pub args: &'static str,
+    pub help: &'static str,
+}
+
+/// The friendly command set. Deliberately TINY: the real interface is `eval`
+/// (`e`) — every non-command line is run as hscript through the engine's own
+/// interpreter, which already exposes the full Fraymakers script API (CState,
+/// HitboxStats, Assist, MatchModifier, Announcer, …) plus live character access
+/// via `match.getCharacters()`. So instead of a per-feature command, you write
+/// the hscript directly:
+///     match.getCharacters()[0].getStateName()
+///     match.getCharacters()[0].toState(CState.SPECIAL_NEUTRAL)
+///     match.getCharacters()[0].damage._damage
+/// The earlier round of auto-player-0 sugar (state/move/physics/anim/…) was
+/// dropped in favour of this explicit, no-hidden-target model.
+pub const COMMANDS: &[Cmd] = &[
+    Cmd { name: "help",    aliases: &["h", "?"],            wire: '\0',
+          args: "",                              help: "list these commands + the hscript model (client-side; sends nothing)" },
+    Cmd { name: "spawn",   aliases: &["start", "launch", "s"], wire: 's',
+          args: "<char> [stage] [assist]",       help: "start a match with <char> (loads custom content if needed); stage/assist default to thespire/commandervideoassist" },
+    Cmd { name: "eval",    aliases: &["e"],                  wire: 'e',
+          args: "<hscript>",                     help: "run an hscript expression in the engine and print E:<result>. This is also the default for any unrecognized line." },
+    Cmd { name: "load",    aliases: &["l"],                 wire: 'l',
+          args: "",                              help: "synchronous custom-.fra load probe (diagnostic; spawn does this itself)" },
+    Cmd { name: "console", aliases: &["c"],                 wire: 'c',
+          args: "",                              help: "run the engine's debug console `help` command (RAN) — a side-effecting call hscript can't make, so it stays a wire byte" },
+    Cmd { name: "exit",    aliases: &["quit", "stop", "x"], wire: 'x',
+          args: "",                              help: "cleanly shut the engine down (hxd.System.exit — no kill-9 orphan)" },
+];
+
+/// Move name → CState field NAME, in the order the engine's generated jump table
+/// expects. The client sends the table INDEX (the ordinal) as the `m` argument;
+/// the engine resolves each CState field by NAME at patch time (robust to findex
+/// drift) and emits one comparison arm per entry, in this exact order. Keep the
+/// two in lockstep by sharing this one table.
+///
+/// Friendly names mirror the Fraymakers animation vocabulary so a modder can
+/// guess them (`tilt_down`, `aerial_forward`, `special_neutral`, …).
+pub const MOVES: &[(&str, &str)] = &[
+    ("jab",             "JAB"),
+    ("dash_attack",     "DASH_ATTACK"),
+    ("tilt_forward",    "TILT_FORWARD"),
+    ("tilt_up",         "TILT_UP"),
+    ("tilt_down",       "TILT_DOWN"),
+    // Strongs (smashes) are 3-phase in CState (_IN -> _CHARGE -> _ATTACK); _IN is the
+    // entry point that drives the whole move, so the friendly name maps there.
+    ("strong_forward",  "STRONG_FORWARD_IN"),
+    ("strong_up",       "STRONG_UP_IN"),
+    ("strong_down",     "STRONG_DOWN_IN"),
+    ("aerial_neutral",  "AERIAL_NEUTRAL"),
+    ("aerial_forward",  "AERIAL_FORWARD"),
+    ("aerial_back",     "AERIAL_BACK"),
+    ("aerial_up",       "AERIAL_UP"),
+    ("aerial_down",     "AERIAL_DOWN"),
+    ("special_neutral", "SPECIAL_NEUTRAL"),
+    ("special_side",    "SPECIAL_SIDE"),
+    ("special_up",      "SPECIAL_UP"),
+    ("special_down",    "SPECIAL_DOWN"),
+    ("grab",            "GRAB"),
+    ("stand",           "STAND"),
+    ("fall",            "FALL"),
+];
+
+/// Find the command whose name or alias matches `tok` (case-insensitive).
+pub fn lookup(tok: &str) -> Option<&'static Cmd> {
+    let t = tok.to_ascii_lowercase();
+    COMMANDS.iter().find(|c| c.name == t || c.aliases.iter().any(|a| *a == t))
+}
+
+/// Ordinal (table index) of a move by friendly name, case-insensitive.
+pub fn move_ordinal(name: &str) -> Option<usize> {
+    let n = name.to_ascii_lowercase();
+    MOVES.iter().position(|(m, _)| *m == n)
+}
+
+/// Map a friendly move name to its `CState.<FIELD>` hscript expression
+/// (e.g. "jab" -> "CState.JAB", "strong_forward" -> "CState.STRONG_FORWARD_IN").
+pub fn move_cstate(name: &str) -> Option<String> {
+    let n = name.to_ascii_lowercase();
+    MOVES.iter().find(|(m, _)| *m == n).map(|(_, field)| format!("CState.{field}"))
+}
+
+/// Outcome of translating one friendly line.
+pub enum Translated {
+    /// Send this exact line to the engine.
+    Wire(String),
+    /// Send `wire` to the engine `count` times, sleeping `gap_ms` between sends
+    /// (client-orchestrated repetition — e.g. `loop`). Zero engine bytecode.
+    Repeat { wire: String, count: u32, gap_ms: u64 },
+    /// Send these wire lines in order (client-orchestrated multi-command — e.g.
+    /// `snapshot` = t, v, a). Zero engine bytecode; groundwork for recipe scripting.
+    Sequence(Vec<String>),
+    /// Handled client-side; print this text, send nothing.
+    Client(String),
+    /// Could not translate; print this error, send nothing.
+    Error(String),
+}
+
+/// Translate a friendly command line into the engine wire line.
+///
+/// - `help` / `?` → prints the help text, sends nothing.
+/// - a known friendly name (or its alias, or the bare wire letter) → rewritten
+///   to `<wire-byte> <args…>`; `move <name>` resolves the name to its ordinal.
+/// - anything else → passed through verbatim (forward-compatible: a raw wire
+///   line a human typed still reaches the engine untouched).
+pub fn translate(line: &str) -> Translated {
+    let line = line.trim();
+    if line.is_empty() {
+        return Translated::Wire(String::new());
+    }
+    let mut parts = line.split_whitespace();
+    let head = parts.next().unwrap_or("");
+    let rest: Vec<&str> = parts.collect();
+
+    // Only the irreducible commands are recognized here; EVERYTHING ELSE is an hscript
+    // expression run through the eval hook (`e <expr>`). So `match.getCharacters()[0].
+    // getStateName()`, `CState.JAB`, `1 + 2` etc. just evaluate — no per-feature command.
+    if let Some(cmd) = lookup(head) {
+        match cmd.name {
+            "help" => return Translated::Client(help_text()),
+
+            // Single-byte wire-protocol commands. spawn/exit/load are the irreducible
+            // bootstrap hooks. `console` stays here too: it's a side-effecting method call
+            // (h2d.Console.runCommand) the interp can't invoke — only field reads and
+            // Character-instance methods reflect through hscript — so its bytecode `c`
+            // handler remains the path.
+            "spawn" | "exit" | "load" | "console" => {
+                let mut wire = cmd.wire.to_string();
+                if !rest.is_empty() { wire.push(' '); wire.push_str(&rest.join(" ")); }
+                return Translated::Wire(wire);
+            }
+
+            // `eval <hscript>` — explicit form; the implicit default below does the same.
+            "eval" => {
+                return Translated::Wire(if rest.is_empty() { "e".into() }
+                                        else { format!("e {}", rest.join(" ")) });
+            }
+            _ => {}
+        }
+    }
+
+    // Unknown head OR a bare hscript expression (`match.getCharacters()[0].toState(
+    // CState.JAB)`, `CState.JAB`, `1 + 2`, …) — run the whole line through the eval hook.
+    Translated::Wire(format!("e {line}"))
+}
+
+/// A friendly gloss for an engine reply line (additive — callers keep the raw
+/// line and append this in parens). Returns None when there's nothing to add.
+pub fn gloss(reply: &str) -> Option<String> {
+    let r = reply.trim();
+    // Eval-hook replies are wrapped as "E:<result>" — gloss the inner payload so
+    // hscript-ported commands read as friendly as the old wire-byte ones did
+    // (e.g. "E:Q:MATCH_LIVE" -> "a match is live", "E:PONG" -> "engine alive").
+    let r = r.strip_prefix("E:").unwrap_or(r);
+    let body = |s: &str| s.to_string();
+    // ANIM:/LAUNCHED come from the engine bootstrap + telemetry; the others gloss the
+    // replies of the still-present bytecode handlers (q/p/t/m) if a raw byte is sent.
+    if let Some(s) = r.strip_prefix("ANIM:") { return Some(format!("animation: {}", body(s))); }
+    if let Some(s) = r.strip_prefix("LAUNCHED ") { return Some(format!("match launched: {}", body(s))); }
+    if let Some(s) = r.strip_prefix("T:") { return Some(format!("state: {}", body(s))); }
+    if let Some(s) = r.strip_prefix("M:") { return Some(format!("move dispatched: {}", body(s))); }
+    match r {
+        "Q:MATCH_LIVE" => Some("a match is live".into()),
+        "Q:NO_MATCH"   => Some("no match running".into()),
+        "PONG"         => Some("engine alive".into()),
+        _ => None,
+    }
+}
+
+/// The `help` listing.
+pub fn help_text() -> String {
+    let mut out = String::from("Peptide commands (friendly name [aliases] <args> — description):\n");
+    for c in COMMANDS {
+        let al = if c.aliases.is_empty() { String::new() } else { format!(" [{}]", c.aliases.join(", ")) };
+        out.push_str(&format!("  {:<8}{:<22} {:<26} {}\n", c.name, al, c.args, c.help));
+    }
+    out.push_str("\nEverything else is hscript, run in the engine's own interpreter via `e`.\n");
+    out.push_str("Live character access (explicit target — no hidden player 0):\n");
+    out.push_str("  match.getCharacters()                       all characters in the match\n");
+    out.push_str("  match.getCharacters().length                how many\n");
+    out.push_str("  match.getCharacters()[0].getStateName()     a character's current state\n");
+    out.push_str("  match.getCharacters()[0].toState(CState.SPECIAL_NEUTRAL)   drive a move\n");
+    out.push_str("  match.getCharacters()[0].body.x             read a field\n");
+    out.push_str("  match.getCharacters()[0].damage._damage     damage %\n");
+    out.push_str("\nThe full Fraymakers script API is in scope (same as character/mode scripts):\n");
+    out.push_str("  CState  CStateGroup  HitboxStats  StatusEffectType  EntityHitCondition\n");
+    out.push_str("  Assist  AssistEvent  MatchModifier  Announcer  GameMenus  Css  GlobalVfx\n");
+    out.push_str("  GlobalSfx  CameraShakeType  GraphicsSettings  DisplaySettings  Ai*Option …\n");
+    out.push_str("\nExamples:\n");
+    out.push_str("  spawn sandbag                 start a sandbag match (default stage/assist)\n");
+    out.push_str("  spawn mario thespire commandervideoassist\n");
+    out.push_str("  match.getCharacters()[0].getStateName()    read a character's state\n");
+    out.push_str("  CState.JAB                    inspect an API enum value\n");
+    out.push_str("  exit                          shut the engine down\n");
+    out.push_str("\nCLI modes (run as `peptide <mode> …`, not engine commands):\n");
+    out.push_str("  (no args) | gui               open the Peptide window (default)\n");
+    out.push_str("  tui                           terminal console\n");
+    out.push_str("  convert <file.ssf> [opts]     SSF2 → Fraymakers conversion (peptide convert --help)\n");
+    out.push_str("  export  --project <.fraytools>   drive FrayTools Publish → build the .fra\n");
+    out.push_str("  render  --entity <rel> [...]     render an entity to PNG via FrayTools\n");
+    out.push_str("  harness --entity <rel> [...]     extract box geometry + PNG + JSON report\n");
+    out.push_str("  headless | send \"<cmd>\"        TCP bridge runtime / one-shot command\n");
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wire(line: &str) -> String {
+        match translate(line) {
+            Translated::Wire(w) => w,
+            other => panic!("expected Wire, got {}", match other {
+                Translated::Client(_) => "Client", Translated::Error(e) => return e, _ => "?",
+            }),
+        }
+    }
+
+    #[test]
+    fn bootstrap_commands_stay_wire_bytes() {
+        // match-launch + clean exit + resource load are the irreducible bootstrap hooks;
+        // console is a side-effecting method call hscript can't invoke. All stay wire bytes.
+        assert_eq!(wire("spawn sandbag thespire x"), "s sandbag thespire x");
+        assert_eq!(wire("exit"), "x");
+        assert_eq!(wire("console"), "c");
+        assert_eq!(wire("load"), "l");
+        assert_eq!(wire("start sandbag"), "s sandbag");
+        assert_eq!(wire("quit"), "x");
+    }
+
+    #[test]
+    fn raw_hscript_passes_through_eval() {
+        // the dropped sugar commands + anything unrecognized are treated as hscript and
+        // run through the eval hook — this is the explicit, no-hidden-target model.
+        assert_eq!(wire("match.getCharacters()[0].getStateName()"),
+                   "e match.getCharacters()[0].getStateName()");
+        assert_eq!(wire("match.getCharacters()[0].toState(CState.JAB)"),
+                   "e match.getCharacters()[0].toState(CState.JAB)");
+        assert_eq!(wire("CState.JAB"), "e CState.JAB");
+        assert_eq!(wire("1 + 2"), "e 1 + 2");
+        assert_eq!(wire("eval CState.JAB"), "e CState.JAB");   // explicit eval == default
+    }
+
+    #[test]
+    fn help_is_client_side() {
+        assert!(matches!(translate("help"), Translated::Client(_)));
+        assert!(matches!(translate("?"), Translated::Client(_)));
+    }
+
+    #[test]
+    fn unknown_routes_to_eval() {
+        // unrecognized input is treated as hscript and run through the eval hook
+        assert_eq!(wire("somethingnew arg"), "e somethingnew arg");
+    }
+}
