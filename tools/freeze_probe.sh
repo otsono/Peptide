@@ -14,6 +14,7 @@
 # Usage: ./freeze_probe.sh <label>   (.fra under test must already be installed)
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 FRAY_DIR="${FRAY_DIR:-$HOME/Library/Application Support/Steam/steamapps/common/Fraymakers}"
 LABEL="${1:-run}"; OUT="/tmp/claude-501/fp_${LABEL}"; mkdir -p "$OUT"; rm -f "$OUT"/* 2>/dev/null
 PORT="$(( (RANDOM % 2000) + 18000 ))"; TOK="fray-$RANDOM$RANDOM"
@@ -22,7 +23,7 @@ cleanup(){ rm -f "$CONN" "$APPID" 2>/dev/null; kill -9 "${ENG:-0}" "${BR:-0}" 2>
 trap cleanup EXIT INT TERM
 
 printf '1420350' > "$APPID"
-"$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
+"$ROOT/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
 
 # Command stream: start the match, then a `q` heartbeat every 3s for ~33s.
 # Each line goes through stdin; the sleeps keep stdin open so serve stays live.
@@ -38,7 +39,7 @@ printf '1420350' > "$APPID"
   echo "s sandbag ${FRAY_STAGE:-thespire} none"
   for n in $(seq 1 11); do sleep 3; echo "q $n"; done
   sleep 2
-} | FRAY_HOLD_SECS=60 "$HERE/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
+} | FRAY_HOLD_SECS=60 "$ROOT/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
 BR=$!
 sleep 0.8
 rm -f "$FRAY_DIR/error.log"

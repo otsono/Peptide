@@ -13,6 +13,7 @@
 #   FRAY_DIR env overrides the Fraymakers install path.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 FRAY_DIR="${FRAY_DIR:-$HOME/Library/Application Support/Steam/steamapps/common/Fraymakers}"
 CMD="${1:-s commandervideo thespire commandervideoassist}"
 SECS="${2:-20}"
@@ -33,14 +34,14 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # 1. Build our tools if needed (dev iteration lives here, in the repo).
-[ -x "$HERE/target/release/peptide" ] || cargo build --release --manifest-path "$HERE/Cargo.toml" >/dev/null 2>&1
+[ -x "$ROOT/target/release/peptide" ] || cargo build --release --manifest-path "$ROOT/Cargo.toml" >/dev/null 2>&1
 
 # 2. (Re)create the added files every run — never assume they survived a restart.
 printf '1420350' > "$APPID"
-"$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" >/dev/null 2>&1
+"$ROOT/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" >/dev/null 2>&1
 
 # 3. Start the loopback bridge and queue the command.
-( printf '%s\n' "$CMD"; sleep "$SECS" ) | "$HERE/target/release/peptide" serve --port "$PORT" --token "$TOK" &
+( printf '%s\n' "$CMD"; sleep "$SECS" ) | "$ROOT/target/release/peptide" serve --port "$PORT" --token "$TOK" &
 BR=$!
 sleep 0.7
 

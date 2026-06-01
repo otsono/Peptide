@@ -16,6 +16,7 @@
 #      filtered-required-load boot reaches READY in ~4.5s, so this is slack.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 FRAY_DIR="${FRAY_DIR:-$HOME/Library/Application Support/Steam/steamapps/common/Fraymakers}"
 GAP="${1:?gap_s}"; shift
 # Fast-boot defaults: skip-title + filtered required-load reaches READY in ~4.5s, so the
@@ -50,7 +51,7 @@ pkill -TERM -f 'hl _conn.dat'   2>/dev/null || true
 pkill -TERM -f 'peptide serve' 2>/dev/null || true
 sleep 0.3
 
-[ -x "$HERE/target/release/peptide" ] || cargo build --release --manifest-path "$HERE/Cargo.toml" >/dev/null 2>&1
+[ -x "$ROOT/target/release/peptide" ] || cargo build --release --manifest-path "$ROOT/Cargo.toml" >/dev/null 2>&1
 printf '1420350' > "$APPID"
 # Headless fast-boot (skip Title/menus + filter required load) is triggered by passing a
 # CHARACTER to the injector. Defaults to sandbag (the harness's standard target) on thespire
@@ -60,9 +61,9 @@ CHAR="${FRAY_CHAR-sandbag}"
 STAGE="${FRAY_STAGE:-thespire}"
 ASSIST="${FRAY_ASSIST:-commandervideoassist}"
 if [ -n "$CHAR" ]; then
-  "$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" "$CHAR" "$STAGE" "$ASSIST" >/dev/null 2>&1
+  "$ROOT/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" "$CHAR" "$STAGE" "$ASSIST" >/dev/null 2>&1
 else
-  "$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" >/dev/null 2>&1
+  "$ROOT/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" >/dev/null 2>&1
 fi
 
 # Engine-lifetime CAP (we poll-wait for the clean 'x' exit and break early, so this is
@@ -78,7 +79,7 @@ feeder() {
   printf 'x\n'     # clean engine exit after the user commands
   sleep "$TOTAL"   # keep the pipe open so peptide's holder doesn't see EOF early
 }
-feeder "$@" | FRAY_CMD_GAP="$GAP" "$HERE/target/release/peptide" serve --port "$PORT" --token "$TOK" &
+feeder "$@" | FRAY_CMD_GAP="$GAP" "$ROOT/target/release/peptide" serve --port "$PORT" --token "$TOK" &
 BR=$!
 sleep 0.7
 

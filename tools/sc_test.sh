@@ -4,6 +4,7 @@
 # error.log has NO Character.hx:769 null. File-based oracle only.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 FRAY_DIR="${FRAY_DIR:-$HOME/Library/Application Support/Steam/steamapps/common/Fraymakers}"
 LABEL="${1:-sc}"; OUT="/tmp/sc_test_${LABEL}"; mkdir -p "$OUT"; rm -f "$OUT"/*
 PORT="$(( (RANDOM % 2000) + 19000 ))"; TOK="fray-$RANDOM$RANDOM"
@@ -11,11 +12,11 @@ BOOT="$FRAY_DIR/hlboot-sdl.dat"; CONN="$FRAY_DIR/_conn.dat"; APPID="$FRAY_DIR/st
 cleanup(){ rm -f "$CONN" "$APPID" 2>/dev/null; kill -9 "${ENG:-0}" "${BR:-0}" 2>/dev/null; }
 trap cleanup EXIT INT TERM
 printf '1420350' > "$APPID"
-"$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
+"$ROOT/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
 echo "PATCH_EXIT=$?" >> "$OUT/FACTS.txt"
 ( sleep 12; echo "l"; sleep 4; echo "s private::sandbag.sandbag thespire commandervideoassist"; sleep 8; \
   for i in $(seq 1 12); do echo "q"; echo "t"; sleep 1; done; sleep 4 ) \
-  | "$HERE/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
+  | "$ROOT/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
 BR=$!
 sleep 0.8
 rm -f "$FRAY_DIR/error.log" "$FRAY_DIR/crash.log"

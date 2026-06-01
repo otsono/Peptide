@@ -14,10 +14,11 @@
 #   ./ab_compare.sh <char> <recipe>            # diff current run vs golden (exit 1 on drift)
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 CHAR="${1:?usage: ab_compare.sh <char> <recipe> [--save]}"
 REC="${2:?usage: ab_compare.sh <char> <recipe> [--save]}"
 MODE="${3:-diff}"
-GOLDEN="$HERE/recipes/${CHAR}.golden"
+GOLDEN="$ROOT/recipes/${CHAR}.golden"
 
 # Distill a stable signature: deduped ANIM states, move acks (M:*), state reads
 # (T:*), match liveness (Q:*), and physics (P:) with floats rounded so sub-pixel
@@ -42,7 +43,7 @@ OUT=$(FRAY_PORT="${FRAY_PORT:-$(( (RANDOM % 2000) + 20300 ))}" "$HERE/recipe.sh"
 SIG=$(printf '%s\n' "$OUT" | signature)
 
 if [ "$MODE" = "--save" ]; then
-  mkdir -p "$HERE/recipes"
+  mkdir -p "$ROOT/recipes"
   printf '%s\n' "$SIG" > "$GOLDEN"
   echo "[ab] saved golden ($(printf '%s\n' "$SIG" | wc -l | tr -d ' ') lines) -> $GOLDEN"
   exit 0

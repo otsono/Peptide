@@ -1052,8 +1052,8 @@ mod tests {
 
     #[test]
     fn parses_a_real_entity_without_panicking() {
-        // ../../ from tools/peptide -> repo root
-        let path = format!("{}/../../characters/pacman/library/entities/pacman_tauntsprite24.entity",
+        // CARGO_MANIFEST_DIR is the repo root (the `peptide` package lives there)
+        let path = format!("{}/characters/pacman/library/entities/pacman_tauntsprite24.entity",
             env!("CARGO_MANIFEST_DIR"));
         let raw = match std::fs::read_to_string(&path) {
             Ok(r) => r,

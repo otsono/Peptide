@@ -94,9 +94,6 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 ├── TESTING.md                Validation harnesses + engine RE map + validation status
 ├── LICENSE                   MIT License
 ├── NOTICE.md                 Dependency attribution (Ruffle swf crate, etc.)
-├── make-app.sh               macOS: build peptide + wrap it in dist/Peptide.app
-├── make-win.sh               Cross-compile the Windows peptide.exe into dist/windows/
-├── rebuild-sandbag.sh        Quick: rebuild peptide + convert sandbag.ssf
 ├── .gitignore                Ignores *.ssf, *.swf, /target, characters/, engine artifacts
 │
 ├── src/                       Peptide — engine harness, webview UI, bytecode patcher
@@ -109,7 +106,7 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 │   ├── ui.rs / bridge.rs      ratatui TUI + headless TCP runtime + the launcher
 │   ├── manifest.rs            engine-symbol dependency table (doctor preflight)
 │   ├── fraytools.rs           FrayTools CDP driver (export / render / harness)
-│   └── asm.rs / commands.rs   opcode helpers + the friendly-command vocabulary
+│   └── asm.rs / interpreter.rs  opcode helpers + the friendly-command vocabulary
 │
 ├── crates/ssf2-converter/     The SSF2 → Fraymakers converter, as a library crate
 │   ├── Cargo.toml             package `ssf2_converter` (lib; dev bins gated by `dev-tools`)
@@ -138,7 +135,15 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 │   │   └── character/          animations.jsonc / stats.jsonc / hitbox_stats.jsonc
 │   └── tests/                 integration + golden tests
 │
-├── tools/fraytools-harness/   Legacy Node FrayTools scripts (reference; superseded by peptide)
+├── tools/                     Build + engine-harness orchestration (shell + Node)
+│   ├── make-app.sh             macOS: build peptide + wrap it in dist/Peptide.app
+│   ├── make-win.sh             Cross-compile the Windows peptide.exe into dist/windows/
+│   ├── run.sh / runseq.sh      Boot Fraymakers + send one / a sequence of console commands
+│   ├── recipe.sh ab_compare.sh Run a command recipe; capture/diff a golden behavior signature
+│   ├── batch_spawn_test.sh     Batch export + in-engine spawn-test a set of characters
+│   ├── rebuild-sandbag.sh      Quick: rebuild peptide + convert sandbag.ssf
+│   ├── freeze_*/pool_test/sc_test.sh   One-off engine probes for past bug investigations
+│   └── fraytools-harness/      Legacy Node FrayTools scripts (reference; superseded by peptide)
 ├── characters/                Converter OUTPUT (`*.hx`, `*.json`, `*.entity` tracked; media ignored)
 └── target/                    Cargo build output (git-ignored)
 ```
@@ -153,7 +158,7 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 ```
 
 So from the repo root the inputs are reachable as `../ssf2-ssfs` — the relative
-path the CLI examples, `rebuild-sandbag.sh`, and the `src/bin/` diagnostic
+path the CLI examples, `tools/rebuild-sandbag.sh`, and the `src/bin/` diagnostic
 defaults all use.
 
 `ssf2-ssfs/` contains the full SSF2 roster (`mario.ssf`, `fox.ssf`, `link.ssf`,
@@ -233,11 +238,11 @@ FrayTools character package (see [§9](#9-output-format-fraymakers-character-pac
 
 ### 3.4 Quick rebuild loop
 
-`rebuild-sandbag.sh` is the inner dev loop: it rebuilds the release binary and
+`tools/rebuild-sandbag.sh` is the inner dev loop: it rebuilds the release binary and
 re-converts `sandbag.ssf`, then prints a sprite count.
 
 ```bash
-./rebuild-sandbag.sh
+./tools/rebuild-sandbag.sh
 ```
 
 > **Input path.** The script reads `../ssf2-ssfs/sandbag.ssf` (relative to the
@@ -261,18 +266,18 @@ character; after that a **Home** screen offers three buttons:
 The webview glue lives in `src/gui.rs` (see [`docs/PEPTIDE_README.md`](docs/PEPTIDE_README.md)
 for the harness internals); there is no separate GUI crate anymore.
 
-**Double-clickable macOS app.** `./make-app.sh` builds the single `peptide`
+**Double-clickable macOS app.** `./tools/make-app.sh` builds the single `peptide`
 binary and wraps it in `dist/Peptide.app` — a normal Finder app (name, dock
 icon, `.ssf` association) with `peptide` as the bundle executable. It
 ad-hoc-codesigns the bundle so Gatekeeper allows a locally-built app to launch,
 and opens it on success (`--no-open` to just build). `dist/` is git-ignored.
 
 ```bash
-./make-app.sh            # build + assemble dist/Peptide.app + launch
-./make-app.sh --no-open  # build + assemble only (packaging / CI)
+./tools/make-app.sh            # build + assemble dist/Peptide.app + launch
+./tools/make-app.sh --no-open  # build + assemble only (packaging / CI)
 ```
 
-**Windows build.** `./make-win.sh` cross-compiles `peptide.exe` into
+**Windows build.** `./tools/make-win.sh` cross-compiles `peptide.exe` into
 `dist/windows/` (prefers `cargo-xwin` for the MSVC ABI, falls back to
 `mingw-w64`; prints the exact install command if neither toolchain is present),
 or build natively on Windows with `cargo build --release`. The webview uses the
@@ -1300,7 +1305,7 @@ What is solid:
    hand-tuned by comparing template characters to SSF2 data. Generated
    `CharacterStats.hx` marks uncertain numbers with `/*TODO*/`.
 
-8. **`rebuild-sandbag.sh` has an absolute path** baked in — breaks if the
+8. **`tools/rebuild-sandbag.sh` has an absolute path** baked in — breaks if the
    repo moves.
 
 9. **`tokio` is a declared dependency but the converter is synchronous** —
@@ -1407,14 +1412,14 @@ Roughly in the order a fresh agent should tackle them.
    universal. Collapses `derive_id_from_getter` /
    `derive_id_from_bundle_method_name` into one identity.
 
-9. **Housekeeping:** make `rebuild-sandbag.sh` path-relative; drop unused
+9. **Housekeeping:** make `tools/rebuild-sandbag.sh` path-relative; drop unused
    `tokio`.
 
 ---
 
 ## 13. Tips for the next agent
 
-- **Smoke test = `sandbag`.** `./rebuild-sandbag.sh` is the fast loop.
+- **Smoke test = `sandbag`.** `./tools/rebuild-sandbag.sh` is the fast loop.
   Mario is the heavy, full-featured test (projectiles, costumes, big
   roster of moves).
 - **`AGENT_CONTEXT.md` is the format bible** — formats are reverse-

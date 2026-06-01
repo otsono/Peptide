@@ -63,7 +63,7 @@ turnaround. Four rules, in priority order:
 3. **Prefer hscript over hand-emitted bytecode (the strategic direction).** The
    engine bundles the full `hscript` interpreter — the same `Parser` + `Interp`
    that runs every character script. The `e` command parses and executes script
-   *text* in-engine (see [`prelude.hsx`](prelude.hsx)). Logic expressed as an
+   *text* in-engine (see [`commands.hsx`](commands.hsx)). Logic expressed as an
    hscript string is resolved by the engine's own linker at runtime, so it is
    **immune to findex drift entirely.** The migration goal: the only brittle
    bytecode left is the minimal eval-bootstrap hook; every handler (move dispatch,
@@ -104,7 +104,7 @@ Peptide preflight — Fraymakers bytecode v<N>
 
 (The `#<findex>` values are placeholders — real findices are build-specific and
 printed at runtime. The symbol *names* in `manifest.rs` are RE facts cited for
-interoperability, which [NOTICE.md](../../NOTICE.md) permits; only verbatim
+interoperability, which [NOTICE.md](../NOTICE.md) permits; only verbatim
 bytecode/disassembly/assets are kept out of the repo.)
 
 The same check (`run_preflight`) runs at the top of every real `connect` patch: it
@@ -128,11 +128,11 @@ everywhere the patch runs:
    compatible; skip to the spawn-test.
 3. For each `[MISS]`: find the symbol's new name with the read-only inspection
    modes (`inspect`, `fnsof`, `whoref`, `dis` — see
-   [TESTING.md](../../TESTING.md) §3), then update the entry in `manifest.rs`
+   [TESTING.md](../TESTING.md) §3), then update the entry in `manifest.rs`
    **and** the matching `require_*` call in `connect_edit`. Re-run `doctor` until
    clean.
 4. Re-run the in-engine spawn-test (sandbag loads, plays, no freeze) per
-   [TESTING.md](../../TESTING.md). `doctor` proves symbols *resolve*; the
+   [TESTING.md](../TESTING.md). `doctor` proves symbols *resolve*; the
    spawn-test proves the patch *behaves*.
 5. If a handler was brittle bytecode, consider porting it to hscript (rule 3)
    while you are in there.
@@ -159,17 +159,17 @@ scripts keep running.
 
 `move <name>` accepts the Fraymakers move vocabulary (`jab`, `tilt_down`,
 `aerial_forward`, `special_neutral`, …); see `help` for the full set. The
-friendly vocabulary lives in one place — [`src/commands.rs`](src/commands.rs) —
+friendly vocabulary lives in one place — [`src/interpreter.rs`](src/interpreter.rs) —
 shared by the bridge and the patcher, so a future GUI can wrap it directly.
 
 ## Quick start
 
 ```
-./run.sh "spawn sandbag thespire commandervideoassist" 20   # friendly
-./run.sh "s commandervideo thespire commandervideoassist" 20 # wire bytes still work
+./tools/run.sh "spawn sandbag thespire commandervideoassist" 20   # friendly
+./tools/run.sh "s commandervideo thespire commandervideoassist" 20 # wire bytes still work
 ```
 
-`run.sh` is self-contained: it writes `steam_appid.txt`, builds the bins,
+`tools/run.sh` is self-contained: it writes `steam_appid.txt`, builds the bins,
 patches the bytecode into the install dir, launches the engine, and bridges the
 command — cleaning up `_conn.dat` afterward. Override the install path with
 `FRAY_DIR=...`.
@@ -186,9 +186,9 @@ time  = 0     # match timer in seconds (0 = unlimited)
 ```
 
 The file is baked into the binary at build time *and* read from disk at patch
-time, so an edited copy takes effect on the next `./run.sh` with **no rebuild**.
+time, so an edited copy takes effect on the next `./tools/run.sh` with **no rebuild**.
 Resolution order: `$PEPTIDE_MATCH_SETTINGS` → `match_settings.conf` next to the
-`peptide` binary → the repo's `tools/peptide/match_settings.conf` → `./match_settings.conf`
+`peptide` binary → the repo's `match_settings.conf` → `./match_settings.conf`
 → the built-in default. (Maps to the engine's `MatchSettingsConfig` `lives`/`time`
 fields via the `matchSettings` virtual.)
 

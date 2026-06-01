@@ -20,11 +20,11 @@ stays on the user's machine and is git-ignored.
 | Harness | Dir | Drives | Transport | Answers |
 |---|---|---|---|---|
 | **FrayTools** | `tools/fraytools-harness/` | the user's FrayTools editor | Chrome DevTools Protocol | "does it render / lay out right? publish me a `.fra`" |
-| **Fraymakers** (`peptide`) | `tools/peptide/` | the user's Fraymakers engine | patched bytecode + loopback TCP | "does it behave at runtime? load / spawn / move / read state" |
+| **Fraymakers** (`peptide`) | `src/` + `tools/` | the user's Fraymakers engine | patched bytecode + loopback TCP | "does it behave at runtime? load / spawn / move / read state" |
 
 Each tool's own README has the detailed command surface:
 - [`tools/fraytools-harness/README.md`](tools/fraytools-harness/README.md) — `harness.js` (box geometry + capture), `export-in-fraytools.js` (publish), `compare_boxes`.
-- [`tools/peptide/README.md`](tools/peptide/README.md) — the bytecode patcher, the loopback bridge, and `run.sh`.
+- [`docs/PEPTIDE_README.md`](docs/PEPTIDE_README.md) — the bytecode patcher, the loopback bridge, and `tools/run.sh`.
 
 This doc is the **cross-tool workflow + the engine RE map + the current
 validation status**. (Long-term RE narrative also lives in
@@ -49,8 +49,8 @@ cargo build --release
   --project "$PWD/characters/<id>/<id>.fraytools"
 
 # 4. Boot the Fraymakers harness, dispatch, observe
-./run.sh "s <id> thespire <assist>" 20     # spawn into a real match
-#   then probe:  ./run.sh "t" 8  (read state)   ./run.sh "m" 8  (drive a move)
+./tools/run.sh "s <id> thespire <assist>" 20     # spawn into a real match
+#   then probe:  ./tools/run.sh "t" 8  (read state)   ./tools/run.sh "m" 8  (drive a move)
 
 # 5. Compare behaviour vs expected → fix in the converter (never hand-edit output) → repeat
 ```
@@ -59,7 +59,7 @@ cargo build --release
 - **FrayTools-side** (`harness.js` / `export-in-fraytools.js`) — visual/layout
   ground truth (box geometry, pivots, rendering) and producing the publishable
   `.fra`. Pair with `compare_boxes` for a numeric verdict.
-- **Fraymakers-side** (`run.sh`) — runtime behaviour (loads, spawns, animates,
+- **Fraymakers-side** (`tools/run.sh`) — runtime behaviour (loads, spawns, animates,
   transitions state, responds to a move dispatch). This is where freeze / crash /
   physics bugs surface.
 
@@ -113,21 +113,21 @@ they verify instead of being skipped. Exits 0 on full pass, 1 on any failure.
 
 ## 3. Fraymakers engine harness (`peptide`)
 
-Code: `tools/peptide/` (Rust). Two bins:
+Code: `src/` (Rust), with shell orchestration in `tools/`. Two bins:
 - **`peptide`** parses the engine's HashLink bytecode (`hlbc` crate), injects a
   per-frame dispatch block into `fraymakers.Main.update`, and writes a patched
   copy. Also has read-only inspection subcommands.
 - **`peptide`** is the loopback TCP server (the injected engine code is
   the client).
 
-### Boot model (`run.sh`)
+### Boot model (`tools/run.sh`)
 
 ```
-./run.sh "<command>" [seconds]          # FRAY_DIR=... overrides the install path
-./run.sh "s sandbag thespire commandervideoassist" 20
+./tools/run.sh "<command>" [seconds]          # FRAY_DIR=... overrides the install path
+./tools/run.sh "s sandbag thespire commandervideoassist" 20
 ```
 
-Steam's sandbox wipes anything added to the install dir, so `run.sh` **recreates
+Steam's sandbox wipes anything added to the install dir, so `tools/run.sh` **recreates
 everything every run and never mutates the pristine engine**: it patches a *copy*
 of `hlboot-sdl.dat` → `_conn.dat` (the source is never written), writes
 `steam_appid.txt` so a direct `./hl` launch doesn't bounce through Steam, starts
@@ -141,7 +141,7 @@ the render thread. Needs `dangerouslyDisableSandbox`.
 Humans type **full-word commands** (`peptide help` lists them); the bridge
 translates them to the single-byte wire protocol the engine dispatches on. The
 wire byte still works as an alias, so older scripts keep running. Friendly
-vocabulary is one shared table: `tools/peptide/src/commands.rs`.
+vocabulary is one shared table: `src/interpreter.rs`.
 
 | Friendly (aliases) | Wire | Meaning | Ack / readback |
 |---|---|---|---|
@@ -173,10 +173,10 @@ wins. `private::` is first so a bare name resolves to headless-loaded custom
 content. Or pass a full `namespace::package.id`.
 
 **Multi-command sessions:** `m`/`t`/`q` probes need the *same* live match (a reboot
-loses it). Use `runseq.sh <boot_wait_s> <gap_s> "cmd1" "cmd2" …` to feed a gapped
+loses it). Use `tools/runseq.sh <boot_wait_s> <gap_s> "cmd1" "cmd2" …` to feed a gapped
 sequence into one engine session (boot→READY ≈ 30s, so `boot_wait_s` ≈ 32,
 `gap_s` 6–9). Example:
-`./runseq.sh 32 6 "s sandbag thespire commandervideoassist" t m t`.
+`./tools/runseq.sh 32 6 "s sandbag thespire commandervideoassist" t m t`.
 
 `peptide` read-only inspection (for re-deriving findices — **always re-verify**):
 `dis <findex>`, `typefields <type>`, `fnsof <type>`, `fninfo <findex>`,
@@ -188,15 +188,15 @@ Every Fraymakers update is a full HashLink **recompile** that renumbers function
 indices, field slots, and type indices. Peptide is built so a new build is a
 fast, self-diagnosing turnaround rather than an archaeology dig. The rules (full
 write-up + version-bump checklist in
-[`tools/peptide/README.md`](tools/peptide/README.md) "Surviving Fraymakers updates"):
+[`docs/PEPTIDE_README.md`](docs/PEPTIDE_README.md) "Surviving Fraymakers updates"):
 
 1. **Resolve by name, not index** — `find_fn`/`require_fn`, `find_type`, `find_field`, `find_native`. Names survive a recompile; pinned integers silently point at the wrong function.
 2. **Fail loudly, never fall back to a pinned index** — a missing name aborts the patch instead of corrupting it.
-3. **Prefer hscript over hand-emitted bytecode** — logic in [`prelude.hsx`](tools/peptide/prelude.hsx) runs through the engine's own interpreter and is immune to index drift.
+3. **Prefer hscript over hand-emitted bytecode** — logic in [`commands.hsx`](commands.hsx) runs through the engine's own interpreter and is immune to index drift.
 4. **Avoid mid-function opcode injection** — use `insert_ops_front`/`insert_ops_end` or hscript.
 
 Every engine symbol the patcher needs is declared once in
-[`tools/peptide/src/manifest.rs`](tools/peptide/src/manifest.rs). **`doctor`** is
+[`src/manifest.rs`](src/manifest.rs). **`doctor`** is
 the preflight that reads it:
 
 ```bash
@@ -340,7 +340,7 @@ returned `M:OK` for each dispatched move with no engine crash. This validates th
 generic load+drive pipeline broadly, not just the two reference characters.
 
 The last six were run unattended by `(/tmp)/batch_chars.sh`: per character it
-regenerates, exports via FrayTools, then `runseq.sh`-drives `spawn/state/move
+regenerates, exports via FrayTools, then `tools/runseq.sh`-drives `spawn/state/move
 jab/move special_neutral/physics` and records PASS only if it LAUNCHED + hit
 `ANIM:STAND` + got `M:OK` + had no `rosetta error` in the engine log. Reusable
 template for sweeping the rest of the 44 converting characters.

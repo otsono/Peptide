@@ -116,10 +116,10 @@ Decomposed into commands (see "Building blocks" below): `spawn` + `dummy` →
   events (state/anim transitions, move acks) and dumps them when the engine stream
   ends (`── last N engine events before stream ended (crash context) ──`), so a
   crash shows what the character was doing instead of a bare disconnect.
-- **A/B comparison** — **[done]** `tools/peptide/ab_compare.sh <char> <recipe>`
+- **A/B comparison** — **[done]** `tools/ab_compare.sh <char> <recipe>`
   distills a stable behavioral signature (anim states + move acks + position) and
   saves/diffs it as a golden — catches behavioral regressions across converter
-  builds. Recipe scripting (`recipe.sh`) is also **[done]**.
+  builds. Recipe scripting (`tools/recipe.sh`) is also **[done]**.
 - **(orig) A/B comparison** — run identical input sequences against two characters (or
   two versions) and diff the readback. Regression testing for mod changes.
   **[planned]** Mostly a layer-3/shell driver over existing commands.
@@ -128,7 +128,7 @@ Decomposed into commands (see "Building blocks" below): `spawn` + `dummy` →
   serialization surface.
 - **Recipe scripting** — a small stable DSL (JSON or a tiny line script) to drive
   Peptide programmatically: `spawn mario; move jab; snapshot; exit`. **[next]**
-  `runseq.sh` is the proto-version; a JSON recipe runner in the bridge is the
+  `tools/runseq.sh` is the proto-version; a JSON recipe runner in the bridge is the
   clean form. Shareable, reusable, no opcodes.
 
 ## Architectural commitment

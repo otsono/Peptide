@@ -11,7 +11,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-cd "$HERE"
+ROOT="$(cd "$HERE/.." && pwd)"
+cd "$ROOT"
 
 OPEN_AFTER=1
 [ "${1:-}" = "--no-open" ] && OPEN_AFTER=0

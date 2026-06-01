@@ -3,6 +3,9 @@
 
 set -e
 
+# Run from the repo root regardless of where this script lives (tools/).
+cd "$(cd "$(dirname "$0")/.." && pwd)"
+
 echo "Building release binary..."
 cargo build --release 2>&1 | tail -5
 

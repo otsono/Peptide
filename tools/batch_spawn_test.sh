@@ -2,8 +2,8 @@
 # Batch export + in-engine spawn-test a set of characters. Records PASS/FAIL.
 # PASS = reached ANIM:STAND after spawn, move jab returned M:OK, no rosetta crash.
 set -u
-# repo root = two dirs up from this script (tools/peptide/ -> repo root)
-cd "$(cd "$(dirname "$0")/../.." && pwd)"
+# repo root = one dir up from this script (tools/ -> repo root)
+cd "$(cd "$(dirname "$0")/.." && pwd)"
 RESULTS="${BATCH_RESULTS:-/tmp/batch_results.txt}"
 : > "$RESULTS"
 
@@ -12,14 +12,14 @@ run_one() {
   local c="$1" port="$2"
   # Drive via explicit hscript (no auto-p0 sugar): read state, then toState a move.
   # toState(...) returns true (E:true); the engine's toState telemetry emits ANIM:<state>.
-  ( cd tools/peptide && FRAY_CHAR="$c" FRAY_PORT="$port" FRAY_ENGINE_LOG=/tmp/${c}_eng.log ./runseq.sh 3 \
+  FRAY_CHAR="$c" FRAY_PORT="$port" FRAY_ENGINE_LOG=/tmp/${c}_eng.log tools/runseq.sh 3 \
       "spawn $c thespire commandervideoassist" \
       "match.getCharacters()[0].getStateName()" \
       "match.getCharacters()[0].toState(CState.JAB)" \
       "match.getCharacters()[0].getStateName()" \
       "match.getCharacters()[0].toState(CState.SPECIAL_NEUTRAL)" \
       "match.getCharacters()[0].body.x" \
-      >/tmp/${c}_test.log 2>&1 )
+      >/tmp/${c}_test.log 2>&1
   local stood mok crash launched bind
   stood=$(grep -c "ANIM:STAND" /tmp/${c}_test.log)
   mok=$(grep -c "E:true" /tmp/${c}_test.log)   # toState(...) -> true
@@ -39,7 +39,7 @@ i=0
 for c in "$@"; do
   i=$((i + 1))
   # 1. ensure fresh source (regen is cheap + deterministic)
-  ./target/release/ssf2_converter ../ssf2-ssfs/$c.ssf >/tmp/${c}_conv.log 2>&1 || { echo "$c CONVERT_FAIL" >>"$RESULTS"; continue; }
+  ./target/release/peptide convert ../ssf2-ssfs/$c.ssf >/tmp/${c}_conv.log 2>&1 || { echo "$c CONVERT_FAIL" >>"$RESULTS"; continue; }
   # 2. export via FrayTools
   node tools/fraytools-harness/export-in-fraytools.js --project "$PWD/characters/$c/$c.fraytools" >/tmp/${c}_export.log 2>&1 || { echo "$c EXPORT_FAIL" >>"$RESULTS"; continue; }
   # 3. spawn + drive — deterministic per-char port (avoids the random-port collisions

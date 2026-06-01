@@ -5,6 +5,7 @@
 # Run: ./pool_test.sh [label]
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 FRAY_DIR="${FRAY_DIR:-$HOME/Library/Application Support/Steam/steamapps/common/Fraymakers}"
 LABEL="${1:-test}"; OUT="/tmp/pool_test_${LABEL}"; mkdir -p "$OUT"; rm -f "$OUT"/*
 PORT="$(( (RANDOM % 2000) + 19000 ))"; TOK="fray-$RANDOM$RANDOM"
@@ -14,14 +15,14 @@ trap cleanup EXIT INT TERM
 printf '1420350' > "$APPID"
 
 # Patch with the new resolver
-"$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
+"$ROOT/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
 echo "PATCH_EXIT=$?" >> "$OUT/FACTS.txt"
 
 # Serve: hold socket open with 14s pre-s delay (let async UGC load finish), then q x6
 ( sleep 14; echo "s sandbag thespire none"; sleep 2; \
   for i in 1 2 3 4 5 6; do echo "q"; sleep 1; done; \
   sleep 5 ) \
-  | "$HERE/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
+  | "$ROOT/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
 BR=$!
 sleep 0.8
 rm -f "$FRAY_DIR/error.log" "$FRAY_DIR/crash.log"

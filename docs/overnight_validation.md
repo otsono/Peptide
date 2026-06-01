@@ -3,7 +3,7 @@
 This is the validation record for the two reference characters, and the template
 for validating the rest of the corpus. It records WHAT was checked, HOW, and the
 commits/tooling that prove it. All runtime checks were performed live against the
-user's local Fraymakers engine via the Peptide harness (`tools/peptide`).
+user's local Fraymakers engine via the Peptide harness (`src/` + `tools/`).
 
 ## Morning summary (read this first)
 
@@ -28,8 +28,8 @@ user's local Fraymakers engine via the Peptide harness (`tools/peptide`).
 - **Decompiler**: stack-threading on both branch arms (recovered `/* ? */` lost
   exprs) + the OOM fix (chibirobo/dedede). 47 lib tests pass throughout.
 
-**P2 (modder features) shipped this session:** `recipe.sh` (shareable command
-scripts), `ab_compare.sh` (golden behavioral-signature regression check), crash
+**P2 (modder features) shipped this session:** `tools/recipe.sh` (shareable command
+scripts), `tools/ab_compare.sh` (golden behavioral-signature regression check), crash
 diagnostics (the bridge dumps the last ~16 events when the engine stream ends),
 animation scrubbing (`step`/`play` — pause + frame-step + resume), and `track
 <move>` (in-engine self-momentum trajectory — verified dash_attack vx 12.86→0,
@@ -86,8 +86,7 @@ node tools/fraytools-harness/export-in-fraytools.js \
   --project "$PWD/characters/<id>/<id>.fraytools"               # -> custom/<id>/<id>.fra
 
 # 3. drive it in the engine with friendly commands
-cd tools/peptide
-FRAY_CHAR=<id> ./runseq.sh 3 "spawn <id> thespire commandervideoassist" \
+FRAY_CHAR=<id> ./tools/runseq.sh 3 "spawn <id> thespire commandervideoassist" \
   "move jab" "move tilt_forward" "move strong_forward" "move special_neutral" \
   "move aerial_neutral" "move grab" "state"
 ```
@@ -140,7 +139,7 @@ sequences, not just a single pose.
 
 ## Tooling proven / extended this session
 
-- **Friendly command vocabulary** (`tools/peptide/src/commands.rs`): `spawn`,
+- **Friendly command vocabulary** (`src/interpreter.rs`): `spawn`,
   `move <name>`, `state`, `query`, `load`, `keys`, `console`, `ping`, `exit`,
   `help`. Single-letter wire bytes remain as aliases. Reply lines get a plain
   gloss. 5 unit tests.

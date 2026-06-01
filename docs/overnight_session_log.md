@@ -3,7 +3,7 @@
 Terse, one line per milestone: `HH:MM — summary. Commit <hash>.`
 Detail lives in per-topic docs, not here.
 
-- 08:45 — 11 characters verified functional in-engine (added marth, falco, captainfalcon, donkeykong, bomberman, blackmage via batch_spawn_test.sh — all PASS: LAUNCHED + ANIM:STAND + M:OK, no crash). Committed batch script (754fa30a, e7d6b884). Launched full-corpus background sweep of the remaining 32 → /tmp/corpus_sweep.txt. Updated memory project_fraymakers-match-launch with current Peptide state.
+- 08:45 — 11 characters verified functional in-engine (added marth, falco, captainfalcon, donkeykong, bomberman, blackmage via tools/batch_spawn_test.sh — all PASS: LAUNCHED + ANIM:STAND + M:OK, no crash). Committed batch script (754fa30a, e7d6b884). Launched full-corpus background sweep of the remaining 32 → /tmp/corpus_sweep.txt. Updated memory project_fraymakers-match-launch with current Peptide state.
 - 08:00 — Corpus: batch-converted all 47 ssf — 44 clean, 2 fail (chibirobo, dedede: SIGKILL/137 OOM entering image extraction — runaway alloc, documented as open in TESTING.md). Stretch: exported + spawn-tested KIRBY (3rd char) — INTRO→STAND, jab/special_neutral/grab all animate, physics clean, no crash. Generic pipeline proven beyond mario/sandbag. Commit 7b76ac86.
 - 07:30 — Both chars committed validated (TESTING.md §3/§5). Added `physics` command (criterion #6): walks player 0, writes `P: x= y= vx= vy= dmg=` via Std.string. Fixed a typed-reg bug (HL field offset comes from reg static type — reused Body reg gave garbage velocities). Live: mario dash_attack moves x −130→49 (real displacement), vel 0 at rest, no crash. Commits c2d88e42, d0447215.
 - 06:30 — MARIO FUNCTIONAL. Stale May-28 .fra was the crash cause; regenerated from current converter + re-exported via FrayTools → fresh .fra. Mario: spawn → INTRO → STAND (stable), then drove the FULL ground moveset — jab, dash_attack, tilt f/u/d, strong f/u/d (full _IN→_ATTACK chains), special n/s/u/d, grab — every one M:OK + correct ANIM + clean recovery to STAND, no crash. Criteria #3/#4/#5 substantially met for mario's ground game. (Aerials next.)
@@ -56,15 +56,15 @@ WHERE TO PICK UP (deferred deliberately — see docs/PARITY.md for plans + gates
 - 14:50 — All 5 recovered chars CONFIRMED in-engine: bomberman/donkeykong/pit/luffy spawn + show real ANIM:JAB + ANIM:SPECIAL_NEUTRAL (not state-dispatch). 45/45 genuinely functional (real movesets) + 45/45 hitbox-stat parity. The frame-data check that found the broken chars is now a per-char coverage metric. This was the core P1 gap (P0 spawn test masked empty shells) — closed.
 
 ## P2 features + .hl spike (goal: finish P1+P2)
-- 15:30 — Installed haxe 4.3.7; ran the Haxe→.hl spike: toolchain works (haxe -hl → valid .hl, hlbc reads it) but a trivial Haxe = 322 fns → "loading" into the engine = a full cross-module linker (deferred as a focused project; tools/peptide/hl_spike/).
-- 15:45 — P2 features: recipe.sh (shareable .recipe scripts) + recipes/mario_moveset.recipe; ab_compare.sh (golden behavioral-signature regression check, sandbag verified UNCHANGED); crash diagnostics (bridge dumps last ~16 events on stream end).
+- 15:30 — Installed haxe 4.3.7; ran the Haxe→.hl spike: toolchain works (haxe -hl → valid .hl, hlbc reads it) but a trivial Haxe = 322 fns → "loading" into the engine = a full cross-module linker (deferred as a focused project; hl_spike/).
+- 15:45 — P2 features: tools/recipe.sh (shareable .recipe scripts) + recipes/mario_moveset.recipe; tools/ab_compare.sh (golden behavioral-signature regression check, sandbag verified UNCHANGED); crash diagnostics (bridge dumps last ~16 events on stream end).
 - 16:10 — Animation scrubbing: step (pause+advance one frame via Animation.playFrame) + play (resume) — verified mario stand 59→60→61 held, play resumes. Self-contained Asm, no s-handler change.
 - 16:25 — track <move>: in-engine self-momentum measurement (drive move + rapid physics sampling). Verified mario dash_attack vx 12.86→0 over ~6 samples, +140px. The opponent-knockback half needs the dummy chain (deferred deep item).
 - 16:35 — Wrote docs/P1_P2_STATUS.md (honest done/deferred for every P1+P2 item). Remaining deep items (dummy→hitresult, .hl linker, save/restore, physics multiplier tuning) all converge on in-engine emergent-behavior measurement = the next focused project. Launched final 45-char regression sweep.
 - 16:45 — Exercised track (momentum-verification loop) on mario: dash_attack lunges (vx 12.3→0, +126px), tilt_forward/strong_forward stationary (vx=0 — correct). track correctly distinguishes moving vs stationary moves. Momentum-PARITY vs SSF2 needs the per-move SSF2 momentum reference (in frame scripts) — noted. Running focused regression spot-check (recovered-5 + diverse) instead of full 45 (already validated via parity_check 45/45 + entity-population).
 
 ## Regression spot-check (10-char sweep) — PASS
-Ran `batch_spawn_test.sh` over fox bomberman donkeykong pit luffy mario sandbag
+Ran `tools/batch_spawn_test.sh` over fox bomberman donkeykong pit luffy mario sandbag
 kirby marth zelda (a cross-section spanning the recovered-shell chars, the two
 reference chars, and chars exercising different sprite-label conventions).
 Result: **10/10 PASS, 0 FAIL** — every char regenerates, exports a fresh .fra,
@@ -75,7 +75,7 @@ entity-population 45/45, the corpus is validated at the P0 bar and stat-parity.
 
 ## Dummy-opponent decision (deferred, with rationale)
 Evaluated implementing the opt-in dummy opponent directly in the `s`-handler
-player-array build (tools/peptide/src/main.rs:1573-1587). Decided AGAINST tonight:
+player-array build (src/main.rs:1573-1587). Decided AGAINST tonight:
 the 2-player path needs a second virtual-typed reg threaded through the delicate
 hand-emitted s-handler reg block, and a reg clobber there would corrupt rr33 (the
 characters ArrayObj startMatch consumes) — blast radius is ALL spawns, i.e. the

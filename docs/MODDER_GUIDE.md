@@ -13,8 +13,7 @@ SSF2 characters, but it's useful for any Fraymakers mod work.
 ## 30-second start
 
 ```
-cd tools/peptide
-./run.sh "spawn sandbag" 20          # boot, spawn sandbag, hold 20s
+./tools/run.sh "spawn sandbag" 20          # boot, spawn sandbag, hold 20s
 ```
 
 You'll see the engine boot, then lines like:
@@ -55,10 +54,10 @@ You type full words; single-letter wire codes still work as aliases.
 ## Driving a sequence (one engine session)
 
 A match doesn't survive a reboot, so to drive several commands against the *same*
-match use `runseq.sh <gap_seconds> "cmd1" "cmd2" …`:
+match use `tools/runseq.sh <gap_seconds> "cmd1" "cmd2" …`:
 
 ```
-./runseq.sh 3 "spawn mario" "state" "move special_neutral" "physics" "move grab"
+./tools/runseq.sh 3 "spawn mario" "state" "move special_neutral" "physics" "move grab"
 ```
 
 It boots once, fires the first command at engine-ready, paces the rest by
@@ -78,8 +77,7 @@ node tools/fraytools-harness/export-in-fraytools.js \
   --project "$PWD/characters/<id>/<id>.fraytools"
 
 # 3. drive it and observe
-cd tools/peptide
-FRAY_CHAR=<id> ./runseq.sh 3 "spawn <id>" "move jab" "move special_neutral" "physics"
+FRAY_CHAR=<id> ./tools/runseq.sh 3 "spawn <id>" "move jab" "move special_neutral" "physics"
 ```
 
 **The #1 gotcha:** the published `.fra` in `custom/<id>/` is *not* rebuilt by the
@@ -89,21 +87,21 @@ stale output. (This caused a phantom "mario crash" that was just a 3-day-old
 
 ## Batch-testing many characters
 
-`tools/peptide/batch_spawn_test.sh <id> <id> …` regenerates, exports, and
+`tools/batch_spawn_test.sh <id> <id> …` regenerates, exports, and
 spawn-drives each character, recording PASS/FAIL (PASS = launched + reached STAND
 + moves dispatched + no crash) to `/tmp/batch_results.txt` (override with
 `BATCH_RESULTS=`). Good for a regression sweep after a converter change.
 
 ## Recipes (shareable scripts)
 
-`tools/peptide/recipe.sh <file>` runs a **recipe** — a text file of friendly
+`tools/recipe.sh <file>` runs a **recipe** — a text file of friendly
 commands (plus `#!char`/`#!stage`/`#!gap` directives) driven into one engine
 session. Reusable + shareable (e.g. `recipes/mario_moveset.recipe`). The
-scriptable form of a manual `runseq.sh` sequence.
+scriptable form of a manual `tools/runseq.sh` sequence.
 
 ## A/B regression check (golden behavioral signature)
 
-`tools/peptide/ab_compare.sh <char> <recipe> --save` captures a character's
+`tools/ab_compare.sh <char> <recipe> --save` captures a character's
 behavioral signature (anim states + move acks + resting position, timing noise
 normalized out) as a golden; re-running without `--save` diffs against it and
 exits non-zero on drift. Use it to catch behavioral regressions after a converter
@@ -119,7 +117,7 @@ frame-coverage. All 45 characters currently pass. For move *momentum*, drive
 
 ## Where things are
 
-- Friendly command vocabulary: `tools/peptide/src/commands.rs` (one table, shared
+- Friendly command vocabulary: `src/interpreter.rs` (one table, shared
   by the client and the patcher — edit here to add/rename a command).
 - Full engine RE map + validation status: `TESTING.md`.
 - Layering and design decisions: `docs/PEPTIDE_ARCHITECTURE.md`.
@@ -135,7 +133,6 @@ reference), and live stat tuning. Built incrementally on the commands above.
 ## The console UI (recommended for interactive use)
 
 ```
-cd tools/peptide
 cargo build --release          # first time only
 ./target/release/peptide    # boots Fraymakers + opens the console
 ```
@@ -155,5 +152,5 @@ Everything you can type in the CLI works here, including raw hscript:
 `match.getCharacters()`, `p0.getStateName()`, `p0.body.x`, `Engine.log("hi")`. Errors
 never crash the engine — they show in the scrollback (red) and in `Engine.log`.
 
-Use the headless `run.sh` / `runseq.sh` for scripted/automated runs; use `run-ui.sh`
+Use the headless `tools/run.sh` / `tools/runseq.sh` for scripted/automated runs; use `run-ui.sh`
 for interactive exploration.

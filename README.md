@@ -77,8 +77,8 @@ A single conversion pulls an entire SSF2 character across to Fraymakers, end to 
 - **`crates/ssf2-converter`** — the SSF2 → Fraymakers converter, now a library
   crate (`run_conversion`), driven by `peptide convert` and the app's converter
   screen.
-- **Desktop app** — `./make-app.sh` wraps `peptide` in a double-clickable macOS
-  `Peptide.app`; `./make-win.sh` cross-compiles the Windows `peptide.exe` (or
+- **Desktop app** — `./tools/make-app.sh` wraps `peptide` in a double-clickable macOS
+  `Peptide.app`; `./tools/make-win.sh` cross-compiles the Windows `peptide.exe` (or
   build natively with `cargo build --release`).
 - **Editable conversion config** — JSONC mapping tables in
   `crates/ssf2-converter/mappings/` drive API translation, stat scaling,

@@ -9,6 +9,7 @@
 # Usage: ./freeze_test2.sh <label>   (the .fra under test must already be installed)
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 FRAY_DIR="${FRAY_DIR:-$HOME/Library/Application Support/Steam/steamapps/common/Fraymakers}"
 LABEL="${1:-run}"; OUT="/tmp/claude-501/f2_${LABEL}"; mkdir -p "$OUT"; rm -f "$OUT"/*
 PORT="$(( (RANDOM % 2000) + 18000 ))"; TOK="fray-$RANDOM$RANDOM"
@@ -17,11 +18,11 @@ cleanup(){ rm -f "$CONN" "$APPID" 2>/dev/null; kill -9 "${ENG:-0}" "${BR:-0}" 2>
 trap cleanup EXIT INT TERM
 
 printf '1420350' > "$APPID"
-"$HERE/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
+"$ROOT/target/release/peptide" "$BOOT" "$CONN" connect "$PORT" "$TOK" > "$OUT/patch.log" 2>&1
 
 # Hold stdin open ~34s so serve stays alive and the socket never closes mid-run.
 ( echo "s sandbag battlefield none"; sleep 34 ) \
-  | "$HERE/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
+  | "$ROOT/target/release/peptide" serve --port "$PORT" --token "$TOK" > "$OUT/serve.log" 2>&1 &
 BR=$!
 sleep 0.8
 rm -f "$FRAY_DIR/error.log"

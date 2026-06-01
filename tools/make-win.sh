@@ -14,7 +14,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-cd "$HERE"
+ROOT="$(cd "$HERE/.." && pwd)"
+cd "$ROOT"
 
 OUT="dist/windows"
 BIN="peptide"

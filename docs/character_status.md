@@ -74,7 +74,7 @@ LAUNCHED + JAB + SPECIAL_NEUTRAL, no crash.)
 
 ## How to reproduce / extend
 
-`docs/MODDER_GUIDE.md` (the iteration loop) and `tools/peptide/batch_spawn_test.sh`
+`docs/MODDER_GUIDE.md` (the iteration loop) and `tools/batch_spawn_test.sh`
 (unattended sweep: regen → export → spawn-drive → PASS/FAIL). Always re-export
 before trusting a result (the stale-`.fra` trap). Pass `FRAY_PORT=<n>` /
 `BATCH_RESULTS=<file>` to avoid port collisions across concurrent runs.
