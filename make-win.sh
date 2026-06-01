@@ -48,6 +48,12 @@ fi
 echo "==> Staging .exe into $OUT…"
 cp "target/$TARGET/release/$BIN.exe" "$OUT/" 2>/dev/null || true
 
+# ---- runtime asset files (NOT embedded — peptide.exe reads them from disk next
+# to itself; the converter reads mappings/ next to the .exe). Ship them alongside.
+cp prelude.hsx match_settings.conf src/peptide_ui.html "$OUT/" 2>/dev/null || true
+mkdir -p "$OUT/mappings"
+cp -R crates/ssf2-converter/mappings/. "$OUT/mappings/" 2>/dev/null || true
+
 cat <<DONE
 
 Build complete. Windows file staged in:

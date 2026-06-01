@@ -67,8 +67,11 @@ pub fn launch() -> std::io::Result<()> {
     let ipc_conn = conn.clone();
     let ipc_proxy = event_loop.create_proxy();
     let ipc_char = char_name.clone();
+    // Read the UI from disk at launch (no compiled-in copy); wry's with_html
+    // borrows a &str, so the String must outlive the builder.
+    let ui_html = crate::read_asset("peptide_ui.html");
     let webview = WebViewBuilder::new()
-        .with_html(include_str!("peptide_ui.html"))
+        .with_html(&ui_html)
         .with_initialization_script(&init)
         .with_ipc_handler(move |req: Request<String>| {
             let body = req.body().to_string();

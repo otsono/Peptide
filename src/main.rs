@@ -605,36 +605,63 @@ fn add_int(code: &mut Bytecode, val: i32) -> usize {
 
 // ---- headless match settings (data-file driven) -----------------------------
 
-/// Built-in default for the headless `s`-command match settings. An on-disk
-/// copy overrides this so values can be tweaked WITHOUT recompiling.
-const MATCH_SETTINGS_DEFAULT: &str = include_str!("../match_settings.conf");
+/// The peptide crate's source dir, captured at compile time. Used ONLY to
+/// *locate* runtime asset files (prelude.hsx, match_settings.conf,
+/// peptide_ui.html) in a dev/source checkout — never to embed their content.
+const PEPTIDE_CRATE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
-/// Resolve the headless match settings → `(lives, time)`. Reads the first
-/// existing override file (`$PEPTIDE_MATCH_SETTINGS`, then `match_settings.conf`
-/// next to the binary, then `./match_settings.conf`), falling back to the
-/// baked-in default. See `tools/peptide/match_settings.conf`.
-fn load_match_settings() -> (i32, i32) {
-    let mut text = MATCH_SETTINGS_DEFAULT.to_string();
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(p) = std::env::var("PEPTIDE_MATCH_SETTINGS") {
-        candidates.push(p.into());
+/// Candidate locations for a peptide runtime asset file (e.g. `prelude.hsx`),
+/// tried in order. The first that exists wins. Resolution:
+///   1. `$PEPTIDE_ASSET_DIR/<rel>` (explicit override dir)
+///   2. cwd-relative (`./<rel>`)
+///   3. next to the binary (`<exe-dir>/<rel>` — the packaged layout)
+///   4. `<exe-dir>/../../<rel>` (a `target/<profile>/<bin>` dev build → repo root)
+///   5. the peptide crate's source dir (`PEPTIDE_CRATE_DIR/<rel>` — source checkout)
+fn asset_candidate_paths(rel: &str) -> Vec<std::path::PathBuf> {
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(dir) = std::env::var("PEPTIDE_ASSET_DIR") {
+        paths.push(std::path::PathBuf::from(dir).join(rel));
     }
+    paths.push(std::path::PathBuf::from(rel));
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            // target/release/peptide → tools/peptide/match_settings.conf
-            candidates.push(dir.join("../../match_settings.conf"));
-            candidates.push(dir.join("match_settings.conf"));
+            paths.push(dir.join(rel));
+            if let Some(up) = dir.parent().and_then(|p| p.parent()) {
+                paths.push(up.join(rel));
+            }
         }
     }
-    candidates.push(std::path::PathBuf::from("match_settings.conf"));
-    for c in &candidates {
-        if let Ok(s) = std::fs::read_to_string(c) {
-            eprintln!("match-settings: loaded override {}", c.display());
-            text = s;
-            break;
+    paths.push(std::path::PathBuf::from(PEPTIDE_CRATE_DIR).join(rel));
+    // peptide_ui.html lives under src/ in the source tree (prelude.hsx and
+    // match_settings.conf are at the crate root); cover both in a dev checkout.
+    paths.push(std::path::PathBuf::from(PEPTIDE_CRATE_DIR).join("src").join(rel));
+    paths
+}
+
+/// Read a peptide runtime asset file from disk (no compiled-in fallback). Panics
+/// with the list of locations tried if it's missing — the asset files ship next
+/// to the binary, so a missing one is a hard, loud error rather than a silent
+/// stale-content bug.
+fn read_asset(rel: &str) -> String {
+    let tried = asset_candidate_paths(rel);
+    for path in &tried {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            eprintln!("peptide: loaded asset {}", path.display());
+            return text;
         }
     }
-    parse_match_settings(&text)
+    panic!(
+        "peptide asset {rel:?} not found. Tried:\n{}\n\
+         Ship it next to the binary, run from the repo, or set PEPTIDE_ASSET_DIR.",
+        tried.iter().map(|p| format!("  - {}", p.display())).collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// Resolve the headless match settings → `(lives, time)`, reading
+/// `match_settings.conf` from disk (see `asset_candidate_paths`). The file is
+/// required at runtime — nothing is baked in.
+fn load_match_settings() -> (i32, i32) {
+    parse_match_settings(&read_asset("match_settings.conf"))
 }
 
 /// Parse `key = value` lines (with `#` comments). Missing keys keep their
@@ -1131,7 +1158,7 @@ fn connect_edit(
     let eval_chars_g = add_string_const(code, "characters"); // bound to the live character ArrayObj each eval
     // The command implementations, in hscript (ported from bytecode). Loaded ONCE into
     // the interp after applyInterpreterGlobals; every friendly command calls into these.
-    let prelude_g = add_string_const(code, include_str!("../prelude.hsx"));
+    let prelude_g = add_string_const(code, &read_asset("prelude.hsx"));
     // Bound into scope so the prelude's __eval() can parse+run the user command inside an
     // hscript try/catch (crash-proofing): __interp = the interp itself, __parser = a Parser,
     // __cmd = the raw user command line (set per-eval).
