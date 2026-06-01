@@ -53,7 +53,8 @@ formats themselves.
 ## Reference Resources
 
 Always check these before guessing about either format:
-- **Fraymakers community docs**: https://github.com/aJewelofRarity/FraymakersDocs/tree/main
+- **Fraymakers API docs** (community-run, high utility — start here for any
+  question about engine functions/scripts/classes): https://shifterbit.github.io/fraymakers-api-docs/
 - **Fraymakers character template** (official): https://github.com/Fraymakers/character-template
 - **SSF2 modding docs**: https://ssf2-modding.readthedocs.io/en/latest/reference/index.html
 

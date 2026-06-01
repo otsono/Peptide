@@ -478,7 +478,11 @@ fn http_get(port: u16, path: &str, timeout: Duration) -> Option<String> {
     stream.set_read_timeout(Some(timeout)).ok()?;
     stream.set_write_timeout(Some(timeout)).ok()?;
     let mut w = stream.try_clone().ok()?;
-    w.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes()).ok()?;
+    // The Host header MUST carry the port: Chrome's DevTools HTTP endpoint echoes the
+    // request Host verbatim into each target's `webSocketDebuggerUrl`. With a bare
+    // `Host: 127.0.0.1` it returns a port-less `ws://127.0.0.1/devtools/...`, which
+    // tungstenite then dials on the default port 80 — so every CDP connect failed.
+    w.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes()).ok()?;
     let mut reader = BufReader::new(stream);
     let mut status = String::new();
     reader.read_line(&mut status).ok()?;
