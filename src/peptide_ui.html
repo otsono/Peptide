@@ -165,6 +165,8 @@
   .mstat:hover{border-color:var(--clay);background:var(--surface);}
   .mstat-pic{width:30px;height:30px;border-radius:50%;background:var(--chip);display:flex;
     align-items:center;justify-content:center;font-size:16px;flex-shrink:0;}
+  /* the engine-ripped stock icon (a tall portrait) cropped into the round pic, head-aligned */
+  img.mstat-pic{object-fit:cover;object-position:center top;}
   .mstat-body{display:flex;flex-direction:column;line-height:1.25;}
   .mstat-id{font-weight:650;font-size:13px;}
   .mstat-meta{font-size:11.5px;color:var(--muted);}
@@ -655,28 +657,62 @@
   // (Rust routes "MATCHSTATUS:<id|dmg|anim;…>" here; it never hits the chat). Robust
   // to no live match — an empty payload just clears the row.
   let lastStatus = null;
+  // Stock icons are ripped from the engine (PNG -> base64 data URL) and cached BY CHARACTER ID
+  // for the duration of ONE engine session (they're cleared on disconnect — a different
+  // Fraymakers session can have a different roster, or a character re-converted with a new
+  // icon). iconReq tracks which ids we've already asked for, so the 200ms status tick doesn't
+  // re-ask every frame. Both are reset in refreshUi() when the connection drops.
+  let iconById = {}, slotIds = [], iconReq = {};
   window.onMatchStatus = function(payload){
     if(payload === lastStatus) return;       // skip needless re-renders
     lastStatus = payload;
     renderMatchStatus(payload);
   };
+  // Engine -> here: a ripped icon for the character currently in match slot `slot`.
+  window.onIcon = function(slot, url){
+    const id = slotIds[parseInt(slot,10)];
+    if(!id || !url) return;
+    iconById[id] = url;
+    renderMatchStatus(lastStatus);           // re-render so the new icon appears
+  };
   function renderMatchStatus(payload){
     const host = $("match-status"); if(!host) return;
     host.innerHTML = "";
     const recs = (payload||"").split(";").map(s=>s.trim()).filter(s=>s.length);
+    slotIds = [];
     for(let i=0;i<recs.length;i++){
       const p = recs[i].split("|");
       const id = p[0]||"?", dmg = (Math.round(parseFloat(p[1]))||0), anim = p[2]||"?";
+      // Only fetch/cache icons for a known id — "?" is a transient/unknown character (a null
+      // id from the engine) and would otherwise collide in the by-id cache.
+      const known = !!id && id !== "?";
+      slotIds[i] = id;
       const b = document.createElement("button");
       b.className = "mstat"; b.title = "Run hscript on this character";
-      b.innerHTML = '<span class="mstat-pic">👤</span>'
+      const icon = known ? iconById[id] : null;
+      const pic = icon
+        ? '<img class="mstat-pic" src="'+icon+'" alt="">'
+        : '<span class="mstat-pic">👤</span>';
+      b.innerHTML = pic
         + '<span class="mstat-body"><span class="mstat-id">'+escapeHtml(id)+'</span>'
         + '<span class="mstat-meta"><b>'+dmg+'%</b> · '+escapeHtml(anim)+'</span></span>';
       const slot=i, cid=id;
       b.onclick=()=>openCharModal(slot, cid);
       host.appendChild(b);
+      // Kick an immediate request the first time we see this id (fast first paint).
+      if(known && !icon && !iconReq[id]){ iconReq[id]=true; ipcSend("@@icon:"+i); }
     }
   }
+  // Retry sweep: the very first request can land before the HUD texture is uploaded
+  // (iconRaw -> ERR:notex -> empty), so re-ask every few seconds for any visible character
+  // still missing an icon. Stops requesting an id as soon as it's cached.
+  setInterval(function(){
+    if(!connected) return;
+    for(let i=0;i<slotIds.length;i++){
+      const id=slotIds[i];
+      if(id && id!=="?" && !iconById[id]) ipcSend("@@icon:"+i);
+    }
+  }, 2500);
 
   // ── per-character chat modal — run hscript on match.getCharacters()[slot] ──
   let charSlot = null;
@@ -738,7 +774,7 @@
     $("input").disabled=dis; $("send").disabled=dis;
     document.querySelectorAll("#match-status button").forEach(b=>b.disabled=dis);
     // No live engine -> no live match: clear the status indicators (+ the char modal).
-    if(!connected){ const ms=$("match-status"); if(ms&&ms.children.length){ ms.innerHTML=""; lastStatus=null; } closeCharModal(); }
+    if(!connected){ const ms=$("match-status"); if(ms&&ms.children.length){ ms.innerHTML=""; lastStatus=null; } iconById={}; iconReq={}; slotIds=[]; closeCharModal(); }
     document.body.classList.toggle("blocked", modalUp);
     // Show the "not connected — launch the game" bar when disconnected and no modal is up.
     $("disco-bar").classList.toggle("show", !connected && !modalUp);
@@ -790,12 +826,12 @@
     if(window.ipc && window.ipc.postMessage) window.ipc.postMessage(text);
   }
 
-  $("send").onclick=()=>{ const v=$("input").value; $("input").value=""; send(v); $("input").focus(); };
-  $("input").addEventListener("keydown",(e)=>{
-    if(e.key==="Enter"){ e.preventDefault(); $("input").value=""; send(e.target.value || $("input").dataset.last || e.target.defaultValue); }
-  });
-  // simpler enter handling
-  $("input").onkeydown=(e)=>{ if(e.key==="Enter"){ const v=$("input").value; $("input").value=""; send(v); } };
+  // One read-then-clear-then-send path, shared by the button and Enter. (A previous
+  // second Enter handler cleared the field BEFORE reading it, so every Enter after the
+  // first message sent an empty string — the chat appeared to "stop working".)
+  function submitInput(){ const v=$("input").value; $("input").value=""; send(v); $("input").focus(); }
+  $("send").onclick=submitInput;
+  $("input").onkeydown=(e)=>{ if(e.key==="Enter"){ e.preventDefault(); submitInput(); } };
   // per-character modal: Enter runs, backdrop click closes
   $("char-input").onkeydown=(e)=>{ if(e.key==="Enter") charSend(); };
   $("char-overlay").addEventListener("click",(e)=>{ if(e.target===$("char-overlay")) closeCharModal(); });

@@ -3058,6 +3058,7 @@ dependencies = [
  "dirs 5.0.1",
  "env_logger",
  "hlbc",
+ "image",
  "log",
  "ratatui",
  "rfd",

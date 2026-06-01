@@ -184,13 +184,19 @@ pub fn translate(line: &str) -> Translated {
 // routed by the GUI to the relevant widget and SUPPRESSED everywhere a human reads the
 // raw stream (the chat, the CLI). The first channel is `matchStatus` (host-polled).
 pub const MATCH_STATUS_TAG: &str = "MATCHSTATUS:";
+/// `ICON:<slot>:<png-hex>` — a character's stock icon ripped from the engine (the host
+/// decodes the hex to a base64 data: URL for the matchStatus widget). Host-requested, not
+/// polled, so it lands once per character rather than every tick.
+pub const ICON_TAG: &str = "ICON:";
 
 /// If `line` is a channel line, return `(channel_name, payload)`. The engine wraps eval
 /// replies as `E:<result>`, so a polled `e matchStatus()` arrives as `E:MATCHSTATUS:<…>`;
 /// we look through the `E:` prefix. Used by the GUI (to route) and the CLI (to suppress).
 pub fn channel_payload(line: &str) -> Option<(&'static str, &str)> {
     let l = line.strip_prefix("E:").unwrap_or(line);
-    l.strip_prefix(MATCH_STATUS_TAG).map(|p| ("matchStatus", p))
+    if let Some(p) = l.strip_prefix(MATCH_STATUS_TAG) { return Some(("matchStatus", p)); }
+    if let Some(p) = l.strip_prefix(ICON_TAG) { return Some(("charIcon", p)); }
+    None
 }
 
 /// A friendly gloss for an engine reply line (additive — callers keep the raw
@@ -307,6 +313,18 @@ pub fn help_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_payload_routes_matchstatus_and_icon() {
+        // through the E: prefix, and bare
+        assert_eq!(channel_payload("E:MATCHSTATUS:a|0|idle"), Some(("matchStatus", "a|0|idle")));
+        assert_eq!(channel_payload("MATCHSTATUS:"), Some(("matchStatus", "")));
+        assert_eq!(channel_payload("E:ICON:0:89504e47"), Some(("charIcon", "0:89504e47")));
+        assert_eq!(channel_payload("ICON:2:"), Some(("charIcon", "2:"))); // empty hex (graceful fail)
+        // not a channel -> goes to the chat
+        assert_eq!(channel_payload("E:hello"), None);
+        assert_eq!(channel_payload("LAUNCHED foo"), None);
+    }
 
     fn wire(line: &str) -> String {
         match translate(line) {
