@@ -49,11 +49,12 @@ fi
 echo "==> Staging .exe into $OUT…"
 cp "build/$TARGET/release/$BIN.exe" "$OUT/" 2>/dev/null || true
 
-# ---- runtime asset files (NOT embedded — peptide.exe reads them from disk next
-# to itself; the converter reads mappings/ next to the .exe). Ship them alongside.
-cp commands.hsx match_settings.conf src/peptide_ui.html "$OUT/" 2>/dev/null || true
-mkdir -p "$OUT/mappings"
-cp -R crates/ssf2-converter/mappings/. "$OUT/mappings/" 2>/dev/null || true
+# ---- runtime asset files (NOT embedded — peptide.exe reads them from disk). Both
+# the app and the converter check a `data/` subfolder next to the .exe first, so
+# stage everything into $OUT/data/.
+mkdir -p "$OUT/data/mappings"
+cp commands.hsx match_settings.conf src/peptide_ui.html "$OUT/data/" 2>/dev/null || true
+cp -R crates/ssf2-converter/mappings/. "$OUT/data/mappings/" 2>/dev/null || true
 
 cat <<DONE
 
