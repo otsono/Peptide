@@ -46,11 +46,12 @@
     { "from": ".updateAttackBoxStats(", "to": ".updateHitboxStats(" },
     { "from": ".getControls()", "to": ".getHeldControls()" },
     { "from": ".gotoAndStop(", "to": ".playFrameLabel(" },
-    { "from": ".setXSpeed(", "to": ".setXVelocity(" },
-    { "from": ".setYSpeed(", "to": ".setYVelocity(" },
-    // NOTE: getXSpeed()/getYSpeed() are kept as-is (Fraymakers' facing-relative speed
-    // getters); they are NOT renamed to get*Velocity(). Only the X/Y getters — the Net
-    // variants still map to getNet*Velocity() in the decompiler.
+    // NOTE: setXSpeed/setYSpeed and getXSpeed/getYSpeed are all kept as-is. Fraymakers'
+    // setXSpeed/getXSpeed are FACING-RELATIVE (positive X = forward in the facing
+    // direction), exactly like SSF2's — renaming the setters to the world-space
+    // set*Velocity() drops the orientation and reverses forward momentum when facing left
+    // (e.g. side-special). The decompiler keeps the names 1:1 and drops SSF2's second flag
+    // arg. Only the Net variants map to getNet*Velocity().
 
     // SSF2 event constants -> Fraymakers event enums (same add/removeEventListener API).
     // ORDER: CHAR_GRABBED before CHAR_GRAB (the latter is a prefix of the former).

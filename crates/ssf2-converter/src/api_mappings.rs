@@ -106,13 +106,17 @@ pub fn build_method_map() -> BTreeMap<(&'static str, &'static str), MethodMappin
         fm_receiver: "self", fm_method: "setY",
         arg_transform: id.clone(), note: "",
     });
+    // setXSpeed/setYSpeed are FACING-RELATIVE in both engines (positive X =
+    // forward in the facing direction) — keep the names 1:1. Mapping them to the
+    // world-space set*Velocity drops the orientation and reverses forward momentum
+    // when facing left (e.g. side-special). See decompiler.rs + commands.jsonc.
     m.insert(("", "setXSpeed"), MethodMapping {
-        fm_receiver: "self", fm_method: "setXVelocity",
-        arg_transform: id.clone(), note: "SSF2 setXSpeed → FM setXVelocity",
+        fm_receiver: "self", fm_method: "setXSpeed",
+        arg_transform: id.clone(), note: "SSF2 setXSpeed → FM setXSpeed (facing-relative)",
     });
     m.insert(("", "setYSpeed"), MethodMapping {
-        fm_receiver: "self", fm_method: "setYVelocity",
-        arg_transform: id.clone(), note: "SSF2 setYSpeed → FM setYVelocity",
+        fm_receiver: "self", fm_method: "setYSpeed",
+        arg_transform: id.clone(), note: "SSF2 setYSpeed → FM setYSpeed (facing-relative)",
     });
     m.insert(("", "getXSpeed"), MethodMapping {
         fm_receiver: "self", fm_method: "getXVelocity",

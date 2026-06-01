@@ -26,8 +26,14 @@ fn lookup_api(name: &str) -> Option<ApiEntry> {
         "setY"              => api!("self.setY"),
         "getXSpeed"         => api!("self.getXSpeed()"),
         "getYSpeed"         => api!("self.getYSpeed()"),
-        "setXSpeed"         => api!("self.setXVelocity"),
-        "setYSpeed"         => api!("self.setYVelocity"),
+        // SSF2 setXSpeed/setYSpeed are FACING-RELATIVE (positive X = forward in
+        // the character's facing direction). Fraymakers' setXSpeed/setYSpeed have
+        // the SAME semantics, so keep the names 1:1 — do NOT map to the world-space
+        // setX/YVelocity (that drops the facing orientation and makes forward
+        // momentum push the wrong way when facing left). Mirrors the getXSpeed/
+        // getYSpeed handling above. The SSF2 second boolean arg is dropped below.
+        "setXSpeed"         => api!("self.setXSpeed"),
+        "setYSpeed"         => api!("self.setYSpeed"),
         "getNetXSpeed"      => api!("self.getNetXVelocity()"),
         "getNetYSpeed"      => api!("self.getNetYVelocity()"),
         "setXSpeedScaled"   => api!("self.setXVelocityScaled"),
@@ -189,24 +195,13 @@ impl Expr {
                         }
                     }
                 }
-                // SSF2 velocity setters -> Fraymakers. setXSpeed's boolean 2nd flag controls
-                // whether the speed is oriented to the character's facing: an explicit `false`
-                // uses the raw value as-is, while an omitted flag (or `true`) orients it through
-                // flipX (Entity.flipX(v) negates v when facing left). setYSpeed never flips and
-                // drops any flag. Calls ALREADY named setXVelocity/setYVelocity are passed
-                // through untouched — only the SSF2 setXSpeed/setYSpeed names are remapped here.
+                // SSF2 setXSpeed/setYSpeed map 1:1 onto Fraymakers' facing-relative
+                // setXSpeed/setYSpeed (see the lookup table above). Both engines treat a
+                // positive X speed as "forward in the facing direction", so NO flipX wrap is
+                // needed — the FM method already applies the orientation. We only drop SSF2's
+                // optional second boolean flag, which FM's single-arg signature doesn't accept.
                 match method.as_str() {
-                    "setXSpeed" if !rendered.is_empty() => {
-                        // false 2nd arg => raw; omitted or any other (incl. true) => flip-to-facing
-                        let raw = rendered.len() >= 2 && rendered[1].trim() == "false";
-                        let value = rendered[0].clone();
-                        rendered = if raw {
-                            vec![value]
-                        } else {
-                            vec![format!("self.flipX({})", value)]
-                        };
-                    }
-                    "setYSpeed" => { rendered.truncate(1); }  // never flips, no flag
+                    "setXSpeed" | "setYSpeed" => { rendered.truncate(1); }
                     _ => {}
                 }
                 let arg_str = rendered.join(", ");

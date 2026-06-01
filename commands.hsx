@@ -68,14 +68,15 @@ matchStatus = function() {
   return out;
 };
 
-// iconRaw(c) — pull the character's STOCK icon straight out of the ENGINE as a base64 PNG. Works
-// for ANY character in the match, including ones with no FrayTools project on disk. The chain is
-// pure reflection over engine objects: the character's DamageCounter (get_fraymakersDamageCounter)
-// -> getStockIconSprites().compactIcon (a pxf SpriteApi — note getStockIconSprites lives on the
-// API, not the entity, so we go through the DamageCounter exactly as the engine does) -> __sprite__
-// -> h2d.Bitmap -> h2d.Tile -> h3d.mat.Texture -> capturePixels -> crop -> PNG. Only __b64
-// (haxe.crypto.Base64.encode) is bytecode-bound. Returns "ERR:<where>" on a missing link so a
-// single bring-up run pinpoints any break; null-safe throughout.
+// iconRaw(c) — pull the character's STOCK icon straight out of the ENGINE as PNG hex. Works for
+// ANY character in the match, including ones with no FrayTools project on disk. The chain is pure
+// reflection over engine objects — ZERO bytecode: the character's DamageCounter
+// (get_fraymakersDamageCounter) -> getStockIconSprites().icons[0] (a pxf SpriteApi — note
+// getStockIconSprites lives on the API, not the entity, so we go through the DamageCounter exactly
+// as the engine does) -> __sprite__ -> _tileLayers[0].tile (the live texture; _bitmaps tiles are
+// sized-but-textureless) -> h3d.mat.Texture -> capturePixels -> crop -> toPNG -> toHex. (Hex, not
+// base64: toHex is an instance method, reflection-safe; a static Base64 closure call crashes the
+// engine. The host decodes the hex.) Returns "ERR:<where>" on a missing link; null-safe throughout.
 iconRaw = function(c) {
   if (c == null) return "ERR:nochar";
   var dc = c.get_fraymakersDamageCounter();
