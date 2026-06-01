@@ -62,7 +62,7 @@ chmod +x "$APP/Contents/MacOS/$BIN"
 # resolves mappings/ via candidate_paths (exe-dir/mappings first). Both must ride
 # in Contents/MacOS/ so a packaged app finds them.
 RES="$APP/Contents/MacOS"
-cp prelude.hsx match_settings.conf src/peptide_ui.html "$RES/"
+cp commands.hsx match_settings.conf src/peptide_ui.html "$RES/"
 mkdir -p "$RES/mappings"
 cp -R crates/ssf2-converter/mappings/. "$RES/mappings/"
 

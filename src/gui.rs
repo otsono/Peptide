@@ -17,7 +17,7 @@ use tao::window::WindowBuilder;
 use wry::http::Request;
 use wry::WebViewBuilder;
 
-use crate::commands::{translate, Translated};
+use crate::interpreter::{translate, Translated};
 
 /// Events pushed into the loop from worker threads, forwarded to the page.
 enum Ev {

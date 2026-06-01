@@ -10,17 +10,24 @@ RESULTS="${BATCH_RESULTS:-/tmp/batch_results.txt}"
 # One spawn+drive attempt for char $1 on port $2. Echoes the PASS/FAIL line.
 run_one() {
   local c="$1" port="$2"
+  # Drive via explicit hscript (no auto-p0 sugar): read state, then toState a move.
+  # toState(...) returns true (E:true); the engine's toState telemetry emits ANIM:<state>.
   ( cd tools/peptide && FRAY_CHAR="$c" FRAY_PORT="$port" FRAY_ENGINE_LOG=/tmp/${c}_eng.log ./runseq.sh 3 \
-      "spawn $c thespire commandervideoassist" "state" "move jab" "state" "move special_neutral" "physics" \
+      "spawn $c thespire commandervideoassist" \
+      "match.getCharacters()[0].getStateName()" \
+      "match.getCharacters()[0].toState(CState.JAB)" \
+      "match.getCharacters()[0].getStateName()" \
+      "match.getCharacters()[0].toState(CState.SPECIAL_NEUTRAL)" \
+      "match.getCharacters()[0].body.x" \
       >/tmp/${c}_test.log 2>&1 )
   local stood mok crash launched bind
   stood=$(grep -c "ANIM:STAND" /tmp/${c}_test.log)
-  mok=$(grep -c "M:OK" /tmp/${c}_test.log)
+  mok=$(grep -c "E:true" /tmp/${c}_test.log)   # toState(...) -> true
   crash=$(grep -ic "rosetta error\|exception" /tmp/${c}_eng.log 2>/dev/null)
   launched=$(grep -c "LAUNCHED" /tmp/${c}_test.log)
   bind=$(grep -c "Address already in use" /tmp/${c}_test.log)
   if [ "$launched" -ge 1 ] && [ "$stood" -ge 1 ] && [ "$mok" -ge 1 ] && [ "$crash" -eq 0 ]; then
-    echo "PASS (stand=$stood mok=$mok)"
+    echo "PASS (stand=$stood toState=$mok)"
   elif [ "$bind" -ge 1 ] && [ "$launched" -eq 0 ]; then
     echo "RETRY"  # port collision, not a real failure — caller retries
   else

@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use crate::commands::{translate, gloss, Translated};
+use crate::interpreter::{translate, gloss, Translated};
 
 const DEFAULT_PORT: u16 = 17999;
 pub fn parse_port(args: &[String]) -> u16 {

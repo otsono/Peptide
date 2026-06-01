@@ -43,7 +43,7 @@ use asm::Asm;
 
 // Shared friendly-command vocabulary. The patcher uses MOVES to generate the
 // move-dispatch jump table; the bridge uses it to translate move names. One table.
-mod commands;
+mod interpreter;
 mod manifest; // engine-symbol dependency table + doctor/preflight progress UI
 mod convert; // `peptide convert` — in-process SSF2 → Fraymakers conversion (folded-in converter)
 mod config; // persisted config (Fraymakers/FrayTools paths, current char) + env-override resolvers
@@ -126,7 +126,7 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Some("help") | Some("-h") | Some("--help") => {
-            print!("{}", commands::help_text());
+            print!("{}", interpreter::help_text());
             return Ok(());
         }
         Some(m) if m.starts_with('-') => {
@@ -606,11 +606,11 @@ fn add_int(code: &mut Bytecode, val: i32) -> usize {
 // ---- headless match settings (data-file driven) -----------------------------
 
 /// The peptide crate's source dir, captured at compile time. Used ONLY to
-/// *locate* runtime asset files (prelude.hsx, match_settings.conf,
+/// *locate* runtime asset files (commands.hsx, match_settings.conf,
 /// peptide_ui.html) in a dev/source checkout — never to embed their content.
 const PEPTIDE_CRATE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
-/// Candidate locations for a peptide runtime asset file (e.g. `prelude.hsx`),
+/// Candidate locations for a peptide runtime asset file (e.g. `commands.hsx`),
 /// tried in order. The first that exists wins. Resolution:
 ///   1. `$PEPTIDE_ASSET_DIR/<rel>` (explicit override dir)
 ///   2. cwd-relative (`./<rel>`)
@@ -632,7 +632,7 @@ fn asset_candidate_paths(rel: &str) -> Vec<std::path::PathBuf> {
         }
     }
     paths.push(std::path::PathBuf::from(PEPTIDE_CRATE_DIR).join(rel));
-    // peptide_ui.html lives under src/ in the source tree (prelude.hsx and
+    // peptide_ui.html lives under src/ in the source tree (commands.hsx and
     // match_settings.conf are at the crate root); cover both in a dev checkout.
     paths.push(std::path::PathBuf::from(PEPTIDE_CRATE_DIR).join("src").join(rel));
     paths
@@ -1093,21 +1093,21 @@ fn connect_edit(
     let m_ok_g = add_string_const(code, "M:OK\n"); // generic move-dispatch ack (move-by-name)
     let m_nomatch_g = add_string_const(code, "M:NOMATCH\n");
     // Move-by-name dispatch table. The client (bridge) sends `m <letter>` where the
-    // selector byte = 'A' + ordinal (ordinal = index into commands::MOVES). We resolve
+    // selector byte = 'A' + ordinal (ordinal = index into interpreter::MOVES). We resolve
     // each move's CState field by NAME here (robust to findex/field drift), so the
     // engine-side jump table is GENERATED from the same shared table the client uses —
     // not hand-written per move. A move whose CState field is absent in this build
     // falls back to JAB (logged) so the dispatch never reads a bogus field.
     let space_idx = add_int(code, ' ' as i32);
     let negone_idx = add_int(code, -1);
-    let move_fields: Vec<(usize, usize)> = commands::MOVES.iter().enumerate().map(|(i, (mv, fld))| {
+    let move_fields: Vec<(usize, usize)> = interpreter::MOVES.iter().enumerate().map(|(i, (mv, fld))| {
         let fidx = find_field(code, cstate_statics_t, fld).unwrap_or_else(|| {
             eprintln!("move-dispatch: CState.{fld} (move {mv:?}) not found — falling back to JAB");
             jab_field
         });
         (add_int(code, 'A' as i32 + i as i32), fidx) // (letter int-pool idx, CState field idx)
     }).collect();
-    eprintln!("move-dispatch: {} moves resolved (selector 'A'..); see commands::MOVES", move_fields.len());
+    eprintln!("move-dispatch: {} moves resolved (selector 'A'..); see interpreter::MOVES", move_fields.len());
     // ---- 'v' command: physics/vitals readback (criterion #6 numeric telemetry) ----
     // Reads player-0 Character body.x/y, physics.currentVelocityX/Y, damage._damage —
     // all Float (t6) — boxes each via ToDyn and formats with Std.string, then writes
@@ -1158,8 +1158,8 @@ fn connect_edit(
     let eval_chars_g = add_string_const(code, "characters"); // bound to the live character ArrayObj each eval
     // The command implementations, in hscript (ported from bytecode). Loaded ONCE into
     // the interp after applyInterpreterGlobals; every friendly command calls into these.
-    let prelude_g = add_string_const(code, &read_asset("prelude.hsx"));
-    // Bound into scope so the prelude's __eval() can parse+run the user command inside an
+    let commands_g = add_string_const(code, &read_asset("commands.hsx"));
+    // Bound into scope so commands.hsx's __eval() can parse+run the user command inside an
     // hscript try/catch (crash-proofing): __interp = the interp itself, __parser = a Parser,
     // __cmd = the raw user command line (set per-eval).
     let eval_interp_g = add_string_const(code, "__interp");
@@ -2203,7 +2203,7 @@ fn connect_edit(
 
     // ---- 'm' command: drive a move BY NAME on the live player-0 Character ----
     // Wire form: `m <letter>` where letter = 'A' + ordinal (ordinal indexes
-    // commands::MOVES; the bridge does the name→letter mapping). Bare `m` (no
+    // interpreter::MOVES; the bridge does the name→letter mapping). Bare `m` (no
     // arg) = JAB. We walk MatchController.currentMatch -> Match.characters[0],
     // drain the rest of the line to read the selector byte, pick the CState via a
     // GENERATED jump table (one JEq arm per move, built from move_fields above),
@@ -2681,7 +2681,7 @@ fn connect_edit(
     if let Opcode::JSLt { offset, .. } = &mut ops[idx_e_jslt] { *offset = idx_e_getstr as i32 - idx_e_jslt as i32 - 1; }
     if let Opcode::JEq  { offset, .. } = &mut ops[idx_e_jeq]  { *offset = idx_e_getstr as i32 - idx_e_jeq as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_jback] { *offset = idx_e_drain as i32 - idx_e_jback as i32 - 1; }
-    // Save the command line: rr14 is reused by the prelude load + p0/characters bindings
+    // Save the command line: rr14 is reused by commands.hsx load + p0/characters bindings
     // below, so we parse the command AFTER the interp is ready, from this saved copy.
     ops.push(Opcode::Mov { dst: rr(55), src: rr(14) });
     // ---- get-or-create the PERSISTENT top-scope interp, loaded with the engine's global
@@ -2696,10 +2696,10 @@ fn connect_edit(
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_interp_ctor), arg0: e_interp });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_apply_globals), arg0: e_interp }); // load engine API
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_interp), src: e_interp });
-    // load the hscript prelude (the ported command implementations) into the interp, once.
+    // load the hscript command script (commands.hsx) (the ported command implementations) into the interp, once.
     ops.push(Opcode::New { dst: e_parser });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_parser_ctor), arg0: e_parser });
-    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(prelude_g) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(commands_g) });
     ops.push(Opcode::Null { dst: rr(15) });
     ops.push(Opcode::Call3 { dst: e_expr, fun: RefFun(hs_parse), arg0: e_parser, arg1: rr(14), arg2: rr(15) });
     ops.push(Opcode::Call2 { dst: e_result, fun: RefFun(hs_interp_script), arg0: e_expr, arg1: e_interp });
@@ -2710,7 +2710,7 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_parser_g) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: e_parser });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
-    // bind __td = Tildebugger statics (so the prelude's Engine.log can call __td.log).
+    // bind __td = Tildebugger statics (so commands.hsx's Engine.log can call __td.log).
     ops.push(Opcode::GetGlobal { dst: rr(23), global: RefGlobal(tilde_global) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(23) });
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_td_g) });
@@ -2721,7 +2721,7 @@ fn connect_edit(
     // so scripts can reach the live character: `p0.toState(...)`, `p0.body.x`, etc.
     ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
     ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });   // currentMatch
-    // NOTE: `match` is an hscript facade defined in the prelude (pxf.core.Match has no
+    // NOTE: `match` is an hscript facade defined in commands.hsx (pxf.core.Match has no
     // RTTI so its fields/methods don't reflect); we bind the reliable `characters` array
     // below and the facade reads it. eval_match_g kept for reference.
     let _ = eval_match_g;
@@ -2748,8 +2748,8 @@ fn connect_edit(
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_p0null] { *offset = idx_e_bindnull as i32 - idx_e_p0null as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_chnull] { *offset = idx_e_bindnull as i32 - idx_e_chnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_p0done] { *offset = idx_e_setp0 as i32 - idx_e_p0done as i32 - 1; }
-    // bind p1 = null for now (the prelude's getCharacters() filters nulls; p1 becomes a
-    // real Character with the dummy-opponent feature). Keeps the prelude from referencing
+    // bind p1 = null for now (commands.hsx's getCharacters() filters nulls; p1 becomes a
+    // real Character with the dummy-opponent feature). Keeps commands.hsx from referencing
     // an unbound variable.
     ops.push(Opcode::Null { dst: rr(28) });
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_p1_g) });
