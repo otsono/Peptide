@@ -738,7 +738,9 @@ fn boot_ssf2(cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>, char_name: Optio
     // inject_ready_signal) before the quick-boot spawn, so it isn't fired into the loading
     // hook (which crashes). Falls back to the responsiveness settle if READY never comes.
     progress(3, 4, "waiting for SSF2 to finish loading…");
-    if !crate::ssf2_bridge::wait_ready_signal(Duration::from_secs(40)) {
+    // Generous timeout: READY fires at the disclaimer ~50s into a cold boot, so a short
+    // wait would give up before it and fall back to the flaky heuristic (see ssf2_bridge).
+    if !crate::ssf2_bridge::wait_ready_signal(Duration::from_secs(120)) {
         let _ = proxy.send_event(Ev::Js(
             "window.onSsf2BootFailed && onSsf2BootFailed(\"SSF2 launched but never settled. Try again.\")".into()));
         return;

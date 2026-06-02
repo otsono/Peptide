@@ -310,7 +310,11 @@ pub fn session(args: &[String]) -> Result<()> {
     // wait for the engine's event-driven READY (injected at the boot disclaimer — see
     // inject_ready_signal), so `tell`-ed commands and the quick-boot spawn aren't fired into
     // the loading hook. Falls back to the responsiveness settle only if READY never arrives.
-    let ready = wait_ready_signal(Duration::from_secs(40));
+    // Generous timeout: the disclaimer (where READY fires) lands ~50s into a cold boot,
+    // so a 40s wait would give up BEFORE READY on a slow boot and fall back to the flaky
+    // heuristic. 120s comfortably covers a cold boot; the fallback only triggers if the
+    // engine genuinely never reaches the disclaimer.
+    let ready = wait_ready_signal(Duration::from_secs(120));
     slog(if ready { "[ssf2-session] engine READY — peptide ssf2 tell \"<cmd>\"" }
          else { "[ssf2-session] engine never settled — accepting commands anyway" });
 
