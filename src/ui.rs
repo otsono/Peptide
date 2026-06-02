@@ -88,15 +88,17 @@ pub fn reawait(port: u16, token: &str, secs: u64) -> Option<(BufReader<TcpStream
 
 // ─────────────────────────── cross-platform launch ─────────────────────────
 
-/// Per-OS engine binary + the env var that points the dynamic loader at the
-/// install dir (so the engine finds its bundled libs / DLLs).
-fn engine_invocation() -> (&'static str, Option<&'static str>) {
+/// The env var that points the dynamic loader at the install dir (so the engine
+/// finds its bundled libs / DLLs). The engine binary NAME is resolved separately
+/// through `Config::engine_name` (env → config → per-OS default) since it differs
+/// per install — Steam ships it as `Fraymakers.exe` on Windows, `hl` elsewhere.
+fn engine_lib_var() -> Option<&'static str> {
     #[cfg(target_os = "windows")]
-    { ("hl.exe", None) } // current_dir is enough for DLL resolution on Windows
+    { None } // current_dir is enough for DLL resolution on Windows
     #[cfg(target_os = "macos")]
-    { ("hl", Some("DYLD_LIBRARY_PATH")) }
+    { Some("DYLD_LIBRARY_PATH") }
     #[cfg(all(unix, not(target_os = "macos")))]
-    { ("hl", Some("LD_LIBRARY_PATH")) }
+    { Some("LD_LIBRARY_PATH") }
 }
 
 // The per-OS default Fraymakers install path now lives in
@@ -265,8 +267,10 @@ pub fn patch_and_launch_with_progress(
     let _ = std::fs::remove_file(fray_dir.join("error.log"));
 
     // boot the patched engine.
-    let (engine_bin, lib_var) = engine_invocation();
-    let mut cmd = Command::new(fray_dir.join(engine_bin));
+    let engine_bin = cfg.engine_name();
+    let lib_var = engine_lib_var();
+    let engine_path = fray_dir.join(&engine_bin);
+    let mut cmd = Command::new(&engine_path);
     cmd.arg("_conn.dat").current_dir(&fray_dir).stdout(Stdio::null()).stderr(Stdio::null());
     if let Some(var) = lib_var {
         cmd.env(var, ".");
@@ -276,7 +280,7 @@ pub fn patch_and_launch_with_progress(
         Err(_) => {
             let _ = std::fs::remove_file(&conn);
             let _ = std::fs::remove_file(&appid);
-            return Err(io_err(&format!("failed to launch the engine ({})", fray_dir.join(engine_bin).display())));
+            return Err(io_err(&format!("failed to launch the engine ({})", engine_path.display())));
         }
     };
     Ok((port, token, Cleanup { conn, appid, engine }))

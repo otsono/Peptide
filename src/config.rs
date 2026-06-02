@@ -48,6 +48,10 @@ pub struct Config {
     pub stage: String,
     pub assist: String,
     pub boot_name: String,
+    /// HashLink runtime binary name inside the Fraymakers install. Empty = per-OS
+    /// default (`Fraymakers.exe` on Windows, `hl` elsewhere). Steam renames the
+    /// HashLink runtime to the game name on Windows, so it's not `hl.exe` there.
+    pub engine_name: String,
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -151,6 +155,18 @@ impl Config {
         "hlboot-sdl.dat".to_string()
     }
 
+    /// HashLink runtime binary name. `FRAY_ENGINE` env → config → per-OS default
+    /// (`Fraymakers.exe` on Windows, `hl` elsewhere). Steam renames the HashLink
+    /// runtime to the game name when packaging for Windows, so it is NOT `hl.exe`
+    /// there; macOS/Linux ship the runtime as `hl`.
+    pub fn engine_name(&self) -> String {
+        if let Ok(e) = std::env::var("FRAY_ENGINE") {
+            if !e.is_empty() { return e; }
+        }
+        if !self.engine_name.is_empty() { return self.engine_name.clone(); }
+        if cfg!(target_os = "windows") { "Fraymakers.exe".to_string() } else { "hl".to_string() }
+    }
+
     /// Output directory for conversions. config → "./characters".
     pub fn output_dir(&self) -> PathBuf {
         if !self.output_dir.is_empty() {
@@ -188,6 +204,7 @@ mod tests {
             stage: "battlefield".into(),
             assist: "someassist".into(),
             boot_name: "hlboot-sdl.dat".into(),
+            engine_name: String::new(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: Config = serde_json::from_str(&json).unwrap();
