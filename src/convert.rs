@@ -104,6 +104,11 @@ peptide convert — SSF2 → Fraymakers character converter
 USAGE:
   peptide convert <file.ssf> [OPTIONS]
 
+The input may be a pre-decompiled character .swf, a SWF-wrapped .ssf, or one of
+SSF2's shipped DAT<n>.ssf data archives (the embedded character SWF is unwrapped
+automatically). Non-character DAT archives (stages, items, UI) are reported and
+skipped.
+
 OPTIONS:
   -o, --output <DIR>          Output directory          [default: ./characters]
   -n, --name <NAME>           Character-name override; for a multi-character
