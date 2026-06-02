@@ -307,6 +307,12 @@ pub fn session(args: &[String]) {
     // boot you then drive with `spawn`). `--no-boot`/`--attach`: connect to an
     // engine someone else launched on --port/--token.
     let no_boot = args.iter().any(|a| a == "--no-boot" || a == "--attach");
+    // When we BOOT a headless engine with a baked char (not --full, not --attach), the
+    // engine reaches READY with all match content loaded but parked — the `s` start-match
+    // is socket-driven and nobody has sent it yet. A true "quick boot" lands straight in a
+    // match, so we auto-fire a single bare `s` once READY arrives (uses the baked default
+    // char/stage/assist). Set below in the boot branch; None for --full / --attach.
+    let mut autostart = false;
     let (reader, write_half, port, token, _guard) = if no_boot {
         let port = parse_port(args);
         let token = parse_token(args);
@@ -320,6 +326,7 @@ pub fn session(args: &[String]) {
         } else {
             Some(arg_val(args, "--char").unwrap_or_else(|| crate::config::Config::load().char_name()))
         };
+        autostart = bake.is_some();
         match crate::ui::patch_and_launch_with_progress(None, bake.as_deref()) {
             Ok((port, token, guard)) => {
                 eprintln!("peptide session: engine launched on :{port}; waiting for it to dial in…");
@@ -378,6 +385,15 @@ pub fn session(args: &[String]) {
 
     // Poll the control file for newly-appended command lines and dispatch them.
     let mut writer = write_half;
+
+    // Quick boot: a baked-char headless boot lands straight in a match. The engine is
+    // READY with all content loaded but the `s` start-match is socket-driven, so fire a
+    // single bare `s` now (it uses the baked default char/stage/assist). --full and
+    // --attach skip this — they're explicitly "boot a bridge, drive it by hand".
+    if autostart {
+        slog(&log, "[session] quick boot — auto-launching the baked character (bare `s`)");
+        process_cmd(&mut writer, "s", &log);
+    }
     let mut offset: u64 = 0;
     let mut leftover = String::new();
     loop {

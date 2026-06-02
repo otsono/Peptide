@@ -263,6 +263,22 @@ pub fn session(args: &[String]) -> Result<()> {
     slog(if ready { "[ssf2-session] engine READY — peptide ssf2 tell \"<cmd>\"" }
          else { "[ssf2-session] engine never settled — accepting commands anyway" });
 
+    // Quick boot (headless): just like the Fraymakers `session --char`, land straight in a
+    // match instead of parking the bridge at the boot screen. The match-launch (SPAWN +
+    // config + GO) is host-driven over the bridge, so we fire a single spawn here once the
+    // engine has settled. `--full` opts out — boot a bare bridge you drive by hand.
+    let full = args.iter().any(|a| a == "--full");
+    if ready && !full {
+        let ch = arg_val(args, "--char").unwrap_or_else(|| crate::config::Config::load().char_name());
+        slog(&format!("[ssf2-session] quick boot — auto-launching {ch} (spawn)"));
+        let mut target = crate::ssf2_target::Ssf2Target::new();
+        match crate::debug_target::run_command(&mut target, &format!("s {ch}")) {
+            Ok(Some(r)) => slog(&format!("<< {r}")),
+            Ok(None) => {}
+            Err(e) => slog(&format!("<< quick-boot spawn failed: {e}")),
+        }
+    }
+
     // poll the control file for appended command lines
     let mut offset: u64 = 0;
     let mut leftover = String::new();
