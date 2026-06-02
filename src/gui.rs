@@ -286,7 +286,11 @@ fn pick_path(dir: bool, reply_fn: &str, ext: &str, proxy: &EventLoopProxy<Ev>) {
         rfd::FileDialog::new().pick_folder()
     } else {
         let mut d = rfd::FileDialog::new();
-        if !ext.is_empty() { d = d.add_filter(ext, &[ext]); }
+        // `ext` may be a comma-separated list (e.g. "ssf,swf,dat") so a single
+        // picker can accept every supported input type, matching what the
+        // converter reads. Empty = no filter (any file).
+        let exts: Vec<&str> = ext.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        if !exts.is_empty() { d = d.add_filter(exts.join("/"), &exts); }
         // A `.fraytools` pick (launch / FrayTools Hook) opens in the configured
         // project folder by default, since that's where projects live.
         if ext == "fraytools" {
