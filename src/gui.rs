@@ -168,6 +168,10 @@ fn config_json() -> String {
     let s = |v: &str| js_str(v);
     let frayroot = cfg.fraymakers_root().map(|p| p.display().to_string()).unwrap_or_default();
     let frayexe = cfg.fraytools_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    // Whether FrayTools resolves to a file that actually exists on disk (not just a
+    // configured-but-missing path). The "isn't built yet" modal uses this to decide
+    // between offering an inline Export and sending the user to Setup.
+    let fraytools_ready = cfg.fraytools_exe().map(|p| p.is_file()).unwrap_or(false);
     // Autodetect for the wizard: did we find each tool on disk? And the path to
     // pre-fill FrayTools with when the user hasn't set one yet.
     let fraymakers_detected = crate::platform::fraymakers_root().is_some();
@@ -181,7 +185,7 @@ fn config_json() -> String {
         "{{\"configured\":{},\"setupComplete\":{},\"currentChar\":{},\"stage\":{},\"assist\":{},\
           \"fraymakersRoot\":{},\
           \"fraymakersDetected\":{},\"fraytoolsPath\":{},\"fraytoolsDetected\":{},\
-          \"fraytoolsExe\":{},\"outputDir\":{},\"miscSsf\":{}}}",
+          \"fraytoolsExe\":{},\"fraytoolsReady\":{},\"outputDir\":{},\"miscSsf\":{}}}",
         cfg.configured,
         cfg.setup_complete(),
         s(&cfg.char_name()),
@@ -192,6 +196,7 @@ fn config_json() -> String {
         s(&fraytools_val),
         fraytools_detected,
         s(&frayexe),
+        fraytools_ready,
         s(&cfg.output_dir().display().to_string()),
         s(&cfg.misc_ssf),
     )
@@ -457,6 +462,16 @@ fn run_fraytools(rest: &str, proxy: &EventLoopProxy<Ev>) {
     push("--frame", "frame");
     push("--out", "out");
     push("--fraytools", "fraytools");
+    // The page rarely sends an explicit FrayTools path (the inline "Export Now" on
+    // the not-built modal sends only the project). Fall back to the Setup-configured
+    // exe so we honor a custom install instead of fraytools::export's hardcoded
+    // per-OS default. Only add it if the page didn't already supply one.
+    if json_str_field(json, "fraytools").filter(|s| !s.is_empty()).is_none() {
+        if let Some(exe) = crate::config::Config::load().fraytools_exe() {
+            argv.push("--fraytools".into());
+            argv.push(exe.display().to_string());
+        }
+    }
 
     let _ = proxy.send_event(Ev::Js(format!(
         "window.onFrayProgress && onFrayProgress({})",

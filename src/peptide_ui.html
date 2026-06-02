@@ -1126,15 +1126,43 @@
   // pendingBuildBoot is set: success → boot into the chat; failure → re-offer Export.
   function exportThenBoot(){
     if(!_buildProject){ modalNotBuilt(_buildChar, "", "No FrayTools project found to publish."); return; }
+    // An inline publish needs FrayTools. If it isn't installed/configured, don't
+    // fire an export that will just fail with a raw spawn error — send the user to
+    // Setup instead.
+    if(!CFG.fraytoolsReady){ modalNeedsFrayTools(); return; }
     flowState="building"; pendingBuildBoot=true;
     modalWorking("Publishing “"+_buildChar+"”…","Exporting in FrayTools — this can take a moment.");
     ipcSend("@@fray:export:"+JSON.stringify({project:_buildProject}));
+  }
+  // FrayTools is required to publish a character's `.fra` but isn't set up. Explain
+  // and route to Setup rather than offering an Export that can't run.
+  function modalNeedsFrayTools(){
+    flowState="prompt";
+    modal.classList.remove("working"); modal.classList.add("prompt");
+    resetPatchbar();
+    mIcon.textContent="🛠️";
+    mTitle.textContent="FrayTools isn’t set up";
+    mMsg.textContent="“"+_buildChar+"” needs to be published from FrayTools first, but Peptide "
+                    +"can’t find your FrayTools install. Point Peptide at it in Setup, then try again.";
+    mErr.textContent="";
+    actions.innerHTML="";
+    const setupBtn=document.createElement("button");
+    setupBtn.className="btn-primary"; setupBtn.textContent="Open Setup";
+    setupBtn.onclick=()=>{ dismissModal(); showScreen("home"); openSetupModal(); };
+    const cancel=document.createElement("button");
+    cancel.className="btn-ghost"; cancel.textContent="Cancel"; cancel.onclick=()=>dismissModal();
+    actions.appendChild(setupBtn); actions.appendChild(cancel);
+    overlay.classList.add("show"); blockUi(true);
   }
   function hideModal(){ overlay.classList.remove("show"); blockUi(false); resetPatchbar(); }
   // boot hit a never-published character → the dedicated "isn't built yet" modal.
   window.onNotBuilt=function(ch, project){
     if(!$("screen-console").classList.contains("active")) return;
     setStatus(false);
+    _buildChar=ch||charName; _buildProject=project||"";
+    // No FrayTools → publishing is impossible; show the Setup prompt up front rather
+    // than an Export Now that would fail.
+    if(!CFG.fraytoolsReady){ modalNeedsFrayTools(); return; }
     modalNotBuilt(ch, project, "");
   };
   // The engine crashed — show its log (Enhanced = the patched-engine RESDIAG diagnostics,
