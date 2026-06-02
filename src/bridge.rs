@@ -44,45 +44,46 @@ pub fn parse_token(args: &[String]) -> Option<String> {
 /// ROBUSTNESS: reads RAW BYTES + lossy-decodes, instead of `reader.lines()` (which
 /// aborts the moment the engine emits a non-UTF8 byte). Shared by `serve` (emits to
 /// stdout) and `session` (emits to the log file).
-fn pump_engine_lines(
-    mut reader: BufReader<TcpStream>,
-    ready_tx: &mpsc::Sender<()>,
-    mut emit: impl FnMut(&str, &str),
-) {
-    let mut buf: Vec<u8> = Vec::with_capacity(256);
-    let mut one = [0u8; 1];
-    let mut last_anim = String::new();
-    loop {
-        match reader.read(&mut one) {
-            Ok(0) => break, // clean EOF
-            Ok(_) => {
-                if one[0] == b'\n' {
-                    let line = String::from_utf8_lossy(&buf);
-                    let line = line.trim_end_matches('\r');
-                    // Channel feeds (matchStatus, icons) are not for the CLI/log — drop them.
-                    if crate::interpreter::channel_payload(line).is_none() {
-                        let pretty = match gloss(line) {
-                            Some(g) => format!("<< {line:<28} ({g})"),
-                            None => format!("<< {line}"),
-                        };
-                        // Suppress repeated per-frame ANIM lines; emit only on change.
-                        let show = match line.strip_prefix("ANIM:") {
-                            Some(a) if a == last_anim => false,
-                            Some(a) => { last_anim = a.to_string(); true }
-                            None => true,
-                        };
-                        if line.contains("READY") { let _ = ready_tx.send(()); }
-                        if show { emit(line, &pretty); }
-                    }
-                    buf.clear();
-                } else {
-                    buf.push(one[0]);
-                }
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break, // transient/decode error: stop mirroring, hold the socket
+/// CLI sink for the shared Fraymakers stream router (`session::pump_fray_stream`): mirrors
+/// meaningful lines to `emit` (stdout for `serve`, the log for `session`) and signals READY.
+/// Channel feeds (matchStatus/icons) are dropped — they're not for the CLI/log. Per-frame
+/// ANIM telemetry is suppressed unless the state changed.
+struct CliStreamSink<'a, F: FnMut(&str, &str)> {
+    ready_tx: &'a mpsc::Sender<()>,
+    emit: F,
+    last_anim: String,
+}
+impl<F: FnMut(&str, &str)> CliStreamSink<'_, F> {
+    fn pretty(line: &str) -> String {
+        match gloss(line) {
+            Some(g) => format!("<< {line:<28} ({g})"),
+            None => format!("<< {line}"),
         }
     }
+}
+impl<F: FnMut(&str, &str)> crate::session::FrayStreamSink for CliStreamSink<'_, F> {
+    fn on_ready(&mut self) { let _ = self.ready_tx.send(()); }
+    // RESDIAG flows to the sink like a normal line (the caller's `emit` captures the
+    // breadcrumb for the crash report and logs it), matching the prior behavior.
+    fn on_resdiag(&mut self, line: &str) { (self.emit)(line, &Self::pretty(line)); }
+    // channel feeds: dropped (no-op) — they belong to widgets, not the CLI/log.
+    fn on_anim(&mut self, state: &str) {
+        if state != self.last_anim {
+            self.last_anim = state.to_string();
+            let line = format!("ANIM:{state}");
+            (self.emit)(&line, &Self::pretty(&line));
+        }
+    }
+    fn on_line(&mut self, raw: &str) { (self.emit)(raw, &Self::pretty(raw)); }
+}
+
+fn pump_engine_lines(
+    reader: BufReader<TcpStream>,
+    ready_tx: &mpsc::Sender<()>,
+    emit: impl FnMut(&str, &str),
+) {
+    let mut sink = CliStreamSink { ready_tx, emit, last_anim: String::new() };
+    crate::session::pump_fray_stream(reader, &mut sink);
 }
 
 pub fn serve(port: u16, token: Option<&str>) {
