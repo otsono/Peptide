@@ -734,6 +734,107 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     Ok(())
 }
 
+/// Inject an EVENT-DRIVEN READY signal — the SSF2 analogue of Fraymakers firing READY
+/// at `Main.onLoaded`. SSF2's boot plays a disclaimer video first, once all content is
+/// loaded and the game is interactive; that IS the "ready" signal. We prepend a one-shot
+/// `READY\n` emit to `DisclaimerMenu.checkDisclaimer` — the game's own recurring check
+/// that watches the disclaimer movie play frame-by-frame (`m_subMenu.currentFrame` vs
+/// `totalFrames`) until it ends. So the host waits for a real boot-complete event instead
+/// of the old `wait_ready` PING-streak heuristic (a flat 6s floor + responsiveness
+/// polling that fired a ways after loading visibly finished).
+///
+/// Because `checkDisclaimer` runs repeatedly while the disclaimer plays, the one-shot
+/// `peptideReadySent` flag + the `peptideSock.connected` guard make this robust against
+/// the loopback socket's async connect: READY fires on the FIRST frame the socket is
+/// connected (essentially the start of the disclaimer) and never again. `checkDisclaimer`
+/// is a `DisclaimerMenu` instance method, so it reaches the bridge socket (an instance
+/// slot on the document, set up by `inject_socket_bridge`) through the document singleton
+/// `Main.ROOT`. The connected guard also prevents an unconnected write from throwing and
+/// aborting the boot.
+pub fn inject_ready_signal(abc: &mut Abc, doc_class_local: &str) -> anyhow::Result<()> {
+    let doc_ci = abc.find_class_by_name(doc_class_local)
+        .ok_or_else(|| anyhow::anyhow!("class {doc_class_local} not found"))?;
+
+    let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
+    let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
+    // getlex needs the class as QName(package, localName) — split the FQN (e.g.
+    // "com.mcleodgaming.ssf2.Main" → ns "com.mcleodgaming.ssf2", name "Main"). A dotted
+    // name in the empty namespace would throw a ReferenceError and crash the boot.
+    let (pkg, local) = doc_class_local.rsplit_once('.').unwrap_or(("", doc_class_local));
+    let doc_ns = { let s = abc.intern_string(pkg); abc.intern_namespace(NS_PACKAGE, s) };
+    let mn_main = { let s = abc.intern_string(local); abc.intern_qname(doc_ns, s) };
+    let mn_root = q(abc, pub_ns, "ROOT");            // Main.ROOT = the document instance
+    let mn_sock = q(abc, pub_ns, "peptideSock");     // the bridge socket (instance slot)
+    let mn_writeutf = q(abc, pub_ns, "writeUTFBytes");
+    let mn_flush = q(abc, pub_ns, "flush");
+    let mn_readysent = q(abc, pub_ns, "peptideReadySent"); // one-shot guard flag
+    let mn_connected = q(abc, pub_ns, "connected");        // Socket.connected (Boolean)
+    let s_ready = abc.intern_string("READY\n");
+
+    // one-shot flag slot on the document instance (defaults to undefined → falsy)
+    abc.add_instance_slot(doc_ci, mn_readysent);
+
+    // hook DisclaimerMenu.checkDisclaimer — the recurring check that runs while the boot
+    // disclaimer video plays (resolved by NAME, version-resilient; it's an instance method).
+    let disc_ci = abc.find_class_by_name("DisclaimerMenu")
+        .ok_or_else(|| anyhow::anyhow!("DisclaimerMenu not found"))?;
+    let method = abc.instances[disc_ci].traits.iter().find_map(|t| match t.data {
+        TraitKindData::Method { method, .. }
+            if abc.multiname_local(t.name).as_deref() == Some("checkDisclaimer") => Some(method),
+        _ => None,
+    }).ok_or_else(|| anyhow::anyhow!("DisclaimerMenu.checkDisclaimer not found"))?;
+    let body_idx = abc.bodies.iter().position(|b| b.method == method)
+        .ok_or_else(|| anyhow::anyhow!("no body for checkDisclaimer"))?;
+
+    // payload (prepended — uniform shift keeps relative branches valid). CRITICAL: every
+    // dereference is null-guarded so this code can NEVER throw. A prepend that throws would
+    // skip checkDisclaimer's own body (its `nextMenu()` advance), leaving the disclaimer
+    // looping forever. With the guards it always falls through to the original body, so the
+    // disclaimer behaves exactly as stock until READY fires and the autostart spawn replaces
+    // it. We touch only the document singleton (Main.ROOT.*), never checkDisclaimer's `this`:
+    //   if (Main.ROOT != null && !Main.ROOT.peptideReadySent
+    //       && Main.ROOT.peptideSock != null && Main.ROOT.peptideSock.connected) {
+    //       Main.ROOT.peptideReadySent = true;
+    //       Main.ROOT.peptideSock.writeUTFBytes("READY\n"); Main.ROOT.peptideSock.flush();
+    //   }
+    let mut c = Code::default();
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
+    let l_skip = c.new_label();
+    // if (Main.ROOT == null) skip — ROOT is assigned in Main's ctor, but guard anyway.
+    c.op_u30(OP_GETLEX, mn_main); c.op_u30(OP_GETPROPERTY, mn_root);
+    c.branch(OP_IFFALSE, l_skip);
+    // if (Main.ROOT.peptideReadySent) skip — already sent once.
+    c.op_u30(OP_GETLEX, mn_main); c.op_u30(OP_GETPROPERTY, mn_root); c.op_u30(OP_GETPROPERTY, mn_readysent);
+    c.branch(OP_IFTRUE, l_skip);
+    // if (Main.ROOT.peptideSock == null) skip — socket slot not set yet.
+    c.op_u30(OP_GETLEX, mn_main); c.op_u30(OP_GETPROPERTY, mn_root); c.op_u30(OP_GETPROPERTY, mn_sock);
+    c.branch(OP_IFFALSE, l_skip);
+    // if (!Main.ROOT.peptideSock.connected) skip — writing to an unconnected socket throws.
+    c.op_u30(OP_GETLEX, mn_main); c.op_u30(OP_GETPROPERTY, mn_root); c.op_u30(OP_GETPROPERTY, mn_sock);
+    c.op_u30(OP_GETPROPERTY, mn_connected);
+    c.branch(OP_IFFALSE, l_skip);
+    // peptideReadySent = true (set BEFORE the write, so a write-throw can't cause a re-emit)
+    c.op_u30(OP_GETLEX, mn_main); c.op_u30(OP_GETPROPERTY, mn_root); c.op(OP_PUSHTRUE); c.op_u30(OP_SETPROPERTY, mn_readysent);
+    // peptideSock.writeUTFBytes("READY\n"); peptideSock.flush();
+    c.op_u30(OP_GETLEX, mn_main); c.op_u30(OP_GETPROPERTY, mn_root); c.op_u30(OP_GETPROPERTY, mn_sock);
+    c.op_u30(OP_PUSHSTRING, s_ready); c.op_u30_u30(OP_CALLPROPVOID, mn_writeutf, 1);
+    c.op_u30(OP_GETLEX, mn_main); c.op_u30(OP_GETPROPERTY, mn_root); c.op_u30(OP_GETPROPERTY, mn_sock);
+    c.op_u30_u30(OP_CALLPROPVOID, mn_flush, 0);
+    c.place(l_skip);
+    c.op(OP_POPSCOPE);
+    let payload = c.finish();
+    let n = payload.len() as u32;
+
+    let body = &mut abc.bodies[body_idx];
+    let mut new_code = payload;
+    new_code.extend_from_slice(&body.code);
+    body.code = new_code;
+    body.max_stack = body.max_stack.max(3);
+    body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
+    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
+    Ok(())
+}
+
 /// Inject a per-frame JUMP CAPTURE PROBE: once a match is live
 /// (GameController.stageData != null), append "<t>,<X>,<Y>,<YSpeed>\n" for the
 /// character at `char_index` to `traj_path` every frame. Null-guarded so it's

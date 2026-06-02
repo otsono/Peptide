@@ -193,6 +193,51 @@ fn probe_responsive() -> bool {
         && request("READ", t).is_ok()
 }
 
+/// Block until the patched engine emits its one-shot `READY` line — the SSF2 analogue of
+/// Fraymakers firing READY at `Main.onLoaded`. The bridge injects it at
+/// `MenuController.showInitialMenu` (boot complete; see `abc_inject::inject_ready_signal`),
+/// so this is a REAL boot-complete event, not the old PING-streak/flat-floor heuristic.
+/// Reads the persistent connection until a bare `READY` line arrives (accumulating across
+/// read timeouts so a split line isn't dropped) or `total` elapses. Returns true on READY.
+pub fn wait_for_ready(total: Duration) -> bool {
+    let mut guard = CONN.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = match guard.as_mut() {
+        Some(c) => c,
+        None => return false,
+    };
+    let _ = conn.reader.get_ref().set_read_timeout(Some(Duration::from_millis(500)));
+    let deadline = Instant::now() + total;
+    let mut line = String::new();
+    loop {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        match conn.reader.read_line(&mut line) {
+            Ok(0) => return false, // EOF — engine gone
+            Ok(_) => {
+                if line.trim_end_matches(['\r', '\n']) == "READY" {
+                    return true;
+                }
+                line.clear(); // some other unsolicited line — discard, await READY
+            }
+            // timeout: any partial bytes stay in `line` to be completed next read
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => return false, // connection gone
+        }
+    }
+}
+
+/// Wait for the engine to be boot-complete. Primary path: the event-driven `READY` line.
+/// Fallback (only if READY never arrives — e.g. an unexpected SSF2 build where the hook
+/// no-op'd): the legacy responsiveness settle, so a boot still succeeds rather than hangs.
+pub fn wait_ready_signal(total: Duration) -> bool {
+    if wait_for_ready(total) {
+        return true;
+    }
+    wait_ready(10, Duration::from_secs(6))
+}
+
 /// `peptide ssf2 send "<cmd>"` — one-shot command, printing the reply. Because the
 /// engine dials into ONE process's socket, the live connection lives in the
 /// `session` process; a standalone `send` therefore routes through the running
@@ -262,10 +307,10 @@ pub fn session(args: &[String]) -> Result<()> {
         slog(&format!("[ssf2-session] {e}"));
     }
 
-    // wait until the engine is STABLY responsive (finished its boot load), not just
-    // the first reply — see wait_ready. Gating here means `tell`-ed commands aren't
-    // fired into the loading hook.
-    let ready = wait_ready(10, Duration::from_secs(40));
+    // wait for the engine's event-driven READY (injected at the boot disclaimer — see
+    // inject_ready_signal), so `tell`-ed commands and the quick-boot spawn aren't fired into
+    // the loading hook. Falls back to the responsiveness settle only if READY never arrives.
+    let ready = wait_ready_signal(Duration::from_secs(40));
     slog(if ready { "[ssf2-session] engine READY — peptide ssf2 tell \"<cmd>\"" }
          else { "[ssf2-session] engine never settled — accepting commands anyway" });
 

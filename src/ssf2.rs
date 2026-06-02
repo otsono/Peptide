@@ -296,6 +296,12 @@ pub fn install_patched(port: u16) -> Result<PathBuf> {
     let traj = crate::ssf2_bridge::traj_path();
     ssf2_converter::abc_inject::patch_file_with(&src_swf, &dst_swf, |abc| {
         ssf2_converter::abc_inject::inject_socket_bridge(abc, SSF2_DOC_CLASS, "127.0.0.1", port)?;
+        // Event-driven READY: fire once while the boot disclaimer plays (the moment loading is
+        // done and the socket is connected), so the host waits for a real signal instead of the
+        // wait_ready PING-streak heuristic. Every dereference is null-guarded so the injection
+        // can never throw / break the disclaimer's own advance. See inject_ready_signal.
+        ssf2_converter::abc_inject::inject_ready_signal(abc, SSF2_DOC_CLASS)?;
+        // a second ENTER_FRAME listener that logs Characters[0] physics each frame
         ssf2_converter::abc_inject::inject_jump_probe(abc, SSF2_DOC_CLASS, &traj, 0)
     })?;
     macos_resign(&dst_app);

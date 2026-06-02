@@ -734,12 +734,11 @@ fn boot_ssf2(cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>, char_name: Optio
     // register the process for window-close teardown (reuses the Cleanup path).
     if let Ok(mut g) = cleanup.lock() { *g = Some(crate::ui::Cleanup::for_engine(child)); }
 
-    // Wait until SSF2 is STABLY responsive (the analogue of Fraymakers' READY) —
-    // NOT just the first PING, which the per-frame hook answers mid-boot while the
-    // engine is still loading and would crash on an early spawn. wait_ready gates on
-    // a streak of consecutive PINGs, so commands fire only after loading completes.
+    // Wait for SSF2's event-driven READY (injected at the boot disclaimer — see
+    // inject_ready_signal) before the quick-boot spawn, so it isn't fired into the loading
+    // hook (which crashes). Falls back to the responsiveness settle if READY never comes.
     progress(3, 4, "waiting for SSF2 to finish loading…");
-    if !crate::ssf2_bridge::wait_ready(10, Duration::from_secs(40)) {
+    if !crate::ssf2_bridge::wait_ready_signal(Duration::from_secs(40)) {
         let _ = proxy.send_event(Ev::Js(
             "window.onSsf2BootFailed && onSsf2BootFailed(\"SSF2 launched but never settled. Try again.\")".into()));
         return;
