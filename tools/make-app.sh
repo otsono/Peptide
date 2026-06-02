@@ -20,7 +20,13 @@ OPEN_AFTER=1
 APP_NAME="Peptide"
 BIN="peptide"
 
-echo "==> Building release binary ($BIN)…"
+# Version for the bundle plist. release.sh sets PEPTIDE_VERSION; otherwise fall
+# back to the package version in Cargo.toml so a standalone build still reports
+# something truthful.
+VERSION="${PEPTIDE_VERSION:-$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)}"
+VERSION="${VERSION:-1.0}"
+
+echo "==> Building release binary ($BIN) v$VERSION…"
 cargo build --release -p peptide --bin peptide
 
 APP="build/$APP_NAME.app"
@@ -36,8 +42,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>$APP_NAME</string>
   <key>CFBundleDisplayName</key><string>$APP_NAME</string>
   <key>CFBundleIdentifier</key><string>com.peptide.app</string>
-  <key>CFBundleVersion</key><string>1.0</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>$BIN</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
