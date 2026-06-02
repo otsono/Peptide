@@ -93,7 +93,15 @@ pub fn launch() -> std::io::Result<()> {
     }
 
     let char_name = crate::config::Config::load().char_name();
-    let init = format!("window.__CHAR__={};", js_str(&char_name));
+    // Diagnostic: the page's JS context posts a ping the instant the init script runs,
+    // and again on DOMContentLoaded. If neither reaches the ipc handler, the page's
+    // JavaScript never executed (vs. loaded-but-not-painted). Cheap and harmless.
+    let init = format!(
+        "window.__CHAR__={};\
+         try{{window.ipc.postMessage('@@diag:js-init');}}catch(e){{}}\
+         document.addEventListener('DOMContentLoaded',function(){{\
+           try{{window.ipc.postMessage('@@diag:dom-ready');}}catch(e){{}}}});",
+        js_str(&char_name));
 
     let ipc_writer = writer.clone();
     let ipc_cleanup = cleanup.clone();
@@ -121,11 +129,25 @@ pub fn launch() -> std::io::Result<()> {
                 .unwrap()
         })
         .with_initialization_script(&init)
+        // Diagnostic: log when WebKitGTK/WKWebView/WebView2 starts and finishes loading
+        // the page resource. "Started" but never "Finished" => the custom-protocol
+        // response didn't load; no events at all => the webview never navigated.
+        .with_on_page_load_handler(|event, url| {
+            let phase = match event {
+                wry::PageLoadEvent::Started => "started",
+                wry::PageLoadEvent::Finished => "finished",
+            };
+            eprintln!("peptide-gui: page-load {phase} {url}");
+        })
         .with_ipc_handler(move |req: Request<String>| {
             let body = req.body().to_string();
             let (w, cl, cn, px, ch) = (ipc_writer.clone(), ipc_cleanup.clone(), ipc_conn.clone(),
                                        ipc_proxy.clone(), ipc_char.clone());
             let b = body.as_str();
+            if let Some(stage) = b.strip_prefix("@@diag:") {
+                eprintln!("peptide-gui: page reached '{stage}' (JS is executing)");
+                return;
+            }
             if b == RECONNECT {
                 thread::spawn(move || reconnect_existing(w, cn, px, ch));
             } else if b.starts_with(BOOT_QUICK) {
