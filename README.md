@@ -87,8 +87,9 @@ A single conversion pulls an entire SSF2 character across to Fraymakers, end to 
 - **Validation harnesses** — the engine harness (Launch Peptide: load / spawn /
   drive-a-move / read state) and the FrayTools Hook (box geometry + one-click
   publish) prove a converted character actually works. See [`TESTING.md`](TESTING.md).
-- **Diagnostic toolkit** — ~30 `dump_*` / `check_*` SWF- and format-inspection
-  binaries in the converter crate, gated behind the `dev-tools` feature.
+- **Diagnostic toolkit** — ~30 SWF- and format-inspection binaries
+  (`dump_*` / `check_*` / `probe_*` / `find_*` / `audit_*`) in the converter
+  crate, gated behind the `dev-tools` feature.
 
 ---
 
@@ -109,7 +110,7 @@ cargo build --release   # → build/release/peptide (the single binary)
 ```
 
 The SSF2 → Fraymakers converter is a **library** (`crates/ssf2-converter`), driven
-through `peptide convert`. The ~30 `dump_*` / `check_*` diagnostic binaries are
+through `peptide convert`. The ~30 `dump_*` / `check_*` / `probe_*` diagnostic binaries are
 gated out of the default build; build one on demand with
 `cargo run -p ssf2_converter --features dev-tools --bin <name>` (see
 [`DEVELOPMENT.md`](DEVELOPMENT.md) §"Diagnostic binaries").
@@ -258,6 +259,11 @@ binary or in the working directory) overrides without recompiling.
 - [`TESTING.md`](TESTING.md) — the FrayTools-side and Fraymakers-engine-side
   validation harnesses, the end-to-end iteration loop, the engine RE map, and
   in-engine validation status.
+- [`docs/PEPTIDE_GUIDE.md`](docs/PEPTIDE_GUIDE.md) — driving the live engine
+  harness: commands, the iteration loop, batch testing, recipes.
+- [`docs/PEPTIDE_DESIGN.md`](docs/PEPTIDE_DESIGN.md) — harness internals: layering,
+  the version-resilience strategy, and the roadmap.
+- [`docs/STATUS.md`](docs/STATUS.md) — converter coverage and parity status.
 
 ## Licence
 

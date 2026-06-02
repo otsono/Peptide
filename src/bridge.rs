@@ -177,40 +177,40 @@ pub fn serve(port: u16, token: Option<&str>) {
     }
 }
 pub fn send_once(port: u16, token: Option<&str>, cmd: &str) {
-    // Translate the friendly command up front; `help` never opens a socket.
-    let cmd = match translate(cmd) {
-        Translated::Wire(w) => w,
-        Translated::Client(text) => { print!("{text}"); return; }
-    };
-    let cmd = cmd.as_str();
-    let (reader, mut write_half) = crate::ui::await_engine(port, token);
-
-    let (tx, rx) = mpsc::channel::<String>();
-    thread::spawn(move || {
-        for line in reader.lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
+    // Client-only commands (help) never open a socket — answer them inline through
+    // the shared parser so the vocabulary stays identical to SSF2's.
+    match crate::interpreter::parse(cmd) {
+        crate::interpreter::Command::Help => { print!("{}", crate::interpreter::help_text()); return; }
+        crate::interpreter::Command::Client(s) => { if !s.trim().is_empty() { print!("{s}"); } return; }
+        _ => {}
+    }
+    let (mut reader, write_half) = crate::ui::await_engine(port, token);
 
     // ALWAYS wait for the engine's "READY" line (title screen / welcome announcer
     // = all .fra content loaded) before sending any command. Sending earlier runs
-    // engine code mid-load, which crashes.
+    // engine code mid-load, which crashes. Bounded read-timeout loop so a stalled
+    // boot eventually gives up instead of blocking forever.
+    let _ = reader.get_ref().set_read_timeout(Some(Duration::from_secs(1)));
     eprintln!("peptide-bridge: waiting for engine READY…");
+    let ready_deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let mut line = String::new();
     loop {
-        match rx.recv_timeout(Duration::from_secs(60)) {
-            Ok(l) => {
-                println!("<< {l}");
-                if l.contains("READY") {
-                    eprintln!("peptide-bridge: engine is READY");
-                    break;
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => { eprintln!("peptide-bridge: connection closed before READY"); return; }
+            Ok(_) => {
+                let l = line.trim();
+                if !l.is_empty() { println!("<< {l}"); }
+                if l.contains("READY") { eprintln!("peptide-bridge: engine is READY"); break; }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut => {
+                if std::time::Instant::now() >= ready_deadline {
+                    eprintln!("peptide-bridge: timed out waiting for READY — aborting send");
+                    return;
                 }
             }
-            Err(_) => {
-                eprintln!("peptide-bridge: timed out waiting for READY — aborting send");
-                return;
-            }
+            Err(_) => { eprintln!("peptide-bridge: read error waiting for READY — aborting"); return; }
         }
     }
     // Optional delay AFTER READY before sending the command. READY fires from the
@@ -227,18 +227,13 @@ pub fn send_once(port: u16, token: Option<&str>, cmd: &str) {
         }
     }
 
-    let mut payload = cmd.to_string();
-    payload.push('\n');
-    write_half.write_all(payload.as_bytes()).expect("write");
-    write_half.flush().ok();
+    // Execute through the SAME OOP dispatcher SSF2 uses: parse → Command → backend.
+    let mut target = crate::debug_target::FraymakersTarget::new(reader, write_half);
     eprintln!("peptide-bridge: sent {cmd:?}");
-
-    // Drain replies for ~1.5s of quiet, glossing recognized lines.
-    while let Ok(l) = rx.recv_timeout(Duration::from_millis(1500)) {
-        match gloss(&l) {
-            Some(g) => println!("<< {l:<28} ({g})"),
-            None => println!("<< {l}"),
-        }
+    match crate::debug_target::run_command(&mut target, cmd) {
+        Ok(Some(reply)) => for l in reply.lines() { println!("<< {l}"); },
+        Ok(None) => {}
+        Err(e) => eprintln!("peptide-bridge: {e}"),
     }
 }
 

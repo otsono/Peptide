@@ -19,12 +19,11 @@ stays on the user's machine and is git-ignored.
 
 | Harness | Dir | Drives | Transport | Answers |
 |---|---|---|---|---|
-| **FrayTools** | `tools/fraytools-harness/` | the user's FrayTools editor | Chrome DevTools Protocol | "does it render / lay out right? publish me a `.fra`" |
+| **FrayTools** (`peptide`) | `src/fraytools.rs` | the user's FrayTools editor | Chrome DevTools Protocol | "does it render / lay out right? publish me a `.fra`" |
 | **Fraymakers** (`peptide`) | `src/` + `tools/` | the user's Fraymakers engine | patched bytecode + loopback TCP | "does it behave at runtime? load / spawn / move / read state" |
 
-Each tool's own README has the detailed command surface:
-- [`tools/fraytools-harness/README.md`](tools/fraytools-harness/README.md) — `harness.js` (box geometry + capture), `export-in-fraytools.js` (publish), `compare_boxes`.
-- [`docs/PEPTIDE_README.md`](docs/PEPTIDE_README.md) — the bytecode patcher, the loopback bridge, and `tools/run.sh`.
+Both surfaces are subcommands of the one `peptide` binary; the detailed command surface lives in:
+- [`docs/PEPTIDE_GUIDE.md`](docs/PEPTIDE_GUIDE.md) — `peptide export` (publish), `peptide harness` (box geometry + capture), `peptide render`, the bytecode patcher, the loopback bridge, and `tools/run.sh`. `compare_boxes` is a `dev-tools`-gated diagnostic bin.
 
 This doc is the **cross-tool workflow + the engine RE map + the current
 validation status**. (Long-term RE narrative also lives in
@@ -41,21 +40,21 @@ $EDITOR src/<...>.rs
 
 # 2. Rebuild + regenerate the target character
 cargo build --release
-./target/release/peptide convert ../ssf2-ssfs/<id>.ssf
+./build/release/peptide convert ../ssf2-ssfs/<id>.ssf
 #    → ./characters/<id>/   (⚠ verify it is FRESH — see §6 stale-output trap)
 
 # 3. Publish to .fra → lands in Fraymakers' custom/<id>/
-./target/release/peptide export \
+./build/release/peptide export \
   --project "$PWD/characters/<id>/<id>.fraytools"
 
 # 4. Boot ONE persistent engine session, then drive + observe it iteratively
-./target/release/peptide session --full &        # boots + holds a live engine
-#   wait for "engine READY" in:  ./target/release/peptide log
-./target/release/peptide tell "spawn <id>"                       # start a real match
-./target/release/peptide tell "match.getCharacters()[0].getStateName()"   # read state
-./target/release/peptide tell "match.getCharacters()[0].toState(CState.JAB)"  # drive a move
-./target/release/peptide log -n 20                # read everything the engine streamed back
-./target/release/peptide tell "exit"             # clean shutdown when done
+./build/release/peptide session --full &        # boots + holds a live engine
+#   wait for "engine READY" in:  ./build/release/peptide log
+./build/release/peptide tell "spawn <id>"                       # start a real match
+./build/release/peptide tell "match.getCharacters()[0].getStateName()"   # read state
+./build/release/peptide tell "match.getCharacters()[0].toState(CState.JAB)"  # drive a move
+./build/release/peptide log -n 20                # read everything the engine streamed back
+./build/release/peptide tell "exit"             # clean shutdown when done
 
 # 5. Compare behaviour vs expected → fix in the converter (never hand-edit output) → repeat
 ```
@@ -71,7 +70,7 @@ command surface in §3. (The old one-shot `tools/run.sh "<cmd>" <secs>` / fixed
 invocation — use a session for interactive iteration.)
 
 **Which harness when:**
-- **FrayTools-side** (`harness.js` / `export-in-fraytools.js`) — visual/layout
+- **FrayTools-side** (`peptide harness` / `peptide export`) — visual/layout
   ground truth (box geometry, pivots, rendering) and producing the publishable
   `.fra`. Pair with `compare_boxes` for a numeric verdict.
 - **Fraymakers-side** (`peptide session`) — runtime behaviour (loads, spawns,
@@ -86,16 +85,16 @@ historical — not the place for new work.)
 
 ## 2. FrayTools harness — publish + box geometry
 
-Code: `tools/fraytools-harness/` (Node; `npm install` pulls `chrome-remote-interface`).
-It drives the user's local FrayTools (Electron + CDP) entirely through FrayTools'
-own runtime objects — no pixel coordinates.
+Code: `src/fraytools.rs` (pure Rust; speaks CDP over HTTP + WebSocket directly,
+no Node). It drives the user's local FrayTools (Electron + CDP) entirely through
+FrayTools' own runtime objects — no pixel coordinates.
 
-- **`export-in-fraytools.js`** runs FrayTools' own **Publish** (the Fraymakers
+- **`peptide export`** runs FrayTools' own **Publish** (the Fraymakers
   Content Exporter) on a converted project and prints the published `.fra` path.
   "Publish All" writes both `<projectDir>/build/` and the Fraymakers
   `custom/<id>/` dir the converter wired up. This is exactly what the GUI's
   "Export in FrayTools" button shells out to.
-- **`harness.js`** opens an entity, navigates to an animation + frame via Redux
+- **`peptide harness`** opens an entity, navigates to an animation + frame via Redux
   `store.dispatch`, reads box geometry from the entity JSON, captures the stage
   as a PNG, and emits a JSON report whose `rendered_anchor` field is *FrayTools'
   own* placement of each box's pivot.
@@ -113,7 +112,7 @@ kill FrayTools and let the script cold-launch a fresh instance.
 ### `compare_boxes` — numeric verdict
 
 ```
-cargo run --release --bin compare_boxes -- \
+cargo run -p ssf2_converter --features dev-tools --bin compare_boxes -- \
   --ssf2 ../ssf2-ssfs/<id>.ssf \
   --char <id> --json /tmp/box.json [--tolerance 2.0]
 ```
@@ -181,51 +180,50 @@ translates them to the single-byte wire protocol the engine dispatches on. The
 wire byte still works as an alias, so older scripts keep running. Friendly
 vocabulary is one shared table: `src/interpreter.rs`.
 
-> **Current model (supersedes the per-feature rows below).** The live command set
-> is deliberately tiny — `spawn`, `eval`, `load`, `console`, `exit` — and
-> **everything else is run as hscript** through the engine's own interpreter via
-> the `e` (eval) hook. So instead of `move`/`state`/`physics`/`anim` sugar you
-> write the call explicitly against the live match, e.g.
+> **The model is hscript-first.** The client command vocabulary (`COMMANDS` in
+> `src/interpreter.rs`) is deliberately tiny — `help`, `spawn`, `eval`, `load`,
+> `console`, `exit`, `hold`, `release`, `seq` — and **anything it doesn't
+> recognize is forwarded to the `e` (eval) handler as hscript**, run through the
+> engine's own interpreter. So instead of `move`/`state`/`physics`/`anim` sugar
+> you write the call explicitly against the live match, e.g.
 > `match.getCharacters()[0].getStateName()`,
 > `match.getCharacters()[0].toState(CState.JAB)`,
 > `match.getCharacters()[0].body.x`. The full Fraymakers script API (CState,
-> HitboxStats, MatchModifier, …) is in scope. The table below documents the
-> still-present wire bytes for reference; prefer the hscript form.
+> HitboxStats, MatchModifier, …) is in scope; the in-engine helpers live in
+> `commands.hsx`.
 
-| Friendly (aliases) | Wire | Meaning | Ack / readback |
+Live wire bytes (what the client actually sends):
+
+| Command (aliases) | Wire | Meaning | Ack / readback |
 |---|---|---|---|
-| `ping` (p) | `p` | liveness | `PONG` |
-| `console` (c) | `c` | console passthrough (`Tildebugger.console.runCommand`) | `RAN` |
 | `spawn <char> [stage] [assist]` (start, launch, s) | `s …` | **start match (self-bootstrapping)** — idempotent custom-load core then `TrainingMode` + `FraymakersMode.startMatch`. | `LAUNCHED <char> <stage> <assist>` |
+| `eval <hscript>` (e) | `e …` | parse + run the hscript text in the engine interpreter; **default for any unrecognized line** | `E:<result>` / `E:<error>` |
+| `hold`/`release`/`seq` (i) | `i <mask>` | held-control bitmask fed to the engine input→action mapping; `seq` plays one mask per frame | (input applied) |
 | `load` (l) | `l` | **synchronous custom-`.fra` load** (headless, main thread) — see §3.1 | `L:…`, `SPR:1`/`SPR:0` |
-| `move [name]` (attack, m) | `m [sel]` | **move dispatch by name** — `Character.toState(CState.<NAME>)` on player 0 (internal dispatch, **not** key-press). Bare = jab. Names = the Fraymakers move set (jab, tilt_down, strong_forward, aerial_up, special_neutral, grab, …). | `M:OK` / `M:NOMATCH` |
-| `state` (status, t) | `t` | **telemetry** — `Character.getStateName()` on player 0 | `T:<state>` / `T:NOMATCH` |
-| `query` (matchlive, q) | `q` | is a match live? | `Q:MATCH_LIVE` / `Q:NO_MATCH` |
-| `physics` (phys, vitals, v) | `v` | player 0 position / velocity / damage (`Std.string` of Body + Physics + Damage floats) | `P: x=.. y=.. vx=.. vy=.. dmg=..` |
-| `anim` (animation, a) | `a` | player 0 current animation + frame index/total (Animation component) | `A:<name> frame <cur>/<total>` |
-| `step` (framestep, f) | `f` | pause + advance player 0's animation ONE frame (scrub) via `Animation.playFrame` | `A:<name> frame <cur>/<total>` |
-| `play` (resume, g) | `g` | resume animation playback after `step` | `PLAY` |
-| `loop <move> [count]` (repeat) | — | **client-side**: re-dispatch a move `count`× (default 8) at 800ms intervals — sustained observation / live tuning. No engine bytecode. | repeated `M:OK` + ANIM stream |
-| `snapshot` (snap) | — | **client-side**: one readback bundle — sends `t`, `v`, `a` in sequence (state + physics + animation). No engine bytecode. | `T:…` + `P:…` + `A:…` |
-| `keys` (pool, k) | `k` | dump pool keys + UGC-discovery diagnostics | `K:…` |
+| `console` (c) | `c` | console passthrough (`Tildebugger.console.runCommand`) | `RAN` |
 | `exit` (quit, stop, x) | `x` | clean engine shutdown (`hxd.System.exit`) | — |
 
-`move <name>` maps the friendly name to a selector byte (`'A'` + ordinal into
-`commands::MOVES`); the engine picks the CState via a jump table generated from
-that same table (fields resolved by name at patch time). Per-state-change
-animation telemetry streams as `ANIM:<state>` (the bridge dedups to changes only)
-— this is the animation-capture readback (criterion #5).
+**Legacy bytecode handlers** still spliced into the dispatch but **no longer
+exposed as client commands** (slated for removal as their logic ports to
+`commands.hsx`): `p` (ping/`PONG`), `m` (move dispatch via `commands::MOVES`
+selector → `Character.toState`), `t` (state name), `q` (match-live), `v`
+(physics), `a` (anim frame), `f`/`g` (frame-step/resume), `k` (pool keys). These
+fire only if you send the raw byte; the friendly names that used to map to them
+are gone, so prefer the hscript form. Per-state-change animation telemetry still
+streams as `ANIM:<state>` (the bridge dedups to changes only) — the
+animation-capture readback (criterion #5).
 
 Short-name resolution (`spawn` / `load`): a bare `sandbag` (no `::`) is tried against
 `private::`, `custom::`, `public::`, `global::` in order; first existing resource
 wins. `private::` is first so a bare name resolves to headless-loaded custom
 content. Or pass a full `namespace::package.id`.
 
-**Multi-command sessions:** `m`/`t`/`q` probes need the *same* live match (a reboot
-loses it). Use `tools/runseq.sh <boot_wait_s> <gap_s> "cmd1" "cmd2" …` to feed a gapped
-sequence into one engine session (boot→READY ≈ 30s, so `boot_wait_s` ≈ 32,
-`gap_s` 6–9). Example:
-`./tools/runseq.sh 32 6 "s sandbag thespire commandervideoassist" t m t`.
+**Multi-command sessions:** hscript probes need the *same* live match (a reboot
+loses it). Use `tools/runseq.sh <gap_s> "cmd1" "cmd2" …` to feed a gapped sequence
+into one engine session — it boots once (boot→READY budget via `FRAY_READY_BUDGET`),
+fires the first command at READY, and paces the rest by `gap_s` (fractional OK).
+Example:
+`./tools/runseq.sh 6 "spawn sandbag" "match.getCharacters()[0].getStateName()" "match.getCharacters()[0].toState(CState.JAB)"`.
 
 `peptide` read-only inspection (for re-deriving findices — **always re-verify**):
 `dis <findex>`, `typefields <type>`, `fnsof <type>`, `fninfo <findex>`,
@@ -237,7 +235,7 @@ Every Fraymakers update is a full HashLink **recompile** that renumbers function
 indices, field slots, and type indices. Peptide is built so a new build is a
 fast, self-diagnosing turnaround rather than an archaeology dig. The rules (full
 write-up + version-bump checklist in
-[`docs/PEPTIDE_README.md`](docs/PEPTIDE_README.md) "Surviving Fraymakers updates"):
+[`docs/PEPTIDE_DESIGN.md`](docs/PEPTIDE_DESIGN.md) "Version resilience"):
 
 1. **Resolve by name, not index** — `find_fn`/`require_fn`, `find_type`, `find_field`, `find_native`. Names survive a recompile; pinned integers silently point at the wrong function.
 2. **Fail loudly, never fall back to a pinned index** — a missing name aborts the patch instead of corrupting it.
@@ -338,10 +336,12 @@ constructed `PXFResource` always has a non-null `characterPxfContentMap` (the ct
 sets it unconditionally) — so a null at `spawnPlayer` always means the resource
 was never fully constructed (never loaded), never a namespace bug.
 
-> **The `m`/`t`/`q` walk is verified live** against a builtin (`commandervideo`)
-> match: `LAUNCHED → T:STAND → M:JAB → T:JAB (transient) → T:STAND → Q:MATCH_LIVE`.
-> Sample `t` at frame cadence (~0.12s) — a single delayed sample misses short
-> moves (jab returns to STAND in ~0.36s).
+> **The drive-and-read walk is verified live** against a builtin (`commandervideo`)
+> match: `LAUNCHED → STAND → JAB (transient) → STAND → match-live`. (This was
+> originally exercised via the legacy `m`/`t`/`q` wire bytes; the same walk is now
+> driven with hscript — `toState(CState.JAB)`, `getStateName()`.) Sample state at
+> frame cadence (~0.12s) — a single delayed sample misses short moves (jab returns
+> to STAND in ~0.36s).
 
 ---
 
@@ -398,8 +398,8 @@ template for sweeping the rest of the 44 converting characters.
 `characters/` and the published `.fra` are git-ignored, so an old `.fra` in
 `custom/<id>/` silently survives converter changes. Mario was crashing the engine
 right after its INTRO purely because `custom/mario/mario.fra` predated recent
-fixes. Regenerate (`ssf2_converter`) **and** re-publish
-(`export-in-fraytools.js`) before drawing any conclusion from a spawn test.
+fixes. Regenerate (`peptide convert`) **and** re-publish
+(`peptide export`) before drawing any conclusion from a spawn test.
 
 **Converter freeze fix — DONE and confirmed.** The user's central concern was
 sandbag freezing the engine shortly after match start. Root cause was a converter
@@ -436,8 +436,7 @@ cargo run -p ssf2_converter --features dev-tools --bin compare_boxes -- \
   --char sandbag --json /tmp/box.json --tolerance 2.0
 ```
 
-(The legacy `node tools/fraytools-harness/harness.js` does the same thing and
-remains as a reference; `compare_boxes` is a `dev-tools`-gated diagnostic bin.)
+(`compare_boxes` is a `dev-tools`-gated diagnostic bin.)
 
 FrayTools renders only **static** collision layers (hurt / item / body); hitboxes
 are runtime script data and don't appear here (validated at runtime instead, §5).
@@ -453,7 +452,7 @@ collision box (it's placed relative to the hand attachment point, with
 (→ ~7 px at higher angles); the most recent sweep shows it resolved to <0.01 px in
 current output. It is gameplay-noncritical (item pickup range, not hit/hurt
 detection), but because it has churned repeatedly it is the **first box type to
-re-check** if any geometry looks off — `harness.js`'s `rendered_anchor` is
+re-check** if any geometry looks off — `peptide harness`'s `rendered_anchor` is
 FrayTools' ground truth to bake against.
 
 ---

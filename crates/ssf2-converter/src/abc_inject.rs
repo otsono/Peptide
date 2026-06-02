@@ -1,0 +1,1207 @@
+//! abc_inject — an AVM2 bytecode assembler + injection helpers on top of
+//! `abc_codec`. This is the SSF2-side analogue of the Fraymakers HashLink
+//! patcher (`src/asm.rs` + `insert_ops_front`): it adds the strings /
+//! namespaces / multinames it needs, emits opcodes, and splices a payload into
+//! an existing method so injected ActionScript runs live.
+//!
+//! Offset safety: we PREPEND the payload to the target method body. Relative
+//! branches (the only kind AVM2 uses for jumps) are unaffected by a uniform
+//! shift of the whole body; only the absolute exception-table offsets
+//! (from/to/target) need `+= prepend_len`, which we fix up.
+
+use crate::abc_codec::*;
+use std::path::Path;
+
+// ── AVM2 opcodes we emit ──
+const OP_GETLOCAL0: u8 = 0xD0;
+const OP_PUSHSCOPE: u8 = 0x30;
+const OP_POPSCOPE: u8 = 0x1D;
+const OP_FINDPROPSTRICT: u8 = 0x5D;
+const OP_GETLEX: u8 = 0x60;
+const OP_PUSHSTRING: u8 = 0x2C;
+const OP_CONSTRUCTPROP: u8 = 0x4A;
+const OP_CALLPROPVOID: u8 = 0x4F;
+const OP_GETPROPERTY: u8 = 0x66;
+const OP_SETLOCAL: u8 = 0x63;
+const OP_GETLOCAL: u8 = 0x62;
+const OP_CALLPROPERTY: u8 = 0x46;
+const OP_CONVERT_S: u8 = 0x70;
+const OP_RETURNVOID: u8 = 0x47;
+// branches + stack/value ops for the reflection dispatcher
+const OP_JUMP: u8 = 0x10;
+#[allow(dead_code)] const OP_IFTRUE: u8 = 0x11;
+const OP_IFFALSE: u8 = 0x12;
+const OP_IFSTRICTEQ: u8 = 0x19;
+#[allow(dead_code)] const OP_IFSTRICTNE: u8 = 0x1A;
+const OP_DUP: u8 = 0x2A;
+const OP_POP: u8 = 0x29;
+const OP_SETPROPERTY: u8 = 0x61;
+const OP_RETURNVALUE: u8 = 0x48;
+const OP_PUSHBYTE: u8 = 0x24;
+const OP_PUSHNULL: u8 = 0x20;
+#[allow(dead_code)] const OP_GETGLOBALSCOPE: u8 = 0x64;
+const OP_ADD: u8 = 0xA0;
+const OP_CONVERT_D: u8 = 0x75;
+const OP_PUSHTRUE: u8 = 0x26;
+const OP_NEWARRAY: u8 = 0x56;
+const OP_NEWOBJECT: u8 = 0x55;
+const OP_PUSHSHORT: u8 = 0x25;
+
+// AVM2 namespace kinds
+const NS_PACKAGE: u8 = 0x16; // CONSTANT_PackageNamespace
+
+/// A tiny opcode emitter with the AVM2 u30 var-encoding + label/branch fixups.
+#[derive(Default)]
+struct Code {
+    b: Vec<u8>,
+    /// label id -> byte position (None until placed).
+    labels: Vec<Option<usize>>,
+    /// (position of the 3 s24 offset bytes, target label id).
+    fixups: Vec<(usize, usize)>,
+}
+impl Code {
+    fn op(&mut self, o: u8) { self.b.push(o); }
+    fn u30(&mut self, mut v: u32) {
+        loop {
+            let mut byte = (v & 0x7f) as u8;
+            v >>= 7;
+            if v != 0 { byte |= 0x80; }
+            self.b.push(byte);
+            if v == 0 { break; }
+        }
+    }
+    fn op_u30(&mut self, o: u8, a: u32) { self.op(o); self.u30(a); }
+    fn op_u30_u30(&mut self, o: u8, a: u32, c: u32) { self.op(o); self.u30(a); self.u30(c); }
+
+    /// Allocate a fresh label id.
+    fn new_label(&mut self) -> usize { self.labels.push(None); self.labels.len() - 1 }
+    /// Mark the current position as label `l`'s target.
+    fn place(&mut self, l: usize) { self.labels[l] = Some(self.b.len()); }
+    /// Emit a branch opcode `op` targeting label `l`. AVM2 s24 offset is relative
+    /// to the byte AFTER the 3 offset bytes. Records a fixup resolved by `finish`.
+    fn branch(&mut self, op: u8, l: usize) {
+        self.b.push(op);
+        let off_pos = self.b.len();
+        self.fixups.push((off_pos, l));
+        self.b.extend_from_slice(&[0, 0, 0]); // placeholder s24
+    }
+    /// Resolve all branch fixups; returns the finished bytecode.
+    fn finish(mut self) -> Vec<u8> {
+        for (off_pos, l) in &self.fixups {
+            let target = self.labels[*l].expect("unplaced label");
+            let next = off_pos + 3; // s24 is relative to the instruction AFTER the offset
+            let delta = target as i64 - next as i64;
+            let bytes = (delta as i32).to_le_bytes();
+            self.b[*off_pos] = bytes[0];
+            self.b[*off_pos + 1] = bytes[1];
+            self.b[*off_pos + 2] = bytes[2];
+        }
+        self.b
+    }
+}
+
+/// Resolved multiname indices for the AIR filesystem API we call.
+struct FsApi {
+    file: u32,        // QName(flash.filesystem, "File")
+    file_stream: u32, // QName(flash.filesystem, "FileStream")
+    file_mode: u32,   // QName(flash.filesystem, "FileMode")
+    write_prop: u32,  // QName(public, "WRITE")
+    open: u32,        // QName(public, "open")
+    write_utf: u32,   // QName(public, "writeUTFBytes")
+    close: u32,       // QName(public, "close")
+}
+
+fn intern_fs_api(abc: &mut Abc) -> FsApi {
+    let fs_ns_name = abc.intern_string("flash.filesystem");
+    let fs_ns = abc.intern_namespace(NS_PACKAGE, fs_ns_name);
+    let pub_ns_name = abc.intern_string("");
+    let pub_ns = abc.intern_namespace(NS_PACKAGE, pub_ns_name);
+    let n_file = abc.intern_string("File");
+    let n_fs = abc.intern_string("FileStream");
+    let n_fm = abc.intern_string("FileMode");
+    let n_write = abc.intern_string("WRITE");
+    let n_open = abc.intern_string("open");
+    let n_wub = abc.intern_string("writeUTFBytes");
+    let n_close = abc.intern_string("close");
+    FsApi {
+        file: abc.intern_qname(fs_ns, n_file),
+        file_stream: abc.intern_qname(fs_ns, n_fs),
+        file_mode: abc.intern_qname(fs_ns, n_fm),
+        write_prop: abc.intern_qname(pub_ns, n_write),
+        open: abc.intern_qname(pub_ns, n_open),
+        write_utf: abc.intern_qname(pub_ns, n_wub),
+        close: abc.intern_qname(pub_ns, n_close),
+    }
+}
+
+/// Emit the payload:
+///   var f = new File(<native_path>);
+///   var fs = new FileStream();
+///   fs.open(f, FileMode.WRITE);
+///   fs.writeUTFBytes(<content>);
+///   fs.close();
+/// using two scratch locals (l_file, l_fs). Wrapped in getlocal0/pushscope ..
+/// popscope so global names resolve when prepended to the method entry (before
+/// the method's own pushscope).
+fn emit_marker_payload(abc: &mut Abc, native_path: &str, content: &str, l_file: u32, l_fs: u32) -> Vec<u8> {
+    let api = intern_fs_api(abc);
+    let s_path = abc.intern_string(native_path);
+    let s_content = abc.intern_string(content);
+
+    let mut c = Code::default();
+    // establish a scope so findpropstrict/getlex resolve top-level definitions
+    c.op(OP_GETLOCAL0);
+    c.op(OP_PUSHSCOPE);
+    // f = new File(path)
+    c.op_u30(OP_FINDPROPSTRICT, api.file);
+    c.op_u30(OP_PUSHSTRING, s_path);
+    c.op_u30_u30(OP_CONSTRUCTPROP, api.file, 1);
+    c.op_u30(OP_SETLOCAL, l_file);
+    // fs = new FileStream()
+    c.op_u30(OP_FINDPROPSTRICT, api.file_stream);
+    c.op_u30_u30(OP_CONSTRUCTPROP, api.file_stream, 0);
+    c.op_u30(OP_SETLOCAL, l_fs);
+    // fs.open(f, FileMode.WRITE)
+    c.op_u30(OP_GETLOCAL, l_fs);
+    c.op_u30(OP_GETLOCAL, l_file);
+    c.op_u30(OP_GETLEX, api.file_mode);
+    c.op_u30(OP_GETPROPERTY, api.write_prop);
+    c.op_u30_u30(OP_CALLPROPVOID, api.open, 2);
+    // fs.writeUTFBytes(content)
+    c.op_u30(OP_GETLOCAL, l_fs);
+    c.op_u30(OP_PUSHSTRING, s_content);
+    c.op_u30_u30(OP_CALLPROPVOID, api.write_utf, 1);
+    // fs.close()
+    c.op_u30(OP_GETLOCAL, l_fs);
+    c.op_u30_u30(OP_CALLPROPVOID, api.close, 0);
+    // restore scope
+    c.op(OP_POPSCOPE);
+    c.b
+}
+
+/// Inject a "write marker file on startup" payload into the document class
+/// constructor (`Main`). Returns Ok(()) on success. This is the smoke test that
+/// proves injected AVM2 code runs in the live engine.
+pub fn inject_startup_marker(abc: &mut Abc, doc_class_local: &str, native_path: &str, content: &str) -> anyhow::Result<()> {
+    // Locate the document class and its constructor (iinit) method body.
+    let ci = abc.find_class_by_name(doc_class_local)
+        .ok_or_else(|| anyhow::anyhow!("class {doc_class_local} not found"))?;
+    let iinit = abc.instances[ci].iinit;
+
+    // scratch locals at the end of the current frame
+    let body_idx = abc.bodies.iter().position(|b| b.method == iinit)
+        .ok_or_else(|| anyhow::anyhow!("no method body for {doc_class_local} iinit (method {iinit})"))?;
+    let l_file = abc.bodies[body_idx].local_count;
+    let l_fs = l_file + 1;
+
+    let payload = emit_marker_payload(abc, native_path, content, l_file, l_fs);
+    let n = payload.len() as u32;
+
+    let body = &mut abc.bodies[body_idx];
+    // prepend payload
+    let mut new_code = payload;
+    new_code.extend_from_slice(&body.code);
+    body.code = new_code;
+    // bump frame requirements
+    body.local_count = l_fs + 1;
+    body.max_stack = body.max_stack.max(4);
+    body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
+    // fix absolute exception offsets (relative branches are shift-invariant)
+    for e in &mut body.exceptions {
+        e.from += n; e.to += n; e.target += n;
+    }
+    Ok(())
+}
+
+/// Inject a per-frame heartbeat: add a handler method that writes the current
+/// `getTimer()` value to `native_path` every frame, and install it as an
+/// ENTER_FRAME listener on the document object from its constructor. Proves
+/// repeated (per-frame) injected execution — the transport linchpin for the
+/// full command loop. Returns Ok(()) on success.
+pub fn inject_enterframe_heartbeat(abc: &mut Abc, doc_class_local: &str, native_path: &str) -> anyhow::Result<()> {
+    let ci = abc.find_class_by_name(doc_class_local)
+        .ok_or_else(|| anyhow::anyhow!("class {doc_class_local} not found"))?;
+
+    // ── multinames we need ──
+    let fs_ns_name = abc.intern_string("flash.filesystem");
+    let fs_ns = abc.intern_namespace(NS_PACKAGE, fs_ns_name);
+    let utils_ns_name = abc.intern_string("flash.utils");
+    let utils_ns = abc.intern_namespace(NS_PACKAGE, utils_ns_name);
+    let events_ns_name = abc.intern_string("flash.events");
+    let events_ns = abc.intern_namespace(NS_PACKAGE, events_ns_name);
+    let pub_ns_name = abc.intern_string("");
+    let pub_ns = abc.intern_namespace(NS_PACKAGE, pub_ns_name);
+
+    let n_file = abc.intern_string("File"); let mn_file = abc.intern_qname(fs_ns, n_file);
+    let n_fstream = abc.intern_string("FileStream"); let mn_fstream = abc.intern_qname(fs_ns, n_fstream);
+    let n_fmode = abc.intern_string("FileMode"); let mn_fmode = abc.intern_qname(fs_ns, n_fmode);
+    let n_write = abc.intern_string("WRITE"); let mn_write = abc.intern_qname(pub_ns, n_write);
+    let n_open = abc.intern_string("open"); let mn_open = abc.intern_qname(pub_ns, n_open);
+    let n_wub = abc.intern_string("writeUTFBytes"); let mn_wub = abc.intern_qname(pub_ns, n_wub);
+    let n_close = abc.intern_string("close"); let mn_close = abc.intern_qname(pub_ns, n_close);
+    let n_gettimer = abc.intern_string("getTimer"); let mn_gettimer = abc.intern_qname(utils_ns, n_gettimer);
+    let n_event = abc.intern_string("Event"); let mn_event = abc.intern_qname(events_ns, n_event);
+    let n_enterframe = abc.intern_string("ENTER_FRAME"); let mn_enterframe = abc.intern_qname(pub_ns, n_enterframe);
+    let n_addel = abc.intern_string("addEventListener"); let mn_addel = abc.intern_qname(pub_ns, n_addel);
+    let n_tick = abc.intern_string("peptideBridgeTick"); let mn_tick = abc.intern_qname(pub_ns, n_tick);
+    let s_path = abc.intern_string(native_path);
+
+    // ── the handler method body (this=local0, event=local1, file=local2, fs=local3) ──
+    let (l_file, l_fs) = (2u32, 3u32);
+    let mut h = Code::default();
+    h.op(OP_GETLOCAL0); h.op(OP_PUSHSCOPE);
+    h.op_u30(OP_FINDPROPSTRICT, mn_file); h.op_u30(OP_PUSHSTRING, s_path); h.op_u30_u30(OP_CONSTRUCTPROP, mn_file, 1); h.op_u30(OP_SETLOCAL, l_file);
+    h.op_u30(OP_FINDPROPSTRICT, mn_fstream); h.op_u30_u30(OP_CONSTRUCTPROP, mn_fstream, 0); h.op_u30(OP_SETLOCAL, l_fs);
+    h.op_u30(OP_GETLOCAL, l_fs); h.op_u30(OP_GETLOCAL, l_file); h.op_u30(OP_GETLEX, mn_fmode); h.op_u30(OP_GETPROPERTY, mn_write); h.op_u30_u30(OP_CALLPROPVOID, mn_open, 2);
+    h.op_u30(OP_GETLOCAL, l_fs);
+    // String(getTimer())
+    h.op_u30(OP_FINDPROPSTRICT, mn_gettimer); h.op_u30_u30(OP_CALLPROPERTY, mn_gettimer, 0); h.op(OP_CONVERT_S);
+    h.op_u30_u30(OP_CALLPROPVOID, mn_wub, 1);
+    h.op_u30(OP_GETLOCAL, l_fs); h.op_u30_u30(OP_CALLPROPVOID, mn_close, 0);
+    h.op(OP_RETURNVOID);
+
+    let handler_method = abc.add_method(MethodInfo {
+        param_types: vec![0],   // (event:*)
+        return_type: 0,         // :void/*
+        name: n_tick,
+        flags: 0,
+        options: Vec::new(),
+        param_names: Vec::new(),
+    });
+    abc.add_body(MethodBody {
+        method: handler_method,
+        max_stack: 4,
+        local_count: 4,
+        init_scope_depth: 0,
+        max_scope_depth: 2,
+        code: h.b,
+        exceptions: Vec::new(),
+        traits: Vec::new(),
+    });
+    abc.add_instance_method_trait(ci, mn_tick, handler_method);
+
+    // ── install listener: prepend to the constructor ──
+    //   this.addEventListener(Event.ENTER_FRAME, this.peptideBridgeTick)
+    let mut c = Code::default();
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
+    c.op(OP_GETLOCAL0);                       // receiver = this
+    c.op_u30(OP_GETLEX, mn_event); c.op_u30(OP_GETPROPERTY, mn_enterframe); // Event.ENTER_FRAME
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_tick);                  // this.peptideBridgeTick (bound)
+    c.op_u30_u30(OP_CALLPROPVOID, mn_addel, 2);
+    c.op(OP_POPSCOPE);
+    let payload = c.b;
+    let n = payload.len() as u32;
+
+    let iinit = abc.instances[ci].iinit;
+    let body_idx = abc.bodies.iter().position(|b| b.method == iinit)
+        .ok_or_else(|| anyhow::anyhow!("no ctor body for {doc_class_local}"))?;
+    let body = &mut abc.bodies[body_idx];
+    let mut new_code = payload;
+    new_code.extend_from_slice(&body.code);
+    body.code = new_code;
+    body.max_stack = body.max_stack.max(3);
+    body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
+    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
+    Ok(())
+}
+
+/// Inject a per-frame command channel: each frame the handler reads `cmd_path`
+/// (host writes commands there; the host guarantees the file exists so no branch
+/// is needed) and writes the bytes back to `resp_path`. This proves the
+/// bidirectional host→engine→host transport — the foundation of the command
+/// loop. (Expanding past echo to reflection dispatch is added vocabulary on the
+/// same mechanism.)
+pub fn inject_command_channel(abc: &mut Abc, doc_class_local: &str, cmd_path: &str, resp_path: &str) -> anyhow::Result<()> {
+    let ci = abc.find_class_by_name(doc_class_local)
+        .ok_or_else(|| anyhow::anyhow!("class {doc_class_local} not found"))?;
+
+    let fs_ns = { let s = abc.intern_string("flash.filesystem"); abc.intern_namespace(NS_PACKAGE, s) };
+    let events_ns = { let s = abc.intern_string("flash.events"); abc.intern_namespace(NS_PACKAGE, s) };
+    let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
+    let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
+    let mn_file = q(abc, fs_ns, "File");
+    let mn_fstream = q(abc, fs_ns, "FileStream");
+    let mn_fmode = q(abc, fs_ns, "FileMode");
+    let mn_read = q(abc, pub_ns, "READ");
+    let mn_write = q(abc, pub_ns, "WRITE");
+    let mn_open = q(abc, pub_ns, "open");
+    let mn_close = q(abc, pub_ns, "close");
+    let mn_bytesavail = q(abc, pub_ns, "bytesAvailable");
+    let mn_readutf = q(abc, pub_ns, "readUTFBytes");
+    let mn_writeutf = q(abc, pub_ns, "writeUTFBytes");
+    let mn_event = q(abc, events_ns, "Event");
+    let mn_enterframe = q(abc, pub_ns, "ENTER_FRAME");
+    let mn_addel = q(abc, pub_ns, "addEventListener");
+    let mn_tick = q(abc, pub_ns, "peptideBridgeTick");
+    let n_tick = abc.intern_string("peptideBridgeTick");
+    let s_cmd = abc.intern_string(cmd_path);
+    let s_resp = abc.intern_string(resp_path);
+
+    // handler frame: this=0, event=1, file=2, fs=3, str=4
+    let (l_file, l_fs, l_str) = (2u32, 3u32, 4u32);
+    let mut h = Code::default();
+    h.op(OP_GETLOCAL0); h.op(OP_PUSHSCOPE);
+    // read: f=new File(cmd); fs=new FileStream(); fs.open(f, READ);
+    h.op_u30(OP_FINDPROPSTRICT, mn_file); h.op_u30(OP_PUSHSTRING, s_cmd); h.op_u30_u30(OP_CONSTRUCTPROP, mn_file, 1); h.op_u30(OP_SETLOCAL, l_file);
+    h.op_u30(OP_FINDPROPSTRICT, mn_fstream); h.op_u30_u30(OP_CONSTRUCTPROP, mn_fstream, 0); h.op_u30(OP_SETLOCAL, l_fs);
+    h.op_u30(OP_GETLOCAL, l_fs); h.op_u30(OP_GETLOCAL, l_file); h.op_u30(OP_GETLEX, mn_fmode); h.op_u30(OP_GETPROPERTY, mn_read); h.op_u30_u30(OP_CALLPROPVOID, mn_open, 2);
+    // str = fs.readUTFBytes(fs.bytesAvailable)
+    h.op_u30(OP_GETLOCAL, l_fs);
+    h.op_u30(OP_GETLOCAL, l_fs); h.op_u30(OP_GETPROPERTY, mn_bytesavail);
+    h.op_u30_u30(OP_CALLPROPERTY, mn_readutf, 1); h.op_u30(OP_SETLOCAL, l_str);
+    h.op_u30(OP_GETLOCAL, l_fs); h.op_u30_u30(OP_CALLPROPVOID, mn_close, 0);
+    // write: f=new File(resp); fs=new FileStream(); fs.open(f, WRITE); fs.writeUTFBytes(str); fs.close()
+    h.op_u30(OP_FINDPROPSTRICT, mn_file); h.op_u30(OP_PUSHSTRING, s_resp); h.op_u30_u30(OP_CONSTRUCTPROP, mn_file, 1); h.op_u30(OP_SETLOCAL, l_file);
+    h.op_u30(OP_FINDPROPSTRICT, mn_fstream); h.op_u30_u30(OP_CONSTRUCTPROP, mn_fstream, 0); h.op_u30(OP_SETLOCAL, l_fs);
+    h.op_u30(OP_GETLOCAL, l_fs); h.op_u30(OP_GETLOCAL, l_file); h.op_u30(OP_GETLEX, mn_fmode); h.op_u30(OP_GETPROPERTY, mn_write); h.op_u30_u30(OP_CALLPROPVOID, mn_open, 2);
+    h.op_u30(OP_GETLOCAL, l_fs); h.op_u30(OP_GETLOCAL, l_str); h.op_u30_u30(OP_CALLPROPVOID, mn_writeutf, 1);
+    h.op_u30(OP_GETLOCAL, l_fs); h.op_u30_u30(OP_CALLPROPVOID, mn_close, 0);
+    h.op(OP_RETURNVOID);
+
+    let handler = abc.add_method(MethodInfo { param_types: vec![0], return_type: 0, name: n_tick, flags: 0, options: vec![], param_names: vec![] });
+    abc.add_body(MethodBody { method: handler, max_stack: 4, local_count: 5, init_scope_depth: 0, max_scope_depth: 2, code: h.b, exceptions: vec![], traits: vec![] });
+    abc.add_instance_method_trait(ci, mn_tick, handler);
+
+    // install listener in ctor
+    let mut c = Code::default();
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
+    c.op(OP_GETLOCAL0);
+    c.op_u30(OP_GETLEX, mn_event); c.op_u30(OP_GETPROPERTY, mn_enterframe);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_tick);
+    c.op_u30_u30(OP_CALLPROPVOID, mn_addel, 2);
+    c.op(OP_POPSCOPE);
+    let payload = c.b; let n = payload.len() as u32;
+    let iinit = abc.instances[ci].iinit;
+    let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
+    let body = &mut abc.bodies[body_idx];
+    let mut new_code = payload; new_code.extend_from_slice(&body.code); body.code = new_code;
+    body.max_stack = body.max_stack.max(3);
+    body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
+    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
+    Ok(())
+}
+
+/// Inject the full reflection dispatcher over an ASYNC TCP SOCKET (flash.net.Socket)
+/// — the AVM2 transport that mirrors the Fraymakers loopback socket. The added
+/// `peptideOnData` handler fires on `socketData` events (NOT every frame), reads one
+/// "<seq>\t<verb>\t<a1>\t<a2>" command, acts via reflection on a persistent
+/// `peptideCur` register, and writes "<seq> <result>\n" back over the socket:
+///   PING            -> "pong"
+///   ROOT            -> cur = this (the document); "ok"
+///   GET   <name>    -> cur = cur[name]            (property by runtime name); "ok"
+///   IDX   <n>       -> cur = cur[Number(n)]       (array/index access); "ok"
+///   CALL  <name>    -> cur = cur.name()           (0-arg method, e.g. getX); "ok"
+///   CALL1 <name> <n>-> cur = cur.name(Number(n))  (1-arg, e.g. setYSpeed); "ok"
+///   READ            -> String(cur)
+/// Event-driven IO is the whole point: the handler runs ONLY when the host sends a
+/// command, so it never does per-frame blocking IO and therefore never starves
+/// SSF2's async resource loader (the flaw of the old per-frame FileStream bridge).
+/// That also removes the need for the execute-once guard. The engine dials into the
+/// host's loopback server at `host:port` from the document ctor.
+pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, port: u16) -> anyhow::Result<()> {
+    let ci = abc.find_class_by_name(doc_class_local)
+        .ok_or_else(|| anyhow::anyhow!("class {doc_class_local} not found"))?;
+
+    // namespaces
+    let net_ns = { let s = abc.intern_string("flash.net"); abc.intern_namespace(NS_PACKAGE, s) };
+    let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
+    let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
+    // flash.net.Socket — async TCP. read/writeUTFBytes/flush/bytesAvailable/connect/addEventListener.
+    let mn_socket = q(abc, net_ns, "Socket");
+    let mn_bytesavail = q(abc, pub_ns, "bytesAvailable");
+    let mn_readutf = q(abc, pub_ns, "readUTFBytes");
+    let mn_writeutf = q(abc, pub_ns, "writeUTFBytes");
+    let mn_flush = q(abc, pub_ns, "flush");
+    let mn_connect = q(abc, pub_ns, "connect");
+    let mn_addel = q(abc, pub_ns, "addEventListener");
+    let mn_split = q(abc, pub_ns, "split");
+    let mn_cur = q(abc, pub_ns, "peptideCur");
+    let mn_sock = q(abc, pub_ns, "peptideSock");
+    let mn_ondata = q(abc, pub_ns, "peptideOnData");
+    let n_ondata = abc.intern_string("peptideOnData");
+    // GameController static singleton (reaches the live match / characters)
+    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
+    let mn_gc = q(abc, ctrl_ns, "GameController");
+    let s_v_gc = abc.intern_string("GC");
+    let s_v_setp = abc.intern_string("SETP");
+    // SPAWN: build Game(1, Mode.TRAINING) + set stage/char + GameController.startMatch
+    let enums_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.enums"); abc.intern_namespace(NS_PACKAGE, s) };
+    let mn_game = q(abc, ctrl_ns, "Game");
+    let mn_mode = q(abc, enums_ns, "Mode");
+    let mn_versus = q(abc, pub_ns, "VERSUS");
+    let mn_startmatch = q(abc, pub_ns, "startMatch");
+    let mn_leveldata = q(abc, pub_ns, "LevelData");
+    let mn_stage = q(abc, pub_ns, "stage");
+    let mn_playersettings = q(abc, pub_ns, "PlayerSettings");
+    let mn_character = q(abc, pub_ns, "character");
+    let mn_human = q(abc, pub_ns, "human");
+    let mn_costume = q(abc, pub_ns, "costume");
+    let s_v_spawn = abc.intern_string("SPAWN");
+    let s_spawned = abc.intern_string("spawned");
+    // resource preload verbs (QUEUE ids, LOADNEXT kicks the async loader, LOADED reports done)
+    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let mn_rm = q(abc, util_ns, "ResourceManager");
+    let mn_queueresources = q(abc, pub_ns, "queueResources");
+    let mn_loadnext = q(abc, pub_ns, "loadNext");
+    let mn_isfullyloaded = q(abc, pub_ns, "isFullyLoaded");
+    let s_v_queue = abc.intern_string("QUEUE");
+    // multiplayer host-orchestration primitives (no in-bytecode loop): set a STRING
+    // property (SETP coerces to Number), queue ONE resource id, and (re)load the queue.
+    let s_v_sets = abc.intern_string("SETS");
+    let s_v_queue1 = abc.intern_string("QUEUE1");
+    let s_v_mload = abc.intern_string("MLOAD");
+    let s_v_loadnext = abc.intern_string("LOADNEXT");
+    let s_v_loaded = abc.intern_string("LOADED");
+    let mn_load = q(abc, pub_ns, "load");
+    let mn_flushqueue = q(abc, pub_ns, "flushLoadQueue");
+    let mn_currentgame = q(abc, pub_ns, "currentGame");
+    let s_v_go = abc.intern_string("GO");
+    let s_queued = abc.intern_string("queued");
+    let s_v_calls = abc.intern_string("CALLS");
+    let s_multimode = abc.intern_string("multimode");
+    // RM/STATS root verbs (cur = the static class) for probing the resource pool / stats
+    let engine_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.engine"); abc.intern_namespace(NS_PACKAGE, s) };
+    let mn_stats_real = q(abc, engine_ns, "Stats");
+    let s_v_rm = abc.intern_string("RM");
+    let s_v_stats = abc.intern_string("STATS");
+    // MenuController (static) — owns the menu/intro screens; disposeAllMenus() tears
+    // them down so a programmatic startMatch isn't left behind the menus. `MC` root
+    // verb = getlex MenuController (parity with GC/RM/STATS).
+    let mn_menuctrl = q(abc, ctrl_ns, "MenuController");
+    let mn_disposemenus = q(abc, pub_ns, "disposeAllMenus");
+    let s_v_mc = abc.intern_string("MC");
+    // runtime-named multiname (MultinameL) bound to the public ns-set
+    let pub_nsset = abc.intern_ns_set(vec![pub_ns]);
+    let mnl = abc.intern_multinamel(pub_nsset);
+    // string constants
+    let s_socketdata = abc.intern_string("socketData"); // ProgressEvent.SOCKET_DATA type
+    let s_host = abc.intern_string(host);
+    let s_port = abc.intern_string(&port.to_string()); // connect() coerces the String to int
+    let s_nl = abc.intern_string("\n");                 // reply framing (host reads to '\n')
+    let s_tab = abc.intern_string("\t");
+    let s_sp = abc.intern_string(" ");
+    let s_q = abc.intern_string("?");
+    let s_pong = abc.intern_string("pong");
+    let s_ok = abc.intern_string("ok");
+    let s_v_ping = abc.intern_string("PING");
+    let s_v_root = abc.intern_string("ROOT");
+    let s_v_get = abc.intern_string("GET");
+    let s_v_idx = abc.intern_string("IDX");
+    let s_v_call = abc.intern_string("CALL");
+    let s_v_call1 = abc.intern_string("CALL1");
+    let s_v_read = abc.intern_string("READ");
+    // LOG <msg>: command-level parity with commands.hsx `log()` — replies
+    // "logged: <msg>" (SSF2 has no on-screen console sink to mirror __td.log, so
+    // the reply IS the observable, same as the E:logged:… line Fraymakers returns).
+    let s_v_log = abc.intern_string("LOG");
+    let s_logged = abc.intern_string("logged: ");
+
+    // add the persistent register + the socket slot to the class
+    abc.add_instance_slot(ci, mn_cur);
+    abc.add_instance_slot(ci, mn_sock);
+
+    // locals: this=0 event=1 (2,3 unused) cmd=4 arr=5 seq=6 verb=7 a1=8 a2=9 result=10
+    //         g=11 ps=12 a3=13 (optional 3rd command arg, e.g. SPAWN's player count)
+    let (l_cmd, l_arr, l_seq, l_verb, l_a1, l_a2, l_res, l_a3) = (4u32,5,6,7,8,9,10,13);
+    let mut c = Code::default();
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
+
+    // ── read one command from the socket: cmd = this.peptideSock.readUTFBytes(bytesAvailable) ──
+    // The host writes exactly one command per send and waits for the reply (strict
+    // request/response), so one socketData event = one command; no buffering needed.
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_sock);                                   // socket (receiver)
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_sock); c.op_u30(OP_GETPROPERTY, mn_bytesavail); // arg = bytesAvailable
+    c.op_u30_u30(OP_CALLPROPERTY, mn_readutf, 1); c.op_u30(OP_SETLOCAL, l_cmd);
+
+    // arr = cmd.split("\t")
+    c.op_u30(OP_GETLOCAL, l_cmd); c.op_u30(OP_PUSHSTRING, s_tab); c.op_u30_u30(OP_CALLPROPERTY, mn_split, 1); c.op_u30(OP_SETLOCAL, l_arr);
+    // seq/verb/a1/a2 = arr[0..3]
+    let field = |c: &mut Code, idx: u8, dst: u32| { c.op_u30(OP_GETLOCAL, l_arr); c.op(OP_PUSHBYTE); c.op(idx); c.op_u30(OP_GETPROPERTY, mnl); c.op_u30(OP_SETLOCAL, dst); };
+    field(&mut c, 0, l_seq); field(&mut c, 1, l_verb); field(&mut c, 2, l_a1); field(&mut c, 3, l_a2);
+    field(&mut c, 4, l_a3); // optional 3rd arg (e.g. SPAWN player count); undefined when absent
+    // result = "?"
+    c.op_u30(OP_PUSHSTRING, s_q); c.op_u30(OP_SETLOCAL, l_res);
+
+    let l_done = c.new_label();
+    // No execute-once guard: this is event-driven (one socketData = one command), so
+    // a side-effecting command runs exactly once, not 30×/sec like the file bridge.
+    // dispatch chain
+    let mut next = c.new_label();
+    // PING
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_ping); c.branch(OP_IFSTRICTNE, next);
+    c.op_u30(OP_PUSHSTRING, s_pong); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // ROOT
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_root); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0); c.op(OP_GETLOCAL0); c.op_u30(OP_SETPROPERTY, mn_cur); // this.peptideCur = this  (push this, this; setproperty)
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // GET <name>: cur = cur[a1]
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_get); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0);                                   // receiver for setproperty
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur); c.op_u30(OP_GETLOCAL, l_a1); c.op_u30(OP_GETPROPERTY, mnl); // cur[a1]
+    c.op_u30(OP_SETPROPERTY, mn_cur);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // IDX <n>: cur = cur[Number(a1)]
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_idx); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur); c.op_u30(OP_GETLOCAL, l_a1); c.op(OP_CONVERT_D); c.op_u30(OP_GETPROPERTY, mnl);
+    c.op_u30(OP_SETPROPERTY, mn_cur);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // CALL <name>: cur = cur.name()
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_call); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur); c.op_u30(OP_GETLOCAL, l_a1); c.op_u30_u30(OP_CALLPROPERTY, mnl, 0);
+    c.op_u30(OP_SETPROPERTY, mn_cur);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // CALL1 <name> <n>: cur = cur.name(Number(n))
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_call1); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur); c.op_u30(OP_GETLOCAL, l_a1); c.op_u30(OP_GETLOCAL, l_a2); c.op(OP_CONVERT_D); c.op_u30_u30(OP_CALLPROPERTY, mnl, 1);
+    c.op_u30(OP_SETPROPERTY, mn_cur);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // CALLS <name> <str>: cur = cur.name(<str>)  (string arg, e.g. getLibraryMC)
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_calls); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur); c.op_u30(OP_GETLOCAL, l_a1); c.op_u30(OP_GETLOCAL, l_a2); c.op_u30_u30(OP_CALLPROPERTY, mnl, 1);
+    c.op_u30(OP_SETPROPERTY, mn_cur);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // GC: cur = getlex GameController (the static match singleton)
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_gc); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_SETPROPERTY, mn_cur);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // RM: cur = getlex ResourceManager
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_rm); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETLEX, mn_rm); c.op_u30(OP_SETPROPERTY, mn_cur);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // STATS: cur = getlex Stats
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_stats); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETLEX, mn_stats_real); c.op_u30(OP_SETPROPERTY, mn_cur);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // MC: cur = getlex MenuController (so the host can call menu methods directly)
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_mc); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETLEX, mn_menuctrl); c.op_u30(OP_SETPROPERTY, mn_cur);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // SETP <name> <n>: cur[name] = Number(n)  (e.g. set YSpeed to launch a jump)
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_setp); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur);   // cur (object)
+    c.op_u30(OP_GETLOCAL, l_a1);                            // name (runtime key)
+    c.op_u30(OP_GETLOCAL, l_a2); c.op(OP_CONVERT_D);        // value
+    c.op_u30(OP_SETPROPERTY, mnl);                          // cur[name] = value
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // SETS <name> <str>: cur[name] = <str>  (STRING set; SETP coerces to Number, so
+    // string fields like PlayerSetting.character need this).
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_sets); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur);
+    c.op_u30(OP_GETLOCAL, l_a1);
+    c.op_u30(OP_GETLOCAL, l_a2);
+    c.op_u30(OP_SETPROPERTY, mnl);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // QUEUE1 <id>: ResourceManager.queueResources([id]) — queue ONE resource.
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_queue1); c.branch(OP_IFSTRICTNE, next);
+    c.op_u30(OP_GETLEX, mn_rm); c.op_u30(OP_GETLOCAL, l_a1); c.op_u30(OP_NEWARRAY, 1); c.op_u30_u30(OP_CALLPROPVOID, mn_queueresources, 1);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // MLOAD: ResourceManager.load({multimode:true}) — (re)drive the load of the queue.
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_mload); c.branch(OP_IFSTRICTNE, next);
+    c.op_u30(OP_GETLEX, mn_rm);
+    c.op_u30(OP_PUSHSTRING, s_multimode); c.op(OP_PUSHTRUE); c.op_u30(OP_NEWOBJECT, 1);
+    c.op_u30_u30(OP_CALLPROPVOID, mn_load, 1);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // SPAWN <char> <stage>: g=new Game(1,TRAINING); g.LevelData.stage=a2;
+    //   ps=g.PlayerSettings[0]; ps.character=a1; ps.human=true; ps.costume=0;
+    //   GameController.startMatch(g)   (the character spawns next frame)
+    let (l_g, l_ps) = (11u32, 12u32);
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_spawn); c.branch(OP_IFSTRICTNE, next);
+    // g = new Game(Number(a3), Mode.VERSUS). The first Game arg is the PLAYER-SLOT
+    // COUNT (creates that many PlayerSettings); a3 is the host-supplied player count.
+    // VERSUS so the match honors the rules the host applies before startMatch.
+    c.op_u30(OP_FINDPROPSTRICT, mn_game); c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_CONVERT_D);
+    c.op_u30(OP_GETLEX, mn_mode); c.op_u30(OP_GETPROPERTY, mn_versus);
+    c.op_u30_u30(OP_CONSTRUCTPROP, mn_game, 2); c.op_u30(OP_SETLOCAL, l_g);
+    // g.LevelData.stage = a2
+    c.op_u30(OP_GETLOCAL, l_g); c.op_u30(OP_GETPROPERTY, mn_leveldata); c.op_u30(OP_GETLOCAL, l_a2); c.op_u30(OP_SETPROPERTY, mn_stage);
+    // ps = g.PlayerSettings[0]
+    c.op_u30(OP_GETLOCAL, l_g); c.op_u30(OP_GETPROPERTY, mn_playersettings); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_GETPROPERTY, mnl); c.op_u30(OP_SETLOCAL, l_ps);
+    // ps.character = a1
+    c.op_u30(OP_GETLOCAL, l_ps); c.op_u30(OP_GETLOCAL, l_a1); c.op_u30(OP_SETPROPERTY, mn_character);
+    // ps.human = true
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHTRUE); c.op_u30(OP_SETPROPERTY, mn_human);
+    // ps.costume = 0
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETPROPERTY, mn_costume);
+    // GameController.currentGame = g  (so GO can startMatch(currentGame))
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETLOCAL, l_g); c.op_u30(OP_SETPROPERTY, mn_currentgame);
+    // flush the title-screen's polluted load queue first (it holds stuck items
+    // like menu_news that never load offline → isFullyLoaded would never go true).
+    c.op_u30(OP_GETLEX, mn_rm); c.op_u30_u30(OP_CALLPROPVOID, mn_flushqueue, 0);
+    // queue the STAGE + CHARACTER resources (both are in poolHash at a fresh boot,
+    // keyed by id; load() then loads both and unloadOldResources keeps them since
+    // they're queued). Character must be loaded too or makePlayer null-derefs on
+    // Stats.getStats. queueResources([stage]); queueResources([char]).
+    c.op_u30(OP_GETLEX, mn_rm); c.op_u30(OP_GETLOCAL, l_a2); c.op_u30(OP_NEWARRAY, 1); c.op_u30_u30(OP_CALLPROPVOID, mn_queueresources, 1);
+    c.op_u30(OP_GETLEX, mn_rm); c.op_u30(OP_GETLOCAL, l_a1); c.op_u30(OP_NEWARRAY, 1); c.op_u30_u30(OP_CALLPROPVOID, mn_queueresources, 1);
+    // ResourceManager.load({multimode:true}) — multimode=false SKIPS loading the
+    // queue (jumps past the queue[0].load(handleLoaded) block); multimode=true
+    // actually drives the in-context async load chain that decrypts content.
+    c.op_u30(OP_GETLEX, mn_rm);
+    c.op_u30(OP_PUSHSTRING, s_multimode); c.op(OP_PUSHTRUE); c.op_u30(OP_NEWOBJECT, 1);
+    c.op_u30_u30(OP_CALLPROPVOID, mn_load, 1);
+    c.op_u30(OP_PUSHSTRING, s_queued); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // GO: GameController.startMatch(currentGame); MenuController.disposeAllMenus()
+    //     — start the match AND tear down the menu/intro screens so the live match
+    //     isn't left sitting behind them (the menu flow normally does this teardown;
+    //     a programmatic startMatch skips it).
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_go); c.branch(OP_IFSTRICTNE, next);
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_currentgame); c.op_u30_u30(OP_CALLPROPVOID, mn_startmatch, 1);
+    c.op_u30(OP_GETLEX, mn_menuctrl); c.op_u30_u30(OP_CALLPROPVOID, mn_disposemenus, 0);
+    c.op_u30(OP_PUSHSTRING, s_spawned); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // QUEUE <a1> <a2>: ResourceManager.queueResources([a1, a2]) — queue ids to load
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_queue); c.branch(OP_IFSTRICTNE, next);
+    c.op_u30(OP_GETLEX, mn_rm);
+    c.op_u30(OP_GETLOCAL, l_a1); c.op_u30(OP_GETLOCAL, l_a2); c.op_u30(OP_NEWARRAY, 2);
+    c.op_u30_u30(OP_CALLPROPVOID, mn_queueresources, 1);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // LOADNEXT: ResourceManager.loadNext() — kick the async loader
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_loadnext); c.branch(OP_IFSTRICTNE, next);
+    c.op_u30(OP_GETLEX, mn_rm); c.op_u30_u30(OP_CALLPROPVOID, mn_loadnext, 0);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // LOADED: result = String(ResourceManager.isFullyLoaded())
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_loaded); c.branch(OP_IFSTRICTNE, next);
+    c.op_u30(OP_GETLEX, mn_rm); c.op_u30_u30(OP_CALLPROPERTY, mn_isfullyloaded, 0); c.op(OP_CONVERT_S); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // LOG <msg>: result = "logged: " + a1  (commands.hsx log() parity)
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_log); c.branch(OP_IFSTRICTNE, next);
+    c.op_u30(OP_PUSHSTRING, s_logged); c.op_u30(OP_GETLOCAL, l_a1); c.op(OP_ADD); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // READ: result = String(cur)
+    c.place(next);
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_read); c.branch(OP_IFSTRICTNE, l_done);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur); c.op(OP_CONVERT_S); c.op_u30(OP_SETLOCAL, l_res);
+
+    c.place(l_done);
+    // ── write reply over the socket: peptideSock.writeUTFBytes(seq + " " + result + "\n"); flush() ──
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_sock);                                   // socket (receiver)
+    c.op_u30(OP_GETLOCAL, l_seq); c.op_u30(OP_PUSHSTRING, s_sp); c.op(OP_ADD);
+    c.op_u30(OP_GETLOCAL, l_res); c.op(OP_ADD); c.op_u30(OP_PUSHSTRING, s_nl); c.op(OP_ADD); // seq + " " + result + "\n"
+    c.op_u30_u30(OP_CALLPROPVOID, mn_writeutf, 1);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_sock); c.op_u30_u30(OP_CALLPROPVOID, mn_flush, 0);
+    c.op(OP_RETURNVOID);
+
+    let handler = abc.add_method(MethodInfo { param_types: vec![0], return_type: 0, name: n_ondata, flags: 0, options: vec![], param_names: vec![] });
+    abc.add_body(MethodBody { method: handler, max_stack: 7, local_count: 14, init_scope_depth: 0, max_scope_depth: 2, code: c.finish(), exceptions: vec![], traits: vec![] });
+    abc.add_instance_method_trait(ci, mn_ondata, handler);
+
+    // ctor: this.peptideSock = new Socket(); addEventListener("socketData", this.peptideOnData);
+    //       connect(host, port)  — dial into the host's loopback server. connect() coerces
+    //       the port String to int; the handler fires only when the host sends data.
+    let mut ic = Code::default();
+    ic.op(OP_GETLOCAL0); ic.op(OP_PUSHSCOPE);
+    // this.peptideSock = new Socket()
+    ic.op(OP_GETLOCAL0); ic.op_u30(OP_FINDPROPSTRICT, mn_socket); ic.op_u30_u30(OP_CONSTRUCTPROP, mn_socket, 0); ic.op_u30(OP_SETPROPERTY, mn_sock);
+    // this.peptideSock.addEventListener("socketData", this.peptideOnData)
+    ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_sock);
+    ic.op_u30(OP_PUSHSTRING, s_socketdata);
+    ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_ondata);
+    ic.op_u30_u30(OP_CALLPROPVOID, mn_addel, 2);
+    // this.peptideSock.connect(host, port)
+    ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_sock);
+    ic.op_u30(OP_PUSHSTRING, s_host); ic.op_u30(OP_PUSHSTRING, s_port);
+    ic.op_u30_u30(OP_CALLPROPVOID, mn_connect, 2);
+    ic.op(OP_POPSCOPE);
+    let payload = ic.finish(); let n = payload.len() as u32;
+    let iinit = abc.instances[ci].iinit;
+    let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
+    let body = &mut abc.bodies[body_idx];
+    let mut new_code = payload; new_code.extend_from_slice(&body.code); body.code = new_code;
+    body.max_stack = body.max_stack.max(3);
+    body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
+    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
+    Ok(())
+}
+
+/// Inject a per-frame JUMP CAPTURE PROBE: once a match is live
+/// (GameController.stageData != null), append "<t>,<X>,<Y>,<YSpeed>\n" for the
+/// character at `char_index` to `traj_path` every frame. Null-guarded so it's
+/// silent at the menu. The host clears the traj file, triggers a jump (via the
+/// reflection bridge's SETP YSpeed), waits, and reads the trajectory.
+pub fn inject_jump_probe(abc: &mut Abc, doc_class_local: &str, traj_path: &str, char_index: u8) -> anyhow::Result<()> {
+    let ci = abc.find_class_by_name(doc_class_local)
+        .ok_or_else(|| anyhow::anyhow!("class {doc_class_local} not found"))?;
+    let fs_ns = { let s = abc.intern_string("flash.filesystem"); abc.intern_namespace(NS_PACKAGE, s) };
+    let utils_ns = { let s = abc.intern_string("flash.utils"); abc.intern_namespace(NS_PACKAGE, s) };
+    let events_ns = { let s = abc.intern_string("flash.events"); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
+    let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
+    let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
+    let mn_file = q(abc, fs_ns, "File");
+    let mn_fstream = q(abc, fs_ns, "FileStream");
+    let mn_fmode = q(abc, fs_ns, "FileMode");
+    let mn_append = q(abc, pub_ns, "APPEND");
+    let mn_open = q(abc, pub_ns, "open");
+    let mn_close = q(abc, pub_ns, "close");
+    let mn_writeutf = q(abc, pub_ns, "writeUTFBytes");
+    let mn_gc = q(abc, ctrl_ns, "GameController");
+    let mn_stagedata = q(abc, pub_ns, "stageData");
+    let mn_characters = q(abc, pub_ns, "Characters");
+    let mn_x = q(abc, pub_ns, "X");
+    let mn_y = q(abc, pub_ns, "Y");
+    let mn_yspeed = q(abc, pub_ns, "YSpeed");
+    let mn_gettimer = q(abc, utils_ns, "getTimer");
+    let mn_event = q(abc, events_ns, "Event");
+    let mn_enterframe = q(abc, pub_ns, "ENTER_FRAME");
+    let mn_addel = q(abc, pub_ns, "addEventListener");
+    let mn_probe = q(abc, pub_ns, "peptideJumpProbe");
+    let n_probe = abc.intern_string("peptideJumpProbe");
+    let pub_nsset = abc.intern_ns_set(vec![pub_ns]);
+    let mnl = abc.intern_multinamel(pub_nsset);
+    let s_traj = abc.intern_string(traj_path);
+    let s_comma = abc.intern_string(",");
+    let s_nl = abc.intern_string("\n");
+
+    // locals: this=0 event=1 sd=2 c0=3 fileObj=4 fs=5
+    let (l_sd, l_c0, l_fo, l_fs) = (2u32, 3, 4, 5);
+    let mut c = Code::default();
+    let l_skip = c.new_label();
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
+    // sd = GameController.stageData ; if null -> skip
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata); c.op_u30(OP_SETLOCAL, l_sd);
+    c.op_u30(OP_GETLOCAL, l_sd); c.op(OP_PUSHNULL); c.branch(OP_IFSTRICTEQ, l_skip);
+    // c0 = sd.Characters[char_index]
+    c.op_u30(OP_GETLOCAL, l_sd); c.op_u30(OP_GETPROPERTY, mn_characters);
+    c.op(OP_PUSHBYTE); c.op(char_index); c.op_u30(OP_GETPROPERTY, mnl); c.op_u30(OP_SETLOCAL, l_c0);
+    // open traj (APPEND)
+    c.op_u30(OP_FINDPROPSTRICT, mn_file); c.op_u30(OP_PUSHSTRING, s_traj); c.op_u30_u30(OP_CONSTRUCTPROP, mn_file, 1); c.op_u30(OP_SETLOCAL, l_fo);
+    c.op_u30(OP_FINDPROPSTRICT, mn_fstream); c.op_u30_u30(OP_CONSTRUCTPROP, mn_fstream, 0); c.op_u30(OP_SETLOCAL, l_fs);
+    c.op_u30(OP_GETLOCAL, l_fs); c.op_u30(OP_GETLOCAL, l_fo); c.op_u30(OP_GETLEX, mn_fmode); c.op_u30(OP_GETPROPERTY, mn_append); c.op_u30_u30(OP_CALLPROPVOID, mn_open, 2);
+    // fs.writeUTFBytes( getTimer + "," + c0.X + "," + c0.Y + "," + c0.YSpeed + "\n" )
+    c.op_u30(OP_GETLOCAL, l_fs);
+    c.op_u30(OP_FINDPROPSTRICT, mn_gettimer); c.op_u30_u30(OP_CALLPROPERTY, mn_gettimer, 0); c.op(OP_CONVERT_S);
+    c.op_u30(OP_PUSHSTRING, s_comma); c.op(OP_ADD);
+    c.op_u30(OP_GETLOCAL, l_c0); c.op_u30(OP_GETPROPERTY, mn_x); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_comma); c.op(OP_ADD);
+    c.op_u30(OP_GETLOCAL, l_c0); c.op_u30(OP_GETPROPERTY, mn_y); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_comma); c.op(OP_ADD);
+    c.op_u30(OP_GETLOCAL, l_c0); c.op_u30(OP_GETPROPERTY, mn_yspeed); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_nl); c.op(OP_ADD);
+    c.op_u30_u30(OP_CALLPROPVOID, mn_writeutf, 1);
+    c.op_u30(OP_GETLOCAL, l_fs); c.op_u30_u30(OP_CALLPROPVOID, mn_close, 0);
+    c.place(l_skip);
+    c.op(OP_RETURNVOID);
+
+    let probe = abc.add_method(MethodInfo { param_types: vec![0], return_type: 0, name: n_probe, flags: 0, options: vec![], param_names: vec![] });
+    abc.add_body(MethodBody { method: probe, max_stack: 6, local_count: 6, init_scope_depth: 0, max_scope_depth: 2, code: c.finish(), exceptions: vec![], traits: vec![] });
+    abc.add_instance_method_trait(ci, mn_probe, probe);
+
+    // install listener in ctor
+    let mut ic = Code::default();
+    ic.op(OP_GETLOCAL0); ic.op(OP_PUSHSCOPE);
+    ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETLEX, mn_event); ic.op_u30(OP_GETPROPERTY, mn_enterframe);
+    ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_probe);
+    ic.op_u30_u30(OP_CALLPROPVOID, mn_addel, 2);
+    ic.op(OP_POPSCOPE);
+    let payload = ic.finish(); let n = payload.len() as u32;
+    let iinit = abc.instances[ci].iinit;
+    let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
+    let body = &mut abc.bodies[body_idx];
+    let mut new_code = payload; new_code.extend_from_slice(&body.code); body.code = new_code;
+    body.max_stack = body.max_stack.max(3);
+    body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
+    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
+    Ok(())
+}
+
+/// Timer-driven load TEST (no per-frame handler): the constructor schedules
+/// `peptideLoadKick` (build Game + queue sandbag+stage + multimode load) once via
+/// setTimeout, and `peptideLoadCheck` every 1.5s via setInterval, which writes
+/// "LIB:<getLibraryMC> STATS:<m_statObjects[char]>" to `marker`. Isolates whether
+/// the resource parse completes WITHOUT a per-frame FileStream-IO command loop
+/// competing for the event loop (the game itself loads via timers, not per-frame).
+pub fn inject_load_test(abc: &mut Abc, doc_class_local: &str, marker: &str, char_id: &str, stage_id: &str) -> anyhow::Result<()> {
+    let ci = abc.find_class_by_name(doc_class_local).ok_or_else(|| anyhow::anyhow!("class not found"))?;
+    let fs_ns = { let s = abc.intern_string("flash.filesystem"); abc.intern_namespace(NS_PACKAGE, s) };
+    let utils_ns = { let s = abc.intern_string("flash.utils"); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
+    let enums_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.enums"); abc.intern_namespace(NS_PACKAGE, s) };
+    let engine_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.engine"); abc.intern_namespace(NS_PACKAGE, s) };
+    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
+    let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
+    let mn_file = q(abc, fs_ns, "File"); let mn_fstream = q(abc, fs_ns, "FileStream"); let mn_fmode = q(abc, fs_ns, "FileMode");
+    let mn_write = q(abc, pub_ns, "WRITE"); let mn_open = q(abc, pub_ns, "open"); let mn_close = q(abc, pub_ns, "close"); let mn_writeutf = q(abc, pub_ns, "writeUTFBytes");
+    let mn_game = q(abc, ctrl_ns, "Game"); let mn_mode = q(abc, enums_ns, "Mode"); let mn_training = q(abc, pub_ns, "TRAINING");
+    let mn_gc = q(abc, ctrl_ns, "GameController"); let mn_rm = q(abc, util_ns, "ResourceManager"); let mn_stats = q(abc, engine_ns, "Stats");
+    let mn_currentgame = q(abc, pub_ns, "currentGame"); let mn_leveldata = q(abc, pub_ns, "LevelData"); let mn_stage = q(abc, pub_ns, "stage");
+    let mn_playersettings = q(abc, pub_ns, "PlayerSettings"); let mn_character = q(abc, pub_ns, "character"); let mn_human = q(abc, pub_ns, "human"); let mn_costume = q(abc, pub_ns, "costume");
+    let mn_flushqueue = q(abc, pub_ns, "flushLoadQueue"); let mn_queueres = q(abc, pub_ns, "queueResources"); let mn_load = q(abc, pub_ns, "load");
+    let mn_getlibmc = q(abc, pub_ns, "getLibraryMC"); let mn_statobjs = q(abc, pub_ns, "m_statObjects");
+    let mn_settimeout = q(abc, utils_ns, "setTimeout"); let mn_setinterval = q(abc, utils_ns, "setInterval");
+    let mn_kick = q(abc, pub_ns, "peptideLoadKick"); let n_kick = abc.intern_string("peptideLoadKick");
+    let mn_check = q(abc, pub_ns, "peptideLoadCheck"); let n_check = abc.intern_string("peptideLoadCheck");
+    let pub_nsset = abc.intern_ns_set(vec![pub_ns]); let mnl = abc.intern_multinamel(pub_nsset);
+    let s_char = abc.intern_string(char_id); let s_stage = abc.intern_string(stage_id);
+    let s_multimode = abc.intern_string("multimode"); let s_marker = abc.intern_string(marker);
+    let s_libpfx = abc.intern_string("LIB:"); let s_statpfx = abc.intern_string(" STATS:"); let s_stagelib = abc.intern_string(&format!("stage_{stage_id}"));
+
+    // ── peptideLoadKick(): build Game(1,TRAINING) + set stage/char + flush + queue + multimode load ──
+    let (l_g, l_ps) = (1u32, 2u32);
+    let mut k = Code::default();
+    k.op(OP_GETLOCAL0); k.op(OP_PUSHSCOPE);
+    k.op_u30(OP_FINDPROPSTRICT, mn_game); k.op(OP_PUSHBYTE); k.op(1); k.op_u30(OP_GETLEX, mn_mode); k.op_u30(OP_GETPROPERTY, mn_training); k.op_u30_u30(OP_CONSTRUCTPROP, mn_game, 2); k.op_u30(OP_SETLOCAL, l_g);
+    k.op_u30(OP_GETLOCAL, l_g); k.op_u30(OP_GETPROPERTY, mn_leveldata); k.op_u30(OP_PUSHSTRING, s_stage); k.op_u30(OP_SETPROPERTY, mn_stage);
+    k.op_u30(OP_GETLOCAL, l_g); k.op_u30(OP_GETPROPERTY, mn_playersettings); k.op(OP_PUSHBYTE); k.op(0); k.op_u30(OP_GETPROPERTY, mnl); k.op_u30(OP_SETLOCAL, l_ps);
+    k.op_u30(OP_GETLOCAL, l_ps); k.op_u30(OP_PUSHSTRING, s_char); k.op_u30(OP_SETPROPERTY, mn_character);
+    k.op_u30(OP_GETLOCAL, l_ps); k.op(OP_PUSHTRUE); k.op_u30(OP_SETPROPERTY, mn_human);
+    k.op_u30(OP_GETLOCAL, l_ps); k.op(OP_PUSHBYTE); k.op(0); k.op_u30(OP_SETPROPERTY, mn_costume);
+    k.op_u30(OP_GETLEX, mn_gc); k.op_u30(OP_GETLOCAL, l_g); k.op_u30(OP_SETPROPERTY, mn_currentgame);
+    k.op_u30(OP_GETLEX, mn_rm); k.op_u30_u30(OP_CALLPROPVOID, mn_flushqueue, 0);
+    k.op_u30(OP_GETLEX, mn_rm); k.op_u30(OP_PUSHSTRING, s_stage); k.op_u30(OP_NEWARRAY, 1); k.op_u30_u30(OP_CALLPROPVOID, mn_queueres, 1);
+    k.op_u30(OP_GETLEX, mn_rm); k.op_u30(OP_PUSHSTRING, s_char); k.op_u30(OP_NEWARRAY, 1); k.op_u30_u30(OP_CALLPROPVOID, mn_queueres, 1);
+    k.op_u30(OP_GETLEX, mn_rm); k.op_u30(OP_PUSHSTRING, s_multimode); k.op(OP_PUSHTRUE); k.op_u30(OP_NEWOBJECT, 1); k.op_u30_u30(OP_CALLPROPVOID, mn_load, 1);
+    k.op(OP_RETURNVOID);
+    let m_kick = abc.add_method(MethodInfo { param_types: vec![], return_type: 0, name: n_kick, flags: 0, options: vec![], param_names: vec![] });
+    abc.add_body(MethodBody { method: m_kick, max_stack: 5, local_count: 3, init_scope_depth: 0, max_scope_depth: 2, code: k.finish(), exceptions: vec![], traits: vec![] });
+    abc.add_instance_method_trait(ci, mn_kick, m_kick);
+
+    // ── peptideLoadCheck(): write "LIB:<getLibraryMC> STATS:<m_statObjects[char]>" ──
+    let (l_fo, l_fs, l_lib) = (1u32, 2u32, 3u32);
+    let mut c = Code::default();
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
+    // lib = String(ResourceManager.getLibraryMC("stage_<id>"))
+    c.op_u30(OP_GETLEX, mn_rm); c.op_u30(OP_PUSHSTRING, s_stagelib); c.op_u30_u30(OP_CALLPROPERTY, mn_getlibmc, 1); c.op(OP_CONVERT_S); c.op_u30(OP_SETLOCAL, l_lib);
+    // open marker (WRITE)
+    c.op_u30(OP_FINDPROPSTRICT, mn_file); c.op_u30(OP_PUSHSTRING, s_marker); c.op_u30_u30(OP_CONSTRUCTPROP, mn_file, 1); c.op_u30(OP_SETLOCAL, l_fo);
+    c.op_u30(OP_FINDPROPSTRICT, mn_fstream); c.op_u30_u30(OP_CONSTRUCTPROP, mn_fstream, 0); c.op_u30(OP_SETLOCAL, l_fs);
+    c.op_u30(OP_GETLOCAL, l_fs); c.op_u30(OP_GETLOCAL, l_fo); c.op_u30(OP_GETLEX, mn_fmode); c.op_u30(OP_GETPROPERTY, mn_write); c.op_u30_u30(OP_CALLPROPVOID, mn_open, 2);
+    // writeUTFBytes("LIB:" + lib)  — stats omitted (m_statObjects may be null → throw)
+    let _ = (mn_stats, mn_statobjs, s_statpfx);
+    c.op_u30(OP_GETLOCAL, l_fs);
+    c.op_u30(OP_PUSHSTRING, s_libpfx); c.op_u30(OP_GETLOCAL, l_lib); c.op(OP_ADD);
+    c.op_u30_u30(OP_CALLPROPVOID, mn_writeutf, 1);
+    c.op_u30(OP_GETLOCAL, l_fs); c.op_u30_u30(OP_CALLPROPVOID, mn_close, 0);
+    c.op(OP_RETURNVOID);
+    let m_check = abc.add_method(MethodInfo { param_types: vec![], return_type: 0, name: n_check, flags: 0, options: vec![], param_names: vec![] });
+    abc.add_body(MethodBody { method: m_check, max_stack: 6, local_count: 4, init_scope_depth: 0, max_scope_depth: 2, code: c.finish(), exceptions: vec![], traits: vec![] });
+    abc.add_instance_method_trait(ci, mn_check, m_check);
+
+    // ── constructor: setTimeout(this.peptideLoadKick, 3000); setInterval(this.peptideLoadCheck, 1500) ──
+    let mut ic = Code::default();
+    ic.op(OP_GETLOCAL0); ic.op(OP_PUSHSCOPE);
+    ic.op_u30(OP_FINDPROPSTRICT, mn_settimeout); ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_kick); ic.op_u30(OP_PUSHSHORT, 3000); ic.op_u30_u30(OP_CALLPROPVOID, mn_settimeout, 2);
+    ic.op_u30(OP_FINDPROPSTRICT, mn_setinterval); ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_check); ic.op_u30(OP_PUSHSHORT, 1500); ic.op_u30_u30(OP_CALLPROPVOID, mn_setinterval, 2);
+    ic.op(OP_POPSCOPE);
+    let payload = ic.finish(); let n = payload.len() as u32;
+    let iinit = abc.instances[ci].iinit;
+    let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
+    let body = &mut abc.bodies[body_idx];
+    let mut nc = payload; nc.extend_from_slice(&body.code); body.code = nc;
+    body.max_stack = body.max_stack.max(4); body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
+    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
+    Ok(())
+}
+
+const OP_NEGATE: u8 = 0x90;
+const OP_CONVERT_B: u8 = 0x76;
+const OP_IFLT: u8 = 0x15;
+
+/// Full TIMER-DRIVEN autospawn (no per-frame command handler — that starves the
+/// async resource Loader). Constructor schedules:
+///   setTimeout(peptideKick, delay): build Game(1,TRAINING)+sandbag/stage, flush,
+///     queue stage+char, ResourceManager.load({multimode:true}).
+///   setInterval(peptideTick, 250ms): a state machine —
+///     state 0: wait until getLibraryMC(stage) && Stats.m_statObjects[char] ready,
+///              then GameController.startMatch(currentGame); state=1.
+///     state 1: wait until GameController.stageData != null, then jump the
+///              character: Characters[0].YSpeed = -CharacterStats.JumpSpeed; state=2.
+///     state 2: done. (Pair with inject_jump_probe to log the trajectory.)
+pub fn inject_autospawn(abc: &mut Abc, doc_class_local: &str, char_id: &str, stage_id: &str, delay_ms: u32) -> anyhow::Result<()> {
+    let ci = abc.find_class_by_name(doc_class_local).ok_or_else(|| anyhow::anyhow!("class not found"))?;
+    let utils_ns = { let s = abc.intern_string("flash.utils"); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
+    let enums_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.enums"); abc.intern_namespace(NS_PACKAGE, s) };
+    let engine_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.engine"); abc.intern_namespace(NS_PACKAGE, s) };
+    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
+    let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
+    let mn_game = q(abc, ctrl_ns, "Game"); let mn_mode = q(abc, enums_ns, "Mode"); let mn_training = q(abc, pub_ns, "TRAINING");
+    let mn_gc = q(abc, ctrl_ns, "GameController"); let mn_rm = q(abc, util_ns, "ResourceManager"); let mn_stats = q(abc, engine_ns, "Stats");
+    let mn_currentgame = q(abc, pub_ns, "currentGame"); let mn_leveldata = q(abc, pub_ns, "LevelData"); let mn_stage = q(abc, pub_ns, "stage");
+    let mn_playersettings = q(abc, pub_ns, "PlayerSettings"); let mn_character = q(abc, pub_ns, "character"); let mn_human = q(abc, pub_ns, "human"); let mn_costume = q(abc, pub_ns, "costume");
+    let mn_flushqueue = q(abc, pub_ns, "flushLoadQueue"); let mn_queueres = q(abc, pub_ns, "queueResources"); let mn_load = q(abc, pub_ns, "load");
+    let mn_getlibmc = q(abc, pub_ns, "getLibraryMC"); let mn_statobjs = q(abc, pub_ns, "m_statObjects");
+    let mn_startmatch = q(abc, pub_ns, "startMatch"); let mn_stagedata = q(abc, pub_ns, "stageData"); let mn_characters = q(abc, pub_ns, "Characters");
+    let mn_charstats = q(abc, pub_ns, "CharacterStats"); let mn_jumpspeed = q(abc, pub_ns, "JumpSpeed"); let mn_yspeed = q(abc, pub_ns, "YSpeed");
+    let mn_settimeout = q(abc, utils_ns, "setTimeout"); let mn_setinterval = q(abc, utils_ns, "setInterval");
+    let mn_state = q(abc, pub_ns, "peptideState");
+    let mn_wait = q(abc, pub_ns, "peptideWait");
+    let mn_kick = q(abc, pub_ns, "peptideKick"); let n_kick = abc.intern_string("peptideKick");
+    let mn_tick = q(abc, pub_ns, "peptideTick"); let n_tick = abc.intern_string("peptideTick");
+    let pub_nsset = abc.intern_ns_set(vec![pub_ns]); let mnl = abc.intern_multinamel(pub_nsset);
+    let s_char = abc.intern_string(char_id); let s_stage = abc.intern_string(stage_id);
+    let s_multimode = abc.intern_string("multimode"); let s_stagelib = abc.intern_string(&format!("stage_{stage_id}"));
+    // debug marker
+    let fs_ns = { let s = abc.intern_string("flash.filesystem"); abc.intern_namespace(NS_PACKAGE, s) };
+    let mn_file = q(abc, fs_ns, "File"); let mn_fstream = q(abc, fs_ns, "FileStream"); let mn_fmode = q(abc, fs_ns, "FileMode");
+    let mn_write = q(abc, pub_ns, "WRITE"); let mn_open = q(abc, pub_ns, "open"); let mn_close = q(abc, pub_ns, "close"); let mn_writeutf = q(abc, pub_ns, "writeUTFBytes");
+    let s_dbg = abc.intern_string("/tmp/peptide_ssf2_autodbg.txt");
+    let s_sp = abc.intern_string(" lib=");
+    let s_mpfx = abc.intern_string(" m=");
+
+    abc.add_instance_slot(ci, mn_state);
+    abc.add_instance_slot(ci, mn_wait);
+
+    // peptideKick(): build + queue + load
+    let (l_g, l_ps) = (1u32, 2u32);
+    let mut k = Code::default();
+    k.op(OP_GETLOCAL0); k.op(OP_PUSHSCOPE);
+    k.op_u30(OP_FINDPROPSTRICT, mn_game); k.op(OP_PUSHBYTE); k.op(1); k.op_u30(OP_GETLEX, mn_mode); k.op_u30(OP_GETPROPERTY, mn_training); k.op_u30_u30(OP_CONSTRUCTPROP, mn_game, 2); k.op_u30(OP_SETLOCAL, l_g);
+    k.op_u30(OP_GETLOCAL, l_g); k.op_u30(OP_GETPROPERTY, mn_leveldata); k.op_u30(OP_PUSHSTRING, s_stage); k.op_u30(OP_SETPROPERTY, mn_stage);
+    k.op_u30(OP_GETLOCAL, l_g); k.op_u30(OP_GETPROPERTY, mn_playersettings); k.op(OP_PUSHBYTE); k.op(0); k.op_u30(OP_GETPROPERTY, mnl); k.op_u30(OP_SETLOCAL, l_ps);
+    k.op_u30(OP_GETLOCAL, l_ps); k.op_u30(OP_PUSHSTRING, s_char); k.op_u30(OP_SETPROPERTY, mn_character);
+    k.op_u30(OP_GETLOCAL, l_ps); k.op(OP_PUSHTRUE); k.op_u30(OP_SETPROPERTY, mn_human);
+    k.op_u30(OP_GETLOCAL, l_ps); k.op(OP_PUSHBYTE); k.op(0); k.op_u30(OP_SETPROPERTY, mn_costume);
+    k.op_u30(OP_GETLEX, mn_gc); k.op_u30(OP_GETLOCAL, l_g); k.op_u30(OP_SETPROPERTY, mn_currentgame);
+    k.op_u30(OP_GETLEX, mn_rm); k.op_u30_u30(OP_CALLPROPVOID, mn_flushqueue, 0);
+    k.op_u30(OP_GETLEX, mn_rm); k.op_u30(OP_PUSHSTRING, s_stage); k.op_u30(OP_NEWARRAY, 1); k.op_u30_u30(OP_CALLPROPVOID, mn_queueres, 1);
+    k.op_u30(OP_GETLEX, mn_rm); k.op_u30(OP_PUSHSTRING, s_char); k.op_u30(OP_NEWARRAY, 1); k.op_u30_u30(OP_CALLPROPVOID, mn_queueres, 1);
+    k.op_u30(OP_GETLEX, mn_rm); k.op_u30(OP_PUSHSTRING, s_multimode); k.op(OP_PUSHTRUE); k.op_u30(OP_NEWOBJECT, 1); k.op_u30_u30(OP_CALLPROPVOID, mn_load, 1);
+    k.op(OP_RETURNVOID);
+    let m_kick = abc.add_method(MethodInfo { param_types: vec![], return_type: 0, name: n_kick, flags: 0, options: vec![], param_names: vec![] });
+    abc.add_body(MethodBody { method: m_kick, max_stack: 5, local_count: 3, init_scope_depth: 0, max_scope_depth: 2, code: k.finish(), exceptions: vec![], traits: vec![] });
+    abc.add_instance_method_trait(ci, mn_kick, m_kick);
+
+    // peptideTick(): state machine. locals: this=0, tmp=1, c0=2
+    let (l_tmp, l_c0) = (1u32, 2u32);
+    let mut c = Code::default();
+    let l_ret = c.new_label();
+    let l_pop_ret = c.new_label();
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
+    // ---- DEBUG: write "S<state> lib=<getLibraryMC>" to autodbg each tick ----
+    c.op_u30(OP_FINDPROPSTRICT, mn_file); c.op_u30(OP_PUSHSTRING, s_dbg); c.op_u30_u30(OP_CONSTRUCTPROP, mn_file, 1); c.op_u30(OP_SETLOCAL, l_c0);
+    c.op_u30(OP_FINDPROPSTRICT, mn_fstream); c.op_u30_u30(OP_CONSTRUCTPROP, mn_fstream, 0); c.op_u30(OP_SETLOCAL, l_tmp);
+    c.op_u30(OP_GETLOCAL, l_tmp); c.op_u30(OP_GETLOCAL, l_c0); c.op_u30(OP_GETLEX, mn_fmode); c.op_u30(OP_GETPROPERTY, mn_write); c.op_u30_u30(OP_CALLPROPVOID, mn_open, 2);
+    c.op_u30(OP_GETLOCAL, l_tmp);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_state); c.op(OP_CONVERT_S);
+    c.op_u30(OP_PUSHSTRING, s_sp); c.op(OP_ADD);
+    c.op_u30(OP_GETLEX, mn_rm); c.op_u30(OP_PUSHSTRING, s_stagelib); c.op_u30_u30(OP_CALLPROPERTY, mn_getlibmc, 1); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    // + " m=" + String(Stats.m_statObjects)
+    c.op_u30(OP_PUSHSTRING, s_mpfx); c.op(OP_ADD);
+    c.op_u30(OP_GETLEX, mn_stats); c.op_u30(OP_GETPROPERTY, mn_statobjs); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30_u30(OP_CALLPROPVOID, mn_writeutf, 1);
+    c.op_u30(OP_GETLOCAL, l_tmp); c.op_u30_u30(OP_CALLPROPVOID, mn_close, 0);
+    // ---- state 1 check first (so a freshly-set state 1 also runs jump path) ----
+    let l_s1 = c.new_label(); let l_after0 = c.new_label();
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_state); c.op(OP_PUSHBYTE); c.op(1); c.branch(OP_IFSTRICTEQ, l_s1);
+    // ---- state 0: wait for load, then startMatch ----
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_state); c.op(OP_PUSHBYTE); c.op(0); c.branch(OP_IFSTRICTNE, l_after0);
+    // if !getLibraryMC(stage) → ret  (stage library is the load-ready signal; the
+    // char loads in the same queue. m_statObjects is private-ns, can't gate on it.)
+    c.op_u30(OP_GETLEX, mn_rm); c.op_u30(OP_PUSHSTRING, s_stagelib); c.op_u30_u30(OP_CALLPROPERTY, mn_getlibmc, 1); c.op(OP_CONVERT_B); c.branch(OP_IFFALSE, l_ret);
+    // stage is ready; the char loads after it in the queue. Wait ~20 ticks (5s)
+    // so the char finishes before startMatch→makePlayer→getStats(char).
+    let _ = (mn_statobjs, mnl);
+    c.op(OP_GETLOCAL0); c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_wait); c.op(OP_PUSHBYTE); c.op(1); c.op(OP_ADD); c.op_u30(OP_SETPROPERTY, mn_wait); // wait++
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_wait); c.op(OP_PUSHBYTE); c.op(20); c.branch(OP_IFLT, l_ret); // if wait < 20 → ret
+    // stage+char ready → startMatch(currentGame); state=1
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_currentgame); c.op_u30_u30(OP_CALLPROPVOID, mn_startmatch, 1);
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHBYTE); c.op(1); c.op_u30(OP_SETPROPERTY, mn_state);
+    c.branch(OP_JUMP, l_ret);
+    c.place(l_after0); c.branch(OP_JUMP, l_ret); // states >=2: nothing
+    // ---- state 1: wait for stageData, then jump ----
+    c.place(l_s1);
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata); c.op(OP_DUP); c.op(OP_PUSHNULL); c.branch(OP_IFSTRICTEQ, l_pop_ret);
+    // c0 = stageData.Characters[0]
+    c.op_u30(OP_GETPROPERTY, mn_characters); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_GETPROPERTY, mnl); c.op_u30(OP_SETLOCAL, l_c0);
+    let _ = l_tmp;
+    // c0.YSpeed = -(c0.CharacterStats.JumpSpeed)
+    c.op_u30(OP_GETLOCAL, l_c0);
+    c.op_u30(OP_GETLOCAL, l_c0); c.op_u30(OP_GETPROPERTY, mn_charstats); c.op_u30(OP_GETPROPERTY, mn_jumpspeed); c.op(OP_NEGATE);
+    c.op_u30(OP_SETPROPERTY, mn_yspeed);
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHBYTE); c.op(2); c.op_u30(OP_SETPROPERTY, mn_state);
+    c.branch(OP_JUMP, l_ret);
+    // pop+ret label (when stageData dup is on stack and null)
+    c.place(l_pop_ret); c.op(OP_POP);
+    c.place(l_ret);
+    c.op(OP_RETURNVOID);
+    let m_tick = abc.add_method(MethodInfo { param_types: vec![], return_type: 0, name: n_tick, flags: 0, options: vec![], param_names: vec![] });
+    abc.add_body(MethodBody { method: m_tick, max_stack: 6, local_count: 3, init_scope_depth: 0, max_scope_depth: 2, code: c.finish(), exceptions: vec![], traits: vec![] });
+    abc.add_instance_method_trait(ci, mn_tick, m_tick);
+
+    // constructor: state=0; setTimeout(peptideKick, delay); setInterval(peptideTick, 250)
+    let mut ic = Code::default();
+    ic.op(OP_GETLOCAL0); ic.op(OP_PUSHSCOPE);
+    ic.op(OP_GETLOCAL0); ic.op(OP_PUSHBYTE); ic.op(0); ic.op_u30(OP_SETPROPERTY, mn_state);
+    ic.op(OP_GETLOCAL0); ic.op(OP_PUSHBYTE); ic.op(0); ic.op_u30(OP_SETPROPERTY, mn_wait);
+    ic.op_u30(OP_FINDPROPSTRICT, mn_settimeout); ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_kick); ic.op_u30(OP_PUSHSHORT, delay_ms); ic.op_u30_u30(OP_CALLPROPVOID, mn_settimeout, 2);
+    ic.op_u30(OP_FINDPROPSTRICT, mn_setinterval); ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_tick); ic.op_u30(OP_PUSHSHORT, 250); ic.op_u30_u30(OP_CALLPROPVOID, mn_setinterval, 2);
+    ic.op(OP_POPSCOPE);
+    let payload = ic.finish(); let n = payload.len() as u32;
+    let iinit = abc.instances[ci].iinit;
+    let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
+    let body = &mut abc.bodies[body_idx];
+    let mut nc = payload; nc.extend_from_slice(&body.code); body.code = nc;
+    body.max_stack = body.max_stack.max(4); body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
+    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
+    Ok(())
+}
+
+/// SWF tag code for DoABC2.
+const TAG_DO_ABC2: u16 = 82;
+
+/// Locate the single DoAbc2 tag inside a raw SWF tag stream and return
+/// (tag_start, tag_total_len, abc_offset_within_stream, abc_len). The tag body
+/// is: flags(u32 LE) + name(NUL-terminated) + abc bytes.
+fn find_doabc2(tags: &[u8]) -> anyhow::Result<(usize, usize, usize, usize)> {
+    let mut i = 0usize;
+    while i + 2 <= tags.len() {
+        let code_len = u16::from_le_bytes([tags[i], tags[i + 1]]);
+        let code = code_len >> 6;
+        let mut len = (code_len & 0x3f) as usize;
+        let mut hdr = 2usize;
+        if len == 0x3f {
+            if i + 6 > tags.len() { anyhow::bail!("truncated long tag header"); }
+            len = u32::from_le_bytes([tags[i + 2], tags[i + 3], tags[i + 4], tags[i + 5]]) as usize;
+            hdr = 6;
+        }
+        let body_start = i + hdr;
+        if body_start + len > tags.len() { anyhow::bail!("tag body exceeds stream"); }
+        if code == TAG_DO_ABC2 {
+            // body: flags(4) + name(NUL-terminated) + abc
+            let body = &tags[body_start..body_start + len];
+            let name_end = body[4..].iter().position(|&b| b == 0)
+                .ok_or_else(|| anyhow::anyhow!("DoAbc2 name not NUL-terminated"))? + 4;
+            let abc_off = body_start + name_end + 1;
+            let abc_len = (body_start + len) - abc_off;
+            return Ok((i, hdr + len, abc_off, abc_len));
+        }
+        i = body_start + len;
+    }
+    anyhow::bail!("no DoAbc2 tag found")
+}
+
+/// Read an SWF, inject the startup marker into `doc_class` ("…ssf2.Main"), and
+/// write a patched SWF to `out`. Byte-splices the DoAbc2 tag so all other tags
+/// are preserved verbatim; recompresses via the swf crate's raw-tag writer.
+pub fn patch_file(
+    in_swf: &Path, out_swf: &Path,
+    doc_class: &str, marker_path: &str, content: &str,
+) -> anyhow::Result<()> {
+    let (doc_class, marker_path, content) = (doc_class.to_string(), marker_path.to_string(), content.to_string());
+    patch_file_with(in_swf, out_swf, move |abc| inject_startup_marker(abc, &doc_class, &marker_path, &content))
+}
+
+/// Patch SSF2's ABC with an arbitrary injection step `f`, byte-splicing the
+/// DoAbc2 tag and recompressing. The general form of `patch_file`.
+pub fn patch_file_with(
+    in_swf: &Path, out_swf: &Path,
+    f: impl FnOnce(&mut Abc) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let data = std::fs::read(in_swf)?;
+    let buf = swf::decompress_swf(&data[..]).map_err(|e| anyhow::anyhow!("decompress: {e}"))?;
+    let tags = &buf.data;
+
+    let (tag_start, tag_total, abc_off, abc_len) = find_doabc2(tags)?;
+
+    // Parse → inject → re-serialize the ABC.
+    let abc_bytes = &tags[abc_off..abc_off + abc_len];
+    let mut abc = parse(abc_bytes)?;
+    f(&mut abc)?;
+    let new_abc = write(&abc);
+
+    // Rebuild the DoAbc2 tag with the new abc bytes (keep flags+name prefix).
+    // Re-emit a long-form header so we never hit the 0x3f short/long boundary.
+    let orig_code_len = u16::from_le_bytes([tags[tag_start], tags[tag_start + 1]]);
+    let orig_hdr = if (orig_code_len & 0x3f) == 0x3f { 6 } else { 2 };
+    let body_start = tag_start + orig_hdr;
+    let body_prefix = &tags[body_start..abc_off]; // flags(4) + name + NUL
+    let new_body_len = body_prefix.len() + new_abc.len();
+
+    let mut out_tags = Vec::with_capacity(tags.len() + new_abc.len());
+    out_tags.extend_from_slice(&tags[..tag_start]);
+    // long-form tag header: ((code<<6)|0x3f) as u16, then u32 length
+    let code_len = ((TAG_DO_ABC2 << 6) | 0x3f) as u16;
+    out_tags.extend_from_slice(&code_len.to_le_bytes());
+    out_tags.extend_from_slice(&(new_body_len as u32).to_le_bytes());
+    out_tags.extend_from_slice(body_prefix);
+    out_tags.extend_from_slice(&new_abc);
+    out_tags.extend_from_slice(&tags[tag_start + tag_total..]);
+
+    // Reconstruct a Header from the parsed HeaderExt and write a patched SWF.
+    let h = &buf.header;
+    let header = swf::Header {
+        compression: h.compression(),
+        version: h.version(),
+        stage_size: h.stage_size().clone(),
+        frame_rate: h.frame_rate(),
+        num_frames: h.num_frames(),
+    };
+    let f = std::fs::File::create(out_swf)?;
+    swf::write::write_swf_raw_tags(&header, &out_tags, std::io::BufWriter::new(f))
+        .map_err(|e| anyhow::anyhow!("write_swf_raw_tags: {e}"))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn patch_ssf2_marker_reparse() {
+        let inp = std::path::Path::new("/Users/jimmy/Downloads/SSF2BetaMac_v1.4.0.1-standalone 2/SSF2.app/Contents/Resources/SSF2.swf");
+        if !inp.exists() { eprintln!("SSF2.swf missing; skip"); return; }
+        let outp = std::path::Path::new("/tmp/SSF2-patched.swf");
+        patch_file(inp, outp, "com.mcleodgaming.ssf2.Main",
+            "/tmp/peptide_ssf2_marker.txt", "alive").expect("patch");
+        // re-parse the patched SWF and the injected ABC to confirm validity
+        let data = std::fs::read(outp).unwrap();
+        let buf = swf::decompress_swf(&data[..]).expect("re-decompress patched");
+        let parsed = swf::parse_swf(&buf).expect("re-parse patched");
+        let abc_bytes: &[u8] = parsed.tags.iter().find_map(|t| if let swf::Tag::DoAbc2(a)=t {Some(&a.data[..])} else {None}).expect("DoAbc2");
+        let abc = crate::abc_codec::parse(abc_bytes).expect("re-parse injected abc (full consume)");
+        eprintln!("patched ABC re-parses: strings={} multinames={} bodies={}", abc.strings.len(), abc.multinames.len(), abc.bodies.len());
+    }
+}
+
+#[cfg(test)]
+mod asm_tests {
+    use super::*;
+    #[test]
+    fn branch_fixup_offsets() {
+        // jump FWD; <pop>; place FWD: forward jump should skip the pop.
+        let mut c = Code::default();
+        let l = c.new_label();
+        c.branch(OP_JUMP, l);  // bytes: [0x10][o0 o1 o2]  off_pos=1, next=4
+        c.op(OP_POP);          // at pos 4
+        c.place(l);            // target = 5
+        let code = c.finish();
+        // s24 at [1..4] should encode 5 - 4 = 1
+        assert_eq!(code[0], OP_JUMP);
+        let off = i32::from_le_bytes([code[1], code[2], code[3], 0]);
+        assert_eq!(off, 1, "forward jump offset");
+        assert_eq!(code[4], OP_POP);
+        // backward jump: target before the branch -> negative offset
+        let mut c = Code::default();
+        let top = c.new_label();
+        c.place(top);          // target = 0
+        c.op(OP_POP);          // pos 0
+        c.branch(OP_JUMP, top);// op at 1, off_pos=2, next=5 -> off = 0-5 = -5
+        let code = c.finish();
+        let off = i32::from_le_bytes([code[2], code[3], code[4], 0]);
+        // sign-extend 24-bit
+        let off = (off << 8) >> 8;
+        assert_eq!(off, -5, "backward jump offset");
+    }
+}

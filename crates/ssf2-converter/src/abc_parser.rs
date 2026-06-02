@@ -2141,7 +2141,12 @@ fn extract_ssf2_stats(bytecode: &[u8], abc: &AbcFile) -> Option<CharStats> {
                         }
                     };
                     if let Some(v) = val {
-                        values.insert(key, v);
+                        // FIRST-WINS: the genuine top-level character stats object
+                        // appears first in the bundle method; later per-projectile
+                        // data objects re-use keys like "gravity"/"width"/"height"
+                        // (usually pushbyte 0), which last-wins would let clobber
+                        // the real value. Keep the first occurrence.
+                        values.entry(key).or_insert(v);
                     }
                 }
                 // Continue; don't double-consume
