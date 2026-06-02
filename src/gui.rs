@@ -603,8 +603,8 @@ fn reconnect_existing(writer: SharedWriter, conn: SharedConn, proxy: EventLoopPr
     match crate::ui::reawait(port, &token, 4) {
         Some((reader, w)) => {
             if let Ok(mut g) = writer.lock() { *g = Some(w); }
-            spawn_reader(reader, proxy.clone());
             // reconnecting to a live match -> don't auto-spawn (the character already exists)
+            spawn_reader(reader, proxy.clone(), writer.clone(), None);
             let _ = proxy.send_event(Ev::Js(format!(
                 "window.onReconnected && onReconnected({}, {}, false)", port, js_str(&char_name))));
         }
@@ -645,7 +645,13 @@ fn boot_new(writer: SharedWriter, cleanup: SharedCleanup, conn: SharedConn,
                 if let Ok(mut g) = writer.lock() { *g = Some(w); }
                 if let Ok(mut g) = cleanup.lock() { *g = Some(guard); }
                 if let Ok(mut g) = conn.lock() { *g = (port, token); }
-                spawn_reader(reader, proxy.clone());
+                // Quick boot fires the shared fastboot launch on READY (host-side, same
+                // policy as the CLI); a regular boot doesn't auto-launch.
+                let autostart = if quick {
+                    crate::fastboot::command(crate::fastboot::Engine::Fraymakers,
+                        &crate::fastboot::BootOptions { char_name: Some(char_name.clone()), full: false })
+                } else { None };
+                spawn_reader(reader, proxy.clone(), writer.clone(), autostart);
                 let _ = proxy.send_event(Ev::Js(format!(
                     "window.onReconnected && onReconnected({}, {}, {})",
                     port, js_str(&char_name), if quick { "true" } else { "false" })));
@@ -748,12 +754,18 @@ fn boot_ssf2(cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>, char_name: Optio
     // async loader, making the spawn flaky. So: spawn with the bridge to ourselves,
     // THEN turn the console (and its poll) on.
     if let Some(ch) = char_name.filter(|c| !c.is_empty()) {
-        let _ = proxy.send_event(Ev::Line(format!("SYS:Engine ready — spawning {ch}…")));
-        let mut target = crate::ssf2_target::Ssf2Target::new();
-        match crate::debug_target::run_command(&mut target, &format!("spawn {ch}")) {
-            Ok(Some(reply)) => { let _ = proxy.send_event(Ev::Line(reply)); }
-            Ok(None) => {}
-            Err(e) => { let _ = proxy.send_event(Ev::Line(format!("SYS:ERR:{e}"))); }
+        // Same shared fastboot policy as the CLI + the Fraymakers GUI — only the transport
+        // differs (SSF2 is synchronous RPC, so we fire it inline here rather than on a
+        // READY line). `wait_ready` above is the SSF2 analogue of Fraymakers' READY.
+        let opts = crate::fastboot::BootOptions { char_name: Some(ch.clone()), full: false };
+        if let Some(cmd) = crate::fastboot::command(crate::fastboot::Engine::Ssf2, &opts) {
+            let _ = proxy.send_event(Ev::Line(format!("SYS:Engine ready — spawning {ch}…")));
+            let mut target = crate::ssf2_target::Ssf2Target::new();
+            match crate::debug_target::run_command(&mut target, &cmd) {
+                Ok(Some(reply)) => { let _ = proxy.send_event(Ev::Line(reply)); }
+                Ok(None) => {}
+                Err(e) => { let _ = proxy.send_event(Ev::Line(format!("SYS:ERR:{e}"))); }
+            }
         }
     } else {
         let _ = proxy.send_event(Ev::Line("SYS:SSF2 ready — type `spawn <char>` to start a match.".into()));
@@ -830,10 +842,17 @@ fn crash_js(log: &str, resdiag: &[String]) -> String {
 /// Socket bytes -> lines -> event loop (-> page). Routes channel feeds (matchStatus/charIcon)
 /// to their widgets and filters per-frame ANIM telemetry out of the chat (it's in the widget).
 /// On EOF/error the engine connection is gone -> crash modal (if it crashed) or reconnect.
-fn spawn_reader(mut reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>) {
+/// Pump the Fraymakers engine's line stream to the webview. `autostart`, when set, is the
+/// shared fastboot command (`fastboot::command`) to fire ONCE the engine reports READY —
+/// the GUI's quick-boot match launch, driven host-side via the SAME policy as the CLI so
+/// the two never drift (the page no longer launches matches). `None` = a regular/bridge
+/// boot or a reconnect to an already-live match: don't auto-launch.
+fn spawn_reader(mut reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>,
+                writer: SharedWriter, autostart: Option<String>) {
     thread::spawn(move || {
         let mut buf: Vec<u8> = Vec::with_capacity(256);
         let mut one = [0u8; 1];
+        let mut autostart = autostart; // taken once on the first READY
         // RESDIAG breadcrumbs go to Peptide's Enhanced (advanced) log, NOT the engine chat —
         // captured here and handed to the crash diagnosis when the engine goes away.
         let mut resdiag: Vec<String> = Vec::new();
@@ -869,6 +888,22 @@ fn spawn_reader(mut reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>) {
                         // matchStatus widgets (current animation and % per character), so it is
                         // filtered out of the chat entirely rather than spamming the transcript.
                         if line.starts_with("ANIM:") { continue; }
+                        // First READY → fire the shared fastboot launch host-side (quick boot).
+                        // Still forward the READY line so the page flips its status indicator.
+                        if line.contains("READY") {
+                            if let Some(cmd) = autostart.take() {
+                                if let Translated::Wire(w) = translate(&cmd) {
+                                    if let Ok(mut g) = writer.lock() {
+                                        if let Some(s) = g.as_mut() {
+                                            let _ = proxy.send_event(Ev::Line(
+                                                "SYS:Engine ready — launching…".into()));
+                                            let _ = s.write_all(format!("{w}\n").as_bytes());
+                                            let _ = s.flush();
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if proxy.send_event(Ev::Line(line)).is_err() { break; }
                     } else {
                         buf.push(one[0]);

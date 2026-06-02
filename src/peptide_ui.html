@@ -987,16 +987,10 @@
     if(line.indexOf("HELLO_FROM_FRAYMAKERS")>=0) return;
     if(line.indexOf("READY")>=0){
       setStatus(true);
-      // Spawn with char + stage + assist ALL explicit, matching the working CLI harness
-      // (`spawn sandbag thespire commandervideoassist`). The `s` handler fetch-loads each
-      // arg it's given; omitting stage/assist leaves them merely "baked" and unfetched,
-      // so their content-refs come back null → the engine's null-namespace crash.
-      if(!spawned){
-        spawned=true;
-        const st = CFG.stage || "teststage", asst = CFG.assist || "commandervideoassist";
-        add("system","Engine ready — spawning "+charName+"…");
-        send(charName ? ("spawn "+charName+" "+st+" "+asst) : "spawn");
-      }
+      // NOTE: the quick-boot match launch is fired HOST-SIDE now (Rust `fastboot::command`,
+      // shared by the CLI and the GUI), so the page no longer launches a match here — it
+      // just reflects the connection status. The "launching…" + LAUNCHED lines arrive over
+      // the normal engine stream.
       return;
     }
     if(line.startsWith("LAUNCHED")){

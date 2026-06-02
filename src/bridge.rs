@@ -387,37 +387,34 @@ pub fn session(args: &[String]) {
     let mut writer = write_half;
 
     // Quick boot: a baked-char headless boot lands straight in a match. The engine is
-    // READY with all content loaded but the `s` start-match is socket-driven, so fire a
-    // single bare `s` now (it uses the baked default char/stage/assist). --full and
-    // --attach skip this — they're explicitly "boot a bridge, drive it by hand".
+    // READY with all content loaded but the `s` start-match is socket-driven, so fire the
+    // shared fastboot command now. The decision + command live in `fastboot` (one home for
+    // CLI + GUI). --full/--attach already cleared `autostart` → bridge-only boot.
     if autostart {
-        slog(&log, "[session] quick boot — auto-launching the baked character (bare `s`)");
-        process_cmd(&mut writer, "s", &log);
-    }
-    let mut offset: u64 = 0;
-    let mut leftover = String::new();
-    loop {
-        if done.load(Relaxed) { slog(&log, "[session] engine gone; exiting"); break; }
-        if let Ok(mut f) = std::fs::File::open(&control) {
-            use std::io::Seek;
-            if f.seek(std::io::SeekFrom::Start(offset)).is_ok() {
-                let mut chunk = String::new();
-                if let Ok(n) = f.read_to_string(&mut chunk) {
-                    if n > 0 {
-                        offset += n as u64;
-                        leftover.push_str(&chunk);
-                        while let Some(nl) = leftover.find('\n') {
-                            let raw: String = leftover.drain(..=nl).collect();
-                            let raw = raw.trim().to_string();
-                            if raw.is_empty() { continue; }
-                            process_cmd(&mut writer, &raw, &log);
-                        }
-                    }
-                }
-            }
+        let opts = crate::fastboot::BootOptions::from_cli(args);
+        if let Some(cmd) = crate::fastboot::command(crate::fastboot::Engine::Fraymakers, &opts) {
+            slog(&log, &format!("[session] quick boot — auto-launching ({cmd})"));
+            process_cmd(&mut writer, &cmd, &log);
         }
-        thread::sleep(Duration::from_millis(50));
     }
+    // Shared control-file tail loop (see `session::tail_control`). Stop when the engine
+    // stream ends (the reader thread set `done`); each line is sent to the engine.
+    crate::session::tail_control(
+        &control,
+        Duration::from_millis(50),
+        || {
+            if done.load(Relaxed) {
+                slog(&log, "[session] engine gone; exiting");
+                true
+            } else {
+                false
+            }
+        },
+        |raw| {
+            process_cmd(&mut writer, raw, &log);
+            true
+        },
+    );
 
     // Crash triage: the engine vanished. Gather the diagnostics needed to find
     // the failing resource — the engine's error.log + the RESDIAG breadcrumbs

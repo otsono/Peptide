@@ -271,55 +271,44 @@ pub fn session(args: &[String]) -> Result<()> {
 
     // Quick boot (headless): just like the Fraymakers `session --char`, land straight in a
     // match instead of parking the bridge at the boot screen. The match-launch (SPAWN +
-    // config + GO) is host-driven over the bridge, so we fire a single spawn here once the
-    // engine has settled. `--full` opts out — boot a bare bridge you drive by hand.
-    let full = args.iter().any(|a| a == "--full");
-    if ready && !full {
-        let ch = arg_val(args, "--char").unwrap_or_else(|| crate::config::Config::load().char_name());
-        slog(&format!("[ssf2-session] quick boot — auto-launching {ch} (spawn)"));
-        let mut target = crate::ssf2_target::Ssf2Target::new();
-        match crate::debug_target::run_command(&mut target, &format!("s {ch}")) {
-            Ok(Some(r)) => slog(&format!("<< {r}")),
-            Ok(None) => {}
-            Err(e) => slog(&format!("<< quick-boot spawn failed: {e}")),
+    // config + GO) is host-driven over the bridge. The decision + command come from the
+    // shared `fastboot` module (one home for CLI + GUI); `--full` opts out via BootOptions.
+    if ready {
+        let opts = crate::fastboot::BootOptions::from_cli(args);
+        if let Some(cmd) = crate::fastboot::command(crate::fastboot::Engine::Ssf2, &opts) {
+            slog(&format!("[ssf2-session] quick boot — auto-launching ({cmd})"));
+            let mut target = crate::ssf2_target::Ssf2Target::new();
+            match crate::debug_target::run_command(&mut target, &cmd) {
+                Ok(Some(r)) => slog(&format!("<< {r}")),
+                Ok(None) => {}
+                Err(e) => slog(&format!("<< quick-boot spawn failed: {e}")),
+            }
         }
     }
 
-    // poll the control file for appended command lines
-    let mut offset: u64 = 0;
-    let mut leftover = String::new();
-    loop {
-        if let Ok(mut f) = std::fs::File::open(&control) {
-            use std::io::{Read, Seek};
-            if f.seek(std::io::SeekFrom::Start(offset)).is_ok() {
-                let mut chunk = String::new();
-                if let Ok(n) = f.read_to_string(&mut chunk) {
-                    if n > 0 {
-                        offset += n as u64;
-                        leftover.push_str(&chunk);
-                        while let Some(nl) = leftover.find('\n') {
-                            let raw: String = leftover.drain(..=nl).collect();
-                            let raw = raw.trim().to_string();
-                            if raw.is_empty() { continue; }
-                            if raw == "exit" || raw == "quit" {
-                                slog("[ssf2-session] exit");
-                                let _ = child.kill();
-                                return Ok(());
-                            }
-                            slog(&format!(">> {raw}"));
-                            let mut target = crate::ssf2_target::Ssf2Target::new();
-                            match crate::debug_target::run_command(&mut target, &raw) {
-                                Ok(Some(r)) => slog(&format!("<< {r}")),
-                                Ok(None) => {}
-                                Err(e) => slog(&format!("<< ERR: {e}")),
-                            }
-                        }
-                    }
-                }
+    // Shared control-file tail loop (see `session::tail_control`); `exit`/`quit` kills the
+    // app and stops the loop. SSF2 is synchronous RPC, so each line runs inline here.
+    crate::session::tail_control(
+        &control,
+        Duration::from_millis(50),
+        || false,
+        |raw| {
+            if raw == "exit" || raw == "quit" {
+                slog("[ssf2-session] exit");
+                let _ = child.kill(); // cross-platform (was pkill -f SSF2-patched)
+                return false;
             }
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+            slog(&format!(">> {raw}"));
+            let mut target = crate::ssf2_target::Ssf2Target::new();
+            match crate::debug_target::run_command(&mut target, raw) {
+                Ok(Some(r)) => slog(&format!("<< {r}")),
+                Ok(None) => {}
+                Err(e) => slog(&format!("<< ERR: {e}")),
+            }
+            true
+        },
+    );
+    Ok(())
 }
 
 /// `peptide ssf2 jumpcapture <char>` — drive a live SSF2 jump and capture the

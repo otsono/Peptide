@@ -57,6 +57,8 @@ mod convert; // `peptide convert` — in-process SSF2 → Fraymakers conversion 
 mod config; // persisted config (Fraymakers/FrayTools paths, current char) + env-override resolvers
 mod platform; // cross-platform path discovery + FrayTools publish-folder editing (ported from the egui GUI)
 mod bridge; // headless TCP runtime (serve / send_once)
+mod fastboot; // single definition of the quick-boot autostart, shared by CLI + GUI
+mod session; // shared control-file tail loop for the CLI session loops (FM + SSF2)
 mod ui; // terminal console (ratatui) + cross-platform launcher
 mod gui; // graphical chat window (egui/eframe) — the default
 mod fraytools; // drive FrayTools over CDP: export .fra / render / harness (ported from Node)
