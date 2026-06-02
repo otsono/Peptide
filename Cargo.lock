@@ -3067,6 +3067,7 @@ dependencies = [
  "ssf2_converter",
  "tao",
  "tungstenite",
+ "windows-sys 0.59.0",
  "wry",
 ]
 

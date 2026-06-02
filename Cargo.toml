@@ -30,3 +30,14 @@ rfd = "0.15"
 ssf2_converter = { path = "crates/ssf2-converter" }
 log = "0.4"
 env_logger = "0.11"
+
+# ── Windows: re-attach a GUI-subsystem .exe to its launching console for CLI ──
+# subcommands (platform::attach_parent_console). Release builds hide the console
+# window on launch via windows_subsystem = "windows" (see src/main.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",          # SECURITY_ATTRIBUTES — required for the CreateFileW binding
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+] }
