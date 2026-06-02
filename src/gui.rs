@@ -14,7 +14,7 @@ use tao::dpi::LogicalSize;
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::window::WindowBuilder;
-use wry::http::Request;
+use wry::http::{Request, Response};
 use wry::WebViewBuilder;
 
 use crate::interpreter::{split_commands, translate, Translated};
@@ -100,12 +100,26 @@ pub fn launch() -> std::io::Result<()> {
     let ipc_conn = conn.clone();
     let ipc_proxy = event_loop.create_proxy();
     let ipc_char = char_name.clone();
-    // The UI HTML is embedded at compile time (include_str!) — the window's shell is
-    // always present and never read from disk, so the GUI always renders regardless
-    // of where the binary runs. wry's with_html takes a &str.
-    let ui_html = include_str!("peptide_ui.html");
+    // Serve the embedded UI over a custom protocol (peptide://localhost/) instead of
+    // with_html. with_html loads from a null/data-URI origin, which on some WebKitGTK
+    // builds (Linux) silently fails to execute the page — the window opens but stays
+    // blank. A custom protocol gives the page a real origin and a normal text/html
+    // response, which loads reliably across WKWebView / WebView2 / WebKitGTK. The HTML
+    // is still include_str!-embedded (no disk read).
+    // WebView2 (Windows) serves custom protocols as http://<scheme>.localhost/;
+    // WKWebView/WebKitGTK use the real <scheme>://localhost/ form.
+    #[cfg(target_os = "windows")]
+    let ui_url = "http://peptide.localhost/";
+    #[cfg(not(target_os = "windows"))]
+    let ui_url = "peptide://localhost/";
     let webview = WebViewBuilder::new()
-        .with_html(ui_html)
+        .with_url(ui_url)
+        .with_custom_protocol("peptide".into(), |_id, _request| {
+            Response::builder()
+                .header(wry::http::header::CONTENT_TYPE, "text/html")
+                .body(std::borrow::Cow::Borrowed(include_str!("peptide_ui.html").as_bytes()))
+                .unwrap()
+        })
         .with_initialization_script(&init)
         .with_ipc_handler(move |req: Request<String>| {
             let body = req.body().to_string();

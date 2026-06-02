@@ -294,11 +294,15 @@ Build deps (Debian/Ubuntu): `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev
 build-essential` (older distros: `libwebkit2gtk-4.0-dev`; Fedora:
 `webkit2gtk4.1-devel gtk3-devel`).
 
-> **Blank-screen note.** WebKitGTK's default DMABUF/GBM renderer paints nothing on
-> many setups (NVIDIA proprietary drivers, VMs/virtualized GPUs, some Wayland
-> sessions) — the window opens but the page never shows. `main()` defaults
-> `WEBKIT_DISABLE_DMABUF_RENDERER=1` on Linux to avoid this (set it yourself to
-> override). If a machine still renders blank, try `WEBKIT_DISABLE_COMPOSITING_MODE=1`.
+> **Blank-screen notes.** Two distinct causes seen on Linux:
+> 1. *Page never loads.* `with_html` loads from a null/data-URI origin, which some
+>    WebKitGTK builds silently refuse to execute — the window opens but stays blank
+>    even with software rendering. `gui.rs` serves the embedded UI over a custom
+>    protocol (`peptide://localhost/`; `http://peptide.localhost/` on WebView2)
+>    instead, which loads reliably with a real origin.
+> 2. *Page loads but doesn't paint.* The DMABUF/GBM renderer paints nothing on NVIDIA /
+>    VM / some Wayland setups; `main()` defaults `WEBKIT_DISABLE_DMABUF_RENDERER=1` on
+>    Linux (overridable). If still blank, run from a terminal and read stderr.
 
 **Runtime data files.** Peptide reads `peptide_ui.html`, `commands.hsx`,
 `match_settings.conf`, and `mappings/` from disk (editable; not `include_str!`-baked
