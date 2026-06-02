@@ -60,7 +60,7 @@ pub fn export(args: &[String]) -> Result<()> {
     // "Are you sure you want to quit?" dialog that would otherwise hold the debug port).
     if cdp_up(port) {
         eprintln!("FrayTools already running — force-killing it for a clean cold relaunch");
-        kill_fraytools(port);
+        kill_fraytools(port, &ft_bin);
         let qdl = Instant::now() + Duration::from_secs(15);
         while Instant::now() < qdl {
             if !cdp_up(port) { break; }
@@ -556,10 +556,14 @@ fn launch_fraytools(bin: &str, port: u16) -> Result<()> {
 }
 
 /// SIGKILL the FrayTools holding the debug port. SIGKILL (not a graceful quit) avoids the
-/// "Are you sure you want to quit?" dialog that would otherwise hold the port open.
-fn kill_fraytools(port: u16) {
+/// "Are you sure you want to quit?" dialog that would otherwise hold the port open. `bin`
+/// is the FrayTools binary we launched; on Windows taskkill matches by image name, so we
+/// derive it from `bin` rather than assuming the default `FrayTools.exe` (a custom or
+/// renamed install would otherwise never be killed, stalling the cold relaunch).
+fn kill_fraytools(port: u16, bin: &str) {
     #[cfg(not(target_os = "windows"))]
     {
+        let _ = (port, bin); // unix matches by cmdline below
         let _ = Command::new("pkill")
             .args(["-9", "-f", &format!("remote-debugging-port={port}")])
             .stdout(Stdio::null()).stderr(Stdio::null()).status();
@@ -567,8 +571,9 @@ fn kill_fraytools(port: u16) {
     #[cfg(target_os = "windows")]
     {
         let _ = port; // taskkill matches by image name, not cmdline
+        let image = Path::new(bin).file_name().and_then(|s| s.to_str()).unwrap_or("FrayTools.exe");
         let _ = Command::new("taskkill")
-            .args(["/IM", "FrayTools.exe", "/F"])
+            .args(["/IM", image, "/F"])
             .stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
 }

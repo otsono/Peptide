@@ -462,14 +462,22 @@ fn run_fraytools(rest: &str, proxy: &EventLoopProxy<Ev>) {
     push("--frame", "frame");
     push("--out", "out");
     push("--fraytools", "fraytools");
-    // The page rarely sends an explicit FrayTools path (the inline "Export Now" on
-    // the not-built modal sends only the project). Fall back to the Setup-configured
-    // exe so we honor a custom install instead of fraytools::export's hardcoded
-    // per-OS default. Only add it if the page didn't already supply one.
+    // The page rarely sends explicit tool paths (the inline "Export Now" on the
+    // not-built modal sends only the project). Fall back to the Setup-configured
+    // locations so we honor a custom install instead of fraytools::export's
+    // hardcoded per-OS defaults (which ignore FRAY_DIR / the saved config). Only
+    // add each if the page didn't already supply one.
+    let cfg = crate::config::Config::load();
     if json_str_field(json, "fraytools").filter(|s| !s.is_empty()).is_none() {
-        if let Some(exe) = crate::config::Config::load().fraytools_exe() {
+        if let Some(exe) = cfg.fraytools_exe() {
             argv.push("--fraytools".into());
             argv.push(exe.display().to_string());
+        }
+    }
+    if json_str_field(json, "fraymakers-root").filter(|s| !s.is_empty()).is_none() {
+        if let Some(root) = cfg.fraymakers_root() {
+            argv.push("--fraymakers-root".into());
+            argv.push(root.display().to_string());
         }
     }
 
