@@ -1,0 +1,403 @@
+//! ssf2_bridge — the HOST side of the SSF2 runtime bridge, mirroring the Fraymakers
+//! `bridge.rs` (session / tell / log / send) but for the AVM2 engine over an ASYNC
+//! TCP SOCKET. The patched SSF2 dials into our loopback server (the port is baked
+//! into the bridge at patch time) and answers on `socketData` events.
+//!
+//! This replaced the old per-frame FileStream IPC: its synchronous reads ran every
+//! frame and starved SSF2's async resource loader (breaking spawns). Event-driven
+//! socket IO touches the engine ONLY when we send a command, so the loader runs
+//! undisturbed — the same transport model as Fraymakers' loopback socket.
+//!
+//! Wire protocol (request/response, one command at a time over the persistent
+//! connection): host writes "<seq>\t<verb>\t<a1>\t<a2>"; the engine replies
+//! "<seq> <result>\n". The seq disambiguates; a socket EOF means SSF2 went away.
+
+use anyhow::{bail, Result};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// Jump-probe trajectory CSV — written by the separate `inject_jump_probe`
+/// per-frame probe (only while a match is live); unrelated to the command socket.
+pub const TRAJ_PATH: &str = "/tmp/peptide_ssf2_traj.csv";
+
+static SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The live loopback connection to the patched SSF2 (None until it dials in / after
+/// it goes away). All `request()`s share it; the Mutex also serializes them, so the
+/// matchStatus poll and a console command can't interleave on the one socket.
+struct SockConn {
+    reader: BufReader<TcpStream>,
+    writer: TcpStream,
+}
+static CONN: Mutex<Option<SockConn>> = Mutex::new(None);
+
+/// Bind the loopback listener BEFORE launching SSF2 (the engine connects from its
+/// document ctor, so the port must already be open). Hand the returned listener to
+/// `accept_engine` after the launch.
+pub fn bind(port: u16) -> Result<TcpListener> {
+    Ok(TcpListener::bind(("127.0.0.1", port))?)
+}
+
+/// Accept the engine's dial-in (call AFTER launch). Stores the live connection,
+/// replacing any prior one. Bounded by `secs` so a no-show can't hang the boot.
+pub fn accept_engine(listener: &TcpListener, secs: u64) -> Result<()> {
+    listener.set_nonblocking(true)?;
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        match listener.accept() {
+            Ok((stream, _peer)) => {
+                stream.set_nonblocking(false)?;
+                let _ = stream.set_nodelay(true);
+                let writer = stream.try_clone()?;
+                *CONN.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(SockConn { reader: BufReader::new(stream), writer });
+                return Ok(());
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline { bail!("SSF2 did not connect within {secs}s"); }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => bail!("accept failed: {e}"),
+        }
+    }
+}
+
+/// Drop the current connection (on disconnect / before a fresh boot).
+pub fn disconnect() {
+    *CONN.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Pick a loopback port for the SSF2 bridge (19000–20999), away from the Fraymakers
+/// range (18000–19999). Wall-clock seeded so successive boots vary.
+pub fn pick_port() -> u16 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(7);
+    19000 + (n % 2000) as u16
+}
+
+/// A process-unique starting seq (seeded from the wall clock; the atomic increments
+/// within a process) so reply matching is robust across reconnects.
+fn seq_base() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0);
+    (nanos % 1_000_000_000) * 1000
+}
+
+fn session_dir(args: &[String]) -> PathBuf {
+    arg_val(args, "--dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".peptide/ssf2-session"))
+}
+
+fn arg_val(args: &[String], key: &str) -> Option<String> {
+    args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned()
+}
+
+/// Send one command and read its reply over the socket. `command` is TAB-joined
+/// "verb\ta1\ta2"; we prepend "<seq>\t" so the engine's `split("\t")` yields
+/// [seq, verb, a1, a2]. The reply line is "<seq> <result>". Holds the connection
+/// lock for the whole exchange (serializing all requests). A socket EOF surfaces as
+/// an error AND drops the connection — that's how we learn SSF2 was closed.
+pub fn request(command: &str, timeout: Duration) -> Result<String> {
+    if SEQ.load(Ordering::Relaxed) == 0 { SEQ.store(seq_base().max(1), Ordering::Relaxed); }
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut guard = CONN.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = guard.as_mut().ok_or_else(|| anyhow::anyhow!("no SSF2 connection"))?;
+
+    // write the command — no trailing newline: one command per send, and the engine
+    // reads `bytesAvailable` per socketData event (strict request/response).
+    if let Err(e) = conn.writer.write_all(format!("{seq}\t{command}").as_bytes())
+        .and_then(|_| conn.writer.flush())
+    {
+        *guard = None;
+        bail!("SSF2 write failed (connection gone): {e}");
+    }
+
+    // read reply lines until one matches our seq (or timeout / EOF).
+    let _ = conn.reader.get_ref().set_read_timeout(Some(timeout));
+    let prefix = format!("{seq} ");
+    let deadline = Instant::now() + timeout;
+    loop {
+        let mut line = String::new();
+        match conn.reader.read_line(&mut line) {
+            Ok(0) => { *guard = None; bail!("SSF2 connection closed"); } // EOF — engine gone
+            Ok(_) => {
+                if let Some(rest) = line.trim_end_matches(['\r', '\n']).strip_prefix(&prefix) {
+                    return Ok(rest.to_string());
+                }
+                // a non-matching line (stale) — keep reading until the deadline
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut => {
+                bail!("no response for {command:?} within {timeout:?}");
+            }
+            Err(e) => { *guard = None; bail!("SSF2 read failed (connection gone): {e}"); }
+        }
+        if Instant::now() >= deadline {
+            bail!("no response for {command:?} within {timeout:?}");
+        }
+    }
+}
+
+
+/// Wait until the engine is STABLY responsive — the SSF2 analogue of Fraymakers'
+/// `READY` line. The per-frame reflection hook answers `PING` very early (from the
+/// document ctor), but while SSF2 is still loading its boot content the engine
+/// starves frames, so PINGs come back only intermittently and any command fired in
+/// that window runs at a bad time and crashes the game. We therefore gate on a RUN
+/// of `needed` consecutive PINGs (the streak resets on every miss): it can only
+/// accumulate once the boot load is finished and frames run smoothly. This makes
+/// the host "queue" the boot spawn / user commands until loading completes, instead
+/// of firing them into the loading hook. Returns true on a clean streak, false on
+/// overall timeout.
+pub fn wait_ready(needed: u32, total: Duration) -> bool {
+    let start = Instant::now();
+    let deadline = start + total;
+    // Minimum settle floor: SSF2's boot has lulls BETWEEN load phases where a single
+    // PING (or even a quick probe) succeeds, so a streak alone can pass too early.
+    // Require at least this much wall time before accepting readiness.
+    let floor = Duration::from_secs(6);
+    let mut streak = 0u32;
+    while Instant::now() < deadline {
+        // A MULTI-OP probe (3 round-trips that must ALL land) is a much stronger
+        // "frames aren't being starved by a load" signal than a single PING: during
+        // a load the per-frame handler can't service three requests back-to-back.
+        if probe_responsive() {
+            streak += 1;
+            if streak >= needed && start.elapsed() >= floor { return true; }
+            std::thread::sleep(Duration::from_millis(250));
+        } else {
+            streak = 0; // a dropped probe means the engine is still loading — restart
+        }
+    }
+    false
+}
+
+/// One multi-op responsiveness probe: read `GameController.stageData` (GC → GET →
+/// READ). All three must land within the short window; a load starving frames will
+/// drop at least one, which is exactly the "still loading" condition we gate on.
+fn probe_responsive() -> bool {
+    let t = Duration::from_millis(500);
+    request("GC", t).is_ok()
+        && request("GET\tstageData", t).is_ok()
+        && request("READ", t).is_ok()
+}
+
+/// `peptide ssf2 send "<cmd>"` — one-shot command, printing the reply. Because the
+/// engine dials into ONE process's socket, the live connection lives in the
+/// `session` process; a standalone `send` therefore routes through the running
+/// session's control file and reads the reply back from its log (a synchronous
+/// `tell`). Start a session first (`peptide ssf2 session`).
+pub fn send(args: &[String]) -> Result<()> {
+    let cmd = args.iter().rev().find(|a| !a.starts_with("--"))
+        .ok_or_else(|| anyhow::anyhow!("usage: peptide ssf2 send \"<command>\""))?;
+    let dir = session_dir(args);
+    let control = dir.join("control");
+    let logp = dir.join("out.log");
+    if !control.exists() {
+        bail!("no SSF2 session running — start one with `peptide ssf2 session` (the socket bridge lives in that process)");
+    }
+    let before = std::fs::metadata(&logp).map(|m| m.len()).unwrap_or(0) as usize;
+    {
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&control)?;
+        writeln!(f, "{cmd}")?;
+    }
+    // the session appends ">> <cmd>" then "<< <reply>"; wait for that reply line.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(80));
+        if let Ok(s) = std::fs::read_to_string(&logp) {
+            if s.len() > before {
+                if let Some(r) = s[before..].lines().find_map(|l| l.strip_prefix("<< ")) {
+                    println!("{r}");
+                    return Ok(());
+                }
+            }
+        }
+    }
+    bail!("no reply from the SSF2 session within 10s");
+}
+
+/// `peptide ssf2 session` — boot the patched app (echo handler for now) and run
+/// the control-file command loop, mirroring each result to out.log.
+pub fn session(args: &[String]) -> Result<()> {
+    let dir = session_dir(args);
+    std::fs::create_dir_all(&dir)?;
+    let control = dir.join("control");
+    let logp = dir.join("out.log");
+    let metap = dir.join("meta");
+    std::fs::write(&control, b"")?;
+    std::fs::write(&logp, b"")?;
+
+    // bind the loopback server FIRST (the engine dials in from its ctor), patch the
+    // app to connect to that port, launch, then accept the connection.
+    let port = pick_port();
+    let listener = bind(port)?;
+    disconnect(); // drop any stale connection
+    let app = crate::ssf2::install_patched(port)?;
+    let exe = app.join("Contents/MacOS/SSF2");
+    let child = std::process::Command::new(&exe)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .spawn()?;
+    std::fs::write(&metap, format!("pid={}\napp={}\nport={}\n", child.id(), app.display(), port))?;
+
+    let slog = |msg: &str| {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&logp) {
+            let _ = writeln!(f, "{msg}");
+        }
+        println!("{msg}");
+    };
+    slog(&format!("[ssf2-session] booted {} (pid {}) on :{port}; waiting for connection…", app.display(), child.id()));
+    if let Err(e) = accept_engine(&listener, 30) {
+        slog(&format!("[ssf2-session] {e}"));
+    }
+
+    // wait until the engine is STABLY responsive (finished its boot load), not just
+    // the first reply — see wait_ready. Gating here means `tell`-ed commands aren't
+    // fired into the loading hook.
+    let ready = wait_ready(10, Duration::from_secs(40));
+    slog(if ready { "[ssf2-session] engine READY — peptide ssf2 tell \"<cmd>\"" }
+         else { "[ssf2-session] engine never settled — accepting commands anyway" });
+
+    // Quick boot (headless): just like the Fraymakers `session --char`, land straight in a
+    // match instead of parking the bridge at the boot screen. The match-launch (SPAWN +
+    // config + GO) is host-driven over the bridge, so we fire a single spawn here once the
+    // engine has settled. `--full` opts out — boot a bare bridge you drive by hand.
+    let full = args.iter().any(|a| a == "--full");
+    if ready && !full {
+        let ch = arg_val(args, "--char").unwrap_or_else(|| crate::config::Config::load().char_name());
+        slog(&format!("[ssf2-session] quick boot — auto-launching {ch} (spawn)"));
+        let mut target = crate::ssf2_target::Ssf2Target::new();
+        match crate::debug_target::run_command(&mut target, &format!("s {ch}")) {
+            Ok(Some(r)) => slog(&format!("<< {r}")),
+            Ok(None) => {}
+            Err(e) => slog(&format!("<< quick-boot spawn failed: {e}")),
+        }
+    }
+
+    // poll the control file for appended command lines
+    let mut offset: u64 = 0;
+    let mut leftover = String::new();
+    loop {
+        if let Ok(mut f) = std::fs::File::open(&control) {
+            use std::io::{Read, Seek};
+            if f.seek(std::io::SeekFrom::Start(offset)).is_ok() {
+                let mut chunk = String::new();
+                if let Ok(n) = f.read_to_string(&mut chunk) {
+                    if n > 0 {
+                        offset += n as u64;
+                        leftover.push_str(&chunk);
+                        while let Some(nl) = leftover.find('\n') {
+                            let raw: String = leftover.drain(..=nl).collect();
+                            let raw = raw.trim().to_string();
+                            if raw.is_empty() { continue; }
+                            if raw == "exit" || raw == "quit" {
+                                slog("[ssf2-session] exit");
+                                let _ = std::process::Command::new("pkill").args(["-f", "SSF2-patched"]).status();
+                                return Ok(());
+                            }
+                            slog(&format!(">> {raw}"));
+                            let mut target = crate::ssf2_target::Ssf2Target::new();
+                            match crate::debug_target::run_command(&mut target, &raw) {
+                                Ok(Some(r)) => slog(&format!("<< {r}")),
+                                Ok(None) => {}
+                                Err(e) => slog(&format!("<< ERR: {e}")),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// `peptide ssf2 jumpcapture <char>` — drive a live SSF2 jump and capture the
+/// per-frame trajectory (written by the injected probe). Requires a running
+/// `peptide ssf2 session`. Steps: SPAWN the char, wait for the match, navigate
+/// to Characters[0], read its CharacterStats.JumpSpeed, set YSpeed=-JumpSpeed to
+/// launch a jump, then read the trajectory CSV the probe accumulated.
+pub fn jumpcapture(args: &[String]) -> Result<()> {
+    let ch = args.iter().rev().find(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| "mario".into());
+    let t = Duration::from_secs(5);
+    let nav = |path: &[&str]| -> Result<String> {
+        // path like ["GC","GET stageData","GET Characters","IDX 0"]
+        let mut last = String::new();
+        for step in path { last = request(&step.replace(' ', "\t"), t)?; }
+        Ok(last)
+    };
+    let stage = args.iter().position(|a| a == "--stage").and_then(|i| args.get(i+1)).cloned().unwrap_or_else(|| "battlefield".into());
+    // 1. SPAWN: build the Game (sets currentGame) + queue stage/char + ResourceManager.load({}) (async).
+    println!("SPAWN {ch} on {stage} → {}", request(&format!("SPAWN\t{ch}\t{stage}"), Duration::from_secs(8))?);
+    // 2. wait for the async resource load to finish.
+    let mut loaded = false;
+    for _ in 0..80 {
+        if request("LOADED", t).map(|r| r == "true").unwrap_or(false) { loaded = true; break; }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    println!("resources fully loaded: {loaded}");
+    // 3. GO: GameController.startMatch(currentGame) — spawns StageData next frame.
+    println!("GO → {}", request("GO", Duration::from_secs(8))?);
+    // wait for the match to come up (stageData non-null)
+    let mut up = false;
+    for _ in 0..40 {
+        let _ = request("GC", t);
+        let _ = request("GET\tstageData", t);
+        if request("READ", t).map(|r| r != "null").unwrap_or(false) { up = true; break; }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    if !up { bail!("match did not start (stageData stayed null) — SPAWN may need more setup"); }
+    println!("match is live");
+    // navigate to Characters[0]
+    nav(&["GC", "GET stageData", "GET Characters", "IDX 0"])?;
+    // read JumpSpeed: cur=char → CharacterStats → JumpSpeed
+    nav(&["GET CharacterStats", "GET JumpSpeed"])?;
+    let js = request("READ", t)?;
+    println!("character JumpSpeed = {js}");
+    let jsv: f64 = js.trim().parse().unwrap_or(15.0);
+    // clear the trajectory file, then launch the jump (re-navigate to the char)
+    std::fs::write(TRAJ_PATH, b"")?;
+    nav(&["GC", "GET stageData", "GET Characters", "IDX 0"])?;
+    request(&format!("SETP\tYSpeed\t{}", -jsv), t)?;
+    println!("launched jump (YSpeed = {}), capturing…", -jsv);
+    std::thread::sleep(Duration::from_millis(1500));
+    let traj = std::fs::read_to_string(TRAJ_PATH).unwrap_or_default();
+    println!("=== SSF2 jump trajectory (t,X,Y,YSpeed) ===\n{traj}");
+    // find apex (min Y, y is down-positive)
+    let mut min_y = f64::INFINITY; let mut ground = f64::NEG_INFINITY;
+    for line in traj.lines() {
+        let cols: Vec<&str> = line.split(',').collect();
+        if cols.len() >= 3 { if let Ok(y) = cols[2].parse::<f64>() { min_y = min_y.min(y); ground = ground.max(y); } }
+    }
+    if min_y.is_finite() {
+        println!("SSF2 apex displacement = {:.1} px (ground {:.1} → apex {:.1})", ground - min_y, ground, min_y);
+    }
+    Ok(())
+}
+
+/// `peptide ssf2 tell "<cmd>"` — append a command to a running session's control file.
+pub fn tell(args: &[String]) -> Result<()> {
+    let dir = session_dir(args);
+    let cmd = args.iter().rev().find(|a| !a.starts_with("--"))
+        .ok_or_else(|| anyhow::anyhow!("usage: peptide ssf2 tell \"<command>\""))?;
+    let control = dir.join("control");
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&control)?;
+    writeln!(f, "{cmd}")?;
+    Ok(())
+}
+
+/// `peptide ssf2 log` — print the session output log.
+pub fn log(args: &[String]) -> Result<()> {
+    let dir = session_dir(args);
+    let logp = dir.join("out.log");
+    let n: usize = arg_val(args, "-n").and_then(|s| s.parse().ok()).unwrap_or(40);
+    let s = std::fs::read_to_string(&logp).unwrap_or_default();
+    let lines: Vec<&str> = s.lines().collect();
+    for l in lines.iter().rev().take(n).rev() { println!("{l}"); }
+    let _ = Path::new(&logp);
+    Ok(())
+}

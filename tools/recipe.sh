@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # recipe.sh — run a Peptide "recipe": a shareable text file of friendly commands
 # driven into one engine session. The reusable/scriptable form of a manual
-# runseq.sh sequence (see docs/PEPTIDE_FUTURE.md "recipe scripting").
+# runseq.sh sequence (see docs/PEPTIDE_GUIDE.md "recipes").
 #
 # Recipe file format (one directive per line):
 #   # comment            — ignored

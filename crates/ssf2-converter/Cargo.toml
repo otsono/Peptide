@@ -43,6 +43,31 @@ sha2 = "0.10"
 tempfile = "3"
 
 [[bin]]
+name = "dump_raw_stats"
+path = "src/bin/dump_raw_stats.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_gravity_ops"
+path = "src/bin/dump_gravity_ops.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_method"
+path = "src/bin/dump_method.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_ssf2_framescripts"
+path = "src/bin/dump_ssf2_framescripts.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "ssf2_sim"
+path = "src/bin/ssf2_sim.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
 name = "audit_main_gets"
 path = "src/bin/audit_main_gets.rs"
 required-features = ["dev-tools"]
@@ -192,3 +217,33 @@ name = "what_is_id"
 path = "src/bin/what_is_id.rs"
 required-features = ["dev-tools"]
 
+
+[[bin]]
+name = "engine_physics"
+path = "src/bin/engine_physics.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "swf_probe"
+path = "src/bin/swf_probe.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "ssf2_dump_class"
+path = "src/bin/ssf2_dump_class.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "ssf2_objgraph"
+path = "src/bin/ssf2_objgraph.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "abc_strings"
+path = "src/bin/abc_strings.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_bindata"
+path = "src/bin/dump_bindata.rs"
+required-features = ["dev-tools"]

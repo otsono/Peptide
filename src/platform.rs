@@ -56,6 +56,45 @@ pub fn detected_fraytools_path() -> Option<PathBuf> {
     default_fraytools_exe()
 }
 
+/// Default SSF2 application path if one is found on disk. SSF2 ships as a
+/// standalone Adobe AIR app; the common spots are `/Applications` and a
+/// downloaded standalone build under `~/Downloads/SSF2*/SSF2.app`. macOS uses the
+/// `.app` bundle (what the SSF2 patcher operates on); Windows the executable.
+pub fn default_ssf2_app() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let direct = PathBuf::from("/Applications/SSF2.app");
+        if direct.exists() {
+            return Some(direct);
+        }
+        if let Some(home) = dirs::home_dir() {
+            if let Ok(rd) = std::fs::read_dir(home.join("Downloads")) {
+                for e in rd.flatten() {
+                    if e.file_name().to_string_lossy().starts_with("SSF2") {
+                        let app = e.path().join("SSF2.app");
+                        if app.exists() {
+                            return Some(app);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let p = Path::new("C:\\Program Files\\SSF2\\SSF2.exe");
+        if p.is_file() {
+            return Some(p.to_path_buf());
+        }
+    }
+    None
+}
+
+/// The user-facing SSF2 install path to display/pre-fill in Setup if found.
+pub fn detected_ssf2_path() -> Option<PathBuf> {
+    default_ssf2_app()
+}
+
 /// Resolve a user-picked FrayTools path to the actual executable. On macOS the
 /// user may pick the `.app` bundle; resolve to `Contents/MacOS/<name>`.
 /// On Windows/Linux they pick the executable directly.

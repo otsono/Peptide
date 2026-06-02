@@ -7,9 +7,24 @@
 // JSONC: // comments and trailing commas are allowed.
 // ─────────────────────────────────────────────────────────────────────────
 {
-  // size_multiplier: global SSF2 → Fraymakers size factor multiplied into
-  // baseScaleX / baseScaleY (SSF2 sprites render ~1.9× smaller than Fraymakers).
+  // ── THE SINGLE TUNABLE KNOB ──────────────────────────────────────────────
+  // size_multiplier: global SSF2 → Fraymakers spatial scale. It is multiplied
+  // into baseScaleX/baseScaleY (SSF2 sprites render ~1.9× smaller than
+  // Fraymakers) AND drives EVERY physics stat. The converter derives, from this
+  // one number plus the fps ratio:
+  //     velocity_scale = size_multiplier * (ssf2_fps / fm_fps)        (≈0.95)
+  //     accel_scale    = size_multiplier * (ssf2_fps / fm_fps)^2      (≈0.475)
+  // Walk/dash/jump/fall speeds use velocity_scale; gravity/friction/accel use
+  // accel_scale. Tweak this one value and the whole physics profile rescales
+  // consistently — no other magic numbers. (Was a guess at 1.9; tune freely.)
   "size_multiplier": 1.9,
+
+  // Frame rates (fixed engine physics, exposed for completeness). SSF2 Beta
+  // runs at 30fps; Fraymakers at 60fps. The 0.5 ratio is why a per-frame
+  // velocity halves and a per-frame acceleration quarters across the conversion
+  // (before the spatial size_multiplier is applied).
+  "ssf2_fps": 30,
+  "fm_fps": 60,
 
   // field_keys: the SSF2 stat key names to try (in order) for each
   // Fraymakers stat field; the first key present in the SWF data wins.
