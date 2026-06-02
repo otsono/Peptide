@@ -129,8 +129,20 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
     } else {
         let detected = detect_char_names(&swf, &opts.input);
         if detected.is_empty() {
-            let fallback = opts.input.file_stem().and_then(|s| s.to_str()).unwrap_or("character").to_string();
-            vec![fallback]
+            let stem = opts.input.file_stem().and_then(|s| s.to_str()).unwrap_or("character");
+            // SSF2 `DAT<n>.ssf` archives are index-named (stages, items, UI, …), so a
+            // stem-as-character fallback would mint a junk "DAT10" pseudo-character for
+            // every non-character archive. Bail clearly instead — the stem fallback is
+            // only meaningful for a hand-named single-character .swf.
+            if is_dat_archive_stem(stem) {
+                anyhow::bail!(
+                    "{} is a valid SSF2 DAT archive but contains no convertible character \
+                     (likely a stage, item, or other asset). Pass --name <id> to force a \
+                     specific character if you believe one is present.",
+                    opts.input.display()
+                );
+            }
+            vec![stem.to_string()]
         } else {
             detected
         }
@@ -310,6 +322,16 @@ fn derive_id_from_getter(method_name: &str) -> Option<String> {
 
 /// Detect all character names in a SWF (constructor walk, with a `Main::get*`
 /// enumeration fallback). Empty for SWFs without a `Main` class.
+/// True when a file stem looks like an SSF2 `DAT<n>` archive name (case-insensitive
+/// `dat` followed by one or more digits), e.g. `DAT0`, `dat123`. Used to suppress
+/// filename-based heuristics that assume the input was named after its character.
+fn is_dat_archive_stem(stem: &str) -> bool {
+    let lower = stem.to_lowercase();
+    lower
+        .strip_prefix("dat")
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn detect_char_names(swf: &swf_parser::SwfFile, _input_path: &Path) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -589,7 +611,10 @@ fn run_tier1_validation(
         }
         if let (Some(id), Some(stem)) = (md.id.as_deref(), input_path.file_stem().and_then(|s| s.to_str())) {
             let stem_lc = stem.to_lowercase();
-            if id.to_lowercase() != stem_lc {
+            // SSF2 `DAT<n>.ssf` archives are named by index, never by character, so
+            // the stem can't match the id — skip the "may have been renamed" check
+            // for them (it's meant to catch a hand-renamed single-character .swf).
+            if !is_dat_archive_stem(stem) && id.to_lowercase() != stem_lc {
                 warnings.push(format!(
                     "Main.id {:?} disagrees with filename stem {:?} — file may have been renamed",
                     id, stem_lc,
