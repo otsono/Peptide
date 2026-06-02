@@ -72,10 +72,18 @@ pub fn resolve_fraytools_exe(picked: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn fraymakers_root_raw() -> Option<PathBuf> {
-    // Per spec: %APPDATA%\Steam\steamapps\common\Fraymakers
-    std::env::var("APPDATA").ok().map(|a| {
-        Path::new(&a).join("Steam").join("steamapps").join("common").join("Fraymakers")
-    })
+    // Steam's default library on Windows is <SystemDrive>\Program Files (x86)\Steam\…,
+    // NOT %APPDATA% (that's Roaming, where Steam never places games). Derive the
+    // system drive so installs on D:\ etc. resolve too.
+    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+    Some(
+        Path::new(&drive)
+            .join("Program Files (x86)")
+            .join("Steam")
+            .join("steamapps")
+            .join("common")
+            .join("Fraymakers"),
+    )
 }
 
 #[cfg(target_os = "macos")]

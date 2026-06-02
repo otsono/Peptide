@@ -52,6 +52,9 @@ pub struct Config {
     /// default (`Fraymakers.exe` on Windows, `hl` elsewhere). Steam renames the
     /// HashLink runtime to the game name on Windows, so it's not `hl.exe` there.
     pub engine_name: String,
+    /// FrayTools Chrome DevTools (CDP) debug port. 0 = default (9222). Override when
+    /// 9222 is already taken by another Electron/Chrome instance on this machine.
+    pub fraytools_debug_port: u16,
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -167,6 +170,19 @@ impl Config {
         if cfg!(target_os = "windows") { "Fraymakers.exe".to_string() } else { "hl".to_string() }
     }
 
+    /// FrayTools CDP debug port. `PEPTIDE_FT_DEBUG_PORT` env → config → 9222
+    /// (the Chrome/Electron default). Lets a user move it off 9222 when another
+    /// Electron/Chrome instance already holds that port.
+    pub fn fraytools_debug_port(&self) -> u16 {
+        if let Ok(p) = std::env::var("PEPTIDE_FT_DEBUG_PORT") {
+            if let Ok(n) = p.trim().parse::<u16>() {
+                if n != 0 { return n; }
+            }
+        }
+        if self.fraytools_debug_port != 0 { return self.fraytools_debug_port; }
+        9222
+    }
+
     /// Output directory for conversions. config → "./characters".
     pub fn output_dir(&self) -> PathBuf {
         if !self.output_dir.is_empty() {
@@ -205,6 +221,7 @@ mod tests {
             assist: "someassist".into(),
             boot_name: "hlboot-sdl.dat".into(),
             engine_name: String::new(),
+            fraytools_debug_port: 0,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: Config = serde_json::from_str(&json).unwrap();

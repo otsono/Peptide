@@ -33,7 +33,7 @@ use tungstenite::{Message, WebSocket};
 /// [--timeout MS] [--fraymakers-root DIR]` — cold-launch FrayTools, open the project,
 /// run Publish All, and print the freshly written .fra path to stdout.
 pub fn export(args: &[String]) -> Result<()> {
-    let port = arg_u16(args, "port", 9222);
+    let port = arg_u16(args, "port", default_debug_port());
     let ft_bin = arg(args, "fraytools").map(String::from).unwrap_or_else(default_fraytools);
     let project = arg(args, "project").ok_or_else(|| anyhow!("--project <abs path to .fraytools> is required"))?;
     let settle = arg_u64(args, "settle", 6000);
@@ -144,7 +144,7 @@ pub fn export(args: &[String]) -> Result<()> {
 /// `peptide render --entity <rel-under-library> [--project ...] [--out PNG] [...]` —
 /// open the entity on the stage and clip-capture the largest canvas to a PNG.
 pub fn render(args: &[String]) -> Result<()> {
-    let port = arg_u16(args, "port", 9222);
+    let port = arg_u16(args, "port", default_debug_port());
     let ft_bin = arg(args, "fraytools").map(String::from).unwrap_or_else(default_fraytools);
     let project = arg(args, "project");
     let entity = arg(args, "entity").ok_or_else(|| anyhow!("--entity <relpath under library/> is required"))?;
@@ -182,7 +182,7 @@ pub fn render(args: &[String]) -> Result<()> {
 /// [--out-json J] [--out-png P] [...]` — navigate to an animation/frame, extract box
 /// geometry from the entity JSON, optionally capture a PNG, and emit a JSON report.
 pub fn harness(args: &[String]) -> Result<()> {
-    let port = arg_u16(args, "port", 9222);
+    let port = arg_u16(args, "port", default_debug_port());
     let ft_bin = arg(args, "fraytools").map(String::from).unwrap_or_else(default_fraytools);
     let project = arg(args, "project");
     let entity = arg(args, "entity").ok_or_else(|| anyhow!("--entity <relpath under library/> is required"))?;
@@ -578,7 +578,20 @@ fn kill_fraytools(port: u16, bin: &str) {
     }
 }
 
+/// FrayTools CDP debug port default for bare CLI use: `PEPTIDE_FT_DEBUG_PORT` env
+/// → saved config → 9222. An explicit `--port` still overrides this.
+fn default_debug_port() -> u16 {
+    crate::config::Config::load().fraytools_debug_port()
+}
+
+/// Fallback FrayTools executable when no `--fraytools` is given. Routes through the
+/// shared Config resolver (configured path → per-OS detected default) so bare CLI
+/// use honors Setup, with a last-resort per-OS guess so we still attempt a launch
+/// (and emit a meaningful error) when nothing is configured or detected.
 fn default_fraytools() -> String {
+    if let Some(p) = crate::config::Config::load().fraytools_exe() {
+        return p.display().to_string();
+    }
     #[cfg(target_os = "windows")]
     {
         match std::env::var("LOCALAPPDATA") {
@@ -592,25 +605,14 @@ fn default_fraytools() -> String {
     }
 }
 
+/// Fallback Fraymakers install when no `--fraymakers-root` is given. Routes through
+/// the shared Config resolver (`FRAY_DIR` env → saved config → per-OS Steam default
+/// in platform.rs) so there is one source of truth for the install path.
 fn default_fraymakers_root() -> PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        PathBuf::from(std::env::var("HOME").unwrap_or_default())
-            .join("Library/Application Support/Steam/steamapps/common/Fraymakers")
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // Derive the system drive instead of assuming C: (some installs are on D:, etc.).
-        let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
-        PathBuf::from(format!(
-            "{drive}\\Program Files (x86)\\Steam\\steamapps\\common\\Fraymakers"
-        ))
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        PathBuf::from(std::env::var("HOME").unwrap_or_default())
-            .join(".steam/steam/steamapps/common/Fraymakers")
-    }
+    crate::config::Config::load()
+        .fraymakers_root()
+        .or_else(crate::platform::default_fraymakers_root)
+        .unwrap_or_default()
 }
 
 // ─────────────────────────── publish-folder + .fra ──────────────────────────
