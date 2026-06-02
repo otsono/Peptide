@@ -427,6 +427,13 @@
         <label>Character name override <span class="hint" style="font-weight:400">(optional; for multi-character SSFs)</span></label>
         <input id="c-name" placeholder="auto-detect" />
       </div>
+      <div class="field">
+        <label>misc.ssf <span class="hint" style="font-weight:400">(optional; auto-detected next to the SSF2 file)</span></label>
+        <div class="inrow">
+          <input id="c-misc" placeholder="auto-detect (…/misc.ssf)" />
+          <button class="btn-sm" onclick="pickFile('c-misc','ssf')">Browse…</button>
+        </div>
+      </div>
       <div class="form-actions">
         <button class="btn-primary" id="c-run" onclick="runConvert()">Convert</button>
       </div>
@@ -576,6 +583,12 @@
     // dismisses it (the engine keeps running in the background regardless).
     if(name!=="console" && typeof hideModal==="function"){ hideModal(); }
     if(name==="console" && typeof refreshUi==="function"){ refreshUi(); } // reflect connection state
+    // Pre-fill path fields from the configured setup so every screen reflects the
+    // same source of truth (Rust still falls back to the configured output dir if
+    // these are left blank). Only fill an empty field so we never clobber the
+    // user's own edit.
+    if(name==="convert" && !$("c-output").value){ $("c-output").value = CFG.outputDir || ""; }
+    if(name==="convert" && !$("c-misc").value){ $("c-misc").value = CFG.miscSsf || ""; }
   }
   function ipcSend(m){ if(window.ipc && window.ipc.postMessage) window.ipc.postMessage(m); }
 
@@ -965,6 +978,7 @@
     $("c-result").innerHTML = "";
     const payload = JSON.stringify({
       input, output: $("c-output").value.trim(), name: $("c-name").value.trim(),
+      miscSsf: $("c-misc").value.trim(),
     });
     ipcSend("@@convert:start:"+payload);
   }
