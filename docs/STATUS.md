@@ -215,10 +215,11 @@ roughly the order a fresh agent should pick these up.
 the live-engine tooling features we want to build. this is the one list (PEPTIDE_DESIGN.md
 points here).
 
-1. **multiplayer in quick boot.** extra players fully functional, not just present: they take
-   hits and receive their own controls. has to work on both SSF2 and Fraymakers. this is the
-   prerequisite for the hit-measurement work in #6.
-2. **rename `spawn` → `startMatch`.**
+1. **multiplayer in quick boot.** on Fraymakers extra players spawn and are fully accessible:
+   `startMatch mario,mario` runs the deferred spawnPlayer and `p1` binds to the live 2nd
+   character (`match.characterCount()`==2, `p1.getStateName()`/`p1.damage` readable). still
+   open: distinct CUSTOM chars as p1 don't self-bootstrap (same-char / base-game only), they
+   don't yet take hits in a verified way, and the SSF2 side. prerequisite for #6.
 3. **`addCharacter`** -- drop players into a running match on the fly.
 4. **scenario replay test env.** replay one exact scenario on repeat: both players at set
    positions, each on a set frame of a set animation, with set momentum, pressing set inputs.
@@ -226,10 +227,14 @@ points here).
    inside that test env (includes stat hot-reload into a running match).
 6. **in-engine hit measurement** (needs #1): hit-result readback (damage dealt, knockback
    distance + angle, hitstun frames), KO-threshold search (binary-search the dummy's % for
-   the lowest KO), and an active-box dump (every active hit/hurt box this frame).
+   the lowest KO), and an active-box dump (every active hit/hurt box this frame). open
+   confounds to solve: `toState(JAB)` doesn't arm a hitbox to damage an overlapping dummy,
+   `p0.flipX()` returns 0 not a facing sign, and `getX` has a Y-dependent offset from `setX`.
 7. **frame-advantage display** in the Peptide UI, on shield hit and on hit.
 8. **overlay mode.** Peptide attaches over the running game, semi-transparent, UI on top,
    matching our existing theming, show/hide on a keybind, as much function as fits without
    blocking the game, and it re-fits when the game window resizes.
-9. **batch commands / inputs from a file** in one go, from the UI or the CLI.
+9. **batch commands / inputs from a file** -- the UI half. the CLI half is `peptide tell
+   --file <path>` (one command per line, `#` comments skipped; mixes engine cmds, `e`
+   hscript, and `seq`/`hold` inputs through the one dispatch path).
 10. **way more hscript commands.**

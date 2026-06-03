@@ -505,6 +505,42 @@ fn write_crash_log(dir: &std::path::Path, port: u16, resdiag: &Arc<Mutex<Vec<Str
 pub fn tell(args: &[String]) {
     let dir = session_dir(args);
     let control = dir.join("control");
+    if !control.exists() {
+        eprintln!("peptide tell: no session at {} — start one with `peptide session`", dir.display());
+        std::process::exit(1);
+    }
+
+    // Batch mode: `tell --file <path>` queues every command in a file in one go (one per
+    // line; blank lines and `#` comments are skipped). The lines share the session's single
+    // dispatch path, so a file can mix engine commands, `e <hscript>`, and `seq`/`hold`
+    // inputs — a whole test scenario from disk. Covers peptide todo #9 (CLI half).
+    if let Some(path) = arg_val(args, "--file").or_else(|| arg_val(args, "-F")) {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => { eprintln!("peptide tell: cannot read batch file {path}: {e}"); std::process::exit(1); }
+        };
+        let lines: Vec<&str> = text.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        if lines.is_empty() {
+            eprintln!("peptide tell: batch file {path} has no commands (blank/comment-only)");
+            std::process::exit(1);
+        }
+        match std::fs::OpenOptions::new().append(true).open(&control) {
+            Ok(mut f) => {
+                for l in &lines {
+                    if writeln!(f, "{l}").is_err() {
+                        eprintln!("peptide tell: write failed mid-batch"); std::process::exit(1);
+                    }
+                }
+                eprintln!("peptide tell: queued {} command(s) from {path}", lines.len());
+            }
+            Err(e) => { eprintln!("peptide tell: cannot write {}: {e}", control.display()); std::process::exit(1); }
+        }
+        return;
+    }
+
     // The command is everything after the flags (so both quoted "spawn sandbag"
     // and bare `tell spawn sandbag` work). `--dir D` must precede the command.
     let mut i = 0;
@@ -516,12 +552,8 @@ pub fn tell(args: &[String]) {
     }
     let cmd = match cmd {
         Some(c) if !c.trim().is_empty() => c,
-        _ => { eprintln!("usage: peptide tell [--dir D] \"<command>\""); std::process::exit(2); }
+        _ => { eprintln!("usage: peptide tell [--dir D] \"<command>\"  |  peptide tell --file <path>"); std::process::exit(2); }
     };
-    if !control.exists() {
-        eprintln!("peptide tell: no session at {} — start one with `peptide session`", dir.display());
-        std::process::exit(1);
-    }
     match std::fs::OpenOptions::new().append(true).open(&control) {
         Ok(mut f) => {
             if writeln!(f, "{}", cmd.trim()).is_ok() {

@@ -52,8 +52,8 @@ pub struct Cmd {
 pub const COMMANDS: &[Cmd] = &[
     Cmd { name: "help",    aliases: &["h", "?"],            wire: '\0',
           args: "",                              help: "list these commands + the hscript model (client-side; sends nothing)" },
-    Cmd { name: "spawn",   aliases: &["start", "launch", "s"], wire: 's',
-          args: "<char> [stage] [assist]",       help: "start a match with <char> (loads custom content if needed); stage/assist default to thespire/commandervideoassist" },
+    Cmd { name: "startMatch", aliases: &["spawn", "start", "launch", "s"], wire: 's',
+          args: "<char[,char2…]> [stage] [assist]", help: "start a match with <char> (loads custom content if needed); comma-separate players for a 2+ player match; stage/assist default to thespire/commandervideoassist" },
     Cmd { name: "eval",    aliases: &["e"],                  wire: 'e',
           args: "<hscript>",                     help: "run an hscript expression in the engine and print E:<result>. This is also the default for any unrecognized line." },
     Cmd { name: "load",    aliases: &["l"],                 wire: 'l',
@@ -183,8 +183,11 @@ pub const MOVES: &[(&str, &str)] = &[
 
 /// Find the command whose name or alias matches `tok` (case-insensitive).
 pub fn lookup(tok: &str) -> Option<&'static Cmd> {
-    let t = tok.to_ascii_lowercase();
-    COMMANDS.iter().find(|c| c.name == t || c.aliases.iter().any(|a| *a == t))
+    // Case-insensitive on both sides so a camelCase canonical name (e.g. `startMatch`)
+    // still matches what the user types, and the displayed name keeps its casing.
+    COMMANDS.iter().find(|c| {
+        c.name.eq_ignore_ascii_case(tok) || c.aliases.iter().any(|a| a.eq_ignore_ascii_case(tok))
+    })
 }
 
 /// Outcome of translating one friendly line.
@@ -336,7 +339,7 @@ pub fn parse(line: &str) -> Command {
     if let Some(cmd) = lookup(head) {
         match cmd.name {
             "help" => return Command::Help,
-            "spawn" => {
+            "startMatch" => {
                 // first token is the player list: comma-separated characters.
                 let characters: Vec<String> = rest.first().copied().unwrap_or("")
                     .split(',').map(str::trim).filter(|c| !c.is_empty()).map(str::to_string).collect();
@@ -668,8 +671,8 @@ pub fn help_text() -> String {
     out.push_str("  Assist  AssistEvent  MatchModifier  Announcer  GameMenus  Css  GlobalVfx\n");
     out.push_str("  GlobalSfx  CameraShakeType  GraphicsSettings  DisplaySettings  Ai*Option …\n");
     out.push_str("\nExamples:\n");
-    out.push_str("  spawn sandbag                 start a sandbag match (default stage/assist)\n");
-    out.push_str("  spawn mario thespire commandervideoassist\n");
+    out.push_str("  startMatch sandbag            start a sandbag match (default stage/assist; alias: spawn)\n");
+    out.push_str("  startMatch mario,mario thespire commandervideoassist   2-player match (comma-separated)\n");
     out.push_str("  match.getCharacters()[0].getStateName()    read a character's state\n");
     out.push_str("  CState.JAB                    inspect an API enum value\n");
     out.push_str("  exit                          shut the engine down\n");
@@ -908,6 +911,7 @@ mod tests {
         // match-launch + clean exit + resource load are the irreducible bootstrap hooks;
         // console is a side-effecting method call hscript can't invoke. All stay wire bytes.
         assert_eq!(wire("spawn sandbag thespire x"), "s sandbag thespire x");
+        assert_eq!(wire("startMatch sandbag thespire x"), "s sandbag thespire x");
         assert_eq!(wire("exit"), "x");
         assert_eq!(wire("console"), "c");
         assert_eq!(wire("load"), "l");
