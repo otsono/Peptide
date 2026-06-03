@@ -982,6 +982,10 @@ fn connect_edit(
     let stage_str = add_string(code, "stage");
     let character_str = add_string(code, "character");
     let port_str = add_string(code, "port");
+    // distinct team per player so the match's hit detection treats them as opponents
+    // (both default to -1 = same/unset, which suppresses inter-player hits). Dropped
+    // harmlessly by ToVirtual if the player virtual has no `team` field.
+    let team_str = add_string(code, "team");
     let matchrules_str = add_string(code, "matchRules");
     // defaultMatchRules is a static on pxf.core.$MatchSettings — the same value the
     // engine's MatchSettings ctor injects into its default matchConfig. We replace
@@ -1940,6 +1944,11 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_pending_port) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(port_str), src: rr(28) });
+    // extra player -> team = its port (>=1), distinct from player 1's team 0, so the match
+    // treats it as an opponent and inter-player hits register.
+    ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_pending_port) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(team_str), src: rr(28) });
     ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });                    // -> player virtual@1957
     ops.push(Opcode::Call1 { dst: rr(30), fun: RefFun(create_player_config), arg0: rr(29) }); // FraymakersPlayerConfig@2536
     // ONE-SHOT MI: past PlayerConfig factory
@@ -2277,6 +2286,10 @@ fn connect_edit(
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(port_str), src: rr(28) });
+    // player 1 -> team 0
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(team_str), src: rr(28) });
     ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });          // -> player virtual@1957 (player 1)
     // characters = [player1, players 2..N] sized to names.length. Player 1 (rr29,
     // fully self-bootstrapped above) lands at index 0; each extra name is resolved
