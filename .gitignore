@@ -8,6 +8,10 @@ __pycache__/
 # Added by cargo
 
 /build
+
+# Claude Code: keep shared settings.json tracked, ignore per-user/runtime files
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
 # Generated binary/image assets inside character output — track .hx, .json, .entity etc but not media
 characters/
 
