@@ -68,12 +68,29 @@ pub fn launch() -> std::io::Result<()> {
     apply_default_linux_env_vars();
     
     let event_loop = EventLoopBuilder::<Ev>::with_user_event().build();
-    let window = WindowBuilder::new()
+    // Overlay mode (peptide todo #8): with $PEPTIDE_OVERLAY=1 the console floats ON TOP of the
+    // running game — always-on-top, compact, parked in the top-right corner — so you can drive
+    // tests while watching the match. Toggle on/off live with the in-window shortcut (see the
+    // KeyboardInput handler below). Default (unset) is the normal full-size window.
+    let overlay = std::env::var("PEPTIDE_OVERLAY").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    let mut builder = WindowBuilder::new()
         .with_title("Peptide")
-        .with_inner_size(LogicalSize::new(940.0, 720.0))
-        .with_min_inner_size(LogicalSize::new(520.0, 400.0))
-        .build(&event_loop)
-        .map_err(|e| io(&e.to_string()))?;
+        .with_always_on_top(overlay)
+        .with_min_inner_size(LogicalSize::new(360.0, 280.0));
+    builder = if overlay {
+        builder.with_inner_size(LogicalSize::new(440.0, 560.0))
+    } else {
+        builder.with_inner_size(LogicalSize::new(940.0, 720.0)).with_min_inner_size(LogicalSize::new(520.0, 400.0))
+    };
+    let window = builder.build(&event_loop).map_err(|e| io(&e.to_string()))?;
+    // overlay starts parked top-right of the primary monitor.
+    if overlay {
+        if let Some(mon) = window.current_monitor() {
+            let sz = mon.size().to_logical::<f64>(window.scale_factor());
+            window.set_outer_position(LogicalPosition::new((sz.width - 440.0 - 24.0).max(0.0), 24.0));
+        }
+    }
+    let mut overlay_on = overlay; // live-toggle state for the always-on-top shortcut
 
     // No eager engine boot: the window opens to Setup (first run) or Home, and the
     // engine is launched lazily only when the user picks "Launch Peptide". The
@@ -238,6 +255,15 @@ pub fn launch() -> std::io::Result<()> {
             }
             Event::UserEvent(Ev::Js(js)) => {
                 let _ = webview.evaluate_script(&js);
+            }
+            // F8 toggles overlay (always-on-top) live, so you can pop the console on top of the
+            // game and drop it back without relaunching (peptide todo #8).
+            Event::WindowEvent { event: WindowEvent::KeyboardInput { event: ref key_ev, .. }, .. }
+                if key_ev.state == tao::event::ElementState::Pressed
+                    && key_ev.physical_key == tao::keyboard::KeyCode::F8 =>
+            {
+                overlay_on = !overlay_on;
+                window.set_always_on_top(overlay_on);
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
                 if let Some(mut c) = cleanup.lock().ok().and_then(|mut g| g.take()) {

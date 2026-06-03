@@ -240,9 +240,12 @@ points here).
    confounds to solve: `toState(JAB)` doesn't arm a hitbox to damage an overlapping dummy,
    `p0.flipX()` returns 0 not a facing sign, and `getX` has a Y-dependent offset from `setX`.
 7. **frame-advantage display** in the Peptide UI, on shield hit and on hit.
-8. **overlay mode.** Peptide attaches over the running game, semi-transparent, UI on top,
-   matching our existing theming, show/hide on a keybind, as much function as fits without
-   blocking the game, and it re-fits when the game window resizes.
+8. **overlay mode.** `$PEPTIDE_OVERLAY=1` floats the console ON TOP of the running game:
+   always-on-top, compact (440x560), parked top-right of the primary monitor, with the full UI
+   (matching our theming). F8 toggles always-on-top on/off live so you can pop it over the match
+   and drop it back without relaunching. still open: true window transparency (the system webview
+   makes this fiddly per-OS) and auto re-fit when the game window moves/resizes (needs OS window
+   tracking).
 9. **batch commands / inputs from a file** -- the UI half. the CLI half is `peptide tell
    --file <path>` (one command per line, `#` comments skipped; mixes engine cmds, `e`
    hscript, and `seq`/`hold` inputs through the one dispatch path).
