@@ -147,6 +147,8 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 ├── tools/                     Build + engine-harness orchestration (shell + Node)
 │   ├── make-app.sh             macOS: build peptide + wrap it in build/Peptide.app
 │   ├── make-win.sh             Cross-compile the Windows peptide.exe into build/windows/
+│   ├── make-linux.sh           Linux: build peptide + stage build/linux/ (run natively on Linux)
+│   ├── release.sh              Cut a release: bump version, build, package, tag, publish
 │   ├── run.sh / runseq.sh      Boot Fraymakers + send one / a sequence of console commands
 │   ├── recipe.sh               Run a shareable .recipe (commands + #!char/#!gap directives)
 │   ├── rebuild-sandbag.sh      Quick: rebuild peptide + convert sandbag.ssf
@@ -298,6 +300,30 @@ then opens it on success (`--no-open` to just build). `build/` is git-ignored.
 `mingw-w64`; prints the exact install command if neither toolchain is present),
 or build natively on Windows with `cargo build --release`. the webview uses the
 WebView2 runtime that ships with Windows 10/11.
+
+**Linux build.** `./tools/make-linux.sh` builds `peptide` and stages it into
+`build/linux/` alongside its `data/` runtime assets. run it natively on Linux:
+the GUI is a `wry` webview that links the system WebKitGTK + GTK3 dev libs, so it
+can't be cross-compiled from macOS. on Debian/Ubuntu the deps are
+`libwebkit2gtk-4.1-dev libgtk-3-dev build-essential`.
+
+**cutting a release.** `./tools/release.sh <version>` is the single source of
+truth: it bumps the version in both `Cargo.toml` files and the lock, builds the
+macOS `.app` and Windows `.exe`, packages the zips, commits the bump, tags, and
+publishes the GitHub release with both zips attached. `--no-publish` stops after
+packaging. two things the script can't do from the macOS release host, so they're
+handled around it:
+
+- **target repo.** releases are published to the upstream repo, where the prior
+  releases live and where `gh` defaults. push the release commit + tag there
+  before creating the release so the tag points at the bumped commit.
+- **the Linux zip.** since Linux can't be cross-built (see above),
+  `.github/workflows/release-linux.yml` builds it natively on `ubuntu-latest`
+  (via `make-linux.sh`) and attaches `Linux - Peptide <version>.zip` to the
+  release. it fires on the `release: published` event, so the workflow has to
+  already be on the default branch when the release goes out, and the Mac +
+  Windows zips have to be attached at publish time (the Linux zip lands a few
+  minutes later when the job finishes).
 
 ---
 
