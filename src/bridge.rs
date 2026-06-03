@@ -2,7 +2,7 @@
 //! dials into. `serve` is the interactive stdin<->socket bridge; `send_once` is a
 //! one-shot for scripts. Connection setup (await_engine) lives in `ui` and is shared.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -291,7 +291,37 @@ fn process_cmd(writer: &mut TcpStream, raw: &str, log: &Arc<Mutex<std::fs::File>
     }
 }
 
-/// `peptide session [--dir D] [--char C | --full] [--no-boot --port N --token T]`
+/// Decide whether the session should also take typed commands from this terminal.
+/// Default: yes when stdin is a TTY (a human/agent sitting at the prompt). `-i` /
+/// `--interactive` forces it on even when stdin is piped; `--no-input` forces it off
+/// (pure daemon: only `peptide tell` feeds it).
+fn want_interactive(args: &[String]) -> bool {
+    if args.iter().any(|a| a == "--no-input") { return false; }
+    if args.iter().any(|a| a == "-i" || a == "--interactive") { return true; }
+    std::io::stdin().is_terminal()
+}
+
+/// Foreground REPL feeder: read lines typed at this terminal and append each to the
+/// session control file, so they flow through the SAME single-writer dispatch path as
+/// `peptide tell` (no second socket writer → no races). Engine output is already
+/// mirrored to stdout by `slog`, so the terminal behaves like the GUI chat: type a
+/// command, watch the reply stream back. EOF (Ctrl-D) just stops reading stdin; it does
+/// NOT close the socket or kill the engine — type `exit` (or Ctrl-C) to shut down.
+fn spawn_stdin_feeder(control: PathBuf, log: Arc<Mutex<std::fs::File>>) {
+    thread::spawn(move || {
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            let Ok(raw) = line else { break };
+            if raw.trim().is_empty() { continue; }
+            match std::fs::OpenOptions::new().append(true).open(&control) {
+                Ok(mut f) => { let _ = writeln!(f, "{}", raw.trim()); }
+                Err(e) => { slog(&log, &format!("[session] stdin: cannot write control file: {e}")); break; }
+            }
+        }
+    });
+}
+
+/// `peptide session [--dir D] [--char C | --full] [--no-boot --port N --token T] [-i|--no-input]`
 /// Boot (or attach to) an engine and run the persistent command loop.
 pub fn session(args: &[String]) {
     let dir = session_dir(args);
@@ -379,9 +409,19 @@ pub fn session(args: &[String]) {
     // Soft READY wait: a freshly-booted engine emits READY; an attached one may
     // have sent it before we connected. Either way proceed after the wait so
     // `--attach` to a live match still works.
+    let interactive = want_interactive(args);
+    let how = if interactive { "type commands here, or peptide tell \"<cmd>\"" } else { "peptide tell \"<cmd>\"" };
     match ready_rx.recv_timeout(Duration::from_secs(60)) {
-        Ok(()) => slog(&log, "[session] engine READY — accepting commands (peptide tell \"<cmd>\")"),
-        Err(_) => slog(&log, "[session] no READY within 60s — accepting commands anyway (attach mode?)"),
+        Ok(()) => slog(&log, &format!("[session] engine READY — accepting commands ({how})")),
+        Err(_) => slog(&log, &format!("[session] no READY within 60s — accepting commands anyway ({how}, attach mode?)")),
+    }
+
+    // Foreground REPL: also take commands typed at this terminal. They're appended to the
+    // control file so they share the one dispatch path below (and `tell` keeps working).
+    // This is the terminal equivalent of the GUI chat — hold focus, send, watch replies.
+    if interactive {
+        slog(&log, "[session] interactive — type a command and press Enter (`exit` or Ctrl-C to quit, Ctrl-D stops input)");
+        spawn_stdin_feeder(control.clone(), Arc::clone(&log));
     }
 
     // Poll the control file for newly-appended command lines and dispatch them.
