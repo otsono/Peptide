@@ -216,10 +216,10 @@ the live-engine tooling features we want to build. this is the one list (PEPTIDE
 points here).
 
 1. **multiplayer in quick boot.** on Fraymakers extra players spawn and are fully accessible:
-   `startMatch mario,mario` runs the deferred spawnPlayer and `p1` binds to the live 2nd
-   character (`match.characterCount()`==2, `p1.getStateName()`/`p1.damage` readable). still
-   open: distinct CUSTOM chars as p1 don't self-bootstrap (same-char / base-game only), they
-   don't yet take hits in a verified way, and the SSF2 side. prerequisite for #6.
+   `startMatch mario,mario` adds each extra player into the live match one per frame, and `p1`
+   binds to the live 2nd character (`match.characterCount()`==2, `p1.getStateName()`/`p1.damage`
+   readable). still open: distinct CUSTOM chars as p1 don't self-bootstrap (same-char / base-game
+   only), they don't yet take hits in a verified way, and the SSF2 side. prerequisite for #6.
 3. **`addCharacter`** -- drop players into a running match on the fly.
 4. **scenario replay test env.** replay one exact scenario on repeat: both players at set
    positions, each on a set frame of a set animation, with set momentum, pressing set inputs.
