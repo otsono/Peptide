@@ -706,6 +706,7 @@ const PEPTIDE_CRATE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 /// Candidate locations for a peptide runtime asset file (e.g. `commands.hsx`),
 /// tried in order. The first that exists wins. Resolution:
+///   0. `$PEPTIDE_MATCH_SETTINGS` (match_settings.conf only — explicit file path)
 ///   1. `$PEPTIDE_ASSET_DIR/<rel>` (explicit override dir)
 ///   2. cwd-relative (`./<rel>`)
 ///   3. the packaged layout: a `data/` subfolder next to the binary (`<exe-dir>/data/<rel>`)
@@ -714,6 +715,14 @@ const PEPTIDE_CRATE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 ///   6. the peptide crate's source dir (`PEPTIDE_CRATE_DIR/<rel>` — source checkout)
 fn asset_candidate_paths(rel: &str) -> Vec<std::path::PathBuf> {
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    // File-specific override (highest priority): `$PEPTIDE_MATCH_SETTINGS` points a full
+    // match_settings.conf path, the way the conf header documents — so you can iterate match
+    // rules without editing the tracked default or the cwd copy.
+    if rel == "match_settings.conf" {
+        if let Ok(file) = std::env::var("PEPTIDE_MATCH_SETTINGS") {
+            paths.push(std::path::PathBuf::from(file));
+        }
+    }
     if let Ok(dir) = std::env::var("PEPTIDE_ASSET_DIR") {
         paths.push(std::path::PathBuf::from(dir).join(rel));
     }
