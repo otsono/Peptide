@@ -223,7 +223,7 @@ points here).
 3. **`addCharacter`** -- drop one more fighter into the LIVE match on the fly. the command
    (`addCharacter`, aliases `addchar`/`add`, wire `n`) re-arms the per-frame deferred-spawn from a
    stashed copy of the roster and fires one extra spawn, verified firing live. still open: the live
-   match allocates 2 player slots, so `spawnPlayer` past slot 2 returns null (`SP:0`) and the count
+   match allocates 2 player slots, so the per-frame spawn past slot 2 returns null (`SP:0`) and the count
    stays 2. the cap is the match MODE: the self-bootstrap launch uses training mode (the only mode
    that starts from the minimal headless config), which is 1v1. breaking past 2 needs a versus /
    free-for-all mode, and that mode's launch needs the CSS/menu/scene context the injected-bytecode
