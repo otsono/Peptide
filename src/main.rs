@@ -1057,6 +1057,7 @@ fn connect_edit(
     let lives_str = add_string(code, "lives");
     let time_str = add_string(code, "time");
     let teamattack_str = add_string(code, "teamAttack");
+    let teams_str = add_string(code, "teams");
     let itemfreq_str = add_string(code, "itemFrequency");
     let create_mode = require_fn(code, "createMode", Some("fraymakers.util.$FraymakersClassFactory"))?;
     let mode_start_match = require_fn(code, "startMatch", Some("fraymakers.core.FraymakersMode"))?;
@@ -2327,10 +2328,9 @@ fn connect_edit(
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(port_str), src: rr(28) });
-    // player 1 -> team 0
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
-    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
-    ops.push(Opcode::DynSet { obj: rr(27), field: RS(team_str), src: rr(28) });
+    // team = port (0). MUST be >=0: sanitizePlayerConfig@6250 op112 only skips its getPlayerPortColor
+    // branch (which hangs for index>=1) when team>=0. team=port also gives free-for-all distinct teams.
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(team_str), src: rr(28) }); // rr28 = boxed 0
     ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });          // -> player virtual@1957 (player 1)
     // characters = [player1, players 2..N] sized to names.length. Player 1 (rr29,
     // fully self-bootstrapped above) lands at index 0; each extra name is resolved
@@ -2339,15 +2339,54 @@ fn connect_edit(
     // the loop body never runs and this is byte-identical to the old size-1 build.
     // rr20=loop index, rr19=N (both Int; untouched by emit_resolve, which scratches
     // rr16/rr39). rr67=names.array (native). rr32=chars native array (survives resolve).
-    // characters = [player1]. Only player 1 launches with startMatch (a 2+ element array
-    // races the engine's threaded media loader and SIGSEGVs). Extra players (parts[4..]) are
-    // added to the LIVE match AFTER startMatch — see the post-start spawnPlayer loop below.
+    // characters = [player1] + player2 (parts[4]) when present, in the INITIAL startMatch so the
+    // engine natively constructs+registers every fighter. _offlineMatchStart@6251 loops over this
+    // array. emit_resolve preserves r32 so the chars array survives the resolve. Players 3+ defer.
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(52), field: RefField(0) }); // parts.length
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(five_idx) });
+    let idx_arr_jsingle = ops.len();
+    ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });               // length<5 -> single
+    // --- TWO players. CRITICAL: player virtuals in the characters array MUST share the element
+    // type rr29 carries (t1957). Building player2 into a differently-typed register (e.g. rr30 = the
+    // t2536 FraymakersPlayerConfig slot) puts a type-mismatched element in the array and _offline-
+    // MatchStart's per-char ToVirtual chokes on it (the loop never reaches createPlayerConfig for
+    // that element = hang). So: alloc the array, store player1 (rr29) FIRST, then REUSE rr29 to
+    // build player2 (the array already holds player1's ref, so reuse is safe). ---
+    ops.push(Opcode::Type { dst: rr(31), ty: RT(1957) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(two_idx) });
+    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) }); // alloc[2]
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(29) }); // [0]=player1 (stored now)
+    // resolve char2 = parts[4] (rr31 = parts.array scratch; emit_resolve preserves rr32/rr42/rr29)
+    ops.push(Opcode::Field { dst: rr(31), obj: rr(52), field: RefField(1) }); // parts.array
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(four_idx) });
+    ops.push(Opcode::GetArray { dst: rr(55), array: rr(31), index: rr(39) }); // parts[4]
+    emit_resolve(&mut ops, 55, 26, char_cmap_field);                         // char2 ref -> rr26
+    // player2 virtual { character: rr26, assist: rr42, port: 1, team: 1 } -> REUSE rr29 (t1957)
+    ops.push(Opcode::New { dst: rr(27) });
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(character_str), src: rr(26) });
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(assist_str), src: rr(42) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(port_str), src: rr(28) });
+    // team=port=1 (>=0): skips sanitizePlayerConfig's player-border branch; distinct free-for-all team.
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(team_str), src: rr(28) });
+    ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });                 // REUSE rr29 -> player2 (t1957)
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(29) }); // [1]=player2
+    let idx_arr_jwrap = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    // --- SINGLE player: chars = [player1] ---
+    let idx_arr_single = ops.len();
     ops.push(Opcode::Type { dst: rr(31), ty: RT(1957) });
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
     ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) });
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
     ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(29) });
+    let idx_arr_wrap = ops.len();
     ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) }); // wrap -> ArrayObj
+    if let Opcode::JSLt   { offset, .. } = &mut ops[idx_arr_jsingle] { *offset = idx_arr_single as i32 - idx_arr_jsingle as i32 - 1; }
+    if let Opcode::JAlways{ offset, .. } = &mut ops[idx_arr_jwrap]   { *offset = idx_arr_wrap as i32 - idx_arr_jwrap as i32 - 1; }
     // matchSettings = { stage: rr25, matchRules: defaultMatchRules } (virtual@675)
     ops.push(Opcode::New { dst: rr(34) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(stage_str), src: rr(25) });
@@ -2379,6 +2418,10 @@ fn connect_edit(
     ops.push(Opcode::Bool { dst: rr(64), value: ValBool(cfg_team_damage) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(64) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(teamattack_str), src: rr(28) });
+    // teams=false (free-for-all): MatchSettingsConfig.teams (field 23, Bool) drives prepTeams@6237.
+    ops.push(Opcode::Bool { dst: rr(64), value: ValBool(false) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(64) });
+    ops.push(Opcode::DynSet { obj: rr(34), field: RS(teams_str), src: rr(28) });
     ops.push(Opcode::ToVirtual { dst: rr(35), src: rr(34) });          // -> matchSettings virtual@675
     // config = { characters, matchSettings, pauseMenu: null } (virtual@4482)
     ops.push(Opcode::New { dst: rr(27) });                             // dynobj (4366)
@@ -2409,10 +2452,10 @@ fn connect_edit(
     // live — see the pending-spawn block in the update epilogue. Stash parts + start indices.
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_parts), src: rr(52) }); // parts ArrayObj
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_saved_parts), src: rr(52) });  // keep a copy for addCharacter (#3)
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(four_idx) });
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_idx), src: rr(39) });   // first extra = parts[4]
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_port), src: rr(39) });  // first extra port = 1
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(five_idx) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_idx), src: rr(39) });   // player2 (parts[4]) is in the initial array; defer parts[5..]
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(two_idx) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_port), src: rr(39) });  // ports 0,1 in initial array; defer from port 2
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_assist), src: rr(42) }); // resolved assist ref (rr42) for extra players
     }
     let _ = (one_idx, launched_g, getresid_fn, spawn_char_fn, five_idx, pxf_entities_field,
@@ -3588,6 +3631,27 @@ fn connect_edit(
     // formatting of the enhanced log is host-side in `interpreter::interpret_crash`.
     inject_stage_diag(code, g_sock, out_field, write_str, flush, str_add, nl_g,
         sock_t, out_t, str_t, enc_t)?;
+    // DIAG (multi-char launch pinpoint): mark each function in the offline launch chain so the LAST
+    // marker that fires identifies where a 2-char startMatch blocks. Resolve by name (findices shift
+    // per build). Remove once the hang is fixed.
+    if std::env::var("PEPTIDE_LAUNCH_DIAG").is_ok() {
+        let fm = "fraymakers.core.FraymakersMode";
+        for (name, parent, marker) in [
+            ("_offlineMatchStart", fm, "DIAG:OMS\n"),
+            ("sanitizePlayerConfig", fm, "DIAG:SPC\n"),
+            ("createPlayerConfig", "fraymakers.util.$FraymakersClassFactory", "DIAG:CPC\n"),
+            ("sanitizePorts", fm, "DIAG:SPORTS\n"),
+            ("prepTeams", fm, "DIAG:PREPTEAMS\n"),
+            ("startMatch", "pxf.controllers.$MatchController", "DIAG:MCSTART\n"),
+        ] {
+            if let Some(fx) = find_fn(code, name, Some(parent)) {
+                inject_entry_marker(code, fx, marker, g_sock, out_field, write_str, flush,
+                    sock_t, out_t, str_t, enc_t)?;
+            } else {
+                eprintln!("connect_edit: launch-diag could not resolve {parent}::{name}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -3651,6 +3715,36 @@ fn inject_stage_diag(
         for (_nm, pos) in assigns.iter_mut() { if *pos >= at { *pos += n as usize; } }
     }
     eprintln!("connect_edit: Match.setupStage stage-id crash diagnostic installed");
+    Ok(())
+}
+
+/// DIAG: prepend a one-line socket marker to the ENTRY of `findex` (emits `<marker>` once per
+/// call). Used to pinpoint where the multi-char launch chain blocks: whichever marker is the LAST
+/// to fire (with no successor) is the hang site. Front insertion is jump-safe (insert_ops_front).
+#[allow(clippy::too_many_arguments)]
+fn inject_entry_marker(
+    code: &mut Bytecode, findex: usize, marker: &str,
+    g_sock: usize, out_field: usize, write_str: usize, flush: usize,
+    sock_t: usize, out_t: usize, str_t: usize, enc_t: usize,
+) -> anyhow::Result<()> {
+    use hlbc::types::{RefField, RefFun, RefGlobal, Reg};
+    let marker_g = add_string_const(code, marker);
+    let fi = function_index_by_findex(code, findex)
+        .ok_or_else(|| anyhow::anyhow!("findex {findex} not found for entry marker {marker:?}"))?;
+    let base = add_regs(&mut code.functions[fi], &[sock_t, out_t, str_t, enc_t, 0]);
+    let (r_sock, r_out, r_msg, r_null, r_ret) =
+        (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4));
+    let m = vec![
+        Opcode::GetGlobal { dst: r_sock, global: RefGlobal(g_sock) },          // 0
+        Opcode::JNull { reg: r_sock, offset: 5 },                             // 1 -> op7 (skip marker)
+        Opcode::Field { dst: r_out, obj: r_sock, field: RefField(out_field) }, // 2
+        Opcode::GetGlobal { dst: r_msg, global: RefGlobal(marker_g) },         // 3
+        Opcode::Null { dst: r_null },                                          // 4
+        Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: r_msg, arg2: r_null }, // 5
+        Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out },          // 6
+    ];
+    insert_ops_front(&mut code.functions[fi], m);
+    eprintln!("connect_edit: entry marker {marker:?} installed on findex {findex}");
     Ok(())
 }
 

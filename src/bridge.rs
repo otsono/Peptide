@@ -352,10 +352,14 @@ pub fn session(args: &[String]) {
         (r, w, port, token.unwrap_or_default(), None)
     } else {
         let full = args.iter().any(|a| a == "--full");
+        // `--char` may carry a comma-separated roster (e.g. `mario,mario`) so the auto-boot builds
+        // a multi-player match directly; the patcher bakes only player 1 (first token), the rest
+        // resolve at launch from the full roster the fastboot command carries.
         let bake: Option<String> = if full {
             None
         } else {
-            Some(arg_val(args, "--char").unwrap_or_else(|| crate::config::Config::load().char_name()))
+            let roster = arg_val(args, "--char").unwrap_or_else(|| crate::config::Config::load().char_name());
+            Some(roster.split(',').next().unwrap_or(&roster).trim().to_string())
         };
         autostart = bake.is_some();
         match crate::ui::patch_and_launch_with_progress(None, bake.as_deref()) {
