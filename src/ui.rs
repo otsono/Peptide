@@ -117,6 +117,13 @@ pub struct Cleanup {
     engine: Option<Child>,
 }
 impl Cleanup {
+    /// A Cleanup that owns just a spawned engine process — no throwaway conn/appid
+    /// files. Used by the SSF2 GUI boot, whose teardown is simply killing the app,
+    /// so it reuses the same window-close disposal path as the Fraymakers engine.
+    pub fn for_engine(engine: Child) -> Cleanup {
+        Cleanup { conn: PathBuf::new(), appid: PathBuf::new(), engine: Some(engine) }
+    }
+
     /// Kill the engine + remove the throwaway files. Idempotent. The GUI calls this on
     /// window-close because its event loop exits the process (skipping Drop).
     pub fn dispose(&mut self) {

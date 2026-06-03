@@ -36,7 +36,6 @@
 11. [Known issues & gaps](#11-known-issues--gaps)
 12. [Prioritized next steps](#12-prioritized-next-steps)
 13. [Tips for the next agent](#13-tips-for-the-next-agent)
-14. [Architectural history](#14-architectural-history)
 
 ---
 
@@ -94,7 +93,7 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 ├── TESTING.md                Validation harnesses + engine RE map + validation status
 ├── LICENSE                   MIT License
 ├── NOTICE.md                 Dependency attribution (Ruffle swf crate, etc.)
-├── .gitignore                Ignores *.ssf, *.swf, /target, characters/, engine artifacts
+├── .gitignore                Ignores *.ssf, *.swf, /build, characters/ media, engine artifacts
 │
 ├── src/                       Peptide — engine harness, webview UI, bytecode patcher
 │   ├── main.rs                CLI dispatch (gui/tui/convert/export/render/harness/patcher) + allocator
@@ -115,21 +114,24 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 │   │   ├── convert.rs         run_conversion(ConvertOptions) — the in-process entry point
 │   │   ├── ssf.rs             .ssf → raw SWF decompression
 │   │   ├── swf_parser.rs      SWF tag parsing (thin wrapper over the Ruffle `swf` crate)
-│   │   ├── abc_parser.rs      AVM2/ABC bytecode parser + semantic extractors (~2500 LOC)
-│   │   ├── decompiler.rs      ABC bytecode → Haxe-ish source (~1700 LOC)
+│   │   ├── abc_parser.rs      AVM2/ABC bytecode parser + semantic extractors (~2650 LOC)
+│   │   ├── decompiler.rs      ABC bytecode → Haxe-ish source (~2050 LOC)
 │   │   ├── extractor.rs       Bridges abc_parser output into CharacterData
 │   │   ├── anim_splitter.rs   Splits multi-move SSF2 sprites into FM animations
 │   │   ├── sprite_parser.rs   Per-frame collision-box geometry from SWF timelines
 │   │   ├── image_extractor.rs PNG extraction, placement, skew baking, projectile/effect/head
+│   │   ├── vector_raster.rs   Rasterizes vector-shape sprites (shape-only heads/effects)
 │   │   ├── sound_extractor.rs Audio extraction (Nellymoser / MP3 / ADPCM → WAV via ffmpeg)
 │   │   ├── palette_gen.rs      Costume palette generation
-│   │   ├── api_mappings.rs     Decompiled-Haxe rewriter pipeline (JSONC-driven, ~1900 LOC)
+│   │   ├── api_mappings.rs     Decompiled-Haxe rewriter pipeline (JSONC-driven, ~2530 LOC)
 │   │   ├── mappings.rs         JSONC loader + OnceLock-cached accessors for mappings/*.jsonc
-│   │   ├── entity_gen.rs       Fraymakers .entity JSON builder (~2000 LOC)
+│   │   ├── entity_gen.rs       Fraymakers .entity JSON builder (~2300 LOC)
 │   │   ├── haxe_gen.rs         Top-level output orchestrator — writes the whole package
 │   │   ├── fraytools_project.rs  Emits the `<name>.fraytools` project file
+│   │   ├── fraytools_transform.rs  Shared FrayTools transform/coordinate helpers
+│   │   ├── project.rs         Shared project / manifest structs
 │   │   ├── uuid_gen.rs         Deterministic UUID v5 generation
-│   │   └── bin/               ~30 diagnostic binaries (gated: --features dev-tools)
+│   │   └── bin/               ~30 diagnostic binaries (dump_*/check_*/probe_*/find_*/audit_*; gated: --features dev-tools)
 │   ├── mappings/              ← editable runtime config (JSONC), baked in via include_str!
 │   │   ├── commands.jsonc      universal SSF2 → FM API command conversions
 │   │   └── character/          animations.jsonc / stats.jsonc / hitbox_stats.jsonc
@@ -147,9 +149,9 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 │   │   ├── parity_check.py      Static SSF2-source-vs-output hitbox-parity diff
 │   │   ├── translation_completeness.sh  Per-character untranslated-marker dashboard
 │   │   └── recipes/             .recipe scripts + .golden behavior signatures
-│   └── fraytools-harness/      Legacy Node FrayTools scripts (reference; superseded by peptide)
+│   └── (FrayTools drive)       ported into the peptide binary: `peptide export|render|harness`
 ├── characters/                Converter OUTPUT (`*.hx`, `*.json`, `*.entity` tracked; media ignored)
-└── target/                    Cargo build output (git-ignored)
+└── build/                     Cargo build output (git-ignored; target-dir → build/release/peptide)
 ```
 
 **Where the test inputs live.** The `.ssf` input files are *not* in this repo
@@ -267,7 +269,7 @@ character; after that a **Home** screen offers three buttons:
 - **FrayTools Hook** — publish to `.fra` / render an entity / extract box
   geometry, driving FrayTools over CDP.
 
-The webview glue lives in `src/gui.rs` (see [`docs/PEPTIDE_README.md`](docs/PEPTIDE_README.md)
+The webview glue lives in `src/gui.rs` (see [`docs/PEPTIDE_DESIGN.md`](docs/PEPTIDE_DESIGN.md)
 for the harness internals); there is no separate GUI crate anymore.
 
 **Double-clickable macOS app.** `./tools/make-app.sh` builds the single `peptide`
@@ -313,7 +315,7 @@ End to end, one `run_conversion` call does this (`crates/ssf2-converter/src/conv
     │                            enumerate `Main`'s instance `get*` methods.
     │                            (`--name` overrides; filename is the
     │                            last-resort fallback for misc.ssf-style SWFs.)
-    │                            See §5.1 + "Architectural history" below.
+    │                            See §5.1 (and `git log` for the detection history).
     │
     ├─ (once) extract_costumes_to_temp:
     │     misc.ssf → ssf::decompress → swf_parser::parse →
@@ -423,9 +425,11 @@ Sizes are approximate (Rust LOC). Modules are grouped by pipeline role.
 
 ### 5.1 Entry point & wiring
 
-#### `main.rs` (~440 LOC)
-CLI definition (`clap`), logging setup, and the top-level orchestration in
-`fn main` + `process_character`. Key functions:
+#### `convert.rs` (~715 LOC)
+The in-process conversion entry point — the library face of what used to be the
+standalone `ssf2_converter` binary's `main()`. `peptide convert` and the Peptide
+GUI both call `run_conversion(ConvertOptions)` here. Top-level orchestration lives
+in `run_conversion` + `process_character`. Key functions:
 - `extract_costumes_to_temp(misc_ssf)` — extracts every character's costume data
   from `misc.ssf` into a temp JSON cache; drops noise (`unknown` key, <10
   costumes). The temp file is deleted after the run.
@@ -435,8 +439,8 @@ CLI definition (`clap`), logging setup, and the top-level orchestration in
   `getGigaBowser` → `gigabowser`, `getWario_Man` → `wario_man`). The
   constructor is the SSF's canonical roster; sub-characters (Sheik in
   zelda.ssf, Giga Bowser in bowser.ssf, Wario Man in wario.ssf) drop out
-  naturally as additional array elements. See the "Architectural history"
-  section below for why this replaced the earlier `get*`-enumeration approach.
+  naturally as additional array elements. (This replaced an earlier
+  `get*`-enumeration approach; see `git log` for that migration.)
   - **Fallback** when the constructor walk returns empty:
     enumerate `Main`'s instance `get*` methods directly (path 2's original
     detection). Survives for one release as a defensive net for a
@@ -506,7 +510,7 @@ stats exposed as variables (so e.g. `aerialSpeedCap` can be defined as
 
 ### 5.3 ABC (ActionScript bytecode) layer
 
-#### `abc_parser.rs` (~2400 LOC — largest module)
+#### `abc_parser.rs` (~2650 LOC — largest module)
 A complete AVM2/ABC parser written from scratch. Parses the ABC constant pool
 (ints, uints, doubles, strings, namespaces, multinames), `Method`s, `Class`es,
 `Trait`s, `Script`s and `MethodBody`s into `AbcFile`. Beyond plain parsing it
@@ -572,7 +576,7 @@ contains a lot of *semantic* extraction tuned to SSF2's code shape:
 - `extract_xframe_name` / `is_root_xframe_method` — maps internal frame methods
   to animation labels via their `xframe`-field assignments in the bytecode.
 
-#### `decompiler.rs` (~1700 LOC)
+#### `decompiler.rs` (~2050 LOC)
 Turns ABC method bytecode into readable, Haxe-ish source. This is a real
 decompiler, not a disassembler:
 - `build_blocks` — splits bytecode into basic blocks with `Terminator`s.
@@ -650,7 +654,7 @@ Extracts **collision-box geometry** from SWF `DefineSprite` timelines.
 - `apply_fallbacks` — clones box data from a related animation when a target
   has none (e.g. `stunned ← hurt`, `swim ← fall`, `victory ← taunt`).
 
-#### `image_extractor.rs` (~1800 LOC)
+#### `image_extractor.rs` (~1970 LOC)
 Extracts the **visual sprites** and their **per-frame placement**.
 - `extract_images(...)` — decodes every `DefineBitsLossless` / `DefineBitsJpeg3`
   bitmap to a PNG (`decode_lossless` / `decode_jpeg3` / `write_png`); builds
@@ -810,7 +814,7 @@ The **output orchestrator**. `generate(...)` writes the entire character package
   `CharacterHitboxStats` / `ProjectileScript` / `ProjectileStats` /
   `ProjectileAnimationStats` / `ProjectileHitboxStats`).
 
-#### `entity_gen.rs` (~2000 LOC)
+#### `entity_gen.rs` (~2300 LOC)
 Builds the Fraymakers `.entity` JSON — the heart of a FrayTools character.
 - `generate_entity` / `generate_entity_with_palette` — the main
   character-entity builder (with/without `paletteMap`); written to
@@ -901,7 +905,7 @@ Roughly grouped by what they investigate:
 
 | Binary | Purpose |
 |---|---|
-| `audit_main_iinit` | Corpus audit: extract `register("id"/"guid"/"characters")` per SSF; produced the data behind the constructor-walk detection (see "Architectural history") |
+| `audit_main_iinit` | Corpus audit: extract `register("id"/"guid"/"characters")` per SSF; produced the data behind the constructor-walk detection |
 | `audit_main_gets` | Corpus audit: every `Main::get*` instance method, with bundle-shape classification |
 | `find_transformations` | Find SSFs with multiple bundles sharing a normalStats_id (Giga Bowser, Wario Man) |
 | `find_get_callers` | Who calls `Main::get<X>()` across the SWF (used to confirm only iinit calls them) |
@@ -1351,11 +1355,7 @@ What is solid:
 ### Code-quality backlog
 
 A standing audit (optimization / cleanup / latent-bug list with file-and-line
-refs). The big-ticket items it originally flagged are **done** — parse-the-SWF-once
-hot paths reduced (`5f34c666`), the four AVM2 stack simulators unified (`21562ab6`),
-`wrap_persistent_state` regex caching (`e7e62111`), `getproperty` mishandling fixed
-with the visitor unification, `infer_ext_var_types` float-as-Int fixed, dead costume
-/ stat extractors deleted (`7671defe`). What's still open, by leverage:
+refs). What's still open, by leverage:
 
 - **Parse the SWF once per character** (`main.rs`, `sprite_parser.rs`,
   `image_extractor.rs`). Several entry points still re-run `swf::decompress_swf` +
@@ -1463,55 +1463,3 @@ Roughly in the order a fresh agent should tackle them.
 - **The pipeline is fail-soft.** A stage that errors logs a warning and
   continues — always scan the run log, `conversion_stats.json`, and
   `conversion_log.json`. Don't assume a non-crashing run was a clean run.
-
----
-
-## 14. Architectural history
-
-Why the code looks the way it does today. These three migrations are **shipped**;
-this is the condensed record of the reasoning behind them (it used to live in
-separate `docs/` design plans).
-
-### Path 1 → Path 2 (stat extraction source)
-
-Each `.ssf` exposes character stats **twice**: inline on a per-character
-`<X>Ext` class (`getOwnStats` / `getAttackStats` / `getProjectileStats` —
-"path 1"), and bundled in a single `Main::get<X>()` method returning
-`{ cData, aData, pData, iData }` ("path 2"). The two were confirmed
-byte-for-byte equivalent across the complexity range, and path 2 is strictly
-more complete: every normal character has a `Main::get<X>` bundle, **and** Sheik
-exists only as `Main::getSheik` (she shares `ZeldaExt`, so path 1 missed her).
-The converter dropped path 1 entirely (commits `71d2d39e`–`de7b480e`); stats
-now come from the bundle (Stage A in `abc_parser`), behaviour code still from
-`<X>Ext` where one exists (Stage B). The `derived_from` marker + `CharacterStats.hx`
-TODO banner handle transformation forms (Giga Bowser, Wario Man) whose bundle's
-`normalStats_id` mismatches their derived id.
-
-### Constructor-walk detection
-
-Path 2 detected characters by enumerating every `Main::get*` instance method.
-A corpus audit (`src/bin/audit_main_iinit`) found a more direct signal: `Main`'s
-constructor literally registers the roster — `self.register("characters",
-[self.getX(), …])` — alongside `register("id", …)` / `register("guid", …)`.
-Across all 45 character SSFs the constructor's `characters[]` array matched the
-`get*` enumeration exactly (0 orphans, 0 id/filename disagreements), so detection
-switched to walking the constructor (commit `d8e328af`), which also yields the
-`ssf2_source` metadata (`package_id` / `package_guid` / `source_method`) now in
-`conversion_log.json`. The old `get*` enumeration survives as a one-release
-defensive fallback in `detect_char_names` (§11.13).
-
-### Multi-character projects + universal PascalCase rename
-
-Three SSFs ship character pairs (`zelda`→Zelda+Sheik, `bowser`→Bowser+Giga
-Bowser, `wario`→Wario+Wario Man). Modelled on the in-the-wild Annie project
-(one `.fraytools` project, a `manifest.json :: content[]` that's the sole source
-of truth for what ships, asset binding by id not filename), the converter now:
-(A) names all entity/script paths after the character id in PascalCase
-(`Character.entity` → `<Pascal>.entity`, `scripts/Character/` → `scripts/<Pascal>/`
-— commit `388e6faf`); (B) emits **one shared project per multi-character SSF**
-with a merged manifest, per-character entities/scripts, collision-suffixed shared
-files, and a `--per-character-projects` rollback flag (`4db74a89`); and (C) gives
-multi-char projects per-character `library/audio/<char_id>/` subdirs (`7729ecda`).
-One shared project per pair is a forward requirement for Fraymakers'
-not-yet-shipped transformation API, which needs both forms in one project to swap
-at runtime. Current output layout is in §9 and `README.md`.

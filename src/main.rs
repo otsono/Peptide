@@ -51,6 +51,7 @@ use asm::Asm;
 // Shared friendly-command vocabulary. The patcher uses MOVES to generate the
 // move-dispatch jump table; the bridge uses it to translate move names. One table.
 mod interpreter;
+mod vocab; // shared commands.hsx vocabulary + FM↔SSF2 reconciliation (interpreter level)
 mod manifest; // engine-symbol dependency table + doctor/preflight progress UI
 mod convert; // `peptide convert` — in-process SSF2 → Fraymakers conversion (folded-in converter)
 mod config; // persisted config (Fraymakers/FrayTools paths, current char) + env-override resolvers
@@ -59,6 +60,10 @@ mod bridge; // headless TCP runtime (serve / send_once)
 mod ui; // terminal console (ratatui) + cross-platform launcher
 mod gui; // graphical chat window (egui/eframe) — the default
 mod fraytools; // drive FrayTools over CDP: export .fra / render / harness (ported from Node)
+mod ssf2; // `peptide ssf2` — SSF2 engine model: physics ground-truth + scaling + quickboot
+mod ssf2_bridge; // host side of the SSF2 runtime bridge (session/tell/log/send over file-IPC)
+mod debug_target; // OOP seam: one Command vocabulary, per-engine DebugTarget backends
+mod ssf2_target; // SSF2 DebugTarget backend (AVM2 reflection eval over file-IPC)
 
 use hlbc::opcodes::Opcode;
 use hlbc::types::{Reg, RefString};
@@ -154,6 +159,11 @@ fn main() -> anyhow::Result<()> {
         Some("export") => {
             // Drive FrayTools' Publish to build the game-ready .fra (was: node export-in-fraytools.js).
             fraytools::export(&args)?;
+            return Ok(());
+        }
+        Some("ssf2") => {
+            // SSF2 engine integration: physics ground-truth, SSF2→FM scaling, quickboot.
+            ssf2::run_cli(&args[2..])?;
             return Ok(());
         }
         Some("render") => {
@@ -337,6 +347,26 @@ fn main() -> anyhow::Result<()> {
             for (i, st) in code.strings.iter().enumerate() {
                 if st.as_str().contains(&needle) {
                     eprintln!("  str {i:6}: {:?}", st.as_str());
+                }
+            }
+            return Ok(());
+        }
+        "newof" => {
+            // find functions that `New` a register of the given type index, and print the
+            // op right after (usually the constructor Call) — to locate a class constructor.
+            let ti: usize = args.get(4).and_then(|s| s.strip_prefix('t').unwrap_or(s).parse().ok()).unwrap();
+            eprintln!("functions with New of type t{ti}:");
+            for f in &code.functions {
+                for (i, op) in f.ops.iter().enumerate() {
+                    if let Opcode::New { dst } = op {
+                        if f.regs.get(dst.0 as usize).map(|t| t.0) == Some(ti) {
+                            let pn = f.parent.and_then(|rt| type_name_of(&code, rt)).unwrap_or("?");
+                            eprintln!("  fn {:6} {}::{}  @op{i}", f.findex.0, pn, s(&code, f.name));
+                            for (k, nop) in f.ops.iter().enumerate().skip(i + 1).take(4) {
+                                eprintln!("      op{k}: {nop:?}");
+                            }
+                        }
+                    }
                 }
             }
             return Ok(());
@@ -634,6 +664,13 @@ fn add_string_const(code: &mut Bytecode, val: &str) -> usize {
     g_idx
 }
 
+// Fraymakers multiplayer: extra players (parts[4..]) are spawnPlayer'd into the live
+// match one-per-frame from the update epilogue (currentMatch is null synchronously after
+// startMatch). The PlayerConfig is built by the engine factory ClassFactory.
+// defaultCreatePlayerConfig(playerVirtual@1957) — which runs the real netcode constructor
+// (a bare `New PlayerConfig` left __bytesCache/__history null and crashed).
+const FM_MULTIPLAYER: bool = true;
+
 fn add_int(code: &mut Bytecode, val: i32) -> usize {
     // Reuse if already present (ints pool is small-ish); else append.
     if let Some(i) = code.ints.iter().position(|&x| x == val) {
@@ -643,6 +680,7 @@ fn add_int(code: &mut Bytecode, val: i32) -> usize {
     code.ints.push(val);
     i
 }
+
 
 // ---- headless match settings (data-file driven) -----------------------------
 
@@ -700,30 +738,17 @@ fn read_asset(rel: &str) -> String {
     );
 }
 
-/// Resolve the headless match settings → `(lives, time)`, reading
-/// `match_settings.conf` from disk (see `asset_candidate_paths`). The file is
-/// required at runtime — nothing is baked in.
-fn load_match_settings() -> (i32, i32) {
-    parse_match_settings(&read_asset("match_settings.conf"))
-}
-
-/// Parse `key = value` lines (with `#` comments). Missing keys keep their
-/// built-in defaults (lives=999, time=0).
-fn parse_match_settings(text: &str) -> (i32, i32) {
-    let (mut lives, mut time) = (999i32, 0i32);
-    for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() { continue; }
-        if let Some((k, v)) = line.split_once('=') {
-            let v = v.trim();
-            match k.trim() {
-                "lives" => if let Ok(n) = v.parse::<i32>() { lives = n; },
-                "time"  => if let Ok(n) = v.parse::<i32>() { time = n; },
-                _ => {}
-            }
-        }
-    }
-    (lives, time)
+/// Resolve the Fraymakers-side match settings from the SHARED source of truth
+/// (`crate::interpreter::load_match_settings`, parsing the same
+/// `match_settings.conf` SSF2 reads), so both engines spawn the same match.
+/// All config *logic/values* live in interpreter.rs; the `s` bytecode merely
+/// bakes these constants into the engine's `matchSettings` virtual (t675).
+/// Returns the full struct — the builder maps each field onto t675's slots
+/// (lives/time/itemFrequency=Int, damageRatio/startDamage/sizeRatio=Float,
+/// teamAttack=Bool). Stamina has no FM equivalent and is a no-op here (mirror
+/// of assists being a no-op on SSF2).
+fn load_match_settings() -> crate::interpreter::MatchSettings {
+    crate::interpreter::load_match_settings()
 }
 
 fn require_type(code: &Bytecode, name: &str) -> anyhow::Result<usize> {
@@ -967,6 +992,8 @@ fn connect_edit(
     // _offlineMatchStart.
     let lives_str = add_string(code, "lives");
     let time_str = add_string(code, "time");
+    let teamattack_str = add_string(code, "teamAttack");
+    let itemfreq_str = add_string(code, "itemFrequency");
     let create_mode = require_fn(code, "createMode", Some("fraymakers.util.$FraymakersClassFactory"))?;
     let mode_start_match = require_fn(code, "startMatch", Some("fraymakers.core.FraymakersMode"))?;
     let mode_t = find_type(code, "fraymakers.core.FraymakersMode")
@@ -979,14 +1006,22 @@ fn connect_edit(
     let str_split = require_fn(code, "split", Some("String"))?;
     let space_g = add_string_const(code, " ");
     let buf_cap_idx = add_int(code, 512);
-    let (cfg_lives, cfg_time) = load_match_settings();
-    eprintln!("match-settings: lives={cfg_lives} time={cfg_time}");
-    let lives_idx = add_int(code, cfg_lives);
-    let time_idx = add_int(code, cfg_time);
+    let cfg = load_match_settings();
+    eprintln!(
+        "match-settings: lives={} time={} teamDamage={} itemFrequency={} (FM applies lives/time/items/teamAttack; damage/size floats are SSF2-only)",
+        cfg.lives, cfg.time, cfg.team_damage, cfg.item_frequency
+    );
+    // Int constant slots applied to the TrainingMode matchSettings virtual.
+    // team_damage is a Bool emitted inline at the build site.
+    let lives_idx = add_int(code, cfg.lives);
+    let time_idx = add_int(code, cfg.time);
+    let itemfreq_idx = add_int(code, cfg.item_frequency);
+    let cfg_team_damage = cfg.team_damage;
     let nl_idx = add_int(code, '\n' as i32);
     let two_idx = add_int(code, 2);
     let three_idx = add_int(code, 3);
     let four_idx = add_int(code, 4);
+    let five_idx = add_int(code, 5);
     eprintln!("line-cmd: alloc={bytes_alloc} set={bytes_set} getString={bytes_getstring} split={str_split}");
     // short-name resolution: a bare "sandbag" (no "::") is tried against each
     // namespace prefix; the first whose resource actually exists wins.
@@ -994,6 +1029,23 @@ fn connect_edit(
     let str_add = require_fn(code, "__add__", Some("$String"))?;
     let getresid_fn = require_fn(code, "getResourceIdentifierString", Some("pxf.io.$ResourceManager"))?;
     let getpxf_fn = require_fn(code, "getPXFResource", Some("pxf.io.$ResourceManager"))?;
+    // Match.spawnCharacter(resourceId, contentId) -> Character: adds a character to the
+    // LIVE match. Used post-startMatch to add players 2..N (TrainingMode's startMatch only
+    // takes one player at launch). Same two strings spawnPlayer derives from a PlayerConfig:
+    // resourceId = getResourceIdentifierString(charRef), contentId = charRef.field(0).
+    let spawn_char_fn = require_fn(code, "spawnCharacter", Some("pxf.core.Match"))?;
+    // Match.spawnPlayer(PlayerConfig) -> Character: full player setup (spawn point, controller,
+    // HUD, state init) — what makes a post-start-added char actually appear and play. The
+    // PlayerConfig is built from a dynobj {character, port} via PlayerConfig.importJSON (it
+    // DynGets character/port/lives/etc; unset fields default).
+    let spawn_player_fn = require_fn(code, "spawnPlayer", Some("pxf.core.Match"))?;
+    let pc_import_json = require_fn(code, "importJSON", Some("pxf.core.PlayerConfig"))?;
+    let player_config_t = require_type(code, "pxf.core.PlayerConfig")?;
+    // FraymakersClassFactory.createPlayerConfig(playerVirtual@1957) -> FraymakersPlayerConfig
+    // (type 2536). Match.spawnPlayer -> createCharacter casts the config to the Fraymakers
+    // SUBCLASS, so the BASE pxf.core.$ClassFactory.defaultCreatePlayerConfig (returns
+    // pxf.core.PlayerConfig) throws "Can't cast ... to FraymakersPlayerConfig" — must use this.
+    let create_player_config = require_fn(code, "createPlayerConfig", Some("fraymakers.util.$FraymakersClassFactory"))?;
     let pxfres_t = require_type(code, "pxf.structs.PXFResource")?;
     let nulli32_t2 = {
         let ci = function_index_by_findex(code, indexof_fn).unwrap();
@@ -1059,6 +1111,20 @@ fn connect_edit(
     let assist_str = add_string(code, "assist");
     let launched_g = add_string_const(code, "LAUNCHED\n");
     let launched2_g = add_string_const(code, "LAUNCHED "); // verbose ack prefix
+    let sp_ok_g = add_string_const(code, "SP:1\n");   // DIAG: spawnPlayer returned a Character
+    let sp_null_g = add_string_const(code, "SP:0\n");  // DIAG: spawnPlayer returned null
+    let mr_g = add_string_const(code, "MR\n");   // DIAG: past emit_resolve
+    let mi_g = add_string_const(code, "MI\n");   // DIAG: past importJSON
+    let queued_g = add_string_const(code, "QUEUED\n"); // DIAG: s handler stashed pending players
+    let pend_g = add_string_const(code, "PEND\n");     // DIAG: per-frame sees pending (non-idle)
+    // Enhanced Peptide diagnostic for the null-assist case. Fraymakers' HUD
+    // (DamageCounter.generateAssistSprite -> getContentIdentifierString) null-derefs `.namespace`
+    // when a player has no assist, so rather than let that SIGSEGV the engine, Peptide skips the
+    // player and emits this on the RESDIAG channel (collected into the crash/diag modal).
+    let null_assist_diag_g = add_string_const(code,
+        "RESDIAG: Peptide skipped an extra player — its assist did not resolve (null). Fraymakers' HUD \
+         (DamageCounter.generateAssistSprite) requires a non-null assist; pass a valid assist id as the \
+         3rd token of `s <char> <stage> <assist> …` so extra players inherit it.\n");
     let nl_g = add_string_const(code, "\n");
     let getcontentid_fn = require_fn(code, "getContentIdentifierString", Some("pxf.io.$ResourceManager"))?;
     // 'q' query command: report whether a match is live (answers "did it start?").
@@ -1322,6 +1388,16 @@ fn connect_edit(
     let g_pkgid = code.globals.len(); code.globals.push(hlbc::types::RefType(13)); // String: <name>.<name>
     let g_nskey = code.globals.len(); code.globals.push(hlbc::types::RefType(13)); // String: private::<name>.<name>
     let g_path = code.globals.len();  code.globals.push(hlbc::types::RefType(13)); // String: <install>/custom/<name>/<name>.fra
+    // deferred multiplayer: extra players (parts[4..]) are spawnPlayer'd into the live match
+    // one-per-frame from the per-frame update, because currentMatch is NULL synchronously after
+    // startMatch. g_pending_parts = the parts ArrayObj (null when nothing pending); g_pending_idx
+    // = next parts index (starts 4); g_pending_port = next player port (starts 1).
+    let g_pending_parts = code.globals.len(); code.globals.push(hlbc::types::RefType(38)); // ArrayObj
+    let g_pending_idx = code.globals.len();   code.globals.push(hlbc::types::RefType(3));  // Int
+    let g_pending_port = code.globals.len();  code.globals.push(hlbc::types::RefType(3));  // Int
+    // resolved assist ref (type 669) stashed from the `s` handler (where the resolve works) so
+    // extra players can reuse it — re-resolving an assist mid-match (per-frame) SIGSEGVs.
+    let g_pending_assist = code.globals.len(); code.globals.push(hlbc::types::RefType(669));
     eprintln!("sprite-fix: get_DataAsPxf={get_data_as_pxf} cacheEntity={cache_sprite_entity} smGet={sm_get} entityMap.f={pxf_entitymap_field} requiredMediaIds.f={reqmedia_field}");
     eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer
@@ -1458,6 +1534,8 @@ fn connect_edit(
     let eval_regs_base = add_regs(f, &[hs_parser_t as usize, hs_interp_t as usize, hs_expr_t as usize, 9]);
     let (e_parser, e_interp, e_expr, e_result) =
         (Reg(eval_regs_base), Reg(eval_regs_base + 1), Reg(eval_regs_base + 2), Reg(eval_regs_base + 3));
+    // PlayerConfig scratch for post-start spawnPlayer of extra players.
+    let cfg_pc_reg = Reg(add_regs(f, &[player_config_t]));
     let (r_done, r_true, r_sock, r_host, r_port, r_out, r_ret, r_ip, r_byte, r_blockf, r_sock2, r_handle, r_c, r_zero) =
         (rr(0), rr(1), rr(2), rr(3), rr(4), rr(5), rr(6), rr(7), rr(8), rr(9), rr(10), rr(11), rr(12), rr(13));
 
@@ -1583,6 +1661,98 @@ fn connect_edit(
         }
         for jf in found_pref { set(ops, jf, l_done); }
     };
+    // Factored self-bootstrap: load the custom char named in register `name` from
+    // <install>/custom/<name>/<name>.fra (sets g_name/g_resid/g_pkgid/g_nskey/g_path, idempotent
+    // — skips if already loaded, else builds a PXF Resource + fetchThreaded + finishLoading +
+    // caches its sprite entities). Same logic as player 1's inline self-bootstrap below, so extra
+    // players (parts[4..]) get their char loaded FRESH in this `s` dispatch — the per-frame spawn
+    // then finds it cached (a char loaded in a prior, since-cleaned-up match has a dead sprite
+    // cache and crashes when re-spawned).
+    #[allow(unused)]
+    let emit_load_char = |ops: &mut Vec<Opcode>, name: u32| {
+        let r = |i: u32| Reg(base + i);
+        ops.push(Opcode::SetGlobal { global: RefGlobal(g_name), src: r(name) });
+        ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(ns_prefixes[0]) });
+        ops.push(Opcode::Call2 { dst: r(56), fun: RefFun(str_add), arg0: r(53), arg1: r(name) });
+        ops.push(Opcode::SetGlobal { global: RefGlobal(g_resid), src: r(56) });
+        ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(dot_g) });
+        ops.push(Opcode::Call2 { dst: r(56), fun: RefFun(str_add), arg0: r(name), arg1: r(53) });
+        ops.push(Opcode::Call2 { dst: r(56), fun: RefFun(str_add), arg0: r(56), arg1: r(name) });
+        ops.push(Opcode::SetGlobal { global: RefGlobal(g_pkgid), src: r(56) });
+        ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(ns_prefixes[0]) });
+        ops.push(Opcode::Call2 { dst: r(56), fun: RefFun(str_add), arg0: r(53), arg1: r(56) });
+        ops.push(Opcode::SetGlobal { global: RefGlobal(g_nskey), src: r(56) });
+        ops.push(Opcode::GetGlobal { dst: r(56), global: RefGlobal(customdir_g) });
+        ops.push(Opcode::Call2 { dst: r(56), fun: RefFun(str_add), arg0: r(56), arg1: r(name) });
+        ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(slash_g) });
+        ops.push(Opcode::Call2 { dst: r(56), fun: RefFun(str_add), arg0: r(56), arg1: r(53) });
+        ops.push(Opcode::Call2 { dst: r(56), fun: RefFun(str_add), arg0: r(56), arg1: r(name) });
+        ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(frasuffix_g) });
+        ops.push(Opcode::Call2 { dst: r(56), fun: RefFun(str_add), arg0: r(56), arg1: r(53) });
+        ops.push(Opcode::SetGlobal { global: RefGlobal(g_path), src: r(56) });
+        ops.push(Opcode::GetGlobal { dst: r(58), global: RefGlobal(g_resid) });
+        ops.push(Opcode::Call1 { dst: r(60), fun: RefFun(getpxf_fn), arg0: r(58) });
+        let j_skip = ops.len();
+        ops.push(Opcode::JNotNull { reg: r(60), offset: 0 });
+        ops.push(Opcode::New { dst: r(71) });
+        ops.push(Opcode::GetGlobal { dst: r(55), global: RefGlobal(g_name) });
+        ops.push(Opcode::GetGlobal { dst: r(56), global: RefGlobal(g_path) });
+        ops.push(Opcode::Null { dst: r(73) });
+        ops.push(Opcode::Call4 { dst: r_ret, fun: RefFun(resource_ctor), arg0: r(71), arg1: r(55), arg2: r(56), arg3: r(73) });
+        ops.push(Opcode::Bool { dst: r(64), value: ValBool(true) });
+        ops.push(Opcode::SetField { obj: r(71), field: RefField(res_isabs_field), src: r(64) });
+        ops.push(Opcode::GetGlobal { dst: r(72), global: RefGlobal(rt_global) });
+        ops.push(Opcode::Field { dst: r(16), obj: r(72), field: RefField(pxf_field) });
+        ops.push(Opcode::SetField { obj: r(71), field: RefField(res_type_field), src: r(16) });
+        ops.push(Opcode::Type { dst: r(31), ty: RT(13) });
+        ops.push(Opcode::Int { dst: r(39), ptr: RefInt(one_idx) });
+        ops.push(Opcode::Call2 { dst: r(32), fun: RefFun(256), arg0: r(31), arg1: r(39) });
+        ops.push(Opcode::Int { dst: r(39), ptr: RefInt(zero_idx) });
+        ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(star_g) });
+        ops.push(Opcode::SetArray { array: r(32), index: r(39), src: r(53) });
+        ops.push(Opcode::Call1 { dst: r(33), fun: RefFun(257), arg0: r(32) });
+        ops.push(Opcode::GetGlobal { dst: r(65), global: RefGlobal(3508) });
+        ops.push(Opcode::SetField { obj: r(65), field: RefField(reqmedia_field), src: r(33) });
+        ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: r(71) });
+        ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: r(71) });
+        ops.push(Opcode::Call1 { dst: r(60), fun: RefFun(get_data_as_pxf), arg0: r(71) });
+        ops.push(Opcode::Field { dst: r(66), obj: r(60), field: RefField(pxf_entities_field) });
+        ops.push(Opcode::Field { dst: r(39), obj: r(66), field: RefField(0) });
+        ops.push(Opcode::Int { dst: r(16), ptr: RefInt(zero_idx) });
+        let loop_ = ops.len();
+        let j_ge = ops.len();
+        ops.push(Opcode::JSGte { a: r(16), b: r(39), offset: 0 });
+        ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(cache_sprite_entity_data), arg0: r(60), arg1: r(16) });
+        ops.push(Opcode::Incr { dst: r(16) });
+        let j_back = ops.len();
+        ops.push(Opcode::JAlways { offset: 0 });
+        let done = ops.len();
+        ops.push(Opcode::Field { dst: r(63), obj: r(60), field: RefField(pxf_entitymap_field) });
+        let j_emap = ops.len();
+        ops.push(Opcode::JNull { reg: r(63), offset: 0 });
+        ops.push(Opcode::GetGlobal { dst: r(55), global: RefGlobal(g_name) });
+        ops.push(Opcode::Call2 { dst: r(28), fun: RefFun(sm_get), arg0: r(63), arg1: r(55) });
+        let j_ent = ops.len();
+        ops.push(Opcode::JNull { reg: r(28), offset: 0 });
+        ops.push(Opcode::UnsafeCast { dst: r(74), src: r(28) });
+        ops.push(Opcode::Null { dst: r(75) });
+        ops.push(Opcode::GetGlobal { dst: r(55), global: RefGlobal(g_name) });
+        ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: r(55), arg1: r(74), arg2: r(75) });
+        ops.push(Opcode::GetGlobal { dst: r(55), global: RefGlobal(g_pkgid) });
+        ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: r(55), arg1: r(74), arg2: r(75) });
+        ops.push(Opcode::GetGlobal { dst: r(55), global: RefGlobal(g_nskey) });
+        ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(cache_sprite_entity), arg0: r(55), arg1: r(74), arg2: r(75) });
+        let addres = ops.len();
+        ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(add_resource), arg0: r(71) });
+        ops.push(Opcode::GetGlobal { dst: r(55), global: RefGlobal(g_nskey) });
+        ops.push(Opcode::SetGlobal { global: RefGlobal(g_loaded_spritekey), src: r(55) });
+        let skip = ops.len();
+        if let Opcode::JNotNull { offset, .. } = &mut ops[j_skip] { *offset = skip as i32 - j_skip as i32 - 1; }
+        if let Opcode::JSGte  { offset, .. } = &mut ops[j_ge]   { *offset = done as i32 - j_ge as i32 - 1; }
+        if let Opcode::JAlways{ offset, .. } = &mut ops[j_back] { *offset = loop_ as i32 - j_back as i32 - 1; }
+        if let Opcode::JNull  { offset, .. } = &mut ops[j_emap] { *offset = addres as i32 - j_emap as i32 - 1; }
+        if let Opcode::JNull  { offset, .. } = &mut ops[j_ent]  { *offset = addres as i32 - j_ent as i32 - 1; }
+    };
     // ---- once-guard + connect + auth handshake (runs a single time) ----
     let mut ops = vec![
         Opcode::GetGlobal { dst: r_done, global: RefGlobal(g_done) },   // 0
@@ -1647,6 +1817,134 @@ fn connect_edit(
     let idx_after_reveal = ops.len();
     if let Opcode::JTrue { offset, .. } = &mut ops[idx_jshown] { *offset = idx_after_reveal as i32 - idx_jshown as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_jnomatch] { *offset = idx_after_reveal as i32 - idx_jnomatch as i32 - 1; }
+    if FM_MULTIPLAYER {
+    // ---- deferred extra-player spawn: spawnPlayer ONE pending char per frame, once the match
+    // is live (currentMatch is null synchronously after startMatch). Serialized one-per-frame so
+    // each char's media loads alone (no threaded-load race). g_pending_parts = parts ArrayObj
+    // (null = idle); g_pending_idx walks parts[4..]; g_pending_port = next port.
+    ops.push(Opcode::GetGlobal { dst: rr(33), global: RefGlobal(g_pending_parts) });
+    let idx_pend_jidle = ops.len();
+    ops.push(Opcode::JNull { reg: rr(33), offset: 0 });                          // nothing pending -> end
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) }); // currentMatch
+    let idx_pend_jnomatch = ops.len();
+    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                          // match not live yet -> end
+    ops.push(Opcode::GetGlobal { dst: rr(16), global: RefGlobal(g_pending_idx) });
+    ops.push(Opcode::Field { dst: rr(39), obj: rr(33), field: RefField(0) });    // parts.length
+    let idx_pend_jclear = ops.len();
+    ops.push(Opcode::JSGte { a: rr(16), b: rr(39), offset: 0 });                 // idx >= length -> clear
+    ops.push(Opcode::Field { dst: rr(67), obj: rr(33), field: RefField(1) });    // parts.array (native)
+    ops.push(Opcode::GetArray { dst: rr(55), array: rr(67), index: rr(16) });    // name = parts[idx]
+    // RM.requiredMediaIds = ["*"] so emit_resolve's load-on-demand pulls the char's FULL media
+    // (sprite entities). A partial load crashes cacheSpriteEntityData/processSpriteSheets when
+    // the char is then realized. Same thing the self-bootstrap does for player 1.
+    ops.push(Opcode::Type { dst: rr(31), ty: RT(13) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(star_g) });
+    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(53) });
+    ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) });
+    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(3508) });
+    ops.push(Opcode::SetField { obj: rr(65), field: RefField(reqmedia_field), src: rr(33) });
+    emit_resolve(&mut ops, 55, 26, char_cmap_field);                            // char ref (load-on-demand)
+    // ONE-SHOT MR: past emit_resolve
+    ops.push(Opcode::GetGlobal { dst: r_sock2, global: RefGlobal(g_sock) });
+    let idx_mr_js = ops.len();
+    ops.push(Opcode::JNull { reg: r_sock2, offset: 0 });
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(mr_g) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_mr_d = ops.len();
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_mr_js] { *offset = idx_mr_d as i32 - idx_mr_js as i32 - 1; }
+    // assist ref = the one the `s` handler already resolved for player 1 (stashed in
+    // g_pending_assist) — the HUD DamageCounter.generateAssistSprite reads it, so a null assist
+    // null-derefs `.namespace`; re-resolving it here (per-frame) SIGSEGVs, so reuse the stash.
+    ops.push(Opcode::GetGlobal { dst: rr(42), global: RefGlobal(g_pending_assist) });
+    // NULL-ASSIST GUARD: a null assist would crash Fraymakers' HUD (DamageCounter) in spawnPlayer.
+    // Instead, emit the enhanced Peptide RESDIAG message and skip this player (idx still advances
+    // at `idx_pend_advance` below, so we don't retry it forever).
+    let idx_na_jok = ops.len();
+    ops.push(Opcode::JNotNull { reg: rr(42), offset: 0 });               // assist present -> ok
+    ops.push(Opcode::GetGlobal { dst: r_sock2, global: RefGlobal(g_sock) });
+    let idx_na_jsock = ops.len();
+    ops.push(Opcode::JNull { reg: r_sock2, offset: 0 });                 // no socket -> skip diag write
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(null_assist_diag_g) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_na_jsock_d = ops.len();
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_na_jsock] { *offset = idx_na_jsock_d as i32 - idx_na_jsock as i32 - 1; }
+    let idx_na_jadv = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                             // null assist -> skip spawn, advance
+    let idx_na_ok = ops.len();
+    if let Opcode::JNotNull { offset, .. } = &mut ops[idx_na_jok] { *offset = idx_na_ok as i32 - idx_na_jok as i32 - 1; }
+    // build the player virtual { character: rr26, assist: rr42, port: g_pending_port } (type 1957)
+    // and hand it to the engine factory -> FraymakersPlayerConfig -> spawnPlayer.
+    ops.push(Opcode::New { dst: rr(27) });
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(character_str), src: rr(26) });
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(assist_str), src: rr(42) });
+    ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_pending_port) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(port_str), src: rr(28) });
+    ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });                    // -> player virtual@1957
+    ops.push(Opcode::Call1 { dst: rr(30), fun: RefFun(create_player_config), arg0: rr(29) }); // FraymakersPlayerConfig@2536
+    // ONE-SHOT MI: past PlayerConfig factory
+    ops.push(Opcode::GetGlobal { dst: r_sock2, global: RefGlobal(g_sock) });
+    let idx_mi_js = ops.len();
+    ops.push(Opcode::JNull { reg: r_sock2, offset: 0 });
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(mi_g) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_mi_d = ops.len();
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_mi_js] { *offset = idx_mi_d as i32 - idx_mi_js as i32 - 1; }
+    ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(spawn_player_fn), arg0: rr(44), arg1: rr(30) });
+    // ONE-SHOT diag (fires once per extra player, NOT every frame — idx advances right below
+    // so it never repeats): SP:1 = spawnPlayer returned a Character, SP:0 = null.
+    ops.push(Opcode::GetGlobal { dst: r_sock2, global: RefGlobal(g_sock) });
+    let idx_sp1_jsock = ops.len();
+    ops.push(Opcode::JNull { reg: r_sock2, offset: 0 });
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    let idx_sp1_jnull = ops.len();
+    ops.push(Opcode::JNull { reg: r_ret, offset: 0 });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(sp_ok_g) });
+    let idx_sp1_jd = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_sp1_n = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(sp_null_g) });
+    let idx_sp1_w = ops.len();
+    if let Opcode::JNull   { offset, .. } = &mut ops[idx_sp1_jnull] { *offset = idx_sp1_n as i32 - idx_sp1_jnull as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_sp1_jd]    { *offset = idx_sp1_w as i32 - idx_sp1_jd as i32 - 1; }
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_sp1_done = ops.len();
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_sp1_jsock] { *offset = idx_sp1_done as i32 - idx_sp1_jsock as i32 - 1; }
+    // advance idx + port (read fresh from globals — emit_resolve clobbered rr16/rr39)
+    let idx_pend_advance = ops.len();
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_na_jadv] { *offset = idx_pend_advance as i32 - idx_na_jadv as i32 - 1; }
+    ops.push(Opcode::GetGlobal { dst: rr(16), global: RefGlobal(g_pending_idx) });
+    ops.push(Opcode::Incr { dst: rr(16) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_idx), src: rr(16) });
+    ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_pending_port) });
+    ops.push(Opcode::Incr { dst: rr(39) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_port), src: rr(39) });
+    let idx_pend_joneframe = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                                     // one spawn per frame -> end
+    let idx_pend_clear = ops.len();
+    ops.push(Opcode::Null { dst: rr(33) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_parts), src: rr(33) }); // done -> idle
+    let idx_pend_end = ops.len();
+    if let Opcode::JNull   { offset, .. } = &mut ops[idx_pend_jidle]    { *offset = idx_pend_end as i32 - idx_pend_jidle as i32 - 1; }
+    if let Opcode::JNull   { offset, .. } = &mut ops[idx_pend_jnomatch] { *offset = idx_pend_end as i32 - idx_pend_jnomatch as i32 - 1; }
+    if let Opcode::JSGte   { offset, .. } = &mut ops[idx_pend_jclear]   { *offset = idx_pend_clear as i32 - idx_pend_jclear as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_pend_joneframe]{ *offset = idx_pend_end as i32 - idx_pend_joneframe as i32 - 1; }
+    }
     let _ = (menuc_field, dispobj_field, visible_field);
     ops.push(Opcode::GetGlobal { dst: r_sock2, global: RefGlobal(g_sock) });
     let idx_jnull = ops.len();
@@ -1756,6 +2054,10 @@ fn connect_edit(
     let idx_name_done = ops.len();
     if let Opcode::JSLt { offset, .. } = &mut ops[idx_name_jdef] { *offset = idx_name_def as i32 - idx_name_jdef as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_name_jdone] { *offset = idx_name_done as i32 - idx_name_jdone as i32 - 1; }
+    // Player 1's char name = rr55 (parts[1] or default). Extra players ride in trailing
+    // space-separated tokens parts[4..] (the host fills stage+assist at parts[2..3]); the
+    // characters-array build below reads them with the same parts.array GetArrays used for
+    // stage/assist — no String.split (that crashed). g_name drives player 1's self-bootstrap.
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_name), src: rr(55) });
     // resid = "private::" + name
     ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(ns_prefixes[0]) });
@@ -1922,14 +2224,23 @@ fn connect_edit(
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(port_str), src: rr(28) });
-    ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });          // -> player virtual@1957
-    // characters = [playerVirtual]
+    ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });          // -> player virtual@1957 (player 1)
+    // characters = [player1, players 2..N] sized to names.length. Player 1 (rr29,
+    // fully self-bootstrapped above) lands at index 0; each extra name is resolved
+    // by id via emit_resolve (load-on-demand for built-in/pool chars) and appended
+    // with a null assist and port=index. A single-player `s` has names.length==1, so
+    // the loop body never runs and this is byte-identical to the old size-1 build.
+    // rr20=loop index, rr19=N (both Int; untouched by emit_resolve, which scratches
+    // rr16/rr39). rr67=names.array (native). rr32=chars native array (survives resolve).
+    // characters = [player1]. Only player 1 launches with startMatch (a 2+ element array
+    // races the engine's threaded media loader and SIGSEGVs). Extra players (parts[4..]) are
+    // added to the LIVE match AFTER startMatch — see the post-start spawnPlayer loop below.
     ops.push(Opcode::Type { dst: rr(31), ty: RT(1957) });
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
-    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) }); // alloc_array
+    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) });
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
     ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(29) });
-    ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) });   // wrap -> ArrayObj
+    ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) }); // wrap -> ArrayObj
     // matchSettings = { stage: rr25, matchRules: defaultMatchRules } (virtual@675)
     ops.push(Opcode::New { dst: rr(34) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(stage_str), src: rr(25) });
@@ -1944,6 +2255,23 @@ fn connect_edit(
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(time_idx) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(time_str), src: rr(28) });
+    // remaining config — same const->ToDyn->DynSet path; values baked from
+    // match_settings.conf (interpreter.rs). itemFrequency (Int) + teamAttack (Bool)
+    // are the fields the engine's TrainingMode start-flow accepts on a programmatic
+    // match. The float fields (damageRatio/startDamage/sizeRatio) are intentionally
+    // NOT applied on Fraymakers: TrainingMode's startMatch silently rejects them
+    // (they belong to the versus-rules path, which our minimal self-bootstrap launch
+    // doesn't drive), so setting them aborts the whole launch. They remain active on
+    // SSF2 (versus mode). This is the same "apply the subset each engine supports"
+    // OOP outcome as assists being a no-op on SSF2 and stamina a no-op on Fraymakers.
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(itemfreq_idx) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
+    ops.push(Opcode::DynSet { obj: rr(34), field: RS(itemfreq_str), src: rr(28) });
+    // teamAttack: rr(64) is the function's Bool scratch (type 7), free past the
+    // self-bootstrap load above.
+    ops.push(Opcode::Bool { dst: rr(64), value: ValBool(cfg_team_damage) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(64) });
+    ops.push(Opcode::DynSet { obj: rr(34), field: RS(teamattack_str), src: rr(28) });
     ops.push(Opcode::ToVirtual { dst: rr(35), src: rr(34) });          // -> matchSettings virtual@675
     // config = { characters, matchSettings, pauseMenu: null } (virtual@4482)
     ops.push(Opcode::New { dst: rr(27) });                             // dynobj (4366)
@@ -1951,9 +2279,23 @@ fn connect_edit(
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(matchsettings_str), src: rr(35) });
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(pausemenu_str), src: rr(38) }); // pauseMenu = null
     ops.push(Opcode::ToVirtual { dst: rr(50), src: rr(27) });          // -> config virtual@4482
-    // mode.startMatch(config)  — runs the engine's offline-match flow (gates, menu suspend/restore)
+    // mode.startMatch(config)  — runs the engine's offline-match flow (gates, menu suspend/restore).
     ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(mode_start_match), arg0: rr(48), arg1: rr(50) });
-    let _ = (one_idx, launched_g);
+    if FM_MULTIPLAYER {
+    // ---- extra players: queue them for deferred spawn (currentMatch is NULL synchronously
+    // after startMatch). The per-frame update spawnPlayer's one each frame once the match is
+    // live — see the pending-spawn block in the update epilogue. Stash parts + start indices.
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_parts), src: rr(52) }); // parts ArrayObj
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(four_idx) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_idx), src: rr(39) });   // first extra = parts[4]
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_port), src: rr(39) });  // first extra port = 1
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_assist), src: rr(42) }); // resolved assist ref (rr42) for extra players
+    }
+    let _ = (one_idx, launched_g, getresid_fn, spawn_char_fn, five_idx, pxf_entities_field,
+             cache_sprite_entity_data, queued_g, pend_g, mr_g, mi_g, sp_ok_g, sp_null_g,
+             g_pending_parts, g_pending_idx, g_pending_port, spawn_player_fn, pc_import_json,
+             cfg_pc_reg, star_g, reqmedia_field);
     // ack: "LAUNCHED <charId> <stageId> <assistId>\n" — echoes resolved content ids
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(launched2_g) });
     ops.push(Opcode::Call1 { dst: rr(53), fun: RefFun(getcontentid_fn), arg0: rr(26) }); // char id

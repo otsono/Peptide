@@ -6,6 +6,7 @@
 
 use std::io::{BufReader, Read, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -18,6 +19,7 @@ use tao::window::WindowBuilder;
 use wry::http::Request;
 use wry::{Rect, WebViewBuilder, WebViewBuilderExtUnix};
 
+use crate::debug_target::DebugTarget; // feature surface: match_status / char_icon
 use crate::interpreter::{split_commands, translate, Translated};
 
 /// Events pushed into the loop from worker threads, forwarded to the page.
@@ -34,6 +36,15 @@ type SharedConn = Arc<Mutex<(u16, String)>>; // the live session's port + auth t
 const RECONNECT: &str = "@@reconnect";     // TCP back into the current session
 const BOOT_QUICK: &str = "@@boot:quick";   // launch a fresh engine, auto-spawn for testing
 const BOOT_REGULAR: &str = "@@boot:regular"; // launch a fresh engine, no auto-spawn
+const BOOT_SSF2: &str = "@@boot:ssf2";     // launch the patched SSF2 app + drive the same console
+const DISCONNECT: &str = "@@disconnect";   // tear down the current engine (status-button menu)
+
+/// Which engine the live console is attached to. The whole console — commands,
+/// the matchStatus poll, replies — routes by this so "Launch Peptide" drives
+/// Fraymakers OR SSF2 through the identical UI. 0 = Fraymakers, 1 = SSF2.
+static GUI_ENGINE: AtomicU8 = AtomicU8::new(0);
+
+fn engine_is_ssf2() -> bool { GUI_ENGINE.load(Ordering::Relaxed) == 1 }
 // Screen-router verbs (Home / Setup / Converter / FrayTools Hook). Heavy work
 // (conversion, FrayTools CDP, file dialogs) runs on a worker thread and posts
 // results back via Ev::Js — never block the tao event loop.
@@ -70,14 +81,47 @@ pub fn launch() -> std::io::Result<()> {
     // engine needs no per-frame bytecode (commands.hsx::matchStatus does the gathering).
     {
         let poll_writer = writer.clone();
-        thread::spawn(move || loop {
+        let poll_cleanup = cleanup.clone();
+        let poll_proxy = event_loop.create_proxy();
+        thread::spawn(move || {
+            let mut ssf2_misses = 0u32; // consecutive PING failures → SSF2 has gone away
+            loop {
             thread::sleep(Duration::from_millis(200));
-            if let Ok(mut g) = poll_writer.lock() {
+            if engine_is_ssf2() {
+                // SSF2: first a cheap PING — this is BOTH the liveness check (so we
+                // notice when SSF2 is closed/crashes; there's no socket EOF like
+                // Fraymakers) and the gate for the heavier matchStatus read.
+                let alive = crate::ssf2_bridge::request("PING", Duration::from_millis(700))
+                    .map(|r| r == "pong").unwrap_or(false);
+                if !alive {
+                    ssf2_misses += 1;
+                    if ssf2_misses >= 5 {
+                        // SSF2 stopped answering — treat it as gone: tear down + tell
+                        // the page (no auto-reconnect; SSF2 has no reconnect path).
+                        ssf2_misses = 0;
+                        GUI_ENGINE.store(0, Ordering::Relaxed);
+                        if let Some(mut c) = poll_cleanup.lock().ok().and_then(|mut g| g.take()) { c.dispose(); }
+                        let _ = poll_proxy.send_event(Ev::Js(
+                            "window.onSsf2Closed && onSsf2Closed()".into()));
+                    }
+                    continue;
+                }
+                ssf2_misses = 0;
+                // pull the matchStatus feed through the SAME trait surface
+                // (DebugTarget::match_status) and route it to the widget. Whenever a
+                // match exists — however it was started — the widget populates.
+                let mut target = crate::ssf2_target::Ssf2Target::new();
+                if let Ok(Some(line)) = target.match_status() {
+                    route_ssf2_line(&line, &poll_proxy);
+                }
+            } else if let Ok(mut g) = poll_writer.lock() {
+                // Fraymakers: poll over the live socket (engine runs commands.hsx::matchStatus).
                 if let Some(s) = g.as_mut() {
                     if s.write_all(b"e matchStatus()\n").and_then(|_| s.flush()).is_err() {
                         // socket dropped — leave it; boot_new/reconnect installs a fresh one
                     }
                 }
+            }
             }
         });
     }
@@ -116,11 +160,26 @@ pub fn launch() -> std::io::Result<()> {
             } else if b.starts_with(BOOT_REGULAR) {
                 let chosen = boot_char(b, BOOT_REGULAR).unwrap_or(ch);
                 thread::spawn(move || boot_new(w, cl, cn, px, chosen, false));
+            } else if b.starts_with(BOOT_SSF2) {
+                // @@boot:ssf2[:<char>] — patch + launch SSF2 and attach the console to it.
+                // With a character: fast-boot (auto-spawn it). Without: a normal boot to
+                // the SSF2 menu (no spawn) — the user drives it from the console.
+                let chosen = boot_char(b, BOOT_SSF2);
+                thread::spawn(move || boot_ssf2(cl, px, chosen));
+            } else if b == DISCONNECT {
+                thread::spawn(move || disconnect_engine(w, cl, px));
             } else if let Some(slot) = b.strip_prefix("@@icon:") {
-                // Request a character's stock icon: run iconFeed(<slot>) on the engine; the
-                // reply (ICON:<slot>:<hex>) comes back through the charIcon channel -> onIcon.
+                // A character's stock icon for match slot <slot>, via the SAME feature
+                // surface (DebugTarget::char_icon). Fraymakers rips the icon over its
+                // socket; SSF2 reports no icon (capability gap) so the widget keeps its
+                // glyph. Only the transport differs — the feature is one trait method.
                 if let Ok(n) = slot.trim().parse::<u32>() {
-                    handle_command(&format!("e iconFeed({n})"), &ipc_writer, &ipc_proxy);
+                    if engine_is_ssf2() {
+                        let mut target = crate::ssf2_target::Ssf2Target::new();
+                        if let Ok(Some(line)) = target.char_icon(n) { route_ssf2_line(&line, &ipc_proxy); }
+                    } else {
+                        handle_command(&format!("e iconFeed({n})"), &ipc_writer, &ipc_proxy);
+                    }
                 }
             } else if b.starts_with("@@") {
                 handle_screen_verb(b, &ipc_proxy);
@@ -216,11 +275,24 @@ fn config_json() -> String {
     } else {
         crate::platform::detected_fraytools_path().map(|p| p.display().to_string()).unwrap_or_default()
     };
+    // SSF2 — the second engine "Launch Peptide" can drive. Pre-fill with the
+    // configured path, else the autodetected install; flag whether one was found
+    // so the wizard can show a "detected" badge like FrayTools/Fraymakers.
+    let ssf2_detected = crate::platform::detected_ssf2_path().is_some();
+    let ssf2_val = if !cfg.ssf2_app.is_empty() {
+        cfg.ssf2_app.clone()
+    } else {
+        crate::platform::detected_ssf2_path().map(|p| p.display().to_string()).unwrap_or_default()
+    };
+    // SSF2 is usable for Launch if the resolved path exists on disk.
+    let ssf2_ready = cfg.ssf2_app().map(|p| p.exists()).unwrap_or(false);
     format!(
         "{{\"configured\":{},\"setupComplete\":{},\"currentChar\":{},\"stage\":{},\"assist\":{},\
           \"fraymakersRoot\":{},\
           \"fraymakersDetected\":{},\"fraytoolsPath\":{},\"fraytoolsDetected\":{},\
-          \"fraytoolsExe\":{},\"fraytoolsReady\":{},\"outputDir\":{},\"miscSsf\":{}}}",
+          \"fraytoolsExe\":{},\"fraytoolsReady\":{},\
+          \"ssf2App\":{},\"ssf2Detected\":{},\"ssf2Ready\":{},\
+          \"outputDir\":{},\"miscSsf\":{}}}",
         cfg.configured,
         cfg.setup_complete(),
         s(&cfg.char_name()),
@@ -232,6 +304,9 @@ fn config_json() -> String {
         fraytools_detected,
         s(&frayexe),
         fraytools_ready,
+        s(&ssf2_val),
+        ssf2_detected,
+        ssf2_ready,
         s(&cfg.output_dir().display().to_string()),
         s(&cfg.misc_ssf),
     )
@@ -356,6 +431,7 @@ fn save_setup(json: &str, proxy: &EventLoopProxy<Ev>) {
     let mut cfg = crate::config::Config::load();
     if let Some(v) = json_str_field(json, "fraymakersRoot") { cfg.fraymakers_root = v; }
     if let Some(v) = json_str_field(json, "fraytoolsPath")  { cfg.fraytools_path = v; }
+    if let Some(v) = json_str_field(json, "ssf2App")        { cfg.ssf2_app = v; }
     if let Some(v) = json_str_field(json, "outputDir")      { cfg.output_dir = v; }
     if let Some(v) = json_str_field(json, "miscSsf")        { cfg.misc_ssf = v; }
     cfg.configured = true;
@@ -603,6 +679,9 @@ fn reconnect_existing(writer: SharedWriter, conn: SharedConn, proxy: EventLoopPr
 /// returns to the "Fraymakers doesn't seem to be open" prompt.
 fn boot_new(writer: SharedWriter, cleanup: SharedCleanup, conn: SharedConn,
             proxy: EventLoopProxy<Ev>, char_name: String, quick: bool) {
+    // switching (back) to Fraymakers: flip the console engine (the SSF2 poll branch
+    // is gated on GUI_ENGINE, so this also stops it).
+    GUI_ENGINE.store(0, Ordering::Relaxed);
     // tear down whatever was there (dead engine + temp files), then patch + launch anew.
     if let Some(mut c) = cleanup.lock().ok().and_then(|mut g| g.take()) {
         c.dispose();
@@ -661,6 +740,120 @@ fn boot_new(writer: SharedWriter, cleanup: SharedCleanup, conn: SharedConn,
             }
         }
     }
+}
+
+/// Boot the patched SSF2 app and attach the live console to it — the SSF2 analogue
+/// of `boot_new`. Patches + launches SSF2, waits for the reflection handler, flips
+/// the console to SSF2 mode, then auto-spawns the chosen character so the user lands
+/// in a live match exactly like the Fraymakers quick-boot. Commands, replies and the
+/// matchStatus widget then route through the SSF2 backend (same Command vocabulary).
+fn boot_ssf2(cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>, char_name: Option<String>) {
+    // tear down whatever engine was running (Fraymakers or a prior SSF2).
+    if let Some(mut c) = cleanup.lock().ok().and_then(|mut g| g.take()) { c.dispose(); }
+
+    let pp = proxy.clone();
+    let progress = move |done: usize, total: usize, label: &str| {
+        let _ = pp.send_event(Ev::Js(format!(
+            "window.onPatchProgress && onPatchProgress({}, {}, {})", done, total, js_str(label))));
+    };
+    progress(1, 4, "patching SSF2…");
+
+    // Bind the loopback server BEFORE launch (the engine dials in from its ctor),
+    // patch the app to connect to that port, then launch + accept.
+    let port = crate::ssf2_bridge::pick_port();
+    crate::ssf2_bridge::disconnect();
+    let listener = match crate::ssf2_bridge::bind(port) {
+        Ok(l) => l,
+        Err(e) => { let _ = proxy.send_event(Ev::Js(format!(
+            "window.onSsf2BootFailed && onSsf2BootFailed({})", js_str(&format!("Couldn’t open the SSF2 bridge port: {e}"))))); return; }
+    };
+    let app = match crate::ssf2::install_patched(port) {
+        Ok(a) => a,
+        Err(e) => { let _ = proxy.send_event(Ev::Js(format!(
+            "window.onSsf2BootFailed && onSsf2BootFailed({})", js_str(&format!("Couldn’t patch SSF2: {e}"))))); return; }
+    };
+    progress(2, 4, "launching SSF2…");
+    let exe = app.join("Contents/MacOS/SSF2");
+    let child = match std::process::Command::new(&exe)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn() {
+        Ok(c) => c,
+        Err(e) => { let _ = proxy.send_event(Ev::Js(format!(
+            "window.onSsf2BootFailed && onSsf2BootFailed({})", js_str(&format!("Couldn’t launch SSF2: {e}"))))); return; }
+    };
+    // accept the engine's dial-in over TCP (bounded so a no-show can't hang the boot).
+    if let Err(e) = crate::ssf2_bridge::accept_engine(&listener, 30) {
+        let _ = proxy.send_event(Ev::Js(format!(
+            "window.onSsf2BootFailed && onSsf2BootFailed({})", js_str(&format!("SSF2 didn’t connect: {e}"))))); return;
+    }
+    // register the process for window-close teardown (reuses the Cleanup path).
+    if let Ok(mut g) = cleanup.lock() { *g = Some(crate::ui::Cleanup::for_engine(child)); }
+
+    // Wait until SSF2 is STABLY responsive (the analogue of Fraymakers' READY) —
+    // NOT just the first PING, which the per-frame hook answers mid-boot while the
+    // engine is still loading and would crash on an early spawn. wait_ready gates on
+    // a streak of consecutive PINGs, so commands fire only after loading completes.
+    progress(3, 4, "waiting for SSF2 to finish loading…");
+    if !crate::ssf2_bridge::wait_ready(10, Duration::from_secs(40)) {
+        let _ = proxy.send_event(Ev::Js(
+            "window.onSsf2BootFailed && onSsf2BootFailed(\"SSF2 launched but never settled. Try again.\")".into()));
+        return;
+    }
+    progress(4, 4, "ready");
+
+    let label = char_name.clone().unwrap_or_default();
+
+    // Auto-spawn (if a character was chosen) happens BEFORE flipping GUI_ENGINE to
+    // SSF2 — otherwise the matchStatus poll (gated on GUI_ENGINE) would run during
+    // the spawn's resource load and its per-frame file IO would contend with SSF2's
+    // async loader, making the spawn flaky. So: spawn with the bridge to ourselves,
+    // THEN turn the console (and its poll) on.
+    if let Some(ch) = char_name.filter(|c| !c.is_empty()) {
+        let _ = proxy.send_event(Ev::Line(format!("SYS:Engine ready — spawning {ch}…")));
+        let mut target = crate::ssf2_target::Ssf2Target::new();
+        match crate::debug_target::run_command(&mut target, &format!("spawn {ch}")) {
+            Ok(Some(reply)) => { let _ = proxy.send_event(Ev::Line(reply)); }
+            Ok(None) => {}
+            Err(e) => { let _ = proxy.send_event(Ev::Line(format!("SYS:ERR:{e}"))); }
+        }
+    } else {
+        let _ = proxy.send_event(Ev::Line("SYS:SSF2 ready — type `spawn <char>` to start a match.".into()));
+    }
+
+    // Now flip the console to SSF2 and drop the page into it. autospawn=false: the
+    // spawn already happened here, so the page must not fire a READY auto-spawn.
+    GUI_ENGINE.store(1, Ordering::Relaxed);
+    let _ = proxy.send_event(Ev::Js(format!(
+        "window.onReconnected && onReconnected(0, {}, false, \"SSF2\")", js_str(&label))));
+}
+
+/// Tear down the live engine on request (the status-button "Disconnect"). Fraymakers
+/// gets a clean `x` exit (closes the socket) before the process is killed; SSF2's
+/// process is killed via its Cleanup. Resets the console to Fraymakers/disconnected
+/// and notifies the page WITHOUT triggering the auto-reconnect flow.
+fn disconnect_engine(writer: SharedWriter, cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>) {
+    if engine_is_ssf2() {
+        crate::ssf2_bridge::disconnect(); // drop the loopback socket
+    } else if let Ok(mut g) = writer.lock() {
+        if let Some(s) = g.as_mut() { let _ = s.write_all(b"x\n"); let _ = s.flush(); }
+        *g = None;
+    }
+    if let Some(mut c) = cleanup.lock().ok().and_then(|mut g| g.take()) { c.dispose(); }
+    GUI_ENGINE.store(0, Ordering::Relaxed);
+    let _ = proxy.send_event(Ev::Js("window.onManualDisconnect && onManualDisconnect()".into()));
+}
+
+/// Route one SSF2 reply line to the page the same way `spawn_reader` routes the
+/// Fraymakers socket: matchStatus → the status widget, everything else → the chat.
+/// (SSF2 has no charIcon feed.)
+fn route_ssf2_line(line: &str, proxy: &EventLoopProxy<Ev>) {
+    if let Some((ch, payload)) = crate::interpreter::channel_payload(line) {
+        if ch == "matchStatus" {
+            let _ = proxy.send_event(Ev::Js(format!(
+                "window.onMatchStatus && onMatchStatus({})", js_str(payload))));
+        }
+        return; // other channels (charIcon) don't exist on SSF2
+    }
+    let _ = proxy.send_event(Ev::Line(line.to_string()));
 }
 
 /// Read the engine crash log (`<fraymakers>/error.log`) if the engine left one. The boot
@@ -756,6 +949,23 @@ fn spawn_reader(mut reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>) {
 /// wire frames with distinct replies. A single (multi-line) command is just the one-block
 /// case. See `interpreter::split_commands`.
 fn handle_command(text: &str, writer: &SharedWriter, proxy: &EventLoopProxy<Ev>) {
+    // SSF2 mode: the SAME Command vocabulary, executed over the reflection bridge.
+    // File-IPC blocks (poll loop + per-request waits), so run it off-thread and post
+    // replies back through the shared channel router — identical UX to Fraymakers.
+    if engine_is_ssf2() {
+        let (text, px) = (text.to_string(), proxy.clone());
+        thread::spawn(move || {
+            for cmd in split_commands(&text) {
+                let mut target = crate::ssf2_target::Ssf2Target::new();
+                match crate::debug_target::run_command(&mut target, &cmd) {
+                    Ok(Some(reply)) => route_ssf2_line(&reply, &px),
+                    Ok(None) => {}
+                    Err(e) => { let _ = px.send_event(Ev::Line(format!("SYS:ERR:{e}"))); }
+                }
+            }
+        });
+        return;
+    }
     let send = |w: &str| {
         if w.is_empty() { return; }
         if let Ok(mut g) = writer.lock() {

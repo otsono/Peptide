@@ -581,8 +581,56 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
     ].into_iter().collect();
     let short_hop_d  = crate::mappings::evaluate_stat_derivation("shortHopSpeed", &vars).unwrap_or(0.0);
     let aerial_cap_d = crate::mappings::evaluate_stat_derivation("aerialSpeedCap", &vars).unwrap_or(0.0);
-    let short_hop = if short_hop_d > 0.0 { short_hop_d } else { c_num("shortHopSpeed") };
+    // shortHopSpeed: prefer the REAL SSF2 value (velocity-scaled). Only fall
+    // back to the jump-derived estimate / template constant when SSF2 lacked it.
+    let (short_hop, short_hop_todo) = if s.short_hop_speed > 0.0 {
+        (ssf2_speed_to_fm(s.short_hop_speed), "")
+    } else if short_hop_d > 0.0 {
+        (short_hop_d, " /*TODO: estimated from jumpSpeed; SSF2 had no shortHopSpeed*/")
+    } else {
+        (c_num("shortHopSpeed"), dflt)
+    };
     let (aerial_cap, aerial_fric_cap_todo) = if s.air_mobility != 0.0 || s.air_friction != 0.0 { (aerial_cap_d, "") } else { (c_num("aerialSpeedCap"), dflt) };
+
+    // ── Real SSF2 movement constants, previously hardcoded template values ──
+    // Now derived from the source (verified against docs/ssf2-physics-model.md)
+    // so walk/run/jump feel matches SSF2. Accelerations use accel_scale; speeds
+    // use velocity_scale (see mappings::scale). The single size_multiplier knob
+    // governs both.
+    let sm = crate::mappings::character_stats();
+    // friction := |decel_rate| (grounded). SSF2 stores it negative.
+    let (friction, friction_todo) = if s.ground_friction != 0.0 {
+        (sm.scale("friction", s.ground_friction.abs()), "")
+    } else {
+        (c_num("friction"), " /*TODO*/")
+    };
+    // SSF2 has ONE grounded accel (accel_rate) feeding both walk and run/ground.
+    let (walk_accel, walk_accel_todo) = if s.ground_accel > 0.0 {
+        (sm.scale("walk_accel", s.ground_accel), "")
+    } else {
+        (c_num("walkSpeedAcceleration"), "")
+    };
+    let ground_accel_v = if s.ground_accel > 0.0 { walk_accel } else { c_num("groundSpeedAcceleration") };
+    let run_accel_v    = if s.ground_accel > 0.0 { walk_accel } else { c_num("runSpeedAcceleration") };
+    // SSF2 accel_rate_air (carried in air_mobility) → aerial horizontal accel.
+    let (aerial_accel, aerial_accel_todo) = if s.air_mobility != 0.0 {
+        (sm.scale("air_accel", s.air_mobility), "")
+    } else {
+        (c_num("aerialSpeedAcceleration"), "")
+    };
+    // Initial walk/dash speeds: accel_start / accel_start_dash are MULTIPLIERS on
+    // the respective speed cap (m_charRun: xSpeed = AccelStart*norm_xSpeed, dash
+    // = AccelStartDash*max_xSpeed). Convert the resulting absolute kick, then
+    // clamp into a sane [0, cap] band (SSF2 re-clamps to the cap next frame; some
+    // dummies carry a degenerate >cap kick value).
+    let walk_initial = if s.walk_initial > 0.0 && s.walk_speed > 0.0 {
+        ssf2_speed_to_fm(s.walk_initial * s.walk_speed).min(walk_cap).max(0.0)
+    } else { c_num("walkSpeedInitial") };
+    let run_initial = if s.dash_initial > 0.0 && s.dash_speed > 0.0 {
+        ssf2_speed_to_fm(s.dash_initial * s.dash_speed).min(dash_speed).max(0.0)
+    } else { c_num("runSpeedInitial") };
+    // runSpeedCap mirrors the dash cap (SSF2 max_xSpeed) when present.
+    let run_cap = if s.dash_speed > 0.0 { dash_speed } else { c_num("runSpeedCap") };
 
     // doubleJumpSpeeds: the real converted value, or the character-template default.
     let dj_array = if dj_speed > 0.0 {
@@ -618,22 +666,22 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
         .replace("{{base_scale_y}}", &fmt(s.base_scale_y))
         .replace("{{weight}}", &fmt(weight)).replace("{{weight_todo}}", weight_todo)
         .replace("{{gravity}}", &fmt(gravity)).replace("{{gravity_todo}}", gravity_todo)
-        .replace("{{short_hop}}", &fmt(short_hop))
+        .replace("{{short_hop}}", &fmt(short_hop)).replace("{{short_hop_todo}}", short_hop_todo)
         .replace("{{jump_speed}}", &fmt(jump_speed)).replace("{{jump_speed_todo}}", jump_speed_todo)
         .replace("{{dj_array}}", &dj_array)
         .replace("{{terminal_vel}}", &fmt(terminal_vel)).replace("{{terminal_vel_todo}}", terminal_vel_todo)
         .replace("{{fast_fall}}", &fmt(fast_fall)).replace("{{fast_fall_todo}}", fast_fall_todo)
-        .replace("{{friction}}", &c("friction"))
-        .replace("{{walk_speed_initial}}", &c("walkSpeedInitial"))
-        .replace("{{walk_speed_accel}}", &c("walkSpeedAcceleration"))
+        .replace("{{friction}}", &fmt(friction)).replace("{{friction_todo}}", friction_todo)
+        .replace("{{walk_speed_initial}}", &fmt(walk_initial))
+        .replace("{{walk_speed_accel}}", &fmt(walk_accel)).replace("{{walk_speed_accel_todo}}", walk_accel_todo)
         .replace("{{walk_cap}}", &fmt(walk_cap)).replace("{{walk_cap_todo}}", walk_cap_todo)
         .replace("{{dash_speed}}", &fmt(dash_speed)).replace("{{dash_speed_todo}}", dash_speed_todo)
-        .replace("{{run_speed_initial}}", &c("runSpeedInitial"))
-        .replace("{{run_speed_accel}}", &c("runSpeedAcceleration"))
-        .replace("{{run_speed_cap}}", &c("runSpeedCap"))
-        .replace("{{ground_speed_accel}}", &c("groundSpeedAcceleration"))
+        .replace("{{run_speed_initial}}", &fmt(run_initial))
+        .replace("{{run_speed_accel}}", &fmt(run_accel_v))
+        .replace("{{run_speed_cap}}", &fmt(run_cap))
+        .replace("{{ground_speed_accel}}", &fmt(ground_accel_v))
         .replace("{{ground_speed_cap}}", &c("groundSpeedCap"))
-        .replace("{{aerial_speed_accel}}", &c("aerialSpeedAcceleration"))
+        .replace("{{aerial_speed_accel}}", &fmt(aerial_accel)).replace("{{aerial_speed_accel_todo}}", aerial_accel_todo)
         .replace("{{aerial_cap}}", &fmt(aerial_cap)).replace("{{aerial_cap_todo}}", aerial_fric_cap_todo)
         .replace("{{aerial_fric}}", &fmt(aerial_fric)).replace("{{aerial_fric_todo}}", aerial_fric_todo));
 

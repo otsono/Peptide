@@ -20,7 +20,8 @@ Everything here was reverse-engineered from first principles during development.
 > converter binary and no egui GUI. Parts of this file predate that move and may
 > say "the converter" / `ssf2_converter input.ssf`; read those as the library
 > crate and `peptide convert …`. Peptide specifics:
-> [`docs/PEPTIDE_README.md`](docs/PEPTIDE_README.md).
+> [`docs/PEPTIDE_GUIDE.md`](docs/PEPTIDE_GUIDE.md) (usage) and
+> [`docs/PEPTIDE_DESIGN.md`](docs/PEPTIDE_DESIGN.md) (internals).
 
 > **Architecture convention — minimum bytecode, maximum hscript (read before every commit).**
 > Hand-emitted HashLink bytecode in `src/main.rs` (`connect_edit` and its `inject_*`
@@ -43,6 +44,32 @@ Everything here was reverse-engineered from first principles during development.
 >
 > Before adding to `connect_edit`/`inject_*`, ask: is this the *smallest* engine primitive
 > that unblocks the feature, with the rest done in `commands.hsx` / `interpreter.rs`?
+
+> **Architecture convention — ONE command vocabulary, TWO engines (read before adding any
+> host-facing feature).** Peptide debugs both Fraymakers (HashLink) and SSF2 (AVM2). A
+> command or feature must behave **identically** on both — the user types the same thing and
+> it does the equivalent thing regardless of which engine is attached. This is enforced by a
+> layered OOP seam; respect the layer boundaries:
+> - **`src/interpreter.rs` — the engine-agnostic vocabulary.** `parse()` turns a typed line
+>   into a `Command`; `src/vocab.rs` declares the `commands.hsx` vocabulary + the FM↔SSF2
+>   name reconciliation. New command syntax is defined **here, once**, never per-engine.
+> - **`src/debug_target.rs` — the `DebugTarget` trait (the feature surface).** Every
+>   host-facing feature is a trait method. Give it a DEFAULT that just evaluates the engine
+>   helper of the same name (`match_status()` → `eval("matchStatus()")`, etc.). Both backends
+>   implement `eval`, so a new feature reaches **both** engines the moment each engine's eval
+>   knows the expression — Fraymakers via `commands.hsx`, SSF2 via `src/ssf2_target.rs`. An
+>   engine that genuinely can't do a feature *overrides the method to say so* (e.g. SSF2
+>   `char_icon` → `None`); it does not get silently special-cased in the caller.
+> - **Backends (`FraymakersTarget`, `Ssf2Target`) + the transport** are the ONLY place
+>   engine differences live. Everything above them is shared.
+>
+> THE RULE: **never write `if engine == fraymakers { … } else { … }` in feature/command logic.**
+> If you reach for that, the difference belongs lower down — in `vocab.rs`, a trait-method
+> override, or the transport. The GUI's per-engine branching is limited to the transport
+> shell (which socket to talk to); the moment it creeps into *what a command does*, you've
+> broken the contract. A new feature should be: add a `DebugTarget` method (default = eval) +
+> implement the expression in `commands.hsx` AND `ssf2_target` — then it "just works" on both.
+> See [`docs/PEPTIDE_DESIGN.md`](docs/PEPTIDE_DESIGN.md) for the full seam.
 
 Cross-reference: [`DEVELOPMENT.md`](DEVELOPMENT.md) covers build / pipeline / modules and
 the current set of mapping JSONC files; this file covers the **input** and **output**
@@ -647,7 +674,8 @@ byte-for-byte (in the GUID dimension). See `src/uuid_gen.rs`.
 
 ## Diagnostic Binaries
 
-Several `--bin` targets exist for debugging:
+~30 `--bin` targets exist for debugging (gated behind `--features dev-tools`).
+The most useful selection:
 ```
 dump_image_placement   — per-frame PlaceObject data for any sprite
 dump_collision_box     — collision-box geometry for an animation
@@ -672,10 +700,10 @@ These tools were the workbench used to figure the formats out. Costume extractio
 itself is now in-process inside `ssf2_converter`; there is no longer a separate
 `extract_costumes` binary.
 
-Usage example:
+Usage example (the bins are dev-tools-gated, so run via cargo):
 ```bash
-./target/release/dump_image_placement ../ssf2-ssfs/mario.ssf "FAir_42"
-./target/release/dump_collision_box ../ssf2-ssfs/mario.ssf "a_air_forward"
+cargo run -p ssf2_converter --features dev-tools --bin dump_image_placement -- ../ssf2-ssfs/mario.ssf "FAir_42"
+cargo run -p ssf2_converter --features dev-tools --bin dump_collision_box -- ../ssf2-ssfs/mario.ssf "a_air_forward"
 ```
 
 ---
@@ -733,16 +761,17 @@ flags uncertain numbers with `/*TODO*/`.
 
 | File | Purpose |
 |---|---|
-| `main.rs` | Entry point, orchestrates extraction pipeline |
+| `convert.rs` | In-process conversion entry point (`run_conversion`); orchestrates the pipeline |
 | `extractor.rs` | Bridge between ABC parser and generator (`CharacterData`) |
-| `abc_parser.rs` | AVM2/ABC bytecode parser + semantic extractors (~2500 LOC) |
-| `decompiler.rs` | Bytecode → Haxe-ish source, full CFG reconstruction (~1700 LOC) |
+| `abc_parser.rs` | AVM2/ABC bytecode parser + semantic extractors (~2650 LOC) |
+| `decompiler.rs` | Bytecode → Haxe-ish source, full CFG reconstruction (~2050 LOC) |
 | `sprite_parser.rs` | Per-frame collision-box geometry from SWF timelines |
 | `image_extractor.rs` | PNG extraction, per-frame image placement, skew baking, projectile/effect/head discovery |
-| `entity_gen.rs` | `.entity` JSON generator (~2000 LOC) |
+| `vector_raster.rs` | Rasterizes vector-shape sprites (shape-only heads/effects) |
+| `entity_gen.rs` | `.entity` JSON generator (~2300 LOC) |
 | `haxe_gen.rs` | Output orchestrator (writes the whole character package) |
 | `anim_splitter.rs` | Multi-label SSF2 sprite → multiple FM animations |
-| `api_mappings.rs` | SSF2 → FM API translation pipeline + JSONC-driven rewriters |
+| `api_mappings.rs` | SSF2 → FM API translation pipeline + JSONC-driven rewriters (~2530 LOC) |
 | `mappings.rs` | JSONC loader / cache for the editable mapping files under `mappings/` |
 | `sound_extractor.rs` | DefineSound → WAV via synthetic FLV + `ffmpeg` |
 | `palette_gen.rs` | SSF2 costume / k-means palette generation |
@@ -750,4 +779,6 @@ flags uncertain numbers with `/*TODO*/`.
 | `ssf.rs` | SSF wrapper → raw SWF |
 | `uuid_gen.rs` | Deterministic UUID v5 generation |
 | `fraytools_project.rs` | `<name>.fraytools` project descriptor |
-| `lib.rs` | `pub mod` declarations (so `src/bin/*` can `use ssf2_converter::*`) |
+| `fraytools_transform.rs` | Shared FrayTools transform/coordinate helpers |
+| `project.rs` | Shared project / manifest structs |
+| `lib.rs` | `pub mod` declarations + `run_conversion` re-export (so `src/bin/*` can `use ssf2_converter::*`) |

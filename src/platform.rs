@@ -56,6 +56,57 @@ pub fn detected_fraytools_path() -> Option<PathBuf> {
     default_fraytools_exe()
 }
 
+/// Default SSF2 install path if found on disk. SSF2 ships as a standalone
+/// Adobe AIR app. macOS: the `.app` bundle. Windows: the install directory
+/// (SSF2.swf and SSF2.exe sit at its root — the patcher needs the directory,
+/// not the exe).
+pub fn default_ssf2_app() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let direct = PathBuf::from("/Applications/SSF2.app");
+        if direct.exists() {
+            return Some(direct);
+        }
+        if let Some(home) = dirs::home_dir() {
+            if let Ok(rd) = std::fs::read_dir(home.join("Downloads")) {
+                for e in rd.flatten() {
+                    if e.file_name().to_string_lossy().starts_with("SSF2") {
+                        let app = e.path().join("SSF2.app");
+                        if app.exists() {
+                            return Some(app);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Installer puts it under "Super Smash Flash 2 Beta [version]" in x86 Program Files.
+        // Return the directory (not the .exe) — the patcher needs the root of the install.
+        let candidates = [
+            "C:\\Program Files (x86)\\Super Smash Flash 2 Beta 1.4",
+            "C:\\Program Files (x86)\\Super Smash Flash 2 Beta",
+            "C:\\Program Files\\Super Smash Flash 2 Beta 1.4",
+            "C:\\Program Files\\Super Smash Flash 2 Beta",
+            "C:\\Program Files\\SSF2",
+            "C:\\SSF2",
+        ];
+        for dir in &candidates {
+            let d = PathBuf::from(dir);
+            if d.join("SSF2.exe").is_file() {
+                return Some(d);
+            }
+        }
+    }
+    None
+}
+
+/// The user-facing SSF2 install path to display/pre-fill in Setup if found.
+pub fn detected_ssf2_path() -> Option<PathBuf> {
+    default_ssf2_app()
+}
+
 /// Resolve a user-picked FrayTools path to the actual executable. On macOS the
 /// user may pick the `.app` bundle; resolve to `Contents/MacOS/<name>`.
 /// On Windows/Linux they pick the executable directly.

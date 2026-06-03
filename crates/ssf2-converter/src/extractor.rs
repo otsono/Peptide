@@ -79,6 +79,17 @@ pub struct CharacterStats {
     pub jump_height:      f64,
     pub double_jump_height: f64,
     pub air_friction:     f64,
+    /// SSF2 `shortHopSpeed` — initial velocity of a short hop (px/frame@30).
+    /// 0 when SSF2 lacks it (then FM falls back to a jump-derived estimate).
+    pub short_hop_speed:  f64,
+    /// SSF2 `decel_rate` — grounded friction (px/frame²@30, stored negative).
+    pub ground_friction:  f64,
+    /// SSF2 `accel_rate` — grounded walk/run acceleration (px/frame²@30).
+    pub ground_accel:     f64,
+    /// SSF2 `accel_start` — initial grounded walk speed on press (px/frame@30).
+    pub walk_initial:     f64,
+    /// SSF2 `accel_start_dash` — initial dash speed on press (px/frame@30).
+    pub dash_initial:     f64,
     /// SSF2 `jumpStartup` stat: # of grounded frames before the jump launches
     /// (the jump-squat duration). Used to slice jump_squat off the jump animation.
     pub jump_startup:     f64,
@@ -108,6 +119,8 @@ impl Default for CharacterStats {
             weight: 100.0, gravity: 0.0, fall_speed: 0.0, fast_fall_speed: 0.0,
             walk_speed: 0.0, dash_speed: 0.0, air_mobility: 0.0,
             max_jumps: 2, jump_height: 0.0, double_jump_height: 0.0, air_friction: 0.0,
+            short_hop_speed: 0.0, ground_friction: 0.0, ground_accel: 0.0,
+            walk_initial: 0.0, dash_initial: 0.0,
             jump_startup: 0.0,
             base_scale_x: 1.0, base_scale_y: 1.0,
         }
@@ -536,6 +549,14 @@ fn convert_stats(vals: &BTreeMap<String, f64>) -> CharacterStats {
         jump_height:        get("jump_height"),
         double_jump_height: get("double_jump_height"),
         air_friction:       get("air_friction"),
+        // Real SSF2 movement constants that were previously discarded in favour
+        // of template constants — wired through so walk/run/jump feel matches
+        // the source. Raw keys (px/frame or px/frame²@30); 0 ⇒ absent in SSF2.
+        short_hop_speed:    vals.get("shortHopSpeed").copied().unwrap_or(0.0),
+        ground_friction:    vals.get("decel_rate").copied().unwrap_or(0.0),
+        ground_accel:       vals.get("accel_rate").copied().unwrap_or(0.0),
+        walk_initial:       vals.get("accel_start").copied().unwrap_or(0.0),
+        dash_initial:       vals.get("accel_start_dash").copied().unwrap_or(0.0),
         // Internal-only (NOT a Fraymakers stat): raw SSF2 jumpStartup frame count,
         // used solely to slice jump_squat off the front of the jump animation.
         jump_startup:       vals.get("jumpStartup").copied().unwrap_or(0.0),

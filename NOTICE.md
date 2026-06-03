@@ -27,7 +27,8 @@ dynamically linked (see `DEVELOPMENT.md` §3).
 
 ## All direct Rust dependencies
 
-(As of HEAD `7729ecda`.)
+Resolved versions (`Cargo.lock`) as of HEAD `6087830d`, spanning both the
+`peptide` binary and the `ssf2_converter` library crate.
 
 | crate         | version  | licence                                    |
 |---------------|----------|--------------------------------------------|
@@ -36,28 +37,37 @@ dynamically linked (see `DEVELOPMENT.md` §3).
 | bytes         | 1.11     | MIT                                        |
 | clap          | 4.6      | MIT OR Apache-2.0                          |
 | **colored**   | 2.2      | **MPL-2.0** — file-level copyleft; no modification needed for our use, but the source remains under MPL-2.0 |
+| crossterm     | 0.29     | MIT                                        |
+| dirs          | 5.0      | MIT OR Apache-2.0                          |
 | **encoding_rs** | 0.8    | (Apache-2.0 OR MIT) **AND BSD-3-Clause** — combined |
 | env_logger    | 0.11     | MIT OR Apache-2.0                          |
 | fasteval      | 0.2      | MIT                                        |
 | flate2        | 1.1      | MIT OR Apache-2.0                          |
+| hlbc          | 0.7      | MIT — HashLink bytecode reader/writer (the engine patcher's RE backbone) |
 | image         | 0.25     | MIT OR Apache-2.0                          |
 | indicatif     | 0.17     | MIT                                        |
 | log           | 0.4      | MIT OR Apache-2.0                          |
+| ratatui       | 0.30     | MIT                                        |
 | regex         | 1        | MIT OR Apache-2.0                          |
+| rfd           | 0.15     | MIT                                        |
 | serde         | 1.0      | MIT OR Apache-2.0                          |
 | serde_json    | 1.0      | MIT OR Apache-2.0                          |
 | sha1          | 0.10     | MIT OR Apache-2.0                          |
 | sha2          | 0.10     | MIT OR Apache-2.0                          |
 | **swf**       | 0.2      | MIT OR Apache-2.0 (Ruffle)                 |
+| tao           | 0.35     | Apache-2.0                                 |
 | tempfile      | 3        | MIT OR Apache-2.0                          |
+| **tiny-skia** | 0.11     | **BSD-3-Clause** — vector-shape rasteriser |
 | tokio         | 1.51     | MIT                                        |
+| toml          | 0.8      | MIT OR Apache-2.0                          |
+| tungstenite   | 0.21     | MIT OR Apache-2.0                          |
+| wry           | 0.55     | Apache-2.0 OR MIT                          |
 
-The MPL-2.0 (`colored`) and BSD-3-Clause (`encoding_rs`) licences
-require the licence text to travel with redistributions. Both licence
-texts are reproduced in full under each crate's published source
-repository; for a binary distribution of this converter, this `NOTICE.md`
-file together with the named source URLs satisfies the attribution
-requirement.
+The MPL-2.0 (`colored`) and BSD-3-Clause (`encoding_rs`, `tiny-skia`) licences
+require the licence text to travel with redistributions. Each licence text is
+reproduced in full under that crate's published source repository; for a binary
+distribution, this `NOTICE.md` file together with the named source URLs satisfies
+the attribution requirement.
 
 ## Asset and game data
 

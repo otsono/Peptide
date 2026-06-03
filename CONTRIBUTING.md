@@ -35,6 +35,13 @@ Three questions, in order:
    - New diagnostic binary? Add a row in DEVELOPMENT §5.7.
    - New mapping JSONC section? Update README + DEVELOPMENT §6.
 
+4. **Did you add a host-facing debug command or feature?**
+   It must work **identically on both engines** (Fraymakers + SSF2). Define it once
+   through the shared seam — a `DebugTarget` trait method (default = `eval`) plus the
+   engine helper in `commands.hsx` AND `src/ssf2_target.rs` — never an
+   `if engine == …` branch in command/feature logic. Full rule in
+   [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md) "ONE command vocabulary, TWO engines".
+
 That's it. The rest is tooling that backs the checklist (see "Tooling"
 below).
 
@@ -52,7 +59,7 @@ harness, webview UI, bytecode patcher) is the root `src/`.
 | `crates/ssf2-converter/src/convert.rs` (orchestration: `detect_char_names`, `process_character`, `write_conversion_log`, `run_conversion`) | DEVELOPMENT §3.3, §4, §5.1 |
 | `src/convert.rs` (peptide `convert` CLI adapter) | DEVELOPMENT §3.3; README §"Usage" if CLI flags change |
 | `crates/ssf2-converter/src/extractor.rs` (`CharacterData` struct) | DEVELOPMENT §5.4 |
-| `crates/ssf2-converter/src/abc_parser.rs` (Stage A bundle extraction, constructor walker, normalStats_id) | DEVELOPMENT §5.3; §14 "Architectural history" if detection logic shifts |
+| `crates/ssf2-converter/src/abc_parser.rs` (Stage A bundle extraction, constructor walker, normalStats_id) | DEVELOPMENT §5.3 |
 | `crates/ssf2-converter/src/decompiler.rs` | DEVELOPMENT §5.3 |
 | `crates/ssf2-converter/src/sprite_parser.rs` (box geometry, xframe transforms) | DEVELOPMENT §5.4; AGENT_CONTEXT §"Collision Boxes" |
 | `crates/ssf2-converter/src/image_extractor.rs` (PNG / placement / skew bake / projectile-and-head discovery) | DEVELOPMENT §5.4; AGENT_CONTEXT §"Image Sprites" |
@@ -63,7 +70,7 @@ harness, webview UI, bytecode patcher) is the root `src/`.
 | `crates/ssf2-converter/src/haxe_gen.rs` (output orchestrator + transformation banner) | DEVELOPMENT §5.6 |
 | `crates/ssf2-converter/src/palette_gen.rs` | DEVELOPMENT §5.6; README §"How costumes work" |
 | `crates/ssf2-converter/src/uuid_gen.rs` | DEVELOPMENT §5.6; AGENT_CONTEXT §"Top-Level Structure" if GUID seeding changes |
-| Peptide root `src/` (gui.rs, peptide_ui.html, config.rs, platform.rs, manifest.rs, fraytools.rs) | docs/PEPTIDE_README.md; TESTING.md |
+| Peptide root `src/` (gui.rs, peptide_ui.html, config.rs, platform.rs, manifest.rs, fraytools.rs) | docs/PEPTIDE_DESIGN.md; docs/PEPTIDE_GUIDE.md; TESTING.md |
 | `crates/ssf2-converter/mappings/commands.jsonc` | DEVELOPMENT §6.1; README §"Configuring the conversion" |
 | `crates/ssf2-converter/mappings/character/*.jsonc` | DEVELOPMENT §6.2–§6.4 |
 | `src/bin/*` | DEVELOPMENT §5.7 (add a row to the table) |
@@ -120,28 +127,25 @@ gates.
   "DEVELOPMENT §5.3: updated abc_parser description." Future
   greppability.
 
-## Architectural history
+## Architectural rationale
 
-Why the code looks the way it does today lives in **`DEVELOPMENT.md` §14
-"Architectural history"** (the path 1 → path 2 stat-extraction switch, the
-constructor-walk detection, and the multi-character project layout). That's
-exactly what a fresh agent or contributor needs when reading the source cold.
+The *why* behind major design decisions (the path 1 → path 2 stat-extraction
+switch, the constructor-walk detection, the multi-character project layout) lives
+in `git log` / commit messages, not a dedicated doc section. When you land a
+substantial design change, explain the *why* in the commit message. Keep the
+durable, current-state docs at the repo top level (README / DEVELOPMENT /
+AGENT_CONTEXT / TESTING / CONTRIBUTING / NOTICE) plus the Peptide docs in `docs/`;
+don't accrete development history into them.
 
-When you land a substantial design change, add a short condensed entry to
-§14 — the *why* and the commit SHAs. Keep the **permanent** docs at the repo
-top level; use the `docs/` folder only for *scratch* (see below), and promote
-anything durable up before it gets lost.
+## The `docs/` folder
 
-## Scratch notes (`docs/`)
+`docs/` holds the **tracked** Peptide harness docs — `PEPTIDE_GUIDE.md`,
+`PEPTIDE_DESIGN.md`, `STATUS.md` (re-included via `.gitignore` negations) — and is
+otherwise a **gitignored scratch space** for working notes during a task
+(investigation logs, RE findings mid-flight, throwaway plans).
 
-`docs/` is a **gitignored scratch space** for working notes during a task —
-investigation logs, RE findings mid-flight, status snapshots, throwaway plans.
-Nothing in it is tracked or ships.
-
-The rule: **if a note in `docs/` would help anyone else** — a fact, a gotcha, an
-RE finding, a design decision, a "what's still open" — **promote it into the
-relevant top-level doc** (README / DEVELOPMENT / AGENT_CONTEXT / TESTING /
-CONTRIBUTING / NOTICE), then the scratch note can be deleted. Don't let durable
-knowledge accumulate only in `docs/`, because the next person (or agent) cloning
-the repo never sees it. `docs/README.md` restates this for anyone who opens the
-folder directly.
+The rule: **if a scratch note would help anyone else** — a fact, a gotcha, an RE
+finding, a design decision, a "what's still open" — **promote it into the relevant
+durable doc** (a top-level doc, or one of the three `docs/` files), then delete the
+scratch note. Don't let durable knowledge accumulate only in untracked scratch,
+because the next person (or agent) cloning the repo never sees it.

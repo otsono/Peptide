@@ -49,6 +49,18 @@
   .pill.live{background:#23302A;color:#8FCBA0;}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--muted);}
   .pill.live .dot{background:var(--ok);box-shadow:0 0 0 3px rgba(91,164,111,.18);}
+  /* status pill is now a clickable button → connection menu */
+  button.pill{border:none;cursor:pointer;font:inherit;font-size:12.5px;font-weight:500;}
+  button.pill:hover{filter:brightness(1.12);}
+  .pill-caret{font-size:9px;opacity:.7;margin-left:1px;}
+  .connwrap{position:relative;}
+  .connmenu{position:absolute;right:0;top:calc(100% + 6px);z-index:50;min-width:200px;
+    background:var(--card,#1b1b1f);border:1px solid var(--line);border-radius:10px;
+    box-shadow:0 10px 30px rgba(0,0,0,.4);padding:6px;display:flex;flex-direction:column;gap:2px;}
+  .connmenu button{text-align:left;padding:9px 11px;border-radius:7px;border:none;background:transparent;
+    color:var(--ink);font:inherit;font-size:13px;cursor:pointer;}
+  .connmenu button:hover{background:var(--chip);}
+  #connmenu-disconnect{color:var(--err-ink,#E98C8C);}
   /* selected project / character indicator (separate from the connection pill) */
   .filepill{display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;
     background:var(--chip);color:var(--ink);font:inherit;font-size:12.5px;font-weight:500;
@@ -231,6 +243,11 @@
   .wiz-step h2{display:flex;align-items:center;gap:10px;font-size:19px;}
   .wiz-step p{margin:6px 0 4px;}
   .wiz-step .inrow{margin-top:14px;}
+  /* multiple labeled fields on one wizard step (Game locations) */
+  .wiz-field{margin-top:16px;}
+  .wiz-field .inrow{margin-top:7px;}
+  .wiz-label{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;}
+  .wiz-field .sublabel{font-size:12px;color:var(--muted);margin-top:3px;}
   .wiz-actions{display:flex;align-items:center;gap:10px;margin-top:24px;}
   .wiz-actions .btn-primary,.wiz-actions .btn-ghost{width:auto;}
   .wiz-spacer{flex:1;}
@@ -293,6 +310,14 @@
   .badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;margin-left:8px;}
   .badge.ok{background:#23302A;color:#8FCBA0;}
   .badge.no{background:var(--err-bg);color:var(--err-ink);}
+  .opt{font-size:11px;font-weight:600;color:var(--muted);margin-left:6px;}
+  p.hint{font-size:12px;color:var(--muted);margin-top:6px;word-break:break-all;}
+  /* Launch-modal engine selector */
+  .engine-tabs{display:flex;gap:6px;margin:4px 0 14px;}
+  .engine-tabs .etab{flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--line);
+    background:transparent;color:var(--muted);font-weight:600;cursor:pointer;}
+  .engine-tabs .etab.active{background:var(--accent,#2D6CDF);color:#fff;border-color:transparent;}
+  .engine-tabs .etab:disabled{opacity:.4;cursor:not-allowed;}
   .form-actions{display:flex;gap:10px;margin-top:24px;}
   .form-actions .btn-primary,.form-actions .btn-ghost{width:auto;padding:11px 26px;}
   .tabs{display:flex;gap:6px;margin-bottom:20px;border-bottom:1px solid var(--border);}
@@ -327,7 +352,14 @@
     <button class="gear" id="gear" style="display:none">⚙ Setup</button>
     <button class="filepill" id="filepill" style="display:none" onclick="openLaunchModal()"
             title="Switch the project / character to run"><span class="filepill-ic">📄</span><span id="filename">—</span></button>
-    <div class="pill" id="pill" style="display:none"><span class="dot"></span><span id="pilltext">Disconnected</span></div>
+    <div class="connwrap">
+      <button class="pill" id="pill" style="display:none" onclick="toggleConnMenu(event)"
+              title="Connection — click to switch engine or disconnect"><span class="dot"></span><span id="pilltext">Disconnected</span><span class="pill-caret">▾</span></button>
+      <div class="connmenu" id="connmenu" style="display:none">
+        <button onclick="connMenuLaunch()">Connect / switch engine…</button>
+        <button id="connmenu-disconnect" onclick="connMenuDisconnect()">Disconnect</button>
+      </div>
+    </div>
   </header>
 
   <!-- ── HOME ───────────────────────────────────────────── -->
@@ -338,7 +370,7 @@
       <div class="home-grid">
         <button class="bigbtn hero" onclick="goConsole()">
           <span class="bt">Launch Peptide</span>
-          <span class="bd">Boot Fraymakers and drive a live match — spawn, move, read state, run hscript.</span>
+          <span class="bd">Open the debugger — connect Fraymakers or SSF2 and drive a live match: spawn, move, read state, run commands.</span>
         </button>
         <div class="home-row">
           <button class="bigbtn" onclick="showScreen('convert')">
@@ -365,12 +397,25 @@
            We autodetected what we could; you can confirm or change each one.</p>
       </div>
 
-      <div class="wiz-step" data-step="fraymakers">
-        <h2>Fraymakers install <span class="badge" id="b-fray">—</span></h2>
-        <p>The Steam folder containing <code>hlboot-sdl.dat</code>.</p>
-        <div class="inrow">
-          <input id="s-fraymakers" placeholder="…/Steam/steamapps/common/Fraymakers" />
-          <button class="btn-sm" onclick="pickDir('s-fraymakers')">Browse…</button>
+      <div class="wiz-step" data-step="engines">
+        <h2>Game locations</h2>
+        <p>Point Peptide at the games you want to debug. Fraymakers is required; SSF2 is optional —
+           with it set, <b>Launch Peptide</b> can drive SSF2 with the same console.</p>
+        <div class="wiz-field">
+          <label class="wiz-label">Fraymakers install <span class="badge" id="b-fray">—</span></label>
+          <div class="sublabel">The Steam folder containing <code>hlboot-sdl.dat</code>.</div>
+          <div class="inrow">
+            <input id="s-fraymakers" placeholder="…/Steam/steamapps/common/Fraymakers" />
+            <button class="btn-sm" onclick="pickDir('s-fraymakers')">Browse…</button>
+          </div>
+        </div>
+        <div class="wiz-field">
+          <label class="wiz-label">SSF2 app <span class="badge" id="b-ssf2">—</span> <span class="opt">optional</span></label>
+          <div class="sublabel">The Super Smash Flash 2 app — leave blank if you only use Fraymakers.</div>
+          <div class="inrow">
+            <input id="s-ssf2" placeholder="/Applications/SSF2.app (or the executable)" />
+            <button class="btn-sm" onclick="pickFile('s-ssf2')">Browse…</button>
+          </div>
         </div>
       </div>
 
@@ -495,8 +540,8 @@
     <div class="crumb" style="padding:10px 18px 0;margin:0;"><button onclick="showScreen('home')">← Home</button></div>
     <div id="scroll"><div id="messages"></div></div>
     <div class="disco-bar" id="disco-bar">
-      <span class="disco-msg"><span class="disco-dot"></span> Not connected — Fraymakers needs to be launched.</span>
-      <button class="btn-sm disco-launch" onclick="launchGame()">Launch game</button>
+      <span class="disco-msg"><span class="disco-dot"></span> Not connected — launch an engine to begin.</span>
+      <button class="btn-sm disco-launch" onclick="openLaunchModal()">Connect…</button>
     </div>
     <div class="composer"><div class="inner">
       <div class="match-status" id="match-status"></div>
@@ -534,11 +579,49 @@
   <div class="overlay" id="launch-overlay">
     <div class="modal" id="launch-modal">
       <h2>Launch Peptide</h2>
-      <p>Choose a FrayTools project to open and spawn.</p>
-      <div class="launch-list" id="launch-list"></div>
+      <div class="engine-tabs" id="engine-tabs">
+        <button class="etab active" data-eng="fraymakers" onclick="setLaunchEngine('fraymakers')">Fraymakers</button>
+        <button class="etab" data-eng="ssf2" id="etab-ssf2" onclick="setLaunchEngine('ssf2')">SSF2</button>
+      </div>
+
+      <div id="launch-fray">
+        <p>Pick a character to fast-boot straight into a live match — or boot
+           Fraymakers normally with no character and drive it from the console.</p>
+        <div class="launch-list" id="launch-list"></div>
+        <div class="m-actions-row">
+          <button class="btn-primary" onclick="launchBrowse()">Browse…</button>
+          <button class="btn-ghost" onclick="launchFrayNoChar()">Boot without a character</button>
+          <button class="btn-ghost" onclick="closeLaunchModal()">Cancel</button>
+        </div>
+      </div>
+
+      <div id="launch-ssf2" style="display:none">
+        <p>Type a built-in SSF2 character to fast-boot into a match, or leave it
+           blank to boot to the SSF2 menu. Either way the same console drives it.</p>
+        <div class="inrow">
+          <input id="ssf2-char" style="flex:1;min-width:0" placeholder="character (blank = boot to menu)" />
+          <button class="btn-primary" style="flex:none;width:auto;white-space:nowrap" onclick="launchSsf2()">Launch SSF2</button>
+        </div>
+        <p class="hint" id="ssf2-hint"></p>
+        <div class="m-actions-row">
+          <button class="btn-ghost" onclick="closeLaunchModal()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CONVERT PERMISSION CONFIRMATION (over Convert screen) ─────────── -->
+  <div class="overlay" id="convperm-overlay">
+    <div class="modal" id="convperm-modal" style="max-width:520px;text-align:left">
+      <h2>Before you convert</h2>
+      <p>Super Smash Flash 2 content is developed over months/years with a lot of
+         deliberate care and attention from an unpaid dev team.</p>
+      <p>Respecting the team's work and their wishes is paramount.<br>
+         If this is a character that is built into the engine, please only proceed
+         if you've received permission from their team to convert the character.</p>
       <div class="m-actions-row">
-        <button class="btn-primary" onclick="launchBrowse()">Browse…</button>
-        <button class="btn-ghost" onclick="closeLaunchModal()">Cancel</button>
+        <button class="btn-primary" onclick="confirmConvertPermission()">OK</button>
+        <button class="btn-ghost" onclick="cancelConvertPermission()">Cancel</button>
       </div>
     </div>
   </div>
@@ -561,7 +644,10 @@
 <script>
   const $ = (id)=>document.getElementById(id);
   const messages = $("messages"), scroll = $("scroll");
-  let spawned = false, charName = (window.__CHAR__||"sandbag"), port = (window.__PORT__||0);
+  let spawned = false, charName = "", port = (window.__PORT__||0);  // no character is selected by default
+  let engineName = "Fraymakers";          // which engine the live console is attached to
+  let manualDisconnect = false;           // set when the user disconnects via the status menu
+  let launchEngine = "fraymakers";        // engine chosen in the Launch modal
   let CFG = {}; // last config snapshot from Rust (bootRoute / onSetupSaved)
 
   // ── screen router ───────────────────────────────────────
@@ -603,12 +689,15 @@
   };
   $("gear").onclick = ()=>openSetupModal();
 
-  // [Launch Peptide] → always ask which FrayTools project to open, derive the
-  // character from it, then boot the engine for that character. Cancelling the
-  // picker leaves you on Home.
-  // [Launch Peptide] → a launch-wizard modal over Home that lists converted
-  // projects (and a Browse for any .fraytools). Selecting one boots that character.
-  function goConsole(){ openLaunchModal(); }
+  // [Launch Peptide] → go STRAIGHT into the debugger console, disconnected. The
+  // user connects an engine from there (the disconnected bar or the status button),
+  // so the debugger is usable/visible without committing to an engine first.
+  function goConsole(){
+    showScreen("console");
+    flowState = "idle";
+    setStatus(false);
+    setTimeout(()=>{ const i=$("input"); if(i) i.focus(); }, 50);
+  }
   // Character id from a picked `.fraytools` path: the file stem (the conversion
   // writes `<char>/<char>.fraytools`), e.g. "…/mario/mario.fraytools" → "mario".
   function projectChar(path){
@@ -618,8 +707,53 @@
   const launchOverlay=$("launch-overlay"), launchList=$("launch-list");
   function openLaunchModal(){
     launchList.innerHTML="";             // lazy: filled in by onProjects when results arrive
+    // SSF2 tab is only enabled once an SSF2 app path resolves (Setup → SSF2 app).
+    const sf = $("etab-ssf2");
+    if(sf){
+      sf.disabled = !CFG.ssf2Ready;
+      sf.title = CFG.ssf2Ready ? "" : "Set your SSF2 app path in Setup to enable";
+    }
+    setLaunchEngine(CFG.ssf2Ready ? launchEngine : "fraymakers");
     launchOverlay.classList.add("show");
     ipcSend("@@projects:list");          // Rust → onProjects([...])
+  }
+  // Toggle the Launch modal between the Fraymakers project picker and the SSF2
+  // character spawner. Same console drives whichever engine is launched.
+  function setLaunchEngine(e){
+    if(e==="ssf2" && !CFG.ssf2Ready) e="fraymakers";
+    launchEngine = e;
+    document.querySelectorAll("#engine-tabs .etab").forEach(b=>b.classList.toggle("active", b.dataset.eng===e));
+    $("launch-fray").style.display = e==="fraymakers" ? "" : "none";
+    $("launch-ssf2").style.display = e==="ssf2" ? "" : "none";
+    const hint = $("ssf2-hint"); if(hint) hint.textContent = CFG.ssf2App ? ("SSF2: "+CFG.ssf2App) : "";
+  }
+  // Launch SSF2: boot the patched app. With a character → fast-boot (auto-spawn);
+  // blank → a normal boot to the SSF2 menu. Either way the console routes commands
+  // through the SSF2 backend (identical syntax).
+  function launchSsf2(){
+    const ch = ($("ssf2-char").value||"").trim();
+    closeLaunchModal();
+    charName = ch;
+    showScreen("console");
+    consoleBooted = true;
+    flowState = "booting";
+    modalWorking("Connecting to SSF2…", ch ? ("Booting "+ch+"…") : "Booting SSF2…");
+    ipcSend(ch ? ("@@boot:ssf2:"+ch) : "@@boot:ssf2");
+    setStatus(false);
+    setTimeout(()=>{ const i=$("input"); if(i) i.focus(); }, 50);
+  }
+  // Boot Fraymakers with NO character selected → a normal (non-headless) boot, not
+  // a fast-boot. No auto-spawn; the user drives it from the console.
+  function launchFrayNoChar(){
+    closeLaunchModal();
+    charName = "";
+    showScreen("console");
+    consoleBooted = true;
+    flowState = "booting";
+    modalWorking("Launching Fraymakers…","Booting Fraymakers (no character)…");
+    ipcSend("@@boot:regular");
+    setStatus(false);
+    setTimeout(()=>{ const i=$("input"); if(i) i.focus(); }, 50);
   }
   function closeLaunchModal(){ launchOverlay.classList.remove("show"); }
   launchOverlay.addEventListener("click",(e)=>{ if(e.target===launchOverlay) closeLaunchModal(); });
@@ -801,10 +935,47 @@
     // Show the "not connected — launch the game" bar when disconnected and no modal is up.
     $("disco-bar").classList.toggle("show", !connected && !modalUp);
     $("pill").classList.toggle("live", connected);
-    $("pilltext").textContent = connected ? "Connected" : (modalUp ? "Connecting…" : "Disconnected");
+    $("pilltext").textContent = connected ? ("Connected ("+engineName+")") : (modalUp ? "Connecting…" : "Disconnected");
     $("filename").textContent = charName || "—";
   }
   function setStatus(live){ connected=live; refreshUi(); }
+
+  // ── connection menu (status-pill button): switch engine or disconnect ──────
+  function toggleConnMenu(e){
+    if(e) e.stopPropagation();
+    const m=$("connmenu");
+    const show = m.style.display==="none" || m.style.display==="";
+    $("connmenu-disconnect").style.display = connected ? "" : "none";
+    m.style.display = show ? "flex" : "none";
+  }
+  function closeConnMenu(){ const m=$("connmenu"); if(m) m.style.display="none"; }
+  function connMenuLaunch(){ closeConnMenu(); openLaunchModal(); }
+  function connMenuDisconnect(){
+    closeConnMenu();
+    if(!connected) return;
+    manualDisconnect = true;        // suppress the auto-reconnect flow on the socket drop
+    setStatus(false);
+    add("system","Disconnecting…");
+    ipcSend("@@disconnect");
+  }
+  // close the menu on any outside click
+  document.addEventListener("click",(e)=>{
+    const m=$("connmenu");
+    if(m && m.style.display!=="none" && !m.contains(e.target) && !e.target.closest("#pill")){ m.style.display="none"; }
+  });
+  // Rust → manual disconnect finished tearing the engine down.
+  window.onManualDisconnect=function(){
+    flowState="idle"; hideModal(); setStatus(false);
+    add("system","Disconnected.");
+  };
+  // Rust → SSF2 stopped answering (window closed / crashed). Unlike Fraymakers there's
+  // no reconnect path, so just drop to disconnected and say so.
+  window.onSsf2Closed=function(){
+    if(!connected && engineName!=="SSF2") return; // already handled / not on SSF2
+    engineName="Fraymakers"; // reset the console's engine label
+    flowState="idle"; hideModal(); setStatus(false);
+    add("system","SSF2 closed — disconnected.");
+  };
 
   // engine → here (called by Rust via evaluate_script). RESDIAG diagnostics never reach the
   // page — Rust captures them for the Enhanced log and keeps them out of the engine chat.
@@ -876,7 +1047,7 @@
   // ── setup wizard (multi-step modal) ─────────────────────
   // One step per field, preceded by a welcome step. Back/Next walk the steps;
   // Next on the last step saves. First run can't be dismissed; a reopen (gear) can.
-  const SETUP_STEPS = ["welcome","fraymakers","fraytools","output"];
+  const SETUP_STEPS = ["welcome","engines","fraytools","output"];
   let setupStep = 0, setupFirst = true;
   const setupOverlay = $("setup-overlay");
 
@@ -885,6 +1056,7 @@
     setupStep = 0;
     $("s-fraymakers").value = CFG.fraymakersRoot || "";
     $("s-fraytools").value  = CFG.fraytoolsPath || "";   // pre-filled from autodetect by Rust
+    $("s-ssf2").value       = CFG.ssf2App || "";         // optional second engine
     $("s-output").value     = CFG.outputDir || "";
     buildDots();
     disarmReset();
@@ -949,16 +1121,19 @@
   // "detected" when autodetect filled the field; "✓ set" once the user edits.
   function revalidateSetup(){
     const fr = $("s-fraymakers").value.trim(), ft = $("s-fraytools").value.trim();
+    const sf = $("s-ssf2").value.trim();
     badge("b-fray", !!fr, CFG.fraymakersDetected ? "✓ detected" : "✓ set");
     badge("b-fraytools", !!ft, CFG.fraytoolsDetected ? "✓ detected" : "✓ set");
+    badge("b-ssf2", !!sf, CFG.ssf2Detected ? "✓ detected" : "✓ set");
   }
-  ["s-fraymakers","s-fraytools"].forEach(id=>{
+  ["s-fraymakers","s-fraytools","s-ssf2"].forEach(id=>{
     const el=$(id); if(el) el.addEventListener("input", revalidateSetup);
   });
   function saveSetup(){
     const payload = JSON.stringify({
       fraymakersRoot: $("s-fraymakers").value.trim(),
       fraytoolsPath:  $("s-fraytools").value.trim(),
+      ssf2App:        $("s-ssf2").value.trim(),
       outputDir:      $("s-output").value.trim(),
     });
     ipcSend("@@setup:save:"+payload);
@@ -971,6 +1146,17 @@
 
   // ── converter screen ────────────────────────────────────
   function runConvert(){
+    const input = $("c-input").value.trim();
+    if(!input){ showResult("c-result", "Pick an SSF2 file first.", "warn"); return; }
+    // Gate on the permission confirmation before doing any work.
+    $("convperm-overlay").classList.add("show");
+  }
+  function cancelConvertPermission(){ $("convperm-overlay").classList.remove("show"); }
+  function confirmConvertPermission(){
+    $("convperm-overlay").classList.remove("show");
+    doConvert();
+  }
+  function doConvert(){
     const input = $("c-input").value.trim();
     if(!input){ showResult("c-result", "Pick an SSF2 file first.", "warn"); return; }
     $("c-run").disabled = true;
@@ -1090,11 +1276,16 @@
     resetPatchbar();
     mTitle.textContent="Fraymakers doesn’t seem to be open";
     mMsg.textContent="Do you want to open it?"; mErr.textContent=err||""; actions.innerHTML="";
-    const quick=document.createElement("button");
-    quick.className="btn-primary"; quick.textContent="Quick Boot"; quick.onclick=()=>startBoot(true);
+    // Quick (fast) boot only applies WITH a character to bake; otherwise just a normal boot.
+    if(charName){
+      const quick=document.createElement("button");
+      quick.className="btn-primary"; quick.textContent="Quick Boot"; quick.onclick=()=>startBoot(true);
+      actions.appendChild(quick);
+    }
     const reg=document.createElement("button");
-    reg.className="btn-ghost"; reg.textContent="Regular Boot"; reg.onclick=()=>startBoot(false);
-    actions.appendChild(quick); actions.appendChild(reg);
+    reg.className=charName?"btn-ghost":"btn-primary"; reg.textContent=charName?"Regular Boot":"Boot Fraymakers";
+    reg.onclick=()=>startBoot(false);
+    actions.appendChild(reg);
     overlay.classList.add("show"); blockUi(true);
   }
   // The picked character has never been published to a `.fra`. Instead of the
@@ -1223,15 +1414,19 @@
   }
   function startBoot(quick){
     flowState="booting";
-    modalWorking("Connecting to Fraymakers…", quick?("Booting "+charName+"…"):"Launching Fraymakers…");
-    // Carry the current character (the project picked at launch) so the reconnect-
-    // flow boot re-bakes the same one rather than the config default.
-    const suffix = charName ? (":"+charName) : "";
-    ipcSend((quick?"@@boot:quick":"@@boot:regular")+suffix);
+    // Quick (fast) boot only makes sense WITH a character to bake; with none, fall
+    // back to a normal boot regardless of which button was pressed.
+    const useQuick = quick && !!charName;
+    modalWorking("Connecting to Fraymakers…", useQuick?("Booting "+charName+"…"):"Launching Fraymakers…");
+    ipcSend(useQuick ? ("@@boot:quick:"+charName) : "@@boot:regular");
   }
 
   window.onDisconnected=function(){
     setStatus(false);
+    // A user-initiated disconnect (status menu) must NOT trigger the auto-reconnect
+    // flow — the socket EOF that follows the kill is expected. onManualDisconnect
+    // already set the disconnected state; just consume the drop and stop.
+    if(manualDisconnect){ manualDisconnect=false; flowState="idle"; hideModal(); return; }
     // Only chase a dropped engine while the user is on the console screen — a drop
     // is irrelevant on Home / Convert / FrayTools, and we never auto-booted there.
     if(!$("screen-console").classList.contains("active")) return;
@@ -1250,11 +1445,31 @@
   };
   // boot launch failed / Fraymakers not found -> straight to "doesn't seem to be open"
   window.onBootFailed=function(msg){ flowState="prompt"; modalPrompt(msg||""); };
-  window.onReconnected=function(p, ch, autospawn){
+  // SSF2 boot failed — a dedicated, correctly-branded modal (NOT the Fraymakers
+  // "doesn't seem to be open" / crash prompt). Just an explanation + Close.
+  window.onSsf2BootFailed=function(msg){
+    flowState="idle";
+    modal.classList.remove("working"); modal.classList.add("prompt");
+    resetPatchbar();
+    $("crashlog-tabs").classList.remove("show"); mCrash.classList.remove("show");
+    mIcon.textContent="⚠️";
+    mTitle.textContent="SSF2 couldn’t start";
+    mMsg.textContent=msg||"The SSF2 app could not be patched or launched.";
+    mErr.textContent="";
+    actions.innerHTML="";
+    const ok=document.createElement("button");
+    ok.className="btn-primary"; ok.textContent="Close";
+    ok.onclick=()=>{ dismissModal(); setStatus(false); };
+    actions.appendChild(ok);
+    overlay.classList.add("show"); blockUi(true);
+  };
+  window.onReconnected=function(p, ch, autospawn, eng){
     if(p) port=p; if(ch) charName=ch;
+    engineName = eng || "Fraymakers";
+    manualDisconnect = false;   // a fresh connection clears any pending manual-disconnect guard
     flowState="idle"; hideModal(); setStatus(true);
     spawned = !autospawn; // quick boot re-arms auto-spawn; reconnect/regular leaves the match as-is
-    add("system","Connected to Fraymakers"+(charName?(" · "+charName):"")+".");
+    add("system","Connected to "+engineName+(charName?(" · "+charName):"")+".");
   };
 
   // Default screen before Rust calls bootRoute (e.g. the static :8777 preview,

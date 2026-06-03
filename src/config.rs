@@ -29,6 +29,13 @@ pub struct Config {
     pub fraymakers_root: String,
     /// FrayTools path — a `.app` bundle on macOS or the executable elsewhere.
     pub fraytools_path: String,
+    /// SSF2 application path — the `SSF2.app` bundle on macOS or the executable
+    /// elsewhere. Empty = autodetect (was the `PEPTIDE_SSF2_APP` env var only).
+    /// Lets "Launch Peptide" target SSF2 with the same console as Fraymakers.
+    pub ssf2_app: String,
+    /// SSF2 spawn stage id (the SSF2 analogue of `stage`; stage names differ per
+    /// engine). Empty = "battlefield".
+    pub ssf2_stage: String,
     /// Legacy: the active character. No longer a setup field — the character to
     /// launch is chosen per-launch by picking a `.fraytools` project. Kept for
     /// back-compat (config round-trips) and the `FRAY_CHAR`/CLI fallback path.
@@ -122,6 +129,28 @@ impl Config {
         platform::default_fraytools_exe()
     }
 
+    /// SSF2 application path. `PEPTIDE_SSF2_APP` env → config → autodetect.
+    /// Returns the bundle/executable path the SSF2 patcher operates on; `None`
+    /// when nothing is configured and autodetect finds no install.
+    pub fn ssf2_app(&self) -> Option<PathBuf> {
+        if let Some(d) = std::env::var_os("PEPTIDE_SSF2_APP") {
+            return Some(PathBuf::from(d));
+        }
+        if !self.ssf2_app.is_empty() {
+            return Some(PathBuf::from(&self.ssf2_app));
+        }
+        platform::default_ssf2_app()
+    }
+
+    /// SSF2 spawn stage id. `PEPTIDE_SSF2_STAGE` env → config → "battlefield".
+    pub fn ssf2_stage(&self) -> String {
+        if let Ok(s) = std::env::var("PEPTIDE_SSF2_STAGE") {
+            if !s.is_empty() { return s; }
+        }
+        if !self.ssf2_stage.is_empty() { return self.ssf2_stage.clone(); }
+        "battlefield".to_string()
+    }
+
     /// Active character. `FRAY_CHAR` env → config → "impostor" (base-game default).
     pub fn char_name(&self) -> String {
         if let Ok(c) = std::env::var("FRAY_CHAR") {
@@ -212,6 +241,8 @@ mod tests {
             configured: true,
             fraymakers_root: "/games/Fraymakers".into(),
             fraytools_path: "/Applications/FrayTools.app".into(),
+            ssf2_app: "/Applications/SSF2.app".into(),
+            ssf2_stage: "finaldestination".into(),
             current_char: "mario".into(),
             output_dir: "/work/out".into(),
             misc_ssf: "/ssfs/misc.ssf".into(),

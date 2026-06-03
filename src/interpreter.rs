@@ -82,21 +82,21 @@ pub const CONTROLS: &[(&str, u32)] = &[
     ("dash", 0x20000),
 ];
 
-/// Expand a `seq` timeline into one `i <mask>` wire line per engine frame.
-///
-/// The engine's command dispatcher processes exactly ONE command line per frame, so a
-/// burst of N `i` lines plays out as N consecutive frames of input — frame-accurate,
-/// paced by the engine itself (not by host timing). This is the replay-like surface for
-/// scripting multi-frame control tests.
+/// Expand a `seq` token list into the per-frame control masks (engine-agnostic).
 ///
 /// Each token is a step `<controls>:<frames>` (or `<controls>*<frames>`; bare `<controls>`
 /// = 1 frame). `controls` is a `+`-joined control list (`down+special`), a raw mask
 /// (`34`/`0x22`), or one of `release`/`none`/`neutral`/empty for the 0 mask (held neutral).
-/// Steps are expanded to `frames` copies each and concatenated; a final `i 0` is appended
+/// Steps are expanded to `frames` copies each and concatenated; a final `0` mask is appended
 /// so the character returns to neutral when the sequence ends. Total frames are capped.
-pub fn expand_sequence(tokens: &[&str]) -> Result<String, String> {
+///
+/// The engine's command dispatcher processes exactly ONE command line per frame, so the
+/// Fraymakers encoder emits one `i <mask>` wire line per element (a burst of N plays out
+/// as N consecutive input frames — frame-accurate, paced by the engine, not host timing);
+/// the SSF2 backend plays the same masks one engine frame at a time.
+pub fn expand_sequence_masks(tokens: &[&str]) -> Result<Vec<u32>, String> {
     const MAX_FRAMES: usize = 4000;
-    let mut lines: Vec<String> = Vec::new();
+    let mut masks: Vec<u32> = Vec::new();
     for step in tokens {
         let (ctrl, frames) = match step.split_once(':').or_else(|| step.split_once('*')) {
             Some((c, n)) => {
@@ -113,14 +113,14 @@ pub fn expand_sequence(tokens: &[&str]) -> Result<String, String> {
         } else {
             controls_mask(&[ctrl])?
         };
-        if lines.len() + frames > MAX_FRAMES {
+        if masks.len() + frames > MAX_FRAMES {
             return Err(format!("sequence too long (> {MAX_FRAMES} frames)"));
         }
-        for _ in 0..frames { lines.push(format!("i {mask}")); }
+        for _ in 0..frames { masks.push(mask); }
     }
-    if lines.is_empty() { return Err("empty sequence".into()); }
-    lines.push("i 0".into()); // auto-release: return to neutral at the end
-    Ok(lines.join("\n"))
+    if masks.is_empty() { return Err("empty sequence".into()); }
+    masks.push(0); // auto-release: return to neutral at the end
+    Ok(masks)
 }
 
 /// Parse a `hold`/`press` argument list into a button bitmask. Tokens are the
@@ -194,6 +194,229 @@ pub enum Translated {
     Client(String),
 }
 
+/// A spawn request: one or more players (player 0, 1, …), a stage, and an optional
+/// assist for player 0. Multiple characters are given comma-separated
+/// (`spawn mario,sonic battlefield`); each becomes a player. Assists are a
+/// Fraymakers concept — on SSF2 the assist field is a no-op.
+#[derive(Debug, Clone)]
+pub struct SpawnArgs {
+    pub characters: Vec<String>,
+    pub stage: Option<String>,
+    pub assist: Option<String>,
+}
+
+impl SpawnArgs {
+    /// Player 0's character (the one being debugged), or "" if none.
+    pub fn character(&self) -> &str {
+        self.characters.first().map(String::as_str).unwrap_or("")
+    }
+}
+
+// ── shared match settings ────────────────────────────────────────────────────
+// The headless debug-match RULES, the SINGLE source of truth read by BOTH engines
+// so a `spawn` produces the same match on Fraymakers and SSF2. The *data* lives in
+// `match_settings.conf` (the source of truth); this is just the parser/loader,
+// living at the interpreter (highest-abstraction) level so every backend reads the
+// one file through the one path. Fraymakers bakes lives+time into its start-match
+// bytecode; SSF2 applies all three to the versus `Game`.
+
+/// Parsed `match_settings.conf` — the full match-rule set, with universal defaults
+/// (a never-ending 1-on-stage debug match). `damage_ratio` is the multiplier on
+/// INCOMING damage when a hit lands (not a starting/current damage value). Each
+/// backend maps these onto its engine: SSF2 → GameSettings/PlayerSetting fields,
+/// Fraymakers → the start-match config.
+#[derive(Debug, Clone, Copy)]
+pub struct MatchSettings {
+    pub lives: i32,          // stock count (999 ≈ infinite)
+    pub time: i32,           // timer seconds (0 = no timer)
+    pub damage_ratio: f64,   // incoming-damage multiplier (1.0 = normal)
+    pub team_damage: bool,   // friendly fire
+    pub start_damage: i32,   // starting damage %
+    pub using_stamina: bool, // stamina (HP) mode instead of stocks
+    pub start_stamina: i32,  // starting stamina/HP (when using_stamina)
+    pub size_ratio: f64,     // character size multiplier
+    pub item_frequency: i32, // item spawn frequency (0 = items off)
+}
+
+impl Default for MatchSettings {
+    fn default() -> Self {
+        MatchSettings {
+            lives: 999,
+            time: 0,
+            damage_ratio: 1.0,
+            team_damage: false,
+            start_damage: 0,
+            using_stamina: false,
+            start_stamina: 150,
+            size_ratio: 1.0,
+            item_frequency: 0,
+        }
+    }
+}
+
+/// Parse the `key = value` config (`#` comment; unknown keys ignored; a missing key
+/// keeps its [`Default`] — the last-resort fallback if the file is absent). Bools
+/// accept true/false/1/0/on/off.
+pub fn parse_match_settings(text: &str) -> MatchSettings {
+    fn b(v: &str) -> Option<bool> {
+        match v.to_ascii_lowercase().as_str() {
+            "true" | "1" | "on" | "yes" => Some(true),
+            "false" | "0" | "off" | "no" => Some(false),
+            _ => None,
+        }
+    }
+    let mut s = MatchSettings::default();
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() { continue; }
+        if let Some((k, v)) = line.split_once('=') {
+            let v = v.trim();
+            match k.trim() {
+                "lives" => if let Ok(n) = v.parse() { s.lives = n; },
+                "time" => if let Ok(n) = v.parse() { s.time = n; },
+                "damage_ratio" => if let Ok(n) = v.parse() { s.damage_ratio = n; },
+                "team_damage" => if let Some(x) = b(v) { s.team_damage = x; },
+                "start_damage" => if let Ok(n) = v.parse() { s.start_damage = n; },
+                "using_stamina" => if let Some(x) = b(v) { s.using_stamina = x; },
+                "start_stamina" => if let Ok(n) = v.parse() { s.start_stamina = n; },
+                "size_ratio" => if let Ok(n) = v.parse() { s.size_ratio = n; },
+                "item_frequency" => if let Ok(n) = v.parse() { s.item_frequency = n; },
+                _ => {}
+            }
+        }
+    }
+    s
+}
+
+/// Load the shared match rules from `match_settings.conf` (the source of truth).
+pub fn load_match_settings() -> MatchSettings {
+    parse_match_settings(&crate::read_asset("match_settings.conf"))
+}
+
+/// The ENGINE-AGNOSTIC command, produced by [`parse`]. Both the Fraymakers and
+/// SSF2 debug backends ([`crate::debug_target::DebugTarget`]) execute these, so
+/// one command vocabulary drives both engines with the same syntax. The
+/// Fraymakers wire encoding lives in [`translate`] (derived from this).
+#[derive(Debug, Clone)]
+pub enum Command {
+    /// Client-side help text.
+    Help,
+    /// Boot a match with the given character (+ optional stage/assist).
+    Spawn(SpawnArgs),
+    /// Evaluate an expression (hscript on Fraymakers; reflection on SSF2).
+    Eval(String),
+    /// Hold the given control bitmask (release = `Hold(0)`).
+    Hold(u32),
+    /// Play a frame-accurate input timeline — one mask per engine frame
+    /// (already auto-released with a trailing `0`).
+    Seq(Vec<u32>),
+    /// Run the engine's debug console.
+    Console,
+    /// Cleanly shut the engine down.
+    Exit,
+    /// Diagnostic content (re)load.
+    Load,
+    /// Nothing to send; print this client-side message (usage / error / empty).
+    Client(String),
+}
+
+/// Parse a human command line into an engine-agnostic [`Command`]. This is the
+/// single front-end shared by every backend — unknown heads and bare expressions
+/// become `Eval`, exactly like the Fraymakers default.
+pub fn parse(line: &str) -> Command {
+    let line = line.trim();
+    if line.is_empty() {
+        return Command::Client(String::new());
+    }
+    let mut parts = line.split_whitespace();
+    let head = parts.next().unwrap_or("");
+    let rest: Vec<&str> = parts.collect();
+
+    if let Some(cmd) = lookup(head) {
+        match cmd.name {
+            "help" => return Command::Help,
+            "spawn" => {
+                // first token is the player list: comma-separated characters.
+                let characters: Vec<String> = rest.first().copied().unwrap_or("")
+                    .split(',').map(str::trim).filter(|c| !c.is_empty()).map(str::to_string).collect();
+                return Command::Spawn(SpawnArgs {
+                    characters,
+                    stage: rest.get(1).map(|s| s.to_string()),
+                    assist: rest.get(2).map(|s| s.to_string()),
+                });
+            }
+            "eval" => return Command::Eval(rest.join(" ")),
+            "hold" => {
+                if rest.is_empty() {
+                    return Command::Client(
+                        "usage: hold <control[+control…]>  (e.g. hold down+special). release = clear.\n".into());
+                }
+                return match controls_mask(&rest) {
+                    Ok(mask) => Command::Hold(mask),
+                    Err(e) => Command::Client(format!("{e}\n")),
+                };
+            }
+            "release" => return Command::Hold(0),
+            "seq" => {
+                if rest.is_empty() {
+                    return Command::Client(
+                        "usage: seq <controls:frames> …  (e.g. seq down+special:2 right:12). One input per engine frame; auto-releases at the end.\n".into());
+                }
+                return match expand_sequence_masks(&rest) {
+                    Ok(masks) => Command::Seq(masks),
+                    Err(e) => Command::Client(format!("{e}\n")),
+                };
+            }
+            "console" => return Command::Console,
+            "exit" => return Command::Exit,
+            "load" => return Command::Load,
+            _ => {}
+        }
+    }
+    // Unknown head OR a bare expression → eval the whole (collapsed) line.
+    Command::Eval(collapse_multiline(line))
+}
+
+/// Encode an engine-agnostic [`Command`] into the Fraymakers wire line. This is
+/// the FraymakersTarget's view; SSF2's backend executes the `Command` differently.
+/// Fraymakers' baked default stage/assist ids (match the patcher's `connect_edit`
+/// `unwrap_or` defaults in main.rs). Sent to fill the stage+assist wire slots when a
+/// multi-player `s` omits them, so the extra players stay at parts[4+].
+const FM_DEFAULT_STAGE: &str = "thespire";
+const FM_DEFAULT_ASSIST: &str = "commandervideoassist";
+
+pub fn command_to_wire(cmd: &Command) -> Translated {
+    match cmd {
+        Command::Help => Translated::Client(help_text()),
+        Command::Client(s) => Translated::Client(s.clone()),
+        Command::Spawn(a) => {
+            // wire: `s <char0> <stage> <assist> [char1 char2 …]`. This wire path drives
+            // Fraymakers. The engine `s` handler splits on spaces (NOT commas) and reads
+            // parts[1]=char0, parts[2]=stage, parts[3]=assist, parts[4..]=extra players.
+            // So for >1 player we MUST emit the stage+assist slots (defaulting to the same
+            // ids the patcher bakes) to keep the extra players at parts[4+]. SSF2 multiplayer
+            // is handled separately by `Ssf2Target::spawn` (idle dummies) and never uses this.
+            let mut wire = String::from("s");
+            if !a.characters.is_empty() { wire.push(' '); wire.push_str(a.character()); }
+            if a.characters.len() > 1 {
+                wire.push(' '); wire.push_str(a.stage.as_deref().unwrap_or(FM_DEFAULT_STAGE));
+                wire.push(' '); wire.push_str(a.assist.as_deref().unwrap_or(FM_DEFAULT_ASSIST));
+                for c in &a.characters[1..] { wire.push(' '); wire.push_str(c); }
+            } else {
+                if let Some(st) = &a.stage { wire.push(' '); wire.push_str(st); }
+                if let Some(asst) = &a.assist { wire.push(' '); wire.push_str(asst); }
+            }
+            Translated::Wire(wire)
+        }
+        Command::Eval(e) => Translated::Wire(if e.is_empty() { "e".into() } else { format!("e {e}") }),
+        Command::Hold(m) => Translated::Wire(format!("i {m}")),
+        Command::Seq(masks) => Translated::Wire(masks.iter().map(|m| format!("i {m}")).collect::<Vec<_>>().join("\n")),
+        Command::Console => Translated::Wire("c".into()),
+        Command::Exit => Translated::Wire("x".into()),
+        Command::Load => Translated::Wire("l".into()),
+    }
+}
+
 /// Translate a friendly command line into the engine wire line.
 ///
 /// - `help` / `?` → prints the help text, sends nothing.
@@ -202,74 +425,10 @@ pub enum Translated {
 /// - anything else → passed through verbatim (forward-compatible: a raw wire
 ///   line a human typed still reaches the engine untouched).
 pub fn translate(line: &str) -> Translated {
-    let line = line.trim();
-    if line.is_empty() {
-        return Translated::Wire(String::new());
-    }
-    let mut parts = line.split_whitespace();
-    let head = parts.next().unwrap_or("");
-    let rest: Vec<&str> = parts.collect();
-
-    // Only the irreducible commands are recognized here; EVERYTHING ELSE is an hscript
-    // expression run through the eval hook (`e <expr>`). So `match.getCharacters()[0].
-    // getStateName()`, `CState.JAB`, `1 + 2` etc. just evaluate — no per-feature command.
-    if let Some(cmd) = lookup(head) {
-        match cmd.name {
-            "help" => return Translated::Client(help_text()),
-
-            // Single-byte wire-protocol commands. spawn/exit/load are the irreducible
-            // bootstrap hooks. `console` stays here too: it's a side-effecting method call
-            // (h2d.Console.runCommand) the interp can't invoke — only field reads and
-            // Character-instance methods reflect through hscript — so its bytecode `c`
-            // handler remains the path.
-            "spawn" | "exit" | "load" | "console" => {
-                let mut wire = cmd.wire.to_string();
-                if !rest.is_empty() { wire.push(' '); wire.push_str(&rest.join(" ")); }
-                return Translated::Wire(wire);
-            }
-
-            // `eval <hscript>` — explicit form; the implicit default below does the same.
-            "eval" => {
-                return Translated::Wire(if rest.is_empty() { "e".into() }
-                                        else { format!("e {}", rest.join(" ")) });
-            }
-
-            // `hold`/`press <controls>` → resolve names to a button bitmask, send `i <mask>`.
-            // `release` → `i 0`. The engine ORs the mask into the live held controls each
-            // frame (and pulses the pressed edge), so its own input→action mapping fires.
-            "hold" => {
-                if rest.is_empty() {
-                    return Translated::Client(
-                        "usage: hold <control[+control…]>  (e.g. hold down+special). release = clear.\n".into());
-                }
-                return match controls_mask(&rest) {
-                    Ok(mask) => Translated::Wire(format!("i {mask}")),
-                    Err(e) => Translated::Client(format!("{e}\n")),
-                };
-            }
-            "release" => return Translated::Wire("i 0".into()),
-
-            // `seq <controls:frames> …` → a frame-accurate input timeline: one `i <mask>`
-            // line per frame, which the engine plays one-per-frame (auto-releases at the end).
-            "seq" => {
-                if rest.is_empty() {
-                    return Translated::Client(
-                        "usage: seq <controls:frames> …  (e.g. seq down+special:2 right:12). One input per engine frame; auto-releases at the end.\n".into());
-                }
-                return match expand_sequence(&rest) {
-                    Ok(wire) => Translated::Wire(wire),
-                    Err(e) => Translated::Client(format!("{e}\n")),
-                };
-            }
-            _ => {}
-        }
-    }
-
-    // Unknown head OR a bare hscript expression (`match.getCharacters()[0].toState(
-    // CState.JAB)`, `CState.JAB`, `1 + 2`, …) — run the whole line through the eval hook.
-    // collapse_multiline folds a pasted/typed multi-line snippet onto one physical line
-    // so it survives the newline-delimited engine wire (the `e` drain reads until '\n').
-    Translated::Wire(format!("e {}", collapse_multiline(line)))
+    // Engine-agnostic parse, then encode to the Fraymakers wire. (Empty line → an
+    // empty wire send, preserving prior behaviour rather than a client no-op.)
+    if line.trim().is_empty() { return Translated::Wire(String::new()); }
+    command_to_wire(&parse(line))
 }
 
 /// Split one chat message into independent commands at BLANK lines.
@@ -448,9 +607,20 @@ pub fn interpret_crash(error_log: &str, resdiag: &[String]) -> Option<String> {
 
     let is_stage = log.contains("setupStage") || log.contains("stagePxfContentMap")
         || resdiag.iter().any(|l| l.contains("stage failed"));
+    // Null assist: the HUD's DamageCounter renders each player's assist icon, so a player with a
+    // null/unresolved assist null-derefs `.namespace` in getContentIdentifierString. Common when
+    // an extra player (multi-player `s a,b`) didn't inherit a valid assist.
+    let is_assist = log.contains("generateAssistSprite") || log.contains("DamageCounter")
+        || resdiag.iter().any(|l| l.contains("assist did not resolve"));
 
     let mut out = String::new();
-    if is_stage {
+    if is_assist {
+        out.push_str("Hmm… a player has no assist.\n");
+        out.push_str("Fraymakers' HUD (DamageCounter.generateAssistSprite) needs every player to \
+                      have a resolved assist — a null one crashes it. If you spawned multiple \
+                      players (`s <char>,<char2>`), pass a valid assist as the 3rd token \
+                      (`s <char> <stage> <assist> …`) so extra players inherit it.");
+    } else if is_stage {
         out.push_str("Hmm… the stage didn't load.\n");
         match &id {
             Some(i) => out.push_str(&format!(
