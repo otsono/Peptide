@@ -80,6 +80,12 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd { name: "info",    aliases: &["status", "players"], wire: 'e',
           args: "",
           help: "one-shot readout of both players: [p0 x, state, dmg, team, p1 x, state, dmg, team]" },
+    Cmd { name: "reset",   aliases: &["neutral"], wire: 'e',
+          args: "",
+          help: "reset both players to neutral STAND with zero momentum (clean slate between tests)" },
+    Cmd { name: "kill",    aliases: &["ko", "blast"], wire: 'e',
+          args: "<player>",
+          help: "fling a player into the bottom blast zone to force a KO (e.g. kill p1) — for respawn / stock testing" },
 ];
 
 /// Control name → button bit (matches pxf.input.ControlsObject's bitmask, field
@@ -406,6 +412,19 @@ pub fn parse(line: &str) -> Command {
                 return Command::Eval(
                     "[p0.getX(), p0.getStateName(), p0.damage._damage, p0.getTeam(), \
                      p1.getX(), p1.getStateName(), p1.damage._damage, p1.getTeam()]".into());
+            }
+            "reset" => {
+                return Command::Eval(
+                    "p0.setXVelocity(0); p0.setYVelocity(0); p1.setXVelocity(0); p1.setYVelocity(0); \
+                     p0.toState(CState.STAND); p1.toState(CState.STAND)".into());
+            }
+            "kill" => {
+                let player = match rest.first() {
+                    Some(p) if p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => *p,
+                    Some(p) => return Command::Client(format!("kill: {p:?} is not a valid player reference\n")),
+                    None => return Command::Client("usage: kill <player>  (e.g. kill p1)\n".into()),
+                };
+                return Command::Eval(format!("{player}.setY({player}.getY() + 3000)"));
             }
             "console" => return Command::Console,
             "exit" => return Command::Exit,
@@ -1060,6 +1079,14 @@ mod tests {
         assert!(wire("info").starts_with("e [p0.getX(), p0.getStateName()"));
         assert!(matches!(translate("dmg p1"), Translated::Client(_)));       // missing value
         assert!(matches!(translate("dmg p1 lots"), Translated::Client(_)));  // non-numeric
+    }
+
+    #[test]
+    fn reset_and_kill_are_eval_wrappers() {
+        assert!(wire("reset").contains("p0.toState(CState.STAND)") && wire("reset").contains("setXVelocity(0)"));
+        assert_eq!(wire("kill p1"), "e p1.setY(p1.getY() + 3000)");
+        assert!(matches!(translate("kill"), Translated::Client(_)));        // missing player
+        assert!(matches!(translate("kill p1;evil"), Translated::Client(_))); // injection guard
     }
 
     #[test]
