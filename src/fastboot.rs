@@ -97,3 +97,53 @@ pub fn command(engine: Engine, opts: &BootOptions) -> Option<String> {
 fn arg_val(args: &[String], key: &str) -> Option<String> {
     args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn from_cli_full_means_no_autostart() {
+        for flag in ["--full", "--no-boot", "--attach"] {
+            assert!(BootOptions::from_cli(&argv(&[flag])).full, "{flag} should mean full/no-autostart");
+        }
+        assert!(!BootOptions::from_cli(&argv(&["--char", "mario"])).full);
+        assert_eq!(BootOptions::from_cli(&argv(&["--char", "mario"])).char_name.as_deref(), Some("mario"));
+    }
+
+    #[test]
+    fn full_boot_never_autostarts() {
+        let opts = BootOptions { char_name: Some("mario".into()), full: true };
+        assert_eq!(command(Engine::Fraymakers, &opts), None);
+        assert_eq!(command(Engine::Ssf2, &opts), None);
+    }
+
+    #[test]
+    fn empty_char_never_autostarts() {
+        let opts = BootOptions { char_name: Some("   ".into()), full: false };
+        assert_eq!(command(Engine::Fraymakers, &opts), None);
+        assert_eq!(command(Engine::Ssf2, &opts), None);
+    }
+
+    #[test]
+    fn ssf2_quick_boot_is_char_only() {
+        // SSF2 resolves stage/assist inside its own spawn, so the command is char-only
+        // and config-independent.
+        let opts = BootOptions { char_name: Some("mario".into()), full: false };
+        assert_eq!(command(Engine::Ssf2, &opts).as_deref(), Some("spawn mario"));
+    }
+
+    #[test]
+    fn fraymakers_quick_boot_makes_stage_and_assist_explicit() {
+        // FM's `s` handler only fetch-loads the args it's given, so the command must carry
+        // an explicit stage + assist (4 tokens: spawn, char, stage, assist).
+        let opts = BootOptions { char_name: Some("mario".into()), full: false };
+        let cmd = command(Engine::Fraymakers, &opts).expect("a char + non-full boot autostarts");
+        assert!(cmd.starts_with("spawn mario "), "got: {cmd}");
+        assert_eq!(cmd.split_whitespace().count(), 4, "spawn + char + stage + assist; got: {cmd}");
+    }
+}
