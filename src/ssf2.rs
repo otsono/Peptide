@@ -81,7 +81,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
         if entry.file_type()?.is_dir() {
             copy_dir_all(&entry.path(), &dst_path)?;
         } else {
-            std::fs::copy(&entry.path(), &dst_path)?;
+            std::fs::copy(entry.path(), &dst_path)?;
         }
     }
     Ok(())

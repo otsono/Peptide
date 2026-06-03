@@ -32,6 +32,7 @@ pub struct Cmd {
     pub aliases: &'static [&'static str],
     /// The wire byte the engine matches on. `'\0'` means handled entirely
     /// client-side (e.g. `help`) and nothing is sent.
+    #[allow(dead_code)] // documents the wire protocol; read on the engine side
     pub wire: char,
     pub args: &'static str,
     pub help: &'static str,

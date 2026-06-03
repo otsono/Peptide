@@ -20,11 +20,26 @@
 //! symbol has gone missing, so a layout change fails loudly instead of corrupting
 //! the engine.
 //!
+//! THE CANONICAL ENGINE-SURFACE REFERENCE
+//! --------------------------------------
+//! The prose docs stay deliberately high-level about the engine, so THIS TABLE is
+//! the canonical, in-repo map of the engine surface the harness actually touches.
+//! If you're trying to understand which engine functions / fields / types Peptide
+//! reaches into and why, read `MANIFEST` below top-to-bottom: it is grouped by
+//! subsystem (`socket-bridge`, `boot`, `content`, `hscript-eval`, `line-cmd`,
+//! `move-dispatch`, `telemetry`, `console`), and every entry carries a `why` string
+//! describing its role. The `connect_edit` patcher in `main.rs` consumes exactly
+//! these symbols (via the `find_fn` / `find_native` / `find_type` / `find_field`
+//! resolvers), so the table doubles as the index into the patch logic.
+//!
 //! THE RULE FOR FUTURE WORK
 //! ------------------------
 //! Any NEW engine symbol a patch comes to depend on MUST be added here. Keep this
-//! list in step with what `connect_edit` actually resolves. See DEVELOPMENT.md,
-//! "Surviving Fraymakers updates", for the full philosophy.
+//! list in step with what `connect_edit` actually resolves. See
+//! docs/PEPTIDE_DESIGN.md, "Version resilience — surviving Fraymakers updates", for
+//! the full philosophy, and the `peptide` read-only inspection subcommands
+//! (`doctor` / `inspect` / `fnsof` / `typefields` / `fninfo` / `dis` / `callers` /
+//! `strgrep` / `whoref`) for re-resolving anything that moves in a new build.
 
 use std::io::{IsTerminal, Write};
 
@@ -287,7 +302,7 @@ pub fn render_report(statuses: &[SymStatus], title: &str) {
     if miss_crit > 0 {
         let _ = writeln!(
             err,
-            "  -> {miss_crit} critical engine symbol(s) gone. This Fraymakers build is NOT\n     compatible with the current patcher. Re-find the names above and update\n     src/manifest.rs + connect_edit. See DEVELOPMENT.md 'Surviving Fraymakers updates'."
+            "  -> {miss_crit} critical engine symbol(s) gone. This Fraymakers build is NOT\n     compatible with the current patcher. Re-find the names above and update\n     src/manifest.rs + connect_edit. See docs/PEPTIDE_DESIGN.md 'Version resilience'."
         );
     } else if miss_warn > 0 {
         let _ = writeln!(

@@ -26,7 +26,18 @@ jobs:
           librsvg2-dev \
           libxdo-dev \
           pkg-config
+    - name: Clippy (lint gate)
+      run: |
+        rustup component add clippy
+        cargo clippy --workspace -- -D warnings
     - name: Build
       run: cargo build --verbose
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --workspace --verbose
+    - name: Note skipped integration tests
+      if: always()
+      run: |
+        echo "::notice::Integration tests that need the SSF2 .ssf corpus are SKIPPED in CI \
+        (the files are McLeodGaming content and aren't committed). They run locally with the \
+        corpus at ../ssf2-ssfs/ or \$SSF2_SSFS_DIR. CI covers unit tests, the convention/doc \
+        guards, and the build."

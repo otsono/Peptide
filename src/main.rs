@@ -4,6 +4,19 @@
 // platform::attach_parent_console). Debug builds keep the console subsystem so
 // `cargo run` output works without ceremony.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+// Clippy baseline (CI runs `cargo clippy -- -D warnings`): pedantic-style / pre-existing
+// lint families we accept. new code should still try to avoid them.
+#![allow(
+    clippy::doc_overindented_list_items,
+    clippy::doc_lazy_continuation,
+    clippy::empty_line_after_doc_comments,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::manual_checked_ops,
+    clippy::unnecessary_unwrap,
+    clippy::neg_cmp_op_on_partial_ord,
+    clippy::field_reassign_with_default,
+)]
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter};

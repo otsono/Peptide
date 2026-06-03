@@ -111,9 +111,9 @@ pub fn parse_sounds(swf: &[u8]) -> Result<Vec<SoundEntry>> {
                     });
                 }
             }
-            76 => {
+            76
                 // SymbolClass — maps char ids to AS3 class names
-                if length >= 2 {
+                if length >= 2 => {
                     let count = u16::from_le_bytes([swf[pos], swf[pos+1]]) as usize;
                     let mut p = pos + 2;
                     for _ in 0..count {
@@ -127,7 +127,6 @@ pub fn parse_sounds(swf: &[u8]) -> Result<Vec<SoundEntry>> {
                         symbols.insert(sym_id, name);
                     }
                 }
-            }
             _ => {}
         }
         pos = tag_end;

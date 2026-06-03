@@ -5,15 +5,11 @@
 use ssf2_converter::ssf;
 use ssf2_converter::swf_parser;
 
-// Location of the sibling test-input directory. Many of these tests are
-// optional — they no-op if the input files aren't present (a fresh checkout
-// on a machine without the SSF2 roster).
+mod common;
+
+// these tests no-op if the SSF2 corpus isn't present (e.g. a fresh checkout).
 fn ssfs_dir() -> std::path::PathBuf {
-    // ssf2-ssfs/ is a sibling of the repo root; the crate sits two levels below.
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().and_then(|p| p.parent())
-        .unwrap_or(std::path::Path::new("."))
-        .join("ssf2-ssfs")
+    common::ssfs_dir()
 }
 
 #[test]
@@ -64,10 +60,7 @@ fn ssf_decompress_rejects_malformed_wrapper() {
 #[test]
 fn parse_sandbag_swf_produces_abc_blocks_and_symbols() {
     let path = ssfs_dir().join("sandbag.ssf");
-    if !path.exists() {
-        eprintln!("skip: sandbag.ssf not available at {}", path.display());
-        return;
-    }
+    if !common::present(&path) { return; }
     let bytes = std::fs::read(&path).expect("read sandbag.ssf");
     let swf_bytes = ssf::decompress(&bytes).expect("unwrap SSF");
     let parsed = swf_parser::parse(&swf_bytes).expect("parse SWF");

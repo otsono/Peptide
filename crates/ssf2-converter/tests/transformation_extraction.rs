@@ -8,12 +8,10 @@
 use ssf2_converter::{run_conversion, ConvertOptions};
 use std::path::{Path, PathBuf};
 
-/// `ssf2-ssfs/` is a sibling of the repo root; the crate sits two levels below.
+mod common;
+
 fn ssf_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(format!("ssf2-ssfs/{}.ssf", name))
+    common::ssf(name)
 }
 
 fn run_converter(ssf: &Path, out: &Path) {
@@ -60,7 +58,7 @@ fn assert_transformation_package(out: &Path, project_id: &str, parent: &str, tra
 #[test]
 fn bowser_ssf_emits_bowser_and_gigabowser() {
     let ssf = ssf_path("bowser");
-    if !ssf.exists() { eprintln!("ssf2-ssfs/bowser.ssf missing; skipping"); return; }
+    if !common::present(&ssf) { return; }
     let out = tempfile::tempdir().expect("tempdir");
     run_converter(&ssf, out.path());
 
@@ -98,7 +96,7 @@ fn bowser_ssf_emits_bowser_and_gigabowser() {
 #[test]
 fn wario_ssf_emits_wario_and_wario_man() {
     let ssf = ssf_path("wario");
-    if !ssf.exists() { eprintln!("ssf2-ssfs/wario.ssf missing; skipping"); return; }
+    if !common::present(&ssf) { return; }
     let out = tempfile::tempdir().expect("tempdir");
     run_converter(&ssf, out.path());
 

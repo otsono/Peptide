@@ -613,7 +613,7 @@ mod tests {
         let buf = swf::decompress_swf(&data[..]).expect("decompress");
         let parsed = swf::parse_swf(&buf).expect("parse swf");
         let abc_bytes: &[u8] = parsed.tags.iter().find_map(|t| {
-            if let swf::Tag::DoAbc2(a) = t { Some(&a.data[..]) } else { None }
+            if let swf::Tag::DoAbc2(a) = t { Some(a.data) } else { None }
         }).expect("DoAbc2");
 
         let abc = parse(abc_bytes).expect("parse abc");

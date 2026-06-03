@@ -671,9 +671,8 @@ fn extract_xframe_name(bytecode: &[u8], abc: &AbcFile) -> Option<String> {
             }
             OP_CONSTRUCTPROP => { read_u30_at(bytecode, &mut i); read_u30_at(bytecode, &mut i); }
             OP_JUMP | OP_IFTRUE | OP_IFFALSE | OP_IFEQ | OP_IFNE | OP_IFLT |
-            OP_IFLE | OP_IFGT | OP_IFGE | OP_IFSTRICTEQ | OP_IFSTRICTNE => {
-                if i + 3 <= bytecode.len() { i += 3; }
-            }
+            OP_IFLE | OP_IFGT | OP_IFGE | OP_IFSTRICTEQ | OP_IFSTRICTNE
+                if i + 3 <= bytecode.len() => { i += 3; }
             _ => {}
         }
     }
@@ -848,10 +847,10 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
                 }
                 // Decompile all other Ext methods for Script.hx
                 // Skip slot/const traits (kind 0/6) — those are variable declarations, not methods
-                name if !matches!(name, "getOwnStats" | "getAttackStats" | "getItemStats" | "getProjectileStats") => {
+                name if !matches!(name, "getOwnStats" | "getAttackStats" | "getItemStats" | "getProjectileStats")
                     // Only decompile actual method traits (kind 1/2/3), not slots (kind 0/6)
                     // The trait.kind is stored in the Trait struct; method_idx > 0 means it's a real method
-                    if t.kind & 0x0F != 0 || t.slot_idx == 0 {
+                    && (t.kind & 0x0F != 0 || t.slot_idx == 0) => {
                         // Get param count from method signature
                         let params: Vec<String> = if let Some(method) = abc.methods.get(body.method_idx as usize) {
                             (0..method.param_count).map(|i| format!("arg{}", i)).collect()
@@ -861,7 +860,6 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
                         let code = decompiler::decompile_method(body, abc, name, &params);
                         ext_methods.insert(name.to_string(), code);
                     }
-                }
                 _ => {}
             }
         }
@@ -1488,9 +1486,8 @@ fn skip_opcode_operands(op: u8, bc: &[u8], i: &mut usize) {
         }
         OP_CONSTRUCT => { read_u30_at(bc, i); }
         OP_JUMP | OP_IFTRUE | OP_IFFALSE | OP_IFEQ | OP_IFNE | OP_IFLT |
-        OP_IFLE | OP_IFGT  | OP_IFGE    | OP_IFSTRICTEQ | OP_IFSTRICTNE => {
-            if *i + 3 <= bc.len() { *i += 3; }
-        }
+        OP_IFLE | OP_IFGT  | OP_IFGE    | OP_IFSTRICTEQ | OP_IFSTRICTNE
+            if *i + 3 <= bc.len() => { *i += 3; }
         _ => {}
     }
 }
@@ -2167,9 +2164,8 @@ fn extract_ssf2_stats(bytecode: &[u8], abc: &AbcFile) -> Option<CharStats> {
             }
             OP_CONSTRUCT | OP_NEWARRAY | OP_NEWOBJECT => { read_u30_at(bytecode, &mut i); }
             OP_JUMP | OP_IFTRUE | OP_IFFALSE | OP_IFEQ | OP_IFNE | OP_IFLT |
-            OP_IFLE | OP_IFGT | OP_IFGE | OP_IFSTRICTEQ | OP_IFSTRICTNE => {
-                if i + 3 <= bytecode.len() { i += 3; }
-            }
+            OP_IFLE | OP_IFGT | OP_IFGE | OP_IFSTRICTEQ | OP_IFSTRICTNE
+                if i + 3 <= bytecode.len() => { i += 3; }
             _ => {}
         }
     }

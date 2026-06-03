@@ -1,92 +1,152 @@
-# SSF2 → Fraymakers Converter: Agent Context
+# SSF2 → Fraymakers converter: agent context
 
-This document is the authoritative reference for AI agents working on this codebase.
-Both SSF2's SWF format and Fraymakers' entity format are largely undocumented.
-Everything here was reverse-engineered from first principles during development.
+this doc is the authoritative reference for AI agents on this codebase. both SSF2's SWF
+format and Fraymakers' entity format are largely undocumented, so everything here was
+reverse-engineered from first principles during development.
 
-> **Copyright boundary — do not paste, do not publish.** SSF2 (© McLeodGaming)
-> and Fraymakers / FrayTools (© Fraymakers) are proprietary. Everything in this
-> file is described **in our own words** for interoperability; the JSON shapes
-> below are **illustrative examples we authored**, not copied from any copyrighted
-> file. Never add verbatim third-party source, bytecode, decompiled output, or
-> assets to the repo — see [`NOTICE.md`](NOTICE.md) "Reverse-engineering &
-> copyright boundary".
+> **Copyright boundary -- do not paste, do not publish.** SSF2 (© McLeodGaming)
+> and Fraymakers / FrayTools (© Team Fray) are proprietary. everything here is
+> described **in our own words** for interoperability; the JSON shapes below are
+> **illustrative examples we authored**, not copied from any copyrighted file. never
+> add verbatim third-party source, bytecode, decompiled output, or assets to the
+> repo -- see [`NOTICE.md`](NOTICE.md) "Reverse-engineering & copyright boundary".
 
-> **Structure note (current).** **Peptide is the parent product** and the single
-> shipping binary at the repo root (`src/`, package `peptide`). The SSF2 →
-> Fraymakers converter is now a **library crate** at `crates/ssf2-converter/`
-> (still package-named `ssf2_converter`); conversion runs in-process via
-> `run_conversion` / `peptide convert <file.ssf>` — there is no standalone
-> converter binary and no egui GUI. Parts of this file predate that move and may
-> say "the converter" / `ssf2_converter input.ssf`; read those as the library
-> crate and `peptide convert …`. Peptide specifics:
+> ## engine-side knowledge is not in this repo (read this)
+>
+> at **Team Fray's request, for legal compliance**, the tracked docs must
+> **not** explain *how to decompile or patch the Fraymakers (HashLink) engine or the
+> FrayTools editor bundle*, and must **not** document **specific non-hscript engine
+> class / function / field names** or the engine's internal symbol map. the following
+> were **deliberately removed and must not be re-added** to any tracked file, commit
+> message, or PR:
+> - the decompilation / RE *technique* -- how engine symbols are located in the
+>   binary, the load-path internals, and the FrayTools bundle render internals.
+> - the engine's internal **symbol map** -- engine type names, field slots, function
+>   indices, the `CState` integer values, the live-match/character access path, and
+>   the named load / dispatch / telemetry functions.
+>
+> **what's fine to document (and stays):** what Peptide *does* (it boots a patched
+> throwaway copy of the local engine and drives it over a loopback protocol), and how
+> to **contribute to Peptide, including the patcher** -- the layering, the "minimum
+> bytecode, maximum hscript" rule, the resolve-by-name-never-by-index discipline, the
+> symbol-manifest + `doctor` preflight workflow, and where new handlers belong. those
+> describe *our* code and process, not the engine's internals. the **hscript** scripting
+> API (`CState.JAB`, `match.getCharacters()`, `HitboxStats`, …) is the public modding
+> surface and is fine to use and show.
+>
+> scope: this is specifically the **Fraymakers/HashLink engine and FrayTools**. the
+> SSF2 / SWF / AVM2-ABC format notes in this document (the converter's *input* side)
+> are unaffected and stay -- they describe McLeodGaming's Flash content the converter
+> legitimately reads, not the Fraymakers engine.
+>
+> **where the engine context actually lives -- read the code, it's the reference.**
+> the prose stays high-level on purpose; the precise engine surface is in the source,
+> which is canonical. to orient:
+> - **`src/manifest.rs` -- the `MANIFEST` table.** the in-repo map of every engine
+>   symbol the patcher depends on, grouped by subsystem (`socket-bridge`, `boot`,
+>   `content`, `hscript-eval`, `line-cmd`, `move-dispatch`, `telemetry`, `console`).
+>   every entry has a `why` string explaining its role. reading it top to bottom is the
+>   fastest way to learn the engine functions/fields/types the harness touches and how
+>   they fit together -- start here!
+> - **`connect_edit` in `src/main.rs`** -- the patch + dispatch shape (what gets spliced
+>   in, the wire handlers, the load/spawn flow). the resolver helpers it calls
+>   (`find_fn`/`require_fn`, `find_type`, `find_field`, `find_native`) each name the
+>   symbol they look up; follow them for the exact surface.
+> - **`commands.hsx`** -- the in-engine hscript vocabulary (the live match/character
+>   access the harness binds), and **`src/interpreter.rs`** -- the host-side command
+>   routing.
+> - **the `peptide` read-only inspection subcommands** (`doctor`, `inspect`, `fnsof`,
+>   `typefields`, `fninfo`, `dis`, `callers`, `strgrep`, `whoref`) re-resolve anything
+>   that moved in a new build, against your *local* engine. `doctor` resolves the whole
+>   `MANIFEST` and prints a pass/fail checklist. resolve by name, re-verify by
+>   disassembly; treat every index/slot as build-specific.
+> - for the few runtime values that aren't compile-time dependencies (e.g. state ids)
+>   and for longer narrative, keep notes in the gitignored `docs/` scratch space
+>   (`docs/ENGINE_INTERNALS.local.md` is the seed). **never** promote engine symbol
+>   maps or the decompile/patch how-to into a tracked doc, and never paste verbatim
+>   engine bytecode / Haxe / disassembly / strings / assets anywhere.
+
+> **structure note.** **Peptide is the parent product** and the single shipping binary
+> at the repo root (`src/`, package `peptide`). the SSF2 → Fraymakers converter is a
+> **library crate** at `crates/ssf2-converter/` (package-named `ssf2_converter`);
+> conversion runs in-process via `run_conversion` / `peptide convert <file.ssf>`, no
+> standalone converter binary. Peptide specifics:
 > [`docs/PEPTIDE_GUIDE.md`](docs/PEPTIDE_GUIDE.md) (usage) and
 > [`docs/PEPTIDE_DESIGN.md`](docs/PEPTIDE_DESIGN.md) (internals).
 
-> **Architecture convention — minimum bytecode, maximum hscript (read before every commit).**
-> Hand-emitted HashLink bytecode in `src/main.rs` (`connect_edit` and its `inject_*`
+> **test corpus (SSF2 inputs) -- you bring your own.** the `.ssf` files the converter
+> reads aren't in the repo (they're SSF2 game content, © McLeodGaming). by default they're
+> expected at the sibling `../ssf2-ssfs/`; set **`$SSF2_SSFS_DIR`** to point somewhere else.
+> you don't need them to build or to `cargo test` -- corpus-dependent tests check for the
+> files and skip cleanly when they're absent (the skip line tells you how to point at the
+> corpus). full convention in [`DEVELOPMENT.md`](DEVELOPMENT.md) §2 "where the test inputs
+> live"; the shared resolver is `crates/ssf2-converter/tests/common/mod.rs`.
+
+> **architecture convention -- minimum bytecode, maximum hscript (read before every commit).**
+> hand-emitted HashLink bytecode in `src/main.rs` (`connect_edit` and its `inject_*`
 > helpers) is the most expensive and fragile code in the repo: a wrong register type or
 > jump offset silently corrupts the engine and can only be caught by launching the game.
-> So: **add only the minimum amount of bytecode needed to make a thing possible, and
-> implement as much of the actual behaviour as you can in `commands.hsx`.** Bytecode is
-> allowed — just keep it to the irreducible engine-side primitive that hscript/host can't
-> otherwise reach. Where each kind of logic belongs:
-> - **`commands.hsx` (hscript in the engine's own interpreter via the `e` hook) — the
->   DEFAULT for engine-side behaviour.** Anything you can express by calling the script
+> so: **add only the minimum bytecode needed to make a thing possible, and implement as
+> much of the behaviour as you can in `commands.hsx`.** bytecode is allowed -- just keep
+> it to the irreducible engine-side primitive that hscript/host can't otherwise reach.
+> where each kind of logic belongs:
+> - **`commands.hsx` (hscript in the engine's own interpreter via the `e` hook) -- the
+>   DEFAULT for engine-side behaviour.** anything you can express by calling the script
 >   API or the bound values (p0/match/CState/…) goes here, not in bytecode.
 > - **`src/interpreter.rs` (host-side Rust, runs in the Peptide process)** for anything
 >   Peptide can do itself: translating commands, parsing `error.log`, building diagnostics,
->   routing TCP channels, reading character files. No engine round-trip needed → host-side.
-> - **Bytecode (`connect_edit`/`inject_*`) — only the minimum primitive** hscript/host
->   can't reach: the socket bootstrap, per-frame dispatch, the `s`/`x`/`l`/`c`/`e` hooks,
->   binding a value into the eval scope, or pulling one fact the others genuinely can't get
->   (e.g. the failing stage id in `inject_stage_diag`). Push everything ELSE up into hscript.
+>   routing TCP channels, reading character files. no engine round-trip needed → host-side.
+> - **bytecode (`connect_edit`/`inject_*`) -- only the minimum primitive** hscript/host
+>   can't reach: the socket bootstrap, per-frame dispatch, the command hooks, or binding a
+>   value into the eval scope. push everything ELSE up into hscript.
 >
-> Before adding to `connect_edit`/`inject_*`, ask: is this the *smallest* engine primitive
-> that unblocks the feature, with the rest done in `commands.hsx` / `interpreter.rs`?
+> before adding to `connect_edit`/`inject_*`, ask: is this the *smallest* engine primitive
+> that unblocks the feature, with the rest done in `commands.hsx` / `interpreter.rs`? (do
+> NOT document the specific engine class/function/field names you patch against -- see
+> "engine-side knowledge is not in this repo" below.)
 
-> **Architecture convention — ONE command vocabulary, TWO engines (read before adding any
-> host-facing feature).** Peptide debugs both Fraymakers (HashLink) and SSF2 (AVM2). A
-> command or feature must behave **identically** on both — the user types the same thing and
-> it does the equivalent thing regardless of which engine is attached. This is enforced by a
-> layered OOP seam; respect the layer boundaries:
-> - **`src/interpreter.rs` — the engine-agnostic vocabulary.** `parse()` turns a typed line
+> **architecture convention -- ONE command vocabulary, TWO engines (read before adding any
+> host-facing feature).** Peptide debugs both Fraymakers and SSF2. a command or feature must
+> behave **identically** on both -- the user types the same thing and it does the equivalent
+> thing regardless of which engine is attached. this is enforced by a layered OOP seam;
+> respect the layer boundaries:
+> - **`src/interpreter.rs` -- the engine-agnostic vocabulary.** `parse()` turns a typed line
 >   into a `Command`; `src/vocab.rs` declares the `commands.hsx` vocabulary + the FM↔SSF2
->   name reconciliation. New command syntax is defined **here, once**, never per-engine.
-> - **`src/debug_target.rs` — the `DebugTarget` trait (the feature surface).** Every
->   host-facing feature is a trait method. Give it a DEFAULT that just evaluates the engine
->   helper of the same name (`match_status()` → `eval("matchStatus()")`, etc.). Both backends
+>   name reconciliation. new command syntax is defined **here, once**, never per-engine.
+> - **`src/debug_target.rs` -- the `DebugTarget` trait (the feature surface).** every
+>   host-facing feature is a trait method. give it a DEFAULT that just evaluates the engine
+>   helper of the same name (`match_status()` → `eval("matchStatus()")`, etc.). both backends
 >   implement `eval`, so a new feature reaches **both** engines the moment each engine's eval
->   knows the expression — Fraymakers via `commands.hsx`, SSF2 via `src/ssf2_target.rs`. An
+>   knows the expression -- Fraymakers via `commands.hsx`, SSF2 via `src/ssf2_target.rs`. an
 >   engine that genuinely can't do a feature *overrides the method to say so* (e.g. SSF2
->   `char_icon` → `None`); it does not get silently special-cased in the caller.
-> - **Backends (`FraymakersTarget`, `Ssf2Target`) + the transport** are the ONLY place
->   engine differences live. Everything above them is shared.
+>   `char_icon` → `None`); it doesn't get silently special-cased in the caller.
+> - **backends (`FraymakersTarget`, `Ssf2Target`) + the transport** are the ONLY place
+>   engine differences live. everything above them is shared.
 >
 > THE RULE: **never write `if engine == fraymakers { … } else { … }` in feature/command logic.**
-> If you reach for that, the difference belongs lower down — in `vocab.rs`, a trait-method
-> override, or the transport. The GUI's per-engine branching is limited to the transport
+> if you reach for that, the difference belongs lower down -- in `vocab.rs`, a trait-method
+> override, or the transport. the GUI's per-engine branching is limited to the transport
 > shell (which socket to talk to); the moment it creeps into *what a command does*, you've
-> broken the contract. A new feature should be: add a `DebugTarget` method (default = eval) +
-> implement the expression in `commands.hsx` AND `ssf2_target` — then it "just works" on both.
-> See [`docs/PEPTIDE_DESIGN.md`](docs/PEPTIDE_DESIGN.md) for the full seam.
+> broken the contract. a new feature should be: add a `DebugTarget` method (default = eval) +
+> implement the expression in `commands.hsx` AND `ssf2_target` -- then it "just works" on both!
+> see [`docs/PEPTIDE_DESIGN.md`](docs/PEPTIDE_DESIGN.md) for the full seam.
 
-Cross-reference: [`DEVELOPMENT.md`](DEVELOPMENT.md) covers build / pipeline / modules and
+cross-reference: [`DEVELOPMENT.md`](DEVELOPMENT.md) covers build / pipeline / modules and
 the current set of mapping JSONC files; this file covers the **input** and **output**
 formats themselves.
 
 ---
 
-## Reference Resources
+## reference resources
 
-Always check these before guessing about either format:
-- **Fraymakers API docs** (community-run, high utility — start here for any
+always check these before guessing about either format:
+- **Fraymakers API docs** (community-run, high utility -- start here for any
   question about engine functions/scripts/classes): https://shifterbit.github.io/fraymakers-api-docs/
 - **Fraymakers character template** (official): https://github.com/Fraymakers/character-template
 - **SSF2 modding docs**: https://ssf2-modding.readthedocs.io/en/latest/reference/index.html
 
-The character template's `library/entities/character.entity` is the ground truth for entity format.
-It is a 2.67 MB file — use `curl | python3` to parse it programmatically, not web_fetch (truncates).
+the character template's `library/entities/character.entity` is the ground truth for entity format.
+it's a 2.67 MB file -- parse it programmatically with `curl | python3`, not web_fetch (truncates).
 
 ```bash
 curl -s https://raw.githubusercontent.com/Fraymakers/character-template/main/library/entities/character.entity | python3 -c "
@@ -97,34 +157,34 @@ import sys, json; obj = json.load(sys.stdin)
 
 ---
 
-## What this tool does
+## what this tool does
 
-Converts Super Smash Flash 2 (SSF2) character `.ssf` files into Fraymakers character packages
-compatible with FrayTools. It extracts:
-- Bitmap images (PNG sprites per frame)
-- Collision box data (hitboxes, hurtboxes, grab/ledge/reflect/absorb boxes) per animation frame
-- Frame scripts (decompiled from ABC bytecode and rewritten through the JSONC command table)
-- Sound references (WAV via `ffmpeg`)
-- Palette / costume data (15 costumes per character from `misc.ssf`)
-- Projectile and effect sprites as standalone `.entity` files
-- A menu / portrait entity for the character-select screen
+converts Super Smash Flash 2 (SSF2) character `.ssf` files into Fraymakers character packages
+compatible with FrayTools. it extracts:
+- bitmap images (PNG sprites per frame)
+- collision box data (hitboxes, hurtboxes, grab/ledge/reflect/absorb boxes) per animation frame
+- frame scripts (decompiled from ABC bytecode and rewritten through the JSONC command table)
+- sound references (WAV via `ffmpeg`)
+- palette / costume data (15 costumes per character from `misc.ssf`)
+- projectile and effect sprites as standalone `.entity` files
+- a menu / portrait entity for the character-select screen
 
-Output is a FrayTools character package directory (full layout in [`README.md`](README.md) and
+output is a FrayTools character package directory (full layout in [`README.md`](README.md) and
 [`DEVELOPMENT.md`](DEVELOPMENT.md) §7).
 
 ---
 
-## SSF2 (.ssf) File Format
+## SSF2 (.ssf) file format
 
-`.ssf` files are SSF-wrapped SWF files. The unwrapper lives in `src/ssf.rs`:
+`.ssf` files are SSF-wrapped SWF files. the unwrapper lives in `src/ssf.rs`:
 
-- A `.ssf` is either a raw SWF (`FWS` / `CWS` / `ZWS` magic — passed through), or
-- An SSF-wrapped file: `u32 swf_len` + `u32 garbage_header_size` + zlib payload.
+- a `.ssf` is either a raw SWF (`FWS` / `CWS` / `ZWS` magic -- passed through), or
+- an SSF-wrapped file: `u32 swf_len` + `u32 garbage_header_size` + zlib payload.
 
-After unwrapping, `swf_parser::parse` uses the Ruffle `swf` crate (`decompress_swf` +
+after unwrapping, `swf_parser::parse` uses the Ruffle `swf` crate (`decompress_swf` +
 `parse_swf`) to turn the bytes into a tag tree.
 
-### SWF Structure for SSF2 Characters
+### SWF structure for SSF2 characters
 
 ```
 SymbolClass        → maps char_id (u16) → class name string
@@ -136,30 +196,30 @@ DoABC / DoABC2     → AS3 bytecode blocks (the character's logic + stats + cost
 DefineSound        → audio (Nellymoser, MP3, ADPCM)
 ```
 
-### Animation Sprites
+### animation sprites
 
-Each character animation lives in a named `DefineSprite`:
-- Name format: `{char}_fla.{AnimLabel}_{index}` e.g. `mario_fla.FAir_42`
-- The root MC (main timeline) places these sprites at specific frame labels (`stance` placements)
-- Each animation sprite contains a sequence of PlaceObject/ShowFrame/RemoveObject tags
+each character animation lives in a named `DefineSprite`:
+- name format: `{char}_fla.{AnimLabel}_{index}` e.g. `mario_fla.FAir_42`
+- the root MC (main timeline) places these sprites at specific frame labels (`stance` placements)
+- each animation sprite contains a sequence of PlaceObject/ShowFrame/RemoveObject tags
 
-The character's main timeline (root) is a DefineSprite whose `SymbolClass` name matches
-the character id exactly (e.g. `mario`, `fox`). Frame labels on the root MC drive the
-`xframe` map: SSF2 frame methods assign an animation label to an `xframe` field, which
-the extractor recovers from the ABC bytecode.
+the character's main timeline (root) is a DefineSprite whose `SymbolClass` name matches
+the character id exactly (e.g. `mario`, `fox`). frame labels on the root MC drive the
+`xframe` map: SSF2 frame methods assign an animation label to an `xframe` field, recovered
+by the extractor from the ABC bytecode.
 
-### Root MC Transform
+### root MC transform
 
-Every animation sprite is placed by the root MC with a transform:
+every animation sprite is placed by the root MC with a transform:
 ```
 tx, ty  = world offset of the character origin (typically negative, e.g. -24.70, -55.30)
 sx, sy  = character scale (typically 1.1 for Mario)
 ```
-All child positions must be composed through this transform via the full affine matrix
-(a, b, c, d, tx, ty) — not just translation × scale, because some root placements rotate.
-See `sprite_parser::XframeTransform` and `image_extractor::ImageLocalMatrix`.
+all child positions must be composed through this transform via the full affine matrix
+(a, b, c, d, tx, ty) -- translation × scale alone won't do it, since some root placements rotate.
+see `sprite_parser::XframeTransform` and `image_extractor::ImageLocalMatrix`.
 
-### SWF Matrix Decomposition
+### SWF matrix decomposition
 
 SWF PlaceObject matrices use `Fixed16` (fixed-point) values:
 ```
@@ -167,7 +227,7 @@ a, b, c, d = matrix components (b and c carry shear/rotation)
 tx, ty     = translation in TWIPS (divide by 20 to get pixels)
 ```
 
-Decompose into scale/rotation:
+decompose into scale/rotation:
 ```rust
 scale_x = sqrt(a² + b²)
 scale_y = sqrt(c² + d²)
@@ -177,37 +237,34 @@ let sy  = if det < 0.0 { -scale_y } else { scale_y };
 rotation_deg = atan2(b, a).to_degrees()
 ```
 
-### Rotation convention — both SWF and FrayTools are CW-positive
+### rotation convention -- both SWF and FrayTools are CW-positive
 
 SWF's `atan2(b, a)` in y-down screen space and FrayTools' rotation field use the
-**same CW-positive convention**. **Do not negate.** The converter emits rotation
+**same CW-positive convention**. **don't negate.** the converter emits rotation
 values normalized to the `[0, 360)` range:
 
 ```rust
 rotation: round2(((swf_rotation % 360.0) + 360.0) % 360.0)
 ```
 
-This applies to **both** IMAGE symbols and COLLISION_BOX symbols (commit `40fad65d`
-brought collision-box rotation in line with the IMAGE-symbol convention that was
-already established by commit `f472a2dd`). If you spot an older comment claiming
-"always negate rotation", it's stale — the code's `((swf_rotation % 360.0) + 360.0)
-% 360.0` formula is the source of truth.
+this applies to **both** IMAGE symbols and COLLISION_BOX symbols. the
+`((swf_rotation % 360.0) + 360.0) % 360.0` formula is the source of truth.
 
-### Skew handling
+### skew handling
 
 FrayTools' IMAGE keyframe can express translation + rotation + scaleX + scaleY, but
-**not shear**. When a SWF placement matrix has shear (non-perpendicular x/y column
-vectors), `image_extractor::prerender_skewed_frames` bakes the world-space linear
-part into a fresh PNG and rewrites the placement as a plain translation. Shear is
-detected via `ImageLocalMatrix::has_skew()`. Non-sheared placements (pure rotation +
-scale + flip) take the faithful scale+rotation path.
+**not shear**. when a SWF placement matrix has shear (non-perpendicular x/y column
+vectors, detected via `ImageLocalMatrix::has_skew()`), `image_extractor::prerender_skewed_frames`
+bakes the world-space linear part into a fresh PNG and rewrites the placement as a plain
+translation. non-sheared placements (pure rotation + scale + flip) take the faithful
+scale+rotation path.
 
-### Collision Boxes
+### collision boxes
 
 SSF2 encodes ALL collision-box data in the SWF timeline, not in AS3 code.
 
-The collision-box character (typically called `CollisonBox_6` — note SSF2's internal
-typo "Collison") is a small square shape (~100×100 unit, scaled per instance by the
+the collision-box character (typically `CollisonBox_6` -- note SSF2's internal typo
+"Collison") is a small square shape (~100×100 unit, scaled per instance by the
 PlaceObject matrix). `sprite_parser::find_collision_box_base_size` measures the
 shape's true bounds at runtime (not hardcoded):
 ```
@@ -218,9 +275,9 @@ top_left_x = center_x - width/2
 top_left_y = center_y - height/2
 ```
 
-#### Box Instance Names → BoxType
+#### box instance names → BoxType
 
-The SSF2 instance name on the PlaceObject determines the FM box type. See
+the SSF2 instance name on the PlaceObject determines the FM box type. see
 `sprite_parser::BoxType::from_instance_name` and `entity_gen::box_type_to_fm`:
 
 | SSF2 instance name | Fraymakers type | Notes |
@@ -229,7 +286,7 @@ The SSF2 instance name on the PlaceObject determines the FM box type. See
 | `hitBox`, `hitBox2`… | `HURT_BOX` | Hurtbox (SSF2 "hit" = FM "hurt") |
 | `hurtBox` | `HURT_BOX` | Hurtbox (alternate name) |
 | `grabBox` | `GRAB_BOX` | Grab range |
-| `itemBox` | `HURT_BOX` | Item pickup — no native FM equivalent; emitted as hurtbox |
+| `itemBox` | `HURT_BOX` | Item pickup -- no native FM equivalent; emitted as hurtbox |
 | `touchBox` | `GRAB_HOLD_POINT` | **POINT layer** (not COLLISION_BOX) |
 | `shieldBox` | `REFLECT_BOX` | |
 | `reflectBox` | `REFLECT_BOX` | |
@@ -238,68 +295,68 @@ The SSF2 instance name on the PlaceObject determines the FM box type. See
 | anything else `*box` | `HURT_BOX` | Fallback |
 
 **`touchBox` → grabholdpoint (verified):**
-- Layer type is `POINT`, not `COLLISION_BOX`.
-- Layer name is `grabholdpoint<N>`.
+- layer type is `POINT`, not `COLLISION_BOX`.
+- layer name is `grabholdpoint<N>`.
 - `pluginMetadata["com.fraymakers.FraymakersMetadata"]` uses `pointType: "GRAB_HOLD_POINT"`.
-- Symbol is type `POINT` with just `x` / `y` / `alpha` / `color` / `rotation` (bottom-centre
-  of the touchBox area — where the opponent's feet anchor).
-- Verified against the official Fraymakers character template `grab_hold` animation.
+- symbol is type `POINT` with just `x` / `y` / `alpha` / `color` / `rotation` (bottom-centre
+  of the touchBox area -- where the opponent's feet anchor).
+- verified against the official Fraymakers character template `grab_hold` animation.
 
-#### ItemBox Special Case
+#### itemBox special case
 
 `itemBox` (typically id=991) is placed relative to the **hand attachment point**
-(bottom-centre of the box). The PlaceObject tx/ty is the hand position; the inner
-shape geometry hangs upward from it (inner_w ≈ 3.7, inner_h ≈ 21.9 pixels). The
+(bottom-centre of the box). the PlaceObject tx/ty is the hand position; the inner
+shape geometry hangs upward from it (inner_w ≈ 3.7, inner_h ≈ 21.9 pixels). the
 emitted COLLISION_BOX symbol uses `pivotY = height` (instead of `height / 2`) so
 rotation pivots around the hand. `itemBox` is the only routinely rotated collision
-box, so the pivot-at-bottom convention matters in practice.
+box, so the pivot-at-bottom convention matters here.
 
-### Image Sprites
+### image sprites
 
-Each animation's visual content sits inside the animation's DefineSprite as a stack
-of `PlaceObject` tags placing one or more named `DefineSprite`s (the sub-sprites)
-or unnamed effect sprites. `image_extractor::build_anim_frame_images` walks each
-animation's display list and records, per frame, every placed image with its full
-world-space affine matrix (`FrameImageEntry`).
+each animation's visual content sits inside its DefineSprite as a stack of `PlaceObject`
+tags placing one or more named `DefineSprite`s (the sub-sprites) or unnamed effect
+sprites. `image_extractor::build_anim_frame_images` walks each animation's display list
+and records, per frame, every placed image with its full world-space affine matrix
+(`FrameImageEntry`).
 
-#### Effect Sprites
+#### effect sprites
 
-Some animations contain nested effect movieclips (e.g. `mario_fla.ChargeSpark_25`).
-These are `_fla.`-named sub-sprites that are not top-level animation containers.
-The image extractor flattens them — composes each effect frame's content into the
-parent timeline via matrix multiplication (`ImageLocalMatrix::compose`).
+some animations contain nested effect movieclips (e.g. `mario_fla.ChargeSpark_25`):
+`_fla.`-named sub-sprites that aren't top-level animation containers. the image
+extractor flattens them -- composes each effect frame's content into the parent
+timeline via matrix multiplication (`ImageLocalMatrix::compose`).
 
-Pure-vector effect shapes (solid-colour fills, no bitmap) **cannot be rendered**
-without a full SWF vector rasterizer. They are silently skipped — only bitmap-backed
-shapes are exported. Affected examples include some sparkle / charge effects.
+pure-vector effect shapes (solid-colour fills, no bitmap) **cannot be rendered**
+without a full SWF vector rasterizer, so they're silently skipped -- only bitmap-backed
+shapes are exported. affected examples include some sparkle / charge effects.
 
-#### shape_to_bitmap Map
+#### shape_to_bitmap map
 
 `DefineShape` tags may have multiple fill entries:
-1. `id = 65535` — the SWF null / clipping bitmap (**always skip**).
-2. The real bitmap id.
+1. `id = 65535` -- the SWF null / clipping bitmap (**always skip**).
+2. the real bitmap id.
 
-The extractor takes the first non-65535 bitmap fill. `image_extractor::shape_pivot`
-captures where the shape's local (0,0) lands inside its bitmap (computed from the
-fill matrix `tx / (a/20)`, `ty / (d/20)`); this drives image-placement pivot offsets
-in the emitted entity.
+the extractor takes the first non-65535 bitmap fill. `image_extractor::shape_pivot`
+captures where the shape's local (0,0) lands inside its bitmap (from the fill matrix
+`tx / (a/20)`, `ty / (d/20)`); this drives image-placement pivot offsets in the
+emitted entity.
 
-#### Unnamed Sprites
+#### unnamed sprites
 
-Some sub-sprites and shapes have no `SymbolClass` entry. Those are resolved via the
-display list (their inner content placed in by depth/timeline). They produce
-synthetic `id_NNNN` names internally and are stripped from the final entity output
-if they carry no real image content.
+some sub-sprites and shapes have no `SymbolClass` entry; those are resolved via the
+display list (their inner content placed in by depth/timeline). they get synthetic
+`id_NNNN` names internally and are stripped from the final entity output if they carry
+no real image content.
 
 ---
 
-## Fraymakers Entity Format (.entity)
+## Fraymakers entity format (.entity)
 
-The `.entity` file is a JSON document consumed by FrayTools. It's the core of a character
-package. All GUIDs are deterministic — seeded by `{char_id}::{context}` and run through
+the `.entity` file is a JSON document consumed by FrayTools, the core of a character
+package. all GUIDs are deterministic -- seeded by `{char_id}::{context}` and run through
 UUID v5 (SHA-1 namespace) in `src/uuid_gen.rs`.
 
-### Top-Level Structure
+### top-level structure
 
 ```json
 {
@@ -325,7 +382,7 @@ UUID v5 (SHA-1 namespace) in `src/uuid_gen.rs`.
 }
 ```
 
-### Animation Object
+### animation object
 
 ```json
 {
@@ -336,23 +393,23 @@ UUID v5 (SHA-1 namespace) in `src/uuid_gen.rs`.
 }
 ```
 
-Empty animations (those whose IMAGE timeline carries no real symbols across all
-frames) are dropped from the final entity. The exception is a small allowlist
-controlled by `populated_jabs` in `haxe_gen.rs`: when the character has exactly two
+empty animations (those whose IMAGE timeline carries no real symbols across all
+frames) are dropped from the final entity. the one exception is a small allowlist
+controlled by `populated_jabs` in `haxe_gen.rs`: when a character has exactly two
 populated jabs the converter keeps `jab3` as an empty placeholder so the Script.hx
 jab-chain references don't break at runtime.
 
-### Layer Types
+### layer types
 
-Every animation typically has this layer stack (in order):
-1. `LABEL` — animation name label on frame 0, plus any inner FrameLabel tags.
-2. `FRAME_SCRIPT` — per-frame Haxe code (`code` is the function body, no wrapper).
-3. `COLLISION_BODY` — character ECB/body diamond, per frame.
-4. `COLLISION_BOX` — one layer per box instance (hitbox0, hurtbox0, etc.).
-5. `POINT` — one layer per `touchBox` (grab-hold point).
-6. `IMAGE` — one layer per depth slot (Image 0, Image 1, …).
+every animation typically has this layer stack (in order):
+1. `LABEL` -- animation name label on frame 0, plus any inner FrameLabel tags.
+2. `FRAME_SCRIPT` -- per-frame Haxe code (`code` is the function body, no wrapper).
+3. `COLLISION_BODY` -- character ECB/body diamond, per frame.
+4. `COLLISION_BOX` -- one layer per box instance (hitbox0, hurtbox0, etc.).
+5. `POINT` -- one layer per `touchBox` (grab-hold point).
+6. `IMAGE` -- one layer per depth slot (Image 0, Image 1, …).
 
-#### LABEL Layer
+#### LABEL layer
 
 ```json
 { "$id": "...", "name": "Labels", "type": "LABEL",
@@ -364,7 +421,7 @@ LABEL keyframe:
 { "$id": "...", "type": "LABEL", "length": 1, "name": "idle", "pluginMetadata": {} }
 ```
 
-#### FRAME_SCRIPT Layer
+#### FRAME_SCRIPT layer
 
 ```json
 { "$id": "...", "name": "Scripts", "type": "FRAME_SCRIPT",
@@ -372,21 +429,21 @@ LABEL keyframe:
   "language": "", "pluginMetadata": {} }
 ```
 
-FRAME_SCRIPT keyframe — `code` is the function body **only** (no `function name() {`
-wrapper). Blank frames use `"code": ""`:
+FRAME_SCRIPT keyframe -- `code` is the function body **only** (no `function name() {`
+wrapper). blank frames use `"code": ""`:
 
 ```json
 { "$id": "...", "type": "FRAME_SCRIPT", "length": 1,
   "code": "self.playAnimation(\"jab2\");", "pluginMetadata": {} }
 ```
 
-#### COLLISION_BODY Layer (ECB / body diamond)
+#### COLLISION_BODY layer (ECB / body diamond)
 
-The ECB is a 4-vertex diamond: foot (bottom), head (top), and two hip vertices at the
+the ECB is a 4-vertex diamond: foot (bottom), head (top), and two hip vertices at the
 sides at the foot/head midpoint. `entity_gen.rs` computes the per-frame diamond as the
 axis-aligned bounding box of that frame's HURTBOX-typed collision boxes, so the body
-auto-fits the character pose. Consecutive frames with identical bodies are run-length
-encoded into a single keyframe.
+auto-fits the pose. consecutive frames with identical bodies are run-length encoded
+into a single keyframe.
 
 ```json
 { "$id": "...", "name": "Body", "type": "COLLISION_BODY", "keyframes": [...],
@@ -402,7 +459,7 @@ COLLISION_BODY symbol:
   "pluginMetadata": {}, "type": "COLLISION_BODY" }
 ```
 
-#### COLLISION_BOX Layer
+#### COLLISION_BOX layer
 
 ```json
 { "$id": "...", "name": "hitbox0", "type": "COLLISION_BOX", "keyframes": [...],
@@ -427,7 +484,7 @@ COLLISION_BOX symbol:
   "x": -54.0, "y": -35.0 }                 // top-left in world space, y-down
 ```
 
-COLLISION_BOX keyframe — blank frame uses `"symbol": null`:
+COLLISION_BOX keyframe -- blank frame uses `"symbol": null`:
 ```json
 { "$id": "...", "type": "COLLISION_BOX", "length": 2,
   "symbol": "sym_$id_or_null", "tweened": false, "tweenType": "LINEAR",
@@ -445,9 +502,9 @@ COLLISION_BOX keyframe — blank frame uses `"symbol": null`:
 | `REFLECT_BOX` | Reflect / shield (from SSF2 `shieldBox` and `reflectBox`) |
 | `COUNTER_BOX` | Counter / absorb (from SSF2 `absorbBox`) |
 
-#### POINT Layer
+#### POINT layer
 
-Used for named points in space (grab hold position, pivot points, etc.).
+used for named points in space (grab hold position, pivot points, etc.).
 
 ```json
 { "$id": "...", "name": "grabholdpoint0", "type": "POINT", "keyframes": [...],
@@ -459,7 +516,7 @@ Used for named points in space (grab hold position, pivot points, etc.).
   } }
 ```
 
-POINT symbol — coordinate only, no size:
+POINT symbol -- coordinate only, no size:
 ```json
 { "$id": "...", "alpha": 1, "color": "0xff0000",
   "pluginMetadata": {}, "rotation": 0, "type": "POINT",
@@ -473,18 +530,18 @@ POINT keyframe:
   "pluginMetadata": {} }
 ```
 
-**Known point types** (in `pluginMetadata.com.fraymakers.FraymakersMetadata.pointType`):
-- `GRAB_HOLD_POINT` — where a grabbed opponent is positioned (from SSF2 `touchBox`).
-- `PIVOT_POINT` — rotation pivot override.
+**known point types** (in `pluginMetadata.com.fraymakers.FraymakersMetadata.pointType`):
+- `GRAB_HOLD_POINT` -- where a grabbed opponent is positioned (from SSF2 `touchBox`).
+- `PIVOT_POINT` -- rotation pivot override.
 
-#### IMAGE Layer
+#### IMAGE layer
 
 ```json
 { "$id": "...", "name": "Image 0", "type": "IMAGE", "keyframes": [...],
   "hidden": false, "locked": false, "pluginMetadata": {} }
 ```
 
-IMAGE symbol — **one is created per placement** (each anim/slot/frame gets its own
+IMAGE symbol -- **one is created per placement** (each anim/slot/frame gets its own
 symbol; symbols are NOT shared across frames because the world matrix varies):
 
 ```json
@@ -498,11 +555,11 @@ symbol; symbols are NOT shared across frames because the world matrix varies):
   "x": -54.0, "y": -35.0 }            // world-space, y-down
 ```
 
-The model FrayTools uses is: `world_pt = (x, y) + R(rot) · diag(sx, sy) · local_pt`.
-The converter mirrors this exactly — `x` / `y` come from the SWF world matrix's
-translation plus a shape-pivot correction; rotation and scale come from the matrix's
-linear part. Sheared placements are pre-rendered to a baked bitmap (see "Skew handling"
-above) and emitted as identity-rotation, identity-scale plain translations.
+the model FrayTools uses is: `world_pt = (x, y) + R(rot) · diag(sx, sy) · local_pt`.
+the converter mirrors this exactly -- `x` / `y` come from the SWF world matrix's
+translation plus a shape-pivot correction; rotation and scale from the matrix's linear
+part. sheared placements are pre-rendered to a baked bitmap (see "skew handling" above)
+and emitted as identity-rotation, identity-scale plain translations.
 
 IMAGE keyframe:
 ```json
@@ -511,123 +568,59 @@ IMAGE keyframe:
   "pluginMetadata": {} }
 ```
 
-Consecutive frames with the same symbol AND identical world matrix are run-length
+consecutive frames with the same symbol AND identical world matrix are run-length
 encoded into one keyframe.
 
-### .meta Sidecar Files
+### .meta sidecar files
 
-Every PNG needs a `.meta` JSON file at the same path + `.meta` extension:
+every PNG needs a `.meta` JSON file at the same path + `.meta` extension:
 ```json
 { "export": false, "guid": "deterministic-guid", "id": "",
   "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2 }
 ```
 
-The GUID in the `.meta` file is what `imageAsset` in IMAGE symbols references — not the
+the GUID in the `.meta` file is what `imageAsset` in IMAGE symbols references, not the
 PNG file path.
 
-### Per-projectile and per-effect entities
+### per-projectile and per-effect entities
 
-Each discovered projectile (SSF2 sprite carrying an `attack_idle` FrameLabel + a `stance`
-PlaceObject) gets its own `library/entities/<name>.entity` plus a set of script files at
+each discovered projectile (SSF2 sprite carrying an `attack_idle` FrameLabel + a `stance`
+PlaceObject) gets its own `library/entities/<name>.entity` plus script files at
 `library/scripts/Projectile/<Pascal>{Script,Stats,HitboxStats,AnimationStats}.hx`.
-Animation names come from the inner sprite's FrameLabel tags when present, else fall back
+animation names come from the inner sprite's FrameLabel tags when present, else fall back
 to the FM template trio `projectileSpawn` / `projectileIdle` / `projectileDestroy`.
 
-Each discovered effect (root-level SymbolClass'd sprite that's neither a projectile, the
+each discovered effect (root-level SymbolClass'd sprite that's neither a projectile, the
 character itself, the head sprite, an `_fla.*` timeline, nor a HUD/icon) is emitted as a
 plain `library/entities/<name>.entity` with one IMAGE layer per inner FrameLabel-derived
-segment. No scripts, no stats. The character's `Script.hx` references these via
+segment -- no scripts, no stats. the character's `Script.hx` references these via
 `match.createVfx(new VfxStats({…}), self)` calls produced by the `attachEffect` rewriter
 in `api_mappings.rs`.
 
 ---
 
-## How FrayTools renders what we emit (render internals)
+## how FrayTools renders what we emit
 
-An independent specification of how **FrayTools 0.4.0** interprets the `.entity`
-files we produce, derived by black-box observation + reading the minified
-`app.asar` bundle. It exists so placement / rotation / timing bugs become
-provable from documented behaviour instead of guesswork — the same
-reverse-engineering-for-interoperability practice that produced the SWF/entity
-notes above.
-
-> **IP boundary.** Everything here is described in our own words from observed
-> *behaviour*. No FrayTools source, strings, or assets are quoted or committed.
-> The bundle is extracted locally (`npx @electron/asar extract`, never committed);
-> domain property names survive minification because they are JSON keys, so the
-> logic around them is followable. FrayTools is McLeodGaming proprietary software.
-
-Confidence: **[observed]** = read from the bundle logic; **[inferred]** = deduced
-from behaviour + our round-trip results (confirm with a probe before relying on it).
-
-- **Stored space is Y-down; FrayTools negates Y at render time. [observed]**
-  The per-keyframe screen-position builder computes the render position's Y as
-  the negation of the stored keyframe `y` (and pivot Y). So the stored `.entity`
-  `y` is Y-down — exactly what the converter emits (negative = above the foot).
-  Don't double-apply the negation.
-
-- **Transform order: place, then rotate the pivot offset, then translate. [observed]**
-  `calculateAbsolutePivotPosition(position, pivotOffset, angleDeg)`: for a non-360
-  angle it converts the pivot offset to polar, adds the angle, converts back, and
-  adds to `position`. The caller passes rotation **negated**; combined with the Y
-  negation the net on-screen convention is **clockwise-positive** — which is what
-  the converter emits (no negation, normalised to `[0, 360)`). Scale is folded
-  into the box dimensions / pivot before this step, not applied as a separate stage.
-
-- **Rotation is honored only for rotation-capable box types. [observed — load-bearing]**
-  FrayTools rotates `ItemBox` and custom collision boxes, but treats hurt / hit /
-  grab / shield / reflect / absorb / ledge / grab-hold boxes as **axis-aligned** —
-  a non-zero `rotation` on those is ignored. The converter therefore collapses
-  rotation into the containing AABB (`w·|cosθ|+h·|sinθ|`, `w·|sinθ|+h·|cosθ|`,
-  `rotation = 0`) for every non-rotation-capable type and keeps rotation only for
-  `ItemBox` — unified in `sprite_parser::finalize_box_geometry` +
-  `BoxType::supports_rotation()` (commits `7172bfcc`, `8ac39d49`, `d16ecfa9`).
-  *Open:* SSF2's lone `customBox` (bandanadee) currently maps to `HURT_BOX` and is
-  AABB-collapsed — correct for a hurtbox; promoting it to a rotatable FM custom box
-  needs the FM custom-box type string (plugin-side, not in the local bundle).
-
-- **COLLISION_BOX pivot is NOT multiplied by scale; other types ARE. [observed]**
-  A COLLISION_BOX's `scaleX`/`scaleY` *are* its width/height in pixels, so its
-  `pivotX`/`pivotY` are already in final pixel units; IMAGE pivots get multiplied
-  by `scaleX`/`scaleY`. The converter emits COLLISION_BOX with `scaleX = width`,
-  `scaleY = height`, `pivotX = width/2`, `pivotY = height/2` — consistent.
-
-- **Keyframe `length` drives duration. [observed]** Timelines lay out purely by
-  sequential keyframe `length`; a keyframe occupies `length` frames before the
-  next. This is why 30→60 fps doubling works by doubling every keyframe `length`
-  in lockstep (`entity_gen::double_keyframe_lengths`). LINEAR is the dominant
-  tween; EASE_IN/EASE_OUT exist but are rare — LINEAR/none is the safe default.
-
-- **The manifest is the registry; `.meta` sidecars bind id↔file. [observed]**
-  `library/manifest.json :: content[]` entries reference flat string ids
-  (`objectStatsId`, `scriptId`, `costumesId`, …); each asset's `.meta` sidecar
-  declares its `guid` + `id`, and the id (not the filename) is what the manifest
-  matches. So a script is found via its `.hx.meta` `id`, not its path. The
-  `.fraytools` file holds **project settings only** (frame rate, palette shader
-  mode, plugins, publish folders) — no content list. (`.fraytools` `version` 12,
-  entity `version` 14 — independent schemas.)
-
-- **Palette swap uses an RG-map shader. [observed]** A base palette + per-costume
-  replacement map interpreted via a red/green-channel lookup; the converter emits
-  `paletteShaderMode: "RG_MAP"` in the `.fraytools` and a `paletteMap` /
-  `paletteCollection` pair per entity.
-
-- **Layer/symbol vocabulary [observed]:** `IMAGE`, `COLLISION_BOX`,
-  `COLLISION_BODY`, `POINT`, `LABEL`, `FRAME_SCRIPT` — exactly the set the
-  converter emits.
-
-**Still guesswork (confirm with a render diff before treating as load-bearing):**
-runtime frame indexing 0- vs 1-based (the editor's "Frame: N" display is 1-based;
-the harness uses 0-based `SET_FRAME` — see `TESTING.md`); whether the per-frame
-COLLISION_BODY diamond expectation matches our AABB-of-hurtboxes approximation;
-and the exact RG-map channel math.
+> **not in this repo (compliance).** this repo doesn't carry a spec of how FrayTools
+> interprets the `.entity` files we emit (the Y-negation, transform order, which box
+> types honor rotation, pivot/scale rules, keyframe-length timing, the manifest/`.meta`
+> binding, the palette shader). per Team Fray's request, that
+> reverse-engineering write-up stays out of the tracked repo (see "engine-side knowledge
+> is not in this repo" below) and must not be added.
+>
+> what you still need for `entity_gen.rs` work is captured structurally elsewhere in
+> this file: the `.entity` schema (every layer/symbol/keyframe shape), the CW-positive
+> `[0,360)` rotation convention the converter emits, the Y-down coordinate system, and
+> the `.meta`-sidecar / manifest id binding -- all properties of the files **we** author.
+> to re-derive FrayTools' render behaviour, do it locally against your own install and
+> keep the notes in the gitignored `docs/` scratch space -- never in a tracked file.
 
 ---
 
-## Coordinate System
+## coordinate system
 
-Both SSF2 and Fraymakers use **y-down** screen coordinates (positive y = down).
-No y-flip is needed between the two systems.
+both SSF2 and Fraymakers use **y-down** screen coordinates (positive y = down).
+no y-flip is needed between the two systems.
 
 ```
 Origin: character foot (ground contact point)
@@ -636,46 +629,46 @@ Positive y: down (into ground)
 Negative y: up (into air)
 ```
 
-World space = root MC transform applied to local SWF coordinates.
+world space = root MC transform applied to local SWF coordinates.
 
 ---
 
-## Animation Name Mapping (SSF2 → Fraymakers)
+## animation name mapping (SSF2 → Fraymakers)
 
-The SSF2 → FM animation-name table is **data-driven** via
-`mappings/character/animations.jsonc`. Keys:
+the SSF2 → FM animation-name table is **data-driven** via
+`mappings/character/animations.jsonc`. keys:
 
-- `ssf2_to_fm` — SSF2 xframe / animation name (e.g. `stand`, `a_air_forward`) → FM
+- `ssf2_to_fm` -- SSF2 xframe / animation name (e.g. `stand`, `a_air_forward`) → FM
   animation name (e.g. `idle`, `aerial_forward`).
-- `label_to_ssf2` — sprite-symbol AnimLabel (lowercased, suffix stripped, e.g.
+- `label_to_ssf2` -- sprite-symbol AnimLabel (lowercased, suffix stripped, e.g.
   `nair`) → SSF2 animation name.
 
-Loaded by `crate::mappings::character_animations()` in `src/mappings.rs`. Used by
+loaded by `crate::mappings::character_animations()` in `src/mappings.rs`. used by
 `extractor::build_ssf2_to_fm_anim`, `sprite_parser::static_ssf2_to_fm`, and the
-sprite-symbol resolver `sprite_parser::extract_ssf2_anim_name`. Edit this file (not
+sprite-symbol resolver `sprite_parser::extract_ssf2_anim_name`. edit this file (not
 the Rust source) to fix animation-name mapping.
 
-Some SSF2 sprites pack multiple FM animations into one timeline separated by internal
+some SSF2 sprites pack multiple FM animations into one timeline separated by internal
 FrameLabel tags (e.g. a "Jab" sprite contains jab1 / jab2 / jab3 / jab4; a "Strong"
-sprite contains in/charge/attack). The splitter lives in `src/anim_splitter.rs` (and
-`sprite_parser::sub_anim_splits` for the sprite-level equivalent). The label patterns
-that drive which splits are **hardcoded match arms** in `anim_splitter.rs` — there is
-no external rules file.
+sprite contains in/charge/attack). the splitter lives in `src/anim_splitter.rs` (and
+`sprite_parser::sub_anim_splits` for the sprite-level equivalent). the label patterns
+driving which splits are **hardcoded match arms** in `anim_splitter.rs` -- no external
+rules file.
 
 ---
 
-## UUID Generation
+## UUID generation
 
-All GUIDs in the entity are **deterministic**, seeded by `{char_id}::{context}`.
-Using UUID v5 (SHA-1 namespace). This ensures regeneration produces the same entity
-byte-for-byte (in the GUID dimension). See `src/uuid_gen.rs`.
+all GUIDs in the entity are **deterministic**, seeded by `{char_id}::{context}` using
+UUID v5 (SHA-1 namespace). this ensures regeneration produces the same entity
+byte-for-byte (in the GUID dimension). see `src/uuid_gen.rs`.
 
 ---
 
-## Diagnostic Binaries
+## diagnostic binaries
 
 ~30 `--bin` targets exist for debugging (gated behind `--features dev-tools`).
-The most useful selection:
+the most useful selection:
 ```
 dump_image_placement   — per-frame PlaceObject data for any sprite
 dump_collision_box     — collision-box geometry for an animation
@@ -696,11 +689,11 @@ check_shape_bitmap     — inspect a shape's bitmap fill + fill matrix
 what_is_id             — identify what a numeric SWF character id refers to
 ```
 
-These tools were the workbench used to figure the formats out. Costume extraction
-itself is now in-process inside `ssf2_converter`; there is no longer a separate
-`extract_costumes` binary.
+these tools are the workbench for inspecting a SWF without re-deriving the format.
+costume extraction is in-process inside `ssf2_converter` (no separate `extract_costumes`
+binary).
 
-Usage example (the bins are dev-tools-gated, so run via cargo):
+usage example (the bins are dev-tools-gated, so run via cargo):
 ```bash
 cargo run -p ssf2_converter --features dev-tools --bin dump_image_placement -- ../ssf2-ssfs/mario.ssf "FAir_42"
 cargo run -p ssf2_converter --features dev-tools --bin dump_collision_box -- ../ssf2-ssfs/mario.ssf "a_air_forward"
@@ -708,56 +701,16 @@ cargo run -p ssf2_converter --features dev-tools --bin dump_collision_box -- ../
 
 ---
 
-## Known Issues / Open Questions
+## known issues / open questions
 
-### Vector-only effect sprites are silently skipped
-Effects whose visuals are pure-vector shapes with solid-colour fills (e.g. some
-charge sparkles, the Mario F-air twinkle) cannot be rasterized without a full SWF
-vector renderer. Only bitmap-backed shapes are exported; vector effects appear
-missing in the converted character.
+open converter issues and the prioritized TODO list live in
+[`docs/STATUS.md`](docs/STATUS.md) -- the single home for converter status and
+next steps. this document is the format reference, not the issue tracker; check
+STATUS.md for what's currently broken, approximate, or unverified (shape-only menu
+portraits, vector-only effect sprites, projectile-behaviour stubs, stat-scaling
+approximations, and the rest).
 
-### Shape-only menu portraits
-A handful of characters (e.g. `donkeykong`, `fox`, `marth`) have `*_head` portraits
-composed entirely of shapes rather than a bitmap. `image_extractor::discover_…`
-prefers a Bitmap placement when available; when there isn't one, the head image is
-missing and the menu entity ships with a placeholder. Needs a small SWF shape
-rasterizer.
-
-### Mario sprite placement not re-verified
-After the recent rotation-convention / itemBox / shear-baking work, Mario in
-particular hasn't been re-verified frame by frame in FrayTools. Most characters
-look right; Mario was the canary that drove the rotation work and may need a
-focused pass.
-
-### One `.ssf` historically failed conversion outright
-A single character file in the roster historically tripped a hard error
-during conversion. Needs re-check against the current pipeline — path 2 +
-the constructor walker have changed enough of the detection path that this
-may already be resolved or may now surface differently.
-
-### Frame-script / API translation is incomplete
-`mappings/commands.jsonc` covers the bulk of SSF2 API calls, but many remain in
-the `ssf2_only` list (intentionally surfaced as `// [SSF2-only: NAME] …` markers)
-or end up in the `conversion_log.json` `unknown` list. Generated `.hx` always
-needs human review.
-
-### Projectile logic is largely stubbed
-Projectile *entities* (visuals, boxes, animations, palettes) are generated.
-Projectile *behaviour* (`ProjectileScript.hx`) is template scaffolding with
-`// TODO: tune X_SPEED / Y_SPEED` placeholders. Multi-state projectiles use a
-local state machine (`LState.IDLE` / `ACTIVE` / `HELD` / …) that registers via
-`Common.initLocalStateMachine()` + `Common.registerLocalState(…)`, but the
-state transitions are stubbed.
-
-### Stat scaling is approximate
-The `scale("gravity", v)` / `scale("speed", v)` calls in `haxe_gen.rs` go through
-`mappings/character/stats.jsonc` multipliers that were hand-tuned by comparing
-template characters to SSF2 data. Generated `CharacterStats.hx` deliberately
-flags uncertain numbers with `/*TODO*/`.
-
----
-
-## Source File Summary
+## source file summary
 
 | File | Purpose |
 |---|---|

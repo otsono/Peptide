@@ -205,4 +205,92 @@ fn historical_plan_docs_carry_status_banner() {
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Compliance trip-wire: no Fraymakers/FrayTools engine-internal symbol names in
+// the tracked docs.
+//
+// At Team Fray's request, the tracked docs must not name specific
+// non-hscript engine classes / functions / fields, nor document the engine's
+// internal symbol map (see AGENT_CONTEXT.md "engine-side knowledge is not in
+// this repo", NOTICE.md, CONTRIBUTING.md). It is fine to document what Peptide
+// does, the patcher architecture/workflow, and the public *hscript* scripting
+// API (CState.JAB, match.getCharacters(), …) — so those are NOT needles here.
+//
+// Each needle is a distinctive engine/bundle symbol token with no legitimate
+// place in a tracked doc. If one trips, the fix is to remove the engine-internal
+// reference from the doc (and keep it in the gitignored docs/ scratch space),
+// NOT to add it to an allow-list.
+const ENGINE_SYMBOL_NEEDLES: &[&str] = &[
+    "fraymakers.Main",          // the patched engine entry point (name the function nowhere)
+    "MatchController",
+    "PXFResource",
+    "spawnPlayer",
+    "cacheSpriteEntityData",
+    "characterPxfContentMap",
+    "ThreadTaskManager",
+    "getPXFResource",
+    "getPXFSpriteEntity",
+    "set_DataAsPxf",
+    "fetchThreaded",
+    "poolHash",
+    "importManifest",
+    "calculateAbsolutePivotPosition", // FrayTools bundle internal
+    "Tildebugger",
+    "hxd.System",
+];
+
+/// Every tracked Markdown doc — the engine-symbol trip-wire scans all of them,
+/// not just the four "stay-current" top-level docs above.
+const TRACKED_DOCS: &[&str] = &[
+    "CLAUDE.md",
+    "README.md",
+    "DEVELOPMENT.md",
+    "AGENT_CONTEXT.md",
+    "CONTRIBUTING.md",
+    "NOTICE.md",
+    "TESTING.md",
+    "docs/PEPTIDE_GUIDE.md",
+    "docs/PEPTIDE_DESIGN.md",
+    "docs/STATUS.md",
+];
+
+#[test]
+fn no_engine_internals_in_tracked_docs() {
+    let mut failures: Vec<String> = Vec::new();
+
+    for doc in TRACKED_DOCS {
+        let path = repo_root().join(doc);
+        let body = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => continue, // doc may not exist in every checkout
+        };
+
+        for needle in ENGINE_SYMBOL_NEEDLES {
+            if !body.contains(needle) { continue; }
+            let hits: Vec<(usize, &str)> = body.lines().enumerate()
+                .filter(|(_, l)| l.contains(needle))
+                .map(|(n, l)| (n + 1, l))
+                .collect();
+            let mut msg = format!(
+                "\n  {} names engine internal {:?}", doc, needle);
+            for (n, l) in hits {
+                msg.push_str(&format!("\n      L{}: {}", n, l.trim()));
+            }
+            failures.push(msg);
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "\nCompliance trip-wire: {} tracked doc(s) name Fraymakers/FrayTools \
+             engine internals:\n{}\n\n\
+             At Team Fray's request the tracked docs must not name specific \
+             non-hscript engine classes/functions/fields or document the engine symbol \
+             map. Remove the reference from the doc and keep it in the gitignored \
+             docs/ scratch space (e.g. docs/ENGINE_INTERNALS.local.md). See \
+             AGENT_CONTEXT.md \"engine-side knowledge is not in this repo\".\n",
+            failures.len(), failures.join("\n"));
+    }
+}
+
 fn _quiet(_: &Path) {} // keeps the `Path` import warning-free

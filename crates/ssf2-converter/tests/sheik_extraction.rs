@@ -9,21 +9,16 @@
 use ssf2_converter::{run_conversion, ConvertOptions};
 use std::path::PathBuf;
 
-/// `ssf2-ssfs/` is a sibling of the repo root; the crate sits two levels below.
+mod common;
+
 fn zelda_ssf_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("ssf2-ssfs/zelda.ssf")
+    common::ssf("zelda")
 }
 
 #[test]
 fn sheik_emits_full_package_from_zelda_ssf() {
     let ssf = zelda_ssf_path();
-    if !ssf.exists() {
-        eprintln!("ssf2-ssfs/zelda.ssf not found; skipping sheik test");
-        return;
-    }
+    if !common::present(&ssf) { return; }
 
     let out = tempfile::tempdir().expect("tempdir");
     // Default: full SSF conversion. Stage B emits zelda+sheik into ONE

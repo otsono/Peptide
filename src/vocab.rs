@@ -97,7 +97,7 @@ pub fn is_passthrough(name: &str) -> bool {
 /// The SSF2 lowering for a known `commands.hsx`/FM method call, or `None` for a
 /// generic reflection call by name.
 pub fn call_lowering(name: &str) -> Option<&'static CallLowering> {
-    CALLS.iter().find(|c| c.names.iter().any(|n| *n == name)).map(|c| &c.lowering)
+    CALLS.iter().find(|c| c.names.contains(&name)).map(|c| &c.lowering)
 }
 
 #[cfg(test)]

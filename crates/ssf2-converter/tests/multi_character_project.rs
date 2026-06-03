@@ -6,15 +6,10 @@
 use ssf2_converter::{run_conversion, ConvertOptions};
 use std::path::{Path, PathBuf};
 
-/// The `ssf2-ssfs/` corpus is a sibling of the repo root; the crate now sits at
-/// `<repo>/crates/ssf2-converter`, so walk up two levels from the manifest dir.
-fn repo_parent() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-}
+mod common;
+
 fn ssf_path(name: &str) -> PathBuf {
-    repo_parent().join(format!("ssf2-ssfs/{}.ssf", name))
+    common::ssf(name)
 }
 /// Run the converter in-process (was: spawn the removed `ssf2_converter` binary).
 /// `extra` accepts the old CLI flags `--name <X>` and `--per-character-projects`.
@@ -35,7 +30,7 @@ fn run_converter(ssf: &Path, out: &Path, extra: &[&str]) {
 #[test]
 fn zelda_ssf_emits_one_merged_project() {
     let ssf = ssf_path("zelda");
-    if !ssf.exists() { eprintln!("zelda.ssf missing; skipping"); return; }
+    if !common::present(&ssf) { return; }
     let out = tempfile::tempdir().expect("tempdir");
     run_converter(&ssf, out.path(), &[]);
 
@@ -113,7 +108,7 @@ fn multi_char_project_uses_per_character_audio_subdirs() {
     // projects library/audio/ becomes a folder per character. Single-char
     // projects keep the flat library/audio/*.wav layout (golden_sandbag).
     let ssf = ssf_path("zelda");
-    if !ssf.exists() { eprintln!("zelda.ssf missing; skipping"); return; }
+    if !common::present(&ssf) { return; }
     let out = tempfile::tempdir().expect("tempdir");
     run_converter(&ssf, out.path(), &[]);
 
@@ -148,7 +143,7 @@ fn single_char_project_keeps_flat_audio_layout() {
     // sandbag here so the contract is tested independently of the
     // golden-hash check.
     let ssf = ssf_path("sandbag");
-    if !ssf.exists() { eprintln!("sandbag.ssf missing; skipping"); return; }
+    if !common::present(&ssf) { return; }
     let out = tempfile::tempdir().expect("tempdir");
     run_converter(&ssf, out.path(), &[]);
 
@@ -168,7 +163,7 @@ fn rollback_flag_emits_per_character_projects() {
     // character gets its own .fraytools project. This is the rollback
     // escape hatch retained for one release per the plan.
     let ssf = ssf_path("zelda");
-    if !ssf.exists() { eprintln!("zelda.ssf missing; skipping"); return; }
+    if !common::present(&ssf) { return; }
     let out = tempfile::tempdir().expect("tempdir");
     run_converter(&ssf, out.path(), &["--per-character-projects"]);
 

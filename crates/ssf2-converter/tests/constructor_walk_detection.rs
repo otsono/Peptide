@@ -15,12 +15,10 @@
 use ssf2_converter::*;
 use std::path::PathBuf;
 
-/// `ssf2-ssfs/` is a sibling of the repo root; the crate sits two levels below.
+mod common;
+
 fn ssfs_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("ssf2-ssfs")
+    common::ssfs_dir()
 }
 
 #[test]
@@ -96,7 +94,7 @@ fn corpus_constructor_walk_matches_path2_enumeration() {
     // discovered character set 1:1. Doubles as the "no orphan get*"
     // gate — caught in CI if a future SSF2 build ships a dev-leftover.
     let dir = ssfs_dir();
-    if !dir.exists() { eprintln!("ssfs/ missing; skipping"); return; }
+    if !common::present(&dir) { return; }
 
     let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap()
         .filter_map(|e| e.ok()).map(|e| e.path())
@@ -169,7 +167,7 @@ fn package_metadata_lands_in_conversion_log() {
     // Run the converter against sandbag.ssf and assert ssf2_source has
     // package_id / package_guid / source_method.
     let sandbag = ssfs_dir().join("sandbag.ssf");
-    if !sandbag.exists() { eprintln!("sandbag.ssf missing; skipping"); return; }
+    if !common::present(&sandbag) { return; }
     let out = tempfile::tempdir().expect("tempdir");
 
     let mut opts = ConvertOptions::new(&sandbag);

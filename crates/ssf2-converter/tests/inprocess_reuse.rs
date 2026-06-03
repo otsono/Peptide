@@ -13,12 +13,10 @@ use ssf2_converter::{run_conversion, ConvertOptions};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// `ssf2-ssfs/` is a sibling of the repo root; the crate sits two levels below.
+mod common;
+
 fn sandbag_ssf() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("ssf2-ssfs/sandbag.ssf")
+    common::ssf("sandbag")
 }
 
 /// SHA-256 every deterministic text output under `dir`, keyed by relative path.
@@ -47,10 +45,7 @@ fn hash_text_outputs(dir: &Path) -> BTreeMap<String, String> {
 #[test]
 fn two_conversions_in_one_process_match() {
     let ssf = sandbag_ssf();
-    if !ssf.exists() {
-        eprintln!("skip: sandbag.ssf not available at {}", ssf.display());
-        return;
-    }
+    if !common::present(&ssf) { return; }
 
     let convert_into = |tag: &str| -> BTreeMap<String, String> {
         let dir = std::env::temp_dir().join(format!("ssf2_reuse_{}_{}", tag, std::process::id()));

@@ -171,9 +171,8 @@ fn simulate_jump(p: &Ssf2Physics, v0: f64) -> (f64, f64, f64) {
         y += v;
         frames += 1.0;
         if y < min_y { min_y = y; }
-        if !reached_apex {
-            if v >= 0.0 { reached_apex = true; rise_frames = frames; }
-        }
+        if !reached_apex
+            && v >= 0.0 { reached_apex = true; rise_frames = frames; }
         if reached_apex && y >= 0.0 { break; }
     }
     (-min_y, rise_frames, frames)

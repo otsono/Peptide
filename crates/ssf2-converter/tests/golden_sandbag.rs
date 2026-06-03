@@ -25,15 +25,10 @@ fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// `ssf2-ssfs/` is a sibling of the repo root. The crate manifest sits two
-/// levels below the repo root (`<repo>/crates/ssf2-converter`), so reaching the
-/// sibling means going up THREE levels: ssf2-converter → crates → repo →
-/// workspace, then into `ssf2-ssfs/`.
+mod common;
+
 fn sandbag_ssf_path() -> PathBuf {
-    manifest_dir()
-        .ancestors().nth(3).map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("ssf2-ssfs/sandbag.ssf")
+    common::ssf("sandbag")
 }
 
 fn golden_hashes_path() -> PathBuf {
@@ -99,10 +94,7 @@ fn rm_rf(p: &Path) {
 #[test]
 fn sandbag_conversion_matches_golden_hashes() {
     let ssf = sandbag_ssf_path();
-    if !ssf.exists() {
-        eprintln!("skip: sandbag.ssf not available at {}", ssf.display());
-        return;
-    }
+    if !common::present(&ssf) { return; }
     let golden_path = golden_hashes_path();
     let golden_text = std::fs::read_to_string(&golden_path)
         .expect("must be able to read tests/golden/sandbag_hashes.txt");

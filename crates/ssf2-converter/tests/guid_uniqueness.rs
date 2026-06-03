@@ -15,9 +15,9 @@
 
 use ssf2_converter::{run_conversion, ConvertOptions};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-fn manifest_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")) }
+mod common;
 
 fn collect_guids(dir: &Path, out: &mut Vec<(String, String)>) {
     let exts = ["hx", "entity", "json", "meta", "palettes", "fraytools"];
@@ -49,14 +49,8 @@ fn collect_guids(dir: &Path, out: &mut Vec<(String, String)>) {
 
 #[test]
 fn sandbag_guids_are_unique() {
-    let ssf = manifest_dir()
-        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("ssf2-ssfs/sandbag.ssf");
-    if !ssf.exists() {
-        eprintln!("skip: sandbag.ssf not available at {}", ssf.display());
-        return;
-    }
+    let ssf = common::ssf("sandbag");
+    if !common::present(&ssf) { return; }
 
     let tempdir = std::env::temp_dir().join(format!("ssf2_guid_sandbag_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tempdir);

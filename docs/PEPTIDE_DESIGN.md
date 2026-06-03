@@ -1,178 +1,144 @@
-# Peptide design — architecture, version resilience, roadmap
+# Peptide design -- architecture, version resilience, roadmap
 
-Peptide drives a running Fraymakers engine for testing converted characters (and,
-increasingly, for live mod development). This doc records the **layering and
-stability decisions** so the system stays maintainable and survives engine
-updates. The guiding rule:
+Peptide drives a running Fraymakers engine for testing converted characters (and more and
+more, for live mod development). this doc records the **layering and stability decisions** so
+the system stays maintainable and survives engine updates. the guiding rule:
 
-> **Push logic to the highest, most readable layer it can live in.**
-> Hand-written HashLink opcodes are the layer of last resort.
+> **push logic to the highest, most readable layer it can live in.** hand-written
+> engine-integration code is the layer of last resort.
 
-## The layers (lowest → highest)
+> **compliance note.** this doc describes Peptide's *own* architecture and the patcher
+> workflow, both totally fine to document. what's removed, at Team Fray's request,
+> is the engine's internal **symbol map** (specific non-hscript engine class/function/field
+> names, the load/dispatch/telemetry functions, the `CState` integer values) and the
+> decompilation *technique*. don't name engine internals here; keep those in the gitignored
+> `docs/` scratch space. see [`AGENT_CONTEXT.md`](../AGENT_CONTEXT.md) "engine-side knowledge
+> is not in this repo".
+
+## the layers (lowest → highest)
 
 | Layer | Where | What lives here |
 |---|---|---|
-| 1. Bytecode dispatch | `src/main.rs` `connect_edit` (+ `src/asm.rs`) | The thin per-frame skeleton spliced into `fraymakers.Main.update`: socket connect/auth and a single-byte wire dispatch. Irreducible (HashLink has no plugin hook) but kept minimal. Where a handler must still be bytecode, it's emitted from Rust data tables via the `Asm` helper (registers + jump offsets resolved at build time, turning runtime engine crashes into patch-time errors) — not hand-placed. |
-| 2. Host vocabulary / routing | `src/interpreter.rs` | The Rust front end: translates the small friendly command set into wire bytes, and forwards **every unrecognized line to the `e` (eval) handler as hscript**. Deliberately flat — a tiny `COMMANDS` table plus helpers (`expand_sequence`, `controls_mask`) that aren't meant to be invoked on their own. It never runs game logic; it only routes. Shared by both the patcher and the bridge so the host surface and the patched protocol can't drift. |
-| 3. In-engine command vocabulary | `commands.hsx` | The human-readable, **non-helper** commands you actually run for tests and scripting — `match.getCharacters()`, `matchStatus()`, `log()`, the icon feeds. Loaded once into the engine-scoped interpreter by the `e` hook. The Fraymakers script API (`CState`, `HitboxStats`, `Assist`, …) is already in scope; `commands.hsx`'s structural job is to expose the live match/character context a non-entity script otherwise lacks. **This is the most-used surface.** |
-| 4. Shell orchestration | `tools/run.sh`, `tools/runseq.sh`, `tools/tests/*` | Boot lifecycle, multi-command sequencing, batch sweeps, cleanup. |
+| 1. Bytecode dispatch | `src/main.rs` `connect_edit` (+ `src/asm.rs`) | the thin per-frame skeleton spliced into the engine's update loop: socket connect/auth and a single-byte wire dispatch. irreducible (HashLink has no plugin hook) but kept minimal. where a handler still has to be bytecode, it's emitted from Rust data tables via the `Asm` helper (registers + jump offsets resolved at build time, which turns runtime engine crashes into patch-time errors), not hand-placed. (don't name the specific engine function patched here, see the compliance note above.) |
+| 2. Host vocabulary / routing | `src/interpreter.rs` | the Rust front end: it translates the small friendly command set into wire bytes, and forwards **every unrecognized line to the `e` (eval) handler as hscript**. deliberately flat, just a tiny `COMMANDS` table plus helpers (`expand_sequence`, `controls_mask`) that aren't meant to be invoked on their own. it just routes, no game logic. shared by both the patcher and the bridge so the host surface and the patched protocol can't drift. |
+| 3. In-engine command vocabulary | `commands.hsx` | the human-readable, **non-helper** commands you actually run for tests and scripting: `match.getCharacters()`, `matchStatus()`, `log()`, the icon feeds. loaded once into the engine-scoped interpreter by the `e` hook. the Fraymakers script API (`CState`, `HitboxStats`, `Assist`, …) is already in scope; `commands.hsx`'s structural job is to expose the live match/character context a non-entity script otherwise lacks. **this is the most-used surface.** |
+| 4. Shell orchestration | `tools/run.sh`, `tools/runseq.sh`, `tools/tests/*` | boot lifecycle, multi-command sequencing, batch sweeps, cleanup. |
 
-### The two seams
+### the two seams
 
-**Bytecode ↔ host (layers 1–2).** The wire protocol is deliberately minimal:
-**one byte selects a handler** (`s` spawn, `e` eval-hscript, `i` input, `l` load,
-`c` console, `x` exit); only the arg-bearing bytes (`s`/`e`/`i`) drain a trailing
-line. The engine never parses words. `interpreter.rs` turns what you type into
-that wire line. Because anything it doesn't recognize is forwarded verbatim to
-`e`, the host vocabulary stays tiny — `interpreter.rs` adds only the few commands
-that genuinely *need* bytecode side-effects (input injection via `hold`/`seq`, the
-console call) plus the handful that bootstrap a session (`spawn`, `load`, `exit`).
+**engine ↔ host (layers 1–2).** the wire protocol is deliberately minimal: **one byte selects
+a handler** (spawn, eval-hscript, input, load, console, exit), and only the arg-bearing ones
+drain a trailing line. the engine never parses words. `interpreter.rs` turns what you type
+into that wire line. since anything it doesn't recognize gets forwarded verbatim to the eval
+handler, the host vocabulary stays tiny: `interpreter.rs` adds only the few commands that
+genuinely *need* an engine-side side-effect (input injection via `hold`/`seq`, the console
+call) plus the handful that bootstrap a session (`spawn`, `load`, `exit`).
 
-**Host ↔ engine (layers 2–3).** The `e` handler hands the hscript text to the
-engine's own `hscript.Interp` — the same interpreter that runs every character
-script — so logic expressed as hscript is resolved by the engine's linker at
-runtime and is immune to findex drift entirely. `commands.hsx` is what that
-hscript can call beyond the stock script API.
+**host ↔ engine (layers 2–3).** the eval handler hands the hscript text to the engine's own
+hscript interpreter, the same one that runs every character script, so logic expressed as
+hscript gets resolved by the engine at runtime and is robust across engine updates.
+`commands.hsx` is what that hscript can call beyond the stock script API.
 
-### Where new features should go
+### where new features should go
 
-The default home for a new capability is **`commands.hsx` (layer 3)** — write it
-as hscript. The script API already exposes the whole engine surface; you almost
-never need new bytecode. Escalate only when forced:
+the default home for a new capability is **`commands.hsx` (layer 3)**, written as hscript.
+the script API already exposes the whole engine surface, so you almost never need to touch
+the engine-integration layer. only escalate when you're forced to:
 
-1. **hscript in `commands.hsx`** — the strategic direction and the right answer
-   for nearly everything. Readable, drift-proof, the most-used surface.
-2. **A new wire command in `interpreter.rs`** — only when the feature needs a
-   bytecode side-effect the interpreter can't reach from script (input injection,
-   a side-effecting engine call). Keep it flat: route to a thin bytecode handler,
-   don't grow logic here.
-3. **A Rust-generated `Asm` bytecode handler** — the last resort, only when even
-   the wire command can't be done from hscript. Drive it from a data table via
-   `Asm`; never hand-place opcodes.
+1. **hscript in `commands.hsx`** -- the strategic direction and the right answer for nearly
+   everything. readable, update-robust, the most-used surface.
+2. **a new wire command in `interpreter.rs`** -- only when the feature needs an engine-side
+   side-effect the interpreter can't reach from script (input injection, a side-effecting
+   engine call). keep it flat: route to a thin handler, don't grow logic here.
+3. **a handler at the engine-integration layer** -- the last resort, only when even the wire
+   command can't be done from hscript. drive it from a data table, never hand-place
+   engine-side code.
 
-## Version resilience — surviving Fraymakers updates
+## version resilience -- surviving Fraymakers updates
 
-Fraymakers ships as compiled HashLink bytecode. **Every Fraymakers update is a
-full recompile** that renumbers function indices (`findex`), field slots, and type
-indices. A patcher that hardcodes those integers breaks silently — it injects into
-whatever function now sits at the old index, corrupting the engine with no error.
-Four rules, in priority order:
+Fraymakers ships as compiled HashLink bytecode, and every update is a full recompile that
+renumbers the engine's internal indices. a patcher that hardcodes those integers breaks
+silently, injecting into whatever now sits at the old index. four rules, in priority order:
 
-1. **Resolve by name, never by index.** Use the read-only resolvers in
+1. **resolve by name, never by index.** use the read-only resolvers in
    [`src/main.rs`](../src/main.rs) (`require_fn`/`find_fn` by name + parent type,
-   `require_type`, `require_field`, …). A name survives a recompile as long as the
-   symbol still exists. Raw `RefFun(N)` literals are a last resort, allowed only
-   for unnameable symbols (e.g. unnamed enum types like `hscript.Expr`), each with
-   a comment on how to re-derive it.
-2. **Never silently fall back to a pinned index.** A name miss must fail **loudly**
-   (`require_*` returns `Err`, aborting the patch). `find_fn(...).unwrap_or(N)` is
-   dangerous: on a build where the symbol moved it injects into a stale index. The
-   few that remain are non-critical paths (marked `critical: false` in the
-   manifest); do not add new ones.
-3. **Prefer hscript over hand-emitted bytecode.** The engine bundles the full
-   `hscript` interpreter — the same `Parser` + `Interp` that runs every character
-   script. The `e` command parses and executes script *text* in-engine, so logic
-   expressed as an hscript string is resolved by the engine's own linker at runtime
-   and is **immune to findex drift entirely**. The migration goal: the only brittle
-   bytecode left is the minimal eval-bootstrap hook; every handler becomes readable
-   Haxe text. Add new behavior as hscript unless there's a hard reason it must be
-   bytecode.
-4. **Avoid mid-function opcode-index injection.** Inserting ops at a fixed offset
-   inside an engine function breaks if the engine changes a single opcode in that
-   function. Prefer the layout-robust `insert_ops_front`/`insert_ops_end` helpers,
-   or move the logic into hscript. Any remaining mid-function injection must assert
-   its expected opcodes and abort loudly if they shifted.
+   `require_type`, `require_field`, …). a name survives a recompile as long as the symbol
+   still exists. raw index literals are a last resort, each commented with how to re-derive
+   it.
+2. **never silently fall back to a pinned index.** a name miss has to fail **loudly**
+   (`require_*` returns `Err`, aborting the patch). the few non-critical fallbacks left are
+   marked `critical: false` in the manifest; don't add new ones.
+3. **prefer hscript over hand-emitted bytecode.** the engine bundles a full hscript
+   interpreter, the same one that runs every character script. the eval command runs script
+   *text* in-engine, so logic expressed as hscript gets resolved by the engine at runtime and
+   is **immune to index drift**. the migration goal: the only brittle bytecode left is the
+   minimal eval-bootstrap hook, and every handler becomes readable Haxe text.
+4. **avoid mid-function opcode-index injection.** inserting ops at a fixed offset inside an
+   engine function breaks if the engine changes a single opcode there. prefer the
+   layout-robust `insert_ops_front`/`insert_ops_end` helpers, or move to hscript.
 
-### The symbol manifest + `doctor`
+### the symbol manifest + `doctor`
 
-Every engine symbol the patcher depends on is declared in one place —
-[`src/manifest.rs`](../src/manifest.rs) (`MANIFEST`), grouped by subsystem, each
-entry tagged `critical` (a miss aborts the patch) or not (a miss warns). This is
-the single source of truth — **any new engine dependency must be added here.**
+every engine symbol the patcher depends on is declared in one place,
+[`src/manifest.rs`](../src/manifest.rs) (`MANIFEST`), grouped by subsystem, each entry tagged
+`critical` (a miss aborts the patch) or not. this is the single source of truth, so **any new
+engine dependency gets added here.** a read-only **`doctor`** preflight resolves the whole
+manifest against a given engine file and prints a pass/fail checklist. the same check runs at
+the top of every real patch and **aborts before mutating anything** if a critical symbol is
+missing, so an incompatible build fails precisely instead of producing corrupt output (the
+GUI shows it in the boot modal, "Verifying engine N/N").
 
-```bash
-# read-only preflight: resolve the whole manifest, print a checklist, exit
-peptide "<install>/hlboot-sdl.dat" _ doctor
-```
+**version-bump loop:** run `doctor` against the new build → for each miss, find the symbol's
+new name with the read-only inspection subcommands and update both `manifest.rs` and the
+matching `require_*` call → repeat until clean → then re-run the in-engine spawn-test
+(`doctor` proves symbols *resolve*; the spawn-test proves the patch *behaves*).
 
-The same check (`run_preflight`) runs at the top of every real `connect` patch: it
-**aborts before mutating a single opcode** if a critical symbol is missing — so an
-incompatible build fails loudly and precisely instead of producing corrupt output.
-Progress surfaces on the CLI/TUI (stderr checklist) and in the GUI boot modal
-("Verifying engine N/71").
+> **keep the engine specifics out of the prose docs.** this section documents the *process*
+> (resolve by name, `doctor`, the manifest), which is fine. it doesn't enumerate the engine
+> symbol map, the runtime `CState` values, or the technique for locating a moved symbol. to
+> orient, read the code: the `MANIFEST` table in [`src/manifest.rs`](../src/manifest.rs) is
+> the canonical, annotated list of the engine surface the patcher touches, and `connect_edit`
+> consumes it. keep any deeper narrative in the gitignored `docs/` scratch space
+> (`docs/ENGINE_INTERNALS.local.md`). see [`AGENT_CONTEXT.md`](../AGENT_CONTEXT.md)
+> "engine-side knowledge is not in this repo".
 
-(The symbol *names* in `manifest.rs` are RE facts cited for interoperability, which
-[NOTICE.md](../NOTICE.md) permits; only verbatim bytecode/disassembly/assets are
-kept out of the repo.)
+## roadmap -- toward a live mod-development tool
 
-### Version-bump checklist
+the bigger vision: steer the engine from the command line, drive the exact move you're
+editing on repeat against a dummy, tweak stats, and see the result right away. the canonical
+use case is a **hitbox-stats live-tuning loop**: load a stage with the character + a dummy,
+loop the attack you're editing, adjust a stat, read back knockback distance / angle / KO %,
+and tune until it feels right.
 
-1. Point `FRAY_DIR` at the new install (or copy the new `hlboot-sdl.dat`).
-2. Run `peptide <new hlboot-sdl.dat> _ doctor`. `0 critical missing` → already
-   compatible; skip to the spawn-test.
-3. For each `[MISS]`: find the symbol's new name with the read-only inspection
-   modes (`inspect`, `fnsof`, `whoref`, `dis` — see [TESTING.md](../TESTING.md)),
-   then update the entry in `manifest.rs` **and** the matching `require_*` call.
-   Re-run `doctor` until clean.
-4. Re-run the in-engine spawn-test (sandbag loads, plays, no freeze). `doctor`
-   proves symbols *resolve*; the spawn-test proves the patch *behaves*.
-5. If a handler was brittle bytecode, consider porting it to hscript (rule 3).
+shipped today: `spawn`, input injection (`hold` / `seq` frame-accurate timelines), and the
+hscript-eval surface. driving any move (`toState(CState.…)`), reading state / position /
+velocity / damage, and the `matchStatus` telemetry feed are all expressed as hscript against
+the live match (see [`commands.hsx`](../commands.hsx)). plus crash diagnostics, recipe
+scripting, and A/B regression checks.
 
-## Roadmap — toward a live mod-development tool
+the remaining deep items all converge on **one missing capability: in-engine measurement of
+emergent behavior** (what a move actually does to an opponent), built on a dummy opponent plus
+post-hit readback. the live, tracked todo list for all of this lives in
+[`STATUS.md`](STATUS.md) "peptide / harness todos".
 
-The bigger vision: steer the engine from the command line, drive the exact move
-you're editing on repeat against a dummy, tweak stats, and see the result
-immediately. The canonical use case is a **hitbox-stats live-tuning loop**: load a
-stage with the character + a dummy, loop the attack you're editing, adjust a stat,
-read back knockback distance / angle / KO %, and tune until it feels right.
+### the hscript / `.hl` direction
 
-Shipped today: `spawn`, input injection (`hold` / `seq` frame-accurate
-timelines), and the hscript-eval surface — driving any move (`toState(CState.…)`),
-reading state / position / velocity / damage, and the `matchStatus` telemetry feed
-are all expressed as hscript against the live match (see
-[`commands.hsx`](../commands.hsx)). Plus crash diagnostics, recipe scripting, and
-A/B regression checks.
-
-The remaining deep items all converge on **one missing capability: in-engine
-measurement of emergent behavior** (what a move actually does to an opponent):
-
-- **A dummy opponent** — spawn a second fighter as a hit target. Extends the
-  proven single-player `spawn` handler to a 2-player array (gated opt-in to keep
-  the proven path byte-equivalent) and binds `p1` in `commands.hsx`. Prerequisite
-  for everything below.
-- **Hit-result readback** — after a hit lands, report damage dealt, victim
-  knockback distance + launch angle, and hitstun frames. Once `p1` is bound this
-  is plain hscript (the same field reads already used on `p0`). The "is it a good
-  angle / would it kill" data.
-- **KO-threshold search** — binary-search the dummy's starting % for the lowest KO
-  %. A driver loop (host-side, or an hscript helper) over the dummy + repeated
-  moves + boundary detection.
-- **Active-box dump** — every active hit/hurt box for the current frame. Reading
-  the engine's nested per-anim/per-hitbox stats structure is more involved than the
-  simple field reads, but still hscript over the script API.
-- **`verify` harness** — drive a move, capture behavior, and diff against the SSF2
-  reference values (already extracted into `HitboxStats.hx`). Turns parity from
-  eyeballing into a pass/fail suite — the functional-parity harness.
-- **Stat hot-reload** — re-read stats into a running match. Today's baseline is
-  "edit → re-export → `spawn` again" (the `spawn` handler reloads a fresh `.fra`
-  in-session); a mid-match in-place re-read is unresearched.
-
-### The hscript / `.hl` direction
-
-Features with real control flow should be written in Haxe (hscript text today, a
-compiled `.hl` module later) rather than hand-emitted opcodes, so the fragile
-hand-bytecode surface stops growing. HashLink bytecode is *monolithic* with no
-runtime module-load facility, so a compiled-`.hl` path most likely means **merging**
-a Haxe-compiled `.hl` into the engine bytecode at patch time (remapping every
-findex / type index / string index across the two modules). `hlbc` (already a
-dependency) gives read/write access to those tables, so it's mechanically possible,
-but the index-remapping is a non-trivial cross-module linker — it needs a dedicated
-feasibility spike before any feature depends on it. Until then, complex features
-stay on the hscript-eval or Rust-generated-`Asm` path.
+features with real control flow should be written in Haxe (hscript text today, a compiled
+`.hl` module later) instead of hand-emitted opcodes, so the fragile hand-bytecode surface
+stops growing. HashLink bytecode is *monolithic* with no runtime module-load facility, so a
+compiled-`.hl` path most likely means **merging** a Haxe-compiled `.hl` into the engine
+bytecode at patch time (remapping every function / type / string index across the two
+modules). `hlbc` (already a dependency) gives read/write access to those tables, so it's
+mechanically possible, but the index-remapping is a hefty cross-module linker and needs a
+dedicated feasibility spike before any feature leans on it. until then, complex features stay
+on the hscript-eval or Rust-generated-`Asm` path.
 
 ## IP boundary
 
-Peptide contains **no** Fraymakers code, bytecode, strings, or assets. It reads the
-user's *local* engine bytecode at runtime, writes a patched *copy*, and speaks a
-loopback TCP protocol. Method/field/type names appear only as interoperability
-facts in our own words. See [`NOTICE.md`](../NOTICE.md).
+Peptide contains **no** Fraymakers code, bytecode, strings, or assets. it reads the user's
+*local* engine at runtime, writes a patched *copy*, and speaks a loopback TCP protocol. per
+Team Fray's request, the tracked docs don't name specific engine internals
+(classes/functions/fields, the symbol map) or explain the decompilation technique, though
+Peptide's own architecture and patcher workflow are documented freely. see
+[`NOTICE.md`](../NOTICE.md) and [`AGENT_CONTEXT.md`](../AGENT_CONTEXT.md) "engine-side
+knowledge is not in this repo".

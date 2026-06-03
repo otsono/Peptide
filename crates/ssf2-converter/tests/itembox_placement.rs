@@ -14,14 +14,12 @@
 use ssf2_converter::fraytools_transform::{collision_box_anchor, intended_pivot_point};
 use ssf2_converter::sprite_parser::{self, BoxType};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+mod common;
 
 fn ssf(name: &str) -> PathBuf {
-    // ssf2-ssfs/ is a sibling of the repo root; the crate sits two levels below.
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().and_then(|p| p.parent()).map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(format!("ssf2-ssfs/{}.ssf", name))
+    common::ssf(name)
 }
 
 fn drift(a: (f64, f64), b: (f64, f64)) -> f64 {
@@ -30,7 +28,7 @@ fn drift(a: (f64, f64), b: (f64, f64)) -> f64 {
 
 fn check_char(name: &str) {
     let p = ssf(name);
-    if !p.exists() { eprintln!("{}.ssf missing; skipping", name); return; }
+    if !common::present(&p) { return; }
     let data = ssf2_converter::ssf::decompress(&std::fs::read(&p).unwrap()).unwrap();
     let empty: BTreeMap<String, String> = BTreeMap::new();
     let boxes = sprite_parser::parse_sprite_boxes(&data, name, &empty).unwrap();

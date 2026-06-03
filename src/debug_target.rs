@@ -25,6 +25,7 @@ use crate::interpreter::{self, Command, SpawnArgs};
 /// An engine that genuinely can't do a feature overrides the method to say so
 /// (e.g. SSF2 has no stock-icon pipeline → `char_icon` returns `None`).
 pub trait DebugTarget {
+    #[allow(dead_code)] // part of the trait surface; not all callers wired yet
     fn engine(&self) -> &'static str;
     fn eval(&mut self, expr: &str) -> Result<String>;
     fn spawn(&mut self, args: &SpawnArgs) -> Result<String>;
@@ -93,6 +94,7 @@ impl FraymakersTarget {
     }
 
     /// Connect by awaiting the engine's dial-in (it must already be launched).
+    #[allow(dead_code)] // alternate constructor for the attach-to-running-engine path
     pub fn connect(port: u16, token: Option<&str>) -> Self {
         let (r, w) = crate::ui::await_engine(port, token);
         Self::new(r, w)

@@ -36,6 +36,7 @@ const OP_IFSTRICTEQ: u8 = 0x19;
 const OP_DUP: u8 = 0x2A;
 const OP_POP: u8 = 0x29;
 const OP_SETPROPERTY: u8 = 0x61;
+#[allow(dead_code)] // kept for completeness of the opcode set
 const OP_RETURNVALUE: u8 = 0x48;
 const OP_PUSHBYTE: u8 = 0x24;
 const OP_PUSHNULL: u8 = 0x20;
@@ -1291,7 +1292,7 @@ pub fn patch_file_with(
     let mut out_tags = Vec::with_capacity(tags.len() + new_abc.len());
     out_tags.extend_from_slice(&tags[..tag_start]);
     // long-form tag header: ((code<<6)|0x3f) as u16, then u32 length
-    let code_len = ((TAG_DO_ABC2 << 6) | 0x3f) as u16;
+    let code_len = (TAG_DO_ABC2 << 6) | 0x3f;
     out_tags.extend_from_slice(&code_len.to_le_bytes());
     out_tags.extend_from_slice(&(new_body_len as u32).to_le_bytes());
     out_tags.extend_from_slice(body_prefix);
@@ -1327,7 +1328,7 @@ mod tests {
         let data = std::fs::read(outp).unwrap();
         let buf = swf::decompress_swf(&data[..]).expect("re-decompress patched");
         let parsed = swf::parse_swf(&buf).expect("re-parse patched");
-        let abc_bytes: &[u8] = parsed.tags.iter().find_map(|t| if let swf::Tag::DoAbc2(a)=t {Some(&a.data[..])} else {None}).expect("DoAbc2");
+        let abc_bytes: &[u8] = parsed.tags.iter().find_map(|t| if let swf::Tag::DoAbc2(a)=t {Some(a.data)} else {None}).expect("DoAbc2");
         let abc = crate::abc_codec::parse(abc_bytes).expect("re-parse injected abc (full consume)");
         eprintln!("patched ABC re-parses: strings={} multinames={} bodies={}", abc.strings.len(), abc.multinames.len(), abc.bodies.len());
     }

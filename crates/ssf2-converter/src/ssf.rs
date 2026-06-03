@@ -120,7 +120,7 @@ fn try_extract_dat(data: &[u8]) -> Option<Vec<u8>> {
     if data.len() < 2 || data[0] & 0x0f != 0x08 {
         return None;
     }
-    if ((data[0] as u16) << 8 | data[1] as u16) % 31 != 0 {
+    if !((data[0] as u16) << 8 | data[1] as u16).is_multiple_of(31) {
         return None;
     }
 
