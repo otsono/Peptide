@@ -34,26 +34,90 @@ use ssf2_converter::{abc_parser, ssf, swf_parser};
 fn ssf2_app() -> PathBuf {
     crate::config::Config::load()
         .ssf2_app()
-        .unwrap_or_else(|| PathBuf::from("/Applications/SSF2.app"))
+        .unwrap_or_else(|| {
+            // Last-resort platform default (only reached when config + env are both empty
+            // AND default_ssf2_app returned None — i.e. SSF2 isn't installed at any
+            // known location). The path is intentionally wrong so the caller's
+            // "SSF2.swf not found" error names the expected layout.
+            if cfg!(target_os = "macos") {
+                PathBuf::from("/Applications/SSF2.app")
+            } else {
+                PathBuf::from("C:\\Program Files (x86)\\Super Smash Flash 2 Beta 1.4")
+            }
+        })
 }
 
-/// Copy the SSF2 app bundle to a writable staging location for patching. Prefers
-/// the SAME folder as the real app (sibling `SSF2-patched.app`); if that folder
-/// can't be written, falls back to a per-platform cache dir, then the temp dir.
-/// Returns the absolute path of the staged copy. Errors only if every candidate
-/// location fails (e.g. no writable disk at all).
+// ── Cross-platform path helpers ────────────────────────────────────────────
+
+/// Path to SSF2.swf inside the install. macOS: inside the .app bundle.
+/// Windows/Linux: at the root of the install directory.
+pub fn ssf2_swf_path(app: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    return app.join("Contents/Resources/SSF2.swf");
+    #[cfg(not(target_os = "macos"))]
+    app.join("SSF2.swf")
+}
+
+/// Path to the SSF2 executable inside the install. macOS: inside the .app bundle.
+/// Windows/Linux: SSF2.exe at the root.
+pub fn ssf2_exe_path(app: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    return app.join("Contents/MacOS/SSF2");
+    #[cfg(not(target_os = "macos"))]
+    app.join("SSF2.exe")
+}
+
+/// Stem name for the staged patched copy (keeps `.app` on macOS for Finder/AIR).
+fn ssf2_patched_name() -> &'static str {
+    if cfg!(target_os = "macos") { "SSF2-patched.app" } else { "SSF2-patched" }
+}
+
+/// Recursively copy `src` into `dst` (pure Rust — no `cp -R`).
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let dst_path = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(&entry.path(), &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// A path in the OS temp dir for a named file (forward-slash for AIR on Windows).
+fn temp_str(name: &str) -> String {
+    std::env::temp_dir().join(name).to_string_lossy().replace('\\', "/")
+}
+
+/// Strip quarantine and re-sign the patched bundle on macOS; no-op on other platforms.
+fn macos_resign(app: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("xattr").arg("-cr").arg(app).status();
+        let _ = std::process::Command::new("codesign").args(["--force","--deep","--sign","-"]).arg(app).status();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app; // silence unused warning
+}
+
+/// Copy the SSF2 install to a writable staging location for patching. Prefers the
+/// sibling `SSF2-patched[.app]`; falls back to a per-platform cache dir, then temp.
 fn stage_patched_bundle(app: &Path) -> Result<PathBuf> {
+    let name = ssf2_patched_name();
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(parent) = app.parent() {
-        candidates.push(parent.join("SSF2-patched.app"));
+        candidates.push(parent.join(name));
     }
     candidates.push(
         dirs::cache_dir()
             .map(|d| d.join("peptide"))
             .unwrap_or_else(|| std::env::temp_dir().join("peptide"))
-            .join("SSF2-patched.app"),
+            .join(name),
     );
-    candidates.push(std::env::temp_dir().join("peptide").join("SSF2-patched.app"));
+    candidates.push(std::env::temp_dir().join("peptide").join(name));
 
     let mut last = String::from("no candidate locations");
     for dst in &candidates {
@@ -64,10 +128,9 @@ fn stage_patched_bundle(app: &Path) -> Result<PathBuf> {
             }
         }
         let _ = std::fs::remove_dir_all(dst);
-        match std::process::Command::new("cp").arg("-R").arg(app).arg(dst).status() {
-            Ok(st) if st.success() => return Ok(dst.clone()),
-            Ok(_) => last = format!("cp -R into {} failed", dst.display()),
-            Err(e) => last = format!("cp -R into {} failed: {e}", dst.display()),
+        match copy_dir_all(app, dst) {
+            Ok(()) => return Ok(dst.clone()),
+            Err(e) => last = format!("copy into {} failed: {e}", dst.display()),
         }
     }
     bail!("could not stage a writable patched SSF2 copy ({last})")
@@ -192,60 +255,50 @@ fn cmd_patch(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `peptide ssf2 install [--heartbeat]` — build a patched copy of SSF2.app under
-/// ./build with the bridge payload injected, ad-hoc resigned so it boots.
+/// `peptide ssf2 install [--heartbeat]` — build a patched copy of the SSF2 install
+/// with the bridge payload injected (and resigned on macOS so Gatekeeper accepts it).
 fn cmd_install(args: &[String]) -> Result<PathBuf> {
     let heartbeat = args.iter().any(|a| a == "--heartbeat");
     let app = ssf2_app();
-    let src_swf = app.join("Contents/Resources/SSF2.swf");
+    let src_swf = ssf2_swf_path(&app);
     if !src_swf.exists() { bail!("SSF2.swf not found at {}", src_swf.display()); }
-    // stage the copy next to the real app (CWD-independent), with safe fallbacks.
     let dst_app = stage_patched_bundle(&app)?;
-    // patch the swf in place inside the copy
-    let dst_swf = dst_app.join("Contents/Resources/SSF2.swf");
-    let marker = "/tmp/peptide_ssf2_marker.txt";
+    let dst_swf = ssf2_swf_path(&dst_app);
+    let marker = temp_str("peptide_ssf2_marker.txt");
     let echo = args.iter().any(|a| a == "--echo");
     if echo {
+        let cmd_file  = temp_str("peptide_ssf2_cmd.txt");
+        let resp_file = temp_str("peptide_ssf2_resp.txt");
         ssf2_converter::abc_inject::patch_file_with(&src_swf, &dst_swf, |abc| {
-            ssf2_converter::abc_inject::inject_command_channel(
-                abc, SSF2_DOC_CLASS, "/tmp/peptide_ssf2_cmd.txt", "/tmp/peptide_ssf2_resp.txt")
+            ssf2_converter::abc_inject::inject_command_channel(abc, SSF2_DOC_CLASS, &cmd_file, &resp_file)
         })?;
     } else if heartbeat {
         ssf2_converter::abc_inject::patch_file_with(&src_swf, &dst_swf, |abc| {
-            ssf2_converter::abc_inject::inject_enterframe_heartbeat(abc, SSF2_DOC_CLASS, marker)
+            ssf2_converter::abc_inject::inject_enterframe_heartbeat(abc, SSF2_DOC_CLASS, &marker)
         })?;
     } else {
-        ssf2_converter::abc_inject::patch_file(&src_swf, &dst_swf, SSF2_DOC_CLASS, marker, "alive")?;
+        ssf2_converter::abc_inject::patch_file(&src_swf, &dst_swf, SSF2_DOC_CLASS, &marker, "alive")?;
     }
-    // strip quarantine + ad-hoc resign so Gatekeeper/AIR accepts the modified bundle
-    let _ = std::process::Command::new("xattr").arg("-cr").arg(&dst_app).status();
-    let _ = std::process::Command::new("codesign").args(["--force","--deep","--sign","-"]).arg(&dst_app).status();
+    macos_resign(&dst_app);
     println!("installed patched bridge: {}", dst_app.display());
     Ok(dst_app)
 }
 
-/// Install a patched SSF2.app carrying the command bridge and return the bundle
-/// path. The bridge is an async `flash.net.Socket` that dials into our loopback
-/// server on `port` (127.0.0.1) — the host must already be listening on it.
+/// Install a patched SSF2 copy carrying the socket bridge and return its path.
+/// The bridge dials `127.0.0.1:<port>` from the document constructor so the host
+/// must already be listening. On macOS the copy is resigned so Gatekeeper accepts it.
 pub fn install_patched(port: u16) -> Result<PathBuf> {
     let app = ssf2_app();
-    let src_swf = app.join("Contents/Resources/SSF2.swf");
+    let src_swf = ssf2_swf_path(&app);
     if !src_swf.exists() { bail!("SSF2.swf not found at {}", src_swf.display()); }
-    // Stage the patched copy NEXT TO the real SSF2 app (keeps it in the same
-    // resources/signing context), falling back to a safe per-platform cache dir
-    // when that folder isn't writable (e.g. /Applications without admin rights, or
-    // the GUI's working directory not being the project root). Absolute paths only,
-    // so this works regardless of the process CWD.
     let dst_app = stage_patched_bundle(&app)?;
-    let dst_swf = dst_app.join("Contents/Resources/SSF2.swf");
+    let dst_swf = ssf2_swf_path(&dst_app);
+    let traj = crate::ssf2_bridge::traj_path();
     ssf2_converter::abc_inject::patch_file_with(&src_swf, &dst_swf, |abc| {
         ssf2_converter::abc_inject::inject_socket_bridge(abc, SSF2_DOC_CLASS, "127.0.0.1", port)?;
-        // a second ENTER_FRAME listener that logs Characters[0] physics each frame
-        ssf2_converter::abc_inject::inject_jump_probe(
-            abc, SSF2_DOC_CLASS, crate::ssf2_bridge::TRAJ_PATH, 0)
+        ssf2_converter::abc_inject::inject_jump_probe(abc, SSF2_DOC_CLASS, &traj, 0)
     })?;
-    let _ = std::process::Command::new("xattr").arg("-cr").arg(&dst_app).status();
-    let _ = std::process::Command::new("codesign").args(["--force","--deep","--sign","-"]).arg(&dst_app).status();
+    macos_resign(&dst_app);
     Ok(dst_app)
 }
 
@@ -253,33 +306,32 @@ pub fn install_patched(port: u16) -> Result<PathBuf> {
 /// (the marker file appears). Proves the code-execution bridge end-to-end.
 fn cmd_selftest(args: &[String]) -> Result<()> {
     let echo = args.iter().any(|a| a == "--echo");
-    // echo mode: the engine reads the cmd file every frame, so it must exist before boot.
     if echo {
-        std::fs::write("/tmp/peptide_ssf2_cmd.txt", b"")?;
-        let _ = std::fs::remove_file("/tmp/peptide_ssf2_resp.txt");
+        std::fs::write(temp_str("peptide_ssf2_cmd.txt"), b"")?;
+        let _ = std::fs::remove_file(temp_str("peptide_ssf2_resp.txt"));
     }
     let dst_app = cmd_install(args)?;
-    let marker = Path::new("/tmp/peptide_ssf2_marker.txt");
+    let marker_s = temp_str("peptide_ssf2_marker.txt");
+    let marker = Path::new(&marker_s);
     let _ = std::fs::remove_file(marker);
-    let exe = dst_app.join("Contents/MacOS/SSF2");
+    let exe = ssf2_exe_path(&dst_app);
     println!("booting patched SSF2…");
     let mut child = std::process::Command::new(&exe)
         .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
         .spawn()?;
 
     if echo {
-        let resp = Path::new("/tmp/peptide_ssf2_resp.txt");
-        // give it a moment to install the listener, then send a command
+        let resp_s = temp_str("peptide_ssf2_resp.txt");
+        let resp = Path::new(&resp_s);
         std::thread::sleep(std::time::Duration::from_millis(3000));
         let token = "PING-12345";
-        std::fs::write("/tmp/peptide_ssf2_cmd.txt", token.as_bytes())?;
+        std::fs::write(temp_str("peptide_ssf2_cmd.txt"), token.as_bytes())?;
         let mut got = String::new();
         for _ in 0..20 {
             std::thread::sleep(std::time::Duration::from_millis(300));
             if let Ok(s) = std::fs::read_to_string(resp) { if s == token { got = s; break; } got = s; }
         }
         let _ = child.kill();
-        let _ = std::process::Command::new("pkill").args(["-f","SSF2-patched"]).status();
         if got == token {
             println!("PASS: bidirectional command channel live — host sent {token:?}, engine echoed {got:?}");
             return Ok(());
@@ -294,12 +346,10 @@ fn cmd_selftest(args: &[String]) -> Result<()> {
     }
     if !ok {
         let _ = child.kill();
-        let _ = std::process::Command::new("pkill").args(["-f","SSF2-patched"]).status();
         bail!("FAIL: marker never appeared — injected code did not run (check the patch)");
     }
     let first = std::fs::read_to_string(marker).unwrap_or_default();
     let result = if heartbeat {
-        // confirm the value CHANGES across ~1.2s → the handler fires every frame
         std::thread::sleep(std::time::Duration::from_millis(1200));
         let second = std::fs::read_to_string(marker).unwrap_or_default();
         if first != second {
@@ -313,7 +363,6 @@ fn cmd_selftest(args: &[String]) -> Result<()> {
         Ok(())
     };
     let _ = child.kill();
-    let _ = std::process::Command::new("pkill").args(["-f","SSF2-patched"]).status();
     result
 }
 
@@ -322,31 +371,28 @@ fn cmd_selftest(args: &[String]) -> Result<()> {
 fn cmd_loadtest(args: &[String]) -> Result<()> {
     let ch = args.iter().rev().find(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| "sandbag".into());
     let app = ssf2_app();
-    let src_swf = app.join("Contents/Resources/SSF2.swf");
-    let dst_app = PathBuf::from("build/SSF2-patched.app");
-    let _ = std::fs::remove_dir_all(&dst_app);
-    if !std::process::Command::new("cp").arg("-R").arg(&app).arg(&dst_app).status()?.success() { bail!("cp failed"); }
-    let dst_swf = dst_app.join("Contents/Resources/SSF2.swf");
-    let marker = "/tmp/peptide_ssf2_loadtest.txt";
-    let _ = std::fs::remove_file(marker);
+    let src_swf = ssf2_swf_path(&app);
+    let dst_app = stage_patched_bundle(&app)?;
+    let dst_swf = ssf2_swf_path(&dst_app);
+    let marker = temp_str("peptide_ssf2_loadtest.txt");
+    let _ = std::fs::remove_file(&marker);
     ssf2_converter::abc_inject::patch_file_with(&src_swf, &dst_swf, |abc| {
-        ssf2_converter::abc_inject::inject_load_test(abc, SSF2_DOC_CLASS, marker, &ch, "battlefield")
+        ssf2_converter::abc_inject::inject_load_test(abc, SSF2_DOC_CLASS, &marker, &ch, "battlefield")
     })?;
-    let _ = std::process::Command::new("xattr").arg("-cr").arg(&dst_app).status();
-    let _ = std::process::Command::new("codesign").args(["--force","--deep","--sign","-"]).arg(&dst_app).status();
-    let exe = dst_app.join("Contents/MacOS/SSF2");
+    macos_resign(&dst_app);
+    let exe = ssf2_exe_path(&dst_app);
     println!("booting timer-driven load test (char={ch}, no per-frame bridge)…");
     let mut child = std::process::Command::new(&exe).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()?;
-    let mp = Path::new(marker);
+    let mp = Path::new(&marker);
     for i in 0..30 {
         std::thread::sleep(std::time::Duration::from_millis(1000));
         if let Ok(s) = std::fs::read_to_string(mp) {
             println!("  t{}s: {}", i+1, s.trim());
-            if s.contains("[object") && !s.contains("LIB:null") { break; } // content parsed
+            if s.contains("[object") && !s.contains("LIB:null") { break; }
         }
     }
     let final_s = std::fs::read_to_string(mp).unwrap_or_default();
-    let _ = child.kill(); let _ = std::process::Command::new("pkill").args(["-f","SSF2-patched"]).status();
+    let _ = child.kill();
     if final_s.contains("LIB:[object") {
         println!("PASS: content PARSED via timer-driven load — the per-frame bridge IO was starving it! ({})", final_s.trim());
         Ok(())
@@ -361,35 +407,31 @@ fn cmd_loadtest(args: &[String]) -> Result<()> {
 fn cmd_autojump(args: &[String]) -> Result<()> {
     let ch = args.iter().rev().find(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| "sandbag".into());
     let app = ssf2_app();
-    let src_swf = app.join("Contents/Resources/SSF2.swf");
-    let dst_app = PathBuf::from("build/SSF2-patched.app");
-    let _ = std::fs::remove_dir_all(&dst_app);
-    if !std::process::Command::new("cp").arg("-R").arg(&app).arg(&dst_app).status()?.success() { bail!("cp failed"); }
-    let dst_swf = dst_app.join("Contents/Resources/SSF2.swf");
-    let traj = crate::ssf2_bridge::TRAJ_PATH;
-    let _ = std::fs::remove_file(traj);
+    let src_swf = ssf2_swf_path(&app);
+    let dst_app = stage_patched_bundle(&app)?;
+    let dst_swf = ssf2_swf_path(&dst_app);
+    let traj = crate::ssf2_bridge::traj_path();
+    let _ = std::fs::remove_file(&traj);
     let chc = ch.clone();
     ssf2_converter::abc_inject::patch_file_with(&src_swf, &dst_swf, |abc| {
         ssf2_converter::abc_inject::inject_autospawn(abc, SSF2_DOC_CLASS, &chc, "battlefield", 3000)?;
-        ssf2_converter::abc_inject::inject_jump_probe(abc, SSF2_DOC_CLASS, traj, 0)
+        ssf2_converter::abc_inject::inject_jump_probe(abc, SSF2_DOC_CLASS, &traj, 0)
     })?;
-    let _ = std::process::Command::new("xattr").arg("-cr").arg(&dst_app).status();
-    let _ = std::process::Command::new("codesign").args(["--force","--deep","--sign","-"]).arg(&dst_app).status();
-    let exe = dst_app.join("Contents/MacOS/SSF2");
+    macos_resign(&dst_app);
+    let exe = ssf2_exe_path(&dst_app);
     println!("booting timer-driven autospawn ({ch} on battlefield) — load→startMatch→jump, capturing…");
     let mut child = std::process::Command::new(&exe).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()?;
-    let tp = Path::new(traj);
     let mut last_lines = 0;
     for i in 0..30 {
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        if let Ok(s) = std::fs::read_to_string(tp) {
+        if let Ok(s) = std::fs::read_to_string(&traj) {
             let n = s.lines().count();
             if n != last_lines { println!("  t{}s: trajectory has {} samples", i+1, n); last_lines = n; }
             if n > 40 { break; }
         }
     }
-    let traj_data = std::fs::read_to_string(tp).unwrap_or_default();
-    let _ = child.kill(); let _ = std::process::Command::new("pkill").args(["-f","SSF2-patched"]).status();
+    let traj_data = std::fs::read_to_string(&traj).unwrap_or_default();
+    let _ = child.kill();
     if traj_data.trim().is_empty() {
         bail!("no trajectory captured — match/jump did not occur");
     }
