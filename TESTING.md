@@ -68,6 +68,14 @@ all against the *same* live match. full command surface in §3. (the old one-sho
 `tools/run.sh "<cmd>" <secs>` / `tools/runseq.sh` paths still work for scripted runs, but they
 reboot per invocation, so use a session for interactive iteration.)
 
+**validating a boot (notes for agents):**
+- a quick boot is **fast** -- you'll see `READY` → `LAUNCHED` → `ANIM:STAND` in **under ~20s**.
+  don't budget 40s; snapshot `peptide log -n 40` once the boot's had ~15-20s and you'll have
+  the whole sequence.
+- **`timeout` doesn't exist on macOS** (it's `gtimeout` from coreutils, if installed). to
+  observe the stream without blocking, just take a couple of `peptide log -n N` snapshots
+  rather than `timeout … peptide log --follow`.
+
 **which harness when:**
 - **FrayTools-side** (`peptide harness` / `peptide export`) -- visual/layout ground truth (box
   geometry, pivots, rendering) and producing the publishable `.fra`. pair with `compare_boxes`
