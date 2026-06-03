@@ -71,6 +71,9 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd { name: "scenario", aliases: &["scene", "replay"], wire: 'e',
           args: "<p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]",
           help: "set up a repeatable test scenario (peptide todo #4): place both players at fixed positions (optionally with momentum vx,vy), reset them to neutral STAND, then play an input timeline on p0. re-run the exact same line to replay it." },
+    Cmd { name: "tune",    aliases: &["movestat"], wire: 'e',
+          args: "<player> <hitboxIndex> <stat>=<value> …",
+          help: "hot-reload a move's hitbox stats into the running match (peptide todo #5): e.g. tune p0 0 damage=15 baseKnockback=50 angle=45 — calls updateHitboxStats live, no relaunch." },
 ];
 
 /// Control name → button bit (matches pxf.input.ControlsObject's bitmask, field
@@ -379,6 +382,7 @@ pub fn parse(line: &str) -> Command {
                 };
             }
             "scenario" => return parse_scenario(&rest),
+            "tune" => return parse_tune(&rest),
             "console" => return Command::Console,
             "exit" => return Command::Exit,
             "load" => return Command::Load,
@@ -427,6 +431,38 @@ fn parse_scenario(rest: &[&str]) -> Command {
         Vec::new()
     };
     Command::Scenario { setup, masks }
+}
+
+/// Parse `tune <player> <hitboxIndex> <stat>=<value> …` into an `updateHitboxStats`
+/// eval — live move-stat hot-reload (peptide todo #5). Numeric values pass through bare;
+/// non-numeric values (e.g. an AttackLimb enum) pass through verbatim, so
+/// `tune p0 0 limb=AttackLimb.FOOT` works too.
+fn parse_tune(rest: &[&str]) -> Command {
+    const USAGE: &str = "usage: tune <player> <hitboxIndex> <stat>=<value> …\n  e.g. tune p0 0 damage=15 baseKnockback=50 angle=45   (live updateHitboxStats; no relaunch)\n";
+    if rest.len() < 3 {
+        return Command::Client(USAGE.into());
+    }
+    let player = rest[0];
+    // very light validation: player looks like an identifier (p0/p1/self/a char ref).
+    if !player.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Command::Client(format!("tune: {player:?} is not a valid player reference\n"));
+    }
+    let idx = match rest[1].parse::<i64>() {
+        Ok(n) if n >= 0 => n,
+        _ => return Command::Client(format!("tune: hitbox index must be a non-negative integer (got {:?})\n", rest[1])),
+    };
+    let mut fields = Vec::new();
+    for kv in &rest[2..] {
+        let (k, v) = match kv.split_once('=') {
+            Some((k, v)) if !k.is_empty() && !v.is_empty() => (k, v),
+            _ => return Command::Client(format!("tune: each stat must be key=value (got {kv:?})\n")),
+        };
+        if !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Command::Client(format!("tune: {k:?} is not a valid stat name\n"));
+        }
+        fields.push(format!("{k}: {v}"));
+    }
+    Command::Eval(format!("{player}.updateHitboxStats({idx}, {{ {} }})", fields.join(", ")))
 }
 
 /// Encode an engine-agnostic [`Command`] into the Fraymakers wire line. This is
@@ -978,6 +1014,20 @@ mod tests {
         assert!(matches!(translate("scenario 300 360,400"), Translated::Client(_)));     // p0 not x,y
         assert!(matches!(translate("scenario a,b 360,400"), Translated::Client(_)));     // non-numeric
         assert!(matches!(translate("scenario 300,400 360,400 bogus:2"), Translated::Client(_))); // bad control
+    }
+
+    #[test]
+    fn tune_builds_update_hitbox_stats_eval() {
+        // numeric stats pass through bare; enum-ish values pass verbatim.
+        assert_eq!(wire("tune p0 0 damage=15 baseKnockback=50"),
+                   "e p0.updateHitboxStats(0, { damage: 15, baseKnockback: 50 })");
+        assert_eq!(wire("tune p1 2 limb=AttackLimb.FOOT"),
+                   "e p1.updateHitboxStats(2, { limb: AttackLimb.FOOT })");
+        // shape errors are client-side (never sent).
+        assert!(matches!(translate("tune p0 0"), Translated::Client(_)));        // no stats
+        assert!(matches!(translate("tune p0 x damage=1"), Translated::Client(_))); // bad index
+        assert!(matches!(translate("tune p0 0 damage"), Translated::Client(_)));  // not key=value
+        assert!(matches!(translate("tune p0 -1 damage=1"), Translated::Client(_))); // negative index
     }
 
     #[test]

@@ -228,8 +228,12 @@ points here).
    `eval` + `seq` through the DebugTarget seam (so it works on both engines). still open: setting
    a precise animation FRAME (not just the state) and the hit-measurement readback (#6) that makes
    a scenario's outcome quantifiable.
-5. **live move-tuning** -- tweak move stats and move code on the fly from the Peptide UI
-   inside that test env (includes stat hot-reload into a running match).
+5. **live move-tuning** -- the `tune <player> <hitboxIndex> <stat>=<value> …` command
+   hot-reloads a move's hitbox stats into the running match with no relaunch (e.g.
+   `tune p0 0 damage=15 baseKnockback=50 angle=45`), via the engine's own
+   `updateHitboxStats`. host-side eval wrapper, validated + unit-tested. still open: the
+   UI surface for it, tweaking move *code* (not just stats) on the fly, and persisting
+   tweaks back to the source stats files.
 6. **in-engine hit measurement** (needs #1): hit-result readback (damage dealt, knockback
    distance + angle, hitstun frames), KO-threshold search (binary-search the dummy's % for
    the lowest KO), and an active-box dump (every active hit/hurt box this frame). open
