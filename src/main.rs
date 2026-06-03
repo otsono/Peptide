@@ -1427,6 +1427,14 @@ fn connect_edit(
     // resolved assist ref (type 669) stashed from the `s` handler (where the resolve works) so
     // extra players can reuse it — re-resolving an assist mid-match (per-frame) SIGSEGVs.
     let g_pending_assist = code.globals.len(); code.globals.push(hlbc::types::RefType(669));
+    // p1 stash: the live match's extra (2nd) player Character. Set when the deferred
+    // spawnPlayer succeeds, reset to null on each start-match. The eval hook binds the `p1`
+    // hscript var from this, instead of indexing the raw Match.characters array (which has no
+    // hscript RTTI — its .length reads as garbage, so a bytecode length-guard crashes the frame).
+    // Typed like r_ret (the spawnPlayer return register, type 0 = the Dynamic-compatible reg),
+    // so the stash SetGlobal from r_ret type-matches and the eval-hook read flows back through
+    // r_ret into setVar (which takes Dynamic) with no boxing.
+    let g_live_p1 = code.globals.len(); code.globals.push(hlbc::types::RefType(0));
     eprintln!("sprite-fix: get_DataAsPxf={get_data_as_pxf} cacheEntity={cache_sprite_entity} smGet={sm_get} entityMap.f={pxf_entitymap_field} requiredMediaIds.f={reqmedia_field}");
     eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer
@@ -1937,6 +1945,9 @@ fn connect_edit(
     let idx_mi_d = ops.len();
     if let Opcode::JNull { offset, .. } = &mut ops[idx_mi_js] { *offset = idx_mi_d as i32 - idx_mi_js as i32 - 1; }
     ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(spawn_player_fn), arg0: rr(44), arg1: rr(30) });
+    // stash the spawned extra player (r_ret) so the eval hook can bind `p1` to it. Read here,
+    // before the SP diag reuses r_ret. null (SP:0) is fine — p1 just stays null.
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_live_p1), src: r_ret });
     // ONE-SHOT diag (fires once per extra player, NOT every frame — idx advances right below
     // so it never repeats): SP:1 = spawnPlayer returned a Character, SP:0 = null.
     ops.push(Opcode::GetGlobal { dst: r_sock2, global: RefGlobal(g_sock) });
@@ -2326,6 +2337,10 @@ fn connect_edit(
     // mode.startMatch(config)  — runs the engine's offline-match flow (gates, menu suspend/restore).
     ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(mode_start_match), arg0: rr(48), arg1: rr(50) });
     if FM_MULTIPLAYER {
+    // reset the p1 stash for this new match — a prior 2-player p1 must not leak in. r_ret is
+    // type 0 (= g_live_p1's type) and free here (mode_start_match's return is unused).
+    ops.push(Opcode::Null { dst: r_ret });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_live_p1), src: r_ret });
     // ---- extra players: queue them for deferred spawn (currentMatch is NULL synchronously
     // after startMatch). The per-frame update spawnPlayer's one each frame once the match is
     // live — see the pending-spawn block in the update epilogue. Stash parts + start indices.
@@ -3185,10 +3200,37 @@ fn connect_edit(
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_p0null] { *offset = idx_e_bindnull as i32 - idx_e_p0null as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_chnull] { *offset = idx_e_bindnull as i32 - idx_e_chnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_p0done] { *offset = idx_e_setp0 as i32 - idx_e_p0done as i32 - 1; }
-    // bind p1 = null for now (commands.hsx's getCharacters() filters nulls; p1 becomes a
-    // real Character with the dummy-opponent feature). Keeps commands.hsx from referencing
-    // an unbound variable.
+    // bind p1 = the live match's extra (2nd) player, stashed by the deferred spawnPlayer in
+    // g_live_p1 (null for a single-player match). getCharacters() in commands.hsx filters the
+    // null out, so p1 only appears once a real 2-player match is running. No array indexing —
+    // the raw Match.characters ArrayObj has no hscript RTTI (see the p0 note above).
+    // g_live_p1 is the spawnPlayer RETURN — a non-Character wrapper, but a reliable "a 2nd
+    // player exists" signal (null = single-player). When it's set, the live 2nd Character is
+    // currentMatch.characters[1] (same source as p0). We index the array in bytecode (no
+    // hscript RTTI) — safe here because the signal guarantees length >= 2, so no garbage
+    // length read. p1 then has the full Character API (getStateName, damage, body, …).
+    ops.push(Opcode::GetGlobal { dst: r_ret, global: RefGlobal(g_live_p1) });
+    let idx_p1_jsolo = ops.len();
+    ops.push(Opcode::JNull { reg: r_ret, offset: 0 });                                 // no extra player -> null
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });   // currentMatch
+    let idx_p1_jnomatch = ops.len();
+    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                                // defensive
+    ops.push(Opcode::Field { dst: rr(33), obj: rr(44), field: RefField(characters_field) }); // ArrayObj
+    let idx_p1_jnoarr = ops.len();
+    ops.push(Opcode::JNull { reg: rr(33), offset: 0 });                                // defensive
+    ops.push(Opcode::Field { dst: rr(32), obj: rr(33), field: RefField(1) });          // .array (native)
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::GetArray { dst: rr(28), array: rr(32), index: rr(39) });          // characters[1] -> live Character
+    let idx_p1_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                                           // -> set p1
+    let idx_p1_null = ops.len();
     ops.push(Opcode::Null { dst: rr(28) });
+    let idx_p1_set = ops.len();
+    if let Opcode::JNull   { offset, .. } = &mut ops[idx_p1_jsolo]    { *offset = idx_p1_null as i32 - idx_p1_jsolo as i32 - 1; }
+    if let Opcode::JNull   { offset, .. } = &mut ops[idx_p1_jnomatch] { *offset = idx_p1_null as i32 - idx_p1_jnomatch as i32 - 1; }
+    if let Opcode::JNull   { offset, .. } = &mut ops[idx_p1_jnoarr]   { *offset = idx_p1_null as i32 - idx_p1_jnoarr as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_p1_jdone]    { *offset = idx_p1_set as i32 - idx_p1_jdone as i32 - 1; }
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_p1_g) });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
     // ---- crash-proof eval: parse + run inside a Trap. On ANY error (parse OR runtime)
