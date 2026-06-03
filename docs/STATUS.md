@@ -224,8 +224,11 @@ points here).
    (`addCharacter`, aliases `addchar`/`add`, wire `n`) re-arms the per-frame deferred-spawn from a
    stashed copy of the roster and fires one extra spawn, verified firing live. still open: the live
    match allocates 2 player slots, so `spawnPlayer` past slot 2 returns null (`SP:0`) and the count
-   stays 2. raising it is the same match-config wall as #1 (`fm-match-config-limits`): the slot count
-   is fixed at launch by the player array, not extendable post-launch.
+   stays 2. the cap is the match MODE: the self-bootstrap launch uses training mode (the only mode
+   that starts from the minimal headless config), which is 1v1. breaking past 2 needs a versus /
+   free-for-all mode, and that mode's launch needs the CSS/menu/scene context the injected-bytecode
+   path can't supply (see `fraymakers-engine-internals`). so addChar's per-frame spawn trigger is
+   done and correct; the 2-player ceiling is the shared architectural wall under #1/#6/#7.
 4. **scenario replay test env.** the `scenario` command sets up a deterministic, re-runnable
    scene: `scenario <p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]` places both players at
    fixed positions (optionally with world-space momentum), resets them to neutral STAND, then
