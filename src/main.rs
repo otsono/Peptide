@@ -3741,12 +3741,15 @@ fn inject_input_override(code: &mut Bytecode, g_inject_held: usize) -> anyhow::R
     let f_if_pressed = require_field(code, "pxf.components.InputFeed", "_pressedControls")?;
     let f_buttons = require_field(code, "pxf.input.ControlsObject", "buttons")?;
     let neg1 = add_int(code, -1); // ~x via Xor(x, -1)
-    let zero = add_int(code, 0);
-    // getTeam() gates the injection to player 0 only: updateGameInput runs on EVERY
-    // character, so without this every player would receive the injected held mask
-    // (both would jab, and their hitboxes clank). Player 1 gets team 0, extras get
-    // team >= 1 (see the player-config team assignment), so team == 0 uniquely selects
-    // the controlled player. getTeam is a public, hscript-callable accessor.
+    // Which player the injected input (`i`/hold/seq) drives, by team. updateGameInput
+    // runs on EVERY character, so without this gate every player would receive the
+    // injected held mask at once (both would jab and their hitboxes would clank).
+    // Player 1 gets team 0, extras get team >= 1 (see the player-config team
+    // assignment), so the team number uniquely selects one player. Default 0 drives
+    // player 1; set $PEPTIDE_INPUT_TEAM=N at patch time to drive a different player
+    // (e.g. =1 to drive the spawned dummy). getTeam is a public, hscript-callable accessor.
+    let input_team = std::env::var("PEPTIDE_INPUT_TEAM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let zero = add_int(code, input_team);
     use hlbc::types::RefFun;
     let getteam = require_fn(code, "getTeam", Some("pxf.entity.Character"))?;
 
