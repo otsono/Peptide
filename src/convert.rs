@@ -9,12 +9,51 @@
 //! thin argument adapter + human-readable summary. The Peptide GUI calls the same
 //! library function directly on a worker thread (see the convert screen).
 
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::Once;
 
 use ssf2_converter::{run_conversion, ConvertOptions};
 
 static LOGGER_INIT: Once = Once::new();
+
+/// The conversion-permission notice shown before any SSF2 → Fraymakers conversion.
+const PERMISSION_NOTICE: &str = "\
+Super Smash Flash 2 content is developed over months/years with a lot of
+deliberate care and attention from an unpaid dev team.
+
+Respecting the team's work and their wishes is paramount.
+If this is a character that is built into the engine, please only proceed if
+you've received permission from their team to convert the character.";
+
+/// Show the permission notice and require explicit confirmation before converting.
+///
+/// `--yes`/`-y` (or a non-interactive stdin, where there is no one to answer)
+/// records acknowledgement and proceeds; otherwise the user must type `y`/`yes`.
+fn confirm_permission(assume_yes: bool) -> anyhow::Result<bool> {
+    println!("\n{PERMISSION_NOTICE}\n");
+
+    if assume_yes {
+        println!("Proceeding (permission acknowledged via --yes).");
+        return Ok(true);
+    }
+
+    if !std::io::stdin().is_terminal() {
+        // No interactive terminal to prompt; refuse rather than convert silently.
+        eprintln!(
+            "convert: refusing to proceed without confirmation (no interactive \
+             terminal). Re-run with --yes once you have permission."
+        );
+        return Ok(false);
+    }
+
+    print!("Have you received permission to convert this character? [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let answer = line.trim().to_ascii_lowercase();
+    Ok(matches!(answer.as_str(), "y" | "yes"))
+}
 
 /// Initialise the global logger exactly once for the whole process. The converter
 /// library logs via the `log` facade but never installs a logger (it can be called
@@ -35,6 +74,7 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
     let mut misc_ssf: Option<PathBuf> = None;
     let mut per_character_projects = false;
     let mut verbose = false;
+    let mut assume_yes = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -43,6 +83,7 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
             "-n" | "--name" => { name = args.get(i + 1).cloned(); i += 2; }
             "--misc-ssf" => { misc_ssf = args.get(i + 1).map(PathBuf::from); i += 2; }
             "--per-character-projects" => { per_character_projects = true; i += 1; }
+            "-y" | "--yes" => { assume_yes = true; i += 1; }
             "-v" | "--verbose" => { verbose = true; i += 1; }
             "-h" | "--help" => { print!("{}", help_text()); return Ok(()); }
             s if s.starts_with('-') => {
@@ -59,6 +100,10 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
     let input = input.ok_or_else(|| {
         anyhow::anyhow!("convert: missing <file.ssf>\n\n{}", help_text())
     })?;
+
+    if !confirm_permission(assume_yes)? {
+        anyhow::bail!("convert: aborted — permission not confirmed");
+    }
 
     init_logger(verbose);
 
@@ -118,6 +163,8 @@ OPTIONS:
                               to the input file otherwise)
       --per-character-projects  Emit each character of a multi-character .ssf as
                               its own project (the pre-Stage-B layout)
+  -y, --yes                   Acknowledge the conversion-permission notice and
+                              skip the interactive prompt (for scripts/CI)
   -v, --verbose               Debug-level logging
   -h, --help                  Show this help
 

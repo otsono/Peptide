@@ -610,6 +610,22 @@
     </div>
   </div>
 
+  <!-- ── CONVERT PERMISSION CONFIRMATION (over Convert screen) ─────────── -->
+  <div class="overlay" id="convperm-overlay">
+    <div class="modal" id="convperm-modal" style="max-width:520px;text-align:left">
+      <h2>Before you convert</h2>
+      <p>Super Smash Flash 2 content is developed over months/years with a lot of
+         deliberate care and attention from an unpaid dev team.</p>
+      <p>Respecting the team's work and their wishes is paramount.<br>
+         If this is a character that is built into the engine, please only proceed
+         if you've received permission from their team to convert the character.</p>
+      <div class="m-actions-row">
+        <button class="btn-primary" onclick="confirmConvertPermission()">OK</button>
+        <button class="btn-ghost" onclick="cancelConvertPermission()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── PER-CHARACTER CHAT (run hscript on one character) ─────────────── -->
   <div class="overlay" id="char-overlay">
     <div class="modal char-modal" id="char-modal">
@@ -1130,6 +1146,17 @@
 
   // ── converter screen ────────────────────────────────────
   function runConvert(){
+    const input = $("c-input").value.trim();
+    if(!input){ showResult("c-result", "Pick an SSF2 file first.", "warn"); return; }
+    // Gate on the permission confirmation before doing any work.
+    $("convperm-overlay").classList.add("show");
+  }
+  function cancelConvertPermission(){ $("convperm-overlay").classList.remove("show"); }
+  function confirmConvertPermission(){
+    $("convperm-overlay").classList.remove("show");
+    doConvert();
+  }
+  function doConvert(){
     const input = $("c-input").value.trim();
     if(!input){ showResult("c-result", "Pick an SSF2 file first.", "warn"); return; }
     $("c-run").disabled = true;
