@@ -203,7 +203,7 @@ pub fn launch() -> std::io::Result<()> {
     let webview = {
         use gtk::traits::WidgetExt;
         // Note that for linux targets we need to initialize gtk before building the webview
-        let _ = gtk::init().map_err(|e| io(&e.to_string()))?;
+        gtk::init().map_err(|e| io(&e.to_string()))?;
         // Likewise for display we have to build using an instance of gtk::Box, here we use the default
         if let Some(vbox) = window.default_vbox() {
             vbox.show_all();

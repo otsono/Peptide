@@ -478,12 +478,12 @@ fn cmd_launch(_args: &[String]) -> Result<()> {
     {
         std::process::Command::new("open").arg(&app).spawn()
             .map_err(|e| anyhow!("open {}: {e}", app.display()))?;
+        Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
         bail!("ssf2 launch is only wired for macOS standalone right now");
     }
-    Ok(())
 }
 
 fn help() {
