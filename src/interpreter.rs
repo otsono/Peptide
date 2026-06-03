@@ -74,6 +74,12 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd { name: "tune",    aliases: &["movestat"], wire: 'e',
           args: "<player> <hitboxIndex> <stat>=<value> …",
           help: "hot-reload a move's hitbox stats into the running match (peptide todo #5): e.g. tune p0 0 damage=15 baseKnockback=50 angle=45 — calls updateHitboxStats live, no relaunch." },
+    Cmd { name: "dmg",     aliases: &["damage", "percent"], wire: 'e',
+          args: "<player> <value>",
+          help: "set a player's damage percent (e.g. dmg p1 80) — handy for knockback / KO-threshold testing" },
+    Cmd { name: "info",    aliases: &["status", "players"], wire: 'e',
+          args: "",
+          help: "one-shot readout of both players: [p0 x, state, dmg, team, p1 x, state, dmg, team]" },
 ];
 
 /// Control name → button bit (matches pxf.input.ControlsObject's bitmask, field
@@ -383,6 +389,24 @@ pub fn parse(line: &str) -> Command {
             }
             "scenario" => return parse_scenario(&rest),
             "tune" => return parse_tune(&rest),
+            "dmg" => {
+                if rest.len() != 2 {
+                    return Command::Client("usage: dmg <player> <value>  (e.g. dmg p1 80)\n".into());
+                }
+                let (player, val) = (rest[0], rest[1]);
+                if !player.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    return Command::Client(format!("dmg: {player:?} is not a valid player reference\n"));
+                }
+                if val.parse::<f64>().is_err() {
+                    return Command::Client(format!("dmg: value must be numeric (got {val:?})\n"));
+                }
+                return Command::Eval(format!("{player}.damage._damage = {val}"));
+            }
+            "info" => {
+                return Command::Eval(
+                    "[p0.getX(), p0.getStateName(), p0.damage._damage, p0.getTeam(), \
+                     p1.getX(), p1.getStateName(), p1.damage._damage, p1.getTeam()]".into());
+            }
             "console" => return Command::Console,
             "exit" => return Command::Exit,
             "load" => return Command::Load,
@@ -1028,6 +1052,14 @@ mod tests {
         assert!(matches!(translate("tune p0 x damage=1"), Translated::Client(_))); // bad index
         assert!(matches!(translate("tune p0 0 damage"), Translated::Client(_)));  // not key=value
         assert!(matches!(translate("tune p0 -1 damage=1"), Translated::Client(_))); // negative index
+    }
+
+    #[test]
+    fn dmg_and_info_are_eval_wrappers() {
+        assert_eq!(wire("dmg p1 80"), "e p1.damage._damage = 80");
+        assert!(wire("info").starts_with("e [p0.getX(), p0.getStateName()"));
+        assert!(matches!(translate("dmg p1"), Translated::Client(_)));       // missing value
+        assert!(matches!(translate("dmg p1 lots"), Translated::Client(_)));  // non-numeric
     }
 
     #[test]

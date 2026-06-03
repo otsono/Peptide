@@ -224,7 +224,7 @@ points here).
 4. **scenario replay test env.** the `scenario` command sets up a deterministic, re-runnable
    scene: `scenario <p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]` places both players at
    fixed positions (optionally with world-space momentum), resets them to neutral STAND, then
-   plays an input timeline on p0 — re-run the exact line to replay it. host-side macro composing
+   plays an input timeline on p0. re-run the exact line to replay it. host-side macro composing
    `eval` + `seq` through the DebugTarget seam (so it works on both engines). still open: setting
    a precise animation FRAME (not just the state) and the hit-measurement readback (#6) that makes
    a scenario's outcome quantifiable.
@@ -246,4 +246,8 @@ points here).
 9. **batch commands / inputs from a file** -- the UI half. the CLI half is `peptide tell
    --file <path>` (one command per line, `#` comments skipped; mixes engine cmds, `e`
    hscript, and `seq`/`hold` inputs through the one dispatch path).
-10. **way more hscript commands.**
+10. **way more hscript commands.** convenience commands now wrap common eval patterns through
+    the one dispatch path (so they work on both engines): `scenario` (#4), `tune` (#5),
+    `dmg <player> <value>` (set damage percent), and `info` (one-shot readout of both players'
+    x / state / damage / team). all validated + unit-tested. more can be added the same way (a
+    `Cmd` registry entry + a `parse_*` that returns `Command::Eval`).
