@@ -850,9 +850,13 @@ pub fn inject_ready_signal(abc: &mut Abc, doc_class_local: &str) -> anyhow::Resu
 pub fn inject_quickboot(abc: &mut Abc, char_id: &str, stage_id: &str) -> anyhow::Result<()> {
     let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
     let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
     let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
     let mn_rm = q(abc, util_ns, "ResourceManager");
     let mn_queueres = q(abc, pub_ns, "queueResources");
+    let mn_menuctrl = q(abc, ctrl_ns, "MenuController");
+    let mn_loadingmenu = q(abc, pub_ns, "loadingMenu");
+    let mn_show = q(abc, pub_ns, "show");
     let s_char = abc.intern_string(char_id);
     let s_stage = abc.intern_string(stage_id);
 
@@ -867,11 +871,16 @@ pub fn inject_quickboot(abc: &mut Abc, char_id: &str, stage_id: &str) -> anyhow:
     let body_idx = abc.bodies.iter().position(|b| b.method == method)
         .ok_or_else(|| anyhow::anyhow!("no body for showInitialMenu"))?;
 
-    // NEW body: ResourceManager.queueResources([char]); queueResources([stage]); return.
+    // NEW body:
+    //   ResourceManager.queueResources([char]); ResourceManager.queueResources([stage]);
+    //   MenuController.loadingMenu.show();   // keep a loading screen up (no black screen)
+    //   return;
+    // The host kills the loading screen (disposeAllMenus) once the match is live.
     let mut c = Code::default();
     c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
     c.op_u30(OP_GETLEX, mn_rm); c.op_u30(OP_PUSHSTRING, s_char); c.op_u30(OP_NEWARRAY, 1); c.op_u30_u30(OP_CALLPROPVOID, mn_queueres, 1);
     c.op_u30(OP_GETLEX, mn_rm); c.op_u30(OP_PUSHSTRING, s_stage); c.op_u30(OP_NEWARRAY, 1); c.op_u30_u30(OP_CALLPROPVOID, mn_queueres, 1);
+    c.op_u30(OP_GETLEX, mn_menuctrl); c.op_u30(OP_GETPROPERTY, mn_loadingmenu); c.op_u30_u30(OP_CALLPROPVOID, mn_show, 0);
     c.op(OP_RETURNVOID);
     let code = c.finish();
 
