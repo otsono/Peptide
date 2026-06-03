@@ -2185,6 +2185,17 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(frasuffix_g) });
     ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(56), arg1: rr(53) });
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_path), src: rr(56) });
+    // BASE/BUILT-IN CHAR (player 1): the host sets PEPTIDE_BASE_P1 when there's no custom/<char>.fra,
+    // i.e. player 1 is a built-in (e.g. commandervideo). The engine already has it, so skip the
+    // custom-fra self-bootstrap UNCONDITIONALLY (running it on a missing file crashes async in
+    // finishLoading with null .entities). emit_resolve below loads the base char's media via its
+    // public:: load-on-demand (the same path player 2 uses, which works).
+    let base_p1 = std::env::var("PEPTIDE_BASE_P1").is_ok();
+    let idx_basechar_jskip = if base_p1 {
+        let i = ops.len();
+        ops.push(Opcode::JAlways { offset: 0 });                        // base p1 -> skip custom load
+        Some(i)
+    } else { None };
     // self-bootstrap (idempotent): getPXFResource(resid) non-null -> skip the load.
     ops.push(Opcode::GetGlobal { dst: rr(58), global: RefGlobal(g_resid) });
     ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(getpxf_fn), arg0: rr(58) });
@@ -2247,6 +2258,9 @@ fn connect_edit(
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_loaded_spritekey), src: rr(55) });
     let idx_sl_skip = ops.len();
     if let Opcode::JNotNull { offset, .. } = &mut ops[idx_s_load_jskip] { *offset = idx_sl_skip as i32 - idx_s_load_jskip as i32 - 1; }
+    if let Some(j) = idx_basechar_jskip {
+        if let Opcode::JAlways { offset, .. } = &mut ops[j] { *offset = idx_sl_skip as i32 - j as i32 - 1; }
+    }
     if let Opcode::JSGte  { offset, .. } = &mut ops[idx_sl_jge]   { *offset = idx_sl_done as i32 - idx_sl_jge as i32 - 1; }
     if let Opcode::JAlways{ offset, .. } = &mut ops[idx_sl_jback] { *offset = idx_sl_loop as i32 - idx_sl_jback as i32 - 1; }
     if let Opcode::JNull  { offset, .. } = &mut ops[idx_sl_emap_jnull] { *offset = idx_sl_addres as i32 - idx_sl_emap_jnull as i32 - 1; }

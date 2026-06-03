@@ -201,13 +201,20 @@ pub fn patch_and_launch_with_progress(
         return Err(io_err(&format!("{} not found (set the Fraymakers install in Setup or FRAY_DIR)", boot.display())));
     }
 
-    // A baked (headless) char must already be published to a `.fra`.
+    // A baked (headless) char should be published to a `.fra` IF it's a custom char. A base/built-in
+    // char (e.g. commandervideo) has no custom/<c>.fra — the engine already has it, and the `s`
+    // handler's base-char skip resolves it via public::. So only error if it looks custom but is
+    // missing; for an absent file we warn and continue (the base-char path handles it).
     if let Some(c) = bake_char {
         let fra = fray_dir.join("custom").join(c).join(format!("{c}.fra"));
         if !fra.exists() {
-            return Err(io_err(&format!(
-                "{c} isn't built yet — no {}. Publish it in FrayTools Hook first, then launch.",
-                fra.display())));
+            eprintln!("peptide: no custom build for {c} ({}); treating it as a built-in/base char.",
+                fra.display());
+            // tell the patcher to skip player 1's custom self-bootstrap (the engine already has the
+            // built-in; emit_resolve loads its media). Read by connect_edit during patching.
+            std::env::set_var("PEPTIDE_BASE_P1", "1");
+        } else {
+            std::env::remove_var("PEPTIDE_BASE_P1");
         }
     }
     let stage = cfg.stage();
