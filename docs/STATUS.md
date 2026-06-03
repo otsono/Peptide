@@ -220,7 +220,12 @@ points here).
    binds to the live 2nd character (`match.characterCount()`==2, `p1.getStateName()`/`p1.damage`
    readable). still open: distinct CUSTOM chars as p1 don't self-bootstrap (same-char / base-game
    only), they don't yet take hits in a verified way, and the SSF2 side. prerequisite for #6.
-3. **`addCharacter`** -- drop players into a running match on the fly.
+3. **`addCharacter`** -- drop one more fighter into the LIVE match on the fly. the command
+   (`addCharacter`, aliases `addchar`/`add`, wire `n`) re-arms the per-frame deferred-spawn from a
+   stashed copy of the roster and fires one extra spawn, verified firing live. still open: the live
+   match allocates 2 player slots, so `spawnPlayer` past slot 2 returns null (`SP:0`) and the count
+   stays 2. raising it is the same match-config wall as #1 (`fm-match-config-limits`): the slot count
+   is fixed at launch by the player array, not extendable post-launch.
 4. **scenario replay test env.** the `scenario` command sets up a deterministic, re-runnable
    scene: `scenario <p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]` places both players at
    fixed positions (optionally with world-space momentum), resets them to neutral STAND, then

@@ -32,6 +32,7 @@ pub trait DebugTarget {
     fn hold(&mut self, mask: u32) -> Result<String>;
     fn seq(&mut self, masks: &[u32]) -> Result<String>;
     fn console(&mut self) -> Result<String>;
+    fn add_character(&mut self) -> Result<String>;
     fn exit(&mut self) -> Result<()>;
     fn load(&mut self) -> Result<String>;
 
@@ -84,6 +85,7 @@ pub fn run_command(target: &mut dyn DebugTarget, line: &str) -> Result<Option<St
             Some(out)
         }
         Command::Console => Some(target.console()?),
+        Command::AddCharacter => Some(target.add_character()?),
         Command::Exit => { target.exit()?; Some("exit".into()) }
         Command::Load => Some(target.load()?),
     })
@@ -162,6 +164,7 @@ impl DebugTarget for FraymakersTarget {
     fn hold(&mut self, mask: u32) -> Result<String> { self.run(&Command::Hold(mask)) }
     fn seq(&mut self, masks: &[u32]) -> Result<String> { self.run(&Command::Seq(masks.to_vec())) }
     fn console(&mut self) -> Result<String> { self.run(&Command::Console) }
+    fn add_character(&mut self) -> Result<String> { self.run(&Command::AddCharacter) }
     fn exit(&mut self) -> Result<()> { let _ = self.run(&Command::Exit)?; Ok(()) }
     fn load(&mut self) -> Result<String> { self.run(&Command::Load) }
 }

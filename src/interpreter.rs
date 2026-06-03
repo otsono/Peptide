@@ -60,6 +60,8 @@ pub const COMMANDS: &[Cmd] = &[
           args: "",                              help: "synchronous custom-.fra load probe (diagnostic; spawn does this itself)" },
     Cmd { name: "console", aliases: &["c"],                 wire: 'c',
           args: "",                              help: "run the engine's debug console `help` command (RAN) — a side-effecting call hscript can't make, so it stays a wire byte" },
+    Cmd { name: "addCharacter", aliases: &["addchar", "add"], wire: 'n',
+          args: "",                              help: "drop one more fighter into the LIVE match on demand (re-spawns the last roster char via the deferred-spawn path) — no relaunch (peptide todo #3)" },
     Cmd { name: "exit",    aliases: &["quit", "stop", "x"], wire: 'x',
           args: "",                              help: "cleanly shut the engine down (hxd.System.exit — no kill-9 orphan)" },
     Cmd { name: "hold",    aliases: &["press", "keys", "input"], wire: 'i',
@@ -338,6 +340,8 @@ pub enum Command {
     Scenario { setup: String, masks: Vec<u32> },
     /// Run the engine's debug console.
     Console,
+    /// Drop one more fighter into the live match (peptide todo #3).
+    AddCharacter,
     /// Cleanly shut the engine down.
     Exit,
     /// Diagnostic content (re)load.
@@ -427,6 +431,7 @@ pub fn parse(line: &str) -> Command {
                 return Command::Eval(format!("{player}.setY({player}.getY() + 3000)"));
             }
             "console" => return Command::Console,
+            "addCharacter" => return Command::AddCharacter,
             "exit" => return Command::Exit,
             "load" => return Command::Load,
             _ => {}
@@ -548,6 +553,7 @@ pub fn command_to_wire(cmd: &Command) -> Translated {
             Translated::Wire(w)
         }
         Command::Console => Translated::Wire("c".into()),
+        Command::AddCharacter => Translated::Wire("n".into()),
         Command::Exit => Translated::Wire("x".into()),
         Command::Load => Translated::Wire("l".into()),
     }

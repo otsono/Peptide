@@ -1377,6 +1377,7 @@ fn connect_edit(
     // frame cur/total — frame-by-frame inspection of a move. `play` resumes.
     let f_idx = add_int(code, 'f' as i32);
     let g_idx = add_int(code, 'g' as i32);
+    let n_idx = add_int(code, 'n' as i32); // 'addCharacter' command byte (#3)
     let pause_field = require_field(code, "pxf.entity.Character", "pauseAnimationPlayback")?;
     let play_frame = require_fn(code, "playFrame", Some("pxf.components.Animation"))?;
     let g_ack_g = add_string_const(code, "PLAY\n");
@@ -1473,6 +1474,10 @@ fn connect_edit(
     let g_pending_parts = code.globals.len(); code.globals.push(hlbc::types::RefType(38)); // ArrayObj
     let g_pending_idx = code.globals.len();   code.globals.push(hlbc::types::RefType(3));  // Int
     let g_pending_port = code.globals.len();  code.globals.push(hlbc::types::RefType(3));  // Int
+    // addCharacter (#3): the deferred loop NULLs g_pending_parts when drained, so we keep a copy of
+    // the parts ArrayObj here (set alongside g_pending_parts at startMatch). The `n` (addCharacter)
+    // command re-arms g_pending from this to spawn one more fighter into the LIVE match on demand.
+    let g_saved_parts = code.globals.len(); code.globals.push(hlbc::types::RefType(38)); // ArrayObj
     // resolved assist ref (type 669) stashed from the `s` handler (where the resolve works) so
     // extra players can reuse it — re-resolving an assist mid-match (per-frame) SIGSEGVs.
     let g_pending_assist = code.globals.len(); code.globals.push(hlbc::types::RefType(669));
@@ -2403,6 +2408,7 @@ fn connect_edit(
     // after startMatch). The per-frame update spawnPlayer's one each frame once the match is
     // live — see the pending-spawn block in the update epilogue. Stash parts + start indices.
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_parts), src: rr(52) }); // parts ArrayObj
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_saved_parts), src: rr(52) });  // keep a copy for addCharacter (#3)
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(four_idx) });
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_idx), src: rr(39) });   // first extra = parts[4]
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
@@ -3149,7 +3155,30 @@ fn connect_edit(
         add_regs(f, &a_regs);
         ops.extend(a_ops);
     }
-    // (g handler falls through to L_ORIG)
+    // (g handler falls through to the 'n' check)
+
+    // ---- 'n' command: addCharacter (#3) — re-arm the deferred spawn from g_saved_parts so the
+    // per-frame loop drops one more fighter (the last roster char) into the LIVE match on demand,
+    // no relaunch. Reuses the proven deferred-spawn path; only re-arms the pending globals. ----
+    let idx_n_check = ops.len();
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(n_idx) });
+    let idx_jne_n = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });        // not 'n' -> 'e' check (patched below)
+    ops.push(Opcode::GetGlobal { dst: rr(33), global: RefGlobal(g_saved_parts) });
+    let idx_n_jnull = ops.len();
+    ops.push(Opcode::JNull { reg: rr(33), offset: 0 });               // no match started -> n_done
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(33), field: RefField(0) });         // parts.length
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(five_idx) });
+    let idx_n_jslt = ops.len();
+    ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });       // length<5 (no extra char) -> n_done
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_parts), src: rr(33) }); // re-arm parts
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::Sub { dst: rr(16), a: rr(16), b: rr(39) });      // length - 1 = last extra index
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_idx), src: rr(16) });    // re-arm idx -> spawns next frame
+    let idx_n_done = ops.len();
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_n_jnull] { *offset = idx_n_done as i32 - idx_n_jnull as i32 - 1; }
+    if let Opcode::JSLt { offset, .. } = &mut ops[idx_n_jslt] { *offset = idx_n_done as i32 - idx_n_jslt as i32 - 1; }
+    // (n handler falls through to the 'e' check, which rejects 'n')
 
     // ---- 'e' (eval) APPENDED at the end of the dispatch chain (after 'g'), so the
     // proven x->p->c->s->...->g chain is byte-identical to baseline. 'e' no-match -> L_ORIG. ----
@@ -3460,7 +3489,8 @@ fn connect_edit(
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_a] { *offset = idx_f_check as i32 - idx_jne_a as i32 - 1; }
     // 'f' (frame-step) -> 'g' (resume) -> L_ORIG. Self-contained Asm blocks.
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_f] { *offset = idx_g_check as i32 - idx_jne_f as i32 - 1; }
-    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_g] { *offset = idx_e_check as i32 - idx_jne_g as i32 - 1; } // g no-match -> 'e' check
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_g] { *offset = idx_n_check as i32 - idx_jne_g as i32 - 1; } // g no-match -> 'n' check
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_n] { *offset = idx_e_check as i32 - idx_jne_n as i32 - 1; } // n no-match -> 'e' check
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_e] { *offset = idx_i_check as i32 - idx_jne_e as i32 - 1; } // 'e' no-match -> 'i' check
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnomatch] { *offset = idx_t_nomatch as i32 - idx_t_jnomatch as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnochars] { *offset = idx_t_nomatch as i32 - idx_t_jnochars as i32 - 1; }
