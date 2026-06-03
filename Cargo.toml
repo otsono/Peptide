@@ -30,6 +30,7 @@ rfd = "0.15"
 ssf2_converter = { path = "crates/ssf2-converter" }
 log = "0.4"
 env_logger = "0.11"
+gtk = "0.18.0"
 
 # ── Windows: re-attach a GUI-subsystem .exe to its launching console for CLI ──
 # subcommands (platform::attach_parent_console). Release builds hide the console
@@ -41,3 +42,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
 ] }
+
+
+[target.'cfg(linux)'.dependencies]
+gtk = "0.18.0"
