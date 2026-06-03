@@ -12,6 +12,32 @@
 //! The command is expressed in the engine-agnostic `spawn …` vocabulary (the same one a
 //! user types); each transport translates it on the way out (FM: `command_to_wire` →
 //! socket; SSF2: `run_command` → reflection). So this module never touches a socket.
+//!
+//! ── Quick-boot feature parity (OOP seam: shared policy here, per-engine integrations) ──
+//!
+//! A quick boot is a SET of features. The decision/orchestration is engine-agnostic and
+//! lives host-side (this module + the session layer); each feature's *implementation* is
+//! owned by the platform-specific integration, because they're different bytecode VMs.
+//! Keep this table honest when either engine's quick boot changes:
+//!
+//!   Feature                 Fraymakers (HashLink, src/main.rs)   SSF2 (AVM2, crates/…/abc_inject.rs)
+//!   ─────────────────────   ──────────────────────────────────   ──────────────────────────────────
+//!   skip menus / title      no-op launchScreen@17771              inject_quickboot rewrites
+//!                           (skip Title + loadUgc)                 MenuController.showInitialMenu
+//!   preload match assets     bake char + `s` handler resolves      inject_quickboot:
+//!                           + fetchThreaded's stage/assist          queueResources([char, stage])
+//!   loading presentation     MatchController.startMatch builds      inject_quickboot:
+//!     (boot → match)         _loadingMenu via loadingScreenFactory   MenuController.loadingMenu.show()
+//!                           + showMenu  (NATIVE; see note)           (torn down by GO's disposeAllMenus)
+//!   readiness signal         READY at Main.onLoaded                 responsiveness heuristic
+//!                                                                   (disclaimer is skipped)
+//!   auto-spawn into match    `command(Fraymakers, …)` → `s`         `command(Ssf2, …)` → `spawn`
+//!
+//! NOTE on FM loading presentation: `MatchController.startMatch@18315` already builds and
+//! shows the loading screen (`loadingScreenFactory` → `_loadingMenu` → `showMenu`) on the
+//! quick-boot path, but it is not visibly held — under investigation whether the factory is
+//! unset on a fast boot or the screen merely flashes because the `s` handler pre-fetches the
+//! match content. SSF2's is held because its on-demand asset decrypt genuinely takes seconds.
 
 use crate::config::Config;
 
