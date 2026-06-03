@@ -56,10 +56,10 @@ pub fn detected_fraytools_path() -> Option<PathBuf> {
     default_fraytools_exe()
 }
 
-/// Default SSF2 application path if one is found on disk. SSF2 ships as a
-/// standalone Adobe AIR app; the common spots are `/Applications` and a
-/// downloaded standalone build under `~/Downloads/SSF2*/SSF2.app`. macOS uses the
-/// `.app` bundle (what the SSF2 patcher operates on); Windows the executable.
+/// Default SSF2 install path if found on disk. SSF2 ships as a standalone
+/// Adobe AIR app. macOS: the `.app` bundle. Windows: the install directory
+/// (SSF2.swf and SSF2.exe sit at its root — the patcher needs the directory,
+/// not the exe).
 pub fn default_ssf2_app() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -82,9 +82,21 @@ pub fn default_ssf2_app() -> Option<PathBuf> {
     }
     #[cfg(target_os = "windows")]
     {
-        let p = Path::new("C:\\Program Files\\SSF2\\SSF2.exe");
-        if p.is_file() {
-            return Some(p.to_path_buf());
+        // Installer puts it under "Super Smash Flash 2 Beta [version]" in x86 Program Files.
+        // Return the directory (not the .exe) — the patcher needs the root of the install.
+        let candidates = [
+            "C:\\Program Files (x86)\\Super Smash Flash 2 Beta 1.4",
+            "C:\\Program Files (x86)\\Super Smash Flash 2 Beta",
+            "C:\\Program Files\\Super Smash Flash 2 Beta 1.4",
+            "C:\\Program Files\\Super Smash Flash 2 Beta",
+            "C:\\Program Files\\SSF2",
+            "C:\\SSF2",
+        ];
+        for dir in &candidates {
+            let d = PathBuf::from(dir);
+            if d.join("SSF2.exe").is_file() {
+                return Some(d);
+            }
         }
     }
     None

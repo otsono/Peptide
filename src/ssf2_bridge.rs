@@ -20,9 +20,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Jump-probe trajectory CSV — written by the separate `inject_jump_probe`
-/// per-frame probe (only while a match is live); unrelated to the command socket.
-pub const TRAJ_PATH: &str = "/tmp/peptide_ssf2_traj.csv";
+/// Path for the per-frame jump-probe trajectory CSV. Computed at call time so it
+/// resolves to the platform temp dir on both macOS (`/tmp/`) and Windows (`%TEMP%`).
+/// Uses forward slashes so Flash's `FileStream` accepts the path on Windows too.
+pub fn traj_path() -> String {
+    std::env::temp_dir()
+        .join("peptide_ssf2_traj.csv")
+        .to_string_lossy()
+        .replace('\\', "/")
+}
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -239,8 +245,8 @@ pub fn session(args: &[String]) -> Result<()> {
     let listener = bind(port)?;
     disconnect(); // drop any stale connection
     let app = crate::ssf2::install_patched(port)?;
-    let exe = app.join("Contents/MacOS/SSF2");
-    let child = std::process::Command::new(&exe)
+    let exe = crate::ssf2::ssf2_exe_path(&app);
+    let mut child = std::process::Command::new(&exe)
         .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
         .spawn()?;
     std::fs::write(&metap, format!("pid={}\napp={}\nport={}\n", child.id(), app.display(), port))?;
@@ -297,7 +303,7 @@ pub fn session(args: &[String]) -> Result<()> {
                             if raw.is_empty() { continue; }
                             if raw == "exit" || raw == "quit" {
                                 slog("[ssf2-session] exit");
-                                let _ = std::process::Command::new("pkill").args(["-f", "SSF2-patched"]).status();
+                                let _ = child.kill();
                                 return Ok(());
                             }
                             slog(&format!(">> {raw}"));
@@ -359,13 +365,13 @@ pub fn jumpcapture(args: &[String]) -> Result<()> {
     let js = request("READ", t)?;
     println!("character JumpSpeed = {js}");
     let jsv: f64 = js.trim().parse().unwrap_or(15.0);
-    // clear the trajectory file, then launch the jump (re-navigate to the char)
-    std::fs::write(TRAJ_PATH, b"")?;
+    let tp = traj_path();
+    std::fs::write(&tp, b"")?;
     nav(&["GC", "GET stageData", "GET Characters", "IDX 0"])?;
     request(&format!("SETP\tYSpeed\t{}", -jsv), t)?;
     println!("launched jump (YSpeed = {}), capturing…", -jsv);
     std::thread::sleep(Duration::from_millis(1500));
-    let traj = std::fs::read_to_string(TRAJ_PATH).unwrap_or_default();
+    let traj = std::fs::read_to_string(&tp).unwrap_or_default();
     println!("=== SSF2 jump trajectory (t,X,Y,YSpeed) ===\n{traj}");
     // find apex (min Y, y is down-positive)
     let mut min_y = f64::INFINITY; let mut ground = f64::NEG_INFINITY;
