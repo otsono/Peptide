@@ -146,6 +146,14 @@ peptide tell "<command>"                           # queue a command for the run
 peptide log  [-n N] [--follow]                     # print/tail the engine replies it mirrored
 ```
 
+Run in a terminal, `session` holds focus and is also an interactive REPL — the
+terminal equivalent of the GUI chat. Type a command, press Enter, and the engine's
+reply streams straight back to the same window (the TCP link stays live the whole
+time). It's enabled automatically when stdin is a TTY; `peptide tell` from another
+terminal still works alongside it. Force it on for a piped stdin with `-i` /
+`--interactive`, or off (pure `tell`-driven daemon) with `--no-input`. EOF (Ctrl-D)
+just stops reading input; type `exit` (or Ctrl-C) to shut the engine down.
+
 - **`session`** patches a *copy* of `hlboot-sdl.dat` → `_conn.dat` (the pristine
   boot file is never written), writes `steam_appid.txt`, launches `./hl _conn.dat`,
   binds the loopback server, and waits for the engine to dial in + reach READY.
