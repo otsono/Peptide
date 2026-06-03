@@ -2447,6 +2447,17 @@ fn connect_edit(
     // type 0 (= g_live_p1's type) and free here (mode_start_match's return is unused).
     ops.push(Opcode::Null { dst: r_ret });
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_live_p1), src: r_ret });
+    // For a 2-player initial-array launch (length>=5) set g_live_p1 to a non-null sentinel so the
+    // eval hook binds p1 = currentMatch.characters[1] (the real, natively-constructed player 2) via
+    // its reliable native-array path. Single-char stays null (characters[1] would read OOB).
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(52), field: RefField(0) }); // parts.length
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(five_idx) });
+    let idx_p1sent_jskip = ops.len();
+    ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });               // length<5 -> leave null
+    ops.push(Opcode::ToDyn { dst: r_ret, src: rr(48) });                      // sentinel = mode (non-null)
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_live_p1), src: r_ret });
+    let idx_p1sent_skip = ops.len();
+    if let Opcode::JSLt { offset, .. } = &mut ops[idx_p1sent_jskip] { *offset = idx_p1sent_skip as i32 - idx_p1sent_jskip as i32 - 1; }
     // ---- extra players: queue them for deferred spawn (currentMatch is NULL synchronously
     // after startMatch). The per-frame update spawnPlayer's one each frame once the match is
     // live — see the pending-spawn block in the update epilogue. Stash parts + start indices.
