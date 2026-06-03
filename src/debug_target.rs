@@ -70,6 +70,19 @@ pub fn run_command(target: &mut dyn DebugTarget, line: &str) -> Result<Option<St
         Command::Eval(e) => Some(target.eval(&e)?),
         Command::Hold(m) => Some(target.hold(m)?),
         Command::Seq(s) => Some(target.seq(&s)?),
+        // Scenario = set up the scene (eval), then play p0's input timeline (seq).
+        // Same DebugTarget seam, so it works identically on Fraymakers and SSF2.
+        Command::Scenario { setup, masks } => {
+            let mut out = target.eval(&setup)?;
+            if !masks.is_empty() {
+                let s = target.seq(&masks)?;
+                if !s.trim().is_empty() {
+                    if !out.trim().is_empty() { out.push('\n'); }
+                    out.push_str(&s);
+                }
+            }
+            Some(out)
+        }
         Command::Console => Some(target.console()?),
         Command::Exit => { target.exit()?; Some("exit".into()) }
         Command::Load => Some(target.load()?),

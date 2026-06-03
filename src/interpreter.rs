@@ -68,6 +68,9 @@ pub const COMMANDS: &[Cmd] = &[
           args: "",                              help: "release all injected controls (sends mask 0)" },
     Cmd { name: "seq",     aliases: &["play", "inputs"], wire: 'i',
           args: "<controls:frames> …",           help: "play a frame-accurate input timeline (e.g. seq down+special:2 right:12) — one input per engine frame, auto-releases at the end" },
+    Cmd { name: "scenario", aliases: &["scene", "replay"], wire: 'e',
+          args: "<p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]",
+          help: "set up a repeatable test scenario (peptide todo #4): place both players at fixed positions (optionally with momentum vx,vy), reset them to neutral STAND, then play an input timeline on p0. re-run the exact same line to replay it." },
 ];
 
 /// Control name → button bit (matches pxf.input.ControlsObject's bitmask, field
@@ -314,6 +317,10 @@ pub enum Command {
     /// Play a frame-accurate input timeline — one mask per engine frame
     /// (already auto-released with a trailing `0`).
     Seq(Vec<u32>),
+    /// A repeatable test scenario: a setup hscript line (positions/momentum/neutral
+    /// state for both players) plus an optional input timeline on p0. Host-side macro
+    /// that composes eval + seq — see peptide todo #4.
+    Scenario { setup: String, masks: Vec<u32> },
     /// Run the engine's debug console.
     Console,
     /// Cleanly shut the engine down.
@@ -371,6 +378,7 @@ pub fn parse(line: &str) -> Command {
                     Err(e) => Command::Client(format!("{e}\n")),
                 };
             }
+            "scenario" => return parse_scenario(&rest),
             "console" => return Command::Console,
             "exit" => return Command::Exit,
             "load" => return Command::Load,
@@ -379,6 +387,46 @@ pub fn parse(line: &str) -> Command {
     }
     // Unknown head OR a bare expression → eval the whole (collapsed) line.
     Command::Eval(collapse_multiline(line))
+}
+
+/// Parse a `scenario <p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]` line into a
+/// pre-expanded [`Command::Scenario`]. Sets both players to fixed positions (and momentum,
+/// if 4 values), resets them to neutral STAND, then plays the input timeline on p0. The
+/// whole thing is deterministic + re-runnable — that's the point (peptide todo #4).
+fn parse_scenario(rest: &[&str]) -> Command {
+    const USAGE: &str = "usage: scenario <p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]\n  e.g. scenario 300,400 360,400 attack:2   (place both, reset to STAND, jab on p0; re-run to replay)\n";
+    if rest.len() < 2 {
+        return Command::Client(USAGE.into());
+    }
+    // "x,y" or "x,y,vx,vy" -> the per-player setup hscript (setX/setY [+ setXVelocity/setYVelocity]).
+    fn body(slot: &str, who: &str) -> Result<String, String> {
+        let n: Vec<&str> = slot.split(',').map(str::trim).collect();
+        if n.len() != 2 && n.len() != 4 {
+            return Err(format!("scenario: {who} must be x,y or x,y,vx,vy (got {slot:?})"));
+        }
+        for v in &n {
+            v.parse::<f64>().map_err(|_| format!("scenario: {who} has a non-numeric value {v:?}"))?;
+        }
+        let mut s = format!("{who}.setX({}); {who}.setY({})", n[0], n[1]);
+        if n.len() == 4 {
+            s.push_str(&format!("; {who}.setXVelocity({}); {who}.setYVelocity({})", n[2], n[3]));
+        }
+        Ok(s)
+    }
+    let p0 = match body(rest[0], "p0") { Ok(s) => s, Err(e) => return Command::Client(format!("{e}\n")) };
+    let p1 = match body(rest[1], "p1") { Ok(s) => s, Err(e) => return Command::Client(format!("{e}\n")) };
+    // setup: position/momentum both players, then reset to neutral STAND.
+    let setup = format!("{p0}; {p1}; p0.toState(CState.STAND); p1.toState(CState.STAND)");
+    // optional input timeline on p0 (same expansion as `seq`).
+    let masks = if rest.len() > 2 {
+        match expand_sequence_masks(&rest[2..]) {
+            Ok(m) => m,
+            Err(e) => return Command::Client(format!("{e}\n")),
+        }
+    } else {
+        Vec::new()
+    };
+    Command::Scenario { setup, masks }
 }
 
 /// Encode an engine-agnostic [`Command`] into the Fraymakers wire line. This is
@@ -415,6 +463,11 @@ pub fn command_to_wire(cmd: &Command) -> Translated {
         Command::Eval(e) => Translated::Wire(if e.is_empty() { "e".into() } else { format!("e {e}") }),
         Command::Hold(m) => Translated::Wire(format!("i {m}")),
         Command::Seq(masks) => Translated::Wire(masks.iter().map(|m| format!("i {m}")).collect::<Vec<_>>().join("\n")),
+        Command::Scenario { setup, masks } => {
+            let mut w = format!("e {setup}");
+            for m in masks { w.push('\n'); w.push_str(&format!("i {m}")); }
+            Translated::Wire(w)
+        }
         Command::Console => Translated::Wire("c".into()),
         Command::Exit => Translated::Wire("x".into()),
         Command::Load => Translated::Wire("l".into()),
@@ -904,6 +957,27 @@ mod tests {
         assert!(matches!(translate("seq down:0"), Translated::Client(_)));   // 0 frames
         assert!(matches!(translate("seq bogus:2"), Translated::Client(_)));  // bad control
         assert!(matches!(translate("seq"), Translated::Client(_)));          // usage
+    }
+
+    #[test]
+    fn scenario_sets_up_scene_then_plays_inputs() {
+        // positions only -> setup eval (with neutral reset), no input lines.
+        assert_eq!(
+            wire("scenario 300,400 360,400"),
+            "e p0.setX(300); p0.setY(400); p1.setX(360); p1.setY(400); p0.toState(CState.STAND); p1.toState(CState.STAND)"
+        );
+        // positions + an input timeline on p0 -> setup eval then one `i` line per frame.
+        assert_eq!(
+            wire("scenario 300,400 360,400 attack:2"),
+            "e p0.setX(300); p0.setY(400); p1.setX(360); p1.setY(400); p0.toState(CState.STAND); p1.toState(CState.STAND)\ni 16\ni 16\ni 0"
+        );
+        // 4-tuple adds momentum (world-space velocity).
+        assert!(wire("scenario 300,400,5,0 360,400").contains("p0.setXVelocity(5); p0.setYVelocity(0)"));
+        // bad shapes are client-side errors (nothing sent to the engine).
+        assert!(matches!(translate("scenario 300,400"), Translated::Client(_)));         // only one player
+        assert!(matches!(translate("scenario 300 360,400"), Translated::Client(_)));     // p0 not x,y
+        assert!(matches!(translate("scenario a,b 360,400"), Translated::Client(_)));     // non-numeric
+        assert!(matches!(translate("scenario 300,400 360,400 bogus:2"), Translated::Client(_))); // bad control
     }
 
     #[test]

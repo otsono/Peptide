@@ -221,8 +221,13 @@ points here).
    readable). still open: distinct CUSTOM chars as p1 don't self-bootstrap (same-char / base-game
    only), they don't yet take hits in a verified way, and the SSF2 side. prerequisite for #6.
 3. **`addCharacter`** -- drop players into a running match on the fly.
-4. **scenario replay test env.** replay one exact scenario on repeat: both players at set
-   positions, each on a set frame of a set animation, with set momentum, pressing set inputs.
+4. **scenario replay test env.** the `scenario` command sets up a deterministic, re-runnable
+   scene: `scenario <p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]` places both players at
+   fixed positions (optionally with world-space momentum), resets them to neutral STAND, then
+   plays an input timeline on p0 — re-run the exact line to replay it. host-side macro composing
+   `eval` + `seq` through the DebugTarget seam (so it works on both engines). still open: setting
+   a precise animation FRAME (not just the state) and the hit-measurement readback (#6) that makes
+   a scenario's outcome quantifiable.
 5. **live move-tuning** -- tweak move stats and move code on the fly from the Peptide UI
    inside that test env (includes stat hot-reload into a running match).
 6. **in-engine hit measurement** (needs #1): hit-result readback (damage dealt, knockback
