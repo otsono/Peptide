@@ -398,6 +398,30 @@ fn main() -> anyhow::Result<()> {
             } else { eprintln!("  type not found: {tname}"); }
             return Ok(());
         }
+        "freaders" => {
+            // list functions that have a Field read of <type>.<fieldidx> (obj reg typed as <type>).
+            let tname = args.get(4).cloned().unwrap();
+            let fidx_target: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap();
+            let ti = match find_type(&code, &tname) { Some(t) => t, None => { eprintln!("type not found: {tname}"); return Ok(()); } };
+            for f in &code.functions {
+                // obj-based Field/SetField where the obj reg is the target type
+                let obj_match = |op: &Opcode| matches!(op,
+                    Opcode::Field { obj, field, .. } | Opcode::SetField { obj, field, .. }
+                        if field.0 == fidx_target && f.regs.get(obj.0 as usize).map(|t| t.0) == Some(ti));
+                // GetThis/SetThis operate on `this` (reg0) — count them when the fn's parent IS the type
+                let parent_is_ti = f.parent.map(|rt| rt.0) == Some(ti);
+                let this_match = |op: &Opcode| parent_is_ti && matches!(op,
+                    Opcode::GetThis { field, .. } | Opcode::SetThis { field, .. } if field.0 == fidx_target);
+                let writes = f.ops.iter().any(|op| matches!(op, Opcode::SetField { obj, field, .. } if field.0==fidx_target && f.regs.get(obj.0 as usize).map(|t| t.0)==Some(ti))
+                    || (parent_is_ti && matches!(op, Opcode::SetThis { field, .. } if field.0==fidx_target)));
+                if f.ops.iter().any(|op| obj_match(op) || this_match(op)) {
+                    let pn = f.parent.and_then(|rt| type_name_of(&code, rt)).unwrap_or("?");
+                    let kind = if writes { "W" } else { "R" };
+                    eprintln!("  [{kind}] {:6} {}::{}", f.findex.0, pn, s(&code, f.name));
+                }
+            }
+            return Ok(());
+        }
         "methods" => {
             // list every function whose parent type name contains <needle>
             let needle = args.get(4).cloned().unwrap();
