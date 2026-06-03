@@ -3741,17 +3741,30 @@ fn inject_input_override(code: &mut Bytecode, g_inject_held: usize) -> anyhow::R
     let f_if_pressed = require_field(code, "pxf.components.InputFeed", "_pressedControls")?;
     let f_buttons = require_field(code, "pxf.input.ControlsObject", "buttons")?;
     let neg1 = add_int(code, -1); // ~x via Xor(x, -1)
+    let zero = add_int(code, 0);
+    // getTeam() gates the injection to player 0 only: updateGameInput runs on EVERY
+    // character, so without this every player would receive the injected held mask
+    // (both would jab, and their hitboxes clank). Player 1 gets team 0, extras get
+    // team >= 1 (see the player-config team assignment), so team == 0 uniquely selects
+    // the controlled player. getTeam is a public, hscript-callable accessor.
+    use hlbc::types::RefFun;
+    let getteam = require_fn(code, "getTeam", Some("pxf.entity.Character"))?;
 
     let fidx = function_index_by_findex(code, upd)
         .ok_or_else(|| anyhow::anyhow!("updateGameInput@{upd} not found"))?;
     let f = &mut code.functions[fidx];
-    // Scratch regs: mask, inputFeed, hc, hb, prev, pb, neg1, notprev, edge, pc, pcb.
+    // Scratch regs: team, zero, mask, inputFeed, hc, hb, prev, pb, neg1, notprev, edge, pc, pcb.
     // ControlsObject/InputFeed-typed regs so HL computes field offsets correctly.
-    let b = add_regs(f, &[3, if_t, co_t, 3, co_t, 3, 3, 3, 3, co_t, 3]);
-    let (r_mask, r_if, r_hc, r_hb, r_prev, r_pb, r_neg1, r_notprev, r_edge, r_pc, r_pcb) =
-        (Reg(b), Reg(b + 1), Reg(b + 2), Reg(b + 3), Reg(b + 4), Reg(b + 5), Reg(b + 6), Reg(b + 7), Reg(b + 8), Reg(b + 9), Reg(b + 10));
+    let b = add_regs(f, &[3, 3, 3, if_t, co_t, 3, co_t, 3, 3, 3, 3, co_t, 3]);
+    let (r_team, r_zero, r_mask, r_if, r_hc, r_hb, r_prev, r_pb, r_neg1, r_notprev, r_edge, r_pc, r_pcb) =
+        (Reg(b), Reg(b + 1), Reg(b + 2), Reg(b + 3), Reg(b + 4), Reg(b + 5), Reg(b + 6), Reg(b + 7), Reg(b + 8), Reg(b + 9), Reg(b + 10), Reg(b + 11), Reg(b + 12));
     let this = Reg(0); // updateGameInput(this:Character)
     let mut ops = vec![
+        // gate: if getTeam(this) != 0, skip the whole injection (only player 0 is driven).
+        Opcode::Call1 { dst: r_team, fun: RefFun(getteam), arg0: this }, // [idx 0]
+        Opcode::Int { dst: r_zero, ptr: RefInt(zero) },                  // [idx 1]
+        Opcode::JEq { a: r_team, b: r_zero, offset: 1 },                 // [idx 2] team==0 -> run body
+        Opcode::JAlways { offset: 0 },                                   // [idx 3] team!=0 -> skip to end
         Opcode::GetGlobal { dst: r_mask, global: RefGlobal(g_inject_held) },
         Opcode::Field { dst: r_if, obj: this, field: RefField(f_inputfeed) },
         Opcode::JNull { reg: r_if, offset: 0 }, // [idx 2] no inputFeed -> skip (patched to end)
@@ -3772,10 +3785,11 @@ fn inject_input_override(code: &mut Bytecode, g_inject_held: usize) -> anyhow::R
         Opcode::Or { dst: r_pcb, a: r_pcb, b: r_edge },
         Opcode::SetField { obj: r_pc, field: RefField(f_buttons), src: r_pcb },
     ];
-    // The null-inputFeed guard skips the rest of the prepended block (lands on the first
-    // original op, which insert_ops_front places right after this block).
+    // The team gate (JAlways idx 3) and the null-inputFeed guard (JNull idx 6) both skip
+    // to the first original op, which insert_ops_front places right after this block.
     let n = ops.len() as i32;
-    if let Opcode::JNull { offset, .. } = &mut ops[2] { *offset = n - 2 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[3] { *offset = n - 3 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[6] { *offset = n - 6 - 1; }
     insert_ops_front(f, ops);
     eprintln!("inject_input_override: updateGameInput@{upd} PREPEND (inputFeed held|=mask, pressed|=edge — upstream of the copy)");
     Ok(())
