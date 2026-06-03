@@ -1,0 +1,36 @@
+*.swf
+*.ssf
+__pycache__/
+*.pyc
+.DS_Store
+
+
+# Added by cargo
+
+/build
+
+# Claude Code: keep shared settings.json tracked, ignore per-user/runtime files
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+# Generated binary/image assets inside character output — track .hx, .json, .entity etc but not media
+characters/
+
+# Scratch / working notes — gitignored by default. The dir is NOT fully ignored
+# (docs/* + negations) so intentionally-tracked docs can be re-included below.
+docs/*
+!docs/PEPTIDE_GUIDE.md
+!docs/PEPTIDE_DESIGN.md
+!docs/STATUS.md
+
+# macOS .app bundle output from make-app.sh
+
+
+# ── Peptide engine artifacts — never commit Fraymakers bytecode or patched output
+*.dat
+_conn.dat
+*.fra
+hlboot*
+eng.log
+# Peptide render/harness PNG dumps (converter sprite PNGs live under characters/,
+# already ignored above). No source PNGs are tracked in this repo.
+*.png

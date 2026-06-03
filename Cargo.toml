@@ -1,0 +1,48 @@
+[workspace]
+members = ["crates/ssf2-converter"]
+resolver = "2"
+
+[package]
+name = "peptide"
+version = "0.2.3"
+edition = "2021"
+license = "Apache-2.0"
+
+[[bin]]
+name = "peptide"
+path = "src/main.rs"
+
+[dependencies]
+# ── Engine harness (bytecode patcher + webview UI + CDP FrayTools driver) ──
+hlbc = "=0.7.0"
+anyhow = "1.0"
+ratatui = "0.30.0"
+crossterm = "0.29.0"
+wry = "0.55.1"
+tao = "0.35.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tungstenite = "0.21"
+image = "0.25.10"  # PNG decode/encode for recoloring the ripped stock icon (palette swap)
+# ── Config persistence + native file dialogs (ported from the old egui GUI) ──
+dirs = "5"
+rfd = "0.15"
+# ── In-process SSF2 → Fraymakers conversion (folded in; no more sidecar bin) ──
+ssf2_converter = { path = "crates/ssf2-converter" }
+log = "0.4"
+env_logger = "0.11"
+
+# ── Windows: re-attach a GUI-subsystem .exe to its launching console for CLI ──
+# subcommands (platform::attach_parent_console). Release builds hide the console
+# window on launch via windows_subsystem = "windows" (see src/main.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",          # SECURITY_ATTRIBUTES — required for the CreateFileW binding
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+] }
+
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18.0"

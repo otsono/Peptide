@@ -1,0 +1,250 @@
+[package]
+name = "ssf2_converter"
+version = "0.2.3"
+edition = "2021"
+license = "Apache-2.0"
+# The ~30 binaries under src/bin/ are internal RE/debug tools. autobins=false +
+# explicit gated [[bin]] entries keep them OUT of the default/release build (and
+# the shipped peptide app); build them on demand with `--features dev-tools`.
+autobins = false
+
+[lib]
+name = "ssf2_converter"
+path = "src/lib.rs"
+
+[features]
+# Compile the src/bin/* developer/debug tools. Off by default.
+dev-tools = []
+
+[dependencies]
+swf = "0.2"
+flate2 = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+fasteval = "0.2"
+anyhow = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
+log = "0.4"
+env_logger = "0.11"
+bytes = "1.0"
+byteorder = "1.5"
+encoding_rs = "0.8"
+image = "0.25.10"
+tiny-skia = "0.11"
+sha1 = "0.10"
+stdio-override = { version = "0.1", optional = true }
+indicatif = "0.17"
+colored = "2.1"
+regex = "1"
+
+[dev-dependencies]
+sha2 = "0.10"
+tempfile = "3"
+
+[[bin]]
+name = "dump_raw_stats"
+path = "src/bin/dump_raw_stats.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_gravity_ops"
+path = "src/bin/dump_gravity_ops.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_method"
+path = "src/bin/dump_method.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_ssf2_framescripts"
+path = "src/bin/dump_ssf2_framescripts.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "ssf2_sim"
+path = "src/bin/ssf2_sim.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "audit_main_gets"
+path = "src/bin/audit_main_gets.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "audit_main_iinit"
+path = "src/bin/audit_main_iinit.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "check_shape_bitmap"
+path = "src/bin/check_shape_bitmap.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "compare_boxes"
+path = "src/bin/compare_boxes.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "decompile_main_iinit"
+path = "src/bin/decompile_main_iinit.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "diff_inline_vs_bundle"
+path = "src/bin/diff_inline_vs_bundle.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_adown_hurtbox_matrices"
+path = "src/bin/dump_adown_hurtbox_matrices.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_aerial_down_frames"
+path = "src/bin/dump_aerial_down_frames.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_collision_box"
+path = "src/bin/dump_collision_box.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_costumes"
+path = "src/bin/dump_costumes.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_frame_labels"
+path = "src/bin/dump_frame_labels.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_image_placement"
+path = "src/bin/dump_image_placement.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_images"
+path = "src/bin/dump_images.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_inner_sprite"
+path = "src/bin/dump_inner_sprite.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_main_class"
+path = "src/bin/dump_main_class.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_pivots"
+path = "src/bin/dump_pivots.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_proj_states"
+path = "src/bin/dump_proj_states.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_raw_frame"
+path = "src/bin/dump_raw_frame.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_shape_bounds"
+path = "src/bin/dump_shape_bounds.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_shape_origins"
+path = "src/bin/dump_shape_origins.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_sprites"
+path = "src/bin/dump_sprites.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_stage"
+path = "src/bin/dump_stage.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_trail_matrices"
+path = "src/bin/dump_trail_matrices.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "find_char_sources"
+path = "src/bin/find_char_sources.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "find_get_callers"
+path = "src/bin/find_get_callers.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "find_transformations"
+path = "src/bin/find_transformations.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "probe_effects"
+path = "src/bin/probe_effects.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "probe_itembox"
+path = "src/bin/probe_itembox.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "probe_raster"
+path = "src/bin/probe_raster.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "what_is_id"
+path = "src/bin/what_is_id.rs"
+required-features = ["dev-tools"]
+
+
+[[bin]]
+name = "engine_physics"
+path = "src/bin/engine_physics.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "swf_probe"
+path = "src/bin/swf_probe.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "ssf2_dump_class"
+path = "src/bin/ssf2_dump_class.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "ssf2_objgraph"
+path = "src/bin/ssf2_objgraph.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "abc_strings"
+path = "src/bin/abc_strings.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_bindata"
+path = "src/bin/dump_bindata.rs"
+required-features = ["dev-tools"]

@@ -1,0 +1,68 @@
+// Character stats-codegen data tables (moved out of Rust so they can change
+// without a rebuild). Consumed by haxe_gen's HitboxStats.hx / CharacterStats.hx
+// generators. The Haxe scaffolding around these lives in character_helpers.toml.
+{
+  // HitboxStats.hx move grouping: section header → ordered FM move names.
+  "hitbox_sections": [
+    { "section": "LIGHT ATTACKS",   "moves": ["jab1","jab2","jab3","dash_attack","tilt_forward","tilt_up","tilt_down"] },
+    { "section": "STRONG ATTACKS",  "moves": ["strong_forward_attack","strong_up_attack","strong_down_attack"] },
+    { "section": "AERIAL ATTACKS",  "moves": ["aerial_neutral","aerial_forward","aerial_back","aerial_up","aerial_down"] },
+    { "section": "SPECIAL ATTACKS", "moves": ["special_neutral","special_neutral_air","special_side","special_side_air","special_up","special_up_air","special_down","special_down_air"] },
+    { "section": "THROWS",          "moves": ["throw_up","throw_down","throw_forward","throw_back"] },
+    { "section": "MISC ATTACKS",    "moves": ["ledge_attack","crash_attack","emote"] }
+  ],
+
+  // CharacterStats.hx flat-constant field groups. Values come from stats.jsonc
+  // `constants`; `anno` (ECB only) is an inline comment suffix.
+  "stats_fields": {
+    "ecb": [
+      { "field": "floorHeadPosition",  "anno": " /*TODO*/" },
+      { "field": "floorHipWidth",      "anno": " /*TODO*/" },
+      { "field": "floorHipXOffset",    "anno": "" },
+      { "field": "floorHipYOffset",    "anno": "" },
+      { "field": "floorFootPosition",  "anno": "" },
+      { "field": "aerialHeadPosition", "anno": " /*TODO*/" },
+      { "field": "aerialHipWidth",     "anno": " /*TODO*/" },
+      { "field": "aerialHipXOffset",   "anno": "" },
+      { "field": "aerialHipYOffset",   "anno": "" },
+      { "field": "aerialFootPosition", "anno": " /*TODO*/" }
+    ],
+    "camera": ["cameraBoxOffsetX","cameraBoxOffsetY","cameraBoxWidth","cameraBoxHeight"],
+    "roll": [
+      "techRollSpeed","techRollSpeedStartFrame","techRollSpeedLength",
+      "dodgeRollSpeed","dodgeRollSpeedStartFrame","dodgeRollSpeedLength",
+      "getupRollSpeed","getupRollSpeedStartFrame","getupRollSpeedLength",
+      "ledgeRollSpeed","ledgeRollSpeedStartFrame","ledgeRollSpeedLength",
+      "ledgeJumpXSpeed","ledgeJumpYSpeed"
+    ],
+    "airdash": ["airdashInitialSpeed","airdashSpeedCap","airdashAccelMultiplier","airdashCancelSpeedConservation"],
+    "shield": [
+      "shieldCrossupThreshold","shieldFrontNineSliceContent","shieldFrontXOffset",
+      "shieldFrontYOffset","shieldFrontWidth","shieldFrontHeight",
+      "shieldBackNineSliceContent","shieldBackXOffset","shieldBackYOffset",
+      "shieldBackWidth","shieldBackHeight"
+    ],
+    "voice": [
+      "attackVoiceIds","hurtLightVoiceIds","hurtMediumVoiceIds","hurtHeavyVoiceIds","koVoiceIds",
+      "attackVoiceSilenceRate","hurtLightSilenceRate","hurtMediumSilenceRate",
+      "hurtHeavySilenceRate","koVoiceSilenceRate"
+    ]
+  },
+
+  // guess_limb: first rule whose `contains` matches the move name (substring)
+  // wins; `default` if none. Order matters.
+  "limb_rules": {
+    "default": "AttackLimb.FIST",
+    "rules": [
+      { "contains": ["throw"],              "limb": "AttackLimb.BODY" },
+      { "contains": ["down"],               "limb": "AttackLimb.FOOT" },
+      { "contains": ["aerial"],             "limb": "AttackLimb.FOOT" },
+      { "contains": ["tilt_up","strong_up"],"limb": "AttackLimb.FIST" },
+      { "contains": ["neutral"],            "limb": "AttackLimb.FOOT" },
+      { "contains": ["jab"],                "limb": "AttackLimb.FIST" },
+      { "contains": ["tilt","forward"],     "limb": "AttackLimb.FIST" },
+      { "contains": ["special"],            "limb": "AttackLimb.FIST" },
+      { "contains": ["ledge","crash"],      "limb": "AttackLimb.FOOT" }
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+// Projectile stats-codegen data tables (moved out of Rust). Consumed by
+// haxe_gen's ProjectileStats.hx generator. The Haxe scaffolding lives in
+// projectile_helpers.toml.
+{
+  // SSF2 getProjectileStats() physics key → FM ProjectileStats field. Order
+  // matters: the first SSF2 key present wins per FM field (xSpeed/ySpeed are
+  // proxies for the speed caps).
+  "physics_map": [
+    { "ssf2": "gravity",          "fm": "gravity" },
+    { "ssf2": "friction",         "fm": "friction" },
+    { "ssf2": "terminalVelocity", "fm": "terminalVelocity" },
+    { "ssf2": "groundSpeedCap",   "fm": "groundSpeedCap" },
+    { "ssf2": "aerialSpeedCap",   "fm": "aerialSpeedCap" },
+    { "ssf2": "aerialFriction",   "fm": "aerialFriction" },
+    { "ssf2": "xSpeed",           "fm": "groundSpeedCap" },
+    { "ssf2": "ySpeed",           "fm": "aerialSpeedCap" }
+  ],
+
+  // Default values emitted for any FM field SSF2 didn't supply.
+  "scaffolding": [
+    { "field": "gravity",          "value": "0.7" },
+    { "field": "friction",         "value": "0" },
+    { "field": "terminalVelocity", "value": "20" },
+    { "field": "groundSpeedCap",   "value": "11" },
+    { "field": "aerialSpeedCap",   "value": "11" },
+    { "field": "aerialFriction",   "value": "0" }
+  ]
+}
