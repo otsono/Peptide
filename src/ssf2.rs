@@ -284,10 +284,16 @@ fn cmd_install(args: &[String]) -> Result<PathBuf> {
     Ok(dst_app)
 }
 
-/// Install a patched SSF2 copy carrying the socket bridge and return its path.
-/// The bridge dials `127.0.0.1:<port>` from the document constructor so the host
-/// must already be listening. On macOS the copy is resigned so Gatekeeper accepts it.
-pub fn install_patched(port: u16) -> Result<PathBuf> {
+/// Install a patched SSF2 copy carrying the socket bridge and return its path. The
+/// bridge dials `127.0.0.1:<port>` from the document constructor so the host must
+/// already be listening. On macOS the copy is resigned so Gatekeeper accepts it.
+///
+/// `fastboot = Some((char, stage))` produces a HEADLESS quick-boot patch: it rewrites
+/// `MenuController.showInitialMenu` to skip the disclaimer (and the whole menu chain) and
+/// instead queue that character + stage for loading, so the boot loads straight toward the
+/// match (see `inject_quickboot`). `None` is a normal boot — the disclaimer plays and fires
+/// the event-driven READY (`inject_ready_signal`).
+pub fn install_patched(port: u16, fastboot: Option<(&str, &str)>) -> Result<PathBuf> {
     let app = ssf2_app();
     let src_swf = ssf2_swf_path(&app);
     if !src_swf.exists() { bail!("SSF2.swf not found at {}", src_swf.display()); }
@@ -296,11 +302,17 @@ pub fn install_patched(port: u16) -> Result<PathBuf> {
     let traj = crate::ssf2_bridge::traj_path();
     ssf2_converter::abc_inject::patch_file_with(&src_swf, &dst_swf, |abc| {
         ssf2_converter::abc_inject::inject_socket_bridge(abc, SSF2_DOC_CLASS, "127.0.0.1", port)?;
-        // Event-driven READY: fire once while the boot disclaimer plays (the moment loading is
-        // done and the socket is connected), so the host waits for a real signal instead of the
-        // wait_ready PING-streak heuristic. Every dereference is null-guarded so the injection
-        // can never throw / break the disclaimer's own advance. See inject_ready_signal.
-        ssf2_converter::abc_inject::inject_ready_signal(abc, SSF2_DOC_CLASS)?;
+        match fastboot {
+            Some((ch, stage)) => {
+                // Headless quick boot: skip the disclaimer/menus at the call site and queue
+                // the match's char + stage so they load during the boot loading screen.
+                ssf2_converter::abc_inject::inject_quickboot(abc, ch, stage)?;
+            }
+            None => {
+                // Normal boot: the disclaimer plays and fires the event-driven READY.
+                ssf2_converter::abc_inject::inject_ready_signal(abc, SSF2_DOC_CLASS)?;
+            }
+        }
         // a second ENTER_FRAME listener that logs Characters[0] physics each frame
         ssf2_converter::abc_inject::inject_jump_probe(abc, SSF2_DOC_CLASS, &traj, 0)
     })?;

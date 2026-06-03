@@ -289,7 +289,19 @@ pub fn session(args: &[String]) -> Result<()> {
     let port = pick_port();
     let listener = bind(port)?;
     disconnect(); // drop any stale connection
-    let app = crate::ssf2::install_patched(port)?;
+    // Quick boot: bake the match char + stage so SSF2 skips the disclaimer/menus and loads
+    // straight toward the match (see inject_quickboot). `--full` = a normal boot (the
+    // disclaimer plays and fires the event-driven READY).
+    let opts = crate::fastboot::BootOptions::from_cli(args);
+    let cfg = crate::config::Config::load();
+    let fastboot: Option<(String, String)> = if opts.full {
+        None
+    } else {
+        let ch = opts.char_name.clone().unwrap_or_else(|| cfg.char_name());
+        if ch.trim().is_empty() { None } else { Some((ch, cfg.ssf2_stage())) }
+    };
+    let app = crate::ssf2::install_patched(
+        port, fastboot.as_ref().map(|(c, s)| (c.as_str(), s.as_str())))?;
     let exe = crate::ssf2::ssf2_exe_path(&app);
     let mut child = std::process::Command::new(&exe)
         .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
@@ -307,14 +319,14 @@ pub fn session(args: &[String]) -> Result<()> {
         slog(&format!("[ssf2-session] {e}"));
     }
 
-    // wait for the engine's event-driven READY (injected at the boot disclaimer — see
-    // inject_ready_signal), so `tell`-ed commands and the quick-boot spawn aren't fired into
-    // the loading hook. Falls back to the responsiveness settle only if READY never arrives.
-    // Generous timeout: the disclaimer (where READY fires) lands ~50s into a cold boot,
-    // so a 40s wait would give up BEFORE READY on a slow boot and fall back to the flaky
-    // heuristic. 120s comfortably covers a cold boot; the fallback only triggers if the
-    // engine genuinely never reaches the disclaimer.
-    let ready = wait_ready_signal(Duration::from_secs(120));
+    // Readiness. Quick boot SKIPS the disclaimer, so there's no event-driven READY — use the
+    // responsiveness heuristic (the boot loading settling un-starves frames). A normal boot
+    // (--full) waits for the disclaimer's READY. Generous timeout for a cold boot either way.
+    let ready = if fastboot.is_some() {
+        wait_ready(10, Duration::from_secs(120))
+    } else {
+        wait_ready_signal(Duration::from_secs(120))
+    };
     slog(if ready { "[ssf2-session] engine READY — peptide ssf2 tell \"<cmd>\"" }
          else { "[ssf2-session] engine never settled — accepting commands anyway" });
 

@@ -835,6 +835,54 @@ pub fn inject_ready_signal(abc: &mut Abc, doc_class_local: &str) -> anyhow::Resu
     Ok(())
 }
 
+/// QUICK BOOT: replace `MenuController.showInitialMenu`'s body so that, instead of showing
+/// the disclaimer (and the whole menu chain after it), it QUEUES the match's character +
+/// stage for loading and returns. This is the engine half of SSF2's headless fast-boot — the
+/// SSF2 analogue of skipping Fraymakers' Title. We branch at the CALL SITE (showInitialMenu =
+/// `MenuController.disclaimerMenu.show()`), NOT inside DisclaimerMenu: a fast-boot patch
+/// rewrites this one method so the disclaimer is never reached. The boot's loading screen
+/// then decrypts the queued char/stage alongside the required resources, and the host spawns
+/// straight into the match once loading settles.
+///
+/// `char_id`/`stage_id` are the resource ids (the same ids the SPAWN verb queues). Queuing an
+/// unknown id is a safe no-op in `queueResources`. This replaces the body wholesale (the
+/// original is ~6 ops: `disclaimerMenu.show()`), so the disclaimer call simply isn't emitted.
+pub fn inject_quickboot(abc: &mut Abc, char_id: &str, stage_id: &str) -> anyhow::Result<()> {
+    let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
+    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
+    let mn_rm = q(abc, util_ns, "ResourceManager");
+    let mn_queueres = q(abc, pub_ns, "queueResources");
+    let s_char = abc.intern_string(char_id);
+    let s_stage = abc.intern_string(stage_id);
+
+    // resolve MenuController.showInitialMenu (static method) by NAME (version-resilient).
+    let menu_ci = abc.find_class_by_name("MenuController")
+        .ok_or_else(|| anyhow::anyhow!("MenuController not found"))?;
+    let method = abc.classes[menu_ci].traits.iter().find_map(|t| match t.data {
+        TraitKindData::Method { method, .. }
+            if abc.multiname_local(t.name).as_deref() == Some("showInitialMenu") => Some(method),
+        _ => None,
+    }).ok_or_else(|| anyhow::anyhow!("MenuController.showInitialMenu not found"))?;
+    let body_idx = abc.bodies.iter().position(|b| b.method == method)
+        .ok_or_else(|| anyhow::anyhow!("no body for showInitialMenu"))?;
+
+    // NEW body: ResourceManager.queueResources([char]); queueResources([stage]); return.
+    let mut c = Code::default();
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
+    c.op_u30(OP_GETLEX, mn_rm); c.op_u30(OP_PUSHSTRING, s_char); c.op_u30(OP_NEWARRAY, 1); c.op_u30_u30(OP_CALLPROPVOID, mn_queueres, 1);
+    c.op_u30(OP_GETLEX, mn_rm); c.op_u30(OP_PUSHSTRING, s_stage); c.op_u30(OP_NEWARRAY, 1); c.op_u30_u30(OP_CALLPROPVOID, mn_queueres, 1);
+    c.op(OP_RETURNVOID);
+    let code = c.finish();
+
+    let body = &mut abc.bodies[body_idx];
+    body.code = code;
+    body.max_stack = body.max_stack.max(2);
+    body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(1);
+    body.exceptions.clear(); // wholesale replace — drop the old body's handlers/offsets
+    Ok(())
+}
+
 /// Inject a per-frame JUMP CAPTURE PROBE: once a match is live
 /// (GameController.stageData != null), append "<t>,<X>,<Y>,<YSpeed>\n" for the
 /// character at `char_index` to `traj_path` every frame. Null-guarded so it's

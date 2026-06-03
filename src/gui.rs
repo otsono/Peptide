@@ -713,7 +713,13 @@ fn boot_ssf2(cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>, char_name: Optio
         Err(e) => { let _ = proxy.send_event(Ev::Js(format!(
             "window.onSsf2BootFailed && onSsf2BootFailed({})", js_str(&format!("Couldn’t open the SSF2 bridge port: {e}"))))); return; }
     };
-    let app = match crate::ssf2::install_patched(port) {
+    // Quick boot: bake the chosen char + stage so SSF2 skips the disclaimer/menus and loads
+    // straight toward the match (see inject_quickboot). No char chosen → a normal boot.
+    let fastboot: Option<(String, String)> = char_name.clone()
+        .filter(|c| !c.is_empty())
+        .map(|c| (c, crate::config::Config::load().ssf2_stage()));
+    let app = match crate::ssf2::install_patched(
+        port, fastboot.as_ref().map(|(c, s)| (c.as_str(), s.as_str()))) {
         Ok(a) => a,
         Err(e) => { let _ = proxy.send_event(Ev::Js(format!(
             "window.onSsf2BootFailed && onSsf2BootFailed({})", js_str(&format!("Couldn’t patch SSF2: {e}"))))); return; }
@@ -738,9 +744,14 @@ fn boot_ssf2(cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>, char_name: Optio
     // inject_ready_signal) before the quick-boot spawn, so it isn't fired into the loading
     // hook (which crashes). Falls back to the responsiveness settle if READY never comes.
     progress(3, 4, "waiting for SSF2 to finish loading…");
-    // Generous timeout: READY fires at the disclaimer ~50s into a cold boot, so a short
-    // wait would give up before it and fall back to the flaky heuristic (see ssf2_bridge).
-    if !crate::ssf2_bridge::wait_ready_signal(Duration::from_secs(120)) {
+    // Quick boot skips the disclaimer (no event READY) → responsiveness heuristic; a normal
+    // boot waits for the disclaimer READY. Generous timeout for a cold boot either way.
+    let settled = if fastboot.is_some() {
+        crate::ssf2_bridge::wait_ready(10, Duration::from_secs(120))
+    } else {
+        crate::ssf2_bridge::wait_ready_signal(Duration::from_secs(120))
+    };
+    if !settled {
         let _ = proxy.send_event(Ev::Js(
             "window.onSsf2BootFailed && onSsf2BootFailed(\"SSF2 launched but never settled. Try again.\")".into()));
         return;
