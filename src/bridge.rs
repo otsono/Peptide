@@ -44,45 +44,46 @@ pub fn parse_token(args: &[String]) -> Option<String> {
 /// ROBUSTNESS: reads RAW BYTES + lossy-decodes, instead of `reader.lines()` (which
 /// aborts the moment the engine emits a non-UTF8 byte). Shared by `serve` (emits to
 /// stdout) and `session` (emits to the log file).
-fn pump_engine_lines(
-    mut reader: BufReader<TcpStream>,
-    ready_tx: &mpsc::Sender<()>,
-    mut emit: impl FnMut(&str, &str),
-) {
-    let mut buf: Vec<u8> = Vec::with_capacity(256);
-    let mut one = [0u8; 1];
-    let mut last_anim = String::new();
-    loop {
-        match reader.read(&mut one) {
-            Ok(0) => break, // clean EOF
-            Ok(_) => {
-                if one[0] == b'\n' {
-                    let line = String::from_utf8_lossy(&buf);
-                    let line = line.trim_end_matches('\r');
-                    // Channel feeds (matchStatus, icons) are not for the CLI/log — drop them.
-                    if crate::interpreter::channel_payload(line).is_none() {
-                        let pretty = match gloss(line) {
-                            Some(g) => format!("<< {line:<28} ({g})"),
-                            None => format!("<< {line}"),
-                        };
-                        // Suppress repeated per-frame ANIM lines; emit only on change.
-                        let show = match line.strip_prefix("ANIM:") {
-                            Some(a) if a == last_anim => false,
-                            Some(a) => { last_anim = a.to_string(); true }
-                            None => true,
-                        };
-                        if line.contains("READY") { let _ = ready_tx.send(()); }
-                        if show { emit(line, &pretty); }
-                    }
-                    buf.clear();
-                } else {
-                    buf.push(one[0]);
-                }
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break, // transient/decode error: stop mirroring, hold the socket
+/// CLI sink for the shared Fraymakers stream router (`session::pump_fray_stream`): mirrors
+/// meaningful lines to `emit` (stdout for `serve`, the log for `session`) and signals READY.
+/// Channel feeds (matchStatus/icons) are dropped — they're not for the CLI/log. Per-frame
+/// ANIM telemetry is suppressed unless the state changed.
+struct CliStreamSink<'a, F: FnMut(&str, &str)> {
+    ready_tx: &'a mpsc::Sender<()>,
+    emit: F,
+    last_anim: String,
+}
+impl<F: FnMut(&str, &str)> CliStreamSink<'_, F> {
+    fn pretty(line: &str) -> String {
+        match gloss(line) {
+            Some(g) => format!("<< {line:<28} ({g})"),
+            None => format!("<< {line}"),
         }
     }
+}
+impl<F: FnMut(&str, &str)> crate::session::FrayStreamSink for CliStreamSink<'_, F> {
+    fn on_ready(&mut self) { let _ = self.ready_tx.send(()); }
+    // RESDIAG flows to the sink like a normal line (the caller's `emit` captures the
+    // breadcrumb for the crash report and logs it), matching the prior behavior.
+    fn on_resdiag(&mut self, line: &str) { (self.emit)(line, &Self::pretty(line)); }
+    // channel feeds: dropped (no-op) — they belong to widgets, not the CLI/log.
+    fn on_anim(&mut self, state: &str) {
+        if state != self.last_anim {
+            self.last_anim = state.to_string();
+            let line = format!("ANIM:{state}");
+            (self.emit)(&line, &Self::pretty(&line));
+        }
+    }
+    fn on_line(&mut self, raw: &str) { (self.emit)(raw, &Self::pretty(raw)); }
+}
+
+fn pump_engine_lines(
+    reader: BufReader<TcpStream>,
+    ready_tx: &mpsc::Sender<()>,
+    emit: impl FnMut(&str, &str),
+) {
+    let mut sink = CliStreamSink { ready_tx, emit, last_anim: String::new() };
+    crate::session::pump_fray_stream(reader, &mut sink);
 }
 
 pub fn serve(port: u16, token: Option<&str>) {
@@ -387,37 +388,34 @@ pub fn session(args: &[String]) {
     let mut writer = write_half;
 
     // Quick boot: a baked-char headless boot lands straight in a match. The engine is
-    // READY with all content loaded but the `s` start-match is socket-driven, so fire a
-    // single bare `s` now (it uses the baked default char/stage/assist). --full and
-    // --attach skip this — they're explicitly "boot a bridge, drive it by hand".
+    // READY with all content loaded but the `s` start-match is socket-driven, so fire the
+    // shared fastboot command now. The decision + command live in `fastboot` (one home for
+    // CLI + GUI). --full/--attach already cleared `autostart` → bridge-only boot.
     if autostart {
-        slog(&log, "[session] quick boot — auto-launching the baked character (bare `s`)");
-        process_cmd(&mut writer, "s", &log);
-    }
-    let mut offset: u64 = 0;
-    let mut leftover = String::new();
-    loop {
-        if done.load(Relaxed) { slog(&log, "[session] engine gone; exiting"); break; }
-        if let Ok(mut f) = std::fs::File::open(&control) {
-            use std::io::Seek;
-            if f.seek(std::io::SeekFrom::Start(offset)).is_ok() {
-                let mut chunk = String::new();
-                if let Ok(n) = f.read_to_string(&mut chunk) {
-                    if n > 0 {
-                        offset += n as u64;
-                        leftover.push_str(&chunk);
-                        while let Some(nl) = leftover.find('\n') {
-                            let raw: String = leftover.drain(..=nl).collect();
-                            let raw = raw.trim().to_string();
-                            if raw.is_empty() { continue; }
-                            process_cmd(&mut writer, &raw, &log);
-                        }
-                    }
-                }
-            }
+        let opts = crate::fastboot::BootOptions::from_cli(args);
+        if let Some(cmd) = crate::fastboot::command(crate::fastboot::Engine::Fraymakers, &opts) {
+            slog(&log, &format!("[session] quick boot — auto-launching ({cmd})"));
+            process_cmd(&mut writer, &cmd, &log);
         }
-        thread::sleep(Duration::from_millis(50));
     }
+    // Shared control-file tail loop (see `session::tail_control`). Stop when the engine
+    // stream ends (the reader thread set `done`); each line is sent to the engine.
+    crate::session::tail_control(
+        &control,
+        Duration::from_millis(50),
+        || {
+            if done.load(Relaxed) {
+                slog(&log, "[session] engine gone; exiting");
+                true
+            } else {
+                false
+            }
+        },
+        |raw| {
+            process_cmd(&mut writer, raw, &log);
+            true
+        },
+    );
 
     // Crash triage: the engine vanished. Gather the diagnostics needed to find
     // the failing resource — the engine's error.log + the RESDIAG breadcrumbs

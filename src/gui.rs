@@ -4,7 +4,7 @@
 //! is the glue: boot the engine, stream replies into the page, send the page's commands to
 //! the socket, and drive the staged reconnect/boot flow when the connection is lost.
 
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -603,8 +603,8 @@ fn reconnect_existing(writer: SharedWriter, conn: SharedConn, proxy: EventLoopPr
     match crate::ui::reawait(port, &token, 4) {
         Some((reader, w)) => {
             if let Ok(mut g) = writer.lock() { *g = Some(w); }
-            spawn_reader(reader, proxy.clone());
             // reconnecting to a live match -> don't auto-spawn (the character already exists)
+            spawn_reader(reader, proxy.clone(), writer.clone(), None);
             let _ = proxy.send_event(Ev::Js(format!(
                 "window.onReconnected && onReconnected({}, {}, false)", port, js_str(&char_name))));
         }
@@ -645,7 +645,13 @@ fn boot_new(writer: SharedWriter, cleanup: SharedCleanup, conn: SharedConn,
                 if let Ok(mut g) = writer.lock() { *g = Some(w); }
                 if let Ok(mut g) = cleanup.lock() { *g = Some(guard); }
                 if let Ok(mut g) = conn.lock() { *g = (port, token); }
-                spawn_reader(reader, proxy.clone());
+                // Quick boot fires the shared fastboot launch on READY (host-side, same
+                // policy as the CLI); a regular boot doesn't auto-launch.
+                let autostart = if quick {
+                    crate::fastboot::command(crate::fastboot::Engine::Fraymakers,
+                        &crate::fastboot::BootOptions { char_name: Some(char_name.clone()), full: false })
+                } else { None };
+                spawn_reader(reader, proxy.clone(), writer.clone(), autostart);
                 let _ = proxy.send_event(Ev::Js(format!(
                     "window.onReconnected && onReconnected({}, {}, {})",
                     port, js_str(&char_name), if quick { "true" } else { "false" })));
@@ -707,7 +713,13 @@ fn boot_ssf2(cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>, char_name: Optio
         Err(e) => { let _ = proxy.send_event(Ev::Js(format!(
             "window.onSsf2BootFailed && onSsf2BootFailed({})", js_str(&format!("Couldn’t open the SSF2 bridge port: {e}"))))); return; }
     };
-    let app = match crate::ssf2::install_patched(port) {
+    // Quick boot: bake the chosen char + stage so SSF2 skips the disclaimer/menus and loads
+    // straight toward the match (see inject_quickboot). No char chosen → a normal boot.
+    let fastboot: Option<(String, String)> = char_name.clone()
+        .filter(|c| !c.is_empty())
+        .map(|c| (c, crate::config::Config::load().ssf2_stage()));
+    let app = match crate::ssf2::install_patched(
+        port, fastboot.as_ref().map(|(c, s)| (c.as_str(), s.as_str()))) {
         Ok(a) => a,
         Err(e) => { let _ = proxy.send_event(Ev::Js(format!(
             "window.onSsf2BootFailed && onSsf2BootFailed({})", js_str(&format!("Couldn’t patch SSF2: {e}"))))); return; }
@@ -728,12 +740,18 @@ fn boot_ssf2(cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>, char_name: Optio
     // register the process for window-close teardown (reuses the Cleanup path).
     if let Ok(mut g) = cleanup.lock() { *g = Some(crate::ui::Cleanup::for_engine(child)); }
 
-    // Wait until SSF2 is STABLY responsive (the analogue of Fraymakers' READY) —
-    // NOT just the first PING, which the per-frame hook answers mid-boot while the
-    // engine is still loading and would crash on an early spawn. wait_ready gates on
-    // a streak of consecutive PINGs, so commands fire only after loading completes.
+    // Wait for SSF2's event-driven READY (injected at the boot disclaimer — see
+    // inject_ready_signal) before the quick-boot spawn, so it isn't fired into the loading
+    // hook (which crashes). Falls back to the responsiveness settle if READY never comes.
     progress(3, 4, "waiting for SSF2 to finish loading…");
-    if !crate::ssf2_bridge::wait_ready(10, Duration::from_secs(40)) {
+    // Quick boot skips the disclaimer (no event READY) → responsiveness heuristic; a normal
+    // boot waits for the disclaimer READY. Generous timeout for a cold boot either way.
+    let settled = if fastboot.is_some() {
+        crate::ssf2_bridge::wait_ready(10, Duration::from_secs(120))
+    } else {
+        crate::ssf2_bridge::wait_ready_signal(Duration::from_secs(120))
+    };
+    if !settled {
         let _ = proxy.send_event(Ev::Js(
             "window.onSsf2BootFailed && onSsf2BootFailed(\"SSF2 launched but never settled. Try again.\")".into()));
         return;
@@ -748,12 +766,18 @@ fn boot_ssf2(cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>, char_name: Optio
     // async loader, making the spawn flaky. So: spawn with the bridge to ourselves,
     // THEN turn the console (and its poll) on.
     if let Some(ch) = char_name.filter(|c| !c.is_empty()) {
-        let _ = proxy.send_event(Ev::Line(format!("SYS:Engine ready — spawning {ch}…")));
-        let mut target = crate::ssf2_target::Ssf2Target::new();
-        match crate::debug_target::run_command(&mut target, &format!("spawn {ch}")) {
-            Ok(Some(reply)) => { let _ = proxy.send_event(Ev::Line(reply)); }
-            Ok(None) => {}
-            Err(e) => { let _ = proxy.send_event(Ev::Line(format!("SYS:ERR:{e}"))); }
+        // Same shared fastboot policy as the CLI + the Fraymakers GUI — only the transport
+        // differs (SSF2 is synchronous RPC, so we fire it inline here rather than on a
+        // READY line). `wait_ready` above is the SSF2 analogue of Fraymakers' READY.
+        let opts = crate::fastboot::BootOptions { char_name: Some(ch.clone()), full: false };
+        if let Some(cmd) = crate::fastboot::command(crate::fastboot::Engine::Ssf2, &opts) {
+            let _ = proxy.send_event(Ev::Line(format!("SYS:Engine ready — spawning {ch}…")));
+            let mut target = crate::ssf2_target::Ssf2Target::new();
+            match crate::debug_target::run_command(&mut target, &cmd) {
+                Ok(Some(reply)) => { let _ = proxy.send_event(Ev::Line(reply)); }
+                Ok(None) => {}
+                Err(e) => { let _ = proxy.send_event(Ev::Line(format!("SYS:ERR:{e}"))); }
+            }
         }
     } else {
         let _ = proxy.send_event(Ev::Line("SYS:SSF2 ready — type `spawn <char>` to start a match.".into()));
@@ -830,54 +854,66 @@ fn crash_js(log: &str, resdiag: &[String]) -> String {
 /// Socket bytes -> lines -> event loop (-> page). Routes channel feeds (matchStatus/charIcon)
 /// to their widgets and filters per-frame ANIM telemetry out of the chat (it's in the widget).
 /// On EOF/error the engine connection is gone -> crash modal (if it crashed) or reconnect.
-fn spawn_reader(mut reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>) {
-    thread::spawn(move || {
-        let mut buf: Vec<u8> = Vec::with_capacity(256);
-        let mut one = [0u8; 1];
-        // RESDIAG breadcrumbs go to Peptide's Enhanced (advanced) log, NOT the engine chat —
-        // captured here and handed to the crash diagnosis when the engine goes away.
-        let mut resdiag: Vec<String> = Vec::new();
-        loop {
-            match reader.read(&mut one) {
-                Ok(0) => { engine_gone(&proxy, &resdiag); break; }
-                Ok(_) => {
-                    if one[0] == b'\n' {
-                        let line = String::from_utf8_lossy(&buf).trim_end_matches('\r').to_string();
-                        buf.clear();
-                        if line.contains("RESDIAG:") { resdiag.push(line); continue; } // enhanced log, not chat
-                        // Channel feeds (matchStatus, charIcon, …) route to their widget, not the chat.
-                        if let Some((ch, payload)) = crate::interpreter::channel_payload(&line) {
-                            match ch {
-                                "charIcon" => {
-                                    // payload = "<slot>:<png-hex>;<palette>" -> recolor + data: URL.
-                                    if let Some((slot, rest)) = payload.split_once(':') {
-                                        let (hex, palette) = rest.split_once(';').unwrap_or((rest, ""));
-                                        if let Some(url) = icon_data_url(hex, palette) {
-                                            let _ = proxy.send_event(Ev::Js(format!(
-                                                "window.onIcon && onIcon({}, {})", js_str(slot), js_str(&url))));
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    let _ = proxy.send_event(Ev::Js(format!(
-                                        "window.onMatchStatus && onMatchStatus({})", js_str(payload))));
-                                }
-                            }
-                            continue;
-                        }
-                        // Per-transition animation + damage telemetry is shown live in the
-                        // matchStatus widgets (current animation and % per character), so it is
-                        // filtered out of the chat entirely rather than spamming the transcript.
-                        if line.starts_with("ANIM:") { continue; }
-                        if proxy.send_event(Ev::Line(line)).is_err() { break; }
-                    } else {
-                        buf.push(one[0]);
+/// Pump the Fraymakers engine's line stream to the webview. `autostart`, when set, is the
+/// shared fastboot command (`fastboot::command`) to fire ONCE the engine reports READY —
+/// the GUI's quick-boot match launch, driven host-side via the SAME policy as the CLI so
+/// the two never drift (the page no longer launches matches). `None` = a regular/bridge
+/// boot or a reconnect to an already-live match: don't auto-launch.
+/// GUI sink for the shared Fraymakers stream router (`session::pump_fray_stream`): routes
+/// channel feeds to their widgets, captures RESDIAG breadcrumbs for the crash modal, drops
+/// per-frame ANIM telemetry from the chat, fires the quick-boot fastboot launch on READY,
+/// and forwards normal lines to the page.
+struct GuiStreamSink {
+    proxy: EventLoopProxy<Ev>,
+    writer: SharedWriter,
+    autostart: Option<String>, // the fastboot command, taken once on the first READY
+    resdiag: Vec<String>,      // breadcrumbs for the Enhanced (advanced) crash log
+}
+impl crate::session::FrayStreamSink for GuiStreamSink {
+    fn on_ready(&mut self) {
+        // First READY → fire the shared fastboot launch host-side (quick boot). The READY
+        // line itself is still forwarded to the page (on_line) so it flips its status.
+        if let Some(cmd) = self.autostart.take() {
+            if let Translated::Wire(w) = translate(&cmd) {
+                if let Ok(mut g) = self.writer.lock() {
+                    if let Some(s) = g.as_mut() {
+                        let _ = self.proxy.send_event(Ev::Line("SYS:Engine ready — launching…".into()));
+                        let _ = s.write_all(format!("{w}\n").as_bytes());
+                        let _ = s.flush();
                     }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => { engine_gone(&proxy, &resdiag); break; }
             }
         }
+    }
+    fn on_resdiag(&mut self, line: &str) { self.resdiag.push(line.to_string()); } // enhanced log, not chat
+    fn on_channel(&mut self, channel: &str, payload: &str) {
+        match channel {
+            "charIcon" => {
+                // payload = "<slot>:<png-hex>;<palette>" -> recolor + data: URL.
+                if let Some((slot, rest)) = payload.split_once(':') {
+                    let (hex, palette) = rest.split_once(';').unwrap_or((rest, ""));
+                    if let Some(url) = icon_data_url(hex, palette) {
+                        let _ = self.proxy.send_event(Ev::Js(format!(
+                            "window.onIcon && onIcon({}, {})", js_str(slot), js_str(&url))));
+                    }
+                }
+            }
+            _ => {
+                let _ = self.proxy.send_event(Ev::Js(format!(
+                    "window.onMatchStatus && onMatchStatus({})", js_str(payload))));
+            }
+        }
+    }
+    // on_anim: dropped — shown live in the matchStatus widget, not the chat transcript.
+    fn on_line(&mut self, raw: &str) { let _ = self.proxy.send_event(Ev::Line(raw.to_string())); }
+    fn on_eof(&mut self) { engine_gone(&self.proxy, &self.resdiag); }
+}
+
+fn spawn_reader(reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>,
+                writer: SharedWriter, autostart: Option<String>) {
+    thread::spawn(move || {
+        let mut sink = GuiStreamSink { proxy, writer, autostart, resdiag: Vec::new() };
+        crate::session::pump_fray_stream(reader, &mut sink);
     });
 }
 

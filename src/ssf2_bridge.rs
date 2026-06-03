@@ -193,6 +193,51 @@ fn probe_responsive() -> bool {
         && request("READ", t).is_ok()
 }
 
+/// Block until the patched engine emits its one-shot `READY` line — the SSF2 analogue of
+/// Fraymakers firing READY at `Main.onLoaded`. The bridge injects it at
+/// `MenuController.showInitialMenu` (boot complete; see `abc_inject::inject_ready_signal`),
+/// so this is a REAL boot-complete event, not the old PING-streak/flat-floor heuristic.
+/// Reads the persistent connection until a bare `READY` line arrives (accumulating across
+/// read timeouts so a split line isn't dropped) or `total` elapses. Returns true on READY.
+pub fn wait_for_ready(total: Duration) -> bool {
+    let mut guard = CONN.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = match guard.as_mut() {
+        Some(c) => c,
+        None => return false,
+    };
+    let _ = conn.reader.get_ref().set_read_timeout(Some(Duration::from_millis(500)));
+    let deadline = Instant::now() + total;
+    let mut line = String::new();
+    loop {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        match conn.reader.read_line(&mut line) {
+            Ok(0) => return false, // EOF — engine gone
+            Ok(_) => {
+                if line.trim_end_matches(['\r', '\n']) == "READY" {
+                    return true;
+                }
+                line.clear(); // some other unsolicited line — discard, await READY
+            }
+            // timeout: any partial bytes stay in `line` to be completed next read
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => return false, // connection gone
+        }
+    }
+}
+
+/// Wait for the engine to be boot-complete. Primary path: the event-driven `READY` line.
+/// Fallback (only if READY never arrives — e.g. an unexpected SSF2 build where the hook
+/// no-op'd): the legacy responsiveness settle, so a boot still succeeds rather than hangs.
+pub fn wait_ready_signal(total: Duration) -> bool {
+    if wait_for_ready(total) {
+        return true;
+    }
+    wait_ready(10, Duration::from_secs(6))
+}
+
 /// `peptide ssf2 send "<cmd>"` — one-shot command, printing the reply. Because the
 /// engine dials into ONE process's socket, the live connection lives in the
 /// `session` process; a standalone `send` therefore routes through the running
@@ -244,7 +289,19 @@ pub fn session(args: &[String]) -> Result<()> {
     let port = pick_port();
     let listener = bind(port)?;
     disconnect(); // drop any stale connection
-    let app = crate::ssf2::install_patched(port)?;
+    // Quick boot: bake the match char + stage so SSF2 skips the disclaimer/menus and loads
+    // straight toward the match (see inject_quickboot). `--full` = a normal boot (the
+    // disclaimer plays and fires the event-driven READY).
+    let opts = crate::fastboot::BootOptions::from_cli(args);
+    let cfg = crate::config::Config::load();
+    let fastboot: Option<(String, String)> = if opts.full {
+        None
+    } else {
+        let ch = opts.char_name.clone().unwrap_or_else(|| cfg.char_name());
+        if ch.trim().is_empty() { None } else { Some((ch, cfg.ssf2_stage())) }
+    };
+    let app = crate::ssf2::install_patched(
+        port, fastboot.as_ref().map(|(c, s)| (c.as_str(), s.as_str())))?;
     let exe = crate::ssf2::ssf2_exe_path(&app);
     let mut child = std::process::Command::new(&exe)
         .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
@@ -262,64 +319,57 @@ pub fn session(args: &[String]) -> Result<()> {
         slog(&format!("[ssf2-session] {e}"));
     }
 
-    // wait until the engine is STABLY responsive (finished its boot load), not just
-    // the first reply — see wait_ready. Gating here means `tell`-ed commands aren't
-    // fired into the loading hook.
-    let ready = wait_ready(10, Duration::from_secs(40));
+    // Readiness. Quick boot SKIPS the disclaimer, so there's no event-driven READY — use the
+    // responsiveness heuristic (the boot loading settling un-starves frames). A normal boot
+    // (--full) waits for the disclaimer's READY. Generous timeout for a cold boot either way.
+    let ready = if fastboot.is_some() {
+        wait_ready(10, Duration::from_secs(120))
+    } else {
+        wait_ready_signal(Duration::from_secs(120))
+    };
     slog(if ready { "[ssf2-session] engine READY — peptide ssf2 tell \"<cmd>\"" }
          else { "[ssf2-session] engine never settled — accepting commands anyway" });
 
     // Quick boot (headless): just like the Fraymakers `session --char`, land straight in a
     // match instead of parking the bridge at the boot screen. The match-launch (SPAWN +
-    // config + GO) is host-driven over the bridge, so we fire a single spawn here once the
-    // engine has settled. `--full` opts out — boot a bare bridge you drive by hand.
-    let full = args.iter().any(|a| a == "--full");
-    if ready && !full {
-        let ch = arg_val(args, "--char").unwrap_or_else(|| crate::config::Config::load().char_name());
-        slog(&format!("[ssf2-session] quick boot — auto-launching {ch} (spawn)"));
-        let mut target = crate::ssf2_target::Ssf2Target::new();
-        match crate::debug_target::run_command(&mut target, &format!("s {ch}")) {
-            Ok(Some(r)) => slog(&format!("<< {r}")),
-            Ok(None) => {}
-            Err(e) => slog(&format!("<< quick-boot spawn failed: {e}")),
+    // config + GO) is host-driven over the bridge. The decision + command come from the
+    // shared `fastboot` module (one home for CLI + GUI); `--full` opts out via BootOptions.
+    if ready {
+        let opts = crate::fastboot::BootOptions::from_cli(args);
+        if let Some(cmd) = crate::fastboot::command(crate::fastboot::Engine::Ssf2, &opts) {
+            slog(&format!("[ssf2-session] quick boot — auto-launching ({cmd})"));
+            let mut target = crate::ssf2_target::Ssf2Target::new();
+            match crate::debug_target::run_command(&mut target, &cmd) {
+                Ok(Some(r)) => slog(&format!("<< {r}")),
+                Ok(None) => {}
+                Err(e) => slog(&format!("<< quick-boot spawn failed: {e}")),
+            }
         }
     }
 
-    // poll the control file for appended command lines
-    let mut offset: u64 = 0;
-    let mut leftover = String::new();
-    loop {
-        if let Ok(mut f) = std::fs::File::open(&control) {
-            use std::io::{Read, Seek};
-            if f.seek(std::io::SeekFrom::Start(offset)).is_ok() {
-                let mut chunk = String::new();
-                if let Ok(n) = f.read_to_string(&mut chunk) {
-                    if n > 0 {
-                        offset += n as u64;
-                        leftover.push_str(&chunk);
-                        while let Some(nl) = leftover.find('\n') {
-                            let raw: String = leftover.drain(..=nl).collect();
-                            let raw = raw.trim().to_string();
-                            if raw.is_empty() { continue; }
-                            if raw == "exit" || raw == "quit" {
-                                slog("[ssf2-session] exit");
-                                let _ = child.kill();
-                                return Ok(());
-                            }
-                            slog(&format!(">> {raw}"));
-                            let mut target = crate::ssf2_target::Ssf2Target::new();
-                            match crate::debug_target::run_command(&mut target, &raw) {
-                                Ok(Some(r)) => slog(&format!("<< {r}")),
-                                Ok(None) => {}
-                                Err(e) => slog(&format!("<< ERR: {e}")),
-                            }
-                        }
-                    }
-                }
+    // Shared control-file tail loop (see `session::tail_control`); `exit`/`quit` kills the
+    // app and stops the loop. SSF2 is synchronous RPC, so each line runs inline here.
+    crate::session::tail_control(
+        &control,
+        Duration::from_millis(50),
+        || false,
+        |raw| {
+            if raw == "exit" || raw == "quit" {
+                slog("[ssf2-session] exit");
+                let _ = child.kill(); // cross-platform (was pkill -f SSF2-patched)
+                return false;
             }
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+            slog(&format!(">> {raw}"));
+            let mut target = crate::ssf2_target::Ssf2Target::new();
+            match crate::debug_target::run_command(&mut target, raw) {
+                Ok(Some(r)) => slog(&format!("<< {r}")),
+                Ok(None) => {}
+                Err(e) => slog(&format!("<< ERR: {e}")),
+            }
+            true
+        },
+    );
+    Ok(())
 }
 
 /// `peptide ssf2 jumpcapture <char>` — drive a live SSF2 jump and capture the
