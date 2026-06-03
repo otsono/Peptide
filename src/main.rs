@@ -386,6 +386,18 @@ fn main() -> anyhow::Result<()> {
             }
             return Ok(());
         }
+        "protos" => {
+            // dump a type's vtable protos IN ORDER (proto index = position), with findexes.
+            let tname = args.get(4).cloned().unwrap();
+            if let Some(ti) = find_type(&code, &tname) {
+                if let Some(o) = code.types[ti].get_type_obj() {
+                    for (i, p) in o.protos.iter().enumerate() {
+                        eprintln!("  proto {i:3} -> findex {:6} {}", p.findex.0, s(&code, p.name));
+                    }
+                } else { eprintln!("  not an obj type: {tname}"); }
+            } else { eprintln!("  type not found: {tname}"); }
+            return Ok(());
+        }
         "methods" => {
             // list every function whose parent type name contains <needle>
             let needle = args.get(4).cloned().unwrap();
