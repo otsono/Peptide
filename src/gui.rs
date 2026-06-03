@@ -14,10 +14,16 @@ use std::time::Duration;
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
+
+#[cfg(target_os = "linux")]
 use tao::platform::unix::WindowExtUnix;
+
 use tao::window::WindowBuilder;
 use wry::http::Request;
-use wry::{Rect, WebViewBuilder, WebViewBuilderExtUnix};
+use wry::{Rect, WebViewBuilder};
+
+#[cfg(target_os = "linux")]
+use wry::WebViewBuilderExtUnix;
 
 use crate::debug_target::DebugTarget; // feature surface: match_status / char_icon
 use crate::interpreter::{split_commands, translate, Translated};
@@ -197,13 +203,23 @@ pub fn launch() -> std::io::Result<()> {
     let webview = {
         use gtk::traits::WidgetExt;
         // Note that for linux targets we need to initialize gtk before building the webview
-        let _ = gtk::init().unwrap();
+        let _ = gtk::init().map_err(|e| io(&e.to_string()))?;
         // Likewise for display we have to build using an instance of gtk::Box, here we use the default
-        let vbox = window.default_vbox().unwrap(); 
-        vbox.show_all();
-        webview_builder
-            .build_gtk(vbox)
-            .map_err(|e| io(&e.to_string()))?
+        if let Some(vbox) = window.default_vbox() {
+            vbox.show_all();
+            webview_builder
+                .build_gtk(vbox)
+                .map_err(|e| io(&e.to_string()))?
+        } else {
+            use gtk::traits::ContainerExt;
+            // We create our own vbox instance if the default vbox isn't present
+            let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            window.gtk_window().add(&vbox);
+            vbox.show_all();
+            webview_builder
+                .build_gtk(&vbox)
+                .map_err(|e| io(&e.to_string()))?
+        }
     };
 
 
@@ -211,13 +227,6 @@ pub fn launch() -> std::io::Result<()> {
 
     event_loop.run(move |event, _t, control_flow| {
         *control_flow = ControlFlow::Wait;
-        #[cfg(target_os = "linux")]
-        while gtk::events_pending() {
-          // Advance the gtk event loop as well
-          gtk::main_iteration_do(false);
-        }
-
-
         match event {
             Event::NewEvents(StartCause::Init) => {
                 // Route the page to Setup or Home based on the persisted config.
@@ -560,7 +569,7 @@ fn set_default_env_var(key:&str, value:&str, unset_if_empty:bool) {
     let env_var = std::env::var_os(key);
     if env_var.is_none() {
         std::env::set_var(key, value);
-    } if let Some(v) = env_var {
+    } else if let Some(v) = env_var {
         if unset_if_empty && v.is_empty() {
             std::env::remove_var(key);
         }
@@ -573,7 +582,7 @@ fn apply_default_linux_env_vars() {
     set_default_env_var("GDK_BACKEND", "x11", true);
     // Hopefully should deal with rendering issues on nvidia gpus
     set_default_env_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1", true);
-    set_default_env_var("DISABLE_COMPOSTING_MODE", "1", true);
+    set_default_env_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1", true);
 }
 
 /// Drive the FrayTools CDP harness for the Hook screen. `rest` is
