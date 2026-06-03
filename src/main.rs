@@ -998,6 +998,12 @@ fn connect_edit(
     let itemfreq_str = add_string(code, "itemFrequency");
     let create_mode = require_fn(code, "createMode", Some("fraymakers.util.$FraymakersClassFactory"))?;
     let mode_start_match = require_fn(code, "startMatch", Some("fraymakers.core.FraymakersMode"))?;
+    // FM's native pre-match loading screen factory. The menus set
+    // MatchController.loadingScreenFactory before startMatch; the headless fast boot skips
+    // the menus, so startMatch's `if (loadingScreenFactory != null)` gate fails and no
+    // loading screen shows. We set the factory to the engine's own createLoadingScreen so
+    // startMatch builds + shows it — parity with SSF2's loadingMenu. See the `s` handler.
+    let create_loading_screen = require_fn(code, "createLoadingScreen", Some("pxf.controllers.$MatchController"))?;
     let mode_t = find_type(code, "fraymakers.core.FraymakersMode")
         .ok_or_else(|| anyhow::anyhow!("FraymakersMode type not found"))?;
     eprintln!("mode-launch: createMode={create_mode} FraymakersMode.startMatch={mode_start_match} FraymakersMode t={mode_t}");
@@ -1159,6 +1165,14 @@ fn connect_edit(
         .ok_or_else(|| anyhow::anyhow!("_matches field not found"))?;
     let match_t = find_type(code, "pxf.core.Match")
         .ok_or_else(|| anyhow::anyhow!("pxf.core.Match type not found"))?;
+    // loadingScreenFactory field (+ its function type, for the scratch closure register).
+    let lsf_field = find_field(code, mc_statics_t, "loadingScreenFactory")
+        .ok_or_else(|| anyhow::anyhow!("loadingScreenFactory field not found"))?;
+    let lsf_field_t = code.types[mc_statics_t]
+        .get_type_obj()
+        .and_then(|o| o.fields.get(lsf_field))
+        .map(|fld| fld.t.0)
+        .ok_or_else(|| anyhow::anyhow!("loadingScreenFactory field type missing"))?;
     eprintln!("query: $MatchController statics t={mc_statics_t} currentMatch field={cm_field} Match t={match_t}");
     // ---- move-dispatch + telemetry API (commands 'm' / 't') — resolved by name ----
     // Drive a move on the live player-0 Character via its own state machine
@@ -1538,6 +1552,10 @@ fn connect_edit(
         (Reg(eval_regs_base), Reg(eval_regs_base + 1), Reg(eval_regs_base + 2), Reg(eval_regs_base + 3));
     // PlayerConfig scratch for post-start spawnPlayer of extra players.
     let cfg_pc_reg = Reg(add_regs(f, &[player_config_t]));
+    // Scratch for the headless pre-match loading-screen factory set: the MatchController
+    // statics object + the factory closure (typed as loadingScreenFactory's function type).
+    let ls_regs_base = add_regs(f, &[mc_statics_t, lsf_field_t]);
+    let (ls_mc_reg, ls_fac_reg) = (Reg(ls_regs_base), Reg(ls_regs_base + 1));
     let (r_done, r_true, r_sock, r_host, r_port, r_out, r_ret, r_ip, r_byte, r_blockf, r_sock2, r_handle, r_c, r_zero) =
         (rr(0), rr(1), rr(2), rr(3), rr(4), rr(5), rr(6), rr(7), rr(8), rr(9), rr(10), rr(11), rr(12), rr(13));
 
@@ -2281,6 +2299,17 @@ fn connect_edit(
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(matchsettings_str), src: rr(35) });
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(pausemenu_str), src: rr(38) }); // pauseMenu = null
     ops.push(Opcode::ToVirtual { dst: rr(50), src: rr(27) });          // -> config virtual@4482
+    // HEADLESS ONLY: show FM's native pre-match loading screen. The menus normally set
+    // MatchController.loadingScreenFactory before startMatch; the fast boot skips them, so
+    // startMatch's `if (loadingScreenFactory != null)` gate fails and no screen shows.
+    // Set the factory to the engine's own createLoadingScreen so startMatch builds + shows
+    // it (parity with SSF2's loadingMenu). Gated on `headless` so a manual `s` in a --full
+    // bridge boot doesn't force it.
+    if headless {
+        ops.push(Opcode::GetGlobal { dst: ls_mc_reg, global: RefGlobal(3511) });
+        ops.push(Opcode::StaticClosure { dst: ls_fac_reg, fun: RefFun(create_loading_screen) });
+        ops.push(Opcode::SetField { obj: ls_mc_reg, field: RefField(lsf_field), src: ls_fac_reg });
+    }
     // mode.startMatch(config)  — runs the engine's offline-match flow (gates, menu suspend/restore).
     ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(mode_start_match), arg0: rr(48), arg1: rr(50) });
     if FM_MULTIPLAYER {
