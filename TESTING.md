@@ -144,6 +144,14 @@ peptide tell "<command>"                           # queue a command for the run
 peptide log  [-n N] [--follow]                     # print/tail the engine replies it mirrored
 ```
 
+run in a terminal, `session` holds focus and is also an interactive REPL, the terminal
+equivalent of the GUI chat. type a command, press Enter, and the engine's reply streams
+straight back to the same window (the TCP link stays live the whole time). it's enabled
+automatically when stdin is a TTY; `peptide tell` from another terminal still works alongside
+it. force it on for a piped stdin with `-i` / `--interactive`, or off (pure `tell`-driven
+daemon) with `--no-input`. EOF (Ctrl-D) just stops reading input; type `exit` (or Ctrl-C) to
+shut the engine down.
+
 - **`session`** boots a throwaway-patched copy of the engine (the pristine install is never
   touched), binds the loopback server, and waits for the engine to dial in + reach READY. on
   clean exit (or `tell exit`) it kills the engine and removes the transient files. needs
