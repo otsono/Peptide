@@ -3057,6 +3057,7 @@ dependencies = [
  "crossterm",
  "dirs 5.0.1",
  "env_logger",
+ "gtk",
  "hlbc",
  "image",
  "log",

@@ -11,12 +11,19 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use tao::dpi::LogicalSize;
+use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
+
+#[cfg(target_os = "linux")]
+use tao::platform::unix::WindowExtUnix;
+
 use tao::window::WindowBuilder;
 use wry::http::Request;
-use wry::WebViewBuilder;
+use wry::{Rect, WebViewBuilder};
+
+#[cfg(target_os = "linux")]
+use wry::WebViewBuilderExtUnix;
 
 use crate::debug_target::DebugTarget; // feature surface: match_status / char_icon
 use crate::interpreter::{split_commands, translate, Translated};
@@ -57,6 +64,9 @@ const PROJECTS_LIST: &str = "@@projects:list";      // enumerate .fraytools proj
 const FRAY_PREFIX: &str = "@@fray:";                // @@fray:export|render|harness:<json>
 
 pub fn launch() -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    apply_default_linux_env_vars();
+    
     let event_loop = EventLoopBuilder::<Ev>::with_user_event().build();
     let window = WindowBuilder::new()
         .with_title("Peptide")
@@ -133,9 +143,14 @@ pub fn launch() -> std::io::Result<()> {
     // Read the UI from disk at launch (no compiled-in copy); wry's with_html
     // borrows a &str, so the String must outlive the builder.
     let ui_html = crate::read_asset("peptide_ui.html");
-    let webview = WebViewBuilder::new()
+
+    let webview_builder = WebViewBuilder::new()
         .with_html(&ui_html)
         .with_initialization_script(&init)
+        .with_bounds(Rect {
+          position: LogicalPosition::new(0, 0).into(),
+          size: LogicalSize::new(940, 720).into(),
+        })
         .with_ipc_handler(move |req: Request<String>| {
             let body = req.body().to_string();
             let (w, cl, cn, px, ch) = (ipc_writer.clone(), ipc_cleanup.clone(), ipc_conn.clone(),
@@ -177,9 +192,38 @@ pub fn launch() -> std::io::Result<()> {
             } else {
                 handle_command(&body, &ipc_writer, &ipc_proxy);
             }
-        })
+        });
+    
+    #[cfg(not(target_os = "linux"))]
+    let webview = webview_builder
         .build(&window)
         .map_err(|e| io(&e.to_string()))?;
+
+    #[cfg(target_os = "linux")]
+    let webview = {
+        use gtk::traits::WidgetExt;
+        // Note that for linux targets we need to initialize gtk before building the webview
+        let _ = gtk::init().map_err(|e| io(&e.to_string()))?;
+        // Likewise for display we have to build using an instance of gtk::Box, here we use the default
+        if let Some(vbox) = window.default_vbox() {
+            vbox.show_all();
+            webview_builder
+                .build_gtk(vbox)
+                .map_err(|e| io(&e.to_string()))?
+        } else {
+            use gtk::traits::ContainerExt;
+            // We create our own vbox instance if the default vbox isn't present
+            let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            window.gtk_window().add(&vbox);
+            vbox.show_all();
+            webview_builder
+                .build_gtk(&vbox)
+                .map_err(|e| io(&e.to_string()))?
+        }
+    };
+
+
+
 
     event_loop.run(move |event, _t, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -514,6 +558,31 @@ fn add_publish_folder(json: &str, proxy: &EventLoopProxy<Ev>) {
                 "window.onPublishResult && onPublishResult(false, {})", js_str(&e))));
         }
     }
+}
+
+// Sets an environment variable to a given value if unset
+//
+// * `key` - The environment variable key 
+// * `value` - The value to be set to the environment variable
+// * `unset_if_empty` - When true, the environment variable is unset if the value is empty
+fn set_default_env_var(key:&str, value:&str, unset_if_empty:bool) {
+    let env_var = std::env::var_os(key);
+    if env_var.is_none() {
+        std::env::set_var(key, value);
+    } else if let Some(v) = env_var {
+        if unset_if_empty && v.is_empty() {
+            std::env::remove_var(key);
+        }
+    }
+}
+
+// Setting default environment variables to fix rendering issues on linux
+fn apply_default_linux_env_vars() {
+    // Using x11 by default
+    set_default_env_var("GDK_BACKEND", "x11", true);
+    // Hopefully should deal with rendering issues on nvidia gpus
+    set_default_env_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1", true);
+    set_default_env_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1", true);
 }
 
 /// Drive the FrayTools CDP harness for the Hook screen. `rest` is
