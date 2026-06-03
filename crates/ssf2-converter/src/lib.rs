@@ -11,6 +11,7 @@
     clippy::unnecessary_unwrap,
     clippy::neg_cmp_op_on_partial_ord,
     clippy::field_reassign_with_default,
+    clippy::collapsible_match,
 )]
 
 // Public modules — exposed for use by binaries in src/bin/
