@@ -65,44 +65,51 @@ dimensions below are the rest.
   in each character's `conversion_log.json :: ssf2_only`. Confirm any entry as
   droppable (like `priority`) or map it as the API surfaces.
 
-  - **method calls, `no_equivalent` (61), commented out.** item system (`getItem`,
+  - **mapped this pass (live-verified on zelda/sandbag/ganondorf):** `getMC`→
+    `getViewRootContainer()`, `getStanceMC`→`getSprite()` (members read off it may
+    differ; flagged inline), `toCrashLand`→`toState(CState.CRASH_BOUNCE)`, `toIdle`→
+    `toState(CState.STAND)`, `toFlying`→`toState(CState.HURT_HEAVY)`; `hitTestGround(x,y)`
+    →`hitTestStructuresWithLineSegment(new Point(x,y), new Point(x,y), null, null)` with
+    the `!= null`/`== null` checks rewritten to `.length > 0`/`== 0` (Array return), the
+    options arg dropped, and a TODO on the point→segment approximation; `if (… isForcedCrash …)`
+    blocks DELETED (no forced-crash in FM). Stat fields: `hasEffect`→`flinch`,
+    `sdiDistance`→`hitstopNudgeMultiplier` (value/6, since SSF2 default is 6),
+    `shieldDamage`→`shieldDamageMultiplier: 1` with the old value kept in a TODO.
+  - **method calls, `no_equivalent` (57), commented out.** item system (`getItem`,
     `getItems`, `getItemStat`, `pickupItem`, `tossItem`, `toToss`, `removeItem`,
     `generateItem`, `updateItemStats`, `isZDropped`); CPU/AI (`isCPU`, `getCPULevel`,
     `getCPUAction`, `getCPUForcedAction`, `getCPUTarget`, `setCPUAttackQueue`,
     `importCPUControls`, `resetCPUControls`, `isStandby`, `getStandby`); Flash/MovieClip
-    (`getMC`, `getMCByLinkageName`, `getHitBox`, `getKirbyHatMC`, `getHUDBackgroundMC`,
+    (`getMCByLinkageName`, `getHitBox`, `getKirbyHatMC`, `getHUDBackgroundMC`,
     `getHUDForegroundMC`, `killDarkener`); sound-needs-a-clip-handle (`stopSound`,
     `stopSFX`, `stopHoldSound`, `stopListening`); final-smash/kirby/misc
     (`isUsingFinalSmash`, `setFinalSmashMeterCharge`, `getCurrentKirbyPower`,
     `getCurrentMusicInfo`, `getQualitySettings`); other (`addIgnoreObject`,
     `calculateKnockback`, `checkAtkilled`, `clearEffectsOnStateChange`, `endControl`,
-    `exportStats`, `getLedges`, `getNearestPath`, `hitTestGround`, `isForcedCrash`,
-    `isReversed`, `jumpToContinue`, `killAttackboxes`, `removeSelfPlatform`,
-    `replacePalette`, `setAttackEnabled`, `setLastUsed`, `shootOutOpponent`,
-    `spawnEnemy`, `stop`, `toCrashLand`, `updateEnemyStats`).
-  - **method calls, `manual_port` (29), close FM equivalent needs hand-work.**
+    `exportStats`, `getLedges`, `getNearestPath`, `isReversed`, `jumpToContinue`,
+    `killAttackboxes`, `removeSelfPlatform`, `replacePalette`, `setAttackEnabled`,
+    `setLastUsed`, `shootOutOpponent`, `spawnEnemy`, `stop`, `updateEnemyStats`).
+  - **method calls, `manual_port` (26), close FM equivalent needs hand-work.**
     `fireProjectile`→`match.createProjectile`, `unnattachFromGround`→`unattachFromFloor`,
     `swapDepthsWithGrabbedOpponent`→`swapDepths`, `getMetalStatus`→StatusEffect/BodyStatus,
     `setColorFilters`→`setCostumeShader`, `getCharacter`/`getProjectile`→
     `match.getCharacters`/`getProjectiles`, plus `angleControl`, `createSelfPlatform`,
     `forceAttack`, `getAttackBoxStat`, `getAttackStat`, `getCurrentAttackFrame`,
     `getCurrentProjectile`, `getExecTime`, `getHealthBox`, `getLinkageID`, `getMidground`,
-    `getNearest`, `getNearestLedge`, `getPlatformBetweenPoints`, `getStanceMC`,
+    `getNearest`, `getNearestLedge`, `getPlatformBetweenPoints`,
     `hitTestGroundBetweenPoints`, `homeTowardsTarget`, `inUpperLeftWarningBounds`,
-    `isEqual`, `setHurtInterrupt`, `toFlying`, `toIdle`.
-  - **hitbox/attack stat fields with no FM mapping**, surfaced as compile/runtime
-    "invalid stat" for per-site fixing: `camShake`, `chargedPriority`, `hasEffect`,
-    `ignoreChargeDamage`, `meteorBounce`, `onlyAffectsGround`, `sdiDistance`,
-    `shieldDamage` (FM's nearest is `shieldDamageMultiplier`, different semantics).
-    `stackKnockback` is actually a real FM `HitboxStatsProps` field (same name) so it
-    passes through fine, not a gap. NB: the "Invalid hitbox stat" check fires only when
-    a hitbox is ACTIVE in-engine, so an eval `updateHitboxStats(0, {x: 1})` on an
-    inactive box won't surface it; confirm field validity against the FM API types.
-    - Resolved this pass: `priority` DROPPED (confirmed unnecessary). The element
-      flags `burn`/`shock` now map to FM `element` (`ElementType.FIRE`/`ELECTRIC`,
-      live-verified) when `: true`; the `: false` / `pitfall: 0` no-element forms are
-      dropped. Still open (carry a numeric value or an unconfirmed FM enum member, so
-      they need per-site treatment, not a flag→enum rename): `aura` (no confirmed
+    `isEqual`, `setHurtInterrupt`.
+  - **hitbox/attack stat fields still with no FM mapping**, surfaced as compile/runtime
+    "invalid stat" for per-site fixing: `camShake`, `chargedPriority`, `ignoreChargeDamage`,
+    `meteorBounce`, `onlyAffectsGround`. `stackKnockback` is actually a real FM
+    `HitboxStatsProps` field (same name) so it passes through fine, not a gap. NB: the
+    "Invalid hitbox stat" check fires only when a hitbox is ACTIVE in-engine, so an eval
+    `updateHitboxStats(0, {x: 1})` on an inactive box won't surface it; confirm field
+    validity against the FM API types.
+    - `priority` DROPPED (confirmed unnecessary). `burn`/`shock` `: true` map to FM
+      `element` (`ElementType.FIRE`/`ELECTRIC`, live-verified); their `: false` /
+      `pitfall: 0` no-element forms are dropped. Still open (carry a value or an
+      unconfirmed FM enum, so per-site, not a flag→enum rename): `aura` (no confirmed
       `ElementType.AURA`), `paralysis` (numeric stun duration), `pitfall` > 0 (FM
       `ElementType.BURY` + `bury*` timing fields, not a bare flag).
   - **`SSF2Event` types with no confirmed FM equivalent, neutralized** (the line is

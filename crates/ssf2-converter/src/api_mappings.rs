@@ -105,6 +105,54 @@ fn is_isready_guard(trimmed: &str) -> bool {
     trimmed.contains("SSF2API.isReady()")
 }
 
+/// Remove `if (… isForcedCrash …) { … }` blocks entirely. SSF2's `isForcedCrash`
+/// (a training-mode forced-crash flag) has no Fraymakers concept, so the whole guarded
+/// block is obsolete in FM. Leaves a one-line marker in place of the deleted block.
+/// (Runs before comment_out_unknown_calls so the block goes away cleanly instead of
+/// being dead-commented.)
+pub fn remove_forced_crash_guards(code: &str) -> String {
+    if !code.contains("isForcedCrash") {
+        return code.to_string();
+    }
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        let is_guard = (trimmed.starts_with("if (") || trimmed.starts_with("if(")
+            || trimmed.starts_with("} else if"))
+            && trimmed.contains("isForcedCrash")
+            && trimmed.ends_with('{');
+        if is_guard {
+            // brace-match to the block's close, then skip the whole block.
+            let mut depth = 0i32;
+            let mut found_open = false;
+            let mut j = i;
+            'scan: while j < lines.len() {
+                for ch in lines[j].chars() {
+                    match ch {
+                        '{' => { depth += 1; found_open = true; }
+                        '}' => { depth -= 1; if found_open && depth == 0 { break 'scan; } }
+                        _ => {}
+                    }
+                }
+                j += 1;
+            }
+            if found_open && depth == 0 {
+                let indent = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+                out.push(format!("{}// [FM] isForcedCrash guard removed (no forced-crash in Fraymakers)", indent));
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(lines[i].to_string());
+        i += 1;
+    }
+    let mut joined = out.join("\n");
+    if code.ends_with('\n') { joined.push('\n'); }
+    joined
+}
+
 /// Strip one tab (or 4 spaces) from the start of a line.
 fn strip_one_tab(line: &str) -> &str {
     line.strip_prefix('\t')
@@ -185,6 +233,11 @@ pub fn translate_ssf2_to_fm(code: &str) -> String {
     result = rewrite_add_effect_to_list(&result);
 
     result = strip_last_frame_end_animation(&result);
+    // `if (… isForcedCrash …) { … }` blocks are obsolete in FM — delete them
+    // (before comment_out_unknown_calls would dead-comment them).
+    result = remove_forced_crash_guards(&result);
+    // SSF2 hitTestGround(x, y) point test → FM line-segment hitTestStructuresWithLineSegment.
+    result = rewrite_hit_test_ground(&result);
     // SSF2Utils.decel(v, amount) → inline Math min/max (FM has no Math.decel).
     result = rewrite_decel_calls(&result);
     // Any SSF2Event.* / SSF2Utils.* still present has no Fraymakers equivalent
@@ -1501,6 +1554,58 @@ fn rewrite_add_effect_to_list(code: &str) -> String {
     out
 }
 
+/// SSF2 `[recv.]hitTestGround(x, y[, opts])` → FM
+/// `hitTestStructuresWithLineSegment(new Point(x, y), new Point(x, y), null, null)`.
+/// SSF2 tests a single point and returns the platform-or-null; FM tests a line
+/// segment and returns an Array, so:
+///   - the point becomes a degenerate (x,y)→(x,y) segment (TODO: a short vertical
+///     span may be more faithful for ground detection),
+///   - the optional SSF2 options object is dropped (FM
+///     StructureColliderSearchOptions differs), and
+///   - an immediately-following `!= null` / `== null` is rewritten to `.length > 0`
+///     / `.length == 0` (an Array is never null, so a raw null-check would be
+///     silently always-true). A bare boolean use gets `.length > 0`.
+/// Balanced-scan so nested-paren / object args don't break the split.
+fn rewrite_hit_test_ground(code: &str) -> String {
+    const NEEDLE: &str = "hitTestGround(";
+    if !code.contains(NEEDLE) {
+        return code.to_string();
+    }
+    let mut out = String::with_capacity(code.len());
+    let mut cursor = 0;
+    while let Some(rel) = code[cursor..].find(NEEDLE) {
+        let start = cursor + rel;
+        let paren_open = start + NEEDLE.len() - 1;
+        let close = match find_matching_close(code, paren_open) {
+            Some(c) => c,
+            None => { out.push_str(&code[cursor..=start]); cursor = start + 1; continue; }
+        };
+        let args = &code[paren_open + 1..close];
+        let a1 = first_top_level_arg(args).trim();
+        let rest = args[first_top_level_arg(args).len()..].trim_start_matches([',', ' ']);
+        let a2 = first_top_level_arg(rest).trim();
+        if a1.is_empty() || a2.is_empty() {
+            out.push_str(&code[cursor..=start]); cursor = start + 1; continue;
+        }
+        // Look at what immediately follows the call for a null comparison.
+        let after = code[close + 1..].trim_start();
+        let (suffix, consume) = if let Some(r) = after.strip_prefix("!= null") {
+            (".length > 0".to_string(), code[close + 1..].len() - r.len())
+        } else if let Some(r) = after.strip_prefix("== null") {
+            (".length == 0".to_string(), code[close + 1..].len() - r.len())
+        } else {
+            (".length > 0".to_string(), 0)
+        };
+        out.push_str(&code[cursor..start]);
+        out.push_str(&format!(
+            "hitTestStructuresWithLineSegment(new Point({a1}, {a2}), new Point({a1}, {a2}), null, null){suffix} /*TODO: SSF2 point ground-test -> FM line segment; verify segment & options*/"
+        ));
+        cursor = close + 1 + consume;
+    }
+    out.push_str(&code[cursor..]);
+    out
+}
+
 /// SSF2Utils.decel(value, amount) → inline decay-toward-zero. SSF2's helper
 /// reduces |value| by amount, clamped at 0 (never crosses sign). Fraymakers'
 /// Math has no `decel`, so emit the equivalent ternary using Math.min/max
@@ -2633,6 +2738,30 @@ mod tests {
         assert!(!out.contains("SSF2Utils.decel"), "decel not rewritten: {out}");
         assert!(out.contains("Math.min(0,") && out.contains("Math.max(0,"), "no min/max form: {out}");
         assert!(out.contains("Math.calculateXVelocity(a.get(), b.get())"), "nested arg corrupted: {out}");
+    }
+
+    #[test]
+    fn forced_crash_guard_block_removed() {
+        let input = "before();\nif (!self.isForcedCrash()) {\n\tself.setIntangibility(true);\n}\nafter();";
+        let out = remove_forced_crash_guards(input);
+        assert!(!out.contains("isForcedCrash") || out.contains("guard removed"),
+            "isForcedCrash not removed: {out}");
+        assert!(!out.contains("setIntangibility(true)"), "guarded body not removed: {out}");
+        assert!(out.contains("before();") && out.contains("after();"), "surrounding code lost: {out}");
+    }
+
+    #[test]
+    fn hit_test_ground_to_line_segment_with_null_check() {
+        let neq = rewrite_hit_test_ground("if (self.hitTestGround(a, b) != null) {");
+        assert!(neq.contains("hitTestStructuresWithLineSegment(new Point(a, b), new Point(a, b), null, null).length > 0"),
+            "!= null not rewritten to .length > 0: {neq}");
+        assert!(!neq.contains("hitTestGround"), "old call left: {neq}");
+        let eq = rewrite_hit_test_ground("x = self.hitTestGround(a, b) == null;");
+        assert!(eq.contains(".length == 0"), "== null not rewritten: {eq}");
+        // The 3rd options arg is dropped; nested-object arg must not break the split.
+        let opts = rewrite_hit_test_ground("self.hitTestGround(p.x, p.y - 5, { platforms: false })");
+        assert!(opts.contains("new Point(p.x, p.y - 5)") && opts.contains(".length > 0"),
+            "options form mishandled: {opts}");
     }
 
     #[test]
