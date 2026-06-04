@@ -453,6 +453,33 @@ fn generate_hitbox_stats(data: &CharacterData, _char_id: &str) -> String {
     }
 
     out.push_str(req("character.stats.hitbox_footer", &t.hitbox_footer));
+    strip_trailing_commas(&out)
+}
+
+/// Remove trailing commas inside object literals — any `,` that is followed only by
+/// whitespace and then a `}`. The hitbox-stats templates append `},` after every hitbox
+/// and every move, which leaves a trailing comma before the closing brace of the last
+/// element. hscript's object-literal parser REJECTS trailing commas, so the whole
+/// HitboxStats expression fails to parse → null stats → hitboxes get no stats and never
+/// deal damage (hurtboxes need no stats, so they still work — which is exactly the
+/// "converted chars can be hit but can't hit" bug). This pass makes the output valid.
+/// Only touches structural trailing commas; commas BETWEEN fields are untouched.
+fn strip_trailing_commas(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b',' {
+            let mut j = i + 1;
+            while j < b.len() && (b[j] as char).is_whitespace() { j += 1; }
+            if j < b.len() && b[j] == b'}' {
+                i += 1; // drop the comma, keep the whitespace that follows
+                continue;
+            }
+        }
+        out.push(b[i] as char);
+        i += 1;
+    }
     out
 }
 
@@ -495,7 +522,12 @@ fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool, inherited_from
     let t = &crate::mappings::script_templates().character.stats;
     let req = crate::mappings::require_template;
     let limb = guess_limb(name);
-    let prefix = if is_extra { "\t// SSF2: " } else { "\t" };
+    // Always build the block with a real tab prefix; an `is_extra` block is commented out WHOLE
+    // below. (The old code only commented the opening `// SSF2: name: {` line and left the hitbox
+    // body active+keyless — a syntax error that broke the ENTIRE HitboxStats object parse, so NO
+    // hitboxes got stats and converted characters couldn't deal damage. Hurtboxes need no stats,
+    // so they kept working — which is exactly the observed bug.)
+    let prefix = "\t";
     let mut out = String::new();
     if let Some(base) = inherited_from {
         // Make the inheritance explicit so a modder knows these values were copied
@@ -534,6 +566,15 @@ fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool, inherited_from
             .replace("{{limb}}", &limb));
     }
     out.push_str(req("character.stats.hitbox_attack_close", &t.hitbox_attack_close));
+    if is_extra {
+        // Comment the ENTIRE block — an SSF2 extra has no FM move name, so it's documentation
+        // only. Commenting every line keeps it inert (and syntactically valid).
+        out = out.lines()
+            .map(|l| format!("\t// SSF2: {}", l.trim_start()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        out.push('\n');
+    }
     out
 }
 
@@ -1708,10 +1749,11 @@ fn generate_projectile_hitbox_stats(
                 .replace("{{name}}", name));
         }
     }
-    req("projectile.stats.proj_hitbox_body", &t.proj_hitbox_body)
+    let body = req("projectile.stats.proj_hitbox_body", &t.proj_hitbox_body)
         .replace("{{entity_id}}", entity_id)
         .replace("{{source_note}}", &source_note)
-        .replace("{{blocks}}", &anim_blocks.join(",\n"))
+        .replace("{{blocks}}", &anim_blocks.join(",\n"));
+    strip_trailing_commas(&body)
 }
 
 /// Format a float like SSF2 would have written it: integers stay integers,

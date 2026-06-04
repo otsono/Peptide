@@ -36,7 +36,9 @@ fn box_type_to_fm(bt: BoxType) -> &'static str {
         BoxType::Hitbox     => "HIT_BOX",
         BoxType::Hurtbox    => "HURT_BOX",
         BoxType::GrabBox    => "GRAB_BOX",
-        BoxType::ItemBox    => "HURT_BOX",  // no item box type in FM, treat as hurtbox
+        BoxType::ItemBox    => "NONE",  // no item-box concept in FM; a stray HURT_BOX here (esp. at
+                                        // index 0, colliding with the real hitbox index) breaks the
+                                        // entity's collision processing. NONE = a non-colliding box.
         BoxType::ShieldBox  => "REFLECT_BOX",
         BoxType::ReflectBox => "REFLECT_BOX",
         BoxType::AbsorbBox  => "COUNTER_BOX",
