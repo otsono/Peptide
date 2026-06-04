@@ -93,7 +93,11 @@ dimensions below are the rest.
   - **hitbox/attack stat fields with no FM mapping**, surfaced as compile/runtime
     "invalid stat" for per-site fixing: `camShake`, `chargedPriority`, `hasEffect`,
     `ignoreChargeDamage`, `meteorBounce`, `onlyAffectsGround`, `sdiDistance`,
-    `shieldDamage`, `stackKnockback`.
+    `shieldDamage` (FM's nearest is `shieldDamageMultiplier`, different semantics).
+    `stackKnockback` is actually a real FM `HitboxStatsProps` field (same name) so it
+    passes through fine, not a gap. NB: the "Invalid hitbox stat" check fires only when
+    a hitbox is ACTIVE in-engine, so an eval `updateHitboxStats(0, {x: 1})` on an
+    inactive box won't surface it; confirm field validity against the FM API types.
     - Resolved this pass: `priority` DROPPED (confirmed unnecessary). The element
       flags `burn`/`shock` now map to FM `element` (`ElementType.FIRE`/`ELECTRIC`,
       live-verified) when `: true`; the `: false` / `pitfall: 0` no-element forms are
