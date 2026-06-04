@@ -209,8 +209,41 @@ const GAP_MARKERS: &[&str] = &["/* ? */", "/* class */"];
 ///   - as a whole RHS value: `x = /* ? */;` →  `x = ;` (parse error)
 /// `f(/* ? */)` (empty arg) and `return /* ? */;` (→ `return ;`) stay valid, so
 /// they are NOT matched.
-fn line_has_invalid_gap(line: &str) -> bool {
+/// Remove `/* … */` spans and a trailing `//` comment, returning the trimmed
+/// remaining code. Used to test what the parser actually sees on a line.
+fn strip_comments(line: &str) -> String {
     let b = line.as_bytes();
+    let mut s = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        if i + 1 < b.len() && b[i] == b'/' && b[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') { i += 1; }
+            i += 2;
+            continue;
+        }
+        if i + 1 < b.len() && b[i] == b'/' && b[i + 1] == b'/' { break; }
+        s.push(b[i] as char);
+        i += 1;
+    }
+    s.trim().to_string()
+}
+
+fn line_has_invalid_gap(line: &str) -> bool {
+    let stripped = strip_comments(line);
+    // A line whose real code starts with `.` is a dangling method-chain
+    // continuation — the decompiler renders chains inline, so this only happens
+    // when the chain's base was an unrecoverable expr on the previous line
+    // (`/* ? */` / `/* class */`). `.foo()` at statement start is a parse error.
+    if stripped.starts_with('.') {
+        return true;
+    }
+    // `.{` (a block-expression attached to a `.` access) is never valid Haxe —
+    // the projectile/inline-block rewrite can emit `getOwner().{ var _p = … }`.
+    // The whole statement is unparseable, so comment it out.
+    if stripped.contains(".{") {
+        return true;
+    }
     for m in GAP_MARKERS {
         let mut from = 0;
         while let Some(rel) = line[from..].find(m) {
@@ -231,7 +264,6 @@ fn line_has_invalid_gap(line: &str) -> bool {
                 return true;
             }
             from = after;
-            let _ = b; // (kept for clarity; byte view unused)
         }
     }
     false
@@ -240,7 +272,12 @@ fn line_has_invalid_gap(line: &str) -> bool {
 /// Comment out lines whose decompiler gap marker is in an invalid position
 /// (`line_has_invalid_gap`), block-aware so an opener's body/brace go with it.
 pub fn neutralize_decompiler_gaps(code: &str) -> String {
-    if !GAP_MARKERS.iter().any(|m| code.contains(m)) {
+    // Cheap skip when there's nothing to do: no gap markers, no `.{`
+    // block-as-property, and no line that could begin with a dangling `.`.
+    if !GAP_MARKERS.iter().any(|m| code.contains(m))
+        && !code.contains(".{")
+        && !code.lines().any(|l| l.trim_start().starts_with('.'))
+    {
         return code.to_string();
     }
     fn net_braces(line: &str) -> i32 {
@@ -2612,5 +2649,25 @@ mod tests {
         let out = neutralize_decompiler_gaps(keep);
         assert!(!out.lines().any(|l| l.trim_start().starts_with("//")),
             "valid gap position wrongly commented: {out}");
+    }
+
+    #[test]
+    fn dot_brace_block_property_is_commented() {
+        // The projectile/inline-block rewrite can emit `getOwner().{ var _p = … }`
+        // — `.{` is invalid Haxe (and its inner `return` would also choke), so the
+        // whole line must be commented even with no other gap marker present.
+        let input = "\tproj.set(self.getOwner().{ var _p = make(); _p.setX(0); });";
+        let out = neutralize_decompiler_gaps(input);
+        assert!(out.trim_start().starts_with("//"), "dot-brace block left live: {out}");
+    }
+
+    #[test]
+    fn multiline_leading_dot_continuation_is_commented() {
+        // The marker ends one line (in a // comment), the chain continues with a
+        // leading `.` on the next — that `.foo()` is a parse error and must be commented.
+        let input = "\t/* ? */// TODO note\n\t.self.updateAnimationStats({ landType: LandType.NORMAL });";
+        let out = neutralize_decompiler_gaps(input);
+        assert!(!out.lines().any(|l| !l.trim_start().starts_with("//") && l.trim_start().starts_with('.')),
+            "leading-dot continuation left live: {out}");
     }
 }
