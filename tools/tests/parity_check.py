@@ -26,7 +26,7 @@ Usage:
     tools/parity_check.py <char> [<char> ...]
 Exit 0 if all checked characters pass; 1 if any divergence.
 """
-import json, re, sys, os
+import json, re, sys, os, tempfile
 
 # this file lives at <repo>/tools/tests/parity_check.py — three dirs up is the repo root
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -117,7 +117,11 @@ def hitbox_active_frames(cid):
     return out
 
 def check_char(cid):
-    ssf2_path = f"/tmp/parity_{cid}_ssf2.json"
+    # The converter writes the dump to the platform temp dir (Rust std::env::temp_dir,
+    # = $TMPDIR on macOS, not always /tmp). Resolve the same way, and fall back to /tmp.
+    ssf2_path = os.path.join(tempfile.gettempdir(), f"parity_{cid}_ssf2.json")
+    if not os.path.exists(ssf2_path) and os.path.exists(f"/tmp/parity_{cid}_ssf2.json"):
+        ssf2_path = f"/tmp/parity_{cid}_ssf2.json"
     if not os.path.exists(ssf2_path):
         print(f"[{cid}] SKIP — no {ssf2_path} (run: DUMP_PARITY=1 ssf2_converter {cid}.ssf)")
         return None

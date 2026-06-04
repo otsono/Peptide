@@ -88,7 +88,14 @@ pub fn command(engine: Engine, opts: &BootOptions) -> Option<String> {
         return None;
     }
     Some(match engine {
-        Engine::Fraymakers => format!("spawn {ch} {} {}", cfg.stage(), cfg.assist()),
+        // Spawn an EXPLICIT 2-char roster (mirror) when a single char is given. A single-char
+        // spawn lets the engine fall back to its native default player 2, which freezes the
+        // match on frame 1; an explicit player 2 loads fine. A char that already carries a
+        // comma roster is passed through untouched. (See the open TODO for the real fix.)
+        Engine::Fraymakers => {
+            let roster = if ch.contains(',') { ch.clone() } else { format!("{ch},{ch}") };
+            format!("spawn {roster} {} {}", cfg.stage(), cfg.assist())
+        }
         Engine::Ssf2 => format!("spawn {ch}"),
     })
 }
@@ -138,12 +145,21 @@ mod tests {
     }
 
     #[test]
-    fn fraymakers_quick_boot_makes_stage_and_assist_explicit() {
-        // FM's `s` handler only fetch-loads the args it's given, so the command must carry
-        // an explicit stage + assist (4 tokens: spawn, char, stage, assist).
+    fn fraymakers_quick_boot_makes_stage_assist_and_player2_explicit() {
+        // FM's `s` handler only fetch-loads the args it's given, so the command must carry an
+        // explicit stage + assist, AND an explicit player-2 roster (a single char lets the
+        // engine fall back to a native default p2 that freezes the match). 4 tokens: spawn,
+        // <char>,<char>, stage, assist.
         let opts = BootOptions { char_name: Some("mario".into()), full: false };
         let cmd = command(Engine::Fraymakers, &opts).expect("a char + non-full boot autostarts");
-        assert!(cmd.starts_with("spawn mario "), "got: {cmd}");
-        assert_eq!(cmd.split_whitespace().count(), 4, "spawn + char + stage + assist; got: {cmd}");
+        assert!(cmd.starts_with("spawn mario,mario "), "got: {cmd}");
+        assert_eq!(cmd.split_whitespace().count(), 4, "spawn + roster + stage + assist; got: {cmd}");
+    }
+
+    #[test]
+    fn fraymakers_quick_boot_keeps_an_explicit_roster() {
+        let opts = BootOptions { char_name: Some("mario,zelda".into()), full: false };
+        let cmd = command(Engine::Fraymakers, &opts).expect("autostarts");
+        assert!(cmd.starts_with("spawn mario,zelda "), "an explicit roster is passed through: {cmd}");
     }
 }

@@ -74,6 +74,7 @@ mod fastboot; // single definition of the quick-boot autostart, shared by CLI + 
 mod session; // shared control-file tail loop for the CLI session loops (FM + SSF2)
 mod ui; // terminal console (ratatui) + cross-platform launcher
 mod gui; // graphical chat window (egui/eframe) — the default
+mod overlay; // standalone transparent debugger HUD that floats over the game (CLI + GUI)
 mod fraytools; // drive FrayTools over CDP: export .fra / render / harness (ported from Node)
 mod ssf2; // `peptide ssf2` — SSF2 engine model: physics ground-truth + scaling + quickboot
 mod ssf2_bridge; // host side of the SSF2 runtime bridge (session/tell/log/send over file-IPC)
@@ -135,6 +136,13 @@ fn main() -> anyhow::Result<()> {
             // agent workflow for iterating on a character or a conversion fix —
             // send an eval, read the reply, decide the next eval, same match.
             bridge::session(&args[2..]);
+            return Ok(());
+        }
+        Some("overlay") => {
+            // Standalone transparent debugger HUD that floats over the game. Its own
+            // process (own window + event loop) so it works from CLI sessions and the GUI
+            // alike; tails the session's out.log and renders state + the SCRIPTERR stream.
+            overlay::run(&args[2..])?;
             return Ok(());
         }
         Some("tell") => {
@@ -382,6 +390,42 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
+                }
+            }
+            return Ok(());
+        }
+        "protos" => {
+            // dump a type's vtable protos IN ORDER (proto index = position), with findexes.
+            let tname = args.get(4).cloned().unwrap();
+            if let Some(ti) = find_type(&code, &tname) {
+                if let Some(o) = code.types[ti].get_type_obj() {
+                    for (i, p) in o.protos.iter().enumerate() {
+                        eprintln!("  proto {i:3} -> findex {:6} {}", p.findex.0, s(&code, p.name));
+                    }
+                } else { eprintln!("  not an obj type: {tname}"); }
+            } else { eprintln!("  type not found: {tname}"); }
+            return Ok(());
+        }
+        "freaders" => {
+            // list functions that have a Field read of <type>.<fieldidx> (obj reg typed as <type>).
+            let tname = args.get(4).cloned().unwrap();
+            let fidx_target: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap();
+            let ti = match find_type(&code, &tname) { Some(t) => t, None => { eprintln!("type not found: {tname}"); return Ok(()); } };
+            for f in &code.functions {
+                // obj-based Field/SetField where the obj reg is the target type
+                let obj_match = |op: &Opcode| matches!(op,
+                    Opcode::Field { obj, field, .. } | Opcode::SetField { obj, field, .. }
+                        if field.0 == fidx_target && f.regs.get(obj.0 as usize).map(|t| t.0) == Some(ti));
+                // GetThis/SetThis operate on `this` (reg0) — count them when the fn's parent IS the type
+                let parent_is_ti = f.parent.map(|rt| rt.0) == Some(ti);
+                let this_match = |op: &Opcode| parent_is_ti && matches!(op,
+                    Opcode::GetThis { field, .. } | Opcode::SetThis { field, .. } if field.0 == fidx_target);
+                let writes = f.ops.iter().any(|op| matches!(op, Opcode::SetField { obj, field, .. } if field.0==fidx_target && f.regs.get(obj.0 as usize).map(|t| t.0)==Some(ti))
+                    || (parent_is_ti && matches!(op, Opcode::SetThis { field, .. } if field.0==fidx_target)));
+                if f.ops.iter().any(|op| obj_match(op) || this_match(op)) {
+                    let pn = f.parent.and_then(|rt| type_name_of(&code, rt)).unwrap_or("?");
+                    let kind = if writes { "W" } else { "R" };
+                    eprintln!("  [{kind}] {:6} {}::{}", f.findex.0, pn, s(&code, f.name));
                 }
             }
             return Ok(());
@@ -706,6 +750,7 @@ const PEPTIDE_CRATE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 /// Candidate locations for a peptide runtime asset file (e.g. `commands.hsx`),
 /// tried in order. The first that exists wins. Resolution:
+///   0. `$PEPTIDE_MATCH_SETTINGS` (match_settings.conf only — explicit file path)
 ///   1. `$PEPTIDE_ASSET_DIR/<rel>` (explicit override dir)
 ///   2. cwd-relative (`./<rel>`)
 ///   3. the packaged layout: a `data/` subfolder next to the binary (`<exe-dir>/data/<rel>`)
@@ -714,6 +759,14 @@ const PEPTIDE_CRATE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 ///   6. the peptide crate's source dir (`PEPTIDE_CRATE_DIR/<rel>` — source checkout)
 fn asset_candidate_paths(rel: &str) -> Vec<std::path::PathBuf> {
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    // File-specific override (highest priority): `$PEPTIDE_MATCH_SETTINGS` points a full
+    // match_settings.conf path, the way the conf header documents — so you can iterate match
+    // rules without editing the tracked default or the cwd copy.
+    if rel == "match_settings.conf" {
+        if let Ok(file) = std::env::var("PEPTIDE_MATCH_SETTINGS") {
+            paths.push(std::path::PathBuf::from(file));
+        }
+    }
     if let Ok(dir) = std::env::var("PEPTIDE_ASSET_DIR") {
         paths.push(std::path::PathBuf::from(dir).join(rel));
     }
@@ -888,10 +941,11 @@ fn connect_edit(
 ) -> anyhow::Result<()> {
     // Character/stage/assist baked as launch defaults. The char drives the self-bootstrap
     // (a custom .fra at <install>/custom/<char>/<char>.fra) and the bare-`s`/auto-launch
-    // Base-game defaults when an arg is omitted: character → impostor, stage →
+    // Base-game defaults when an arg is omitted: character → commandervideo, stage →
     // thespire (a real loadable stage), assist → commandervideoassist. All generic —
-    // derived from the injector args; these are just the fallbacks.
-    let cname = char_name.as_deref().unwrap_or("impostor");
+    // derived from the injector args; these are just the fallbacks. (Was impostor, but
+    // impostor crashes the game on match load — see the open TODO.)
+    let cname = char_name.as_deref().unwrap_or("commandervideo");
     let sname = stage_name.as_deref().unwrap_or("thespire");
     let aname = assist_name.as_deref().unwrap_or("commandervideoassist");
     let char_path = format!("{install_dir}/custom/{cname}/{cname}.fra");
@@ -973,6 +1027,10 @@ fn connect_edit(
     let stage_str = add_string(code, "stage");
     let character_str = add_string(code, "character");
     let port_str = add_string(code, "port");
+    // distinct team per player so the match's hit detection treats them as opponents
+    // (both default to -1 = same/unset, which suppresses inter-player hits). Dropped
+    // harmlessly by ToVirtual if the player virtual has no `team` field.
+    let team_str = add_string(code, "team");
     let matchrules_str = add_string(code, "matchRules");
     // defaultMatchRules is a static on pxf.core.$MatchSettings — the same value the
     // engine's MatchSettings ctor injects into its default matchConfig. We replace
@@ -1008,6 +1066,7 @@ fn connect_edit(
     let lives_str = add_string(code, "lives");
     let time_str = add_string(code, "time");
     let teamattack_str = add_string(code, "teamAttack");
+    let teams_str = add_string(code, "teams");
     let itemfreq_str = add_string(code, "itemFrequency");
     let create_mode = require_fn(code, "createMode", Some("fraymakers.util.$FraymakersClassFactory"))?;
     let mode_start_match = require_fn(code, "startMatch", Some("fraymakers.core.FraymakersMode"))?;
@@ -1328,6 +1387,7 @@ fn connect_edit(
     // frame cur/total — frame-by-frame inspection of a move. `play` resumes.
     let f_idx = add_int(code, 'f' as i32);
     let g_idx = add_int(code, 'g' as i32);
+    let n_idx = add_int(code, 'n' as i32); // 'addCharacter' command byte (#3)
     let pause_field = require_field(code, "pxf.entity.Character", "pauseAnimationPlayback")?;
     let play_frame = require_fn(code, "playFrame", Some("pxf.components.Animation"))?;
     let g_ack_g = add_string_const(code, "PLAY\n");
@@ -1424,9 +1484,21 @@ fn connect_edit(
     let g_pending_parts = code.globals.len(); code.globals.push(hlbc::types::RefType(38)); // ArrayObj
     let g_pending_idx = code.globals.len();   code.globals.push(hlbc::types::RefType(3));  // Int
     let g_pending_port = code.globals.len();  code.globals.push(hlbc::types::RefType(3));  // Int
+    // addCharacter (#3): the deferred loop NULLs g_pending_parts when drained, so we keep a copy of
+    // the parts ArrayObj here (set alongside g_pending_parts at startMatch). The `n` (addCharacter)
+    // command re-arms g_pending from this to spawn one more fighter into the LIVE match on demand.
+    let g_saved_parts = code.globals.len(); code.globals.push(hlbc::types::RefType(38)); // ArrayObj
     // resolved assist ref (type 669) stashed from the `s` handler (where the resolve works) so
     // extra players can reuse it — re-resolving an assist mid-match (per-frame) SIGSEGVs.
     let g_pending_assist = code.globals.len(); code.globals.push(hlbc::types::RefType(669));
+    // p1 stash: the live match's extra (2nd) player Character. Set when the deferred
+    // spawnPlayer succeeds, reset to null on each start-match. The eval hook binds the `p1`
+    // hscript var from this, instead of indexing the raw Match.characters array (which has no
+    // hscript RTTI — its .length reads as garbage, so a bytecode length-guard crashes the frame).
+    // Typed like r_ret (the spawnPlayer return register, type 0 = the Dynamic-compatible reg),
+    // so the stash SetGlobal from r_ret type-matches and the eval-hook read flows back through
+    // r_ret into setVar (which takes Dynamic) with no boxing.
+    let g_live_p1 = code.globals.len(); code.globals.push(hlbc::types::RefType(0));
     eprintln!("sprite-fix: get_DataAsPxf={get_data_as_pxf} cacheEntity={cache_sprite_entity} smGet={sm_get} entityMap.f={pxf_entitymap_field} requiredMediaIds.f={reqmedia_field}");
     eprintln!("load-cmd: Resource t={resource_t} ctor={resource_ctor} fetchThreaded={fetch_threaded} finishLoading={finish_loading} addResource={add_resource} RT.g={rt_global} PXF.field={pxf_field} _filePath={res_filepath_field} _type={res_type_field} _isAbsolute={res_isabs_field}");
     // Reveal-the-match plumbing: the match renders in CoreEngine.gameContainer
@@ -1923,6 +1995,11 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_pending_port) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(port_str), src: rr(28) });
+    // extra player -> team = its port (>=1), distinct from player 1's team 0, so the match
+    // treats it as an opponent and inter-player hits register.
+    ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_pending_port) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(team_str), src: rr(28) });
     ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });                    // -> player virtual@1957
     ops.push(Opcode::Call1 { dst: rr(30), fun: RefFun(create_player_config), arg0: rr(29) }); // FraymakersPlayerConfig@2536
     // ONE-SHOT MI: past PlayerConfig factory
@@ -1937,6 +2014,9 @@ fn connect_edit(
     let idx_mi_d = ops.len();
     if let Opcode::JNull { offset, .. } = &mut ops[idx_mi_js] { *offset = idx_mi_d as i32 - idx_mi_js as i32 - 1; }
     ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(spawn_player_fn), arg0: rr(44), arg1: rr(30) });
+    // stash the spawned extra player (r_ret) so the eval hook can bind `p1` to it. Read here,
+    // before the SP diag reuses r_ret. null (SP:0) is fine — p1 just stays null.
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_live_p1), src: r_ret });
     // ONE-SHOT diag (fires once per extra player, NOT every frame — idx advances right below
     // so it never repeats): SP:1 = spawnPlayer returned a Character, SP:0 = null.
     ops.push(Opcode::GetGlobal { dst: r_sock2, global: RefGlobal(g_sock) });
@@ -2114,6 +2194,19 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(frasuffix_g) });
     ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(56), arg1: rr(53) });
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_path), src: rr(56) });
+    // BASE/BUILT-IN CHAR (player 1): if there's no custom/<char>.fra on disk, player 1 is a
+    // built-in (e.g. commandervideo) the engine already ships. Detect that HERE by stat'ing the
+    // exact file the self-bootstrap would load (char_path) — the patcher owns this decision, no
+    // env hand-off from the host (which only the GUI set, leaving the CLI/session path to crash).
+    // When it's a base char, skip the custom-fra self-bootstrap UNCONDITIONALLY (running it on a
+    // missing file crashes async in finishLoading with null .entities); emit_resolve below loads
+    // the base char's media via its public:: load-on-demand (the same path player 2 uses).
+    let base_p1 = !std::path::Path::new(&char_path).exists();
+    let idx_basechar_jskip = if base_p1 {
+        let i = ops.len();
+        ops.push(Opcode::JAlways { offset: 0 });                        // base p1 -> skip custom load
+        Some(i)
+    } else { None };
     // self-bootstrap (idempotent): getPXFResource(resid) non-null -> skip the load.
     ops.push(Opcode::GetGlobal { dst: rr(58), global: RefGlobal(g_resid) });
     ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(getpxf_fn), arg0: rr(58) });
@@ -2176,6 +2269,9 @@ fn connect_edit(
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_loaded_spritekey), src: rr(55) });
     let idx_sl_skip = ops.len();
     if let Opcode::JNotNull { offset, .. } = &mut ops[idx_s_load_jskip] { *offset = idx_sl_skip as i32 - idx_s_load_jskip as i32 - 1; }
+    if let Some(j) = idx_basechar_jskip {
+        if let Opcode::JAlways { offset, .. } = &mut ops[j] { *offset = idx_sl_skip as i32 - j as i32 - 1; }
+    }
     if let Opcode::JSGte  { offset, .. } = &mut ops[idx_sl_jge]   { *offset = idx_sl_done as i32 - idx_sl_jge as i32 - 1; }
     if let Opcode::JAlways{ offset, .. } = &mut ops[idx_sl_jback] { *offset = idx_sl_loop as i32 - idx_sl_jback as i32 - 1; }
     if let Opcode::JNull  { offset, .. } = &mut ops[idx_sl_emap_jnull] { *offset = idx_sl_addres as i32 - idx_sl_emap_jnull as i32 - 1; }
@@ -2257,6 +2353,9 @@ fn connect_edit(
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(port_str), src: rr(28) });
+    // team = port (0). MUST be >=0: sanitizePlayerConfig@6250 op112 only skips its getPlayerPortColor
+    // branch (which hangs for index>=1) when team>=0. team=port also gives free-for-all distinct teams.
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(team_str), src: rr(28) }); // rr28 = boxed 0
     ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });          // -> player virtual@1957 (player 1)
     // characters = [player1, players 2..N] sized to names.length. Player 1 (rr29,
     // fully self-bootstrapped above) lands at index 0; each extra name is resolved
@@ -2265,15 +2364,54 @@ fn connect_edit(
     // the loop body never runs and this is byte-identical to the old size-1 build.
     // rr20=loop index, rr19=N (both Int; untouched by emit_resolve, which scratches
     // rr16/rr39). rr67=names.array (native). rr32=chars native array (survives resolve).
-    // characters = [player1]. Only player 1 launches with startMatch (a 2+ element array
-    // races the engine's threaded media loader and SIGSEGVs). Extra players (parts[4..]) are
-    // added to the LIVE match AFTER startMatch — see the post-start spawnPlayer loop below.
+    // characters = [player1] + player2 (parts[4]) when present, in the INITIAL startMatch so the
+    // engine natively constructs+registers every fighter. _offlineMatchStart@6251 loops over this
+    // array. emit_resolve preserves r32 so the chars array survives the resolve. Players 3+ defer.
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(52), field: RefField(0) }); // parts.length
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(five_idx) });
+    let idx_arr_jsingle = ops.len();
+    ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });               // length<5 -> single
+    // --- TWO players. CRITICAL: player virtuals in the characters array MUST share the element
+    // type rr29 carries (t1957). Building player2 into a differently-typed register (e.g. rr30 = the
+    // t2536 FraymakersPlayerConfig slot) puts a type-mismatched element in the array and _offline-
+    // MatchStart's per-char ToVirtual chokes on it (the loop never reaches createPlayerConfig for
+    // that element = hang). So: alloc the array, store player1 (rr29) FIRST, then REUSE rr29 to
+    // build player2 (the array already holds player1's ref, so reuse is safe). ---
+    ops.push(Opcode::Type { dst: rr(31), ty: RT(1957) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(two_idx) });
+    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) }); // alloc[2]
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(29) }); // [0]=player1 (stored now)
+    // resolve char2 = parts[4] (rr31 = parts.array scratch; emit_resolve preserves rr32/rr42/rr29)
+    ops.push(Opcode::Field { dst: rr(31), obj: rr(52), field: RefField(1) }); // parts.array
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(four_idx) });
+    ops.push(Opcode::GetArray { dst: rr(55), array: rr(31), index: rr(39) }); // parts[4]
+    emit_resolve(&mut ops, 55, 26, char_cmap_field);                         // char2 ref -> rr26
+    // player2 virtual { character: rr26, assist: rr42, port: 1, team: 1 } -> REUSE rr29 (t1957)
+    ops.push(Opcode::New { dst: rr(27) });
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(character_str), src: rr(26) });
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(assist_str), src: rr(42) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(port_str), src: rr(28) });
+    // team=port=1 (>=0): skips sanitizePlayerConfig's player-border branch; distinct free-for-all team.
+    ops.push(Opcode::DynSet { obj: rr(27), field: RS(team_str), src: rr(28) });
+    ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });                 // REUSE rr29 -> player2 (t1957)
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(29) }); // [1]=player2
+    let idx_arr_jwrap = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    // --- SINGLE player: chars = [player1] ---
+    let idx_arr_single = ops.len();
     ops.push(Opcode::Type { dst: rr(31), ty: RT(1957) });
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
     ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) });
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
     ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(29) });
+    let idx_arr_wrap = ops.len();
     ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) }); // wrap -> ArrayObj
+    if let Opcode::JSLt   { offset, .. } = &mut ops[idx_arr_jsingle] { *offset = idx_arr_single as i32 - idx_arr_jsingle as i32 - 1; }
+    if let Opcode::JAlways{ offset, .. } = &mut ops[idx_arr_jwrap]   { *offset = idx_arr_wrap as i32 - idx_arr_jwrap as i32 - 1; }
     // matchSettings = { stage: rr25, matchRules: defaultMatchRules } (virtual@675)
     ops.push(Opcode::New { dst: rr(34) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(stage_str), src: rr(25) });
@@ -2305,6 +2443,10 @@ fn connect_edit(
     ops.push(Opcode::Bool { dst: rr(64), value: ValBool(cfg_team_damage) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(64) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(teamattack_str), src: rr(28) });
+    // teams=false (free-for-all): MatchSettingsConfig.teams (field 23, Bool) drives prepTeams@6237.
+    ops.push(Opcode::Bool { dst: rr(64), value: ValBool(false) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(64) });
+    ops.push(Opcode::DynSet { obj: rr(34), field: RS(teams_str), src: rr(28) });
     ops.push(Opcode::ToVirtual { dst: rr(35), src: rr(34) });          // -> matchSettings virtual@675
     // config = { characters, matchSettings, pauseMenu: null } (virtual@4482)
     ops.push(Opcode::New { dst: rr(27) });                             // dynobj (4366)
@@ -2326,14 +2468,30 @@ fn connect_edit(
     // mode.startMatch(config)  — runs the engine's offline-match flow (gates, menu suspend/restore).
     ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(mode_start_match), arg0: rr(48), arg1: rr(50) });
     if FM_MULTIPLAYER {
+    // reset the p1 stash for this new match — a prior 2-player p1 must not leak in. r_ret is
+    // type 0 (= g_live_p1's type) and free here (mode_start_match's return is unused).
+    ops.push(Opcode::Null { dst: r_ret });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_live_p1), src: r_ret });
+    // For a 2-player initial-array launch (length>=5) set g_live_p1 to a non-null sentinel so the
+    // eval hook binds p1 = currentMatch.characters[1] (the real, natively-constructed player 2) via
+    // its reliable native-array path. Single-char stays null (characters[1] would read OOB).
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(52), field: RefField(0) }); // parts.length
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(five_idx) });
+    let idx_p1sent_jskip = ops.len();
+    ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });               // length<5 -> leave null
+    ops.push(Opcode::ToDyn { dst: r_ret, src: rr(48) });                      // sentinel = mode (non-null)
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_live_p1), src: r_ret });
+    let idx_p1sent_skip = ops.len();
+    if let Opcode::JSLt { offset, .. } = &mut ops[idx_p1sent_jskip] { *offset = idx_p1sent_skip as i32 - idx_p1sent_jskip as i32 - 1; }
     // ---- extra players: queue them for deferred spawn (currentMatch is NULL synchronously
     // after startMatch). The per-frame update spawnPlayer's one each frame once the match is
     // live — see the pending-spawn block in the update epilogue. Stash parts + start indices.
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_parts), src: rr(52) }); // parts ArrayObj
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(four_idx) });
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_idx), src: rr(39) });   // first extra = parts[4]
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_port), src: rr(39) });  // first extra port = 1
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_saved_parts), src: rr(52) });  // keep a copy for addCharacter (#3)
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(five_idx) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_idx), src: rr(39) });   // player2 (parts[4]) is in the initial array; defer parts[5..]
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(two_idx) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_port), src: rr(39) });  // ports 0,1 in initial array; defer from port 2
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_assist), src: rr(42) }); // resolved assist ref (rr42) for extra players
     }
     let _ = (one_idx, launched_g, getresid_fn, spawn_char_fn, five_idx, pxf_entities_field,
@@ -3076,7 +3234,30 @@ fn connect_edit(
         add_regs(f, &a_regs);
         ops.extend(a_ops);
     }
-    // (g handler falls through to L_ORIG)
+    // (g handler falls through to the 'n' check)
+
+    // ---- 'n' command: addCharacter (#3) — re-arm the deferred spawn from g_saved_parts so the
+    // per-frame loop drops one more fighter (the last roster char) into the LIVE match on demand,
+    // no relaunch. Reuses the proven deferred-spawn path; only re-arms the pending globals. ----
+    let idx_n_check = ops.len();
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(n_idx) });
+    let idx_jne_n = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });        // not 'n' -> 'e' check (patched below)
+    ops.push(Opcode::GetGlobal { dst: rr(33), global: RefGlobal(g_saved_parts) });
+    let idx_n_jnull = ops.len();
+    ops.push(Opcode::JNull { reg: rr(33), offset: 0 });               // no match started -> n_done
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(33), field: RefField(0) });         // parts.length
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(five_idx) });
+    let idx_n_jslt = ops.len();
+    ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });       // length<5 (no extra char) -> n_done
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_parts), src: rr(33) }); // re-arm parts
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::Sub { dst: rr(16), a: rr(16), b: rr(39) });      // length - 1 = last extra index
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_idx), src: rr(16) });    // re-arm idx -> spawns next frame
+    let idx_n_done = ops.len();
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_n_jnull] { *offset = idx_n_done as i32 - idx_n_jnull as i32 - 1; }
+    if let Opcode::JSLt { offset, .. } = &mut ops[idx_n_jslt] { *offset = idx_n_done as i32 - idx_n_jslt as i32 - 1; }
+    // (n handler falls through to the 'e' check, which rejects 'n')
 
     // ---- 'e' (eval) APPENDED at the end of the dispatch chain (after 'g'), so the
     // proven x->p->c->s->...->g chain is byte-identical to baseline. 'e' no-match -> L_ORIG. ----
@@ -3185,10 +3366,37 @@ fn connect_edit(
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_p0null] { *offset = idx_e_bindnull as i32 - idx_e_p0null as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_chnull] { *offset = idx_e_bindnull as i32 - idx_e_chnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_p0done] { *offset = idx_e_setp0 as i32 - idx_e_p0done as i32 - 1; }
-    // bind p1 = null for now (commands.hsx's getCharacters() filters nulls; p1 becomes a
-    // real Character with the dummy-opponent feature). Keeps commands.hsx from referencing
-    // an unbound variable.
+    // bind p1 = the live match's extra (2nd) player, stashed by the deferred spawnPlayer in
+    // g_live_p1 (null for a single-player match). getCharacters() in commands.hsx filters the
+    // null out, so p1 only appears once a real 2-player match is running. No array indexing —
+    // the raw Match.characters ArrayObj has no hscript RTTI (see the p0 note above).
+    // g_live_p1 is the spawnPlayer RETURN — a non-Character wrapper, but a reliable "a 2nd
+    // player exists" signal (null = single-player). When it's set, the live 2nd Character is
+    // currentMatch.characters[1] (same source as p0). We index the array in bytecode (no
+    // hscript RTTI) — safe here because the signal guarantees length >= 2, so no garbage
+    // length read. p1 then has the full Character API (getStateName, damage, body, …).
+    ops.push(Opcode::GetGlobal { dst: r_ret, global: RefGlobal(g_live_p1) });
+    let idx_p1_jsolo = ops.len();
+    ops.push(Opcode::JNull { reg: r_ret, offset: 0 });                                 // no extra player -> null
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });   // currentMatch
+    let idx_p1_jnomatch = ops.len();
+    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                                // defensive
+    ops.push(Opcode::Field { dst: rr(33), obj: rr(44), field: RefField(characters_field) }); // ArrayObj
+    let idx_p1_jnoarr = ops.len();
+    ops.push(Opcode::JNull { reg: rr(33), offset: 0 });                                // defensive
+    ops.push(Opcode::Field { dst: rr(32), obj: rr(33), field: RefField(1) });          // .array (native)
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
+    ops.push(Opcode::GetArray { dst: rr(28), array: rr(32), index: rr(39) });          // characters[1] -> live Character
+    let idx_p1_jdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                                           // -> set p1
+    let idx_p1_null = ops.len();
     ops.push(Opcode::Null { dst: rr(28) });
+    let idx_p1_set = ops.len();
+    if let Opcode::JNull   { offset, .. } = &mut ops[idx_p1_jsolo]    { *offset = idx_p1_null as i32 - idx_p1_jsolo as i32 - 1; }
+    if let Opcode::JNull   { offset, .. } = &mut ops[idx_p1_jnomatch] { *offset = idx_p1_null as i32 - idx_p1_jnomatch as i32 - 1; }
+    if let Opcode::JNull   { offset, .. } = &mut ops[idx_p1_jnoarr]   { *offset = idx_p1_null as i32 - idx_p1_jnoarr as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_p1_jdone]    { *offset = idx_p1_set as i32 - idx_p1_jdone as i32 - 1; }
     ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_p1_g) });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
     // ---- crash-proof eval: parse + run inside a Trap. On ANY error (parse OR runtime)
@@ -3360,7 +3568,8 @@ fn connect_edit(
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_a] { *offset = idx_f_check as i32 - idx_jne_a as i32 - 1; }
     // 'f' (frame-step) -> 'g' (resume) -> L_ORIG. Self-contained Asm blocks.
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_f] { *offset = idx_g_check as i32 - idx_jne_f as i32 - 1; }
-    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_g] { *offset = idx_e_check as i32 - idx_jne_g as i32 - 1; } // g no-match -> 'e' check
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_g] { *offset = idx_n_check as i32 - idx_jne_g as i32 - 1; } // g no-match -> 'n' check
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_n] { *offset = idx_e_check as i32 - idx_jne_n as i32 - 1; } // n no-match -> 'e' check
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_e] { *offset = idx_i_check as i32 - idx_jne_e as i32 - 1; } // 'e' no-match -> 'i' check
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnomatch] { *offset = idx_t_nomatch as i32 - idx_t_jnomatch as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnochars] { *offset = idx_t_nomatch as i32 - idx_t_jnochars as i32 - 1; }
@@ -3451,6 +3660,30 @@ fn connect_edit(
     // on a change, no per-frame polling). Pinpoints which move was active at a crash.
     inject_anim_telemetry(code, to_state, g_sock, out_field, write_str, flush,
         get_state_name, str_add, anim_prefix_g, nl_g, sock_t, out_t, str_t, enc_t)?;
+    // Engine-side script-error surfacing. The engine runs every character/assist/mode/stage
+    // script through ApiScript.interpretScript, which builds a rich error (Std.string + line
+    // via posInfos + origin) and calls Tildebugger.error — but ONLY when ApiUtilities.
+    // loggingEnabled is true, which it isn't in normal play, so trapped script errors are
+    // swallowed silently (char loads, hitboxes don't arm). We force that gate on so the
+    // engine's own error path fires in the in-game console. ON by default; the GUI checkbox
+    // (or PEPTIDE_ENGINE_LOGGING=0) opts out. Non-fatal: a symbol drift just skips the feature.
+    if std::env::var("PEPTIDE_ENGINE_LOGGING").map(|v| v != "0").unwrap_or(true) {
+        if let Err(e) = inject_logging_override(code) {
+            eprintln!("inject_logging_override: skipped ({e})");
+        }
+        // Un-gate the in-game Tildebugger console so errors actually render on screen
+        // (production builds drop non-"important" logs).
+        if let Err(e) = inject_console_display_override(code) {
+            eprintln!("inject_console_display_override: skipped ({e})");
+        }
+        // The socket leg: prepend to the Tildebugger.error chokepoint so every script error
+        // (frame scripts, per-frame fns, lifecycle runners, one-shot eval) hits the TCP stream.
+        if let Err(e) = inject_error_socket_mirror(
+            code, g_sock, out_field, write_str, flush, str_add, nl_g, sock_t, out_t, str_t, enc_t,
+        ) {
+            eprintln!("inject_error_socket_mirror: skipped ({e})");
+        }
+    }
     // Crash diagnostics, split per the "keep logic OUT of bytecode" convention
     // (AGENT_CONTEXT.md): the ONLY thing that must be in bytecode is pulling the one fact
     // `error.log` lacks — the resource id that was null. inject_stage_diag emits that id
@@ -3458,6 +3691,27 @@ fn connect_edit(
     // formatting of the enhanced log is host-side in `interpreter::interpret_crash`.
     inject_stage_diag(code, g_sock, out_field, write_str, flush, str_add, nl_g,
         sock_t, out_t, str_t, enc_t)?;
+    // DIAG (multi-char launch pinpoint): mark each function in the offline launch chain so the LAST
+    // marker that fires identifies where a 2-char startMatch blocks. Resolve by name (findices shift
+    // per build). Remove once the hang is fixed.
+    if std::env::var("PEPTIDE_LAUNCH_DIAG").is_ok() {
+        let fm = "fraymakers.core.FraymakersMode";
+        for (name, parent, marker) in [
+            ("_offlineMatchStart", fm, "DIAG:OMS\n"),
+            ("sanitizePlayerConfig", fm, "DIAG:SPC\n"),
+            ("createPlayerConfig", "fraymakers.util.$FraymakersClassFactory", "DIAG:CPC\n"),
+            ("sanitizePorts", fm, "DIAG:SPORTS\n"),
+            ("prepTeams", fm, "DIAG:PREPTEAMS\n"),
+            ("startMatch", "pxf.controllers.$MatchController", "DIAG:MCSTART\n"),
+        ] {
+            if let Some(fx) = find_fn(code, name, Some(parent)) {
+                inject_entry_marker(code, fx, marker, g_sock, out_field, write_str, flush,
+                    sock_t, out_t, str_t, enc_t)?;
+            } else {
+                eprintln!("connect_edit: launch-diag could not resolve {parent}::{name}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -3521,6 +3775,36 @@ fn inject_stage_diag(
         for (_nm, pos) in assigns.iter_mut() { if *pos >= at { *pos += n as usize; } }
     }
     eprintln!("connect_edit: Match.setupStage stage-id crash diagnostic installed");
+    Ok(())
+}
+
+/// DIAG: prepend a one-line socket marker to the ENTRY of `findex` (emits `<marker>` once per
+/// call). Used to pinpoint where the multi-char launch chain blocks: whichever marker is the LAST
+/// to fire (with no successor) is the hang site. Front insertion is jump-safe (insert_ops_front).
+#[allow(clippy::too_many_arguments)]
+fn inject_entry_marker(
+    code: &mut Bytecode, findex: usize, marker: &str,
+    g_sock: usize, out_field: usize, write_str: usize, flush: usize,
+    sock_t: usize, out_t: usize, str_t: usize, enc_t: usize,
+) -> anyhow::Result<()> {
+    use hlbc::types::{RefField, RefFun, RefGlobal, Reg};
+    let marker_g = add_string_const(code, marker);
+    let fi = function_index_by_findex(code, findex)
+        .ok_or_else(|| anyhow::anyhow!("findex {findex} not found for entry marker {marker:?}"))?;
+    let base = add_regs(&mut code.functions[fi], &[sock_t, out_t, str_t, enc_t, 0]);
+    let (r_sock, r_out, r_msg, r_null, r_ret) =
+        (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4));
+    let m = vec![
+        Opcode::GetGlobal { dst: r_sock, global: RefGlobal(g_sock) },          // 0
+        Opcode::JNull { reg: r_sock, offset: 5 },                             // 1 -> op7 (skip marker)
+        Opcode::Field { dst: r_out, obj: r_sock, field: RefField(out_field) }, // 2
+        Opcode::GetGlobal { dst: r_msg, global: RefGlobal(marker_g) },         // 3
+        Opcode::Null { dst: r_null },                                          // 4
+        Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: r_msg, arg2: r_null }, // 5
+        Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out },          // 6
+    ];
+    insert_ops_front(&mut code.functions[fi], m);
+    eprintln!("connect_edit: entry marker {marker:?} installed on findex {findex}");
     Ok(())
 }
 
@@ -3677,17 +3961,33 @@ fn inject_input_override(code: &mut Bytecode, g_inject_held: usize) -> anyhow::R
     let f_if_pressed = require_field(code, "pxf.components.InputFeed", "_pressedControls")?;
     let f_buttons = require_field(code, "pxf.input.ControlsObject", "buttons")?;
     let neg1 = add_int(code, -1); // ~x via Xor(x, -1)
+    // Which player the injected input (`i`/hold/seq) drives, by team. updateGameInput
+    // runs on EVERY character, so without this gate every player would receive the
+    // injected held mask at once (both would jab and their hitboxes would clank).
+    // Player 1 gets team 0, extras get team >= 1 (see the player-config team
+    // assignment), so the team number uniquely selects one player. Default 0 drives
+    // player 1; set $PEPTIDE_INPUT_TEAM=N at patch time to drive a different player
+    // (e.g. =1 to drive the spawned dummy). getTeam is a public, hscript-callable accessor.
+    let input_team = std::env::var("PEPTIDE_INPUT_TEAM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let zero = add_int(code, input_team);
+    use hlbc::types::RefFun;
+    let getteam = require_fn(code, "getTeam", Some("pxf.entity.Character"))?;
 
     let fidx = function_index_by_findex(code, upd)
         .ok_or_else(|| anyhow::anyhow!("updateGameInput@{upd} not found"))?;
     let f = &mut code.functions[fidx];
-    // Scratch regs: mask, inputFeed, hc, hb, prev, pb, neg1, notprev, edge, pc, pcb.
+    // Scratch regs: team, zero, mask, inputFeed, hc, hb, prev, pb, neg1, notprev, edge, pc, pcb.
     // ControlsObject/InputFeed-typed regs so HL computes field offsets correctly.
-    let b = add_regs(f, &[3, if_t, co_t, 3, co_t, 3, 3, 3, 3, co_t, 3]);
-    let (r_mask, r_if, r_hc, r_hb, r_prev, r_pb, r_neg1, r_notprev, r_edge, r_pc, r_pcb) =
-        (Reg(b), Reg(b + 1), Reg(b + 2), Reg(b + 3), Reg(b + 4), Reg(b + 5), Reg(b + 6), Reg(b + 7), Reg(b + 8), Reg(b + 9), Reg(b + 10));
+    let b = add_regs(f, &[3, 3, 3, if_t, co_t, 3, co_t, 3, 3, 3, 3, co_t, 3]);
+    let (r_team, r_zero, r_mask, r_if, r_hc, r_hb, r_prev, r_pb, r_neg1, r_notprev, r_edge, r_pc, r_pcb) =
+        (Reg(b), Reg(b + 1), Reg(b + 2), Reg(b + 3), Reg(b + 4), Reg(b + 5), Reg(b + 6), Reg(b + 7), Reg(b + 8), Reg(b + 9), Reg(b + 10), Reg(b + 11), Reg(b + 12));
     let this = Reg(0); // updateGameInput(this:Character)
     let mut ops = vec![
+        // gate: if getTeam(this) != 0, skip the whole injection (only player 0 is driven).
+        Opcode::Call1 { dst: r_team, fun: RefFun(getteam), arg0: this }, // [idx 0]
+        Opcode::Int { dst: r_zero, ptr: RefInt(zero) },                  // [idx 1]
+        Opcode::JEq { a: r_team, b: r_zero, offset: 1 },                 // [idx 2] team==0 -> run body
+        Opcode::JAlways { offset: 0 },                                   // [idx 3] team!=0 -> skip to end
         Opcode::GetGlobal { dst: r_mask, global: RefGlobal(g_inject_held) },
         Opcode::Field { dst: r_if, obj: this, field: RefField(f_inputfeed) },
         Opcode::JNull { reg: r_if, offset: 0 }, // [idx 2] no inputFeed -> skip (patched to end)
@@ -3708,12 +4008,150 @@ fn inject_input_override(code: &mut Bytecode, g_inject_held: usize) -> anyhow::R
         Opcode::Or { dst: r_pcb, a: r_pcb, b: r_edge },
         Opcode::SetField { obj: r_pc, field: RefField(f_buttons), src: r_pcb },
     ];
-    // The null-inputFeed guard skips the rest of the prepended block (lands on the first
-    // original op, which insert_ops_front places right after this block).
+    // The team gate (JAlways idx 3) and the null-inputFeed guard (JNull idx 6) both skip
+    // to the first original op, which insert_ops_front places right after this block.
     let n = ops.len() as i32;
-    if let Opcode::JNull { offset, .. } = &mut ops[2] { *offset = n - 2 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[3] { *offset = n - 3 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[6] { *offset = n - 6 - 1; }
     insert_ops_front(f, ops);
     eprintln!("inject_input_override: updateGameInput@{upd} PREPEND (inputFeed held|=mask, pressed|=edge — upstream of the copy)");
+    Ok(())
+}
+
+/// Force the trapped-script-error gate inside `ApiScript.interpretScript` to take the
+/// logging branch, so the engine's own detailed error surfaces instead of being swallowed.
+///
+/// interpretScript wraps every character/assist/mode/stage script in a try/catch. The
+/// catch already formats a detailed error (`Std.string(exc)` + line/col via `posInfos` +
+/// the script origin) and calls `Tildebugger.error(...)`. The gate is the opposite polarity
+/// of what its field name suggests: the bytecode is `if (loggingEnabled) return; else
+/// log`, i.e. the read is FALSE on the path that actually logs (and `loggingEnabled` is the
+/// value passed as the error()'s second arg, always false on the real logging path). In
+/// normal play the field reads true, so the catch returns early and the error is silently
+/// swallowed (the character loads, but e.g. its hitboxes never arm).
+///
+/// The fix is one in-place op swap: the gate's `Field` read becomes a constant `false`,
+/// which forces the log branch AND reproduces the engine's genuine `error(msg, false)`
+/// call exactly. No new ops, no offset shifts. Matched by field + obj-reg type (not op
+/// index) so it survives engine-build drift. Local to interpretScript.
+/// Flip the `loggingEnabled` gate in `ApiScript.interpretScript` (the one-shot script-eval
+/// path) so its catch reaches the log branch. Only this one-shot path is gated; the
+/// per-frame character paths (`interpretScriptFunction`, `HaxeScript.runFrameScripts`) call
+/// `Tildebugger.error` unconditionally. See `inject_error_socket_mirror` for the socket leg.
+fn inject_logging_override(code: &mut Bytecode) -> anyhow::Result<()> {
+    let interp_script = require_fn(code, "interpretScript", Some("pxf.api.$ApiScript"))?;
+    let apiutil_t = find_type(code, "pxf.api.$ApiUtilities")
+        .ok_or_else(|| anyhow::anyhow!("pxf.api.$ApiUtilities type not found"))?;
+    let logging_field = find_field(code, apiutil_t, "loggingEnabled")
+        .ok_or_else(|| anyhow::anyhow!("ApiUtilities.loggingEnabled field not found"))?;
+    let fidx = function_index_by_findex(code, interp_script)
+        .ok_or_else(|| anyhow::anyhow!("interpretScript@{interp_script} not found"))?;
+    let targets: Vec<(usize, Reg)> = {
+        let f = &code.functions[fidx];
+        f.ops.iter().enumerate().filter_map(|(i, op)| match op {
+            Opcode::Field { dst, obj, field }
+                if field.0 == logging_field
+                    && f.regs.get(obj.0 as usize).map(|t| t.0) == Some(apiutil_t) =>
+            {
+                Some((i, *dst))
+            }
+            _ => None,
+        }).collect()
+    };
+    if targets.is_empty() {
+        anyhow::bail!("loggingEnabled gate read not found in interpretScript@{interp_script}");
+    }
+    let f = &mut code.functions[fidx];
+    for (i, dst) in &targets {
+        f.ops[*i] = Opcode::Bool { dst: *dst, value: hlbc::types::ValBool(false) };
+    }
+    eprintln!(
+        "inject_logging_override: loggingEnabled gate -> false (one-shot eval log branch) in interpretScript@{interp_script} ({} site)",
+        targets.len()
+    );
+    Ok(())
+}
+
+/// Force the in-game Tildebugger console to actually DISPLAY errors. `Tildebugger.log`
+/// gates the `ImprovedConsole.log` call behind `if (production && !important) return;` —
+/// Fraymakers ships as a production build and script errors arrive with the important flag
+/// false, so the console silently drops them (the message was built and the socket mirror
+/// already saw it; only the on-screen render is suppressed). Flip the `production` field
+/// read to `false` so the display branch always runs. Local to `Tildebugger.log`.
+fn inject_console_display_override(code: &mut Bytecode) -> anyhow::Result<()> {
+    let log_fn = require_fn(code, "log", Some("pxf.core.$Tildebugger"))?;
+    let tilde_t = find_type(code, "pxf.core.$Tildebugger")
+        .ok_or_else(|| anyhow::anyhow!("pxf.core.$Tildebugger type not found"))?;
+    let prod_field = find_field(code, tilde_t, "production")
+        .ok_or_else(|| anyhow::anyhow!("Tildebugger.production field not found"))?;
+    let fidx = function_index_by_findex(code, log_fn)
+        .ok_or_else(|| anyhow::anyhow!("Tildebugger.log@{log_fn} not found"))?;
+    let targets: Vec<(usize, Reg)> = {
+        let f = &code.functions[fidx];
+        f.ops.iter().enumerate().filter_map(|(i, op)| match op {
+            Opcode::Field { dst, obj, field }
+                if field.0 == prod_field
+                    && f.regs.get(obj.0 as usize).map(|t| t.0) == Some(tilde_t) =>
+            {
+                Some((i, *dst))
+            }
+            _ => None,
+        }).collect()
+    };
+    if targets.is_empty() {
+        anyhow::bail!("production gate read not found in Tildebugger.log@{log_fn}");
+    }
+    let f = &mut code.functions[fidx];
+    for (i, dst) in &targets {
+        f.ops[*i] = Opcode::Bool { dst: *dst, value: hlbc::types::ValBool(false) };
+    }
+    eprintln!(
+        "inject_console_display_override: production gate -> false in Tildebugger.log@{log_fn} ({} site); errors now render in the in-game console",
+        targets.len()
+    );
+    Ok(())
+}
+
+/// Mirror EVERY engine error onto the harness socket as a `SCRIPTERR:` line by prepending
+/// a socket write to the single chokepoint `Tildebugger.error(msg, ...)`. All script-error
+/// catches (one-shot eval, per-frame `interpretScriptFunction`, keyframe `runFrameScripts`,
+/// the lifecycle runners) funnel through here, so one front-insertion covers them all — and
+/// the same errors keep going to the in-game Tildebugger console as before. `reg0` is the
+/// message String. Guarded by a g_sock null-check (no-op before the harness connects).
+#[allow(clippy::too_many_arguments)]
+fn inject_error_socket_mirror(
+    code: &mut Bytecode, g_sock: usize, out_field: usize, write_str: usize, flush: usize,
+    str_add: usize, nl_g: usize, sock_t: usize, out_t: usize, str_t: usize, enc_t: usize,
+) -> anyhow::Result<()> {
+    use hlbc::types::{RefField, RefFun, RefGlobal};
+    let tilde_error = require_fn(code, "error", Some("pxf.core.$Tildebugger"))?;
+    let fidx = function_index_by_findex(code, tilde_error)
+        .ok_or_else(|| anyhow::anyhow!("Tildebugger.error@{tilde_error} not found"))?;
+    let scripterr_g = add_string_const(code, "SCRIPTERR: ");
+    let f = &mut code.functions[fidx];
+    // reg0 is the error message (String) — prepend runs before the original body touches it.
+    let msg_reg = Reg(0);
+    let base = add_regs(f, &[sock_t, out_t, str_t, str_t, enc_t, 0]);
+    let (r_sock, r_out, r_name, r_msg, r_null, r_ret) =
+        (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4), Reg(base + 5));
+    let mut ops = vec![
+        Opcode::GetGlobal { dst: r_sock, global: RefGlobal(g_sock) },          // 0
+        Opcode::JNull { reg: r_sock, offset: 0 },                              // 1 -> skip (not connected yet)
+        Opcode::Field { dst: r_out, obj: r_sock, field: RefField(out_field) }, // 2
+        Opcode::GetGlobal { dst: r_msg, global: RefGlobal(scripterr_g) },       // 3  "SCRIPTERR: "
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: msg_reg }, // 4  + message
+        Opcode::GetGlobal { dst: r_name, global: RefGlobal(nl_g) },             // 5  "\n"
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: r_name }, // 6  + "\n"
+        Opcode::Null { dst: r_null },                                          // 7
+        Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: r_msg, arg2: r_null }, // 8
+        Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out },         // 9
+    ];
+    let skip = ops.len() as i32;
+    if let Opcode::JNull { offset, .. } = &mut ops[1] { *offset = skip - 1 - 1; }
+    insert_ops_front(f, ops);
+    eprintln!(
+        "inject_error_socket_mirror: SCRIPTERR socket mirror prepended to Tildebugger.error@{tilde_error}; every engine/script error now also hits the Peptide TCP stream"
+    );
     Ok(())
 }
 

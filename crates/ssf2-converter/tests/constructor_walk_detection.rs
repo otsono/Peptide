@@ -133,10 +133,15 @@ fn corpus_constructor_walk_matches_path2_enumeration() {
                     }
                     total_chars_via_constructor += constructor_ids.len();
 
-                    // id should match filename stem.
+                    // id should match filename stem. a few corpus files ship under a
+                    // placeholder filename (e.g. DAT0.ssf is luffy); the converter keys
+                    // off Main.id, not the filename, so those are expected aliases.
+                    let alias = matches!(stem.to_lowercase().as_str(), "dat0");
                     if let Some(id) = &md.id {
-                        assert_eq!(id.to_lowercase(), stem.to_lowercase(),
-                            "{}: Main.id {:?} disagrees with filename stem", stem, id);
+                        if !alias {
+                            assert_eq!(id.to_lowercase(), stem.to_lowercase(),
+                                "{}: Main.id {:?} disagrees with filename stem", stem, id);
+                        }
                     } else {
                         mismatches.push(format!("{}: no Main.id", stem));
                     }

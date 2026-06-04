@@ -164,6 +164,10 @@ impl Expr {
             Expr::Local(n)  => format!("_v{}", n),
             Expr::GetLex(n)              => n.clone(),
             Expr::Closure(params, stmts)  => render_closure(params, stmts, 0),
+            // A decompiler-unreconstructable expression. Renders as a bare comment so
+            // that in STATEMENT position (`/* ? */ foo();`) it's harmless whitespace.
+            // In CONDITION position a bare comment is a parse error (`if (/* ? */)`) that
+            // kills the whole script — `render_condition` substitutes `false` there.
             Expr::Unknown                 => "/* ? */".to_string(),
             Expr::GetProperty(obj, name) => {
                 format!("{}.{}", obj.render(), name)
@@ -305,6 +309,39 @@ fn make_if(cond: Expr, then_b: Vec<Stmt>, else_b: Vec<Stmt>) -> Stmt {
     }
 }
 
+/// Collect every AVM2 register written by a `Stmt::VarDecl` in this body (recursing into
+/// if/while branches, but NOT into nested closures — those have their own scope). Used to emit
+/// `var` declarations: the decompiler renders register writes as bare `_vN = …`, which hscript
+/// rejects (a local must be `var`-declared; an undeclared assignment is a runtime error or an
+/// accidental shared global). Declaring once at the function top makes a register written inside
+/// a branch function-scoped (matching AVM2 register semantics).
+fn collect_local_writes(stmts: &[Stmt], out: &mut std::collections::BTreeSet<u32>) {
+    for s in stmts {
+        match s {
+            Stmt::VarDecl(n, v) => {
+                if !(*n == 0 && matches!(v, Expr::This)) { out.insert(*n); }
+            }
+            Stmt::If(_, t, e) => { collect_local_writes(t, out); collect_local_writes(e, out); }
+            Stmt::While(_, b) => collect_local_writes(b, out),
+            _ => {}
+        }
+    }
+}
+
+/// `var _vN = null;` lines for the register temps a body writes. Skips locals 1..=param_count
+/// (those render as `argN` — already function parameters) and local 0 (`self`).
+fn render_local_decls(stmts: &[Stmt], param_count: usize, depth: usize) -> String {
+    let mut writes = std::collections::BTreeSet::new();
+    collect_local_writes(stmts, &mut writes);
+    let tab = "\t".repeat(depth);
+    let mut out = String::new();
+    for &n in &writes {
+        if (1..=param_count).contains(&(n as usize)) { continue; }
+        out.push_str(&format!("{}var _v{} = null;\n", tab, n));
+    }
+    out
+}
+
 fn render_closure(params: &[String], stmts: &[Stmt], depth: usize) -> String {
     let param_str = params.join(", ");
     if stmts.is_empty() {
@@ -317,8 +354,9 @@ fn render_closure(params: &[String], stmts: &[Stmt], depth: usize) -> String {
         }
     }
     let tab = "\t".repeat(depth);
+    let decls = render_local_decls(stmts, params.len(), depth + 1);
     let body = render_stmts(stmts, depth + 1);
-    format!("function({}) {{\n{}{}}}", param_str, body, tab)
+    format!("function({}) {{\n{}{}{}}}", param_str, decls, body, tab)
 }
 
 fn render_stmts(stmts: &[Stmt], depth: usize) -> String {
@@ -357,7 +395,7 @@ fn render_stmts(stmts: &[Stmt], depth: usize) -> String {
             }
             Stmt::Expr(e) => out.push_str(&format!("{}{};\n", tab, e.render())),
             Stmt::If(cond, then_b, else_b) => {
-                out.push_str(&format!("{}if ({}) {{\n", tab, cond.render()));
+                out.push_str(&format!("{}if ({}) {{\n", tab, render_condition(cond)));
                 out.push_str(&render_stmts(then_b, depth + 1));
                 if !else_b.is_empty() {
                     out.push_str(&format!("{}}} else {{\n", tab));
@@ -366,13 +404,29 @@ fn render_stmts(stmts: &[Stmt], depth: usize) -> String {
                 out.push_str(&format!("{}}}\n", tab));
             }
             Stmt::While(cond, body) => {
-                out.push_str(&format!("{}while ({}) {{\n", tab, cond.render()));
+                out.push_str(&format!("{}while ({}) {{\n", tab, render_condition(cond)));
                 out.push_str(&render_stmts(body, depth + 1));
                 out.push_str(&format!("{}}}\n", tab));
             }
         }
     }
     out
+}
+
+/// Render an `if`/`while` condition, guaranteeing it's a parse-valid expression.
+/// A decompiler-unreconstructable sub-expression renders as a `/* ? */` comment, which
+/// is fine in statement position but a fatal parse error in CONDITION position (a comment
+/// can't be an operand — `if (/* ? */)`, `if (x && /* ? */)`, `if (f(/* ? */))` all break,
+/// and an hscript parse error kills the ENTIRE character script). When the rendered
+/// condition contains such a marker, substitute a falsy placeholder so that one block goes
+/// dead while the rest of the script still loads and runs.
+fn render_condition(cond: &Expr) -> String {
+    let r = cond.render();
+    if r.contains("/* ? */") {
+        "false /* ? */".to_string()
+    } else {
+        r
+    }
 }
 
 // ─── Opcode constants ─────────────────────────────────────────────────────────
@@ -1448,6 +1502,16 @@ impl<'a> StructuredDecoder<'a> {
             (inner_else, self.find_merge_inner(inner_then, inner_else))
         };
 
+        // Guard against a zero-length body range. When body_start == body_merge the
+        // collapsed `if (A && B) { ... }` would decode an EMPTY body, silently dropping
+        // the branch's statements (e.g. mario's rise(): the `pressed2 = true` that arms
+        // the up-special launch). Refuse the collapse so the caller falls back to the
+        // nested-if path, which preserves the body. Return None WITHOUT marking blocks
+        // visited, so the fallback can still decode them.
+        if body_merge == Some(body_start) {
+            return None;
+        }
+
         // Mark all consumed blocks as visited
         self.visited.insert(then_start);
         self.visited.insert(else_start);
@@ -1940,6 +2004,7 @@ pub fn decompile_method(
 
     let param_str = params.join(", ");
     let mut out = format!("function {}({}) {{\n", name, param_str);
+    out.push_str(&render_local_decls(&stmts, params.len(), 1));
     out.push_str(&render_stmts(&stmts, 1));
     out.push_str("}\n\n");
     out
@@ -1947,7 +2012,29 @@ pub fn decompile_method(
 
 #[cfg(test)]
 mod make_if_tests {
-    use super::{make_if, render_stmts, Expr, Stmt};
+    use super::{make_if, render_stmts, render_local_decls, Expr, Stmt};
+
+    #[test]
+    fn register_temps_get_var_declarations() {
+        // _v2 written at top level, _v3 written only inside an if-branch: BOTH must be declared
+        // with `var` at the function top (a branch-scoped var would be invisible after the block).
+        let stmts = vec![
+            Stmt::VarDecl(2, Expr::Num(1.0)),
+            Stmt::If(Expr::Bool(true), vec![Stmt::VarDecl(3, Expr::Num(2.0))], vec![]),
+        ];
+        let decls = render_local_decls(&stmts, 0, 1);
+        assert!(decls.contains("var _v2 = null;"), "missing _v2 decl: {decls}");
+        assert!(decls.contains("var _v3 = null;"), "missing _v3 (branch) decl: {decls}");
+    }
+
+    #[test]
+    fn param_registers_are_not_redeclared() {
+        // local 1 == arg0 (a param, rendered as arg0); it must NOT get a `var _v1` shadow.
+        let stmts = vec![Stmt::VarDecl(1, Expr::Num(1.0)), Stmt::VarDecl(2, Expr::Num(2.0))];
+        let decls = render_local_decls(&stmts, 1, 1); // 1 param
+        assert!(!decls.contains("_v1"), "param register declared as _v1: {decls}");
+        assert!(decls.contains("var _v2 = null;"), "temp _v2 not declared: {decls}");
+    }
 
     #[test]
     fn empty_then_is_negated_and_swapped() {

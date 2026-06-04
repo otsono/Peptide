@@ -52,14 +52,16 @@ pub struct Cmd {
 pub const COMMANDS: &[Cmd] = &[
     Cmd { name: "help",    aliases: &["h", "?"],            wire: '\0',
           args: "",                              help: "list these commands + the hscript model (client-side; sends nothing)" },
-    Cmd { name: "spawn",   aliases: &["start", "launch", "s"], wire: 's',
-          args: "<char> [stage] [assist]",       help: "start a match with <char> (loads custom content if needed); stage/assist default to thespire/commandervideoassist" },
+    Cmd { name: "startMatch", aliases: &["spawn", "start", "launch", "s"], wire: 's',
+          args: "<char[,char2…]> [stage] [assist]", help: "start a match with <char> (loads custom content if needed); comma-separate players for a 2+ player match; stage/assist default to thespire/commandervideoassist" },
     Cmd { name: "eval",    aliases: &["e"],                  wire: 'e',
           args: "<hscript>",                     help: "run an hscript expression in the engine and print E:<result>. This is also the default for any unrecognized line." },
     Cmd { name: "load",    aliases: &["l"],                 wire: 'l',
           args: "",                              help: "synchronous custom-.fra load probe (diagnostic; spawn does this itself)" },
     Cmd { name: "console", aliases: &["c"],                 wire: 'c',
           args: "",                              help: "run the engine's debug console `help` command (RAN) — a side-effecting call hscript can't make, so it stays a wire byte" },
+    Cmd { name: "addCharacter", aliases: &["addchar", "add"], wire: 'n',
+          args: "",                              help: "drop one more fighter into the LIVE match on demand (re-spawns the last roster char via the deferred-spawn path) — no relaunch (peptide todo #3)" },
     Cmd { name: "exit",    aliases: &["quit", "stop", "x"], wire: 'x',
           args: "",                              help: "cleanly shut the engine down (hxd.System.exit — no kill-9 orphan)" },
     Cmd { name: "hold",    aliases: &["press", "keys", "input"], wire: 'i',
@@ -68,6 +70,24 @@ pub const COMMANDS: &[Cmd] = &[
           args: "",                              help: "release all injected controls (sends mask 0)" },
     Cmd { name: "seq",     aliases: &["play", "inputs"], wire: 'i',
           args: "<controls:frames> …",           help: "play a frame-accurate input timeline (e.g. seq down+special:2 right:12) — one input per engine frame, auto-releases at the end" },
+    Cmd { name: "scenario", aliases: &["scene", "replay"], wire: 'e',
+          args: "<p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]",
+          help: "set up a repeatable test scenario (peptide todo #4): place both players at fixed positions (optionally with momentum vx,vy), reset them to neutral STAND, then play an input timeline on p0. re-run the exact same line to replay it." },
+    Cmd { name: "tune",    aliases: &["movestat"], wire: 'e',
+          args: "<player> <hitboxIndex> <stat>=<value> …",
+          help: "hot-reload a move's hitbox stats into the running match (peptide todo #5): e.g. tune p0 0 damage=15 baseKnockback=50 angle=45 — calls updateHitboxStats live, no relaunch." },
+    Cmd { name: "dmg",     aliases: &["damage", "percent"], wire: 'e',
+          args: "<player> <value>",
+          help: "set a player's damage percent (e.g. dmg p1 80) — handy for knockback / KO-threshold testing" },
+    Cmd { name: "info",    aliases: &["status", "players"], wire: 'e',
+          args: "",
+          help: "one-shot readout of both players: [p0 x, state, dmg, team, p1 x, state, dmg, team]" },
+    Cmd { name: "reset",   aliases: &["neutral"], wire: 'e',
+          args: "",
+          help: "reset both players to neutral STAND with zero momentum (clean slate between tests)" },
+    Cmd { name: "kill",    aliases: &["ko", "blast"], wire: 'e',
+          args: "<player>",
+          help: "fling a player into the bottom blast zone to force a KO (e.g. kill p1) — for respawn / stock testing" },
 ];
 
 /// Control name → button bit (matches pxf.input.ControlsObject's bitmask, field
@@ -183,8 +203,11 @@ pub const MOVES: &[(&str, &str)] = &[
 
 /// Find the command whose name or alias matches `tok` (case-insensitive).
 pub fn lookup(tok: &str) -> Option<&'static Cmd> {
-    let t = tok.to_ascii_lowercase();
-    COMMANDS.iter().find(|c| c.name == t || c.aliases.iter().any(|a| *a == t))
+    // Case-insensitive on both sides so a camelCase canonical name (e.g. `startMatch`)
+    // still matches what the user types, and the displayed name keeps its casing.
+    COMMANDS.iter().find(|c| {
+        c.name.eq_ignore_ascii_case(tok) || c.aliases.iter().any(|a| a.eq_ignore_ascii_case(tok))
+    })
 }
 
 /// Outcome of translating one friendly line.
@@ -311,8 +334,14 @@ pub enum Command {
     /// Play a frame-accurate input timeline — one mask per engine frame
     /// (already auto-released with a trailing `0`).
     Seq(Vec<u32>),
+    /// A repeatable test scenario: a setup hscript line (positions/momentum/neutral
+    /// state for both players) plus an optional input timeline on p0. Host-side macro
+    /// that composes eval + seq — see peptide todo #4.
+    Scenario { setup: String, masks: Vec<u32> },
     /// Run the engine's debug console.
     Console,
+    /// Drop one more fighter into the live match (peptide todo #3).
+    AddCharacter,
     /// Cleanly shut the engine down.
     Exit,
     /// Diagnostic content (re)load.
@@ -336,7 +365,7 @@ pub fn parse(line: &str) -> Command {
     if let Some(cmd) = lookup(head) {
         match cmd.name {
             "help" => return Command::Help,
-            "spawn" => {
+            "startMatch" => {
                 // first token is the player list: comma-separated characters.
                 let characters: Vec<String> = rest.first().copied().unwrap_or("")
                     .split(',').map(str::trim).filter(|c| !c.is_empty()).map(str::to_string).collect();
@@ -368,7 +397,41 @@ pub fn parse(line: &str) -> Command {
                     Err(e) => Command::Client(format!("{e}\n")),
                 };
             }
+            "scenario" => return parse_scenario(&rest),
+            "tune" => return parse_tune(&rest),
+            "dmg" => {
+                if rest.len() != 2 {
+                    return Command::Client("usage: dmg <player> <value>  (e.g. dmg p1 80)\n".into());
+                }
+                let (player, val) = (rest[0], rest[1]);
+                if !player.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    return Command::Client(format!("dmg: {player:?} is not a valid player reference\n"));
+                }
+                if val.parse::<f64>().is_err() {
+                    return Command::Client(format!("dmg: value must be numeric (got {val:?})\n"));
+                }
+                return Command::Eval(format!("{player}.damage._damage = {val}"));
+            }
+            "info" => {
+                return Command::Eval(
+                    "[p0.getX(), p0.getStateName(), p0.damage._damage, p0.getTeam(), \
+                     p1.getX(), p1.getStateName(), p1.damage._damage, p1.getTeam()]".into());
+            }
+            "reset" => {
+                return Command::Eval(
+                    "p0.setXVelocity(0); p0.setYVelocity(0); p1.setXVelocity(0); p1.setYVelocity(0); \
+                     p0.toState(CState.STAND); p1.toState(CState.STAND)".into());
+            }
+            "kill" => {
+                let player = match rest.first() {
+                    Some(p) if p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => *p,
+                    Some(p) => return Command::Client(format!("kill: {p:?} is not a valid player reference\n")),
+                    None => return Command::Client("usage: kill <player>  (e.g. kill p1)\n".into()),
+                };
+                return Command::Eval(format!("{player}.setY({player}.getY() + 3000)"));
+            }
             "console" => return Command::Console,
+            "addCharacter" => return Command::AddCharacter,
             "exit" => return Command::Exit,
             "load" => return Command::Load,
             _ => {}
@@ -376,6 +439,78 @@ pub fn parse(line: &str) -> Command {
     }
     // Unknown head OR a bare expression → eval the whole (collapsed) line.
     Command::Eval(collapse_multiline(line))
+}
+
+/// Parse a `scenario <p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]` line into a
+/// pre-expanded [`Command::Scenario`]. Sets both players to fixed positions (and momentum,
+/// if 4 values), resets them to neutral STAND, then plays the input timeline on p0. The
+/// whole thing is deterministic + re-runnable — that's the point (peptide todo #4).
+fn parse_scenario(rest: &[&str]) -> Command {
+    const USAGE: &str = "usage: scenario <p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]\n  e.g. scenario 300,400 360,400 attack:2   (place both, reset to STAND, jab on p0; re-run to replay)\n";
+    if rest.len() < 2 {
+        return Command::Client(USAGE.into());
+    }
+    // "x,y" or "x,y,vx,vy" -> the per-player setup hscript (setX/setY [+ setXVelocity/setYVelocity]).
+    fn body(slot: &str, who: &str) -> Result<String, String> {
+        let n: Vec<&str> = slot.split(',').map(str::trim).collect();
+        if n.len() != 2 && n.len() != 4 {
+            return Err(format!("scenario: {who} must be x,y or x,y,vx,vy (got {slot:?})"));
+        }
+        for v in &n {
+            v.parse::<f64>().map_err(|_| format!("scenario: {who} has a non-numeric value {v:?}"))?;
+        }
+        let mut s = format!("{who}.setX({}); {who}.setY({})", n[0], n[1]);
+        if n.len() == 4 {
+            s.push_str(&format!("; {who}.setXVelocity({}); {who}.setYVelocity({})", n[2], n[3]));
+        }
+        Ok(s)
+    }
+    let p0 = match body(rest[0], "p0") { Ok(s) => s, Err(e) => return Command::Client(format!("{e}\n")) };
+    let p1 = match body(rest[1], "p1") { Ok(s) => s, Err(e) => return Command::Client(format!("{e}\n")) };
+    // setup: position/momentum both players, then reset to neutral STAND.
+    let setup = format!("{p0}; {p1}; p0.toState(CState.STAND); p1.toState(CState.STAND)");
+    // optional input timeline on p0 (same expansion as `seq`).
+    let masks = if rest.len() > 2 {
+        match expand_sequence_masks(&rest[2..]) {
+            Ok(m) => m,
+            Err(e) => return Command::Client(format!("{e}\n")),
+        }
+    } else {
+        Vec::new()
+    };
+    Command::Scenario { setup, masks }
+}
+
+/// Parse `tune <player> <hitboxIndex> <stat>=<value> …` into an `updateHitboxStats`
+/// eval — live move-stat hot-reload (peptide todo #5). Numeric values pass through bare;
+/// non-numeric values (e.g. an AttackLimb enum) pass through verbatim, so
+/// `tune p0 0 limb=AttackLimb.FOOT` works too.
+fn parse_tune(rest: &[&str]) -> Command {
+    const USAGE: &str = "usage: tune <player> <hitboxIndex> <stat>=<value> …\n  e.g. tune p0 0 damage=15 baseKnockback=50 angle=45   (live updateHitboxStats; no relaunch)\n";
+    if rest.len() < 3 {
+        return Command::Client(USAGE.into());
+    }
+    let player = rest[0];
+    // very light validation: player looks like an identifier (p0/p1/self/a char ref).
+    if !player.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Command::Client(format!("tune: {player:?} is not a valid player reference\n"));
+    }
+    let idx = match rest[1].parse::<i64>() {
+        Ok(n) if n >= 0 => n,
+        _ => return Command::Client(format!("tune: hitbox index must be a non-negative integer (got {:?})\n", rest[1])),
+    };
+    let mut fields = Vec::new();
+    for kv in &rest[2..] {
+        let (k, v) = match kv.split_once('=') {
+            Some((k, v)) if !k.is_empty() && !v.is_empty() => (k, v),
+            _ => return Command::Client(format!("tune: each stat must be key=value (got {kv:?})\n")),
+        };
+        if !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Command::Client(format!("tune: {k:?} is not a valid stat name\n"));
+        }
+        fields.push(format!("{k}: {v}"));
+    }
+    Command::Eval(format!("{player}.updateHitboxStats({idx}, {{ {} }})", fields.join(", ")))
 }
 
 /// Encode an engine-agnostic [`Command`] into the Fraymakers wire line. This is
@@ -412,7 +547,13 @@ pub fn command_to_wire(cmd: &Command) -> Translated {
         Command::Eval(e) => Translated::Wire(if e.is_empty() { "e".into() } else { format!("e {e}") }),
         Command::Hold(m) => Translated::Wire(format!("i {m}")),
         Command::Seq(masks) => Translated::Wire(masks.iter().map(|m| format!("i {m}")).collect::<Vec<_>>().join("\n")),
+        Command::Scenario { setup, masks } => {
+            let mut w = format!("e {setup}");
+            for m in masks { w.push('\n'); w.push_str(&format!("i {m}")); }
+            Translated::Wire(w)
+        }
         Command::Console => Translated::Wire("c".into()),
+        Command::AddCharacter => Translated::Wire("n".into()),
         Command::Exit => Translated::Wire("x".into()),
         Command::Load => Translated::Wire("l".into()),
     }
@@ -668,8 +809,8 @@ pub fn help_text() -> String {
     out.push_str("  Assist  AssistEvent  MatchModifier  Announcer  GameMenus  Css  GlobalVfx\n");
     out.push_str("  GlobalSfx  CameraShakeType  GraphicsSettings  DisplaySettings  Ai*Option …\n");
     out.push_str("\nExamples:\n");
-    out.push_str("  spawn sandbag                 start a sandbag match (default stage/assist)\n");
-    out.push_str("  spawn mario thespire commandervideoassist\n");
+    out.push_str("  startMatch sandbag            start a sandbag match (default stage/assist; alias: spawn)\n");
+    out.push_str("  startMatch mario,mario thespire commandervideoassist   2-player match (comma-separated)\n");
     out.push_str("  match.getCharacters()[0].getStateName()    read a character's state\n");
     out.push_str("  CState.JAB                    inspect an API enum value\n");
     out.push_str("  exit                          shut the engine down\n");
@@ -904,10 +1045,62 @@ mod tests {
     }
 
     #[test]
+    fn scenario_sets_up_scene_then_plays_inputs() {
+        // positions only -> setup eval (with neutral reset), no input lines.
+        assert_eq!(
+            wire("scenario 300,400 360,400"),
+            "e p0.setX(300); p0.setY(400); p1.setX(360); p1.setY(400); p0.toState(CState.STAND); p1.toState(CState.STAND)"
+        );
+        // positions + an input timeline on p0 -> setup eval then one `i` line per frame.
+        assert_eq!(
+            wire("scenario 300,400 360,400 attack:2"),
+            "e p0.setX(300); p0.setY(400); p1.setX(360); p1.setY(400); p0.toState(CState.STAND); p1.toState(CState.STAND)\ni 16\ni 16\ni 0"
+        );
+        // 4-tuple adds momentum (world-space velocity).
+        assert!(wire("scenario 300,400,5,0 360,400").contains("p0.setXVelocity(5); p0.setYVelocity(0)"));
+        // bad shapes are client-side errors (nothing sent to the engine).
+        assert!(matches!(translate("scenario 300,400"), Translated::Client(_)));         // only one player
+        assert!(matches!(translate("scenario 300 360,400"), Translated::Client(_)));     // p0 not x,y
+        assert!(matches!(translate("scenario a,b 360,400"), Translated::Client(_)));     // non-numeric
+        assert!(matches!(translate("scenario 300,400 360,400 bogus:2"), Translated::Client(_))); // bad control
+    }
+
+    #[test]
+    fn tune_builds_update_hitbox_stats_eval() {
+        // numeric stats pass through bare; enum-ish values pass verbatim.
+        assert_eq!(wire("tune p0 0 damage=15 baseKnockback=50"),
+                   "e p0.updateHitboxStats(0, { damage: 15, baseKnockback: 50 })");
+        assert_eq!(wire("tune p1 2 limb=AttackLimb.FOOT"),
+                   "e p1.updateHitboxStats(2, { limb: AttackLimb.FOOT })");
+        // shape errors are client-side (never sent).
+        assert!(matches!(translate("tune p0 0"), Translated::Client(_)));        // no stats
+        assert!(matches!(translate("tune p0 x damage=1"), Translated::Client(_))); // bad index
+        assert!(matches!(translate("tune p0 0 damage"), Translated::Client(_)));  // not key=value
+        assert!(matches!(translate("tune p0 -1 damage=1"), Translated::Client(_))); // negative index
+    }
+
+    #[test]
+    fn dmg_and_info_are_eval_wrappers() {
+        assert_eq!(wire("dmg p1 80"), "e p1.damage._damage = 80");
+        assert!(wire("info").starts_with("e [p0.getX(), p0.getStateName()"));
+        assert!(matches!(translate("dmg p1"), Translated::Client(_)));       // missing value
+        assert!(matches!(translate("dmg p1 lots"), Translated::Client(_)));  // non-numeric
+    }
+
+    #[test]
+    fn reset_and_kill_are_eval_wrappers() {
+        assert!(wire("reset").contains("p0.toState(CState.STAND)") && wire("reset").contains("setXVelocity(0)"));
+        assert_eq!(wire("kill p1"), "e p1.setY(p1.getY() + 3000)");
+        assert!(matches!(translate("kill"), Translated::Client(_)));        // missing player
+        assert!(matches!(translate("kill p1;evil"), Translated::Client(_))); // injection guard
+    }
+
+    #[test]
     fn bootstrap_commands_stay_wire_bytes() {
         // match-launch + clean exit + resource load are the irreducible bootstrap hooks;
         // console is a side-effecting method call hscript can't invoke. All stay wire bytes.
         assert_eq!(wire("spawn sandbag thespire x"), "s sandbag thespire x");
+        assert_eq!(wire("startMatch sandbag thespire x"), "s sandbag thespire x");
         assert_eq!(wire("exit"), "x");
         assert_eq!(wire("console"), "c");
         assert_eq!(wire("load"), "l");

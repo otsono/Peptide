@@ -211,6 +211,37 @@ re-deriving the engine integration on a new build. their existence is noted in
 [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md) "engine-side knowledge is not in this repo"; the
 specifics and any findings stay in local-only notes, not here.
 
+### the debugger overlay (a HUD that floats over the game)
+
+`peptide overlay` is a standalone, semi-transparent, click-through HUD that floats on top of
+the running game and shows the live state (current animation) plus the `SCRIPTERR:` error
+stream. it's a separate process/window, not the Peptide GUI, so it works the same whether the
+session was started from the CLI (`peptide session`) or the GUI. both session paths spawn it
+for you and it self-exits when the engine/session dies. opt out with `--no-overlay` or
+`PEPTIDE_OVERLAY=0`. on macOS it pins to the Fraymakers window and follows it; on other
+platforms it shows as a fixed-position HUD (the per-platform window-find is the open piece).
+
+it reads the session's `out.log`, so anything the engine surfaces into that log shows up: the
+error half is per-engine (Fraymakers surfaces trapped script errors as `SCRIPTERR:` via the
+bytecode patch; SSF2 surfaces its own through its bridge), the overlay just renders whatever
+arrives. same ONE-vocabulary-TWO-engines seam as everything else (see AGENT_CONTEXT).
+
+### driving + observing the GUI from code
+
+the GUI can be driven headlessly for reproducible boot testing:
+
+- `PEPTIDE_GUI_AUTOBOOT=<verb>` fires one boot IPC after the page loads -- `<verb>` is the part
+  after `@@boot:`, e.g. `quick:mario`, `regular`, `ssf2:mario`. same as clicking that button.
+- `PEPTIDE_GUI_TRACE=1` echoes every incoming IPC message and page-bound event to stderr, so a
+  run can be captured + read back (pair it with `screencapture` to see the result).
+- `PEPTIDE_NO_POLL=1` disables the per-200ms `matchStatus` poll (isolation knob when you suspect
+  the host poll is perturbing a fragile match-start).
+
+example: `PEPTIDE_GUI_TRACE=1 PEPTIDE_GUI_AUTOBOOT=quick:mario peptide gui` boots the GUI, quick-
+boots mario, and traces the whole boot flow to stderr. note the freeze class some converted
+chars hit on match frame 1 is NOT visible to `peptide tell`/eval (the frame loop is hung), so
+confirm those visually (a screenshot), not over the socket.
+
 ### 3.0 surviving Fraymakers updates (the version-compatibility gate)
 
 every Fraymakers update renumbers the engine's internal indices, so a patcher that pins

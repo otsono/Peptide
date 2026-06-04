@@ -32,6 +32,7 @@ use crate::interpreter::{split_commands, translate, Translated};
 enum Ev {
     Line(String), // an engine reply line -> onLine(...)
     Js(String),   // arbitrary JS to evaluate (status, modal, reconnect/boot callbacks)
+    Overlay(bool),// engage/disengage overlay (float-on-top) — fired when a session connects
 }
 
 type SharedWriter = Arc<Mutex<Option<TcpStream>>>;
@@ -51,6 +52,60 @@ const DISCONNECT: &str = "@@disconnect";   // tear down the current engine (stat
 static GUI_ENGINE: AtomicU8 = AtomicU8::new(0);
 
 fn engine_is_ssf2() -> bool { GUI_ENGINE.load(Ordering::Relaxed) == 1 }
+
+/// Echo a GUI event to stderr when PEPTIDE_GUI_TRACE=1 (the in-code GUI test harness).
+fn gui_trace(tag: &str, msg: &str) {
+    if std::env::var("PEPTIDE_GUI_TRACE").map(|v| v == "1").unwrap_or(false) {
+        let m: String = msg.chars().take(160).collect();
+        eprintln!("[gui-trace] {tag}: {m}");
+    }
+}
+
+// ── Standalone transparent overlay (the separate debugger HUD floated over the game) ──
+// The GUI feeds it the same way the CLI session does: tee the engine stream to a log the
+// overlay tails. A separate process/window, so it never touches THIS Peptide window.
+static OVERLAY_LOG: std::sync::OnceLock<Mutex<std::fs::File>> = std::sync::OnceLock::new();
+static OVERLAY_SPAWNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn overlay_log_path() -> std::path::PathBuf {
+    crate::bridge::default_session_dir().join("gui-out.log")
+}
+
+/// Mirror one engine line into the overlay's tail log (no-op until the overlay is spawned).
+fn tee_overlay(raw: &str) {
+    if let Some(f) = OVERLAY_LOG.get() {
+        if let Ok(mut g) = f.lock() {
+            use std::io::Write;
+            let _ = writeln!(g, "{raw}");
+        }
+    }
+}
+
+/// Spawn the standalone overlay process once per GUI run (it watchdogs our pid and self-
+/// exits when we die). Opt out with PEPTIDE_OVERLAY=0.
+fn spawn_standalone_overlay() {
+    if std::env::var("PEPTIDE_OVERLAY").map(|v| v == "0").unwrap_or(false) {
+        return;
+    }
+    if OVERLAY_SPAWNED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let path = overlay_log_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(f) = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&path) {
+        let _ = OVERLAY_LOG.set(Mutex::new(f));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe)
+            .arg("overlay").arg("--log").arg(&path)
+            .arg("--parent").arg(std::process::id().to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+}
 // Screen-router verbs (Home / Setup / Converter / FrayTools Hook). Heavy work
 // (conversion, FrayTools CDP, file dialogs) runs on a worker thread and posts
 // results back via Ev::Js — never block the tao event loop.
@@ -68,12 +123,29 @@ pub fn launch() -> std::io::Result<()> {
     apply_default_linux_env_vars();
     
     let event_loop = EventLoopBuilder::<Ev>::with_user_event().build();
-    let window = WindowBuilder::new()
+    // Overlay mode (peptide todo #8): with $PEPTIDE_OVERLAY=1 the console floats ON TOP of the
+    // running game — always-on-top, compact, parked in the top-right corner — so you can drive
+    // tests while watching the match. Toggle on/off live with the in-window shortcut (see the
+    // KeyboardInput handler below). Default (unset) is the normal full-size window.
+    let overlay = std::env::var("PEPTIDE_OVERLAY").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    let mut builder = WindowBuilder::new()
         .with_title("Peptide")
-        .with_inner_size(LogicalSize::new(940.0, 720.0))
-        .with_min_inner_size(LogicalSize::new(520.0, 400.0))
-        .build(&event_loop)
-        .map_err(|e| io(&e.to_string()))?;
+        .with_always_on_top(overlay)
+        .with_min_inner_size(LogicalSize::new(360.0, 280.0));
+    builder = if overlay {
+        builder.with_inner_size(LogicalSize::new(440.0, 560.0))
+    } else {
+        builder.with_inner_size(LogicalSize::new(940.0, 720.0)).with_min_inner_size(LogicalSize::new(520.0, 400.0))
+    };
+    let window = builder.build(&event_loop).map_err(|e| io(&e.to_string()))?;
+    // overlay starts parked top-right of the primary monitor.
+    if overlay {
+        if let Some(mon) = window.current_monitor() {
+            let sz = mon.size().to_logical::<f64>(window.scale_factor());
+            window.set_outer_position(LogicalPosition::new((sz.width - 440.0 - 24.0).max(0.0), 24.0));
+        }
+    }
+    let mut overlay_on = overlay; // live-toggle state for the always-on-top shortcut
 
     // No eager engine boot: the window opens to Setup (first run) or Home, and the
     // engine is launched lazily only when the user picks "Launch Peptide". The
@@ -90,9 +162,13 @@ pub fn launch() -> std::io::Result<()> {
         let poll_cleanup = cleanup.clone();
         let poll_proxy = event_loop.create_proxy();
         thread::spawn(move || {
+            // PEPTIDE_NO_POLL=1 disables the matchStatus/PING poll (isolation: does the
+            // per-200ms `e matchStatus()` write hang the engine's frame loop on match start?).
+            let no_poll = std::env::var("PEPTIDE_NO_POLL").map(|v| v == "1").unwrap_or(false);
             let mut ssf2_misses = 0u32; // consecutive PING failures → SSF2 has gone away
             loop {
             thread::sleep(Duration::from_millis(200));
+            if no_poll { continue; }
             if engine_is_ssf2() {
                 // SSF2: first a cheap PING — this is BOTH the liveness check (so we
                 // notice when SSF2 is closed/crashes; there's no socket EOF like
@@ -132,6 +208,25 @@ pub fn launch() -> std::io::Result<()> {
         });
     }
 
+    // Test harness: drive the GUI from code so boot bugs are reproducible headlessly.
+    //   PEPTIDE_GUI_AUTOBOOT=<verb>   fire one boot IPC after the page loads. <verb> is the
+    //                                 part after "@@boot:", e.g. "quick:mario", "regular",
+    //                                 "ssf2:mario". Equivalent to clicking that boot button.
+    //   PEPTIDE_GUI_TRACE=1           echo every IPC message + page-bound Ev::Js to stderr,
+    //                                 so a run can be captured + read back (with screenshots).
+    if let Ok(verb) = std::env::var("PEPTIDE_GUI_AUTOBOOT") {
+        if !verb.trim().is_empty() {
+            let px = event_loop.create_proxy();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(3500)); // let the page boot-route + render
+                let msg = format!("@@boot:{}", verb.trim());
+                eprintln!("[gui-trace] AUTOBOOT -> {msg}");
+                let _ = px.send_event(Ev::Js(format!(
+                    "window.ipc && window.ipc.postMessage({})", js_str(&msg))));
+            });
+        }
+    }
+
     let char_name = crate::config::Config::load().char_name();
     let init = format!("window.__CHAR__={};", js_str(&char_name));
 
@@ -153,6 +248,7 @@ pub fn launch() -> std::io::Result<()> {
         })
         .with_ipc_handler(move |req: Request<String>| {
             let body = req.body().to_string();
+            gui_trace("ipc", &body);
             let (w, cl, cn, px, ch) = (ipc_writer.clone(), ipc_cleanup.clone(), ipc_conn.clone(),
                                        ipc_proxy.clone(), ipc_char.clone());
             let b = body.as_str();
@@ -186,6 +282,16 @@ pub fn launch() -> std::io::Result<()> {
                     } else {
                         handle_command(&format!("e iconFeed({n})"), &ipc_writer, &ipc_proxy);
                     }
+                }
+            } else if let Some(v) = b.strip_prefix("@@opt:enginelogging:") {
+                // "Surface script errors in-game" checkbox. Sets the env the patcher reads
+                // (PEPTIDE_ENGINE_LOGGING) — done synchronously on the IPC thread so the boot
+                // message the page sends right after spawns the patcher with the right value.
+                // Default is ON, so we only pin "0" for off and clear it for on.
+                if v.trim() == "0" {
+                    std::env::set_var("PEPTIDE_ENGINE_LOGGING", "0");
+                } else {
+                    std::env::remove_var("PEPTIDE_ENGINE_LOGGING");
                 }
             } else if b.starts_with("@@") {
                 handle_screen_verb(b, &ipc_proxy);
@@ -237,7 +343,26 @@ pub fn launch() -> std::io::Result<()> {
                 let _ = webview.evaluate_script(&format!("window.onLine && onLine({})", js_str(&line)));
             }
             Event::UserEvent(Ev::Js(js)) => {
+                if js.contains("onReconnected") || js.contains("Failed") || js.contains("crash")
+                    || js.contains("onPatchProgress") || js.contains("SSF2") {
+                    gui_trace("Ev::Js", &js);
+                }
                 let _ = webview.evaluate_script(&js);
+            }
+            // A session connected: spawn the standalone transparent debugger overlay over
+            // the game (a separate process/window — does NOT touch this Peptide window).
+            // Once per connection; the overlay watchdogs our pid and self-exits when we do.
+            Event::UserEvent(Ev::Overlay(true)) => {
+                spawn_standalone_overlay();
+            }
+            // F8 toggles overlay (always-on-top) live, so you can pop the console on top of the
+            // game and drop it back without relaunching (peptide todo #8).
+            Event::WindowEvent { event: WindowEvent::KeyboardInput { event: ref key_ev, .. }, .. }
+                if key_ev.state == tao::event::ElementState::Pressed
+                    && key_ev.physical_key == tao::keyboard::KeyCode::F8 =>
+            {
+                overlay_on = !overlay_on;
+                window.set_always_on_top(overlay_on);
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
                 if let Some(mut c) = cleanup.lock().ok().and_then(|mut g| g.take()) {
@@ -678,6 +803,7 @@ fn reconnect_existing(writer: SharedWriter, conn: SharedConn, proxy: EventLoopPr
             spawn_reader(reader, proxy.clone(), writer.clone(), None);
             let _ = proxy.send_event(Ev::Js(format!(
                 "window.onReconnected && onReconnected({}, {}, false)", port, js_str(&char_name))));
+            let _ = proxy.send_event(Ev::Overlay(true));
         }
         None => {
             let _ = proxy.send_event(Ev::Js("window.onReconnectFailed && onReconnectFailed(\"no_session\")".into()));
@@ -711,7 +837,10 @@ fn boot_new(writer: SharedWriter, cleanup: SharedCleanup, conn: SharedConn,
     // is just a live TCP bridge with no auto-spawn. Both keep active TCP.
     let bake = if quick && !char_name.is_empty() { Some(char_name.as_str()) } else { None };
     match crate::ui::patch_and_launch_with_progress(Some(&on_progress), bake) {
-        Ok((port, token, mut guard)) => match crate::ui::reawait(port, &token, 30) {
+        // 60s (was 30): a cold fast-boot can take longer than 30s to dial in, and a timeout
+        // here disposes the guard — which KILLS the just-launched engine (looks like a crash).
+        // The CLI session uses 45s; give the GUI even more headroom.
+        Ok((port, token, mut guard)) => match crate::ui::reawait(port, &token, 60) {
             Some((reader, w)) => {
                 if let Ok(mut g) = writer.lock() { *g = Some(w); }
                 if let Ok(mut g) = cleanup.lock() { *g = Some(guard); }
@@ -726,6 +855,7 @@ fn boot_new(writer: SharedWriter, cleanup: SharedCleanup, conn: SharedConn,
                 let _ = proxy.send_event(Ev::Js(format!(
                     "window.onReconnected && onReconnected({}, {}, {})",
                     port, js_str(&char_name), if quick { "true" } else { "false" })));
+                let _ = proxy.send_event(Ev::Overlay(true));
             }
             None => {
                 guard.dispose(); // kill the engine that never dialed in
@@ -818,14 +948,17 @@ fn boot_ssf2(cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>, char_name: Optio
     // Quick boot skips the disclaimer (no event READY) → responsiveness heuristic; a normal
     // boot waits for the disclaimer READY. Generous timeout for a cold boot either way.
     let settled = if fastboot.is_some() {
-        crate::ssf2_bridge::wait_ready(10, Duration::from_secs(120))
+        crate::ssf2_bridge::wait_ready(10, Duration::from_secs(60))
     } else {
-        crate::ssf2_bridge::wait_ready_signal(Duration::from_secs(120))
+        crate::ssf2_bridge::wait_ready_signal(Duration::from_secs(60))
     };
+    // SSF2 is already connected (accept_engine passed). The responsiveness probe can be
+    // flakier under the GUI's event loop than in the CLI, so don't HARD-FAIL on it the way
+    // we used to (that's the "stuck then fails at 3/4" report) — match the CLI session, which
+    // proceeds and accepts commands anyway. A genuinely-not-ready engine surfaces at spawn.
     if !settled {
         let _ = proxy.send_event(Ev::Js(
-            "window.onSsf2BootFailed && onSsf2BootFailed(\"SSF2 launched but never settled. Try again.\")".into()));
-        return;
+            "window.onLine && onLine(\"SYS:SSF2 connected but slow to settle — continuing…\")".into()));
     }
     progress(4, 4, "ready");
 
@@ -859,6 +992,7 @@ fn boot_ssf2(cleanup: SharedCleanup, proxy: EventLoopProxy<Ev>, char_name: Optio
     GUI_ENGINE.store(1, Ordering::Relaxed);
     let _ = proxy.send_event(Ev::Js(format!(
         "window.onReconnected && onReconnected(0, {}, false, \"SSF2\")", js_str(&label))));
+    let _ = proxy.send_event(Ev::Overlay(true));
 }
 
 /// Tear down the live engine on request (the status-button "Disconnect"). Fraymakers
@@ -976,8 +1110,17 @@ impl crate::session::FrayStreamSink for GuiStreamSink {
         }
     }
     // on_anim: dropped — shown live in the matchStatus widget, not the chat transcript.
-    fn on_line(&mut self, raw: &str) { let _ = self.proxy.send_event(Ev::Line(raw.to_string())); }
-    fn on_eof(&mut self) { engine_gone(&self.proxy, &self.resdiag); }
+    fn on_line(&mut self, raw: &str) {
+        tee_overlay(raw); // mirror to the standalone overlay's tail log (SCRIPTERR/ANIM/etc.)
+        let _ = self.proxy.send_event(Ev::Line(raw.to_string()));
+    }
+    fn on_eof(&mut self) {
+        // The engine stream ended (crash or quit). The GUI survives to show reconnect, so the
+        // overlay's parent-pid watchdog won't fire — write the close marker into its tail log
+        // so it tears down too (also covers non-macOS, where the window-vanish poll doesn't run).
+        tee_overlay("[engine stream ended]");
+        engine_gone(&self.proxy, &self.resdiag);
+    }
 }
 
 fn spawn_reader(reader: BufReader<TcpStream>, proxy: EventLoopProxy<Ev>,

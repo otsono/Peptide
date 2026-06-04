@@ -215,21 +215,50 @@ roughly the order a fresh agent should pick these up.
 the live-engine tooling features we want to build. this is the one list (PEPTIDE_DESIGN.md
 points here).
 
-1. **multiplayer in quick boot.** extra players fully functional, not just present: they take
-   hits and receive their own controls. has to work on both SSF2 and Fraymakers. this is the
-   prerequisite for the hit-measurement work in #6.
-2. **rename `spawn` → `startMatch`.**
-3. **`addCharacter`** -- drop players into a running match on the fly.
-4. **scenario replay test env.** replay one exact scenario on repeat: both players at set
-   positions, each on a set frame of a set animation, with set momentum, pressing set inputs.
-5. **live move-tuning** -- tweak move stats and move code on the fly from the Peptide UI
-   inside that test env (includes stat hot-reload into a running match).
+1. **multiplayer in quick boot.** on Fraymakers extra players spawn and are fully accessible:
+   `startMatch mario,mario` adds each extra player into the live match one per frame, and `p1`
+   binds to the live 2nd character (`match.characterCount()`==2, `p1.getStateName()`/`p1.damage`
+   readable). still open: distinct CUSTOM chars as p1 don't self-bootstrap (same-char / base-game
+   only), they don't yet take hits in a verified way, and the SSF2 side. prerequisite for #6.
+3. **`addCharacter`** -- drop one more fighter into the LIVE match on the fly. the command
+   (`addCharacter`, aliases `addchar`/`add`, wire `n`) re-arms the per-frame deferred-spawn from a
+   stashed copy of the roster and fires one extra spawn, verified firing live. still open: the live
+   match allocates 2 player slots, so the per-frame spawn past slot 2 returns null (`SP:0`) and the count
+   stays 2. the cap is the match MODE: the self-bootstrap launch uses training mode (the only mode
+   that starts from the minimal headless config), which is 1v1. breaking past 2 needs a versus /
+   free-for-all mode, and that mode's launch needs the CSS/menu/scene context the injected-bytecode
+   path can't supply (see `fraymakers-engine-internals`). so addChar's per-frame spawn trigger is
+   done and correct; the 2-player ceiling is the shared architectural wall under #1/#6/#7.
+4. **scenario replay test env.** the `scenario` command sets up a deterministic, re-runnable
+   scene: `scenario <p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]` places both players at
+   fixed positions (optionally with world-space momentum), resets them to neutral STAND, then
+   plays an input timeline on p0. re-run the exact line to replay it. host-side macro composing
+   `eval` + `seq` through the DebugTarget seam (so it works on both engines). still open: setting
+   a precise animation FRAME (not just the state) and the hit-measurement readback (#6) that makes
+   a scenario's outcome quantifiable.
+5. **live move-tuning** -- the `tune <player> <hitboxIndex> <stat>=<value> …` command
+   hot-reloads a move's hitbox stats into the running match with no relaunch (e.g.
+   `tune p0 0 damage=15 baseKnockback=50 angle=45`), via the engine's own
+   `updateHitboxStats`. host-side eval wrapper, validated + unit-tested. still open: the
+   UI surface for it, tweaking move *code* (not just stats) on the fly, and persisting
+   tweaks back to the source stats files.
 6. **in-engine hit measurement** (needs #1): hit-result readback (damage dealt, knockback
    distance + angle, hitstun frames), KO-threshold search (binary-search the dummy's % for
-   the lowest KO), and an active-box dump (every active hit/hurt box this frame).
+   the lowest KO), and an active-box dump (every active hit/hurt box this frame). open
+   confounds to solve: `toState(JAB)` doesn't arm a hitbox to damage an overlapping dummy,
+   `p0.flipX()` returns 0 not a facing sign, and `getX` has a Y-dependent offset from `setX`.
 7. **frame-advantage display** in the Peptide UI, on shield hit and on hit.
-8. **overlay mode.** Peptide attaches over the running game, semi-transparent, UI on top,
-   matching our existing theming, show/hide on a keybind, as much function as fits without
-   blocking the game, and it re-fits when the game window resizes.
-9. **batch commands / inputs from a file** in one go, from the UI or the CLI.
-10. **way more hscript commands.**
+8. **overlay mode.** `$PEPTIDE_OVERLAY=1` floats the console ON TOP of the running game:
+   always-on-top, compact (440x560), parked top-right of the primary monitor, with the full UI
+   (matching our theming). F8 toggles always-on-top on/off live so you can pop it over the match
+   and drop it back without relaunching. still open: true window transparency (the system webview
+   makes this fiddly per-OS) and auto re-fit when the game window moves/resizes (needs OS window
+   tracking).
+9. **batch commands / inputs from a file** -- the UI half. the CLI half is `peptide tell
+   --file <path>` (one command per line, `#` comments skipped; mixes engine cmds, `e`
+   hscript, and `seq`/`hold` inputs through the one dispatch path).
+10. **way more hscript commands.** convenience commands now wrap common eval patterns through
+    the one dispatch path (so they work on both engines): `scenario` (#4), `tune` (#5),
+    `dmg <player> <value>` (set damage percent), and `info` (one-shot readout of both players'
+    x / state / damage / team). all validated + unit-tested. more can be added the same way (a
+    `Cmd` registry entry + a `parse_*` that returns `Command::Eval`).

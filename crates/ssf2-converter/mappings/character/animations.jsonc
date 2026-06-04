@@ -59,6 +59,7 @@
 
     "defend": "shield",
     "dodgeroll": "roll",
+    "roll": "crash_roll",
     "airdodge": "airdodge",
     "sidestep": "spot_dodge",
     "grab": "grab",
@@ -68,7 +69,8 @@
     "stunned": "stunned",
     "dizzy": "dizzy",
     "sleep": "sleep",
-    "falling": "tumble",
+    "tumble": "tumble",
+    "falling": "fall",
     "crash": "crash_bounce",
     "frozen": "frozen",
     "egg": "egg",

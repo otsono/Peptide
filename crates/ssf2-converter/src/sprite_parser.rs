@@ -390,6 +390,73 @@ pub fn parse_sprite_boxes(
     parse_sprite_boxes_from_swf(&swf, char_name, ssf2_to_fm, &xform_map)
 }
 
+/// Map each animation's INNER sprite id → its SSF2 xframe label, by walking the
+/// root MC timeline. THIS is the only correct source of an animation's identity:
+/// an animation is the xframe `FrameLabel` on the root timeline, and the `stance`
+/// PlaceObject under that label places the animation's inner sprite. We must NEVER
+/// derive an animation name from the inner sprite's SYMBOL name — two animations
+/// can share a symbol (and across a multi-char .ssf the symbol names collide), and
+/// SSF2 routes by timeline placement, not by symbol. (Mirrors what dump_proj_states
+/// observes and how extract_xframe_transforms already reads the same timeline.)
+pub(crate) fn build_xframe_sprite_map(
+    swf: &swf::Swf<'_>,
+    sym_names: &BTreeMap<u16, String>,
+    char_lower: &str,
+) -> BTreeMap<u16, String> {
+    let mut map: BTreeMap<u16, String> = BTreeMap::new();
+    let root_id = find_root_sprite_id(swf, sym_names, char_lower);
+    for tag in &swf.tags {
+        if let swf::Tag::DefineSprite(sprite) = tag {
+            if Some(sprite.id) != root_id { continue; }
+            let mut cur_label = String::new();
+            for stag in &sprite.tags {
+                match stag {
+                    swf::Tag::FrameLabel(fl) => {
+                        cur_label = fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
+                    }
+                    swf::Tag::PlaceObject(po) => {
+                        let inst = po.name.as_ref()
+                            .map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
+                        if inst.as_deref() == Some("stance") {
+                            if let swf::PlaceObjectAction::Place(cid) = &po.action {
+                                if !cur_label.is_empty() {
+                                    // First label that places a given inner sprite wins.
+                                    map.entry(*cid).or_insert_with(|| cur_label.clone());
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            break;
+        }
+    }
+    map
+}
+
+/// THE single source of truth for "what animation is this sprite": sprite id →
+/// (ssf2 anim name, fm anim name). Built from the timeline (build_xframe_sprite_map)
+/// then run through ssf2_to_fm (static fallback). The box extractor AND the image
+/// extractor BOTH call this, so they can never disagree about a sprite's animation —
+/// if they computed it independently they could (and did) drift.
+pub(crate) fn build_anim_sprite_map(
+    swf: &swf::Swf<'_>,
+    sym_names: &BTreeMap<u16, String>,
+    char_lower: &str,
+    ssf2_to_fm: &BTreeMap<String, String>,
+) -> BTreeMap<u16, (String, String)> {
+    build_xframe_sprite_map(swf, sym_names, char_lower)
+        .into_iter()
+        .map(|(id, ssf2)| {
+            let fm = ssf2_to_fm.get(&ssf2).cloned()
+                .or_else(|| static_ssf2_to_fm(&ssf2))
+                .unwrap_or_else(|| ssf2.clone());
+            (id, (ssf2, fm))
+        })
+        .collect()
+}
+
 /// Same as `parse_sprite_boxes` but operates on an already-parsed SWF and
 /// a precomputed xform_map. Main.rs parses each character's SWF once and
 /// computes its xform_map once, then threads both here to skip the
@@ -421,26 +488,19 @@ pub fn parse_sprite_boxes_from_swf(
     let char_lower = char_name.to_lowercase();
     let mut result: BTreeMap<String, AnimationBoxData> = BTreeMap::new();
 
+    // Shared, timeline-derived sprite→animation map (the SAME one the image
+    // extractor uses — never derived from the sprite's symbol name).
+    let anim_by_sprite = build_anim_sprite_map(swf, &sym_names, &char_lower, ssf2_to_fm);
+
     for tag in &swf.tags {
         if let swf::Tag::DefineSprite(sprite) = tag {
             let sym = sym_names.get(&sprite.id).cloned().unwrap_or_default();
 
-            // Only process sprites that belong to this character
-            if !sym.to_lowercase().contains(&char_lower) {
-                continue;
-            }
-
-            // Try to extract SSF2 animation name from the symbol name
-            let ssf2_name = match extract_ssf2_anim_name(&sym, &char_lower, ssf2_to_fm) {
-                Some(n) => n,
+            // (ssf2 name, fm name) for this sprite, or skip if it's not a timeline animation.
+            let (ssf2_name, fm_name) = match anim_by_sprite.get(&sprite.id) {
+                Some((s, f)) => (s.clone(), f.clone()),
                 None => continue,
             };
-
-            // Convert SSF2 name → FM name.
-            let fm_name = ssf2_to_fm.get(&ssf2_name)
-                .cloned()
-                .or_else(|| static_ssf2_to_fm(&ssf2_name))
-                .unwrap_or_else(|| ssf2_name.clone());
 
             // Look up root MC transform for this animation
             let xform = xform_map.get(&fm_name).copied().unwrap_or_default();

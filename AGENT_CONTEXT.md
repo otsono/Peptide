@@ -132,6 +132,16 @@ reverse-engineered from first principles during development.
 >   `char_icon` → `None`); it doesn't get silently special-cased in the caller.
 > - **backends (`FraymakersTarget`, `Ssf2Target`) + the transport** are the ONLY place
 >   engine differences live. everything above them is shared.
+> - **passive host features (a stream the engine emits, or a display) are shared the same
+>   way.** the live debugger overlay (`src/overlay.rs`) is engine-agnostic: it tails the
+>   session `out.log` and renders it, and BOTH the Fraymakers (`bridge`) and SSF2
+>   (`ssf2_bridge`) sessions spawn it through the one `overlay::spawn_for_session`. anything
+>   the engine *surfaces into that log* is the per-engine half: surfacing trapped script
+>   errors as a `SCRIPTERR:` line is the FM engine's job (done by the bytecode patch); SSF2
+>   surfaces its own errors through its bridge. the overlay just shows whichever arrives. so
+>   the feature ("see errors + state over the game") is one host feature on both engines; only
+>   *how each engine produces the data* differs, and an engine that can't produce some of it is
+>   a capability gap (an empty field), not a special case in the host.
 >
 > THE RULE: **never write `if engine == fraymakers { … } else { … }` in feature/command logic.**
 > if you reach for that, the difference belongs lower down -- in `vocab.rs`, a trait-method

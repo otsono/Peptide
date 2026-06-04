@@ -217,7 +217,8 @@
     { "from": ".destroyTimer(", "to": ".removeTimer(" },
     { "from": ".stancePlayFrame(", "to": ".playLabel(" },
     { "from": ".removeAllEffects()", "to": "/* TODO: removeAllEffects */" },
-    { "from": ".addEffectToList(", "to": "/* TODO: addEffectToList */ " },
+    // .addEffectToList(...) is unwrapped by rewrite_add_effect_to_list (a balanced
+    // string strip orphans its closing paren, breaking the script).
 
     // Hitbox property renames in object literals — universal SSF2 → FM
     // field-name conversions. Applied to ANY object literal containing

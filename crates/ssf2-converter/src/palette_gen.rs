@@ -353,7 +353,9 @@ fn build_output(
     let preview_meta_json = serde_json::to_string_pretty(&json!({
         "export": false,
         "guid": preview_meta_guid,
-        "id": "",
+        // Unique per char (was ""). One library/sprites/ is shared across a
+        // multi-char project, so an empty id on two previews is ambiguous.
+        "id": format!("{}PalettePreview", char_name),
         "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
     }))?;
 

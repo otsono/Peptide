@@ -89,8 +89,11 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
     let char_entity_filename = format!("{}.entity", char_pascal);
     fs::write(entities_dir.join(&char_entity_filename), entity_gen::generate_entity(data, &char_id, sprite_boxes, img_result, populated_jabs))?;
 
-    // Generate .meta sidecar files for each sprite PNG
-    let meta_guids = entity_gen::get_image_meta_guids(&char_id, img_result);
+    // Generate .meta sidecar files for each sprite PNG. Image GUIDs are
+    // symbol-only (crate::uuid_gen::image_meta_guid) so they're consistent across
+    // the character, projectile/effect and menu paths — critical for multi-char
+    // projects where one library/sprites/ is shared (else refs dangle → placeholders).
+    let meta_guids = entity_gen::get_image_meta_guids(img_result);
     let sprites_dir = char_dir.join("library/sprites");
     let mut meta_count = 0;
     for (png_rel_path, guid) in &meta_guids {
@@ -117,8 +120,15 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
         Ok(pal) => {
             fs::write(char_dir.join(format!("library/costumes.palettes{}", suffix)),       &pal.palettes_json)?;
             fs::write(char_dir.join(format!("library/costumes.palettes{}.meta", suffix)),  &pal.palettes_meta_json)?;
-            fs::write(sprites_dir.join(format!("palette_preview.png{}", suffix)),          &pal.preview_png)?;
-            fs::write(sprites_dir.join(format!("palette_preview.png{}.meta", suffix)),     &pal.preview_meta_json)?;
+            // CHAR-UNIQUE preview filename. The old `palette_preview.png{suffix}` scheme
+            // gave the 2nd+ char of a multi-char project a name like `palette_preview.png2`
+            // — a malformed extension that ALSO shares the base name `palette_preview` with
+            // char 1, so FrayTools (which derives a sprite's GUID from its path) collides
+            // the two previews. A char-prefixed `.png` name is unique + valid. The palette
+            // links its preview by GUID (imageAsset), so the filename isn't referenced elsewhere.
+            let preview_name = format!("{}_palette_preview.png", char_id);
+            fs::write(sprites_dir.join(&preview_name),                    &pal.preview_png)?;
+            fs::write(sprites_dir.join(format!("{}.meta", preview_name)), &pal.preview_meta_json)?;
             // Write the entity with the paletteMap filled in
             let entity_json = entity_gen::generate_entity_with_palette(
                 data, &char_id, sprite_boxes, img_result, populated_jabs,
@@ -139,7 +149,7 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
             // Find the head image in our extracted images
             let head_image = img_result.images.values().find(|img| &img.symbol_name == img_sym);
             if let Some(head_img) = head_image {
-                let head_meta_guid = crate::uuid_gen::det_uuid(&format!("{}::meta_{}", char_id, img_sym));
+                let head_meta_guid = crate::uuid_gen::image_meta_guid(img_sym);
                 let menu_info = entity_gen::MenuImageInfo {
                     head_symbol: img_sym.clone(),
                     head_width: head_img.width,
@@ -172,149 +182,23 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
         log::warn!("No head sprite found, skipping Menu.entity");
     }
 
-    // ── projectile.entity files ───────────────────────────────────────────────────
-    for proj in projectiles {
-        // Extract image frames from the inner sprite using effect-sprite flattening
-        let (image_frames, image_guids) = if let Some(inner_id) = proj.inner_sprite_id {
-            match crate::image_extractor::extract_projectile_frame_images_from_swf(
-                parsed_swf, &char_id, inner_id, img_result
-            ) {
-                Ok(pfi) => {
-                    log::debug!("Projectile '{}': {} image frames", proj.name, pfi.frames.len());
-                    (pfi.frames, pfi.image_guids)
-                }
-                Err(e) => {
-                    log::warn!("Failed to extract images for projectile '{}': {}", proj.name, e);
-                    (vec![], std::collections::BTreeMap::new())
-                }
-            }
-        } else {
-            (vec![], std::collections::BTreeMap::new())
+    // ── projectile files ──────────────────────────────────────────────────
+    // Delegated to the summoner-agnostic projectile subsystem so stages/items
+    // can emit projectiles the same way (see projectile_gen). The character is
+    // just one kind of owner here.
+    {
+        let scripts_root = char_dir.join("library/scripts");
+        let ctx = crate::projectile_gen::ProjectileGenCtx {
+            owner_id: &char_id,
+            entities_dir: &entities_dir,
+            scripts_root: &scripts_root,
+            parsed_swf,
+            img_result,
+            projectile_data: &data.projectile_data,
+            palette_collection_guid: palette_collection_guid.as_deref(),
+            palette_base_map_id: palette_base_map_id.as_deref(),
         };
-
-        // Extract collision boxes from the inner sprite
-        let boxes = if let Some(inner_id) = proj.inner_sprite_id {
-            match crate::sprite_parser::extract_boxes_for_sprite_id_from_swf(parsed_swf, inner_id) {
-                Ok(b) => b,
-                Err(e) => {
-                    log::warn!("Failed to extract boxes for projectile '{}': {}", proj.name, e);
-                    None
-                }
-            }
-        } else { None };
-
-        // Extract image+box data for each extra state (multi-state projectiles like link_bomb)
-        let mut extra_states: Vec<entity_gen::ProjectileStateData> = Vec::new();
-        for state in &proj.states {
-            if state.label == "attack_idle" { continue; } // already extracted above
-            let (sf, sg) = match crate::image_extractor::extract_projectile_frame_images_from_swf(
-                parsed_swf, &char_id, state.inner_sprite_id, img_result
-            ) {
-                Ok(pfi) => (pfi.frames, pfi.image_guids),
-                Err(e) => {
-                    log::warn!("State '{}' image extraction failed: {}", state.label, e);
-                    (vec![], std::collections::BTreeMap::new())
-                }
-            };
-            let sb = crate::sprite_parser::extract_boxes_for_sprite_id_from_swf(parsed_swf, state.inner_sprite_id).unwrap_or_default();
-            extra_states.push(entity_gen::ProjectileStateData {
-                label: state.label.clone(),
-                image_frames: sf,
-                image_guids: sg,
-                boxes: sb,
-                frame_count: state.inner_frame_count,
-            });
-        }
-
-        let proj_info = entity_gen::ProjectileInfo {
-            name: proj.name.clone(),
-            inner_sprite_name: proj.inner_sprite_name.clone(),
-            inner_frame_count: proj.inner_frame_count,
-            boxes,
-            image_frames,
-            image_guids,
-            extra_states,
-            inner_labels: proj.inner_labels.clone(),
-        };
-
-        let filename = format!("{}.entity", sanitize_entity_name(&proj.name));
-        let mut proj_json = entity_gen::generate_projectile_entity(&char_id, &proj_info);
-        // Fill in paletteMap if available
-        if let (Some(ref cg), Some(ref pm)) = (&palette_collection_guid, &palette_base_map_id) {
-            let mut proj_val: serde_json::Value = serde_json::from_str(&proj_json).unwrap_or(serde_json::json!({}));
-            proj_val["paletteMap"] = serde_json::json!({
-                "paletteCollection": cg,
-                "paletteMap": pm
-            });
-            proj_json = serde_json::to_string_pretty(&proj_val).unwrap_or(proj_json);
-        }
-        fs::write(entities_dir.join(&filename), proj_json)?;
-        log::info!("Generated projectile entity: {} ({} frames)", filename, proj.inner_frame_count);
-
-        // ── projectile script files ──────────────────────────────────────────
-        // Layout matches the convention observed in aJewelofRarity/AnnieCharacter
-        // (real FM character mod): a SINGLE `library/scripts/Projectile/`
-        // directory holds files for every projectile, with each file
-        // prefixed by the projectile name in PascalCase
-        // (`DeeNspecScript.hx`, `DeeNspecStats.hx`, …). Scales cleanly to
-        // multi-projectile characters; matches a real-FM-mod precedent
-        // (our prior `Projectile_<name>/` layout matched none of the 6
-        // surveyed repos).
-        let entity_id = proj.name.replace('_', "");
-        let pascal = snake_to_pascal(&proj.name);
-        let proj_scripts_dir = char_dir.join("library/scripts/Projectile");
-        fs::create_dir_all(&proj_scripts_dir)?;
-
-        fs::write(
-            proj_scripts_dir.join(format!("{}Script.hx", pascal)),
-            generate_projectile_script(&char_id, &entity_id, &proj_info.extra_states),
-        )?;
-        fs::write(
-            proj_scripts_dir.join(format!("{}Script.hx.meta", pascal)),
-            script_meta(
-                &format!("{}ProjectileScript", entity_id),
-                &det_uuid(&format!("{}::{}::ProjectileScript::meta", char_id, proj.name)),
-                ScriptMetaKind::ProjectileScript,
-            ),
-        )?;
-        fs::write(
-            proj_scripts_dir.join(format!("{}AnimationStats.hx", pascal)),
-            generate_projectile_animation_stats(&proj_info),
-        )?;
-        fs::write(
-            proj_scripts_dir.join(format!("{}AnimationStats.hx.meta", pascal)),
-            script_meta(
-                &format!("{}ProjectileAnimationStats", entity_id),
-                &det_uuid(&format!("{}::{}::ProjectileAnimationStats::meta", char_id, proj.name)),
-                ScriptMetaKind::ProjectileAnimationStats,
-            ),
-        )?;
-        let proj_ssf2_match = best_match_projectile_data(&proj.name, &data.projectile_data);
-        fs::write(
-            proj_scripts_dir.join(format!("{}Stats.hx", pascal)),
-            generate_projectile_stats(&char_id, &entity_id, &proj_info, proj_ssf2_match),
-        )?;
-        fs::write(
-            proj_scripts_dir.join(format!("{}Stats.hx.meta", pascal)),
-            script_meta(
-                &format!("{}ProjectileStats", entity_id),
-                &det_uuid(&format!("{}::{}::ProjectileStats::meta", char_id, proj.name)),
-                ScriptMetaKind::ProjectileStats,
-            ),
-        )?;
-        fs::write(
-            proj_scripts_dir.join(format!("{}HitboxStats.hx", pascal)),
-            generate_projectile_hitbox_stats(&char_id, &entity_id, &proj_info, proj_ssf2_match),
-        )?;
-        fs::write(
-            proj_scripts_dir.join(format!("{}HitboxStats.hx.meta", pascal)),
-            script_meta(
-                &format!("{}ProjectileHitboxStats", entity_id),
-                &det_uuid(&format!("{}::{}::ProjectileHitboxStats::meta", char_id, proj.name)),
-                ScriptMetaKind::ProjectileHitboxStats,
-            ),
-        )?;
-        log::info!("Generated projectile scripts for {} → {}*.hx", proj.name, pascal);
+        crate::projectile_gen::generate_projectiles(&ctx, projectiles)?;
     }
 
     // ── effect .entity files ─────────────────────────────────────────────
@@ -453,6 +337,71 @@ fn generate_hitbox_stats(data: &CharacterData, _char_id: &str) -> String {
     }
 
     out.push_str(req("character.stats.hitbox_footer", &t.hitbox_footer));
+    let out = strip_trailing_commas(&out);
+    // ERROR HANDLER for broken hitbox stats: the engine parses HitboxStats as one hscript object
+    // literal; a single malformed entry (e.g. a half-commented attack block) breaks the WHOLE parse
+    // → null stats → the character silently deals no damage (hurtboxes still work, so nothing
+    // crashes — a nasty silent failure). Validate the generated object here so a converter bug
+    // surfaces loudly at convert time instead of as dead hitboxes in-engine.
+    assert_balanced_stats(&out, &format!("HitboxStats for {}", data.name));
+    out
+}
+
+/// Fail the conversion (loudly, in peptide) if a generated stats object is not a syntactically
+/// balanced hscript object literal — the failure mode that produces dead hitboxes in-engine.
+/// Counts `{}`/`[]` ignoring `//` line comments (string literals in these files never contain
+/// braces). A mismatch means an attack block is malformed and the engine's parse would fail.
+fn assert_balanced_stats(s: &str, context: &str) {
+    let mut curly: i64 = 0;
+    let mut square: i64 = 0;
+    for line in s.lines() {
+        let code = match line.find("//") { Some(i) => &line[..i], None => line };
+        for c in code.chars() {
+            match c {
+                '{' => curly += 1,
+                '}' => curly -= 1,
+                '[' => square += 1,
+                ']' => square -= 1,
+                _ => {}
+            }
+        }
+        if curly < 0 || square < 0 {
+            panic!("broken stats object ({context}): unbalanced braces — an attack block is \
+                    malformed (a stray/closing brace). The engine would fail to parse this and the \
+                    character would deal no damage. Offending line: {:?}", line.trim());
+        }
+    }
+    if curly != 0 || square != 0 {
+        panic!("broken stats object ({context}): unbalanced braces at end \
+                (curly={curly}, square={square}) — a malformed attack block. The engine would fail \
+                to parse this and the character would deal no damage.");
+    }
+}
+
+/// Remove trailing commas inside object literals — any `,` that is followed only by
+/// whitespace and then a `}`. The hitbox-stats templates append `},` after every hitbox
+/// and every move, which leaves a trailing comma before the closing brace of the last
+/// element. hscript's object-literal parser REJECTS trailing commas, so the whole
+/// HitboxStats expression fails to parse → null stats → hitboxes get no stats and never
+/// deal damage (hurtboxes need no stats, so they still work — which is exactly the
+/// "converted chars can be hit but can't hit" bug). This pass makes the output valid.
+/// Only touches structural trailing commas; commas BETWEEN fields are untouched.
+fn strip_trailing_commas(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b',' {
+            let mut j = i + 1;
+            while j < b.len() && (b[j] as char).is_whitespace() { j += 1; }
+            if j < b.len() && b[j] == b'}' {
+                i += 1; // drop the comma, keep the whitespace that follows
+                continue;
+            }
+        }
+        out.push(b[i] as char);
+        i += 1;
+    }
     out
 }
 
@@ -495,7 +444,12 @@ fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool, inherited_from
     let t = &crate::mappings::script_templates().character.stats;
     let req = crate::mappings::require_template;
     let limb = guess_limb(name);
-    let prefix = if is_extra { "\t// SSF2: " } else { "\t" };
+    // Always build the block with a real tab prefix; an `is_extra` block is commented out WHOLE
+    // below. (The old code only commented the opening `// SSF2: name: {` line and left the hitbox
+    // body active+keyless — a syntax error that broke the ENTIRE HitboxStats object parse, so NO
+    // hitboxes got stats and converted characters couldn't deal damage. Hurtboxes need no stats,
+    // so they kept working — which is exactly the observed bug.)
+    let prefix = "\t";
     let mut out = String::new();
     if let Some(base) = inherited_from {
         // Make the inheritance explicit so a modder knows these values were copied
@@ -534,6 +488,15 @@ fn format_attack(name: &str, hitboxes: &[Hitbox], is_extra: bool, inherited_from
             .replace("{{limb}}", &limb));
     }
     out.push_str(req("character.stats.hitbox_attack_close", &t.hitbox_attack_close));
+    if is_extra {
+        // Comment the ENTIRE block — an SSF2 extra has no FM move name, so it's documentation
+        // only. Commenting every line keeps it inert (and syntactically valid).
+        out = out.lines()
+            .map(|l| format!("\t// SSF2: {}", l.trim_start()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        out.push('\n');
+    }
     out
 }
 
@@ -949,7 +912,7 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     // multi-hit combo. Single-jab characters get no chain boilerplate, so
     // nothing references the missing jab2/jab3 animations.
     if populated_jabs >= 2 {
-        out.push_str(&generate_jab_scripts());
+        out.push_str(&generate_jab_scripts(populated_jabs));
     }
 
     // Full-script post-pass: fix paired setIntangibility calls
@@ -971,6 +934,12 @@ fn generate_script(data: &CharacterData, _char_id: &str, populated_jabs: usize) 
     // NAME is defined as a local function here (comment_out runs per-method and
     // can't see sibling defs). Restore those calls.
     out = crate::api_mappings::uncomment_local_fn_calls(&out);
+
+    // Final pass: any commenter that neutralized a block-opening `{` (e.g. an inline
+    // SSF2-only translator on `if (self.getMC()...) {`) leaves the matching `}` live
+    // and orphaned, which is a parse error the engine swallows silently. Comment any
+    // such orphaned close so the emitted hscript stays balanced. #13.
+    out = crate::api_mappings::balance_commented_blocks(&out);
 
     out
 }
@@ -998,11 +967,32 @@ fn extract_fn_body(code: &str) -> Option<String> {
     if body.is_empty() { None } else { Some(body.to_string()) }
 }
 
-fn generate_jab_scripts() -> String {
-    crate::mappings::require_template(
+fn generate_jab_scripts(populated_jabs: usize) -> String {
+    let base = crate::mappings::require_template(
         "character.jab.chain_helpers",
         &crate::mappings::script_templates().character.jab.chain_helpers,
-    ).to_string()
+    ).to_string();
+    if populated_jabs < 4 {
+        return base; // 1-3 hit jabs: template chain (jab1→jab2→jab3→idle) is exact.
+    }
+    // 4-hit jab: extend the chain — jab3 chains to jab4 on a re-press, and jab4
+    // returns to idle. Same shape as the jab1/jab2 links, with CState.JAB4.
+    let jab3_idle = "function jab3_end() {\n\tentity.playCState(CState.IDLE);\n}";
+    let jab3_chain = "function jab3_end() {\n\
+\tif (entity.checkInput(ControlsObject.ATTACK)) {\n\
+\t\tentity.setAnimation(\"jab4\");\n\
+\t\tentity.playCState(CState.JAB4);\n\
+\t} else {\n\
+\t\tentity.playCState(CState.IDLE);\n\
+\t}\n}\n\n\
+function jab4_end() {\n\
+\tentity.playCState(CState.IDLE);\n}";
+    if base.contains(jab3_idle) {
+        base.replace(jab3_idle, jab3_chain)
+    } else {
+        // Template shape changed — append the jab4 link defensively.
+        format!("{}\n\nfunction jab4_end() {{\n\tentity.playCState(CState.IDLE);\n}}\n", base)
+    }
 }
 
 // ─── manifest.json ───────────────────────────────────────────────────────────
@@ -1070,7 +1060,7 @@ fn generate_manifest(char_id: &str, display_name: &str, projectile_names: &[Stri
     for proj_name in projectile_names {
         let entity_id = proj_name.replace('_', "");
         content.push(serde_json::json!({
-            "id":               format!("{}Projectile", entity_id),
+            "id":               crate::projectile_gen::projectile_content_id(proj_name),
             "type":             "projectile",
             "objectStatsId":    format!("{}ProjectileStats", entity_id),
             "animationStatsId": format!("{}ProjectileAnimationStats", entity_id),
@@ -1095,6 +1085,9 @@ pub fn generate_multi_char_manifest(
     chars: &[crate::project::ManifestCharEntry],
 ) -> String {
     let mut content: Vec<serde_json::Value> = Vec::new();
+    // Projectiles are discovered from the one shared SWF, so multiple sub-characters
+    // can list the same one. Each projectile content id must appear ONCE in the manifest.
+    let mut seen_proj: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     for entry in chars {
         let char_id = &entry.char_id;
@@ -1156,9 +1149,11 @@ pub fn generate_multi_char_manifest(
             "scriptId": ai_script_id
         }));
         for proj_name in &entry.projectile_names {
+            let content_id = crate::projectile_gen::projectile_content_id(proj_name);
+            if !seen_proj.insert(content_id.clone()) { continue; } // already listed by an earlier char
             let entity_id = proj_name.replace('_', "");
             content.push(serde_json::json!({
-                "id":               format!("{}Projectile", entity_id),
+                "id":               content_id,
                 "type":             "projectile",
                 "objectStatsId":    format!("{}ProjectileStats", entity_id),
                 "animationStatsId": format!("{}ProjectileAnimationStats", entity_id),
@@ -1271,7 +1266,7 @@ fn silent_wav() -> Vec<u8> {
 
 /// Convert a projectile name to a valid entity filename.
 /// "mario_fireball" → "mario_fireball"
-fn sanitize_entity_name(name: &str) -> String {
+pub(crate) fn sanitize_entity_name(name: &str) -> String {
     name.replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_")
 }
 
@@ -1279,7 +1274,7 @@ fn sanitize_entity_name(name: &str) -> String {
 /// prefix used for the script-file names (`DeeNspec` → `DeeNspecScript.hx`).
 /// Matches the convention seen in real FM character mods
 /// (aJewelofRarity/AnnieCharacter: `Cut` → `CutScript.hx`).
-fn snake_to_pascal(name: &str) -> String {
+pub(crate) fn snake_to_pascal(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut capitalize_next = true;
     for c in name.chars() {
@@ -1343,7 +1338,7 @@ pub enum ScriptMetaKind {
 /// All script-kind .meta files use `language: "hscript"`. The
 /// `pluginMetadata` shape and `plugins` array vary by kind — see the enum
 /// docs. Cross-referenced against Fraymakers/character-template.
-fn script_meta(id: &str, guid: &str, kind: ScriptMetaKind) -> String {
+pub(crate) fn script_meta(id: &str, guid: &str, kind: ScriptMetaKind) -> String {
     use ScriptMetaKind::*;
     // `plugin_meta` always contains a `com.fraymakers.FraymakersMetadata`
     // entry except for the projectile companion stats files, which use an
@@ -1393,16 +1388,48 @@ fn script_meta(id: &str, guid: &str, kind: ScriptMetaKind) -> String {
 
 /// ProjectileScript.hx — handles lifecycle events.
 /// Multi-state projectiles get extra PState constants and state-switching logic.
-fn generate_projectile_script(
+/// Synthesize a projectile's launch (X_SPEED, Y_SPEED) from the SSF2
+/// `getProjectileStats()` physics. SSF2 projectiles carry no behavior script —
+/// the engine drives them from these stats — so we derive the launch from the
+/// best available speed source and apply the SAME velocity_scale the character
+/// physics uses (30->60fps + the 1.9x sprite upscale). Returns (x, y, note).
+fn synth_projectile_launch(ssf2_match: Option<&crate::abc_parser::ProjectileData>) -> (f64, f64, String) {
+    let vs = crate::physics_sim::ScaleParams::default().velocity_scale();
+    let stats = match ssf2_match {
+        Some(d) if !d.stats.is_empty() => &d.stats,
+        // No SSF2 data at all: fall back to the historical template default.
+        _ => return (8.0, 0.0, "no SSF2 speed data — default launch (verify live).".to_string()),
+    };
+    let pick = |keys: &[&str]| keys.iter().find_map(|k| stats.get(*k).copied());
+    // Explicit launch speed if SSF2 provides one; otherwise the speed cap is the
+    // best proxy (the fireball-class projectiles launch at / accelerate to cap).
+    let (x_raw, x_src) = pick(&["xSpeed", "x_speed", "norm_xSpeed"]).map(|v| (v, "xSpeed"))
+        .or_else(|| pick(&["groundSpeedCap", "ground_speed_cap", "aerialSpeedCap", "aerial_speed_cap"]).map(|v| (v, "speedCap")))
+        .unwrap_or((8.0, "default"));
+    let y_raw = pick(&["ySpeed", "y_speed"]).unwrap_or(0.0);
+    let note = format!(
+        "X from SSF2 {}={} * velocity_scale {:.3}; bounce/lifetime not in SSF2 char data — verify live.",
+        x_src, fmt_num(x_raw), vs
+    );
+    (x_raw * vs, y_raw * vs, note)
+}
+
+pub(crate) fn generate_projectile_script(
     _char_id: &str,
     entity_id: &str,
     extra_states: &[entity_gen::ProjectileStateData],
+    ssf2_match: Option<&crate::abc_parser::ProjectileData>,
 ) -> String {
     let t = &crate::mappings::script_templates().projectile.script;
     let req = crate::mappings::require_template;
+    let (x_speed, y_speed, speed_note) = synth_projectile_launch(ssf2_match);
     if extra_states.is_empty() {
         // Single-state: standard template
-        req("projectile.script.single_state", &t.single_state).replace("{{entity_id}}", entity_id)
+        req("projectile.script.single_state", &t.single_state)
+            .replace("{{entity_id}}", entity_id)
+            .replace("{{x_speed}}", &fmt_num(x_speed))
+            .replace("{{y_speed}}", &fmt_num(y_speed))
+            .replace("{{speed_note}}", &speed_note)
     } else {
         // Multi-state: use Fraymakers local state machine instead of fake PStates
         // Each SSF2 frame label becomes an LState that drives animation switching.
@@ -1426,6 +1453,9 @@ fn generate_projectile_script(
             .replace("{{entity_id}}", entity_id)
             .replace("{{lstate_prep}}", &lstate_prep)
             .replace("{{update_branches}}", &update_branches)
+            .replace("{{x_speed}}", &fmt_num(x_speed))
+            .replace("{{y_speed}}", &fmt_num(y_speed))
+            .replace("{{speed_note}}", &speed_note)
     }
 }
 
@@ -1499,7 +1529,7 @@ fn projectile_anim_names(proj: &entity_gen::ProjectileInfo) -> ProjectileAnims {
     ProjectileAnims { active, destroy, all }
 }
 
-fn generate_projectile_animation_stats(proj: &entity_gen::ProjectileInfo) -> String {
+pub(crate) fn generate_projectile_animation_stats(proj: &entity_gen::ProjectileInfo) -> String {
     let t = &crate::mappings::script_templates().projectile.stats;
     let req = crate::mappings::require_template;
     let anims = projectile_anim_names(proj);
@@ -1538,7 +1568,7 @@ fn generate_projectile_animation_stats(proj: &entity_gen::ProjectileInfo) -> Str
 ///
 /// Result is best-effort; callers should mark output with a TODO so the
 /// modder verifies the mapping per call site.
-fn best_match_projectile_data<'a>(
+pub(crate) fn best_match_projectile_data<'a>(
     proj_name: &str,
     projectile_data: &'a std::collections::BTreeMap<String, crate::abc_parser::ProjectileData>,
 ) -> Option<&'a crate::abc_parser::ProjectileData> {
@@ -1570,7 +1600,7 @@ fn best_match_projectile_data<'a>(
         .max_by_key(|d| d.stats.len() + d.hitboxes.len())
 }
 
-fn generate_projectile_stats(
+pub(crate) fn generate_projectile_stats(
     _char_id: &str,
     entity_id: &str,
     proj: &entity_gen::ProjectileInfo,
@@ -1578,7 +1608,7 @@ fn generate_projectile_stats(
 ) -> String {
     let t = &crate::mappings::script_templates().projectile.stats;
     let req = crate::mappings::require_template;
-    let content_id = format!("{}Projectile", entity_id);
+    let content_id = crate::projectile_gen::projectile_content_id(entity_id);
     let anims = projectile_anim_names(proj);
 
     // SSF2 physics field name → FM ProjectileStats field name. The set
@@ -1646,7 +1676,7 @@ fn generate_projectile_stats(
 /// `mappings/character/hitbox_stats.jsonc` as the canonical SSF2→FM
 /// field-name table (same source the character HitboxStats.hx generator
 /// uses — single source of truth, not duplicated).
-fn generate_projectile_hitbox_stats(
+pub(crate) fn generate_projectile_hitbox_stats(
     _char_id: &str,
     entity_id: &str,
     proj: &entity_gen::ProjectileInfo,
@@ -1708,10 +1738,13 @@ fn generate_projectile_hitbox_stats(
                 .replace("{{name}}", name));
         }
     }
-    req("projectile.stats.proj_hitbox_body", &t.proj_hitbox_body)
+    let body = req("projectile.stats.proj_hitbox_body", &t.proj_hitbox_body)
         .replace("{{entity_id}}", entity_id)
         .replace("{{source_note}}", &source_note)
-        .replace("{{blocks}}", &anim_blocks.join(",\n"))
+        .replace("{{blocks}}", &anim_blocks.join(",\n"));
+    let body = strip_trailing_commas(&body);
+    assert_balanced_stats(&body, &format!("ProjectileHitboxStats for {entity_id}"));
+    body
 }
 
 /// Format a float like SSF2 would have written it: integers stay integers,
@@ -1727,7 +1760,7 @@ fn fmt_num(v: f64) -> String {
 
 #[cfg(test)]
 mod hitbox_split_tests {
-    use super::base_attack_name;
+    use super::{base_attack_name, strip_trailing_commas, assert_balanced_stats};
 
     #[test]
     fn split_sub_anims_map_to_their_base_attack() {
@@ -1742,5 +1775,27 @@ mod hitbox_split_tests {
         assert_eq!(base_attack_name("tilt_forward"), None);
         assert_eq!(base_attack_name("dash_attack"), None);
         assert_eq!(base_attack_name("strong_forward_attack"), None);
+    }
+
+    #[test]
+    fn strip_trailing_commas_removes_only_structural_commas() {
+        let got = strip_trailing_commas("{ jab1: { hitbox0: { d: 1, a: 2 }, }, }");
+        // the trailing commas before } are gone; the comma between fields stays
+        assert_eq!(got, "{ jab1: { hitbox0: { d: 1, a: 2 } } }");
+    }
+
+    #[test]
+    fn assert_balanced_stats_accepts_valid_and_ignores_comments() {
+        // a half-commented block (the real bug) is still balanced once the open is in a comment
+        // AND the body is commented too — the fixed form — so it passes.
+        assert_balanced_stats("{\n\tjab1: { hitbox0: {} }\n\t// SSF2: x: {\n\t// SSF2: }\n}", "t");
+    }
+
+    #[test]
+    #[should_panic(expected = "broken stats object")]
+    fn assert_balanced_stats_rejects_the_half_commented_block_bug() {
+        // the original bug: the open `x: {` is commented out but the body + close are ACTIVE,
+        // leaving an extra `}` → unbalanced → must be caught.
+        assert_balanced_stats("{\n\t// SSF2: x: {\n\t\thitbox0: {}\n\t}\n}", "t");
     }
 }

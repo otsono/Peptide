@@ -798,9 +798,11 @@ fn build_anim_frame_images(
     xform_map: &BTreeMap<String, crate::sprite_parser::XframeTransform>,
     images: &BTreeMap<u16, ExtractedImage>,
 ) -> BTreeMap<String, AnimFrameImages> {
-    use crate::sprite_parser::extract_ssf2_anim_name;
-
     let char_lower = char_name.to_lowercase();
+    // Animation identity comes from the TIMELINE (xframe FrameLabel + `stance`
+    // instance), never from the sprite's symbol name. THE SAME shared map the box
+    // extractor uses — images, boxes and transforms name the SAME animation per sprite.
+    let anim_by_sprite = crate::sprite_parser::build_anim_sprite_map(swf, symbols, &char_lower, ssf2_to_fm);
     let mut result = BTreeMap::new();
 
     // Pre-build a lookup of all DefineSprite tags by id (including unnamed ones)
@@ -875,7 +877,9 @@ fn build_anim_frame_images(
             if let swf::Tag::DefineSprite(sprite) = tag {
                 let sym = match symbols.get(&sprite.id) { Some(s) => s.as_str(), None => continue };
                 if !sym.contains("_fla.") { continue; }
-                if extract_ssf2_anim_name(sym, &char_lower, ssf2_to_fm).is_some() { continue; }
+                // Skip character ANIMATION sprites (those placed on the root timeline);
+                // this block handles the remaining non-anim effect/trail sprites.
+                if anim_by_sprite.contains_key(&sprite.id) { continue; }
 
                 let mut disp: BTreeMap<u16, (u16, String, ImageLocalMatrix)> = BTreeMap::new();
                 // depth → (unnamed_sprite_id, place_parent_mat, frame_started)
@@ -960,17 +964,13 @@ fn build_anim_frame_images(
             // Only process character animation sprites
             if !sym.contains("_fla.") { continue; }
 
-            let fm_name = match extract_ssf2_anim_name(sym, &char_lower, ssf2_to_fm) {
-                // Prefer the dynamic xframe-derived map; fall back to the
-                // static table so animations the bytecode never setXFrame'd
-                // still route to their Fraymakers slot instead of landing
-                // under the raw SSF2 name (which leaves the slot empty).
-                Some(ssf2_name) => ssf2_to_fm.get(&ssf2_name).cloned()
-                    .or_else(|| crate::sprite_parser::static_ssf2_to_fm(&ssf2_name))
-                    .unwrap_or(ssf2_name),
+            let fm_name = match anim_by_sprite.get(&sprite.id) {
+                // The shared map already resolved this sprite's FM animation name.
+                Some((_ssf2, fm)) => fm.clone(),
                 None => {
-                    // No mapping but still process — use raw symbol name as key
-                    // e.g. "sandbag_fla.UpThrow_69" contains trail/effect images
+                    // Not a root-timeline animation — a sub-sprite carrying trail/effect
+                    // images. Keep the raw symbol as the key (NOT a symbol-derived ANIM
+                    // name); the trail/effect system references these by symbol.
                     sym.to_string()
                 }
             };
@@ -1371,6 +1371,10 @@ fn sanitize_name(name: &str) -> String {
 pub struct ProjectileFrameImages {
     /// frame index → symbol name of the image placed on that frame (if any)
     pub frames: Vec<Option<String>>,
+    /// frame index → the placed image's SSF2 local transform (scale/pos/rotation).
+    /// Parallel to `frames`. Without applying this the image renders at its full
+    /// native bitmap size (SSF2 scales it down) — i.e. WAY too big.
+    pub matrices: Vec<Option<ImageLocalMatrix>>,
     /// symbol_name → meta GUID
     pub image_guids: BTreeMap<String, String>,
 }
@@ -1397,7 +1401,9 @@ pub fn extract_projectile_frame_images(
 /// SWF parse across all calls within one character's conversion.
 pub fn extract_projectile_frame_images_from_swf(
     swf: &swf::Swf<'_>,
-    char_id: &str,
+    // Image GUIDs are now symbol-only (see image_meta_guid), so the owner id is
+    // no longer part of the seed. Kept in the signature for caller compatibility.
+    _char_id: &str,
     inner_sprite_id: u16,
     img_result: &ImageExtractionResult,
 ) -> Result<ProjectileFrameImages> {
@@ -1463,7 +1469,7 @@ pub fn extract_projectile_frame_images_from_swf(
     // Pass 2: flatten target sprite
     let sprite = match all_sprites.get(&inner_sprite_id) {
         Some(s) => s,
-        None => return Ok(ProjectileFrameImages { frames: vec![], image_guids: BTreeMap::new() }),
+        None => return Ok(ProjectileFrameImages { frames: vec![], matrices: vec![], image_guids: BTreeMap::new() }),
     };
 
     let mut disp: BTreeMap<u16, (u16, String, ImageLocalMatrix)> = BTreeMap::new();
@@ -1538,22 +1544,28 @@ pub fn extract_projectile_frame_images_from_swf(
 
     // Convert effect_frames → per-frame symbol names
     let mut frames: Vec<Option<String>> = Vec::new();
+    let mut matrices: Vec<Option<ImageLocalMatrix>> = Vec::new();
     let mut image_guids: BTreeMap<String, String> = BTreeMap::new();
 
     for frame_entries in &effect_frames {
         // Each entry now has the resolved symbol_name already (from Pass 1 & 2 fixes).
-        // Take the first non-empty symbol name in the frame.
-        let sym_name = frame_entries.iter().find_map(|(_shape_id, sym_name, _mat)| {
-            if sym_name.is_empty() { None } else { Some(sym_name.clone()) }
-        });
+        // Take the first non-empty symbol name in the frame, WITH its local matrix.
+        let entry = frame_entries.iter().find(|(_id, sym, _mat)| !sym.is_empty());
+        let sym_name = entry.map(|(_id, sym, _mat)| sym.clone());
+        let mat = entry.map(|(_id, _sym, mat)| *mat);
         if let Some(ref sym) = sym_name {
-            let meta_guid = crate::uuid_gen::det_uuid(&format!("{}::meta_{}", char_id, sym));
+            // Symbol-only GUID (matches get_image_meta_guids) so projectile/effect
+            // entity refs resolve to the shared sprite .meta regardless of which
+            // char owns them — multi-char projectile/effect sprites no longer
+            // dangle into placeholders.
+            let meta_guid = crate::uuid_gen::image_meta_guid(sym);
             image_guids.insert(sym.clone(), meta_guid);
         }
         frames.push(sym_name);
+        matrices.push(mat);
     }
 
-    Ok(ProjectileFrameImages { frames, image_guids })
+    Ok(ProjectileFrameImages { frames, matrices, image_guids })
 }
 
 fn po_to_mat(po: &swf::PlaceObject) -> ImageLocalMatrix {

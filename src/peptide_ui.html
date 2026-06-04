@@ -39,6 +39,9 @@
   }
   .title{font-weight:650;font-size:17px;letter-spacing:-.01em;}
   .subtitle{color:var(--muted);font-size:13px;margin-left:2px;}
+  .launch-opt{display:flex;align-items:center;gap:8px;margin:10px 2px 2px;font-size:13px;color:var(--ink);cursor:pointer;}
+  .launch-opt input{width:auto;margin:0;flex:none;cursor:pointer;}
+  .launch-opt .hint{color:var(--muted);font-size:12px;}
   .spacer{flex:1;}
   .pill{
     display:flex;align-items:center;gap:7px;
@@ -588,6 +591,10 @@
         <p>Pick a character to fast-boot straight into a live match — or boot
            Fraymakers normally with no character and drive it from the console.</p>
         <div class="launch-list" id="launch-list"></div>
+        <label class="launch-opt" title="Forces ApiUtilities.loggingEnabled on so the engine surfaces trapped character/assist/mode/stage script errors (with line + origin) in its console instead of swallowing them silently.">
+          <input type="checkbox" id="opt-engine-logging" checked onchange="setEngineLogging(this.checked)">
+          <span>Surface script errors in-game <span class="hint">(shows trapped hscript errors via the engine console)</span></span>
+        </label>
         <div class="m-actions-row">
           <button class="btn-primary" onclick="launchBrowse()">Browse…</button>
           <button class="btn-ghost" onclick="launchFrayNoChar()">Boot without a character</button>
@@ -742,6 +749,13 @@
     setStatus(false);
     setTimeout(()=>{ const i=$("input"); if(i) i.focus(); }, 50);
   }
+  // Engine-side script-error surfacing toggle (the "Surface script errors in-game"
+  // checkbox). On by default; tells the patcher whether to force ApiUtilities.loggingEnabled
+  // so trapped script errors hit the engine console. Sent on change AND before each boot so
+  // the patcher (spawned next) reads the right env value.
+  function setEngineLogging(on){ ipcSend("@@opt:enginelogging:" + (on ? "1" : "0")); }
+  function syncEngineLogging(){ var c=$("#opt-engine-logging"); if(c) setEngineLogging(c.checked); }
+
   // Boot Fraymakers with NO character selected → a normal (non-headless) boot, not
   // a fast-boot. No auto-spawn; the user drives it from the console.
   function launchFrayNoChar(){
@@ -751,6 +765,7 @@
     consoleBooted = true;
     flowState = "booting";
     modalWorking("Launching Fraymakers…","Booting Fraymakers (no character)…");
+    syncEngineLogging();
     ipcSend("@@boot:regular");
     setStatus(false);
     setTimeout(()=>{ const i=$("input"); if(i) i.focus(); }, 50);
@@ -781,6 +796,7 @@
     consoleBooted = true;
     flowState = "booting";
     modalWorking("Connecting to Fraymakers…","Booting "+charName+"…");
+    syncEngineLogging();
     ipcSend("@@boot:quick:"+charName);
     setStatus(false);
     setTimeout(()=>{ const i=$("input"); if(i) i.focus(); }, 50);
@@ -1412,6 +1428,7 @@
     // back to a normal boot regardless of which button was pressed.
     const useQuick = quick && !!charName;
     modalWorking("Connecting to Fraymakers…", useQuick?("Booting "+charName+"…"):"Launching Fraymakers…");
+    syncEngineLogging();
     ipcSend(useQuick ? ("@@boot:quick:"+charName) : "@@boot:regular");
   }
 

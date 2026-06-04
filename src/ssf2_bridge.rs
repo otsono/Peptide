@@ -284,6 +284,9 @@ pub fn session(args: &[String]) -> Result<()> {
     std::fs::write(&control, b"")?;
     std::fs::write(&logp, b"")?;
 
+    // Same host-side overlay the Fraymakers session uses — one shared spawn, engine-agnostic.
+    let _overlay = crate::overlay::spawn_for_session(&logp, args);
+
     // bind the loopback server FIRST (the engine dials in from its ctor), patch the
     // app to connect to that port, launch, then accept the connection.
     let port = pick_port();

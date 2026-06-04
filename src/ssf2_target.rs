@@ -318,6 +318,7 @@ impl DebugTarget for Ssf2Target {
     }
 
     fn console(&mut self) -> Result<String> { self.op("ROOT") }
+    fn add_character(&mut self) -> Result<String> { Ok("addCharacter: not supported on SSF2 yet\n".into()) }
     fn exit(&mut self) -> Result<()> { let _ = std::process::Command::new("pkill").args(["-f", "SSF2-patched"]).status(); Ok(()) }
     fn load(&mut self) -> Result<String> { self.op("LOADED") }
 
