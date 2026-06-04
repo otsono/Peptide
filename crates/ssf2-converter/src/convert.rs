@@ -92,6 +92,14 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
     let swf = swf_parser::parse(&swf_data)?;
     log::info!("Parsed SWF: v{}, {} ABC blocks", swf.version, swf.abc_blocks.len());
 
+    // Parse the SWF tag tree once for the whole file. The tags (sprites, images,
+    // sounds) are identical across every character in a multi-char .ssf, so the
+    // per-character extractors all borrow this one parse instead of re-parsing.
+    let parsed_swf_buf = swf::decompress_swf(&swf_data[..])
+        .map_err(|e| anyhow::anyhow!("decompress SWF: {}", e))?;
+    let parsed_swf = swf::parse_swf(&parsed_swf_buf)
+        .map_err(|e| anyhow::anyhow!("parse SWF: {}", e))?;
+
     // ── Palette extraction from misc.ssf ──────────────────────────────────────
     // Explicit --misc-ssf, else misc.ssf next to the input. Extract all costume
     // data in-process to a temp JSON cache, deleted when done.
@@ -195,7 +203,7 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
             })
         } else { None };
         match process_character(
-            &swf_data, &swf, char_name, &opts.output, costumes_path.as_deref(),
+            &parsed_swf, &swf, char_name, &opts.output, costumes_path.as_deref(),
             &opts.input, slot.as_ref(), &mut all_warnings,
         ) {
             Ok(Some(artifacts)) => {
@@ -537,7 +545,7 @@ fn detect_char_names(swf: &swf_parser::SwfFile, _input_path: &Path) -> Vec<Strin
 
 #[allow(clippy::too_many_arguments)]
 fn process_character(
-    swf_data: &[u8],
+    parsed_swf: &swf::Swf,
     swf: &swf_parser::SwfFile,
     char_name: &str,
     output: &Path,
@@ -548,12 +556,6 @@ fn process_character(
 ) -> Result<Option<ProcessedCharacter>> {
     // Fresh conversion log for this character.
     crate::api_mappings::reset_conversion_log();
-
-    // Parse the SWF once for this character; downstream extractors take &swf::Swf.
-    let parsed_swf_buf = swf::decompress_swf(swf_data)
-        .map_err(|e| anyhow::anyhow!("decompress SWF for {}: {}", char_name, e))?;
-    let parsed_swf = swf::parse_swf(&parsed_swf_buf)
-        .map_err(|e| anyhow::anyhow!("parse SWF for {}: {}", char_name, e))?;
 
     // Extract character data (ABC: attacks, stats, frame scripts, xframe map)
     let mut char_data = extractor::extract(swf, char_name)?;
@@ -574,7 +576,7 @@ fn process_character(
         .unwrap_or_else(|| abc_parser::pascal_form(char_name));
 
     // Median xframe scale from the root character MovieClip.
-    let (base_scale_x, base_scale_y) = sprite_parser::extract_xframe_scale_from_swf(&parsed_swf, char_name)
+    let (base_scale_x, base_scale_y) = sprite_parser::extract_xframe_scale_from_swf(parsed_swf, char_name)
         .unwrap_or_else(|e| {
             log::warn!("extract_xframe_scale failed: {}, defaulting to 1.0", e);
             (1.0, 1.0)
@@ -587,12 +589,12 @@ fn process_character(
 
     // Root MC transforms — computed once and shared.
     let xform_map = sprite_parser::extract_xframe_transforms_from_swf(
-        &parsed_swf, char_name, &char_data.ssf2_to_fm_anim,
+        parsed_swf, char_name, &char_data.ssf2_to_fm_anim,
     ).unwrap_or_default();
 
     // Per-frame collision box geometry.
     let sprite_boxes = sprite_parser::parse_sprite_boxes_from_swf(
-        &parsed_swf, char_name, &char_data.ssf2_to_fm_anim, &xform_map,
+        parsed_swf, char_name, &char_data.ssf2_to_fm_anim, &xform_map,
     ).unwrap_or_else(|e| {
         log::warn!("sprite_parser failed: {}", e);
         Default::default()
@@ -618,7 +620,7 @@ fn process_character(
         }
     }
     let img_result = image_extractor::extract_images_from_swf(
-        &parsed_swf, &char_output_dir, char_name, &char_data.ssf2_to_fm_anim, &xform_map,
+        parsed_swf, &char_output_dir, char_name, &char_data.ssf2_to_fm_anim, &xform_map,
     ).unwrap_or_else(|e| {
         log::warn!("image_extractor failed: {}", e);
         image_extractor::ImageExtractionResult {
@@ -636,14 +638,14 @@ fn process_character(
         Some(_) => char_output_dir.join(format!("library/audio/{}", char_name)),
         None    => char_output_dir.join("library/audio"),
     };
-    let sounds = match sound_extractor::extract_all_sounds(swf_data, &sounds_dir, char_name) {
+    let sounds = match sound_extractor::extract_all_sounds(parsed_swf, &sounds_dir, char_name) {
         Ok(s) => s,
         Err(e) => { log::warn!("sound_extractor failed: {}", e); vec![] }
     };
 
     // Discover projectiles, effects, head sprite.
     let (mut projectiles, effects, head_sprite) = image_extractor::discover_projectiles_and_head_from_swf(
-        &parsed_swf, char_name,
+        parsed_swf, char_name,
     ).unwrap_or_else(|e| {
         log::warn!("discover_projectiles_and_head failed: {}", e);
         (vec![], vec![], None)
@@ -672,7 +674,7 @@ fn process_character(
 
     // Generate Fraymakers files.
     haxe_gen::generate(output, char_name, &char_pascal, &char_data, &sprite_boxes, &img_result,
-        costumes, &sounds, &projectiles, &effects, head_sprite.as_ref(), &parsed_swf,
+        costumes, &sounds, &projectiles, &effects, head_sprite.as_ref(), parsed_swf,
         multi_char_slot)?;
     log::info!("Generated Fraymakers files for {}", char_name);
 

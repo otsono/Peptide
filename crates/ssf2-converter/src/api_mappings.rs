@@ -11,444 +11,6 @@
 
 use std::collections::BTreeMap;
 
-// ─── Legacy / TODO Mappings ───────────────────────────────────────────────────
-//
-// The five `build_*_map` functions below + `load_api_methods_json` are
-// LEGACY tables from before the JSONC mapping system. They have no current
-// callers anywhere in the workspace. They are KEPT (not deleted) until
-// every entry has been confirmed to have a JSONC home — most do, a few
-// may carry a note or special-case that hasn't been migrated.
-//
-// To migrate an entry: confirm the SSF2→FM mapping is present in
-// `mappings/commands.jsonc` (replacements / call_splits / passthrough /
-// ssf2_only) or `mappings/character/*.jsonc`, then delete the entry here.
-// Once a whole map is empty, delete the function and its supporting types.
-//
-// Tracking: docs/codebase_analysis.md §2.1.
-
-// (ssf2_receiver, ssf2_method) → (fm_receiver, fm_method, note)
-// receiver = "" means static/global, "self" means self.self in SSF2 → self in FM
-
-#[derive(Debug, Clone)]
-pub struct MethodMapping {
-    pub fm_receiver: &'static str,    // "" = same receiver, "self" = entity self
-    pub fm_method: &'static str,
-    pub arg_transform: ArgTransform,
-    pub note: &'static str,
-}
-
-#[derive(Debug, Clone)]
-pub enum ArgTransform {
-    /// Pass args through unchanged
-    Identity,
-    /// Drop all args
-    NoArgs,
-    /// Remap arg indices: e.g. [1, 0] means swap first two
-    Reorder(Vec<usize>),
-    /// First N args only
-    TakeFirst(usize),
-    /// Custom transformation tag (handled in code)
-    Custom(&'static str),
-}
-
-// TODO: migrate every entry below to `mappings/commands.jsonc` (mostly
-// `replacements`; a few may need `regex_replacements` or `ssf2_only`), then
-// remove this function and the MethodMapping / ArgTransform types it uses.
-// Tracking: docs/codebase_analysis.md §2.1.
-#[allow(dead_code)]
-pub fn build_method_map() -> BTreeMap<(&'static str, &'static str), MethodMapping> {
-    let mut m = BTreeMap::new();
-    let id = ArgTransform::Identity;
-
-    // ── SSF2Character → FM Character/Entity ──────────────────────────────
-
-    // Movement & State
-    m.insert(("", "endAttack"), MethodMapping {
-        fm_receiver: "self", fm_method: "endAnimation",
-        arg_transform: ArgTransform::NoArgs,
-        note: "SSF2 endAttack() → FM endAnimation()",
-    });
-    m.insert(("", "setState"), MethodMapping {
-        fm_receiver: "self", fm_method: "toState",
-        arg_transform: id.clone(),
-        note: "SSF2 setState(state) → FM toState(state)",
-    });
-    m.insert(("", "inState"), MethodMapping {
-        fm_receiver: "self", fm_method: "inState",
-        arg_transform: id.clone(),
-        note: "",
-    });
-    m.insert(("", "isFacingRight"), MethodMapping {
-        fm_receiver: "self", fm_method: "isFacingRight",
-        arg_transform: ArgTransform::NoArgs,
-        note: "",
-    });
-    m.insert(("", "isFacingLeft"), MethodMapping {
-        fm_receiver: "self", fm_method: "isFacingLeft",
-        arg_transform: ArgTransform::NoArgs,
-        note: "",
-    });
-
-    // Position / velocity
-    m.insert(("", "getX"), MethodMapping {
-        fm_receiver: "self", fm_method: "getX",
-        arg_transform: ArgTransform::NoArgs, note: "",
-    });
-    m.insert(("", "getY"), MethodMapping {
-        fm_receiver: "self", fm_method: "getY",
-        arg_transform: ArgTransform::NoArgs, note: "",
-    });
-    m.insert(("", "setX"), MethodMapping {
-        fm_receiver: "self", fm_method: "setX",
-        arg_transform: id.clone(), note: "",
-    });
-    m.insert(("", "setY"), MethodMapping {
-        fm_receiver: "self", fm_method: "setY",
-        arg_transform: id.clone(), note: "",
-    });
-    // setXSpeed/setYSpeed are FACING-RELATIVE in both engines (positive X =
-    // forward in the facing direction) — keep the names 1:1. Mapping them to the
-    // world-space set*Velocity drops the orientation and reverses forward momentum
-    // when facing left (e.g. side-special). See decompiler.rs + commands.jsonc.
-    m.insert(("", "setXSpeed"), MethodMapping {
-        fm_receiver: "self", fm_method: "setXSpeed",
-        arg_transform: id.clone(), note: "SSF2 setXSpeed → FM setXSpeed (facing-relative)",
-    });
-    m.insert(("", "setYSpeed"), MethodMapping {
-        fm_receiver: "self", fm_method: "setYSpeed",
-        arg_transform: id.clone(), note: "SSF2 setYSpeed → FM setYSpeed (facing-relative)",
-    });
-    m.insert(("", "getXSpeed"), MethodMapping {
-        fm_receiver: "self", fm_method: "getXVelocity",
-        arg_transform: ArgTransform::NoArgs, note: "",
-    });
-    m.insert(("", "getYSpeed"), MethodMapping {
-        fm_receiver: "self", fm_method: "getYVelocity",
-        arg_transform: ArgTransform::NoArgs, note: "",
-    });
-
-    // Hitbox / Attack
-    m.insert(("", "updateAttackBoxStats"), MethodMapping {
-        fm_receiver: "self", fm_method: "updateHitboxStats",
-        arg_transform: id.clone(),
-        note: "SSF2 updateAttackBoxStats(id, stats) → FM updateHitboxStats(id, stats)",
-    });
-    m.insert(("", "refreshAttackID"), MethodMapping {
-        fm_receiver: "self", fm_method: "reactivateHitboxes",
-        arg_transform: ArgTransform::NoArgs,
-        note: "SSF2 refreshAttackID → FM reactivateHitboxes",
-    });
-
-    // Animation
-    m.insert(("", "gotoAndPlay"), MethodMapping {
-        fm_receiver: "self", fm_method: "playAnimation",
-        arg_transform: id.clone(),
-        note: "SSF2 gotoAndPlay(label) → FM playAnimation(name)",
-    });
-    m.insert(("", "gotoAndStop"), MethodMapping {
-        fm_receiver: "self", fm_method: "playAnimation",
-        arg_transform: id.clone(),
-        note: "SSF2 gotoAndStop(label) → FM playAnimation(name) /* TODO: stop after */",
-    });
-    m.insert(("", "play"), MethodMapping {
-        fm_receiver: "self", fm_method: "resume",
-        arg_transform: ArgTransform::NoArgs,
-        note: "",
-    });
-    m.insert(("", "stop"), MethodMapping {
-        fm_receiver: "self", fm_method: "pause",
-        arg_transform: ArgTransform::NoArgs,
-        note: "",
-    });
-
-    // Controls
-    m.insert(("", "getControls"), MethodMapping {
-        fm_receiver: "self", fm_method: "getHeldControls",
-        arg_transform: ArgTransform::NoArgs,
-        note: "SSF2 getControls → FM getHeldControls",
-    });
-    m.insert(("", "getPressedControls"), MethodMapping {
-        fm_receiver: "self", fm_method: "getPressedControls",
-        arg_transform: ArgTransform::NoArgs, note: "",
-    });
-
-    // Grabbing
-    m.insert(("", "grab"), MethodMapping {
-        fm_receiver: "self", fm_method: "attemptGrab",
-        arg_transform: id.clone(),
-        note: "SSF2 grab(target) → FM attemptGrab(foe)",
-    });
-    m.insert(("", "shootOutOpponent"), MethodMapping {
-        fm_receiver: "self", fm_method: "releaseAllCharacters",
-        arg_transform: ArgTransform::NoArgs,
-        note: "",
-    });
-
-    // Projectile
-    m.insert(("", "fireProjectile"), MethodMapping {
-        fm_receiver: "self", fm_method: "/* TODO: spawn projectile */",
-        arg_transform: id.clone(),
-        note: "SSF2 fireProjectile needs manual conversion — FM uses CustomGameObject",
-    });
-
-    // Scale
-    m.insert(("", "getScaleX"), MethodMapping {
-        fm_receiver: "self", fm_method: "getScaleX",
-        arg_transform: ArgTransform::NoArgs, note: "",
-    });
-    m.insert(("", "getScaleY"), MethodMapping {
-        fm_receiver: "self", fm_method: "getScaleY",
-        arg_transform: ArgTransform::NoArgs, note: "",
-    });
-    m.insert(("", "setScaleX"), MethodMapping {
-        fm_receiver: "self", fm_method: "setScaleX",
-        arg_transform: id.clone(), note: "",
-    });
-    m.insert(("", "setScaleY"), MethodMapping {
-        fm_receiver: "self", fm_method: "setScaleY",
-        arg_transform: id.clone(), note: "",
-    });
-
-    // Visibility
-    m.insert(("", "setVisible"), MethodMapping {
-        fm_receiver: "self", fm_method: "setVisible",
-        arg_transform: id.clone(), note: "",
-    });
-
-    // Damage
-    m.insert(("", "getDamage"), MethodMapping {
-        fm_receiver: "self", fm_method: "getDamage",
-        arg_transform: ArgTransform::NoArgs, note: "",
-    });
-    m.insert(("", "addDamage"), MethodMapping {
-        fm_receiver: "self", fm_method: "addDamage",
-        arg_transform: id.clone(), note: "",
-    });
-
-    // Events
-    m.insert(("", "addEventListener"), MethodMapping {
-        fm_receiver: "self", fm_method: "addEventListener",
-        arg_transform: id.clone(), note: "Event types need remapping",
-    });
-    m.insert(("", "removeEventListener"), MethodMapping {
-        fm_receiver: "self", fm_method: "removeEventListener",
-        arg_transform: id.clone(), note: "",
-    });
-
-    // ── SSF2API static methods → FM equivalents ──────────────────────────
-
-    m.insert(("SSF2API", "print"), MethodMapping {
-        fm_receiver: "", fm_method: "Engine.log",
-        arg_transform: id.clone(),
-        note: "SSF2API.print → Engine.log",
-    });
-    m.insert(("SSF2API", "random"), MethodMapping {
-        fm_receiver: "", fm_method: "Random.getFloat",
-        arg_transform: ArgTransform::Custom("random_0_1"),
-        note: "SSF2API.random() → Random.getFloat(0, 1)",
-    });
-    m.insert(("SSF2API", "randomInteger"), MethodMapping {
-        fm_receiver: "", fm_method: "Random.getInt",
-        arg_transform: id.clone(),
-        note: "SSF2API.randomInteger(min,max) → Random.getInt(min,max)",
-    });
-    m.insert(("SSF2API", "getElapsedFrames"), MethodMapping {
-        fm_receiver: "", fm_method: "Engine.getElapsedFrames",
-        arg_transform: ArgTransform::NoArgs,
-        note: "",
-    });
-    m.insert(("SSF2API", "isReady"), MethodMapping {
-        fm_receiver: "", fm_method: "true /* SSF2API.isReady always true in FM */",
-        arg_transform: ArgTransform::NoArgs,
-        note: "Guard check — FM is always ready",
-    });
-    m.insert(("SSF2API", "playSound"), MethodMapping {
-        fm_receiver: "self", fm_method: "/* TODO: playSound */",
-        arg_transform: id.clone(),
-        note: "SSF2API.playSound → FM AudioClip or entity sfx",
-    });
-    m.insert(("SSF2API", "stopSound"), MethodMapping {
-        fm_receiver: "", fm_method: "/* TODO: stopSound */",
-        arg_transform: id.clone(), note: "",
-    });
-    m.insert(("SSF2API", "shakeCamera"), MethodMapping {
-        fm_receiver: "", fm_method: "Camera.shake",
-        arg_transform: id.clone(),
-        note: "SSF2API.shakeCamera(intensity) → Camera.shake(...)",
-    });
-    m.insert(("SSF2API", "lightFlash"), MethodMapping {
-        fm_receiver: "", fm_method: "/* TODO: lightFlash */",
-        arg_transform: id.clone(), note: "No direct FM equivalent",
-    });
-    m.insert(("SSF2API", "getCharacter"), MethodMapping {
-        fm_receiver: "", fm_method: "/* TODO: getCharacter */",
-        arg_transform: id.clone(), note: "FM uses Match.getCharacters()",
-    });
-    m.insert(("SSF2API", "getCharacters"), MethodMapping {
-        fm_receiver: "", fm_method: "Match.getCharacters",
-        arg_transform: ArgTransform::NoArgs, note: "",
-    });
-    m.insert(("SSF2API", "attachEffect"), MethodMapping {
-        fm_receiver: "", fm_method: "/* TODO: Vfx.spawn */",
-        arg_transform: id.clone(),
-        note: "SSF2API.attachEffect → FM Vfx system",
-    });
-
-    m
-}
-
-// ─── Property Mappings ────────────────────────────────────────────────────────
-// SSF2 property name → (FM getter, FM setter)
-
-// TODO: migrate every entry below to `mappings/commands.jsonc :: replacements`
-// (e.g. `.x = ` → `.setX(`, `.alpha = ` → `.setAlpha(`), then remove.
-// Tracking: docs/codebase_analysis.md §2.1.
-#[allow(dead_code)]
-pub fn build_property_map() -> BTreeMap<&'static str, (&'static str, &'static str)> {
-    let mut m = BTreeMap::new();
-
-    // SSF2 → FM property mappings
-    m.insert("x",           ("getX()",          "setX"));
-    m.insert("y",           ("getY()",          "setY"));
-    m.insert("scaleX",      ("getScaleX()",     "setScaleX"));
-    m.insert("scaleY",      ("getScaleY()",     "setScaleY"));
-    m.insert("alpha",       ("getAlpha()",      "setAlpha"));
-    m.insert("visible",     ("getVisible()",    "setVisible"));
-    m.insert("rotation",    ("getRotation()",   "setRotation"));
-    m.insert("currentFrame",("getCurrentFrame()", "playFrame"));
-
-    m
-}
-
-// ─── SSF2 State → FM CState Mappings ──────────────────────────────────────────
-
-// TODO: migrate every entry below to `mappings/commands.jsonc :: replacements`
-// (e.g. `CState.IDLE` → `CState.STAND`) or a new `state_map` section if a
-// dedicated table makes sense, then remove.
-// Tracking: docs/codebase_analysis.md §2.1.
-#[allow(dead_code)]
-pub fn build_state_map() -> BTreeMap<&'static str, &'static str> {
-    let mut m = BTreeMap::new();
-
-    // SSF2 CState / character states → FM CState constants
-    // SSF2 uses numeric values; FM uses CState.CONSTANT
-    m.insert("IDLE",            "CState.STAND");
-    m.insert("STAND",          "CState.STAND");
-    m.insert("WALK",           "CState.WALK_LOOP");
-    m.insert("RUN",            "CState.RUN");
-    m.insert("DASH",           "CState.DASH");
-    m.insert("JUMP",           "CState.JUMP_IN");
-    m.insert("JUMP_SQUAT",    "CState.JUMP_SQUAT");
-    m.insert("FALL",           "CState.FALL");
-    m.insert("FALL_SPECIAL",   "CState.FALL_SPECIAL");
-    m.insert("LAND",           "CState.LAND");
-    m.insert("CROUCH",         "CState.CROUCH_LOOP");
-    m.insert("SHIELD",         "CState.SHIELD_LOOP");
-
-    // Attacks
-    m.insert("JAB",            "CState.JAB");
-    m.insert("JAB1",           "CState.JAB");
-    m.insert("JAB2",           "CState.JAB");
-    m.insert("JAB3",           "CState.JAB");
-    m.insert("DASH_ATTACK",    "CState.DASH_ATTACK");
-    m.insert("TILT_FORWARD",   "CState.TILT_FORWARD");
-    m.insert("TILT_UP",        "CState.TILT_UP");
-    m.insert("TILT_DOWN",      "CState.TILT_DOWN");
-    m.insert("STRONG_FORWARD", "CState.STRONG_FORWARD_ATTACK");
-    m.insert("STRONG_UP",      "CState.STRONG_UP_ATTACK");
-    m.insert("STRONG_DOWN",    "CState.STRONG_DOWN_ATTACK");
-    m.insert("AERIAL_NEUTRAL", "CState.AERIAL_NEUTRAL");
-    m.insert("AERIAL_FORWARD", "CState.AERIAL_FORWARD");
-    m.insert("AERIAL_BACK",    "CState.AERIAL_BACK");
-    m.insert("AERIAL_UP",      "CState.AERIAL_UP");
-    m.insert("AERIAL_DOWN",    "CState.AERIAL_DOWN");
-    m.insert("SPECIAL_NEUTRAL","CState.SPECIAL_NEUTRAL");
-    m.insert("SPECIAL_SIDE",   "CState.SPECIAL_SIDE");
-    m.insert("SPECIAL_UP",     "CState.SPECIAL_UP");
-    m.insert("SPECIAL_DOWN",   "CState.SPECIAL_DOWN");
-    m.insert("GRAB",           "CState.GRAB");
-    m.insert("GRAB_HOLD",      "CState.GRAB_HOLD");
-    m.insert("THROW_FORWARD",  "CState.THROW_FORWARD");
-    m.insert("THROW_BACK",     "CState.THROW_BACK");
-    m.insert("THROW_UP",       "CState.THROW_UP");
-    m.insert("THROW_DOWN",     "CState.THROW_DOWN");
-
-    // Defense
-    m.insert("SHIELD_IN",     "CState.SHIELD_IN");
-    m.insert("SHIELD_OUT",    "CState.SHIELD_OUT");
-    m.insert("ROLL",          "CState.ROLL");
-    m.insert("SPOT_DODGE",    "CState.SPOT_DODGE");
-    m.insert("PARRY",         "CState.PARRY_IN");
-
-    // Hurt / KO
-    m.insert("HURT",           "CState.HURT_LIGHT");
-    m.insert("TUMBLE",         "CState.TUMBLE");
-    m.insert("KO",             "CState.KO");
-
-    // Ledge
-    m.insert("LEDGE_IN",      "CState.LEDGE_IN");
-    m.insert("LEDGE_LOOP",    "CState.LEDGE_LOOP");
-    m.insert("LEDGE_CLIMB",   "CState.LEDGE_CLIMB");
-    m.insert("LEDGE_ATTACK",  "CState.LEDGE_ATTACK");
-    m.insert("LEDGE_ROLL",    "CState.LEDGE_ROLL");
-    m.insert("LEDGE_JUMP",    "CState.LEDGE_JUMP");
-
-    m
-}
-
-// ─── SSF2 Event → FM GameObjectEvent Mappings ─────────────────────────────────
-
-// TODO: migrate every entry below to `mappings/commands.jsonc :: replacements`
-// (e.g. `GameObjectEvent.HIT` → `GameObjectEvent.HIT_DEALT`) — the
-// `addEventListener(SSF2_EVENT.X, …)` calls are already rewritten via the
-// literal table where applicable. Once parity is confirmed, remove.
-// Tracking: docs/codebase_analysis.md §2.1.
-#[allow(dead_code)]
-pub fn build_event_map() -> BTreeMap<&'static str, &'static str> {
-    let mut m = BTreeMap::new();
-
-    m.insert("STATE_CHANGE",     "GameObjectEvent.LINK_FRAMES");
-    m.insert("HIT",             "GameObjectEvent.HIT_DEALT");
-    m.insert("HIT_RECEIVED",    "GameObjectEvent.HIT_RECEIVED");
-    m.insert("LAND",            "GameObjectEvent.LAND");
-    m.insert("GRAB",            "GameObjectEvent.GRAB_DEALT");
-    m.insert("GRAB_RECEIVED",   "GameObjectEvent.GRAB_RECEIVED");
-    m.insert("SHIELD_HIT",     "GameObjectEvent.SHIELD_HIT_DEALT");
-    m.insert("HITSTOP_START",   "GameObjectEvent.ENTER_HITSTOP");
-    m.insert("HITSTOP_END",     "GameObjectEvent.EXIT_HITSTOP");
-    m.insert("LEFT_GROUND",     "GameObjectEvent.LEFT_GROUND");
-
-    m
-}
-
-// ─── SSF2 Hitbox Property → FM HitboxStats Property Mappings ──────────────────
-
-// TODO: this overlaps with `mappings/character/hitbox_stats.jsonc :: fields`
-// (which already covers damage / angle / baseKnockback / knockbackGrowth /
-// hitstop / hitstun). The remaining entries (shieldDamage, priority,
-// hitSound, refreshRate, selfHitStun→selfHitstop) need to land either in
-// hitbox_stats.jsonc as new `fm_field` rows or in commands.jsonc :: ssf2_only.
-// Once that's done, remove this function.
-// Tracking: docs/codebase_analysis.md §2.1.
-#[allow(dead_code)]
-pub fn build_hitbox_prop_map() -> BTreeMap<&'static str, &'static str> {
-    let mut m = BTreeMap::new();
-
-    m.insert("damage",         "damage");
-    m.insert("direction",      "angle");
-    m.insert("power",          "baseKnockback");
-    m.insert("kbGrowth",       "knockbackGrowth");
-    m.insert("kbConstant",     "baseKnockback");
-    m.insert("hitStun",        "hitstun");
-    m.insert("selfHitStun",    "selfHitstop");
-    m.insert("shieldDamage",   "shieldDamageMultiplier");
-    m.insert("priority",       "/* TODO: no FM equivalent for priority */");
-    m.insert("hitSound",       "attackStrength");
-    m.insert("refreshRate",    "/* TODO: no FM equivalent for refreshRate */");
-
-    m
-}
-
 // ─── SSF2 "self.self" Pattern ──────────────────────────────────────────────────
 // In decompiled SSF2 sub-MC code, "self.self" refers to the character instance.
 // In Fraymakers, the Script.hx `self` already IS the character/entity.
@@ -623,8 +185,173 @@ pub fn translate_ssf2_to_fm(code: &str) -> String {
     result = rewrite_add_effect_to_list(&result);
 
     result = strip_last_frame_end_animation(&result);
+    // SSF2Utils.decel(v, amount) → inline Math min/max (FM has no Math.decel).
+    result = rewrite_decel_calls(&result);
+    // Any SSF2Event.* / SSF2Utils.* still present has no Fraymakers equivalent
+    // in the tables above; neutralize it so the line can't reference an
+    // undefined symbol and crash the script at runtime.
+    result = neutralize_unmapped_ssf2(&result);
+    // Comment out statements the decompiler couldn't fully reconstruct, where the
+    // leftover `/* ? */` / `/* class */` marker would make INVALID Haxe (a `.x`
+    // receiver after a comment, or `= ;` empty RHS) that the engine rejects —
+    // killing the whole script. Commenting keeps the gap visible and the rest of
+    // the script alive. See docs/STATUS.md "frame-script translation".
+    result = neutralize_decompiler_gaps(&result);
     result = comment_out_unknown_calls(&result);
     result
+}
+
+/// Markers a decompiler-unreconstructable expression renders as.
+const GAP_MARKERS: &[&str] = &["/* ? */", "/* class */"];
+
+/// True when `line` uses a gap marker in a position that is INVALID Haxe:
+///   - as a receiver:        `/* ? */.foo`  →  `.foo` (parse error)
+///   - as a whole RHS value: `x = /* ? */;` →  `x = ;` (parse error)
+/// `f(/* ? */)` (empty arg) and `return /* ? */;` (→ `return ;`) stay valid, so
+/// they are NOT matched.
+fn line_has_invalid_gap(line: &str) -> bool {
+    let b = line.as_bytes();
+    for m in GAP_MARKERS {
+        let mut from = 0;
+        while let Some(rel) = line[from..].find(m) {
+            let start = from + rel;
+            let after = start + m.len();
+            // receiver: marker directly followed by `.`
+            let next = line[after..].trim_start();
+            if next.starts_with('.') {
+                return true;
+            }
+            // empty RHS: marker preceded by `=` (not `==`/`!=`/`<=`…) and the
+            // value ends right after (`;`/`)`/`,`/end).
+            let before = line[..start].trim_end();
+            let assign = before.ends_with('=')
+                && !before.ends_with("==") && !before.ends_with("!=")
+                && !before.ends_with("<=") && !before.ends_with(">=");
+            if assign && (next.is_empty() || next.starts_with([';', ')', ','])) {
+                return true;
+            }
+            from = after;
+            let _ = b; // (kept for clarity; byte view unused)
+        }
+    }
+    false
+}
+
+/// Comment out lines whose decompiler gap marker is in an invalid position
+/// (`line_has_invalid_gap`), block-aware so an opener's body/brace go with it.
+pub fn neutralize_decompiler_gaps(code: &str) -> String {
+    if !GAP_MARKERS.iter().any(|m| code.contains(m)) {
+        return code.to_string();
+    }
+    fn net_braces(line: &str) -> i32 {
+        let live = line.split("//").next().unwrap_or(line);
+        live.matches('{').count() as i32 - live.matches('}').count() as i32
+    }
+    let lines: Vec<&str> = code.lines().collect();
+    let mut dead = vec![false; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        if !trimmed.starts_with("//") && line_has_invalid_gap(lines[i]) {
+            dead[i] = true;
+            let mut depth = net_braces(lines[i]);
+            let mut j = i + 1;
+            while depth > 0 && j < lines.len() {
+                depth += net_braces(lines[j]);
+                dead[j] = true;
+                j += 1;
+            }
+            i = j.max(i + 1);
+            continue;
+        }
+        i += 1;
+    }
+    let trailing_nl = code.ends_with('\n');
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if dead[idx] && !trimmed.starts_with("//") {
+            let indent = &line[..line.len() - trimmed.len()];
+            out.push(format!("{}// [gap: decompiler couldn't recover] {}", indent, trimmed));
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    let mut joined = out.join("\n");
+    if trailing_nl { joined.push('\n'); }
+    joined
+}
+
+/// SSF2 namespaces with no Fraymakers symbol that, if they survive translation,
+/// crash the script (`Unknown variable: SSF2Event` / `SSF2Utils`). Anything
+/// mapped by the tables above is already renamed by the time this runs.
+const UNMAPPED_SSF2_PREFIXES: &[&str] = &["SSF2Event.", "SSF2Utils."];
+
+fn line_has_unmapped_ssf2(line: &str) -> bool {
+    UNMAPPED_SSF2_PREFIXES.iter().any(|p| line.contains(p))
+}
+
+/// Comment out lines that still reference a bare unmapped `SSF2*.` symbol after
+/// the rename passes. Those have no Fraymakers equivalent, so the engine would
+/// hit `Unknown variable` and drop the whole script; commenting the line (or the
+/// whole block, for inline-closure handlers) keeps the rest of the handler alive.
+pub fn neutralize_unmapped_ssf2(code: &str) -> String {
+    if !UNMAPPED_SSF2_PREFIXES.iter().any(|p| code.contains(p)) {
+        return code.to_string();
+    }
+    // Net `{` minus `}` on a line, ignoring an inline `//` comment tail (string
+    // contents are not scanned — event-listener lines don't carry `{`-in-strings).
+    fn net_braces(line: &str) -> i32 {
+        let live = line.split("//").next().unwrap_or(line);
+        live.matches('{').count() as i32 - live.matches('}').count() as i32
+    }
+
+    let lines: Vec<&str> = code.lines().collect();
+    let mut dead = vec![false; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        if line_has_unmapped_ssf2(lines[i]) && !trimmed.starts_with("//") {
+            dead[i] = true;
+            // If the listener line opens a block (e.g. an inline `function() {`
+            // handler), comment through the matching close so the orphaned body
+            // and brace don't leak as live code.
+            let mut depth = net_braces(lines[i]);
+            let mut j = i + 1;
+            while depth > 0 && j < lines.len() {
+                depth += net_braces(lines[j]);
+                dead[j] = true;
+                j += 1;
+            }
+            i = j.max(i + 1);
+            continue;
+        }
+        i += 1;
+    }
+
+    let trailing_nl = code.ends_with('\n');
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if dead[idx] && !trimmed.starts_with("//") {
+            let indent = &line[..line.len() - trimmed.len()];
+            // Tag the opener line with the symbol name; continuation lines just dead.
+            let prefix = UNMAPPED_SSF2_PREFIXES.iter().find(|p| line.contains(**p));
+            if let Some(p) = prefix {
+                let sym = line.split(*p).nth(1)
+                    .map(|r| r.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<String>())
+                    .unwrap_or_default();
+                out.push(format!("{}// [SSF2-only: {}] {}", indent, sym, trimmed));
+            } else {
+                out.push(format!("{}// [SSF2-dead] {}", indent, trimmed));
+            }
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    let mut joined = out.join("\n");
+    if trailing_nl { joined.push('\n'); }
+    joined
 }
 
 /// Placeholder audio content id (a silent .wav emitted per character by
@@ -1732,6 +1459,37 @@ fn rewrite_add_effect_to_list(code: &str) -> String {
     out
 }
 
+/// SSF2Utils.decel(value, amount) → inline decay-toward-zero. SSF2's helper
+/// reduces |value| by amount, clamped at 0 (never crosses sign). Fraymakers'
+/// Math has no `decel`, so emit the equivalent ternary using Math.min/max
+/// (both present in FM). Balanced-scan so nested-paren args (e.g.
+/// Math.abs(Math.calculateXVelocity(...))) split correctly.
+fn rewrite_decel_calls(code: &str) -> String {
+    const NEEDLE: &str = "SSF2Utils.decel(";
+    let mut out = String::with_capacity(code.len());
+    let mut cursor = 0;
+    while let Some(rel) = code[cursor..].find(NEEDLE) {
+        let start = cursor + rel;
+        let paren_open = start + NEEDLE.len() - 1;
+        let close = match find_matching_close(code, paren_open) {
+            Some(c) => c,
+            None => { out.push_str(&code[cursor..=start]); cursor = start + 1; continue; }
+        };
+        let args = &code[paren_open + 1..close];
+        let a = first_top_level_arg(args).trim();
+        let b = args[first_top_level_arg(args).len()..].trim_start_matches([',', ' ']).trim();
+        if b.is_empty() {
+            // not the 2-arg form — leave untouched
+            out.push_str(&code[cursor..=start]); cursor = start + 1; continue;
+        }
+        out.push_str(&code[cursor..start]);
+        out.push_str(&format!("(({a}) < 0 ? Math.min(0, ({a}) + ({b})) : Math.max(0, ({a}) - ({b})))"));
+        cursor = close + 1;
+    }
+    out.push_str(&code[cursor..]);
+    out
+}
+
 /// Substring of a comma-separated arg list up to the first top-level (depth-0,
 /// outside string literals) comma, or the whole string if there is none.
 fn first_top_level_arg(args: &str) -> &str {
@@ -2469,63 +2227,6 @@ fn log_unknown_calls(code: &str, cfg: &crate::mappings::ApiCommands) {
     }
 }
 
-/// Load SSF2→FM method mappings from the JSON file at `mappings/api_methods.json`
-/// relative to the project root. Falls back to empty map if file not found.
-// TODO: this loader reads `mappings/api_methods.json`, which doesn't
-// exist in the repo and isn't called from anywhere. The schema it parses
-// (`{ "method_name": { "fm": "<replacement>" } }`) was superseded by
-// `mappings/commands.jsonc :: replacements`. Confirm no out-of-tree
-// caller depends on this signature, then remove.
-// Tracking: docs/codebase_analysis.md §2.1.
-#[allow(dead_code)]
-pub fn load_api_methods_json(mappings_dir: &std::path::Path) -> Vec<(String, String)> {
-    let path = mappings_dir.join("api_methods.json");
-    let Ok(text) = std::fs::read_to_string(&path) else { return vec![]; };
-    let mut pairs = Vec::new();
-    // Simple JSON scan: extract "method_name": { "fm": "replacement" ... } pairs
-    // We use a regex-free approach: scan for quoted keys and their fm values
-    let mut pos = 0;
-    let bytes = text.as_bytes();
-    while pos < bytes.len() {
-        // Find a key (method name) — bare string between quotes
-        if let Some(key_start) = text[pos..].find('"') {
-            let abs_ks = pos + key_start + 1;
-            if let Some(key_end) = text[abs_ks..].find('"') {
-                let key = &text[abs_ks..abs_ks + key_end];
-                let after_key = abs_ks + key_end + 1;
-                // Look for {"fm": "..."}  nearby
-                if let Some(obj_start) = text[after_key..].find('{') {
-                    let abs_os = after_key + obj_start;
-                    if let Some(obj_end) = text[abs_os..].find('}') {
-                        let obj = &text[abs_os..abs_os + obj_end + 1];
-                        if let Some(fm_pos) = obj.find("\"fm\"") {
-                            let after_fm = abs_os + fm_pos + 4;
-                            if let Some(val_start) = text[after_fm..].find('"') {
-                                let abs_vs = after_fm + val_start + 1;
-                                if let Some(val_end) = text[abs_vs..].find('"') {
-                                    let fm_val = &text[abs_vs..abs_vs + val_end];
-                                    // Only include if key is a valid method name (no spaces, no slashes)
-                                    if !key.contains(' ') && !key.contains('/') && !key.starts_with('_') {
-                                        pairs.push((key.to_string(), fm_val.to_string()));
-                                    }
-                                    pos = abs_vs + val_end + 1;
-                                    continue;
-                                }
-                            }
-                        }
-                        pos = abs_os + obj_end + 1;
-                        continue;
-                    }
-                }
-                pos = after_key;
-                continue;
-            }
-        }
-        break;
-    }
-    pairs
-}
-
 // ─── 30fps → 60fps frame-count scaling ───────────────────────────────────────
 //
 // SSF2 plays at 30fps, Fraymakers at 60fps. Numeric arguments in decompiled
@@ -2840,5 +2541,76 @@ mod tests {
         // inner if should survive
         assert!(output.contains("if (x > 0)"), "inner if should survive");
         assert!(output.contains("self.y = 1;"), "body not inlined");
+    }
+
+    #[test]
+    fn mapped_events_are_renamed() {
+        // High-frequency events with a confirmed FM equivalent.
+        let out = translate_ssf2_to_fm("self.addEventListener(SSF2Event.GROUND_LEAVE, h);");
+        assert!(out.contains("GameObjectEvent.LEFT_GROUND"), "GROUND_LEAVE not mapped: {out}");
+        assert!(!out.contains("SSF2Event."), "raw SSF2Event leaked: {out}");
+        // ATTACK_HIT must not corrupt the longer ATTACK_HIT_SHIELD prefix.
+        let shield = translate_ssf2_to_fm("self.addEventListener(SSF2Event.ATTACK_HIT_SHIELD, h);");
+        assert!(shield.contains("GameObjectEvent.SHIELD_HIT_DEALT"), "ATTACK_HIT_SHIELD mismapped: {shield}");
+        assert!(!shield.contains("HIT_DEALT_SHIELD"), "prefix corruption: {shield}");
+    }
+
+    #[test]
+    fn unmapped_event_is_neutralized_not_leaked() {
+        // An event with no FM equivalent must be commented, never left raw.
+        let out = translate_ssf2_to_fm("self.addEventListener(SSF2Event.CHAR_ATTACK_COMPLETE, h);");
+        assert!(!out.lines().any(|l| !l.trim_start().starts_with("//") && l.contains("SSF2Event.")),
+            "raw SSF2Event leaked live: {out}");
+        assert!(out.contains("[SSF2-only: CHAR_ATTACK_COMPLETE]"), "no marker: {out}");
+    }
+
+    #[test]
+    fn unmapped_event_inline_closure_block_is_fully_commented() {
+        // Inline-closure handler: the whole block must be commented so the body
+        // and closing brace don't leak as orphaned live code.
+        let input = "self.addEventListener(SSF2Event.CHAR_ATTACK_COMPLETE, function() {\n\tself.x = 1;\n});";
+        let out = neutralize_unmapped_ssf2(input);
+        for l in out.lines() {
+            assert!(l.trim_start().starts_with("//"), "line left live: {l:?}");
+        }
+    }
+
+    #[test]
+    fn ssf2utils_decel_inlined_with_nested_args() {
+        let input = "self.setXSpeed(SSF2Utils.decel(self.getXSpeed(), Math.abs(Math.calculateXVelocity(a.get(), b.get()))));";
+        let out = translate_ssf2_to_fm(input);
+        assert!(!out.contains("SSF2Utils.decel"), "decel not rewritten: {out}");
+        assert!(out.contains("Math.min(0,") && out.contains("Math.max(0,"), "no min/max form: {out}");
+        assert!(out.contains("Math.calculateXVelocity(a.get(), b.get())"), "nested arg corrupted: {out}");
+    }
+
+    #[test]
+    fn ssf2utils_cast_is_neutralized() {
+        let input = "if (!SSF2Utils.cast(arg0.data.grabber, SSF2Character)) {\n\tself.x = 1;\n}";
+        let out = translate_ssf2_to_fm(input);
+        assert!(!out.lines().any(|l| !l.trim_start().starts_with("//") && l.contains("SSF2Utils.")),
+            "raw SSF2Utils leaked: {out}");
+    }
+
+    #[test]
+    fn invalid_gap_receiver_is_commented() {
+        // `/* ? */.standtime.set(...)` is invalid Haxe; the line must be commented.
+        let out = neutralize_decompiler_gaps("\t/* ? */.standtime.set(standtime.get() - 1);");
+        assert!(out.trim_start().starts_with("//"), "invalid receiver not commented: {out}");
+    }
+
+    #[test]
+    fn empty_rhs_gap_is_commented() {
+        let out = neutralize_decompiler_gaps("\tObject.SSF2Utils = /* class */;");
+        assert!(out.trim_start().starts_with("//"), "empty RHS not commented: {out}");
+    }
+
+    #[test]
+    fn valid_gap_positions_are_preserved() {
+        // `f(/* ? */)` (empty arg) and `return /* ? */;` (→ `return ;`) are valid.
+        let keep = "\tself.doThing(/* ? */);\n\treturn /* ? */;";
+        let out = neutralize_decompiler_gaps(keep);
+        assert!(!out.lines().any(|l| l.trim_start().starts_with("//")),
+            "valid gap position wrongly commented: {out}");
     }
 }

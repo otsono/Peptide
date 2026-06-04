@@ -1239,32 +1239,82 @@ fn round2(v: f64) -> f64 {
 
 /// Strip the `function name() {` wrapper from a script and return just the body,
 /// with one level of leading tab removed from each line.
+/// De-indent (strip one leading tab) and trim leading/trailing blank lines.
+fn dedent_body(inner: &str) -> Vec<String> {
+    let mut lines: Vec<String> = inner.lines()
+        .map(|l| l.strip_prefix('\t').unwrap_or(l).to_string())
+        .collect();
+    while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) { lines.remove(0); }
+    while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) { lines.pop(); }
+    lines
+}
+
+/// Extract the statement body from `script.code`.
+///
+/// A single `script.code` usually wraps one `function name() { … }`, but it can hold
+/// MORE than one when two SSF2 frame scripts land on the same frame (e.g. a slot-aliased
+/// animation like `tech_ground` reusing `crash_*` plus its own script). Naively dropping
+/// only the first `function …{` line and the last `}` then leaks the inner function and a
+/// stray brace, producing unparseable keyframe code. Instead, brace-match every top-level
+/// `function …{ }` (skipping braces inside `//` comments and strings) and concatenate their
+/// bodies — all the scripts run on that frame. Falls back to the old line-based strip if no
+/// function wrapper is present.
 fn extract_function_body(code: &str) -> String {
+    let b = code.as_bytes();
+    let mut bodies: Vec<String> = Vec::new();
+    let mut i = 0;
+    while let Some(rel) = code[i..].find("function ") {
+        let fpos = i + rel;
+        // Opening brace of this function's block.
+        let Some(boff) = code[fpos..].find('{') else { break };
+        let open = fpos + boff;
+        // Brace-match forward, ignoring `//` comments and string contents.
+        let mut depth = 0i32;
+        let mut j = open;
+        let mut in_str: Option<u8> = None;
+        let mut close: Option<usize> = None;
+        while j < b.len() {
+            let c = b[j];
+            match in_str {
+                Some(q) => {
+                    if c == b'\\' { j += 2; continue; }
+                    if c == q { in_str = None; }
+                }
+                None => match c {
+                    b'/' if j + 1 < b.len() && b[j + 1] == b'/' => {
+                        while j < b.len() && b[j] != b'\n' { j += 1; }
+                        continue;
+                    }
+                    b'"' | b'\'' => in_str = Some(c),
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 { close = Some(j); break; }
+                    }
+                    _ => {}
+                },
+            }
+            j += 1;
+        }
+        let Some(close) = close else { break }; // unbalanced; bail to fallback
+        bodies.push(dedent_body(&code[open + 1..close]).join("\n"));
+        i = close + 1;
+    }
+
+    if !bodies.is_empty() {
+        return bodies.join("\n");
+    }
+
+    // Fallback: no `function` wrapper found (or unbalanced) — old line-based strip.
     let mut lines: Vec<&str> = code.lines().collect();
-    // Drop leading blank lines
-    while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) {
-        lines.remove(0);
-    }
-    // Drop trailing blank lines
-    while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
-        lines.pop();
-    }
-    if lines.is_empty() {
-        return String::new();
-    }
-    // First line should be `function name() {` — drop it
+    while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) { lines.remove(0); }
+    while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) { lines.pop(); }
+    if lines.is_empty() { return String::new(); }
     if lines.first().map(|l| l.trim_start().starts_with("function ")).unwrap_or(false) {
         lines.remove(0);
     }
-    // Last line should be `}` — drop it
-    if lines.last().map(|l| l.trim() == "}").unwrap_or(false) {
-        lines.pop();
-    }
-    // De-indent by one tab
-    let body: Vec<&str> = lines.iter()
-        .map(|l| l.strip_prefix('\t').unwrap_or(l))
-        .collect();
-    body.join("\n")
+    if lines.last().map(|l| l.trim() == "}").unwrap_or(false) { lines.pop(); }
+    lines.iter().map(|l| l.strip_prefix('\t').unwrap_or(l)).collect::<Vec<_>>().join("\n")
 }
 
 // ─── Menu entity generation ───────────────────────────────────────────────────
@@ -2345,4 +2395,53 @@ pub fn generate_effect_entity(
     });
 
     serde_json::to_string_pretty(&entity).unwrap_or_else(|_| "{}".to_string())
+}
+
+#[cfg(test)]
+mod extract_body_tests {
+    use super::extract_function_body;
+
+    // helper: depth never goes negative and ends at zero (comment/string-naive is fine here)
+    fn structurally_valid(s: &str) -> bool {
+        let mut depth = 0i32;
+        let mut min = 0i32;
+        for c in s.chars() {
+            if c == '{' { depth += 1; }
+            if c == '}' { depth -= 1; min = min.min(depth); }
+        }
+        depth == 0 && min >= 0
+    }
+
+    #[test]
+    fn single_function_body_is_unwrapped() {
+        let code = "function foo__frame0() {\n\tA;\n\tB;\n}";
+        assert_eq!(extract_function_body(code), "A;\nB;");
+    }
+
+    #[test]
+    fn nested_braces_preserved_and_dedented() {
+        let code = "function foo() {\n\tif (x) {\n\t\tB;\n\t}\n}";
+        assert_eq!(extract_function_body(code), "if (x) {\n\tB;\n}");
+    }
+
+    #[test]
+    fn two_functions_on_one_frame_merge_bodies() {
+        // Two SSF2 frame scripts landing on the same frame (slot-aliased anim).
+        // Both bodies must run, and the result must be structurally valid (no
+        // leaked inner `function` wrapper, no stray brace).
+        let code = "function tech__frame0() {\n\tA;\n}\n\nfunction tech__frame0() {\n\tB;\n}";
+        let body = extract_function_body(code);
+        assert!(body.contains("A;") && body.contains("B;"), "both bodies kept: {body}");
+        assert!(!body.contains("function "), "inner wrapper leaked: {body}");
+        assert!(structurally_valid(&body), "unbalanced output: {body}");
+    }
+
+    #[test]
+    fn commented_braces_do_not_confuse_matcher() {
+        // A fully commented-out SSF2-only if-block must not throw off brace matching.
+        let code = "function f() {\n\tA;\n\t// [SSF2-only: x] if (g()) {\n\t// [SSF2-dead] }\n}";
+        let body = extract_function_body(code);
+        assert!(structurally_valid(&body), "unbalanced: {body}");
+        assert!(!body.contains("function "), "wrapper leaked: {body}");
+    }
 }

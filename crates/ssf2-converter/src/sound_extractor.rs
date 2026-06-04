@@ -57,79 +57,41 @@ impl SoundEntry {
     }
 }
 
-// ─── Parse all DefineSound tags from decompressed SWF bytes ──────────────────
+// ─── Parse all DefineSound tags from an already-parsed SWF ───────────────────
 
-pub fn parse_sounds(swf: &[u8]) -> Result<Vec<SoundEntry>> {
-    // Skip SWF header: signature(3)+version(1)+length(4)+FrameSize(var)+FrameRate(2)+FrameCount(2)
-    let mut pos = 8usize;
-    if swf.len() < pos { bail!("SWF too short"); }
-    let nb_bits = (swf[pos] >> 3) & 0x1f;
-    let rect_bits = nb_bits as usize * 4 + 5;
-    pos += rect_bits.div_ceil(8) + 4;
-
+pub fn parse_sounds(swf: &swf::Swf) -> Vec<SoundEntry> {
     let mut sounds:  BTreeMap<u16, SoundEntry> = BTreeMap::new();
     let mut symbols: BTreeMap<u16, String>     = BTreeMap::new();
 
-    while pos + 2 <= swf.len() {
-        let rth = u16::from_le_bytes([swf[pos], swf[pos+1]]);
-        pos += 2;
-        let tag_type = (rth >> 6) as u32;
-        let mut length = (rth & 0x3f) as usize;
-        if length == 0x3f {
-            if pos + 4 > swf.len() { break; }
-            length = u32::from_le_bytes([swf[pos], swf[pos+1], swf[pos+2], swf[pos+3]]) as usize;
-            pos += 4;
-        }
-        let _tag_start = pos;
-        let tag_end   = pos + length;
-        if tag_end > swf.len() { break; }
-
-        match tag_type {
-            14 => {
-                // DefineSound
-                if length >= 7 {
-                    let char_id     = u16::from_le_bytes([swf[pos], swf[pos+1]]);
-                    let flags       = swf[pos+2];
-                    let fmt         = (flags >> 4) & 0xf;
-                    let rate_idx    = (flags >> 2) & 0x3;
-                    let bits16      = ((flags >> 1) & 1) == 1;
-                    let stereo      = (flags & 1) == 1;
-                    let sample_count = u32::from_le_bytes([
-                        swf[pos+3], swf[pos+4], swf[pos+5], swf[pos+6]
-                    ]);
-                    let sample_rate = [5512u32, 11025, 22050, 44100][rate_idx as usize];
-                    let data = swf[pos+7..tag_end].to_vec();
-                    sounds.insert(char_id, SoundEntry {
-                        char_id,
-                        name: String::new(),
-                        fmt,
-                        sample_rate,
-                        bits16,
-                        stereo,
-                        sample_count,
-                        data,
-                    });
+    for tag in &swf.tags {
+        match tag {
+            swf::Tag::DefineSound(sound) => {
+                // `AudioCompression as u8` is the raw SWF format nibble
+                // (Uncompressed=3, Adpcm=1, Mp3=2, Nellymoser=6, …), which is
+                // exactly what `convert_to_wav` matches on below. The crate has
+                // already decoded `sample_rate` to Hz.
+                sounds.insert(sound.id, SoundEntry {
+                    char_id:      sound.id,
+                    name:         String::new(),
+                    fmt:          sound.format.compression as u8,
+                    sample_rate:  sound.format.sample_rate as u32,
+                    bits16:       sound.format.is_16_bit,
+                    stereo:       sound.format.is_stereo,
+                    sample_count: sound.num_samples,
+                    data:         sound.data.to_vec(),
+                });
+            }
+            // SymbolClass — maps char ids to AS3 class names
+            swf::Tag::SymbolClass(links) => {
+                for link in links {
+                    symbols.insert(
+                        link.id,
+                        String::from_utf8_lossy(link.class_name.as_bytes()).to_string(),
+                    );
                 }
             }
-            76
-                // SymbolClass — maps char ids to AS3 class names
-                if length >= 2 => {
-                    let count = u16::from_le_bytes([swf[pos], swf[pos+1]]) as usize;
-                    let mut p = pos + 2;
-                    for _ in 0..count {
-                        if p + 2 > tag_end { break; }
-                        let sym_id = u16::from_le_bytes([swf[p], swf[p+1]]);
-                        p += 2;
-                        let end = swf[p..tag_end].iter().position(|&b| b == 0)
-                            .map(|i| p + i).unwrap_or(tag_end);
-                        let name = String::from_utf8_lossy(&swf[p..end]).to_string();
-                        p = end + 1;
-                        symbols.insert(sym_id, name);
-                    }
-                }
             _ => {}
         }
-        pos = tag_end;
     }
 
     // Attach names from SymbolClass
@@ -142,7 +104,7 @@ pub fn parse_sounds(swf: &[u8]) -> Result<Vec<SoundEntry>> {
         }
     }
 
-    Ok(sounds.into_values().collect())
+    sounds.into_values().collect()
 }
 
 // ─── Convert one SoundEntry to WAV via FLV intermediary ──────────────────────
@@ -333,8 +295,8 @@ fn build_flv_from_chunks(audio_hdr: u8, data: &[u8], chunk_frames: usize, sample
 
 // ─── Bulk extract all sounds from a character ────────────────────────────────
 
-pub fn extract_all_sounds(swf: &[u8], out_dir: &Path, char_id: &str) -> Result<Vec<SoundEntry>> {
-    let sounds = parse_sounds(swf)?;
+pub fn extract_all_sounds(swf: &swf::Swf, out_dir: &Path, char_id: &str) -> Result<Vec<SoundEntry>> {
+    let sounds = parse_sounds(swf);
     if sounds.is_empty() {
         log::info!("No sounds found in SWF");
         return Ok(sounds);

@@ -207,10 +207,28 @@
     { "from": "self.playAttackSound(", "to": "playAttackSound(" },
     { "from": "self.playVoiceSound(", "to": "playVoiceSound(" },
 
-    // Event types
+    // Event types. SSF2Event constants that have a confirmed Fraymakers
+    // GameObjectEvent equivalent are renamed here; anything left as a bare
+    // SSF2Event.* after this pass is neutralized (commented [SSF2-only]) by
+    // neutralize_unmapped_events so it can't crash the engine.
+    // NOTE: list longer prefixes BEFORE their shorter forms — the literal pass
+    // is ordered + global, so SSF2Event.ATTACK_HIT must come after the
+    // ATTACK_HIT_* variants or it would corrupt them into HIT_DEALT_*.
     { "from": "SSF2Event.STATE_CHANGE", "to": "GameObjectEvent.LINK_FRAMES" },
+    { "from": "SSF2Event.ATTACK_HIT_POWER_SHIELD", "to": "GameObjectEvent.SHIELD_HIT_DEALT" },
+    { "from": "SSF2Event.ATTACK_HIT_SHIELD", "to": "GameObjectEvent.SHIELD_HIT_DEALT" },
+    { "from": "SSF2Event.ATTACK_HIT", "to": "GameObjectEvent.HIT_DEALT" },
+    { "from": "SSF2Event.CHAR_SHIELD_HIT", "to": "GameObjectEvent.SHIELD_HIT_RECEIVED" },
+    { "from": "SSF2Event.GROUND_LEAVE", "to": "GameObjectEvent.LEFT_GROUND" },
+    { "from": "SSF2Event.CHAR_KO_DEATH", "to": "GameObjectEvent.KO" },
     { "from": "SSF2Event.HIT", "to": "GameObjectEvent.HIT_DEALT" },
     { "from": "SSF2Event.LAND", "to": "GameObjectEvent.LAND" },
+    // Events with NO clear/confirmed Fraymakers equivalent are intentionally left
+    // for neutralize_unmapped_ssf2 to comment as [SSF2-only] rather than guessed:
+    //   CHAR_ATTACK_COMPLETE/CHANGED, REVERSE(_HIT), CHAR_COUNTER, CHAR_METAL_CHANGE,
+    //   PROJ_COLLIDE/DESTROYED/HURT, HOMING_TARGET, ENEMY_DESTROYED, ITEM_*,
+    //   CHAR_SELF_DESTRUCT, CHAR_ABSORB, CHAR_POWER_SHIELD_HIT, CHAR_SIZE_CHANGE,
+    //   CHAR_TRANSFORM, ATTACK_ENABLED, KO_POINT, GAME_ITEM_CREATED.
 
     // Timer / effect patterns
     { "from": ".createTimer(", "to": ".addTimer(" },

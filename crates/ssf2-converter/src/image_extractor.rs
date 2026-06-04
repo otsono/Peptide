@@ -1204,19 +1204,8 @@ fn build_anim_frame_images(
 
 /// Apply image fallbacks for procedural/synthetic animations.
 fn apply_image_fallbacks(result: &mut BTreeMap<String, AnimFrameImages>) {
-    let fallbacks: &[(&str, &str)] = &[
-        ("stunned", "hurt"), ("star_ko", "hurt"), ("starko", "hurt"),
-        ("screenko", "hurt"), ("buried", "crouch"), ("fly", "jump_aerial"),
-        ("swim", "fall"), ("ladder", "stand"), ("wall_stick", "fall"),
-        ("special", "stand"), ("carry", "grab"), ("land_heavy", "land"),
-        ("ledge_lean", "ledge_hang"), ("victory", "taunt"), ("defeat", "hurt"),
-        ("respawn", "stand"), ("special_down_air", "special_down"),
-        ("item_float", "stand"), ("item_screw", "special_up"),
-        ("tumble", "fall"), ("frozen", "stand"),
-    ];
-
     let mut to_insert: Vec<(String, AnimFrameImages)> = Vec::new();
-    for (missing, donor) in fallbacks {
+    for (missing, donor) in crate::sprite_parser::ANIM_FALLBACKS {
         // Override if missing entirely OR if present but has no actual image frames
         let needs_fallback = match result.get(*missing) {
             None => true,
