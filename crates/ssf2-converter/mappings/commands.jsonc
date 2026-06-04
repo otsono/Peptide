@@ -220,15 +220,20 @@
     { "from": "SSF2Event.ATTACK_HIT", "to": "GameObjectEvent.HIT_DEALT" },
     { "from": "SSF2Event.CHAR_SHIELD_HIT", "to": "GameObjectEvent.SHIELD_HIT_RECEIVED" },
     { "from": "SSF2Event.GROUND_LEAVE", "to": "GameObjectEvent.LEFT_GROUND" },
-    { "from": "SSF2Event.CHAR_KO_DEATH", "to": "GameObjectEvent.KO" },
+    { "from": "SSF2Event.CHAR_KO_DEATH", "to": "CharacterEvent.KNOCK_OUT" },
     { "from": "SSF2Event.HIT", "to": "GameObjectEvent.HIT_DEALT" },
     { "from": "SSF2Event.LAND", "to": "GameObjectEvent.LAND" },
     // Events with NO clear/confirmed Fraymakers equivalent are intentionally left
-    // for neutralize_unmapped_ssf2 to comment as [SSF2-only] rather than guessed:
-    //   CHAR_ATTACK_COMPLETE/CHANGED, REVERSE(_HIT), CHAR_COUNTER, CHAR_METAL_CHANGE,
-    //   PROJ_COLLIDE/DESTROYED/HURT, HOMING_TARGET, ENEMY_DESTROYED, ITEM_*,
-    //   CHAR_SELF_DESTRUCT, CHAR_ABSORB, CHAR_POWER_SHIELD_HIT, CHAR_SIZE_CHANGE,
-    //   CHAR_TRANSFORM, ATTACK_ENABLED, KO_POINT, GAME_ITEM_CREATED.
+    // for neutralize_unmapped_ssf2 to comment as [SSF2-only] rather than guessed.
+    // NB: only events whose FM constant is non-null AT RUNTIME may be mapped — a bad
+    // guess reaches the engine as "Null event type passed to addEventListener", which
+    // "no Unknown variable error" at convert time won't catch (hscript returns null for
+    // a missing enum field). Note the ENUM matters too: char KO/death is
+    // CharacterEvent.KNOCK_OUT, not GameObjectEvent.KO (the latter is null).
+    // Left neutralized: KO_POINT, CHAR_ATTACK_COMPLETE/CHANGED, REVERSE(_HIT),
+    //   CHAR_COUNTER, CHAR_METAL_CHANGE, PROJ_COLLIDE/DESTROYED/HURT, HOMING_TARGET,
+    //   ENEMY_DESTROYED, ITEM_*, CHAR_SELF_DESTRUCT, CHAR_ABSORB, CHAR_POWER_SHIELD_HIT,
+    //   CHAR_SIZE_CHANGE, CHAR_TRANSFORM, ATTACK_ENABLED, GAME_ITEM_CREATED.
 
     // Timer / effect patterns
     { "from": ".createTimer(", "to": ".addTimer(" },
