@@ -233,6 +233,23 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
         }
     }
 
+    // #13: lint every emitted .hx for structural breakage (unbalanced delimiters,
+    // dangling string, empty interpolation) so a generation bug surfaces in the
+    // convert output as a SCRIPTERR line instead of silently dying in-engine. Scope
+    // to only THIS run's output dirs (single-char output is the shared root, so
+    // linting project_dir would re-flag stale unrelated characters).
+    let lint_dirs: Vec<PathBuf> = if multi_char_mode {
+        vec![project_dir.clone()]
+    } else {
+        char_names.iter().map(|c| opts.output.join(c)).collect()
+    };
+    for dir in &lint_dirs {
+        for problem in lint_emitted_hscript(dir) {
+            log::error!("{problem}");
+            all_warnings.push(problem);
+        }
+    }
+
     // Collect the .fraytools files produced (for the UI's "open / publish" step).
     let fraytools_files = collect_fraytools_files(&project_dir, multi_char_mode, &char_names, &opts.output);
 
@@ -271,6 +288,162 @@ fn collect_fraytools_files(
         }
     }
     out
+}
+
+/// #13: walk every emitted `.hx` under `dir` and structurally lint it, returning
+/// one `SCRIPTERR:` line per problem. The engine executes generated hscript with a
+/// try/catch that, by default, swallows parse/runtime failures silently — a
+/// generation bug then reads in-engine as "the move just doesn't do anything." This
+/// catches the realistic generation failures (unbalanced delimiters, an unterminated
+/// string, an empty `${}`) at convert time so they surface in the session instead.
+fn lint_emitted_hscript(dir: &Path) -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        if let Ok(rd) = fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().map(|x| x == "hx").unwrap_or(false) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(dir, &mut files);
+    files.sort();
+    let mut problems = Vec::new();
+    for f in &files {
+        let Ok(src) = fs::read_to_string(f) else { continue };
+        let rel = f.strip_prefix(dir).unwrap_or(f).display();
+        if let Some(msg) = hscript_structural_problem(&src) {
+            problems.push(format!("SCRIPTERR: {rel}: {msg}"));
+        }
+    }
+    problems
+}
+
+/// Lightweight hscript structural check: scan outside string literals and comments,
+/// require balanced `(){}[]` and a terminated string, and reject empty `${}`
+/// interpolation. Returns the first problem found, or None if the file looks sound.
+/// NOT a full parser — it only catches the breakage our own emitter can produce.
+fn hscript_structural_problem(src: &str) -> Option<String> {
+    let b = src.as_bytes();
+    let mut stack: Vec<(u8, usize)> = Vec::new(); // (closing char, byte offset of opener)
+    let mut line = 1usize;
+    let mut i = 0usize;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'\n' {
+            line += 1;
+            i += 1;
+            continue;
+        }
+        // comments
+        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                if b[i] == b'\n' {
+                    line += 1;
+                }
+                i += 1;
+            }
+            i += 2;
+            continue;
+        }
+        // string literals (" or '); ' supports ${...} interpolation
+        if c == b'"' || c == b'\'' {
+            let quote = c;
+            let start_line = line;
+            i += 1;
+            let mut terminated = false;
+            while i < b.len() {
+                let d = b[i];
+                if d == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if d == b'\n' {
+                    line += 1;
+                    i += 1;
+                    continue;
+                }
+                if quote == b'\'' && d == b'$' && i + 1 < b.len() && b[i + 1] == b'{' {
+                    if i + 2 < b.len() && b[i + 2] == b'}' {
+                        return Some(format!("empty string interpolation `${{}}` near line {start_line}"));
+                    }
+                    // skip the interpolation braces so an inner } doesn't end scan early
+                    let mut depth = 0i32;
+                    i += 1; // at '{'
+                    loop {
+                        if i >= b.len() {
+                            return Some(format!("unterminated `${{...}}` interpolation opened near line {start_line}"));
+                        }
+                        match b[i] {
+                            b'{' => depth += 1,
+                            b'}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    i += 1;
+                                    break;
+                                }
+                            }
+                            b'\n' => line += 1,
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    continue;
+                }
+                if d == quote {
+                    terminated = true;
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            if !terminated {
+                return Some(format!("unterminated string literal opened near line {start_line}"));
+            }
+            continue;
+        }
+        match c {
+            b'(' => stack.push((b')', line)),
+            b'{' => stack.push((b'}', line)),
+            b'[' => stack.push((b']', line)),
+            b')' | b'}' | b']' => match stack.pop() {
+                Some((expected, _)) if expected == c => {}
+                Some((expected, opened)) => {
+                    return Some(format!(
+                        "mismatched delimiter: expected `{}` but found `{}` at line {line} (opener at line {opened})",
+                        expected as char, c as char
+                    ));
+                }
+                None => {
+                    return Some(format!("stray closing `{}` at line {line}", c as char));
+                }
+            },
+            _ => {}
+        }
+        i += 1;
+    }
+    if let Some((expected, opened)) = stack.last() {
+        return Some(format!(
+            "unbalanced delimiter: `{}` opened at line {opened} never closed",
+            match expected {
+                b')' => '(',
+                b'}' => '{',
+                _ => '[',
+            }
+        ));
+    }
+    None
 }
 
 /// Extract all costume palettes from misc.ssf in-process and write to a temp JSON
@@ -430,6 +603,20 @@ fn process_character(
         Some(s) => s.project_dir.clone(),
         None => output.join(char_name),
     };
+    // Clean the generated `library/` subtree before (re)writing, so a file that a
+    // prior conversion produced but this one no longer does (e.g. an old
+    // palette_preview.png after a rename) doesn't orphan — orphans can even collide
+    // on deterministic GUIDs. Multi-char characters SHARE one project library/, so
+    // only the FIRST slot cleans it; later slots add into it.
+    let is_first_slot = multi_char_slot.map(|s| s.slot_idx == 0).unwrap_or(true);
+    if is_first_slot {
+        let lib = char_output_dir.join("library");
+        if lib.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&lib) {
+                log::warn!("could not clean stale library dir {}: {}", lib.display(), e);
+            }
+        }
+    }
     let img_result = image_extractor::extract_images_from_swf(
         &parsed_swf, &char_output_dir, char_name, &char_data.ssf2_to_fm_anim, &xform_map,
     ).unwrap_or_else(|e| {
@@ -455,12 +642,30 @@ fn process_character(
     };
 
     // Discover projectiles, effects, head sprite.
-    let (projectiles, effects, head_sprite) = image_extractor::discover_projectiles_and_head_from_swf(
+    let (mut projectiles, effects, head_sprite) = image_extractor::discover_projectiles_and_head_from_swf(
         &parsed_swf, char_name,
     ).unwrap_or_else(|e| {
         log::warn!("discover_projectiles_and_head failed: {}", e);
         (vec![], vec![], None)
     });
+    // In a multi-char .ssf the SWF prefixes a sub-character's projectiles with its id
+    // (e.g. sheik's "sheik_uspecDamage"), but the fireProjectile spawn call uses the
+    // LOGICAL name ("uspecDamage"). Strip a leading "<subchar>_" so the projectile's
+    // content id matches the spawn (else the createProjectile dangles). Single-char is
+    // a no-op (its own name isn't prefixed).
+    let strip_prefixes: Vec<String> = multi_char_slot
+        .map(|s| s.char_ids.iter().map(|c| format!("{}_", c)).collect())
+        .unwrap_or_default();
+    if !strip_prefixes.is_empty() {
+        for p in &mut projectiles {
+            for pfx in &strip_prefixes {
+                if let Some(rest) = p.name.strip_prefix(pfx.as_str()) {
+                    p.name = rest.to_string();
+                    break;
+                }
+            }
+        }
+    }
     log::info!("Discovered {} projectiles, {} effects, head={}",
         projectiles.len(), effects.len(),
         head_sprite.as_ref().map(|h| h.name.as_str()).unwrap_or("none"));
@@ -735,5 +940,43 @@ mod tests {
         assert_eq!(derive_id_from_getter("init"), None);
         assert_eq!(derive_id_from_getter(""), None);
         assert_eq!(derive_id_from_getter("get"), None);
+    }
+
+    #[test]
+    fn hscript_lint_accepts_sound_script() {
+        let ok = r#"
+            function init() {
+                // a comment with unbalanced { ( [ chars
+                var s = "string with } ] ) braces";
+                var t = 'interp ${entity.getName()} and an escaped \' quote';
+                /* block } comment */
+                self.doThing({ a: 1, b: [2, 3] });
+            }
+        "#;
+        assert_eq!(hscript_structural_problem(ok), None);
+    }
+
+    #[test]
+    fn hscript_lint_catches_unbalanced_brace() {
+        let bad = "function f() {\n  if (x) {\n    y();\n}\n";
+        assert!(hscript_structural_problem(bad).is_some());
+    }
+
+    #[test]
+    fn hscript_lint_catches_mismatch_and_stray_close() {
+        assert!(hscript_structural_problem("foo([1, 2)").is_some());
+        assert!(hscript_structural_problem("a) + b").is_some());
+    }
+
+    #[test]
+    fn hscript_lint_catches_unterminated_string_and_empty_interp() {
+        assert!(hscript_structural_problem("var s = \"oops;").is_some());
+        assert!(hscript_structural_problem("var s = 'val ${}';").is_some());
+    }
+
+    #[test]
+    fn hscript_lint_ignores_delims_in_strings_and_comments() {
+        assert_eq!(hscript_structural_problem("var s = \"){]}[(\";"), None);
+        assert_eq!(hscript_structural_problem("// )]}\nvar x = 1;"), None);
     }
 }

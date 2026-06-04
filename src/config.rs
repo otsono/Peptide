@@ -151,13 +151,14 @@ impl Config {
         "battlefield".to_string()
     }
 
-    /// Active character. `FRAY_CHAR` env → config → "impostor" (base-game default).
+    /// Active character. `FRAY_CHAR` env → config → "commandervideo" (base-game default).
+    /// (was "impostor", but impostor crashes the game on match load — see the open TODO.)
     pub fn char_name(&self) -> String {
         if let Ok(c) = std::env::var("FRAY_CHAR") {
             if !c.is_empty() { return c; }
         }
         if !self.current_char.is_empty() { return self.current_char.clone(); }
-        "impostor".to_string()
+        "commandervideo".to_string()
     }
 
     /// Stage id. `FRAY_STAGE` env → config → "thespire" (a real, loadable base-game stage).

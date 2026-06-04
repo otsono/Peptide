@@ -32,6 +32,7 @@ pub trait DebugTarget {
     fn hold(&mut self, mask: u32) -> Result<String>;
     fn seq(&mut self, masks: &[u32]) -> Result<String>;
     fn console(&mut self) -> Result<String>;
+    fn add_character(&mut self) -> Result<String>;
     fn exit(&mut self) -> Result<()>;
     fn load(&mut self) -> Result<String>;
 
@@ -70,7 +71,21 @@ pub fn run_command(target: &mut dyn DebugTarget, line: &str) -> Result<Option<St
         Command::Eval(e) => Some(target.eval(&e)?),
         Command::Hold(m) => Some(target.hold(m)?),
         Command::Seq(s) => Some(target.seq(&s)?),
+        // Scenario = set up the scene (eval), then play p0's input timeline (seq).
+        // Same DebugTarget seam, so it works identically on Fraymakers and SSF2.
+        Command::Scenario { setup, masks } => {
+            let mut out = target.eval(&setup)?;
+            if !masks.is_empty() {
+                let s = target.seq(&masks)?;
+                if !s.trim().is_empty() {
+                    if !out.trim().is_empty() { out.push('\n'); }
+                    out.push_str(&s);
+                }
+            }
+            Some(out)
+        }
         Command::Console => Some(target.console()?),
+        Command::AddCharacter => Some(target.add_character()?),
         Command::Exit => { target.exit()?; Some("exit".into()) }
         Command::Load => Some(target.load()?),
     })
@@ -149,6 +164,7 @@ impl DebugTarget for FraymakersTarget {
     fn hold(&mut self, mask: u32) -> Result<String> { self.run(&Command::Hold(mask)) }
     fn seq(&mut self, masks: &[u32]) -> Result<String> { self.run(&Command::Seq(masks.to_vec())) }
     fn console(&mut self) -> Result<String> { self.run(&Command::Console) }
+    fn add_character(&mut self) -> Result<String> { self.run(&Command::AddCharacter) }
     fn exit(&mut self) -> Result<()> { let _ = self.run(&Command::Exit)?; Ok(()) }
     fn load(&mut self) -> Result<String> { self.run(&Command::Load) }
 }

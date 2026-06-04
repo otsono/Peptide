@@ -252,7 +252,8 @@ pub fn send_once(port: u16, token: Option<&str>, cmd: &str) {
 /// Where a session keeps its control file + output log. `PEPTIDE_SESSION_DIR`
 /// overrides; `--dir` on the command line overrides that. One well-known dir by
 /// default so `tell`/`log` find the running session with no arguments.
-fn default_session_dir() -> PathBuf {
+/// Holds the spawned overlay child and kills it when the session drops.
+pub(crate) fn default_session_dir() -> PathBuf {
     if let Ok(d) = std::env::var("PEPTIDE_SESSION_DIR") {
         if !d.trim().is_empty() { return PathBuf::from(d); }
     }
@@ -352,10 +353,14 @@ pub fn session(args: &[String]) {
         (r, w, port, token.unwrap_or_default(), None)
     } else {
         let full = args.iter().any(|a| a == "--full");
+        // `--char` may carry a comma-separated roster (e.g. `mario,mario`) so the auto-boot builds
+        // a multi-player match directly; the patcher bakes only player 1 (first token), the rest
+        // resolve at launch from the full roster the fastboot command carries.
         let bake: Option<String> = if full {
             None
         } else {
-            Some(arg_val(args, "--char").unwrap_or_else(|| crate::config::Config::load().char_name()))
+            let roster = arg_val(args, "--char").unwrap_or_else(|| crate::config::Config::load().char_name());
+            Some(roster.split(',').next().unwrap_or(&roster).trim().to_string())
         };
         autostart = bake.is_some();
         match crate::ui::patch_and_launch_with_progress(None, bake.as_deref()) {
@@ -381,6 +386,11 @@ pub fn session(args: &[String]) {
     let _ = std::fs::write(&metap, format!(
         "port={port}\ntoken={token}\ncontrol={}\nlog={}\npid={}\n",
         control.display(), logp.display(), std::process::id()));
+
+    // Float the transparent debugger HUD over the game, tailing this session's log. Engine-
+    // agnostic: the SSF2 session spawns it the same way. On by default; opt out with
+    // --no-overlay or PEPTIDE_OVERLAY=0. Killed when the session ends (drop + pid watchdog).
+    let _overlay = crate::overlay::spawn_for_session(&logp, args);
 
     // socket -> log (+ stdout); signal READY once the engine reports it. Shares the
     // reader with `serve` via pump_engine_lines; the emit closure mirrors each line
@@ -505,6 +515,42 @@ fn write_crash_log(dir: &std::path::Path, port: u16, resdiag: &Arc<Mutex<Vec<Str
 pub fn tell(args: &[String]) {
     let dir = session_dir(args);
     let control = dir.join("control");
+    if !control.exists() {
+        eprintln!("peptide tell: no session at {} — start one with `peptide session`", dir.display());
+        std::process::exit(1);
+    }
+
+    // Batch mode: `tell --file <path>` queues every command in a file in one go (one per
+    // line; blank lines and `#` comments are skipped). The lines share the session's single
+    // dispatch path, so a file can mix engine commands, `e <hscript>`, and `seq`/`hold`
+    // inputs — a whole test scenario from disk. Covers peptide todo #9 (CLI half).
+    if let Some(path) = arg_val(args, "--file").or_else(|| arg_val(args, "-F")) {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => { eprintln!("peptide tell: cannot read batch file {path}: {e}"); std::process::exit(1); }
+        };
+        let lines: Vec<&str> = text.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        if lines.is_empty() {
+            eprintln!("peptide tell: batch file {path} has no commands (blank/comment-only)");
+            std::process::exit(1);
+        }
+        match std::fs::OpenOptions::new().append(true).open(&control) {
+            Ok(mut f) => {
+                for l in &lines {
+                    if writeln!(f, "{l}").is_err() {
+                        eprintln!("peptide tell: write failed mid-batch"); std::process::exit(1);
+                    }
+                }
+                eprintln!("peptide tell: queued {} command(s) from {path}", lines.len());
+            }
+            Err(e) => { eprintln!("peptide tell: cannot write {}: {e}", control.display()); std::process::exit(1); }
+        }
+        return;
+    }
+
     // The command is everything after the flags (so both quoted "spawn sandbag"
     // and bare `tell spawn sandbag` work). `--dir D` must precede the command.
     let mut i = 0;
@@ -516,12 +562,8 @@ pub fn tell(args: &[String]) {
     }
     let cmd = match cmd {
         Some(c) if !c.trim().is_empty() => c,
-        _ => { eprintln!("usage: peptide tell [--dir D] \"<command>\""); std::process::exit(2); }
+        _ => { eprintln!("usage: peptide tell [--dir D] \"<command>\"  |  peptide tell --file <path>"); std::process::exit(2); }
     };
-    if !control.exists() {
-        eprintln!("peptide tell: no session at {} — start one with `peptide session`", dir.display());
-        std::process::exit(1);
-    }
     match std::fs::OpenOptions::new().append(true).open(&control) {
         Ok(mut f) => {
             if writeln!(f, "{}", cmd.trim()).is_ok() {

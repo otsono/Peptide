@@ -22,6 +22,17 @@ const NAMESPACE: [u8; 16] = [
     0xf2, 0x30, 0x89, 0x6c,
 ];
 
+/// Deterministic GUID for an image asset's `.meta`, keyed ONLY by the sprite's
+/// symbol name. Image GUIDs must be NAMESPACE-FREE: a sprite's PNG/.meta is
+/// shared (one per symbol_name) and referenced from many places — the character
+/// entity, projectile/effect entities, the menu icon — and in a multi-character
+/// project those places run with different per-char ids. Seeding by symbol only
+/// guarantees every reference and the .meta agree, so nothing dangles into a
+/// placeholder. Symbol names are unique within a project (one PNG per name).
+pub fn image_meta_guid(symbol: &str) -> String {
+    det_uuid(&format!("image::{}", symbol))
+}
+
 /// Generate a deterministic UUID v5 from a seed string.
 /// Identical seeds always produce identical UUIDs.
 /// Different seeds produce statistically unique UUIDs (SHA-1 collision resistance).

@@ -201,13 +201,17 @@ pub fn patch_and_launch_with_progress(
         return Err(io_err(&format!("{} not found (set the Fraymakers install in Setup or FRAY_DIR)", boot.display())));
     }
 
-    // A baked (headless) char must already be published to a `.fra`.
+    // A baked (headless) char should be published to a `.fra` IF it's a custom char. A base/built-in
+    // char (e.g. commandervideo) has no custom/<c>.fra — the engine already has it, and the `s`
+    // handler's base-char skip resolves it via public::. So only error if it looks custom but is
+    // missing; for an absent file we warn and continue (the base-char path handles it).
     if let Some(c) = bake_char {
+        // Informational only: the patcher (connect_edit) self-detects base-vs-custom by stat'ing
+        // custom/<c>/<c>.fra itself, so there's no flag to pass — we just warn if it looks absent.
         let fra = fray_dir.join("custom").join(c).join(format!("{c}.fra"));
         if !fra.exists() {
-            return Err(io_err(&format!(
-                "{c} isn't built yet — no {}. Publish it in FrayTools Hook first, then launch.",
-                fra.display())));
+            eprintln!("peptide: no custom build for {c} ({}); treating it as a built-in/base char.",
+                fra.display());
         }
     }
     let stage = cfg.stage();
