@@ -1,0 +1,100 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body {
+    margin: 0; padding: 0; background: transparent; overflow: hidden;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    -webkit-user-select: none; user-select: none;
+  }
+  #panel {
+    margin: 8px;
+    background: rgba(12, 13, 18, 0.62);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 10px;
+    padding: 8px 10px;
+    color: #d7dae0;
+    font-size: 11px;
+    line-height: 1.35;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+  }
+  #hdr {
+    display: flex; align-items: center; gap: 6px;
+    font-weight: 600; letter-spacing: .5px; color: #9aa3b2;
+    font-size: 10px; text-transform: uppercase; margin-bottom: 5px;
+  }
+  #dot { width: 7px; height: 7px; border-radius: 50%; background: #4ad07a; box-shadow: 0 0 6px #4ad07a; }
+  #dot.stale { background: #6b7280; box-shadow: none; }
+  #state { color: #7fd4ff; }
+  #state b { color: #d7dae0; font-weight: 600; }
+  #errwrap { margin-top: 6px; }
+  #errs { display: flex; flex-direction: column; gap: 2px; }
+  .err { color: #ff8a8a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 360px; }
+  .err .loc { color: #ffd07a; }
+  #count { color: #ff8a8a; font-weight: 600; }
+  .empty { color: #5b6472; font-style: italic; }
+</style>
+</head>
+<body>
+  <div id="panel">
+    <div id="hdr"><span id="dot"></span><span>peptide overlay</span></div>
+    <div id="state">state <b id="anim">—</b></div>
+    <div id="errwrap">
+      <div><span id="count">0</span> script errors</div>
+      <div id="errs"><div class="empty">no errors</div></div>
+    </div>
+  </div>
+
+<script>
+  var errCount = 0;
+  var recent = [];          // last N unique-ish error lines
+  var MAX = 6;
+  var lastBeat = Date.now();
+
+  function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  function renderErrs(){
+    var box = document.getElementById('errs');
+    document.getElementById('count').textContent = errCount;
+    if (!recent.length){ box.innerHTML = '<div class="empty">no errors</div>'; return; }
+    box.innerHTML = recent.map(function(e){
+      // split "loc: message" so the file:line is highlighted
+      var m = e.match(/^([^ ]+?:[^ ]*?:?\d*):?\s*(.*)$/);
+      var loc = m ? m[1] : '';
+      var msg = m ? m[2] : e;
+      return '<div class="err"><span class="loc">'+esc(loc)+'</span> '+esc(msg)+'</div>';
+    }).join('');
+  }
+
+  // Called by the host for each engine/log line.
+  window.push = function(raw){
+    lastBeat = Date.now();
+    if (typeof raw !== 'string') return;
+    var line = raw.trim();
+
+    // engine errors: Fraymakers mirrors them as "SCRIPTERR: <msg>"; SSF2's session reports
+    // command failures as "<< ERR: <msg>". Recognize both so the HUD is engine-agnostic.
+    var em = line.match(/SCRIPTERR:\s*(.*)$/) || line.match(/<<\s*ERR:\s*(.*)$/);
+    if (em){
+      errCount++;
+      var msg = em[1].replace(/^Script (Interpret|Parse) Error:\s*/, '').replace(/\s*\(origin:[^)]*\)\s*$/, '');
+      recent.push(msg);
+      if (recent.length > MAX) recent.shift();
+      renderErrs();
+      return;
+    }
+
+    // "<< ANIM:<STATE>" — current animation/state
+    var am = line.match(/ANIM:([A-Z_0-9]+)/);
+    if (am){ document.getElementById('anim').textContent = am[1].toLowerCase(); return; }
+  };
+
+  // heartbeat dot: green while lines flow, dim if the stream goes quiet
+  setInterval(function(){
+    var stale = (Date.now() - lastBeat) > 4000;
+    document.getElementById('dot').classList.toggle('stale', stale);
+  }, 1000);
+</script>
+</body>
+</html>

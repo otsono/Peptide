@@ -164,6 +164,10 @@ impl Expr {
             Expr::Local(n)  => format!("_v{}", n),
             Expr::GetLex(n)              => n.clone(),
             Expr::Closure(params, stmts)  => render_closure(params, stmts, 0),
+            // A decompiler-unreconstructable expression. Renders as a bare comment so
+            // that in STATEMENT position (`/* ? */ foo();`) it's harmless whitespace.
+            // In CONDITION position a bare comment is a parse error (`if (/* ? */)`) that
+            // kills the whole script — `render_condition` substitutes `false` there.
             Expr::Unknown                 => "/* ? */".to_string(),
             Expr::GetProperty(obj, name) => {
                 format!("{}.{}", obj.render(), name)
@@ -391,7 +395,7 @@ fn render_stmts(stmts: &[Stmt], depth: usize) -> String {
             }
             Stmt::Expr(e) => out.push_str(&format!("{}{};\n", tab, e.render())),
             Stmt::If(cond, then_b, else_b) => {
-                out.push_str(&format!("{}if ({}) {{\n", tab, cond.render()));
+                out.push_str(&format!("{}if ({}) {{\n", tab, render_condition(cond)));
                 out.push_str(&render_stmts(then_b, depth + 1));
                 if !else_b.is_empty() {
                     out.push_str(&format!("{}}} else {{\n", tab));
@@ -400,13 +404,29 @@ fn render_stmts(stmts: &[Stmt], depth: usize) -> String {
                 out.push_str(&format!("{}}}\n", tab));
             }
             Stmt::While(cond, body) => {
-                out.push_str(&format!("{}while ({}) {{\n", tab, cond.render()));
+                out.push_str(&format!("{}while ({}) {{\n", tab, render_condition(cond)));
                 out.push_str(&render_stmts(body, depth + 1));
                 out.push_str(&format!("{}}}\n", tab));
             }
         }
     }
     out
+}
+
+/// Render an `if`/`while` condition, guaranteeing it's a parse-valid expression.
+/// A decompiler-unreconstructable sub-expression renders as a `/* ? */` comment, which
+/// is fine in statement position but a fatal parse error in CONDITION position (a comment
+/// can't be an operand — `if (/* ? */)`, `if (x && /* ? */)`, `if (f(/* ? */))` all break,
+/// and an hscript parse error kills the ENTIRE character script). When the rendered
+/// condition contains such a marker, substitute a falsy placeholder so that one block goes
+/// dead while the rest of the script still loads and runs.
+fn render_condition(cond: &Expr) -> String {
+    let r = cond.render();
+    if r.contains("/* ? */") {
+        "false /* ? */".to_string()
+    } else {
+        r
+    }
 }
 
 // ─── Opcode constants ─────────────────────────────────────────────────────────

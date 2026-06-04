@@ -27,14 +27,14 @@ FrayTools to publish. see [`README.md`](README.md) for the pitch.
   `commands.hsx`, not hand-emitted bytecode. (AGENT_CONTEXT.)
 - **ONE command vocabulary, TWO engines.** a host-facing feature must behave the same on
   Fraymakers and SSF2 via the `DebugTarget` seam, never an `if engine == ...` branch in feature
-  logic. (enforced by `tests/conventions.rs`.)
+  logic. (enforced by `crates/ssf2-converter/tests/conventions.rs`.)
 - **compliance: no engine-RE in the docs.** never put the methodology for decompiling/patching
   the Fraymakers engine or FrayTools, or specific non-hscript engine
   class/function/field names, in any tracked file. (AGENT_CONTEXT "engine-side knowledge is not
   in this repo"; enforced by `tests/doc_freshness.rs`.)
 - **docs describe current state only, in lowercase casual voice, no em-dashes.** no "(fixed)"
   archaeology, no commit refs, no "previously/formerly". (em-dashes enforced by
-  `tests/conventions.rs`.)
+  `crates/ssf2-converter/tests/conventions.rs`.)
 - **keep docs succinct.** lead with the point, cut the throat-clearing and the AI tells (no
   "it's not just X, it's Y" antithesis, no rule-of-three padding). say it once: each topic has
   one home (status/TODOs live in `docs/STATUS.md`, the format reference in `AGENT_CONTEXT.md`),

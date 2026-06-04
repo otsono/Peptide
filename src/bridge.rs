@@ -252,7 +252,8 @@ pub fn send_once(port: u16, token: Option<&str>, cmd: &str) {
 /// Where a session keeps its control file + output log. `PEPTIDE_SESSION_DIR`
 /// overrides; `--dir` on the command line overrides that. One well-known dir by
 /// default so `tell`/`log` find the running session with no arguments.
-fn default_session_dir() -> PathBuf {
+/// Holds the spawned overlay child and kills it when the session drops.
+pub(crate) fn default_session_dir() -> PathBuf {
     if let Ok(d) = std::env::var("PEPTIDE_SESSION_DIR") {
         if !d.trim().is_empty() { return PathBuf::from(d); }
     }
@@ -385,6 +386,11 @@ pub fn session(args: &[String]) {
     let _ = std::fs::write(&metap, format!(
         "port={port}\ntoken={token}\ncontrol={}\nlog={}\npid={}\n",
         control.display(), logp.display(), std::process::id()));
+
+    // Float the transparent debugger HUD over the game, tailing this session's log. Engine-
+    // agnostic: the SSF2 session spawns it the same way. On by default; opt out with
+    // --no-overlay or PEPTIDE_OVERLAY=0. Killed when the session ends (drop + pid watchdog).
+    let _overlay = crate::overlay::spawn_for_session(&logp, args);
 
     // socket -> log (+ stdout); signal READY once the engine reports it. Shares the
     // reader with `serve` via pump_engine_lines; the emit closure mirrors each line

@@ -74,6 +74,7 @@ mod fastboot; // single definition of the quick-boot autostart, shared by CLI + 
 mod session; // shared control-file tail loop for the CLI session loops (FM + SSF2)
 mod ui; // terminal console (ratatui) + cross-platform launcher
 mod gui; // graphical chat window (egui/eframe) — the default
+mod overlay; // standalone transparent debugger HUD that floats over the game (CLI + GUI)
 mod fraytools; // drive FrayTools over CDP: export .fra / render / harness (ported from Node)
 mod ssf2; // `peptide ssf2` — SSF2 engine model: physics ground-truth + scaling + quickboot
 mod ssf2_bridge; // host side of the SSF2 runtime bridge (session/tell/log/send over file-IPC)
@@ -135,6 +136,13 @@ fn main() -> anyhow::Result<()> {
             // agent workflow for iterating on a character or a conversion fix —
             // send an eval, read the reply, decide the next eval, same match.
             bridge::session(&args[2..]);
+            return Ok(());
+        }
+        Some("overlay") => {
+            // Standalone transparent debugger HUD that floats over the game. Its own
+            // process (own window + event loop) so it works from CLI sessions and the GUI
+            // alike; tails the session's out.log and renders state + the SCRIPTERR stream.
+            overlay::run(&args[2..])?;
             return Ok(());
         }
         Some("tell") => {
@@ -933,10 +941,11 @@ fn connect_edit(
 ) -> anyhow::Result<()> {
     // Character/stage/assist baked as launch defaults. The char drives the self-bootstrap
     // (a custom .fra at <install>/custom/<char>/<char>.fra) and the bare-`s`/auto-launch
-    // Base-game defaults when an arg is omitted: character → impostor, stage →
+    // Base-game defaults when an arg is omitted: character → commandervideo, stage →
     // thespire (a real loadable stage), assist → commandervideoassist. All generic —
-    // derived from the injector args; these are just the fallbacks.
-    let cname = char_name.as_deref().unwrap_or("impostor");
+    // derived from the injector args; these are just the fallbacks. (Was impostor, but
+    // impostor crashes the game on match load — see the open TODO.)
+    let cname = char_name.as_deref().unwrap_or("commandervideo");
     let sname = stage_name.as_deref().unwrap_or("thespire");
     let aname = assist_name.as_deref().unwrap_or("commandervideoassist");
     let char_path = format!("{install_dir}/custom/{cname}/{cname}.fra");
@@ -3662,6 +3671,18 @@ fn connect_edit(
         if let Err(e) = inject_logging_override(code) {
             eprintln!("inject_logging_override: skipped ({e})");
         }
+        // Un-gate the in-game Tildebugger console so errors actually render on screen
+        // (production builds drop non-"important" logs).
+        if let Err(e) = inject_console_display_override(code) {
+            eprintln!("inject_console_display_override: skipped ({e})");
+        }
+        // The socket leg: prepend to the Tildebugger.error chokepoint so every script error
+        // (frame scripts, per-frame fns, lifecycle runners, one-shot eval) hits the TCP stream.
+        if let Err(e) = inject_error_socket_mirror(
+            code, g_sock, out_field, write_str, flush, str_add, nl_g, sock_t, out_t, str_t, enc_t,
+        ) {
+            eprintln!("inject_error_socket_mirror: skipped ({e})");
+        }
     }
     // Crash diagnostics, split per the "keep logic OUT of bytecode" convention
     // (AGENT_CONTEXT.md): the ONLY thing that must be in bytecode is pulling the one fact
@@ -3997,19 +4018,26 @@ fn inject_input_override(code: &mut Bytecode, g_inject_held: usize) -> anyhow::R
     Ok(())
 }
 
-/// Force `pxf.api.ApiUtilities.loggingEnabled` to read `true` inside
-/// `ApiScript.interpretScript`, so the engine's own trapped-script-error path runs.
+/// Force the trapped-script-error gate inside `ApiScript.interpretScript` to take the
+/// logging branch, so the engine's own detailed error surfaces instead of being swallowed.
 ///
 /// interpretScript wraps every character/assist/mode/stage script in a try/catch. The
 /// catch already formats a detailed error (`Std.string(exc)` + line/col via `posInfos` +
-/// the script origin) and calls `Tildebugger.error(...)` — but it is gated behind an early
-/// `if (!ApiUtilities.loggingEnabled) return;`, which is false in normal play, so the error
-/// is silently swallowed (the character loads, but e.g. its hitboxes never arm).
+/// the script origin) and calls `Tildebugger.error(...)`. The gate is the opposite polarity
+/// of what its field name suggests: the bytecode is `if (loggingEnabled) return; else
+/// log`, i.e. the read is FALSE on the path that actually logs (and `loggingEnabled` is the
+/// value passed as the error()'s second arg, always false on the real logging path). In
+/// normal play the field reads true, so the catch returns early and the error is silently
+/// swallowed (the character loads, but e.g. its hitboxes never arm).
 ///
-/// The fix is one in-place op swap: the gate's `Field` read of `loggingEnabled` becomes a
-/// constant `true`. No new ops, no offset shifts. Matched by field + obj-reg type (not op
-/// index) so it survives engine-build drift. Local to interpretScript — does not change the
-/// global `loggingEnabled` flag for any other code path.
+/// The fix is one in-place op swap: the gate's `Field` read becomes a constant `false`,
+/// which forces the log branch AND reproduces the engine's genuine `error(msg, false)`
+/// call exactly. No new ops, no offset shifts. Matched by field + obj-reg type (not op
+/// index) so it survives engine-build drift. Local to interpretScript.
+/// Flip the `loggingEnabled` gate in `ApiScript.interpretScript` (the one-shot script-eval
+/// path) so its catch reaches the log branch. Only this one-shot path is gated; the
+/// per-frame character paths (`interpretScriptFunction`, `HaxeScript.runFrameScripts`) call
+/// `Tildebugger.error` unconditionally. See `inject_error_socket_mirror` for the socket leg.
 fn inject_logging_override(code: &mut Bytecode) -> anyhow::Result<()> {
     let interp_script = require_fn(code, "interpretScript", Some("pxf.api.$ApiScript"))?;
     let apiutil_t = find_type(code, "pxf.api.$ApiUtilities")
@@ -4018,7 +4046,6 @@ fn inject_logging_override(code: &mut Bytecode) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("ApiUtilities.loggingEnabled field not found"))?;
     let fidx = function_index_by_findex(code, interp_script)
         .ok_or_else(|| anyhow::anyhow!("interpretScript@{interp_script} not found"))?;
-    // Locate the gate's Field read: loggingEnabled on an ApiUtilities-typed obj reg.
     let targets: Vec<(usize, Reg)> = {
         let f = &code.functions[fidx];
         f.ops.iter().enumerate().filter_map(|(i, op)| match op {
@@ -4036,11 +4063,94 @@ fn inject_logging_override(code: &mut Bytecode) -> anyhow::Result<()> {
     }
     let f = &mut code.functions[fidx];
     for (i, dst) in &targets {
-        f.ops[*i] = Opcode::Bool { dst: *dst, value: hlbc::types::ValBool(true) };
+        f.ops[*i] = Opcode::Bool { dst: *dst, value: hlbc::types::ValBool(false) };
     }
     eprintln!(
-        "inject_logging_override: ApiUtilities.loggingEnabled -> true in interpretScript@{interp_script} ({} site); trapped script errors now surface via Tildebugger.error",
+        "inject_logging_override: loggingEnabled gate -> false (one-shot eval log branch) in interpretScript@{interp_script} ({} site)",
         targets.len()
+    );
+    Ok(())
+}
+
+/// Force the in-game Tildebugger console to actually DISPLAY errors. `Tildebugger.log`
+/// gates the `ImprovedConsole.log` call behind `if (production && !important) return;` —
+/// Fraymakers ships as a production build and script errors arrive with the important flag
+/// false, so the console silently drops them (the message was built and the socket mirror
+/// already saw it; only the on-screen render is suppressed). Flip the `production` field
+/// read to `false` so the display branch always runs. Local to `Tildebugger.log`.
+fn inject_console_display_override(code: &mut Bytecode) -> anyhow::Result<()> {
+    let log_fn = require_fn(code, "log", Some("pxf.core.$Tildebugger"))?;
+    let tilde_t = find_type(code, "pxf.core.$Tildebugger")
+        .ok_or_else(|| anyhow::anyhow!("pxf.core.$Tildebugger type not found"))?;
+    let prod_field = find_field(code, tilde_t, "production")
+        .ok_or_else(|| anyhow::anyhow!("Tildebugger.production field not found"))?;
+    let fidx = function_index_by_findex(code, log_fn)
+        .ok_or_else(|| anyhow::anyhow!("Tildebugger.log@{log_fn} not found"))?;
+    let targets: Vec<(usize, Reg)> = {
+        let f = &code.functions[fidx];
+        f.ops.iter().enumerate().filter_map(|(i, op)| match op {
+            Opcode::Field { dst, obj, field }
+                if field.0 == prod_field
+                    && f.regs.get(obj.0 as usize).map(|t| t.0) == Some(tilde_t) =>
+            {
+                Some((i, *dst))
+            }
+            _ => None,
+        }).collect()
+    };
+    if targets.is_empty() {
+        anyhow::bail!("production gate read not found in Tildebugger.log@{log_fn}");
+    }
+    let f = &mut code.functions[fidx];
+    for (i, dst) in &targets {
+        f.ops[*i] = Opcode::Bool { dst: *dst, value: hlbc::types::ValBool(false) };
+    }
+    eprintln!(
+        "inject_console_display_override: production gate -> false in Tildebugger.log@{log_fn} ({} site); errors now render in the in-game console",
+        targets.len()
+    );
+    Ok(())
+}
+
+/// Mirror EVERY engine error onto the harness socket as a `SCRIPTERR:` line by prepending
+/// a socket write to the single chokepoint `Tildebugger.error(msg, ...)`. All script-error
+/// catches (one-shot eval, per-frame `interpretScriptFunction`, keyframe `runFrameScripts`,
+/// the lifecycle runners) funnel through here, so one front-insertion covers them all — and
+/// the same errors keep going to the in-game Tildebugger console as before. `reg0` is the
+/// message String. Guarded by a g_sock null-check (no-op before the harness connects).
+#[allow(clippy::too_many_arguments)]
+fn inject_error_socket_mirror(
+    code: &mut Bytecode, g_sock: usize, out_field: usize, write_str: usize, flush: usize,
+    str_add: usize, nl_g: usize, sock_t: usize, out_t: usize, str_t: usize, enc_t: usize,
+) -> anyhow::Result<()> {
+    use hlbc::types::{RefField, RefFun, RefGlobal};
+    let tilde_error = require_fn(code, "error", Some("pxf.core.$Tildebugger"))?;
+    let fidx = function_index_by_findex(code, tilde_error)
+        .ok_or_else(|| anyhow::anyhow!("Tildebugger.error@{tilde_error} not found"))?;
+    let scripterr_g = add_string_const(code, "SCRIPTERR: ");
+    let f = &mut code.functions[fidx];
+    // reg0 is the error message (String) — prepend runs before the original body touches it.
+    let msg_reg = Reg(0);
+    let base = add_regs(f, &[sock_t, out_t, str_t, str_t, enc_t, 0]);
+    let (r_sock, r_out, r_name, r_msg, r_null, r_ret) =
+        (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4), Reg(base + 5));
+    let mut ops = vec![
+        Opcode::GetGlobal { dst: r_sock, global: RefGlobal(g_sock) },          // 0
+        Opcode::JNull { reg: r_sock, offset: 0 },                              // 1 -> skip (not connected yet)
+        Opcode::Field { dst: r_out, obj: r_sock, field: RefField(out_field) }, // 2
+        Opcode::GetGlobal { dst: r_msg, global: RefGlobal(scripterr_g) },       // 3  "SCRIPTERR: "
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: msg_reg }, // 4  + message
+        Opcode::GetGlobal { dst: r_name, global: RefGlobal(nl_g) },             // 5  "\n"
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: r_name }, // 6  + "\n"
+        Opcode::Null { dst: r_null },                                          // 7
+        Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: r_msg, arg2: r_null }, // 8
+        Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out },         // 9
+    ];
+    let skip = ops.len() as i32;
+    if let Opcode::JNull { offset, .. } = &mut ops[1] { *offset = skip - 1 - 1; }
+    insert_ops_front(f, ops);
+    eprintln!(
+        "inject_error_socket_mirror: SCRIPTERR socket mirror prepended to Tildebugger.error@{tilde_error}; every engine/script error now also hits the Peptide TCP stream"
     );
     Ok(())
 }

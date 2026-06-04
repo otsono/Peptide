@@ -70,7 +70,7 @@ chmod +x "$APP/Contents/MacOS/$BIN"
 # Contents/MacOS/data/ so a packaged app finds it.
 DATA="$APP/Contents/MacOS/data"
 mkdir -p "$DATA/mappings"
-cp commands.hsx match_settings.conf src/peptide_ui.html "$DATA/"
+cp commands.hsx match_settings.conf src/peptide_ui.html src/peptide_overlay.html "$DATA/"
 cp -R crates/ssf2-converter/mappings/. "$DATA/mappings/"
 
 # ---- ad-hoc codesign so Gatekeeper lets a local build run (WKWebView needs it) ----
