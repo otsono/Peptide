@@ -352,10 +352,8 @@ pub fn launch() -> std::io::Result<()> {
             // A session connected: spawn the standalone transparent debugger overlay over
             // the game (a separate process/window — does NOT touch this Peptide window).
             // Once per connection; the overlay watchdogs our pid and self-exits when we do.
-            Event::UserEvent(Ev::Overlay(on)) => {
-                if on {
-                    spawn_standalone_overlay();
-                }
+            Event::UserEvent(Ev::Overlay(true)) => {
+                spawn_standalone_overlay();
             }
             // F8 toggles overlay (always-on-top) live, so you can pop the console on top of the
             // game and drop it back without relaunching (peptide todo #8).

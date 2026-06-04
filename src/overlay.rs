@@ -21,7 +21,8 @@ use wry::WebViewBuilder;
 enum Ev {
     Line(String),
     /// Move the overlay to (x, y) screen points — the follow thread keeps it pinned to the
-    /// game window's top-left corner.
+    /// game window's top-left corner. Only sent on macOS (the follow thread is macOS-only).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Move(f64, f64),
 }
 
