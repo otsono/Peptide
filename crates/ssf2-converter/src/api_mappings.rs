@@ -613,6 +613,15 @@ pub fn translate_ssf2_to_fm(code: &str) -> String {
     // comment_out_unknown_calls so the rewritten calls aren't flagged.
     result = rewrite_play_sound_calls(&result);
 
+    // SSF2 self.fireProjectile("name", x, y) → match.createProjectile(...) + position.
+    // Must run before comment_out_unknown_calls so the spawn isn't commented out.
+    result = rewrite_fire_projectile_calls(&result);
+
+    // SSF2 RECV.addEffectToList(effect, owner) → keep just the effect-spawning first
+    // arg (createVfx already spawns it). Balanced-scan so the closing paren and owner
+    // arg are removed cleanly instead of orphaned.
+    result = rewrite_add_effect_to_list(&result);
+
     result = strip_last_frame_end_animation(&result);
     result = comment_out_unknown_calls(&result);
     result
@@ -800,6 +809,45 @@ pub fn generate_sound_helpers(
 /// playSound args can contain nested calls, e.g. position objects), extracts
 /// the first string-literal argument, and drops the rest (FM AudioClip.play
 /// takes the content + an optional options object we don't synthesise).
+/// SSF2 `self.fireProjectile("name", xOff, yOff)` → FM `match.createProjectile(...)`
+/// plus a spawn-position offset, mirroring the FrayMakers character-template idiom
+/// (`fireNSpecialProjectile`: createProjectile, then setX/setY with flipX for facing).
+/// The two args are the spawn OFFSET (x via flipX so it tracks facing, y added raw); some
+/// moves derive that offset from velocity, e.g. zelda's `fireProjectile("airneedle",
+/// self.getXSpeed(), self.getYSpeed())` spawns the needle ahead in the direction of motion —
+/// so each arg can be an expression (a method call), not just a literal. Args are passed
+/// through verbatim. Without this the call is left as an `// [SSF2-only: fireProjectile]`
+/// comment and the move spawns NO projectile. Name → manifest content id via
+/// projectile_content_id.
+pub fn rewrite_fire_projectile_calls(code: &str) -> String {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        // Each arg may contain ONE level of parens (a method call like self.getXSpeed()).
+        regex::Regex::new(
+            r#"(?:self\.)?fireProjectile\(\s*"([^"]+)"\s*(?:,\s*((?:[^,()]|\([^()]*\))+?)\s*)?(?:,\s*((?:[^,()]|\([^()]*\))+?)\s*)?\)"#,
+        )
+        .expect("fireProjectile regex")
+    });
+    re.replace_all(code, |caps: &regex::Captures| {
+        let content_id = crate::projectile_gen::projectile_content_id(&caps[1]);
+        let off = |i: usize| {
+            caps.get(i)
+                .map(|m| m.as_str().trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("0")
+                .to_string()
+        };
+        format!(
+            "{{ var _proj = match.createProjectile(self.getResource().getContent(\"{}\"), self); \
+_proj.setX(self.getX() + self.flipX({})); _proj.setY(self.getY() + ({})); }}",
+            content_id,
+            off(2),
+            off(3),
+        )
+    })
+    .into_owned()
+}
+
 pub fn rewrite_play_sound_calls(code: &str) -> String {
     const NEEDLE: &str = "playSound(";
     let bytes = code.as_bytes();
@@ -1651,6 +1699,66 @@ fn find_receiver_start(code: &str, dot_pos: usize) -> usize {
 
 /// Walk forward from an opening bracket/paren/brace to find the matching
 /// close. Tracks string state so quoted delimiters don't disturb the count.
+/// SSF2 `RECV.addEffectToList(effect, owner)` registers an already-built effect on an
+/// entity's effect list. In Fraymakers the usual `effect` arg is a `match.createVfx(...)`
+/// that already spawns the effect, so the wrapper is redundant. Keep just the first
+/// arg; drop the receiver, the owner arg, and the wrapper's closing paren. A plain
+/// string strip of `.addEffectToList(` would leave that `)` (and `, owner`) dangling,
+/// which is a parse error the engine swallows silently. #13.
+fn rewrite_add_effect_to_list(code: &str) -> String {
+    const NEEDLE: &str = ".addEffectToList(";
+    let mut out = String::with_capacity(code.len());
+    let mut cursor = 0;
+    while let Some(rel) = code[cursor..].find(NEEDLE) {
+        let dot_pos = cursor + rel;
+        let paren_open = dot_pos + NEEDLE.len() - 1; // index of '('
+        let close = match find_matching_close(code, paren_open) {
+            Some(c) => c,
+            None => {
+                // unterminated call — leave the site untouched and move past the dot
+                out.push_str(&code[cursor..=dot_pos]);
+                cursor = dot_pos + 1;
+                continue;
+            }
+        };
+        let recv_start = find_receiver_start(code, dot_pos);
+        let arg1 = first_top_level_arg(&code[paren_open + 1..close]).trim();
+        out.push_str(&code[cursor..recv_start]);
+        out.push_str("/* addEffectToList */ ");
+        out.push_str(arg1);
+        cursor = close + 1;
+    }
+    out.push_str(&code[cursor..]);
+    out
+}
+
+/// Substring of a comma-separated arg list up to the first top-level (depth-0,
+/// outside string literals) comma, or the whole string if there is none.
+fn first_top_level_arg(args: &str) -> &str {
+    let b = args.as_bytes();
+    let mut depth = 0i32;
+    let mut in_str: Option<u8> = None;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        match in_str {
+            Some(q) => {
+                if c == b'\\' { i += 2; continue; }
+                if c == q { in_str = None; }
+            }
+            None => match c {
+                b'"' | b'\'' => in_str = Some(c),
+                b'(' | b'{' | b'[' => depth += 1,
+                b')' | b'}' | b']' => depth -= 1,
+                b',' if depth == 0 => return &args[..i],
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    args
+}
+
 fn find_matching_close(code: &str, open_pos: usize) -> Option<usize> {
     let bytes = code.as_bytes();
     let mut depth = 1i32;
@@ -2017,6 +2125,34 @@ fn rewrite_persistent_assignment(code: &str, name: &str) -> String {
     out
 }
 
+/// Net `{` minus `}` on a single line, ignoring braces inside string literals and
+/// after a `//` line comment. Drives block-aware comment-out so a multi-line dead
+/// block (condition + body + close) is fully neutralized, not just its first line.
+fn net_brace_delta(line: &str) -> i32 {
+    let b = line.as_bytes();
+    let mut depth = 0i32;
+    let mut in_str: Option<u8> = None;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        match in_str {
+            Some(q) => {
+                if c == b'\\' { i += 2; continue; }
+                if c == q { in_str = None; }
+            }
+            None => match c {
+                b'/' if i + 1 < b.len() && b[i + 1] == b'/' => break,
+                b'"' | b'\'' => in_str = Some(c),
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    depth
+}
+
 pub fn comment_out_unknown_calls(code: &str) -> String {
     let cfg = crate::mappings::api_commands();
     // Build the `.NAME(` match strings from the JSON ssf2_only list.
@@ -2036,16 +2172,38 @@ pub fn comment_out_unknown_calls(code: &str) -> String {
     let lines: Vec<&str> = code.lines().collect();
     let mut out = Vec::with_capacity(lines.len());
     let mut ssf2_hits: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    for line in &lines {
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
         let trimmed = line.trim();
-        if trimmed.starts_with("//") { out.push(line.to_string()); continue; }
+        if trimmed.starts_with("//") { out.push(line.to_string()); i += 1; continue; }
         let hit = markers.iter().find(|(m, name)| line.contains(m) && !local_fns.contains(*name));
         if let Some((_, name)) = hit {
             let indent = &line[..line.len() - line.trim_start().len()];
-            out.push(format!("{}// [SSF2-only: {}] {}", indent, name, trimmed));
             *ssf2_hits.entry((*name).to_string()).or_insert(0) += 1;
+            // If this statement OPENS a `{` block (e.g. `if (self.isCPU()) {`),
+            // the block body was guarded by a now-unsupported call, so it is dead in
+            // FM. Comment the whole block through its matching `}` — leaving the body
+            // or the close brace live would produce unconditional code or an orphaned
+            // `}` (a parse error the engine swallows silently). #13.
+            let mut depth = net_brace_delta(line);
+            out.push(format!("{}// [SSF2-only: {}] {}", indent, name, trimmed));
+            i += 1;
+            while depth > 0 && i < lines.len() {
+                let cont = lines[i];
+                let cont_indent = &cont[..cont.len() - cont.trim_start().len()];
+                let cont_trimmed = cont.trim();
+                if cont_trimmed.starts_with("//") {
+                    out.push(cont.to_string());
+                } else {
+                    out.push(format!("{}// [SSF2-dead] {}", cont_indent, cont_trimmed));
+                }
+                depth += net_brace_delta(cont);
+                i += 1;
+            }
         } else {
             out.push(line.to_string());
+            i += 1;
         }
     }
     let mut joined = out.join("\n");
@@ -2088,6 +2246,99 @@ pub fn uncomment_local_fn_calls(code: &str) -> String {
     if code.ends_with('\n') { joined.push('\n'); }
     if restored > 0 {
         log::info!("uncomment_local_fn_calls: restored {} call(s) to locally-defined functions", restored);
+    }
+    joined
+}
+
+/// Comment out any `}` whose matching `{` lives on a commented-out line. When a
+/// translator neutralizes a block-opening statement (`if (self.getMC()...) {` becomes
+/// `// [SSF2-only: getMC] if (...) {`), the opening brace is now inside a comment but
+/// the matching `}` is still live code, so the script no longer parses and the engine
+/// drops the whole handler silently. This whole-file post-pass walks braces in source
+/// order on a stack tagged by whether each opener was dead, and comments any live close
+/// that matches a dead open. Iterates to a fixpoint to absorb nested cascades. #13.
+pub fn balance_commented_blocks(code: &str) -> String {
+    fn is_dead(line: &str) -> bool {
+        line.trim_start().starts_with("//")
+    }
+    // Indices of `{` / `}` on a line that are structural. For a dead (commented) line,
+    // every brace in the raw text counts (the original block markers live in the
+    // comment). For a live line, skip braces inside strings or after an inline `//`.
+    fn braces(line: &str, dead: bool) -> Vec<(usize, bool)> {
+        let b = line.as_bytes();
+        let mut v = Vec::new();
+        if dead {
+            for (i, &c) in b.iter().enumerate() {
+                if c == b'{' { v.push((i, true)); } else if c == b'}' { v.push((i, false)); }
+            }
+            return v;
+        }
+        let mut in_str: Option<u8> = None;
+        let mut i = 0;
+        while i < b.len() {
+            let c = b[i];
+            match in_str {
+                Some(q) => {
+                    if c == b'\\' { i += 2; continue; }
+                    if c == q { in_str = None; }
+                }
+                None => match c {
+                    b'/' if i + 1 < b.len() && b[i + 1] == b'/' => break,
+                    b'"' | b'\'' => in_str = Some(c),
+                    b'{' => v.push((i, true)),
+                    b'}' => v.push((i, false)),
+                    _ => {}
+                },
+            }
+            i += 1;
+        }
+        v
+    }
+
+    let net = |line: &str| -> i32 {
+        braces(line, is_dead(line)).iter().map(|(_, o)| if *o { 1 } else { -1 }).sum()
+    };
+
+    let trailing_nl = code.ends_with('\n');
+    let mut lines: Vec<String> = code.lines().map(|s| s.to_string()).collect();
+    // Local forward scan per commented opener — robust to imbalance elsewhere in the
+    // file (a global stack mispairs once any earlier block is uneven). For each dead
+    // line that nets a positive `{`, walk forward tracking depth until it returns to
+    // the opener's base level; if the line that closes it is live, that `}` is the
+    // orphan, so comment it.
+    for _ in 0..16 {
+        let mut to_comment: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for idx in 0..lines.len() {
+            if !is_dead(&lines[idx]) {
+                continue;
+            }
+            let open_delta = net(&lines[idx]);
+            if open_delta <= 0 {
+                continue; // not a net block-opener
+            }
+            let mut depth = open_delta;
+            for (j, line) in lines.iter().enumerate().skip(idx + 1) {
+                depth += net(line);
+                if depth <= 0 {
+                    if !is_dead(line) {
+                        to_comment.insert(j);
+                    }
+                    break;
+                }
+            }
+        }
+        if to_comment.is_empty() {
+            break;
+        }
+        for j in to_comment {
+            let line = &lines[j];
+            let indent = &line[..line.len() - line.trim_start().len()];
+            lines[j] = format!("{}// [SSF2-dead] {}", indent, line.trim());
+        }
+    }
+    let mut joined = lines.join("\n");
+    if trailing_nl {
+        joined.push('\n');
     }
     joined
 }
@@ -2396,6 +2647,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fire_projectile_becomes_create_projectile_spawn() {
+        // SSF2's fireProjectile must spawn a real FM projectile, not get
+        // commented out (which left the neutral special spawning nothing).
+        let out = translate_ssf2_to_fm("self.fireProjectile(\"mario_fireball\", 22, -20);\n");
+        assert!(out.contains("match.createProjectile"), "no createProjectile: {out}");
+        assert!(out.contains("getContent(\"mariofireballProjectile\")"),
+            "content id wrong (want mariofireballProjectile): {out}");
+        assert!(out.contains("self.flipX(22)"), "x offset/facing not applied: {out}");
+        assert!(out.contains("self.getY() + (-20)"), "y offset not applied: {out}");
+        assert!(!out.contains("[SSF2-only: fireProjectile]"),
+            "spawn was still commented out: {out}");
+        // No-offset form defaults to 0,0.
+        let bare = translate_ssf2_to_fm("self.fireProjectile(\"mario_fireball\");\n");
+        assert!(bare.contains("self.flipX(0)") && bare.contains("self.getY() + (0)"),
+            "bare fireProjectile didn't default offsets: {bare}");
+        // Expression args (a method call, e.g. zelda's airneedle spawning ahead of motion)
+        // must match too — they contain parens, which a naive [^,()] arg pattern would miss.
+        let expr = translate_ssf2_to_fm(
+            "self.fireProjectile(\"airneedle\", self.getXSpeed(), self.getYSpeed());\n");
+        assert!(expr.contains("match.createProjectile"), "expr-arg form not rewritten: {expr}");
+        assert!(expr.contains("self.flipX(self.getXSpeed())"),
+            "expr x-offset not carried: {expr}");
+        assert!(expr.contains("self.getY() + (self.getYSpeed())"),
+            "expr y-offset not carried: {expr}");
+        assert!(!expr.contains("[SSF2-only: fireProjectile]"),
+            "expr-arg fireProjectile left commented: {expr}");
+    }
+
+    #[test]
     fn test_global_variable_rewrite() {
         // SSF2 get/setGlobalVariable -> Fraymakers makeX wrapper .get()/.set().
         let out = translate_ssf2_to_fm(concat!(
@@ -2428,6 +2708,45 @@ mod tests {
         assert!(!out.contains("[SSF2-only: jumpToContinue]"), "marker not removed");
         // tossItem is NOT defined locally -> stays commented
         assert!(out.contains("[SSF2-only: tossItem] self.tossItem(270)"), "non-local wrongly restored");
+    }
+
+    #[test]
+    fn rewrite_add_effect_to_list_unwraps_balanced() {
+        let code = "self.addEffectToList(match.createVfx(new VfxStats({ x: 1 }), self), self);";
+        let out = rewrite_add_effect_to_list(code);
+        assert_eq!(
+            out,
+            "/* addEffectToList */ match.createVfx(new VfxStats({ x: 1 }), self);"
+        );
+        // balanced parens after the rewrite
+        assert_eq!(out.matches('(').count(), out.matches(')').count());
+    }
+
+    #[test]
+    fn balance_commented_blocks_fixes_orphaned_close() {
+        let code = concat!(
+            "function destroy(arg0) {\n",
+            "\t// [SSF2-only: getMC] if (self.getMC().currentLabel != \"x\") {\n",
+            "\t\t// [SSF2-only: getMC] self.getMC().currentLabel == \"x\";\n",
+            "\t}\n",
+            "\t// [SSF2-only: getStanceMC] if (self.getStanceMC() != \"a\") {\n",
+            "\t\tself.playLabel(\"attack\");\n",
+            "\t}\n",
+            "}\n",
+        );
+        let out = balance_commented_blocks(code);
+        // the two `}` whose openers are commented must now be commented too; the
+        // function's own braces stay live and the whole thing balances.
+        let live: i32 = out.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .map(net_brace_delta)
+            .sum();
+        assert_eq!(live, 0, "live braces unbalanced after fix:\n{out}");
+        // only the function body's own close should remain live.
+        let live_closes = out.lines()
+            .filter(|l| !l.trim_start().starts_with("//") && l.trim() == "}")
+            .count();
+        assert_eq!(live_closes, 1, "expected 1 live `}}` (function end), got {live_closes}:\n{out}");
     }
 
     #[test]

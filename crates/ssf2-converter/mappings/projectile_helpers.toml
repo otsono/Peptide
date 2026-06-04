@@ -6,10 +6,12 @@
 # {{entity_id}}
 single_state = '''
 // Projectile script for {{entity_id}} -- converted from SSF2
-// TODO: tune X_SPEED / Y_SPEED and gravity to match SSF2 behaviour.
+// X_SPEED / Y_SPEED are synthesized from SSF2 getProjectileStats() (speed caps),
+// scaled by the same velocity_scale the character physics uses (30->60fps + size).
+// {{speed_note}}
 
-var X_SPEED = 8;
-var Y_SPEED = 0;
+var X_SPEED = {{x_speed}};
+var Y_SPEED = {{y_speed}};
 
 function initialize() {
     self.addEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit, { persistent: true });
@@ -46,10 +48,10 @@ multi_state = '''
 // Projectile script for {{entity_id}} -- converted from SSF2 (multi-state)
 // Uses the local state machine to switch between animations since PState
 // only supports built-in values (ACTIVE, DESTROYING, etc).
-// TODO: tune X_SPEED / Y_SPEED and gravity to match SSF2 behaviour.
+// X_SPEED / Y_SPEED synthesized from SSF2 getProjectileStats(). {{speed_note}}
 
-var X_SPEED = 8;
-var Y_SPEED = 0;
+var X_SPEED = {{x_speed}};
+var Y_SPEED = {{y_speed}};
 
 // ---- Local state machine setup ----
 function _prepLocalState(animation:String, ?index:Int=Math.NaN):Int {

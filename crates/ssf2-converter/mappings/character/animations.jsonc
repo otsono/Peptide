@@ -59,6 +59,8 @@
 
     "defend": "shield",
     "dodgeroll": "roll",
+    "roll": "crash_roll",
+    "flying": "hurt_heavy",
     "airdodge": "airdodge",
     "sidestep": "spot_dodge",
     "grab": "grab",

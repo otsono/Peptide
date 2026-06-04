@@ -1482,6 +1482,16 @@ impl<'a> StructuredDecoder<'a> {
             (inner_else, self.find_merge_inner(inner_then, inner_else))
         };
 
+        // Guard against a zero-length body range. When body_start == body_merge the
+        // collapsed `if (A && B) { ... }` would decode an EMPTY body, silently dropping
+        // the branch's statements (e.g. mario's rise(): the `pressed2 = true` that arms
+        // the up-special launch). Refuse the collapse so the caller falls back to the
+        // nested-if path, which preserves the body. Return None WITHOUT marking blocks
+        // visited, so the fallback can still decode them.
+        if body_merge == Some(body_start) {
+            return None;
+        }
+
         // Mark all consumed blocks as visited
         self.visited.insert(then_start);
         self.visited.insert(else_start);

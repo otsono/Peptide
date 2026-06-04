@@ -38,6 +38,9 @@ pub struct SplitAnim {
 const WALK_IN_FRAMES: u16 = 2;
 const WALK_OUT_FRAMES: u16 = 2;
 const FALL_IN_FRAMES: u16 = 3;
+/// stand_turn is the idle pose mirrored in place; it's held for the FM-template turn
+/// length, NOT the full idle loop. Source (30fps) frames → ~2x engine frames.
+const STAND_TURN_FRAMES: u16 = 3;
 
 /// Produce the list of output animations for a character.
 /// Returns one `SplitAnim` per Fraymakers animation to emit.
@@ -393,7 +396,7 @@ pub fn split_animations(
             // Template lengths are 60fps; our source is 30fps (doubled later), so the slice
             // lengths are template_len/2 (walk_in 3 -> 2, walk_out 3 -> 2). walk_loop takes the
             // remaining frames and appends the peeled head frames so the full cycle plays
-            // seamlessly starting just after the lean-in. walk_out reuses the start of `land`.
+            // seamlessly starting just after the lean-in. walk_out reuses the start of `skid`.
             "walk" => {
                 let wi = WALK_IN_FRAMES.min(total.saturating_sub(1));
                 if wi >= 1 { push_split(&mut out, "walk_in", anim_name, 0, wi, &labels, false, None); }
@@ -403,7 +406,7 @@ pub fn split_animations(
                 } else {
                     push_split(&mut out, "walk_loop", anim_name, 0, total, &labels, true, Some(0));
                 }
-                push_split(&mut out, "walk_out", "land", 0, WALK_OUT_FRAMES, &[], false, None);
+                push_split(&mut out, "walk_out", "skid", 0, WALK_OUT_FRAMES, &[], false, None);
             }
 
             // ── Buried / dizzy: loop at tail ──────────────────────────────────
@@ -425,6 +428,42 @@ pub fn split_animations(
                     push_split(&mut out, "land_heavy", anim_name, df, total, &labels, false, None);
                 } else {
                     push_split(&mut out, "land_light", anim_name, 0, total, &labels, false, None);
+                }
+            }
+
+            // ── Crash (knocked-down → getup → collapse): split by frame label ──
+            // SSF2's `crash` (GetUp) sprite holds the whole sequence on one timeline.
+            // labels (e.g. mario): bounce, dead, getup, done, standloop, die, collapse.
+            // Each named split runs until the NEXT named split-point:
+            //   bounce    -> crash_bounce
+            //   dead      -> crash_loop              (looping; lying knocked-down)
+            //   getup     -> crash_get_up
+            //   standloop -> crash_collapse_in_loop  (looping; UNUSED slot)
+            //   collapse  -> crash_collapse          (UNUSED slot)
+            // NB: animations.jsonc renames SSF2 `crash` -> `crash_bounce` BEFORE the
+            // splitter runs, so the incoming anim_name here is `crash_bounce`.
+            "crash_bounce" => {
+                let dead_f      = label_map.get("dead").copied();
+                let getup_f     = label_map.get("getup").copied();
+                let standloop_f = label_map.get("standloop").copied();
+                let collapse_f  = label_map.get("collapse").copied();
+                let bounce_start = label_map.get("bounce").copied().unwrap_or(0);
+                let bounce_end = dead_f.or(getup_f).or(standloop_f).or(collapse_f).unwrap_or(total);
+                push_split(&mut out, "crash_bounce", anim_name, bounce_start, bounce_end, &labels, false, None);
+                if let Some(f) = dead_f {
+                    let end = getup_f.or(standloop_f).or(collapse_f).unwrap_or(total);
+                    push_split(&mut out, "crash_loop", anim_name, f, end, &labels, true, Some(0));
+                }
+                if let Some(f) = getup_f {
+                    let end = standloop_f.or(collapse_f).unwrap_or(total);
+                    push_split(&mut out, "crash_get_up", anim_name, f, end, &labels, false, None);
+                }
+                if let Some(f) = standloop_f {
+                    let end = collapse_f.unwrap_or(total);
+                    push_split(&mut out, "crash_collapse_in_loop", anim_name, f, end, &labels, true, Some(0));
+                }
+                if let Some(f) = collapse_f {
+                    push_split(&mut out, "crash_collapse", anim_name, f, total, &labels, false, None);
                 }
             }
 
@@ -588,6 +627,9 @@ pub fn split_animations(
         ("crash_get_up", "crash_bounce"),
         ("crash_roll",   "crash_bounce"),
         ("crash_attack", "crash_bounce"),
+        // tech_ground also receives the getup motion (the get-up portion of the crash
+        // sprite). Only fills if a char has no dedicated tech-ground animation already.
+        ("tech_ground",  "crash_get_up"),
         // Special-fall (helpless) state animation.
         ("fall_special", "helpless"),
         // Assist call (Fraymakers-specific) — placeholder reuse of a neutral pose.
@@ -598,6 +640,17 @@ pub fn split_animations(
         if out.iter().any(|s| s.fm_name == *target) { continue; }
         if let Some(mut a) = out.iter().find(|s| s.fm_name == *src).cloned() {
             a.fm_name = target.to_string();
+            // stand_turn is the idle POSE mirrored horizontally in place (the flip is
+            // applied in entity_gen), held for the FM-template turn length — not the
+            // whole idle loop. Clip to STAND_TURN_FRAMES from the idle's first frame.
+            if *target == "stand_turn" {
+                a.start_frame = 0;
+                a.end_frame = STAND_TURN_FRAMES;
+                a.loop_tail = false;
+                a.loop_frame = None;
+                a.append_head_frames = 0;
+                a.labels.retain(|(_, f)| *f < STAND_TURN_FRAMES);
+            }
             eprintln!("anim alias: '{}' <- reuse of '{}'", target, src);
             out.push(a);
         }

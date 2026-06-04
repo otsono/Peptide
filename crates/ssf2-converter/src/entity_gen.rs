@@ -294,7 +294,7 @@ pub fn generate_entity(
     // Each image gets a deterministic GUID for its .meta file
     let mut image_guids: BTreeMap<String, String> = BTreeMap::new();
     for img in img_result.images.values() {
-        let meta_guid = uuid(char_id, &format!("meta_{}", img.symbol_name));
+        let meta_guid = crate::uuid_gen::image_meta_guid(&img.symbol_name);
         image_guids.insert(img.symbol_name.clone(), meta_guid);
     }
 
@@ -1001,7 +1001,9 @@ pub fn generate_entity(
                             // the bitmap origin lands at M·shape_pivot.
                             //
                             // Preserve sign: negative scaleX/scaleY = flip, which FrayTools supports.
-                            let fm_sx = round2(world_sx);
+                            // stand_turn has no SSF2 sprite — it's the idle pose mirrored
+                            // horizontally in place, so negate scaleX for it.
+                            let fm_sx = round2(world_sx) * if anim_name == "stand_turn" { -1.0 } else { 1.0 };
                             let fm_sy = round2(world_sy);
 
                             // World-space matrix components
@@ -1214,12 +1216,11 @@ pub fn generate_entity_with_palette(
 
 /// Get image GUIDs for .meta file generation
 pub fn get_image_meta_guids(
-    char_id: &str,
     img_result: &ImageExtractionResult,
 ) -> BTreeMap<String, String> {
     let mut result = BTreeMap::new();
     for img in img_result.images.values() {
-        let meta_guid = uuid(char_id, &format!("meta_{}", img.symbol_name));
+        let meta_guid = crate::uuid_gen::image_meta_guid(&img.symbol_name);
         result.insert(img.png_path.clone(), meta_guid);
     }
     result
@@ -1500,6 +1501,9 @@ pub struct ProjectileInfo {
     pub boxes: Option<AnimationBoxData>,
     /// Image frames from the inner sprite (symbol name per frame)
     pub image_frames: Vec<Option<String>>,
+    /// Per-frame SSF2 local transform (parallel to image_frames). Applied to the
+    /// IMAGE symbol so the sprite renders at its SSF2 display size, not full native.
+    pub image_matrices: Vec<Option<crate::image_extractor::ImageLocalMatrix>>,
     /// Meta GUIDs for each unique image used
     pub image_guids: BTreeMap<String, String>,
     /// Extra per-state data for multi-state projectiles (e.g. link_bomb).
@@ -1517,6 +1521,7 @@ pub struct ProjectileInfo {
 pub struct ProjectileStateData {
     pub label: String,
     pub image_frames: Vec<Option<String>>,
+    pub image_matrices: Vec<Option<crate::image_extractor::ImageLocalMatrix>>,
     pub image_guids: BTreeMap<String, String>,
     pub boxes: Option<AnimationBoxData>,
     pub frame_count: u16,
@@ -1548,6 +1553,23 @@ pub fn ssf2_proj_label_to_fm_anim(label: &str) -> String {
     }
 }
 
+/// FrayTools IMAGE-symbol transform (scaleX, scaleY, rotation, x, y) from an
+/// optional SSF2 local matrix. Projectiles/effects are standalone (no root MC to
+/// compose), so the local matrix applies directly. None → identity (the old default,
+/// which rendered large bitmaps at full native size — i.e. way too big).
+fn proj_image_xform(mat: Option<&crate::image_extractor::ImageLocalMatrix>) -> (f64, f64, f64, f64, f64) {
+    match mat {
+        Some(m) => (
+            round2(m.sx),
+            round2(m.sy),
+            round2(((m.rotation % 360.0) + 360.0) % 360.0),
+            round2(m.tx),
+            round2(m.ty),
+        ),
+        None => (1.0, 1.0, 0.0, 0.0, 0.0),
+    }
+}
+
 pub fn generate_projectile_entity(
     char_id: &str,
     proj: &ProjectileInfo,
@@ -1568,6 +1590,8 @@ pub fn generate_projectile_entity(
         if let Some(sym_name) = sym_name {
             if let Some(guid) = proj.image_guids.get(sym_name.as_str()) {
                 let sym_id = uuid(char_id, &format!("proj_{}_idle_img_sym_{}", proj_id, frame));
+                let (sx, sy, rot, x, y) = proj_image_xform(
+                    proj.image_matrices.get(frame as usize).and_then(|m| m.as_ref()));
                 symbols.push(json!({
                     "$id": sym_id,
                     "alpha": 1,
@@ -1575,12 +1599,12 @@ pub fn generate_projectile_entity(
                     "pivotX": 0,
                     "pivotY": 0,
                     "pluginMetadata": {},
-                    "rotation": 0,
-                    "scaleX": 1,
-                    "scaleY": 1,
+                    "rotation": rot,
+                    "scaleX": sx,
+                    "scaleY": sy,
                     "type": "IMAGE",
-                    "x": 0,
-                    "y": 0
+                    "x": x,
+                    "y": y
                 }));
                 keyframes.push(json!({
                     "$id": kf_id,
@@ -1824,6 +1848,7 @@ pub fn generate_projectile_entity(
             let sym_name = proj.image_frames[0].as_ref().unwrap();
             let guid = proj.image_guids.get(sym_name.as_str()).cloned().unwrap_or_default();
             let sym_id = uuid(char_id, &format!("proj_{}_spawn_sym", proj_id));
+            let (sx, sy, rot, x, y) = proj_image_xform(proj.image_matrices.first().and_then(|m| m.as_ref()));
             symbols.push(json!({
                 "$id": sym_id,
                 "alpha": 1,
@@ -1831,12 +1856,12 @@ pub fn generate_projectile_entity(
                 "pivotX": 0,
                 "pivotY": 0,
                 "pluginMetadata": {},
-                "rotation": 0,
-                "scaleX": 1,
-                "scaleY": 1,
+                "rotation": rot,
+                "scaleX": sx,
+                "scaleY": sy,
                 "type": "IMAGE",
-                "x": 0,
-                "y": 0
+                "x": x,
+                "y": y
             }));
             let kf_id = uuid(char_id, &format!("proj_{}_spawn_kf", proj_id));
             keyframes.push(json!({
@@ -1911,6 +1936,8 @@ pub fn generate_projectile_entity(
         if let Some(sym_name) = sym_name {
             if let Some(guid) = proj.image_guids.get(sym_name.as_str()) {
                 let sym_id = uuid(char_id, &format!("proj_{}_destroy_sym", proj_id));
+                let (sx, sy, rot, x, y) = proj_image_xform(
+                    proj.image_matrices.get(last_frame).and_then(|m| m.as_ref()));
                 symbols.push(json!({
                     "$id": sym_id,
                     "alpha": 1,
@@ -1918,12 +1945,12 @@ pub fn generate_projectile_entity(
                     "pivotX": 0,
                     "pivotY": 0,
                     "pluginMetadata": {},
-                    "rotation": 0,
-                    "scaleX": 1,
-                    "scaleY": 1,
+                    "rotation": rot,
+                    "scaleX": sx,
+                    "scaleY": sy,
                     "type": "IMAGE",
-                    "x": 0,
-                    "y": 0
+                    "x": x,
+                    "y": y
                 }));
                 keyframes.push(json!({
                     "$id": destroy_kf_id,
@@ -2067,7 +2094,7 @@ pub fn generate_projectile_entity(
     // 30fps → 60fps: hold every keyframe for two frames (see fn docs).
     double_keyframe_lengths(&mut keyframes);
 
-    let entity_id = format!("{}Projectile", proj.name.replace('_', ""));
+    let entity_id = crate::projectile_gen::projectile_content_id(&proj.name);
     let entity = json!({
         "animations": animations,
         "export": true,
@@ -2170,6 +2197,7 @@ pub fn generate_effect_entity(
         img_result,
     ).unwrap_or(crate::image_extractor::ProjectileFrameImages {
         frames: vec![],
+        matrices: vec![],
         image_guids: std::collections::BTreeMap::new(),
     });
 
@@ -2217,6 +2245,8 @@ pub fn generate_effect_entity(
             if let Some(sym_name) = sym_name {
                 if let Some(guid) = frame_images.image_guids.get(sym_name.as_str()) {
                     let sym_id = uuid(char_id, &format!("eff_{}_seg{}_img_sym_{}", effect_id, seg_idx, frame_idx));
+                    let (sx, sy, rot, x, y) = proj_image_xform(
+                        frame_images.matrices.get(frame_idx).and_then(|m| m.as_ref()));
                     symbols.push(json!({
                         "$id": sym_id,
                         "alpha": 1,
@@ -2224,12 +2254,12 @@ pub fn generate_effect_entity(
                         "pivotX": 0,
                         "pivotY": 0,
                         "pluginMetadata": {},
-                        "rotation": 0,
-                        "scaleX": 1,
-                        "scaleY": 1,
+                        "rotation": rot,
+                        "scaleX": sx,
+                        "scaleY": sy,
                         "type": "IMAGE",
-                        "x": 0,
-                        "y": 0
+                        "x": x,
+                        "y": y
                     }));
                     keyframes.push(json!({
                         "$id": kf_id,

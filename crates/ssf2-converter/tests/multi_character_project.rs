@@ -69,9 +69,14 @@ fn zelda_ssf_emits_one_merged_project() {
     assert!(lib.join("costumes.palettes2").exists(),          "slot 1 (sheik) costumes.palettes2 must exist");
     assert!(lib.join("costumes.palettes.meta").exists(),      "slot 0 .meta must exist");
     assert!(lib.join("costumes.palettes2.meta").exists(),     "slot 1 .meta must exist");
+    // Palette previews are CHAR-PREFIXED (not palette_preview.png{N}) so the two
+    // chars' previews don't collide on base filename in the shared sprites/ dir —
+    // FrayTools derives a sprite GUID from its path, so a shared base name collided.
     let sprites = project.join("library/sprites");
-    assert!(sprites.join("palette_preview.png").exists(),     "slot 0 palette_preview.png must exist");
-    assert!(sprites.join("palette_preview.png2").exists(),    "slot 1 palette_preview.png2 must exist");
+    assert!(sprites.join("zelda_palette_preview.png").exists(), "zelda palette preview must exist");
+    assert!(sprites.join("sheik_palette_preview.png").exists(), "sheik palette preview must exist");
+    assert!(!sprites.join("palette_preview.png2").exists(),
+        "the old malformed .png2 preview name must NOT be emitted");
 
     // Manifest has BOTH characters with distinct asset ids + per-char menu pointers.
     let manifest_raw = std::fs::read_to_string(lib.join("manifest.json")).unwrap();

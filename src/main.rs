@@ -2185,12 +2185,14 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(frasuffix_g) });
     ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(56), arg1: rr(53) });
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_path), src: rr(56) });
-    // BASE/BUILT-IN CHAR (player 1): the host sets PEPTIDE_BASE_P1 when there's no custom/<char>.fra,
-    // i.e. player 1 is a built-in (e.g. commandervideo). The engine already has it, so skip the
-    // custom-fra self-bootstrap UNCONDITIONALLY (running it on a missing file crashes async in
-    // finishLoading with null .entities). emit_resolve below loads the base char's media via its
-    // public:: load-on-demand (the same path player 2 uses, which works).
-    let base_p1 = std::env::var("PEPTIDE_BASE_P1").is_ok();
+    // BASE/BUILT-IN CHAR (player 1): if there's no custom/<char>.fra on disk, player 1 is a
+    // built-in (e.g. commandervideo) the engine already ships. Detect that HERE by stat'ing the
+    // exact file the self-bootstrap would load (char_path) — the patcher owns this decision, no
+    // env hand-off from the host (which only the GUI set, leaving the CLI/session path to crash).
+    // When it's a base char, skip the custom-fra self-bootstrap UNCONDITIONALLY (running it on a
+    // missing file crashes async in finishLoading with null .entities); emit_resolve below loads
+    // the base char's media via its public:: load-on-demand (the same path player 2 uses).
+    let base_p1 = !std::path::Path::new(&char_path).exists();
     let idx_basechar_jskip = if base_p1 {
         let i = ops.len();
         ops.push(Opcode::JAlways { offset: 0 });                        // base p1 -> skip custom load
@@ -3649,6 +3651,18 @@ fn connect_edit(
     // on a change, no per-frame polling). Pinpoints which move was active at a crash.
     inject_anim_telemetry(code, to_state, g_sock, out_field, write_str, flush,
         get_state_name, str_add, anim_prefix_g, nl_g, sock_t, out_t, str_t, enc_t)?;
+    // Engine-side script-error surfacing. The engine runs every character/assist/mode/stage
+    // script through ApiScript.interpretScript, which builds a rich error (Std.string + line
+    // via posInfos + origin) and calls Tildebugger.error — but ONLY when ApiUtilities.
+    // loggingEnabled is true, which it isn't in normal play, so trapped script errors are
+    // swallowed silently (char loads, hitboxes don't arm). We force that gate on so the
+    // engine's own error path fires in the in-game console. ON by default; the GUI checkbox
+    // (or PEPTIDE_ENGINE_LOGGING=0) opts out. Non-fatal: a symbol drift just skips the feature.
+    if std::env::var("PEPTIDE_ENGINE_LOGGING").map(|v| v != "0").unwrap_or(true) {
+        if let Err(e) = inject_logging_override(code) {
+            eprintln!("inject_logging_override: skipped ({e})");
+        }
+    }
     // Crash diagnostics, split per the "keep logic OUT of bytecode" convention
     // (AGENT_CONTEXT.md): the ONLY thing that must be in bytecode is pulling the one fact
     // `error.log` lacks — the resource id that was null. inject_stage_diag emits that id
@@ -3980,6 +3994,54 @@ fn inject_input_override(code: &mut Bytecode, g_inject_held: usize) -> anyhow::R
     if let Opcode::JNull { offset, .. } = &mut ops[6] { *offset = n - 6 - 1; }
     insert_ops_front(f, ops);
     eprintln!("inject_input_override: updateGameInput@{upd} PREPEND (inputFeed held|=mask, pressed|=edge — upstream of the copy)");
+    Ok(())
+}
+
+/// Force `pxf.api.ApiUtilities.loggingEnabled` to read `true` inside
+/// `ApiScript.interpretScript`, so the engine's own trapped-script-error path runs.
+///
+/// interpretScript wraps every character/assist/mode/stage script in a try/catch. The
+/// catch already formats a detailed error (`Std.string(exc)` + line/col via `posInfos` +
+/// the script origin) and calls `Tildebugger.error(...)` — but it is gated behind an early
+/// `if (!ApiUtilities.loggingEnabled) return;`, which is false in normal play, so the error
+/// is silently swallowed (the character loads, but e.g. its hitboxes never arm).
+///
+/// The fix is one in-place op swap: the gate's `Field` read of `loggingEnabled` becomes a
+/// constant `true`. No new ops, no offset shifts. Matched by field + obj-reg type (not op
+/// index) so it survives engine-build drift. Local to interpretScript — does not change the
+/// global `loggingEnabled` flag for any other code path.
+fn inject_logging_override(code: &mut Bytecode) -> anyhow::Result<()> {
+    let interp_script = require_fn(code, "interpretScript", Some("pxf.api.$ApiScript"))?;
+    let apiutil_t = find_type(code, "pxf.api.$ApiUtilities")
+        .ok_or_else(|| anyhow::anyhow!("pxf.api.$ApiUtilities type not found"))?;
+    let logging_field = find_field(code, apiutil_t, "loggingEnabled")
+        .ok_or_else(|| anyhow::anyhow!("ApiUtilities.loggingEnabled field not found"))?;
+    let fidx = function_index_by_findex(code, interp_script)
+        .ok_or_else(|| anyhow::anyhow!("interpretScript@{interp_script} not found"))?;
+    // Locate the gate's Field read: loggingEnabled on an ApiUtilities-typed obj reg.
+    let targets: Vec<(usize, Reg)> = {
+        let f = &code.functions[fidx];
+        f.ops.iter().enumerate().filter_map(|(i, op)| match op {
+            Opcode::Field { dst, obj, field }
+                if field.0 == logging_field
+                    && f.regs.get(obj.0 as usize).map(|t| t.0) == Some(apiutil_t) =>
+            {
+                Some((i, *dst))
+            }
+            _ => None,
+        }).collect()
+    };
+    if targets.is_empty() {
+        anyhow::bail!("loggingEnabled gate read not found in interpretScript@{interp_script}");
+    }
+    let f = &mut code.functions[fidx];
+    for (i, dst) in &targets {
+        f.ops[*i] = Opcode::Bool { dst: *dst, value: hlbc::types::ValBool(true) };
+    }
+    eprintln!(
+        "inject_logging_override: ApiUtilities.loggingEnabled -> true in interpretScript@{interp_script} ({} site); trapped script errors now surface via Tildebugger.error",
+        targets.len()
+    );
     Ok(())
 }
 

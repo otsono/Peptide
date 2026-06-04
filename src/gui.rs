@@ -204,6 +204,16 @@ pub fn launch() -> std::io::Result<()> {
                         handle_command(&format!("e iconFeed({n})"), &ipc_writer, &ipc_proxy);
                     }
                 }
+            } else if let Some(v) = b.strip_prefix("@@opt:enginelogging:") {
+                // "Surface script errors in-game" checkbox. Sets the env the patcher reads
+                // (PEPTIDE_ENGINE_LOGGING) — done synchronously on the IPC thread so the boot
+                // message the page sends right after spawns the patcher with the right value.
+                // Default is ON, so we only pin "0" for off and clear it for on.
+                if v.trim() == "0" {
+                    std::env::set_var("PEPTIDE_ENGINE_LOGGING", "0");
+                } else {
+                    std::env::remove_var("PEPTIDE_ENGINE_LOGGING");
+                }
             } else if b.starts_with("@@") {
                 handle_screen_verb(b, &ipc_proxy);
             } else {

@@ -47,6 +47,7 @@
   { "name": "jab1", "props": "" },
   { "name": "jab2", "props": "" },
   { "name": "jab3", "props": "" },
+  { "name": "jab4", "props": "" },
   { "name": "dash_attack", "props": "xSpeedConservation: 1" },
   { "name": "tilt_forward", "props": "" },
   { "name": "tilt_up", "props": "" },
