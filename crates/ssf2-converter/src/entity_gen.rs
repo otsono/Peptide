@@ -1016,8 +1016,15 @@ pub fn generate_entity(
                                 .and_then(|sid| img_result.shape_pivot.get(&sid))
                                 .copied()
                                 .unwrap_or((0.0, 0.0));
-                            let fm_x = round2(world_tx + wa * off_x + wc * off_y);
+                            let mut fm_x = round2(world_tx + wa * off_x + wc * off_y);
                             let fm_y = round2(world_ty + wb * off_x + wd * off_y);
+                            // stand_turn mirrors the idle pose IN PLACE about the character's
+                            // vertical axis (entity x=0). Negating scaleX alone flips about the
+                            // sprite's own left edge, sliding it sideways; also negate the x
+                            // position so the whole placement reflects about the origin.
+                            if anim_name == "stand_turn" {
+                                fm_x = round2(-fm_x);
+                            }
                             let pivot_x = 0.0_f64;
                             let pivot_y = 0.0_f64;
 
