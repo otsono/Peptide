@@ -277,6 +277,14 @@
     { "from": "canDI:",                "to": "directionalInfluence:" },//  25
     { "from": "atk_id:",               "to": "attackId:" },            //  17
     { "from": "shieldStunMultiplier:", "to": "shieldstunMultiplier:" },//   2 (camelCase fix)
+    // SSF2 boolean element flags → FM HitboxStats `element` (ElementType enum).
+    // Only the `: true` form maps (the `: false` / non-element forms are dropped
+    // in regex_replacements). `element` is a confirmed HitboxStats field; FIRE /
+    // ELECTRIC are confirmed ElementType members (live-verified). Matching the
+    // explicit `: true` keeps the non-hitbox `burn: { … }` use (an anim-stats bag)
+    // untouched.
+    { "from": "burn: true",  "to": "element: ElementType.FIRE" },
+    { "from": "shock: true", "to": "element: ElementType.ELECTRIC" },
     // SSF2 fields with no clear FM mapping (left alone — surface as
     // compile errors so the modder fixes per-site): aura, burn, shock,
     // paralysis, pitfall (would need FM `element` enum), camShake,
@@ -305,6 +313,29 @@
       "pattern": "priority\\s*:\\s*[^,}]+\\s*,\\s*",
       "replacement": "",
       "note": "drop SSF2 hitbox priority (no FM equivalent) — first key"
+    },
+    // SSF2 element flags in their "no element" form carry no FM data — drop them
+    // (the `: true` forms are already mapped to `element: …` by the literal pass).
+    // `burn`/`shock` false; `pitfall: 0` (no bury). Comma-prefixed then first-key.
+    {
+      "pattern": ",\\s*(?:burn|shock)\\s*:\\s*false",
+      "replacement": "",
+      "note": "drop SSF2 burn/shock:false (no element)"
+    },
+    {
+      "pattern": "(?:burn|shock)\\s*:\\s*false\\s*,\\s*",
+      "replacement": "",
+      "note": "drop SSF2 burn/shock:false — first key"
+    },
+    {
+      "pattern": ",\\s*pitfall\\s*:\\s*0\\b",
+      "replacement": "",
+      "note": "drop SSF2 pitfall:0 (no bury)"
+    },
+    {
+      "pattern": "pitfall\\s*:\\s*0\\s*,\\s*",
+      "replacement": "",
+      "note": "drop SSF2 pitfall:0 (no bury) — first key"
     },
     // SSF2 get/setGlobalVariable("name") → Fraymakers persistent-state wrappers.
     // The `self.` prefix (if present) is dropped; the wrapper var is declared by

@@ -91,11 +91,16 @@ dimensions below are the rest.
     `hitTestGroundBetweenPoints`, `homeTowardsTarget`, `inUpperLeftWarningBounds`,
     `isEqual`, `setHurtInterrupt`, `toFlying`, `toIdle`.
   - **hitbox/attack stat fields with no FM mapping**, surfaced as compile/runtime
-    "invalid stat" for per-site fixing: `aura`, `burn`, `shock`, `paralysis`, `pitfall`
-    (status-element flags, candidates to map onto an FM `element` enum), `camShake`,
-    `chargedPriority`, `hasEffect`, `ignoreChargeDamage`, `meteorBounce`,
-    `onlyAffectsGround`, `sdiDistance`, `shieldDamage`, `stackKnockback`. `priority` was
-    confirmed unnecessary and is now DROPPED (regex_replacements).
+    "invalid stat" for per-site fixing: `camShake`, `chargedPriority`, `hasEffect`,
+    `ignoreChargeDamage`, `meteorBounce`, `onlyAffectsGround`, `sdiDistance`,
+    `shieldDamage`, `stackKnockback`.
+    - Resolved this pass: `priority` DROPPED (confirmed unnecessary). The element
+      flags `burn`/`shock` now map to FM `element` (`ElementType.FIRE`/`ELECTRIC`,
+      live-verified) when `: true`; the `: false` / `pitfall: 0` no-element forms are
+      dropped. Still open (carry a numeric value or an unconfirmed FM enum member, so
+      they need per-site treatment, not a flag→enum rename): `aura` (no confirmed
+      `ElementType.AURA`), `paralysis` (numeric stun duration), `pitfall` > 0 (FM
+      `ElementType.BURY` + `bury*` timing fields, not a bare flag).
   - **`SSF2Event` types with no confirmed FM equivalent, neutralized** (the line is
     commented so it can't pass a null event): `KO_POINT`, `CHAR_ATTACK_COMPLETE`,
     `CHAR_ATTACK_CHANGED`, `REVERSE`, `REVERSE_HIT`, `CHAR_COUNTER`, `CHAR_METAL_CHANGE`,
