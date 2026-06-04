@@ -25,13 +25,6 @@ serde_json = "1.0"
 tungstenite = "0.21"
 image = "0.25.10"  # PNG decode/encode for recoloring the ripped stock icon (palette swap)
 libc = "0.2"       # parent-pid liveness check so the overlay self-exits when its session dies
-
-# ── macOS overlay: force true NSWindow transparency + find/follow the game window ──
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSColor", "NSResponder", "NSView"] }
-core-graphics = "0.25"
-core-foundation = "0.10"
 # ── Config persistence + native file dialogs (ported from the old egui GUI) ──
 dirs = "5"
 rfd = "0.15"
@@ -39,6 +32,15 @@ rfd = "0.15"
 ssf2_converter = { path = "crates/ssf2-converter" }
 log = "0.4"
 env_logger = "0.11"
+
+# ── macOS overlay: force true NSWindow transparency + find/follow the game window ──
+# (a target table; MUST come after the plain [dependencies] keys above, or it would
+# absorb every dep declared below it into the macOS-only set.)
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSColor", "NSResponder", "NSView"] }
+core-graphics = "0.25"
+core-foundation = "0.10"
 
 # ── Windows: re-attach a GUI-subsystem .exe to its launching console for CLI ──
 # subcommands (platform::attach_parent_console). Release builds hide the console
