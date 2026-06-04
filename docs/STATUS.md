@@ -57,9 +57,53 @@ dimensions below are the rest.
   sizing are all approximate. generated `CharacterStats.hx` flags the shaky numbers with
   `/*TODO*/`. dialing the scale factors in for real needs an in-engine SSF2-vs-converted
   comparison (the dummy / measurement path), not a static fix.
-- **no-FM-equivalent calls.** CPU-AI branches, z-order (`getMC`/`swapChildren`),
-  `forceAttack`, and the item system have no FM mapping, so they get commented out as
-  `[SSF2-only]`. no impact for human play of non-item characters.
+- **SSF2-only / no-FM-equivalent inventory.** SSF2 API surface with no Fraymakers
+  mapping. Calls get commented out as `[SSF2-only]` (no impact for human play of
+  non-item characters); stat fields and events are handled as noted. The
+  authoritative per-entry list (with notes + `manual_port`/`no_equivalent`
+  category) lives in `mappings/commands.jsonc :: ssf2_only`; runtime tallies land
+  in each character's `conversion_log.json :: ssf2_only`. Confirm any entry as
+  droppable (like `priority`) or map it as the API surfaces.
+
+  - **method calls, `no_equivalent` (61), commented out.** item system (`getItem`,
+    `getItems`, `getItemStat`, `pickupItem`, `tossItem`, `toToss`, `removeItem`,
+    `generateItem`, `updateItemStats`, `isZDropped`); CPU/AI (`isCPU`, `getCPULevel`,
+    `getCPUAction`, `getCPUForcedAction`, `getCPUTarget`, `setCPUAttackQueue`,
+    `importCPUControls`, `resetCPUControls`, `isStandby`, `getStandby`); Flash/MovieClip
+    (`getMC`, `getMCByLinkageName`, `getHitBox`, `getKirbyHatMC`, `getHUDBackgroundMC`,
+    `getHUDForegroundMC`, `killDarkener`); sound-needs-a-clip-handle (`stopSound`,
+    `stopSFX`, `stopHoldSound`, `stopListening`); final-smash/kirby/misc
+    (`isUsingFinalSmash`, `setFinalSmashMeterCharge`, `getCurrentKirbyPower`,
+    `getCurrentMusicInfo`, `getQualitySettings`); other (`addIgnoreObject`,
+    `calculateKnockback`, `checkAtkilled`, `clearEffectsOnStateChange`, `endControl`,
+    `exportStats`, `getLedges`, `getNearestPath`, `hitTestGround`, `isForcedCrash`,
+    `isReversed`, `jumpToContinue`, `killAttackboxes`, `removeSelfPlatform`,
+    `replacePalette`, `setAttackEnabled`, `setLastUsed`, `shootOutOpponent`,
+    `spawnEnemy`, `stop`, `toCrashLand`, `updateEnemyStats`).
+  - **method calls, `manual_port` (29), close FM equivalent needs hand-work.**
+    `fireProjectile`→`match.createProjectile`, `unnattachFromGround`→`unattachFromFloor`,
+    `swapDepthsWithGrabbedOpponent`→`swapDepths`, `getMetalStatus`→StatusEffect/BodyStatus,
+    `setColorFilters`→`setCostumeShader`, `getCharacter`/`getProjectile`→
+    `match.getCharacters`/`getProjectiles`, plus `angleControl`, `createSelfPlatform`,
+    `forceAttack`, `getAttackBoxStat`, `getAttackStat`, `getCurrentAttackFrame`,
+    `getCurrentProjectile`, `getExecTime`, `getHealthBox`, `getLinkageID`, `getMidground`,
+    `getNearest`, `getNearestLedge`, `getPlatformBetweenPoints`, `getStanceMC`,
+    `hitTestGroundBetweenPoints`, `homeTowardsTarget`, `inUpperLeftWarningBounds`,
+    `isEqual`, `setHurtInterrupt`, `toFlying`, `toIdle`.
+  - **hitbox/attack stat fields with no FM mapping**, surfaced as compile/runtime
+    "invalid stat" for per-site fixing: `aura`, `burn`, `shock`, `paralysis`, `pitfall`
+    (status-element flags, candidates to map onto an FM `element` enum), `camShake`,
+    `chargedPriority`, `hasEffect`, `ignoreChargeDamage`, `meteorBounce`,
+    `onlyAffectsGround`, `sdiDistance`, `shieldDamage`, `stackKnockback`. `priority` was
+    confirmed unnecessary and is now DROPPED (regex_replacements).
+  - **`SSF2Event` types with no confirmed FM equivalent, neutralized** (the line is
+    commented so it can't pass a null event): `KO_POINT`, `CHAR_ATTACK_COMPLETE`,
+    `CHAR_ATTACK_CHANGED`, `REVERSE`, `REVERSE_HIT`, `CHAR_COUNTER`, `CHAR_METAL_CHANGE`,
+    `PROJ_COLLIDE`, `PROJ_DESTROYED`, `PROJ_HURT`, `HOMING_TARGET`, `ENEMY_DESTROYED`,
+    `ITEM_TOSSED`, `ITEM_DESTROYED`, `CHAR_SELF_DESTRUCT`, `CHAR_ABSORB`,
+    `CHAR_POWER_SHIELD_HIT`, `CHAR_SIZE_CHANGE`, `CHAR_TRANSFORM`, `ATTACK_ENABLED`,
+    `GAME_ITEM_CREATED`. (Mapped this pass: `ATTACK_HIT`, `ATTACK_HIT_SHIELD`,
+    `GROUND_LEAVE`, `CHAR_SHIELD_HIT`, `CHAR_KO_DEATH`→`CharacterEvent.KNOCK_OUT`.)
 
 ## measuring progress
 
