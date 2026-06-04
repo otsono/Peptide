@@ -453,7 +453,45 @@ fn generate_hitbox_stats(data: &CharacterData, _char_id: &str) -> String {
     }
 
     out.push_str(req("character.stats.hitbox_footer", &t.hitbox_footer));
-    strip_trailing_commas(&out)
+    let out = strip_trailing_commas(&out);
+    // ERROR HANDLER for broken hitbox stats: the engine parses HitboxStats as one hscript object
+    // literal; a single malformed entry (e.g. a half-commented attack block) breaks the WHOLE parse
+    // → null stats → the character silently deals no damage (hurtboxes still work, so nothing
+    // crashes — a nasty silent failure). Validate the generated object here so a converter bug
+    // surfaces loudly at convert time instead of as dead hitboxes in-engine.
+    assert_balanced_stats(&out, &format!("HitboxStats for {}", data.name));
+    out
+}
+
+/// Fail the conversion (loudly, in peptide) if a generated stats object is not a syntactically
+/// balanced hscript object literal — the failure mode that produces dead hitboxes in-engine.
+/// Counts `{}`/`[]` ignoring `//` line comments (string literals in these files never contain
+/// braces). A mismatch means an attack block is malformed and the engine's parse would fail.
+fn assert_balanced_stats(s: &str, context: &str) {
+    let mut curly: i64 = 0;
+    let mut square: i64 = 0;
+    for line in s.lines() {
+        let code = match line.find("//") { Some(i) => &line[..i], None => line };
+        for c in code.chars() {
+            match c {
+                '{' => curly += 1,
+                '}' => curly -= 1,
+                '[' => square += 1,
+                ']' => square -= 1,
+                _ => {}
+            }
+        }
+        if curly < 0 || square < 0 {
+            panic!("broken stats object ({context}): unbalanced braces — an attack block is \
+                    malformed (a stray/closing brace). The engine would fail to parse this and the \
+                    character would deal no damage. Offending line: {:?}", line.trim());
+        }
+    }
+    if curly != 0 || square != 0 {
+        panic!("broken stats object ({context}): unbalanced braces at end \
+                (curly={curly}, square={square}) — a malformed attack block. The engine would fail \
+                to parse this and the character would deal no damage.");
+    }
 }
 
 /// Remove trailing commas inside object literals — any `,` that is followed only by
@@ -1753,7 +1791,9 @@ fn generate_projectile_hitbox_stats(
         .replace("{{entity_id}}", entity_id)
         .replace("{{source_note}}", &source_note)
         .replace("{{blocks}}", &anim_blocks.join(",\n"));
-    strip_trailing_commas(&body)
+    let body = strip_trailing_commas(&body);
+    assert_balanced_stats(&body, &format!("ProjectileHitboxStats for {entity_id}"));
+    body
 }
 
 /// Format a float like SSF2 would have written it: integers stay integers,
@@ -1769,7 +1809,7 @@ fn fmt_num(v: f64) -> String {
 
 #[cfg(test)]
 mod hitbox_split_tests {
-    use super::base_attack_name;
+    use super::{base_attack_name, strip_trailing_commas, assert_balanced_stats};
 
     #[test]
     fn split_sub_anims_map_to_their_base_attack() {
@@ -1784,5 +1824,27 @@ mod hitbox_split_tests {
         assert_eq!(base_attack_name("tilt_forward"), None);
         assert_eq!(base_attack_name("dash_attack"), None);
         assert_eq!(base_attack_name("strong_forward_attack"), None);
+    }
+
+    #[test]
+    fn strip_trailing_commas_removes_only_structural_commas() {
+        let got = strip_trailing_commas("{ jab1: { hitbox0: { d: 1, a: 2 }, }, }");
+        // the trailing commas before } are gone; the comma between fields stays
+        assert_eq!(got, "{ jab1: { hitbox0: { d: 1, a: 2 } } }");
+    }
+
+    #[test]
+    fn assert_balanced_stats_accepts_valid_and_ignores_comments() {
+        // a half-commented block (the real bug) is still balanced once the open is in a comment
+        // AND the body is commented too — the fixed form — so it passes.
+        assert_balanced_stats("{\n\tjab1: { hitbox0: {} }\n\t// SSF2: x: {\n\t// SSF2: }\n}", "t");
+    }
+
+    #[test]
+    #[should_panic(expected = "broken stats object")]
+    fn assert_balanced_stats_rejects_the_half_commented_block_bug() {
+        // the original bug: the open `x: {` is commented out but the body + close are ACTIVE,
+        // leaving an extra `}` → unbalanced → must be caught.
+        assert_balanced_stats("{\n\t// SSF2: x: {\n\t\thitbox0: {}\n\t}\n}", "t");
     }
 }
