@@ -1,0 +1,22 @@
+LAUNCHED private::sandbag.sandbag public::thespire.thespire public::commandervideoassist.commandervideoassist
+ANIM:INTRO
+T:INTRO
+ANIM:STAND
+ANIM:JAB
+M:OK
+ANIM:STAND
+ANIM:TILT_FORWARD
+M:OK
+ANIM:STAND
+ANIM:STRONG_FORWARD_IN
+M:OK
+ANIM:STRONG_FORWARD_ATTACK
+ANIM:STAND
+ANIM:SPECIAL_NEUTRAL
+M:OK
+ANIM:STAND
+T:STAND
+P: x=256 y=73 vx=0 vy=0 dmg=0
+ANIM:GRAB
+M:OK
+ANIM:STAND

@@ -1,0 +1,69 @@
+// commands.hsx — Peptide's in-engine command vocabulary, in hscript. The ENGINE-SIDE
+// counterpart to interpreter.rs: interpreter.rs translates what you type into a wire
+// line, the engine's `e` bytecode handler (patched in by main.rs) hands the hscript text
+// to its interpreter, and the helpers defined HERE are what that hscript can call.
+// Loaded ONCE into the engine-scoped interpreter (after applyInterpreterGlobals) by the
+// `e`/eval hook. It is deliberately MINIMAL: the engine
+// interpreter already exposes the entire Fraymakers script API (CState, HitboxStats,
+// Assist, MatchModifier, Announcer, … — the same globals every character/mode/stage
+// script gets). The ONE thing the API does not provide to a non-entity script is the
+// live match/character context (a character script gets `self`; we are not one), so the
+// only job of commands.hsx is to expose that context. Everything else, a user writes as
+// plain hscript through `e`:
+//     match.getCharacters()[0].getStateName()
+//     match.getCharacters()[0].toState(CState.SPECIAL_NEUTRAL)
+//
+// Bound PER-EVAL by the eval hook (so these read live state at call time):
+//   p0, p1     = the match's characters (FraymakersCharacter); plumbing for getCharacters().
+//                Prefer match.getCharacters()[i] over p0 — explicit, no hidden target.
+//   CState, HitboxStats, Assist, MatchModifier, … = the engine script API (applyInterpreterGlobals).
+//   __td       = Tildebugger statics, for the Engine.log facade.
+
+// Engine.log(x) writes to the in-game console (the same sink the eval hook reports
+// errors to). `log(x)` is a global shorthand.
+Engine = {
+  log: function(msg) { __td.log("" + msg, null, null); return null; }
+};
+log = function(msg) { __td.log("" + msg, null, null); return "logged: " + msg; };
+
+// The live character list, as a NATIVE hscript array. (The raw pxf.core.Match.characters
+// ArrayObj has no usable RTTI — .length/Std.string on it return garbage — so we build a
+// fresh array from the per-eval-bound characters.) Returning an Array lets callers chain:
+// match.getCharacters()[0].getStateName(), match.getCharacters().length. p1 is null until
+// the dummy-opponent feature binds a second character.
+getCharacters = function() {
+  var a = [];
+  if (p0 != null) a.push(p0);
+  if (p1 != null) a.push(p1);
+  return a;
+};
+
+// `match` facade — pxf.core.Match has no RTTI, so we expose the useful bits over the
+// reliable bound values instead of the raw object. This is the primary way to reach the
+// live characters and run any of their methods/fields.
+match = {
+  getCharacters: function() { return getCharacters(); },
+  getCharacter: function(i) { return getCharacters()[i]; },
+  characterCount: function() { return getCharacters().length; }
+};
+
+// matchStatus() — the data behind Peptide's "matchStatus" TCP channel (a host-polled feed,
+// NOT chat). Returns "MATCHSTATUS:" + one record per active character, ";"-separated, each
+// "<id>|<damage>|<animation>". Robust to no live match (returns just "MATCHSTATUS:"). Every
+// field is null-guarded so the feed never throws (a thrown poll would land in chat).
+matchStatus = function() {
+  var cs = getCharacters();
+  var out = "MATCHSTATUS:";
+  var i = 0;
+  while (i < cs.length) {
+    var c = cs[i];
+    if (i > 0) out += ";";
+    var goc = (c != null) ? c.gameObjectContent : null;
+    var nm  = (goc != null && goc.id != null) ? goc.id : "?";
+    var dmg = (c != null && c.damage != null) ? c.damage._damage : 0;
+    var an  = (c != null && c.animation != null) ? c.animation.currentAnimation : "?";
+    out += nm + "|" + dmg + "|" + an;
+    i += 1;
+  }
+  return out;
+};

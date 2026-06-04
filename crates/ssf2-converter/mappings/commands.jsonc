@@ -1,0 +1,802 @@
+// ─────────────────────────────────────────────────────────────────────────
+// commands.jsonc — SSF2 → Fraymakers API command conversions (UNIVERSAL)
+//
+// Universal API conversions — NOT character-scoped, which is why this file
+// sits at the top of mappings/ rather than under mappings/character/.
+// Loaded at runtime; built-in defaults are used if missing or malformed.
+// JSONC: // comments and trailing commas are allowed.
+//
+// API REFERENCE: the "Fraymakers/api-types-plugin" / "fraymakers-api.d.ts"
+// citations below are the raw TS declarations; the same API rendered as
+// browsable docs (functions/classes/scripts) lives at the community-run
+// https://shifterbit.github.io/fraymakers-api-docs/ — start there.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  // replacements: the ordered list of literal find→replace pairs applied to
+  // decompiled Haxe to turn SSF2 API calls into Fraymakers equivalents.
+  // ORDER MATTERS — they run top to bottom (e.g. "self.self." must run
+  // before the bare "self.self"). Structural transforms (readiness-guard
+  // removal, last-frame endAnimation stripping, unknown-call commenting)
+  // stay in code; only this literal table lives here.
+  "replacements": [
+    { "from": "self.self = /* ? */;", "to": "// self reference (implicit in FM)" },
+    { "from": "self.self = /* ? */", "to": "self" },
+    { "from": "self.self.", "to": "self." },
+    // A cross-block stack underflow in the decompiler can leave a dangling
+    // "/* ? */." receiver before a self-call (e.g. "/* ? */.self.foo(...)").
+    // The intended receiver is self; collapse it so the emit is valid Haxe.
+    // (Deeper fix = thread the predecessor operand stack into branch bodies;
+    // tracked as a follow-up — this rule keeps output compilable meanwhile.)
+    { "from": "/* ? */.self.", "to": "self." },
+    { "from": "&& self.self)", "to": ")" },
+    { "from": "if (true && self.self)", "to": "if (true)" },
+    { "from": "|| self.self)", "to": ")" },
+    { "from": "if ((self.self && true)", "to": "if ((true)" },
+    { "from": "(self.self && true)", "to": "(true)" },
+    { "from": "self.self", "to": "self" },
+    { "from": "if (self.self && ", "to": "if (true && " },
+    { "from": "|| self.self", "to": "" },
+
+    // SSF2API static calls
+    { "from": "SSF2API.print(", "to": "Engine.log(" },
+    { "from": "SSF2API.isReady()", "to": "true" },
+    { "from": "SSF2API.random()", "to": "Random.getFloat(0, 1)" },
+    { "from": "SSF2API.randomInteger(", "to": "Random.getInt(" },
+    // getElapsedFrames lives on the `match` instance, NOT Engine (Engine has only
+    // log/makeUid/forEach/forCount/framesToTimeString*). getCharacters() likewise
+    // is on the lowercase `match` instance — `Match` is the type, not the global.
+    { "from": "SSF2API.getElapsedFrames()", "to": "match.getElapsedFrames()" },
+    { "from": "SSF2API.getCharacters()", "to": "match.getCharacters()" },
+
+    // Additional SSF2API statics — these MUST precede the catch-all `SSF2API.`→
+    // `match.` (further below) so non-Match homes (Engine/Random/AudioClip/literal)
+    // win first; anything left over falls through to `match.<name>`.
+    //   Faithful Match-instance routes:
+    { "from": "SSF2API.getPlayers()", "to": "match.getPlayers()" },
+    { "from": "SSF2API.getProjectiles()", "to": "match.getProjectiles()" },
+    { "from": "SSF2API.spawnProjectile(", "to": "match.createProjectile(" },
+    { "from": "SSF2API.getCamBounds()", "to": "match.getStage().getCameraBounds()" },   // returns RectCollisionArea, not a MovieClip
+    { "from": "SSF2API.getDeathBounds()", "to": "match.getStage().getDeathBounds()" },
+    { "from": "SSF2API.getGameSettings()", "to": "match.getMatchSettingsConfig()" },    // field shape differs — manual touch-up
+    //   Engine / AudioClip statics:
+    { "from": "SSF2API.generateUID()", "to": "Engine.makeUid()" },
+    { "from": "SSF2API.getUID()", "to": "Engine.makeUid()" },
+    { "from": "SSF2API.playSound(", "to": "AudioClip.play(" },                    // SSF2 linkage string vs FM resource content — verify id
+    //   No FM equivalent but read in an expression → resolve to a usable literal
+    //   (a bare comment would break the assignment) and tag inline for manual review.
+    { "from": "SSF2API.getAverageFPS()", "to": "60 /* [SSF2-only: getAverageFPS] FM runs at 60fps; no FPS query */" },
+    { "from": "SSF2API.getAPIVersion()", "to": "\"0.0.0\" /* [SSF2-only: getAPIVersion] */" },
+    { "from": "SSF2API.isDebug()", "to": "false /* [SSF2-only: isDebug] */" },
+    { "from": "SSF2API.getSnapshot()", "to": "null /* [SSF2-only: getSnapshot] no FM screen capture */" },
+    { "from": "SSF2API.isGameStarted()", "to": "(match.getElapsedFrames() > 0) /* [SSF2-only: approx — prefer MatchEvent.MATCH_STARTED] */" },
+
+    // Method renames
+    { "from": ".endAttack()", "to": ".endAnimation()" },
+    { "from": ".refreshAttackID()", "to": ".reactivateHitboxes()" },
+    { "from": ".updateAttackBoxStats(", "to": ".updateHitboxStats(" },
+    { "from": ".getControls()", "to": ".getHeldControls()" },
+    { "from": ".gotoAndStop(", "to": ".playFrameLabel(" },
+    // NOTE: setXSpeed/setYSpeed and getXSpeed/getYSpeed are all kept as-is. Fraymakers'
+    // setXSpeed/getXSpeed are FACING-RELATIVE (positive X = forward in the facing
+    // direction), exactly like SSF2's — renaming the setters to the world-space
+    // set*Velocity() drops the orientation and reverses forward momentum when facing left
+    // (e.g. side-special). The decompiler keeps the names 1:1 and drops SSF2's second flag
+    // arg. Only the Net variants map to getNet*Velocity().
+
+    // SSF2 event constants -> Fraymakers event enums (same add/removeEventListener API).
+    // ORDER: CHAR_GRABBED before CHAR_GRAB (the latter is a prefix of the former).
+    { "from": "SSF2Event.GROUND_TOUCH",    "to": "EntityEvent.COLLIDE_FLOOR" },
+    { "from": "SSF2Event.ATTACK_CONNECT",  "to": "GameObjectEvent.HIT_DEALT" },
+    { "from": "SSF2Event.CHAR_HURT",       "to": "GameObjectEvent.HIT_RECEIVED" },
+    { "from": "SSF2Event.CHAR_GRABBED",    "to": "GameObjectEvent.GRAB_RECEIVED" },
+    { "from": "SSF2Event.CHAR_LEDGE_GRAB", "to": "CharacterEvent.LEDGE_GRAB" },
+    { "from": "SSF2Event.CHAR_GRAB",       "to": "GameObjectEvent.GRAB_DEALT" },
+    { "from": "SSF2Event.GAME_TICK_END",   "to": "match.TICK_END" },
+    // SSF2API.* event registration lives on `match` in Fraymakers.
+    { "from": "SSF2API.",                  "to": "match." },
+
+    // FM API renames — confirmed against Fraymakers/api-types-plugin (the
+    // authoritative TS declarations of every class+method) and real usage in
+    // Fraymakers/character-template's Script.hx and character.entity.
+    // Also see the rendered docs: https://shifterbit.github.io/fraymakers-api-docs/
+    { "from": ".getOpponents(",          "to": ".getFoes(" },
+    { "from": ".getGrabbedOpponents(",   "to": ".getAllGrabbedFoes(" },
+    { "from": ".getGrabbedOpponent(",    "to": ".getGrabbedFoe(" },
+    { "from": ".setVisibility(",         "to": ".setVisible(" },
+    { "from": ".forceHitStun(",          "to": ".forceStartHitstun(" },
+    { "from": ".getUID(",                "to": ".getUid(" },
+    { "from": ".getID(",                 "to": ".getUid(" },
+    { "from": ".getTeamID(",             "to": ".getTeam(" },
+    { "from": ".getCostume(",            "to": ".getCostumeIndex(" },
+    { "from": ".getCurrentAnimation(",   "to": ".getAnimation(" },
+    { "from": ".bringBehind(",           "to": ".sendBehind(" },
+    { "from": ".pushEffectBehind(",      "to": ".sendBehind(" },
+    { "from": ".destroy(",               "to": ".kill(" },
+    // releaseOpponent → releaseAllCharacters: SSF2 .releaseOpponent() often
+    // has no arg (release everything). releaseCharacter(target) is the
+    // single-target form — verify each callsite if behaviour seems off.
+    { "from": ".releaseOpponent(",       "to": ".releaseAllCharacters(" },
+    // Palette swap: return/arg type wraps PaletteSwapShader; mechanical
+    // rename only — call sites may still need manual touch-up.
+    { "from": ".setPaletteSwapData(",    "to": ".setCostumeShader(" },
+    { "from": ".getPaletteSwapData(",    "to": ".getCostumeShader(" },
+    // setIASA: SSF2 source already emits self.setIASA(true) inside the
+    // appropriate frame script. FM's API is Common.setIASA(bool). Drop self,
+    // route to Common.
+    { "from": "self.setIASA(",           "to": "Common.setIASA(" },
+
+    // FM engine globals (no `self.` — `match` is a global instance, like
+    // `self` and `Common`). The TS typedef declares the TMatch class; the
+    // global is lowercase `match`. Routes:
+    //   - SSF2API.getStage()     → match.getStage()
+    //   - SSF2API.getCamera()    → match.getCamera()
+    //   - SSF2API.shakeCamera(x) → match.getCamera().shake(x)
+    //   - self.addTarget / self.deleteTarget → match.getCamera().*
+    // After SSF2API.getStage() rewires, chained .getCameraBounds() and
+    // .getDeathBounds() (the FM names) already work — same names on Stage.
+    { "from": "SSF2API.getStage()",      "to": "match.getStage()" },
+    { "from": "SSF2API.getCamera()",     "to": "match.getCamera()" },
+    { "from": "SSF2API.shakeCamera(",    "to": "match.getCamera().shake(" },
+    { "from": "self.addTarget(",         "to": "match.getCamera().addTarget(" },
+    { "from": "self.deleteTarget(",      "to": "match.getCamera().deleteTarget(" },
+
+    // Random — SSF2API.safeRandom() / .safeRandomInteger(min,max) → FM
+    // Random.* statics. safeRandom is a clean text rename. safeRandomInteger
+    // drops its (min,max) args; handled by the regex_replacements section
+    // below because the literal table can't drop args.
+    { "from": "SSF2API.safeRandom(",     "to": "Random.getValue(" },
+
+    // ── Additional verified FM renames (cross-checked against the FM API types) ──
+    // Knockback / momentum (Entity / GameObject level).
+    { "from": ".applyKnockbackSpeed(", "to": ".setKnockback(" },   // raw (speed, angle) → Entity.setKnockback(speed, angle)
+    { "from": ".applyKnockback(",      "to": ".setKnockback(" },   // SSF2 'knockback' is a derived magnitude — verify per call site
+    { "from": ".resetKnockback(",      "to": ".resetMomentum(" },  // zeroes velocity (closest; or setKnockback(0,0))
+    // Damage. dealDamage and addDamage both INCREASE damage by the arg (same sign).
+    // healDamage DECREASES it → handled in regex_replacements (sign flip).
+    { "from": ".dealDamage(",          "to": ".addDamage(" },
+    // Double-jump counter — SSF2 "midair jump" == FM "double jump" (Character level).
+    { "from": ".getMidairJumpCount(",  "to": ".getDoubleJumpCount(" },
+    { "from": ".setMidairJumpCount(",  "to": ".setDoubleJumpCount(" },
+    // Scale getters → FM scaled accessors.
+    { "from": ".getXScale(",           "to": ".getScaleX(" },
+    { "from": ".getYScale(",           "to": ".getScaleY(" },
+    // SSF2Utils.* math helpers → FM Math.* statics (identical signatures unless noted).
+    // calculateXSpeed/calculateYSpeed swap arg order → see regex_replacements.
+    { "from": "SSF2Utils.calculateSpeed(",                  "to": "Math.calculateSpeed(" },
+    { "from": "SSF2Utils.calculateDifferenceBetweenAngles(", "to": "Math.angleDifference(" },
+    { "from": "SSF2Utils.forceBase360(",                    "to": "Math.forceBase360(" },
+    { "from": "SSF2Utils.getAngleBetween(",                 "to": "Math.getAngleBetween(" },  // SSF2 accounts for flipped Y — verify orientation
+    { "from": "SSF2Utils.getDistance(",                     "to": "Math.getDistance(" },
+    { "from": "SSF2Utils.toDegrees(",                       "to": "Math.toDegrees(" },
+    { "from": "SSF2Utils.toRadians(",                       "to": "Math.toRadians(" },
+
+    // State transitions
+    { "from": ".toLand()", "to": ".toState(CState.LAND)" },
+    { "from": ".toHelpless()", "to": ".toState(CState.FALL_SPECIAL)" },
+    { "from": ".toHeavyLand()", "to": ".toState(CState.LAND) //TODO: create land_heavy anim & change to toState(CState.LAND, \"land_heavy\")" },
+
+    // SSF2 resetJumps() regains midair jumps by zeroing the used-jump counter.
+    // FM's faithful equivalent is Character.setDoubleJumpCount(0) (FM "double jump"
+    // == SSF2 "midair jump"). The old mapping to .preLand() was wrong — preLand is
+    // landing cleanup and its signature requires a bool arg.
+    { "from": ".resetJumps()", "to": ".setDoubleJumpCount(0)" },
+
+    { "from": ".resetMovement()", "to": ".setXVelocity(0); self.setYVelocity(0)" },
+    { "from": ".safeMove(", "to": ".move(" },
+
+    { "from": ".isOnGround()", "to": ".isOnFloor()" },
+    { "from": ".checkGround()", "to": ".attachToFloor()" },
+
+    { "from": ".setLandingLag(true)", "to": ".updateAnimationStats({ autoCancel: true })" },
+    { "from": ".setLandingLag(false)", "to": ".updateAnimationStats({ autoCancel: false })" },
+
+    // SSF2 get/setGlobalVariable("name"[, v]) are string-keyed PERSISTENT
+    // per-character variables. They are rewritten to Fraymakers persistent-state
+    // wrappers (name.get() / name.set(v)) by the regex_replacements below; the
+    // matching `var name = self.makeInt/makeBool(...)` declaration is emitted by
+    // the extractor's global-var pass (see src/extractor.rs). (Previously these
+    // were mis-mapped to per-animation get/updateAnimationStatsMetadata — wrong
+    // scope AND not a real FM API.)
+
+    // playAttackSound(N) / playVoiceSound(N) route to bare Script.hx helpers
+    // (generated by api_mappings::generate_sound_helpers from the character's
+    // attackSound{N}_id / attackVoice{N}_id tables). Strip the SSF2 `self.`
+    // receiver so the call binds to the script-scope function, not an entity
+    // method — keyframe scripts call Script.hx functions bare (verified
+    // against Fraymakers/character-template).
+    { "from": "self.playAttackSound(", "to": "playAttackSound(" },
+    { "from": "self.playVoiceSound(", "to": "playVoiceSound(" },
+
+    // Event types
+    { "from": "SSF2Event.STATE_CHANGE", "to": "GameObjectEvent.LINK_FRAMES" },
+    { "from": "SSF2Event.HIT", "to": "GameObjectEvent.HIT_DEALT" },
+    { "from": "SSF2Event.LAND", "to": "GameObjectEvent.LAND" },
+
+    // Timer / effect patterns
+    { "from": ".createTimer(", "to": ".addTimer(" },
+    { "from": ".destroyTimer(", "to": ".removeTimer(" },
+    { "from": ".stancePlayFrame(", "to": ".playLabel(" },
+    { "from": ".removeAllEffects()", "to": "/* TODO: removeAllEffects */" },
+    { "from": ".addEffectToList(", "to": "/* TODO: addEffectToList */ " },
+
+    // Hitbox property renames in object literals — universal SSF2 → FM
+    // field-name conversions. Applied to ANY object literal containing
+    // these keys (typically inside updateHitboxStats / updateAttackBoxStats
+    // / updateAttackStats calls). The canonical SSF2 ↔ FM pairs here
+    // MIRROR mappings/character/hitbox_stats.jsonc — that file uses the
+    // same names when generating HitboxStats.hx from extracted attacks;
+    // both files share one canonical naming, not duplicated logic.
+    //
+    // Knockback / hit-effect names
+    { "from": "direction:",            "to": "angle:" },
+    { "from": "power:",                "to": "baseKnockback:" },
+    // weightKB: was previously renamed to baseKnockback: but the user
+    // reports they're different SSF2 concepts. weightKB now passes
+    // through unchanged so the FM compiler surfaces it for manual
+    // handling per call site. hitbox_stats.jsonc also no longer pulls
+    // weightKB into baseKnockback's source-key list.
+    { "from": "kbGrowth:",             "to": "knockbackGrowth:" },
+    { "from": "kbConstant:",           "to": "knockbackGrowth:" },
+    // Frame fields (doubled BEFORE this stage by double_frame_counts)
+    { "from": "hitStun:",              "to": "hitstop:" },
+    { "from": "selfHitStun:",          "to": "selfHitstop:" },
+    { "from": "hitLag:",               "to": "hitstun:" },
+    { "from": "selfHitLag:",           "to": "selfHitstop:" },
+    // High-frequency SSF2 hitbox-only names with direct FM equivalents.
+    // Cross-checked against Fraymakers/api-types-plugin updateHitboxStats
+    // props (also rendered at https://shifterbit.github.io/fraymakers-api-docs/).
+    // Counts indicate corpus-wide occurrences (45 chars scanned).
+    { "from": "effectSound:",          "to": "hitSoundOverride:" },    // 225
+    { "from": "effect_id:",            "to": "hitEffectOverride:" },   // 125
+    { "from": "effect_ID:",            "to": "hitEffectOverride:" },   //   1
+    { "from": "reversableAngle:",      "to": "reversibleAngle:" },     //  46 (spelling fix)
+    { "from": "canDI:",                "to": "directionalInfluence:" },//  25
+    { "from": "atk_id:",               "to": "attackId:" },            //  17
+    { "from": "shieldStunMultiplier:", "to": "shieldstunMultiplier:" },//   2 (camelCase fix)
+    // SSF2 fields with no clear FM mapping (left alone — surface as
+    // compile errors so the modder fixes per-site): aura, burn, shock,
+    // paralysis, pitfall (would need FM `element` enum), camShake,
+    // chargedPriority, hasEffect, ignoreChargeDamage, meteorBounce,
+    // onlyAffectsGround, priority, sdiDistance, shieldDamage, stackKnockback.
+  ],
+
+  // regex_replacements: regex-based renames applied AFTER the literal
+  // `replacements` pass. Used for cases the literal table can't express:
+  // dropping/rewriting args, dispatching on argument shape, etc. The
+  // `replacement` string follows Rust's `regex` crate substitution syntax —
+  // `$1`, `${name}`, `$$` for a literal `$`. Bad patterns warn once and are
+  // skipped.
+  "regex_replacements": [
+    // SSF2 get/setGlobalVariable("name") → Fraymakers persistent-state wrappers.
+    // The `self.` prefix (if present) is dropped; the wrapper var is declared by
+    // the extractor's global-var pass. set: the trailing `, ` becomes `(` of .set(,
+    // reusing the call's existing close paren. get: → name.get().
+    {
+      "pattern": "(?:self\\.)?setGlobalVariable\\(\\s*\"(\\w+)\"\\s*,\\s*",
+      "replacement": "$1.set(",
+      "note": "SSF2 persistent global → makeX wrapper .set()"
+    },
+    {
+      "pattern": "(?:self\\.)?getGlobalVariable\\(\\s*\"(\\w+)\"\\s*\\)",
+      "replacement": "$1.get()",
+      "note": "SSF2 persistent global → makeX wrapper .get()"
+    },
+    // safeRandomInteger(min, max) → Random.getValue() * 100. The (min, max)
+    // args are dropped (user-specified placeholder mapping). `[^()]*` keeps
+    // it safe against the rare nested call: matches only flat arg lists, so
+    // safeRandomInteger(foo(x), y) won't be touched.
+    {
+      "pattern": "SSF2API\\.safeRandomInteger\\([^()]*\\)",
+      "replacement": "Random.getValue() * 100",
+      "note": "drop (min,max) args, fixed placeholder mapping"
+    },
+    // updateAnimationStats/updateAttackStats({ autoCancel: BOOL }) → Common.setAutocancel(BOOL).
+    {
+      "pattern": "(?:self\\.)?(?:updateAnimationStats|updateAttackStats)\\(\\{\\s*autoCancel:\\s*(true|false)\\s*\\}\\)",
+      "replacement": "Common.setAutocancel($1)",
+      "note": "autoCancel toggle maps to the Common helper"
+    },
+    // gotoAndPlay("LABEL") → playFrameLabel("LABEL"). Numeric form
+    // gotoAndPlay(N) → playFrame(N) — included for completeness even though
+    // no character currently uses it.
+    {
+      "pattern": "\\.gotoAndPlay\\(\\s*\"([^\"]*)\"\\s*\\)",
+      "replacement": ".playFrameLabel(\"$1\")",
+      "note": "string-label form"
+    },
+    {
+      "pattern": "\\.gotoAndPlay\\(\\s*(\\d+)\\s*\\)",
+      "replacement": ".playFrame($1)",
+      "note": "numeric-frame form"
+    },
+
+    // SSF2Utils.calculateXSpeed/YSpeed(speed, angle) → FM Math.calculateX/YVelocity(degrees, speed):
+    // ARG ORDER IS SWAPPED between the two APIs.
+    {
+      "pattern": "SSF2Utils\\.calculateXSpeed\\(\\s*([^,()]+),\\s*([^()]+)\\)",
+      "replacement": "Math.calculateXVelocity($2, $1)",
+      "note": "swap (speed,angle)→(degrees,speed)"
+    },
+    {
+      "pattern": "SSF2Utils\\.calculateYSpeed\\(\\s*([^,()]+),\\s*([^()]+)\\)",
+      "replacement": "Math.calculateYVelocity($2, $1)",
+      "note": "swap args; SSF2's flipped-Y helper may need a sign review"
+    },
+    // setScale(x, y): FM has no two-arg setScale — split. Anchored to `self.` (the
+    // receiver the decompiler emits) to avoid mis-targeting a chained receiver.
+    {
+      "pattern": "self\\.setScale\\(\\s*([^,()]+),\\s*([^()]+)\\)",
+      "replacement": "self.setScaleX($1); self.setScaleY($2)",
+      "note": "SSF2 setScale(x,y) → FM setScaleX + setScaleY"
+    },
+    // setPosition(x, y) absolute reposition → Entity.moveAbsolute(x, y) (same arg shape).
+    {
+      "pattern": "\\.setPosition\\(",
+      "replacement": ".moveAbsolute(",
+      "note": "absolute reposition"
+    },
+    // healDamage(x) reduces damage → FM addDamage(-x). Receiver-preserving; sign flip required.
+    {
+      "pattern": "(\\w+)\\.healDamage\\(\\s*([^()]*?)\\s*\\)",
+      "replacement": "$1.addDamage(-($2))",
+      "note": "heal = negative addDamage"
+    },
+    // inHitStun():Bool → (getHitstun() > 0). FM exposes a numeric hitstun count, not a bool.
+    {
+      "pattern": "(\\w+)\\.inHitStun\\(\\s*\\)",
+      "replacement": "($1.getHitstun() > 0)",
+      "note": "bool derived from hitstun count"
+    },
+    // Net-velocity queries — only the no-toggle form maps (FM lacks ignoreNormal/ignoreKnockback).
+    { "pattern": "(\\w+)\\.netSpeed\\(\\s*\\)",  "replacement": "$1.getNetSpeed()" },
+    { "pattern": "(\\w+)\\.netXSpeed\\(\\s*\\)", "replacement": "$1.getNetXVelocity()" },
+    { "pattern": "(\\w+)\\.netYSpeed\\(\\s*\\)", "replacement": "$1.getNetYVelocity()" },
+    // Body-status queries → hasBodyStatus(BodyStatus.*).
+    { "pattern": "(\\w+)\\.getIntangibility\\(\\s*\\)", "replacement": "$1.hasBodyStatus(BodyStatus.INTANGIBLE)" },
+    { "pattern": "(\\w+)\\.getInvincibility\\(\\s*\\)", "replacement": "$1.hasBodyStatus(BodyStatus.INVINCIBLE)" },
+    // resetMovement(event): the no-arg literal form is in `replacements`; this covers the
+    // event-arg form (and any receiver) by zeroing momentum and dropping the arg.
+    {
+      "pattern": "(\\w+)\\.resetMovement\\([^()]+\\)",
+      "replacement": "$1.resetMomentum()",
+      "note": "drops event arg"
+    },
+    // Camera self-registration helpers (SSF2 calls these on the object that wants to be
+    // tracked; FM routes through match.getCamera()). Anchored to `self.`.
+    { "pattern": "self\\.addToCamera\\(\\s*\\)",      "replacement": "match.getCamera().addTarget(self)" },
+    { "pattern": "self\\.removeFromCamera\\(\\s*\\)", "replacement": "match.getCamera().deleteTarget(self)" },
+    {
+      "pattern": "self\\.camFocus\\(\\s*([^()]*?)\\s*\\)",
+      "replacement": "match.getCamera().addTimedTarget(self, $1)",
+      "note": "camFocus(length) → addTimedTarget(self, length); auto-expires like SSF2"
+    },
+    { "pattern": "self\\.camUnfocus\\(\\s*\\)",       "replacement": "match.getCamera().deleteTimedTarget(self)" },
+    // Chained SSF2 GameTimer read → match frame counter (both are frame counts).
+    {
+      "pattern": "(?:SSF2API|match)\\.getGameTimer\\(\\)\\.getCurrentTime\\(\\)",
+      "replacement": "match.getElapsedFrames()",
+      "note": "match clock as a frame count (literal catch-all may already have rewritten SSF2API.→match.)"
+    }
+    // self.attachEffect(...) → match.createVfx(...) is handled by the
+    // context-aware `rewrite_attach_effect_calls` pass in api_mappings.rs,
+    // not by regex_replacements. That pass needs per-character knowledge
+    // of which animation name to reference in each effect's entity (since
+    // effects can have multiple FrameLabel-derived animations), which a
+    // static regex can't provide. Per-prop translation is driven by the
+    // `attach_effect_props` table below.
+  ],
+
+  // attach_effect_props: per-prop translation table for the second
+  // argument of SSF2 `self.attachEffect("name", { props })`. The
+  // `rewrite_attach_effect_calls` pass parses the {…} block, looks up
+  // each key here, and emits the translated field(s) inside the
+  // generated `new VfxStats({…})` argument — alongside `spriteContent`
+  // and `animation`. Source values pass through unchanged unless a
+  // mapping entry says otherwise. Keys with no entry surface as
+  // `// TODO:` lines above the call, same convention as call_splits.
+  //
+  // FM target field reference: VfxStats constructor from
+  // Fraymakers/api-types-plugin's fraymakers-api.d.ts (mirrors the
+  // Haxe VfxStatsProps typedef; also rendered at
+  // https://shifterbit.github.io/fraymakers-api-docs/). Mappings were chosen by walking
+  // through all 1,583 prop-bag attachEffect calls across 46 SSF2
+  // characters and tallying every key:
+  //   x:1161  y:1039  scaleX:740  scaleY:735  parentLock:321
+  //   syncHitStun:180  rotation:53  loop:16  behind:9  flipOnX:5
+  //   resize:2  flip:1
+  //
+  // Forms:
+  //   "<fmPropName>"                              — direct rename, value passes through
+  //   { "expand_to": ["a","b","c"] }              — one source → multiple FM fields (same value)
+  //   { "todo": "<note>" }                        — no FM equivalent; emit TODO above call
+  //   { "target": "<fmPropName>", "todo": "…" }  — rename + carry a non-fatal note
+  "attach_effect_props": {
+    // 1:1 renames — same name and identical semantics in VfxStats.
+    "x":           "x",
+    "y":           "y",
+    "scaleX":      "scaleX",
+    "scaleY":      "scaleY",
+    "rotation":    "rotation",
+    // SSF2 `parentLock: true` packs three FM toggles together: position
+    // follows owner (relativeWith), scale follows owner (resizeWith),
+    // flip follows owner (flipWith). The expansion writes the source
+    // value into each — so `parentLock: false` correctly turns all
+    // three off.
+    "parentLock":  { "expand_to": ["relativeWith", "resizeWith", "flipWith"] },
+    // No clean FM equivalent — let the porter decide.
+    "syncHitStun": { "todo": "no FM equivalent — Vfx instances don't track owner hitstun automatically; chain or event-listener port required" },
+    "loop":        { "todo": "SSF2 loop:Int (play N times) vs FM loop:Bool (true=infinite); semantics differ — check intent and either drop or set loop:true" },
+    "behind":      { "todo": "SSF2 z-order flag vs FM layer:String (VfxLayer.*) — pick a VfxLayer constant (likely CHARACTERS_BACK)" },
+    "flipOnX":     { "todo": "SSF2 render-flip on X; closest FM hint is scaleX: -x or flipWith — manual port" },
+    "flip":        { "todo": "SSF2 render-flip toggle with no FM equivalent — manual port" },
+    "resize":      { "todo": "SSF2 resize flag with no FM equivalent — manual port (consider resizeWith)" }
+  },
+
+  // global_vfx_map: SSF2 → Fraymakers GlobalVfx constants. Effect names
+  // listed here are shared "system" effects (dust, sparks, ground impacts,
+  // pickup indicators) — they don't ship as per-character entities in FM;
+  // instead, every character can play them off the global VFX sprite by
+  // referencing the right animation constant.
+  //
+  // When `rewrite_attach_effect_calls` sees an effect name in this table,
+  // it emits the global-shape VfxStats call:
+  //   match.createVfx(new VfxStats({
+  //     spriteContent: "global::vfx.vfx",
+  //     animation:     GlobalVfx.<CONSTANT>
+  //   }), self)
+  // …instead of the per-character `self.getResource().getContent("…")`
+  // form. The constant is referenced unquoted — it's a string-typed
+  // member on the `GlobalVfx` class in api-types-plugin, but the Haxe
+  // hscript reads it via the class accessor at runtime.
+  //
+  // Coverage was picked from the corpus tally (most-used SSF2 global
+  // names + best-fit FM constants from fraymakers-api.d.ts lines
+  // 2948–3064; also rendered at https://shifterbit.github.io/fraymakers-api-docs/).
+  // Unmapped global_* names (e.g. `global_wind_wave`,
+  // `global_bubbles`) fall through to the per-character `getContent`
+  // path and use the `active` animation fallback — porters can either
+  // add a mapping here or supply a local `<name>.entity`.
+  "global_vfx_map": {
+    // Landing / impact / strong-move dust.
+    "global_dust_heavy":    "LAND_DUST",
+    "global_dust_heavy_rv": "LAND_DUST_BACK",
+    "global_dust_blast":    "LAND_DUST",
+    // Small-motion / dash kick dust.
+    "global_dust_light":    "DUST_START_LIGHT",
+    "global_dust_light_rv": "DUST_START_LIGHT",
+    // Generic poof / cloud.
+    "global_dust_cloud":    "DUST_POOF",
+    // Spinning / swirl dust.
+    "global_dust_swirl":    "DUST_SPIN",
+    "global_dust_spin":     "DUST_SPIN",
+    "global_dust_spiral":   "DUST_SPIN",
+    // Launch knockback smoke.
+    "global_dust_launch":   "KNOCKBACK_SMOKE",
+    // Hit sparks.
+    "global_spark":         "SPARKLE_LIGHT",
+    "global_sparkle":       "SPARKLE_LIGHT",
+    "global_smash_spark":   "SPARKLE_HEAVY",
+    // Item pickup indicator.
+    "itempickup_effect":    "ITEM_INDICATOR"
+  },
+
+  // global_sound_map: SSF2 *shared* sound ids (not extracted into a
+  // character's per-char audio bank) → Fraymakers built-in `GlobalSfx`
+  // constant. `rewrite_play_sound_calls` emits
+  //   AudioClip.play(GlobalSfx.<CONSTANT>)
+  // for any playSound("id") whose id is in this table. Ids that are NEITHER
+  // here NOR an extracted per-character asset get a placeholder asset + a
+  // visible TODO comment in the frame-script Haxe.
+  //
+  // Constants are the verbatim members of the GlobalSfx class
+  // (community API docs: https://shifterbit.github.io/fraymakers-api-docs/ -> classes/GlobalSfx). Best-fit
+  // matches from the corpus tally of unmatched playSound ids across
+  // mario/kirby/link/samus.
+  "global_sound_map": {
+    // Swing / throw whooshes (small / medium / large).
+    "brawl_swing_s": "WHOOSH_1",
+    "brawl_swing_m": "WHOOSH_2",
+    "brawl_swing_l": "WHOOSH_3",
+    "throw_woosh":   "WHOOSH_2",
+    // Metal-form landings → generic land sound (no metal-specific GlobalSfx).
+    "metal_land_s":  "LAND",
+    "metal_land_m":  "LAND",
+    "metal_land_l":  "LAND"
+    // No close GlobalSfx match (→ placeholder + TODO): metal_step_*, screw1-6,
+    // *_step* footsteps, mario_lift. GlobalSfx has no footstep/step or
+    // screw/drill constant.
+  },
+
+  // call_splits: SSF2 "umbrella" calls whose object-literal argument
+  // needs to be split into multiple FM calls. Each entry maps an SSF2
+  // field name to "<fm_target_method>.<fm_field_name>". Fields sharing
+  // a target method get GROUPED into one combined call (one
+  // updateAnimationStats call with all matched fields, etc.). Source
+  // fields not listed below pass through as `// TODO: …` comments —
+  // they're surfaced for manual review without dropping data.
+  "call_splits": {
+    "updateAttackStats": {
+      "fields": {
+        // SSF2 attack-state flags → FM AnimationStats. updateAttackStats
+        // takes no hitbox id; everything routed here ends up in a single
+        // updateAnimationStats({ … }) call per source line.
+        // Cross-checked against Fraymakers/api-types-plugin
+        // AnimationStatsProps (lines 796-835 of fraymakers-api.d.ts; also
+        // rendered at https://shifterbit.github.io/fraymakers-api-docs/).
+        //
+        // Boolean flags
+        "cancelWhenAirborne": "updateAnimationStats.leaveGroundCancel",
+        "allowControl":       "updateAnimationStats.allowMovement",
+        // Charge timing (chargetime_max is in frame_params → doubled
+        // before this stage; the rendered FM value is the 60fps count).
+        "chargetime_max":     "updateAnimationStats.chargeFramesMax",
+        // Per-anim physics overrides (FM AnimationStatsProps supports
+        // friction / *SpeedAcceleration / *SpeedCap as per-animation
+        // overrides). SSF2's xSpeedDecay is a NEGATIVE multiplier; FM
+        // friction is a POSITIVE decay value — name maps cleanly but
+        // the user may need to flip signs per site. Flagged inline.
+        "xSpeedAccel":        "updateAnimationStats.groundSpeedAcceleration",
+        "xSpeedAccelAir":     "updateAnimationStats.aerialSpeedAcceleration",
+        "xSpeedCap":          "updateAnimationStats.groundSpeedCap",
+        "xSpeedDecay":        "updateAnimationStats.friction",
+        "xSpeedDecayAir":     "updateAnimationStats.aerialFriction",
+        // CharacterAnimationStats / AnimationStats boolean flags — confirmed against the
+        // Fraymakers API docs (CharacterAnimationStats: allowFastFall/allowJump/allowTurn/
+        // doubleJumpCancel; AnimationStats: interruptible/autoRotate). Set via the same
+        // updateAnimationStats({...}) path that already carries allowMovement.
+        "allowFastFall":         "updateAnimationStats.allowFastFall",
+        "allowJump":             "updateAnimationStats.allowJump",
+        "jumpCancelAttack":      "updateAnimationStats.allowJump",
+        "allowTurn":             "updateAnimationStats.allowTurn",
+        "allowFullInterrupt":    "updateAnimationStats.interruptible",
+        "doubleJumpCancelAttack":"updateAnimationStats.doubleJumpCancel",
+        "rotate":                "updateAnimationStats.autoRotate",
+        // disableJump is the inverse of allowJump.
+        "disableJump": {
+          "target": "updateAnimationStats.allowJump",
+          "value_map": { "true": "false", "false": "true" }
+        },
+        // Object-form entries — value-conditional + skip rules.
+        //
+        // canFallOff: only `true` maps cleanly (player can drop through
+        // soft platforms during the attack → FM LandType.NORMAL). Other
+        // values surface as TODO. The inline `todo` note also fires on
+        // the success path because the FM landType has more nuance than
+        // SSF2's bool — the user should sanity-check each call site.
+        "canFallOff": {
+          "target": "updateAnimationStats.landType",
+          "value_map": { "true": "LandType.NORMAL" },
+          "todo": "verify per call site (SSF2 canFallOff is bool; FM landType is an enum with more options)"
+        },
+        // air_ease → AnimationStats.terminalVelocity. The SSF2 sentinel `-1`
+        // means "no override" and is dropped; any other value sets terminalVelocity.
+        "air_ease": { "target": "updateAnimationStats.terminalVelocity", "skip_if_value": "-1" }
+        // Still-unmapped SSF2 fields (surface as `// TODO:` per call site):
+        // hit_ease (no direct FM speed-stat equivalent), airCancel,
+        // airCancelSpecial (cancel-into-aerial windows — no clean FM flag), allowDoubleJump,
+        // allowRun, allowControlGround, atk_id, cancelSoundOnEnd, cancelVoiceOnEnd,
+        // facedLedgesOnly, IASA, ledgeFrame, linkFrames, refreshRate, rocket, secondaryAttack.
+        // bodyStatus group (superArmor/heavyArmor/invincible) needs a bool→BodyStatus-enum
+        // conversion (e.g. superArmor→BodyStatus.ARMOR); left for a value-map pass once the
+        // exact BodyStatus enum member names are confirmed.
+      }
+    }
+  },
+
+  // frame_params: command parameters that carry a frame count, doubled for
+  // the 30fps → 60fps timing change. 'kind: "call"' targets one positional
+  // argument (by 'name' + 0-based 'arg' index); 'kind: "field"' targets a
+  // named object-literal key. Only entries with 'isframe: true' are doubled.
+  // Optional 'sentinel': a value at/above which the parameter is left alone.
+  "frame_params": [
+    // createTimer(delay, repeatCount, callback) — only the delay (arg 0).
+    // keep_one: a per-frame timer (delay 1) keeps firing every engine frame
+    // rather than doubling to every-other-frame, preserving poll responsiveness.
+    { "kind": "call",  "name": "createTimer",     "arg": 0, "isframe": true, "keep_one": true },
+    // hit-freeze / hitstun durations; 255 = "no override" sentinel, kept.
+    { "kind": "field", "name": "hitStun",        "isframe": true, "sentinel": 255 },
+    { "kind": "field", "name": "selfHitStun",    "isframe": true, "sentinel": 255 },
+    { "kind": "field", "name": "hitLag",         "isframe": true, "sentinel": 255 },
+    // hitbox re-hit cooldown, in frames.
+    { "kind": "field", "name": "refreshRate",    "isframe": true },
+    // maximum charge duration, in frames.
+    { "kind": "field", "name": "chargetime_max", "isframe": true },
+  ],
+
+  // ─── Passthrough Fraymakers APIs ──────────────────────────────────────
+  // SSF2 calls that ARE valid Fraymakers APIs and should be left exactly
+  // as written by the decompiler — no rename, no [SSF2-only] comment.
+  // Consumed by api_mappings::comment_out_unknown_calls as part of the
+  // "known calls" set: a name listed here is recognised as an FM-legit
+  // call and not flagged when scanning for unknowns.
+  "passthrough_fm_apis": [
+    { "name": "addEventListener", "note": "generic event API; same shape in Fraymakers" },
+    { "name": "removeEventListener", "note": "generic event API; same shape in Fraymakers" },
+    { "name": "hasEventListener", "note": "generic event API; same shape in Fraymakers" },
+    { "name": "isFacingRight", "note": "Fraymakers character method, same name" },
+    { "name": "setIntangibility", "note": "kept SSF2 name; pairs are rewritten to applyGlobalBodyStatus by fix_intangibility_pairs in haxe_gen" },
+    { "name": "getCamera", "note": "Fraymakers Camera accessor" },
+    { "name": "shake", "note": "Camera.shake — same name in Fraymakers" },
+    // updateAttackStats is NOT a valid FM API — moved to `call_splits`
+    // below. Each SSF2 field is routed to the proper FM target method.
+    { "name": "getOwner", "note": "Projectile API" },
+    { "name": "getCostumeIndex", "note": "Projectile/character API" },
+    { "name": "setCostumeIndex", "note": "Projectile/character API" },
+    { "name": "enableReflectionListener", "note": "Projectile API" },
+    { "name": "setState", "note": "Projectile state machine API" },
+    { "name": "registerLocalState", "note": "Projectile local state-machine API" },
+    { "name": "initLocalStateMachine", "note": "Projectile local state-machine API" },
+    { "name": "toLocalState", "note": "Projectile local state-machine API" },
+    { "name": "inLocalState", "note": "Projectile local state-machine API" },
+    { "name": "finalFramePlayed", "note": "Projectile / animation runtime check" },
+    { "name": "getContent", "note": "Fraymakers resource API" },
+    { "name": "getResource", "note": "Fraymakers resource API" },
+
+    // Confirmed against Fraymakers/api-types-plugin TS declarations + real
+    // usage in Fraymakers/character-template (Script.hx + character.entity).
+    // Rendered docs: https://shifterbit.github.io/fraymakers-api-docs/
+    // Position / transform
+    { "name": "getX",                  "note": "Entity coordinate accessor — same name" },
+    { "name": "getY",                  "note": "Entity coordinate accessor — same name" },
+    { "name": "setX",                  "note": "Entity coordinate setter — same name" },
+    { "name": "setY",                  "note": "Entity coordinate setter — same name" },
+    { "name": "flipX",                 "note": "Entity.flipX(value:Float):Float — multiplies value by -1 when facing left" },
+    { "name": "flip",                  "note": "Entity.flip() — confirmed in character-template Script.hx" },
+    { "name": "faceLeft",              "note": "Entity.faceLeft()" },
+    { "name": "faceRight",             "note": "Entity.faceRight()" },
+    { "name": "setRotation",           "note": "Entity.setRotation(value:Float):Float" },
+    { "name": "getRotation",           "note": "Entity.getRotation():Float" },
+    { "name": "resetRotation",         "note": "Entity.resetRotation():Void" },
+    { "name": "rotate",                "note": "Entity.rotate() — user-confirmed supported on self" },
+    // State / stats
+    { "name": "getState",              "note": "Entity.getState():Int" },
+    { "name": "inState",               "note": "Character.inState(CState.*):Bool — confirmed in character-template" },
+    { "name": "getType",               "note": "Entity.getType():Int" },
+    { "name": "isDisposed",            "note": "Entity.isDisposed():Bool" },
+    { "name": "getDamage",             "note": "GameObject.getDamage():Float" },
+    { "name": "setDamage",             "note": "GameObject.setDamage(dmg:Float):Float" },
+    { "name": "getCharacterStat",      "note": "Character.getCharacterStat(name:String):Dynamic" },
+    { "name": "updateCharacterStats",  "note": "Character.updateCharacterStats(stats:CharacterStatsProps):Void" },
+    { "name": "getProjectileStat",     "note": "Projectile.getProjectileStat(name:String):Dynamic" },
+    { "name": "updateProjectileStats", "note": "Projectile.updateProjectileStats(stats:ProjectileStatsProps):Void" },
+    // Z-order / ownership
+    { "name": "swapDepths",            "note": "Entity.swapDepths(gameObject:GameObject):Void" },
+    { "name": "bringInFront",          "note": "Entity.bringInFront(gameObject:GameObject):Void" },
+    { "name": "setOwner",              "note": "GameObject.setOwner(owner:GameObject):Void" },
+    // ─── SSF2 calls that ARE valid FM API at the mapped level (added) ───
+    { "name": "addForcedTarget", "note": "SSF2Camera.addForcedTarget(mc) → FM Camera.addForcedTarget(entity). Same name." },
+    { "name": "addTimedTarget", "note": "SSF2Camera.addTimedTarget(mc, length) → FM Camera.addTimedTarget(entity, length). Same name; length is a frame count (consider frame_params doubling)." },
+    { "name": "addTimedTargetPoint", "note": "SSF2Camera.addTimedTargetPoint(point, length) → FM Camera.addTimedTargetPoint(point, length). Same name." },
+    { "name": "deleteForcedTarget", "note": "SSF2Camera.deleteForcedTarget → FM Camera.deleteForcedTarget(entity). Same name." },
+    { "name": "deleteTimedTargetPoint", "note": "SSF2Camera.deleteTimedTargetPoint(point) → FM Camera.deleteTimedTargetPoint(point). Same name." },
+    { "name": "getGameObjectStat", "note": "GameObject.getGameObjectStat(name):Dynamic — identical name & semantics" },
+    { "name": "getLives", "note": "Character.getLives():Int — identical" },
+    { "name": "getMode", "note": "SSF2Camera.getMode() → FM Camera.getMode():Int. Called on match.getCamera() result; same name, passes through." },
+    { "name": "getPlayers", "note": "Match.getPlayers() — slotted chars. Catch-all SSF2API.→match. yields match.getPlayers(), valid." },
+    { "name": "getXSpeed", "note": "SSF2Platform.getXSpeed() (px/frame) -> FM Entity.getXSpeed(). Same concept." },
+    { "name": "getYSpeed", "note": "SSF2Platform.getYSpeed() (px/frame) -> FM Entity.getYSpeed(). Same concept." },
+    { "name": "releaseLedge", "note": "Character.releaseLedge():Void — identical name+intent (frees the held ledge)" },
+    { "name": "setLives", "note": "Character.setLives(lives:Int):Void — identical" },
+    { "name": "setMode", "note": "SSF2Camera.setMode(mode) → FM Camera.setMode(mode):Int. CameraMode enum members differ in name but call passes through." },
+    { "name": "setXSpeed", "note": "SSF2Platform.setXSpeed(value) (px/frame) -> FM Entity.setXSpeed(speed). Facing-relative semantics preserved per existing converter convention." },
+    { "name": "setYSpeed", "note": "SSF2Platform.setYSpeed(value) (px/frame) -> FM Entity.setYSpeed(speed)." },
+  ],
+
+  // ─── SSF2-only calls (commented out in output) ─────────────────────────
+  // Calls the literal/regex passes don't convert. The converter rewrites any
+  // line containing one of these as `// [SSF2-only: NAME] <original>` so it
+  // stays readable without compiling. Every name here still feeds that marker
+  // pass; the "category" field is a triage hint for future converter work and
+  // is not read by the loader:
+  //   handled_elsewhere - a later pass (regex_replacements / call_splits /
+  //                       the attachEffect + playSound rewriters) handles the
+  //                       real case; the entry only catches leftover residue.
+  //   manual_port       - a Fraymakers API/mechanism does the same job, but
+  //                       wiring it up needs a human (shapes/args differ).
+  //   no_equivalent     - no Fraymakers construct we've found does this
+  //                       (whole subsystem absent, or Flash/timeline-only).
+  "ssf2_only": [
+    // ── handled_elsewhere: real case handled by a later pass; this only catches leftover residue ──
+    { "category": "handled_elsewhere", "name": "attachEffect", "note": "regex_replacements rewrites literal-string forms; this catches non-literal/nested cases for manual port" },
+    { "category": "handled_elsewhere", "name": "updateAttackStats", "note": "split into FM updateAnimationStats / updateHitboxStats via call_splits when called with object literal; variable-arg form needs manual rewrite" },
+
+    // ── manual_port: a Fraymakers API/mechanism does the same job, but wiring it up needs a human ──
+    { "category": "manual_port", "name": "forceAttack", "note": "SSF2 buffers a raw attack input (e.g. forceAttack(\"b\",1)); FM has no script input-buffer analog — comment out (was emitted as an undefined self.forceAttack call). Manual port: drive the intended move via self.toState(CState.X)" },
+    { "category": "manual_port", "name": "fireProjectile", "note": "FM uses match.createProjectile(projectileContent, owner) — manual port" },
+    { "category": "manual_port", "name": "getCurrentProjectile", "note": "FM tracks projectiles in script-level vars; use match.getProjectiles() — manual port" },
+    { "category": "manual_port", "name": "swapDepthsWithGrabbedOpponent", "note": "rewrite as self.swapDepths(self.getGrabbedFoe()) — small structural change" },
+    { "category": "manual_port", "name": "unnattachFromGround", "note": "FM uses unattachFromFloor() — close but not identical, manual port" },
+    { "category": "manual_port", "name": "getExecTime", "note": "FM has match.getElapsedFrames() but scope differs (match-wide, not entity)" },
+    { "category": "manual_port", "name": "getNearestLedge", "note": "FM ledge API is action-oriented (attemptLedgeGrab), not query-oriented" },
+    { "category": "manual_port", "name": "getMetalStatus", "note": "SSF2 'Metal Box' powerup — FM uses StatusEffect/BodyStatus instead" },
+    { "category": "manual_port", "name": "inUpperLeftWarningBounds", "note": "SSF2 offscreen-warning bounds; FM exposes OffscreenIndicator but no in/out bounds queries" },
+    { "category": "manual_port", "name": "angleControl", "note": "SSF2Projectile.angleControl(speed, angle) sets X/Y speeds for angular velocity. No single FM call; emulate via Math.calculateXVelocity/YVelocity + setXSpeed/se…" },
+    { "category": "manual_port", "name": "createSelfPlatform", "note": "creates a position-locked platform from x/y/w/h; FM uses match.createSpriteStructure/createStructure (no self-locked helper). Manual port. confidence: high" },
+    { "category": "manual_port", "name": "getAttackBoxStat", "note": "reads a single attack-box stat by id+name; FM getHitboxStats(id) returns the whole HitboxStats object — caller indexes the field. No single-stat getter; manual…" },
+    { "category": "manual_port", "name": "getAttackStat", "note": "reads a single per-attack (non-box) stat; FM getAnimationStat(name) is the closest (per-animation stat) but keys differ. Manual port / map to getAnimationStat.…" },
+    { "category": "manual_port", "name": "getCharacter", "note": "SSF2API.getCharacter(uid) — FM exposes only match.getCharacters() (no single lookup)" },
+    { "category": "manual_port", "name": "getCurrentAttackFrame", "note": "current attack name as string — closest is getAnimation() but semantics differ (attack-frame vs anim); manual" },
+    { "category": "manual_port", "name": "getHealthBox", "note": "returns the health-box MovieClip; FM is not Flash. Closest: TCharacter.getDamageCounterContainer()/getDamageCounterRenderSprite() but not equivalent. Manual. c…" },
+    { "category": "manual_port", "name": "getLinkageID", "note": "returns Flash linkage id string; FM is not Flash — closest is getResource() identity. Manual port. confidence: high" },
+    { "category": "manual_port", "name": "getMidground", "note": "SSF2Stage midground MovieClip (entities layer); FM uses getCharactersContainer()." },
+    { "category": "manual_port", "name": "getNearest", "note": "finds nearest object by type string; FM has no built-in nearest-search — iterate match.getCharacters()/getProjectiles() + Math.getDistance. Manual port. confid…" },
+    { "category": "manual_port", "name": "getPlatformBetweenPoints", "note": "SSF2 platform raycast; FM uses hitTestStructuresWithLineSegment (Entity-level), different shape." },
+    { "category": "manual_port", "name": "getProjectile", "note": "SSF2API.getProjectile(uid) — FM exposes only match.getProjectiles() (no single lookup)" },
+    { "category": "manual_port", "name": "getStanceMC", "note": "returns the current-animation MovieClip; FM not Flash — use playFrameLabel/playLabel for nav (stancePlayFrame already mapped). Manual port. confidence: high" },
+    { "category": "manual_port", "name": "hitTestGroundBetweenPoints", "note": "SSF2 platform raycast; FM uses hitTestStructuresWithLineSegment." },
+    { "category": "manual_port", "name": "homeTowardsTarget", "note": "moves obj toward a target at given speed; FM has no homing helper — implement with Math.getAngleBetween + setKnockback/velocity. Manual port. confidence: high" },
+    { "category": "manual_port", "name": "isEqual", "note": "SSF2BaseAPIObject.isEqual(obj) reference equality (use instead of ==). FM Entity has getUid(); identity is compared directly with == on entity refs in Haxe. No…" },
+    { "category": "manual_port", "name": "setColorFilters", "note": "applies costume-style color settings ignoring team; FM uses setCostumeShader(PaletteSwapShader). Mechanical rename is unsafe (arg is a settings object vs shade…" },
+    { "category": "manual_port", "name": "setHurtInterrupt", "note": "registers a pre-hurt veto callback — no FM hurt-interrupt hook (FM uses validateHit/event listeners); manual port" },
+    { "category": "manual_port", "name": "toFlying", "note": "heavy-knockback 'flying' state — FM tumble/knockback handled by hit system, no toState analog" },
+    { "category": "manual_port", "name": "toIdle", "note": "SSF2Item.toIdle() item state transition; item-system-specific (FM uses toState with CState). ssf2_only." },
+
+    // ── no_equivalent: no Fraymakers construct we've found does this (subsystem absent, or Flash/timeline-only) ──
+    { "category": "no_equivalent", "name": "clearEffectsOnStateChange", "note": "VFX lifecycle is owned by the Vfx instance / event listeners in FM — no global clear" },
+    { "category": "no_equivalent", "name": "jumpToContinue", "note": "SSF2 jump-to-continue loop; no FM equivalent" },
+    { "category": "no_equivalent", "name": "stop", "note": "timeline navigation; no timeline in FM (AudioClip.stop() exists but requires a clip handle)" },
+    { "category": "no_equivalent", "name": "killAttackboxes", "note": "no FM equivalent" },
+    { "category": "no_equivalent", "name": "checkAtkilled", "note": "no FM equivalent" },
+    { "category": "no_equivalent", "name": "pickupItem", "note": "no FM item system (FM has Assists)" },
+    { "category": "no_equivalent", "name": "tossItem", "note": "no FM item system" },
+    { "category": "no_equivalent", "name": "getItem", "note": "no FM item system" },
+    { "category": "no_equivalent", "name": "getMC", "note": "AS3 MovieClip access — FM is not Flash" },
+    { "category": "no_equivalent", "name": "getCPULevel", "note": "no public 'getCPULevel' in FM — AI is in CharacterAiScript" },
+    { "category": "no_equivalent", "name": "isCPU", "note": "no public isCPU getter in FM (port-colour internally branches on it)" },
+    { "category": "no_equivalent", "name": "isForcedCrash", "note": "no FM equivalent" },
+    { "category": "no_equivalent", "name": "stopSound", "note": "FM AudioClip.stop() needs the AudioClip handle returned by AudioClip.play() — manual port required" },
+    { "category": "no_equivalent", "name": "stopSFX", "note": "same as stopSound — needs an AudioClip handle from the matching play() call" },
+    { "category": "no_equivalent", "name": "stopHoldSound", "note": "same as stopSound — needs an AudioClip handle from the matching play() call" },
+    { "category": "no_equivalent", "name": "stopListening", "note": "TODO: maps to removeEventListener(type, listener) in FM but signature differs — verify per-callsite" },
+    { "category": "no_equivalent", "name": "addIgnoreObject", "note": "SSF2Platform.addIgnoreObject(obj) disables collision vs a specific object. FM Structure collision model differs (no per-object ignore list call in index). ssf2…" },
+    { "category": "no_equivalent", "name": "calculateKnockback", "note": "SSF2 knockback formula; no FM public formula API." },
+    { "category": "no_equivalent", "name": "endControl", "note": "SSF2Projectile.endControl() removes player directional control stats. FM has no controlDirection/influence sta…" },
+    { "category": "no_equivalent", "name": "exportStats", "note": "SSF2Projectile.exportStats() returns spawn-time stat snapshot Object; no FM equivalent (FM getProjectileStat is live). ssf2_only." },
+    { "category": "no_equivalent", "name": "generateItem", "note": "spawn engine/custom item — no FM item system" },
+    { "category": "no_equivalent", "name": "getCPUAction", "note": "CPU state query (CPUState enum) — no FM equivalent (CharacterAiScript)" },
+    { "category": "no_equivalent", "name": "getCPUForcedAction", "note": "training-mode forced CPU state — no FM equivalent" },
+    { "category": "no_equivalent", "name": "getCPUTarget", "note": "CPU target character — no FM AI query API" },
+    { "category": "no_equivalent", "name": "getCurrentKirbyPower", "note": "Kirby copy-ability accessor — Kirby-hat mechanic, no FM analog" },
+    { "category": "no_equivalent", "name": "getCurrentMusicInfo", "note": "SSF2 music-state object; no FM analog." },
+    { "category": "no_equivalent", "name": "getHUDBackgroundMC", "note": "SSF2Stage HUD layer MovieClip; no FM analog." },
+    { "category": "no_equivalent", "name": "getHUDForegroundMC", "note": "SSF2Stage HUD layer MovieClip; no FM analog." },
+    { "category": "no_equivalent", "name": "getHitBox", "note": "returns raw rectangle/transform data for a named hitbox of the current frame; FM getCollisionBoxes(boxType) returns CollisionBox[] but is type-indexed, not nam…" },
+    { "category": "no_equivalent", "name": "getItemStat", "note": "SSF2Item.getItemStat(name); FM has no item system. ssf2_only." },
+    { "category": "no_equivalent", "name": "getItems", "note": "No FM item system." },
+    { "category": "no_equivalent", "name": "getKirbyHatMC", "note": "Kirby hat MovieClip — Kirby mechanic + no MovieClip in FM" },
+    { "category": "no_equivalent", "name": "getLedges", "note": "SSF2Stage ledge MovieClip list; FM ledges are part of Structure system, no list API." },
+    { "category": "no_equivalent", "name": "getMCByLinkageName", "note": "AS3 SWF linkage lookup; FM is not Flash." },
+    { "category": "no_equivalent", "name": "getNearestPath", "note": "A*-style nearest path via SSF2Beacons; no FM navigation graph. Manual port. confidence: high" },
+    { "category": "no_equivalent", "name": "getQualitySettings", "note": "SSF2 per-quality settings object; FM has no quality-settings query." },
+    { "category": "no_equivalent", "name": "getStandby", "note": "training stand-by state — no FM training-mode standby" },
+    { "category": "no_equivalent", "name": "hitTestGround", "note": "SSF2 platform point test; no direct FM Match-level analog (Entity collision APIs differ)." },
+    { "category": "no_equivalent", "name": "importCPUControls", "note": "hard-coded CPU input array — no FM analog" },
+    { "category": "no_equivalent", "name": "inLowerLeftWarningBounds", "note": "offscreen warning-bounds query; FM OffscreenIndicator has no in/out bounds query (already noted for the Upper variant). Manual port. confidence: high" },
+    { "category": "no_equivalent", "name": "inLowerRightWarningBounds", "note": "offscreen warning-bounds query; no FM equivalent. Manual port. confidence: high" },
+    { "category": "no_equivalent", "name": "inUpperRightWarningBounds", "note": "offscreen warning-bounds query; no FM equivalent. Manual port. confidence: high" },
+    { "category": "no_equivalent", "name": "isReversed", "note": "SSF2Projectile/Item.isReversed() -> true if reflected. FM has GameObjectEvent.REFLECTED listener but no boolean isReversed query in the index. ssf2_only." },
+    { "category": "no_equivalent", "name": "isStandby", "note": "training stand-by query — no FM analog" },
+    { "category": "no_equivalent", "name": "isUsingFinalSmash", "note": "Final Smash state query — no FM Final Smash" },
+    { "category": "no_equivalent", "name": "isZDropped", "note": "SSF2Item.isZDropped(); item-specific, no FM analog. ssf2_only." },
+    { "category": "no_equivalent", "name": "killDarkener", "note": "SSF2Camera companion of darken(); no FM analog." },
+    { "category": "no_equivalent", "name": "removeItem", "note": "destroy held item — no FM item system" },
+    { "category": "no_equivalent", "name": "removeSelfPlatform", "note": "frees the createSelfPlatform structure; in FM kill() the created Structure. Manual port (no direct API). confidence: high" },
+    { "category": "no_equivalent", "name": "replacePalette", "note": "SSF2Utils helper (color/MovieClip/timeline) with no FM equivalent — manual port" },
+    { "category": "no_equivalent", "name": "resetCPUControls", "note": "clears imported CPU controls — no FM analog" },
+    { "category": "no_equivalent", "name": "setAttackEnabled", "note": "per-attack enable + reenable timer — no FM per-attack-enable API" },
+    { "category": "no_equivalent", "name": "setCPUAttackQueue", "note": "CPU attack-queue string — no FM analog" },
+    { "category": "no_equivalent", "name": "setFinalSmashMeterCharge", "note": "Final Smash meter setter — no FM Final Smash" },
+    { "category": "no_equivalent", "name": "setLastUsed", "note": "set frames-since-attack-used — no FM analog" },
+    { "category": "no_equivalent", "name": "shootOutOpponent", "note": "Kirby inhale spit-out — Kirby mechanic, no FM analog" },
+    { "category": "no_equivalent", "name": "spawnEnemy", "note": "SSF2 Enemy spawn; no FM Enemy type." },
+    { "category": "no_equivalent", "name": "toCrashLand", "note": "crash-land state — SSF2 crash mechanic, no FM CState analog" },
+    { "category": "no_equivalent", "name": "toToss", "note": "item-toss state — no FM item system" },
+    { "category": "no_equivalent", "name": "updateEnemyStats", "note": "SSF2Enemy.updateEnemyStats(obj); no FM enemy system. ssf2_only." },
+    { "category": "no_equivalent", "name": "updateItemStats", "note": "SSF2Item.updateItemStats(obj); no FM item system. ssf2_only." },
+  ]
+
+  // Script.hx Haxe templates now live in the per-entity TOML files:
+  //   global_helpers.toml · character_helpers.toml · projectile_helpers.toml
+  //   (stage_helpers.toml / item_helpers.toml are TODO placeholders).
+  // See crate::mappings::script_templates().
+}
