@@ -235,6 +235,51 @@ fn strip_trailing_return(body: &str) -> String {
     body.to_string()
 }
 
+/// Remove a top-level (brace-depth 0) bare `return;` that is followed by more
+/// statements in a frame script. hscript compiles a frame script as a statement
+/// sequence, where code AFTER a `return` is unreachable and rejected at parse
+/// time ("Unexpected token return"). The decompiler occasionally emits a spurious
+/// unconditional `return;` mid-body (control-flow it couldn't structure), leaving
+/// the real logic dead after it. Dropping the bare return keeps that logic — a
+/// conditional early-exit (`if (c) { return; }`) is inside a block (depth > 0) and
+/// is left untouched. Comment-only / blank tails don't count as "more statements".
+fn strip_unreachable_returns(body: &str) -> String {
+    if !body.contains("return;") {
+        return body.to_string();
+    }
+    fn strip_comments(line: &str) -> String {
+        let b = line.as_bytes();
+        let mut s = String::new();
+        let mut i = 0;
+        while i < b.len() {
+            if i + 1 < b.len() && b[i] == b'/' && b[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') { i += 1; }
+                i += 2;
+                continue;
+            }
+            if i + 1 < b.len() && b[i] == b'/' && b[i + 1] == b'/' { break; }
+            s.push(b[i] as char);
+            i += 1;
+        }
+        s.trim().to_string()
+    }
+    let lines: Vec<&str> = body.lines().collect();
+    let last_code = lines.iter().rposition(|l| !strip_comments(l).is_empty());
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut depth = 0i32;
+    for (idx, line) in lines.iter().enumerate() {
+        let code = strip_comments(line);
+        let is_bare_return_depth0 = depth == 0 && code == "return;";
+        depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
+        if is_bare_return_depth0 && last_code.is_some_and(|lc| idx < lc) {
+            continue;
+        }
+        out.push(line);
+    }
+    out.join("\n")
+}
+
 /// Frame-doubling holds every keyframe for two frames, which also stretches each 1-frame
 /// SCRIPT keyframe to two — making the script's frame span ambiguous. A frame script must
 /// fire on exactly ONE frame, so after doubling we split every non-blank FRAME_SCRIPT
@@ -475,6 +520,11 @@ pub fn generate_entity(
                                     // is a statement block, not a function, so the final
                                     // `return;` (from the SSF2 returnvoid) is noise.
                                     let body = strip_trailing_return(&body);
+                                    // Also drop a spurious mid-body `return;` that
+                                    // leaves real code unreachable (a frame script is
+                                    // a statement sequence; code after `return` is a
+                                    // parse error). See strip_unreachable_returns.
+                                    let body = strip_unreachable_returns(&body);
                                     frame_code.insert(local_frame, body);
                                 }
                             }
@@ -507,6 +557,9 @@ pub fn generate_entity(
                             let e = frame_code.entry(last).or_default();
                             *e = if e.trim().is_empty() { moved }
                                  else { format!("{}\n{}", moved, e.trim_start()) };
+                            // The merge can append code after a `return;` that was
+                            // trailing in `moved` — re-strip so the joined script parses.
+                            *e = strip_unreachable_returns(e);
                         }
                     }
                 }
@@ -2399,7 +2452,31 @@ pub fn generate_effect_entity(
 
 #[cfg(test)]
 mod extract_body_tests {
-    use super::extract_function_body;
+    use super::{extract_function_body, strip_unreachable_returns};
+
+    #[test]
+    fn spurious_mid_return_dropped_keeps_following_code() {
+        // special_up frame 79 shape: a depth-0 `return;` before the real logic.
+        let body = "AudioClip.play(\"a\");\nreturn;\nif (x) {\n\tplayVoiceSound(1);\n}\nplayAttackSound(1);";
+        let out = strip_unreachable_returns(body);
+        assert!(!out.lines().any(|l| l.trim() == "return;"), "mid return not dropped: {out}");
+        assert!(out.contains("playAttackSound(1);"), "following code lost: {out}");
+    }
+
+    #[test]
+    fn conditional_return_in_block_is_kept() {
+        // A real early-exit inside an if (depth > 0) must NOT be stripped.
+        let body = "if (x) {\n\treturn;\n}\ndoThing();";
+        let out = strip_unreachable_returns(body);
+        assert!(out.contains("return;"), "conditional return wrongly stripped: {out}");
+    }
+
+    #[test]
+    fn trailing_only_return_left_for_trailing_pass() {
+        // Last-statement return has no code after — not our job (strip_trailing_return handles it).
+        let body = "doThing();\nreturn;";
+        assert_eq!(strip_unreachable_returns(body), body);
+    }
 
     // helper: depth never goes negative and ends at zero (comment/string-naive is fine here)
     fn structurally_valid(s: &str) -> bool {
