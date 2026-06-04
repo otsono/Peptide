@@ -173,7 +173,7 @@
     // State transitions
     { "from": ".toLand()", "to": ".toState(CState.LAND)" },
     { "from": ".toHelpless()", "to": ".toState(CState.FALL_SPECIAL)" },
-    { "from": ".toHeavyLand()", "to": ".toState(CState.LAND) //TODO: create land_heavy anim & change to toState(CState.LAND, \"land_heavy\")" },
+    { "from": ".toHeavyLand()", "to": ".toState(CState.LAND) /*TODO: create land_heavy anim & change to toState(CState.LAND, \"land_heavy\")*/" },
 
     // SSF2 resetJumps() regains midair jumps by zeroing the used-jump counter.
     // FM's faithful equivalent is Character.setDoubleJumpCount(0) (FM "double jump"
