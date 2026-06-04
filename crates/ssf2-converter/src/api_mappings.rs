@@ -586,9 +586,14 @@ pub fn generate_sound_helpers(
 pub fn rewrite_fire_projectile_calls(code: &str) -> String {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| {
+        // Consume the WHOLE dotted/method receiver chain before fireProjectile
+        // (`self.`, `self.getOwner().`, …) so the block replaces the entire
+        // `<receiver>.fireProjectile(...)` call. Leaving a dangling `receiver.`
+        // before the emitted `{ … }` produces invalid `receiver.{ … }`. The
+        // block always creates the projectile on `match` with `self` as owner.
         // Each arg may contain ONE level of parens (a method call like self.getXSpeed()).
         regex::Regex::new(
-            r#"(?:self\.)?fireProjectile\(\s*"([^"]+)"\s*(?:,\s*((?:[^,()]|\([^()]*\))+?)\s*)?(?:,\s*((?:[^,()]|\([^()]*\))+?)\s*)?\)"#,
+            r#"(?:[A-Za-z_]\w*(?:\([^()]*\))?\.)*fireProjectile\(\s*"([^"]+)"\s*(?:,\s*((?:[^,()]|\([^()]*\))+?)\s*)?(?:,\s*((?:[^,()]|\([^()]*\))+?)\s*)?\)"#,
         )
         .expect("fireProjectile regex")
     });
@@ -603,7 +608,7 @@ pub fn rewrite_fire_projectile_calls(code: &str) -> String {
         };
         format!(
             "{{ var _proj = match.createProjectile(self.getResource().getContent(\"{}\"), self); \
-_proj.setX(self.getX() + self.flipX({})); _proj.setY(self.getY() + ({})); }}",
+_proj.setX(self.getX() + self.flipX({})); _proj.setY(self.getY() + ({})); _proj; }}",
             content_id,
             off(2),
             off(3),
@@ -2411,6 +2416,15 @@ mod tests {
             "expr y-offset not carried: {expr}");
         assert!(!expr.contains("[SSF2-only: fireProjectile]"),
             "expr-arg fireProjectile left commented: {expr}");
+        // A non-`self` receiver chain (zelda: self.getOwner().fireProjectile) must be
+        // consumed WHOLE — otherwise the dangling `receiver.` glues onto the emitted
+        // block as `receiver.{ … }`, which is invalid Haxe.
+        let owner = translate_ssf2_to_fm(
+            "proj = self.getOwner().fireProjectile(\"cameraPanProjectile\", 0, 0);\n");
+        assert!(owner.contains("match.createProjectile"), "owner-receiver not rewritten: {owner}");
+        assert!(!owner.contains(".{"), "dangling receiver produced .{{: {owner}");
+        assert!(owner.trim_end().ends_with("_proj; };") || owner.contains("_proj; }"),
+            "block doesn't return _proj (wrong value in assignment position): {owner}");
     }
 
     #[test]
