@@ -281,7 +281,8 @@
     // compile errors so the modder fixes per-site): aura, burn, shock,
     // paralysis, pitfall (would need FM `element` enum), camShake,
     // chargedPriority, hasEffect, ignoreChargeDamage, meteorBounce,
-    // onlyAffectsGround, priority, sdiDistance, shieldDamage, stackKnockback.
+    // onlyAffectsGround, sdiDistance, shieldDamage, stackKnockback.
+    // (`priority` was confirmed unnecessary and is DROPPED in regex_replacements.)
   ],
 
   // regex_replacements: regex-based renames applied AFTER the literal
@@ -291,6 +292,20 @@
   // `$1`, `${name}`, `$$` for a literal `$`. Bad patterns warn once and are
   // skipped.
   "regex_replacements": [
+    // SSF2 hitbox `priority:` has NO Fraymakers equivalent (confirmed unnecessary
+    // for porting) — drop the key from updateHitboxStats / new HitboxStats({…})
+    // object literals so the engine doesn't reject it ("Invalid hitbox stat:
+    // priority"). Two passes: comma-prefixed (middle/last key) then first-key.
+    {
+      "pattern": ",\\s*priority\\s*:\\s*[^,}]+",
+      "replacement": "",
+      "note": "drop SSF2 hitbox priority (no FM equivalent) — comma-prefixed"
+    },
+    {
+      "pattern": "priority\\s*:\\s*[^,}]+\\s*,\\s*",
+      "replacement": "",
+      "note": "drop SSF2 hitbox priority (no FM equivalent) — first key"
+    },
     // SSF2 get/setGlobalVariable("name") → Fraymakers persistent-state wrappers.
     // The `self.` prefix (if present) is dropped; the wrapper var is declared by
     // the extractor's global-var pass. set: the trailing `, ` becomes `(` of .set(,
