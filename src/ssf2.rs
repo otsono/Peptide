@@ -289,8 +289,8 @@ fn cmd_install(args: &[String]) -> Result<PathBuf> {
 /// already be listening. On macOS the copy is resigned so Gatekeeper accepts it.
 ///
 /// `fastboot = Some((char, stage))` produces a HEADLESS quick-boot patch: it rewrites
-/// `MenuController.showInitialMenu` to skip the disclaimer (and the whole menu chain) and
-/// instead queue that character + stage for loading, so the boot loads straight toward the
+/// the boot's initial-menu entry point to skip the disclaimer (and the whole menu chain)
+/// and instead queue that character + stage for loading, so the boot loads straight toward the
 /// match (see `inject_quickboot`). `None` is a normal boot — the disclaimer plays and fires
 /// the event-driven READY (`inject_ready_signal`).
 pub fn install_patched(port: u16, fastboot: Option<(&str, &str)>) -> Result<PathBuf> {

@@ -8,8 +8,8 @@
 //! engine's reflection verbs (`GC`/`GET`/`IDX`/`CALL`/`CALL1`/`SETP`/`READ`),
 //! mapping the Fraymakers debug vocabulary (`match`, `p0`, `.body.x`,
 //! `.physics.currentVelocityX`, `getCharacter(i)`, `getStateName()`) onto SSF2's
-//! object graph (`GameController.stageData.Characters[i]`, `.X/.Y/.XSpeed/.YSpeed`,
-//! `.State`).
+//! live match object graph (the per-player character nodes and their
+//! `.X/.Y/.XSpeed/.YSpeed`, `.State`).
 
 use anyhow::{anyhow, Result};
 use std::time::Duration;
