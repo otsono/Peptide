@@ -176,6 +176,14 @@ pub struct ImageExtractionResult {
     /// computed as (-fill_tx / (fill_a/20), -fill_ty / (fill_d/20)).
     /// Only populated for shapes with a non-trivial fill offset.
     pub shape_pivot: BTreeMap<u16, (f64, f64)>,
+    /// shape_id → (fill_scale_x, fill_scale_y), the bitmap-fill matrix scale
+    /// (signed; negative = flip). SSF2 references a high-res bitmap through a
+    /// DefineShape whose fill matrix scales it (often WAY down, e.g. a shared
+    /// magic-particle bitmap displayed at 0.08×). The PNG is extracted at native
+    /// resolution, so this scale MUST multiply into the IMAGE symbol's scale or
+    /// the sprite renders 1/fill_scale too big. Absent → 1.0 (vector shapes, or
+    /// bitmaps placed 1:1). See entity_gen IMAGE placement.
+    pub shape_fill_scale: BTreeMap<u16, (f64, f64)>,
     /// fm_anim_name → per-frame image references
     pub anim_images: BTreeMap<String, AnimFrameImages>,
 }
@@ -223,6 +231,7 @@ pub fn extract_images_from_swf(
     //    pivot_x = -fill_tx / (fill_a / 20),  pivot_y = -fill_ty / (fill_d / 20)
     let mut shape_to_bitmap: ShapeToBitmapMap = BTreeMap::new();
     let mut shape_pivot: BTreeMap<u16, (f64, f64)> = BTreeMap::new();
+    let mut shape_fill_scale: BTreeMap<u16, (f64, f64)> = BTreeMap::new();
     for tag in &swf.tags {
         if let swf::Tag::DefineShape(shape) = tag {
             // Look for bitmap fill in fill styles.
@@ -240,6 +249,9 @@ pub fn extract_images_from_swf(
                         let scale_x = fa / 20.0;
                         let scale_y = fd / 20.0;
                         if scale_x.abs() > 0.001 && scale_y.abs() > 0.001 {
+                            // Store the fill scale so the IMAGE placement can fold it in
+                            // (the PNG is at native res; this is how much SSF2 shrinks it).
+                            shape_fill_scale.insert(shape.id, (scale_x, scale_y));
                             // fill matrix: shape_pt = fill_matrix * bitmap_pt
                             // So: bitmap_pt = inv(fill_matrix) * shape_pt
                             // For shape (0,0): bitmap_pt = (-tx/a, -ty/d) in pixel space
@@ -432,6 +444,7 @@ pub fn extract_images_from_swf(
         images,
         shape_to_bitmap,
         shape_pivot,
+        shape_fill_scale,
         anim_images,
     })
 }

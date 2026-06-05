@@ -1056,8 +1056,22 @@ pub fn generate_entity(
                             // Preserve sign: negative scaleX/scaleY = flip, which FrayTools supports.
                             // stand_turn has no SSF2 sprite — it's the idle pose mirrored
                             // horizontally in place, so negate scaleX for it.
-                            let fm_sx = round2(world_sx) * if anim_name == "stand_turn" { -1.0 } else { 1.0 };
-                            let fm_sy = round2(world_sy);
+                            // Fold the shape's bitmap-FILL scale into the placement.
+                            // SSF2 references a high-res bitmap through a DefineShape whose
+                            // fill matrix scales it (often far down). The PNG is at native
+                            // res, so without this the sprite renders 1/fill too big (e.g.
+                            // zelda's shared magic particle at fill 0.078 → ~13× oversized,
+                            // the screen-filling nair effect). M_place·M_fill composes to
+                            // scale (world_sx·fsx, world_sy·fsy) with the same rotation, and
+                            // the stored shape_pivot (= fill_tx / fsx) × fsx recovers the
+                            // true fill translation in pixels. Absent fill (vector shapes,
+                            // 1:1 bitmaps) → (1,1), so body sprites are untouched.
+                            let (fsx, fsy) = shape_id
+                                .and_then(|sid| img_result.shape_fill_scale.get(&sid))
+                                .copied()
+                                .unwrap_or((1.0, 1.0));
+                            let fm_sx = round2(world_sx * fsx) * if anim_name == "stand_turn" { -1.0 } else { 1.0 };
+                            let fm_sy = round2(world_sy * fsy);
 
                             // World-space matrix components
                             let wa = entry.map(|e| e.world_a).unwrap_or(1.0);
@@ -1069,6 +1083,7 @@ pub fn generate_entity(
                                 .and_then(|sid| img_result.shape_pivot.get(&sid))
                                 .copied()
                                 .unwrap_or((0.0, 0.0));
+                            let (off_x, off_y) = (off_x * fsx, off_y * fsy);
                             let mut fm_x = round2(world_tx + wa * off_x + wc * off_y);
                             let fm_y = round2(world_ty + wb * off_x + wd * off_y);
                             // stand_turn mirrors the idle pose IN PLACE about the character's
