@@ -215,6 +215,48 @@ fn reorder_animations(animations: &mut Vec<Value>, layers: &mut Vec<Value>, keyf
     *animations = out;
 }
 
+/// Append every character-template animation that did NOT make it into the entity
+/// (never converted, or dropped as empty) as an empty stub, grouped at the very
+/// bottom under a blank "====MISSING ANIMATIONS====" separator. This surfaces the
+/// gaps for the modder (e.g. tumble, the extra jabs, parry, the special-down loop)
+/// with the same empty template shape they have in the official character template,
+/// instead of silently omitting them. Call AFTER drop + reorder so the stubs are
+/// neither dropped nor sorted back into the main list.
+fn append_missing_template_animations(
+    animations: &mut Vec<Value>, layers: &mut Vec<Value>, keyframes: &mut Vec<Value>, char_id: &str,
+) {
+    let present: std::collections::BTreeSet<String> = animations.iter()
+        .filter_map(|a| a.get("name").and_then(Value::as_str).map(String::from))
+        .collect();
+    let missing: Vec<String> = crate::mappings::character_animation_template().iter()
+        .map(|e| e.name.clone())
+        .filter(|n| !present.contains(n))
+        .collect();
+    if missing.is_empty() { return; }
+
+    // Blank separator animation (a single empty frame-script layer, like the UNUSED one).
+    let sep_kf = uuid(char_id, "kf_missing_separator");
+    let sep_layer = uuid(char_id, "layer_missing_separator");
+    keyframes.push(json!({ "$id": sep_kf, "type": "FRAME_SCRIPT", "length": 1, "code": "", "pluginMetadata": {} }));
+    layers.push(json!({ "$id": sep_layer, "name": "Scripts", "type": "FRAME_SCRIPT",
+        "keyframes": [sep_kf], "hidden": false, "locked": false, "language": "", "pluginMetadata": {} }));
+    animations.push(json!({ "$id": uuid(char_id, "anim_missing_separator"),
+        "name": "====MISSING ANIMATIONS====", "layers": [sep_layer], "pluginMetadata": {} }));
+
+    for name in &missing {
+        let kf_id = uuid(char_id, &format!("kf_missing_{}", name));
+        let layer_id = uuid(char_id, &format!("layer_missing_{}", name));
+        keyframes.push(json!({ "$id": kf_id, "type": "IMAGE", "length": 1, "symbol": Value::Null,
+            "tweened": false, "tweenType": "LINEAR", "pluginMetadata": {} }));
+        layers.push(json!({ "$id": layer_id, "name": "Image 0", "type": "IMAGE",
+            "keyframes": [kf_id], "hidden": false, "locked": false, "pluginMetadata": {} }));
+        animations.push(json!({ "$id": uuid(char_id, &format!("anim_missing_{}", name)),
+            "name": name, "layers": [layer_id], "pluginMetadata": {} }));
+    }
+    log::info!("Added {} missing template animation stub(s) under ====MISSING ANIMATIONS====: {}",
+        missing.len(), missing.join(", "));
+}
+
 fn double_keyframe_lengths(keyframes: &mut [Value]) {
     for kf in keyframes {
         if let Some(len) = kf.get("length").and_then(Value::as_u64) {
@@ -1275,6 +1317,7 @@ pub fn generate_entity(
     // Order template animations per the character template; relegate everything that is
     // neither a template animation nor a direct variant of one to an UNUSED section.
     reorder_animations(&mut animations, &mut layers, &mut keyframes, char_id);
+    append_missing_template_animations(&mut animations, &mut layers, &mut keyframes, char_id);
 
     let entity = json!({
         "animations": animations,
