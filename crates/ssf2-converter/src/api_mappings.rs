@@ -1528,24 +1528,38 @@ fn find_receiver_start(code: &str, dot_pos: usize) -> usize {
 /// string strip of `.addEffectToList(` would leave that `)` (and `, owner`) dangling,
 /// which is a parse error the engine swallows silently. #13.
 fn rewrite_add_effect_to_list(code: &str) -> String {
-    const NEEDLE: &str = ".addEffectToList(";
+    // Match the call name with OR without a receiver: `recv.addEffectToList(` and a
+    // bare `addEffectToList(` (the latter appears when SSF2's receiver was stripped
+    // upstream) both leave a dangling `)` + owner arg if not unwrapped.
+    const NEEDLE: &str = "addEffectToList(";
     let mut out = String::with_capacity(code.len());
     let mut cursor = 0;
     while let Some(rel) = code[cursor..].find(NEEDLE) {
-        let dot_pos = cursor + rel;
-        let paren_open = dot_pos + NEEDLE.len() - 1; // index of '('
+        let name_start = cursor + rel;
+        let prev = code[..name_start].chars().last();
+        // Skip if it's part of a longer identifier (e.g. removeAddEffectToList).
+        if prev.map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) {
+            out.push_str(&code[cursor..name_start + NEEDLE.len()]);
+            cursor = name_start + NEEDLE.len();
+            continue;
+        }
+        let paren_open = name_start + NEEDLE.len() - 1; // index of '('
         let close = match find_matching_close(code, paren_open) {
             Some(c) => c,
             None => {
-                // unterminated call — leave the site untouched and move past the dot
-                out.push_str(&code[cursor..=dot_pos]);
-                cursor = dot_pos + 1;
+                out.push_str(&code[cursor..=name_start]);
+                cursor = name_start + 1;
                 continue;
             }
         };
-        let recv_start = find_receiver_start(code, dot_pos);
+        // With a `.`, drop the whole receiver chain; a bare call keeps text up to the name.
+        let cut_start = if prev == Some('.') {
+            find_receiver_start(code, name_start - 1)
+        } else {
+            name_start
+        };
         let arg1 = first_top_level_arg(&code[paren_open + 1..close]).trim();
-        out.push_str(&code[cursor..recv_start]);
+        out.push_str(&code[cursor..cut_start]);
         out.push_str("/* addEffectToList */ ");
         out.push_str(arg1);
         cursor = close + 1;
@@ -1675,6 +1689,18 @@ fn find_matching_close(code: &str, open_pos: usize) -> Option<usize> {
             if c == b'\\' { i += 2; continue; }
             if c == q { in_str = None; }
         } else {
+            // Skip comments — a `'`/`(`/`)` inside them is text, not code (e.g. an
+            // inserted `/* TODO: …don't… */` would otherwise open a phantom string).
+            if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') { i += 1; }
+                i += 2;
+                continue;
+            }
+            if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
+                continue;
+            }
             match c {
                 b'"' | b'\'' => in_str = Some(c),
                 b'(' | b'{' | b'[' => depth += 1,
@@ -2577,6 +2603,17 @@ mod tests {
         );
         // balanced parens after the rewrite
         assert_eq!(out.matches('(').count(), out.matches(')').count());
+    }
+
+    #[test]
+    fn rewrite_add_effect_to_list_bare_call_unwrapped() {
+        // No receiver (the SSF2 receiver was stripped upstream) — must still unwrap so
+        // the wrapper's `)` + owner arg don't dangle (marth/pichu finalsmash).
+        let code = "\taddEffectToList(match.createVfx(new VfxStats({ x: 1 }), self), self);";
+        let out = rewrite_add_effect_to_list(code);
+        assert!(out.contains("match.createVfx(new VfxStats({ x: 1 }), self)"), "effect lost: {out}");
+        assert!(!out.contains("addEffectToList("), "wrapper not removed: {out}");
+        assert_eq!(out.matches('(').count(), out.matches(')').count(), "unbalanced: {out}");
     }
 
     #[test]

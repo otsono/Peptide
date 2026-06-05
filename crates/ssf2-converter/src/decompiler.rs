@@ -157,7 +157,12 @@ impl Expr {
                 if *v == v.round() && v.abs() < 1_000_000.0 { format!("{}", *v as i64) }
                 else { format!("{:.4}", v).trim_end_matches('0').trim_end_matches('.').to_string() }
             }
-            Expr::Str(s)    => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+            // Escape control chars too: a string carrying a literal newline/tab would
+            // otherwise break across source lines (a Haxe string can't span lines), e.g.
+            // `Engine.log("a:\nb:")` decompiled with a raw newline → unparseable.
+            Expr::Str(s) => format!("\"{}\"", s
+                .replace('\\', "\\\\").replace('"', "\\\"")
+                .replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t")),
             Expr::Bool(b)   => b.to_string(),
             Expr::Null      => "null".to_string(),
             Expr::This      => "self".to_string(),
