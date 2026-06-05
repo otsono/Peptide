@@ -659,8 +659,9 @@ pub fn generate_entity(
             let mut per_frame: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(frame_count as usize);
             {
                 let box_data = sprite_boxes.get(source_anim.as_str());
-                let mut last = default_body;
-                for f in 0..frame_count {
+                // Per-frame body from the frame's HURTBOX union, or None when the
+                // frame has NO hurtboxes at all.
+                let raw: Vec<Option<(f64, f64, f64, f64)>> = (0..frame_count).map(|f| {
                     let src_f = src_frame(f);
                     let mut aabb: Option<(f64, f64, f64, f64)> = None; // left,right,top,bottom
                     if let Some(boxes) = box_data.and_then(|bd| bd.frames.get(&src_f)) {
@@ -673,17 +674,23 @@ pub fn generate_entity(
                             });
                         }
                     }
-                    let body = match aabb {
-                        Some((l, r, t, btm)) => (
-                            round2(-btm),          // foot  = up-height of the bottom edge
-                            round2(-t),            // head  = up-height of the top edge
-                            round2(r - l),         // hipWidth = box width
-                            round2((l + r) / 2.0), // hipXOffset = box centre x
-                        ),
-                        None => last, // no hurtboxes this frame — hold the last body
-                    };
-                    last = body;
-                    per_frame.push(body);
+                    aabb.map(|(l, r, t, btm)| (
+                        round2(-btm),          // foot  = up-height of the bottom edge
+                        round2(-t),            // head  = up-height of the top edge
+                        round2(r - l),         // hipWidth = box width
+                        round2((l + r) / 2.0), // hipXOffset = box centre x
+                    ))
+                }).collect();
+                // A frame with NO hurtboxes keeps the ECB exactly as it was — hold the
+                // previous body so the RLE below emits NO new keyframe for it (the ECB
+                // persists until the next hurtbox frame). Leading no-hurtbox frames
+                // backfill from the first real body, so the ECB never shows a default
+                // diamond mid-animation. All-empty animation → default.
+                let first_real = raw.iter().flatten().next().copied();
+                let mut last = first_real.unwrap_or(default_body);
+                for b in &raw {
+                    if let Some(bb) = b { last = *bb; }
+                    per_frame.push(last);
                 }
             }
 
@@ -988,12 +995,31 @@ pub fn generate_entity(
                 if let Some(anim_imgs) = img_result.anim_images.get(source_anim.as_str()) {
                     let total = frame_count;
 
+                    // Per-frame entry for this slot, HOLDING the last sprite across
+                    // INTERIOR gaps. A source frame with no entry in this slot would
+                    // otherwise emit a null keyframe and the sprite vanishes mid-anim
+                    // (e.g. zelda disappearing for 24 frames of fall_loop). Hold the
+                    // previous sprite until the slot's next real frame; TRAILING gaps
+                    // (no later sprite in this slot) stay empty so a sprite that
+                    // genuinely ends still ends.
+                    let raw: Vec<Option<&crate::image_extractor::FrameImageEntry>> = (0..total)
+                        .map(|f| anim_imgs.frames.get(&src_frame(f)).and_then(|v| v.get(slot)))
+                        .collect();
+                    let last_real = raw.iter().rposition(|e| e.is_some());
+                    let mut held: Vec<Option<crate::image_extractor::FrameImageEntry>> =
+                        Vec::with_capacity(total as usize);
+                    let mut carry: Option<crate::image_extractor::FrameImageEntry> = None;
+                    for (f, e) in raw.iter().enumerate() {
+                        match e {
+                            Some(ent) => { carry = Some((*ent).clone()); held.push(Some((*ent).clone())); }
+                            None if last_real.is_some_and(|lr| f < lr) => held.push(carry.clone()),
+                            None => held.push(None),
+                        }
+                    }
+
                     let mut f: u32 = 0;
                     while f < total {
-                        // Map the logical frame to its source frame (handles wrapped head frames).
-                        let src_f = src_frame(f) as u32;
-                        let entry = anim_imgs.frames.get(&(src_f as u16))
-                            .and_then(|v| v.get(slot));
+                        let entry = held[f as usize].as_ref();
 
                         // Key for run-length: same symbol AND same world transform
                         let sym_name = entry.map(|e| e.symbol_name.as_str());
@@ -1007,8 +1033,7 @@ pub fn generate_entity(
                         // Run-length encode consecutive frames with identical symbol + world transform
                         let mut run = 1u32;
                         while f + run < total {
-                            let next = anim_imgs.frames.get(&src_frame(f + run))
-                                .and_then(|v| v.get(slot));
+                            let next = held[(f + run) as usize].as_ref();
                             let matches = next.map(|e| e.symbol_name.as_str()) == sym_name
                                 && next.map(|e| round2(e.world_tx))       == Some(world_tx).filter(|_| sym_name.is_some())
                                 && next.map(|e| round2(e.world_ty))       == Some(world_ty).filter(|_| sym_name.is_some())
