@@ -579,7 +579,7 @@ fn process_character(
             log::warn!("extract_xframe_scale failed: {}, defaulting to 1.0", e);
             (1.0, 1.0)
         });
-    let size_mult = mappings::character_stats().size_multiplier;
+    let size_mult = mappings::character_stats().scaling.size_multiplier;
     char_data.stats.base_scale_x = base_scale_x * size_mult;
     char_data.stats.base_scale_y = base_scale_y * size_mult;
     log::info!("Character base scale: scaleX={:.4}, scaleY={:.4} (raw {:.4}/{:.4} × {} size multiplier)",
