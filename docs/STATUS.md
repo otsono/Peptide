@@ -115,6 +115,14 @@ dimensions below are the rest.
       unconfirmed FM enum, so per-site, not a flag→enum rename): `aura` (no confirmed
       `ElementType.AURA`), `paralysis` (numeric stun duration), `pitfall` > 0 (FM
       `ElementType.BURY` + `bury*` timing fields, not a bare flag).
+  - **Flash display-list / timeline methods called on the mapped view objects**
+    (`getMC`→`getViewRootContainer()`, `getStanceMC`→`getSprite()`): `swapChildren`
+    (35), `removeChild` (48), `addChild` (12), `getChildByName` (14), `getChildAt`/
+    `numChildren`, and timeline reads `currentLabel` (37), `currentFrame` (18),
+    `gotoAndPlay`. NONE exist in the FraymakersApiTypes (FM rendering/animation is not
+    a Flash display list), so they're null at runtime and need per-site porting (e.g.
+    z-order via FM layering, timeline reads via the FM animation API). This is the main
+    remaining `Invalid function null` source after the AS3-cast fix.
   - **`SSF2Event` types with no confirmed FM equivalent, neutralized** (the line is
     commented so it can't pass a null event): `KO_POINT`, `CHAR_ATTACK_COMPLETE`,
     `CHAR_ATTACK_CHANGED`, `REVERSE`, `REVERSE_HIT`, `CHAR_COUNTER`, `CHAR_METAL_CHANGE`,
