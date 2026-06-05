@@ -246,6 +246,11 @@ pub fn translate_ssf2_to_fm(code: &str) -> String {
     // in the tables above; neutralize it so the line can't reference an
     // undefined symbol and crash the script at runtime.
     result = neutralize_unmapped_ssf2(&result);
+    // `.currentLabel` / `.currentFrame` are Flash MovieClip TIMELINE properties with
+    // no Fraymakers equivalent. They survive because getMC()→getViewRootContainer()
+    // maps to a real FM call, so the line stays live and reads a property the FM
+    // container doesn't have (null access at runtime). Neutralize block-aware.
+    result = neutralize_flash_timeline_props(&result);
     // Comment out statements the decompiler couldn't fully reconstruct, where the
     // leftover `/* ? */` / `/* class */` marker would make INVALID Haxe (a `.x`
     // receiver after a comment, or `= ;` empty RHS) that the engine rejects —
@@ -437,6 +442,78 @@ pub fn neutralize_unmapped_ssf2(code: &str) -> String {
             } else {
                 out.push(format!("{}// [SSF2-dead] {}", indent, trimmed));
             }
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    let mut joined = out.join("\n");
+    if trailing_nl { joined.push('\n'); }
+    joined
+}
+
+/// Flash MovieClip timeline tokens: `currentLabel` / `currentFrame`, whether read
+/// as a property (`getViewRootContainer().currentLabel`) or as the bare frame-script
+/// playhead identifier (`curFrame.get() == currentFrame`). Neither has a Fraymakers
+/// equivalent, so a live use is a runtime null-access / Unknown-variable. Comment the
+/// statement (and, if it opens a block like `if (...currentLabel...) {`, the whole
+/// block) so the script stays alive. balance_commented_blocks fixes any orphaned close.
+const FLASH_TIMELINE_PROPS: &[&str] = &["currentLabel", "currentFrame"];
+
+/// True if `needle` appears in `hay` as a whole identifier (not a substring of a
+/// longer name like `getCurrentFrame` or `currentFrameRate`).
+fn contains_word(hay: &str, needle: &str) -> bool {
+    let b = hay.as_bytes();
+    let n = needle.as_bytes();
+    let is_id = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut from = 0;
+    while let Some(rel) = hay[from..].find(needle) {
+        let s = from + rel;
+        let before_ok = s == 0 || !is_id(b[s - 1]);
+        let e = s + n.len();
+        let after_ok = e >= b.len() || !is_id(b[e]);
+        if before_ok && after_ok { return true; }
+        from = s + 1;
+    }
+    false
+}
+
+pub fn neutralize_flash_timeline_props(code: &str) -> String {
+    if !FLASH_TIMELINE_PROPS.iter().any(|p| contains_word(code, p)) {
+        return code.to_string();
+    }
+    fn net_braces(line: &str) -> i32 {
+        let live = line.split("//").next().unwrap_or(line);
+        live.matches('{').count() as i32 - live.matches('}').count() as i32
+    }
+    let lines: Vec<&str> = code.lines().collect();
+    let mut dead = vec![false; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        let hit = FLASH_TIMELINE_PROPS.iter().any(|p| contains_word(lines[i], p));
+        if hit && !trimmed.starts_with("//") {
+            dead[i] = true;
+            let mut depth = net_braces(lines[i]);
+            let mut j = i + 1;
+            while depth > 0 && j < lines.len() {
+                depth += net_braces(lines[j]);
+                dead[j] = true;
+                j += 1;
+            }
+            i = j.max(i + 1);
+            continue;
+        }
+        i += 1;
+    }
+    let trailing_nl = code.ends_with('\n');
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if dead[idx] && !trimmed.starts_with("//") {
+            let indent = &line[..line.len() - trimmed.len()];
+            let sym = FLASH_TIMELINE_PROPS.iter().find(|p| contains_word(line, p))
+                .copied().unwrap_or("currentLabel");
+            out.push(format!("{}// [SSF2-only: {}] {}", indent, sym, trimmed));
         } else {
             out.push(line.to_string());
         }
@@ -2676,6 +2753,36 @@ mod tests {
         let out = rewrite_add_effect_to_list(code);
         assert!(out.contains("function addEffectToList(arg0) {"), "definition mangled: {out}");
         assert_eq!(out.matches('(').count(), out.matches(')').count(), "unbalanced: {out}");
+    }
+
+    #[test]
+    fn neutralize_flash_timeline_props_comments_block() {
+        // getMC()→getViewRootContainer() leaves a live `.currentLabel` read on a
+        // container that has no such property. The whole `if (...) {...}` must be
+        // commented block-aware so it can't null-access at runtime.
+        let code = "if (self.getViewRootContainer().currentLabel != \"b\") {\n\tEngine.log(\"x\");\n}\nself.toState(CState.STAND);";
+        let out = neutralize_flash_timeline_props(code);
+        assert!(!out.lines().any(|l| {
+            let t = l.trim_start();
+            !t.starts_with("//") && t.contains(".currentLabel")
+        }), "live currentLabel survived: {out}");
+        // The trailing live statement is untouched.
+        assert!(out.contains("self.toState(CState.STAND);"), "ate live code: {out}");
+        // Block body got swept too (no orphaned Engine.log left live).
+        assert!(out.lines().filter(|l| !l.trim_start().starts_with("//")).all(|l| !l.contains("Engine.log")),
+            "block body leaked: {out}");
+    }
+
+    #[test]
+    fn neutralize_flash_timeline_props_bare_identifier_and_word_boundary() {
+        // Bare `currentFrame` playhead must be neutralized…
+        let bare = "if (curFrame.get() == currentFrame) {\n\tx();\n}";
+        let out = neutralize_flash_timeline_props(bare);
+        assert!(out.lines().all(|l| l.trim_start().starts_with("//") || !contains_word(l, "currentFrame")),
+            "bare currentFrame survived: {out}");
+        // …but a longer identifier that merely contains it must NOT be touched.
+        let safe = "var n = self.getCurrentFrameRate();";
+        assert_eq!(neutralize_flash_timeline_props(safe), safe, "word-boundary false positive");
     }
 
     #[test]
