@@ -48,17 +48,19 @@ fn mario_movement_stats_match_ssf2_ground_truth() {
     let body = std::fs::read_to_string(&cs)
         .unwrap_or_else(|e| panic!("read {}: {e}", cs.display()));
 
-    // (field, expected, tolerance). Expected values are the ones confirmed live in
-    // Fraymakers and derived from the SSF2 physics model for size_multiplier=1.9.
+    // (field, expected, tolerance). Derived from the SSF2 physics model at the
+    // current size_multiplier (1.3). The 1:1 live-Fraymakers verification was done
+    // at 1.9; every stat scales linearly with the knob, so these are the 1.9 values
+    // times 1.3/1.9.
     let checks: &[(&str, f64, f64)] = &[
-        ("gravity",          0.62,  0.02),
-        ("shortHopSpeed",    9.03,  0.05),
-        ("jumpSpeed",        16.53, 0.05),
-        ("terminalVelocity", 12.35, 0.05),
-        ("fastFallSpeed",    15.2,  0.05),
-        ("friction",         0.49,  0.02),
-        ("walkSpeedCap",     3.8,   0.05),
-        ("dashSpeed",        10.45, 0.05),
+        ("gravity",          0.42,  0.02),
+        ("shortHopSpeed",    6.17,  0.05),
+        ("jumpSpeed",        11.31, 0.05),
+        ("terminalVelocity", 8.45,  0.05),
+        ("fastFallSpeed",    10.4,  0.05),
+        ("friction",         0.34,  0.02),
+        ("walkSpeedCap",     2.6,   0.05),
+        ("dashSpeed",        7.15,  0.05),
     ];
     let mut errs: Vec<String> = Vec::new();
     for (field, expected, tol) in checks {
