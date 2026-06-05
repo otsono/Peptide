@@ -178,6 +178,15 @@
     { "from": ".toIdle()", "to": ".toState(CState.STAND)" },
     { "from": ".toFlying()", "to": ".toState(CState.HURT_HEAVY)" },
 
+    // AS3 global type-casts the decompiler wrongly emitted as `self.X(...)` (X is a
+    // global, not a method, so `self.int`/`self.Number` resolve to null → "Invalid
+    // function null"). Haxe `Std.*` IS in character-script scope (live-probed).
+    // `self.Number(x)` is a balanced rewrite (rewrite_number_cast, needs the extra
+    // paren); int/uint are arity-preserving renames. Std.int truncates toward zero,
+    // matching AS3 int().
+    { "from": "self.int(", "to": "Std.int(" },
+    { "from": "self.uint(", "to": "Std.int(" },
+
     // Flash MovieClip accessors → Fraymakers view objects.
     { "from": ".getMC()", "to": ".getViewRootContainer()" },
     // getStanceMC was the current-animation MovieClip; getSprite() is the FM sprite,

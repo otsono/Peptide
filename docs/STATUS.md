@@ -72,8 +72,11 @@ dimensions below are the rest.
     →`hitTestStructuresWithLineSegment(new Point(x,y), new Point(x,y), null, null)` with
     the `!= null`/`== null` checks rewritten to `.length > 0`/`== 0` (Array return), the
     options arg dropped, and a TODO on the point→segment approximation; `if (… isForcedCrash …)`
-    blocks DELETED (no forced-crash in FM). Stat fields: `hasEffect`→`flinch`,
-    `sdiDistance`→`hitstopNudgeMultiplier` (value/6, since SSF2 default is 6),
+    blocks DELETED (no forced-crash in FM). AS3 global casts the decompiler wrongly
+    attached to `self` (so they were null → "Invalid function null"): `self.int`/
+    `self.uint`→`Std.int`, `self.Number(x)`→`Std.parseFloat(Std.string(x))` (`Std` is
+    in character-script scope, confirmed by a live probe). Stat fields: `hasEffect`→
+    `flinch`, `sdiDistance`→`hitstopNudgeMultiplier` (value/6, since SSF2 default is 6),
     `shieldDamage`→`shieldDamageMultiplier: 1` with the old value kept in a TODO.
   - **method calls, `no_equivalent` (57), commented out.** item system (`getItem`,
     `getItems`, `getItemStat`, `pickupItem`, `tossItem`, `toToss`, `removeItem`,

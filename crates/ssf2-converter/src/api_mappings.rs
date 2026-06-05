@@ -238,6 +238,8 @@ pub fn translate_ssf2_to_fm(code: &str) -> String {
     result = remove_forced_crash_guards(&result);
     // SSF2 hitTestGround(x, y) point test → FM line-segment hitTestStructuresWithLineSegment.
     result = rewrite_hit_test_ground(&result);
+    // AS3 self.Number(x) cast → Std.parseFloat(Std.string(x)).
+    result = rewrite_number_cast(&result);
     // SSF2Utils.decel(v, amount) → inline Math min/max (FM has no Math.decel).
     result = rewrite_decel_calls(&result);
     // Any SSF2Event.* / SSF2Utils.* still present has no Fraymakers equivalent
@@ -1620,6 +1622,33 @@ fn rewrite_hit_test_ground(code: &str) -> String {
     out
 }
 
+/// AS3 `self.Number(x)` (a global cast the decompiler mis-attached to `self`, so it
+/// resolves to null at runtime) → Haxe `Std.parseFloat(Std.string(x))`, which converts
+/// strings AND already-numeric values to Float. `Std` is in character-script scope
+/// (live-probed). Balanced-scan so nested-paren args don't break the wrap.
+fn rewrite_number_cast(code: &str) -> String {
+    const NEEDLE: &str = "self.Number(";
+    if !code.contains(NEEDLE) {
+        return code.to_string();
+    }
+    let mut out = String::with_capacity(code.len());
+    let mut cursor = 0;
+    while let Some(rel) = code[cursor..].find(NEEDLE) {
+        let start = cursor + rel;
+        let paren_open = start + NEEDLE.len() - 1;
+        let close = match find_matching_close(code, paren_open) {
+            Some(c) => c,
+            None => { out.push_str(&code[cursor..=start]); cursor = start + 1; continue; }
+        };
+        let inner = code[paren_open + 1..close].trim();
+        out.push_str(&code[cursor..start]);
+        out.push_str(&format!("Std.parseFloat(Std.string({inner}))"));
+        cursor = close + 1;
+    }
+    out.push_str(&code[cursor..]);
+    out
+}
+
 /// SSF2Utils.decel(value, amount) → inline decay-toward-zero. SSF2's helper
 /// reduces |value| by amount, clamped at 0 (never crosses sign). Fraymakers'
 /// Math has no `decel`, so emit the equivalent ternary using Math.min/max
@@ -2603,6 +2632,14 @@ mod tests {
         );
         // balanced parens after the rewrite
         assert_eq!(out.matches('(').count(), out.matches(')').count());
+    }
+
+    #[test]
+    fn number_cast_rewritten_balanced() {
+        let out = rewrite_number_cast("cardNumber.set(self.Number(child.get().name));");
+        assert!(out.contains("Std.parseFloat(Std.string(child.get().name))"), "wrong: {out}");
+        assert!(!out.contains("self.Number("), "old cast left: {out}");
+        assert_eq!(out.matches('(').count(), out.matches(')').count(), "unbalanced: {out}");
     }
 
     #[test]
