@@ -14,18 +14,24 @@
 
 use std::path::PathBuf;
 
-/// Single source of truth for the Fraymakers/FrayTools engine-internal symbol
-/// tokens that must not leak into the tracked repo. Two trip-wires share it so a
+/// Single source of truth for the engine-internal symbol tokens that must not
+/// leak into the tracked repo, for BOTH engines. Two trip-wires share it so a
 /// new symbol updates both at once:
 ///   - `doc_freshness.rs :: no_engine_internals_in_tracked_docs` scans Markdown.
 ///   - `conventions.rs :: no_engine_internals_in_code_comments` scans `.rs` comments.
 ///
 /// These are distinctive non-hscript engine/bundle symbols with no legitimate
 /// place in a doc or a comment (outside the patcher source that IS the symbol
-/// map's home). SSF2 / AVM2 input-side symbols are intentionally NOT here -- that
-/// side is unaffected. See AGENT_CONTEXT.md "engine-side knowledge is not in this
-/// repo" and CONTRIBUTING.md "special case".
+/// map's home: `src/main.rs`/`src/manifest.rs`/`src/bin/` for Fraymakers,
+/// `abc_inject.rs` for the SSF2 AVM2 injector).
+///
+/// The SSF2 entries are the RUNNING-ENGINE internals RE'd from SSF2.swf (the live
+/// match/menu object graph). SSF2 INPUT-SIDE symbols -- the `.ssf`/SWF format and
+/// the character modding API the converter reads -- are intentionally NOT here;
+/// that side is ours to name. See AGENT_CONTEXT.md "engine-side knowledge is not
+/// in this repo" and CONTRIBUTING.md "special case".
 pub const ENGINE_SYMBOL_NEEDLES: &[&str] = &[
+    // Fraymakers / FrayTools (HashLink)
     "fraymakers.Main",
     "Main.onLoaded",
     "MatchController",
@@ -46,6 +52,15 @@ pub const ENGINE_SYMBOL_NEEDLES: &[&str] = &[
     "loadingScreenFactory",
     "FraymakersClassFactory",
     "queueRequiredResources",
+    // SSF2 running-engine internals (RE'd from SSF2.swf)
+    "GameController",
+    "MenuController",
+    "ResourceManager",
+    "showInitialMenu",
+    "disposeAllMenus",
+    "disclaimerMenu",
+    "loadingMenu",
+    "queueResources",
 ];
 
 /// Directory holding the `.ssf` corpus (see module docs for resolution order).

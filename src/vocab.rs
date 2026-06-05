@@ -26,7 +26,7 @@ pub struct Root {
 /// The roots `commands.hsx` binds per eval (`match`, `p0`, `p1`) plus the engine
 /// singletons the SSF2 reflection bridge exposes (`gc`/`rm`/`stats`/`root`).
 /// On Fraymakers these are hscript globals; on SSF2 each lowers to the verb chain
-/// that reaches the same live object (`GameController.stageData.Characters[i]`, …).
+/// that reaches the same live object (the per-player character node in the live match, …).
 pub const ROOTS: &[Root] = &[
     Root { names: &["match"],                  ssf2: &["GC", "GET\tstageData"] },
     Root { names: &["p0", "self"],             ssf2: &["GC", "GET\tstageData", "GET\tCharacters", "IDX\t0"] },
