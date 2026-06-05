@@ -183,7 +183,7 @@ pub fn wait_ready(needed: u32, total: Duration) -> bool {
     false
 }
 
-/// One multi-op responsiveness probe: read `GameController.stageData` (GC → GET →
+/// One multi-op responsiveness probe: read the live match's stage data (GC → GET →
 /// READ). All three must land within the short window; a load starving frames will
 /// drop at least one, which is exactly the "still loading" condition we gate on.
 fn probe_responsive() -> bool {
@@ -195,7 +195,7 @@ fn probe_responsive() -> bool {
 
 /// Block until the patched engine emits its one-shot `READY` line — the SSF2 analogue of
 /// Fraymakers firing READY at boot complete. The bridge injects it at
-/// `MenuController.showInitialMenu` (boot complete; see `abc_inject::inject_ready_signal`),
+/// the boot's initial-menu entry point (boot complete; see `abc_inject::inject_ready_signal`),
 /// so this is a REAL boot-complete event, not the old PING-streak/flat-floor heuristic.
 /// Reads the persistent connection until a bare `READY` line arrives (accumulating across
 /// read timeouts so a split line isn't dropped) or `total` elapses. Returns true on READY.
@@ -390,7 +390,7 @@ pub fn jumpcapture(args: &[String]) -> Result<()> {
         Ok(last)
     };
     let stage = args.iter().position(|a| a == "--stage").and_then(|i| args.get(i+1)).cloned().unwrap_or_else(|| "battlefield".into());
-    // 1. SPAWN: build the Game (sets currentGame) + queue stage/char + ResourceManager.load({}) (async).
+    // 1. SPAWN: build the Game (sets currentGame) + queue stage/char + kick the async resource load.
     println!("SPAWN {ch} on {stage} → {}", request(&format!("SPAWN\t{ch}\t{stage}"), Duration::from_secs(8))?);
     // 2. wait for the async resource load to finish.
     let mut loaded = false;
@@ -399,7 +399,7 @@ pub fn jumpcapture(args: &[String]) -> Result<()> {
         std::thread::sleep(Duration::from_millis(400));
     }
     println!("resources fully loaded: {loaded}");
-    // 3. GO: GameController.startMatch(currentGame) — spawns StageData next frame.
+    // 3. GO: start the match — spawns the stage next frame.
     println!("GO → {}", request("GO", Duration::from_secs(8))?);
     // wait for the match to come up (stageData non-null)
     let mut up = false;
