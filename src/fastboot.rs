@@ -20,15 +20,14 @@
 //! owned by the platform-specific integration, because they're different bytecode VMs.
 //! Keep this table honest when either engine's quick boot changes:
 //!
-//!   Feature                 Fraymakers (HashLink, src/main.rs)   SSF2 (AVM2, crates/…/abc_inject.rs)
+//!   Feature                 Fraymakers (src/main.rs)             SSF2 (crates/…/abc_inject.rs)
 //!   ─────────────────────   ──────────────────────────────────   ──────────────────────────────────
-//!   skip menus / title      no-op the final boot load-step        inject_quickboot rewrites
-//!                           (skip Title + ugc load)                MenuController.showInitialMenu
-//!   preload match assets     bake char + the `s` handler           inject_quickboot:
-//!                           resolves + fetches stage/assist        queueResources([char, stage])
-//!   loading presentation     the start-match path builds + shows   inject_quickboot:
-//!     (boot → match)         a loading screen (NATIVE; see note)    MenuController.loadingMenu.show()
-//!                                                                   (torn down by GO's disposeAllMenus)
+//!   skip menus / title      no-op the final boot load-step        inject_quickboot rewrites the
+//!                           (skip Title + ugc load)                initial-menu entry point
+//!   preload match assets     bake char + the `s` handler           inject_quickboot queues the
+//!                           resolves + fetches stage/assist        char + stage assets up front
+//!   loading presentation     the start-match path builds + shows   inject_quickboot shows a loading
+//!     (boot → match)         a loading screen (NATIVE; see note)    screen, held until the match starts
 //!   readiness signal         READY at boot complete                responsiveness heuristic
 //!                                                                   (disclaimer is skipped)
 //!   auto-spawn into match    `command(Fraymakers, …)` → `s`         `command(Ssf2, …)` → `spawn`

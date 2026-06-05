@@ -1398,9 +1398,10 @@ pub(crate) fn script_meta(id: &str, guid: &str, kind: ScriptMetaKind) -> String 
 /// `getProjectileStats()` physics. SSF2 projectiles carry no behavior script —
 /// the engine drives them from these stats — so we derive the launch from the
 /// best available speed source and apply the SAME velocity_scale the character
-/// physics uses (30->60fps + the 1.9x sprite upscale). Returns (x, y, note).
+/// physics uses (the one `size_multiplier` knob in stats.jsonc + the 30->60fps
+/// ratio). Returns (x, y, note).
 fn synth_projectile_launch(ssf2_match: Option<&crate::abc_parser::ProjectileData>) -> (f64, f64, String) {
-    let vs = crate::physics_sim::ScaleParams::default().velocity_scale();
+    let vs = crate::mappings::character_stats().scaling.velocity_scale();
     let stats = match ssf2_match {
         Some(d) if !d.stats.is_empty() => &d.stats,
         // No SSF2 data at all: fall back to the historical template default.

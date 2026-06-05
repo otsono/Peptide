@@ -63,12 +63,13 @@ fn zelda_ssf_emits_one_merged_project() {
     }
 
     // Collision suffix rule: Zelda (constructor-walk slot 0) keeps the
-    // unsuffixed costumes.palettes; Sheik (slot 1) gets `2`.
+    // unsuffixed costumes.palettes; Sheik (slot 1) gets `2` on the BASE name
+    // (`costumes2.palettes`), since a `.palettes2` extension is malformed.
     let lib = project.join("library");
     assert!(lib.join("costumes.palettes").exists(),           "slot 0 (zelda) costumes.palettes must exist");
-    assert!(lib.join("costumes.palettes2").exists(),          "slot 1 (sheik) costumes.palettes2 must exist");
+    assert!(lib.join("costumes2.palettes").exists(),          "slot 1 (sheik) costumes2.palettes must exist");
     assert!(lib.join("costumes.palettes.meta").exists(),      "slot 0 .meta must exist");
-    assert!(lib.join("costumes.palettes2.meta").exists(),     "slot 1 .meta must exist");
+    assert!(lib.join("costumes2.palettes.meta").exists(),     "slot 1 .meta must exist");
     // Palette previews are CHAR-PREFIXED (not palette_preview.png{N}) so the two
     // chars' previews don't collide on base filename in the shared sprites/ dir —
     // FrayTools derives a sprite GUID from its path, so a shared base name collided.
