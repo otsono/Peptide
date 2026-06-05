@@ -118,8 +118,14 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
         .map(|n| n.to_string()).unwrap_or_default();
     match palette_gen::generate_palettes_and_remap(&char_id, char_name, &sprites_dir, costumes_json) {
         Ok(pal) => {
-            fs::write(char_dir.join(format!("library/costumes.palettes{}", suffix)),       &pal.palettes_json)?;
-            fs::write(char_dir.join(format!("library/costumes.palettes{}.meta", suffix)),  &pal.palettes_meta_json)?;
+            // Suffix goes on the BASE name, not the extension: char 2 is
+            // `costumes2.palettes`, NOT `costumes.palettes2`. A `.palettes2`
+            // extension is malformed — FrayTools only recognizes `.palettes`
+            // collections, so the 2nd+ char's costumes never loaded (the engine's
+            // "Could not find script: <char>Costumes" lookup then failed). Same
+            // class of bug as the palette_preview.png suffix fixed below.
+            fs::write(char_dir.join(format!("library/costumes{}.palettes", suffix)),       &pal.palettes_json)?;
+            fs::write(char_dir.join(format!("library/costumes{}.palettes.meta", suffix)),  &pal.palettes_meta_json)?;
             // CHAR-UNIQUE preview filename. The old `palette_preview.png{suffix}` scheme
             // gave the 2nd+ char of a multi-char project a name like `palette_preview.png2`
             // — a malformed extension that ALSO shares the base name `palette_preview` with
