@@ -974,8 +974,12 @@ fn build_anim_frame_images(
                 .map(|s| s.as_str())
                 .unwrap_or("");
 
-            // Only process character animation sprites
-            if !sym.contains("_fla.") { continue; }
+            // Process character animation sprites. These are usually named
+            // "{char}_fla.{Anim}_{N}", but a root-timeline `stance` sub-sprite can be
+            // UNNAMED (sym="") and still be a real animation — the box pass processes
+            // it via anim_by_sprite, so the image pass must too, or that animation comes
+            // out with hurtboxes but no visual (e.g. zelda's `falling`/tumble stance).
+            if !sym.contains("_fla.") && !anim_by_sprite.contains_key(&sprite.id) { continue; }
 
             let fm_name = match anim_by_sprite.get(&sprite.id) {
                 // The shared map already resolved this sprite's FM animation name.
@@ -1186,11 +1190,22 @@ fn build_anim_frame_images(
                 let sub_splits = crate::sprite_parser::sub_anim_image_splits(&fm_name, &frame_labels, total);
 
                 if sub_splits.is_empty() {
+                    // Now that the image pass also processes unnamed stance sprites, two
+                    // sprites can map to one fm name (a named visual + an image-less
+                    // stance). Never let an image-less sprite clobber an entry that
+                    // already has a visual.
+                    let new_has_image = frames.values()
+                        .any(|v| v.iter().any(|e| !e.symbol_name.is_empty()));
+                    let existing_has_image = result.get(&fm_name)
+                        .map(|p: &AnimFrameImages| p.frames.values().any(|v| v.iter().any(|e| !e.symbol_name.is_empty())))
+                        .unwrap_or(false);
+                    if new_has_image || !existing_has_image {
                     result.insert(fm_name, AnimFrameImages {
                         frames,
                         total_frames: total,
                         max_depth_slots,
                     });
+                    }
                 } else {
                     for (sub_fm_name, start_frame, end_frame) in sub_splits {
                         let slice_len = end_frame.saturating_sub(start_frame);
