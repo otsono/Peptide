@@ -708,6 +708,18 @@ pub fn generate_entity(
                 }
                 let sym_id = uuid(char_id, &format!("sym_body_{}_{}", anim_name, f));
                 let kf_id = uuid(char_id, &format!("kf_body_{}_{}", anim_name, f));
+                // The ECB is a 4-vertex diamond: foot (0,-foot), head (0,-head), hips
+                // (hipXOffset ± hipWidth/2, midY). The foot/head verts are PINNED to
+                // x=0, so for a convex diamond the hips must straddle x=0, i.e.
+                // |hipXOffset| < hipWidth/2. When the hurtbox union is far off-centre
+                // (e.g. zelda fall, centre ~-38 vs width ~38) the raw offset pushes both
+                // hips to one side and the shape collapses into an ARROW — which renders
+                // wrong and crashes FrayTools on edit. Clamp the offset to keep the hips
+                // straddling the centre (a comfortable margin) so it's always a valid
+                // diamond.
+                let half_w = (body.2 / 2.0).max(0.0);
+                let max_off = (half_w - half_w * 0.25).max(0.0); // hips keep ≥25% past centre
+                let hip_x_offset = round2(body.3.clamp(-max_off, max_off));
                 symbols.push(json!({
                     "$id": sym_id,
                     "alpha": Value::Null,
@@ -715,7 +727,7 @@ pub fn generate_entity(
                     "foot": body.0,
                     "head": body.1,
                     "hipWidth": body.2,
-                    "hipXOffset": body.3,
+                    "hipXOffset": hip_x_offset,
                     "hipYOffset": 0,
                     "pluginMetadata": {},
                     "type": "COLLISION_BODY"
@@ -995,27 +1007,21 @@ pub fn generate_entity(
                 if let Some(anim_imgs) = img_result.anim_images.get(source_anim.as_str()) {
                     let total = frame_count;
 
-                    // Per-frame entry for this slot, HOLDING the last sprite across
-                    // INTERIOR gaps. A source frame with no entry in this slot would
-                    // otherwise emit a null keyframe and the sprite vanishes mid-anim
-                    // (e.g. zelda disappearing for 24 frames of fall_loop). Hold the
-                    // previous sprite until the slot's next real frame; TRAILING gaps
-                    // (no later sprite in this slot) stay empty so a sprite that
-                    // genuinely ends still ends.
-                    let raw: Vec<Option<&crate::image_extractor::FrameImageEntry>> = (0..total)
-                        .map(|f| anim_imgs.frames.get(&src_frame(f)).and_then(|v| v.get(slot)))
+                    // LOOP the visual timeline like Flash does for a nested MovieClip
+                    // whose frame count is shorter than the parent (gameplay) timeline.
+                    // SSF2's `fall` is an 8-frame looping sprite running under a 20-frame
+                    // hurtbox timeline, so source frames past the sprite's last frame wrap
+                    // modulo its length (frame 8 → sprite frame 0) instead of coming back
+                    // empty and making the character vanish mid-animation. When the sprite
+                    // and gameplay timelines are equal length this is the identity.
+                    let img_len = anim_imgs.frames.keys().max()
+                        .map(|m| *m as u32 + 1).unwrap_or(1).max(1);
+                    let held: Vec<Option<crate::image_extractor::FrameImageEntry>> = (0..total)
+                        .map(|f| {
+                            let looped = (src_frame(f) as u32 % img_len) as u16;
+                            anim_imgs.frames.get(&looped).and_then(|v| v.get(slot)).cloned()
+                        })
                         .collect();
-                    let last_real = raw.iter().rposition(|e| e.is_some());
-                    let mut held: Vec<Option<crate::image_extractor::FrameImageEntry>> =
-                        Vec::with_capacity(total as usize);
-                    let mut carry: Option<crate::image_extractor::FrameImageEntry> = None;
-                    for (f, e) in raw.iter().enumerate() {
-                        match e {
-                            Some(ent) => { carry = Some((*ent).clone()); held.push(Some((*ent).clone())); }
-                            None if last_real.is_some_and(|lr| f < lr) => held.push(carry.clone()),
-                            None => held.push(None),
-                        }
-                    }
 
                     let mut f: u32 = 0;
                     while f < total {
