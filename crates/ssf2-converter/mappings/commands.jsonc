@@ -804,6 +804,24 @@
   //   no_equivalent     - no Fraymakers construct we've found does this
   //                       (whole subsystem absent, or Flash/timeline-only).
   "ssf2_only": [
+    // ── Flash DisplayObjectContainer / timeline methods called on the mapped view
+    // objects (getMC→getViewRootContainer, getStanceMC→getSprite). NONE exist in the
+    // FraymakersApiTypes (checked) — FM rendering is not a Flash display list — so they
+    // resolve to null at runtime ("Invalid function null"). Comment them out so the call
+    // can't crash; the original line stays visible in the marker. removeChild/contains
+    // ARE in FM, so they're intentionally NOT here. ──
+    { "category": "no_equivalent", "name": "swapChildren", "note": "Flash z-order; FM uses layering. No FM displaylist." },
+    { "category": "no_equivalent", "name": "addChild", "note": "Flash displaylist add; no FM analog (createVfx/createSpriteStructure instead)." },
+    { "category": "no_equivalent", "name": "getChildByName", "note": "Flash displaylist lookup; no FM analog." },
+    { "category": "no_equivalent", "name": "getChildAt", "note": "Flash displaylist index access; no FM analog." },
+    { "category": "no_equivalent", "name": "getChildIndex", "note": "Flash displaylist index; no FM analog." },
+    { "category": "no_equivalent", "name": "setChildIndex", "note": "Flash displaylist reorder; no FM analog." },
+    { "category": "no_equivalent", "name": "gotoAndPlay", "note": "Flash timeline nav; FM uses playLabel/playFrame." },
+    { "category": "no_equivalent", "name": "gotoAndStop", "note": "Flash timeline nav; FM uses playLabel/playFrame + pause." },
+    { "category": "no_equivalent", "name": "nextFrame", "note": "Flash timeline nav; no FM analog." },
+    { "category": "no_equivalent", "name": "prevFrame", "note": "Flash timeline nav; no FM analog." },
+    { "category": "no_equivalent", "name": "getBounds", "note": "Flash bounds query; FM uses ECB/hitbox APIs." },
+
     // ── handled_elsewhere: real case handled by a later pass; this only catches leftover residue ──
     { "category": "handled_elsewhere", "name": "attachEffect", "note": "regex_replacements rewrites literal-string forms; this catches non-literal/nested cases for manual port" },
     { "category": "handled_elsewhere", "name": "updateAttackStats", "note": "split into FM updateAnimationStats / updateHitboxStats via call_splits when called with object literal; variable-arg form needs manual rewrite" },
