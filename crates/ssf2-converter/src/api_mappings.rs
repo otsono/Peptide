@@ -1545,6 +1545,19 @@ fn rewrite_add_effect_to_list(code: &str) -> String {
             cursor = name_start + NEEDLE.len();
             continue;
         }
+        // Skip a function DEFINITION: `function addEffectToList(arg0) {` is a decl,
+        // not a call. Rewriting it strips the parens and produces invalid hscript
+        // (`function /* addEffectToList */ arg0 {`), which fails to parse and takes
+        // the whole Script.hx scope down with it.
+        let before = code[..name_start].trim_end();
+        let is_fn_def = before.strip_suffix("function")
+            .map(|b| b.is_empty() || !b.chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_'))
+            .unwrap_or(false);
+        if is_fn_def {
+            out.push_str(&code[cursor..name_start + NEEDLE.len()]);
+            cursor = name_start + NEEDLE.len();
+            continue;
+        }
         let paren_open = name_start + NEEDLE.len() - 1; // index of '('
         let close = match find_matching_close(code, paren_open) {
             Some(c) => c,
@@ -2650,6 +2663,18 @@ mod tests {
         let out = rewrite_add_effect_to_list(code);
         assert!(out.contains("match.createVfx(new VfxStats({ x: 1 }), self)"), "effect lost: {out}");
         assert!(!out.contains("addEffectToList("), "wrapper not removed: {out}");
+        assert_eq!(out.matches('(').count(), out.matches(')').count(), "unbalanced: {out}");
+    }
+
+    #[test]
+    fn rewrite_add_effect_to_list_leaves_fn_definition_intact() {
+        // `function addEffectToList(arg0) {` is the SSF2 ext-method DEFINITION, not a
+        // call. It must pass through untouched — mangling it to
+        // `function /* addEffectToList */ arg0 {` is invalid hscript and crashes the
+        // whole Script.hx scope (zelda:stand rand/repeats Unknown-variable cascade).
+        let code = "function addEffectToList(arg0) {\n\teffects.get().push(arg0);\n}";
+        let out = rewrite_add_effect_to_list(code);
+        assert!(out.contains("function addEffectToList(arg0) {"), "definition mangled: {out}");
         assert_eq!(out.matches('(').count(), out.matches(')').count(), "unbalanced: {out}");
     }
 
