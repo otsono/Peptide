@@ -19,6 +19,8 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+use crate::physics_sim::ScaleParams;
+
 /// The converter crate's source dir (`…/crates/ssf2-converter`), captured at
 /// compile time. Only used to *locate* the mappings files at runtime in a dev /
 /// source checkout — the file CONTENT is always read from disk, never embedded.
@@ -70,46 +72,21 @@ pub struct StatMappings {
     /// strings or arrays — kept as raw JSON so each is written Haxe-literally).
     #[serde(default)]
     pub constants: BTreeMap<String, serde_json::Value>,
-    /// Global SSF2 → Fraymakers size multiplier applied to baseScaleX / baseScaleY.
-    /// SSF2 sprites are ~1.9× smaller than Fraymakers' scale; edit in stats.jsonc.
-    ///
-    /// THIS IS THE SINGLE TUNABLE KNOB. Every physics stat (walk/dash/jump
-    /// speeds, gravity, friction, accel) is derived from it via [`StatMappings::scale`],
-    /// so changing this value rescales the entire physics profile consistently.
-    /// See [`StatMappings::velocity_scale`] / [`StatMappings::accel_scale`].
-    #[serde(default = "default_size_multiplier")]
-    pub size_multiplier: f64,
-
-    /// SSF2 simulation rate (Hz). Fixed physics — 30 for SSF2 Beta.
-    #[serde(default = "default_ssf2_fps")]
-    pub ssf2_fps: f64,
-
-    /// Fraymakers simulation rate (Hz). Fixed physics — 60.
-    #[serde(default = "default_fm_fps")]
-    pub fm_fps: f64,
+    /// The scale knob (`size_multiplier` + fps), flattened from the top-level
+    /// `size_multiplier`/`ssf2_fps`/`fm_fps` keys in `stats.jsonc`. This is the
+    /// SINGLE TUNABLE KNOB: every physics stat (walk/dash/jump speeds, gravity,
+    /// friction, accel) is derived from it via [`StatMappings::scale`], so editing
+    /// `size_multiplier` rescales the whole physics profile consistently. The
+    /// definition + default live in one place, [`ScaleParams`].
+    #[serde(flatten)]
+    pub scaling: ScaleParams,
 }
-
-fn default_size_multiplier() -> f64 { 1.9 }
-fn default_ssf2_fps() -> f64 { 30.0 }
-fn default_fm_fps() -> f64 { 60.0 }
 
 impl StatMappings {
     /// SSF2 key names to try for a Fraymakers stat field, in priority order.
     pub fn keys_for(&self, field: &str) -> &[String] {
         self.field_keys.get(field).map(|v| v.as_slice()).unwrap_or(&[])
     }
-
-    /// fps ratio (ssf2/fm). 0.5 for 30→60.
-    pub fn fps_ratio(&self) -> f64 { self.ssf2_fps / self.fm_fps }
-
-    /// Multiplier for a per-frame VELOCITY (px/frame): walk/dash caps, jump &
-    /// fall speeds. A velocity at 30fps becomes `size_mult * (30/60)` at 60fps
-    /// to preserve real motion at `size_mult`× spatial scale. ≈ 0.95 at 1.9.
-    pub fn velocity_scale(&self) -> f64 { self.size_multiplier * self.fps_ratio() }
-
-    /// Multiplier for a per-frame ACCELERATION (px/frame²): gravity, friction,
-    /// ground/air accel. Scales as `size_mult * (30/60)^2`. ≈ 0.475 at 1.9.
-    pub fn accel_scale(&self) -> f64 { self.size_multiplier * self.fps_ratio().powi(2) }
 
     /// Scale a raw SSF2 stat into Fraymakers units, derived ENTIRELY from the
     /// `size_multiplier` knob (+ fps ratio). `name` classifies the stat as a
@@ -121,10 +98,10 @@ impl StatMappings {
         let factor = match name {
             // accelerations (px/frame²)
             "gravity" | "air_friction" | "friction" | "walk_accel" | "air_accel" => {
-                self.accel_scale()
+                self.scaling.accel_scale()
             }
             // velocities (px/frame)
-            "speed" | "jump" | "walk" | "dash" | "fall" => self.velocity_scale(),
+            "speed" | "jump" | "walk" | "dash" | "fall" => self.scaling.velocity_scale(),
             // not a physics scale we own → legacy behaviour (e.g. frame-count
             // multipliers configured elsewhere).
             _ => return self.multipliers.get(name).map(|m| m.apply(raw)).unwrap_or(raw),
