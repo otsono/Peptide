@@ -229,6 +229,11 @@ impl DebugTarget for Ssf2Target {
     }
 
     fn spawn(&mut self, args: &SpawnArgs) -> Result<String> {
+        // `--versus` (args.force_versus) is a no-op here BY DESIGN: SSF2 has no separate
+        // training mode, every match is a versus Game, so the flag that forces versus on
+        // Fraymakers is already the only mode on SSF2. Same engine-subset parity as assists
+        // being Fraymakers-only and stamina being SSF2-only. We accept it and ignore it.
+        let _ = args.force_versus;
         // Stage: caller-supplied, else the configured SSF2 stage (parity with how
         // Fraymakers resolves its stage from config — names differ per engine).
         let stage = args.stage.clone()

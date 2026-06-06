@@ -64,12 +64,17 @@ script API. run `./build/release/peptide help` for the live list.
 | `help` | list these + the hscript model (sends nothing) |
 
 the roster is comma-separated and accepted everywhere a character is (the `spawn` command,
-`--char a,b,c,d`, and the `FRAY_ROSTER` env / config `roster` for a fast boot). 1-2 players launch
-in training mode (the parity-harness "fighter + dummy" path), 3-4 auto-engage versus mode. distinct
-custom characters are each synchronously self-bootstrapped, so a mixed roster like `sandbag,mario`
-works. each live fighter binds to `p0`/`p1`/`p2`/`p3` for driving (e.g. `p3.getStateName()`), and
-`match.getCharacters().length` reports the real count. `spawn --versus a,b` forces versus mode for a
-1-2 player roster; `PEPTIDE_FORCE_TRAINING=1` pins training mode for the whole session.
+`--char a,b,c,d`, and the `FRAY_ROSTER` env / config `roster` for a fast boot). 1-4 players work on
+**both** Fraymakers and SSF2; each live fighter binds to `p0`/`p1`/`p2`/`p3` for driving (e.g.
+`p3.getStateName()`), and `match.getCharacters().length` reports the real count on either engine.
+distinct characters in one roster work (e.g. `sandbag,mario`).
+
+mode differs by engine, and that is deliberate (each applies the subset it has):
+- **Fraymakers**: 1-2 players launch in training mode (the parity-harness "fighter + dummy" path),
+  3-4 auto-engage versus mode. `spawn --versus a,b` forces versus for a 1-2 player roster, and
+  `PEPTIDE_FORCE_TRAINING=1` pins training for the session.
+- **SSF2**: every match is a versus match (SSF2 has no separate training match mode), so `--versus`
+  is parsed but a **no-op** there, and idle extra players are simply human slots that get no input.
 
 everything else is hscript. the engine already exposes the entire Fraymakers script API
 (`CState`, `HitboxStats`, `Assist`, `MatchModifier`, `Announcer`, …) plus live character
