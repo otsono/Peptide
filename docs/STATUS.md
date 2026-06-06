@@ -242,11 +242,17 @@ roughly the order a fresh agent should pick these up.
 the live-engine tooling features we want to build. this is the one list (PEPTIDE_DESIGN.md
 points here).
 
-1. **multiplayer in quick boot.** on Fraymakers extra players spawn and are fully accessible:
-   `startMatch mario,mario` adds each extra player into the live match one per frame, and `p1`
-   binds to the live 2nd character (`match.characterCount()`==2, `p1.getStateName()`/`p1.damage`
-   readable). still open: distinct CUSTOM chars as p1 don't self-bootstrap (same-char / base-game
-   only), they don't yet take hits in a verified way, and the SSF2 side. prerequisite for #6.
+1. **multiplayer in quick boot.** the `spawn`/fastboot vocabulary takes a roster of up to 4
+   comma-separated characters (`spawn a,b,c,d [stage] [assist]`, `FRAY_ROSTER`/config `roster`,
+   `--char a,b,c,d`), and the launch builds an N-player characters array natively. live, the match
+   caps at **2 players**: a 2-char roster of the SAME char (or a base-game extra) spawns 2 and `p1`
+   binds to the live 2nd character (`match.getCharacters().length`==2, `p1.getStateName()`/`p1.damage`
+   readable, verified). still open and the wall for 3-4: (a) the headless training-mode launch only
+   spawns 2 of the array regardless of N (breaking past 2 needs a versus / free-for-all launch, the
+   shared ceiling under #3); (b) a DISTINCT custom char as an extra needs its OWN synchronous
+   self-bootstrap before launch (an async media load doesn't finish in time, so it currently only
+   same-char / base-game extras spawn clean); plus they don't yet take hits in a verified way, and
+   the SSF2 side. prerequisite for #6.
 3. **`addCharacter`** -- drop one more fighter into the LIVE match on the fly. the command
    (`addCharacter`, aliases `addchar`/`add`, wire `n`) re-arms the per-frame deferred-spawn from a
    stashed copy of the roster and fires one extra spawn, verified firing live. still open: the live
