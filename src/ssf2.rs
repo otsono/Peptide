@@ -568,6 +568,58 @@ fn cmd_identify(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `peptide ssf2 stage <file.ssf> [--out <dir>] [--id <id>] [--info]`
+///
+/// Parse an SSF2 stage `.ssf` into a geometry model and emit a Fraymakers stage
+/// package (geometry-only MVP) under `<out>/<id>/`. `--info` prints the parsed
+/// model without emitting; `--id` overrides the output id (e.g. to avoid clashing
+/// with a built-in FM stage id). This is the SSF2->FM stage converter front end.
+fn cmd_stage(args: &[String]) -> Result<()> {
+    let out_dir = flag_str(args, "--out").unwrap_or_else(|| "stages".to_string());
+    let id_override = flag_str(args, "--id");
+    let info_only = args.iter().any(|a| a == "--info");
+    let flag_vals: std::collections::HashSet<&String> =
+        ["--out", "--id"].iter().filter_map(|f| {
+            args.iter().position(|a| a == f).and_then(|i| args.get(i + 1))
+        }).collect();
+    let target = args.iter()
+        .find(|a| !a.starts_with("--") && !flag_vals.contains(a))
+        .ok_or_else(|| anyhow!("usage: peptide ssf2 stage <file.ssf> [--out <dir>] [--id <id>] [--info]"))?;
+    let target = PathBuf::from(target);
+
+    let mut model = ssf2_converter::parse_stage(&target)?;
+    if let Some(id) = id_override { model.id = id; }
+
+    // print the parsed model (the phase-2 exit criteria: platforms + bounds + spawns).
+    println!("stage '{}' (from {})", model.id, target.display());
+    if let Some(f) = model.main_floor() {
+        println!("  main floor: x[{:.1},{:.1}] top y={:.1} (w={:.1})", f.rect.left(), f.rect.right(), f.rect.top(), f.rect.w);
+    }
+    for p in model.platforms.iter().filter(|p| p.drop_through) {
+        println!("  platform:   x[{:.1},{:.1}] top y={:.1} (w={:.1}) drop-through", p.rect.left(), p.rect.right(), p.rect.top(), p.rect.w);
+    }
+    if let Some(r) = &model.death_box {
+        println!("  death box:  x[{:.1},{:.1}] y[{:.1},{:.1}]", r.left(), r.right(), r.top(), r.bottom());
+    }
+    if let Some(r) = &model.camera_box {
+        println!("  camera box: x[{:.1},{:.1}] y[{:.1},{:.1}]", r.left(), r.right(), r.top(), r.bottom());
+    }
+    for s in &model.entrances {
+        println!("  entrance {}: ({:.1},{:.1}){}", s.index, s.x, s.y, if s.face_left { " <-" } else { " ->" });
+    }
+    for s in &model.respawns {
+        println!("  respawn  {}: ({:.1},{:.1})", s.index, s.x, s.y);
+    }
+
+    if info_only { return Ok(()); }
+
+    let out_root = PathBuf::from(&out_dir);
+    let (dir, fraytools) = ssf2_converter::emit_stage(&model, &out_root)?;
+    println!("\nemitted FM stage package -> {}", dir.display());
+    println!("publish with: peptide export --project \"{}\"", fraytools.display());
+    Ok(())
+}
+
 /// Sort key that orders `DAT2.ssf` before `DAT10.ssf` (numeric run aware).
 fn natural_key(s: &str) -> (String, u64) {
     let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
@@ -587,6 +639,10 @@ USAGE:
   peptide ssf2 identify <dir|file> [--copy-stages <dest>] [--kind character|stage|other]
         Classify SSF2 .ssf resources (character / stage / other). Over a dir, scans
         every .ssf and prints a table; --copy-stages copies the stages out (named by id).
+  peptide ssf2 stage <file.ssf> [--out <dir>] [--id <id>] [--info]
+        Convert an SSF2 stage .ssf into a Fraymakers stage package (geometry-only:
+        floor + soft platforms, death/camera boxes, entrance/respawn points). Prints
+        the parsed model; --info skips emitting; --id overrides the output id.
   peptide ssf2 launch
         Quickboot the standalone SSF2.app for manual observation.
 
@@ -616,6 +672,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         "stats" => cmd_stats(rest),
         "scale" => cmd_scale(rest),
         "identify" => cmd_identify(rest),
+        "stage" => cmd_stage(rest),
         "patch" => cmd_patch(rest),
         "install" => cmd_install(rest).map(|_| ()),
         "selftest" => cmd_selftest(rest),
