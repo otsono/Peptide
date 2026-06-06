@@ -149,6 +149,19 @@ pub const MANIFEST: &[Symbol] = &[
     sym!(type "fraymakers.core.FraymakersMode",  "boot", "mode object that owns the match", true),
     sym!(type "pxf.core.$MatchSettings",         "boot", "defaultMatchRules statics", true),
     sym!(type "pxf.core.Match",                  "boot", "live-match query target", true),
+    // fast-boot fns (resolved by name so a recompile can't silently mis-point them):
+    sym!(fn "launchScreen" in "fraymakers.$Main", "boot", "fast-boot no-op target (skips Title + bulk UGC); STATIC method, $-parent", true),
+    sym!(fn "onLoaded" in "fraymakers.Main",      "boot", "headless READY hook (load-step queue head)", true),
+    sym!(fn "loadUgc" in "fraymakers.util.$UgcUtil", "boot", "launchScreen guard: the no-op target must call this", true),
+    sym!(fn "init" in "pxf.io.$ThreadTaskManager", "boot", "spawns the worker that drains the .fra load deque", true),
+    sym!(fn "cleanupMatch" in "pxf.controllers.$MatchController", "boot", "close the prior match on re-launch", true),
+    sym!(fn "destroyAllActiveMenus" in "pxf.controllers.$MenuController", "boot", "clear menus before a headless match", true),
+    // statics-object types — find_statics_global locates the global holding each:
+    sym!(type "pxf.io.$ResourceManager",         "boot", "RM statics (pool/poolHash/content maps)", true),
+    sym!(type "pxf.controllers.$MatchController", "boot", "MatchController statics (currentMatch)", true),
+    sym!(type "pxf.core.$CoreEngine",            "boot", "CoreEngine statics", true),
+    sym!(type "pxf.core.$Tildebugger",           "boot", "Tildebugger statics (console + error mirror)", true),
+    sym!(type "fraymakers.util.$UgcUtil",        "boot", "UgcUtil statics (load queue diagnostics)", true),
 
     // ── Content resolution / self-bootstrap ─────────────────────────────────
     sym!(type "pxf.io.AbstractResource",         "content", "base resource type", true),
@@ -163,6 +176,11 @@ pub const MANIFEST: &[Symbol] = &[
     sym!(fn "getResourceIdentifierString" in "pxf.io.$ResourceManager", "content", "short-name resolution", true),
     sym!(fn "getContentIdentifierString" in "pxf.io.$ResourceManager", "content", "content id for the launch payload", true),
     sym!(fn "addResource" in "pxf.io.$ResourceManager",              "content", "register the bootstrapped char", true),
+    sym!(fn "__constructor__" in "pxf.io.$Resource", "content", "build the self-bootstrap Resource (id/path/enc)", true),
+    sym!(fn "queueRequiredResources" in "pxf.io.$ResourceManager", "content", "boot required-load filter target", true),
+    sym!(fn "getResourceByID" in "pxf.io.$ResourceManager",       "content", "load-on-demand pool fetch", true),
+    sym!(fn "parseResourceIdentifier" in "pxf.io.$ResourceManager", "content", "fqid string -> resource identifier (canonicalize)", true),
+    sym!(fn "setupStage" in "pxf.core.Match",    "content", "stage-null crash-diagnostic insertion point", true),
     sym!(field "characterPxfContentMap" of "pxf.structs.PXFResource", "content", "char + assist lookup", true),
     sym!(field "stagePxfContentMap" of "pxf.structs.PXFResource",     "content", "stage lookup", true),
     sym!(fn "keys" in "haxe.ds.StringMap",       "content", "iterate content maps", true),
