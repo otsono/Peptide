@@ -1,0 +1,22 @@
+{
+  "content": [
+    {
+      "description": "battlefieldssf2 — converted from Super Smash Flash 2",
+      "id": "battlefieldssf2",
+      "metadata": {
+        "ui": {
+          "entityId": "battlefieldssf2",
+          "render": {
+            "animation": "stage"
+          }
+        }
+      },
+      "music": [],
+      "name": "battlefieldssf2",
+      "objectStatsId": "battlefieldssf2StageStats",
+      "scriptId": "battlefieldssf2Script",
+      "type": "stage"
+    }
+  ],
+  "resourceId": "battlefieldssf2"
+}
