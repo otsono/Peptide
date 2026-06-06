@@ -23,7 +23,7 @@ pub struct Root {
     pub ssf2: &'static [&'static str],
 }
 
-/// The roots `commands.hsx` binds per eval (`match`, `p0`, `p1`) plus the engine
+/// The roots `commands.hsx` binds per eval (`match`, `p0`..`p3`) plus the engine
 /// singletons the SSF2 reflection bridge exposes (`gc`/`rm`/`stats`/`root`).
 /// On Fraymakers these are hscript globals; on SSF2 each lowers to the verb chain
 /// that reaches the same live object (the per-player character node in the live match, …).
@@ -31,6 +31,8 @@ pub const ROOTS: &[Root] = &[
     Root { names: &["match"],                  ssf2: &["GC", "GET\tstageData"] },
     Root { names: &["p0", "self"],             ssf2: &["GC", "GET\tstageData", "GET\tCharacters", "IDX\t0"] },
     Root { names: &["p1"],                     ssf2: &["GC", "GET\tstageData", "GET\tCharacters", "IDX\t1"] },
+    Root { names: &["p2"],                     ssf2: &["GC", "GET\tstageData", "GET\tCharacters", "IDX\t2"] },
+    Root { names: &["p3"],                     ssf2: &["GC", "GET\tstageData", "GET\tCharacters", "IDX\t3"] },
     Root { names: &["gamecontroller", "gc"],   ssf2: &["GC"] },
     Root { names: &["resourcemanager", "rm"],  ssf2: &["RM"] },
     Root { names: &["menucontroller", "mc"],   ssf2: &["MC"] },
@@ -110,6 +112,10 @@ mod tests {
         assert_eq!(root_ssf2("MATCH"), Some(["GC", "GET\tstageData"].as_slice())); // case-insensitive
         assert_eq!(root_ssf2("p0"), root_ssf2("self"));
         assert_eq!(root_ssf2("p1").unwrap().last(), Some(&"IDX\t1"));
+        // p0..p3 all resolve (SSF2 parity with the Fraymakers p0-p3 binding); each indexes
+        // the matching live-character slot.
+        assert_eq!(root_ssf2("p2").unwrap().last(), Some(&"IDX\t2"));
+        assert_eq!(root_ssf2("p3").unwrap().last(), Some(&"IDX\t3"));
         assert!(root_ssf2("nonsense").is_none());
     }
 
