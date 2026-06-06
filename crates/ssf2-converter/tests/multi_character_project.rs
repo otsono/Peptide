@@ -70,6 +70,7 @@ fn zelda_ssf_emits_one_merged_project() {
     assert!(lib.join("costumes2.palettes").exists(),          "slot 1 (sheik) costumes2.palettes must exist");
     assert!(lib.join("costumes.palettes.meta").exists(),      "slot 0 .meta must exist");
     assert!(lib.join("costumes2.palettes.meta").exists(),     "slot 1 .meta must exist");
+    assert!(!lib.join("costumes.palettes2").exists(),         "the old malformed .palettes2 name must NOT be emitted");
     // Palette previews are CHAR-PREFIXED (not palette_preview.png{N}) so the two
     // chars' previews don't collide on base filename in the shared sprites/ dir —
     // FrayTools derives a sprite GUID from its path, so a shared base name collided.

@@ -70,7 +70,11 @@
     "dizzy": "dizzy",
     "sleep": "sleep",
     "tumble": "tumble",
-    "falling": "fall",
+    // SSF2 "falling" is the tumble/launched state (a distinct 20-frame anim), NOT
+    // the fall loop. Mapping it to "fall" made fm "fall" pull its hurtboxes from
+    // "falling" while the sprite came from "fall" (Fall_20) — so the boxes landed
+    // ~35px off the body. Route it to "tumble" so "fall" keeps its own matching boxes.
+    "falling": "tumble",
     "crash": "crash_bounce",
     "frozen": "frozen",
     "egg": "egg",
