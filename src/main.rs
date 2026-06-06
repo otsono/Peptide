@@ -1237,6 +1237,19 @@ fn connect_edit(
     // global is needed here.)
     let stage_bare_g = add_string_const(code, sname);
     let assist_bare_g = add_string_const(code, aname);
+    // CUSTOM STAGE self-bootstrap (geometry-MVP): a converted SSF2 stage lives at
+    // custom/<stage>/<stage>.fra but, unlike a built-in, is never registered in the
+    // resource pool (fast-boot skips the bulk UGC scan), so Match.setupStage gets null.
+    // If the baked stage has a custom .fra on disk (patch-time check, same gate idea as
+    // base_p1 for the char), bake its private:: resid + path and emit a trimmed load
+    // (build Resource + fetchThreaded + finishLoading + addResource) before the stage
+    // resolve. No sprite-entity caching — a geometry-only stage has no art to render, its
+    // collision/bounds/spawns come straight from the .entity. Built-in stages skip this
+    // (no custom .fra) and resolve via the normal load-on-demand path.
+    let stage_custom_path = format!("{install_dir}/custom/{sname}/{sname}.fra");
+    let custom_stage = std::path::Path::new(&stage_custom_path).exists();
+    let stage_resid_g = add_string_const(code, &format!("private::{sname}"));
+    let stage_path_g = add_string_const(code, &stage_custom_path);
     let _ = (&char_resid, &stage_fqid, &assist_fqid); // full ids no longer baked (resolve from bare)
     let assist_str = add_string(code, "assist");
     let launched_g = add_string_const(code, "LAUNCHED\n");
@@ -2423,6 +2436,34 @@ fn connect_edit(
     let idx_stage_done = ops.len();
     if let Opcode::JSLt { offset, .. } = &mut ops[idx_stage_jdef] { *offset = idx_stage_def as i32 - idx_stage_jdef as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_stage_jdone] { *offset = idx_stage_done as i32 - idx_stage_jdone as i32 - 1; }
+    // CUSTOM STAGE self-bootstrap (only emitted when the baked stage has a custom .fra).
+    // rr(55) holds the stage name (parts[2]/baked); we DON'T touch it — the load uses the
+    // baked private:: resid + path + bare name, so emit_resolve below still sees rr(55).
+    if custom_stage {
+        // idempotent: skip if already in the pool. NB: requiredMediaIds=["*"] is left as
+        // the char self-bootstrap (which runs first for a custom p1) set it, so this block
+        // never touches rr(32) = parts.array (the downstream stage/assist resolves need it).
+        ops.push(Opcode::GetGlobal { dst: rr(58), global: RefGlobal(stage_resid_g) });
+        ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(getpxf_fn), arg0: rr(58) });
+        let idx_st_jskip = ops.len();
+        ops.push(Opcode::JNotNull { reg: rr(60), offset: 0 });                 // already loaded -> skip
+        ops.push(Opcode::New { dst: rr(71) });
+        ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(stage_bare_g) }); // Resource id = bare name
+        ops.push(Opcode::GetGlobal { dst: rr(56), global: RefGlobal(stage_path_g) });
+        ops.push(Opcode::Null { dst: rr(73) });
+        ops.push(Opcode::Call4 { dst: r_ret, fun: RefFun(resource_ctor), arg0: rr(71), arg1: rr(53), arg2: rr(56), arg3: rr(73) });
+        ops.push(Opcode::Bool { dst: rr(64), value: ValBool(true) });
+        ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_isabs_field), src: rr(64) });
+        ops.push(Opcode::GetGlobal { dst: rr(72), global: RefGlobal(rt_global) });
+        ops.push(Opcode::Field { dst: rr(16), obj: rr(72), field: RefField(pxf_field) });
+        ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_type_field), src: rr(16) });
+        ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: rr(71) });
+        ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: rr(71) });
+        ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(add_resource), arg0: rr(71) });
+        let idx_st_skip = ops.len();
+        if let Opcode::JNotNull { offset, .. } = &mut ops[idx_st_jskip] { *offset = idx_st_skip as i32 - idx_st_jskip as i32 - 1; }
+        eprintln!("custom-stage self-bootstrap: emitted (private::{sname} <- {stage_custom_path})");
+    }
     emit_resolve(&mut ops, 55, 25, stage_cmap_field); // stage ref (loads on demand)
     // ASSIST: parts.length >= 4 ? parts[3] : baked assist default.
     ops.push(Opcode::Field { dst: rr(16), obj: rr(52), field: RefField(0) }); // parts.length
