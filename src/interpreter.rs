@@ -53,7 +53,7 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd { name: "help",    aliases: &["h", "?"],            wire: '\0',
           args: "",                              help: "list these commands + the hscript model (client-side; sends nothing)" },
     Cmd { name: "startMatch", aliases: &["spawn", "start", "launch", "s"], wire: 's',
-          args: "<char[,char2…]> [stage] [assist]", help: "start a match with <char> (loads custom content if needed); comma-separate players for a 2+ player match; stage/assist default to thespire/commandervideoassist" },
+          args: "<char[,char2,char3,char4]> [stage] [assist]", help: "start a match (loads custom content if needed); comma-separate up to 4 characters for a multi-player roster (live match caps at 2 today); stage/assist default to thespire/commandervideoassist" },
     Cmd { name: "eval",    aliases: &["e"],                  wire: 'e',
           args: "<hscript>",                     help: "run an hscript expression in the engine and print E:<result>. This is also the default for any unrecognized line." },
     Cmd { name: "load",    aliases: &["l"],                 wire: 'l',
@@ -366,9 +366,16 @@ pub fn parse(line: &str) -> Command {
         match cmd.name {
             "help" => return Command::Help,
             "startMatch" => {
-                // first token is the player list: comma-separated characters.
+                // first token is the player list: comma-separated characters (up to 4 —
+                // Fraymakers has 4 ports). stage/assist are the next two positional tokens.
                 let characters: Vec<String> = rest.first().copied().unwrap_or("")
                     .split(',').map(str::trim).filter(|c| !c.is_empty()).map(str::to_string).collect();
+                if characters.len() > FM_MAX_PLAYERS {
+                    return Command::Client(format!(
+                        "spawn: {} players requested but Fraymakers supports at most {FM_MAX_PLAYERS}. \
+                         Comma-separate up to {FM_MAX_PLAYERS} characters (e.g. spawn a,b,c,d stage assist).\n",
+                        characters.len()));
+                }
                 return Command::Spawn(SpawnArgs {
                     characters,
                     stage: rest.get(1).map(|s| s.to_string()),
@@ -520,6 +527,8 @@ fn parse_tune(rest: &[&str]) -> Command {
 /// multi-player `s` omits them, so the extra players stay at parts[4+].
 const FM_DEFAULT_STAGE: &str = "thespire";
 const FM_DEFAULT_ASSIST: &str = "commandervideoassist";
+/// Max players a Fraymakers match supports (4 ports). `spawn` rejects a larger roster.
+pub const FM_MAX_PLAYERS: usize = 4;
 
 pub fn command_to_wire(cmd: &Command) -> Translated {
     match cmd {
@@ -810,7 +819,7 @@ pub fn help_text() -> String {
     out.push_str("  GlobalSfx  CameraShakeType  GraphicsSettings  DisplaySettings  Ai*Option …\n");
     out.push_str("\nExamples:\n");
     out.push_str("  startMatch sandbag            start a sandbag match (default stage/assist; alias: spawn)\n");
-    out.push_str("  startMatch mario,mario thespire commandervideoassist   2-player match (comma-separated)\n");
+    out.push_str("  spawn sandbag,sandbag         2-player mirror match (comma-separated roster, up to 4)\n");
     out.push_str("  match.getCharacters()[0].getStateName()    read a character's state\n");
     out.push_str("  CState.JAB                    inspect an API enum value\n");
     out.push_str("  exit                          shut the engine down\n");
@@ -1106,6 +1115,27 @@ mod tests {
         assert_eq!(wire("load"), "l");
         assert_eq!(wire("start sandbag"), "s sandbag");
         assert_eq!(wire("quit"), "x");
+    }
+
+    #[test]
+    fn spawn_encodes_multi_player_rosters() {
+        // a 2-char mirror: wire keeps player0 at parts[1], stage/assist at parts[2..3],
+        // and the extra player at parts[4].
+        assert_eq!(wire("spawn sandbag,sandbag"),
+                   format!("s sandbag {FM_DEFAULT_STAGE} {FM_DEFAULT_ASSIST} sandbag"));
+        // a full 4-char roster with an explicit stage: players 3 and 4 land at parts[5..6].
+        assert_eq!(wire("spawn sandbag,mario,sandbag,mario thespire"),
+                   format!("s sandbag thespire {FM_DEFAULT_ASSIST} mario sandbag mario"));
+        // explicit stage + assist are honored for the multi-player slots too.
+        assert_eq!(wire("spawn a,b,c,d stg ast"), "s a stg ast b c d");
+    }
+
+    #[test]
+    fn spawn_rejects_more_than_four_players() {
+        // Fraymakers has 4 ports; a 5-char roster is a client-side error, not a wire send.
+        assert!(matches!(translate("spawn a,b,c,d,e"), Translated::Client(_)));
+        // exactly 4 is fine.
+        assert!(matches!(translate("spawn a,b,c,d"), Translated::Wire(_)));
     }
 
     #[test]

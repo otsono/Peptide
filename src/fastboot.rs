@@ -82,20 +82,25 @@ pub fn command(engine: Engine, opts: &BootOptions) -> Option<String> {
         return None;
     }
     let cfg = Config::load();
-    let ch = opts.char_name.clone().unwrap_or_else(|| cfg.char_name());
-    if ch.trim().is_empty() {
+    // CLI `--char` may itself be a comma roster; else fall back to the configured roster
+    // (`FRAY_ROSTER`/config `roster`, single `current_char` when unset).
+    let ch = opts.char_name.clone().unwrap_or_else(|| cfg.roster());
+    let ch = ch.trim();
+    if ch.is_empty() {
         return None;
     }
     Some(match engine {
-        // Spawn an EXPLICIT 2-char roster (mirror) when a single char is given. A single-char
-        // spawn lets the engine fall back to its native default player 2, which freezes the
-        // match on frame 1; an explicit player 2 loads fine. A char that already carries a
-        // comma roster is passed through untouched. (See the open TODO for the real fix.)
+        // Spawn the full roster (up to 4 players). A SINGLE char is mirrored to an explicit
+        // 2-char roster: a lone player lets the engine fall back to its native default player 2,
+        // which freezes the match on frame 1; an explicit player 2 loads fine. A multi-char
+        // roster is passed through untouched.
         Engine::Fraymakers => {
-            let roster = if ch.contains(',') { ch.clone() } else { format!("{ch},{ch}") };
+            let roster = if ch.contains(',') { ch.to_string() } else { format!("{ch},{ch}") };
             format!("spawn {roster} {} {}", cfg.stage(), cfg.assist())
         }
-        Engine::Ssf2 => format!("spawn {ch}"),
+        // SSF2 spawns player-0's character; extra roster entries are FM-only here. Take the
+        // first roster slot so a configured multi-char roster still boots cleanly.
+        Engine::Ssf2 => format!("spawn {}", ch.split(',').next().unwrap_or(ch).trim()),
     })
 }
 
@@ -160,5 +165,23 @@ mod tests {
         let opts = BootOptions { char_name: Some("mario,zelda".into()), full: false };
         let cmd = command(Engine::Fraymakers, &opts).expect("autostarts");
         assert!(cmd.starts_with("spawn mario,zelda "), "an explicit roster is passed through: {cmd}");
+    }
+
+    #[test]
+    fn fraymakers_quick_boot_passes_a_full_four_player_roster() {
+        // A 4-char roster is passed through verbatim (no mirroring); stage+assist still
+        // get appended so the engine `s` handler keeps the extra players at parts[4+].
+        let opts = BootOptions { char_name: Some("sandbag,mario,sandbag,mario".into()), full: false };
+        let cmd = command(Engine::Fraymakers, &opts).expect("autostarts");
+        assert!(cmd.starts_with("spawn sandbag,mario,sandbag,mario "), "got: {cmd}");
+        assert_eq!(cmd.split_whitespace().count(), 4, "spawn + roster + stage + assist; got: {cmd}");
+    }
+
+    #[test]
+    fn ssf2_quick_boot_takes_the_first_roster_slot() {
+        // SSF2 multiplayer is handled by its own backend; the boot command spawns player 0,
+        // so a configured FM roster still boots cleanly on SSF2 (first slot wins).
+        let opts = BootOptions { char_name: Some("mario,zelda,kirby".into()), full: false };
+        assert_eq!(command(Engine::Ssf2, &opts).as_deref(), Some("spawn mario"));
     }
 }

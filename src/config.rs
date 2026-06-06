@@ -40,6 +40,10 @@ pub struct Config {
     /// launch is chosen per-launch by picking a `.fraytools` project. Kept for
     /// back-compat (config round-trips) and the `FRAY_CHAR`/CLI fallback path.
     pub current_char: String,
+    /// Fast-boot roster: comma-separated character ids (up to 4) the quick boot
+    /// launches as players 1..N. Empty = mirror the active `current_char`. The
+    /// `FRAY_ROSTER` env wins over this. See [`Config::roster`].
+    pub roster: String,
     /// Output directory for converted characters (per-char output = `<output>/<char>`).
     pub output_dir: String,
 
@@ -161,6 +165,21 @@ impl Config {
         "commandervideo".to_string()
     }
 
+    /// Fast-boot roster: the comma-separated character ids a quick boot launches
+    /// as players 1..N (up to 4). `FRAY_ROSTER` env → config `roster` → fall back
+    /// to a single [`Config::char_name`]. Whitespace-trimmed; empty entries dropped.
+    /// A single entry means a 1-character roster (fastboot mirrors it to dodge the
+    /// native-default-p2 freeze — see [`crate::fastboot::command`]).
+    pub fn roster(&self) -> String {
+        let raw = std::env::var("FRAY_ROSTER").ok().filter(|s| !s.is_empty())
+            .or_else(|| (!self.roster.is_empty()).then(|| self.roster.clone()));
+        match raw {
+            Some(r) => r.split(',').map(str::trim).filter(|c| !c.is_empty())
+                .collect::<Vec<_>>().join(","),
+            None => self.char_name(),
+        }
+    }
+
     /// Stage id. `FRAY_STAGE` env → config → "thespire" (a real, loadable base-game stage).
     pub fn stage(&self) -> String {
         if let Ok(s) = std::env::var("FRAY_STAGE") {
@@ -245,6 +264,7 @@ mod tests {
             ssf2_app: "/Applications/SSF2.app".into(),
             ssf2_stage: "finaldestination".into(),
             current_char: "mario".into(),
+            roster: "mario,sandbag".into(),
             output_dir: "/work/out".into(),
             misc_ssf: "/ssfs/misc.ssf".into(),
             fraymakers_auto_publish: true,
@@ -261,6 +281,18 @@ mod tests {
         assert_eq!(back.fraytools_path, "/Applications/FrayTools.app");
         assert!(back.fraymakers_auto_publish);
         assert_eq!(back.stage, "battlefield");
+        assert_eq!(back.roster, "mario,sandbag");
+    }
+
+    #[test]
+    fn roster_falls_back_to_char_name_and_normalizes() {
+        // FRAY_ROSTER env is not set in this test process, so config drives roster().
+        let mut cfg = Config { current_char: "mario".into(), ..Config::default() };
+        // empty roster -> single active char
+        assert_eq!(cfg.roster(), "mario");
+        // explicit roster is trimmed + empty entries dropped
+        cfg.roster = " sandbag , mario ,, zelda ".into();
+        assert_eq!(cfg.roster(), "sandbag,mario,zelda");
     }
 
     #[test]

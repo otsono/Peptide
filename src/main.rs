@@ -2357,61 +2357,69 @@ fn connect_edit(
     // branch (which hangs for index>=1) when team>=0. team=port also gives free-for-all distinct teams.
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(team_str), src: rr(28) }); // rr28 = boxed 0
     ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });          // -> player virtual@1957 (player 1)
-    // characters = [player1, players 2..N] sized to names.length. Player 1 (rr29,
-    // fully self-bootstrapped above) lands at index 0; each extra name is resolved
-    // by id via emit_resolve (load-on-demand for built-in/pool chars) and appended
-    // with a null assist and port=index. A single-player `s` has names.length==1, so
-    // the loop body never runs and this is byte-identical to the old size-1 build.
-    // rr20=loop index, rr19=N (both Int; untouched by emit_resolve, which scratches
-    // rr16/rr39). rr67=names.array (native). rr32=chars native array (survives resolve).
-    // characters = [player1] + player2 (parts[4]) when present, in the INITIAL startMatch so the
-    // engine natively constructs+registers every fighter. _offlineMatchStart@6251 loops over this
-    // array. emit_resolve preserves r32 so the chars array survives the resolve. Players 3+ defer.
+    // characters = [player1, player2, …, playerN] — ALL roster members go into the INITIAL
+    // startMatch array so the engine natively constructs + registers every fighter via
+    // _offlineMatchStart@6251 (its per-char loop runs the full PlayerConfig path for each).
+    // Player count N = 1 + (parts.length - 4): player0 is parts[1], each extra is parts[4..].
+    // Player1 (rr29, self-bootstrapped above) is index 0; each extra name is resolved by id
+    // (emit_resolve = load-on-demand) and built into a player virtual with port=team=index.
+    //
+    // CRITICAL: every array element MUST share the t1957 type rr29 carries. A differently-typed
+    // element makes _offlineMatchStart's per-char ToVirtual choke (hang). So store player1 first,
+    // then REUSE rr29 for each extra (the array already holds the prior ref, so reuse is safe).
+    // rr19=N, rr20=loop index (both Int, untouched by emit_resolve which scratches rr16/rr39).
+    // rr32=chars native array (survives resolve). Single-player (length<5) -> N=1 and the loop
+    // body never runs, byte-identical to the old size-1 build; a 2-char roster reproduces the old
+    // mirror exactly (N=2). 3-4 players is the new path (Fraymakers has 4 ports).
+    //
+    // N = (length >= 5) ? length - 3 : 1
+    ops.push(Opcode::Int { dst: rr(19), ptr: RefInt(one_idx) });             // N = 1 (player0 only)
     ops.push(Opcode::Field { dst: rr(16), obj: rr(52), field: RefField(0) }); // parts.length
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(five_idx) });
-    let idx_arr_jsingle = ops.len();
-    ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });               // length<5 -> single
-    // --- TWO players. CRITICAL: player virtuals in the characters array MUST share the element
-    // type rr29 carries (t1957). Building player2 into a differently-typed register (e.g. rr30 = the
-    // t2536 FraymakersPlayerConfig slot) puts a type-mismatched element in the array and _offline-
-    // MatchStart's per-char ToVirtual chokes on it (the loop never reaches createPlayerConfig for
-    // that element = hang). So: alloc the array, store player1 (rr29) FIRST, then REUSE rr29 to
-    // build player2 (the array already holds player1's ref, so reuse is safe). ---
+    let idx_arr_jsolo = ops.len();
+    ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });               // length<5 -> N stays 1
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(three_idx) });
+    ops.push(Opcode::Sub { dst: rr(19), a: rr(16), b: rr(39) });             // N = length - 3
+    let idx_arr_nset = ops.len();
+    if let Opcode::JSLt { offset, .. } = &mut ops[idx_arr_jsolo] { *offset = idx_arr_nset as i32 - idx_arr_jsolo as i32 - 1; }
+    // alloc chars[N]; store player1 at [0]
     ops.push(Opcode::Type { dst: rr(31), ty: RT(1957) });
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(two_idx) });
-    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) }); // alloc[2]
+    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(19) }); // alloc[N]
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
-    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(29) }); // [0]=player1 (stored now)
-    // resolve char2 = parts[4] (rr31 = parts.array scratch; emit_resolve preserves rr32/rr42/rr29)
-    ops.push(Opcode::Field { dst: rr(31), obj: rr(52), field: RefField(1) }); // parts.array
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(four_idx) });
-    ops.push(Opcode::GetArray { dst: rr(55), array: rr(31), index: rr(39) }); // parts[4]
-    emit_resolve(&mut ops, 55, 26, char_cmap_field);                         // char2 ref -> rr26
-    // player2 virtual { character: rr26, assist: rr42, port: 1, team: 1 } -> REUSE rr29 (t1957)
+    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(29) }); // [0]=player1
+    // for i in 1..N: chars[i] = playerVirtual{ character: resolve(parts[3+i]), assist: rr42, port: i, team: i }
+    ops.push(Opcode::Int { dst: rr(20), ptr: RefInt(one_idx) });             // i = 1
+    let idx_arr_top = ops.len();
+    ops.push(Opcode::JSGte { a: rr(20), b: rr(19), offset: 0 });             // i >= N -> done
+    // NOTE on extra-char media: player1 is fully (synchronously) self-bootstrapped above, so its
+    // content map is populated when startMatch runs. An extra that's a SAME-as-p1 char or a
+    // base-game char resolves to an already-constructed resource and spawns clean. A DISTINCT
+    // custom extra would need its OWN synchronous self-bootstrap before startMatch (an async
+    // requiredMediaIds load doesn't finish in time, so spawnPlayer null-derefs
+    // characterPxfContentMap) — that's the open multi-custom TODO in docs/STATUS.md. Separately,
+    // the headless TrainingMode launch only spawns 2 of the array's players regardless of N;
+    // breaking past 2 needs a versus-mode launch (also tracked in STATUS).
+    ops.push(Opcode::Field { dst: rr(31), obj: rr(52), field: RefField(1) }); // parts.array (native)
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(three_idx) });
+    ops.push(Opcode::Add { dst: rr(16), a: rr(39), b: rr(20) });             // index = 3 + i (i=1 -> parts[4])
+    ops.push(Opcode::GetArray { dst: rr(55), array: rr(31), index: rr(16) }); // parts[3+i]
+    emit_resolve(&mut ops, 55, 26, char_cmap_field);                         // char ref -> rr26 (clobbers rr16/rr39)
     ops.push(Opcode::New { dst: rr(27) });
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(character_str), src: rr(26) });
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(assist_str), src: rr(42) });
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
-    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
+    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(20) });                    // port = i
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(port_str), src: rr(28) });
-    // team=port=1 (>=0): skips sanitizePlayerConfig's player-border branch; distinct free-for-all team.
+    // team=port=i (>=1): skips sanitizePlayerConfig's player-border branch; distinct free-for-all team.
     ops.push(Opcode::DynSet { obj: rr(27), field: RS(team_str), src: rr(28) });
-    ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });                 // REUSE rr29 -> player2 (t1957)
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
-    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(29) }); // [1]=player2
-    let idx_arr_jwrap = ops.len();
-    ops.push(Opcode::JAlways { offset: 0 });
-    // --- SINGLE player: chars = [player1] ---
-    let idx_arr_single = ops.len();
-    ops.push(Opcode::Type { dst: rr(31), ty: RT(1957) });
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
-    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(39) });
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
-    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(29) });
-    let idx_arr_wrap = ops.len();
+    ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });                 // REUSE rr29 -> player_i (t1957)
+    ops.push(Opcode::SetArray { array: rr(32), index: rr(20), src: rr(29) }); // chars[i] = player_i
+    ops.push(Opcode::Incr { dst: rr(20) });
+    let idx_arr_back = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                                 // -> loop top (re-check i<N)
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_arr_back] { *offset = idx_arr_top as i32 - idx_arr_back as i32 - 1; }
+    let idx_arr_done = ops.len();
+    if let Opcode::JSGte { offset, .. } = &mut ops[idx_arr_top] { *offset = idx_arr_done as i32 - idx_arr_top as i32 - 1; }
     ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) }); // wrap -> ArrayObj
-    if let Opcode::JSLt   { offset, .. } = &mut ops[idx_arr_jsingle] { *offset = idx_arr_single as i32 - idx_arr_jsingle as i32 - 1; }
-    if let Opcode::JAlways{ offset, .. } = &mut ops[idx_arr_jwrap]   { *offset = idx_arr_wrap as i32 - idx_arr_jwrap as i32 - 1; }
     // matchSettings = { stage: rr25, matchRules: defaultMatchRules } (virtual@675)
     ops.push(Opcode::New { dst: rr(34) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(stage_str), src: rr(25) });
@@ -2483,16 +2491,19 @@ fn connect_edit(
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_live_p1), src: r_ret });
     let idx_p1sent_skip = ops.len();
     if let Opcode::JSLt { offset, .. } = &mut ops[idx_p1sent_jskip] { *offset = idx_p1sent_skip as i32 - idx_p1sent_jskip as i32 - 1; }
-    // ---- extra players: queue them for deferred spawn (currentMatch is NULL synchronously
-    // after startMatch). The per-frame update spawnPlayer's one each frame once the match is
-    // live — see the pending-spawn block in the update epilogue. Stash parts + start indices.
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_parts), src: rr(52) }); // parts ArrayObj
+    // ---- extra players: ALL roster members are now in the INITIAL characters array (the
+    // N-player loop above), so the initial spawn needs NO deferred work. Set g_pending_idx =
+    // parts.length so the per-frame deferred-spawn loop sees `idx >= length` and stays idle.
+    // The stash (g_saved_parts + g_pending_assist + g_pending_port) is still kept so the
+    // on-demand `addCharacter` (#3) command can re-arm the deferred path to add one more
+    // fighter to the LIVE match later. g_pending_parts stays null = idle until then.
+    ops.push(Opcode::Null { dst: rr(33) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_parts), src: rr(33) }); // idle (all players in initial array)
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_saved_parts), src: rr(52) });  // keep a copy for addCharacter (#3)
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(five_idx) });
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_idx), src: rr(39) });   // player2 (parts[4]) is in the initial array; defer parts[5..]
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(two_idx) });
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_port), src: rr(39) });  // ports 0,1 in initial array; defer from port 2
-    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_assist), src: rr(42) }); // resolved assist ref (rr42) for extra players
+    ops.push(Opcode::Field { dst: rr(39), obj: rr(52), field: RefField(0) });        // parts.length
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_idx), src: rr(39) });   // idx = length -> deferred loop drained
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_port), src: rr(19) });  // next addChar port = N (free-for-all slot past the roster)
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_pending_assist), src: rr(42) }); // resolved assist ref (rr42) for addCharacter
     }
     let _ = (one_idx, launched_g, getresid_fn, spawn_char_fn, five_idx, pxf_entities_field,
              cache_sprite_entity_data, queued_g, pend_g, mr_g, mi_g, sp_ok_g, sp_null_g,
