@@ -244,7 +244,11 @@ fn main() -> anyhow::Result<()> {
             eprintln!("doctor: all critical engine symbols resolved — patcher is compatible with this build");
             return Ok(());
         }
-        "probe" => probe_edit(&mut code, 17746)?, // fraymakers.Main.onLoaded@17746
+        "probe" => {
+            let onloaded = find_fn(&code, "onLoaded", Some("fraymakers.Main"))
+                .ok_or_else(|| anyhow::anyhow!("fraymakers.Main.onLoaded not found"))?;
+            probe_edit(&mut code, onloaded)?
+        }
         "inspect" => {
             inspect(&code);
             return Ok(()); // nothing to write
@@ -523,6 +527,14 @@ fn type_name_of(code: &Bytecode, rt: hlbc::types::RefType) -> Option<&str> {
         .get(rt.0)
         .and_then(|t| t.get_type_obj())
         .map(|o| s(code, o.name))
+}
+
+/// Global-table index of a class's statics object, by the class's (`$`-prefixed)
+/// statics type name. Engine recompiles renumber the global table, so a statics
+/// object that used to sit at a pinned index must be found by its type instead.
+fn find_statics_global(code: &Bytecode, statics_type_name: &str) -> Option<usize> {
+    let t = find_type(code, statics_type_name)?;
+    code.globals.iter().position(|g| g.0 == t)
 }
 
 /// findex of a function by short name, optionally constrained to a parent type.
@@ -1165,7 +1177,25 @@ fn connect_edit(
     // addResource pushes every loaded resource onto (verified: addResource op44
     // hl.types.ArrayObj::push@89 on pool, md5 1b65af22). poolHash (f13) still
     // exists for getPXFResource lookups; we use pool for our safe iteration.
-    let rm_statics_t = code.globals[3508].0; // pxf.io.$ResourceManager statics
+    // Statics-object globals: resolve by type name (the pinned indices 3508/3511/
+    // 3458/3456/3449 drift every engine recompile). rm_g/mc_g/core_g replace the
+    // literals everywhere below.
+    let rm_g = find_statics_global(code, "pxf.io.$ResourceManager")
+        .ok_or_else(|| anyhow::anyhow!("$ResourceManager statics global not found"))?;
+    let mc_g = find_statics_global(code, "pxf.controllers.$MatchController")
+        .ok_or_else(|| anyhow::anyhow!("$MatchController statics global not found"))?;
+    let core_g = find_statics_global(code, "pxf.core.$CoreEngine")
+        .ok_or_else(|| anyhow::anyhow!("$CoreEngine statics global not found"))?;
+    eprintln!("statics globals (by name): RM={rm_g} MatchController={mc_g} CoreEngine={core_g}");
+    // Engine methods called from injected ops, resolved by name (their findices drift
+    // every recompile). Replace the old pinned literals 18287/18325/19543.
+    let getresbyid_fn = require_fn(code, "getResourceByID", Some("pxf.io.$ResourceManager"))?;
+    let cleanupmatch_fn = require_fn(code, "cleanupMatch", Some("pxf.controllers.$MatchController"))?;
+    let destroymenus_fn = require_fn(code, "destroyAllActiveMenus", Some("pxf.controllers.$MenuController"))?;
+    // fqid String -> parsed resource identifier (t669), round-tripped through
+    // getResourceIdentifierString to canonicalize. Old pinned literal 18224.
+    let parseresid_fn = require_fn(code, "parseResourceIdentifier", Some("pxf.io.$ResourceManager"))?;
+    let rm_statics_t = code.globals[rm_g].0; // pxf.io.$ResourceManager statics
     let poolhash_field = find_field(code, rm_statics_t, "poolHash")
         .ok_or_else(|| anyhow::anyhow!("poolHash field not found"))?;
     let pool_field = find_field(code, rm_statics_t, "pool")
@@ -1243,14 +1273,15 @@ fn connect_edit(
     let _ = (k_inst_pos_g, k_inst_zero_g); // reserved for a follow-up installedUgc probe
     // UgcUtil statics g3449: directoriesToLoad=field 11 (ArrayObj),
     // installedUgc=field 10 (an object whose field 3 is an ArrayObj of items).
-    let ugc_statics_g = 3449usize;
+    let ugc_statics_g = find_statics_global(code, "fraymakers.util.$UgcUtil")
+        .ok_or_else(|| anyhow::anyhow!("$UgcUtil statics global not found"))?;
     // Diagnostic: currentMatch (statics f6) is null right after `s` even when the
     // match is alive, because it's only set in onMatchReady. _matches (statics
     // f13, an ArrayObj) is pushed in the same onMatchReady, so its length tells us
     // whether a Match object actually exists yet. This disambiguates "match live,
     // q reads the wrong ref" (matches>0) from "match never started" (matches==0).
     let q_matches_g = add_string_const(code, "Q:MATCHES_NONEMPTY\n");
-    let mc_statics_t = code.globals[3511].0; // pxf.controllers.$MatchController statics
+    let mc_statics_t = code.globals[mc_g].0; // pxf.controllers.$MatchController statics
     let cm_field = find_field(code, mc_statics_t, "currentMatch")
         .ok_or_else(|| anyhow::anyhow!("currentMatch field not found"))?;
     let matches_field = find_field(code, mc_statics_t, "_matches")
@@ -1425,7 +1456,10 @@ fn connect_edit(
     // + addResource. getPXFResource then returns it with _data populated (spawnPlayer's
     // requirement). See docs/ENGINE_RE_MAP_v2.md.
     let resource_t = require_type(code, "pxf.io.Resource")?;
-    let resource_ctor = 17827usize; // pxf.io.$Resource.__constructor__ (Resource,String id,String path,t241 enc) — verified this build
+    // pxf.io.$Resource.__constructor__ (Resource, String id, String path, enc). The
+    // findex drifts every recompile (the old pinned 17827 now points at
+    // Resource::convertBytesToImageBitmapData → garbage-bytes SIGSEGV), so by name.
+    let resource_ctor = require_fn(code, "__constructor__", Some("pxf.io.$Resource"))?;
     let fetch_threaded = require_fn(code, "fetchThreaded", Some("pxf.io.Resource"))?;
     let finish_loading = require_fn(code, "finishLoading", Some("pxf.io.AbstractResource"))?;
     let add_resource = require_fn(code, "addResource", Some("pxf.io.$ResourceManager"))?;
@@ -1469,7 +1503,7 @@ fn connect_edit(
     let cache_sprite_entity = require_fn(code, "cacheSpriteEntity", Some("pxf.io.$ResourceManager"))?;
     let sm_get = require_fn(code, "get", Some("haxe.ds.StringMap"))?;
     // pxfSpriteEntityCache field (g3508) — for the getPXFSpriteEntity self-heal patch.
-    let spritecache_field = find_field(code, code.globals[3508].0, "pxfSpriteEntityCache")
+    let spritecache_field = find_field(code, code.globals[rm_g].0, "pxfSpriteEntityCache")
         .ok_or_else(|| anyhow::anyhow!("pxfSpriteEntityCache field not found"))?;
     let pxf_entitymap_field = find_field(code, pxfres_t, "entityMap")
         .ok_or_else(|| anyhow::anyhow!("PXFResource.entityMap field not found"))?;
@@ -1530,7 +1564,7 @@ fn connect_edit(
     // (added by the always-subscribed gameStarted handler); menuContainer is a
     // sibling painted on top. Hiding menuContainer's h2d display object reveals
     // the match — non-destructively, so currentMatch / the live match stay intact.
-    let core_statics_t = code.globals[3458].0; // pxf.core.$CoreEngine statics
+    let core_statics_t = code.globals[core_g].0; // pxf.core.$CoreEngine statics
     let menuc_field = find_field(code, core_statics_t, "menuContainer")
         .ok_or_else(|| anyhow::anyhow!("menuContainer field not found"))?;
     let container_t = find_type(code, "pxf.display.Container")
@@ -1547,7 +1581,8 @@ fn connect_edit(
     // ImprovedConsole extends h2d.Console, so the field works as the receiver.
     let run_command = require_fn(code, "runCommand", Some("h2d.Console"))?;
     let set_enabled = require_fn(code, "set_enabled", Some("pxf.core.ImprovedConsole"))?;
-    let tilde_global = 3456usize; // pxf.core.$Tildebugger static (TODO: resolve by name)
+    let tilde_global = find_statics_global(code, "pxf.core.$Tildebugger")
+        .ok_or_else(|| anyhow::anyhow!("$Tildebugger statics global not found"))?;
     let tilde_t = code.globals[tilde_global].0;
     let console_field = find_field(code, tilde_t, "console")
         .ok_or_else(|| anyhow::anyhow!("Tildebugger.console field not found"))?;
@@ -1726,7 +1761,7 @@ fn connect_edit(
             prefix_starts.push(prefix_start);
             ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(pref) });
             ops.push(Opcode::Call2 { dst: r(57), fun: RefFun(str_add), arg0: r(53), arg1: r(56) });
-            ops.push(Opcode::Call2 { dst: r(out), fun: RefFun(18224), arg0: r(57), arg1: r(38) });
+            ops.push(Opcode::Call2 { dst: r(out), fun: RefFun(parseresid_fn), arg0: r(57), arg1: r(38) });
             if k + 1 < n {
                 ops.push(Opcode::Call1 { dst: r(58), fun: RefFun(getresid_fn), arg0: r(out) });
                 ops.push(Opcode::Call1 { dst: r(60), fun: RefFun(getpxf_fn), arg0: r(58) });
@@ -1739,7 +1774,7 @@ fn connect_edit(
                 // char) skip via the JNotNull guard; ids not in the pool skip via JNull.
                 let j_already = ops.len();
                 ops.push(Opcode::JNotNull { reg: r(60), offset: 0 });   // already loaded -> skip load
-                ops.push(Opcode::Call2 { dst: r(68), fun: RefFun(18287), arg0: r(58), arg1: r(38) }); // getResourceByID
+                ops.push(Opcode::Call2 { dst: r(68), fun: RefFun(getresbyid_fn), arg0: r(58), arg1: r(38) }); // getResourceByID
                 let j_notpool = ops.len();
                 ops.push(Opcode::JNull { reg: r(68), offset: 0 });      // not in pool -> skip load
                 ops.push(Opcode::UnsafeCast { dst: r(71), src: r(68) }); // AbstractResource -> Resource
@@ -1766,7 +1801,7 @@ fn connect_edit(
         ops.push(Opcode::JAlways { offset: 0 });
         // L_FULL
         let l_full = ops.len();
-        ops.push(Opcode::Call2 { dst: r(out), fun: RefFun(18224), arg0: r(name), arg1: r(38) });
+        ops.push(Opcode::Call2 { dst: r(out), fun: RefFun(parseresid_fn), arg0: r(name), arg1: r(38) });
         let l_done = ops.len();
         let set = |ops: &mut Vec<Opcode>, at: usize, tgt: usize| {
             let off = tgt as i32 - at as i32 - 1;
@@ -1841,7 +1876,7 @@ fn connect_edit(
         ops.push(Opcode::GetGlobal { dst: r(53), global: RefGlobal(star_g) });
         ops.push(Opcode::SetArray { array: r(32), index: r(39), src: r(53) });
         ops.push(Opcode::Call1 { dst: r(33), fun: RefFun(257), arg0: r(32) });
-        ops.push(Opcode::GetGlobal { dst: r(65), global: RefGlobal(3508) });
+        ops.push(Opcode::GetGlobal { dst: r(65), global: RefGlobal(rm_g) });
         ops.push(Opcode::SetField { obj: r(65), field: RefField(reqmedia_field), src: r(33) });
         ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: r(71) });
         ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: r(71) });
@@ -1937,11 +1972,11 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(9), global: RefGlobal(g_shown) });
     let idx_jshown = ops.len();
     ops.push(Opcode::JTrue { cond: rr(9), offset: 0 });                // already done -> recv
-    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(mc_g) });
     ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) }); // currentMatch
     let idx_jnomatch = ops.len();
     ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                // no match yet -> recv
-    ops.push(Opcode::Call0 { dst: r_ret, fun: RefFun(19543) });        // destroyAllActiveMenus
+    ops.push(Opcode::Call0 { dst: r_ret, fun: RefFun(destroymenus_fn) });        // destroyAllActiveMenus
     ops.push(Opcode::Bool { dst: rr(1), value: ValBool(true) });
     ops.push(Opcode::SetGlobal { global: RefGlobal(g_shown), src: rr(1) });
     let idx_after_reveal = ops.len();
@@ -1955,7 +1990,7 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(33), global: RefGlobal(g_pending_parts) });
     let idx_pend_jidle = ops.len();
     ops.push(Opcode::JNull { reg: rr(33), offset: 0 });                          // nothing pending -> end
-    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(mc_g) });
     ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) }); // currentMatch
     let idx_pend_jnomatch = ops.len();
     ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                          // match not live yet -> end
@@ -1975,7 +2010,7 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(star_g) });
     ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(53) });
     ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) });
-    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(3508) });
+    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(rm_g) });
     ops.push(Opcode::SetField { obj: rr(65), field: RefField(reqmedia_field), src: rr(33) });
     emit_resolve(&mut ops, 55, 26, char_cmap_field);                            // char ref (load-on-demand)
     // ONE-SHOT MR: past emit_resolve
@@ -2271,7 +2306,7 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(star_g) });
     ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(53) });
     ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) });
-    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(3508) });
+    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(rm_g) });
     ops.push(Opcode::SetField { obj: rr(65), field: RefField(reqmedia_field), src: rr(33) });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: rr(71) });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: rr(71) });
@@ -2328,11 +2363,11 @@ fn connect_edit(
     // MatchController.cleanupMatch@18325(currentMatch): removes it from _matches, kills its
     // events, nulls currentMatch, tears down its entities. First launch -> currentMatch null
     // -> skipped. Without this, successive `s` commands stacked matches (old ones never closed).
-    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });            // MatchController statics
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(mc_g) });            // MatchController statics
     ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) }); // currentMatch
     let idx_jnocm = ops.len();
     ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                              // none -> skip cleanup
-    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(18325), arg0: rr(44) });        // cleanupMatch(currentMatch)
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(cleanupmatch_fn), arg0: rr(44) });        // cleanupMatch(currentMatch)
     let idx_after_cleanup = ops.len();
     if let Opcode::JNull { offset, .. } = &mut ops[idx_jnocm] { *offset = idx_after_cleanup as i32 - idx_jnocm as i32 - 1; }
     // ---- create the match mode: createMode({ resource: <mode ref> }) ----
@@ -2358,7 +2393,7 @@ fn connect_edit(
         let idx_mode_done = ops.len();
         if let Opcode::JSLt { offset, .. } = &mut ops[idx_mode_train] { *offset = idx_mode_done as i32 - idx_mode_train as i32 - 1; }
     }
-    ops.push(Opcode::Call2 { dst: rr(25), fun: RefFun(18224), arg0: rr(14), arg1: rr(38) }); // mode resource ref
+    ops.push(Opcode::Call2 { dst: rr(25), fun: RefFun(parseresid_fn), arg0: rr(14), arg1: rr(38) }); // mode resource ref
     ops.push(Opcode::New { dst: rr(34) });                             // modeConfig dynobj
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(resource_str), src: rr(25) });
     ops.push(Opcode::ToVirtual { dst: rr(49), src: rr(34) });          // -> modeConfig virtual@1194
@@ -2544,7 +2579,7 @@ fn connect_edit(
     // it (parity with SSF2's loadingMenu). Gated on `headless` so a manual `s` in a --full
     // bridge boot doesn't force it.
     if headless {
-        ops.push(Opcode::GetGlobal { dst: ls_mc_reg, global: RefGlobal(3511) });
+        ops.push(Opcode::GetGlobal { dst: ls_mc_reg, global: RefGlobal(mc_g) });
         ops.push(Opcode::StaticClosure { dst: ls_fac_reg, fun: RefFun(create_loading_screen) });
         ops.push(Opcode::SetField { obj: ls_mc_reg, field: RefField(lsf_field), src: ls_fac_reg });
     }
@@ -2630,7 +2665,7 @@ fn connect_edit(
         add_regs(f, &a_regs);
         ops.extend(a_ops);
     }
-    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(mc_g) });
     ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) }); // currentMatch
     let idx_q_jnull = ops.len();
     ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                 // null -> NO_MATCH write
@@ -2643,7 +2678,7 @@ fn connect_edit(
     ops.push(Opcode::JAlways { offset: 0 });                            // -> L_ORIG
     // currentMatch null: check _matches.length to tell "match exists" from "none".
     let idx_q_nomatch = ops.len();
-    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(mc_g) });
     ops.push(Opcode::Field { dst: rr(45), obj: rr(43), field: RefField(matches_field) }); // _matches (ArrayObj)
     let idx_q_jm_null = ops.len();
     ops.push(Opcode::JNull { reg: rr(45), offset: 0 });                 // _matches null -> NO_MATCH
@@ -2694,7 +2729,7 @@ fn connect_edit(
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
     let idx_k_after_dirs = ops.len();
     // pool = RM.pool (field 12)
-    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(3508) });
+    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(rm_g) });
     ops.push(Opcode::Field { dst: rr(66), obj: rr(65), field: RefField(pool_field) });
     let idx_k_jnull_pool = ops.len();
     ops.push(Opcode::JNull { reg: rr(66), offset: 0 });                   // null pool -> k_done
@@ -2757,7 +2792,7 @@ fn connect_edit(
     ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(star_g) });
     ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(53) });
     ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) }); // wrap -> ArrayObj
-    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(3508) });    // RM statics
+    ops.push(Opcode::GetGlobal { dst: rr(65), global: RefGlobal(rm_g) });    // RM statics
     ops.push(Opcode::SetField { obj: rr(65), field: RefField(reqmedia_field), src: rr(33) });
     // synchronous read+decode (main thread): fetchThreaded -> File.getBytes -> createFromBytes -> set_DataAsPxf
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: rr(71) });
@@ -2922,7 +2957,7 @@ fn connect_edit(
         // output = sock2.output
         a.op(Opcode::Field { dst: rr(5), obj: rr(10), field: RefField(out_field) });
         // walk to player-0 Character
-        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(3511) });
+        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(mc_g) });
         a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
         a.jnull(r_cm, nomatch);
         a.op(Opcode::Field { dst: r_chars, obj: r_cm, field: RefField(characters_field) });
@@ -2991,7 +3026,7 @@ fn connect_edit(
     let idx_jne_t = ops.len();
     ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });            // not 't' -> L_ORIG
     ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
-    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(mc_g) });
     ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });
     let idx_t_jnomatch = ops.len();
     ops.push(Opcode::JNull { reg: rr(44), offset: 0 });
@@ -3059,7 +3094,7 @@ fn connect_edit(
         let r_acc  = a.reg(str_t);           // accumulator
         let r_lbl  = a.reg(str_t);
         a.op(Opcode::Field { dst: rr(5), obj: rr(10), field: RefField(out_field) });
-        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(3511) });
+        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(mc_g) });
         a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
         a.jnull(r_cm, nomatch);
         a.op(Opcode::Field { dst: r_chs, obj: r_cm, field: RefField(characters_field) });
@@ -3159,7 +3194,7 @@ fn connect_edit(
         let r_acc  = a.reg(str_t);
         let r_lbl  = a.reg(str_t);
         a.op(Opcode::Field { dst: rr(5), obj: rr(10), field: RefField(out_field) });
-        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(3511) });
+        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(mc_g) });
         a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
         a.jnull(r_cm, nomatch);
         a.op(Opcode::Field { dst: r_chs, obj: r_cm, field: RefField(characters_field) });
@@ -3226,7 +3261,7 @@ fn connect_edit(
         let r_dyn = a.reg(9); let r_str = a.reg(str_t); let r_acc = a.reg(str_t); let r_lbl = a.reg(str_t);
         let r_true = a.reg(7); let r_rv = a.reg(0);
         a.op(Opcode::Field { dst: rr(5), obj: rr(10), field: RefField(out_field) });
-        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(3511) });
+        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(mc_g) });
         a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
         a.jnull(r_cm, nomatch);
         a.op(Opcode::Field { dst: r_chs, obj: r_cm, field: RefField(characters_field) });
@@ -3294,7 +3329,7 @@ fn connect_edit(
         let r_arr = a.reg(11); let r_el = a.reg(9); let r_char = a.reg(char_entity_t);
         let r_false = a.reg(7); let r_acc = a.reg(str_t);
         a.op(Opcode::Field { dst: rr(5), obj: rr(10), field: RefField(out_field) });
-        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(3511) });
+        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(mc_g) });
         a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
         a.jnull(r_cm, nomatch);
         a.op(Opcode::Field { dst: r_chs, obj: r_cm, field: RefField(characters_field) });
@@ -3423,7 +3458,7 @@ fn connect_edit(
     if let Opcode::JNotNull { offset, .. } = &mut ops[idx_e_haveinterp] { *offset = idx_e_interp_ready as i32 - idx_e_haveinterp as i32 - 1; }
     // ---- bind p0 = MatchController.currentMatch.characters[0] (as Dynamic; null if no match) ----
     // so scripts can reach the live character: `p0.toState(...)`, `p0.body.x`, etc.
-    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(mc_g) });
     ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });   // currentMatch
     // NOTE: `match` is an hscript facade defined in commands.hsx (pxf.core.Match has no
     // RTTI so its fields/methods don't reflect); we bind the reliable `characters` array
@@ -3461,7 +3496,7 @@ fn connect_edit(
     // no match / no array -> all extras null.
     ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(zero_idx) });                      // default length 0
     ops.push(Opcode::Null { dst: rr(32) });                                            // default no native array
-    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(mc_g) });
     ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });   // currentMatch
     let idx_px_jnomatch = ops.len();
     ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                                // no match -> extras null
@@ -3691,7 +3726,7 @@ fn connect_edit(
     {
         let mut a = Asm::new(0); // reuses the fn's own regs (0-4); allocates none
         let l_ret = a.label();
-        a.op(Opcode::GetGlobal { dst: Reg(3), global: RefGlobal(3508) });
+        a.op(Opcode::GetGlobal { dst: Reg(3), global: RefGlobal(rm_g) });
         a.op(Opcode::Field { dst: Reg(2), obj: Reg(3), field: RefField(spritecache_field) });
         a.op(Opcode::Call2 { dst: Reg(1), fun: RefFun(sm_get), arg0: Reg(2), arg1: Reg(0) });
         a.jnotnull(Reg(1), l_ret);                       // hit -> return it
@@ -3719,13 +3754,34 @@ fn connect_edit(
     // (which created the game/menu containers + MatchController + set updateLoopReady),
     // so `s` dispatches without ever reaching a menu. startMatch reuses the existing
     // gameContainer (created in configLoaded, before preLoad).
+    // Resolve the boot fns by name (pinned findices drift every recompile). NOTE:
+    // launchScreen is a STATIC method, so its parent is the `$`-companion type
+    // `fraymakers.$Main`, not the instance type `fraymakers.Main`. onLoaded is an
+    // instance method on `fraymakers.Main`.
+    let launchscreen_fx = require_fn(code, "launchScreen", Some("fraymakers.$Main"))?;
+    let onloaded_fx = require_fn(code, "onLoaded", Some("fraymakers.Main"))?;
+    // Guard: confirm we resolved the RIGHT launchScreen by checking it actually
+    // calls UgcUtil::loadUgc (its defining behaviour — "show Title + bulk-load UGC").
+    // A rename/refactor that moved that logic elsewhere fails loudly here.
+    let loadugc_fx = require_fn(code, "loadUgc", Some("fraymakers.util.$UgcUtil"))?;
+    {
+        let lf = function_index_by_findex(code, launchscreen_fx)
+            .ok_or_else(|| anyhow::anyhow!("launchScreen fn not found"))?;
+        let calls_loadugc = code.functions[lf].ops.iter().any(|op| matches!(op,
+            Opcode::Call0 { fun, .. } | Opcode::Call1 { fun, .. } if fun.0 == loadugc_fx));
+        if !calls_loadugc {
+            anyhow::bail!("launchScreen@{launchscreen_fx} does not call UgcUtil::loadUgc — \
+                           engine boot flow changed; re-verify the fast-boot no-op target");
+        }
+    }
+    eprintln!("boot fns (by name): launchScreen={launchscreen_fx} onLoaded={onloaded_fx}");
     if headless {
-        let lfi = function_index_by_findex(code, 17771)
-            .ok_or_else(|| anyhow::anyhow!("launchScreen@17771 not found"))?;
+        let lfi = function_index_by_findex(code, launchscreen_fx)
+            .ok_or_else(|| anyhow::anyhow!("launchScreen fn not found"))?;
         let lf = &mut code.functions[lfi];
         let vreg = add_regs(lf, &[0]); // void-typed scratch reg for the early Ret
         insert_ops_front(lf, vec![Opcode::Ret { ret: Reg(vreg) }]);
-        eprintln!("connect_edit: [headless] no-op'd launchScreen@17771 (skip Title + loadUgc)");
+        eprintln!("connect_edit: [headless] no-op'd launchScreen (skip Title + loadUgc)");
     }
     // Signal READY + set g_ready. The hook point differs by mode so the harness's
     // "wait for READY, then send commands" handshake fires at the right moment:
@@ -3737,8 +3793,8 @@ fn connect_edit(
     //     any `s` the harness sends) only happens once the title is up. A match launches
     //     only if `s` is explicitly sent, after the title — never auto-skipped.
     let menu_ready_g = add_string_const(code, "READY\n");
-    let ready_hook = if headless { 17746 } else { 17771 };
-    inject_ready_flag(code, ready_hook, g_ready, g_sock, out_field, write_str, flush, menu_ready_g, sock_t, out_t, str_t, enc_t, 17842)?;
+    let ready_hook = if headless { onloaded_fx } else { launchscreen_fx };
+    inject_ready_flag(code, ready_hook, g_ready, g_sock, out_field, write_str, flush, menu_ready_g, sock_t, out_t, str_t, enc_t)?;
     // FAST BOOT (deeper): filter the boot required-resources load to skip ALL public:: base
     // content (the ~10.6s of base-character renders we don't need for a 1-char training
     // match). Keeps global:: (hscript/vfx/vsmode) + private:: (common/fonts). The match's
@@ -3825,11 +3881,14 @@ fn inject_stage_diag(
     use hlbc::types::{RefField, RefFun, RefGlobal};
     let diag_g = add_string_const(code,
         "RESDIAG: stage failed to load — Match.setupStage got null from getPXFResource for resource id: ");
-    let fi = function_index_by_findex(code, 2491)
-        .ok_or_else(|| anyhow::anyhow!("Match.setupStage@2491 not found"))?;
+    let setupstage_fx = require_fn(code, "setupStage", Some("pxf.core.Match"))?;
+    let fi = function_index_by_findex(code, setupstage_fx)
+        .ok_or_else(|| anyhow::anyhow!("Match.setupStage not found"))?;
+    // getPXFResource's findex drifts; resolve by name and assert op73 calls THAT.
+    let getpxf_findex = require_fn(code, "getPXFResource", Some("pxf.io.$ResourceManager"))?;
     // Verify the op layout at the insertion point before touching it.
     match code.functions[fi].ops.get(73) {
-        Some(Opcode::Call1 { dst, fun, .. }) if dst.0 == 15 && fun.0 == 18288 => {}
+        Some(Opcode::Call1 { dst, fun, .. }) if dst.0 == 15 && fun.0 == getpxf_findex => {}
         o => anyhow::bail!("setupStage op73 not getPXFResource->r15: {o:?}"),
     }
     match code.functions[fi].ops.get(74) {
@@ -3962,8 +4021,9 @@ fn inject_required_filter(code: &mut Bytecode) -> anyhow::Result<()> {
     };
     let pub_g = add_string_const(code, "public::");
     let zero_c = add_int(code, 0);
-    let qfi = function_index_by_findex(code, 18234)
-        .ok_or_else(|| anyhow::anyhow!("queueRequiredResources@18234 not found"))?;
+    let qrr_findex = require_fn(code, "queueRequiredResources", Some("pxf.io.$ResourceManager"))?;
+    let qfi = function_index_by_findex(code, qrr_findex)
+        .ok_or_else(|| anyhow::anyhow!("queueRequiredResources not found"))?;
     // scratch regs: r_str(String), r_null(startidx_t), r_idx(Int), r_zero(Int)
     let base = add_regs(&mut code.functions[qfi], &[13, startidx_t, 3, 3]);
     let (r_str, r_null, r_idx, r_zero) = (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3));
@@ -4256,8 +4316,12 @@ fn inject_ready_flag(
     code: &mut Bytecode, ctor_findex: usize, g_ready: usize, g_sock: usize,
     out_field: usize, write_str: usize, flush: usize, marker_g: usize,
     sock_t: usize, out_t: usize, str_t: usize, enc_t: usize,
-    load_ugc: usize,
 ) -> anyhow::Result<()> {
+    // ThreadTaskManager.init — spawns the worker thread that drains the UGC/.fra
+    // load deque. Its findex drifts every recompile (the old pinned 25781 now points
+    // at DelayBasedNetworkMatch::delayBasedInputCheck → SIGSEGV), so resolve by name.
+    let ttm_init = find_fn(code, "init", Some("pxf.io.$ThreadTaskManager"))
+        .ok_or_else(|| anyhow::anyhow!("ThreadTaskManager.init not found"))?;
     let fidx = function_index_by_findex(code, ctor_findex)
         .ok_or_else(|| anyhow::anyhow!("ctor @{ctor_findex} not found"))?;
     let f = &mut code.functions[fidx];
@@ -4265,7 +4329,6 @@ fn inject_ready_flag(
     let (r_b, r_sock, r_out, r_str, r_enc, r_ret) =
         (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4), Reg(base + 5));
     use hlbc::types::{RefField, RefFun, RefGlobal};
-    let _ = load_ugc; // fast-boot: no longer called here (see note below)
     let mut ops = vec![
         // Kick off custom-content (UGC) loading. Our injected boot path
         // (Title.start → MainMenu) bypasses Main::launchScreen, which normally
@@ -4281,7 +4344,7 @@ fn inject_ready_flag(
         // even if our headless boot path skipped the normal init. (Verified: the
         // ONLY function that pops the task deque is init's spawned worker; without
         // it the `k` pool-key dump showed only private::common, never custom.)
-        Opcode::Call0 { dst: r_ret, fun: RefFun(25781) },
+        Opcode::Call0 { dst: r_ret, fun: RefFun(ttm_init) },
         // FAST BOOT: do NOT call loadInLocalUgc here — that scanned custom/ and loaded
         // EVERY custom character (the slow "loading all custom content" screen). We only
         // need the ONE char `s` requests, which the `s`/`l` self-bootstrap loads
