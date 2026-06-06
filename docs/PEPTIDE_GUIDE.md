@@ -53,7 +53,7 @@ script API. run `./build/release/peptide help` for the live list.
 
 | Command | What it does |
 |---|---|
-| `spawn <char[,char2,char3,char4]> [stage] [assist]` | start a 1-4 player match (loads your custom `.fra`s); comma-separate the roster (e.g. `spawn sandbag,sandbag` mirror, `spawn sandbag,mario,sandbag,mario` 4-player); stage/assist default to thespire / commandervideoassist |
+| `spawn <char[,…]> [stage] [assist] [--versus]` | start a 1-4 player match (loads your custom `.fra`s); comma-separate the roster (e.g. `spawn sandbag,sandbag` mirror, `spawn sandbag,mario,sandbag,mario` 4-player); 3-4 players auto-engage versus mode, `--versus` forces it for 1-2; stage/assist default to thespire / commandervideoassist |
 | `eval <hscript>` | run an hscript expression and print `E:<result>`. **also the default for any unrecognized line** |
 | `hold <control[+control…]>` | hold control inputs (e.g. `hold down+special`); feeds the engine's input→action mapping, not a synthetic keypress |
 | `release` | release all injected controls |
@@ -68,7 +68,8 @@ the roster is comma-separated and accepted everywhere a character is (the `spawn
 in training mode (the parity-harness "fighter + dummy" path), 3-4 auto-engage versus mode. distinct
 custom characters are each synchronously self-bootstrapped, so a mixed roster like `sandbag,mario`
 works. each live fighter binds to `p0`/`p1`/`p2`/`p3` for driving (e.g. `p3.getStateName()`), and
-`match.getCharacters().length` reports the real count. `PEPTIDE_FORCE_TRAINING=1` pins training mode.
+`match.getCharacters().length` reports the real count. `spawn --versus a,b` forces versus mode for a
+1-2 player roster; `PEPTIDE_FORCE_TRAINING=1` pins training mode for the whole session.
 
 everything else is hscript. the engine already exposes the entire Fraymakers script API
 (`CState`, `HitboxStats`, `Assist`, `MatchModifier`, `Announcer`, …) plus live character

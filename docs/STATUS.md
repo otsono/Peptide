@@ -251,9 +251,9 @@ points here).
    (`spawn sandbag,mario,sandbag,mario` -> 4 live, verified). every fighter binds to `p0`/`p1`/`p2`/`p3`
    and `match.getCharacters().length` reports the real count (read host-side from the live match, since
    hscript lacks RTTI on the raw character list). verified live: rosters of 1/2/2-distinct/3/4 ->
-   `getCharacters()` 2/2/2/3/4, zero crashes, `p3.getStateName()` drivable. still open: they don't yet
-   take hits in a verified way, a `--versus` flag to force versus for 1-2 players, and the SSF2 side.
-   prerequisite for #6. (impl note: extras are built as UNROLLED straight-line blocks -- emitting the
+   `getCharacters()` 2/2/2/3/4, zero crashes, `p3.getStateName()` drivable. `spawn --versus a,b` forces
+   versus mode for a 1-2 player roster (wire byte `S`). still open: they don't yet take hits in a
+   verified way, and the SSF2 side. prerequisite for #6. (impl note: extras are built as UNROLLED straight-line blocks -- emitting the
    char-resolve helper inside a runtime back-branch corrupts the loop counter, so each of the <=3
    extras is its own guarded block.)
 3. **`addCharacter`** -- drop one more fighter into the LIVE match on the fly. the command

@@ -53,7 +53,7 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd { name: "help",    aliases: &["h", "?"],            wire: '\0',
           args: "",                              help: "list these commands + the hscript model (client-side; sends nothing)" },
     Cmd { name: "startMatch", aliases: &["spawn", "start", "launch", "s"], wire: 's',
-          args: "<char[,char2,char3,char4]> [stage] [assist]", help: "start a match (loads custom content if needed); comma-separate up to 4 characters for a 1-4 player match (3-4 auto-engage versus mode); stage/assist default to thespire/commandervideoassist" },
+          args: "<char[,…]> [stage] [assist] [--versus]", help: "start a 1-4 player match (loads custom content if needed); comma-separate up to 4 characters (3-4 auto-engage versus mode; --versus forces versus for 1-2); stage/assist default to thespire/commandervideoassist" },
     Cmd { name: "eval",    aliases: &["e"],                  wire: 'e',
           args: "<hscript>",                     help: "run an hscript expression in the engine and print E:<result>. This is also the default for any unrecognized line." },
     Cmd { name: "load",    aliases: &["l"],                 wire: 'l',
@@ -227,6 +227,9 @@ pub struct SpawnArgs {
     pub characters: Vec<String>,
     pub stage: Option<String>,
     pub assist: Option<String>,
+    /// `--versus`: force versus mode even for a 1-2 player roster (3-4 players engage versus
+    /// automatically regardless). No-op on SSF2.
+    pub force_versus: bool,
 }
 
 impl SpawnArgs {
@@ -366,9 +369,12 @@ pub fn parse(line: &str) -> Command {
         match cmd.name {
             "help" => return Command::Help,
             "startMatch" => {
-                // first token is the player list: comma-separated characters (up to 4 —
-                // Fraymakers has 4 ports). stage/assist are the next two positional tokens.
-                let characters: Vec<String> = rest.first().copied().unwrap_or("")
+                // `--versus` may appear anywhere; pull it out, then parse positionally. The first
+                // remaining token is the player list: comma-separated characters (up to 4 — Fraymakers
+                // has 4 ports). stage/assist are the next two positional tokens.
+                let force_versus = rest.contains(&"--versus");
+                let pos: Vec<&str> = rest.iter().copied().filter(|t| *t != "--versus").collect();
+                let characters: Vec<String> = pos.first().copied().unwrap_or("")
                     .split(',').map(str::trim).filter(|c| !c.is_empty()).map(str::to_string).collect();
                 if characters.len() > FM_MAX_PLAYERS {
                     return Command::Client(format!(
@@ -378,8 +384,9 @@ pub fn parse(line: &str) -> Command {
                 }
                 return Command::Spawn(SpawnArgs {
                     characters,
-                    stage: rest.get(1).map(|s| s.to_string()),
-                    assist: rest.get(2).map(|s| s.to_string()),
+                    stage: pos.get(1).map(|s| s.to_string()),
+                    assist: pos.get(2).map(|s| s.to_string()),
+                    force_versus,
                 });
             }
             "eval" => return Command::Eval(rest.join(" ")),
@@ -541,7 +548,9 @@ pub fn command_to_wire(cmd: &Command) -> Translated {
             // So for >1 player we MUST emit the stage+assist slots (defaulting to the same
             // ids the patcher bakes) to keep the extra players at parts[4+]. SSF2 multiplayer
             // is handled separately by `Ssf2Target::spawn` (idle dummies) and never uses this.
-            let mut wire = String::from("s");
+            // `--versus` swaps the lead byte to `S` (force versus mode); the engine dispatch
+            // treats `S` and `s` identically except for the mode it selects.
+            let mut wire = String::from(if a.force_versus { "S" } else { "s" });
             if !a.characters.is_empty() { wire.push(' '); wire.push_str(a.character()); }
             if a.characters.len() > 1 {
                 wire.push(' '); wire.push_str(a.stage.as_deref().unwrap_or(FM_DEFAULT_STAGE));
