@@ -151,10 +151,22 @@ fn build_entity(model: &StageModel) -> Value {
     let id = &model.id;
     let mut b = EntityBuilder::new(id);
 
-    // depth containers (the engine slots fighters/effects into these)
+    // depth containers — the engine slots fighters / effects / structures / shadows into
+    // these by container type during match setup. The full set must be present (matching a
+    // shipped stage): the engine looks them up by type when placing a player, so a missing
+    // CHARACTERS_BACK/FRONT (etc.) container leaves the spawned player nowhere to attach and
+    // it silently never enters the match.
+    b.add_container("Background Behind", "BACKGROUND_BEHIND_CONTAINER");
     b.add_container("Background Effects", "BACKGROUND_EFFECTS_CONTAINER");
+    b.add_container("Background Shadows", "BACKGROUND_SHADOWS_CONTAINER");
+    b.add_container("Background Structures", "BACKGROUND_STRUCTURES_CONTAINER");
+    b.add_container("Characters Back", "CHARACTERS_BACK_CONTAINER");
     b.add_container("Characters", "CHARACTERS_CONTAINER");
+    b.add_container("Characters Front", "CHARACTERS_FRONT_CONTAINER");
+    b.add_container("Foreground Structures", "FOREGROUND_STRUCTURES_CONTAINER");
+    b.add_container("Foreground Shadows", "FOREGROUND_SHADOWS_CONTAINER");
     b.add_container("Foreground Effects", "FOREGROUND_EFFECTS_CONTAINER");
+    b.add_container("Foreground Front", "FOREGROUND_FRONT_CONTAINER");
 
     // boundaries
     if let Some(r) = &model.death_box { b.add_collision_box("Death Box", "DEATH_BOX", r); }
