@@ -42,3 +42,7 @@ pub mod abc_inject;
 // In-process conversion entry point (was the `ssf2_converter` binary's main()).
 pub mod convert;
 pub use convert::{run_conversion, ConversionSummary, ConvertOptions};
+
+// Asset classification (identify which `.ssf` is a character / stage / other).
+pub mod classify;
+pub use classify::{classify_ssf, AssetKind, SsfClassification};
