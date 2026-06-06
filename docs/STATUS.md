@@ -242,26 +242,26 @@ roughly the order a fresh agent should pick these up.
 the live-engine tooling features we want to build. this is the one list (PEPTIDE_DESIGN.md
 points here).
 
-1. **multiplayer in quick boot.** the `spawn`/fastboot vocabulary takes a roster of up to 4
-   comma-separated characters (`spawn a,b,c,d [stage] [assist]`, `FRAY_ROSTER`/config `roster`,
-   `--char a,b,c,d`), and the launch builds an N-player characters array natively. live, the match
-   caps at **2 players**: a 2-char roster of the SAME char (or a base-game extra) spawns 2 and `p1`
-   binds to the live 2nd character (`match.getCharacters().length`==2, `p1.getStateName()`/`p1.damage`
-   readable, verified). still open and the wall for 3-4: (a) the headless training-mode launch only
-   spawns 2 of the array regardless of N (breaking past 2 needs a versus / free-for-all launch, the
-   shared ceiling under #3); (b) a DISTINCT custom char as an extra needs its OWN synchronous
-   self-bootstrap before launch (an async media load doesn't finish in time, so it currently only
-   same-char / base-game extras spawn clean); plus they don't yet take hits in a verified way, and
-   the SSF2 side. prerequisite for #6.
+1. **multiplayer in quick boot.** 1-4 player matches work on Fraymakers. the `spawn`/fastboot
+   vocabulary takes a roster of up to 4 comma-separated characters (`spawn a,b,c,d [stage] [assist]`,
+   `FRAY_ROSTER`/config `roster`, `--char a,b,c,d`); the launch builds the full N-player characters
+   array and the engine constructs every fighter natively. 1-2 players use training mode (the
+   parity-harness "fighter + dummy" path), 3-4 auto-engage versus mode (selected at runtime by roster
+   size). each extra is synchronously self-bootstrapped, so DISTINCT custom chars in one roster work
+   (`spawn sandbag,mario,sandbag,mario` -> 4 live, verified). every fighter binds to `p0`/`p1`/`p2`/`p3`
+   and `match.getCharacters().length` reports the real count (read host-side from the live match, since
+   hscript lacks RTTI on the raw character list). verified live: rosters of 1/2/2-distinct/3/4 ->
+   `getCharacters()` 2/2/2/3/4, zero crashes, `p3.getStateName()` drivable. still open: they don't yet
+   take hits in a verified way, a `--versus` flag to force versus for 1-2 players, and the SSF2 side.
+   prerequisite for #6. (impl note: extras are built as UNROLLED straight-line blocks -- emitting the
+   char-resolve helper inside a runtime back-branch corrupts the loop counter, so each of the <=3
+   extras is its own guarded block.)
 3. **`addCharacter`** -- drop one more fighter into the LIVE match on the fly. the command
    (`addCharacter`, aliases `addchar`/`add`, wire `n`) re-arms the per-frame deferred-spawn from a
-   stashed copy of the roster and fires one extra spawn, verified firing live. still open: the live
-   match allocates 2 player slots, so the per-frame spawn past slot 2 returns null (`SP:0`) and the count
-   stays 2. the cap is the match MODE: the self-bootstrap launch uses training mode (the only mode
-   that starts from the minimal headless config), which is 1v1. breaking past 2 needs a versus /
-   free-for-all mode, and that mode's launch needs the CSS/menu/scene context the injected-bytecode
-   path can't supply (see `fraymakers-engine-internals`). so addChar's per-frame spawn trigger is
-   done and correct; the 2-player ceiling is the shared architectural wall under #1/#6/#7.
+   stashed copy of the roster and fires one extra spawn, verified firing live. now that the launch
+   path lands the full roster up front (#1), the typical use case is covered there; this is for adding
+   a fighter mid-match. open: the deferred per-frame add hasn't been re-verified against a versus-mode
+   match for slots past the initial roster.
 4. **scenario replay test env.** the `scenario` command sets up a deterministic, re-runnable
    scene: `scenario <p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]` places both players at
    fixed positions (optionally with world-space momentum), resets them to neutral STAND, then

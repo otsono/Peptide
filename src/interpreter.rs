@@ -53,7 +53,7 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd { name: "help",    aliases: &["h", "?"],            wire: '\0',
           args: "",                              help: "list these commands + the hscript model (client-side; sends nothing)" },
     Cmd { name: "startMatch", aliases: &["spawn", "start", "launch", "s"], wire: 's',
-          args: "<char[,char2,char3,char4]> [stage] [assist]", help: "start a match (loads custom content if needed); comma-separate up to 4 characters for a multi-player roster (live match caps at 2 today); stage/assist default to thespire/commandervideoassist" },
+          args: "<char[,char2,char3,char4]> [stage] [assist]", help: "start a match (loads custom content if needed); comma-separate up to 4 characters for a 1-4 player match (3-4 auto-engage versus mode); stage/assist default to thespire/commandervideoassist" },
     Cmd { name: "eval",    aliases: &["e"],                  wire: 'e',
           args: "<hscript>",                     help: "run an hscript expression in the engine and print E:<result>. This is also the default for any unrecognized line." },
     Cmd { name: "load",    aliases: &["l"],                 wire: 'l',
@@ -819,7 +819,8 @@ pub fn help_text() -> String {
     out.push_str("  GlobalSfx  CameraShakeType  GraphicsSettings  DisplaySettings  Ai*Option …\n");
     out.push_str("\nExamples:\n");
     out.push_str("  startMatch sandbag            start a sandbag match (default stage/assist; alias: spawn)\n");
-    out.push_str("  spawn sandbag,sandbag         2-player mirror match (comma-separated roster, up to 4)\n");
+    out.push_str("  spawn sandbag,sandbag         2-player mirror match (comma-separated roster)\n");
+    out.push_str("  spawn sandbag,mario,sandbag,mario   4-player versus match (1-4 players; p0..p3 drive each)\n");
     out.push_str("  match.getCharacters()[0].getStateName()    read a character's state\n");
     out.push_str("  CState.JAB                    inspect an API enum value\n");
     out.push_str("  exit                          shut the engine down\n");

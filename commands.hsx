@@ -29,12 +29,14 @@ log = function(msg) { __td.log("" + msg, null, null); return "logged: " + msg; }
 // The live character list, as a NATIVE hscript array. (The raw pxf.core.Match.characters
 // ArrayObj has no usable RTTI — .length/Std.string on it return garbage — so we build a
 // fresh array from the per-eval-bound characters.) Returning an Array lets callers chain:
-// match.getCharacters()[0].getStateName(), match.getCharacters().length. p1 is null until
-// the dummy-opponent feature binds a second character.
+// match.getCharacters()[0].getStateName(), match.getCharacters().length. p1..p3 are null
+// until the match actually has that many players (1-4 supported).
 getCharacters = function() {
   var a = [];
   if (p0 != null) a.push(p0);
   if (p1 != null) a.push(p1);
+  if (p2 != null) a.push(p2);
+  if (p3 != null) a.push(p3);
   return a;
 };
 

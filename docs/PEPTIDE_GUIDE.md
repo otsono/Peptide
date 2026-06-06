@@ -53,7 +53,7 @@ script API. run `./build/release/peptide help` for the live list.
 
 | Command | What it does |
 |---|---|
-| `spawn <char[,char2,char3,char4]> [stage] [assist]` | start a match (loads your custom `.fra`); comma-separate up to 4 characters for a multi-player roster (e.g. `spawn sandbag,sandbag` mirror); stage/assist default to thespire / commandervideoassist |
+| `spawn <char[,char2,char3,char4]> [stage] [assist]` | start a 1-4 player match (loads your custom `.fra`s); comma-separate the roster (e.g. `spawn sandbag,sandbag` mirror, `spawn sandbag,mario,sandbag,mario` 4-player); stage/assist default to thespire / commandervideoassist |
 | `eval <hscript>` | run an hscript expression and print `E:<result>`. **also the default for any unrecognized line** |
 | `hold <control[+control…]>` | hold control inputs (e.g. `hold down+special`); feeds the engine's input→action mapping, not a synthetic keypress |
 | `release` | release all injected controls |
@@ -64,9 +64,11 @@ script API. run `./build/release/peptide help` for the live list.
 | `help` | list these + the hscript model (sends nothing) |
 
 the roster is comma-separated and accepted everywhere a character is (the `spawn` command,
-`--char a,b,c,d`, and the `FRAY_ROSTER` env / config `roster` for a fast boot). live, the match
-currently caps at **2 players** and clean extras are a same-as-player-1 char or a base-game char;
-a 3rd/4th slot and distinct custom extras are tracked in [`docs/STATUS.md`](STATUS.md) #1.
+`--char a,b,c,d`, and the `FRAY_ROSTER` env / config `roster` for a fast boot). 1-2 players launch
+in training mode (the parity-harness "fighter + dummy" path), 3-4 auto-engage versus mode. distinct
+custom characters are each synchronously self-bootstrapped, so a mixed roster like `sandbag,mario`
+works. each live fighter binds to `p0`/`p1`/`p2`/`p3` for driving (e.g. `p3.getStateName()`), and
+`match.getCharacters().length` reports the real count. `PEPTIDE_FORCE_TRAINING=1` pins training mode.
 
 everything else is hscript. the engine already exposes the entire Fraymakers script API
 (`CState`, `HitboxStats`, `Assist`, `MatchModifier`, `Announcer`, …) plus live character
