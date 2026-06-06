@@ -46,3 +46,9 @@ pub use convert::{run_conversion, ConversionSummary, ConvertOptions};
 // Asset classification (identify which `.ssf` is a character / stage / other).
 pub mod classify;
 pub use classify::{classify_ssf, AssetKind, SsfClassification};
+
+// SSF2 stage geometry parser + Fraymakers stage emitter (the stage-porting pipeline).
+pub mod stage_parser;
+pub use stage_parser::{parse_stage, Platform, Rect, SpawnPoint, StageModel};
+pub mod stage_emit;
+pub use stage_emit::emit_stage;

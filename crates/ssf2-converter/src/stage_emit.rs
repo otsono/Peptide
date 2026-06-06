@@ -1,0 +1,321 @@
+//! stage_emit — emit a Fraymakers stage package from a parsed [`StageModel`].
+//!
+//! Mirrors the converted-character layout but for a `type:"stage"` resource:
+//! ```text
+//! stages/<id>/
+//!   <id>.fraytools
+//!   library/
+//!     manifest.json (+ .meta)
+//!     entities/<id>.entity
+//!     scripts/stage/<id>Script.hx (+ .meta)
+//!     scripts/stage/<id>StageStats.hx (+ .meta)
+//! ```
+//! The `.entity` is the normalized FrayTools graph (symbols + keyframes + layers +
+//! one `stage` animation) reversed from the public `Fraymakers/stage-template`. MVP
+//! is geometry-only: COLLISION_BOX death/camera boxes, LINE_SEGMENT floor + soft
+//! platforms, ENTRANCE/RESPAWN points. Art (IMAGE layers + parallax) is deferred.
+
+use anyhow::{Context, Result};
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+
+use crate::stage_parser::{Rect, StageModel};
+use crate::uuid_gen::det_uuid;
+
+/// Emit the FM stage package for `model` under `out_root/<id>/`. Returns the
+/// project dir and the `.fraytools` path (for the FrayTools publish step).
+pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathBuf)> {
+    let id = &model.id;
+    let dir = out_root.join(id);
+    let lib = dir.join("library");
+    std::fs::create_dir_all(lib.join("entities")).context("mkdir entities")?;
+    std::fs::create_dir_all(lib.join("scripts").join("stage")).context("mkdir scripts/stage")?;
+
+    let entity = build_entity(model);
+    write_json(&lib.join("entities").join(format!("{id}.entity")), &entity)?;
+
+    write_json(&lib.join("manifest.json"), &build_manifest(id))?;
+    write_meta(&lib.join("manifest.json.meta"), id, "manifest", "json", None, None)?;
+
+    let scripts = lib.join("scripts").join("stage");
+    std::fs::write(scripts.join(format!("{id}Script.hx")), script_hx(id))?;
+    write_meta(&scripts.join(format!("{id}Script.hx.meta")), id, &format!("{id}Script"), "", Some("STAGE"), None)?;
+    std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id))?;
+    write_meta(&scripts.join(format!("{id}StageStats.hx.meta")), id, &format!("{id}StageStats"), "hscript", None, None)?;
+
+    let fraytools = dir.join(format!("{id}.fraytools"));
+    write_json(&fraytools, &build_fraytools())?;
+
+    Ok((dir, fraytools))
+}
+
+fn write_json(path: &Path, v: &Value) -> Result<()> {
+    std::fs::write(path, serde_json::to_string_pretty(v)?).with_context(|| format!("write {}", path.display()))
+}
+
+// ─────────────────────────────── the .entity ────────────────────────────────
+
+/// Builders accumulate symbols/keyframes/layers; each `add_*` returns the layer
+/// `$id` so the animation can list them in order.
+struct EntityBuilder<'a> {
+    id: &'a str,
+    seq: usize,
+    symbols: Vec<Value>,
+    keyframes: Vec<Value>,
+    layers: Vec<Value>,
+    anim_layers: Vec<String>,
+}
+
+impl<'a> EntityBuilder<'a> {
+    fn new(id: &'a str) -> Self {
+        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![] }
+    }
+    /// A stable per-entity uuid for `role` (e.g. `"layer:Floor"`).
+    fn uid(&mut self, role: &str) -> String {
+        self.seq += 1;
+        det_uuid(&format!("stage::{}::{}::{}", self.id, role, self.seq))
+    }
+
+    /// A CONTAINER layer (Characters / effects depth groups). No symbol.
+    fn add_container(&mut self, name: &str, container_type: &str) {
+        let kf = self.uid(&format!("kf:{name}"));
+        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "type": "CONTAINER" }));
+        let lid = self.uid(&format!("layer:{name}"));
+        self.layers.push(json!({
+            "$id": lid, "hidden": false, "locked": false, "name": name, "type": "CONTAINER",
+            "keyframes": [kf],
+            "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "containerType": container_type } }
+        }));
+        self.anim_layers.push(lid);
+    }
+
+    /// A COLLISION_BOX layer (death / camera box). `rect` in FM coords.
+    fn add_collision_box(&mut self, name: &str, box_type: &str, rect: &Rect) {
+        let sym = self.uid(&format!("sym:{name}"));
+        self.symbols.push(json!({
+            "$id": sym, "type": "COLLISION_BOX", "alpha": null, "color": null, "pluginMetadata": {},
+            "x": rect.left(), "y": rect.top(), "scaleX": rect.w, "scaleY": rect.h,
+            "pivotX": rect.w / 2.0, "pivotY": 0, "rotation": 0
+        }));
+        let kf = self.uid(&format!("kf:{name}"));
+        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "COLLISION_BOX" }));
+        let lid = self.uid(&format!("layer:{name}"));
+        self.layers.push(json!({
+            "$id": lid, "hidden": false, "locked": false, "name": name, "type": "COLLISION_BOX",
+            "defaultAlpha": 0.5, "defaultColor": "0xd1d1d1", "keyframes": [kf],
+            "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "collisionBoxType": box_type } }
+        }));
+        self.anim_layers.push(lid);
+    }
+
+    /// A LINE_SEGMENT layer (walkable surface). `pm` is the per-symbol
+    /// FraymakersMetadata (structureType + ledge/dropThrough flags).
+    fn add_line_segment(&mut self, name: &str, points: [f64; 4], pm: Value) {
+        let sym = self.uid(&format!("sym:{name}"));
+        self.symbols.push(json!({
+            "$id": sym, "type": "LINE_SEGMENT", "alpha": 0.5, "color": "0xeeeeee",
+            "points": [points[0], points[1], points[2], points[3]],
+            "pluginMetadata": { "com.fraymakers.FraymakersMetadata": pm }
+        }));
+        let kf = self.uid(&format!("kf:{name}"));
+        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "LINE_SEGMENT" }));
+        let lid = self.uid(&format!("layer:{name}"));
+        self.layers.push(json!({
+            "$id": lid, "hidden": false, "locked": false, "name": name, "type": "LINE_SEGMENT",
+            "keyframes": [kf],
+            "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "lineSegmentType": "LINE_SEGMENT_STRUCTURE" } }
+        }));
+        self.anim_layers.push(lid);
+    }
+
+    /// A POINT layer (entrance / respawn). `point_type` = ENTRANCE_POINT|RESPAWN_POINT.
+    fn add_point(&mut self, name: &str, point_type: &str, index: usize, x: f64, y: f64, rotation: i64) {
+        let sym = self.uid(&format!("sym:{name}"));
+        self.symbols.push(json!({
+            "$id": sym, "type": "POINT", "alpha": 1, "color": "0xff0000", "pluginMetadata": {},
+            "x": x, "y": y, "rotation": rotation
+        }));
+        let kf = self.uid(&format!("kf:{name}"));
+        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "POINT" }));
+        let lid = self.uid(&format!("layer:{name}"));
+        self.layers.push(json!({
+            "$id": lid, "hidden": false, "locked": false, "name": name, "type": "POINT",
+            "keyframes": [kf],
+            "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "pointType": point_type, "index": index } }
+        }));
+        self.anim_layers.push(lid);
+    }
+}
+
+fn build_entity(model: &StageModel) -> Value {
+    let id = &model.id;
+    let mut b = EntityBuilder::new(id);
+
+    // depth containers (the engine slots fighters/effects into these)
+    b.add_container("Background Effects", "BACKGROUND_EFFECTS_CONTAINER");
+    b.add_container("Characters", "CHARACTERS_CONTAINER");
+    b.add_container("Foreground Effects", "FOREGROUND_EFFECTS_CONTAINER");
+
+    // boundaries
+    if let Some(r) = &model.death_box { b.add_collision_box("Death Box", "DEATH_BOX", r); }
+    if let Some(r) = &model.camera_box { b.add_collision_box("Camera Box", "CAMERA_BOX", r); }
+
+    // collision: main floor (solid, with ledges) + soft platforms (drop-through)
+    let main_floor = model.main_floor().cloned();
+    let mut plat_n = 0usize;
+    for p in &model.platforms {
+        let r = &p.rect;
+        let points = [r.left(), r.top(), r.right(), r.top()];
+        if !p.drop_through && main_floor.as_ref().map(|m| m.rect == *r).unwrap_or(false) {
+            b.add_line_segment("Floor", points, json!({
+                "structureType": "FLOOR", "leftLedge": true, "rightLedge": true, "dropThrough": false
+            }));
+        } else if p.drop_through {
+            plat_n += 1;
+            b.add_line_segment(&format!("Platform {plat_n} Floor"), points, json!({
+                "structureType": "FLOOR", "leftLedge": false, "rightLedge": false, "dropThrough": true
+            }));
+        } else {
+            // a secondary solid surface (rare) — emit as a plain floor
+            plat_n += 1;
+            b.add_line_segment(&format!("Solid {plat_n} Floor"), points, json!({
+                "structureType": "FLOOR", "leftLedge": false, "rightLedge": false, "dropThrough": false
+            }));
+        }
+    }
+
+    // spawns: entrances (match start) + respawns. Fill 4 of each (the engine expects
+    // a full set); if SSF2 declared fewer, fall back to the main floor center.
+    let floor_cx = main_floor.as_ref().map(|m| m.rect.left() + m.rect.w / 2.0).unwrap_or(0.0);
+    let floor_top = main_floor.as_ref().map(|m| m.rect.top()).unwrap_or(0.0);
+    for i in 0..4usize {
+        let (x, y, rot) = model.entrances.iter().find(|s| s.index == i)
+            .map(|s| (s.x, s.y, if s.face_left { 270 } else { 90 }))
+            .unwrap_or((floor_cx + (i as f64 - 1.5) * 60.0, floor_top - 40.0, 90));
+        b.add_point(&format!("Entrance {i}"), "ENTRANCE_POINT", i, x, y, rot);
+    }
+    for i in 0..4usize {
+        let (x, y, rot) = model.respawns.iter().find(|s| s.index == i)
+            .map(|s| (s.x, s.y, if s.face_left { 270 } else { 90 }))
+            .unwrap_or((floor_cx + (i as f64 - 1.5) * 60.0, floor_top - 200.0, 90));
+        b.add_point(&format!("Respawn {i}"), "RESPAWN_POINT", i, x, y, rot);
+    }
+
+    let anim = json!({
+        "$id": b.uid("anim:stage"), "name": "stage", "pluginMetadata": {}, "layers": b.anim_layers
+    });
+
+    json!({
+        "version": 14,
+        "id": id,
+        "guid": det_uuid(&format!("stage::{id}::entity")),
+        "export": true,
+        "plugins": ["com.fraymakers.FraymakersMetadata"],
+        "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "objectType": "STAGE", "version": "0.4.0" } },
+        "symbols": b.symbols,
+        "keyframes": b.keyframes,
+        "layers": b.layers,
+        "animations": [anim],
+        "tags": [],
+        "terrains": [],
+        "tilesets": [],
+        "paletteMap": { "paletteCollection": null, "paletteMap": null }
+    })
+}
+
+// ───────────────────────── manifest / scripts / project ─────────────────────
+
+fn build_manifest(id: &str) -> Value {
+    json!({
+        "resourceId": id,
+        "content": [{
+            "id": id,
+            "name": id,
+            "description": format!("{id} — converted from Super Smash Flash 2"),
+            "type": "stage",
+            "objectStatsId": format!("{id}StageStats"),
+            "scriptId": format!("{id}Script"),
+            "music": [],
+            "metadata": {
+                "ui": { "entityId": id, "render": { "animation": "stage" } }
+            }
+        }]
+    })
+}
+
+fn build_fraytools() -> Value {
+    json!({
+        "frame_rate": 60,
+        "snapToPixel": true,
+        "paletteShaderMode": "RG_MAP",
+        "plugins": [
+            "com.fraymakers.ContentExporter",
+            "com.fraymakers.FraymakersTypes",
+            "com.fraymakers.FraymakersMetadata"
+        ],
+        "pluginMetadata": {},
+        "publishFolders": [ { "id": "build0", "path": "./build" } ],
+        "version": 12
+    })
+}
+
+fn write_meta(path: &Path, _stage_id: &str, id: &str, language: &str, object_type: Option<&str>, _unused: Option<()>) -> Result<()> {
+    let mut pm = json!({});
+    if let Some(ot) = object_type {
+        pm = json!({ "com.fraymakers.FraymakersMetadata": { "objectType": ot, "version": "0.4.0" } });
+    }
+    let plugins: Vec<&str> = if object_type.is_some() { vec!["com.fraymakers.FraymakersMetadata"] } else { vec![] };
+    let v = json!({
+        "export": true,
+        "guid": det_uuid(&format!("stage::meta::{id}")),
+        "id": id,
+        "language": language,
+        "pluginMetadata": pm,
+        "plugins": plugins,
+        "tags": [],
+        "version": 1
+    });
+    write_json(path, &v)
+}
+
+/// Geometry-only StageStats: stage sprite + camera defaults, no shadows/backgrounds.
+fn stage_stats_hx(id: &str) -> String {
+    format!(
+        "// Stats for {id} (converted from SSF2; geometry-only MVP)\n\n\
+{{\n\
+\tspriteContent: self.getResource().getContent(\"{id}\"),\n\
+\tanimationId: \"stage\",\n\
+\tambientColor: 0xffffffff,\n\
+\tshadowLayers: [],\n\
+\tcamera: {{\n\
+\t\tstartX: 0,\n\
+\t\tstartY: 0,\n\
+\t\tzoomX: 0,\n\
+\t\tzoomY: 0,\n\
+\t\tcamEaseRate: 1 / 11,\n\
+\t\tcamZoomRate: 1 / 15,\n\
+\t\tminZoomHeight: 360,\n\
+\t\tinitialHeight: 360,\n\
+\t\tinitialWidth: 640,\n\
+\t\tbackgrounds: []\n\
+\t}}\n\
+}}\n"
+    )
+}
+
+/// Minimal stage Script.hx — pause the (single-frame) timeline; no hazards/scroll.
+fn script_hx(id: &str) -> String {
+    format!(
+        "// API Script for {id} (converted from SSF2; geometry-only MVP)\n\n\
+function initialize() {{\n\
+\tself.pause();\n\
+}}\n\
+function update() {{}}\n\
+function onTeardown() {{}}\n\
+function onKill() {{}}\n\
+function onStale() {{}}\n\
+function afterPushState() {{}}\n\
+function afterPopState() {{}}\n\
+function afterFlushStates() {{}}\n"
+    )
+}
