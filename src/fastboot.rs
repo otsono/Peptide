@@ -98,9 +98,10 @@ pub fn command(engine: Engine, opts: &BootOptions) -> Option<String> {
             let roster = if ch.contains(',') { ch.to_string() } else { format!("{ch},{ch}") };
             format!("spawn {roster} {} {}", cfg.stage(), cfg.assist())
         }
-        // SSF2 spawns player-0's character; extra roster entries are FM-only here. Take the
-        // first roster slot so a configured multi-char roster still boots cleanly.
-        Engine::Ssf2 => format!("spawn {}", ch.split(',').next().unwrap_or(ch).trim()),
+        // SSF2 also supports the full roster (Ssf2Target::spawn builds an N-slot versus Game),
+        // so pass the comma roster through unchanged. SSF2 resolves its stage from config inside
+        // its own spawn, so only the characters are needed here (no stage/assist tokens).
+        Engine::Ssf2 => format!("spawn {ch}"),
     })
 }
 
@@ -178,10 +179,10 @@ mod tests {
     }
 
     #[test]
-    fn ssf2_quick_boot_takes_the_first_roster_slot() {
-        // SSF2 multiplayer is handled by its own backend; the boot command spawns player 0,
-        // so a configured FM roster still boots cleanly on SSF2 (first slot wins).
+    fn ssf2_quick_boot_passes_the_full_roster() {
+        // SSF2's backend builds an N-slot versus Game, so a multi-char roster boots the whole
+        // match (no stage/assist tokens — SSF2 resolves the stage from config in its own spawn).
         let opts = BootOptions { char_name: Some("mario,zelda,kirby".into()), full: false };
-        assert_eq!(command(Engine::Ssf2, &opts).as_deref(), Some("spawn mario"));
+        assert_eq!(command(Engine::Ssf2, &opts).as_deref(), Some("spawn mario,zelda,kirby"));
     }
 }
