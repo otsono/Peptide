@@ -25,6 +25,18 @@ a few are hand-verified deep (drive moves + physics + anim): `sandbag` (the refe
 `mario` (the deepest, a full 18-move sweep), `kirby`, `bowser`, `fox`. everybody else is
 batch-verified (spawn + jab + special_neutral, no crash).
 
+## stage porting
+
+`peptide ssf2 stage <file.ssf>` converts an SSF2 stage to a Fraymakers stage package
+(geometry MVP, no art yet). it parses the SSF2 placement tree for the floor, soft
+platforms, death/camera boxes, and entrance/respawn beacons, then emits the FM `.entity`
++ manifest + StageStats/Script + `.fraytools`. battlefield (DAT328) converts; FrayTools
+imports it and `peptide export` builds + publishes the `.fra` to the engine's `custom/`
+dir. live spawn-verify is pending a spawn-patcher re-sync to the current engine build (a
+2026-06-05 engine update renumbered some hardcoded boot indices; this blocks all spawning,
+not just stages). deferred follow-ups: art layers (IMAGE + parallax), hazards, moving
+platforms, music, and multi-stage batch conversion.
+
 ## hitbox-stat parity
 
 **every character's hitbox stats match the SSF2 source. no exceptions right now.**
