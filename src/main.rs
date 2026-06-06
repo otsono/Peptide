@@ -312,6 +312,16 @@ fn main() -> anyhow::Result<()> {
             disasm(&code, fx);
             return Ok(());
         }
+        "strs" => {
+            // print one or more strings by index: `peptide <in> _ strs 24593 24755 …`
+            for a in &args[4..] {
+                if let Ok(i) = a.parse::<usize>() {
+                    if i < code.strings.len() { eprintln!("  [{i}] = {:?}", code.strings[i].as_str()); }
+                    else { eprintln!("  [{i}] = <out of range>"); }
+                }
+            }
+            return Ok(());
+        }
         "typefields" => {
             let tname = args.get(4).cloned().unwrap();
             // allow "t123" or a bare index to address a type directly
@@ -1054,7 +1064,15 @@ fn connect_edit(
     // startMatch@6227 with {characters, matchSettings, pauseMenu}. This runs the
     // engine's own offline-match flow (gates transition, menu suspend/restore) —
     // no menu hand-teardown, and the mode stays alive to restore menus on match end.
-    let mode_fullid = add_string_const(code, "global::vsmode.trainingmode");
+    // Launch mode resource, selected at RUNTIME by roster size. trainingmode (the verified-stable
+    // 1-2 player path, keeps the parity-harness "one fighter + one dummy" use case) is used for
+    // <=2 players; vsmode (free-for-all) for 3-4. Both ids are baked; the `s` handler picks one
+    // from parts.length (see the createMode site). `PEPTIDE_FORCE_TRAINING=1` pins trainingmode
+    // (debug/comparison escape hatch).
+    let trainingmode_g = add_string_const(code, "global::vsmode.trainingmode");
+    let vsmode_g = add_string_const(code, "global::vsmode.vsmode");
+    let force_training = std::env::var("PEPTIDE_FORCE_TRAINING").as_deref() == Ok("1");
+    eprintln!("mode-launch: trainingmode + vsmode baked; runtime-selected by roster size (force_training={force_training})");
     let characters_str = add_string(code, "characters");
     let matchsettings_str = add_string(code, "matchSettings");
     let pausemenu_str = add_string(code, "pauseMenu");
@@ -1102,6 +1120,7 @@ fn connect_edit(
     let three_idx = add_int(code, 3);
     let four_idx = add_int(code, 4);
     let five_idx = add_int(code, 5);
+    let six_idx = add_int(code, 6);
     eprintln!("line-cmd: alloc={bytes_alloc} set={bytes_set} getString={bytes_getstring} split={str_split}");
     // short-name resolution: a bare "sandbag" (no "::") is tried against each
     // namespace prefix; the first whose resource actually exists wins.
@@ -1327,7 +1346,9 @@ fn connect_edit(
     let hs_apply_globals = find_fn(code, "applyInterpreterGlobals", Some("fraymakers.api.$FraymakersScriptGlobals")).unwrap_or(18218);
     let hs_interp_script = find_fn(code, "interpretScript", Some("pxf.api.$ApiScript")).unwrap_or(2202);
     let eval_p0_g = add_string_const(code, "p0");  // bound to player-0 Character before each eval
-    let eval_p1_g = add_string_const(code, "p1");  // bound to player-1 Character (null until 2-player matches)
+    let eval_p1_g = add_string_const(code, "p1");  // bound to player-1 Character (null until 2+ players)
+    let eval_p2_g = add_string_const(code, "p2");  // bound to player-2 Character (null until 3+ players)
+    let eval_p3_g = add_string_const(code, "p3");  // bound to player-3 Character (null until 4 players)
     let eval_match_g = add_string_const(code, "match"); // bound to MatchController.currentMatch each eval
     let eval_chars_g = add_string_const(code, "characters"); // bound to the live character ArrayObj each eval
     // The command implementations, in hscript (ported from bytecode). Loaded ONCE into
@@ -2294,8 +2315,23 @@ fn connect_edit(
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(18325), arg0: rr(44) });        // cleanupMatch(currentMatch)
     let idx_after_cleanup = ops.len();
     if let Opcode::JNull { offset, .. } = &mut ops[idx_jnocm] { *offset = idx_after_cleanup as i32 - idx_jnocm as i32 - 1; }
-    // ---- create a real TrainingMode: createMode({ resource: <trainingmode ref> }) ----
-    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(mode_fullid) });
+    // ---- create the match mode: createMode({ resource: <mode ref> }) ----
+    // Pick trainingmode vs vsmode by roster size at runtime: parts = [s,char0,stage,assist,extras…]
+    // so player count N = max(1, parts.length - 3); N >= 3 (parts.length >= 6) -> vsmode (free-for-all,
+    // up to 4 players), else trainingmode (1-2, the parity-harness dummy path). PEPTIDE_FORCE_TRAINING
+    // bakes trainingmode unconditionally.
+    if force_training {
+        ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(trainingmode_g) });
+    } else {
+        ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(trainingmode_g) }); // default: training
+        ops.push(Opcode::Field { dst: rr(16), obj: rr(52), field: RefField(0) });        // parts.length
+        ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(six_idx) });
+        let idx_mode_train = ops.len();
+        ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });                       // length < 6 -> keep training
+        ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(vsmode_g) });         // >= 6 -> versus
+        let idx_mode_done = ops.len();
+        if let Opcode::JSLt { offset, .. } = &mut ops[idx_mode_train] { *offset = idx_mode_done as i32 - idx_mode_train as i32 - 1; }
+    }
     ops.push(Opcode::Call2 { dst: rr(25), fun: RefFun(18224), arg0: rr(14), arg1: rr(38) }); // mode resource ref
     ops.push(Opcode::New { dst: rr(34) });                             // modeConfig dynobj
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(resource_str), src: rr(25) });
@@ -2382,44 +2418,57 @@ fn connect_edit(
     ops.push(Opcode::Sub { dst: rr(19), a: rr(16), b: rr(39) });             // N = length - 3
     let idx_arr_nset = ops.len();
     if let Opcode::JSLt { offset, .. } = &mut ops[idx_arr_jsolo] { *offset = idx_arr_nset as i32 - idx_arr_jsolo as i32 - 1; }
-    // alloc chars[N]; store player1 at [0]
+    // alloc chars[N] into rr67 — a register neither emit_load_char nor emit_resolve clobbers, so
+    // the array survives each extra's synchronous self-bootstrap below; store player0 at [0].
     ops.push(Opcode::Type { dst: rr(31), ty: RT(1957) });
-    ops.push(Opcode::Call2 { dst: rr(32), fun: RefFun(256), arg0: rr(31), arg1: rr(19) }); // alloc[N]
+    ops.push(Opcode::Call2 { dst: rr(67), fun: RefFun(256), arg0: rr(31), arg1: rr(19) }); // alloc[N]
     ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
-    ops.push(Opcode::SetArray { array: rr(32), index: rr(39), src: rr(29) }); // [0]=player1
-    // for i in 1..N: chars[i] = playerVirtual{ character: resolve(parts[3+i]), assist: rr42, port: i, team: i }
-    ops.push(Opcode::Int { dst: rr(20), ptr: RefInt(one_idx) });             // i = 1
-    let idx_arr_top = ops.len();
-    ops.push(Opcode::JSGte { a: rr(20), b: rr(19), offset: 0 });             // i >= N -> done
-    // NOTE on extra-char media: player1 is fully (synchronously) self-bootstrapped above, so its
-    // content map is populated when startMatch runs. An extra that's a SAME-as-p1 char or a
-    // base-game char resolves to an already-constructed resource and spawns clean. A DISTINCT
-    // custom extra would need its OWN synchronous self-bootstrap before startMatch (an async
-    // requiredMediaIds load doesn't finish in time, so spawnPlayer null-derefs
-    // characterPxfContentMap) — that's the open multi-custom TODO in docs/STATUS.md. Separately,
-    // the headless TrainingMode launch only spawns 2 of the array's players regardless of N;
-    // breaking past 2 needs a versus-mode launch (also tracked in STATUS).
-    ops.push(Opcode::Field { dst: rr(31), obj: rr(52), field: RefField(1) }); // parts.array (native)
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(three_idx) });
-    ops.push(Opcode::Add { dst: rr(16), a: rr(39), b: rr(20) });             // index = 3 + i (i=1 -> parts[4])
-    ops.push(Opcode::GetArray { dst: rr(55), array: rr(31), index: rr(16) }); // parts[3+i]
-    emit_resolve(&mut ops, 55, 26, char_cmap_field);                         // char ref -> rr26 (clobbers rr16/rr39)
-    ops.push(Opcode::New { dst: rr(27) });
-    ops.push(Opcode::DynSet { obj: rr(27), field: RS(character_str), src: rr(26) });
-    ops.push(Opcode::DynSet { obj: rr(27), field: RS(assist_str), src: rr(42) });
-    ops.push(Opcode::ToDyn { dst: rr(28), src: rr(20) });                    // port = i
-    ops.push(Opcode::DynSet { obj: rr(27), field: RS(port_str), src: rr(28) });
-    // team=port=i (>=1): skips sanitizePlayerConfig's player-border branch; distinct free-for-all team.
-    ops.push(Opcode::DynSet { obj: rr(27), field: RS(team_str), src: rr(28) });
-    ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });                 // REUSE rr29 -> player_i (t1957)
-    ops.push(Opcode::SetArray { array: rr(32), index: rr(20), src: rr(29) }); // chars[i] = player_i
-    ops.push(Opcode::Incr { dst: rr(20) });
-    let idx_arr_back = ops.len();
-    ops.push(Opcode::JAlways { offset: 0 });                                 // -> loop top (re-check i<N)
-    if let Opcode::JAlways { offset, .. } = &mut ops[idx_arr_back] { *offset = idx_arr_top as i32 - idx_arr_back as i32 - 1; }
-    let idx_arr_done = ops.len();
-    if let Opcode::JSGte { offset, .. } = &mut ops[idx_arr_top] { *offset = idx_arr_done as i32 - idx_arr_top as i32 - 1; }
-    ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(32) }); // wrap -> ArrayObj
+    ops.push(Opcode::SetArray { array: rr(67), index: rr(39), src: rr(29) }); // [0]=player0
+    // Build players 2..N as UNROLLED, guarded straight-line blocks (Fraymakers has 4 ports, so at
+    // most 3 extras). A runtime loop does NOT work here: emitting emit_resolve inside a back-branch
+    // corrupts the loop counter at runtime (the static bytecode looks correct, but only one pass
+    // runs), so each extra is its own block. For extra k (2..4) the player lands at characters[k-1]
+    // from parts[k+2]; the block runs only when N >= k. Each extra is SYNCHRONOUSLY self-bootstrapped
+    // (emit_load_char) before it is resolved, so a DISTINCT custom char (not baked as player0) has
+    // its media + content map fully loaded before startMatch — without it Match.spawnPlayer
+    // null-derefs characterPxfContentMap. emit_load_char is idempotent: a same-as-p0 or base-game
+    // char is already loaded and the load is skipped.
+    // index pools keyed by extra-player k (k = 2,3,4): guard value k, parts index k+2, slot/port k-1.
+    let pk_guard = [two_idx, three_idx, four_idx];   // k    = 2,3,4
+    let pk_parts = [four_idx, five_idx, six_idx];     // k+2  = 4,5,6 (parts index)
+    let pk_slot  = [one_idx, two_idx, three_idx];     // k-1  = 1,2,3 (port / slot)
+    for j in 0..3usize {
+        // guard: N (rr19) >= k ? build : skip
+        ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(pk_guard[j]) });
+        let idx_skip = ops.len();
+        ops.push(Opcode::JSLt { a: rr(19), b: rr(39), offset: 0 });           // N < k -> skip this player
+        // name = parts[k+2]  (k=2 -> parts[4])
+        ops.push(Opcode::Field { dst: rr(31), obj: rr(52), field: RefField(1) }); // parts.array (native)
+        ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(pk_parts[j]) });
+        ops.push(Opcode::GetArray { dst: rr(55), array: rr(31), index: rr(39) }); // parts[k+2] -> rr55
+        // synchronously load this char (idempotent). scratches rr31/32/33/39/55/...
+        emit_load_char(&mut ops, 55);
+        // re-fetch the name (emit_load_char scratched rr55/rr31/rr39), then resolve it -> rr26
+        ops.push(Opcode::Field { dst: rr(31), obj: rr(52), field: RefField(1) });
+        ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(pk_parts[j]) });
+        ops.push(Opcode::GetArray { dst: rr(55), array: rr(31), index: rr(39) });
+        emit_resolve(&mut ops, 55, 26, char_cmap_field);                     // char ref -> rr26
+        // player virtual { character: rr26, assist: rr42, port: k-1, team: k-1 } -> REUSE rr29
+        ops.push(Opcode::New { dst: rr(27) });
+        ops.push(Opcode::DynSet { obj: rr(27), field: RS(character_str), src: rr(26) });
+        ops.push(Opcode::DynSet { obj: rr(27), field: RS(assist_str), src: rr(42) });
+        ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(pk_slot[j]) });
+        ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });                // port = k-1
+        ops.push(Opcode::DynSet { obj: rr(27), field: RS(port_str), src: rr(28) });
+        // team=port=k-1 (>=1): skips sanitizePlayerConfig's player-border branch; distinct ffa team.
+        ops.push(Opcode::DynSet { obj: rr(27), field: RS(team_str), src: rr(28) });
+        ops.push(Opcode::ToVirtual { dst: rr(29), src: rr(27) });             // REUSE rr29 (t1957)
+        ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(pk_slot[j]) });
+        ops.push(Opcode::SetArray { array: rr(67), index: rr(39), src: rr(29) }); // characters[k-1]
+        let idx_after = ops.len();
+        if let Opcode::JSLt { offset, .. } = &mut ops[idx_skip] { *offset = idx_after as i32 - idx_skip as i32 - 1; }
+    }
+    ops.push(Opcode::Call1 { dst: rr(33), fun: RefFun(257), arg0: rr(67) }); // wrap -> ArrayObj
     // matchSettings = { stage: rr25, matchRules: defaultMatchRules } (virtual@675)
     ops.push(Opcode::New { dst: rr(34) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(stage_str), src: rr(25) });
@@ -3377,39 +3426,46 @@ fn connect_edit(
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_p0null] { *offset = idx_e_bindnull as i32 - idx_e_p0null as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_e_chnull] { *offset = idx_e_bindnull as i32 - idx_e_chnull as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_e_p0done] { *offset = idx_e_setp0 as i32 - idx_e_p0done as i32 - 1; }
-    // bind p1 = the live match's extra (2nd) player, stashed by the deferred spawnPlayer in
-    // g_live_p1 (null for a single-player match). getCharacters() in commands.hsx filters the
-    // null out, so p1 only appears once a real 2-player match is running. No array indexing —
-    // the raw Match.characters ArrayObj has no hscript RTTI (see the p0 note above).
-    // g_live_p1 is the spawnPlayer RETURN — a non-Character wrapper, but a reliable "a 2nd
-    // player exists" signal (null = single-player). When it's set, the live 2nd Character is
-    // currentMatch.characters[1] (same source as p0). We index the array in bytecode (no
-    // hscript RTTI) — safe here because the signal guarantees length >= 2, so no garbage
-    // length read. p1 then has the full Character API (getStateName, damage, body, …).
-    ops.push(Opcode::GetGlobal { dst: r_ret, global: RefGlobal(g_live_p1) });
-    let idx_p1_jsolo = ops.len();
-    ops.push(Opcode::JNull { reg: r_ret, offset: 0 });                                 // no extra player -> null
+    // bind p1, p2, p3 = the live match's extra players (slots 1..3). We read the real
+    // currentMatch.characters ArrayObj LENGTH in bytecode (field 0 — works fine; only hscript
+    // lacks RTTI on this ArrayObj) and bind p<slot> = characters[slot] when slot < length, else
+    // null. getCharacters() in commands.hsx drops the nulls, so each p<slot> appears only once the
+    // match actually has that many players. Each bound p<slot> has the full Character API.
+    // currentMatch.characters -> rr33 (ArrayObj), length -> rr16, native array -> rr32. Defensive:
+    // no match / no array -> all extras null.
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(zero_idx) });                      // default length 0
+    ops.push(Opcode::Null { dst: rr(32) });                                            // default no native array
     ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(3511) });
     ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });   // currentMatch
-    let idx_p1_jnomatch = ops.len();
-    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                                // defensive
+    let idx_px_jnomatch = ops.len();
+    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });                                // no match -> extras null
     ops.push(Opcode::Field { dst: rr(33), obj: rr(44), field: RefField(characters_field) }); // ArrayObj
-    let idx_p1_jnoarr = ops.len();
-    ops.push(Opcode::JNull { reg: rr(33), offset: 0 });                                // defensive
-    ops.push(Opcode::Field { dst: rr(32), obj: rr(33), field: RefField(1) });          // .array (native)
-    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(one_idx) });
-    ops.push(Opcode::GetArray { dst: rr(28), array: rr(32), index: rr(39) });          // characters[1] -> live Character
-    let idx_p1_jdone = ops.len();
-    ops.push(Opcode::JAlways { offset: 0 });                                           // -> set p1
-    let idx_p1_null = ops.len();
-    ops.push(Opcode::Null { dst: rr(28) });
-    let idx_p1_set = ops.len();
-    if let Opcode::JNull   { offset, .. } = &mut ops[idx_p1_jsolo]    { *offset = idx_p1_null as i32 - idx_p1_jsolo as i32 - 1; }
-    if let Opcode::JNull   { offset, .. } = &mut ops[idx_p1_jnomatch] { *offset = idx_p1_null as i32 - idx_p1_jnomatch as i32 - 1; }
-    if let Opcode::JNull   { offset, .. } = &mut ops[idx_p1_jnoarr]   { *offset = idx_p1_null as i32 - idx_p1_jnoarr as i32 - 1; }
-    if let Opcode::JAlways { offset, .. } = &mut ops[idx_p1_jdone]    { *offset = idx_p1_set as i32 - idx_p1_jdone as i32 - 1; }
-    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_p1_g) });
-    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
+    let idx_px_jnoarr = ops.len();
+    ops.push(Opcode::JNull { reg: rr(33), offset: 0 });                                // no array -> extras null
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(33), field: RefField(0) });          // characters.length
+    ops.push(Opcode::Field { dst: rr(32), obj: rr(33), field: RefField(1) });          // characters.array (native)
+    let idx_px_ready = ops.len();
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_px_jnomatch] { *offset = idx_px_ready as i32 - idx_px_jnomatch as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_px_jnoarr]   { *offset = idx_px_ready as i32 - idx_px_jnoarr as i32 - 1; }
+    // for slot in 1..=3: p<slot> = (slot < length && array != null) ? array[slot] : null
+    for (slot_idx, name_g) in [(one_idx, eval_p1_g), (two_idx, eval_p2_g), (three_idx, eval_p3_g)] {
+        ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(slot_idx) });                  // slot
+        let idx_s_jnull = ops.len();
+        ops.push(Opcode::JSGte { a: rr(39), b: rr(16), offset: 0 });                   // slot >= length -> null
+        let idx_s_jnoarr = ops.len();
+        ops.push(Opcode::JNull { reg: rr(32), offset: 0 });                            // no array -> null
+        ops.push(Opcode::GetArray { dst: rr(28), array: rr(32), index: rr(39) });      // characters[slot]
+        let idx_s_jset = ops.len();
+        ops.push(Opcode::JAlways { offset: 0 });                                       // -> setVar
+        let idx_s_null = ops.len();
+        ops.push(Opcode::Null { dst: rr(28) });
+        let idx_s_set = ops.len();
+        if let Opcode::JSGte   { offset, .. } = &mut ops[idx_s_jnull]  { *offset = idx_s_null as i32 - idx_s_jnull as i32 - 1; }
+        if let Opcode::JNull   { offset, .. } = &mut ops[idx_s_jnoarr] { *offset = idx_s_null as i32 - idx_s_jnoarr as i32 - 1; }
+        if let Opcode::JAlways { offset, .. } = &mut ops[idx_s_jset]   { *offset = idx_s_set as i32 - idx_s_jset as i32 - 1; }
+        ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(name_g) });
+        ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
+    }
     // ---- crash-proof eval: parse + run inside a Trap. On ANY error (parse OR runtime)
     // log to the engine (Sys.println -> engine log) AND return "ERR: <msg>" to Peptide.
     // Uses exprReturn (throws on error, unlike interpretScript which swallows) with the
@@ -3714,6 +3770,7 @@ fn connect_edit(
             ("sanitizePorts", fm, "DIAG:SPORTS\n"),
             ("prepTeams", fm, "DIAG:PREPTEAMS\n"),
             ("startMatch", "pxf.controllers.$MatchController", "DIAG:MCSTART\n"),
+            ("spawnPlayer", "pxf.core.Match", "DIAG:SPAWN\n"),
         ] {
             if let Some(fx) = find_fn(code, name, Some(parent)) {
                 inject_entry_marker(code, fx, marker, g_sock, out_field, write_str, flush,
