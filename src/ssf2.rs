@@ -19,7 +19,7 @@
 //!
 //! SSF2 install location: $PEPTIDE_SSF2_APP, else the standalone Mac default.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -486,6 +486,95 @@ fn cmd_launch(_args: &[String]) -> Result<()> {
     }
 }
 
+/// `--key value` string flag (sibling of [`flag_f64`]).
+fn flag_str(args: &[String], name: &str) -> Option<String> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+}
+
+/// `peptide ssf2 identify <dir|file> [--copy-stages <dest>] [--kind character|stage|other]`
+///
+/// Classify SSF2 `.ssf` resources (character / stage / other) without converting them.
+/// Over a directory it scans every `.ssf` and prints a table; `--copy-stages <dest>`
+/// copies the stages out (renamed to `<Main.id>.ssf`) for iteration. `--kind` filters
+/// the printed rows. This is how we find which `DATn.ssf` are stages to port.
+fn cmd_identify(args: &[String]) -> Result<()> {
+    let copy_dest = flag_str(args, "--copy-stages").map(PathBuf::from);
+    let kind_filter = flag_str(args, "--kind");
+    // first positional that isn't a flag or a flag's value.
+    let flag_vals: std::collections::HashSet<&String> =
+        ["--copy-stages", "--kind"].iter().filter_map(|f| {
+            args.iter().position(|a| a == f).and_then(|i| args.get(i + 1))
+        }).collect();
+    let target = args.iter()
+        .find(|a| !a.starts_with("--") && !flag_vals.contains(a))
+        .ok_or_else(|| anyhow!("usage: peptide ssf2 identify <dir|file> [--copy-stages <dest>] [--kind character|stage|other]"))?;
+    let target = PathBuf::from(target);
+
+    // collect the .ssf files to classify (a single file, or every .ssf in a dir).
+    let mut files: Vec<PathBuf> = Vec::new();
+    if target.is_dir() {
+        for entry in std::fs::read_dir(&target).with_context(|| format!("read dir {}", target.display()))? {
+            let p = entry?.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("ssf") { files.push(p); }
+        }
+        files.sort_by_key(|p| natural_key(p.file_name().and_then(|s| s.to_str()).unwrap_or("")));
+    } else {
+        files.push(target.clone());
+    }
+    if files.is_empty() { bail!("no .ssf files found at {}", target.display()); }
+
+    if let Some(dest) = &copy_dest {
+        std::fs::create_dir_all(dest).with_context(|| format!("create {}", dest.display()))?;
+    }
+
+    let (mut n_char, mut n_stage, mut n_other, mut n_err, mut copied) = (0, 0, 0, 0, 0);
+    println!("{:<16} {:<22} {:<10} detail", "file", "id", "kind");
+    println!("{}", "-".repeat(72));
+    for f in &files {
+        let stem = f.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+        match ssf2_converter::classify_ssf(f) {
+            Ok(c) => {
+                let id = c.id.clone().unwrap_or_else(|| "-".into());
+                let detail = match &c.kind {
+                    ssf2_converter::AssetKind::Character(ids) => format!("chars: {}", ids.join(",")),
+                    ssf2_converter::AssetKind::Stage => format!("markers: {}", c.markers.join(",")),
+                    ssf2_converter::AssetKind::Other => String::new(),
+                };
+                match c.kind {
+                    ssf2_converter::AssetKind::Character(_) => n_char += 1,
+                    ssf2_converter::AssetKind::Stage => n_stage += 1,
+                    ssf2_converter::AssetKind::Other => n_other += 1,
+                }
+                let show = kind_filter.as_deref().map(|k| k == c.kind.label()).unwrap_or(true);
+                if show {
+                    println!("{:<16} {:<22} {:<10} {}", stem, id, c.kind.label(), detail);
+                }
+                // copy stages out, named by Main.id (fallback: original stem).
+                if let (Some(dest), ssf2_converter::AssetKind::Stage) = (&copy_dest, &c.kind) {
+                    let name = c.id.clone().unwrap_or_else(|| stem.trim_end_matches(".ssf").to_string());
+                    let out = dest.join(format!("{name}.ssf"));
+                    std::fs::copy(f, &out).with_context(|| format!("copy {} -> {}", f.display(), out.display()))?;
+                    copied += 1;
+                }
+            }
+            Err(e) => { n_err += 1; eprintln!("{:<16} <error: {}>", stem, e); }
+        }
+    }
+    println!("\n{} files: {} character, {} stage, {} other, {} error",
+             files.len(), n_char, n_stage, n_other, n_err);
+    if let Some(dest) = &copy_dest {
+        println!("copied {copied} stage(s) to {}", dest.display());
+    }
+    Ok(())
+}
+
+/// Sort key that orders `DAT2.ssf` before `DAT10.ssf` (numeric run aware).
+fn natural_key(s: &str) -> (String, u64) {
+    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+    let prefix: String = s.chars().take_while(|c| !c.is_ascii_digit()).collect();
+    (prefix, digits.parse().unwrap_or(0))
+}
+
 fn help() {
     print!("\
 peptide ssf2 — SSF2 engine integration (physics model + scaling + quickboot)
@@ -495,6 +584,9 @@ USAGE:
         Raw SSF2 constants → simulated ground-truth motion → derived Fraymakers stats.
   peptide ssf2 scale  <file.ssf> [char] [--size-mult N]
         Compact raw → derived scaling table (velocity_scale / accel_scale).
+  peptide ssf2 identify <dir|file> [--copy-stages <dest>] [--kind character|stage|other]
+        Classify SSF2 .ssf resources (character / stage / other). Over a dir, scans
+        every .ssf and prints a table; --copy-stages copies the stages out (named by id).
   peptide ssf2 launch
         Quickboot the standalone SSF2.app for manual observation.
 
@@ -523,6 +615,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     match sub {
         "stats" => cmd_stats(rest),
         "scale" => cmd_scale(rest),
+        "identify" => cmd_identify(rest),
         "patch" => cmd_patch(rest),
         "install" => cmd_install(rest).map(|_| ()),
         "selftest" => cmd_selftest(rest),
