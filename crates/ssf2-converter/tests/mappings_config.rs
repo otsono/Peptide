@@ -184,3 +184,23 @@ fn api_commands_frame_params_isframe_only() {
     assert!(any_isframe,
         "at least one frame_params entry must have isframe=true");
 }
+
+/// A `//` line-comment in a replacement `to` value eats the rest of the line —
+/// including the statement-terminating `;` that follows the matched `from`. That
+/// produces an unterminated statement (e.g. `self.toState(CState.LAND) //…` then
+/// the next line is "Unexpected token …"). Use a `/* … */` block comment instead,
+/// UNLESS the `from` itself consumes the whole statement (ends in `;`).
+#[test]
+fn replacement_line_comments_dont_eat_semicolons() {
+    let c = api_commands();
+    for r in &c.replacements {
+        if r.to.contains("//") && !r.from.trim_end().ends_with(';') {
+            panic!(
+                "replacement {:?} -> {:?} uses a // line-comment but its `from` \
+                 doesn't end with ';', so the following statement terminator is \
+                 swallowed. Use a /* block comment */ instead.",
+                r.from, r.to
+            );
+        }
+    }
+}

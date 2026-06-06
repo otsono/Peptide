@@ -651,7 +651,7 @@ pub fn split_animations(
                 a.append_head_frames = 0;
                 a.labels.retain(|(_, f)| *f < STAND_TURN_FRAMES);
             }
-            eprintln!("anim alias: '{}' <- reuse of '{}'", target, src);
+            log::debug!("anim alias: '{}' <- reuse of '{}'", target, src);
             out.push(a);
         }
     }

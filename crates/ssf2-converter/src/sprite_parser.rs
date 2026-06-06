@@ -707,42 +707,46 @@ fn split_taunt(frame_labels: &[(String, u16)], total_frames: u16) -> Vec<(String
 /// For animations with no extracted sprite data, clone box data from the most
 /// appropriate related animation. The cloned data keeps the same box shapes but
 /// marks the animation name correctly so it lands in the right entity layer.
-fn apply_fallbacks(result: &mut BTreeMap<String, AnimationBoxData>) {
-    // Table: missing FM anim name → best donor FM anim name
-    let fallbacks: &[(&str, &str)] = &[
-        // Damage / launched states
-        ("stunned",           "hurt"),
-        ("star_ko",           "hurt"),
-        ("starko",            "hurt"),
-        ("screenko",          "hurt"),
-        ("buried",            "crouch"),
-        // Airborne/misc states
-        ("fly",               "jump_aerial"),
-        ("swim",              "fall"),
-        ("ladder",            "stand"),
-        ("wall_stick",        "fall"),
-        ("special",           "stand"),
-        ("carry",             "grab"),
-        // Landing variants
-        ("land_heavy",        "land"),
-        ("ledge_lean",        "ledge_hang"),
-        // Win/lose/respawn
-        ("victory",           "taunt"),
-        ("defeat",            "hurt"),
-        ("respawn",           "stand"),
-        // Special air variants
-        ("special_down_air",  "special_down"),
-        ("special_neutral_air", "special_neutral"),
-        ("special_side_air",  "special_side"),
-        ("special_up_air",    "special_up"),
-        // Item variants
-        ("item_float",        "stand"),
-        ("item_screw",        "special_up"),
-    ];
+/// Missing FM anim name → best donor FM anim name. One shared table for both the
+/// collision-box fallbacks (`apply_fallbacks`) and the image fallbacks
+/// (`image_extractor::apply_image_fallbacks`) so the two can't drift apart.
+pub(crate) const ANIM_FALLBACKS: &[(&str, &str)] = &[
+    // Damage / launched states
+    ("stunned",           "hurt"),
+    ("star_ko",           "hurt"),
+    ("starko",            "hurt"),
+    ("screenko",          "hurt"),
+    ("buried",            "crouch"),
+    ("tumble",            "fall"),
+    ("frozen",            "stand"),
+    // Airborne/misc states
+    ("fly",               "jump_aerial"),
+    ("swim",              "fall"),
+    ("ladder",            "stand"),
+    ("wall_stick",        "fall"),
+    ("special",           "stand"),
+    ("carry",             "grab"),
+    // Landing variants
+    ("land_heavy",        "land"),
+    ("ledge_lean",        "ledge_hang"),
+    // Win/lose/respawn
+    ("victory",           "taunt"),
+    ("defeat",            "hurt"),
+    ("respawn",           "stand"),
+    // Special air variants
+    ("special_down_air",  "special_down"),
+    ("special_neutral_air", "special_neutral"),
+    ("special_side_air",  "special_side"),
+    ("special_up_air",    "special_up"),
+    // Item variants
+    ("item_float",        "stand"),
+    ("item_screw",        "special_up"),
+];
 
+fn apply_fallbacks(result: &mut BTreeMap<String, AnimationBoxData>) {
     let mut to_insert: Vec<AnimationBoxData> = Vec::new();
 
-    for (missing, donor) in fallbacks {
+    for (missing, donor) in ANIM_FALLBACKS {
         if result.contains_key(*missing) { continue; }
         if let Some(donor_data) = result.get(*donor) {
             log::debug!("Fallback: '{}' ← '{}' ({} frames)", missing, donor, donor_data.total_frames);
@@ -1112,6 +1116,23 @@ fn extract_frame_boxes(
                     .collect();
 
                 if !boxes.is_empty() {
+                    // Invariant: a frame's box instance names are unique. The display
+                    // list is depth-keyed and Flash authoring keeps instance names
+                    // unique per timeline, so each name maps to exactly one box here.
+                    // entity_gen relies on this — it keys one FM layer (and one
+                    // sym_box_{anim}_{inst}_{frame} symbol) per instance name and
+                    // takes the first box per name. If the invariant is ever violated
+                    // the extra box would be silently dropped and the symbol seeds
+                    // would alias, so warn loudly instead of failing quietly.
+                    let mut seen = std::collections::HashSet::new();
+                    for b in &boxes {
+                        if !seen.insert(b.instance_name.as_str()) {
+                            log::warn!(
+                                "frame {} has duplicate box instance name '{}'; only the first is kept",
+                                current_frame, b.instance_name
+                            );
+                        }
+                    }
                     result.insert(current_frame, boxes);
                 }
                 current_frame += 1;

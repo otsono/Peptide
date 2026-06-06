@@ -235,6 +235,51 @@ fn strip_trailing_return(body: &str) -> String {
     body.to_string()
 }
 
+/// Remove a top-level (brace-depth 0) bare `return;` that is followed by more
+/// statements in a frame script. hscript compiles a frame script as a statement
+/// sequence, where code AFTER a `return` is unreachable and rejected at parse
+/// time ("Unexpected token return"). The decompiler occasionally emits a spurious
+/// unconditional `return;` mid-body (control-flow it couldn't structure), leaving
+/// the real logic dead after it. Dropping the bare return keeps that logic — a
+/// conditional early-exit (`if (c) { return; }`) is inside a block (depth > 0) and
+/// is left untouched. Comment-only / blank tails don't count as "more statements".
+fn strip_unreachable_returns(body: &str) -> String {
+    if !body.contains("return;") {
+        return body.to_string();
+    }
+    fn strip_comments(line: &str) -> String {
+        let b = line.as_bytes();
+        let mut s = String::new();
+        let mut i = 0;
+        while i < b.len() {
+            if i + 1 < b.len() && b[i] == b'/' && b[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') { i += 1; }
+                i += 2;
+                continue;
+            }
+            if i + 1 < b.len() && b[i] == b'/' && b[i + 1] == b'/' { break; }
+            s.push(b[i] as char);
+            i += 1;
+        }
+        s.trim().to_string()
+    }
+    let lines: Vec<&str> = body.lines().collect();
+    let last_code = lines.iter().rposition(|l| !strip_comments(l).is_empty());
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut depth = 0i32;
+    for (idx, line) in lines.iter().enumerate() {
+        let code = strip_comments(line);
+        let is_bare_return_depth0 = depth == 0 && code == "return;";
+        depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
+        if is_bare_return_depth0 && last_code.is_some_and(|lc| idx < lc) {
+            continue;
+        }
+        out.push(line);
+    }
+    out.join("\n")
+}
+
 /// Frame-doubling holds every keyframe for two frames, which also stretches each 1-frame
 /// SCRIPT keyframe to two — making the script's frame span ambiguous. A frame script must
 /// fire on exactly ONE frame, so after doubling we split every non-blank FRAME_SCRIPT
@@ -475,6 +520,11 @@ pub fn generate_entity(
                                     // is a statement block, not a function, so the final
                                     // `return;` (from the SSF2 returnvoid) is noise.
                                     let body = strip_trailing_return(&body);
+                                    // Also drop a spurious mid-body `return;` that
+                                    // leaves real code unreachable (a frame script is
+                                    // a statement sequence; code after `return` is a
+                                    // parse error). See strip_unreachable_returns.
+                                    let body = strip_unreachable_returns(&body);
                                     frame_code.insert(local_frame, body);
                                 }
                             }
@@ -507,6 +557,9 @@ pub fn generate_entity(
                             let e = frame_code.entry(last).or_default();
                             *e = if e.trim().is_empty() { moved }
                                  else { format!("{}\n{}", moved, e.trim_start()) };
+                            // The merge can append code after a `return;` that was
+                            // trailing in `moved` — re-strip so the joined script parses.
+                            *e = strip_unreachable_returns(e);
                         }
                     }
                 }
@@ -606,8 +659,9 @@ pub fn generate_entity(
             let mut per_frame: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(frame_count as usize);
             {
                 let box_data = sprite_boxes.get(source_anim.as_str());
-                let mut last = default_body;
-                for f in 0..frame_count {
+                // Per-frame body from the frame's HURTBOX union, or None when the
+                // frame has NO hurtboxes at all.
+                let raw: Vec<Option<(f64, f64, f64, f64)>> = (0..frame_count).map(|f| {
                     let src_f = src_frame(f);
                     let mut aabb: Option<(f64, f64, f64, f64)> = None; // left,right,top,bottom
                     if let Some(boxes) = box_data.and_then(|bd| bd.frames.get(&src_f)) {
@@ -620,17 +674,23 @@ pub fn generate_entity(
                             });
                         }
                     }
-                    let body = match aabb {
-                        Some((l, r, t, btm)) => (
-                            round2(-btm),          // foot  = up-height of the bottom edge
-                            round2(-t),            // head  = up-height of the top edge
-                            round2(r - l),         // hipWidth = box width
-                            round2((l + r) / 2.0), // hipXOffset = box centre x
-                        ),
-                        None => last, // no hurtboxes this frame — hold the last body
-                    };
-                    last = body;
-                    per_frame.push(body);
+                    aabb.map(|(l, r, t, btm)| (
+                        round2(-btm),          // foot  = up-height of the bottom edge
+                        round2(-t),            // head  = up-height of the top edge
+                        round2(r - l),         // hipWidth = box width
+                        round2((l + r) / 2.0), // hipXOffset = box centre x
+                    ))
+                }).collect();
+                // A frame with NO hurtboxes keeps the ECB exactly as it was — hold the
+                // previous body so the RLE below emits NO new keyframe for it (the ECB
+                // persists until the next hurtbox frame). Leading no-hurtbox frames
+                // backfill from the first real body, so the ECB never shows a default
+                // diamond mid-animation. All-empty animation → default.
+                let first_real = raw.iter().flatten().next().copied();
+                let mut last = first_real.unwrap_or(default_body);
+                for b in &raw {
+                    if let Some(bb) = b { last = *bb; }
+                    per_frame.push(last);
                 }
             }
 
@@ -648,6 +708,18 @@ pub fn generate_entity(
                 }
                 let sym_id = uuid(char_id, &format!("sym_body_{}_{}", anim_name, f));
                 let kf_id = uuid(char_id, &format!("kf_body_{}_{}", anim_name, f));
+                // The ECB is a 4-vertex diamond: foot (0,-foot), head (0,-head), hips
+                // (hipXOffset ± hipWidth/2, midY). The foot/head verts are PINNED to
+                // x=0, so for a convex diamond the hips must straddle x=0, i.e.
+                // |hipXOffset| < hipWidth/2. When the hurtbox union is far off-centre
+                // (e.g. zelda fall, centre ~-38 vs width ~38) the raw offset pushes both
+                // hips to one side and the shape collapses into an ARROW — which renders
+                // wrong and crashes FrayTools on edit. Clamp the offset to keep the hips
+                // straddling the centre (a comfortable margin) so it's always a valid
+                // diamond.
+                let half_w = (body.2 / 2.0).max(0.0);
+                let max_off = (half_w - half_w * 0.25).max(0.0); // hips keep ≥25% past centre
+                let hip_x_offset = round2(body.3.clamp(-max_off, max_off));
                 symbols.push(json!({
                     "$id": sym_id,
                     "alpha": Value::Null,
@@ -655,7 +727,7 @@ pub fn generate_entity(
                     "foot": body.0,
                     "head": body.1,
                     "hipWidth": body.2,
-                    "hipXOffset": body.3,
+                    "hipXOffset": hip_x_offset,
                     "hipYOffset": 0,
                     "pluginMetadata": {},
                     "type": "COLLISION_BODY"
@@ -935,12 +1007,25 @@ pub fn generate_entity(
                 if let Some(anim_imgs) = img_result.anim_images.get(source_anim.as_str()) {
                     let total = frame_count;
 
+                    // LOOP the visual timeline like Flash does for a nested MovieClip
+                    // whose frame count is shorter than the parent (gameplay) timeline.
+                    // SSF2's `fall` is an 8-frame looping sprite running under a 20-frame
+                    // hurtbox timeline, so source frames past the sprite's last frame wrap
+                    // modulo its length (frame 8 → sprite frame 0) instead of coming back
+                    // empty and making the character vanish mid-animation. When the sprite
+                    // and gameplay timelines are equal length this is the identity.
+                    let img_len = anim_imgs.frames.keys().max()
+                        .map(|m| *m as u32 + 1).unwrap_or(1).max(1);
+                    let held: Vec<Option<crate::image_extractor::FrameImageEntry>> = (0..total)
+                        .map(|f| {
+                            let looped = (src_frame(f) as u32 % img_len) as u16;
+                            anim_imgs.frames.get(&looped).and_then(|v| v.get(slot)).cloned()
+                        })
+                        .collect();
+
                     let mut f: u32 = 0;
                     while f < total {
-                        // Map the logical frame to its source frame (handles wrapped head frames).
-                        let src_f = src_frame(f) as u32;
-                        let entry = anim_imgs.frames.get(&(src_f as u16))
-                            .and_then(|v| v.get(slot));
+                        let entry = held[f as usize].as_ref();
 
                         // Key for run-length: same symbol AND same world transform
                         let sym_name = entry.map(|e| e.symbol_name.as_str());
@@ -954,8 +1039,7 @@ pub fn generate_entity(
                         // Run-length encode consecutive frames with identical symbol + world transform
                         let mut run = 1u32;
                         while f + run < total {
-                            let next = anim_imgs.frames.get(&src_frame(f + run))
-                                .and_then(|v| v.get(slot));
+                            let next = held[(f + run) as usize].as_ref();
                             let matches = next.map(|e| e.symbol_name.as_str()) == sym_name
                                 && next.map(|e| round2(e.world_tx))       == Some(world_tx).filter(|_| sym_name.is_some())
                                 && next.map(|e| round2(e.world_ty))       == Some(world_ty).filter(|_| sym_name.is_some())
@@ -1003,8 +1087,22 @@ pub fn generate_entity(
                             // Preserve sign: negative scaleX/scaleY = flip, which FrayTools supports.
                             // stand_turn has no SSF2 sprite — it's the idle pose mirrored
                             // horizontally in place, so negate scaleX for it.
-                            let fm_sx = round2(world_sx) * if anim_name == "stand_turn" { -1.0 } else { 1.0 };
-                            let fm_sy = round2(world_sy);
+                            // Fold the shape's bitmap-FILL scale into the placement.
+                            // SSF2 references a high-res bitmap through a DefineShape whose
+                            // fill matrix scales it (often far down). The PNG is at native
+                            // res, so without this the sprite renders 1/fill too big (e.g.
+                            // zelda's shared magic particle at fill 0.078 → ~13× oversized,
+                            // the screen-filling nair effect). M_place·M_fill composes to
+                            // scale (world_sx·fsx, world_sy·fsy) with the same rotation, and
+                            // the stored shape_pivot (= fill_tx / fsx) × fsx recovers the
+                            // true fill translation in pixels. Absent fill (vector shapes,
+                            // 1:1 bitmaps) → (1,1), so body sprites are untouched.
+                            let (fsx, fsy) = shape_id
+                                .and_then(|sid| img_result.shape_fill_scale.get(&sid))
+                                .copied()
+                                .unwrap_or((1.0, 1.0));
+                            let fm_sx = round2(world_sx * fsx) * if anim_name == "stand_turn" { -1.0 } else { 1.0 };
+                            let fm_sy = round2(world_sy * fsy);
 
                             // World-space matrix components
                             let wa = entry.map(|e| e.world_a).unwrap_or(1.0);
@@ -1016,6 +1114,7 @@ pub fn generate_entity(
                                 .and_then(|sid| img_result.shape_pivot.get(&sid))
                                 .copied()
                                 .unwrap_or((0.0, 0.0));
+                            let (off_x, off_y) = (off_x * fsx, off_y * fsy);
                             let mut fm_x = round2(world_tx + wa * off_x + wc * off_y);
                             let fm_y = round2(world_ty + wb * off_x + wd * off_y);
                             // stand_turn mirrors the idle pose IN PLACE about the character's
@@ -1239,32 +1338,82 @@ fn round2(v: f64) -> f64 {
 
 /// Strip the `function name() {` wrapper from a script and return just the body,
 /// with one level of leading tab removed from each line.
+/// De-indent (strip one leading tab) and trim leading/trailing blank lines.
+fn dedent_body(inner: &str) -> Vec<String> {
+    let mut lines: Vec<String> = inner.lines()
+        .map(|l| l.strip_prefix('\t').unwrap_or(l).to_string())
+        .collect();
+    while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) { lines.remove(0); }
+    while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) { lines.pop(); }
+    lines
+}
+
+/// Extract the statement body from `script.code`.
+///
+/// A single `script.code` usually wraps one `function name() { … }`, but it can hold
+/// MORE than one when two SSF2 frame scripts land on the same frame (e.g. a slot-aliased
+/// animation like `tech_ground` reusing `crash_*` plus its own script). Naively dropping
+/// only the first `function …{` line and the last `}` then leaks the inner function and a
+/// stray brace, producing unparseable keyframe code. Instead, brace-match every top-level
+/// `function …{ }` (skipping braces inside `//` comments and strings) and concatenate their
+/// bodies — all the scripts run on that frame. Falls back to the old line-based strip if no
+/// function wrapper is present.
 fn extract_function_body(code: &str) -> String {
+    let b = code.as_bytes();
+    let mut bodies: Vec<String> = Vec::new();
+    let mut i = 0;
+    while let Some(rel) = code[i..].find("function ") {
+        let fpos = i + rel;
+        // Opening brace of this function's block.
+        let Some(boff) = code[fpos..].find('{') else { break };
+        let open = fpos + boff;
+        // Brace-match forward, ignoring `//` comments and string contents.
+        let mut depth = 0i32;
+        let mut j = open;
+        let mut in_str: Option<u8> = None;
+        let mut close: Option<usize> = None;
+        while j < b.len() {
+            let c = b[j];
+            match in_str {
+                Some(q) => {
+                    if c == b'\\' { j += 2; continue; }
+                    if c == q { in_str = None; }
+                }
+                None => match c {
+                    b'/' if j + 1 < b.len() && b[j + 1] == b'/' => {
+                        while j < b.len() && b[j] != b'\n' { j += 1; }
+                        continue;
+                    }
+                    b'"' | b'\'' => in_str = Some(c),
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 { close = Some(j); break; }
+                    }
+                    _ => {}
+                },
+            }
+            j += 1;
+        }
+        let Some(close) = close else { break }; // unbalanced; bail to fallback
+        bodies.push(dedent_body(&code[open + 1..close]).join("\n"));
+        i = close + 1;
+    }
+
+    if !bodies.is_empty() {
+        return bodies.join("\n");
+    }
+
+    // Fallback: no `function` wrapper found (or unbalanced) — old line-based strip.
     let mut lines: Vec<&str> = code.lines().collect();
-    // Drop leading blank lines
-    while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) {
-        lines.remove(0);
-    }
-    // Drop trailing blank lines
-    while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
-        lines.pop();
-    }
-    if lines.is_empty() {
-        return String::new();
-    }
-    // First line should be `function name() {` — drop it
+    while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) { lines.remove(0); }
+    while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) { lines.pop(); }
+    if lines.is_empty() { return String::new(); }
     if lines.first().map(|l| l.trim_start().starts_with("function ")).unwrap_or(false) {
         lines.remove(0);
     }
-    // Last line should be `}` — drop it
-    if lines.last().map(|l| l.trim() == "}").unwrap_or(false) {
-        lines.pop();
-    }
-    // De-indent by one tab
-    let body: Vec<&str> = lines.iter()
-        .map(|l| l.strip_prefix('\t').unwrap_or(l))
-        .collect();
-    body.join("\n")
+    if lines.last().map(|l| l.trim() == "}").unwrap_or(false) { lines.pop(); }
+    lines.iter().map(|l| l.strip_prefix('\t').unwrap_or(l)).collect::<Vec<_>>().join("\n")
 }
 
 // ─── Menu entity generation ───────────────────────────────────────────────────
@@ -2345,4 +2494,77 @@ pub fn generate_effect_entity(
     });
 
     serde_json::to_string_pretty(&entity).unwrap_or_else(|_| "{}".to_string())
+}
+
+#[cfg(test)]
+mod extract_body_tests {
+    use super::{extract_function_body, strip_unreachable_returns};
+
+    #[test]
+    fn spurious_mid_return_dropped_keeps_following_code() {
+        // special_up frame 79 shape: a depth-0 `return;` before the real logic.
+        let body = "AudioClip.play(\"a\");\nreturn;\nif (x) {\n\tplayVoiceSound(1);\n}\nplayAttackSound(1);";
+        let out = strip_unreachable_returns(body);
+        assert!(!out.lines().any(|l| l.trim() == "return;"), "mid return not dropped: {out}");
+        assert!(out.contains("playAttackSound(1);"), "following code lost: {out}");
+    }
+
+    #[test]
+    fn conditional_return_in_block_is_kept() {
+        // A real early-exit inside an if (depth > 0) must NOT be stripped.
+        let body = "if (x) {\n\treturn;\n}\ndoThing();";
+        let out = strip_unreachable_returns(body);
+        assert!(out.contains("return;"), "conditional return wrongly stripped: {out}");
+    }
+
+    #[test]
+    fn trailing_only_return_left_for_trailing_pass() {
+        // Last-statement return has no code after — not our job (strip_trailing_return handles it).
+        let body = "doThing();\nreturn;";
+        assert_eq!(strip_unreachable_returns(body), body);
+    }
+
+    // helper: depth never goes negative and ends at zero (comment/string-naive is fine here)
+    fn structurally_valid(s: &str) -> bool {
+        let mut depth = 0i32;
+        let mut min = 0i32;
+        for c in s.chars() {
+            if c == '{' { depth += 1; }
+            if c == '}' { depth -= 1; min = min.min(depth); }
+        }
+        depth == 0 && min >= 0
+    }
+
+    #[test]
+    fn single_function_body_is_unwrapped() {
+        let code = "function foo__frame0() {\n\tA;\n\tB;\n}";
+        assert_eq!(extract_function_body(code), "A;\nB;");
+    }
+
+    #[test]
+    fn nested_braces_preserved_and_dedented() {
+        let code = "function foo() {\n\tif (x) {\n\t\tB;\n\t}\n}";
+        assert_eq!(extract_function_body(code), "if (x) {\n\tB;\n}");
+    }
+
+    #[test]
+    fn two_functions_on_one_frame_merge_bodies() {
+        // Two SSF2 frame scripts landing on the same frame (slot-aliased anim).
+        // Both bodies must run, and the result must be structurally valid (no
+        // leaked inner `function` wrapper, no stray brace).
+        let code = "function tech__frame0() {\n\tA;\n}\n\nfunction tech__frame0() {\n\tB;\n}";
+        let body = extract_function_body(code);
+        assert!(body.contains("A;") && body.contains("B;"), "both bodies kept: {body}");
+        assert!(!body.contains("function "), "inner wrapper leaked: {body}");
+        assert!(structurally_valid(&body), "unbalanced output: {body}");
+    }
+
+    #[test]
+    fn commented_braces_do_not_confuse_matcher() {
+        // A fully commented-out SSF2-only if-block must not throw off brace matching.
+        let code = "function f() {\n\tA;\n\t// [SSF2-only: x] if (g()) {\n\t// [SSF2-dead] }\n}";
+        let body = extract_function_body(code);
+        assert!(structurally_valid(&body), "unbalanced: {body}");
+        assert!(!body.contains("function "), "wrapper leaked: {body}");
+    }
 }

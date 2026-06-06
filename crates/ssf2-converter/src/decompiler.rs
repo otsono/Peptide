@@ -157,7 +157,12 @@ impl Expr {
                 if *v == v.round() && v.abs() < 1_000_000.0 { format!("{}", *v as i64) }
                 else { format!("{:.4}", v).trim_end_matches('0').trim_end_matches('.').to_string() }
             }
-            Expr::Str(s)    => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+            // Escape control chars too: a string carrying a literal newline/tab would
+            // otherwise break across source lines (a Haxe string can't span lines), e.g.
+            // `Engine.log("a:\nb:")` decompiled with a raw newline → unparseable.
+            Expr::Str(s) => format!("\"{}\"", s
+                .replace('\\', "\\\\").replace('"', "\\\"")
+                .replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t")),
             Expr::Bool(b)   => b.to_string(),
             Expr::Null      => "null".to_string(),
             Expr::This      => "self".to_string(),
@@ -168,7 +173,7 @@ impl Expr {
             // that in STATEMENT position (`/* ? */ foo();`) it's harmless whitespace.
             // In CONDITION position a bare comment is a parse error (`if (/* ? */)`) that
             // kills the whole script — `render_condition` substitutes `false` there.
-            Expr::Unknown                 => "/* ? */".to_string(),
+            Expr::Unknown => "/* ? */".to_string(),
             Expr::GetProperty(obj, name) => {
                 format!("{}.{}", obj.render(), name)
             }
@@ -329,7 +334,9 @@ fn collect_local_writes(stmts: &[Stmt], out: &mut std::collections::BTreeSet<u32
 }
 
 /// `var _vN = null;` lines for the register temps a body writes. Skips locals 1..=param_count
-/// (those render as `argN` — already function parameters) and local 0 (`self`).
+/// (those render as `argN` — already function parameters). Local 0 is normally `self` and never
+/// collected, but a rebound local 0 (`setlocal_0` of a non-`this` value) is collected and gets a
+/// `var _v0` so its `_v0 = …` write and reads compile.
 fn render_local_decls(stmts: &[Stmt], param_count: usize, depth: usize) -> String {
     let mut writes = std::collections::BTreeSet::new();
     collect_local_writes(stmts, &mut writes);
@@ -800,15 +807,27 @@ impl<'a> BlockDecoder<'a> {
     }
 
     fn string(&self, idx: u32) -> String {
-        self.abc.strings.get(idx as usize).cloned().unwrap_or_default()
+        self.abc.strings.get(idx as usize).map(|s| s.to_string()).unwrap_or_default()
     }
 
     fn multiname(&self, idx: u32) -> String {
-        self.abc.multinames.get(idx as usize).map(|m| m.name.clone()).unwrap_or_default()
+        self.abc.multinames.get(idx as usize).map(|m| m.name.to_string()).unwrap_or_default()
     }
 
     fn get_local(&self, n: u32) -> Expr {
-        if n == 0 { return Expr::This; }
+        if n == 0 {
+            // Register 0 is the implicit `this`. Most bodies never write it, so
+            // reads render as `self`. But a frame script can `setlocal_0` with a
+            // non-`this` value (rebinding `this`-as-local). When that's happened,
+            // reads must follow the rebind to the synthetic `_v0` local — that
+            // write is rendered as `_v0 = …` and declared `var _v0`, so reading
+            // `self` here would silently drop the rebound value and read the
+            // wrong thing. Until a rebind, `self.locals` has no entry for 0.
+            return match self.locals.get(&0) {
+                Some(Some(v)) if !matches!(v, Expr::This) => Expr::Local(0),
+                _ => Expr::This,
+            };
+        }
         // Check if it's a named param
         if let Some(name) = self.param_locals.get(&n) {
             return Expr::GetLex(name.clone());
@@ -1065,7 +1084,11 @@ impl<'a> BlockDecoder<'a> {
 
                 OP_COERCE | OP_ASTYPE | OP_ISTYPE => { read_u30_at(self.bc, &mut pos); }
                 OP_COERCE_A | OP_COERCE_B | OP_COERCE_I | OP_COERCE_D | OP_COERCE_S | OP_COERCE_U | OP_COERCE_O => {}
-                OP_ASTYPELATE  => { self.pop(); self.pop(); self.stack.push(Expr::Unknown); }
+                // `value as Type` (type from the stack). The coercion is a no-op
+                // for valid code (value already IS the type), so keep the value —
+                // matches how OP_ASTYPE (type as operand) is handled above and
+                // turns `/* ? : as-cast */` into the real underlying expression.
+                OP_ASTYPELATE  => { self.pop(); /* drop the type, keep the value */ }
                 // convert_b is a boolean cast — keep value on stack unchanged
                 OP_CONVERT_B => {}
                 OP_CONVERT_S | OP_CONVERT_I | OP_CONVERT_U | OP_CONVERT_D | OP_CONVERT_O | OP_CHECKFILTER => {}
@@ -2034,6 +2057,29 @@ mod make_if_tests {
         let decls = render_local_decls(&stmts, 1, 1); // 1 param
         assert!(!decls.contains("_v1"), "param register declared as _v1: {decls}");
         assert!(decls.contains("var _v2 = null;"), "temp _v2 not declared: {decls}");
+    }
+
+    #[test]
+    fn rebound_local0_is_compilable_not_self_assign() {
+        // A frame script can `setlocal_0` of a non-`this` value (rebinding
+        // `this`-as-local). That must NOT render as `self = …` (uncompilable —
+        // `self` is final in Fraymakers Haxe). It renders `_v0 = …` and gets a
+        // `var _v0` declaration so both the write and any reads compile.
+        let rebind = Stmt::VarDecl(0, Expr::Num(5.0));
+        let rendered = render_stmts(std::slice::from_ref(&rebind), 0);
+        assert!(rendered.contains("_v0 = 5"), "rebound local 0 not _v0: {rendered}");
+        assert!(!rendered.contains("self ="), "uncompilable self-assign leaked: {rendered}");
+        let decls = render_local_decls(std::slice::from_ref(&rebind), 0, 1);
+        assert!(decls.contains("var _v0 = null;"), "rebound local 0 not declared: {decls}");
+    }
+
+    #[test]
+    fn noop_local0_this_assign_is_dropped() {
+        // The `this = this` setup line some compilers emit is a no-op: it's not
+        // rendered and gets no `_v0` declaration.
+        let setup = Stmt::VarDecl(0, Expr::This);
+        assert_eq!(render_stmts(std::slice::from_ref(&setup), 0), "", "this=this not dropped");
+        assert_eq!(render_local_decls(std::slice::from_ref(&setup), 0, 1), "", "this=this got a decl");
     }
 
     #[test]
