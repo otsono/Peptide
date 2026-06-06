@@ -1033,7 +1033,8 @@ fn connect_edit(
     // engine WITHOUT `kill -9` mid-render (which leaves wedged U-state ./hl orphans on macOS).
     let hxd_exit = require_fn(code, "exit", Some("hxd.$System"))?;
     let c_idx = add_int(code, 'c' as i32); // 'console' command byte
-    let s_idx = add_int(code, 's' as i32); // 'start match' command byte
+    let s_idx = add_int(code, 's' as i32); // 'start match' (auto mode) command byte
+    let s_versus_idx = add_int(code, 'S' as i32); // 'start match, FORCE versus' command byte (--versus)
     let stage_str = add_string(code, "stage");
     let character_str = add_string(code, "character");
     let port_str = add_string(code, "port");
@@ -1509,6 +1510,9 @@ fn connect_edit(
     // the parts ArrayObj here (set alongside g_pending_parts at startMatch). The `n` (addCharacter)
     // command re-arms g_pending from this to spawn one more fighter into the LIVE match on demand.
     let g_saved_parts = code.globals.len(); code.globals.push(hlbc::types::RefType(38)); // ArrayObj
+    // `--versus` force flag: set per-launch by the 'S' dispatch byte (true) vs 's' (false); the
+    // mode-select reads it to force versus mode even for a 1-2 player roster.
+    let g_force_versus = code.globals.len(); code.globals.push(hlbc::types::RefType(7)); // Bool
     // resolved assist ref (type 669) stashed from the `s` handler (where the resolve works) so
     // extra players can reuse it — re-resolving an assist mid-match (per-frame) SIGSEGVs.
     let g_pending_assist = code.globals.len(); code.globals.push(hlbc::types::RefType(669));
@@ -2119,11 +2123,27 @@ fn connect_edit(
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
 
-    // 's' check -> build a full MatchSettings (1 player on thespire) + startMatch.
+    // 's' (auto mode) / 'S' (--versus, force versus) check -> build a MatchSettings + startMatch.
+    // Both run the SAME handler; the only difference is g_force_versus, which the mode-select reads.
     let idx_s_check = ops.len();
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(s_versus_idx) });
+    let idx_j_sv = ops.len();
+    ops.push(Opcode::JEq { a: r_c, b: rr(16), offset: 0 });             // 'S' -> force-versus path
     ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(s_idx) });
     let idx_jne_s = ops.len();
-    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });          // not 's' -> L_ORIG
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });          // neither 's' nor 'S' -> L_ORIG
+    // byte == 's': auto mode -> g_force_versus = false
+    ops.push(Opcode::Bool { dst: rr(9), value: ValBool(false) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_force_versus), src: rr(9) });
+    let idx_jbody = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                            // -> shared handler body
+    // byte == 'S': force versus -> g_force_versus = true
+    let idx_sv_set = ops.len();
+    if let Opcode::JEq { offset, .. } = &mut ops[idx_j_sv] { *offset = idx_sv_set as i32 - idx_j_sv as i32 - 1; }
+    ops.push(Opcode::Bool { dst: rr(9), value: ValBool(true) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_force_versus), src: rr(9) });
+    let idx_body = ops.len();
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_jbody] { *offset = idx_body as i32 - idx_jbody as i32 - 1; }
     use hlbc::types::{RefString as RS, RefType as RT};
     // MULTI-LAUNCH: no one-shot guard. `s` re-runs every time its byte arrives over
     // TCP, so a single session can start successive matches with different args. The
@@ -2324,11 +2344,17 @@ fn connect_edit(
         ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(trainingmode_g) });
     } else {
         ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(trainingmode_g) }); // default: training
+        // force-versus (`--versus`, the 'S' byte) -> versus regardless of roster size
+        ops.push(Opcode::GetGlobal { dst: rr(9), global: RefGlobal(g_force_versus) });
+        let idx_mode_force = ops.len();
+        ops.push(Opcode::JTrue { cond: rr(9), offset: 0 });                              // forced -> versus
         ops.push(Opcode::Field { dst: rr(16), obj: rr(52), field: RefField(0) });        // parts.length
         ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(six_idx) });
         let idx_mode_train = ops.len();
         ops.push(Opcode::JSLt { a: rr(16), b: rr(39), offset: 0 });                       // length < 6 -> keep training
-        ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(vsmode_g) });         // >= 6 -> versus
+        let idx_mode_versus = ops.len();
+        if let Opcode::JTrue { offset, .. } = &mut ops[idx_mode_force] { *offset = idx_mode_versus as i32 - idx_mode_force as i32 - 1; }
+        ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(vsmode_g) });         // versus
         let idx_mode_done = ops.len();
         if let Opcode::JSLt { offset, .. } = &mut ops[idx_mode_train] { *offset = idx_mode_done as i32 - idx_mode_train as i32 - 1; }
     }
