@@ -57,9 +57,80 @@ dimensions below are the rest.
   sizing are all approximate. generated `CharacterStats.hx` flags the shaky numbers with
   `/*TODO*/`. dialing the scale factors in for real needs an in-engine SSF2-vs-converted
   comparison (the dummy / measurement path), not a static fix.
-- **no-FM-equivalent calls.** CPU-AI branches, z-order (`getMC`/`swapChildren`),
-  `forceAttack`, and the item system have no FM mapping, so they get commented out as
-  `[SSF2-only]`. no impact for human play of non-item characters.
+- **SSF2-only / no-FM-equivalent inventory.** SSF2 API surface with no Fraymakers
+  mapping. Calls get commented out as `[SSF2-only]` (no impact for human play of
+  non-item characters); stat fields and events are handled as noted. The
+  authoritative per-entry list (with notes + `manual_port`/`no_equivalent`
+  category) lives in `mappings/commands.jsonc :: ssf2_only`; runtime tallies land
+  in each character's `conversion_log.json :: ssf2_only`. Confirm any entry as
+  droppable (like `priority`) or map it as the API surfaces.
+
+  - **mapped this pass (live-verified on zelda/sandbag/ganondorf):** `getMC`→
+    `getViewRootContainer()`, `getStanceMC`→`getSprite()` (members read off it may
+    differ; flagged inline), `toCrashLand`→`toState(CState.CRASH_BOUNCE)`, `toIdle`→
+    `toState(CState.STAND)`, `toFlying`→`toState(CState.HURT_HEAVY)`; `hitTestGround(x,y)`
+    →`hitTestStructuresWithLineSegment(new Point(x,y), new Point(x,y), null, null)` with
+    the `!= null`/`== null` checks rewritten to `.length > 0`/`== 0` (Array return), the
+    options arg dropped, and a TODO on the point→segment approximation; `if (… isForcedCrash …)`
+    blocks DELETED (no forced-crash in FM). AS3 global casts the decompiler wrongly
+    attached to `self` (so they were null → "Invalid function null"): `self.int`/
+    `self.uint`→`Std.int`, `self.Number(x)`→`Std.parseFloat(Std.string(x))` (`Std` is
+    in character-script scope, confirmed by a live probe). Stat fields: `hasEffect`→
+    `flinch`, `sdiDistance`→`hitstopNudgeMultiplier` (value/6, since SSF2 default is 6),
+    `shieldDamage`→`shieldDamageMultiplier: 1` with the old value kept in a TODO.
+  - **method calls, `no_equivalent` (57), commented out.** item system (`getItem`,
+    `getItems`, `getItemStat`, `pickupItem`, `tossItem`, `toToss`, `removeItem`,
+    `generateItem`, `updateItemStats`, `isZDropped`); CPU/AI (`isCPU`, `getCPULevel`,
+    `getCPUAction`, `getCPUForcedAction`, `getCPUTarget`, `setCPUAttackQueue`,
+    `importCPUControls`, `resetCPUControls`, `isStandby`, `getStandby`); Flash/MovieClip
+    (`getMCByLinkageName`, `getHitBox`, `getKirbyHatMC`, `getHUDBackgroundMC`,
+    `getHUDForegroundMC`, `killDarkener`); sound-needs-a-clip-handle (`stopSound`,
+    `stopSFX`, `stopHoldSound`, `stopListening`); final-smash/kirby/misc
+    (`isUsingFinalSmash`, `setFinalSmashMeterCharge`, `getCurrentKirbyPower`,
+    `getCurrentMusicInfo`, `getQualitySettings`); other (`addIgnoreObject`,
+    `calculateKnockback`, `checkAtkilled`, `clearEffectsOnStateChange`, `endControl`,
+    `exportStats`, `getLedges`, `getNearestPath`, `isReversed`, `jumpToContinue`,
+    `killAttackboxes`, `removeSelfPlatform`, `replacePalette`, `setAttackEnabled`,
+    `setLastUsed`, `shootOutOpponent`, `spawnEnemy`, `stop`, `updateEnemyStats`).
+  - **method calls, `manual_port` (26), close FM equivalent needs hand-work.**
+    `fireProjectile`→`match.createProjectile`, `unnattachFromGround`→`unattachFromFloor`,
+    `swapDepthsWithGrabbedOpponent`→`swapDepths`, `getMetalStatus`→StatusEffect/BodyStatus,
+    `setColorFilters`→`setCostumeShader`, `getCharacter`/`getProjectile`→
+    `match.getCharacters`/`getProjectiles`, plus `angleControl`, `createSelfPlatform`,
+    `forceAttack`, `getAttackBoxStat`, `getAttackStat`, `getCurrentAttackFrame`,
+    `getCurrentProjectile`, `getExecTime`, `getHealthBox`, `getLinkageID`, `getMidground`,
+    `getNearest`, `getNearestLedge`, `getPlatformBetweenPoints`,
+    `hitTestGroundBetweenPoints`, `homeTowardsTarget`, `inUpperLeftWarningBounds`,
+    `isEqual`, `setHurtInterrupt`.
+  - **hitbox/attack stat fields still with no FM mapping**, surfaced as compile/runtime
+    "invalid stat" for per-site fixing: `camShake`, `chargedPriority`, `ignoreChargeDamage`,
+    `meteorBounce`, `onlyAffectsGround`. `stackKnockback` is actually a real FM
+    `HitboxStatsProps` field (same name) so it passes through fine, not a gap. NB: the
+    "Invalid hitbox stat" check fires only when a hitbox is ACTIVE in-engine, so an eval
+    `updateHitboxStats(0, {x: 1})` on an inactive box won't surface it; confirm field
+    validity against the FM API types.
+    - `priority` DROPPED (confirmed unnecessary). `burn`/`shock` `: true` map to FM
+      `element` (`ElementType.FIRE`/`ELECTRIC`, live-verified); their `: false` /
+      `pitfall: 0` no-element forms are dropped. Still open (carry a value or an
+      unconfirmed FM enum, so per-site, not a flag→enum rename): `aura` (no confirmed
+      `ElementType.AURA`), `paralysis` (numeric stun duration), `pitfall` > 0 (FM
+      `ElementType.BURY` + `bury*` timing fields, not a bare flag).
+  - **Flash display-list / timeline methods called on the mapped view objects**
+    (`getMC`→`getViewRootContainer()`, `getStanceMC`→`getSprite()`): `swapChildren`
+    (35), `removeChild` (48), `addChild` (12), `getChildByName` (14), `getChildAt`/
+    `numChildren`, and timeline reads `currentLabel` (37), `currentFrame` (18),
+    `gotoAndPlay`. NONE exist in the FraymakersApiTypes (FM rendering/animation is not
+    a Flash display list), so they're null at runtime and need per-site porting (e.g.
+    z-order via FM layering, timeline reads via the FM animation API). This is the main
+    remaining `Invalid function null` source after the AS3-cast fix.
+  - **`SSF2Event` types with no confirmed FM equivalent, neutralized** (the line is
+    commented so it can't pass a null event): `KO_POINT`, `CHAR_ATTACK_COMPLETE`,
+    `CHAR_ATTACK_CHANGED`, `REVERSE`, `REVERSE_HIT`, `CHAR_COUNTER`, `CHAR_METAL_CHANGE`,
+    `PROJ_COLLIDE`, `PROJ_DESTROYED`, `PROJ_HURT`, `HOMING_TARGET`, `ENEMY_DESTROYED`,
+    `ITEM_TOSSED`, `ITEM_DESTROYED`, `CHAR_SELF_DESTRUCT`, `CHAR_ABSORB`,
+    `CHAR_POWER_SHIELD_HIT`, `CHAR_SIZE_CHANGE`, `CHAR_TRANSFORM`, `ATTACK_ENABLED`,
+    `GAME_ITEM_CREATED`. (Mapped this pass: `ATTACK_HIT`, `ATTACK_HIT_SHIELD`,
+    `GROUND_LEAVE`, `CHAR_SHIELD_HIT`, `CHAR_KO_DEATH`→`CharacterEvent.KNOCK_OUT`.)
 
 ## measuring progress
 
@@ -113,13 +184,6 @@ the live list of open converter issues. strike an entry when you fix it.
   `stats.jsonc :: multipliers` are hand-tuned and the generated `CharacterStats.hx` marks
   the shaky ones with `/*TODO*/`.
 
-- **`tools/rebuild-sandbag.sh` has an absolute path** baked in, so it breaks if the repo
-  moves.
-
-- **`tokio` is declared as a dependency but the converter is synchronous.** `main.rs` has
-  no async. it's probably vestigial. verify before relying on it, and consider dropping it
-  to cut build time.
-
 - **robustness.** `process_character` swallows per-stage errors and carries on with
   defaults. great for batch runs, but it means a partly-broken character can sneak out
   without an obvious failure. the Tier 1 validation pass catches the most common silent
@@ -133,42 +197,12 @@ the live list of open converter issues. strike an entry when you fix it.
   the `ssf2_source` block in `conversion_log.json` both flag it. the content author still
   has to script the swap by hand in the parent character's `Script.hx`.
 
-- **`build_*_map` legacy block deferred.** there's ~350 lines of `build_method_map` /
-  `build_property_map` / `build_state_map` / `build_event_map` / `build_hitbox_prop_map` /
-  `load_api_methods_json` in `api_mappings.rs`, marked TODO and kept around until JSONC parity
-  is confirmed. once the JSONC tables clearly cover all of it, delete the block.
-
 - **path 2 enumeration fallback is still around.** the fallback in `detect_char_names`
-  (instance-method enumeration on Main) is kept for one release as a safety net for a
-  hypothetical future SSF that builds its roster array dynamically. it's slated for deletion
-  in a follow-up; watch the warn log to see if it ever fires.
-
-### code-quality backlog
-
-a standing audit: optimization, cleanup, and latent-bug items with file refs. verify each
-one against `git log` before acting, since line numbers drift. what's still open, roughly
-by leverage:
-
-- **parse the SWF once per character** (`main.rs`, `sprite_parser.rs`, `image_extractor.rs`).
-  a handful of entry points still re-run `swf::decompress_swf` + `swf::parse_swf` on the
-  same buffer (and `extract_xframe_transforms` runs twice). thread the parsed `swf::Swf`
-  through instead. biggest correctness-preserving perf win on the board.
-- **per-multiname / per-method `String` clones in `abc_parser`.** store `name_idx` and look
-  up on demand instead of cloning every multiname name.
-- **replace the hand-rolled SWF tag walker in `sound_extractor.rs`** (`parse_sounds`) with
-  the `swf` crate's `DefineSound` parsing. deletes ~80 lines and a second parse.
-- **`entity_gen` UUID seed can collide** when one animation frame has two boxes sharing an
-  instance name (`sym_box_{anim}_{inst}_{frame}`). there's a defensive comment on it for
-  now; either confirm SSF2 never duplicates an instance name within a frame, or fold depth
-  into the seed.
-- **`setlocal_0` → `self = …`** in `decompiler.rs` emits uncompilable Haxe if a frame script
-  rebinds `this`-as-local to some arbitrary expression. the self-assign guard only covers
-  `this`→`this`.
-- **duplicate fallback / split tables.** `apply_fallbacks` (`sprite_parser`) vs
-  `apply_image_fallbacks` (`image_extractor`), and `expand_split_anim` (`extractor`) vs the
-  splitter rules. lift each pair to one shared table.
-- **`build_*_map` legacy block** in `api_mappings.rs` (~350 lines). delete once JSONC parity
-  is confirmed (see the known-issue above).
+  (instance-method enumeration on Main) is kept as a safety net for a hypothetical future SSF
+  that builds its roster array dynamically. a full 47-character corpus sweep never triggers
+  the "constructor walk returned empty" warn, so the constructor walk handles the whole known
+  roster; the net stays until a shipped release confirms the same in the wild, then it and
+  `derive_id_from_getter` can go.
 
 ---
 
@@ -178,7 +212,9 @@ roughly the order a fresh agent should pick these up.
 
 1. **keep the full-corpus convert sweep green.** re-run the whole `../ssf2-ssfs/` corpus
    against the current converter after any decompiler/parser change, and trace anything that
-   hard-fails before it quietly regresses the clean status.
+   hard-fails before it quietly regresses the clean status. (currently green: 47/47 convert
+   exit 0, 45/46 fighters with zero `validation_warnings`; `misc.ssf`, a palette archive, is
+   the only one with a benign "no attacks" note.)
 
 2. **shape-only head rasterizer.** add a minimal SWF shape rasterizer (or pull one out of
    `ruffle`) so the `donkeykong` / `fox` / `marth` menu portraits actually have pixels
@@ -194,19 +230,10 @@ roughly the order a fresh agent should pick these up.
 5. **validate stat scaling** against a handful of hand-tuned reference characters and tighten
    the `stats.jsonc :: multipliers`.
 
-6. **per-character status sweep.** batch-convert the full roster, triage who converts
-   cleanly, and capture a per-character status list. the `validation_warnings` block in
-   `conversion_log.json` is a good first-pass triage signal.
-
-7. **sweep the `build_*_map` deferred block.** confirm JSONC parity, delete the legacy code,
-   and simplify the shape of `api_mappings.rs`.
-
-8. **delete the path 2 enumeration fallback** in `detect_char_names` once a release confirms
-   the constructor walker handles everything. that collapses `derive_id_from_getter` and
+6. **delete the path 2 enumeration fallback** in `detect_char_names` once a shipped release
+   confirms the constructor walker handles everything in the wild (a full local corpus sweep
+   already never trips its warn). that collapses `derive_id_from_getter` and
    `derive_id_from_bundle_method_name` into a single identity.
-
-9. **housekeeping:** make `tools/rebuild-sandbag.sh` path-relative, and drop the unused
-   `tokio` dependency.
 
 ---
 
@@ -244,9 +271,13 @@ points here).
    tweaks back to the source stats files.
 6. **in-engine hit measurement** (needs #1): hit-result readback (damage dealt, knockback
    distance + angle, hitstun frames), KO-threshold search (binary-search the dummy's % for
-   the lowest KO), and an active-box dump (every active hit/hurt box this frame). open
-   confounds to solve: `toState(JAB)` doesn't arm a hitbox to damage an overlapping dummy,
-   `p0.flipX()` returns 0 not a facing sign, and `getX` has a Y-dependent offset from `setX`.
+   the lowest KO), and an active-box dump (every active hit/hurt box this frame). damage
+   readback already works live: `scenario 0,0 20,0` (dummy overlapping) + `seq attack:3`
+   (drive the attack via INPUT, not `toState`) + reading `p1.damage._damage` shows the dummy
+   take the hit (0 → 9 on a sandbag jab). so the `toState(JAB)` "doesn't arm a hitbox" confound
+   is bypassed by input-driving the attack. still open: knockback/hitstun readback, the
+   KO-search, the active-box dump, and two position confounds: `p0.flipX()` returns 0 not a
+   facing sign, and `getX` carries an offset from `setX` (`setX(0)` reads back `getX -19.5`).
 7. **frame-advantage display** in the Peptide UI, on shield hit and on hit.
 8. **overlay mode.** `$PEPTIDE_OVERLAY=1` floats the console ON TOP of the running game:
    always-on-top, compact (440x560), parked top-right of the primary monitor, with the full UI

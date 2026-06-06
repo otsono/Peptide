@@ -10,6 +10,7 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use crate::decompiler;
 
 // ─── AVM2 opcodes we care about ──────────────────────────────────────────────
@@ -77,7 +78,9 @@ const OP_IFSTRICTNE:    u8 = 0x1A;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AbcFile {
-    pub strings: Vec<String>,
+    /// ABC string constant pool. Interned as `Arc<str>` so resolving a name
+    /// onto a `Multiname` / `Method` is a refcount bump, not a fresh allocation.
+    pub strings: Vec<Arc<str>>,
     pub ints: Vec<i32>,
     pub uints: Vec<u32>,
     pub doubles: Vec<f64>,
@@ -93,13 +96,13 @@ pub struct Multiname {
     pub kind: u8,
     pub name_idx: u32,
     pub ns_idx: u32,
-    pub name: String, // resolved from string pool
+    pub name: Arc<str>, // resolved from string pool (shared, not re-allocated)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Method {
     pub name_idx: u32,
-    pub name: String,
+    pub name: Arc<str>,
     pub param_count: u32,
     pub return_type_idx: u32,
 }
@@ -376,9 +379,9 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
 
     // Strings
     let string_count = r.read_u30()? as usize;
-    let mut strings = vec![String::new()];
+    let mut strings: Vec<Arc<str>> = vec![Arc::from("")];
     for _ in 1..string_count {
-        strings.push(r.read_string()?);
+        strings.push(Arc::from(r.read_string()?));
     }
 
     log::debug!("ABC constants: {} ints, {} uints, {} doubles, {} strings",
@@ -390,7 +393,7 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
     for _ in 1..ns_count {
         let _kind = r.read_u8()?;
         let name_idx = r.read_u30()?;
-        namespaces.push(strings.get(name_idx as usize).cloned().unwrap_or_default());
+        namespaces.push(strings.get(name_idx as usize).map(|s| s.to_string()).unwrap_or_default());
     }
 
     // Namespace sets
@@ -404,7 +407,7 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
 
     // Multinames
     let mn_count = r.read_u30()? as usize;
-    let mut multinames = vec![Multiname { kind: 0, name_idx: 0, ns_idx: 0, name: String::new() }];
+    let mut multinames = vec![Multiname { kind: 0, name_idx: 0, ns_idx: 0, name: Arc::from("") }];
     for _ in 1..mn_count {
         let kind = r.read_u8()?;
         let mn = match kind {
@@ -419,7 +422,7 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
                 Multiname { kind, name_idx, ns_idx: 0, name: strings.get(name_idx as usize).cloned().unwrap_or_default() }
             }
             0x11 | 0x12 => { // RTQNameL, RTQNameLA
-                Multiname { kind, name_idx: 0, ns_idx: 0, name: String::new() }
+                Multiname { kind, name_idx: 0, ns_idx: 0, name: Arc::from("") }
             }
             0x09 | 0x0E => { // Multiname, MultinameA
                 let name_idx = r.read_u30()?;
@@ -429,17 +432,17 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
             }
             0x1B | 0x1C => { // MultinameL, MultinameLA
                 let _ns_set = r.read_u30()?;
-                Multiname { kind, name_idx: 0, ns_idx: 0, name: String::new() }
+                Multiname { kind, name_idx: 0, ns_idx: 0, name: Arc::from("") }
             }
             0x1D => { // TypeName (generic)
                 let _qname = r.read_u30()?;
                 let param_count = r.read_u30()? as usize;
                 for _ in 0..param_count { r.read_u30()?; }
-                Multiname { kind, name_idx: 0, ns_idx: 0, name: String::new() }
+                Multiname { kind, name_idx: 0, ns_idx: 0, name: Arc::from("") }
             }
             _ => {
                 log::warn!("Unknown multiname kind: 0x{:02X}", kind);
-                Multiname { kind, name_idx: 0, ns_idx: 0, name: String::new() }
+                Multiname { kind, name_idx: 0, ns_idx: 0, name: Arc::from("") }
             }
         };
         multinames.push(mn);
@@ -500,8 +503,8 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
                 instance_methods.push(t);
             }
         }
-        let name = multinames.get(name_idx as usize).map(|m| m.name.clone()).unwrap_or_default();
-        let super_name = multinames.get(super_name_idx as usize).map(|m| m.name.clone()).unwrap_or_default();
+        let name = multinames.get(name_idx as usize).map(|m| m.name.to_string()).unwrap_or_default();
+        let super_name = multinames.get(super_name_idx as usize).map(|m| m.name.to_string()).unwrap_or_default();
         // Also resolve namespace-qualified name for _fla.* classes
         let ns_name = if let Some(mn) = multinames.get(name_idx as usize) {
             if mn.kind == 0x07 || mn.kind == 0x0D {
@@ -510,9 +513,9 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
                 if ns_idx < namespaces.len() && !namespaces[ns_idx].is_empty() {
                     format!("{}.{}", namespaces[ns_idx], mn.name)
                 } else {
-                    mn.name.clone()
+                    mn.name.to_string()
                 }
-            } else { mn.name.clone() }
+            } else { mn.name.to_string() }
         } else { name.clone() };
         let full_name = if ns_name != name && ns_name.contains("_fla.") { ns_name } else { name.clone() };
         classes.push(Class { name: full_name, super_name, instance_methods, class_methods: vec![], constructor_idx });
@@ -593,12 +596,12 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
     Ok(AbcFile { strings, ints, uints, doubles, multinames, methods, classes, scripts, method_bodies })
 }
 
-fn parse_trait(r: &mut Reader, _strings: &[String], multinames: &[Multiname]) -> Result<Trait> {
+fn parse_trait(r: &mut Reader, _strings: &[Arc<str>], multinames: &[Multiname]) -> Result<Trait> {
     let name_idx = r.read_u30()?;
     let kind_byte = r.read_u8()?;
     let kind = kind_byte & 0x0F;
     let has_metadata = kind_byte & 0x40 != 0;
-    let name = multinames.get(name_idx as usize).map(|m| m.name.clone()).unwrap_or_default();
+    let name = multinames.get(name_idx as usize).map(|m| m.name.to_string()).unwrap_or_default();
 
     let (method_idx, slot_idx) = match kind {
         0 | 6 => { // Slot, Const
@@ -657,7 +660,7 @@ fn extract_xframe_name(bytecode: &[u8], abc: &AbcFile) -> Option<String> {
                     if let Some(s) = abc.strings.get(idx as usize) {
                         // xframe values are short snake_case strings, not bytecode artifacts
                         if !s.is_empty() && s.len() < 40 && s.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                            return Some(s.clone());
+                            return Some(s.to_string());
                         }
                     }
                 }
@@ -732,7 +735,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
     for body in abc.method_bodies.iter() {
         if let Some(method) = abc.methods.get(body.method_idx as usize) {
             if !method.name.is_empty() {
-                method_names.insert(body.method_idx, method.name.clone());
+                method_names.insert(body.method_idx, method.name.to_string());
             }
         }
     }
@@ -1005,7 +1008,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
     // We map that back to an animation name via xframe_map (e.g. frame47 → "a").
     //
     // Find the addFrameScript multiname index
-    let afs_mn_idx = abc.multinames.iter().position(|mn| mn.name == "addFrameScript");
+    let afs_mn_idx = abc.multinames.iter().position(|mn| &*mn.name == "addFrameScript");
     if let Some(afs_idx) = afs_mn_idx {
         // Encode afs_idx as u30 for pattern matching
         let mut afs_enc = Vec::new();
@@ -1097,7 +1100,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
                                     if let Some(mn_idx) = read_u30_at(bc, &mut k) {
                                         if let Some(frame) = pending_frame.take() {
                                             let method_name = abc.multinames.get(mn_idx as usize)
-                                                .map(|m| m.name.clone()).unwrap_or_default();
+                                                .map(|m| m.name.to_string()).unwrap_or_default();
                                             // Find the method_idx for this method name in this class
                                             let midx = class.instance_methods.iter()
                                                 .find(|t| t.name == method_name)
@@ -1171,12 +1174,12 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
     if xframe_map.is_empty() {
         // Find the xframe multiname index
         let xframe_mn_idx = abc.multinames.iter().enumerate()
-            .find(|(_, mn)| mn.name == "xframe")
+            .find(|(_, mn)| &*mn.name == "xframe")
             .map(|(i, _)| i);
 
         // Also check ALL multinames named 'xframe' (might be QName and Multiname variants)
         let xframe_mn_indices: Vec<usize> = abc.multinames.iter().enumerate()
-            .filter(|(_, mn)| mn.name == "xframe")
+            .filter(|(_, mn)| &*mn.name == "xframe")
             .map(|(i, _)| i)
             .collect();
         log::debug!("xframe multiname indices: {:?}", xframe_mn_indices);
@@ -1218,7 +1221,7 @@ pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedChar
                                         if !s.is_empty() && s.len() < 40
                                             && s.chars().all(|c| c.is_alphanumeric() || c == '_')
                                         {
-                                            seen_anims.insert(s.clone());
+                                            seen_anims.insert(s.to_string());
                                         }
                                     }
                                 }
@@ -1388,7 +1391,7 @@ pub fn extract_main_package_metadata(abc: &AbcFile) -> Option<MainPackageMetadat
 /// callpropvoid register, 2` and return `VALUE`. Used for the
 /// string-valued `register` keys (`id`, `guid`).
 fn scan_register_string_arg(body: &MethodBody, abc: &AbcFile, key: &str) -> Option<String> {
-    let key_idx = abc.strings.iter().position(|s| s == key)? as u32;
+    let key_idx = abc.strings.iter().position(|s| &**s == key)? as u32;
     let bc = &body.bytecode;
     let mut i = 0;
     while i < bc.len() {
@@ -1401,7 +1404,7 @@ fn scan_register_string_arg(body: &MethodBody, abc: &AbcFile, key: &str) -> Opti
             if s_idx == key_idx && j < bc.len() && bc[j] == OP_PUSHSTRING {
                 let mut k = j + 1;
                 let v_idx = read_u30_at(bc, &mut k)?;
-                return abc.strings.get(v_idx as usize).cloned();
+                return abc.strings.get(v_idx as usize).map(|s| s.to_string());
             }
             i = j;
             continue;
@@ -1419,7 +1422,7 @@ fn scan_register_string_arg(body: &MethodBody, abc: &AbcFile, key: &str) -> Opti
 /// its raw method name.
 fn scan_register_characters_array(body: &MethodBody, abc: &AbcFile) -> Vec<(String, String)> {
     let Some(key_idx) = abc.strings.iter()
-        .position(|s| s == "characters").map(|i| i as u32)
+        .position(|s| &**s == "characters").map(|i| i as u32)
     else { return Vec::new() };
 
     let bc = &body.bytecode;
@@ -1444,7 +1447,7 @@ fn scan_register_characters_array(body: &MethodBody, abc: &AbcFile) -> Vec<(Stri
                         // arg count — read + discard
                         read_u30_at(bc, &mut m);
                         let name = abc.multinames.get(mn_idx as usize)
-                            .map(|mn| mn.name.clone()).unwrap_or_default();
+                            .map(|mn| mn.name.to_string()).unwrap_or_default();
                         if let Some(id) = derive_id_from_bundle_method_name(&name) {
                             out.push((id, name));
                         }
@@ -1502,7 +1505,7 @@ fn skip_opcode_operands(op: u8, bc: &[u8], i: &mut usize) {
 /// detect transformation/alternate-form bundles (their `normalStats_id`
 /// is the parent character's id, not their own derived id).
 pub fn extract_normal_stats_id(body: &MethodBody, abc: &AbcFile) -> Option<String> {
-    let needle_idx = abc.strings.iter().position(|s| s == "normalStats_id")? as u32;
+    let needle_idx = abc.strings.iter().position(|s| &**s == "normalStats_id")? as u32;
     let bytes = &body.bytecode;
     let mut i = 0;
     while i < bytes.len() {
@@ -1517,7 +1520,7 @@ pub fn extract_normal_stats_id(body: &MethodBody, abc: &AbcFile) -> Option<Strin
                         if bytes[k] == OP_PUSHSTRING {
                             let mut m = k + 1;
                             let v = read_u30_at(bytes, &mut m)?;
-                            return abc.strings.get(v as usize).cloned();
+                            return abc.strings.get(v as usize).map(|s| s.to_string());
                         }
                         k += 1;
                     }
@@ -1536,7 +1539,7 @@ pub fn extract_normal_stats_id(body: &MethodBody, abc: &AbcFile) -> Option<Strin
 /// <value>` pattern as `extract_normal_stats_id`. Returns None if the field
 /// name isn't in the string pool, or isn't pushed in this body.
 fn extract_field_string(body: &MethodBody, abc: &AbcFile, field: &str) -> Option<String> {
-    let needle_idx = abc.strings.iter().position(|s| s == field)? as u32;
+    let needle_idx = abc.strings.iter().position(|s| &**s == field)? as u32;
     let bytes = &body.bytecode;
     let mut i = 0;
     while i < bytes.len() {
@@ -1550,7 +1553,7 @@ fn extract_field_string(body: &MethodBody, abc: &AbcFile, field: &str) -> Option
                         if bytes[k] == OP_PUSHSTRING {
                             let mut m = k + 1;
                             let v = read_u30_at(bytes, &mut m)?;
-                            return abc.strings.get(v as usize).cloned();
+                            return abc.strings.get(v as usize).map(|s| s.to_string());
                         }
                         k += 1;
                     }
@@ -1695,7 +1698,7 @@ fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
             // ── Constant pushes ─────────────────────────────────────────
             OP_PUSHSTRING => {
                 if let Some(idx) = read_u30_at(bytecode, &mut i) {
-                    let s = abc.strings.get(idx as usize).cloned().unwrap_or_default();
+                    let s = abc.strings.get(idx as usize).map(|s| s.to_string()).unwrap_or_default();
                     stack.push(StackVal::Str(s));
                 }
             }
@@ -1791,7 +1794,7 @@ fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
                 if costume_mode {
                     let mn = abc.multinames.get(mn_idx as usize);
                     let is_runtime = mn.map(|m| m.kind == 0x1B || m.kind == 0x1C).unwrap_or(false);
-                    let static_name = mn.and_then(|m| if m.name.is_empty() { None } else { Some(m.name.clone()) });
+                    let static_name = mn.and_then(|m| if m.name.is_empty() { None } else { Some(m.name.to_string()) });
                     if is_runtime {
                         let _val = stack.pop();
                         let key = stack.pop();
@@ -1820,7 +1823,7 @@ fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
                 if costume_mode {
                     let mn = abc.multinames.get(mn_idx as usize);
                     let is_runtime = mn.map(|m| m.kind == 0x1B || m.kind == 0x1C).unwrap_or(false);
-                    let static_name = mn.and_then(|m| if m.name.is_empty() { None } else { Some(m.name.clone()) });
+                    let static_name = mn.and_then(|m| if m.name.is_empty() { None } else { Some(m.name.to_string()) });
                     if is_runtime {
                         let key = stack.pop();
                         stack.pop(); // receiver
@@ -2106,7 +2109,7 @@ fn extract_ssf2_stats(bytecode: &[u8], abc: &AbcFile) -> Option<CharStats> {
         // Look for pushstring followed immediately by a numeric push
         if op == OP_PUSHSTRING {
             if let Some(str_idx) = read_u30_at(bytecode, &mut i) {
-                let key = abc.strings.get(str_idx as usize).cloned().unwrap_or_default();
+                let key = abc.strings.get(str_idx as usize).map(|s| s.to_string()).unwrap_or_default();
                 if STAT_KEYS.contains(&key.as_str()) && i < bytecode.len() {
                     // Next op should be a numeric push
                     let next_op = bytecode[i]; i += 1;
@@ -2399,8 +2402,8 @@ mod tests {
     /// given strings / doubles / uints (indices start at 1, as AVM2's
     /// constant pool has a sentinel at index 0).
     fn mk_abc(strings: &[&str], doubles: &[f64], uints: &[u32]) -> AbcFile {
-        let mut all_strings = vec![String::new()];
-        all_strings.extend(strings.iter().map(|s| s.to_string()));
+        let mut all_strings: Vec<Arc<str>> = vec![Arc::from("")];
+        all_strings.extend(strings.iter().map(|s| Arc::from(*s)));
         let mut all_doubles = vec![f64::NAN];
         all_doubles.extend(doubles.iter().copied());
         let mut all_uints = vec![0u32];
@@ -2410,7 +2413,7 @@ mod tests {
             ints: vec![0],
             uints: all_uints,
             doubles: all_doubles,
-            multinames: vec![Multiname { kind: 0, name_idx: 0, ns_idx: 0, name: String::new() }],
+            multinames: vec![Multiname { kind: 0, name_idx: 0, ns_idx: 0, name: Arc::from("") }],
             methods: vec![],
             classes: vec![],
             scripts: vec![],
