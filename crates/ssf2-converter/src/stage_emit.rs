@@ -238,6 +238,9 @@ fn build_entity(model: &StageModel) -> Value {
 // ───────────────────────── manifest / scripts / project ─────────────────────
 
 fn build_manifest(id: &str) -> Value {
+    // a match needs at least one music track to start; reference a public bgm that ships
+    // with the engine (matching what a shipped stage declares).
+    let music = json!([{ "namespace": "public", "resourceId": "bgm_welkinwonderland", "contentId": "bgm_welkinwonderland" }]);
     json!({
         "resourceId": id,
         "content": [{
@@ -247,7 +250,7 @@ fn build_manifest(id: &str) -> Value {
             "type": "stage",
             "objectStatsId": format!("{id}StageStats"),
             "scriptId": format!("{id}Script"),
-            "music": [],
+            "music": music,
             "metadata": {
                 "ui": { "entityId": id, "render": { "animation": "stage" } }
             }
