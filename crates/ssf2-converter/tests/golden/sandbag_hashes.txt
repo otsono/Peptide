@@ -48,7 +48,7 @@ f1ab79b7c9f51574be86180d5d04193883cdebd950009f2b816e07a62eb2cee3  ./library/enti
 d4450dc5ce1c1ed539e8bb64b5dc5ae5008f2662800da722ea71e4bd98fabbfa  ./library/manifest.json.meta
 c515312185555160396b67ba3d8342529cbceef47787447bf89261649850b74a  ./library/scripts/Sandbag/AnimationStats.hx
 ac46cba6bdf94fe35a593c1cf9481a8e16a2629a75b7cb05a821276cc13460cc  ./library/scripts/Sandbag/AnimationStats.hx.meta
-9b55d6320d9c34566afd394b94d0fc4f51af556b7a59896c19eed93f00fb080e  ./library/scripts/Sandbag/CharacterStats.hx
+d42dbfb2634bc9ccbe55c0768ac4e756b1e8acbef311975ed9b2cab74ff898a3  ./library/scripts/Sandbag/CharacterStats.hx
 802ff6d02189790162a4d670f4725be84fa29e7257bc5e1d339922a843b4efba  ./library/scripts/Sandbag/CharacterStats.hx.meta
 73a1da112610ef259a37f9086099ad7b64bd68c08335b2f5b947f1d14ef6238c  ./library/scripts/Sandbag/HitboxStats.hx
 8a40dc9a77ab0810c0cdc9dddc4ed593256b3a2ada891bda0a7a23d1eaa8d542  ./library/scripts/Sandbag/HitboxStats.hx.meta

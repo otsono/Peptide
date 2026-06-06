@@ -10,14 +10,14 @@
 //! must be rescaled by a factor that is fully determined by two things:
 //!
 //!   * the spatial scale  `size_multiplier`  (how much bigger the sprite is in
-//!     Fraymakers — currently ~1.9, but an experimental knob, see below), and
+//!     Fraymakers — currently 1.3, but an experimental knob, see below), and
 //!   * the frame-rate ratio `ssf2_fps / fm_fps` (= 30/60 = 0.5, fixed physics).
 //!
 //! A velocity in px/frame and an acceleration in px/frame² scale differently
 //! under a frame-rate change, so we derive TWO factors from the one knob:
 //!
-//!   velocity_scale = size_multiplier * (ssf2_fps / fm_fps)        // ≈ 1.9*0.5 = 0.95
-//!   accel_scale    = size_multiplier * (ssf2_fps / fm_fps)^2      // ≈ 1.9*0.25 = 0.475
+//!   velocity_scale = size_multiplier * (ssf2_fps / fm_fps)        // ≈ 1.3*0.5 = 0.65
+//!   accel_scale    = size_multiplier * (ssf2_fps / fm_fps)^2      // ≈ 1.3*0.25 = 0.325
 //!
 //! `size_multiplier` is the SINGLE tunable knob. Tweak it (in stats.jsonc or
 //! [`ScaleParams`]) and *everything* derived here — walk/dash/jump speeds,
@@ -32,22 +32,39 @@
 
 use std::collections::BTreeMap;
 
-/// Frame-rate + spatial-scale parameters that drive the SSF2→FM conversion.
-/// The whole point: `size_multiplier` is the one knob to tweak.
-#[derive(Debug, Clone, Copy)]
+use serde::Deserialize;
+
+/// Frame-rate + spatial-scale parameters that drive the SSF2→FM conversion, and
+/// the SINGLE home of the scale knob. The converter loads it from `stats.jsonc`
+/// (flattened into [`crate::mappings::StatMappings`]); the `peptide ssf2` sim /
+/// tuning tools use it directly. `size_multiplier` is the one knob to tweak.
+#[derive(Debug, Clone, Copy, Deserialize)]
 pub struct ScaleParams {
     /// Spatial scale: how much larger the sprite renders in Fraymakers than in
-    /// SSF2. The experimental knob. (Was hardcoded 1.9.)
+    /// SSF2. The experimental knob.
+    #[serde(default = "default_size_multiplier")]
     pub size_multiplier: f64,
     /// SSF2 simulation rate (Hz). Fixed at 30 for SSF2 Beta.
+    #[serde(default = "default_ssf2_fps")]
     pub ssf2_fps: f64,
     /// Fraymakers simulation rate (Hz). Fixed at 60.
+    #[serde(default = "default_fm_fps")]
     pub fm_fps: f64,
 }
 
+/// The default scale knob, in ONE place. `stats.jsonc` supplies the operative
+/// value (this is the fallback when it's absent, e.g. the standalone sim tools).
+fn default_size_multiplier() -> f64 { 1.3 }
+fn default_ssf2_fps() -> f64 { 30.0 }
+fn default_fm_fps() -> f64 { 60.0 }
+
 impl Default for ScaleParams {
     fn default() -> Self {
-        ScaleParams { size_multiplier: 1.9, ssf2_fps: 30.0, fm_fps: 60.0 }
+        ScaleParams {
+            size_multiplier: default_size_multiplier(),
+            ssf2_fps: default_ssf2_fps(),
+            fm_fps: default_fm_fps(),
+        }
     }
 }
 
@@ -301,8 +318,8 @@ mod tests {
     #[test]
     fn scale_factors_track_the_one_knob() {
         let mut sp = ScaleParams::default();
-        assert!((sp.velocity_scale() - 0.95).abs() < 1e-9);
-        assert!((sp.accel_scale() - 0.475).abs() < 1e-9);
+        assert!((sp.velocity_scale() - 0.65).abs() < 1e-9);
+        assert!((sp.accel_scale() - 0.325).abs() < 1e-9);
         // Tweak the single knob → both factors move together.
         sp.size_multiplier = 2.0;
         assert!((sp.velocity_scale() - 1.0).abs() < 1e-9);
@@ -313,10 +330,10 @@ mod tests {
     fn derived_stats_scale_with_knob() {
         let p = Ssf2Physics::from_raw(&sandbag());
         let s1 = derive_fm_stats(&p, &ScaleParams::default());
-        // jump 15 * 0.95 = 14.25, gravity 1.2 * 0.475 = 0.57.
-        assert!((s1.jump_speed - 14.25).abs() < 1e-6, "{}", s1.jump_speed);
-        assert!((s1.gravity - 0.57).abs() < 1e-6, "{}", s1.gravity);
-        assert!((s1.walk_speed_cap - 7.6).abs() < 1e-6, "{}", s1.walk_speed_cap);
+        // jump 15 * 0.65 = 9.75, gravity 1.2 * 0.325 = 0.39, walk 8 * 0.65 = 5.2.
+        assert!((s1.jump_speed - 9.75).abs() < 1e-6, "{}", s1.jump_speed);
+        assert!((s1.gravity - 0.39).abs() < 1e-6, "{}", s1.gravity);
+        assert!((s1.walk_speed_cap - 5.2).abs() < 1e-6, "{}", s1.walk_speed_cap);
         // Apex preserved in body-heights: FM apex / FM-scaled body-height should
         // equal SSF2 apex / SSF2 body-height (scale-invariant).
         let m_ss = simulate(&p, &ScaleParams::default());

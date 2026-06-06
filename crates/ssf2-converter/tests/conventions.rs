@@ -87,14 +87,21 @@ fn no_per_engine_branching_in_rust() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Compliance trip-wire #2: no Fraymakers/FrayTools engine-internal symbol names
-// (or RE'd engine code-line refs) in `.rs` COMMENTS.
+// Compliance trip-wire #2: no engine-internal symbol names (or RE'd engine
+// code-line refs) in `.rs` COMMENTS, for either engine -- Fraymakers/FrayTools
+// (HashLink) and SSF2 (the AVM2 engine RE'd from SSF2.swf).
 //
 // This is the comment-side companion to `doc_freshness.rs ::
-// no_engine_internals_in_tracked_docs`. At Team Fray's request the engine symbol
-// map and the engine RE methodology stay out of the tracked repo. That reaches
-// into code comments: a comment must not name a non-hscript engine class /
-// function / field, nor cite an engine code line (`name@12345`).
+// no_engine_internals_in_tracked_docs`. At Team Fray's request the Fraymakers
+// symbol map and RE methodology stay out of the tracked repo; the SSF2 engine
+// internals are kept out on the same footing (the SSF2 engine is McLeodGaming's,
+// and its internals are not ours to document). That reaches into code comments:
+// a comment must not name a non-hscript engine class / function / field, nor
+// cite an engine code line (`name@12345`).
+//
+// SSF2 INPUT-SIDE symbols are fine -- the `.ssf`/SWF format, the SSF2 character
+// modding API the converter reads, etc. The ban is on RUNNING-ENGINE internals
+// (the live match/menu object graph), not the input the converter parses.
 //
 // Scope note (deliberately narrow): this is the ONLY doc rule that carries over
 // to comments. The house voice / current-state-only / lowercase rules are for
@@ -102,17 +109,20 @@ fn no_per_engine_branching_in_rust() {
 // legitimately names engine symbols in string literals to resolve them
 // (`find_fn("spawnPlayer")`) and in user-facing diagnostics, which is fine.
 //
-// EXEMPT: the source that *is* the documented home of the symbol map -- the
-// MANIFEST table (`src/manifest.rs`), the patch/dispatch shape (`connect_edit`
-// in `src/main.rs`), and the RE tooling under `src/bin/`. See AGENT_CONTEXT.md
-// "engine-side knowledge is not in this repo" and CONTRIBUTING.md "special case".
+// EXEMPT: the source that *is* the documented home of a symbol map. Fraymakers:
+// the MANIFEST table (`src/manifest.rs`), the patch/dispatch shape (`connect_edit`
+// in `src/main.rs`), and the RE tooling under `src/bin/`. SSF2: the AVM2 injector
+// (`abc_inject.rs`), which is where the SSF2 engine symbols are resolved+patched.
+// See AGENT_CONTEXT.md "engine-side knowledge is not in this repo" and
+// CONTRIBUTING.md "special case".
 
-/// True if `path` is the documented home of the engine symbol map (exempt).
+/// True if `path` is the documented home of an engine symbol map (exempt).
 fn is_symbol_map_home(path: &str) -> bool {
     let p = path.replace('\\', "/");
     p.ends_with("/src/main.rs")
         || p.ends_with("/src/manifest.rs")
         || p.contains("/src/bin/")
+        || p.ends_with("/src/abc_inject.rs")
 }
 
 /// `name@12345` style engine code-line reference inside `text` (a comment).
