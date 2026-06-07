@@ -251,6 +251,22 @@ fn fmt_num(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") }
 }
 
+/// Map a Fraymakers hitbox stat name to the SSF2 `AttackDamage` public setter that tune
+/// drives, or `None` for a stat with no SSF2 analogue (skipped best-effort). The stored
+/// `AttackBoxes["attackBox"]` is an AttackDamage (sealed) with public accessors
+/// Damage/KBConstant/Power/Direction/WeightKB; mutating it persists (re-read each hit).
+fn tune_accessor(fm: &str) -> Option<&'static str> {
+    Some(match fm {
+        "damage" => "Damage",
+        "baseKnockback" => "KBConstant",
+        "knockbackGrowth" => "Power",
+        "angle" => "Direction",
+        "weightKnockback" | "weightKB" => "WeightKB",
+        "shieldDamage" => "ShieldDamage",
+        _ => return None,
+    })
+}
+
 // ─────────────────────────── reflection mapping ───────────────────────────
 
 impl Ssf2Target {
@@ -332,16 +348,13 @@ impl DebugTarget for Ssf2Target {
             return Ok(format!("[{}]", parts.join(", ")));
         }
 
-        // tune (`updateHitboxStats(idx, {…})`) is Fraymakers-only. FM addresses a LIVE
-        // hitbox by index and mutates its stats in place; SSF2 has no equivalent — its
-        // attacks are move-NAME + per-frame data (`m_attackData.getAttack(name).AttackBoxes`)
-        // with private per-hit `AttackDamage` stats, no stable "hitbox index" to address.
-        // Declare the gap explicitly (parity with how char_icon/console declare gaps)
-        // rather than emit a reflection call SSF2 can't resolve.
-        if expr.contains("updateHitboxStats") {
-            return Ok("tune: Fraymakers-only. SSF2 attacks are move-name + per-frame data \
-                       (no addressable live hitbox to mutate), so there's no clean parity \
-                       for updateHitboxStats. Use the converter's stat scaling instead.".into());
+        // tune (`<player>.updateHitboxStats(<move>, {stat:val,…})`). FM addresses a live
+        // hitbox by index; SSF2 addresses by MOVE NAME (its attacks are move-name + per-box
+        // data), so on SSF2 the index slot carries a move name. We navigate cur to the
+        // player, then mutate stored attack box 0 of that move via the TUNE verb (which
+        // sets the AttackDamage public setters Damage/KBConstant/Direction/Power).
+        if let Some(rest) = expr.split_once(".updateHitboxStats(") {
+            return self.eval_tune(rest.0, rest.1);
         }
 
         // commands.hsx composite globals that aren't a plain navigation: handle
@@ -623,6 +636,47 @@ impl Ssf2Target {
         let mut last = String::new();
         for op in ops { last = self.op(op)?; }
         if read { self.op("READ") } else { Ok(last) }
+    }
+
+    /// tune on SSF2: `<player>` + the `updateHitboxStats(...)` arg text
+    /// `<move>, { stat: val, … })`. Navigates the bridge's `peptideCur` to the player's
+    /// Character, then for each stat sends a TUNE verb that mutates stored attack box 0 of
+    /// the named move (SSF2 addresses attacks by move name, not a flat hitbox index).
+    fn eval_tune(&self, player: &str, args: &str) -> Result<String> {
+        let args = args.trim().trim_end_matches(')').trim();
+        // split "<move>, { … }" at the first comma → move name + object text
+        let (mv, obj) = args.split_once(',')
+            .ok_or_else(|| anyhow!("tune: expected `<move>, {{stats}}` (got {args:?})"))?;
+        let mv = mv.trim();
+        let obj = obj.trim().trim_start_matches('{').trim_end_matches('}');
+        // navigate cur → the target Character (p0/p1/…)
+        for op in self.emit_root(player)? { self.op(&op)?; }
+        // apply each stat that maps to an SSF2 AttackDamage setter
+        let mut applied: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        for pair in obj.split(',') {
+            let pair = pair.trim();
+            if pair.is_empty() { continue; }
+            let (k, v) = pair.split_once(':')
+                .ok_or_else(|| anyhow!("tune: bad stat `{pair}` (expected key:value)"))?;
+            let (k, v) = (k.trim(), v.trim());
+            match tune_accessor(k) {
+                Some(acc) => {
+                    // the TUNE verb reads the box stat back after setting; surface any
+                    // engine-side error (e.g. an unknown move name → null) instead of
+                    // falsely reporting success.
+                    let r = self.op(&format!("TUNE\t{mv}\t{acc}\t{v}"))?;
+                    if r.contains("ERR") {
+                        return Err(anyhow!("tune {player} {mv}: {r} (is {mv:?} a valid move name?)"));
+                    }
+                    applied.push(format!("{k}={} (box0 {acc}={})", v, r.trim()));
+                }
+                None => skipped.push(k.to_string()),
+            }
+        }
+        let mut out = format!("tune {player} {mv}: {}", if applied.is_empty() { "nothing applied".into() } else { applied.join(", ") });
+        if !skipped.is_empty() { out.push_str(&format!(" (no SSF2 analogue: {})", skipped.join(", "))); }
+        Ok(out)
     }
 
     /// Handle the `commands.hsx` globals that are whole helpers rather than a plain
