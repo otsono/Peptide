@@ -11,7 +11,13 @@
           }
         }
       },
-      "music": [],
+      "music": [
+        {
+          "contentId": "bgm_welkinwonderland",
+          "namespace": "public",
+          "resourceId": "bgm_welkinwonderland"
+        }
+      ],
       "name": "battlefieldssf2",
       "objectStatsId": "battlefieldssf2StageStats",
       "scriptId": "battlefieldssf2Script",
