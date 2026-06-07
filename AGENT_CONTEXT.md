@@ -362,6 +362,20 @@ SSF2Stage`) confirms the model: `getBackground` / `getMidground` / `getForegroun
 fixed planes; `getCameraBackgrounds` is the separate parallax system. parallax is rare (1 of
 110 corpus stages, junglehijinx); the rest have a single fixed backdrop.
 
+**parallax math (from the SSF2 game engine `Vcam`/`VcamBG`/`VcamBGSettings`).** each
+camera-background layer (`<id>_bg` content + the `_cambg` layers) is its OWN parallax plane,
+and SSF2 auto-derives its pan rate from the layer's pixel size vs the 640x360 game view:
+```
+xPanMultiplier = (bgWidth  - 640) / (2 * bgWidth)     (clamp < 0 to 0)
+yPanMultiplier = (bgHeight - 360) / (2 * bgHeight)
+```
+so a wide layer scrolls slower-than-stage by a larger factor and a layer <= the view size is
+screen-fixed (multiplier 0). this is per-LAYER (a 3095px sunray plane -> 0.40, a 1255px tree
+plane -> 0.245, a 396px sun -> 0), which is what makes the depth read. `VcamBGSettings` is
+field-for-field the same as the Fraymakers camera-background config (`xPanMultiplier`/`mode`/
+`autoPanMultiplier`/`foreground`/... -- shared McLeodGaming lineage), so the converter computes
+each layer's multiplier with the formula above (native px) and emits it explicitly per layer.
+
 **scale.** Fraymakers space is SSF2 space scaled up by `size_multiplier` (the same knob the
 character converter scales sprites by, default 1.3; in world-units-per-second the spatial
 scale works out to exactly `size_multiplier`). so the stage parser scales every coordinate

@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 use crate::stage_parser::{Rect, StageArt, StageModel};
+// note: ParallaxLayer is read via model.art.parallax below.
 use crate::uuid_gen::det_uuid;
 
 /// Emit the FM stage package for `model` under `out_root/<id>/`. Returns the
@@ -60,9 +61,13 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     let stage_refs: Vec<ArtRef> = stage_frames.iter().enumerate()
         .map(|(i, a)| write_layer(&format!("stage{i}"), a))
         .collect::<Result<_>>()?;
+    let parallax_refs: Vec<ParallaxRef> = model.art.parallax.iter().enumerate()
+        .map(|(i, layer)| write_layer(&format!("parallax{i}"), &layer.art)
+            .map(|r| ParallaxRef { art: r, x_pan: layer.x_pan, y_pan: layer.y_pan }))
+        .collect::<Result<_>>()?;
     let art = ArtRefs {
         background: model.art.background.as_ref().map(|a| write_layer("bg", a)).transpose()?,
-        parallax: model.art.parallax.as_ref().map(|a| write_layer("parallax", a)).transpose()?,
+        parallax: parallax_refs,
         stage: stage_refs,
         foreground: model.art.foreground.as_ref().map(|a| write_layer("fg", a)).transpose()?,
     };
@@ -82,7 +87,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     let scripts = lib.join("scripts").join("stage");
     std::fs::write(scripts.join(format!("{id}Script.hx")), script_hx(id, art.stage.len() > 1))?;
     write_meta(&scripts.join(format!("{id}Script.hx.meta")), id, &format!("{id}Script"), "", Some("STAGE"), None)?;
-    std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id, art.parallax.as_ref(), model.scale))?;
+    std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id, &art.parallax, model.scale))?;
     write_meta(&scripts.join(format!("{id}StageStats.hx.meta")), id, &format!("{id}StageStats"), "hscript", None, None)?;
 
     let fraytools = dir.join(format!("{id}.fraytools"));
@@ -107,8 +112,9 @@ struct EntityBuilder<'a> {
     layers: Vec<Value>,
     /// Layer ids of the `stage` animation, in render order (first = back).
     anim_layers: Vec<String>,
-    /// Layer ids of the `parallax0` animation (the SSF2 `_cambg` camera-background layer).
-    parallax_layers: Vec<String>,
+    /// One `(animationName, layerId)` per parallax camera-background layer (`parallax0`,
+    /// `parallax1`, …) — each `_cambg` layer scrolls at its own rate, so each is its own.
+    parallax_anims: Vec<(String, String)>,
     /// Length of the stage animation in frames (static layers hold for this many).
     frame_len: usize,
     /// SSF2 -> FM art scale (`size_multiplier`): native-resolution art PNGs render at this
@@ -118,7 +124,7 @@ struct EntityBuilder<'a> {
 
 impl<'a> EntityBuilder<'a> {
     fn new(id: &'a str) -> Self {
-        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], parallax_layers: vec![], frame_len: 1, scale: 1.0 }
+        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], parallax_anims: vec![], frame_len: 1, scale: 1.0 }
     }
     /// A stable per-entity uuid for `role` (e.g. `"layer:Floor"`).
     fn uid(&mut self, role: &str) -> String {
@@ -210,13 +216,13 @@ impl<'a> EntityBuilder<'a> {
         let lid = self.make_image(name, image_asset, x, y, self.scale);
         self.anim_layers.push(lid);
     }
-    /// Add an IMAGE layer to the `parallax0` animation (the SSF2 `_cambg` camera background).
-    /// The IMAGE symbol stays at scale 1: the camera's ParallaxBG sizes it from
-    /// `originalBGWidth × scaleMultiplier` (set in StageStats), which is where the stage
-    /// scale is applied, so scaling the symbol too would double it.
-    fn add_image_parallax(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
-        let lid = self.make_image(name, image_asset, x, y, 1.0);
-        self.parallax_layers.push(lid);
+    /// Add a parallax camera-background layer as its own `parallax{idx}` animation. The IMAGE
+    /// symbol stays at scale 1: the camera's ParallaxBG sizes it from
+    /// `originalBGWidth × scaleMultiplier` (set in StageStats), so scaling the symbol too
+    /// would double it.
+    fn add_image_parallax(&mut self, idx: usize, image_asset: &str, x: f64, y: f64) {
+        let lid = self.make_image(&format!("Parallax {idx}"), image_asset, x, y, 1.0);
+        self.parallax_anims.push((format!("parallax{idx}"), lid));
     }
     /// Add an animated IMAGE layer to the `stage` animation: one keyframe per frame, each
     /// referencing that frame's image, so the layer plays through them (loops).
@@ -263,8 +269,11 @@ impl<'a> EntityBuilder<'a> {
 /// A written art layer the entity references: the sprite `.meta` guid + placement + size.
 struct ArtRef { guid: String, x: f64, y: f64, w: u32, h: u32 }
 
+/// A parallax camera-background layer: the written sprite + its per-layer pan rate.
+struct ParallaxRef { art: ArtRef, x_pan: f64, y_pan: f64 }
+
 /// The depth layers the entity lays out. `stage` is the frame sequence (1 = static).
-struct ArtRefs { background: Option<ArtRef>, parallax: Option<ArtRef>, stage: Vec<ArtRef>, foreground: Option<ArtRef> }
+struct ArtRefs { background: Option<ArtRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Option<ArtRef> }
 
 /// Render the floor + soft platforms as filled rectangles on a transparent canvas
 /// covering their bounding box (1px = 1 stage unit). Gives the stage visible content
@@ -394,16 +403,18 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
         b.add_point(&format!("Respawn {i}"), "RESPAWN_POINT", i, x, y, rot);
     }
 
-    // SSF2 `_cambg` parallax -> its own `parallax0` animation (camera-scrolled in StageStats).
-    if let Some(a) = &art.parallax { b.add_image_parallax("Parallax 0", &a.guid, a.x, a.y); }
+    // each SSF2 camera-background layer -> its own `parallax{i}` animation (each scrolls at its
+    // own rate, set in StageStats).
+    for (i, p) in art.parallax.iter().enumerate() {
+        b.add_image_parallax(i, &p.art.guid, p.art.x, p.art.y);
+    }
 
     let mut animations = vec![json!({
         "$id": b.uid("anim:stage"), "name": "stage", "pluginMetadata": {}, "layers": b.anim_layers
     })];
-    if !b.parallax_layers.is_empty() {
-        animations.push(json!({
-            "$id": b.uid("anim:parallax0"), "name": "parallax0", "pluginMetadata": {}, "layers": b.parallax_layers
-        }));
+    for (name, lid) in b.parallax_anims.clone() {
+        let aid = b.uid(&format!("anim:{name}"));
+        animations.push(json!({ "$id": aid, "name": name, "pluginMetadata": {}, "layers": [lid] }));
     }
 
     json!({
@@ -508,20 +519,17 @@ fn write_meta(path: &Path, _stage_id: &str, id: &str, language: &str, object_typ
 
 /// StageStats: stage sprite + camera. The fixed SSF2 backdrop lives as an IMAGE layer in the
 /// `stage` animation (it carries the surface fighters stand on, so it moves 1:1 with the
-/// world). A SSF2 `_cambg` parallax layer, when present, is emitted as a camera-relative
-/// background (the `parallax0` animation, panned slower than the camera for depth).
-fn stage_stats_hx(id: &str, parallax: Option<&ArtRef>, scale: f64) -> String {
-    let backgrounds = match parallax {
-        // The camera's ParallaxBG sizes the layer as `originalBGWidth × scaleMultiplier`, so
-        // `originalBGWidth/Height` is the NATIVE png size and `scaleMultiplier` is the
-        // SSF2->FM stage scale (the parallax IMAGE symbol stays at scale 1). PAN mode pans
-        // the layer at `xPanMultiplier` of the camera offset, matching how SSF2 scrolls its
-        // `_cambg` layers (discrete planes that move camera-relative), rather than BOUNDS
-        // (which stretches the layer to fit the camera bounds).
-        Some(b) => format!(
-            "\n\t\t\t{{\n\
+/// world). Each SSF2 camera-background layer is emitted as its own `parallax{i}` animation +
+/// a `camera.backgrounds` entry that pans at the layer's own SSF2-derived `xPanMultiplier`.
+fn stage_stats_hx(id: &str, parallax: &[ParallaxRef], scale: f64) -> String {
+    // back-to-front: layer 0 is the farthest (highest depth). ParallaxBG sizes the layer as
+    // `originalBGWidth × scaleMultiplier` (native png × the stage scale; the IMAGE symbol stays
+    // at scale 1). PAN mode pans the layer at `xPanMultiplier` of the camera offset, matching
+    // how SSF2's Vcam scrolls each camera background.
+    let entries: Vec<String> = parallax.iter().enumerate().map(|(i, p)| format!(
+        "\n\t\t\t{{\n\
 \t\t\t\tspriteContent: self.getResource().getContent(\"{id}\"),\n\
-\t\t\t\tanimationId: \"parallax0\",\n\
+\t\t\t\tanimationId: \"parallax{i}\",\n\
 \t\t\t\tmode: ParallaxMode.PAN,\n\
 \t\t\t\toriginalBGWidth: {w},\n\
 \t\t\t\toriginalBGHeight: {h},\n\
@@ -529,15 +537,15 @@ fn stage_stats_hx(id: &str, parallax: Option<&ArtRef>, scale: f64) -> String {
 \t\t\t\tverticalScroll: false,\n\
 \t\t\t\tloopWidth: 0,\n\
 \t\t\t\tloopHeight: 0,\n\
-\t\t\t\txPanMultiplier: 0.5,\n\
-\t\t\t\tyPanMultiplier: 0.5,\n\
+\t\t\t\txPanMultiplier: {xp},\n\
+\t\t\t\tyPanMultiplier: {yp},\n\
 \t\t\t\tscaleMultiplier: {scale},\n\
 \t\t\t\tforeground: false,\n\
-\t\t\t\tdepth: 2000\n\
-\t\t\t}}\n\t\t",
-            w = b.w, h = b.h),
-        None => String::new(),
-    };
+\t\t\t\tdepth: {depth}\n\
+\t\t\t}}",
+        w = p.art.w, h = p.art.h, xp = p.x_pan, yp = p.y_pan, depth = 2000 - (i as i64) * 10)
+    ).collect();
+    let backgrounds = if entries.is_empty() { String::new() } else { format!("{}\n\t\t", entries.join(",")) };
     format!(
         "// Stats for {id} (converted from SSF2)\n\n\
 {{\n\

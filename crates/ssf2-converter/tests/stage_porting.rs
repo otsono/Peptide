@@ -75,7 +75,7 @@ fn battlefield_parses_to_geometry() {
     assert!(m.art.background.is_some(), "painted backdrop rasterizes");
     assert!(m.art.foreground.is_some(), "foreground rasterizes");
     assert!(m.art.stage_frames.is_empty(), "collision masks must not render as stage art");
-    assert!(m.art.parallax.is_none(), "battlefield has no parallax (fixed background)");
+    assert!(m.art.parallax.is_empty(), "battlefield has no parallax (fixed background)");
 }
 
 /// Junglehijinx is the corpus's parallax stage: its `<id>_bg` carries `_cambg` camera-
@@ -92,7 +92,10 @@ fn junglehijinx_has_parallax() {
     // the `_cambg` parallax composites WITH the far backdrop sky (so the sun rays draw in
     // front of the sky, not occluded behind it), and the stageMC `background` plane (island)
     // stays a fixed near-layer.
-    assert!(m.art.parallax.is_some(), "junglehijinx `_cambg` layers must be parallax");
+    assert!(m.art.parallax.len() >= 3, "junglehijinx has multiple per-rate parallax layers, got {}", m.art.parallax.len());
+    // each layer has its own pan rate (wider layers scroll more); they are NOT all equal.
+    let rates: Vec<f64> = m.art.parallax.iter().map(|p| p.x_pan).collect();
+    assert!(rates.iter().any(|&r| r > 0.3) && rates.iter().any(|&r| r < 0.05), "per-layer rates differ, got {rates:?}");
     assert!(m.art.background.is_some(), "fixed near-background (island) present");
     // the island terrain is sloped, so the main floor traces a polyline, not a flat line.
     let floor = m.main_floor().expect("main floor");

@@ -113,10 +113,11 @@ pub struct StageArtSet {
     /// Fixed painted backdrop (SSF2 `<id>_bg` / `background`), drawn behind everything.
     /// Moves 1:1 with the world (it carries the surface fighters stand on).
     pub background: Option<StageArt>,
-    /// Camera-relative parallax layers (SSF2 `*_cambg` children of the background, what
-    /// `SSF2Stage.getCameraBackgrounds` returns), composited back-to-front. Scrolls slower
-    /// than the stage. `None` for the 109/110 corpus stages with no `_cambg` layers.
-    pub parallax: Option<StageArt>,
+    /// Camera-relative parallax layers (the SSF2 `<id>_bg` backdrop + the `_cambg` layers that
+    /// `SSF2Stage.getCameraBackgrounds` returns), back-to-front. Each is its OWN plane with its
+    /// OWN pan rate (SSF2 auto-derives it from the layer size). Empty for the 109/110 corpus
+    /// stages with no camera backgrounds.
+    pub parallax: Vec<ParallaxLayer>,
     /// The main stage art (terrain / platforms / props) at character depth. More than
     /// one frame when the source has animated clips (the emitter loops them).
     pub stage_frames: Vec<StageArt>,
@@ -128,9 +129,19 @@ impl StageArtSet {
     /// `true` if no layer rasterized (e.g. a stage with only bitmap fills we can't
     /// decode) — the emitter then falls back to a geometry placeholder.
     pub fn is_empty(&self) -> bool {
-        self.background.is_none() && self.parallax.is_none()
+        self.background.is_none() && self.parallax.is_empty()
             && self.stage_frames.is_empty() && self.foreground.is_none()
     }
+}
+
+/// One camera-background parallax layer: the composited art + its per-layer pan rate (SSF2
+/// auto-derives the rate from the layer's pixel size vs the 640x360 view; see `parallax_pan`).
+#[derive(Clone, Debug)]
+pub struct ParallaxLayer {
+    pub art: StageArt,
+    /// Fraction of the camera's movement this layer scrolls by (0 = screen-fixed).
+    pub x_pan: f64,
+    pub y_pan: f64,
 }
 
 /// A composited stage-art image ready to drop in as an IMAGE layer / parallax bg.
@@ -604,16 +615,31 @@ fn render_art_layers(
         }
     }
     let foreground = composite(base_insts, &[ArtKind::Foreground]);
-    // when the backdrop carries `_cambg` parallax layers, composite the far sky (Backdrop) +
-    // the parallax (`_cambg`) into ONE camera-relative plane (so the rays/sun draw in front of
-    // the sky, not occluded behind it), and keep the stageMC `background` plane as a fixed
-    // near-background in front of it. without parallax, backdrop + background are one fixed bg.
+    // when the backdrop carries `_cambg` parallax layers, each backdrop/cambg LAYER (grouped
+    // by symbol) becomes its own camera-relative plane with its own auto-derived pan rate (so
+    // the sky, sun rays, trees, ... scroll at different rates, reading as depth — and the rays
+    // draw in front of the sky, not occluded by it). The stageMC `background` plane (the
+    // island fighters stand near) stays a fixed near-layer in front. Without parallax, backdrop
+    // + background fold into one fixed bg.
     let has_parallax = base_insts.iter().any(|i| art_kind(i) == ArtKind::Parallax);
     let (background, parallax) = if has_parallax {
-        (composite(base_insts, &[ArtKind::Background]),
-         composite(base_insts, &[ArtKind::Backdrop, ArtKind::Parallax]))
+        let mut order: Vec<&str> = Vec::new();
+        let mut groups: BTreeMap<&str, Vec<&Instance>> = BTreeMap::new();
+        for i in base_insts.iter().filter(|i| matches!(art_kind(i), ArtKind::Backdrop | ArtKind::Parallax)) {
+            let key = i.sym_name.as_str();
+            if !groups.contains_key(key) { order.push(key); }
+            groups.entry(key).or_default().push(i);
+        }
+        let layers: Vec<ParallaxLayer> = order.iter().filter_map(|key| {
+            composite_layer(&groups[*key], shape_defs, bitmaps, ox, oy).map(|mut art| {
+                art.x *= scale; art.y *= scale;
+                let (x_pan, y_pan) = parallax_pan(art.w, art.h);
+                ParallaxLayer { art, x_pan, y_pan }
+            })
+        }).collect();
+        (composite(base_insts, &[ArtKind::Background]), layers)
     } else {
-        (composite(base_insts, &[ArtKind::Backdrop, ArtKind::Background]), None)
+        (composite(base_insts, &[ArtKind::Backdrop, ArtKind::Background]), Vec::new())
     };
 
     // Emit a multi-frame stage animation only when the samples form a CLEAN animation:
@@ -779,6 +805,15 @@ fn rdp_simplify(pts: &[(f64, f64)], eps: f64) -> Vec<(f64, f64)> {
     } else {
         vec![a, b]
     }
+}
+
+/// SSF2's auto pan multiplier for a camera-background layer of `w x h` native px, vs the
+/// 640x360 game view (the SSF2 `Vcam` formula): `(size - view) / (2 * size)`, clamped to
+/// `[0, 0.5]` (a layer <= the view is screen-fixed; a very wide layer approaches 0.5).
+fn parallax_pan(w: u32, h: u32) -> (f64, f64) {
+    let x = ((w as f64 - 640.0) / (2.0 * w.max(1) as f64)).clamp(0.0, 0.5);
+    let y = ((h as f64 - 360.0) / (2.0 * h.max(1) as f64)).clamp(0.0, 0.5);
+    (x, y)
 }
 
 /// Decompress an `.ssf` to SWF bytes via the DAT-archive aware path.
