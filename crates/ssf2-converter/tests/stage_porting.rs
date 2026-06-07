@@ -6,6 +6,29 @@ mod common;
 
 use ssf2_converter::{emit_stage, parse_stage};
 
+/// Every stage in the corpus must parse (covers the terrain-naming variety across
+/// SSF2 stages, not just battlefield). Corpus-gated.
+#[test]
+fn all_corpus_stages_parse() {
+    let dir = common::ssfs_dir().join("stages");
+    if !common::present(&dir) {
+        return;
+    }
+    let mut total = 0;
+    let mut failed = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let p = entry.unwrap().path();
+        if p.extension().and_then(|e| e.to_str()) != Some("ssf") {
+            continue;
+        }
+        total += 1;
+        if let Err(e) = parse_stage(&p) {
+            failed.push(format!("{}: {e}", p.file_name().unwrap().to_string_lossy()));
+        }
+    }
+    assert!(failed.is_empty(), "{}/{} stages failed to parse:\n{}", failed.len(), total, failed.join("\n"));
+}
+
 /// Battlefield is the iteration target: a 4-platform stage with death/camera
 /// boxes and 4 spawn points. Parse it and check the extracted geometry is sane.
 #[test]
