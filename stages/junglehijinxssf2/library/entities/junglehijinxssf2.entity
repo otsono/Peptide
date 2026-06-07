@@ -1,7 +1,7 @@
 {
   "animations": [
     {
-      "$id": "eaca5298-8143-5986-9816-2e45198e37b3",
+      "$id": "361c3621-9d57-5f57-858d-94384031079d",
       "layers": [
         "80ef7b82-f16f-5c65-9875-099848c0ed3d",
         "b955bfcc-7a93-5ba1-b0af-eb8d14c5d0fe",
@@ -33,11 +33,35 @@
       "pluginMetadata": {}
     },
     {
-      "$id": "d1307582-de62-56a5-85b4-4597ab7ee491",
+      "$id": "a2ba387c-3f0d-556f-a7a1-2e4d037bc129",
       "layers": [
         "7a7d2d36-5aa0-59f5-90d1-d076dda2305a"
       ],
       "name": "parallax0",
+      "pluginMetadata": {}
+    },
+    {
+      "$id": "ea4faac3-ffa6-5df3-9488-8cde89084fea",
+      "layers": [
+        "716ebbe2-5ed1-5d7f-84f0-70bff48ed73a"
+      ],
+      "name": "parallax1",
+      "pluginMetadata": {}
+    },
+    {
+      "$id": "dacfbaa1-14dd-51e7-9fe1-62241862210f",
+      "layers": [
+        "fc4fbeae-7afb-5c14-bd1e-f4f3e39d85ad"
+      ],
+      "name": "parallax2",
+      "pluginMetadata": {}
+    },
+    {
+      "$id": "f84bff59-516f-5e74-9ec3-43ab69353f4f",
+      "layers": [
+        "a835c9a0-9321-51a2-9a5f-1f6f36fa9352"
+      ],
+      "name": "parallax3",
       "pluginMetadata": {}
     }
   ],
@@ -242,6 +266,33 @@
       "length": 1,
       "pluginMetadata": {},
       "symbol": "678cc99e-1b07-596a-8c0e-2a29def3c3bf",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "IMAGE"
+    },
+    {
+      "$id": "10aa8b89-5569-59d3-83f2-75baf8ec7b3d",
+      "length": 1,
+      "pluginMetadata": {},
+      "symbol": "ff7121ec-99a1-5b85-b722-af34c409fea0",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "IMAGE"
+    },
+    {
+      "$id": "5c6c196a-54a3-5233-a01a-4e37c81d5144",
+      "length": 1,
+      "pluginMetadata": {},
+      "symbol": "e557469e-6533-5811-a3c7-7905b6b9c384",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "IMAGE"
+    },
+    {
+      "$id": "826ad01c-03c8-5b2f-b8d6-a4f8ae979380",
+      "length": 1,
+      "pluginMetadata": {},
+      "symbol": "3e56f308-6ecd-5869-9dee-b7c8c8fff718",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "IMAGE"
@@ -637,6 +688,39 @@
       "name": "Parallax 0",
       "pluginMetadata": {},
       "type": "IMAGE"
+    },
+    {
+      "$id": "716ebbe2-5ed1-5d7f-84f0-70bff48ed73a",
+      "hidden": false,
+      "keyframes": [
+        "10aa8b89-5569-59d3-83f2-75baf8ec7b3d"
+      ],
+      "locked": false,
+      "name": "Parallax 1",
+      "pluginMetadata": {},
+      "type": "IMAGE"
+    },
+    {
+      "$id": "fc4fbeae-7afb-5c14-bd1e-f4f3e39d85ad",
+      "hidden": false,
+      "keyframes": [
+        "5c6c196a-54a3-5233-a01a-4e37c81d5144"
+      ],
+      "locked": false,
+      "name": "Parallax 2",
+      "pluginMetadata": {},
+      "type": "IMAGE"
+    },
+    {
+      "$id": "a835c9a0-9321-51a2-9a5f-1f6f36fa9352",
+      "hidden": false,
+      "keyframes": [
+        "826ad01c-03c8-5b2f-b8d6-a4f8ae979380"
+      ],
+      "locked": false,
+      "name": "Parallax 3",
+      "pluginMetadata": {},
+      "type": "IMAGE"
     }
   ],
   "paletteMap": {
@@ -836,7 +920,35 @@
     {
       "$id": "678cc99e-1b07-596a-8c0e-2a29def3c3bf",
       "alpha": 1,
-      "imageAsset": "cd235369-a815-54dc-9d58-965c10a75f2a",
+      "imageAsset": "72719123-17c2-565d-a374-0d101c06e297",
+      "pivotX": 0,
+      "pivotY": 0,
+      "pluginMetadata": {},
+      "rotation": 0,
+      "scaleX": 1.0,
+      "scaleY": 1.0,
+      "type": "IMAGE",
+      "x": -533.070205078125,
+      "y": -623.2042875671387
+    },
+    {
+      "$id": "ff7121ec-99a1-5b85-b722-af34c409fea0",
+      "alpha": 1,
+      "imageAsset": "342e970e-f43e-5c7f-83ba-0be153c9012c",
+      "pivotX": 0,
+      "pivotY": 0,
+      "pluginMetadata": {},
+      "rotation": 0,
+      "scaleX": 1.0,
+      "scaleY": 1.0,
+      "type": "IMAGE",
+      "x": -462.86045745849606,
+      "y": -220.24431549072273
+    },
+    {
+      "$id": "e557469e-6533-5811-a3c7-7905b6b9c384",
+      "alpha": 1,
+      "imageAsset": "cdc426f1-cac5-5f2b-ba16-d3432f2d31ba",
       "pivotX": 0,
       "pivotY": 0,
       "pluginMetadata": {},
@@ -845,7 +957,21 @@
       "scaleY": 1.0,
       "type": "IMAGE",
       "x": -1358.1521205814809,
-      "y": -623.2042875671387
+      "y": -403.5601898392488
+    },
+    {
+      "$id": "3e56f308-6ecd-5869-9dee-b7c8c8fff718",
+      "alpha": 1,
+      "imageAsset": "4ef3e7fb-843f-5f59-832d-38fbf5ec1c38",
+      "pivotX": 0,
+      "pivotY": 0,
+      "pluginMetadata": {},
+      "rotation": 0,
+      "scaleX": 1.0,
+      "scaleY": 1.0,
+      "type": "IMAGE",
+      "x": 96.93269805908206,
+      "y": -225.74172302246092
     }
   ],
   "tags": [],
