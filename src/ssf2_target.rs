@@ -435,10 +435,15 @@ impl DebugTarget for Ssf2Target {
             vec![args.character().to_string()]
         } else { args.characters.clone() };
         let n = chars.len().max(1);
+        // Reserve one spare slot (capped at SSF2's 4-player max) so `addCharacter` has a
+        // pre-allocated slot to fill live — the match's player containers are fixed-size
+        // at startGame, so a slot can't be grown afterward. The spare is marked
+        // exist=false + null character below, so startGame skips it (no ghost fighter).
+        let slots = (n + 1).min(4);
 
-        // SPAWN: build a VERSUS Game with N player slots, set player 0's character,
-        // queue stage+char0, load. (3rd arg = player count → Game(N, VERSUS).)
-        self.op(&format!("SPAWN\t{}\t{}\t{}", chars[0], stage, n))?;
+        // SPAWN: build a VERSUS Game with `slots` player slots, set player 0's character,
+        // queue stage+char0, load. (3rd arg = slot count → Game(slots, VERSUS).)
+        self.op(&format!("SPAWN\t{}\t{}\t{}", chars[0], stage, slots))?;
 
         // Add players 1..N: each is an idle dummy — a human slot (so NO CPU AI) that
         // simply never receives input (only player 0 is driven by the input injector),
@@ -452,6 +457,14 @@ impl DebugTarget for Ssf2Target {
             let _ = self.op(&format!("QUEUE1\t{ch}"));
         }
         if n > 1 { let _ = self.op("MLOAD"); }
+
+        // Mark reserved spare slots [n..slots) as non-participating (exist=false, null
+        // character) so startGame's makePlayer loop skips them and the match doesn't count
+        // them as fighters. addCharacter later flips exist=true and fills one.
+        for i in n..slots {
+            let _ = self.op("GC"); let _ = self.op("GET\tcurrentGame"); let _ = self.op("GET\tPlayerSettings"); let _ = self.op(&format!("IDX\t{i}"));
+            let _ = self.op("SETP\texist\t0"); // character stays null from PlayerSetting.init() → startGame skips it
+        }
 
         // Apply the FULL match config on the REAL config objects BEFORE startMatch reads
         // them. Global rules live on Game.LevelData (GameSettings, lowercase slots); the
@@ -539,18 +552,33 @@ impl DebugTarget for Ssf2Target {
         Ok(out)
     }
 
-    /// addCharacter is Fraymakers-only. FM drops a fighter into the LIVE match via its
-    /// deferred-spawn path; SSF2 builds every player during `StageData.startGame`, and
-    /// its `makePlayer` can't be invoked standalone mid-match — it depends on the
-    /// per-player stage/HUD/camera setup that the start-game loop establishes (verified
-    /// live: pushing a PlayerSetting and loading its stats both succeed, but a mid-match
-    /// makePlayer throws). Spawning a fresh N-player match up front (`spawn a,b,c,d`)
-    /// is the SSF2 way to field multiple fighters. Declared explicitly (parity with how
-    /// char_icon/console declare their gaps) rather than silently stubbed.
+    /// Live add-player: drop the `sandbag` dummy into a RESERVED match slot. spawn reserves
+    /// a spare slot (exist=false, null character); this finds it, loads the dummy's stats
+    /// (Stats.getStats, what the Character ctor reads), then the ADDCHAR verb fills the slot
+    /// and constructs the Character live (self-registering into the match). Returns the
+    /// engine reply (ADDCHAR surfaces any engine-side error via the bridge).
     fn add_character(&mut self) -> Result<String> {
-        Ok("addCharacter: Fraymakers-only. SSF2 builds all players at match start (no \
-            standalone mid-match add-player path); use `spawn a,b,c,d` to field a \
-            multi-fighter match instead.".into())
+        let ch = "sandbag";
+        // find the first reserved/empty slot (character is null) in PlayerSettings
+        let slot = (0..4).find(|i| {
+            let _ = self.op("GC"); let _ = self.op("GET\tcurrentGame"); let _ = self.op("GET\tPlayerSettings"); let _ = self.op(&format!("IDX\t{i}"));
+            matches!(self.op("GET\tcharacter").and_then(|_| self.op("READ")),
+                     Ok(r) if r == "null" || r == "undefined" || r.trim().is_empty())
+        });
+        let Some(slot) = slot else {
+            return Ok("addCharacter: no free slot (match is full at 4 players). spawn fewer to leave room.".into());
+        };
+        let _ = self.op(&format!("QUEUE1\t{ch}"));
+        let _ = self.op("MLOAD");
+        // wait for the dummy's stats to load (exactly what the Character ctor reads)
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(400));
+            let _ = self.op("STATS");
+            if self.op(&format!("CALLS\tgetStats\t{ch}")).is_ok()
+                && self.op("READ").map(|r| r.contains("[object")).unwrap_or(false) { break; }
+        }
+        let r = self.op(&format!("ADDCHAR\t{ch}\t{slot}"))?;
+        Ok(format!("addCharacter {ch} → slot {slot}: {r}"))
     }
     fn exit(&mut self) -> Result<()> { let _ = std::process::Command::new("pkill").args(["-f", "SSF2-patched"]).status(); Ok(()) }
     fn load(&mut self) -> Result<String> { self.op("LOADED") }
