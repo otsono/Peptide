@@ -96,6 +96,10 @@ fn junglehijinx_has_parallax() {
     // each layer has its own pan rate (wider layers scroll more); they are NOT all equal.
     let rates: Vec<f64> = m.art.parallax.iter().map(|p| p.x_pan).collect();
     assert!(rates.iter().any(|&r| r > 0.3) && rates.iter().any(|&r| r < 0.05), "per-layer rates differ, got {rates:?}");
+    // SSF2 `_cambg` discrete layers pan (the autoPanMultiplier feeds PAN_MODE); BOUNDS is the
+    // tiling/wrapping mode.
+    assert!(m.art.parallax.iter().all(|p| p.mode == ssf2_converter::ParallaxMode::Pan),
+        "cambg layers use PAN mode (BOUNDS is for tiling backdrops)");
     assert!(m.art.background.is_some(), "fixed near-background (island) present");
     // the island terrain is sloped, so the main floor traces a polyline, not a flat line.
     let floor = m.main_floor().expect("main floor");

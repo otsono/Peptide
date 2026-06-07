@@ -376,6 +376,18 @@ field-for-field the same as the Fraymakers camera-background config (`xPanMultip
 `autoPanMultiplier`/`foreground`/... -- shared McLeodGaming lineage), so the converter computes
 each layer's multiplier with the formula above (native px) and emits it explicitly per layer.
 
+**PAN vs BOUNDS mode (`VcamBGSettings.mode`).** SSF2 has two camera-background modes:
+- `PAN`: `Vcam.syncPositions` sets `bg.x = centX + cameraOffset * xPanMultiplier` -- a straight
+  parallax pan at the per-layer multiplier. this is what the `_cambg` layers use (the
+  `autoPanMultiplier` formula above feeds `xPanMultiplier`, which only `PAN` consumes), so it's
+  the correct/default mode for converted parallax.
+- `BOUNDS` (with `horizontalScroll`): `Vcam.changeBG` makes left/right copies of the sprite at
+  `±width_override` so it tiles seamlessly, anchored to the camera bounds -- for a repeating
+  backdrop (clouds/gradient that wraps), not discrete elements.
+both map to `ParallaxMode.PAN` / `ParallaxMode.BOUNDS` on the Fraymakers side and the converter
+emits either; it defaults to PAN (no corpus stage tiles) and uses BOUNDS for a layer flagged to
+loop.
+
 **scale.** Fraymakers space is SSF2 space scaled up by `size_multiplier` (the same knob the
 character converter scales sprites by, default 1.3; in world-units-per-second the spatial
 scale works out to exactly `size_multiplier`). so the stage parser scales every coordinate

@@ -21,8 +21,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-use crate::stage_parser::{Rect, StageArt, StageModel};
-// note: ParallaxLayer is read via model.art.parallax below.
+use crate::stage_parser::{ParallaxMode, Rect, StageArt, StageModel};
 use crate::uuid_gen::det_uuid;
 
 /// Emit the FM stage package for `model` under `out_root/<id>/`. Returns the
@@ -63,7 +62,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         .collect::<Result<_>>()?;
     let parallax_refs: Vec<ParallaxRef> = model.art.parallax.iter().enumerate()
         .map(|(i, layer)| write_layer(&format!("parallax{i}"), &layer.art)
-            .map(|r| ParallaxRef { art: r, x_pan: layer.x_pan, y_pan: layer.y_pan }))
+            .map(|r| ParallaxRef { art: r, mode: layer.mode, x_pan: layer.x_pan, y_pan: layer.y_pan }))
         .collect::<Result<_>>()?;
     let art = ArtRefs {
         background: model.art.background.as_ref().map(|a| write_layer("bg", a)).transpose()?,
@@ -269,8 +268,8 @@ impl<'a> EntityBuilder<'a> {
 /// A written art layer the entity references: the sprite `.meta` guid + placement + size.
 struct ArtRef { guid: String, x: f64, y: f64, w: u32, h: u32 }
 
-/// A parallax camera-background layer: the written sprite + its per-layer pan rate.
-struct ParallaxRef { art: ArtRef, x_pan: f64, y_pan: f64 }
+/// A parallax camera-background layer: the written sprite + its scroll mode + pan rate.
+struct ParallaxRef { art: ArtRef, mode: ParallaxMode, x_pan: f64, y_pan: f64 }
 
 /// The depth layers the entity lays out. `stage` is the frame sequence (1 = static).
 struct ArtRefs { background: Option<ArtRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Option<ArtRef> }
@@ -526,17 +525,25 @@ fn stage_stats_hx(id: &str, parallax: &[ParallaxRef], scale: f64) -> String {
     // `originalBGWidth × scaleMultiplier` (native png × the stage scale; the IMAGE symbol stays
     // at scale 1). PAN mode pans the layer at `xPanMultiplier` of the camera offset, matching
     // how SSF2's Vcam scrolls each camera background.
-    let entries: Vec<String> = parallax.iter().enumerate().map(|(i, p)| format!(
+    let entries: Vec<String> = parallax.iter().enumerate().map(|(i, p)| {
+        // PAN: straight parallax pan at the per-layer multiplier (the SSF2 `_cambg` behavior).
+        // BOUNDS: anchored to the camera bounds + tiling to fill (loopWidth/Height = the tile
+        // size), for a repeating backdrop.
+        let (mode, hscroll, vscroll, loop_w, loop_h) = match p.mode {
+            ParallaxMode::Pan => ("PAN", "false", "false", 0, 0),
+            ParallaxMode::Bounds => ("BOUNDS", "true", "true", p.art.w, p.art.h),
+        };
+        format!(
         "\n\t\t\t{{\n\
 \t\t\t\tspriteContent: self.getResource().getContent(\"{id}\"),\n\
 \t\t\t\tanimationId: \"parallax{i}\",\n\
-\t\t\t\tmode: ParallaxMode.PAN,\n\
+\t\t\t\tmode: ParallaxMode.{mode},\n\
 \t\t\t\toriginalBGWidth: {w},\n\
 \t\t\t\toriginalBGHeight: {h},\n\
-\t\t\t\thorizontalScroll: false,\n\
-\t\t\t\tverticalScroll: false,\n\
-\t\t\t\tloopWidth: 0,\n\
-\t\t\t\tloopHeight: 0,\n\
+\t\t\t\thorizontalScroll: {hscroll},\n\
+\t\t\t\tverticalScroll: {vscroll},\n\
+\t\t\t\tloopWidth: {loop_w},\n\
+\t\t\t\tloopHeight: {loop_h},\n\
 \t\t\t\txPanMultiplier: {xp},\n\
 \t\t\t\tyPanMultiplier: {yp},\n\
 \t\t\t\tscaleMultiplier: {scale},\n\
@@ -544,7 +551,7 @@ fn stage_stats_hx(id: &str, parallax: &[ParallaxRef], scale: f64) -> String {
 \t\t\t\tdepth: {depth}\n\
 \t\t\t}}",
         w = p.art.w, h = p.art.h, xp = p.x_pan, yp = p.y_pan, depth = 2000 - (i as i64) * 10)
-    ).collect();
+    }).collect();
     let backgrounds = if entries.is_empty() { String::new() } else { format!("{}\n\t\t", entries.join(",")) };
     format!(
         "// Stats for {id} (converted from SSF2)\n\n\
