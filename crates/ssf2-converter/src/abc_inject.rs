@@ -35,6 +35,7 @@ const OP_IFFALSE: u8 = 0x12;
 const OP_IFSTRICTEQ: u8 = 0x19;
 #[allow(dead_code)] const OP_IFSTRICTNE: u8 = 0x1A;
 const OP_DUP: u8 = 0x2A;
+const OP_SWAP: u8 = 0x2B;
 const OP_POP: u8 = 0x29;
 const OP_SETPROPERTY: u8 = 0x61;
 #[allow(dead_code)] // kept for completeness of the opcode set
@@ -79,6 +80,8 @@ impl Code {
     fn new_label(&mut self) -> usize { self.labels.push(None); self.labels.len() - 1 }
     /// Mark the current position as label `l`'s target.
     fn place(&mut self, l: usize) { self.labels[l] = Some(self.b.len()); }
+    /// Byte position of a placed label (for exception-table from/to/target offsets).
+    fn pos(&self, l: usize) -> u32 { self.labels[l].expect("unplaced label") as u32 }
     /// Emit a branch opcode `op` targeting label `l`. AVM2 s24 offset is relative
     /// to the byte AFTER the 3 offset bytes. Records a fixup resolved by `finish`.
     fn branch(&mut self, op: u8, l: usize) {
@@ -497,6 +500,9 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     // the reply IS the observable, same as the E:logged:… line Fraymakers returns).
     let s_v_log = abc.intern_string("LOG");
     let s_logged = abc.intern_string("logged: ");
+    // error reporting: a thrown command (e.g. a bad reflection path) is caught and the
+    // reply becomes "ERR:<exception>" instead of timing out the host silently.
+    let s_errpfx = abc.intern_string("ERR:");
     // HOLD <idx> <mask> / SEQ <idx> <csv-masks>: host input injection. These write
     // per-frame state directly onto the TARGET player's Controller (reached via the
     // public Characters[idx].ControlSettings chain); the per-frame applicator
@@ -518,6 +524,28 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     let mn_stagedata2 = q(abc, pub_ns, "stageData");
     let mn_characters2 = q(abc, pub_ns, "Characters");
     let mn_controlsettings = q(abc, pub_ns, "ControlSettings");
+    // ADDCHAR <char>: live add-player into the running match (build PlayerSetting, push,
+    // StageData.makePlayer). makePlayer lives in StageData's protected namespace, so reuse
+    // the engine's own multiname from the pool; Vector.push is the AS3 builtin ns.
+    let s_v_addchar = abc.intern_string("ADDCHAR");
+    let mn_expansion = q(abc, pub_ns, "expansion");
+    let mn_team = q(abc, pub_ns, "team");
+    let mn_exist = q(abc, pub_ns, "exist");
+    // direct Character construction (skips makePlayer's HUD attach, which assumes the
+    // start-game per-slot setup). The Character ctor self-registers into the live match
+    // via StageData.addPlayer/addCharacter. importData/de/activateCharacters are public
+    // (only makePlayer itself is protected).
+    let mn_character_class = q(abc, engine_ns, "Character");
+    let mn_getstats = q(abc, pub_ns, "getStats");
+    let mn_importdata = q(abc, pub_ns, "importData");
+    let mn_deactivate = q(abc, pub_ns, "deactivateCharacters");
+    let mn_activate = q(abc, pub_ns, "activateCharacters");
+    let mn_x_start = q(abc, pub_ns, "x_start");
+    let mn_y_start = q(abc, pub_ns, "y_start");
+    let s_player_id = abc.intern_string("player_id");
+    let s_shieldtype = abc.intern_string("shieldType");
+    let s_shield = abc.intern_string("shield");
+    let s_stamina = abc.intern_string("stamina");
 
     // add the persistent register + the socket slot to the class
     abc.add_instance_slot(ci, mn_cur);
@@ -544,6 +572,11 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     field(&mut c, 4, l_a3); // optional 3rd arg (e.g. SPAWN player count); undefined when absent
     // result = "?"
     c.op_u30(OP_PUSHSTRING, s_q); c.op_u30(OP_SETLOCAL, l_res);
+
+    // try-region start: the whole dispatch is wrapped so a thrown command (bad path,
+    // unresolved member, engine-side null-deref) reports "ERR:<exception>" instead of
+    // killing the handler silently (which would time the host out).
+    let l_try_start = c.new_label(); c.place(l_try_start);
 
     let l_done = c.new_label();
     // No execute-once guard: this is event-driven (one socketData = one command), so
@@ -740,6 +773,49 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_PUSHTRUE); c.op_u30(OP_SETPROPERTY, mn_active);
     c.place(l_seq_skip);
     c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // ADDCHAR <char> <slot>: live add-player into a RESERVED (pre-allocated, empty) slot.
+    // The match's player containers are fixed-size at startGame, so spawn reserves spare
+    // slots (exist=false, null character) and addCharacter fills one here: set the slot's
+    // PlayerSetting, importData the stats, then construct the Character directly (the ctor
+    // self-registers via StageData.addPlayer/addCharacter), bracketed by de/activate like
+    // makePlayer. We skip makePlayer's attachHealthBox (its HUD attach assumes start-game
+    // per-slot setup). No-op if no match is live. l_g=currentGame, l_ps=the slot's
+    // PlayerSetting, l_a3=stats CharacterData.
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_addchar); c.branch(OP_IFSTRICTNE, next);
+    let l_ac_skip = c.new_label();
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_currentgame); c.op_u30(OP_SETLOCAL, l_g);
+    c.op_u30(OP_GETLOCAL, l_g); c.branch(OP_IFFALSE, l_ac_skip);
+    // ps = g.PlayerSettings[Number(slot)]  (the reserved slot)
+    c.op_u30(OP_GETLOCAL, l_g); c.op_u30(OP_GETPROPERTY, mn_playersettings); c.op_u30(OP_GETLOCAL, l_a2); c.op(OP_CONVERT_D); c.op_u30(OP_GETPROPERTY, mnl); c.op_u30(OP_SETLOCAL, l_ps);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op_u30(OP_GETLOCAL, l_a1); c.op_u30(OP_SETPROPERTY, mn_character);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHTRUE); c.op_u30(OP_SETPROPERTY, mn_human);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHTRUE); c.op_u30(OP_SETPROPERTY, mn_exist);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETPROPERTY, mn_costume);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETPROPERTY, mn_expansion);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHBYTE); c.op(0xFF); c.op_u30(OP_SETPROPERTY, mn_team); // team = -1 (FFA)
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETPROPERTY, mn_x_start);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op_u30(OP_PUSHSHORT, 100); c.op_u30(OP_SETPROPERTY, mn_y_start);
+    // stats = Stats.getStats(char)
+    c.op_u30(OP_GETLEX, mn_stats_real); c.op_u30(OP_GETLOCAL, l_a1); c.op_u30_u30(OP_CALLPROPERTY, mn_getstats, 1); c.op_u30(OP_SETLOCAL, l_a3);
+    // stats.importData({player_id: Number(slot)+1 (1-based, matching makePlayer's blue), shieldType:"shield", stamina:0})
+    c.op_u30(OP_GETLOCAL, l_a3);
+    c.op_u30(OP_PUSHSTRING, s_player_id); c.op_u30(OP_GETLOCAL, l_a2); c.op(OP_CONVERT_D); c.op(OP_PUSHBYTE); c.op(1); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_shieldtype); c.op_u30(OP_PUSHSTRING, s_shield);
+    c.op_u30(OP_PUSHSTRING, s_stamina); c.op(OP_PUSHBYTE); c.op(0);
+    c.op_u30(OP_NEWOBJECT, 3);
+    c.op_u30_u30(OP_CALLPROPVOID, mn_importdata, 1);
+    // stageData.deactivateCharacters()  (makePlayer brackets the construct with de/activate)
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata2); c.op_u30_u30(OP_CALLPROPVOID, mn_deactivate, 0);
+    // new Character(stats, ps, stageData) — ctor self-registers via addPlayer/addCharacter
+    c.op_u30(OP_FINDPROPSTRICT, mn_character_class);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op_u30(OP_GETLOCAL, l_ps);
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata2);
+    c.op_u30_u30(OP_CONSTRUCTPROP, mn_character_class, 3); c.op(OP_POP);
+    // stageData.activateCharacters()
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata2); c.op_u30_u30(OP_CALLPROPVOID, mn_activate, 0);
+    c.place(l_ac_skip);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
     // LOG <msg>: result = "logged: " + a1  (commands.hsx log() parity)
     c.place(next); next = c.new_label();
     c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_log); c.branch(OP_IFSTRICTNE, next);
@@ -750,6 +826,19 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur); c.op(OP_CONVERT_S); c.op_u30(OP_SETLOCAL, l_res);
 
     c.place(l_done);
+    // try-region end. Normal path skips the catch handler; a thrown command lands here
+    // with the exception on the operand stack.
+    let l_try_end = c.new_label(); c.place(l_try_end);
+    let l_reply = c.new_label();
+    c.branch(OP_JUMP, l_reply);
+    // catch handler: result = "ERR:" + String(exception). Re-push the scope the unwind
+    // dropped (so the scope depth matches the normal path at l_reply).
+    let l_catch = c.new_label(); c.place(l_catch);
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);          // operand: [exc] ; scope restored to depth 1
+    c.op(OP_CONVERT_S);                              // [String(exc)]
+    c.op_u30(OP_PUSHSTRING, s_errpfx); c.op(OP_SWAP); c.op(OP_ADD); // ["ERR:" + String(exc)]
+    c.op_u30(OP_SETLOCAL, l_res);
+    c.place(l_reply);
     // ── write reply over the socket: peptideSock.writeUTFBytes(seq + " " + result + "\n"); flush() ──
     c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_sock);                                   // socket (receiver)
     c.op_u30(OP_GETLOCAL, l_seq); c.op_u30(OP_PUSHSTRING, s_sp); c.op(OP_ADD);
@@ -759,7 +848,10 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     c.op(OP_RETURNVOID);
 
     let handler = abc.add_method(MethodInfo { param_types: vec![0], return_type: 0, name: n_ondata, flags: 0, options: vec![], param_names: vec![] });
-    abc.add_body(MethodBody { method: handler, max_stack: 7, local_count: 14, init_scope_depth: 0, max_scope_depth: 2, code: c.finish(), exceptions: vec![], traits: vec![] });
+    // exception-table entry covering the whole dispatch (catch-all: exc_type 0). Capture
+    // the byte offsets before finish() consumes the Code.
+    let exc = Exception { from: c.pos(l_try_start), to: c.pos(l_try_end), target: c.pos(l_catch), exc_type: 0, var_name: 0 };
+    abc.add_body(MethodBody { method: handler, max_stack: 7, local_count: 14, init_scope_depth: 0, max_scope_depth: 2, code: c.finish(), exceptions: vec![exc], traits: vec![] });
     abc.add_instance_method_trait(ci, mn_ondata, handler);
 
     // ctor: this.peptideSock = new Socket(); addEventListener("socketData", this.peptideOnData);
