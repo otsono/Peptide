@@ -31,7 +31,20 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     std::fs::create_dir_all(lib.join("entities")).context("mkdir entities")?;
     std::fs::create_dir_all(lib.join("scripts").join("stage")).context("mkdir scripts/stage")?;
 
-    let entity = build_entity(model);
+    // Placeholder sprite — a stage needs visible content to be playable (the engine sizes
+    // the stage + places players from the sprite bounds). Draw the collision geometry as
+    // filled rects so the stage both renders and shows where to stand. Real art is a
+    // follow-up; this is the minimum that makes the converted stage playable.
+    let sprites = lib.join("sprites").join("Stage");
+    std::fs::create_dir_all(&sprites).context("mkdir sprites/Stage")?;
+    let placeholder = render_placeholder(model);
+    let img_guid = det_uuid(&format!("stage::{id}::placeholder"));
+    std::fs::write(sprites.join(format!("{id}_stage.png")), &placeholder.png)?;
+    write_json(&sprites.join(format!("{id}_stage.png.meta")), &json!({
+        "export": false, "guid": img_guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
+    }))?;
+
+    let entity = build_entity(model, &img_guid, placeholder.x, placeholder.y);
     write_json(&lib.join("entities").join(format!("{id}.entity")), &entity)?;
 
     write_json(&lib.join("manifest.json"), &build_manifest(id))?;
@@ -128,6 +141,28 @@ impl<'a> EntityBuilder<'a> {
         self.anim_layers.push(lid);
     }
 
+    /// An IMAGE layer referencing a sprite by its `.meta` guid (`image_asset`), placed
+    /// at `(x, y)` in stage coords. A stage MUST have visible content: the engine sizes
+    /// the stage sprite from its image bounds during match setup, and a stage with no
+    /// IMAGE never places a player (verified live). So even the geometry MVP emits a
+    /// placeholder sprite.
+    fn add_image(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
+        let sym = self.uid(&format!("sym:{name}"));
+        self.symbols.push(json!({
+            "$id": sym, "type": "IMAGE", "imageAsset": image_asset, "alpha": 1,
+            "x": x, "y": y, "scaleX": 1, "scaleY": 1, "rotation": 0, "pivotX": 0, "pivotY": 0,
+            "pluginMetadata": {}
+        }));
+        let kf = self.uid(&format!("kf:{name}"));
+        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE" }));
+        let lid = self.uid(&format!("layer:{name}"));
+        self.layers.push(json!({
+            "$id": lid, "hidden": false, "locked": false, "name": name, "type": "IMAGE",
+            "keyframes": [kf], "pluginMetadata": {}
+        }));
+        self.anim_layers.push(lid);
+    }
+
     /// A POINT layer (entrance / respawn). `point_type` = ENTRANCE_POINT|RESPAWN_POINT.
     fn add_point(&mut self, name: &str, point_type: &str, index: usize, x: f64, y: f64, rotation: i64) {
         let sym = self.uid(&format!("sym:{name}"));
@@ -147,9 +182,52 @@ impl<'a> EntityBuilder<'a> {
     }
 }
 
-fn build_entity(model: &StageModel) -> Value {
+/// The placeholder PNG plus the stage-space position of its top-left corner.
+struct Placeholder { png: Vec<u8>, x: f64, y: f64 }
+
+/// Render the floor + soft platforms as filled rectangles on a transparent canvas
+/// covering their bounding box (1px = 1 stage unit). Gives the stage visible content
+/// (required for play) and shows the playable geometry.
+fn render_placeholder(model: &StageModel) -> Placeholder {
+    use image::{Rgba, RgbaImage};
+    // bounding box of all collision geometry, with a small margin.
+    let rects: Vec<Rect> = model.platforms.iter().map(|p| p.rect).collect();
+    let margin = 8.0;
+    let min_x = rects.iter().map(|r| r.left()).fold(f64::MAX, f64::min) - margin;
+    let min_y = rects.iter().map(|r| r.top()).fold(f64::MAX, f64::min) - margin;
+    let max_x = rects.iter().map(|r| r.right()).fold(f64::MIN, f64::max) + margin;
+    let max_y = rects.iter().map(|r| r.bottom()).fold(f64::MIN, f64::max) + margin;
+    let w = ((max_x - min_x).ceil() as u32).clamp(1, 4096);
+    let h = ((max_y - min_y).ceil() as u32).clamp(1, 4096);
+    let mut img = RgbaImage::new(w, h);
+    for p in &model.platforms {
+        let r = &p.rect;
+        let color = if p.drop_through { Rgba([120, 160, 220, 235]) } else { Rgba([90, 100, 120, 255]) };
+        let x0 = ((r.left() - min_x).max(0.0)) as u32;
+        let y0 = ((r.top() - min_y).max(0.0)) as u32;
+        let x1 = ((r.right() - min_x).min(w as f64)) as u32;
+        let y1 = ((r.bottom() - min_y).min(h as f64)) as u32;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                img.put_pixel(x, y, color);
+            }
+        }
+    }
+    let mut png = Vec::new();
+    {
+        use image::ImageEncoder;
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(img.as_raw(), w, h, image::ExtendedColorType::Rgba8)
+            .expect("encode placeholder png");
+    }
+    Placeholder { png, x: min_x, y: min_y }
+}
+
+fn build_entity(model: &StageModel, img_guid: &str, img_x: f64, img_y: f64) -> Value {
     let id = &model.id;
     let mut b = EntityBuilder::new(id);
+    // visible content (required for the stage to place players) — see add_image.
+    b.add_image("Stage Art", img_guid, img_x, img_y);
 
     // depth containers — the engine slots fighters / effects / structures / shadows into
     // these by container type during match setup. The full set must be present (matching a
