@@ -403,6 +403,24 @@ pub fn inject_command_channel(abc: &mut Abc, doc_class_local: &str, cmd_path: &s
 /// SSF2's async resource loader (the flaw of the old per-frame FileStream bridge).
 /// That also removes the need for the execute-once guard. The engine dials into the
 /// host's loopback server at `host:port` from the document ctor.
+/// Find an existing `QName` multiname in the pool by local name, preferring one whose
+/// qualified name mentions `prefer_owner` — so a protected-namespace member is reused by
+/// exact (ns, name) match (runtime callproperty resolves by exact match) rather than
+/// forged public.
+fn find_qname_by_local_owned(abc: &Abc, local: &str, prefer_owner: &str) -> Option<u32> {
+    let mut fallback = None;
+    for (i, mn) in abc.multinames.iter().enumerate() {
+        let idx = i as u32 + 1;
+        if matches!(mn, Multiname::QName { .. }) && abc.multiname_local(idx).as_deref() == Some(local) {
+            if abc.multiname_qualified(idx).map(|q| q.contains(prefer_owner)).unwrap_or(false) {
+                return Some(idx);
+            }
+            fallback.get_or_insert(idx);
+        }
+    }
+    fallback
+}
+
 pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, port: u16) -> anyhow::Result<()> {
     let ci = abc.find_class_by_name(doc_class_local)
         .ok_or_else(|| anyhow::anyhow!("class {doc_class_local} not found"))?;
@@ -546,6 +564,16 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     let s_shieldtype = abc.intern_string("shieldType");
     let s_shield = abc.intern_string("shield");
     let s_stamina = abc.intern_string("stamina");
+    // TUNE <move> <accessor> <value>: mutate a stored attack box's stat on the current
+    // peptideCur (a Character). cur.AttackDataObj().getAttack(move).AttackBoxes[0] is an
+    // AttackDamage with public setters (Damage/KBConstant/Direction/Power); we set the
+    // accessor by runtime name. AttackDataObj is protected → reuse the engine's QName.
+    let s_v_tune = abc.intern_string("TUNE");
+    let mn_attackdataobj = find_qname_by_local_owned(abc, "AttackDataObj", "InteractiveSprite")
+        .ok_or_else(|| anyhow::anyhow!("AttackDataObj multiname not found in pool"))?;
+    let mn_getattack = q(abc, pub_ns, "getAttack");
+    let mn_attackboxes = q(abc, pub_ns, "AttackBoxes");
+    let s_attackbox = abc.intern_string("attackBox"); // the default box key (AttackBoxes is string-keyed)
 
     // add the persistent register + the socket slot to the class
     abc.add_instance_slot(ci, mn_cur);
@@ -816,6 +844,23 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata2); c.op_u30_u30(OP_CALLPROPVOID, mn_activate, 0);
     c.place(l_ac_skip);
     c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // TUNE <move> <accessor> <value>: mutate stored attack box 0's stat on peptideCur.
+    // cur.AttackDataObj().getAttack(a1).AttackBoxes[0][a2] = Number(a3). AttackDataObj is
+    // protected (reused QName); getAttack/AttackBoxes/the AttackDamage setter are public.
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_tune); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur);
+    c.op_u30(OP_GETPROPERTY, mn_attackdataobj);                    // AttackDataObj is a GETTER
+    c.op_u30(OP_GETLOCAL, l_a1); c.op_u30_u30(OP_CALLPROPERTY, mn_getattack, 1); // getAttack(move) is a method
+    c.op_u30(OP_GETPROPERTY, mn_attackboxes);                      // AttackBoxes is a GETTER (string-keyed)
+    c.op_u30(OP_PUSHSTRING, s_attackbox); c.op_u30(OP_GETPROPERTY, mnl); // box = AttackBoxes["attackBox"]
+    c.op(OP_DUP);                                                  // [box, box]
+    c.op_u30(OP_GETLOCAL, l_a2);                                   // accessor (runtime name)
+    c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_CONVERT_D);               // Number(value)
+    c.op_u30(OP_SETPROPERTY, mnl);                                 // box[accessor] = value ; leaves [box]
+    c.op_u30(OP_GETLOCAL, l_a2); c.op_u30(OP_GETPROPERTY, mnl);    // read box[accessor] back
+    c.op(OP_CONVERT_S); c.op_u30(OP_SETLOCAL, l_res);             // result = the new value (confirmation)
+    c.branch(OP_JUMP, l_done);
     // LOG <msg>: result = "logged: " + a1  (commands.hsx log() parity)
     c.place(next); next = c.new_label();
     c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_log); c.branch(OP_IFSTRICTNE, next);
