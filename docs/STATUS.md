@@ -474,29 +474,42 @@ points here).
    and `match.getCharacters().length` reports the real count (read host-side from the live match, since
    hscript lacks RTTI on the raw character list). verified live: rosters of 1/2/2-distinct/3/4 ->
    `getCharacters()` 2/2/2/3/4, zero crashes, `p3.getStateName()` drivable. `spawn --versus a,b` forces
-   versus mode for a 1-2 player roster (wire byte `S`). still open: they don't yet take hits in a
-   verified way, and the SSF2 side. prerequisite for #6. (impl note: extras are built as UNROLLED straight-line blocks -- emitting the
+   versus mode for a 1-2 player roster (wire byte `S`). SSF2 input injection is live too:
+   `hold`/`release`/`seq` drive the controlled player via a per-frame applicator injected into
+   `Controller.getControlStatus` (host control masks translated to SSF2's control-bit layout),
+   verified live (`hold right` walks: XSpeed 0 -> 4 -> 0 on release; `seq jump:…` leaves the
+   ground). still open: they don't yet take hits in a verified way. prerequisite for #6. (impl note:
+   extras are built as UNROLLED straight-line blocks -- emitting the
    char-resolve helper inside a runtime back-branch corrupts the loop counter, so each of the <=3
    extras is its own guarded block.)
-3. **`addCharacter`** -- drop one more fighter into the LIVE match on the fly. the command
+3. **`addCharacter`** -- drop one more fighter into the LIVE match on the fly. on Fraymakers
    (`addCharacter`, aliases `addchar`/`add`, wire `n`) re-arms the per-frame deferred-spawn from a
    stashed copy of the roster and fires one extra spawn, verified firing live. now that the launch
    path lands the full roster up front (#1), the typical use case is covered there; this is for adding
-   a fighter mid-match. open: the deferred per-frame add hasn't been re-verified against a versus-mode
-   match for slots past the initial roster.
+   a fighter mid-match. **Fraymakers-only**: SSF2 builds every player during `StageData.startGame`,
+   and its `makePlayer` can't run standalone mid-match (verified live: pushing a PlayerSetting and
+   loading its stats both succeed, but a mid-match `makePlayer` throws, since it depends on the
+   per-player stage/HUD/camera setup the start-game loop establishes). SSF2 reports the gap and
+   points at `spawn a,b,c,d`. open on FM: the deferred add hasn't been re-verified against a
+   versus-mode match for slots past the initial roster.
 4. **scenario replay test env.** the `scenario` command sets up a deterministic, re-runnable
    scene: `scenario <p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]` places both players at
    fixed positions (optionally with world-space momentum), resets them to neutral STAND, then
    plays an input timeline on p0. re-run the exact line to replay it. host-side macro composing
-   `eval` + `seq` through the DebugTarget seam (so it works on both engines). still open: setting
+   `eval` + `seq` through the DebugTarget seam, working on **both engines** (verified live on SSF2:
+   the setup lowers `setX`/`setY`/`setXVelocity` to field writes and `toState(CState.STAND)` to
+   `setState(0)`, then the input timeline plays via the SSF2 input applicator). still open: setting
    a precise animation FRAME (not just the state) and the hit-measurement readback (#6) that makes
    a scenario's outcome quantifiable.
 5. **live move-tuning** -- the `tune <player> <hitboxIndex> <stat>=<value> …` command
    hot-reloads a move's hitbox stats into the running match with no relaunch (e.g.
    `tune p0 0 damage=15 baseKnockback=50 angle=45`), via the engine's own
-   `updateHitboxStats`. host-side eval wrapper, validated + unit-tested. still open: the
-   UI surface for it, tweaking move *code* (not just stats) on the fly, and persisting
-   tweaks back to the source stats files.
+   `updateHitboxStats`. host-side eval wrapper, validated + unit-tested. **Fraymakers-only**: FM
+   addresses a live hitbox by index and mutates it in place; SSF2's attacks are move-name +
+   per-frame `AttackBox` data with private per-hit `AttackDamage` stats, so there's no addressable
+   live hitbox index to map to. SSF2 reports the gap and points at the converter's stat scaling.
+   still open on FM: the UI surface for it, tweaking move *code* (not just stats) on the fly, and
+   persisting tweaks back to the source stats files.
 6. **in-engine hit measurement** (needs #1): hit-result readback (damage dealt, knockback
    distance + angle, hitstun frames), KO-threshold search (binary-search the dummy's % for
    the lowest KO), and an active-box dump (every active hit/hurt box this frame). damage
