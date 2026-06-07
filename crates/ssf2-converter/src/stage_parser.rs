@@ -647,22 +647,40 @@ fn composite_layer(
     );
     let mut drew = false;
     for inst in art {
-        // a native-resolution tile for this shape: bitmap fill if it has one, else the
-        // vector rasterization.
-        let tile: Option<RgbaImage> = if let Some(bid) = shape_bitmap(inst.shape_id) {
+        let (tw, th) = tw_th(inst);
+        // The placed tile at the AABB size: a bitmap fill clipped to the shape OUTLINE, else
+        // the vector rasterization.
+        let scaled: Option<RgbaImage> = if let Some(bid) = shape_bitmap(inst.shape_id) {
             let (w, h, rgba) = bitmaps.get(&bid).unwrap();
-            RgbaImage::from_raw(*w, *h, rgba.clone())
+            let Some(bmp) = RgbaImage::from_raw(*w, *h, rgba.clone()) else { continue };
+            let mut bmp = imageops::resize(&bmp, tw, th, imageops::FilterType::Triangle);
+            // clip the bitmap to the shape's path (not its rectangular AABB): rasterize the
+            // path with the bitmap fill swapped for solid white, and use that as an alpha
+            // mask. Without this an irregular bitmap-filled shape (e.g. a tree canopy) renders
+            // as a hard rectangle.
+            let shape = shape_defs.get(&inst.shape_id).unwrap();
+            let mask_fills: Vec<swf::FillStyle> = shape.styles.fill_styles.iter().map(|f| match f {
+                swf::FillStyle::Bitmap { .. } => swf::FillStyle::Color(swf::Color { r: 255, g: 255, b: 255, a: 255 }),
+                other => other.clone(),
+            }).collect();
+            if let Some(mask) = crate::vector_raster::rasterize_shape(
+                &shape.shape_bounds, &mask_fills, &shape.styles.line_styles, &shape.shape,
+            ).and_then(|r| RgbaImage::from_raw(r.width, r.height, r.rgba)) {
+                let mask = imageops::resize(&mask, tw, th, imageops::FilterType::Triangle);
+                for (p, m) in bmp.pixels_mut().zip(mask.pixels()) {
+                    p[3] = ((p[3] as u32 * m[3] as u32) / 255) as u8;
+                }
+            }
+            Some(bmp)
         } else {
             let shape = shape_defs.get(&inst.shape_id).unwrap();
             crate::vector_raster::rasterize_shape(
                 &shape.shape_bounds, &shape.styles.fill_styles, &shape.styles.line_styles, &shape.shape,
             ).and_then(|r| RgbaImage::from_raw(r.width, r.height, r.rgba))
+                .map(|t| imageops::resize(&t, tw, th, imageops::FilterType::Triangle))
         };
-        let Some(tile) = tile else { continue };
-        if tile.width() == 0 || tile.height() == 0 { continue; }
-        // resize the tile to the placed AABB size, then overlay it.
-        let (tw, th) = tw_th(inst);
-        let scaled = imageops::resize(&tile, tw, th, imageops::FilterType::Triangle);
+        let Some(scaled) = scaled else { continue };
+        if scaled.width() == 0 || scaled.height() == 0 { continue; }
         let ox_px = (inst.aabb.left() - min_x).round() as i64;
         let oy_px = (inst.aabb.top() - min_y).round() as i64;
         imageops::overlay(&mut canvas, &scaled, ox_px, oy_px);
