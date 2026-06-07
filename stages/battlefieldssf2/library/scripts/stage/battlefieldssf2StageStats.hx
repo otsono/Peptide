@@ -15,23 +15,6 @@
 		minZoomHeight: 360,
 		initialHeight: 360,
 		initialWidth: 640,
-		backgrounds: [
-			{
-				spriteContent: self.getResource().getContent("battlefieldssf2"),
-				animationId: "parallax0",
-				mode: ParallaxMode.BOUNDS,
-				originalBGWidth: 882,
-				originalBGHeight: 611,
-				horizontalScroll: false,
-				verticalScroll: false,
-				loopWidth: 0,
-				loopHeight: 0,
-				xPanMultiplier: 0.4,
-				yPanMultiplier: 0.4,
-				scaleMultiplier: 1,
-				foreground: false,
-				depth: 2000
-			}
-		]
+		backgrounds: []
 	}
 }

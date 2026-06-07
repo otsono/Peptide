@@ -1,13 +1,13 @@
 {
   "animations": [
     {
-      "$id": "69da166f-1309-5a2a-9991-e87dac03a66b",
+      "$id": "d0c77aa6-5ea7-5d09-b345-ae38b34abb5f",
       "layers": [
-        "5b7cbd21-b65a-59b6-b7e7-3086970ce4bd",
-        "e6fe48d2-eb20-554b-b742-9afecf4815ca",
-        "7e0a6fe1-b314-5d28-9217-5ce371ef14a6",
-        "584abdb0-ef53-5c3a-9067-032e9c600ace",
-        "b7b4ead8-65d0-57ff-99e8-d8cb3f4556e7",
+        "65b2ae70-de9d-57f2-83bb-52f29cc265f3",
+        "b3b783a6-067c-5742-8626-b68610068fbd",
+        "dc0c4e36-15f3-5529-8e5e-def7a002467b",
+        "37b8c4c7-114d-50a1-920a-e60eb5ff82f8",
+        "8a34e4c0-f5c9-550d-aba2-f7d57edaa4c4",
         "afca8017-f121-571c-8b4e-ad24d8f0f0d9",
         "4491ff77-1980-5416-941c-65b8ab026443",
         "aca0a1db-a0b1-51b2-afd5-109ca1c9dc14",
@@ -34,14 +34,6 @@
       ],
       "name": "stage",
       "pluginMetadata": {}
-    },
-    {
-      "$id": "0517f537-8b87-5186-a1d8-5f4ec734fc55",
-      "layers": [
-        "69970304-f290-57ea-ab47-8cb2b9ef242c"
-      ],
-      "name": "parallax0",
-      "pluginMetadata": {}
     }
   ],
   "export": true,
@@ -49,37 +41,37 @@
   "id": "battlefieldssf2",
   "keyframes": [
     {
-      "$id": "fed8ec44-a6ab-5f0d-afed-5f93622c7583",
+      "$id": "5fb4a5be-fb72-5eeb-88cc-2743e3208b9a",
       "length": 1,
       "pluginMetadata": {},
-      "type": "CONTAINER"
-    },
-    {
-      "$id": "2553d2c9-6aaf-5487-bd10-cc6efd19f254",
-      "length": 1,
-      "pluginMetadata": {},
-      "type": "CONTAINER"
-    },
-    {
-      "$id": "a96a25b6-4780-5051-a47b-574584521e12",
-      "length": 1,
-      "pluginMetadata": {},
-      "type": "CONTAINER"
-    },
-    {
-      "$id": "0e44c5f2-f1b3-52ea-8c3c-e148bc10861c",
-      "length": 1,
-      "pluginMetadata": {},
-      "type": "CONTAINER"
-    },
-    {
-      "$id": "509635c3-87db-5d3f-8558-1b7a3ef5dc42",
-      "length": 1,
-      "pluginMetadata": {},
-      "symbol": "ee0e1a15-bc58-5c59-a19d-24aeb73829a4",
+      "symbol": "2e5ca511-6cd7-513b-88ef-bc833b387df2",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "IMAGE"
+    },
+    {
+      "$id": "eea5b0dc-483f-5d58-a608-258f43702893",
+      "length": 1,
+      "pluginMetadata": {},
+      "type": "CONTAINER"
+    },
+    {
+      "$id": "c0ed8ad5-6d38-5432-b018-c3b718f713ec",
+      "length": 1,
+      "pluginMetadata": {},
+      "type": "CONTAINER"
+    },
+    {
+      "$id": "6df13ecc-b570-5bcd-9ff3-c52d8babecc7",
+      "length": 1,
+      "pluginMetadata": {},
+      "type": "CONTAINER"
+    },
+    {
+      "$id": "aa1f5c3b-8a8f-587f-9813-03a36c975b4e",
+      "length": 1,
+      "pluginMetadata": {},
+      "type": "CONTAINER"
     },
     {
       "$id": "cf258339-593d-51b6-a0e8-5826f26e924b",
@@ -266,23 +258,25 @@
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
-    },
-    {
-      "$id": "cd42c7b0-93ad-5f30-a2cb-4607bd390685",
-      "length": 1,
-      "pluginMetadata": {},
-      "symbol": "f75634cf-3e8a-5dfc-aa0a-58ba369a2d26",
-      "tweenType": "LINEAR",
-      "tweened": false,
-      "type": "IMAGE"
     }
   ],
   "layers": [
     {
-      "$id": "5b7cbd21-b65a-59b6-b7e7-3086970ce4bd",
+      "$id": "65b2ae70-de9d-57f2-83bb-52f29cc265f3",
       "hidden": false,
       "keyframes": [
-        "fed8ec44-a6ab-5f0d-afed-5f93622c7583"
+        "5fb4a5be-fb72-5eeb-88cc-2743e3208b9a"
+      ],
+      "locked": false,
+      "name": "Background Art",
+      "pluginMetadata": {},
+      "type": "IMAGE"
+    },
+    {
+      "$id": "b3b783a6-067c-5742-8626-b68610068fbd",
+      "hidden": false,
+      "keyframes": [
+        "eea5b0dc-483f-5d58-a608-258f43702893"
       ],
       "locked": false,
       "name": "Background Behind",
@@ -294,10 +288,10 @@
       "type": "CONTAINER"
     },
     {
-      "$id": "e6fe48d2-eb20-554b-b742-9afecf4815ca",
+      "$id": "dc0c4e36-15f3-5529-8e5e-def7a002467b",
       "hidden": false,
       "keyframes": [
-        "2553d2c9-6aaf-5487-bd10-cc6efd19f254"
+        "c0ed8ad5-6d38-5432-b018-c3b718f713ec"
       ],
       "locked": false,
       "name": "Background Effects",
@@ -309,10 +303,10 @@
       "type": "CONTAINER"
     },
     {
-      "$id": "7e0a6fe1-b314-5d28-9217-5ce371ef14a6",
+      "$id": "37b8c4c7-114d-50a1-920a-e60eb5ff82f8",
       "hidden": false,
       "keyframes": [
-        "a96a25b6-4780-5051-a47b-574584521e12"
+        "6df13ecc-b570-5bcd-9ff3-c52d8babecc7"
       ],
       "locked": false,
       "name": "Background Shadows",
@@ -324,10 +318,10 @@
       "type": "CONTAINER"
     },
     {
-      "$id": "584abdb0-ef53-5c3a-9067-032e9c600ace",
+      "$id": "8a34e4c0-f5c9-550d-aba2-f7d57edaa4c4",
       "hidden": false,
       "keyframes": [
-        "0e44c5f2-f1b3-52ea-8c3c-e148bc10861c"
+        "aa1f5c3b-8a8f-587f-9813-03a36c975b4e"
       ],
       "locked": false,
       "name": "Background Structures",
@@ -337,17 +331,6 @@
         }
       },
       "type": "CONTAINER"
-    },
-    {
-      "$id": "b7b4ead8-65d0-57ff-99e8-d8cb3f4556e7",
-      "hidden": false,
-      "keyframes": [
-        "509635c3-87db-5d3f-8558-1b7a3ef5dc42"
-      ],
-      "locked": false,
-      "name": "Stage Art",
-      "pluginMetadata": {},
-      "type": "IMAGE"
     },
     {
       "$id": "afca8017-f121-571c-8b4e-ad24d8f0f0d9",
@@ -704,17 +687,6 @@
         }
       },
       "type": "POINT"
-    },
-    {
-      "$id": "69970304-f290-57ea-ab47-8cb2b9ef242c",
-      "hidden": false,
-      "keyframes": [
-        "cd42c7b0-93ad-5f30-a2cb-4607bd390685"
-      ],
-      "locked": false,
-      "name": "Background",
-      "pluginMetadata": {},
-      "type": "IMAGE"
     }
   ],
   "paletteMap": {
@@ -732,9 +704,9 @@
   ],
   "symbols": [
     {
-      "$id": "ee0e1a15-bc58-5c59-a19d-24aeb73829a4",
+      "$id": "2e5ca511-6cd7-513b-88ef-bc833b387df2",
       "alpha": 1,
-      "imageAsset": "bd6a6254-48d8-5b69-a89d-004a5593ed76",
+      "imageAsset": "3e2d30c7-1a5c-547b-854f-e258f7a337e1",
       "pivotX": 0,
       "pivotY": 0,
       "pluginMetadata": {},
@@ -742,8 +714,8 @@
       "scaleX": 1,
       "scaleY": 1,
       "type": "IMAGE",
-      "x": -262.2902404785156,
-      "y": -178.39999999999998
+      "x": -441.0,
+      "y": -248.0
     },
     {
       "$id": "48283adc-05fd-5fee-a32b-5406b7ca98e5",
@@ -960,20 +932,6 @@
       "type": "POINT",
       "x": 31.55000000000001,
       "y": -115.74999999999999
-    },
-    {
-      "$id": "f75634cf-3e8a-5dfc-aa0a-58ba369a2d26",
-      "alpha": 1,
-      "imageAsset": "3e2d30c7-1a5c-547b-854f-e258f7a337e1",
-      "pivotX": 0,
-      "pivotY": 0,
-      "pluginMetadata": {},
-      "rotation": 0,
-      "scaleX": 1,
-      "scaleY": 1,
-      "type": "IMAGE",
-      "x": -441.0,
-      "y": -248.0
     }
   ],
   "tags": [],

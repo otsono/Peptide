@@ -17,7 +17,7 @@
 //! vector art rasterized + composited by the parser, or a geometry placeholder for
 //! bitmap-only stages). Parallax backgrounds + hazards are follow-ups.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -46,7 +46,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         write_json(&sprites.join(format!("{id}_{suffix}.png.meta")), &json!({
             "export": false, "guid": guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
         }))?;
-        Ok(ArtRef { guid, x: art.x, y: art.y, w: art.w, h: art.h })
+        Ok(ArtRef { guid, x: art.x, y: art.y })
     };
     let stage_fallback;
     let stage_frames: Vec<&StageArt> = if !model.art.stage_frames.is_empty() {
@@ -67,6 +67,12 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     };
 
     let entity = build_entity(model, &art);
+    // FM-side validation: the built entity must carry the layers a Fraymakers stage needs
+    // (these are invariants of build_entity; the check guards against regressions).
+    let missing = validate_fm_entity(&entity);
+    if !missing.is_empty() {
+        bail!("emitted {id}.entity is missing required Fraymakers stage layers: {}", missing.join(", "));
+    }
     write_json(&lib.join("entities").join(format!("{id}.entity")), &entity)?;
 
     write_json(&lib.join("manifest.json"), &build_manifest(id))?;
@@ -75,7 +81,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     let scripts = lib.join("scripts").join("stage");
     std::fs::write(scripts.join(format!("{id}Script.hx")), script_hx(id, art.stage.len() > 1))?;
     write_meta(&scripts.join(format!("{id}Script.hx.meta")), id, &format!("{id}Script"), "", Some("STAGE"), None)?;
-    std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id, art.background.as_ref()))?;
+    std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id))?;
     write_meta(&scripts.join(format!("{id}StageStats.hx.meta")), id, &format!("{id}StageStats"), "hscript", None, None)?;
 
     let fraytools = dir.join(format!("{id}.fraytools"));
@@ -100,15 +106,13 @@ struct EntityBuilder<'a> {
     layers: Vec<Value>,
     /// Layer ids of the `stage` animation, in render order (first = back).
     anim_layers: Vec<String>,
-    /// Layer ids of the `parallax0` animation (the parallax background).
-    parallax_layers: Vec<String>,
     /// Length of the stage animation in frames (static layers hold for this many).
     frame_len: usize,
 }
 
 impl<'a> EntityBuilder<'a> {
     fn new(id: &'a str) -> Self {
-        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], parallax_layers: vec![], frame_len: 1 }
+        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], frame_len: 1 }
     }
     /// A stable per-entity uuid for `role` (e.g. `"layer:Floor"`).
     fn uid(&mut self, role: &str) -> String {
@@ -216,11 +220,6 @@ impl<'a> EntityBuilder<'a> {
         let lid = self.make_image(name, image_asset, x, y);
         self.anim_layers.push(lid);
     }
-    /// Add an IMAGE layer to the `parallax0` animation (the parallax background).
-    fn add_image_parallax(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
-        let lid = self.make_image(name, image_asset, x, y);
-        self.parallax_layers.push(lid);
-    }
     /// Add an animated IMAGE layer to the `stage` animation: one keyframe per frame, each
     /// referencing that frame's image, so the layer plays through them (loops).
     fn add_image_frames(&mut self, name: &str, frames: &[(String, f64, f64)]) {
@@ -264,7 +263,7 @@ impl<'a> EntityBuilder<'a> {
 }
 
 /// A written art layer the entity references: the sprite `.meta` guid + placement.
-struct ArtRef { guid: String, x: f64, y: f64, w: u32, h: u32 }
+struct ArtRef { guid: String, x: f64, y: f64 }
 
 /// The depth layers the entity lays out. `stage` is the frame sequence (1 = static).
 struct ArtRefs { background: Option<ArtRef>, stage: Vec<ArtRef>, foreground: Option<ArtRef> }
@@ -314,10 +313,12 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     // static layers hold across all of them.
     b.frame_len = art.stage.len().max(1);
 
-    // ── render order (first = back): background depth containers, the stage art (behind
-    // fighters), the character containers, the foreground art (in front of fighters),
-    // the foreground containers, then the invisible collision / spawns. The parallax
-    // background lives in its own `parallax0` animation (camera-scrolled). ──
+    // ── render order (first = back): the painted backdrop, background depth containers,
+    // the stage art (behind fighters), the character containers, the foreground art (in
+    // front of fighters), the foreground containers, then the invisible collision / spawns.
+    // The backdrop is FIXED, not parallax-scrolled: the SSF2 `<id>_bg` plane includes the
+    // surface fighters stand on, so it has to stay aligned with the collision. ──
+    if let Some(a) = &art.background { b.add_image("Background Art", &a.guid, a.x, a.y); }
     b.add_container("Background Behind", "BACKGROUND_BEHIND_CONTAINER");
     b.add_container("Background Effects", "BACKGROUND_EFFECTS_CONTAINER");
     b.add_container("Background Shadows", "BACKGROUND_SHADOWS_CONTAINER");
@@ -386,17 +387,9 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
         b.add_point(&format!("Respawn {i}"), "RESPAWN_POINT", i, x, y, rot);
     }
 
-    // parallax background -> its own `parallax0` animation (camera-scrolled in StageStats).
-    if let Some(a) = &art.background { b.add_image_parallax("Background", &a.guid, a.x, a.y); }
-
-    let mut animations = vec![json!({
+    let animations = vec![json!({
         "$id": b.uid("anim:stage"), "name": "stage", "pluginMetadata": {}, "layers": b.anim_layers
     })];
-    if !b.parallax_layers.is_empty() {
-        animations.push(json!({
-            "$id": b.uid("anim:parallax0"), "name": "parallax0", "pluginMetadata": {}, "layers": b.parallax_layers
-        }));
-    }
 
     json!({
         "version": 14,
@@ -414,6 +407,30 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
         "tilesets": [],
         "paletteMap": { "paletteCollection": null, "paletteMap": null }
     })
+}
+
+/// The Fraymakers stage layers a playable `.entity` must carry. Returns the names of any
+/// that are missing (empty = valid). Mirrors the required-linkage check on the SSF2 side:
+/// a stage needs a Characters container, a walkable floor, spawn/respawn points, and a
+/// visible IMAGE (the engine sizes the stage + places fighters from the sprite bounds).
+fn validate_fm_entity(entity: &Value) -> Vec<String> {
+    let empty = vec![];
+    let layers = entity.get("layers").and_then(|l| l.as_array()).unwrap_or(&empty);
+    let meta = |l: &Value, key: &str| -> Option<String> {
+        l.pointer(&format!("/pluginMetadata/com.fraymakers.FraymakersMetadata/{key}"))
+            .and_then(|v| v.as_str()).map(str::to_string)
+    };
+    let has_container = |ct: &str| layers.iter().any(|l| meta(l, "containerType").as_deref() == Some(ct));
+    let has_point = |pt: &str| layers.iter().any(|l| meta(l, "pointType").as_deref() == Some(pt));
+    let has_type = |ty: &str| layers.iter().any(|l| l.get("type").and_then(|v| v.as_str()) == Some(ty));
+
+    let mut missing = Vec::new();
+    if !has_container("CHARACTERS_CONTAINER") { missing.push("Characters container".to_string()); }
+    if !has_type("LINE_SEGMENT") { missing.push("a floor line segment".to_string()); }
+    if !has_point("ENTRANCE_POINT") { missing.push("an entrance point".to_string()); }
+    if !has_point("RESPAWN_POINT") { missing.push("a respawn point".to_string()); }
+    if !has_type("IMAGE") { missing.push("a visible IMAGE layer".to_string()); }
+    missing
 }
 
 // ───────────────────────── manifest / scripts / project ─────────────────────
@@ -474,30 +491,10 @@ fn write_meta(path: &Path, _stage_id: &str, id: &str, language: &str, object_typ
     write_json(path, &v)
 }
 
-/// StageStats: stage sprite + camera, plus the parallax background (the SSF2 backdrop
-/// rendered as the `parallax0` animation and camera-scrolled at < 1 pan for depth).
-fn stage_stats_hx(id: &str, bg: Option<&ArtRef>) -> String {
-    let backgrounds = match bg {
-        Some(b) => format!(
-            "\n\t\t\t{{\n\
-\t\t\t\tspriteContent: self.getResource().getContent(\"{id}\"),\n\
-\t\t\t\tanimationId: \"parallax0\",\n\
-\t\t\t\tmode: ParallaxMode.BOUNDS,\n\
-\t\t\t\toriginalBGWidth: {w},\n\
-\t\t\t\toriginalBGHeight: {h},\n\
-\t\t\t\thorizontalScroll: false,\n\
-\t\t\t\tverticalScroll: false,\n\
-\t\t\t\tloopWidth: 0,\n\
-\t\t\t\tloopHeight: 0,\n\
-\t\t\t\txPanMultiplier: 0.4,\n\
-\t\t\t\tyPanMultiplier: 0.4,\n\
-\t\t\t\tscaleMultiplier: 1,\n\
-\t\t\t\tforeground: false,\n\
-\t\t\t\tdepth: 2000\n\
-\t\t\t}}\n\t\t",
-            w = b.w, h = b.h),
-        None => String::new(),
-    };
+/// StageStats: stage sprite + camera. The SSF2 backdrop is a fixed IMAGE layer in the
+/// `stage` animation (it carries the surface fighters stand on, so it stays aligned with
+/// the collision), so there are no camera-relative parallax backgrounds here.
+fn stage_stats_hx(id: &str) -> String {
     format!(
         "// Stats for {id} (converted from SSF2)\n\n\
 {{\n\
@@ -515,7 +512,7 @@ fn stage_stats_hx(id: &str, bg: Option<&ArtRef>) -> String {
 \t\tminZoomHeight: 360,\n\
 \t\tinitialHeight: 360,\n\
 \t\tinitialWidth: 640,\n\
-\t\tbackgrounds: [{backgrounds}]\n\
+\t\tbackgrounds: []\n\
 \t}}\n\
 }}\n"
     )

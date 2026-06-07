@@ -610,6 +610,9 @@ fn cmd_stage(args: &[String]) -> Result<()> {
     for s in &model.respawns {
         println!("  respawn  {}: ({:.1},{:.1})", s.index, s.x, s.y);
     }
+    for w in &model.warnings {
+        eprintln!("  warning: {w}");
+    }
 
     if info_only { return Ok(()); }
 
