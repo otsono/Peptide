@@ -302,6 +302,9 @@ pub fn install_patched(port: u16, fastboot: Option<(&str, &str)>) -> Result<Path
     let traj = crate::ssf2_bridge::traj_path();
     ssf2_converter::abc_inject::patch_file_with(&src_swf, &dst_swf, |abc| {
         ssf2_converter::abc_inject::inject_socket_bridge(abc, SSF2_DOC_CLASS, "127.0.0.1", port)?;
+        // per-frame input applicator (hold/seq/scenario): reads the bridge's HOLD/SEQ
+        // state and drives the target player's controls each frame.
+        ssf2_converter::abc_inject::inject_input_applicator(abc, SSF2_DOC_CLASS)?;
         match fastboot {
             Some((ch, stage)) => {
                 // Headless quick boot: skip the disclaimer/menus at the call site and queue

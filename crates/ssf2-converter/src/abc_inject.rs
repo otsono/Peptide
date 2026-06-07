@@ -26,6 +26,7 @@ const OP_SETLOCAL: u8 = 0x63;
 const OP_GETLOCAL: u8 = 0x62;
 const OP_CALLPROPERTY: u8 = 0x46;
 const OP_CONVERT_S: u8 = 0x70;
+const OP_CONVERT_I: u8 = 0x73;
 const OP_RETURNVOID: u8 = 0x47;
 // branches + stack/value ops for the reflection dispatcher
 const OP_JUMP: u8 = 0x10;
@@ -496,6 +497,27 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     // the reply IS the observable, same as the E:logged:… line Fraymakers returns).
     let s_v_log = abc.intern_string("LOG");
     let s_logged = abc.intern_string("logged: ");
+    // HOLD <idx> <mask> / SEQ <idx> <csv-masks>: host input injection. These write
+    // per-frame state directly onto the TARGET player's Controller (reached via the
+    // public Characters[idx].ControlSettings chain); the per-frame applicator
+    // (inject_input_applicator) reads it off that same controller. SSF2's controls are
+    // frame-paced engine-side (a queued mask list drained one per frame), mirroring how
+    // Fraymakers drains one `i` line per frame. State lives on the controller (not the
+    // document) because the applicator runs inside Controller and the document singleton
+    // Main.ROOT is a non-public static the reflection seam can't reach.
+    let s_v_hold = abc.intern_string("HOLD");
+    let s_v_seq = abc.intern_string("SEQ");
+    let s_comma = abc.intern_string(",");
+    // controller-state slots (added to the Controller class by inject_input_applicator;
+    // here we just need the public multinames to set them on the target controller)
+    let mn_holdmask = q(abc, pub_ns, "peptideHoldMask");   // persistent held mask (release = 0)
+    let mn_seqlist = q(abc, pub_ns, "peptideSeq");         // Array of per-frame masks, or null
+    let mn_seqidx = q(abc, pub_ns, "peptideSeqIdx");       // next index into peptideSeq
+    let mn_active = q(abc, pub_ns, "peptideActive");       // injection on for this controller
+    // nav to the target controller: GameController.stageData.Characters[idx].ControlSettings
+    let mn_stagedata2 = q(abc, pub_ns, "stageData");
+    let mn_characters2 = q(abc, pub_ns, "Characters");
+    let mn_controlsettings = q(abc, pub_ns, "ControlSettings");
 
     // add the persistent register + the socket slot to the class
     abc.add_instance_slot(ci, mn_cur);
@@ -685,6 +707,39 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     c.place(next); next = c.new_label();
     c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_loaded); c.branch(OP_IFSTRICTNE, next);
     c.op_u30(OP_GETLEX, mn_rm); c.op_u30_u30(OP_CALLPROPERTY, mn_isfullyloaded, 0); c.op(OP_CONVERT_S); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // HOLD <idx> <mask>: set the persistent held mask on Characters[idx]'s controller.
+    // release = mask 0. (peptideSeq cleared so a stale timeline can't override the hold.)
+    // No-op when no match is live (stageData null). ctrl is stashed in l_a3 (free here).
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_hold); c.branch(OP_IFSTRICTNE, next);
+    let l_hold_skip = c.new_label();
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata2); c.op_u30(OP_SETLOCAL, l_a3);
+    c.op_u30(OP_GETLOCAL, l_a3); c.branch(OP_IFFALSE, l_hold_skip);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op_u30(OP_GETPROPERTY, mn_characters2);
+    c.op_u30(OP_GETLOCAL, l_a1); c.op(OP_CONVERT_D); c.op_u30(OP_GETPROPERTY, mnl);
+    c.op_u30(OP_GETPROPERTY, mn_controlsettings); c.op_u30(OP_SETLOCAL, l_a3); // l_a3 = ctrl
+    c.op_u30(OP_GETLOCAL, l_a3); c.op_u30(OP_GETLOCAL, l_a2); c.op(OP_CONVERT_D); c.op_u30(OP_SETPROPERTY, mn_holdmask);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_PUSHNULL); c.op_u30(OP_SETPROPERTY, mn_seqlist);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_PUSHTRUE); c.op_u30(OP_SETPROPERTY, mn_active);
+    c.place(l_hold_skip);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // SEQ <idx> <m,m,…>: queue a per-frame mask timeline on Characters[idx]'s controller;
+    // the applicator drains one per frame and auto-releases (mask 0) once exhausted.
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_seq); c.branch(OP_IFSTRICTNE, next);
+    let l_seq_skip = c.new_label();
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata2); c.op_u30(OP_SETLOCAL, l_a3);
+    c.op_u30(OP_GETLOCAL, l_a3); c.branch(OP_IFFALSE, l_seq_skip);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op_u30(OP_GETPROPERTY, mn_characters2);
+    c.op_u30(OP_GETLOCAL, l_a1); c.op(OP_CONVERT_D); c.op_u30(OP_GETPROPERTY, mnl);
+    c.op_u30(OP_GETPROPERTY, mn_controlsettings); c.op_u30(OP_SETLOCAL, l_a3); // l_a3 = ctrl
+    // ctrl.peptideSeq = a2.split(",")
+    c.op_u30(OP_GETLOCAL, l_a3); c.op_u30(OP_GETLOCAL, l_a2); c.op_u30(OP_PUSHSTRING, s_comma); c.op_u30_u30(OP_CALLPROPERTY, mn_split, 1); c.op_u30(OP_SETPROPERTY, mn_seqlist);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETPROPERTY, mn_seqidx);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETPROPERTY, mn_holdmask);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_PUSHTRUE); c.op_u30(OP_SETPROPERTY, mn_active);
+    c.place(l_seq_skip);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
     // LOG <msg>: result = "logged: " + a1  (commands.hsx log() parity)
     c.place(next); next = c.new_label();
     c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_log); c.branch(OP_IFSTRICTNE, next);
@@ -730,6 +785,120 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     let body = &mut abc.bodies[body_idx];
     let mut new_code = payload; new_code.extend_from_slice(&body.code); body.code = new_code;
     body.max_stack = body.max_stack.max(3);
+    body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
+    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
+    Ok(())
+}
+
+/// Inject the per-frame INPUT APPLICATOR — the SSF2 half of host input injection
+/// (`hold`/`release`/`seq`/`scenario`). This is the SSF2 analogue of Fraymakers'
+/// per-frame control-mask epilogue: each frame the engine reads a player's controls
+/// once, and we make that read return a host-supplied mask.
+///
+/// SSF2's per-frame input read flows through `Controller.getControlStatus()` (a
+/// human player's `Character.m_getKey` calls it once per frame, then derives
+/// held/pressed from it via the controls buffer). We PREPEND a guarded early-return:
+/// when `this.peptideActive` is set, it returns a `ControlsObject` whose `controls`
+/// is the mask for this frame, so held/pressed semantics are computed natively
+/// downstream (a first-frame mask reads as "pressed", subsequent identical frames as
+/// "held" — exactly like a real button). Otherwise it falls through to the stock
+/// keyboard read untouched.
+///
+/// State lives on the CONTROLLER itself (added here as instance slots; set by the
+/// socket bridge's HOLD/SEQ verbs via the public `Characters[idx].ControlSettings`
+/// chain), not the document — the applicator runs inside `Controller`, so reading off
+/// `this` needs no global anchor (the document singleton `Main.ROOT` is a non-public
+/// static the reflection seam can't reach), and only the targeted controller carries
+/// `peptideActive`, so no per-frame identity comparison is needed:
+///   * `peptideActive`   — injection on for this controller
+///   * `peptideHoldMask` — the persistent held mask (`release` = 0)
+///   * `peptideSeq`      — a per-frame mask Array (or null); drained one/frame
+///   * `peptideSeqIdx`   — next index into `peptideSeq`; auto-releases at the end
+///
+/// Reads off `this` can't throw; an idle/un-targeted controller has `peptideActive`
+/// undefined → falls through to the unmodified body.
+pub fn inject_input_applicator(abc: &mut Abc, _doc_class_local: &str) -> anyhow::Result<()> {
+    // hook Controller.getControlStatus (resolved by NAME — version-resilient)
+    let ctrl_ci = abc.find_class_by_name("Controller")
+        .ok_or_else(|| anyhow::anyhow!("Controller not found"))?;
+    let method = abc.instances[ctrl_ci].traits.iter().find_map(|t| match t.data {
+        TraitKindData::Method { method, .. }
+            if abc.multiname_local(t.name).as_deref() == Some("getControlStatus") => Some(method),
+        _ => None,
+    }).ok_or_else(|| anyhow::anyhow!("Controller.getControlStatus not found"))?;
+    let body_idx = abc.bodies.iter().position(|b| b.method == method)
+        .ok_or_else(|| anyhow::anyhow!("no body for getControlStatus"))?;
+
+    let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
+    let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
+    // per-controller injection-state slots (must match the public QNames the socket
+    // bridge sets on the target controller)
+    let mn_active = q(abc, pub_ns, "peptideActive");
+    let mn_holdmask = q(abc, pub_ns, "peptideHoldMask");
+    let mn_seqlist = q(abc, pub_ns, "peptideSeq");
+    let mn_seqidx = q(abc, pub_ns, "peptideSeqIdx");
+    let mn_controls = q(abc, pub_ns, "controls");
+    let mn_length = q(abc, pub_ns, "length");
+    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let mn_controlsobject = q(abc, util_ns, "ControlsObject");
+    let pub_nsset = abc.intern_ns_set(vec![pub_ns]);
+    let mnl = abc.intern_multinamel(pub_nsset); // runtime [idx] access
+
+    // add the state slots to the Controller class (public, untyped)
+    abc.add_instance_slot(ctrl_ci, mn_active);
+    abc.add_instance_slot(ctrl_ci, mn_holdmask);
+    abc.add_instance_slot(ctrl_ci, mn_seqlist);
+    abc.add_instance_slot(ctrl_ci, mn_seqidx);
+
+    // scratch local (getControlStatus uses only local_0/local_1)
+    let l_mask = 2u32;
+    let mut c = Code::default();
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
+    let l_fall = c.new_label();
+    let l_use_hold = c.new_label();
+    let l_seq_live = c.new_label();
+    let l_apply = c.new_label();
+    // if (!this.peptideActive) fall
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_active); c.branch(OP_IFFALSE, l_fall);
+    // if (this.peptideSeq == null) use hold
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_seqlist); c.branch(OP_IFFALSE, l_use_hold);
+    // if (this.peptideSeqIdx < this.peptideSeq.length) seq-live, else exhausted
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_seqidx);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_seqlist); c.op_u30(OP_GETPROPERTY, mn_length);
+    c.branch(OP_IFLT, l_seq_live);
+    // exhausted: mask = 0 ; this.peptideSeq = null (auto-release)
+    c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETLOCAL, l_mask);
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHNULL); c.op_u30(OP_SETPROPERTY, mn_seqlist);
+    c.branch(OP_JUMP, l_apply);
+    // seq-live: mask = int(this.peptideSeq[this.peptideSeqIdx]) ; this.peptideSeqIdx += 1
+    c.place(l_seq_live);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_seqlist);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_seqidx); c.op_u30(OP_GETPROPERTY, mnl);
+    c.op(OP_CONVERT_I); c.op_u30(OP_SETLOCAL, l_mask);
+    c.op(OP_GETLOCAL0);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_seqidx); c.op(OP_PUSHBYTE); c.op(1); c.op(OP_ADD);
+    c.op_u30(OP_SETPROPERTY, mn_seqidx);
+    c.branch(OP_JUMP, l_apply);
+    // use-hold: mask = int(this.peptideHoldMask)
+    c.place(l_use_hold);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_holdmask); c.op(OP_CONVERT_I); c.op_u30(OP_SETLOCAL, l_mask);
+    // apply: return a ControlsObject whose controls = mask
+    c.place(l_apply);
+    c.op_u30(OP_FINDPROPSTRICT, mn_controlsobject); c.op_u30_u30(OP_CONSTRUCTPROP, mn_controlsobject, 0);
+    c.op(OP_DUP); c.op_u30(OP_GETLOCAL, l_mask); c.op_u30(OP_SETPROPERTY, mn_controls);
+    c.op(OP_POPSCOPE); c.op(OP_RETURNVALUE);
+    // fall-through: restore scope, then the original keyboard-read body runs
+    c.place(l_fall);
+    c.op(OP_POPSCOPE);
+    let payload = c.finish();
+    let n = payload.len() as u32;
+
+    let body = &mut abc.bodies[body_idx];
+    let mut new_code = payload;
+    new_code.extend_from_slice(&body.code);
+    body.code = new_code;
+    body.local_count = body.local_count.max(l_mask + 1);
+    body.max_stack = body.max_stack.max(4);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
     for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
