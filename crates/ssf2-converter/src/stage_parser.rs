@@ -176,14 +176,18 @@ pub fn parse_stage(path: &Path) -> Result<StageModel> {
     let (ox, oy) = origin.unwrap_or((275.0, 200.0)); // SWF stage center fallback
     let to_fm = |r: &Rect| Rect { x: r.x - ox, y: r.y - oy, w: r.w, h: r.h };
 
-    // --- platforms: TerrainMC = solid floor; *platform* = drop-through soft platform.
+    // --- platforms: `*platform*` = drop-through soft platform; otherwise any terrain /
+    // collision shape (SSF2 stages name these inconsistently: TerrainMC, terrain_mc,
+    // ChunkTerrain, CollisonBox [sic], ground) is a solid floor. Check `platform` first so
+    // `terrainGround_platform` (both words) is classified drop-through.
     let mut platforms: Vec<Platform> = Vec::new();
     for inst in &instances {
         let sn = inst.sym_name.to_ascii_lowercase();
-        if sn.contains("terrainmc") {
-            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: false });
-        } else if sn.contains("platform") {
+        let is_solid = ["terrain", "collison", "collision", "ground"].iter().any(|m| sn.contains(m));
+        if sn.contains("platform") {
             platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: true });
+        } else if is_solid {
+            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: false });
         }
     }
 
