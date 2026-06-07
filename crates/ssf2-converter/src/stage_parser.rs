@@ -87,13 +87,36 @@ pub struct StageModel {
     pub entrances: Vec<SpawnPoint>,
     /// Respawn beacons (SSF2 `pN_Spawn`), ordered by player index.
     pub respawns: Vec<SpawnPoint>,
-    /// Rendered stage art: the SSF2 stage's vector shapes composited into one RGBA
-    /// PNG, plus the FM-coord top-left where it should be placed. `None` if no vector
-    /// art rasterized (e.g. a bitmap-only stage) — the emitter then draws a placeholder.
-    pub art: Option<StageArt>,
+    /// Grabbable ledge x-positions `(left, right)` from the SSF2 `ledge_mc` instances,
+    /// in FM coords. Used as the main floor's left/right endpoints.
+    pub ledges: Option<(f64, f64)>,
+    /// Rendered stage art, split into depth layers (parallax background, the main
+    /// stage at character depth, and a foreground that draws in front of fighters).
+    pub art: StageArtSet,
 }
 
-/// A composited stage-art image ready to drop in as the stage sprite.
+/// The stage art split by depth so the emitter can layer it around the characters
+/// and parallax-scroll the background.
+#[derive(Clone, Debug, Default)]
+pub struct StageArtSet {
+    /// Far backdrop (SSF2 `*_bg` / `background`), drawn behind everything and
+    /// parallax-scrolled by the camera.
+    pub background: Option<StageArt>,
+    /// The main stage art (terrain / platforms / props) at character depth.
+    pub stage: Option<StageArt>,
+    /// Art that draws in front of the fighters (SSF2 `foreground`).
+    pub foreground: Option<StageArt>,
+}
+
+impl StageArtSet {
+    /// `true` if no layer rasterized (e.g. a stage with only bitmap fills we can't
+    /// decode) — the emitter then falls back to a geometry placeholder.
+    pub fn is_empty(&self) -> bool {
+        self.background.is_none() && self.stage.is_none() && self.foreground.is_none()
+    }
+}
+
+/// A composited stage-art image ready to drop in as an IMAGE layer / parallax bg.
 #[derive(Clone, Debug)]
 pub struct StageArt {
     /// PNG bytes (RGBA).
@@ -101,6 +124,9 @@ pub struct StageArt {
     /// Top-left of the image in FM stage coords.
     pub x: f64,
     pub y: f64,
+    /// Pixel dimensions (for parallax `originalBGWidth/Height`).
+    pub w: u32,
+    pub h: u32,
 }
 
 impl StageModel {
@@ -211,8 +237,12 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     let mut platforms: Vec<Platform> = Vec::new();
     for inst in &instances {
         let sn = inst.sym_name.to_ascii_lowercase();
-        let is_solid = ["terrain", "collison", "collision", "ground"].iter().any(|m| sn.contains(m));
-        if sn.contains("platform") {
+        // `back`/`fore`ground are ART, not collision — exclude them (they contain the
+        // substring "ground", which would otherwise read as a floor).
+        let is_art_bg = sn.contains("background") || sn.contains("foreground");
+        let is_solid = !is_art_bg
+            && ["terrain", "collison", "collision", "ground"].iter().any(|m| sn.contains(m));
+        if !is_art_bg && sn.contains("platform") {
             platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: true });
         } else if is_solid {
             platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: false });
@@ -243,14 +273,45 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     entrances.sort_by_key(|s| s.index);
     respawns.sort_by_key(|s| s.index);
 
+    // --- ledges: the SSF2 `ledge_mc_left` / `ledge_mc_right` beacons mark the floor's
+    // grabbable edges (FM grabs ledges at the floor's left/right endpoints).
+    let ledge_x = |needle: &str| instances.iter()
+        .find(|i| i.sym_name.to_ascii_lowercase().contains(needle))
+        .map(|i| i.cx - ox);
+    let ledges = match (ledge_x("ledge_mc_left"), ledge_x("ledge_mc_right")) {
+        (Some(l), Some(r)) => Some((l.min(r), l.max(r))),
+        _ => None,
+    };
+
     if platforms.is_empty() {
         bail!("no collision geometry found in {} (not a recognised SSF2 stage?)", path.display());
     }
 
-    // --- art: rasterize the stage's vector + bitmap shapes, composite them into one image.
-    let art = if render_art_flag { render_art(&instances, &shape_defs, &bitmaps, ox, oy) } else { None };
+    // --- art: rasterize the stage's shapes, split into background / stage / foreground.
+    let art = if render_art_flag {
+        render_art_layers(&instances, &shape_defs, &bitmaps, ox, oy)
+    } else {
+        StageArtSet::default()
+    };
 
-    Ok(StageModel { id, platforms, death_box, camera_box, entrances, respawns, art })
+    Ok(StageModel { id, platforms, death_box, camera_box, entrances, respawns, ledges, art })
+}
+
+/// Depth layer an art instance belongs to (back-to-front).
+#[derive(Clone, Copy, PartialEq)]
+enum ArtKind { Background, Stage, Foreground }
+
+/// Classify an art instance by its SSF2 name: `*_bg`/`background` -> behind; `foreground`
+/// -> in front of fighters; everything else (terrain, platforms, props) -> at stage depth.
+fn art_kind(inst: &Instance) -> ArtKind {
+    let label = format!("{} {}", inst.inst_name.as_deref().unwrap_or(""), inst.sym_name).to_ascii_lowercase();
+    if label.contains("foreground") || label.contains("_fg") {
+        ArtKind::Foreground
+    } else if label.contains("background") || label.contains("_bg") {
+        ArtKind::Background
+    } else {
+        ArtKind::Stage
+    }
 }
 
 /// `true` if a placed instance is non-visual scaffolding (boundary clip, spawn beacon,
@@ -261,12 +322,35 @@ fn is_marker(label: &str) -> bool {
         .iter().any(|m| l.contains(m))
 }
 
-/// Rasterize every art shape and composite them (back-to-front = walk order) into one
-/// RGBA image spanning their union bounds. Returns `None` if nothing rasterized (e.g. a
-/// bitmap-only stage, which `vector_raster` can't handle). Coordinates are converted to
-/// FM space (raw world minus the stageMC origin).
-fn render_art(
+/// Rasterize the stage's art and split it into background / stage / foreground layers
+/// (each composited into its own RGBA image), so the emitter can draw the background
+/// behind fighters, the foreground in front, and parallax-scroll the background.
+fn render_art_layers(
     instances: &[Instance],
+    shape_defs: &BTreeMap<u16, &swf::Shape>,
+    bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
+    ox: f64, oy: f64,
+) -> StageArtSet {
+    // art instances = placed shapes that aren't markers and have a DefineShape.
+    let art: Vec<&Instance> = instances.iter()
+        .filter(|i| shape_defs.contains_key(&i.shape_id))
+        .filter(|i| !is_marker(i.inst_name.as_deref().unwrap_or("")) && !is_marker(&i.sym_name))
+        .collect();
+    let layer = |kind: ArtKind| -> Option<StageArt> {
+        let group: Vec<&Instance> = art.iter().copied().filter(|i| art_kind(i) == kind).collect();
+        composite_layer(&group, shape_defs, bitmaps, ox, oy)
+    };
+    StageArtSet {
+        background: layer(ArtKind::Background),
+        stage: layer(ArtKind::Stage),
+        foreground: layer(ArtKind::Foreground),
+    }
+}
+
+/// Composite a set of art instances (back-to-front = walk order) into one RGBA image
+/// spanning their union bounds. `None` if nothing rasterized.
+fn composite_layer(
+    art: &[&Instance],
     shape_defs: &BTreeMap<u16, &swf::Shape>,
     bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
     ox: f64, oy: f64,
@@ -283,11 +367,6 @@ fn render_art(
         })
     };
 
-    // art instances = placed shapes that aren't markers and have a DefineShape.
-    let art: Vec<&Instance> = instances.iter()
-        .filter(|i| shape_defs.contains_key(&i.shape_id))
-        .filter(|i| !is_marker(i.inst_name.as_deref().unwrap_or("")) && !is_marker(&i.sym_name))
-        .collect();
     if art.is_empty() { return None; }
 
     // union bounds (raw world coords) -> canvas. cap to keep the PNG sane.
@@ -304,7 +383,7 @@ fn render_art(
         (i.aabb.h.round() as u32).clamp(1, 4096),
     );
     let mut drew = false;
-    for inst in &art {
+    for inst in art {
         // a native-resolution tile for this shape: bitmap fill if it has one, else the
         // vector rasterization.
         let tile: Option<RgbaImage> = if let Some(bid) = shape_bitmap(inst.shape_id) {
@@ -334,7 +413,7 @@ fn render_art(
         image::codecs::png::PngEncoder::new(&mut png)
             .write_image(canvas.as_raw(), cw, ch, image::ExtendedColorType::Rgba8).ok()?;
     }
-    Some(StageArt { png, x: min_x - ox, y: min_y - oy })
+    Some(StageArt { png, x: min_x - ox, y: min_y - oy, w: cw, h: ch })
 }
 
 /// Decompress an `.ssf` to SWF bytes via the DAT-archive aware path.
