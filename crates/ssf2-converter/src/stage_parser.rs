@@ -134,11 +134,24 @@ impl StageArtSet {
     }
 }
 
-/// One camera-background parallax layer: the composited art + its per-layer pan rate (SSF2
-/// auto-derives the rate from the layer's pixel size vs the 640x360 view; see `parallax_pan`).
+/// How a camera-background layer scrolls (mirrors SSF2 `VcamBGSettings.mode` =
+/// Fraymakers `ParallaxMode`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParallaxMode {
+    /// Straight parallax pan at `x_pan`/`y_pan` (`bg = camera * multiplier`). SSF2's `_cambg`
+    /// discrete layers use this (the `autoPanMultiplier` feeds the pan).
+    Pan,
+    /// Anchored to the camera bounds, tiling to fill (SSF2 makes ±width copies). For a
+    /// repeating/wrapping backdrop.
+    Bounds,
+}
+
+/// One camera-background parallax layer: the composited art + its per-layer scroll mode and
+/// pan rate (SSF2 auto-derives the rate from the layer's pixel size; see `parallax_pan`).
 #[derive(Clone, Debug)]
 pub struct ParallaxLayer {
     pub art: StageArt,
+    pub mode: ParallaxMode,
     /// Fraction of the camera's movement this layer scrolls by (0 = screen-fixed).
     pub x_pan: f64,
     pub y_pan: f64,
@@ -630,11 +643,15 @@ fn render_art_layers(
             if !groups.contains_key(key) { order.push(key); }
             groups.entry(key).or_default().push(i);
         }
+        // SSF2 `_cambg` layers are discrete elements that PAN (the autoPanMultiplier feeds the
+        // pan); BOUNDS is for a tiling/wrapping backdrop, which the corpus has none of. Default
+        // PAN; `PEPTIDE_PARALLAX_BOUNDS` forces BOUNDS to exercise that path.
+        let mode = if std::env::var("PEPTIDE_PARALLAX_BOUNDS").is_ok() { ParallaxMode::Bounds } else { ParallaxMode::Pan };
         let layers: Vec<ParallaxLayer> = order.iter().filter_map(|key| {
             composite_layer(&groups[*key], shape_defs, bitmaps, ox, oy).map(|mut art| {
                 art.x *= scale; art.y *= scale;
                 let (x_pan, y_pan) = parallax_pan(art.w, art.h);
-                ParallaxLayer { art, x_pan, y_pan }
+                ParallaxLayer { art, mode, x_pan, y_pan }
             })
         }).collect();
         (composite(base_insts, &[ArtKind::Background]), layers)
