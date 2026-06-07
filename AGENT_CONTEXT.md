@@ -331,6 +331,37 @@ emitted COLLISION_BOX symbol uses `pivotY = height` (instead of `height / 2`) so
 rotation pivots around the hand. `itemBox` is the only routinely rotated collision
 box, so the pivot-at-bottom convention matters here.
 
+### SSF2 stage structure
+
+a stage `.ssf` is a SWF whose document root places two things: the `<id>_bg` backdrop
+container (linkage `<id>_bg`, no instance name) and the `stageMC` (linkage `stage_<id>`).
+the AS3 `stage_<id>` class exposes the stage to the engine via named slots, and the placement
+uses those same INSTANCE names. identify layers by instance name + linkage id + the AS3
+slots, NOT by the fla-prefixed timeline symbol names (`<id>_fla.<thing>_<n>`), which are
+auto-generated and don't generalize.
+
+the planes (stage-root child instance names = AS3 slots), back to front:
+
+| instance name | role | maps to |
+|---|---|---|
+| `<id>_bg` (linkage, unnamed) | painted backdrop, fixed (moves 1:1 with the world) | FM background IMAGE |
+| `*_cambg` (inside `<id>_bg`) | camera-relative parallax layers (`getCameraBackgrounds`) | FM camera background |
+| `background` | fixed backdrop plane | FM background IMAGE |
+| `terrain` | collision masks (invisible in SSF2) | FM collision boxes / line segments |
+| `foreground` / `*_fg` | draws in front of fighters | FM foreground IMAGE |
+| `shadowMask` / `reflectionMask` | masks (not art) | dropped |
+| `stance` | spawn-pose beacons | dropped (spawns come from the markers below) |
+
+markers live inside `terrain`, identified by LINKAGE suffix (no instance name): `*TerrainMC*`
+(solid floor), `terrainGround_platform*` (drop-through), `CollisonBox*` [sic], `ledge_mc_*`,
+`pN_Start` / `pN_Spawn` (spawns), `boundary_clip` / `deathBoundary` / `camBoundary`,
+`warningbounds_*`, `itemGen_mc`.
+
+the `SSF2Stage` AS3 class (visible in any stage's ABC via `ssf2_objgraph <stage.ssf> slots
+SSF2Stage`) confirms the model: `getBackground` / `getMidground` / `getForeground` are the
+fixed planes; `getCameraBackgrounds` is the separate parallax system. parallax is rare (1 of
+110 corpus stages, junglehijinx); the rest have a single fixed backdrop.
+
 ### image sprites
 
 each animation's visual content sits inside its DefineSprite as a stack of `PlaceObject`
