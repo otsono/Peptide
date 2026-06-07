@@ -29,14 +29,14 @@ batch-verified (spawn + jab + special_neutral, no crash).
 
 `peptide ssf2 stage <file.ssf>` converts an SSF2 stage to a playable Fraymakers stage. it
 parses the SSF2 placement tree for the floor, soft platforms, death/camera boxes, and
-entrance/respawn beacons, rasterizes the stage's vector art into the stage sprite, and emits
+entrance/respawn beacons, rasterizes the stage's art (vector shapes + bitmap backgrounds) into the stage sprite, and emits
 the FM `.entity` + manifest + StageStats/Script + `.fraytools`; FrayTools builds + publishes
 the `.fra` to the engine's `custom/` dir. all 110 corpus stages convert. battlefield (DAT328)
 is live-verified: `spawn sandbag battlefieldssf2` (drive with `FRAY_STAGE=<stage>`) loads the
 stage, the fighter stands on the platforms, walks, and falls off the edges into the blast
 zone (KO + respawn), no crash. NB: a stage needs visible content to place players (the engine
-sizes it from the sprite bounds); bitmap-only stages fall back to a geometry placeholder
-sprite. follow-ups: bitmap-fill art, parallax backgrounds, hazards, moving platforms, music.
+sizes it from the sprite bounds); the sprite is the SSF2 art (vector shapes + bitmap backgrounds rasterized + composited);
+stages with no rasterizable art fall back to a geometry placeholder. follow-ups: parallax backgrounds, hazards, moving platforms, music.
 
 ## hitbox-stat parity
 
