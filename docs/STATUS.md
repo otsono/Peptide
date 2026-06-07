@@ -27,15 +27,16 @@ batch-verified (spawn + jab + special_neutral, no crash).
 
 ## stage porting
 
-`peptide ssf2 stage <file.ssf>` converts an SSF2 stage to a Fraymakers stage package
-(geometry MVP, no art yet). it parses the SSF2 placement tree for the floor, soft
-platforms, death/camera boxes, and entrance/respawn beacons, then emits the FM `.entity`
-+ manifest + StageStats/Script + `.fraytools`. battlefield (DAT328) converts; FrayTools
-imports it and `peptide export` builds + publishes the `.fra` to the engine's `custom/`
-dir. live spawn-verify is pending a spawn-patcher re-sync to the current engine build (a
-2026-06-05 engine update renumbered some hardcoded boot indices; this blocks all spawning,
-not just stages). deferred follow-ups: art layers (IMAGE + parallax), hazards, moving
-platforms, music, and multi-stage batch conversion.
+`peptide ssf2 stage <file.ssf>` converts an SSF2 stage to a playable Fraymakers stage. it
+parses the SSF2 placement tree for the floor, soft platforms, death/camera boxes, and
+entrance/respawn beacons, emits the FM `.entity` + manifest + StageStats/Script + a
+placeholder sprite (the floor/platforms drawn as filled rects) + `.fraytools`, and FrayTools
+builds + publishes the `.fra` to the engine's `custom/` dir. battlefield (DAT328) is
+live-verified: `spawn sandbag battlefieldssf2` loads the stage, the fighter stands on the
+platforms, walks, and falls off the edges into the blast zone (KO + respawn), no crash. NB:
+a stage needs visible content to place players (the engine sizes it from the sprite bounds),
+so the geometry MVP ships a placeholder sprite rather than no art. deferred follow-ups: real
+SSF2 stage art (replace the placeholder), parallax, hazards, moving platforms, music, batch.
 
 ## hitbox-stat parity
 
