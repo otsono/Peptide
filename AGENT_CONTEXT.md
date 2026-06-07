@@ -362,6 +362,13 @@ SSF2Stage`) confirms the model: `getBackground` / `getMidground` / `getForegroun
 fixed planes; `getCameraBackgrounds` is the separate parallax system. parallax is rare (1 of
 110 corpus stages, junglehijinx); the rest have a single fixed backdrop.
 
+**scale.** Fraymakers space is SSF2 space scaled up by `size_multiplier` (the same knob the
+character converter scales sprites by, default 1.3; in world-units-per-second the spatial
+scale works out to exactly `size_multiplier`). so the stage parser scales every coordinate
+(floor / platforms / bounds / spawns / ledges + art placement) by it, and the emitter renders
+the native-resolution art IMAGE layers at that scale. a 1:1 stage would be too small for the
+scaled-up fighters, and the backdrop wouldn't fill the FM camera.
+
 ### image sprites
 
 each animation's visual content sits inside its DefineSprite as a stack of `PlaceObject`

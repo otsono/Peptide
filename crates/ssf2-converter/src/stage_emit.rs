@@ -82,7 +82,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     let scripts = lib.join("scripts").join("stage");
     std::fs::write(scripts.join(format!("{id}Script.hx")), script_hx(id, art.stage.len() > 1))?;
     write_meta(&scripts.join(format!("{id}Script.hx.meta")), id, &format!("{id}Script"), "", Some("STAGE"), None)?;
-    std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id, art.parallax.as_ref()))?;
+    std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id, art.parallax.as_ref(), model.scale))?;
     write_meta(&scripts.join(format!("{id}StageStats.hx.meta")), id, &format!("{id}StageStats"), "hscript", None, None)?;
 
     let fraytools = dir.join(format!("{id}.fraytools"));
@@ -111,11 +111,14 @@ struct EntityBuilder<'a> {
     parallax_layers: Vec<String>,
     /// Length of the stage animation in frames (static layers hold for this many).
     frame_len: usize,
+    /// SSF2 -> FM art scale (`size_multiplier`): native-resolution art PNGs render at this
+    /// scale so they match the scaled-up geometry + fighters.
+    scale: f64,
 }
 
 impl<'a> EntityBuilder<'a> {
     fn new(id: &'a str) -> Self {
-        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], parallax_layers: vec![], frame_len: 1 }
+        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], parallax_layers: vec![], frame_len: 1, scale: 1.0 }
     }
     /// A stable per-entity uuid for `role` (e.g. `"layer:Floor"`).
     fn uid(&mut self, role: &str) -> String {
@@ -155,25 +158,6 @@ impl<'a> EntityBuilder<'a> {
         self.anim_layers.push(lid);
     }
 
-    /// A CAMERA_ANCHOR_BOX layer (a region the camera keeps framed). Same box shape as
-    /// a COLLISION_BOX; the layer's `collisionBoxType` + `index` mark it as an anchor.
-    fn add_camera_anchor_box(&mut self, name: &str, index: usize, rect: &Rect) {
-        let sym = self.uid(&format!("sym:{name}"));
-        self.symbols.push(json!({
-            "$id": sym, "type": "COLLISION_BOX", "alpha": null, "color": null, "pluginMetadata": {},
-            "x": rect.left(), "y": rect.top(), "scaleX": rect.w, "scaleY": rect.h,
-            "pivotX": rect.w / 2.0, "pivotY": 0, "rotation": 0
-        }));
-        let kf = self.uid(&format!("kf:{name}"));
-        self.keyframes.push(json!({ "$id": kf, "length": self.frame_len, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "COLLISION_BOX" }));
-        let lid = self.uid(&format!("layer:{name}"));
-        self.layers.push(json!({
-            "$id": lid, "hidden": false, "locked": false, "name": name, "type": "COLLISION_BOX",
-            "defaultAlpha": 0.5, "defaultColor": "0xd1d1d1", "keyframes": [kf],
-            "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "collisionBoxType": "CAMERA_ANCHOR_BOX", "index": index } }
-        }));
-        self.anim_layers.push(lid);
-    }
 
     /// A LINE_SEGMENT layer (walkable surface). `pm` is the per-symbol
     /// FraymakersMetadata (structureType + ledge/dropThrough flags).
@@ -200,13 +184,13 @@ impl<'a> EntityBuilder<'a> {
     /// the stage sprite from its image bounds during match setup, and a stage with no
     /// IMAGE never places a player (verified live). So even the geometry MVP emits a
     /// placeholder sprite.
-    /// Create an IMAGE layer (in the entity pools) and return its layer id. The caller
-    /// pushes the id into whichever animation it belongs to (stage vs parallax).
-    fn make_image(&mut self, name: &str, image_asset: &str, x: f64, y: f64) -> String {
+    /// Create an IMAGE layer (in the entity pools) at `img_scale` and return its layer id.
+    /// The caller pushes the id into whichever animation it belongs to (stage vs parallax).
+    fn make_image(&mut self, name: &str, image_asset: &str, x: f64, y: f64, img_scale: f64) -> String {
         let sym = self.uid(&format!("sym:{name}"));
         self.symbols.push(json!({
             "$id": sym, "type": "IMAGE", "imageAsset": image_asset, "alpha": 1,
-            "x": x, "y": y, "scaleX": 1, "scaleY": 1, "rotation": 0, "pivotX": 0, "pivotY": 0,
+            "x": x, "y": y, "scaleX": img_scale, "scaleY": img_scale, "rotation": 0, "pivotX": 0, "pivotY": 0,
             "pluginMetadata": {}
         }));
         let kf = self.uid(&format!("kf:{name}"));
@@ -218,15 +202,18 @@ impl<'a> EntityBuilder<'a> {
         }));
         lid
     }
-    /// Add an IMAGE layer to the `stage` animation at the current depth.
+    /// Add an IMAGE layer to the `stage` animation at the current depth (rendered at the
+    /// stage `scale` so the native-resolution art matches the scaled-up geometry).
     fn add_image(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
-        let lid = self.make_image(name, image_asset, x, y);
+        let lid = self.make_image(name, image_asset, x, y, self.scale);
         self.anim_layers.push(lid);
     }
-    /// Add an IMAGE layer to the `parallax0` animation (the SSF2 `_cambg` camera background,
-    /// camera-scrolled by StageStats, separate from the fixed `stage` animation).
+    /// Add an IMAGE layer to the `parallax0` animation (the SSF2 `_cambg` camera background).
+    /// The IMAGE symbol stays at scale 1: the camera's ParallaxBG sizes it from
+    /// `originalBGWidth × scaleMultiplier` (set in StageStats), which is where the stage
+    /// scale is applied, so scaling the symbol too would double it.
     fn add_image_parallax(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
-        let lid = self.make_image(name, image_asset, x, y);
+        let lid = self.make_image(name, image_asset, x, y, 1.0);
         self.parallax_layers.push(lid);
     }
     /// Add an animated IMAGE layer to the `stage` animation: one keyframe per frame, each
@@ -237,7 +224,7 @@ impl<'a> EntityBuilder<'a> {
             let sym = self.uid(&format!("sym:{name}:{i}"));
             self.symbols.push(json!({
                 "$id": sym, "type": "IMAGE", "imageAsset": guid, "alpha": 1,
-                "x": x, "y": y, "scaleX": 1, "scaleY": 1, "rotation": 0, "pivotX": 0, "pivotY": 0,
+                "x": x, "y": y, "scaleX": self.scale, "scaleY": self.scale, "rotation": 0, "pivotX": 0, "pivotY": 0,
                 "pluginMetadata": {}
             }));
             let kf = self.uid(&format!("kf:{name}:{i}"));
@@ -318,6 +305,7 @@ fn render_placeholder(model: &StageModel) -> StageArt {
 fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     let id = &model.id;
     let mut b = EntityBuilder::new(id);
+    b.scale = model.scale;
     // the stage animation runs for as many frames as the stage art has (1 = static);
     // static layers hold across all of them.
     b.frame_len = art.stage.len().max(1);
@@ -345,12 +333,15 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     b.add_container("Foreground Effects", "FOREGROUND_EFFECTS_CONTAINER");
     b.add_container("Foreground Front", "FOREGROUND_FRONT_CONTAINER");
 
-    // boundaries: blast zone + hard camera bounds, plus a camera anchor spanning the
-    // camera box so the camera frames the play area.
+    // boundaries: blast zone + hard camera bounds. NO camera-anchor box: the engine adds an
+    // anchor to the camera's target bounds, so any anchor forces the camera to zoom out to
+    // keep it framed. A blast-zone-sized anchor pins the camera at max zoom-out and the art
+    // never fills the view. Without one, the camera frames the players within the camera box
+    // and sits at the StageStats `minZoomHeight` floor, where the scaled backdrop fills, the
+    // same as a FM-native stage.
     if let Some(r) = &model.death_box { b.add_collision_box("Death Box", "DEATH_BOX", r); }
     if let Some(r) = &model.camera_box {
         b.add_collision_box("Camera Box", "CAMERA_BOX", r);
-        b.add_camera_anchor_box("Camera Anchor Box 0", 0, r);
     }
 
     // collision: main floor (solid, with ledges at the SSF2 ledge positions) + soft
@@ -512,13 +503,19 @@ fn write_meta(path: &Path, _stage_id: &str, id: &str, language: &str, object_typ
 /// `stage` animation (it carries the surface fighters stand on, so it moves 1:1 with the
 /// world). A SSF2 `_cambg` parallax layer, when present, is emitted as a camera-relative
 /// background (the `parallax0` animation, panned slower than the camera for depth).
-fn stage_stats_hx(id: &str, parallax: Option<&ArtRef>) -> String {
+fn stage_stats_hx(id: &str, parallax: Option<&ArtRef>, scale: f64) -> String {
     let backgrounds = match parallax {
+        // The camera's ParallaxBG sizes the layer as `originalBGWidth × scaleMultiplier`, so
+        // `originalBGWidth/Height` is the NATIVE png size and `scaleMultiplier` is the
+        // SSF2->FM stage scale (the parallax IMAGE symbol stays at scale 1). PAN mode pans
+        // the layer at `xPanMultiplier` of the camera offset, matching how SSF2 scrolls its
+        // `_cambg` layers (discrete planes that move camera-relative), rather than BOUNDS
+        // (which stretches the layer to fit the camera bounds).
         Some(b) => format!(
             "\n\t\t\t{{\n\
 \t\t\t\tspriteContent: self.getResource().getContent(\"{id}\"),\n\
 \t\t\t\tanimationId: \"parallax0\",\n\
-\t\t\t\tmode: ParallaxMode.BOUNDS,\n\
+\t\t\t\tmode: ParallaxMode.PAN,\n\
 \t\t\t\toriginalBGWidth: {w},\n\
 \t\t\t\toriginalBGHeight: {h},\n\
 \t\t\t\thorizontalScroll: false,\n\
@@ -527,7 +524,7 @@ fn stage_stats_hx(id: &str, parallax: Option<&ArtRef>) -> String {
 \t\t\t\tloopHeight: 0,\n\
 \t\t\t\txPanMultiplier: 0.5,\n\
 \t\t\t\tyPanMultiplier: 0.5,\n\
-\t\t\t\tscaleMultiplier: 1,\n\
+\t\t\t\tscaleMultiplier: {scale},\n\
 \t\t\t\tforeground: false,\n\
 \t\t\t\tdepth: 2000\n\
 \t\t\t}}\n\t\t",

@@ -39,10 +39,15 @@ fn battlefield_parses_to_geometry() {
     }
     let m = parse_stage(&p).expect("parse battlefield");
 
+    // geometry is scaled SSF2 -> FM by `size_multiplier` (so the stage matches the
+    // scaled-up fighters and the art fills the FM camera). Battlefield's ~523px SSF2 floor
+    // becomes ~523*scale in FM.
+    assert!(m.scale > 1.0, "stage scaled up to FM (size_multiplier), got {}", m.scale);
     // a wide solid main floor + three drop-through soft platforms.
     let floor = m.main_floor().expect("main floor");
     assert!(!floor.drop_through, "main floor must be solid");
-    assert!(floor.rect.w > 400.0, "battlefield floor is ~520px wide, got {}", floor.rect.w);
+    assert!((floor.rect.w - 523.0 * m.scale).abs() < 30.0,
+        "battlefield floor ~{:.0} (523*{}), got {:.0}", 523.0 * m.scale, m.scale, floor.rect.w);
     let soft = m.platforms.iter().filter(|p| p.drop_through).count();
     assert_eq!(soft, 3, "battlefield has 3 soft platforms, got {soft}");
 

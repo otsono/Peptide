@@ -34,3 +34,6 @@ eng.log
 # Peptide render/harness PNG dumps (converter sprite PNGs live under characters/,
 # already ignored above). No source PNGs are tracked in this repo.
 *.png
+
+# engine RE notes (compliance: never tracked)
+docs/*.local.md
