@@ -63,6 +63,16 @@ path = "src/bin/dump_method.rs"
 required-features = ["dev-tools"]
 
 [[bin]]
+name = "patch_probe"
+path = "src/bin/patch_probe.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "diff_abc"
+path = "src/bin/diff_abc.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
 name = "dump_ssf2_framescripts"
 path = "src/bin/dump_ssf2_framescripts.rs"
 required-features = ["dev-tools"]
