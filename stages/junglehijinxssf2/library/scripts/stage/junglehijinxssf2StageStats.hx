@@ -21,7 +21,7 @@
 				animationId: "parallax0",
 				mode: ParallaxMode.PAN,
 				originalBGWidth: 3199,
-				originalBGHeight: 875,
+				originalBGHeight: 1044,
 				horizontalScroll: false,
 				verticalScroll: false,
 				loopWidth: 0,

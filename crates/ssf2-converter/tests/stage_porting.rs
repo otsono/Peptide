@@ -89,8 +89,18 @@ fn junglehijinx_has_parallax() {
         return;
     }
     let m = parse_stage(&p).expect("parse junglehijinx");
+    // the `_cambg` parallax composites WITH the far backdrop sky (so the sun rays draw in
+    // front of the sky, not occluded behind it), and the stageMC `background` plane (island)
+    // stays a fixed near-layer.
     assert!(m.art.parallax.is_some(), "junglehijinx `_cambg` layers must be parallax");
-    assert!(m.art.background.is_some(), "fixed backdrop still present");
+    assert!(m.art.background.is_some(), "fixed near-background (island) present");
+    // the island terrain is sloped, so the main floor traces a polyline, not a flat line.
+    let floor = m.main_floor().expect("main floor");
+    let profile = floor.profile.as_ref().expect("curved floor has a traced profile");
+    assert!(profile.len() >= 3, "junglehijinx floor is a polyline, got {} points", profile.len());
+    let ys: Vec<f64> = profile.iter().map(|p| p.1).collect();
+    let span = ys.iter().cloned().fold(f64::MIN, f64::max) - ys.iter().cloned().fold(f64::MAX, f64::min);
+    assert!(span > 20.0, "floor surface actually rises/falls (slope ~{span:.0}px)");
 
     let tmp = std::env::temp_dir().join("peptide-stage-parallax-test");
     let _ = std::fs::remove_dir_all(&tmp);
@@ -102,6 +112,11 @@ fn junglehijinx_has_parallax() {
     assert!(anim_names.contains(&"parallax0"), "emits a parallax0 animation, got {anim_names:?}");
     let stats = std::fs::read_to_string(dir.join("library").join("scripts").join("stage").join(format!("{}StageStats.hx", m.id))).unwrap();
     assert!(stats.contains("animationId: \"parallax0\""), "StageStats declares the camera background");
+    // the Floor line segment carries the multi-point polyline.
+    let max_pts = v["symbols"].as_array().unwrap().iter()
+        .filter(|s| s["type"] == "LINE_SEGMENT")
+        .map(|s| s["points"].as_array().map(|a| a.len()).unwrap_or(0)).max().unwrap_or(0);
+    assert!(max_pts > 4, "the floor line segment is a polyline (> 2 points), got {} coords", max_pts);
 }
 
 /// Emit the FM stage package and assert the `.entity` graph is internally
