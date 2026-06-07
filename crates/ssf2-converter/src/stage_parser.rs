@@ -167,6 +167,24 @@ pub fn parse_stage(path: &Path) -> Result<StageModel> {
     for tag in &swf.tags {
         if let swf::Tag::DefineShape(s) = tag { shape_defs.insert(s.id, s); }
     }
+    // Bitmap registry (id -> (w, h, RGBA)) for shapes whose fill is a bitmap (stage
+    // backgrounds are usually bitmaps, which `vector_raster` can't fill).
+    let mut bitmaps: BTreeMap<u16, (u32, u32, Vec<u8>)> = BTreeMap::new();
+    for tag in &swf.tags {
+        match tag {
+            swf::Tag::DefineBitsLossless(b) => {
+                if let Ok(rgba) = crate::image_extractor::decode_lossless(b) {
+                    bitmaps.insert(b.id, (b.width as u32, b.height as u32, rgba));
+                }
+            }
+            swf::Tag::DefineBitsJpeg3(j) => {
+                if let Ok((w, h, rgba)) = crate::image_extractor::decode_jpeg3(j) {
+                    bitmaps.insert(j.id, (w, h, rgba));
+                }
+            }
+            _ => {}
+        }
+    }
 
     // Collect every placed shape instance (with world AABB) and find the stageMC origin.
     let mut instances: Vec<Instance> = Vec::new();
@@ -219,8 +237,8 @@ pub fn parse_stage(path: &Path) -> Result<StageModel> {
         bail!("no collision geometry found in {} (not a recognised SSF2 stage?)", path.display());
     }
 
-    // --- art: rasterize the stage's vector shapes + composite them into one image.
-    let art = render_art(&instances, &shape_defs, ox, oy);
+    // --- art: rasterize the stage's vector + bitmap shapes, composite them into one image.
+    let art = render_art(&instances, &shape_defs, &bitmaps, ox, oy);
 
     Ok(StageModel { id, platforms, death_box, camera_box, entrances, respawns, art })
 }
@@ -237,8 +255,23 @@ fn is_marker(label: &str) -> bool {
 /// RGBA image spanning their union bounds. Returns `None` if nothing rasterized (e.g. a
 /// bitmap-only stage, which `vector_raster` can't handle). Coordinates are converted to
 /// FM space (raw world minus the stageMC origin).
-fn render_art(instances: &[Instance], shape_defs: &BTreeMap<u16, &swf::Shape>, ox: f64, oy: f64) -> Option<StageArt> {
+fn render_art(
+    instances: &[Instance],
+    shape_defs: &BTreeMap<u16, &swf::Shape>,
+    bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
+    ox: f64, oy: f64,
+) -> Option<StageArt> {
     use image::{imageops, RgbaImage};
+
+    // The bitmap id a shape fills with, if any (stage backgrounds are bitmap-filled
+    // rects that `vector_raster` skips; we blit the bitmap into the shape's AABB).
+    let shape_bitmap = |sid: u16| -> Option<u16> {
+        let shape = shape_defs.get(&sid)?;
+        shape.styles.fill_styles.iter().find_map(|f| match f {
+            swf::FillStyle::Bitmap { id, .. } if bitmaps.contains_key(id) => Some(*id),
+            _ => None,
+        })
+    };
 
     // art instances = placed shapes that aren't markers and have a DefineShape.
     let art: Vec<&Instance> = instances.iter()
@@ -256,17 +289,27 @@ fn render_art(instances: &[Instance], shape_defs: &BTreeMap<u16, &swf::Shape>, o
     let ch = ((max_y - min_y).ceil() as u32).clamp(1, 4096);
     let mut canvas = RgbaImage::new(cw, ch);
 
+    let tw_th = |i: &Instance| (
+        (i.aabb.w.round() as u32).clamp(1, 4096),
+        (i.aabb.h.round() as u32).clamp(1, 4096),
+    );
     let mut drew = false;
     for inst in &art {
-        let shape = shape_defs.get(&inst.shape_id).unwrap();
-        let Some(r) = crate::vector_raster::rasterize_shape(
-            &shape.shape_bounds, &shape.styles.fill_styles, &shape.styles.line_styles, &shape.shape,
-        ) else { continue };
-        if r.width == 0 || r.height == 0 { continue; }
-        // resize the native-resolution raster to the placed AABB size, then overlay it.
-        let tile = RgbaImage::from_raw(r.width, r.height, r.rgba)?;
-        let tw = (inst.aabb.w.round() as u32).clamp(1, 4096);
-        let th = (inst.aabb.h.round() as u32).clamp(1, 4096);
+        // a native-resolution tile for this shape: bitmap fill if it has one, else the
+        // vector rasterization.
+        let tile: Option<RgbaImage> = if let Some(bid) = shape_bitmap(inst.shape_id) {
+            let (w, h, rgba) = bitmaps.get(&bid).unwrap();
+            RgbaImage::from_raw(*w, *h, rgba.clone())
+        } else {
+            let shape = shape_defs.get(&inst.shape_id).unwrap();
+            crate::vector_raster::rasterize_shape(
+                &shape.shape_bounds, &shape.styles.fill_styles, &shape.styles.line_styles, &shape.shape,
+            ).and_then(|r| RgbaImage::from_raw(r.width, r.height, r.rgba))
+        };
+        let Some(tile) = tile else { continue };
+        if tile.width() == 0 || tile.height() == 0 { continue; }
+        // resize the tile to the placed AABB size, then overlay it.
+        let (tw, th) = tw_th(inst);
         let scaled = imageops::resize(&tile, tw, th, imageops::FilterType::Triangle);
         let ox_px = (inst.aabb.left() - min_x).round() as i64;
         let oy_px = (inst.aabb.top() - min_y).round() as i64;
