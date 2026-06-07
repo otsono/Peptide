@@ -1250,7 +1250,7 @@ fn apply_image_fallbacks(result: &mut BTreeMap<String, AnimFrameImages>) {
 }
 
 /// Decode DefineBitsLossless/DefineBitsLossless2 → RGBA pixels
-fn decode_lossless(bmp: &swf::DefineBitsLossless) -> Result<Vec<u8>> {
+pub(crate) fn decode_lossless(bmp: &swf::DefineBitsLossless) -> Result<Vec<u8>> {
     use flate2::read::ZlibDecoder;
     use std::io::Read;
 
@@ -1339,7 +1339,7 @@ fn decode_lossless(bmp: &swf::DefineBitsLossless) -> Result<Vec<u8>> {
 }
 
 /// Decode DefineBitsJpeg3 → (width, height, RGBA pixels)
-fn decode_jpeg3(jpeg: &swf::DefineBitsJpeg3) -> Result<(u32, u32, Vec<u8>)> {
+pub(crate) fn decode_jpeg3(jpeg: &swf::DefineBitsJpeg3) -> Result<(u32, u32, Vec<u8>)> {
     use image::ImageReader;
     use std::io::Cursor;
 
