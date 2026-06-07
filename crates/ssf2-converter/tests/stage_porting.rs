@@ -63,12 +63,40 @@ fn battlefield_parses_to_geometry() {
     // battlefield carries the full SSF2 stage linkage set, so validation is clean.
     assert!(m.warnings.is_empty(), "battlefield should validate clean, got: {:?}", m.warnings);
 
-    // art: the painted backdrop (`battlefield_bg`) and the foreground both rasterize.
-    // The collision masks (TerrainMC / platforms / ledges) are NOT art, so the stage-depth
-    // bucket is empty (this is the fix for the doubled-stage render).
+    // art: the painted backdrop (`background` plane) and the foreground both rasterize.
+    // The collision masks (the `terrain` plane) are NOT art, so the stage-depth bucket is
+    // empty (the fix for the doubled-stage render). Battlefield has no `_cambg` layers, so
+    // its background is fixed (no parallax).
     assert!(m.art.background.is_some(), "painted backdrop rasterizes");
     assert!(m.art.foreground.is_some(), "foreground rasterizes");
     assert!(m.art.stage_frames.is_empty(), "collision masks must not render as stage art");
+    assert!(m.art.parallax.is_none(), "battlefield has no parallax (fixed background)");
+}
+
+/// Junglehijinx is the corpus's parallax stage: its `<id>_bg` carries `_cambg` camera-
+/// background layers (trees, sun, sunrays). They must classify as parallax (not folded into
+/// the fixed backdrop), and the emitter must produce a `parallax0` animation + camera
+/// background. Corpus-gated.
+#[test]
+fn junglehijinx_has_parallax() {
+    let p = common::ssfs_dir().join("stages").join("junglehijinx.ssf");
+    if !common::present(&p) {
+        return;
+    }
+    let m = parse_stage(&p).expect("parse junglehijinx");
+    assert!(m.art.parallax.is_some(), "junglehijinx `_cambg` layers must be parallax");
+    assert!(m.art.background.is_some(), "fixed backdrop still present");
+
+    let tmp = std::env::temp_dir().join("peptide-stage-parallax-test");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let (dir, _) = emit_stage(&m, &tmp).expect("emit");
+    let v: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("library").join("entities").join(format!("{}.entity", m.id))).unwrap()).unwrap();
+    let anim_names: Vec<&str> = v["animations"].as_array().unwrap().iter()
+        .filter_map(|a| a["name"].as_str()).collect();
+    assert!(anim_names.contains(&"parallax0"), "emits a parallax0 animation, got {anim_names:?}");
+    let stats = std::fs::read_to_string(dir.join("library").join("scripts").join("stage").join(format!("{}StageStats.hx", m.id))).unwrap();
+    assert!(stats.contains("animationId: \"parallax0\""), "StageStats declares the camera background");
 }
 
 /// Emit the FM stage package and assert the `.entity` graph is internally

@@ -46,7 +46,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         write_json(&sprites.join(format!("{id}_{suffix}.png.meta")), &json!({
             "export": false, "guid": guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
         }))?;
-        Ok(ArtRef { guid, x: art.x, y: art.y })
+        Ok(ArtRef { guid, x: art.x, y: art.y, w: art.w, h: art.h })
     };
     let stage_fallback;
     let stage_frames: Vec<&StageArt> = if !model.art.stage_frames.is_empty() {
@@ -62,6 +62,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         .collect::<Result<_>>()?;
     let art = ArtRefs {
         background: model.art.background.as_ref().map(|a| write_layer("bg", a)).transpose()?,
+        parallax: model.art.parallax.as_ref().map(|a| write_layer("parallax", a)).transpose()?,
         stage: stage_refs,
         foreground: model.art.foreground.as_ref().map(|a| write_layer("fg", a)).transpose()?,
     };
@@ -81,7 +82,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     let scripts = lib.join("scripts").join("stage");
     std::fs::write(scripts.join(format!("{id}Script.hx")), script_hx(id, art.stage.len() > 1))?;
     write_meta(&scripts.join(format!("{id}Script.hx.meta")), id, &format!("{id}Script"), "", Some("STAGE"), None)?;
-    std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id))?;
+    std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id, art.parallax.as_ref()))?;
     write_meta(&scripts.join(format!("{id}StageStats.hx.meta")), id, &format!("{id}StageStats"), "hscript", None, None)?;
 
     let fraytools = dir.join(format!("{id}.fraytools"));
@@ -106,13 +107,15 @@ struct EntityBuilder<'a> {
     layers: Vec<Value>,
     /// Layer ids of the `stage` animation, in render order (first = back).
     anim_layers: Vec<String>,
+    /// Layer ids of the `parallax0` animation (the SSF2 `_cambg` camera-background layer).
+    parallax_layers: Vec<String>,
     /// Length of the stage animation in frames (static layers hold for this many).
     frame_len: usize,
 }
 
 impl<'a> EntityBuilder<'a> {
     fn new(id: &'a str) -> Self {
-        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], frame_len: 1 }
+        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], parallax_layers: vec![], frame_len: 1 }
     }
     /// A stable per-entity uuid for `role` (e.g. `"layer:Floor"`).
     fn uid(&mut self, role: &str) -> String {
@@ -220,6 +223,12 @@ impl<'a> EntityBuilder<'a> {
         let lid = self.make_image(name, image_asset, x, y);
         self.anim_layers.push(lid);
     }
+    /// Add an IMAGE layer to the `parallax0` animation (the SSF2 `_cambg` camera background,
+    /// camera-scrolled by StageStats, separate from the fixed `stage` animation).
+    fn add_image_parallax(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
+        let lid = self.make_image(name, image_asset, x, y);
+        self.parallax_layers.push(lid);
+    }
     /// Add an animated IMAGE layer to the `stage` animation: one keyframe per frame, each
     /// referencing that frame's image, so the layer plays through them (loops).
     fn add_image_frames(&mut self, name: &str, frames: &[(String, f64, f64)]) {
@@ -262,11 +271,11 @@ impl<'a> EntityBuilder<'a> {
     }
 }
 
-/// A written art layer the entity references: the sprite `.meta` guid + placement.
-struct ArtRef { guid: String, x: f64, y: f64 }
+/// A written art layer the entity references: the sprite `.meta` guid + placement + size.
+struct ArtRef { guid: String, x: f64, y: f64, w: u32, h: u32 }
 
 /// The depth layers the entity lays out. `stage` is the frame sequence (1 = static).
-struct ArtRefs { background: Option<ArtRef>, stage: Vec<ArtRef>, foreground: Option<ArtRef> }
+struct ArtRefs { background: Option<ArtRef>, parallax: Option<ArtRef>, stage: Vec<ArtRef>, foreground: Option<ArtRef> }
 
 /// Render the floor + soft platforms as filled rectangles on a transparent canvas
 /// covering their bounding box (1px = 1 stage unit). Gives the stage visible content
@@ -387,9 +396,17 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
         b.add_point(&format!("Respawn {i}"), "RESPAWN_POINT", i, x, y, rot);
     }
 
-    let animations = vec![json!({
+    // SSF2 `_cambg` parallax -> its own `parallax0` animation (camera-scrolled in StageStats).
+    if let Some(a) = &art.parallax { b.add_image_parallax("Parallax 0", &a.guid, a.x, a.y); }
+
+    let mut animations = vec![json!({
         "$id": b.uid("anim:stage"), "name": "stage", "pluginMetadata": {}, "layers": b.anim_layers
     })];
+    if !b.parallax_layers.is_empty() {
+        animations.push(json!({
+            "$id": b.uid("anim:parallax0"), "name": "parallax0", "pluginMetadata": {}, "layers": b.parallax_layers
+        }));
+    }
 
     json!({
         "version": 14,
@@ -491,10 +508,32 @@ fn write_meta(path: &Path, _stage_id: &str, id: &str, language: &str, object_typ
     write_json(path, &v)
 }
 
-/// StageStats: stage sprite + camera. The SSF2 backdrop is a fixed IMAGE layer in the
-/// `stage` animation (it carries the surface fighters stand on, so it stays aligned with
-/// the collision), so there are no camera-relative parallax backgrounds here.
-fn stage_stats_hx(id: &str) -> String {
+/// StageStats: stage sprite + camera. The fixed SSF2 backdrop lives as an IMAGE layer in the
+/// `stage` animation (it carries the surface fighters stand on, so it moves 1:1 with the
+/// world). A SSF2 `_cambg` parallax layer, when present, is emitted as a camera-relative
+/// background (the `parallax0` animation, panned slower than the camera for depth).
+fn stage_stats_hx(id: &str, parallax: Option<&ArtRef>) -> String {
+    let backgrounds = match parallax {
+        Some(b) => format!(
+            "\n\t\t\t{{\n\
+\t\t\t\tspriteContent: self.getResource().getContent(\"{id}\"),\n\
+\t\t\t\tanimationId: \"parallax0\",\n\
+\t\t\t\tmode: ParallaxMode.BOUNDS,\n\
+\t\t\t\toriginalBGWidth: {w},\n\
+\t\t\t\toriginalBGHeight: {h},\n\
+\t\t\t\thorizontalScroll: false,\n\
+\t\t\t\tverticalScroll: false,\n\
+\t\t\t\tloopWidth: 0,\n\
+\t\t\t\tloopHeight: 0,\n\
+\t\t\t\txPanMultiplier: 0.5,\n\
+\t\t\t\tyPanMultiplier: 0.5,\n\
+\t\t\t\tscaleMultiplier: 1,\n\
+\t\t\t\tforeground: false,\n\
+\t\t\t\tdepth: 2000\n\
+\t\t\t}}\n\t\t",
+            w = b.w, h = b.h),
+        None => String::new(),
+    };
     format!(
         "// Stats for {id} (converted from SSF2)\n\n\
 {{\n\
@@ -512,7 +551,7 @@ fn stage_stats_hx(id: &str) -> String {
 \t\tminZoomHeight: 360,\n\
 \t\tinitialHeight: 360,\n\
 \t\tinitialWidth: 640,\n\
-\t\tbackgrounds: []\n\
+\t\tbackgrounds: [{backgrounds}]\n\
 \t}}\n\
 }}\n"
     )

@@ -102,9 +102,13 @@ pub struct StageModel {
 /// and parallax-scroll the background.
 #[derive(Clone, Debug, Default)]
 pub struct StageArtSet {
-    /// Far backdrop (SSF2 `*_bg` / `background`), drawn behind everything and
-    /// parallax-scrolled by the camera.
+    /// Fixed painted backdrop (SSF2 `<id>_bg` / `background`), drawn behind everything.
+    /// Moves 1:1 with the world (it carries the surface fighters stand on).
     pub background: Option<StageArt>,
+    /// Camera-relative parallax layers (SSF2 `*_cambg` children of the background, what
+    /// `SSF2Stage.getCameraBackgrounds` returns), composited back-to-front. Scrolls slower
+    /// than the stage. `None` for the 109/110 corpus stages with no `_cambg` layers.
+    pub parallax: Option<StageArt>,
     /// The main stage art (terrain / platforms / props) at character depth. More than
     /// one frame when the source has animated clips (the emitter loops them).
     pub stage_frames: Vec<StageArt>,
@@ -116,7 +120,8 @@ impl StageArtSet {
     /// `true` if no layer rasterized (e.g. a stage with only bitmap fills we can't
     /// decode) — the emitter then falls back to a geometry placeholder.
     pub fn is_empty(&self) -> bool {
-        self.background.is_none() && self.stage_frames.is_empty() && self.foreground.is_none()
+        self.background.is_none() && self.parallax.is_none()
+            && self.stage_frames.is_empty() && self.foreground.is_none()
     }
 }
 
@@ -148,8 +153,15 @@ struct Instance {
     /// PlaceObject instance name (e.g. `deathBoundary`), if any.
     inst_name: Option<String>,
     /// SWF SymbolClass name of the nearest named sprite ancestor (e.g.
-    /// `battlefield_fla.battlefield_TerrainMC_5`).
+    /// `battlefield_fla.battlefield_TerrainMC_5`). Fla-prefixed + auto-numbered, so it's a
+    /// weak cross-stage signal; prefer [`Instance::plane`] for art and linkage suffixes for
+    /// markers.
     sym_name: String,
+    /// The stage-root plane this instance descends from, by INSTANCE name (the stable AS3
+    /// slot: `terrain` / `background` / `foreground` / `shadowMask` / `reflectionMask`), or
+    /// an extra root instance (`*_cambg` parallax, `stance`, decorations). The robust art
+    /// classifier (instance names generalize across stages; symbol names do not).
+    plane: Option<String>,
     /// World AABB in raw SSF2 coords.
     aabb: Rect,
     /// World center (raw SSF2 coords).
@@ -227,6 +239,8 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         }
     }
 
+    // PEPTIDE_STAGE_DEBUG dumps the SymbolClass linkage table; PEPTIDE_STAGE_TREE (in `walk`)
+    // dumps the placement tree with each instance's resolved plane. Both gated, for stage RE.
     if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
         eprintln!("=== SymbolClass linkage table ({} entries) for {} ===", sym_names.len(), id);
         for (cid, n) in &sym_names { eprintln!("  id={cid} linkage={n:?}"); }
@@ -235,7 +249,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // Collect every placed shape instance (with world AABB) and find the stageMC origin.
     let mut instances: Vec<Instance> = Vec::new();
     let mut origin: Option<(f64, f64)> = None;
-    walk(&swf.tags, Mat::id(), &sym_names, &shape_bounds, &sprites, 0, None, &mut instances, &mut origin);
+    walk(&swf.tags, Mat::id(), &sym_names, &shape_bounds, &sprites, 0, None, None, &mut instances, &mut origin);
 
     let (ox, oy) = origin.unwrap_or((275.0, 200.0)); // SWF stage center fallback
     let to_fm = |r: &Rect| Rect { x: r.x - ox, y: r.y - oy, w: r.w, h: r.h };
@@ -335,21 +349,51 @@ fn validate_ssf2_linkages(sym_names: &BTreeMap<u16, String>, model_id: &str) -> 
 
 /// Depth layer an art instance belongs to (back-to-front).
 #[derive(Clone, Copy, PartialEq)]
-enum ArtKind { Background, Stage, Foreground }
+enum ArtKind { Parallax, Background, Stage, Foreground }
 
-/// Classify a *visual* art instance by its SSF2 linkage name: `foreground`/`*_fg` draws in
-/// front of fighters; `*_bg`/`background`/`*BGAnimations*` is the painted backdrop behind
-/// everything; anything else visual (decorative props) sits at stage depth. Collision and
-/// scaffolding never reach here (filtered by [`is_non_art`]).
+/// Classify a *visual* art instance by its stage PLANE — the instance name of the stage-root
+/// child it descends from (the stable AS3 slot: `terrain`/`background`/`foreground`/mask, or
+/// an extra root instance). Instance names generalize across stages; fla-prefixed symbol
+/// names do not. `*_cambg` = a camera-background parallax layer (SSF2
+/// `SSF2Stage.getCameraBackgrounds`); `foreground`/`*_fg` = in front of fighters;
+/// `background` = the fixed backdrop; decorations (clouds, lensflare, …) sit at stage depth.
+/// Collision (`terrain`) and masks never reach here (filtered by [`is_non_art_plane`]).
 fn art_kind(inst: &Instance) -> ArtKind {
-    let label = format!("{} {}", inst.inst_name.as_deref().unwrap_or(""), inst.sym_name).to_ascii_lowercase();
-    if label.contains("foreground") || label.contains("_fg") {
+    let plane = inst.plane.as_deref().unwrap_or("").to_ascii_lowercase();
+    if plane.contains("cambg") {
+        ArtKind::Parallax
+    } else if plane == "foreground" || plane.contains("_fg") {
         ArtKind::Foreground
-    } else if label.contains("background") || label.contains("_bg") || label.contains("bganimation") {
+    } else if plane == "background" {
         ArtKind::Background
     } else {
         ArtKind::Stage
     }
+}
+
+/// Planes that are not visual art: collision (`terrain`), the shadow/reflection masks, and
+/// spawn-pose beacons (`stance`). The plane is already normalized by [`plane_tag`].
+fn is_non_art_plane(plane: Option<&str>) -> bool {
+    matches!(plane, Some("terrain") | Some("mask") | Some("stance"))
+}
+
+/// The normalized stage plane an instance establishes for its subtree, from its INSTANCE
+/// name (the AS3 slot vocabulary + the `_cambg` parallax / `_fg` foreground conventions),
+/// or `None` to inherit the parent's plane. The one symbol-name exception: the document-
+/// root backdrop container carries no instance name but the explicit linkage `<id>_bg`, so
+/// an unnamed `*_bg` instance tags `background`. Instance/linkage signals generalize across
+/// stages; fla-prefixed timeline symbol names do not.
+fn plane_tag(inst_name: Option<&str>, sym: &str) -> Option<&'static str> {
+    let n = inst_name.unwrap_or("");
+    let nl = n.to_ascii_lowercase();
+    if nl.contains("cambg") { Some("cambg") }
+    else if nl == "foreground" || nl.contains("_fg") { Some("foreground") }
+    else if nl == "background" { Some("background") }
+    else if nl == "terrain" { Some("terrain") }
+    else if nl.contains("mask") { Some("mask") }
+    else if nl == "stance" { Some("stance") }
+    else if n.is_empty() && sym.to_ascii_lowercase().ends_with("_bg") { Some("background") }
+    else { None }
 }
 
 // ── SSF2 stage linkage vocabulary ──
@@ -428,6 +472,7 @@ fn build_frames(tags: &[swf::Tag]) -> Vec<Vec<PlacedChild>> {
 #[allow(clippy::too_many_arguments)]
 fn walk_frame(
     children: &[PlacedChild], parent: Mat, global_frame: usize, carried_sym: Option<&str>,
+    plane: Option<&str>,
     sym_names: &BTreeMap<u16, String>, shape_defs: &BTreeMap<u16, &swf::Shape>,
     sprite_frames: &BTreeMap<u16, Vec<Vec<PlacedChild>>>, out: &mut Vec<Instance>, rec: usize,
 ) {
@@ -435,6 +480,9 @@ fn walk_frame(
     for (id, local, name) in children {
         let world = parent.mul(local);
         let sym = sym_names.get(id).cloned().unwrap_or_default();
+        // an instance establishes a plane for its subtree by instance name (or the `_bg`
+        // linkage for the unnamed root backdrop); otherwise it inherits the parent's plane.
+        let my_plane = plane_tag(name.as_deref(), &sym).or(plane);
         if let Some(s) = shape_defs.get(id) {
             let b = &s.shape_bounds;
             let (x0, y0, x1, y1) = (b.x_min.get() as f64/20.0, b.y_min.get() as f64/20.0, b.x_max.get() as f64/20.0, b.y_max.get() as f64/20.0);
@@ -445,6 +493,7 @@ fn walk_frame(
             let ymx = cs.iter().map(|c| c.1).fold(f64::MIN, f64::max);
             out.push(Instance {
                 shape_id: *id, inst_name: name.clone(), sym_name: carried_sym.unwrap_or("").to_string(),
+                plane: my_plane.map(str::to_string),
                 aabb: Rect { x: xmn, y: ymn, w: xmx - xmn, h: ymx - ymn },
                 cx: world.tx, cy: world.ty, x_sign: world.x_sign(),
             });
@@ -452,7 +501,7 @@ fn walk_frame(
         if let Some(frames) = sprite_frames.get(id) {
             let next = name.as_deref().or(if sym.is_empty() { carried_sym } else { Some(&sym) }).map(|s| s.to_string());
             let f = &frames[global_frame % frames.len()];
-            walk_frame(f, world, global_frame, next.as_deref(), sym_names, shape_defs, sprite_frames, out, rec + 1);
+            walk_frame(f, world, global_frame, next.as_deref(), my_plane, sym_names, shape_defs, sprite_frames, out, rec + 1);
         }
     }
 }
@@ -486,8 +535,11 @@ fn render_art_layers(
     let frame_instances = |g: usize| -> Vec<Instance> {
         let root = &root_frames[g % root_frames.len()];
         let mut out = Vec::new();
-        walk_frame(root, Mat::id(), g, None, sym_names, shape_defs, &sprite_frames, &mut out, 0);
+        walk_frame(root, Mat::id(), g, None, None, sym_names, shape_defs, &sprite_frames, &mut out, 0);
+        // exclude non-art PLANES (terrain/masks/spawns, by instance name) and any stray
+        // collision/scaffolding markers (by linkage suffix) that slipped into an art plane.
         out.retain(|i| shape_defs.contains_key(&i.shape_id)
+            && !is_non_art_plane(i.plane.as_deref())
             && !is_non_art(i.inst_name.as_deref().unwrap_or("")) && !is_non_art(&i.sym_name));
         out
     };
@@ -513,13 +565,16 @@ fn render_art_layers(
     if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
         eprintln!("=== art instances (richest frame {base_idx}, {} insts) ===", base_insts.len());
         for i in base_insts {
-            let k = match art_kind(i) { ArtKind::Background => "BG", ArtKind::Stage => "STAGE", ArtKind::Foreground => "FG" };
-            eprintln!("  [{k:5}] sym={:?} inst={:?} aabb=({:.0},{:.0} {:.0}x{:.0})",
-                i.sym_name, i.inst_name, i.aabb.x, i.aabb.y, i.aabb.w, i.aabb.h);
+            let k = match art_kind(i) { ArtKind::Parallax => "PARLX", ArtKind::Background => "BG", ArtKind::Stage => "STAGE", ArtKind::Foreground => "FG" };
+            eprintln!("  [{k:5}] plane={:?} sym={:?} aabb=({:.0},{:.0} {:.0}x{:.0})",
+                i.plane, i.sym_name, i.aabb.x, i.aabb.y, i.aabb.w, i.aabb.h);
         }
     }
     let background = composite(base_insts, ArtKind::Background);
     let foreground = composite(base_insts, ArtKind::Foreground);
+    // parallax: the `_cambg` layers composited back-to-front into one camera-relative plane
+    // (SSF2 scrolls them via getCameraBackgrounds; the emitter maps it to an FM camera bg).
+    let parallax = composite(base_insts, ArtKind::Parallax);
 
     // Emit a multi-frame stage animation only when the samples form a CLEAN animation:
     // every frame well-populated (no blinking on/off) and at least two distinct images.
@@ -535,7 +590,7 @@ fn render_art_layers(
         sampled[base_idx].1.clone().into_iter().collect()
     };
 
-    StageArtSet { background, stage_frames, foreground }
+    StageArtSet { background, parallax, stage_frames, foreground }
 }
 
 /// Composite a set of art instances (back-to-front = walk order) into one RGBA image
@@ -649,7 +704,7 @@ fn walk<'a>(
     sym_names: &BTreeMap<u16, String>,
     shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
     sprites: &BTreeMap<u16, &'a Vec<swf::Tag>>,
-    rec: usize, carried_sym: Option<&str>,
+    rec: usize, carried_sym: Option<&str>, plane: Option<&str>,
     out: &mut Vec<Instance>, origin: &mut Option<(f64, f64)>,
 ) {
     if rec > 8 { return; }
@@ -666,6 +721,13 @@ fn walk<'a>(
         let world = parent.mul(&local);
         let inst_name = po.name.as_ref().map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
         let sym = sym_names.get(&id).cloned().unwrap_or_default();
+        let my_plane = plane_tag(inst_name.as_deref(), &sym).or(plane);
+
+        if std::env::var("PEPTIDE_STAGE_TREE").is_ok() {
+            let kind = if sprites.contains_key(&id) { "MC" } else if shape_bounds.contains_key(&id) { "shape" } else { "?" };
+            eprintln!("{}d{} {kind} inst={:?} sym={:?} plane={:?} @({:.0},{:.0})",
+                "  ".repeat(rec), po.depth, inst_name.as_deref().unwrap_or(""), sym, my_plane.unwrap_or(""), world.tx, world.ty);
+        }
 
         // record the stage origin from the root stageMC instance
         if origin.is_none()
@@ -684,6 +746,7 @@ fn walk<'a>(
                 shape_id: id,
                 inst_name: inst_name.clone(),
                 sym_name: carried_sym.unwrap_or("").to_string(),
+                plane: my_plane.map(str::to_string),
                 aabb: Rect { x: xmn, y: ymn, w: xmx - xmn, h: ymx - ymn },
                 cx: world.tx, cy: world.ty,
                 x_sign: world.x_sign(),
@@ -694,7 +757,7 @@ fn walk<'a>(
             // else inherit the parent's carried symbol.
             let next = inst_name.as_deref().or(if sym.is_empty() { carried_sym } else { Some(&sym) });
             let next = next.map(|s| s.to_string());
-            walk(child, world, sym_names, shape_bounds, sprites, rec + 1, next.as_deref(), out, origin);
+            walk(child, world, sym_names, shape_bounds, sprites, rec + 1, next.as_deref(), my_plane, out, origin);
         }
     }
 }

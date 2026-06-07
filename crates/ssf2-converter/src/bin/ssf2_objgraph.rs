@@ -18,11 +18,16 @@ use ssf2_converter::abc_codec::{self, Abc, Multiname, TraitKindData};
 
 fn load(path: &str) -> Abc {
     let data = std::fs::read(path).expect("read swf");
-    let buf = swf::decompress_swf(&data[..]).expect("decompress");
+    // SSF2 ships stages/chars as DAT-wrapped archives; unwrap to the inner SWF first
+    // (raw swf::decompress_swf fails on the DAT container), then decompress the SWF.
+    let inner = ssf2_converter::ssf::decompress(&data).expect("ssf decompress");
+    let buf = swf::decompress_swf(&inner[..]).expect("decompress");
     let parsed = swf::parse_swf(&buf).expect("parse swf");
-    let abc_bytes = parsed.tags.iter().find_map(|t| {
+    // a SWF can carry several DoAbc2 tags (per-frame ABC); merge by taking the largest
+    // (the engine/stage class table is the bulk one). Fall back to the first.
+    let abc_bytes = parsed.tags.iter().filter_map(|t| {
         if let swf::Tag::DoAbc2(a) = t { Some(a.data.to_vec()) } else { None }
-    }).expect("DoAbc2");
+    }).max_by_key(|b| b.len()).expect("DoAbc2");
     abc_codec::parse(&abc_bytes).expect("parse abc")
 }
 

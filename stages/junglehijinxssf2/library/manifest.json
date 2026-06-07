@@ -1,0 +1,28 @@
+{
+  "content": [
+    {
+      "description": "junglehijinxssf2 — converted from Super Smash Flash 2",
+      "id": "junglehijinxssf2",
+      "metadata": {
+        "ui": {
+          "entityId": "junglehijinxssf2",
+          "render": {
+            "animation": "stage"
+          }
+        }
+      },
+      "music": [
+        {
+          "contentId": "bgm_welkinwonderland",
+          "namespace": "public",
+          "resourceId": "bgm_welkinwonderland"
+        }
+      ],
+      "name": "junglehijinxssf2",
+      "objectStatsId": "junglehijinxssf2StageStats",
+      "scriptId": "junglehijinxssf2Script",
+      "type": "stage"
+    }
+  ],
+  "resourceId": "junglehijinxssf2"
+}
