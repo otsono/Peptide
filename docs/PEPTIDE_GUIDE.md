@@ -80,6 +80,24 @@ mode differs by engine, and that is deliberate (each applies the subset it has):
 - **SSF2**: every match is a versus match (SSF2 has no separate training match mode), so `--versus`
   is parsed but a **no-op** there, and idle extra players are simply human slots that get no input.
 
+### engine parity
+
+one command vocabulary, two engines, through the same `DebugTarget` seam. SSF2 reaches its live
+match over AVM2 reflection plus a per-frame input applicator injected into the engine's controller
+read, so the same lines drive both:
+
+| command | fraymakers | ssf2 |
+|---|---|---|
+| `spawn` / `eval` / `load` / `console` | yes | yes |
+| `hold` / `release` / `seq` / `scenario` | yes | yes (input applicator) |
+| `addCharacter` | yes (live deferred-spawn) | no, FM-only: SSF2 builds every player at match start, no standalone mid-match add path. use `spawn a,b,c,d` |
+| `tune` | yes (live `updateHitboxStats`) | no, FM-only: SSF2 attacks are move-name + per-frame data with no addressable live hitbox index |
+
+`hold`/`seq` control masks are translated to SSF2's control-bit layout host-side; `scenario`'s
+setup lowers `setX`/`setY`/`setXVelocity`/`toState(CState.STAND)` to SSF2 field writes and
+`setState`. the two FM-only rows report their gap explicitly when called on SSF2 (same way
+`char_icon` declares no stock-icon pipeline) rather than silently doing nothing.
+
 everything else is hscript. the engine already exposes the entire Fraymakers script API
 (`CState`, `HitboxStats`, `Assist`, `MatchModifier`, `Announcer`, …) plus live character
 access, so you write the script directly:
