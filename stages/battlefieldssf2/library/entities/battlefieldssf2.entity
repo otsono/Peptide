@@ -73,10 +73,10 @@
       "type": "CONTAINER"
     },
     {
-      "$id": "f6878dc2-ed5f-5368-b7fe-9093142f524a",
+      "$id": "509635c3-87db-5d3f-8558-1b7a3ef5dc42",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "b3608d8c-a5bd-5117-9e64-ec64ad34cf89",
+      "symbol": "ee0e1a15-bc58-5c59-a19d-24aeb73829a4",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "IMAGE"
@@ -342,7 +342,7 @@
       "$id": "b7b4ead8-65d0-57ff-99e8-d8cb3f4556e7",
       "hidden": false,
       "keyframes": [
-        "f6878dc2-ed5f-5368-b7fe-9093142f524a"
+        "509635c3-87db-5d3f-8558-1b7a3ef5dc42"
       ],
       "locked": false,
       "name": "Stage Art",
@@ -732,9 +732,9 @@
   ],
   "symbols": [
     {
-      "$id": "b3608d8c-a5bd-5117-9e64-ec64ad34cf89",
+      "$id": "ee0e1a15-bc58-5c59-a19d-24aeb73829a4",
       "alpha": 1,
-      "imageAsset": "7c8ff558-363e-59de-9f81-54114a9ad57f",
+      "imageAsset": "bd6a6254-48d8-5b69-a89d-004a5593ed76",
       "pivotX": 0,
       "pivotY": 0,
       "pluginMetadata": {},

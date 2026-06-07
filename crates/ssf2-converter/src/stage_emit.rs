@@ -49,14 +49,20 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         Ok(ArtRef { guid, x: art.x, y: art.y, w: art.w, h: art.h })
     };
     let stage_fallback;
-    let stage_art = match &model.art.stage {
-        Some(a) => Some(a),
-        None if model.art.is_empty() => { stage_fallback = render_placeholder(model); Some(&stage_fallback) }
-        None => None,
+    let stage_frames: Vec<&StageArt> = if !model.art.stage_frames.is_empty() {
+        model.art.stage_frames.iter().collect()
+    } else if model.art.is_empty() {
+        stage_fallback = render_placeholder(model);
+        vec![&stage_fallback]
+    } else {
+        vec![]
     };
+    let stage_refs: Vec<ArtRef> = stage_frames.iter().enumerate()
+        .map(|(i, a)| write_layer(&format!("stage{i}"), a))
+        .collect::<Result<_>>()?;
     let art = ArtRefs {
         background: model.art.background.as_ref().map(|a| write_layer("bg", a)).transpose()?,
-        stage: stage_art.map(|a| write_layer("stage", a)).transpose()?,
+        stage: stage_refs,
         foreground: model.art.foreground.as_ref().map(|a| write_layer("fg", a)).transpose()?,
     };
 
@@ -67,7 +73,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     write_meta(&lib.join("manifest.json.meta"), id, "manifest", "json", None, None)?;
 
     let scripts = lib.join("scripts").join("stage");
-    std::fs::write(scripts.join(format!("{id}Script.hx")), script_hx(id))?;
+    std::fs::write(scripts.join(format!("{id}Script.hx")), script_hx(id, art.stage.len() > 1))?;
     write_meta(&scripts.join(format!("{id}Script.hx.meta")), id, &format!("{id}Script"), "", Some("STAGE"), None)?;
     std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id, art.background.as_ref()))?;
     write_meta(&scripts.join(format!("{id}StageStats.hx.meta")), id, &format!("{id}StageStats"), "hscript", None, None)?;
@@ -96,11 +102,13 @@ struct EntityBuilder<'a> {
     anim_layers: Vec<String>,
     /// Layer ids of the `parallax0` animation (the parallax background).
     parallax_layers: Vec<String>,
+    /// Length of the stage animation in frames (static layers hold for this many).
+    frame_len: usize,
 }
 
 impl<'a> EntityBuilder<'a> {
     fn new(id: &'a str) -> Self {
-        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], parallax_layers: vec![] }
+        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], parallax_layers: vec![], frame_len: 1 }
     }
     /// A stable per-entity uuid for `role` (e.g. `"layer:Floor"`).
     fn uid(&mut self, role: &str) -> String {
@@ -111,7 +119,7 @@ impl<'a> EntityBuilder<'a> {
     /// A CONTAINER layer (Characters / effects depth groups). No symbol.
     fn add_container(&mut self, name: &str, container_type: &str) {
         let kf = self.uid(&format!("kf:{name}"));
-        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "type": "CONTAINER" }));
+        self.keyframes.push(json!({ "$id": kf, "length": self.frame_len, "pluginMetadata": {}, "type": "CONTAINER" }));
         let lid = self.uid(&format!("layer:{name}"));
         self.layers.push(json!({
             "$id": lid, "hidden": false, "locked": false, "name": name, "type": "CONTAINER",
@@ -130,7 +138,7 @@ impl<'a> EntityBuilder<'a> {
             "pivotX": rect.w / 2.0, "pivotY": 0, "rotation": 0
         }));
         let kf = self.uid(&format!("kf:{name}"));
-        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "COLLISION_BOX" }));
+        self.keyframes.push(json!({ "$id": kf, "length": self.frame_len, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "COLLISION_BOX" }));
         let lid = self.uid(&format!("layer:{name}"));
         self.layers.push(json!({
             "$id": lid, "hidden": false, "locked": false, "name": name, "type": "COLLISION_BOX",
@@ -150,7 +158,7 @@ impl<'a> EntityBuilder<'a> {
             "pivotX": rect.w / 2.0, "pivotY": 0, "rotation": 0
         }));
         let kf = self.uid(&format!("kf:{name}"));
-        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "COLLISION_BOX" }));
+        self.keyframes.push(json!({ "$id": kf, "length": self.frame_len, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "COLLISION_BOX" }));
         let lid = self.uid(&format!("layer:{name}"));
         self.layers.push(json!({
             "$id": lid, "hidden": false, "locked": false, "name": name, "type": "COLLISION_BOX",
@@ -170,7 +178,7 @@ impl<'a> EntityBuilder<'a> {
             "pluginMetadata": { "com.fraymakers.FraymakersMetadata": pm }
         }));
         let kf = self.uid(&format!("kf:{name}"));
-        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "LINE_SEGMENT" }));
+        self.keyframes.push(json!({ "$id": kf, "length": self.frame_len, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "LINE_SEGMENT" }));
         let lid = self.uid(&format!("layer:{name}"));
         self.layers.push(json!({
             "$id": lid, "hidden": false, "locked": false, "name": name, "type": "LINE_SEGMENT",
@@ -195,7 +203,7 @@ impl<'a> EntityBuilder<'a> {
             "pluginMetadata": {}
         }));
         let kf = self.uid(&format!("kf:{name}"));
-        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE" }));
+        self.keyframes.push(json!({ "$id": kf, "length": self.frame_len, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE" }));
         let lid = self.uid(&format!("layer:{name}"));
         self.layers.push(json!({
             "$id": lid, "hidden": false, "locked": false, "name": name, "type": "IMAGE",
@@ -213,6 +221,28 @@ impl<'a> EntityBuilder<'a> {
         let lid = self.make_image(name, image_asset, x, y);
         self.parallax_layers.push(lid);
     }
+    /// Add an animated IMAGE layer to the `stage` animation: one keyframe per frame, each
+    /// referencing that frame's image, so the layer plays through them (loops).
+    fn add_image_frames(&mut self, name: &str, frames: &[(String, f64, f64)]) {
+        let mut kfs = Vec::new();
+        for (i, (guid, x, y)) in frames.iter().enumerate() {
+            let sym = self.uid(&format!("sym:{name}:{i}"));
+            self.symbols.push(json!({
+                "$id": sym, "type": "IMAGE", "imageAsset": guid, "alpha": 1,
+                "x": x, "y": y, "scaleX": 1, "scaleY": 1, "rotation": 0, "pivotX": 0, "pivotY": 0,
+                "pluginMetadata": {}
+            }));
+            let kf = self.uid(&format!("kf:{name}:{i}"));
+            self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE" }));
+            kfs.push(kf);
+        }
+        let lid = self.uid(&format!("layer:{name}"));
+        self.layers.push(json!({
+            "$id": lid, "hidden": false, "locked": false, "name": name, "type": "IMAGE",
+            "keyframes": kfs, "pluginMetadata": {}
+        }));
+        self.anim_layers.push(lid);
+    }
 
     /// A POINT layer (entrance / respawn). `point_type` = ENTRANCE_POINT|RESPAWN_POINT.
     fn add_point(&mut self, name: &str, point_type: &str, index: usize, x: f64, y: f64, rotation: i64) {
@@ -222,7 +252,7 @@ impl<'a> EntityBuilder<'a> {
             "x": x, "y": y, "rotation": rotation
         }));
         let kf = self.uid(&format!("kf:{name}"));
-        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "POINT" }));
+        self.keyframes.push(json!({ "$id": kf, "length": self.frame_len, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "POINT" }));
         let lid = self.uid(&format!("layer:{name}"));
         self.layers.push(json!({
             "$id": lid, "hidden": false, "locked": false, "name": name, "type": "POINT",
@@ -236,8 +266,8 @@ impl<'a> EntityBuilder<'a> {
 /// A written art layer the entity references: the sprite `.meta` guid + placement.
 struct ArtRef { guid: String, x: f64, y: f64, w: u32, h: u32 }
 
-/// The three depth layers the entity lays out (any may be absent).
-struct ArtRefs { background: Option<ArtRef>, stage: Option<ArtRef>, foreground: Option<ArtRef> }
+/// The depth layers the entity lays out. `stage` is the frame sequence (1 = static).
+struct ArtRefs { background: Option<ArtRef>, stage: Vec<ArtRef>, foreground: Option<ArtRef> }
 
 /// Render the floor + soft platforms as filled rectangles on a transparent canvas
 /// covering their bounding box (1px = 1 stage unit). Gives the stage visible content
@@ -280,6 +310,9 @@ fn render_placeholder(model: &StageModel) -> StageArt {
 fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     let id = &model.id;
     let mut b = EntityBuilder::new(id);
+    // the stage animation runs for as many frames as the stage art has (1 = static);
+    // static layers hold across all of them.
+    b.frame_len = art.stage.len().max(1);
 
     // ── render order (first = back): background depth containers, the stage art (behind
     // fighters), the character containers, the foreground art (in front of fighters),
@@ -289,7 +322,10 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     b.add_container("Background Effects", "BACKGROUND_EFFECTS_CONTAINER");
     b.add_container("Background Shadows", "BACKGROUND_SHADOWS_CONTAINER");
     b.add_container("Background Structures", "BACKGROUND_STRUCTURES_CONTAINER");
-    if let Some(a) = &art.stage { b.add_image("Stage Art", &a.guid, a.x, a.y); }
+    if !art.stage.is_empty() {
+        let frames: Vec<(String, f64, f64)> = art.stage.iter().map(|a| (a.guid.clone(), a.x, a.y)).collect();
+        b.add_image_frames("Stage Art", &frames);
+    }
     b.add_container("Characters Back", "CHARACTERS_BACK_CONTAINER");
     b.add_container("Characters", "CHARACTERS_CONTAINER");
     b.add_container("Characters Front", "CHARACTERS_FRONT_CONTAINER");
@@ -485,12 +521,15 @@ fn stage_stats_hx(id: &str, bg: Option<&ArtRef>) -> String {
     )
 }
 
-/// Minimal stage Script.hx — pause the (single-frame) timeline; no hazards/scroll.
-fn script_hx(id: &str) -> String {
+/// Stage Script.hx — pause a static stage on frame 1; let an animated stage's timeline
+/// play (the SSF2 animated clips loop). The parallax background is camera-scrolled by
+/// StageStats, so no manual scroll is needed.
+fn script_hx(id: &str, animated: bool) -> String {
+    let init = if animated { "\t// animated stage clips play + loop on the timeline" } else { "\tself.pause();" };
     format!(
-        "// API Script for {id} (converted from SSF2; geometry-only MVP)\n\n\
+        "// API Script for {id} (converted from SSF2)\n\n\
 function initialize() {{\n\
-\tself.pause();\n\
+{init}\n\
 }}\n\
 function update() {{}}\n\
 function onTeardown() {{}}\n\

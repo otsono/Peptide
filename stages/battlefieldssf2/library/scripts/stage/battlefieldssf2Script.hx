@@ -1,4 +1,4 @@
-// API Script for battlefieldssf2 (converted from SSF2; geometry-only MVP)
+// API Script for battlefieldssf2 (converted from SSF2)
 
 function initialize() {
 	self.pause();
