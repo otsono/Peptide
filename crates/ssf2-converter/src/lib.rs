@@ -49,6 +49,6 @@ pub use classify::{classify_ssf, AssetKind, SsfClassification};
 
 // SSF2 stage geometry parser + Fraymakers stage emitter (the stage-porting pipeline).
 pub mod stage_parser;
-pub use stage_parser::{parse_stage, parse_stage_opts, Platform, Rect, SpawnPoint, StageArt, StageModel};
+pub use stage_parser::{parse_stage, parse_stage_opts, Platform, Rect, SpawnPoint, StageArt, StageArtSet, StageModel};
 pub mod stage_emit;
 pub use stage_emit::emit_stage;

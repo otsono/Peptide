@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-use crate::stage_parser::{Rect, StageModel};
+use crate::stage_parser::{Rect, StageArt, StageModel};
 use crate::uuid_gen::det_uuid;
 
 /// Emit the FM stage package for `model` under `out_root/<id>/`. Returns the
@@ -33,23 +33,34 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     std::fs::create_dir_all(lib.join("entities")).context("mkdir entities")?;
     std::fs::create_dir_all(lib.join("scripts").join("stage")).context("mkdir scripts/stage")?;
 
-    // Stage sprite — a stage needs visible content to be playable (the engine sizes the
-    // stage + places players from the sprite bounds). Prefer the real SSF2 art (the stage's
-    // vector shapes composited by the parser); fall back to a placeholder (the collision
-    // geometry as filled rects) for bitmap-only stages where nothing rasterized.
+    // Stage art — split into depth layers: a parallax background, the main stage at
+    // character depth, and a foreground in front of fighters. A stage needs visible
+    // content to be playable (the engine sizes the stage + places players from the sprite
+    // bounds), so if nothing rasterized we fall back to a geometry placeholder as the
+    // stage layer. Each layer is a PNG + `.meta`; the `.png` is gitignored (regenerated).
     let sprites = lib.join("sprites").join("Stage");
     std::fs::create_dir_all(&sprites).context("mkdir sprites/Stage")?;
-    let (png, art_x, art_y) = match &model.art {
-        Some(a) => (a.png.clone(), a.x, a.y),
-        None => { let p = render_placeholder(model); (p.png, p.x, p.y) }
+    let write_layer = |suffix: &str, art: &StageArt| -> Result<ArtRef> {
+        let guid = det_uuid(&format!("stage::{id}::{suffix}"));
+        std::fs::write(sprites.join(format!("{id}_{suffix}.png")), &art.png)?;
+        write_json(&sprites.join(format!("{id}_{suffix}.png.meta")), &json!({
+            "export": false, "guid": guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
+        }))?;
+        Ok(ArtRef { guid, x: art.x, y: art.y, w: art.w, h: art.h })
     };
-    let img_guid = det_uuid(&format!("stage::{id}::sprite"));
-    std::fs::write(sprites.join(format!("{id}_stage.png")), &png)?;
-    write_json(&sprites.join(format!("{id}_stage.png.meta")), &json!({
-        "export": false, "guid": img_guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
-    }))?;
+    let stage_fallback;
+    let stage_art = match &model.art.stage {
+        Some(a) => Some(a),
+        None if model.art.is_empty() => { stage_fallback = render_placeholder(model); Some(&stage_fallback) }
+        None => None,
+    };
+    let art = ArtRefs {
+        background: model.art.background.as_ref().map(|a| write_layer("bg", a)).transpose()?,
+        stage: stage_art.map(|a| write_layer("stage", a)).transpose()?,
+        foreground: model.art.foreground.as_ref().map(|a| write_layer("fg", a)).transpose()?,
+    };
 
-    let entity = build_entity(model, &img_guid, art_x, art_y);
+    let entity = build_entity(model, &art);
     write_json(&lib.join("entities").join(format!("{id}.entity")), &entity)?;
 
     write_json(&lib.join("manifest.json"), &build_manifest(id))?;
@@ -58,7 +69,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     let scripts = lib.join("scripts").join("stage");
     std::fs::write(scripts.join(format!("{id}Script.hx")), script_hx(id))?;
     write_meta(&scripts.join(format!("{id}Script.hx.meta")), id, &format!("{id}Script"), "", Some("STAGE"), None)?;
-    std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id))?;
+    std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id, art.background.as_ref()))?;
     write_meta(&scripts.join(format!("{id}StageStats.hx.meta")), id, &format!("{id}StageStats"), "hscript", None, None)?;
 
     let fraytools = dir.join(format!("{id}.fraytools"));
@@ -81,12 +92,15 @@ struct EntityBuilder<'a> {
     symbols: Vec<Value>,
     keyframes: Vec<Value>,
     layers: Vec<Value>,
+    /// Layer ids of the `stage` animation, in render order (first = back).
     anim_layers: Vec<String>,
+    /// Layer ids of the `parallax0` animation (the parallax background).
+    parallax_layers: Vec<String>,
 }
 
 impl<'a> EntityBuilder<'a> {
     fn new(id: &'a str) -> Self {
-        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![] }
+        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], parallax_layers: vec![] }
     }
     /// A stable per-entity uuid for `role` (e.g. `"layer:Floor"`).
     fn uid(&mut self, role: &str) -> String {
@@ -126,6 +140,26 @@ impl<'a> EntityBuilder<'a> {
         self.anim_layers.push(lid);
     }
 
+    /// A CAMERA_ANCHOR_BOX layer (a region the camera keeps framed). Same box shape as
+    /// a COLLISION_BOX; the layer's `collisionBoxType` + `index` mark it as an anchor.
+    fn add_camera_anchor_box(&mut self, name: &str, index: usize, rect: &Rect) {
+        let sym = self.uid(&format!("sym:{name}"));
+        self.symbols.push(json!({
+            "$id": sym, "type": "COLLISION_BOX", "alpha": null, "color": null, "pluginMetadata": {},
+            "x": rect.left(), "y": rect.top(), "scaleX": rect.w, "scaleY": rect.h,
+            "pivotX": rect.w / 2.0, "pivotY": 0, "rotation": 0
+        }));
+        let kf = self.uid(&format!("kf:{name}"));
+        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "COLLISION_BOX" }));
+        let lid = self.uid(&format!("layer:{name}"));
+        self.layers.push(json!({
+            "$id": lid, "hidden": false, "locked": false, "name": name, "type": "COLLISION_BOX",
+            "defaultAlpha": 0.5, "defaultColor": "0xd1d1d1", "keyframes": [kf],
+            "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "collisionBoxType": "CAMERA_ANCHOR_BOX", "index": index } }
+        }));
+        self.anim_layers.push(lid);
+    }
+
     /// A LINE_SEGMENT layer (walkable surface). `pm` is the per-symbol
     /// FraymakersMetadata (structureType + ledge/dropThrough flags).
     fn add_line_segment(&mut self, name: &str, points: [f64; 4], pm: Value) {
@@ -151,7 +185,9 @@ impl<'a> EntityBuilder<'a> {
     /// the stage sprite from its image bounds during match setup, and a stage with no
     /// IMAGE never places a player (verified live). So even the geometry MVP emits a
     /// placeholder sprite.
-    fn add_image(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
+    /// Create an IMAGE layer (in the entity pools) and return its layer id. The caller
+    /// pushes the id into whichever animation it belongs to (stage vs parallax).
+    fn make_image(&mut self, name: &str, image_asset: &str, x: f64, y: f64) -> String {
         let sym = self.uid(&format!("sym:{name}"));
         self.symbols.push(json!({
             "$id": sym, "type": "IMAGE", "imageAsset": image_asset, "alpha": 1,
@@ -165,7 +201,17 @@ impl<'a> EntityBuilder<'a> {
             "$id": lid, "hidden": false, "locked": false, "name": name, "type": "IMAGE",
             "keyframes": [kf], "pluginMetadata": {}
         }));
+        lid
+    }
+    /// Add an IMAGE layer to the `stage` animation at the current depth.
+    fn add_image(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
+        let lid = self.make_image(name, image_asset, x, y);
         self.anim_layers.push(lid);
+    }
+    /// Add an IMAGE layer to the `parallax0` animation (the parallax background).
+    fn add_image_parallax(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
+        let lid = self.make_image(name, image_asset, x, y);
+        self.parallax_layers.push(lid);
     }
 
     /// A POINT layer (entrance / respawn). `point_type` = ENTRANCE_POINT|RESPAWN_POINT.
@@ -187,13 +233,16 @@ impl<'a> EntityBuilder<'a> {
     }
 }
 
-/// The placeholder PNG plus the stage-space position of its top-left corner.
-struct Placeholder { png: Vec<u8>, x: f64, y: f64 }
+/// A written art layer the entity references: the sprite `.meta` guid + placement.
+struct ArtRef { guid: String, x: f64, y: f64, w: u32, h: u32 }
+
+/// The three depth layers the entity lays out (any may be absent).
+struct ArtRefs { background: Option<ArtRef>, stage: Option<ArtRef>, foreground: Option<ArtRef> }
 
 /// Render the floor + soft platforms as filled rectangles on a transparent canvas
 /// covering their bounding box (1px = 1 stage unit). Gives the stage visible content
 /// (required for play) and shows the playable geometry.
-fn render_placeholder(model: &StageModel) -> Placeholder {
+fn render_placeholder(model: &StageModel) -> StageArt {
     use image::{Rgba, RgbaImage};
     // bounding box of all collision geometry, with a small margin.
     let rects: Vec<Rect> = model.platforms.iter().map(|p| p.rect).collect();
@@ -225,55 +274,60 @@ fn render_placeholder(model: &StageModel) -> Placeholder {
             .write_image(img.as_raw(), w, h, image::ExtendedColorType::Rgba8)
             .expect("encode placeholder png");
     }
-    Placeholder { png, x: min_x, y: min_y }
+    StageArt { png, x: min_x, y: min_y, w, h }
 }
 
-fn build_entity(model: &StageModel, img_guid: &str, img_x: f64, img_y: f64) -> Value {
+fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     let id = &model.id;
     let mut b = EntityBuilder::new(id);
-    // visible content (required for the stage to place players) — see add_image.
-    b.add_image("Stage Art", img_guid, img_x, img_y);
 
-    // depth containers — the engine slots fighters / effects / structures / shadows into
-    // these by container type during match setup. The full set must be present (matching a
-    // shipped stage): the engine looks them up by type when placing a player, so a missing
-    // CHARACTERS_BACK/FRONT (etc.) container leaves the spawned player nowhere to attach and
-    // it silently never enters the match.
+    // ── render order (first = back): background depth containers, the stage art (behind
+    // fighters), the character containers, the foreground art (in front of fighters),
+    // the foreground containers, then the invisible collision / spawns. The parallax
+    // background lives in its own `parallax0` animation (camera-scrolled). ──
     b.add_container("Background Behind", "BACKGROUND_BEHIND_CONTAINER");
     b.add_container("Background Effects", "BACKGROUND_EFFECTS_CONTAINER");
     b.add_container("Background Shadows", "BACKGROUND_SHADOWS_CONTAINER");
     b.add_container("Background Structures", "BACKGROUND_STRUCTURES_CONTAINER");
+    if let Some(a) = &art.stage { b.add_image("Stage Art", &a.guid, a.x, a.y); }
     b.add_container("Characters Back", "CHARACTERS_BACK_CONTAINER");
     b.add_container("Characters", "CHARACTERS_CONTAINER");
     b.add_container("Characters Front", "CHARACTERS_FRONT_CONTAINER");
+    if let Some(a) = &art.foreground { b.add_image("Foreground Art", &a.guid, a.x, a.y); }
     b.add_container("Foreground Structures", "FOREGROUND_STRUCTURES_CONTAINER");
     b.add_container("Foreground Shadows", "FOREGROUND_SHADOWS_CONTAINER");
     b.add_container("Foreground Effects", "FOREGROUND_EFFECTS_CONTAINER");
     b.add_container("Foreground Front", "FOREGROUND_FRONT_CONTAINER");
 
-    // boundaries
+    // boundaries: blast zone + hard camera bounds, plus a camera anchor spanning the
+    // camera box so the camera frames the play area.
     if let Some(r) = &model.death_box { b.add_collision_box("Death Box", "DEATH_BOX", r); }
-    if let Some(r) = &model.camera_box { b.add_collision_box("Camera Box", "CAMERA_BOX", r); }
+    if let Some(r) = &model.camera_box {
+        b.add_collision_box("Camera Box", "CAMERA_BOX", r);
+        b.add_camera_anchor_box("Camera Anchor Box 0", 0, r);
+    }
 
-    // collision: main floor (solid, with ledges) + soft platforms (drop-through)
+    // collision: main floor (solid, with ledges at the SSF2 ledge positions) + soft
+    // platforms (drop-through). Ledges grab at the floor's left/right endpoints.
     let main_floor = model.main_floor().cloned();
     let mut plat_n = 0usize;
     for p in &model.platforms {
         let r = &p.rect;
-        let points = [r.left(), r.top(), r.right(), r.top()];
+        let (lx, rx) = model.ledges
+            .filter(|_| main_floor.as_ref().map(|m| m.rect == *r).unwrap_or(false))
+            .unwrap_or((r.left(), r.right()));
         if !p.drop_through && main_floor.as_ref().map(|m| m.rect == *r).unwrap_or(false) {
-            b.add_line_segment("Floor", points, json!({
+            b.add_line_segment("Floor", [lx, r.top(), rx, r.top()], json!({
                 "structureType": "FLOOR", "leftLedge": true, "rightLedge": true, "dropThrough": false
             }));
         } else if p.drop_through {
             plat_n += 1;
-            b.add_line_segment(&format!("Platform {plat_n} Floor"), points, json!({
+            b.add_line_segment(&format!("Platform {plat_n} Floor"), [r.left(), r.top(), r.right(), r.top()], json!({
                 "structureType": "FLOOR", "leftLedge": false, "rightLedge": false, "dropThrough": true
             }));
         } else {
-            // a secondary solid surface (rare) — emit as a plain floor
             plat_n += 1;
-            b.add_line_segment(&format!("Solid {plat_n} Floor"), points, json!({
+            b.add_line_segment(&format!("Solid {plat_n} Floor"), [r.left(), r.top(), r.right(), r.top()], json!({
                 "structureType": "FLOOR", "leftLedge": false, "rightLedge": false, "dropThrough": false
             }));
         }
@@ -296,9 +350,17 @@ fn build_entity(model: &StageModel, img_guid: &str, img_x: f64, img_y: f64) -> V
         b.add_point(&format!("Respawn {i}"), "RESPAWN_POINT", i, x, y, rot);
     }
 
-    let anim = json!({
+    // parallax background -> its own `parallax0` animation (camera-scrolled in StageStats).
+    if let Some(a) = &art.background { b.add_image_parallax("Background", &a.guid, a.x, a.y); }
+
+    let mut animations = vec![json!({
         "$id": b.uid("anim:stage"), "name": "stage", "pluginMetadata": {}, "layers": b.anim_layers
-    });
+    })];
+    if !b.parallax_layers.is_empty() {
+        animations.push(json!({
+            "$id": b.uid("anim:parallax0"), "name": "parallax0", "pluginMetadata": {}, "layers": b.parallax_layers
+        }));
+    }
 
     json!({
         "version": 14,
@@ -310,7 +372,7 @@ fn build_entity(model: &StageModel, img_guid: &str, img_x: f64, img_y: f64) -> V
         "symbols": b.symbols,
         "keyframes": b.keyframes,
         "layers": b.layers,
-        "animations": [anim],
+        "animations": animations,
         "tags": [],
         "terrains": [],
         "tilesets": [],
@@ -376,10 +438,32 @@ fn write_meta(path: &Path, _stage_id: &str, id: &str, language: &str, object_typ
     write_json(path, &v)
 }
 
-/// Geometry-only StageStats: stage sprite + camera defaults, no shadows/backgrounds.
-fn stage_stats_hx(id: &str) -> String {
+/// StageStats: stage sprite + camera, plus the parallax background (the SSF2 backdrop
+/// rendered as the `parallax0` animation and camera-scrolled at < 1 pan for depth).
+fn stage_stats_hx(id: &str, bg: Option<&ArtRef>) -> String {
+    let backgrounds = match bg {
+        Some(b) => format!(
+            "\n\t\t\t{{\n\
+\t\t\t\tspriteContent: self.getResource().getContent(\"{id}\"),\n\
+\t\t\t\tanimationId: \"parallax0\",\n\
+\t\t\t\tmode: ParallaxMode.BOUNDS,\n\
+\t\t\t\toriginalBGWidth: {w},\n\
+\t\t\t\toriginalBGHeight: {h},\n\
+\t\t\t\thorizontalScroll: false,\n\
+\t\t\t\tverticalScroll: false,\n\
+\t\t\t\tloopWidth: 0,\n\
+\t\t\t\tloopHeight: 0,\n\
+\t\t\t\txPanMultiplier: 0.4,\n\
+\t\t\t\tyPanMultiplier: 0.4,\n\
+\t\t\t\tscaleMultiplier: 1,\n\
+\t\t\t\tforeground: false,\n\
+\t\t\t\tdepth: 2000\n\
+\t\t\t}}\n\t\t",
+            w = b.w, h = b.h),
+        None => String::new(),
+    };
     format!(
-        "// Stats for {id} (converted from SSF2; geometry-only MVP)\n\n\
+        "// Stats for {id} (converted from SSF2)\n\n\
 {{\n\
 \tspriteContent: self.getResource().getContent(\"{id}\"),\n\
 \tanimationId: \"stage\",\n\
@@ -395,7 +479,7 @@ fn stage_stats_hx(id: &str) -> String {
 \t\tminZoomHeight: 360,\n\
 \t\tinitialHeight: 360,\n\
 \t\tinitialWidth: 640,\n\
-\t\tbackgrounds: []\n\
+\t\tbackgrounds: [{backgrounds}]\n\
 \t}}\n\
 }}\n"
     )
