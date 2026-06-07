@@ -11,9 +11,11 @@
 //!     scripts/stage/<id>StageStats.hx (+ .meta)
 //! ```
 //! The `.entity` is the normalized FrayTools graph (symbols + keyframes + layers +
-//! one `stage` animation) reversed from the public `Fraymakers/stage-template`. MVP
-//! is geometry-only: COLLISION_BOX death/camera boxes, LINE_SEGMENT floor + soft
-//! platforms, ENTRANCE/RESPAWN points. Art (IMAGE layers + parallax) is deferred.
+//! one `stage` animation) reversed from the public `Fraymakers/stage-template`:
+//! COLLISION_BOX death/camera boxes, LINE_SEGMENT floor + soft platforms,
+//! ENTRANCE/RESPAWN points, and an IMAGE layer carrying the stage sprite (the SSF2
+//! vector art rasterized + composited by the parser, or a geometry placeholder for
+//! bitmap-only stages). Parallax backgrounds + hazards are follow-ups.
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
