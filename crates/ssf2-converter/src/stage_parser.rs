@@ -128,8 +128,15 @@ struct Instance {
     x_sign: f64,
 }
 
-/// Parse the SSF2 stage at `path` into a [`StageModel`] (read-only).
+/// Parse the SSF2 stage at `path` into a [`StageModel`], rendering its art (read-only).
 pub fn parse_stage(path: &Path) -> Result<StageModel> {
+    parse_stage_opts(path, true)
+}
+
+/// Parse the SSF2 stage at `path`. `render_art` toggles the (relatively expensive)
+/// art rasterization: the converter needs it, but a geometry-only pass (e.g. the
+/// coverage test, or `--info`) skips decoding + compositing every shape/bitmap.
+pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel> {
     let raw = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
     let swf_data = ssf_decompress(&raw, path)?;
     let buf = swf::decompress_swf(&swf_data[..]).context("decompress SWF")?;
@@ -168,21 +175,24 @@ pub fn parse_stage(path: &Path) -> Result<StageModel> {
         if let swf::Tag::DefineShape(s) = tag { shape_defs.insert(s.id, s); }
     }
     // Bitmap registry (id -> (w, h, RGBA)) for shapes whose fill is a bitmap (stage
-    // backgrounds are usually bitmaps, which `vector_raster` can't fill).
+    // backgrounds are usually bitmaps, which `vector_raster` can't fill). Only decoded
+    // when rendering art (decoding every stage's bitmaps is the slow part).
     let mut bitmaps: BTreeMap<u16, (u32, u32, Vec<u8>)> = BTreeMap::new();
-    for tag in &swf.tags {
-        match tag {
-            swf::Tag::DefineBitsLossless(b) => {
-                if let Ok(rgba) = crate::image_extractor::decode_lossless(b) {
-                    bitmaps.insert(b.id, (b.width as u32, b.height as u32, rgba));
+    if render_art_flag {
+        for tag in &swf.tags {
+            match tag {
+                swf::Tag::DefineBitsLossless(b) => {
+                    if let Ok(rgba) = crate::image_extractor::decode_lossless(b) {
+                        bitmaps.insert(b.id, (b.width as u32, b.height as u32, rgba));
+                    }
                 }
-            }
-            swf::Tag::DefineBitsJpeg3(j) => {
-                if let Ok((w, h, rgba)) = crate::image_extractor::decode_jpeg3(j) {
-                    bitmaps.insert(j.id, (w, h, rgba));
+                swf::Tag::DefineBitsJpeg3(j) => {
+                    if let Ok((w, h, rgba)) = crate::image_extractor::decode_jpeg3(j) {
+                        bitmaps.insert(j.id, (w, h, rgba));
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -238,7 +248,7 @@ pub fn parse_stage(path: &Path) -> Result<StageModel> {
     }
 
     // --- art: rasterize the stage's vector + bitmap shapes, composite them into one image.
-    let art = render_art(&instances, &shape_defs, &bitmaps, ox, oy);
+    let art = if render_art_flag { render_art(&instances, &shape_defs, &bitmaps, ox, oy) } else { None };
 
     Ok(StageModel { id, platforms, death_box, camera_box, entrances, respawns, art })
 }

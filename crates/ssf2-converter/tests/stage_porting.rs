@@ -4,7 +4,7 @@
 
 mod common;
 
-use ssf2_converter::{emit_stage, parse_stage};
+use ssf2_converter::{emit_stage, parse_stage, parse_stage_opts};
 
 /// Every stage in the corpus must parse (covers the terrain-naming variety across
 /// SSF2 stages, not just battlefield). Corpus-gated.
@@ -22,7 +22,7 @@ fn all_corpus_stages_parse() {
             continue;
         }
         total += 1;
-        if let Err(e) = parse_stage(&p) {
+        if let Err(e) = parse_stage_opts(&p, false) {
             failed.push(format!("{}: {e}", p.file_name().unwrap().to_string_lossy()));
         }
     }
