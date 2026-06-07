@@ -117,6 +117,7 @@ const CONVERT_PREFIX: &str = "@@convert:start:";   // @@convert:start:<json>
 const PUBLISH_PREFIX: &str = "@@publish:add:";      // @@publish:add:<json {char, output}>
 const PROJECTS_LIST: &str = "@@projects:list";      // enumerate .fraytools projects (launch modal)
 const FRAY_PREFIX: &str = "@@fray:";                // @@fray:export|render|harness:<json>
+const STAGE_OPEN: &str = "@@stage:open";           // pick a stage .fraytools + recreate it for the parallax preview
 
 pub fn launch() -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
@@ -223,6 +224,34 @@ pub fn launch() -> std::io::Result<()> {
                 eprintln!("[gui-trace] AUTOBOOT -> {msg}");
                 let _ = px.send_event(Ev::Js(format!(
                     "window.ipc && window.ipc.postMessage({})", js_str(&msg))));
+            });
+        }
+    }
+    //   PEPTIDE_STAGE_PREVIEW=<.fraytools>  open that stage in the parallax preview on launch
+    //                                       (skips the file picker; handy for testing).
+    if let Ok(p) = std::env::var("PEPTIDE_STAGE_PREVIEW") {
+        if !p.trim().is_empty() {
+            let (px, path) = (event_loop.create_proxy(), std::path::PathBuf::from(p.trim()));
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(3500));
+                let _ = px.send_event(Ev::Js("window.showScreen && showScreen('stage')".into()));
+                match stage_preview_json(&path) {
+                    Ok(json) => { let _ = px.send_event(Ev::Js(format!("window.onStagePreview && onStagePreview({json})"))); }
+                    Err(e) => eprintln!("[gui-trace] stage-preview load failed: {e}"),
+                }
+                // test hook: force the virtual mouse to (x,y) in 0..1 so a screenshot shows a
+                // specific camera pan (otherwise the preview tracks the real mouse).
+                if let Ok(m) = std::env::var("PEPTIDE_STAGE_PREVIEW_MOUSE") {
+                    thread::sleep(Duration::from_millis(400));
+                    let mut it = m.split(',');
+                    let x: f64 = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0.5);
+                    let y: f64 = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0.5);
+                    let _ = px.send_event(Ev::Js(format!("window.stageSetMouse && stageSetMouse({x},{y})")));
+                }
+                if std::env::var("PEPTIDE_STAGE_PREVIEW_TARGETS").is_ok() {
+                    thread::sleep(Duration::from_millis(450));
+                    let _ = px.send_event(Ev::Js("window.stageDemoTargets && stageDemoTargets()".into()));
+                }
             });
         }
     }
@@ -479,8 +508,119 @@ fn handle_screen_verb(verb: &str, proxy: &EventLoopProxy<Ev>) {
         // export:<json> | render:<json> | harness:<json>
         let (rest, px) = (rest.to_string(), proxy.clone());
         thread::spawn(move || run_fraytools(&rest, &px));
+    } else if verb == STAGE_OPEN {
+        let px = proxy.clone();
+        thread::spawn(move || open_stage_preview(&px));
     }
     // Unknown @@verbs are ignored (forward-compat with the page).
+}
+
+/// Pick a stage `.fraytools` and recreate its layers (art + per-layer parallax rate) for the
+/// in-GUI parallax preview. Reads the emitted package back (entity + StageStats + sprite PNGs),
+/// sends the layer list to the page as `onStagePreview(json)`.
+fn open_stage_preview(proxy: &EventLoopProxy<Ev>) {
+    let mut d = rfd::FileDialog::new().add_filter("FrayTools stage", &["fraytools"]);
+    if let Some(start) = resolved_project_dir() { d = d.set_directory(start); }
+    let Some(path) = d.pick_file() else { return };
+    match stage_preview_json(&path) {
+        Ok(json) => { let _ = proxy.send_event(Ev::Js(format!("window.onStagePreview && onStagePreview({json})"))); }
+        Err(e) => { let _ = proxy.send_event(Ev::Js(format!(
+            "window.onStagePreviewError && onStagePreviewError({})", js_str(&e.to_string())))); }
+    }
+}
+
+/// Reconstruct a stage's preview layers from its emitted FrayTools package: each IMAGE layer's
+/// placement (x/y/scale) from the `.entity`, its sprite as a base64 data URL (matched by the
+/// `imageAsset` guid), and its parallax rate (`xPanMultiplier` from the StageStats camera
+/// backgrounds; fixed stage layers get rate 1). Returns the JSON the page renders.
+fn stage_preview_json(fraytools: &std::path::Path) -> Result<String, String> {
+    use std::collections::HashMap;
+    let err = |m: String| m;
+    let dir = fraytools.parent().ok_or_else(|| "stage path has no parent".to_string())?;
+    let lib = dir.join("library");
+    // the single .entity under library/entities/
+    let ent_dir = lib.join("entities");
+    let entity_path = std::fs::read_dir(&ent_dir).map_err(|e| err(format!("read {}: {e}", ent_dir.display())))?
+        .filter_map(|e| e.ok()).map(|e| e.path())
+        .find(|p| p.extension().and_then(|x| x.to_str()) == Some("entity"))
+        .ok_or_else(|| "no .entity in the project's library/entities".to_string())?;
+    let id = entity_path.file_stem().and_then(|s| s.to_str()).unwrap_or("stage").to_string();
+    let entity: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&entity_path).map_err(|e| err(e.to_string()))?
+    ).map_err(|e| err(format!("parse entity: {e}")))?;
+
+    // guid -> data URL, from the sprite .meta (guid) + sibling .png.
+    let sprites = lib.join("sprites").join("Stage");
+    let mut guid_url: HashMap<String, String> = HashMap::new();
+    if let Ok(rd) = std::fs::read_dir(&sprites) {
+        for e in rd.filter_map(|e| e.ok()) {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("meta") { continue; }
+            let Ok(meta) = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&p).unwrap_or_default()) else { continue };
+            let Some(guid) = meta["guid"].as_str() else { continue };
+            let png = p.with_extension(""); // strip ".meta" -> "<name>.png"
+            if let Ok(bytes) = std::fs::read(&png) {
+                guid_url.insert(guid.to_string(), format!("data:image/png;base64,{}", base64_encode(&bytes)));
+            }
+        }
+    }
+
+    // parallax rates: scan the StageStats for each `animationId: "parallaxN" … xPanMultiplier: v`.
+    let stats = std::fs::read_to_string(lib.join("scripts").join("stage").join(format!("{id}StageStats.hx"))).unwrap_or_default();
+    let rates = parse_parallax_rates(&stats);
+
+    // index the entity pools.
+    let arr = |v: &serde_json::Value, k: &str| v[k].as_array().cloned().unwrap_or_default();
+    let id_of = |v: &serde_json::Value| v["$id"].as_str().unwrap_or("").to_string();
+    let layers_by_id: HashMap<String, serde_json::Value> = arr(&entity, "layers").into_iter().map(|l| (id_of(&l), l)).collect();
+    let kf_sym: HashMap<String, String> = arr(&entity, "keyframes").into_iter()
+        .map(|k| (id_of(&k), k["symbol"].as_str().unwrap_or("").to_string())).collect();
+    let sym_by_id: HashMap<String, serde_json::Value> = arr(&entity, "symbols").into_iter().map(|s| (id_of(&s), s)).collect();
+
+    // collect IMAGE layers, parallax animations first (drawn farthest-back), then the stage
+    // animation (the fixed backdrop / stage art / foreground, in order).
+    let anims = arr(&entity, "animations");
+    let ordered: Vec<&serde_json::Value> = anims.iter().filter(|a| a["name"].as_str().unwrap_or("").starts_with("parallax"))
+        .chain(anims.iter().filter(|a| a["name"].as_str() == Some("stage"))).collect();
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for a in ordered {
+        let aname = a["name"].as_str().unwrap_or("");
+        let parallax = aname.starts_with("parallax");
+        let rate = if parallax { rates.get(aname).copied().unwrap_or(0.5) } else { 1.0 };
+        for lid in a["layers"].as_array().cloned().unwrap_or_default() {
+            let Some(layer) = layers_by_id.get(lid.as_str().unwrap_or("")) else { continue };
+            if layer["type"].as_str() != Some("IMAGE") { continue; }
+            let Some(kf) = layer["keyframes"].as_array().and_then(|k| k.first()).and_then(|k| k.as_str()) else { continue };
+            let Some(sym) = kf_sym.get(kf).and_then(|s| sym_by_id.get(s)) else { continue };
+            let Some(url) = sym["imageAsset"].as_str().and_then(|g| guid_url.get(g)) else { continue };
+            out.push(serde_json::json!({
+                "name": layer["name"], "url": url,
+                "x": sym["x"], "y": sym["y"], "scale": sym["scaleX"],
+                "rate": rate, "parallax": parallax,
+            }));
+        }
+    }
+    Ok(serde_json::json!({ "id": id, "layers": out }).to_string())
+}
+
+/// Map each `parallaxN` camera background to its `xPanMultiplier`, scanned from the StageStats.
+fn parse_parallax_rates(stats: &str) -> std::collections::HashMap<String, f64> {
+    let mut out = std::collections::HashMap::new();
+    let mut cur: Option<String> = None;
+    for line in stats.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("animationId:") {
+            let name = rest.trim().trim_matches([' ', '"', ',']).to_string();
+            cur = name.starts_with("parallax").then_some(name);
+        } else if let Some(rest) = t.strip_prefix("xPanMultiplier:") {
+            if let Some(a) = &cur {
+                if let Ok(v) = rest.trim().trim_end_matches(',').trim().parse::<f64>() {
+                    out.insert(a.clone(), v);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Minimal JSON-string-field extractor for the small, flat objects the page
