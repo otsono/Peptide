@@ -37,6 +37,7 @@ pub mod fraytools_transform;
 pub mod vector_raster;
 pub mod physics_sim;
 pub mod abc_codec;
+pub mod engine_probe;
 pub mod abc_inject;
 
 // In-process conversion entry point (was the `ssf2_converter` binary's main()).
