@@ -31,20 +31,23 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     std::fs::create_dir_all(lib.join("entities")).context("mkdir entities")?;
     std::fs::create_dir_all(lib.join("scripts").join("stage")).context("mkdir scripts/stage")?;
 
-    // Placeholder sprite — a stage needs visible content to be playable (the engine sizes
-    // the stage + places players from the sprite bounds). Draw the collision geometry as
-    // filled rects so the stage both renders and shows where to stand. Real art is a
-    // follow-up; this is the minimum that makes the converted stage playable.
+    // Stage sprite — a stage needs visible content to be playable (the engine sizes the
+    // stage + places players from the sprite bounds). Prefer the real SSF2 art (the stage's
+    // vector shapes composited by the parser); fall back to a placeholder (the collision
+    // geometry as filled rects) for bitmap-only stages where nothing rasterized.
     let sprites = lib.join("sprites").join("Stage");
     std::fs::create_dir_all(&sprites).context("mkdir sprites/Stage")?;
-    let placeholder = render_placeholder(model);
-    let img_guid = det_uuid(&format!("stage::{id}::placeholder"));
-    std::fs::write(sprites.join(format!("{id}_stage.png")), &placeholder.png)?;
+    let (png, art_x, art_y) = match &model.art {
+        Some(a) => (a.png.clone(), a.x, a.y),
+        None => { let p = render_placeholder(model); (p.png, p.x, p.y) }
+    };
+    let img_guid = det_uuid(&format!("stage::{id}::sprite"));
+    std::fs::write(sprites.join(format!("{id}_stage.png")), &png)?;
     write_json(&sprites.join(format!("{id}_stage.png.meta")), &json!({
         "export": false, "guid": img_guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
     }))?;
 
-    let entity = build_entity(model, &img_guid, placeholder.x, placeholder.y);
+    let entity = build_entity(model, &img_guid, art_x, art_y);
     write_json(&lib.join("entities").join(format!("{id}.entity")), &entity)?;
 
     write_json(&lib.join("manifest.json"), &build_manifest(id))?;
