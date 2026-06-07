@@ -282,6 +282,8 @@
   .crumb button{font:inherit;font-size:13px;color:var(--muted);background:none;border:none;
     cursor:pointer;padding:4px 8px;border-radius:7px;}
   .crumb button:hover{background:var(--chip);color:var(--ink);}
+  .crumb .seg{border:1px solid #2a2f3a;padding:3px 10px;}
+  .crumb .seg.seg-on{background:var(--accent,#7dd3fc);color:#0b0d12;border-color:transparent;}
 
   /* home — three big buttons */
   .home-grid{display:flex;flex-direction:column;gap:14px;margin-top:8px;}
@@ -402,8 +404,12 @@
       <button onclick="ipcSend('@@stage:open')">Open Stage…</button>
       <button onclick="stageAddTarget()">+ Camera Target</button>
       <button onclick="stageClearTargets()">Clear Targets</button>
+      <span style="margin-left:6px;opacity:.6;font-size:12px;">engine:</span>
+      <button id="stage-eng-ssf2" class="seg seg-on" onclick="stageSetEngine('ssf2')">SSF2</button>
+      <button id="stage-eng-fm" class="seg" onclick="stageSetEngine('fraymakers')">Fraymakers</button>
       <span id="stage-status" style="opacity:.7;font-size:13px;"></span>
     </div>
+    <div id="stage-params" style="position:absolute;right:14px;top:60px;max-width:430px;background:rgba(11,13,18,.82);border:1px solid #2a2f3a;border-radius:8px;padding:9px 12px;font:12px/1.5 ui-monospace,Menlo,monospace;color:#cdd3df;pointer-events:none;white-space:pre-wrap;"></div>
     <canvas id="stage-canvas" style="display:block;width:100%;height:calc(100vh - 52px);background:#0b0d12;cursor:crosshair;"></canvas>
   </section>
 
@@ -711,7 +717,42 @@
   // shifts by `camera * rate` (rate 1 = fixed stage art, rate < 1 = parallax
   // background). Camera targets are draggable circles the camera frames.
   const STAGE = { layers:[], targets:[], mouse:{x:0.5,y:0.5}, drag:-1, loaded:false,
-                  center:{x:0,y:0}, span:{x:600,y:400}, raf:0 };
+                  center:{x:0,y:0}, span:{x:600,y:400}, raf:0, engine:"ssf2", params:null };
+  // Switch which engine drives the parallax. The per-layer rate is pulled from that engine's
+  // executable at runtime (onEngineParams), not from the converter's ported output.
+  function stageSetEngine(e){
+    STAGE.engine=e;
+    $("stage-eng-ssf2").classList.toggle("seg-on", e==="ssf2");
+    $("stage-eng-fm").classList.toggle("seg-on", e==="fraymakers");
+    STAGE.params=null; ipcSend("@@stage:engine:"+e);
+  }
+  window.onEngineParams = function(p){
+    STAGE.params = p;
+    if(p && p.error){ stageParamsPanel("engine "+(p.engine||"")+": "+p.error+"\n(set the path in Setup)"); return; }
+    stageParamsPanel(stageParamsText(p));
+  };
+  function clamp01h(v){ return Math.max(0, Math.min(0.5, v)); }
+  // Per-layer pan rate, computed LIVE from the active engine's view size (no ported constants).
+  function layerRate(l){
+    if(!l.parallax) return {x:1,y:1};
+    const p=STAGE.params;
+    if(!p || !p.view_w) return {x:(l.rate==null?0.5:l.rate), y:(l.rate==null?0.5:l.rate)};
+    // SSF2's Vcam auto-derives this from the layer size vs the engine view; Fraymakers has no
+    // auto-pan but inherits the same value (the converter wrote it via this formula), so both
+    // engines yield the same rate — the switch confirms the conversion is 1:1.
+    const d=p.divisor||2, w=l.w||1, h=l.h||1;
+    return { x:clamp01h((w-p.view_w)/(d*w)), y:clamp01h((h-p.view_h)/(d*h)) };
+  }
+  function stageParamsText(p){
+    if(!p) return "";
+    let s = "engine: "+(p.label||p.engine)+"\nsource: "+(p.source||"")+"\nview: "+p.view_w+"x"+p.view_h+"   rate = "+(p.formula||"");
+    if(STAGE.loaded){
+      const rows = STAGE.layers.filter(l=>l.parallax && l.w).map(l=>"  "+l.name.padEnd(14)+" "+layerRate(l).x.toFixed(3));
+      if(rows.length) s += "\n"+rows.join("\n");
+    }
+    return s;
+  }
+  function stageParamsPanel(t){ const e=$("stage-params"); if(e) e.textContent=t||""; }
   function stageStatus(t){ const e=$("stage-status"); if(e) e.textContent=t; }
   window.onStagePreviewError = function(msg){ stageStatus("error: "+msg); };
   window.onStagePreview = function(data){
@@ -728,8 +769,8 @@
     });
   };
   function stageReady(data){
-    // fit view to the fixed (rate==1) layers' bounding box, else all layers.
-    const fixed = STAGE.layers.filter(l=>l.rate>=1 && l.w);
+    // fit view to the fixed (non-parallax) layers' bounding box, else all layers.
+    const fixed = STAGE.layers.filter(l=>!l.parallax && l.w);
     const set = (fixed.length?fixed:STAGE.layers).filter(l=>l.w);
     let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
     set.forEach(l=>{ minx=Math.min(minx,l.x); miny=Math.min(miny,l.y); maxx=Math.max(maxx,l.x+l.w*l.scale); maxy=Math.max(maxy,l.y+l.h*l.scale); });
@@ -738,6 +779,7 @@
     STAGE.span = { x:Math.max(200,(maxx-minx)/2), y:Math.max(150,(maxy-miny)/2) };
     STAGE.loaded = true;
     stageStatus(data.id+" — "+STAGE.layers.length+" layers · move the mouse to parallax · drag the circles");
+    stageSetEngine(STAGE.engine); // pull the active engine's parallax params from its executable
     stageStartLoop();
   }
   function stageCanvas(){ return $("stage-canvas"); }
@@ -766,8 +808,9 @@
     // layers are pre-ordered back-to-front (parallax first, then the stage art).
     STAGE.layers.forEach(l=>{
       if(!l.w) return;
-      const sx = (l.x - cam.x*l.rate)*z + cx;
-      const sy = (l.y - cam.y*l.rate)*z + cy;
+      const r = layerRate(l);               // live from the active engine's params
+      const sx = (l.x - cam.x*r.x)*z + cx;
+      const sy = (l.y - cam.y*r.y)*z + cy;
       g.drawImage(l.img, sx, sy, l.w*l.scale*z, l.h*l.scale*z);
     });
     // camera-frame guide (the 640x360 FM view at this zoom) + the targets.

@@ -118,6 +118,7 @@ const PUBLISH_PREFIX: &str = "@@publish:add:";      // @@publish:add:<json {char
 const PROJECTS_LIST: &str = "@@projects:list";      // enumerate .fraytools projects (launch modal)
 const FRAY_PREFIX: &str = "@@fray:";                // @@fray:export|render|harness:<json>
 const STAGE_OPEN: &str = "@@stage:open";           // pick a stage .fraytools + recreate it for the parallax preview
+const STAGE_ENGINE_PREFIX: &str = "@@stage:engine:"; // @@stage:engine:<ssf2|fraymakers> — pull that engine's parallax params live
 
 pub fn launch() -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
@@ -251,6 +252,10 @@ pub fn launch() -> std::io::Result<()> {
                 if std::env::var("PEPTIDE_STAGE_PREVIEW_TARGETS").is_ok() {
                     thread::sleep(Duration::from_millis(450));
                     let _ = px.send_event(Ev::Js("window.stageDemoTargets && stageDemoTargets()".into()));
+                }
+                if let Ok(e) = std::env::var("PEPTIDE_STAGE_PREVIEW_ENGINE") {
+                    thread::sleep(Duration::from_millis(500));
+                    let _ = px.send_event(Ev::Js(format!("window.stageSetEngine && stageSetEngine({})", js_str(e.trim()))));
                 }
             });
         }
@@ -511,6 +516,16 @@ fn handle_screen_verb(verb: &str, proxy: &EventLoopProxy<Ev>) {
     } else if verb == STAGE_OPEN {
         let px = proxy.clone();
         thread::spawn(move || open_stage_preview(&px));
+    } else if let Some(engine) = verb.strip_prefix(STAGE_ENGINE_PREFIX) {
+        let (engine, px) = (engine.to_string(), proxy.clone());
+        thread::spawn(move || {
+            let js = match engine_params_json(&engine) {
+                Ok(j) => format!("window.onEngineParams && onEngineParams({j})"),
+                Err(e) => format!("window.onEngineParams && onEngineParams({})",
+                    serde_json::json!({ "engine": engine, "error": e })),
+            };
+            let _ = px.send_event(Ev::Js(js));
+        });
     }
     // Unknown @@verbs are ignored (forward-compat with the page).
 }
@@ -527,6 +542,55 @@ fn open_stage_preview(proxy: &EventLoopProxy<Ev>) {
         Err(e) => { let _ = proxy.send_event(Ev::Js(format!(
             "window.onStagePreviewError && onStagePreviewError({})", js_str(&e.to_string())))); }
     }
+}
+
+/// Pull a game engine's camera-background parallax parameters LIVE out of its executable, so
+/// the preview is driven by the real engines (not the converter's ported constants). SSF2:
+/// read the logical view size (`Main.m_width`/`m_height`) from `SSF2.swf`; its `Vcam`
+/// auto-derives each layer's pan rate `(w-viewW)/(2w)`. Fraymakers: confirm the `ParallaxBG`
+/// engine class in `hlboot`; it has no auto-pan (it applies the explicit per-layer multiplier
+/// the converter wrote, computed via SSF2's formula) and reads the view from each stage's
+/// `GameCameraConfig` (the 640x360 default), so the rate is the same — the switch verifies the
+/// conversion is 1:1.
+fn engine_params_json(engine: &str) -> Result<String, String> {
+    let cfg = crate::config::Config::load();
+    match engine {
+        "ssf2" => {
+            let app = cfg.ssf2_app().ok_or_else(|| "SSF2 app not configured (Setup → SSF2 path)".to_string())?;
+            let swf = [app.join("Contents/Resources/SSF2.swf"), app.join("SSF2.swf"), app.clone()]
+                .into_iter().find(|p| p.is_file())
+                .ok_or_else(|| format!("SSF2.swf not found under {}", app.display()))?;
+            let bytes = std::fs::read(&swf).map_err(|e| e.to_string())?;
+            let (vw, vh) = ssf2_converter::engine_probe::ssf2_view_dims(&bytes)
+                .ok_or_else(|| "could not read Main.m_width/m_height from SSF2.swf".to_string())?;
+            Ok(serde_json::json!({
+                "engine": "ssf2", "label": "SSF2", "view_w": vw, "view_h": vh,
+                "auto": true, "divisor": 2, "formula": format!("(w - {vw}) / (2·w)"),
+                "source": format!("{} · Vcam / Main", swf.display()),
+            }).to_string())
+        }
+        "fraymakers" => {
+            let root = cfg.fraymakers_root().ok_or_else(|| "Fraymakers not configured (Setup → Fraymakers path)".to_string())?;
+            let hlboot = root.join(crate::config::Config::load().boot_name());
+            let present = fm_has_parallax(&hlboot);
+            Ok(serde_json::json!({
+                "engine": "fraymakers", "label": "Fraymakers", "view_w": 640, "view_h": 360,
+                "auto": false, "divisor": 2, "formula": "explicit xPanMultiplier (inherits the SSF2 rate)",
+                "source": format!("{} · ParallaxBG{}", hlboot.display(), if present { " ✓" } else { " (class not found)" }),
+            }).to_string())
+        }
+        other => Err(format!("unknown engine {other:?}")),
+    }
+}
+
+/// `true` if the Fraymakers `hlboot` defines the `ParallaxBG` camera-background class (confirms
+/// the engine's parallax model live, without depending on the converter's output).
+fn fm_has_parallax(hlboot: &std::path::Path) -> bool {
+    use std::io::BufReader;
+    let Ok(file) = std::fs::File::open(hlboot) else { return false };
+    let mut r = BufReader::new(file);
+    let Ok(code) = hlbc::Bytecode::deserialize(&mut r) else { return false };
+    crate::find_type(&code, "pxf.core.camera.ParallaxBG").is_some()
 }
 
 /// Reconstruct a stage's preview layers from its emitted FrayTools package: each IMAGE layer's
