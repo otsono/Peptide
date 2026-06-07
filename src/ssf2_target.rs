@@ -299,6 +299,7 @@ impl DebugTarget for Ssf2Target {
     fn eval(&mut self, expr: &str) -> Result<String> {
         let expr = expr.trim();
         if expr.is_empty() { return Ok(String::new()); }
+
         // bare verb passthrough: allow raw reflection verbs (GC/GET/READ/SPAWN/…)
         let head = expr.split_whitespace().next().unwrap_or("");
         if matches!(head, "GC"|"RM"|"STATS"|"MC"|"ROOT"|"GET"|"IDX"|"CALL"|"CALL1"|"CALLS"|"SETP"|"READ"|"PING"|"SPAWN"|"GO"|"QUEUE"|"LOADED"|"LOADNEXT") {
@@ -329,6 +330,18 @@ impl DebugTarget for Ssf2Target {
                 .map(|e| self.eval(e).map(|v| v.trim().to_string()).unwrap_or_else(|_| "?".into()))
                 .collect();
             return Ok(format!("[{}]", parts.join(", ")));
+        }
+
+        // tune (`updateHitboxStats(idx, {…})`) is Fraymakers-only. FM addresses a LIVE
+        // hitbox by index and mutates its stats in place; SSF2 has no equivalent — its
+        // attacks are move-NAME + per-frame data (`m_attackData.getAttack(name).AttackBoxes`)
+        // with private per-hit `AttackDamage` stats, no stable "hitbox index" to address.
+        // Declare the gap explicitly (parity with how char_icon/console declare gaps)
+        // rather than emit a reflection call SSF2 can't resolve.
+        if expr.contains("updateHitboxStats") {
+            return Ok("tune: Fraymakers-only. SSF2 attacks are move-name + per-frame data \
+                       (no addressable live hitbox to mutate), so there's no clean parity \
+                       for updateHitboxStats. Use the converter's stat scaling instead.".into());
         }
 
         // commands.hsx composite globals that aren't a plain navigation: handle
@@ -488,13 +501,23 @@ impl DebugTarget for Ssf2Target {
     }
 
     fn hold(&mut self, mask: u32) -> Result<String> {
-        // SSF2 input injection isn't wired through the engine's controller yet;
-        // expose the mask so callers see it took effect at the protocol level.
-        Ok(format!("hold mask={mask} (ssf2 input injection: see autojump for YSpeed-level control)"))
+        // Translate the host control mask to SSF2's ControlsObject bit layout and set
+        // it as the persistent held mask for the controlled player (p0 → Characters[0]).
+        // The per-frame applicator (inject_input_applicator) drives it; release = mask 0.
+        let ssf2 = crate::vocab::fm_mask_to_ssf2(mask);
+        self.op(&format!("HOLD\t0\t{ssf2}"))?;
+        Ok(format!("hold mask={mask} (ssf2 controls={ssf2}, p0)"))
     }
 
     fn seq(&mut self, masks: &[u32]) -> Result<String> {
-        Ok(format!("seq {} frames (ssf2 input timeline not yet wired)", masks.len()))
+        // Queue a frame-accurate input timeline for p0. Each host mask is translated to
+        // SSF2's bit layout; the engine-side applicator drains one per frame and
+        // auto-releases at the end (mirrors Fraymakers draining one `i` line per frame).
+        let csv = masks.iter()
+            .map(|m| crate::vocab::fm_mask_to_ssf2(*m).to_string())
+            .collect::<Vec<_>>().join(",");
+        self.op(&format!("SEQ\t0\t{csv}"))?;
+        Ok(format!("seq {} frames (ssf2, p0)", masks.len()))
     }
 
     /// SSF2 has no debug console (the engine's interactive command console is a
@@ -516,7 +539,19 @@ impl DebugTarget for Ssf2Target {
         Ok(out)
     }
 
-    fn add_character(&mut self) -> Result<String> { Ok("addCharacter: not supported on SSF2 yet\n".into()) }
+    /// addCharacter is Fraymakers-only. FM drops a fighter into the LIVE match via its
+    /// deferred-spawn path; SSF2 builds every player during `StageData.startGame`, and
+    /// its `makePlayer` can't be invoked standalone mid-match — it depends on the
+    /// per-player stage/HUD/camera setup that the start-game loop establishes (verified
+    /// live: pushing a PlayerSetting and loading its stats both succeed, but a mid-match
+    /// makePlayer throws). Spawning a fresh N-player match up front (`spawn a,b,c,d`)
+    /// is the SSF2 way to field multiple fighters. Declared explicitly (parity with how
+    /// char_icon/console declare their gaps) rather than silently stubbed.
+    fn add_character(&mut self) -> Result<String> {
+        Ok("addCharacter: Fraymakers-only. SSF2 builds all players at match start (no \
+            standalone mid-match add-player path); use `spawn a,b,c,d` to field a \
+            multi-fighter match instead.".into())
+    }
     fn exit(&mut self) -> Result<()> { let _ = std::process::Command::new("pkill").args(["-f", "SSF2-patched"]).status(); Ok(()) }
     fn load(&mut self) -> Result<String> { self.op("LOADED") }
 
