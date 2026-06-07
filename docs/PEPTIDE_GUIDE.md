@@ -55,11 +55,15 @@ script API. run `./build/release/peptide help` for the live list.
 |---|---|
 | `spawn <char[,…]> [stage] [assist] [--versus]` | start a 1-4 player match (loads your custom `.fra`s); comma-separate the roster (e.g. `spawn sandbag,sandbag` mirror, `spawn sandbag,mario,sandbag,mario` 4-player); 3-4 players auto-engage versus mode, `--versus` forces it for 1-2; stage/assist default to thespire / commandervideoassist |
 | `eval <hscript>` | run an hscript expression and print `E:<result>`. **also the default for any unrecognized line** |
-| `hold <control[+control…]>` | hold control inputs (e.g. `hold down+special`); feeds the engine's input→action mapping, not a synthetic keypress |
-| `release` | release all injected controls |
-| `seq <controls:frames> …` | play a frame-accurate input timeline (e.g. `seq down+special:2 right:12`), one input per frame, auto-releases at the end |
+| `dmg <player> <value>` | set a player's damage percent (e.g. `dmg p1 80`) for knockback / KO-threshold testing |
+| `info` | one-shot readout of both players: `[x, state, damage, team]` for p0 and p1 |
+| `reset` | reset both players to neutral with zero momentum (clean slate between tests) |
+| `kill <player>` | fling a player into the bottom blast zone to force a KO (e.g. `kill p1`) for respawn / stock testing |
+| `hold <control[+control…]>` | hold control inputs (e.g. `hold down+special`); feeds the engine's input→action mapping, not a synthetic keypress. *Fraymakers; SSF2 input injection is pending.* |
+| `release` | release all injected controls. *Fraymakers; SSF2 input injection is pending.* |
+| `seq <controls:frames> …` | play a frame-accurate input timeline (e.g. `seq down+special:2 right:12`), one input per frame, auto-releases at the end. *Fraymakers; SSF2 input injection is pending.* |
 | `load` | synchronous custom-`.fra` load probe (diagnostic; `spawn` does this itself) |
-| `console` | run the engine's debug-console `help` |
+| `console` | run the engine's debug-console `help`. *Fraymakers only; SSF2 has no debug console.* |
 | `exit` | cleanly shut the engine down |
 | `help` | list these + the hscript model (sends nothing) |
 
