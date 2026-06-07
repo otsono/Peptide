@@ -90,9 +90,12 @@ pub struct StageModel {
     /// Grabbable ledge x-positions `(left, right)` from the SSF2 `ledge_mc` instances,
     /// in FM coords. Used as the main floor's left/right endpoints.
     pub ledges: Option<(f64, f64)>,
-    /// Rendered stage art, split into depth layers (parallax background, the main
+    /// Rendered stage art, split into depth layers (the painted backdrop, the main
     /// stage at character depth, and a foreground that draws in front of fighters).
     pub art: StageArtSet,
+    /// Non-fatal validation notes: required SSF2 stage linkages that were missing from
+    /// the source (e.g. no collision floor, no spawn beacons). Surfaced to the user.
+    pub warnings: Vec<String>,
 }
 
 /// The stage art split by depth so the emitter can layer it around the characters
@@ -224,6 +227,11 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         }
     }
 
+    if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+        eprintln!("=== SymbolClass linkage table ({} entries) for {} ===", sym_names.len(), id);
+        for (cid, n) in &sym_names { eprintln!("  id={cid} linkage={n:?}"); }
+    }
+
     // Collect every placed shape instance (with world AABB) and find the stageMC origin.
     let mut instances: Vec<Instance> = Vec::new();
     let mut origin: Option<(f64, f64)> = None;
@@ -296,32 +304,82 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         StageArtSet::default()
     };
 
-    Ok(StageModel { id, platforms, death_box, camera_box, entrances, respawns, ledges, art })
+    // --- validate: the SSF2 source should carry the standard stage linkages, and the
+    // parse should have recovered the playable bits. Non-fatal notes for the user.
+    let mut warnings = validate_ssf2_linkages(&sym_names, &id);
+    if death_box.is_none() { warnings.push("blast zone not parsed (no deathBoundary)".into()); }
+    if camera_box.is_none() { warnings.push("camera bounds not parsed (no camBoundary)".into()); }
+    if entrances.is_empty() { warnings.push("no match-start entrances parsed (pN_Start)".into()); }
+    if !platforms.iter().any(|p| !p.drop_through) { warnings.push("no solid floor parsed".into()); }
+
+    Ok(StageModel { id, platforms, death_box, camera_box, entrances, respawns, ledges, art, warnings })
+}
+
+/// Validate that the SSF2 source carries the linkages a playable stage needs. Returns a
+/// note for each missing one (non-fatal: the converter fills fallbacks, but a gap usually
+/// means a mis-parse or an unusual stage). Keyed off the SymbolClass linkage table.
+fn validate_ssf2_linkages(sym_names: &BTreeMap<u16, String>, model_id: &str) -> Vec<String> {
+    let all: Vec<String> = sym_names.values().map(|s| s.to_ascii_lowercase()).collect();
+    let has = |needles: &[&str]| all.iter().any(|n| needles.iter().any(|m| n.contains(m)));
+    let mut w = Vec::new();
+    if !has(&["terrainmc", "terrain_mc", "collison", "collision"]) {
+        w.push("SSF2 source has no collision-floor linkage (TerrainMC / CollisonBox)".into());
+    }
+    if !has(&["_start_"]) { w.push("SSF2 source has no pN_Start spawn beacons".into()); }
+    if !has(&["boundary"]) { w.push("SSF2 source has no boundary_clip (blast/camera bounds)".into()); }
+    if !has(&["_bg", "background"]) {
+        w.push(format!("SSF2 source has no backdrop art linkage (`{model_id}_bg`)"));
+    }
+    w
 }
 
 /// Depth layer an art instance belongs to (back-to-front).
 #[derive(Clone, Copy, PartialEq)]
 enum ArtKind { Background, Stage, Foreground }
 
-/// Classify an art instance by its SSF2 name: `*_bg`/`background` -> behind; `foreground`
-/// -> in front of fighters; everything else (terrain, platforms, props) -> at stage depth.
+/// Classify a *visual* art instance by its SSF2 linkage name: `foreground`/`*_fg` draws in
+/// front of fighters; `*_bg`/`background`/`*BGAnimations*` is the painted backdrop behind
+/// everything; anything else visual (decorative props) sits at stage depth. Collision and
+/// scaffolding never reach here (filtered by [`is_non_art`]).
 fn art_kind(inst: &Instance) -> ArtKind {
     let label = format!("{} {}", inst.inst_name.as_deref().unwrap_or(""), inst.sym_name).to_ascii_lowercase();
     if label.contains("foreground") || label.contains("_fg") {
         ArtKind::Foreground
-    } else if label.contains("background") || label.contains("_bg") {
+    } else if label.contains("background") || label.contains("_bg") || label.contains("bganimation") {
         ArtKind::Background
     } else {
         ArtKind::Stage
     }
 }
 
-/// `true` if a placed instance is non-visual scaffolding (boundary clip, spawn beacon,
-/// warning bounds, item generator, shadow mask) rather than stage art.
-fn is_marker(label: &str) -> bool {
+// ── SSF2 stage linkage vocabulary ──
+// A shipped SSF2 stage carries a consistent set of named symbols (linkage ids). Art
+// classification and validation key off these names. Two families are NOT art:
+//  - COLLISION masks: `*TerrainMC*`, `terrainGround_platform*`, `CollisonBox*` [sic],
+//    `ledge_mc_*`. SSF2 renders them invisibly; Peptide maps them to FM collision boxes /
+//    line segments. Drawing them as art double-draws a flat silhouette over the backdrop.
+//  - SCAFFOLDING: `pN_Start`/`pN_Spawn` beacons, the death/camera `boundary_clip`,
+//    off-screen `warningbounds_*`, the `itemGen_mc`, `shadowMask`/`reflectionMask`, the
+//    `light_source_mc`, the `smashball` spawn. All non-visual.
+
+/// SSF2 collision-geometry linkage (invisible in SSF2; becomes FM collision, never art).
+fn is_collision_linkage(label: &str) -> bool {
     let l = label.to_ascii_lowercase();
-    ["boundary", "_start_", "_spawn_", "warning", "itemgen", "shadowmask", "smashball"]
+    l.contains("terrainmc") || l.contains("terrain_mc") || l.contains("platform")
+        || l.contains("collison") || l.contains("collision") || l.contains("ledge_mc")
+}
+
+/// SSF2 non-visual scaffolding linkage (spawn/boundary/warning/itemgen/mask/light/smashball).
+fn is_scaffold_linkage(label: &str) -> bool {
+    let l = label.to_ascii_lowercase();
+    ["_start_", "_spawn_", "boundary", "warningbounds", "warning", "itemgen",
+     "shadowmask", "reflectionmask", "light_source", "smashball"]
         .iter().any(|m| l.contains(m))
+}
+
+/// `true` if a placed instance is collision geometry or scaffolding (not stage art).
+fn is_non_art(label: &str) -> bool {
+    is_collision_linkage(label) || is_scaffold_linkage(label)
 }
 
 /// Cap on stage-animation frames (SSF2 clips can be hundreds of frames; we loop a short
@@ -430,7 +488,7 @@ fn render_art_layers(
         let mut out = Vec::new();
         walk_frame(root, Mat::id(), g, None, sym_names, shape_defs, &sprite_frames, &mut out, 0);
         out.retain(|i| shape_defs.contains_key(&i.shape_id)
-            && !is_marker(i.inst_name.as_deref().unwrap_or("")) && !is_marker(&i.sym_name));
+            && !is_non_art(i.inst_name.as_deref().unwrap_or("")) && !is_non_art(&i.sym_name));
         out
     };
     let composite = |insts: &[Instance], kind: ArtKind| -> Option<StageArt> {
@@ -452,6 +510,14 @@ fn render_art_layers(
     // empty; pick the frame with the most content for the static layers).
     let base_idx = stage_counts.iter().enumerate().max_by_key(|(_, c)| **c).map(|(i, _)| i).unwrap_or(0);
     let base_insts = &sampled[base_idx].0;
+    if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+        eprintln!("=== art instances (richest frame {base_idx}, {} insts) ===", base_insts.len());
+        for i in base_insts {
+            let k = match art_kind(i) { ArtKind::Background => "BG", ArtKind::Stage => "STAGE", ArtKind::Foreground => "FG" };
+            eprintln!("  [{k:5}] sym={:?} inst={:?} aabb=({:.0},{:.0} {:.0}x{:.0})",
+                i.sym_name, i.inst_name, i.aabb.x, i.aabb.y, i.aabb.w, i.aabb.h);
+        }
+    }
     let background = composite(base_insts, ArtKind::Background);
     let foreground = composite(base_insts, ArtKind::Foreground);
 

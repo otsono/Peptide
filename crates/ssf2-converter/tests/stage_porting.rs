@@ -59,6 +59,16 @@ fn battlefield_parses_to_geometry() {
     let mut idx: Vec<usize> = m.entrances.iter().map(|s| s.index).collect();
     idx.sort();
     assert_eq!(idx, vec![0, 1, 2, 3]);
+
+    // battlefield carries the full SSF2 stage linkage set, so validation is clean.
+    assert!(m.warnings.is_empty(), "battlefield should validate clean, got: {:?}", m.warnings);
+
+    // art: the painted backdrop (`battlefield_bg`) and the foreground both rasterize.
+    // The collision masks (TerrainMC / platforms / ledges) are NOT art, so the stage-depth
+    // bucket is empty (this is the fix for the doubled-stage render).
+    assert!(m.art.background.is_some(), "painted backdrop rasterizes");
+    assert!(m.art.foreground.is_some(), "foreground rasterizes");
+    assert!(m.art.stage_frames.is_empty(), "collision masks must not render as stage art");
 }
 
 /// Emit the FM stage package and assert the `.entity` graph is internally
@@ -106,4 +116,20 @@ fn battlefield_emits_consistent_entity() {
     assert_eq!(v["pluginMetadata"]["com.fraymakers.FraymakersMetadata"]["objectType"], "STAGE");
     let man: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("library").join("manifest.json")).unwrap()).unwrap();
     assert_eq!(man["content"][0]["type"], "stage");
+
+    // the required Fraymakers stage layers are present (emit_stage bails otherwise, but
+    // assert here too so a regression names the missing layer). For battlefield the only
+    // IMAGE layers are the backdrop + foreground (no collision-silhouette stage art): the
+    // doubled-render fix.
+    let layers = v["layers"].as_array().unwrap();
+    let named = |n: &str| layers.iter().any(|l| l["name"] == n);
+    let meta_eq = |key: &str, val: &str| layers.iter().any(|l|
+        l.pointer(&format!("/pluginMetadata/com.fraymakers.FraymakersMetadata/{key}")).and_then(|x| x.as_str()) == Some(val));
+    assert!(meta_eq("containerType", "CHARACTERS_CONTAINER"), "has Characters container");
+    assert!(meta_eq("pointType", "ENTRANCE_POINT"), "has an entrance point");
+    assert!(meta_eq("pointType", "RESPAWN_POINT"), "has a respawn point");
+    assert!(named("Background Art"), "has the painted backdrop layer");
+    assert!(named("Foreground Art"), "has the foreground layer");
+    let image_layers = layers.iter().filter(|l| l["type"] == "IMAGE").count();
+    assert_eq!(image_layers, 2, "battlefield has exactly 2 art layers (backdrop + foreground), no collision silhouette");
 }
