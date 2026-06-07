@@ -102,8 +102,9 @@ pub struct StageArtSet {
     /// Far backdrop (SSF2 `*_bg` / `background`), drawn behind everything and
     /// parallax-scrolled by the camera.
     pub background: Option<StageArt>,
-    /// The main stage art (terrain / platforms / props) at character depth.
-    pub stage: Option<StageArt>,
+    /// The main stage art (terrain / platforms / props) at character depth. More than
+    /// one frame when the source has animated clips (the emitter loops them).
+    pub stage_frames: Vec<StageArt>,
     /// Art that draws in front of the fighters (SSF2 `foreground`).
     pub foreground: Option<StageArt>,
 }
@@ -112,7 +113,7 @@ impl StageArtSet {
     /// `true` if no layer rasterized (e.g. a stage with only bitmap fills we can't
     /// decode) — the emitter then falls back to a geometry placeholder.
     pub fn is_empty(&self) -> bool {
-        self.background.is_none() && self.stage.is_none() && self.foreground.is_none()
+        self.background.is_none() && self.stage_frames.is_empty() && self.foreground.is_none()
     }
 }
 
@@ -137,6 +138,7 @@ impl StageModel {
 }
 
 /// One placed shape instance discovered during the tree walk.
+#[derive(Clone)]
 struct Instance {
     /// The placed `DefineShape` id (so its art can be rasterized later).
     shape_id: u16,
@@ -289,7 +291,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
 
     // --- art: rasterize the stage's shapes, split into background / stage / foreground.
     let art = if render_art_flag {
-        render_art_layers(&instances, &shape_defs, &bitmaps, ox, oy)
+        render_art_layers(&swf.tags, &sprites, &sym_names, &shape_defs, &bitmaps, ox, oy)
     } else {
         StageArtSet::default()
     };
@@ -322,29 +324,152 @@ fn is_marker(label: &str) -> bool {
         .iter().any(|m| l.contains(m))
 }
 
-/// Rasterize the stage's art and split it into background / stage / foreground layers
-/// (each composited into its own RGBA image), so the emitter can draw the background
-/// behind fighters, the foreground in front, and parallax-scroll the background.
+/// Cap on stage-animation frames (SSF2 clips can be hundreds of frames; we loop a short
+/// slice). Background/foreground are single-frame.
+const ANIM_FRAME_CAP: usize = 12;
+
+/// One placed child in a sprite's timeline frame: `(character id, local matrix, name)`.
+type PlacedChild = (u16, Mat, Option<String>);
+
+/// Build a sprite/root timeline: the placed-child state snapshotted at each `ShowFrame`
+/// (Flash semantics — Place/Replace set a depth, Modify updates its matrix, Remove clears
+/// it). At least one frame.
+fn build_frames(tags: &[swf::Tag]) -> Vec<Vec<PlacedChild>> {
+    let mut depth: std::collections::BTreeMap<u16, PlacedChild> = std::collections::BTreeMap::new();
+    let mat_of = |po: &swf::PlaceObject| po.matrix.as_ref().map(|m| Mat {
+        a: m.a.to_f64(), b: m.b.to_f64(), c: m.c.to_f64(), d: m.d.to_f64(),
+        tx: m.tx.get() as f64 / 20.0, ty: m.ty.get() as f64 / 20.0,
+    });
+    let name_of = |po: &swf::PlaceObject| po.name.as_ref().map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
+    let mut frames: Vec<Vec<PlacedChild>> = Vec::new();
+    for tag in tags {
+        match tag {
+            swf::Tag::PlaceObject(po) => match &po.action {
+                swf::PlaceObjectAction::Place(id) | swf::PlaceObjectAction::Replace(id) => {
+                    depth.insert(po.depth, (*id, mat_of(po).unwrap_or(Mat::id()), name_of(po)));
+                }
+                swf::PlaceObjectAction::Modify => {
+                    if let Some(e) = depth.get_mut(&po.depth) {
+                        if let Some(m) = mat_of(po) { e.1 = m; }
+                        if let Some(n) = name_of(po) { e.2 = Some(n); }
+                    }
+                }
+            },
+            swf::Tag::RemoveObject(r) => { depth.remove(&r.depth); }
+            swf::Tag::ShowFrame => { frames.push(depth.values().cloned().collect()); }
+            _ => {}
+        }
+    }
+    if frames.is_empty() { frames.push(depth.values().cloned().collect()); }
+    frames
+}
+
+/// Walk the placement tree at a fixed global frame (every animated sprite shows its
+/// `global_frame % len` frame — Flash advances all clips together), collecting the placed
+/// shape instances with world AABBs. Mirrors [`walk`] but frame-aware.
+#[allow(clippy::too_many_arguments)]
+fn walk_frame(
+    children: &[PlacedChild], parent: Mat, global_frame: usize, carried_sym: Option<&str>,
+    sym_names: &BTreeMap<u16, String>, shape_defs: &BTreeMap<u16, &swf::Shape>,
+    sprite_frames: &BTreeMap<u16, Vec<Vec<PlacedChild>>>, out: &mut Vec<Instance>, rec: usize,
+) {
+    if rec > 8 { return; }
+    for (id, local, name) in children {
+        let world = parent.mul(local);
+        let sym = sym_names.get(id).cloned().unwrap_or_default();
+        if let Some(s) = shape_defs.get(id) {
+            let b = &s.shape_bounds;
+            let (x0, y0, x1, y1) = (b.x_min.get() as f64/20.0, b.y_min.get() as f64/20.0, b.x_max.get() as f64/20.0, b.y_max.get() as f64/20.0);
+            let cs = [world.apply(x0, y0), world.apply(x1, y0), world.apply(x1, y1), world.apply(x0, y1)];
+            let xmn = cs.iter().map(|c| c.0).fold(f64::MAX, f64::min);
+            let xmx = cs.iter().map(|c| c.0).fold(f64::MIN, f64::max);
+            let ymn = cs.iter().map(|c| c.1).fold(f64::MAX, f64::min);
+            let ymx = cs.iter().map(|c| c.1).fold(f64::MIN, f64::max);
+            out.push(Instance {
+                shape_id: *id, inst_name: name.clone(), sym_name: carried_sym.unwrap_or("").to_string(),
+                aabb: Rect { x: xmn, y: ymn, w: xmx - xmn, h: ymx - ymn },
+                cx: world.tx, cy: world.ty, x_sign: world.x_sign(),
+            });
+        }
+        if let Some(frames) = sprite_frames.get(id) {
+            let next = name.as_deref().or(if sym.is_empty() { carried_sym } else { Some(&sym) }).map(|s| s.to_string());
+            let f = &frames[global_frame % frames.len()];
+            walk_frame(f, world, global_frame, next.as_deref(), sym_names, shape_defs, sprite_frames, out, rec + 1);
+        }
+    }
+}
+
+/// Rasterize the stage's art into background / stage / foreground layers. The stage layer
+/// is frame-aware: if the source has animated clips it renders multiple frames (the
+/// emitter loops them). Background/foreground are single-frame (frame 0).
+#[allow(clippy::too_many_arguments)]
 fn render_art_layers(
-    instances: &[Instance],
+    root_tags: &[swf::Tag],
+    sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
+    sym_names: &BTreeMap<u16, String>,
     shape_defs: &BTreeMap<u16, &swf::Shape>,
     bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
     ox: f64, oy: f64,
 ) -> StageArtSet {
-    // art instances = placed shapes that aren't markers and have a DefineShape.
-    let art: Vec<&Instance> = instances.iter()
-        .filter(|i| shape_defs.contains_key(&i.shape_id))
-        .filter(|i| !is_marker(i.inst_name.as_deref().unwrap_or("")) && !is_marker(&i.sym_name))
-        .collect();
-    let layer = |kind: ArtKind| -> Option<StageArt> {
-        let group: Vec<&Instance> = art.iter().copied().filter(|i| art_kind(i) == kind).collect();
+    // per-sprite + root frame timelines.
+    let mut sprite_frames: BTreeMap<u16, Vec<Vec<PlacedChild>>> = BTreeMap::new();
+    for (id, tags) in sprites { sprite_frames.insert(*id, build_frames(tags)); }
+    let root_frames = build_frames(root_tags);
+
+    // full animation length = longest timeline. We sample ANIM_FRAME_CAP frames spread
+    // EVENLY across it (a 645-frame clip's first 12 frames are usually a static slice, so
+    // sampling end-to-end captures the motion); the emitter loops the samples.
+    let full_len = sprite_frames.values().map(|f| f.len())
+        .chain(std::iter::once(root_frames.len())).max().unwrap_or(1);
+    let n_samples = full_len.min(ANIM_FRAME_CAP);
+    let sample_frame = |i: usize| -> usize { i * full_len / n_samples };
+
+    // instances at a given global frame, classified + composited per layer.
+    let frame_instances = |g: usize| -> Vec<Instance> {
+        let root = &root_frames[g % root_frames.len()];
+        let mut out = Vec::new();
+        walk_frame(root, Mat::id(), g, None, sym_names, shape_defs, &sprite_frames, &mut out, 0);
+        out.retain(|i| shape_defs.contains_key(&i.shape_id)
+            && !is_marker(i.inst_name.as_deref().unwrap_or("")) && !is_marker(&i.sym_name));
+        out
+    };
+    let composite = |insts: &[Instance], kind: ArtKind| -> Option<StageArt> {
+        let group: Vec<&Instance> = insts.iter().filter(|i| art_kind(i) == kind).collect();
         composite_layer(&group, shape_defs, bitmaps, ox, oy)
     };
-    StageArtSet {
-        background: layer(ArtKind::Background),
-        stage: layer(ArtKind::Stage),
-        foreground: layer(ArtKind::Foreground),
-    }
+
+    // sample every frame's instance set + the composited image.
+    let sampled: Vec<(Vec<Instance>, Option<StageArt>)> = (0..n_samples).map(|i| {
+        let insts = frame_instances(sample_frame(i));
+        let img = composite(&insts, ArtKind::Stage);
+        (insts, img)
+    }).collect();
+    let stage_counts: Vec<usize> = sampled.iter()
+        .map(|(insts, _)| insts.iter().filter(|x| art_kind(x) == ArtKind::Stage).count()).collect();
+    let max_count = stage_counts.iter().copied().max().unwrap_or(0);
+
+    // background / foreground from the richest frame (an animated stage's frame 0 can be
+    // empty; pick the frame with the most content for the static layers).
+    let base_idx = stage_counts.iter().enumerate().max_by_key(|(_, c)| **c).map(|(i, _)| i).unwrap_or(0);
+    let base_insts = &sampled[base_idx].0;
+    let background = composite(base_insts, ArtKind::Background);
+    let foreground = composite(base_insts, ArtKind::Foreground);
+
+    // Emit a multi-frame stage animation only when the samples form a CLEAN animation:
+    // every frame well-populated (no blinking on/off) and at least two distinct images.
+    // Otherwise (static, or a chaotic/long SSF2 timeline) use the single richest frame.
+    let imgs: Vec<&StageArt> = sampled.iter().filter_map(|(_, img)| img.as_ref()).collect();
+    let clean = max_count > 0
+        && stage_counts.iter().all(|&c| c * 5 >= max_count * 4)   // >=80% of max in every frame
+        && imgs.len() == n_samples
+        && imgs.windows(2).any(|w| w[0].png != w[1].png);          // some motion
+    let stage_frames: Vec<StageArt> = if clean {
+        imgs.into_iter().cloned().collect()
+    } else {
+        sampled[base_idx].1.clone().into_iter().collect()
+    };
+
+    StageArtSet { background, stage_frames, foreground }
 }
 
 /// Composite a set of art instances (back-to-front = walk order) into one RGBA image
