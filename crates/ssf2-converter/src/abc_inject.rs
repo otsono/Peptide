@@ -53,6 +53,18 @@ const OP_PUSHSHORT: u8 = 0x25;
 // AVM2 namespace kinds
 const NS_PACKAGE: u8 = 0x16; // CONSTANT_PackageNamespace
 
+// ── SSF2 engine namespaces (single source of truth) ──
+// Every injected call into the live engine resolves its symbols BY NAME against one
+// of these package namespaces, so a recompile of SSF2 survives as long as the symbol
+// still exists. If SSF2 is ever repackaged, this is the one place the package paths
+// change; `ssf2_manifest()` + `verify_symbols()` then flag any class/member that moved
+// (run via `peptide ssf2 doctor` and the patch preflight) instead of silently breaking.
+pub const SSF2_PKG: &str = "com.mcleodgaming.ssf2";              // Main (document class)
+pub const SSF2_NS_CONTROLLERS: &str = "com.mcleodgaming.ssf2.controllers"; // GameController, Game, MenuController, PlayerSetting
+pub const SSF2_NS_ENGINE: &str = "com.mcleodgaming.ssf2.engine"; // Character, StageData, AttackData/Object, Stats
+pub const SSF2_NS_UTIL: &str = "com.mcleodgaming.ssf2.util";     // Controller, ControlsObject, ResourceManager
+pub const SSF2_NS_ENUMS: &str = "com.mcleodgaming.ssf2.enums";   // Mode
+
 /// A tiny opcode emitter with the AVM2 u30 var-encoding + label/branch fixups.
 #[derive(Default)]
 struct Code {
@@ -103,6 +115,145 @@ impl Code {
         }
         self.b
     }
+}
+
+/// Prepend `payload` to a method body: splice it before the existing code and shift the
+/// absolute exception-table offsets by the payload length. AVM2 branches are relative
+/// (shift-invariant), so only the exception from/to/target need fixing. This is the one
+/// home for the "inject at method entry" mechanics every `inject_*` helper relies on;
+/// callers still set their own frame requirements (max_stack / max_scope_depth /
+/// local_count) since those are payload-specific.
+fn prepend_code(body: &mut MethodBody, payload: &[u8]) {
+    let n = payload.len() as u32;
+    let mut spliced = payload.to_vec();
+    spliced.extend_from_slice(&body.code);
+    body.code = spliced;
+    // shift the absolute exception-table offsets by the prepend length (relative
+    // branches are shift-invariant, so only from/to/target need fixing).
+    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
+}
+
+// ───────────────────────────── symbol manifest ─────────────────────────────
+// The SSF2 analogue of src/manifest.rs (the Fraymakers side): the single table of
+// every engine symbol the injected bridge + verbs depend on. Each is resolved BY NAME
+// against the loaded SSF2 ABC, so a recompile of SSF2 survives as long as the symbol
+// still exists. `verify_symbols` runs at the top of every patch (and `peptide ssf2
+// doctor`): if a class or member has moved, the patch ABORTS with the missing symbol
+// named, instead of producing a SWF whose injected calls fail silently at runtime.
+//
+// Any NEW SSF2 symbol an injection comes to depend on MUST be listed here.
+
+/// One SSF2 engine dependency: a class by local name, optionally a member on it.
+pub struct Ssf2Symbol {
+    /// Instance class local name (matched by `find_class_by_name`).
+    pub class: &'static str,
+    /// A method/getter/setter/slot the class must declare, or `None` for "class exists".
+    pub member: Option<&'static str>,
+    /// Subsystem, for grouping the doctor checklist.
+    pub group: &'static str,
+    /// Why we depend on it (shown when missing).
+    pub why: &'static str,
+    /// `true` → the patch can't function without it (a miss aborts); `false` → a loud
+    /// warning but the patch proceeds (graceful-degradation site).
+    pub critical: bool,
+}
+
+macro_rules! ssf2_sym {
+    ($class:literal $(. $member:literal)?, $group:literal, $why:literal, $crit:literal) => {
+        Ssf2Symbol { class: $class, member: ssf2_sym!(@m $($member)?), group: $group, why: $why, critical: $crit }
+    };
+    (@m $member:literal) => { Some($member) };
+    (@m) => { None };
+}
+
+/// Every SSF2 class/member the injected bridge + command verbs resolve at runtime.
+/// Grouped by the feature that needs them; keep in step with the `inject_*` helpers
+/// and the host-side `Ssf2Target` verbs.
+pub const SSF2_MANIFEST: &[Ssf2Symbol] = &[
+    // ── document + boot hooks (resolved by name at patch time too) ──
+    ssf2_sym!("Main",                              "boot", "document class: socket bridge + listeners attach to its ctor", true),
+    ssf2_sym!("DisclaimerMenu"."checkDisclaimer",  "boot", "event-driven READY hook (boot-complete signal)", true),
+    ssf2_sym!("MenuController"."showInitialMenu",  "boot", "quick-boot: rewritten to queue the match + skip menus", true),
+    // ── socket bridge / match launch ──
+    ssf2_sym!("GameController"."stageData",         "bridge", "the live match graph root (characters live under it)", true),
+    ssf2_sym!("GameController"."currentGame",       "bridge", "the Game the spawn verbs build + startMatch reads", true),
+    ssf2_sym!("GameController"."startMatch",        "bridge", "start the programmatically-built match", true),
+    ssf2_sym!("MenuController"."disposeAllMenus",   "bridge", "tear menus down after a programmatic startMatch", true),
+    ssf2_sym!("Game",                               "bridge", "constructed (N player slots) by the SPAWN verb", true),
+    ssf2_sym!("Mode",                               "bridge", "Mode.VERSUS for the built Game", true),
+    ssf2_sym!("ResourceManager"."queueResources",   "bridge", "queue stage + character resources to load", true),
+    ssf2_sym!("ResourceManager"."load",             "bridge", "drive the in-context async resource load", true),
+    ssf2_sym!("PlayerSetting"."character",          "bridge", "per-slot character id the match builds from", true),
+    ssf2_sym!("Stats"."getStats",                   "bridge", "CharacterData lookup (makePlayer/ctor read it)", true),
+    // ── live match graph (reflection bridge navigation) ──
+    ssf2_sym!("StageData"."Characters",             "reflect", "per-player character nodes (p0..p3 resolve through it)", true),
+    ssf2_sym!("Character"."getDamage",              "reflect", "matchStatus + dmg/info read the damage percent", false),
+    // ── input injection (hold/seq/scenario) ──
+    ssf2_sym!("Controller"."getControlStatus",      "input", "per-frame input read we prepend the applicator to", true),
+    ssf2_sym!("Character"."ControlSettings",        "input", "public getter to the player's Controller (targeting)", true),
+    ssf2_sym!("ControlsObject"."controls",          "input", "the control bitmask the applicator writes per frame", true),
+    ssf2_sym!("Character"."setState",               "input", "scenario's toState(STAND) lowering", false),
+    // ── addCharacter (live add into a reserved slot) ──
+    ssf2_sym!("StageData"."activateCharacters",     "addchar", "re-activate after constructing the added Character", true),
+    ssf2_sym!("StageData"."deactivateCharacters",   "addchar", "bracket the construct like makePlayer does", true),
+    ssf2_sym!("Character",                           "addchar", "constructed directly (its ctor self-registers)", true),
+    ssf2_sym!("PlayerSetting"."exist",              "addchar", "reserved-slot flag flipped true when filled", true),
+    // ── tune (mutate a move's stored hitbox stats) ──
+    ssf2_sym!("Character"."AttackDataObj",          "tune", "protected getter to the AttackData (move table)", true),
+    ssf2_sym!("AttackData"."getAttack",             "tune", "look up a move's AttackObject by name", true),
+    ssf2_sym!("AttackObject"."AttackBoxes",         "tune", "the move's stored attack boxes (string-keyed)", true),
+    ssf2_sym!("AttackDamage"."Damage",              "tune", "a stored box's mutable stat setter (Damage/KBConstant/…)", true),
+];
+
+/// Does class index `ci` (or any of its superclasses) declare a trait named `member`
+/// (method/getter/setter/slot)? Walks the super chain so inherited members resolve
+/// (e.g. `AttackDataObj`/`getDamage` live on `InteractiveSprite`, the parent of
+/// `Character`). Stops at the first super that isn't a user class (a builtin like
+/// Object/Sprite), and guards against cycles.
+fn class_has_member(abc: &Abc, ci: usize, member: &str) -> bool {
+    let named = |abc: &Abc, c: usize| {
+        let m = |ts: &[Trait]| ts.iter().any(|t| abc.multiname_local(t.name).as_deref() == Some(member));
+        m(&abc.instances[c].traits) || m(&abc.classes[c].traits)
+    };
+    let mut cur = Some(ci);
+    for _ in 0..32 { // depth guard
+        let Some(c) = cur else { return false };
+        if named(abc, c) { return true; }
+        cur = abc.multiname_local(abc.instances[c].super_name)
+            .and_then(|s| abc.find_class_by_name(&s));
+    }
+    false
+}
+
+/// Resolve each manifest symbol against `abc`, returning `(symbol, resolved?)` for the
+/// doctor checklist and the patch preflight.
+pub fn verify_symbols(abc: &Abc) -> Vec<(&'static Ssf2Symbol, bool)> {
+    SSF2_MANIFEST.iter().map(|s| {
+        let ok = match abc.find_class_by_name(s.class) {
+            None => false,
+            Some(ci) => s.member.map(|m| class_has_member(abc, ci, m)).unwrap_or(true),
+        };
+        (s, ok)
+    }).collect()
+}
+
+/// Patch preflight: abort if any CRITICAL manifest symbol is missing, naming what moved
+/// (and why) so a SSF2 layout change fails loudly instead of corrupting the patch.
+pub fn preflight(abc: &Abc) -> anyhow::Result<()> {
+    let missing: Vec<String> = verify_symbols(abc).into_iter()
+        .filter(|(s, ok)| s.critical && !ok)
+        .map(|(s, _)| match s.member {
+            Some(m) => format!("  {}.{} — {}", s.class, m, s.why),
+            None => format!("  {} — {}", s.class, s.why),
+        })
+        .collect();
+    if missing.is_empty() { return Ok(()); }
+    anyhow::bail!(
+        "SSF2 symbol preflight failed — {} critical engine symbol(s) moved or were renamed \
+         (SSF2 likely updated). Peptide resolves these by name; update SSF2_MANIFEST + the \
+         inject_* helpers to the new names:\n{}",
+        missing.len(), missing.join("\n")
+    )
 }
 
 /// Resolved multiname indices for the AIR filesystem API we call.
@@ -200,21 +351,15 @@ pub fn inject_startup_marker(abc: &mut Abc, doc_class_local: &str, native_path: 
     let l_fs = l_file + 1;
 
     let payload = emit_marker_payload(abc, native_path, content, l_file, l_fs);
-    let n = payload.len() as u32;
 
     let body = &mut abc.bodies[body_idx];
     // prepend payload
-    let mut new_code = payload;
-    new_code.extend_from_slice(&body.code);
-    body.code = new_code;
+    prepend_code(body, &payload);
     // bump frame requirements
     body.local_count = l_fs + 1;
     body.max_stack = body.max_stack.max(4);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
     // fix absolute exception offsets (relative branches are shift-invariant)
-    for e in &mut body.exceptions {
-        e.from += n; e.to += n; e.target += n;
-    }
     Ok(())
 }
 
@@ -295,18 +440,14 @@ pub fn inject_enterframe_heartbeat(abc: &mut Abc, doc_class_local: &str, native_
     c.op_u30_u30(OP_CALLPROPVOID, mn_addel, 2);
     c.op(OP_POPSCOPE);
     let payload = c.b;
-    let n = payload.len() as u32;
 
     let iinit = abc.instances[ci].iinit;
     let body_idx = abc.bodies.iter().position(|b| b.method == iinit)
         .ok_or_else(|| anyhow::anyhow!("no ctor body for {doc_class_local}"))?;
     let body = &mut abc.bodies[body_idx];
-    let mut new_code = payload;
-    new_code.extend_from_slice(&body.code);
-    body.code = new_code;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(3);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -375,14 +516,13 @@ pub fn inject_command_channel(abc: &mut Abc, doc_class_local: &str, cmd_path: &s
     c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_tick);
     c.op_u30_u30(OP_CALLPROPVOID, mn_addel, 2);
     c.op(OP_POPSCOPE);
-    let payload = c.b; let n = payload.len() as u32;
+    let payload = c.b;
     let iinit = abc.instances[ci].iinit;
     let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
     let body = &mut abc.bodies[body_idx];
-    let mut new_code = payload; new_code.extend_from_slice(&body.code); body.code = new_code;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(3);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -443,12 +583,12 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     let mn_ondata = q(abc, pub_ns, "peptideOnData");
     let n_ondata = abc.intern_string("peptideOnData");
     // GameController static singleton (reaches the live match / characters)
-    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string(SSF2_NS_CONTROLLERS); abc.intern_namespace(NS_PACKAGE, s) };
     let mn_gc = q(abc, ctrl_ns, "GameController");
     let s_v_gc = abc.intern_string("GC");
     let s_v_setp = abc.intern_string("SETP");
     // SPAWN: build Game(1, Mode.TRAINING) + set stage/char + GameController.startMatch
-    let enums_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.enums"); abc.intern_namespace(NS_PACKAGE, s) };
+    let enums_ns = { let s = abc.intern_string(SSF2_NS_ENUMS); abc.intern_namespace(NS_PACKAGE, s) };
     let mn_game = q(abc, ctrl_ns, "Game");
     let mn_mode = q(abc, enums_ns, "Mode");
     let mn_versus = q(abc, pub_ns, "VERSUS");
@@ -462,7 +602,7 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     let s_v_spawn = abc.intern_string("SPAWN");
     let s_spawned = abc.intern_string("spawned");
     // resource preload verbs (QUEUE ids, LOADNEXT kicks the async loader, LOADED reports done)
-    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let util_ns = { let s = abc.intern_string(SSF2_NS_UTIL); abc.intern_namespace(NS_PACKAGE, s) };
     let mn_rm = q(abc, util_ns, "ResourceManager");
     let mn_queueresources = q(abc, pub_ns, "queueResources");
     let mn_loadnext = q(abc, pub_ns, "loadNext");
@@ -483,7 +623,7 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     let s_v_calls = abc.intern_string("CALLS");
     let s_multimode = abc.intern_string("multimode");
     // RM/STATS root verbs (cur = the static class) for probing the resource pool / stats
-    let engine_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.engine"); abc.intern_namespace(NS_PACKAGE, s) };
+    let engine_ns = { let s = abc.intern_string(SSF2_NS_ENGINE); abc.intern_namespace(NS_PACKAGE, s) };
     let mn_stats_real = q(abc, engine_ns, "Stats");
     let s_v_rm = abc.intern_string("RM");
     let s_v_stats = abc.intern_string("STATS");
@@ -916,14 +1056,13 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     ic.op_u30(OP_PUSHSTRING, s_host); ic.op_u30(OP_PUSHSTRING, s_port);
     ic.op_u30_u30(OP_CALLPROPVOID, mn_connect, 2);
     ic.op(OP_POPSCOPE);
-    let payload = ic.finish(); let n = payload.len() as u32;
+    let payload = ic.finish();
     let iinit = abc.instances[ci].iinit;
     let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
     let body = &mut abc.bodies[body_idx];
-    let mut new_code = payload; new_code.extend_from_slice(&body.code); body.code = new_code;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(3);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -976,7 +1115,7 @@ pub fn inject_input_applicator(abc: &mut Abc, _doc_class_local: &str) -> anyhow:
     let mn_seqidx = q(abc, pub_ns, "peptideSeqIdx");
     let mn_controls = q(abc, pub_ns, "controls");
     let mn_length = q(abc, pub_ns, "length");
-    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let util_ns = { let s = abc.intern_string(SSF2_NS_UTIL); abc.intern_namespace(NS_PACKAGE, s) };
     let mn_controlsobject = q(abc, util_ns, "ControlsObject");
     let pub_nsset = abc.intern_ns_set(vec![pub_ns]);
     let mnl = abc.intern_multinamel(pub_nsset); // runtime [idx] access
@@ -1028,16 +1167,12 @@ pub fn inject_input_applicator(abc: &mut Abc, _doc_class_local: &str) -> anyhow:
     c.place(l_fall);
     c.op(OP_POPSCOPE);
     let payload = c.finish();
-    let n = payload.len() as u32;
 
     let body = &mut abc.bodies[body_idx];
-    let mut new_code = payload;
-    new_code.extend_from_slice(&body.code);
-    body.code = new_code;
+    prepend_code(body, &payload);
     body.local_count = body.local_count.max(l_mask + 1);
     body.max_stack = body.max_stack.max(4);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -1130,15 +1265,11 @@ pub fn inject_ready_signal(abc: &mut Abc, doc_class_local: &str) -> anyhow::Resu
     c.place(l_skip);
     c.op(OP_POPSCOPE);
     let payload = c.finish();
-    let n = payload.len() as u32;
 
     let body = &mut abc.bodies[body_idx];
-    let mut new_code = payload;
-    new_code.extend_from_slice(&body.code);
-    body.code = new_code;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(3);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -1156,8 +1287,8 @@ pub fn inject_ready_signal(abc: &mut Abc, doc_class_local: &str) -> anyhow::Resu
 /// original is ~6 ops: `disclaimerMenu.show()`), so the disclaimer call simply isn't emitted.
 pub fn inject_quickboot(abc: &mut Abc, char_id: &str, stage_id: &str) -> anyhow::Result<()> {
     let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
-    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
-    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
+    let util_ns = { let s = abc.intern_string(SSF2_NS_UTIL); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string(SSF2_NS_CONTROLLERS); abc.intern_namespace(NS_PACKAGE, s) };
     let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
     let mn_rm = q(abc, util_ns, "ResourceManager");
     let mn_queueres = q(abc, pub_ns, "queueResources");
@@ -1210,7 +1341,7 @@ pub fn inject_jump_probe(abc: &mut Abc, doc_class_local: &str, traj_path: &str, 
     let fs_ns = { let s = abc.intern_string("flash.filesystem"); abc.intern_namespace(NS_PACKAGE, s) };
     let utils_ns = { let s = abc.intern_string("flash.utils"); abc.intern_namespace(NS_PACKAGE, s) };
     let events_ns = { let s = abc.intern_string("flash.events"); abc.intern_namespace(NS_PACKAGE, s) };
-    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string(SSF2_NS_CONTROLLERS); abc.intern_namespace(NS_PACKAGE, s) };
     let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
     let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
     let mn_file = q(abc, fs_ns, "File");
@@ -1279,14 +1410,13 @@ pub fn inject_jump_probe(abc: &mut Abc, doc_class_local: &str, traj_path: &str, 
     ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_probe);
     ic.op_u30_u30(OP_CALLPROPVOID, mn_addel, 2);
     ic.op(OP_POPSCOPE);
-    let payload = ic.finish(); let n = payload.len() as u32;
+    let payload = ic.finish();
     let iinit = abc.instances[ci].iinit;
     let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
     let body = &mut abc.bodies[body_idx];
-    let mut new_code = payload; new_code.extend_from_slice(&body.code); body.code = new_code;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(3);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -1300,10 +1430,10 @@ pub fn inject_load_test(abc: &mut Abc, doc_class_local: &str, marker: &str, char
     let ci = abc.find_class_by_name(doc_class_local).ok_or_else(|| anyhow::anyhow!("class not found"))?;
     let fs_ns = { let s = abc.intern_string("flash.filesystem"); abc.intern_namespace(NS_PACKAGE, s) };
     let utils_ns = { let s = abc.intern_string("flash.utils"); abc.intern_namespace(NS_PACKAGE, s) };
-    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
-    let enums_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.enums"); abc.intern_namespace(NS_PACKAGE, s) };
-    let engine_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.engine"); abc.intern_namespace(NS_PACKAGE, s) };
-    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string(SSF2_NS_CONTROLLERS); abc.intern_namespace(NS_PACKAGE, s) };
+    let enums_ns = { let s = abc.intern_string(SSF2_NS_ENUMS); abc.intern_namespace(NS_PACKAGE, s) };
+    let engine_ns = { let s = abc.intern_string(SSF2_NS_ENGINE); abc.intern_namespace(NS_PACKAGE, s) };
+    let util_ns = { let s = abc.intern_string(SSF2_NS_UTIL); abc.intern_namespace(NS_PACKAGE, s) };
     let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
     let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
     let mn_file = q(abc, fs_ns, "File"); let mn_fstream = q(abc, fs_ns, "FileStream"); let mn_fmode = q(abc, fs_ns, "FileMode");
@@ -1369,13 +1499,12 @@ pub fn inject_load_test(abc: &mut Abc, doc_class_local: &str, marker: &str, char
     ic.op_u30(OP_FINDPROPSTRICT, mn_settimeout); ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_kick); ic.op_u30(OP_PUSHSHORT, 3000); ic.op_u30_u30(OP_CALLPROPVOID, mn_settimeout, 2);
     ic.op_u30(OP_FINDPROPSTRICT, mn_setinterval); ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_check); ic.op_u30(OP_PUSHSHORT, 1500); ic.op_u30_u30(OP_CALLPROPVOID, mn_setinterval, 2);
     ic.op(OP_POPSCOPE);
-    let payload = ic.finish(); let n = payload.len() as u32;
+    let payload = ic.finish();
     let iinit = abc.instances[ci].iinit;
     let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
     let body = &mut abc.bodies[body_idx];
-    let mut nc = payload; nc.extend_from_slice(&body.code); body.code = nc;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(4); body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -1396,10 +1525,10 @@ const OP_IFLT: u8 = 0x15;
 pub fn inject_autospawn(abc: &mut Abc, doc_class_local: &str, char_id: &str, stage_id: &str, delay_ms: u32) -> anyhow::Result<()> {
     let ci = abc.find_class_by_name(doc_class_local).ok_or_else(|| anyhow::anyhow!("class not found"))?;
     let utils_ns = { let s = abc.intern_string("flash.utils"); abc.intern_namespace(NS_PACKAGE, s) };
-    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
-    let enums_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.enums"); abc.intern_namespace(NS_PACKAGE, s) };
-    let engine_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.engine"); abc.intern_namespace(NS_PACKAGE, s) };
-    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string(SSF2_NS_CONTROLLERS); abc.intern_namespace(NS_PACKAGE, s) };
+    let enums_ns = { let s = abc.intern_string(SSF2_NS_ENUMS); abc.intern_namespace(NS_PACKAGE, s) };
+    let engine_ns = { let s = abc.intern_string(SSF2_NS_ENGINE); abc.intern_namespace(NS_PACKAGE, s) };
+    let util_ns = { let s = abc.intern_string(SSF2_NS_UTIL); abc.intern_namespace(NS_PACKAGE, s) };
     let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
     let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
     let mn_game = q(abc, ctrl_ns, "Game"); let mn_mode = q(abc, enums_ns, "Mode"); let mn_training = q(abc, pub_ns, "TRAINING");
@@ -1514,13 +1643,12 @@ pub fn inject_autospawn(abc: &mut Abc, doc_class_local: &str, char_id: &str, sta
     ic.op_u30(OP_FINDPROPSTRICT, mn_settimeout); ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_kick); ic.op_u30(OP_PUSHSHORT, delay_ms); ic.op_u30_u30(OP_CALLPROPVOID, mn_settimeout, 2);
     ic.op_u30(OP_FINDPROPSTRICT, mn_setinterval); ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_tick); ic.op_u30(OP_PUSHSHORT, 250); ic.op_u30_u30(OP_CALLPROPVOID, mn_setinterval, 2);
     ic.op(OP_POPSCOPE);
-    let payload = ic.finish(); let n = payload.len() as u32;
+    let payload = ic.finish();
     let iinit = abc.instances[ci].iinit;
     let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
     let body = &mut abc.bodies[body_idx];
-    let mut nc = payload; nc.extend_from_slice(&body.code); body.code = nc;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(4); body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -1571,6 +1699,16 @@ pub fn patch_file(
 
 /// Patch SSF2's ABC with an arbitrary injection step `f`, byte-splicing the
 /// DoAbc2 tag and recompressing. The general form of `patch_file`.
+/// Decompress an SSF2 SWF and parse its DoAbc2 block into an [`Abc`]. The read-only
+/// front half of `patch_file_with`, shared so `peptide ssf2 doctor` checks the exact
+/// same bytecode the patch would.
+pub fn read_abc(in_swf: &Path) -> anyhow::Result<Abc> {
+    let data = std::fs::read(in_swf)?;
+    let buf = swf::decompress_swf(&data[..]).map_err(|e| anyhow::anyhow!("decompress: {e}"))?;
+    let (_, _, abc_off, abc_len) = find_doabc2(&buf.data)?;
+    parse(&buf.data[abc_off..abc_off + abc_len])
+}
+
 pub fn patch_file_with(
     in_swf: &Path, out_swf: &Path,
     f: impl FnOnce(&mut Abc) -> anyhow::Result<()>,
@@ -1638,11 +1776,58 @@ mod tests {
         let abc = crate::abc_codec::parse(abc_bytes).expect("re-parse injected abc (full consume)");
         eprintln!("patched ABC re-parses: strings={} multinames={} bodies={}", abc.strings.len(), abc.multinames.len(), abc.bodies.len());
     }
+
+    /// The whole SSF2_MANIFEST must resolve against the installed SSF2 — a regression
+    /// guard so a wrong/renamed manifest entry is caught here, and `preflight` passes on
+    /// the supported build. Skips cleanly when the SSF2 corpus isn't present.
+    #[test]
+    fn manifest_resolves_against_real_ssf2() {
+        let inp = std::path::Path::new("/Users/jimmy/Downloads/SSF2BetaMac_v1.4.0.1-standalone 2/SSF2.app/Contents/Resources/SSF2.swf");
+        if !inp.exists() { eprintln!("SSF2.swf missing; skip"); return; }
+        let abc = read_abc(inp).expect("read abc");
+        let missing: Vec<_> = verify_symbols(&abc).into_iter().filter(|(_, ok)| !ok)
+            .map(|(s, _)| s.member.map(|m| format!("{}.{m}", s.class)).unwrap_or_else(|| s.class.into()))
+            .collect();
+        assert!(missing.is_empty(), "manifest symbols not resolving: {missing:?}");
+        preflight(&abc).expect("preflight should pass on the supported SSF2 build");
+    }
+
+    /// The detection logic itself: a real class resolves (walking the super chain for an
+    /// inherited member), a bogus class/member does not.
+    #[test]
+    fn verify_detects_missing_symbols() {
+        let inp = std::path::Path::new("/Users/jimmy/Downloads/SSF2BetaMac_v1.4.0.1-standalone 2/SSF2.app/Contents/Resources/SSF2.swf");
+        if !inp.exists() { eprintln!("SSF2.swf missing; skip"); return; }
+        let abc = read_abc(inp).expect("read abc");
+        assert!(abc.find_class_by_name("NoSuchClass_xyz").is_none());
+        let ci = abc.find_class_by_name("Character").expect("Character exists");
+        assert!(class_has_member(&abc, ci, "AttackDataObj"), "inherited member resolves via super chain");
+        assert!(!class_has_member(&abc, ci, "noSuchMember_xyz"), "bogus member is reported missing");
+    }
 }
 
 #[cfg(test)]
 mod asm_tests {
     use super::*;
+
+    /// prepend_code MUST shift the exception-table offsets by the payload length, not
+    /// just splice the code — a body with a try/catch (e.g. Main.iinit) is silently
+    /// corrupted otherwise (the catch points mid-instruction → AVM2 verify failure).
+    /// This guards the exact regression where a refactor dropped the shift.
+    #[test]
+    fn prepend_code_shifts_exceptions() {
+        let mut body = MethodBody {
+            method: 0, max_stack: 0, local_count: 0, init_scope_depth: 0, max_scope_depth: 0,
+            code: vec![0xAA, 0xBB],
+            exceptions: vec![Exception { from: 1, to: 2, target: 1, exc_type: 0, var_name: 0 }],
+            traits: vec![],
+        };
+        prepend_code(&mut body, &[0x10, 0x20, 0x30]); // 3-byte payload
+        assert_eq!(body.code, vec![0x10, 0x20, 0x30, 0xAA, 0xBB], "payload prepended before old code");
+        let e = &body.exceptions[0];
+        assert_eq!((e.from, e.to, e.target), (4, 5, 4), "exception offsets shifted by payload len (3)");
+    }
+
     #[test]
     fn branch_fixup_offsets() {
         // jump FWD; <pop>; place FWD: forward jump should skip the pop.
