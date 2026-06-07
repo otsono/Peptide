@@ -87,6 +87,20 @@ pub struct StageModel {
     pub entrances: Vec<SpawnPoint>,
     /// Respawn beacons (SSF2 `pN_Spawn`), ordered by player index.
     pub respawns: Vec<SpawnPoint>,
+    /// Rendered stage art: the SSF2 stage's vector shapes composited into one RGBA
+    /// PNG, plus the FM-coord top-left where it should be placed. `None` if no vector
+    /// art rasterized (e.g. a bitmap-only stage) — the emitter then draws a placeholder.
+    pub art: Option<StageArt>,
+}
+
+/// A composited stage-art image ready to drop in as the stage sprite.
+#[derive(Clone, Debug)]
+pub struct StageArt {
+    /// PNG bytes (RGBA).
+    pub png: Vec<u8>,
+    /// Top-left of the image in FM stage coords.
+    pub x: f64,
+    pub y: f64,
 }
 
 impl StageModel {
@@ -98,6 +112,8 @@ impl StageModel {
 
 /// One placed shape instance discovered during the tree walk.
 struct Instance {
+    /// The placed `DefineShape` id (so its art can be rasterized later).
+    shape_id: u16,
     /// PlaceObject instance name (e.g. `deathBoundary`), if any.
     inst_name: Option<String>,
     /// SWF SymbolClass name of the nearest named sprite ancestor (e.g.
@@ -146,6 +162,11 @@ pub fn parse_stage(path: &Path) -> Result<StageModel> {
             _ => {}
         }
     }
+    // DefineShape registry, for rasterizing stage art.
+    let mut shape_defs: BTreeMap<u16, &swf::Shape> = BTreeMap::new();
+    for tag in &swf.tags {
+        if let swf::Tag::DefineShape(s) = tag { shape_defs.insert(s.id, s); }
+    }
 
     // Collect every placed shape instance (with world AABB) and find the stageMC origin.
     let mut instances: Vec<Instance> = Vec::new();
@@ -193,7 +214,70 @@ pub fn parse_stage(path: &Path) -> Result<StageModel> {
     if platforms.is_empty() {
         bail!("no collision geometry found in {} (not a recognised SSF2 stage?)", path.display());
     }
-    Ok(StageModel { id, platforms, death_box, camera_box, entrances, respawns })
+
+    // --- art: rasterize the stage's vector shapes + composite them into one image.
+    let art = render_art(&instances, &shape_defs, ox, oy);
+
+    Ok(StageModel { id, platforms, death_box, camera_box, entrances, respawns, art })
+}
+
+/// `true` if a placed instance is non-visual scaffolding (boundary clip, spawn beacon,
+/// warning bounds, item generator, shadow mask) rather than stage art.
+fn is_marker(label: &str) -> bool {
+    let l = label.to_ascii_lowercase();
+    ["boundary", "_start_", "_spawn_", "warning", "itemgen", "shadowmask", "smashball"]
+        .iter().any(|m| l.contains(m))
+}
+
+/// Rasterize every art shape and composite them (back-to-front = walk order) into one
+/// RGBA image spanning their union bounds. Returns `None` if nothing rasterized (e.g. a
+/// bitmap-only stage, which `vector_raster` can't handle). Coordinates are converted to
+/// FM space (raw world minus the stageMC origin).
+fn render_art(instances: &[Instance], shape_defs: &BTreeMap<u16, &swf::Shape>, ox: f64, oy: f64) -> Option<StageArt> {
+    use image::{imageops, RgbaImage};
+
+    // art instances = placed shapes that aren't markers and have a DefineShape.
+    let art: Vec<&Instance> = instances.iter()
+        .filter(|i| shape_defs.contains_key(&i.shape_id))
+        .filter(|i| !is_marker(i.inst_name.as_deref().unwrap_or("")) && !is_marker(&i.sym_name))
+        .collect();
+    if art.is_empty() { return None; }
+
+    // union bounds (raw world coords) -> canvas. cap to keep the PNG sane.
+    let min_x = art.iter().map(|i| i.aabb.left()).fold(f64::MAX, f64::min);
+    let min_y = art.iter().map(|i| i.aabb.top()).fold(f64::MAX, f64::min);
+    let max_x = art.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max);
+    let max_y = art.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max);
+    let cw = ((max_x - min_x).ceil() as u32).clamp(1, 4096);
+    let ch = ((max_y - min_y).ceil() as u32).clamp(1, 4096);
+    let mut canvas = RgbaImage::new(cw, ch);
+
+    let mut drew = false;
+    for inst in &art {
+        let shape = shape_defs.get(&inst.shape_id).unwrap();
+        let Some(r) = crate::vector_raster::rasterize_shape(
+            &shape.shape_bounds, &shape.styles.fill_styles, &shape.styles.line_styles, &shape.shape,
+        ) else { continue };
+        if r.width == 0 || r.height == 0 { continue; }
+        // resize the native-resolution raster to the placed AABB size, then overlay it.
+        let tile = RgbaImage::from_raw(r.width, r.height, r.rgba)?;
+        let tw = (inst.aabb.w.round() as u32).clamp(1, 4096);
+        let th = (inst.aabb.h.round() as u32).clamp(1, 4096);
+        let scaled = imageops::resize(&tile, tw, th, imageops::FilterType::Triangle);
+        let ox_px = (inst.aabb.left() - min_x).round() as i64;
+        let oy_px = (inst.aabb.top() - min_y).round() as i64;
+        imageops::overlay(&mut canvas, &scaled, ox_px, oy_px);
+        drew = true;
+    }
+    if !drew { return None; }
+
+    let mut png = Vec::new();
+    {
+        use image::ImageEncoder;
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(canvas.as_raw(), cw, ch, image::ExtendedColorType::Rgba8).ok()?;
+    }
+    Some(StageArt { png, x: min_x - ox, y: min_y - oy })
 }
 
 /// Decompress an `.ssf` to SWF bytes via the DAT-archive aware path.
@@ -270,6 +354,7 @@ fn walk<'a>(
             let ymn = corners.iter().map(|c| c.1).fold(f64::MAX, f64::min);
             let ymx = corners.iter().map(|c| c.1).fold(f64::MIN, f64::max);
             out.push(Instance {
+                shape_id: id,
                 inst_name: inst_name.clone(),
                 sym_name: carried_sym.unwrap_or("").to_string(),
                 aabb: Rect { x: xmn, y: ymn, w: xmx - xmn, h: ymx - ymn },

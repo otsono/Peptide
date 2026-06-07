@@ -657,7 +657,7 @@
     {
       "$id": "77f620bf-cd3b-53eb-95f0-66dff1abea80",
       "alpha": 1,
-      "imageAsset": "26e15750-0a8f-5eb5-9cb4-77e488401c0d",
+      "imageAsset": "caac8591-e813-548a-a440-6a836ddcb020",
       "pivotX": 0,
       "pivotY": 0,
       "pluginMetadata": {},
@@ -665,8 +665,8 @@
       "scaleX": 1,
       "scaleY": 1,
       "type": "IMAGE",
-      "x": -266.15,
-      "y": -56.32942276000975
+      "x": -441.0,
+      "y": -248.0
     },
     {
       "$id": "c784af1a-35c4-514f-8722-a07b8b6e20dd",
