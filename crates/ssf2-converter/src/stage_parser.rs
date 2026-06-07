@@ -59,6 +59,9 @@ pub struct Platform {
     pub rect: Rect,
     /// `true` for a one-way (drop-through) soft platform; `false` for solid terrain.
     pub drop_through: bool,
+    /// The walkable TOP surface as a polyline in FM coords (left to right), when the terrain
+    /// is curved/sloped. `None` for a flat platform (use `rect.top()` as a level line).
+    pub profile: Option<Vec<(f64, f64)>>,
 }
 
 /// A player beacon (match-start "entrance" or respawn point) in FM coords.
@@ -278,9 +281,13 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         let is_solid = !is_art_bg
             && ["terrain", "collison", "collision", "ground"].iter().any(|m| sn.contains(m));
         if !is_art_bg && sn.contains("platform") {
-            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: true });
+            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: true, profile: None });
         } else if is_solid {
-            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: false });
+            // solid terrain can be curved/sloped (e.g. a hilly island), so trace its top
+            // surface as a polyline instead of a flat line.
+            let profile = shape_defs.get(&inst.shape_id)
+                .and_then(|s| floor_profile(s, &inst.aabb, ox, oy, scale));
+            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: false, profile });
         }
     }
 
@@ -360,9 +367,12 @@ fn validate_ssf2_linkages(sym_names: &BTreeMap<u16, String>, model_id: &str) -> 
     w
 }
 
-/// Depth layer an art instance belongs to (back-to-front).
+/// Depth layer an art instance belongs to (back-to-front). `Backdrop` is the document-root
+/// `<id>_bg` scene (the far sky), which composites WITH `Parallax` (the `_cambg` layers) into
+/// one camera-relative background when parallax is present, so the rays/sun draw in front of
+/// the sky instead of being occluded by it.
 #[derive(Clone, Copy, PartialEq)]
-enum ArtKind { Parallax, Background, Stage, Foreground }
+enum ArtKind { Backdrop, Parallax, Background, Stage, Foreground }
 
 /// Classify a *visual* art instance by its stage PLANE — the instance name of the stage-root
 /// child it descends from (the stable AS3 slot: `terrain`/`background`/`foreground`/mask, or
@@ -377,6 +387,8 @@ fn art_kind(inst: &Instance) -> ArtKind {
         ArtKind::Parallax
     } else if plane == "foreground" || plane.contains("_fg") {
         ArtKind::Foreground
+    } else if plane == "backdrop" {
+        ArtKind::Backdrop
     } else if plane == "background" {
         ArtKind::Background
     } else {
@@ -405,7 +417,11 @@ fn plane_tag(inst_name: Option<&str>, sym: &str) -> Option<&'static str> {
     else if nl == "terrain" { Some("terrain") }
     else if nl.contains("mask") { Some("mask") }
     else if nl == "stance" { Some("stance") }
-    else if n.is_empty() && sym.to_ascii_lowercase().ends_with("_bg") { Some("background") }
+    // the document-root backdrop container (`<id>_bg`, and `*_bg` sky props inside it) carries
+    // no instance name. it sits BEHIND the stageMC `background` plane and holds the `_cambg`
+    // parallax layers, so it gets its own `backdrop` tag (composited with the parallax when
+    // present, otherwise drawn as the farthest fixed layer).
+    else if n.is_empty() && sym.to_ascii_lowercase().ends_with("_bg") { Some("backdrop") }
     else { None }
 }
 
@@ -556,8 +572,8 @@ fn render_art_layers(
             && !is_non_art(i.inst_name.as_deref().unwrap_or("")) && !is_non_art(&i.sym_name));
         out
     };
-    let composite = |insts: &[Instance], kind: ArtKind| -> Option<StageArt> {
-        let group: Vec<&Instance> = insts.iter().filter(|i| art_kind(i) == kind).collect();
+    let composite = |insts: &[Instance], kinds: &[ArtKind]| -> Option<StageArt> {
+        let group: Vec<&Instance> = insts.iter().filter(|i| kinds.contains(&art_kind(i))).collect();
         // PNG stays native-resolution; only the placement is scaled (the emitter renders the
         // IMAGE layer at `scale`), so the art and geometry share one scale with no upscaling.
         composite_layer(&group, shape_defs, bitmaps, ox, oy).map(|mut a| {
@@ -568,7 +584,7 @@ fn render_art_layers(
     // sample every frame's instance set + the composited image.
     let sampled: Vec<(Vec<Instance>, Option<StageArt>)> = (0..n_samples).map(|i| {
         let insts = frame_instances(sample_frame(i));
-        let img = composite(&insts, ArtKind::Stage);
+        let img = composite(&insts, &[ArtKind::Stage]);
         (insts, img)
     }).collect();
     let stage_counts: Vec<usize> = sampled.iter()
@@ -582,16 +598,23 @@ fn render_art_layers(
     if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
         eprintln!("=== art instances (richest frame {base_idx}, {} insts) ===", base_insts.len());
         for i in base_insts {
-            let k = match art_kind(i) { ArtKind::Parallax => "PARLX", ArtKind::Background => "BG", ArtKind::Stage => "STAGE", ArtKind::Foreground => "FG" };
+            let k = match art_kind(i) { ArtKind::Backdrop => "BKDRP", ArtKind::Parallax => "PARLX", ArtKind::Background => "BG", ArtKind::Stage => "STAGE", ArtKind::Foreground => "FG" };
             eprintln!("  [{k:5}] plane={:?} sym={:?} aabb=({:.0},{:.0} {:.0}x{:.0})",
                 i.plane, i.sym_name, i.aabb.x, i.aabb.y, i.aabb.w, i.aabb.h);
         }
     }
-    let background = composite(base_insts, ArtKind::Background);
-    let foreground = composite(base_insts, ArtKind::Foreground);
-    // parallax: the `_cambg` layers composited back-to-front into one camera-relative plane
-    // (SSF2 scrolls them via getCameraBackgrounds; the emitter maps it to an FM camera bg).
-    let parallax = composite(base_insts, ArtKind::Parallax);
+    let foreground = composite(base_insts, &[ArtKind::Foreground]);
+    // when the backdrop carries `_cambg` parallax layers, composite the far sky (Backdrop) +
+    // the parallax (`_cambg`) into ONE camera-relative plane (so the rays/sun draw in front of
+    // the sky, not occluded behind it), and keep the stageMC `background` plane as a fixed
+    // near-background in front of it. without parallax, backdrop + background are one fixed bg.
+    let has_parallax = base_insts.iter().any(|i| art_kind(i) == ArtKind::Parallax);
+    let (background, parallax) = if has_parallax {
+        (composite(base_insts, &[ArtKind::Background]),
+         composite(base_insts, &[ArtKind::Backdrop, ArtKind::Parallax]))
+    } else {
+        (composite(base_insts, &[ArtKind::Backdrop, ArtKind::Background]), None)
+    };
 
     // Emit a multi-frame stage animation only when the samples form a CLEAN animation:
     // every frame well-populated (no blinking on/off) and at least two distinct images.
@@ -695,6 +718,67 @@ fn composite_layer(
             .write_image(canvas.as_raw(), cw, ch, image::ExtendedColorType::Rgba8).ok()?;
     }
     Some(StageArt { png, x: min_x - ox, y: min_y - oy, w: cw, h: ch })
+}
+
+/// Trace a solid terrain shape's walkable TOP surface as a polyline in FM coords (left to
+/// right). Rasterizes the shape and scans each column for the topmost opaque pixel, then maps
+/// to world via the placed AABB and simplifies. `None` if the shape won't rasterize, is
+/// essentially flat (so the level `rect.top()` line suffices), or maps to < 2 points. Maps
+/// through the AABB, so it's exact for translated/scaled terrain; rotated terrain would skew
+/// (rare for stages).
+fn floor_profile(shape: &swf::Shape, aabb: &Rect, ox: f64, oy: f64, scale: f64) -> Option<Vec<(f64, f64)>> {
+    use image::{imageops, RgbaImage};
+    let raster = crate::vector_raster::rasterize_shape(
+        &shape.shape_bounds, &shape.styles.fill_styles, &shape.styles.line_styles, &shape.shape,
+    )?;
+    let mask = RgbaImage::from_raw(raster.width, raster.height, raster.rgba)?;
+    let w = (aabb.w.round() as u32).clamp(1, 4096);
+    let h = (aabb.h.round() as u32).clamp(1, 4096);
+    if w < 2 || h < 2 { return None; }
+    let mask = imageops::resize(&mask, w, h, imageops::FilterType::Triangle);
+    let step = (w / 96).max(1); // ~96 columns sampled across the span
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    let mut cx = 0u32;
+    loop {
+        let col = cx.min(w - 1);
+        if let Some(ty) = (0..h).find(|&y| mask.get_pixel(col, y)[3] > 40) {
+            pts.push((
+                (aabb.left() + col as f64 - ox) * scale,
+                (aabb.top() + ty as f64 - oy) * scale,
+            ));
+        }
+        if col == w - 1 { break; }
+        cx += step;
+    }
+    if pts.len() < 2 { return None; }
+    let simplified = rdp_simplify(&pts, 2.0);
+    // a (near-)flat profile adds nothing over the level floor line.
+    let ys: Vec<f64> = simplified.iter().map(|p| p.1).collect();
+    let span = ys.iter().cloned().fold(f64::MIN, f64::max) - ys.iter().cloned().fold(f64::MAX, f64::min);
+    if span < 6.0 { return None; }
+    Some(simplified)
+}
+
+/// Ramer-Douglas-Peucker polyline simplification (perpendicular-distance epsilon in px).
+fn rdp_simplify(pts: &[(f64, f64)], eps: f64) -> Vec<(f64, f64)> {
+    if pts.len() < 3 { return pts.to_vec(); }
+    let (a, b) = (pts[0], pts[pts.len() - 1]);
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = (dx * dx + dy * dy).sqrt().max(1e-9);
+    let (mut max_d, mut idx) = (0.0_f64, 0);
+    for (i, p) in pts.iter().enumerate().take(pts.len() - 1).skip(1) {
+        let d = ((p.0 - a.0) * dy - (p.1 - a.1) * dx).abs() / len;
+        if d > max_d { max_d = d; idx = i; }
+    }
+    if max_d > eps {
+        let mut left = rdp_simplify(&pts[..=idx], eps);
+        let right = rdp_simplify(&pts[idx..], eps);
+        left.pop();
+        left.extend(right);
+        left
+    } else {
+        vec![a, b]
+    }
 }
 
 /// Decompress an `.ssf` to SWF bytes via the DAT-archive aware path.

@@ -159,13 +159,15 @@ impl<'a> EntityBuilder<'a> {
     }
 
 
-    /// A LINE_SEGMENT layer (walkable surface). `pm` is the per-symbol
+    /// A LINE_SEGMENT layer (walkable surface). `points` is the polyline (>= 2 points; a
+    /// flat floor is 2, a curved/sloped terrain traces its surface). `pm` is the per-symbol
     /// FraymakersMetadata (structureType + ledge/dropThrough flags).
-    fn add_line_segment(&mut self, name: &str, points: [f64; 4], pm: Value) {
+    fn add_line_segment(&mut self, name: &str, points: &[(f64, f64)], pm: Value) {
+        let flat: Vec<f64> = points.iter().flat_map(|&(x, y)| [x, y]).collect();
         let sym = self.uid(&format!("sym:{name}"));
         self.symbols.push(json!({
             "$id": sym, "type": "LINE_SEGMENT", "alpha": 0.5, "color": "0xeeeeee",
-            "points": [points[0], points[1], points[2], points[3]],
+            "points": flat,
             "pluginMetadata": { "com.fraymakers.FraymakersMetadata": pm }
         }));
         let kf = self.uid(&format!("kf:{name}"));
@@ -353,18 +355,23 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
         let (lx, rx) = model.ledges
             .filter(|_| main_floor.as_ref().map(|m| m.rect == *r).unwrap_or(false))
             .unwrap_or((r.left(), r.right()));
+        // a curved/sloped terrain traces its top surface as a polyline; a flat one is the
+        // level top line. ledges anchor at the surface endpoints.
+        let surface = |default: Vec<(f64, f64)>| -> Vec<(f64, f64)> {
+            p.profile.clone().filter(|pf| pf.len() >= 2).unwrap_or(default)
+        };
         if !p.drop_through && main_floor.as_ref().map(|m| m.rect == *r).unwrap_or(false) {
-            b.add_line_segment("Floor", [lx, r.top(), rx, r.top()], json!({
+            b.add_line_segment("Floor", &surface(vec![(lx, r.top()), (rx, r.top())]), json!({
                 "structureType": "FLOOR", "leftLedge": true, "rightLedge": true, "dropThrough": false
             }));
         } else if p.drop_through {
             plat_n += 1;
-            b.add_line_segment(&format!("Platform {plat_n} Floor"), [r.left(), r.top(), r.right(), r.top()], json!({
+            b.add_line_segment(&format!("Platform {plat_n} Floor"), &[(r.left(), r.top()), (r.right(), r.top())], json!({
                 "structureType": "FLOOR", "leftLedge": false, "rightLedge": false, "dropThrough": true
             }));
         } else {
             plat_n += 1;
-            b.add_line_segment(&format!("Solid {plat_n} Floor"), [r.left(), r.top(), r.right(), r.top()], json!({
+            b.add_line_segment(&format!("Solid {plat_n} Floor"), &surface(vec![(r.left(), r.top()), (r.right(), r.top())]), json!({
                 "structureType": "FLOOR", "leftLedge": false, "rightLedge": false, "dropThrough": false
             }));
         }
