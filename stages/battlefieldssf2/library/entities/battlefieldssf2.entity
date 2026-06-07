@@ -1,7 +1,7 @@
 {
   "animations": [
     {
-      "$id": "d0c77aa6-5ea7-5d09-b345-ae38b34abb5f",
+      "$id": "70a4b649-0143-589e-a077-6145183eff1e",
       "layers": [
         "65b2ae70-de9d-57f2-83bb-52f29cc265f3",
         "b3b783a6-067c-5742-8626-b68610068fbd",
@@ -18,19 +18,18 @@
         "43dd0c90-f0b6-576c-a5c9-14fc4061a9db",
         "749db468-997f-5fb5-830f-03ea13e30d8f",
         "86357cad-5caf-59a9-92b6-e24305bfaa6b",
-        "273e3427-6071-5565-88b0-9783e5004fde",
-        "f8e809e6-2bb4-58a5-af24-bbd426e2c080",
-        "360ce061-aa6a-5b62-90c4-a5b86d01b287",
-        "90adfd5b-4533-565b-aee2-c038f0760a10",
-        "dbb3f859-6479-5afd-8e1e-0eac0ad0a5c3",
-        "a68b83ff-0908-5eb8-8d43-4a522aa78131",
-        "412956db-ff89-5d50-b391-c97e646165c3",
-        "9540dadf-2ed2-56f9-9903-45cee271c248",
-        "41df9ad5-f1c1-5479-941a-31a96bd7e95c",
-        "0033672f-ee93-5313-ad85-9ff8ad231217",
-        "c9a27fb2-047d-520c-b97e-5e6a6bb9b182",
-        "3ef36677-8d7d-5bc6-be92-90bb48ffba07",
-        "841c89b5-3c72-57c4-8610-fbc10c3817c4"
+        "3ac3b83c-0c52-52f4-bf9b-564f088ca599",
+        "b691a6c3-3ad6-5f18-bb32-36f830a86685",
+        "feaa445c-be40-58ca-a0d8-4898327654a7",
+        "8e85ddd8-2108-5cec-86f0-a91403c1a471",
+        "71fb5850-49cf-587d-937e-0355d5ebc68b",
+        "6585453a-7e69-5353-b827-3f32f0868a1b",
+        "a26b6a19-983f-5752-b345-4ea9142a0707",
+        "28db3e1a-fe39-529f-a734-131a91620089",
+        "d5026b4a-faba-5f88-b8c3-59439af6116d",
+        "977a13a5-044d-5ce5-9f21-53a6aa08c294",
+        "39bde4ce-c122-54cd-be7c-b7bdeeca877a",
+        "514e4b8f-7ae8-5bcf-8e6c-23a86b546518"
       ],
       "name": "stage",
       "pluginMetadata": {}
@@ -143,118 +142,109 @@
       "type": "COLLISION_BOX"
     },
     {
-      "$id": "de59da2f-0e56-5810-9fa3-f7e8ec406438",
+      "$id": "9d6f8b02-296d-5079-8480-eea50d95c640",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "728727ff-5900-545e-898d-d161d9efb808",
-      "tweenType": "LINEAR",
-      "tweened": false,
-      "type": "COLLISION_BOX"
-    },
-    {
-      "$id": "031becb2-d269-5eac-9143-3600db97dab6",
-      "length": 1,
-      "pluginMetadata": {},
-      "symbol": "51790dfa-ff80-5f06-b4b2-1b99bc5b2b80",
+      "symbol": "a359cf88-e112-587f-a12c-32507c01fc87",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "0c490323-1f54-5300-baa8-9ec0b9aace2c",
+      "$id": "e6b9b419-f132-5949-824d-ff8806dc6b22",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "170b3187-60c7-5d0a-8c5d-4eddf9417b86",
+      "symbol": "62d2d572-553b-5944-b11f-5433237dd669",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "fe3be6a8-ad24-5ed6-a93a-5fccc3059c15",
+      "$id": "d5526812-708d-5a86-8e75-72a5f90866c4",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "fe893e32-9e3a-505c-953a-dddfd2880123",
+      "symbol": "be393f32-2246-5575-bf5a-9cfc225025d2",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "f0aa12a0-f64b-5376-a6a1-7aca903fb439",
+      "$id": "df4724f3-0dcd-5ff6-a246-05b37bb47b77",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "31c27cf7-3ec7-5e97-84cd-c0b34239aeea",
+      "symbol": "5a0d4587-55f4-5bbd-a35a-04369007a02b",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "a954a601-8400-5292-a56c-a1b7bb58b235",
+      "$id": "20cc71dd-06f2-5d53-924a-4252635bdeed",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "4dcd0ddb-6046-5b9d-87f2-2a25927f5ead",
+      "symbol": "743f3a24-d192-5b1f-9cd8-c0fd4000d3c4",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "374dcea2-a791-56b5-b65f-3392e40b8397",
+      "$id": "4bce8e61-f931-5906-9799-71acfffbbbce",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "33e280fd-637e-5d17-91fb-1a7cff1e30e7",
+      "symbol": "e5e36055-959a-59ad-a767-ce4e09c4021c",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "c00c8351-9f25-58e2-956b-0424f001363e",
+      "$id": "c677e4f3-4ee6-5b3d-9a73-fe051fc6f429",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "fdde4f73-7e3a-50ce-a545-4448a62a652f",
+      "symbol": "ee293789-7be8-5b9c-a5d6-87aa4c325dfe",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "a60aa026-494e-5a9f-95e2-12bb49949135",
+      "$id": "cc552ba0-58d1-5bd5-bc8b-2351535dbd1a",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "dd4a2d8c-6018-560d-a387-3e80e4916c9d",
+      "symbol": "4c6f81b8-f04c-5db6-bfcc-f3a34b3056d1",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "718d23c1-97e6-590f-b4be-92b8f328280f",
+      "$id": "f8998d31-78da-5fa8-87f2-be20137b0f68",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "fbd28aa4-3b4f-500c-beb7-56bf88482ec5",
+      "symbol": "4800059e-96cd-5af2-88a3-e5a0b1646cce",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "19449ead-e1f7-53c5-ba14-1aa94e47a8cc",
+      "$id": "0df22c49-6c27-5b47-b899-4398bb482623",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "47497cad-cea1-5187-9894-20303cbda7b0",
+      "symbol": "b0abc69d-1c96-5317-bc7d-e9211162a0e1",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "4bfeb167-18ef-542e-8d8f-5f0e9b30f0fe",
+      "$id": "f2751de7-d233-53cc-85b5-ad49cff210bb",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "da27cdab-3c9e-5245-a6b3-c1ab45c52c21",
+      "symbol": "929f0ade-5e09-53e3-94e3-8e951dfebdde",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "0f66c37f-7377-5d22-bcbb-b0b541fca9df",
+      "$id": "63e013ea-8af4-5118-935e-ed7118e901aa",
       "length": 1,
       "pluginMetadata": {},
-      "symbol": "f4a3a10d-aa07-540b-a983-bda4731075eb",
+      "symbol": "733a7246-fe3c-5504-a841-5219199481d6",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
@@ -483,28 +473,10 @@
       "type": "COLLISION_BOX"
     },
     {
-      "$id": "273e3427-6071-5565-88b0-9783e5004fde",
-      "defaultAlpha": 0.5,
-      "defaultColor": "0xd1d1d1",
+      "$id": "3ac3b83c-0c52-52f4-bf9b-564f088ca599",
       "hidden": false,
       "keyframes": [
-        "de59da2f-0e56-5810-9fa3-f7e8ec406438"
-      ],
-      "locked": false,
-      "name": "Camera Anchor Box 0",
-      "pluginMetadata": {
-        "com.fraymakers.FraymakersMetadata": {
-          "collisionBoxType": "CAMERA_ANCHOR_BOX",
-          "index": 0
-        }
-      },
-      "type": "COLLISION_BOX"
-    },
-    {
-      "$id": "f8e809e6-2bb4-58a5-af24-bbd426e2c080",
-      "hidden": false,
-      "keyframes": [
-        "031becb2-d269-5eac-9143-3600db97dab6"
+        "9d6f8b02-296d-5079-8480-eea50d95c640"
       ],
       "locked": false,
       "name": "Floor",
@@ -516,10 +488,10 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "360ce061-aa6a-5b62-90c4-a5b86d01b287",
+      "$id": "b691a6c3-3ad6-5f18-bb32-36f830a86685",
       "hidden": false,
       "keyframes": [
-        "0c490323-1f54-5300-baa8-9ec0b9aace2c"
+        "e6b9b419-f132-5949-824d-ff8806dc6b22"
       ],
       "locked": false,
       "name": "Platform 1 Floor",
@@ -531,10 +503,10 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "90adfd5b-4533-565b-aee2-c038f0760a10",
+      "$id": "feaa445c-be40-58ca-a0d8-4898327654a7",
       "hidden": false,
       "keyframes": [
-        "fe3be6a8-ad24-5ed6-a93a-5fccc3059c15"
+        "d5526812-708d-5a86-8e75-72a5f90866c4"
       ],
       "locked": false,
       "name": "Platform 2 Floor",
@@ -546,10 +518,10 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "dbb3f859-6479-5afd-8e1e-0eac0ad0a5c3",
+      "$id": "8e85ddd8-2108-5cec-86f0-a91403c1a471",
       "hidden": false,
       "keyframes": [
-        "f0aa12a0-f64b-5376-a6a1-7aca903fb439"
+        "df4724f3-0dcd-5ff6-a246-05b37bb47b77"
       ],
       "locked": false,
       "name": "Platform 3 Floor",
@@ -561,10 +533,10 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "a68b83ff-0908-5eb8-8d43-4a522aa78131",
+      "$id": "71fb5850-49cf-587d-937e-0355d5ebc68b",
       "hidden": false,
       "keyframes": [
-        "a954a601-8400-5292-a56c-a1b7bb58b235"
+        "20cc71dd-06f2-5d53-924a-4252635bdeed"
       ],
       "locked": false,
       "name": "Entrance 0",
@@ -577,10 +549,10 @@
       "type": "POINT"
     },
     {
-      "$id": "412956db-ff89-5d50-b391-c97e646165c3",
+      "$id": "6585453a-7e69-5353-b827-3f32f0868a1b",
       "hidden": false,
       "keyframes": [
-        "374dcea2-a791-56b5-b65f-3392e40b8397"
+        "4bce8e61-f931-5906-9799-71acfffbbbce"
       ],
       "locked": false,
       "name": "Entrance 1",
@@ -593,10 +565,10 @@
       "type": "POINT"
     },
     {
-      "$id": "9540dadf-2ed2-56f9-9903-45cee271c248",
+      "$id": "a26b6a19-983f-5752-b345-4ea9142a0707",
       "hidden": false,
       "keyframes": [
-        "c00c8351-9f25-58e2-956b-0424f001363e"
+        "c677e4f3-4ee6-5b3d-9a73-fe051fc6f429"
       ],
       "locked": false,
       "name": "Entrance 2",
@@ -609,10 +581,10 @@
       "type": "POINT"
     },
     {
-      "$id": "41df9ad5-f1c1-5479-941a-31a96bd7e95c",
+      "$id": "28db3e1a-fe39-529f-a734-131a91620089",
       "hidden": false,
       "keyframes": [
-        "a60aa026-494e-5a9f-95e2-12bb49949135"
+        "cc552ba0-58d1-5bd5-bc8b-2351535dbd1a"
       ],
       "locked": false,
       "name": "Entrance 3",
@@ -625,10 +597,10 @@
       "type": "POINT"
     },
     {
-      "$id": "0033672f-ee93-5313-ad85-9ff8ad231217",
+      "$id": "d5026b4a-faba-5f88-b8c3-59439af6116d",
       "hidden": false,
       "keyframes": [
-        "718d23c1-97e6-590f-b4be-92b8f328280f"
+        "f8998d31-78da-5fa8-87f2-be20137b0f68"
       ],
       "locked": false,
       "name": "Respawn 0",
@@ -641,10 +613,10 @@
       "type": "POINT"
     },
     {
-      "$id": "c9a27fb2-047d-520c-b97e-5e6a6bb9b182",
+      "$id": "977a13a5-044d-5ce5-9f21-53a6aa08c294",
       "hidden": false,
       "keyframes": [
-        "19449ead-e1f7-53c5-ba14-1aa94e47a8cc"
+        "0df22c49-6c27-5b47-b899-4398bb482623"
       ],
       "locked": false,
       "name": "Respawn 1",
@@ -657,10 +629,10 @@
       "type": "POINT"
     },
     {
-      "$id": "3ef36677-8d7d-5bc6-be92-90bb48ffba07",
+      "$id": "39bde4ce-c122-54cd-be7c-b7bdeeca877a",
       "hidden": false,
       "keyframes": [
-        "4bfeb167-18ef-542e-8d8f-5f0e9b30f0fe"
+        "f2751de7-d233-53cc-85b5-ad49cff210bb"
       ],
       "locked": false,
       "name": "Respawn 2",
@@ -673,10 +645,10 @@
       "type": "POINT"
     },
     {
-      "$id": "841c89b5-3c72-57c4-8610-fbc10c3817c4",
+      "$id": "514e4b8f-7ae8-5bcf-8e6c-23a86b546518",
       "hidden": false,
       "keyframes": [
-        "0f66c37f-7377-5d22-bcbb-b0b541fca9df"
+        "63e013ea-8af4-5118-935e-ed7118e901aa"
       ],
       "locked": false,
       "name": "Respawn 3",
@@ -711,11 +683,11 @@
       "pivotY": 0,
       "pluginMetadata": {},
       "rotation": 0,
-      "scaleX": 1,
-      "scaleY": 1,
+      "scaleX": 1.3,
+      "scaleY": 1.3,
       "type": "IMAGE",
-      "x": -441.0,
-      "y": -248.0
+      "x": -573.3000000000001,
+      "y": -322.40000000000003
     },
     {
       "$id": "48283adc-05fd-5fee-a32b-5406b7ca98e5",
@@ -725,56 +697,42 @@
       "pivotY": 0,
       "pluginMetadata": {},
       "rotation": 0,
-      "scaleX": 1,
-      "scaleY": 1,
+      "scaleX": 1.3,
+      "scaleY": 1.3,
       "type": "IMAGE",
-      "x": -294.65,
-      "y": -46.30000000000001
+      "x": -383.04499999999996,
+      "y": -60.19000000000002
     },
     {
       "$id": "1a2607ee-a589-5372-8fd9-6a464836a9a2",
       "alpha": null,
       "color": null,
-      "pivotX": 776.2773132324219,
+      "pivotX": 1009.1605072021484,
       "pivotY": 0,
       "pluginMetadata": {},
       "rotation": 0,
-      "scaleX": 1552.5546264648438,
-      "scaleY": 1027.8078002929688,
+      "scaleX": 2018.3210144042969,
+      "scaleY": 1336.1501403808595,
       "type": "COLLISION_BOX",
-      "x": -772.7320434570313,
-      "y": -502.25487670898434
+      "x": -1004.5516564941407,
+      "y": -652.9313397216797
     },
     {
       "$id": "a3b52e3f-1ebf-5087-914a-853c1453352f",
       "alpha": null,
       "color": null,
-      "pivotX": 550.9148254394531,
+      "pivotX": 716.1892730712891,
       "pivotY": 0,
       "pluginMetadata": {},
       "rotation": 0,
-      "scaleX": 1101.8296508789062,
-      "scaleY": 726.9783813476563,
+      "scaleX": 1432.3785461425782,
+      "scaleY": 945.0718957519532,
       "type": "COLLISION_BOX",
-      "x": -547.3598510742188,
-      "y": -335.9436828613281
+      "x": -711.5678063964845,
+      "y": -436.7267877197266
     },
     {
-      "$id": "728727ff-5900-545e-898d-d161d9efb808",
-      "alpha": null,
-      "color": null,
-      "pivotX": 550.9148254394531,
-      "pivotY": 0,
-      "pluginMetadata": {},
-      "rotation": 0,
-      "scaleX": 1101.8296508789062,
-      "scaleY": 726.9783813476563,
-      "type": "COLLISION_BOX",
-      "x": -547.3598510742188,
-      "y": -335.9436828613281
-    },
-    {
-      "$id": "51790dfa-ff80-5f06-b4b2-1b99bc5b2b80",
+      "$id": "a359cf88-e112-587f-a12c-32507c01fc87",
       "alpha": 0.5,
       "color": "0xeeeeee",
       "pluginMetadata": {
@@ -786,15 +744,15 @@
         }
       },
       "points": [
-        -257.65,
-        133.64999999999998,
-        264.70000000000005,
-        133.64999999999998
+        -334.945,
+        173.74499999999998,
+        344.11000000000007,
+        173.74499999999998
       ],
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "170b3187-60c7-5d0a-8c5d-4eddf9417b86",
+      "$id": "62d2d572-553b-5944-b11f-5433237dd669",
       "alpha": 0.5,
       "color": "0xeeeeee",
       "pluginMetadata": {
@@ -806,15 +764,15 @@
         }
       },
       "points": [
-        -187.256640625,
-        44.220611572265625,
-        -67.15585937499998,
-        44.220611572265625
+        -243.43363281249998,
+        57.486795043945314,
+        -87.30261718749995,
+        57.486795043945314
       ],
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "fe893e32-9e3a-505c-953a-dddfd2880123",
+      "$id": "be393f32-2246-5575-bf5a-9cfc225025d2",
       "alpha": 0.5,
       "color": "0xeeeeee",
       "pluginMetadata": {
@@ -826,15 +784,15 @@
         }
       },
       "points": [
-        74.24335937500001,
-        44.220611572265625,
-        194.34414062500002,
-        44.220611572265625
+        96.51636718750002,
+        57.486795043945314,
+        252.64738281250004,
+        57.486795043945314
       ],
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "31c27cf7-3ec7-5e97-84cd-c0b34239aeea",
+      "$id": "5a0d4587-55f4-5bbd-a35a-04369007a02b",
       "alpha": 0.5,
       "color": "0xeeeeee",
       "pluginMetadata": {
@@ -846,92 +804,92 @@
         }
       },
       "points": [
-        -52.00239105224608,
-        -48.32942276000975,
-        59.08759613037114,
-        -48.32942276000975
+        -67.60310836791992,
+        -62.828249588012675,
+        76.81387496948248,
+        -62.828249588012675
       ],
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "4dcd0ddb-6046-5b9d-87f2-2a25927f5ead",
+      "$id": "743f3a24-d192-5b1f-9cd8-c0fd4000d3c4",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
       "rotation": 90,
       "type": "POINT",
-      "x": -129.85,
-      "y": 35.80000000000001
+      "x": -168.805,
+      "y": 46.54000000000001
     },
     {
-      "$id": "33e280fd-637e-5d17-91fb-1a7cff1e30e7",
+      "$id": "e5e36055-959a-59ad-a767-ce4e09c4021c",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
       "rotation": 270,
       "type": "POINT",
-      "x": 135.85000000000002,
-      "y": 36.35000000000002
+      "x": 176.60500000000005,
+      "y": 47.25500000000003
     },
     {
-      "$id": "fdde4f73-7e3a-50ce-a545-4448a62a652f",
+      "$id": "ee293789-7be8-5b9c-a5d6-87aa4c325dfe",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
       "rotation": 90,
       "type": "POINT",
-      "x": 3.4499999999999886,
-      "y": -56.89999999999998
+      "x": 4.484999999999985,
+      "y": -73.96999999999997
     },
     {
-      "$id": "dd4a2d8c-6018-560d-a387-3e80e4916c9d",
+      "$id": "4c6f81b8-f04c-5db6-bfcc-f3a34b3056d1",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
       "rotation": 270,
       "type": "POINT",
-      "x": 0.44999999999998863,
-      "y": 125.5
+      "x": 0.5849999999999852,
+      "y": 163.15
     },
     {
-      "$id": "fbd28aa4-3b4f-500c-beb7-56bf88482ec5",
+      "$id": "4800059e-96cd-5af2-88a3-e5a0b1646cce",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
       "rotation": 90,
       "type": "POINT",
-      "x": -86.65,
-      "y": -115.74999999999999
+      "x": -112.64500000000001,
+      "y": -150.475
     },
     {
-      "$id": "47497cad-cea1-5187-9894-20303cbda7b0",
+      "$id": "b0abc69d-1c96-5317-bc7d-e9211162a0e1",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
       "rotation": 270,
       "type": "POINT",
-      "x": 90.64999999999998,
-      "y": -115.74999999999999
+      "x": 117.84499999999997,
+      "y": -150.475
     },
     {
-      "$id": "da27cdab-3c9e-5245-a6b3-c1ab45c52c21",
+      "$id": "929f0ade-5e09-53e3-94e3-8e951dfebdde",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
       "rotation": 90,
       "type": "POINT",
-      "x": -27.55000000000001,
-      "y": -115.74999999999999
+      "x": -35.81500000000002,
+      "y": -150.475
     },
     {
-      "$id": "f4a3a10d-aa07-540b-a983-bda4731075eb",
+      "$id": "733a7246-fe3c-5504-a841-5219199481d6",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
       "rotation": 270,
       "type": "POINT",
-      "x": 31.55000000000001,
-      "y": -115.74999999999999
+      "x": 41.015000000000015,
+      "y": -150.475
     }
   ],
   "tags": [],

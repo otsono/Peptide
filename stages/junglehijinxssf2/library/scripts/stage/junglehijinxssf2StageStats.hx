@@ -19,7 +19,7 @@
 			{
 				spriteContent: self.getResource().getContent("junglehijinxssf2"),
 				animationId: "parallax0",
-				mode: ParallaxMode.BOUNDS,
+				mode: ParallaxMode.PAN,
 				originalBGWidth: 3199,
 				originalBGHeight: 875,
 				horizontalScroll: false,
@@ -28,7 +28,7 @@
 				loopHeight: 0,
 				xPanMultiplier: 0.5,
 				yPanMultiplier: 0.5,
-				scaleMultiplier: 1,
+				scaleMultiplier: 1.3,
 				foreground: false,
 				depth: 2000
 			}

@@ -96,6 +96,11 @@ pub struct StageModel {
     /// Non-fatal validation notes: required SSF2 stage linkages that were missing from
     /// the source (e.g. no collision floor, no spawn beacons). Surfaced to the user.
     pub warnings: Vec<String>,
+    /// SSF2 -> Fraymakers spatial scale (the `size_multiplier` knob, default 1.3). Fraymakers
+    /// space is SSF2 space scaled up by this factor (characters are rendered at this scale,
+    /// so the stage geometry + art must match it). Geometry coords are already scaled; the
+    /// emitter renders the art IMAGE layers at this scale.
+    pub scale: f64,
 }
 
 /// The stage art split by depth so the emitter can layer it around the characters
@@ -252,7 +257,13 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     walk(&swf.tags, Mat::id(), &sym_names, &shape_bounds, &sprites, 0, None, None, &mut instances, &mut origin);
 
     let (ox, oy) = origin.unwrap_or((275.0, 200.0)); // SWF stage center fallback
-    let to_fm = |r: &Rect| Rect { x: r.x - ox, y: r.y - oy, w: r.w, h: r.h };
+    // Fraymakers space = SSF2 space scaled up by `size_multiplier` (the same knob the
+    // character converter scales sprites by, default 1.3), so the stage matches the
+    // scaled-up fighters and the art fills the FM camera the way it did in SSF2.
+    let scale = crate::mappings::character_stats().scaling.size_multiplier;
+    let to_fm = |r: &Rect| Rect {
+        x: (r.x - ox) * scale, y: (r.y - oy) * scale, w: r.w * scale, h: r.h * scale,
+    };
 
     // --- platforms: `*platform*` = drop-through soft platform; otherwise any terrain /
     // collision shape (SSF2 stages name these inconsistently: TerrainMC, terrain_mc,
@@ -289,9 +300,9 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     for inst in &instances {
         let sn = inst.sym_name.to_ascii_lowercase();
         if let Some(idx) = player_index(&sn, "_start_") {
-            entrances.push(SpawnPoint { index: idx, x: inst.cx - ox, y: inst.cy - oy, face_left: inst.x_sign < 0.0 });
+            entrances.push(SpawnPoint { index: idx, x: (inst.cx - ox) * scale, y: (inst.cy - oy) * scale, face_left: inst.x_sign < 0.0 });
         } else if let Some(idx) = player_index(&sn, "_spawn_") {
-            respawns.push(SpawnPoint { index: idx, x: inst.cx - ox, y: inst.cy - oy, face_left: inst.x_sign < 0.0 });
+            respawns.push(SpawnPoint { index: idx, x: (inst.cx - ox) * scale, y: (inst.cy - oy) * scale, face_left: inst.x_sign < 0.0 });
         }
     }
     entrances.sort_by_key(|s| s.index);
@@ -301,7 +312,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // grabbable edges (FM grabs ledges at the floor's left/right endpoints).
     let ledge_x = |needle: &str| instances.iter()
         .find(|i| i.sym_name.to_ascii_lowercase().contains(needle))
-        .map(|i| i.cx - ox);
+        .map(|i| (i.cx - ox) * scale);
     let ledges = match (ledge_x("ledge_mc_left"), ledge_x("ledge_mc_right")) {
         (Some(l), Some(r)) => Some((l.min(r), l.max(r))),
         _ => None,
@@ -312,8 +323,10 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     }
 
     // --- art: rasterize the stage's shapes, split into background / stage / foreground.
+    // The PNGs stay native-resolution; placement is scaled here and the emitter renders the
+    // IMAGE layers at `scale`, matching the geometry.
     let art = if render_art_flag {
-        render_art_layers(&swf.tags, &sprites, &sym_names, &shape_defs, &bitmaps, ox, oy)
+        render_art_layers(&swf.tags, &sprites, &sym_names, &shape_defs, &bitmaps, ox, oy, scale)
     } else {
         StageArtSet::default()
     };
@@ -326,7 +339,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     if entrances.is_empty() { warnings.push("no match-start entrances parsed (pN_Start)".into()); }
     if !platforms.iter().any(|p| !p.drop_through) { warnings.push("no solid floor parsed".into()); }
 
-    Ok(StageModel { id, platforms, death_box, camera_box, entrances, respawns, ledges, art, warnings })
+    Ok(StageModel { id, platforms, death_box, camera_box, entrances, respawns, ledges, art, warnings, scale })
 }
 
 /// Validate that the SSF2 source carries the linkages a playable stage needs. Returns a
@@ -516,7 +529,7 @@ fn render_art_layers(
     sym_names: &BTreeMap<u16, String>,
     shape_defs: &BTreeMap<u16, &swf::Shape>,
     bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
-    ox: f64, oy: f64,
+    ox: f64, oy: f64, scale: f64,
 ) -> StageArtSet {
     // per-sprite + root frame timelines.
     let mut sprite_frames: BTreeMap<u16, Vec<Vec<PlacedChild>>> = BTreeMap::new();
@@ -545,7 +558,11 @@ fn render_art_layers(
     };
     let composite = |insts: &[Instance], kind: ArtKind| -> Option<StageArt> {
         let group: Vec<&Instance> = insts.iter().filter(|i| art_kind(i) == kind).collect();
-        composite_layer(&group, shape_defs, bitmaps, ox, oy)
+        // PNG stays native-resolution; only the placement is scaled (the emitter renders the
+        // IMAGE layer at `scale`), so the art and geometry share one scale with no upscaling.
+        composite_layer(&group, shape_defs, bitmaps, ox, oy).map(|mut a| {
+            a.x *= scale; a.y *= scale; a
+        })
     };
 
     // sample every frame's instance set + the composited image.
