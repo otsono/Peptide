@@ -49,12 +49,42 @@ fn moving_platforms_detected_and_flagged() {
         assert!(m.warnings.iter().any(|w| w.contains("moving platform")),
             "a moving-platform warning surfaces, got {:?}", m.warnings);
     }
-    // battlefield has none — no false positive, no warning.
+    // battlefield has none — no false positive, no warning. its 4 distinct platforms (main +
+    // 3 soft) don't overlap, so the dedup pass leaves them intact.
     let bf = dir.join("battlefield.ssf");
     if common::present(&bf) {
         let m = parse_stage(&bf).expect("parse battlefield");
         assert!(m.platforms.iter().all(|p| !p.moving), "battlefield has no moving platforms");
         assert!(!m.warnings.iter().any(|w| w.contains("moving platform")), "no moving-platform warning");
+        assert_eq!(m.platforms.len(), 4, "battlefield's 4 distinct platforms survive the dedup pass");
+    }
+}
+
+/// Overlapping collision platforms are deduped: a moving-platform container MC and its
+/// collision child both match the platform/terrain naming, so the same platform would be
+/// emitted twice (overlapping rects). No two surviving platforms of the same kind may
+/// substantially overlap. Corpus-gated over the moving-platform stages.
+#[test]
+fn overlapping_platforms_are_deduped() {
+    let dir = common::ssfs_dir().join("stages");
+    if !common::present(&dir) {
+        return;
+    }
+    for name in ["towerofsalvation.ssf", "crateria.ssf", "battlefield.ssf"] {
+        let p = dir.join(name);
+        if !common::present(&p) { continue; }
+        let m = parse_stage(&p).expect("parse");
+        let ps: Vec<_> = m.platforms.iter().collect();
+        for (i, a) in ps.iter().enumerate() {
+            for b in ps.iter().skip(i + 1) {
+                if a.drop_through != b.drop_through { continue; }
+                let (ra, rb) = (&a.rect, &b.rect);
+                let ix = (ra.right().min(rb.right()) - ra.left().max(rb.left())).max(0.0);
+                let iy = (ra.bottom().min(rb.bottom()) - ra.top().max(rb.top())).max(0.0);
+                let small = (ra.w * ra.h).min(rb.w * rb.h).max(1.0);
+                assert!((ix * iy) / small < 0.7, "{name}: two same-kind platforms overlap (dedup missed a duplicate)");
+            }
+        }
     }
 }
 
@@ -111,7 +141,12 @@ fn battlefield_parses_to_geometry() {
     // empty (the fix for the doubled-stage render). Battlefield has no `_cambg` layers, so
     // its background is fixed (no parallax).
     assert!(m.art.background.is_some(), "painted backdrop rasterizes");
-    assert!(m.art.foreground.is_some(), "foreground rasterizes");
+    // battlefield's SSF2 `foreground` plane is the platform's front face, which overlaps the
+    // `background` structure. Drawn as an FM foreground it would re-draw the platform in front
+    // of fighters (a visible duplicate), so it folds into the background instead — no separate
+    // foreground layer. (Distinct foreground props on other stages, e.g. junglehijinx's trees,
+    // do NOT overlap and stay in front.)
+    assert!(m.art.foreground.is_none(), "battlefield's structure-foreground folds into the background (no duplicate)");
     assert!(m.art.stage_frames.is_empty(), "collision masks must not render as stage art");
     assert!(m.art.parallax.is_empty(), "battlefield has no parallax (fixed background)");
 }
@@ -139,6 +174,10 @@ fn junglehijinx_has_parallax() {
     assert!(m.art.parallax.iter().all(|p| p.mode == ssf2_converter::ParallaxMode::Pan),
         "cambg layers use PAN mode (BOUNDS is for tiling backdrops)");
     assert!(m.art.background.is_some(), "fixed near-background (island) present");
+    // junglehijinx's foreground is the `*_fg` jungle foliage — a DISTINCT prop offset from the
+    // island, low overlap with the background, so it stays in front (NOT folded like a
+    // structure front-face would be). This is the half of the fold heuristic that must survive.
+    assert!(m.art.foreground.is_some(), "distinct foreground props (jungle foliage) stay in front");
     // the island terrain is sloped, so the main floor traces a polyline, not a flat line.
     let floor = m.main_floor().expect("main floor");
     let profile = floor.profile.as_ref().expect("curved floor has a traced profile");
@@ -211,9 +250,9 @@ fn battlefield_emits_consistent_entity() {
     assert_eq!(man["content"][0]["type"], "stage");
 
     // the required Fraymakers stage layers are present (emit_stage bails otherwise, but
-    // assert here too so a regression names the missing layer). For battlefield the only
-    // IMAGE layers are the backdrop + foreground (no collision-silhouette stage art): the
-    // doubled-render fix.
+    // assert here too so a regression names the missing layer). For battlefield the only IMAGE
+    // layer is the backdrop: the collision masks don't render (the doubled-silhouette fix) and
+    // the structure-foreground folds into the backdrop (the doubled-platform fix).
     let layers = v["layers"].as_array().unwrap();
     let named = |n: &str| layers.iter().any(|l| l["name"] == n);
     let meta_eq = |key: &str, val: &str| layers.iter().any(|l|
@@ -222,7 +261,6 @@ fn battlefield_emits_consistent_entity() {
     assert!(meta_eq("pointType", "ENTRANCE_POINT"), "has an entrance point");
     assert!(meta_eq("pointType", "RESPAWN_POINT"), "has a respawn point");
     assert!(named("Background Art"), "has the painted backdrop layer");
-    assert!(named("Foreground Art"), "has the foreground layer");
     let image_layers = layers.iter().filter(|l| l["type"] == "IMAGE").count();
-    assert_eq!(image_layers, 2, "battlefield has exactly 2 art layers (backdrop + foreground), no collision silhouette");
+    assert_eq!(image_layers, 1, "battlefield has exactly 1 art layer (backdrop, structure-foreground folded in), no duplicate platform / collision silhouette");
 }
