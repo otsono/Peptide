@@ -632,7 +632,7 @@ fn hazard_script_hx(hz: &Hazard) -> String {
          }};\n\n\
          var HALF_W = {hw:.1};\nvar HALF_H = {hh:.1};\nvar DAMAGE = {dmg};\nvar KB = {kb};\nvar ANGLE = {ang};\n\
          var m_frame = 0;\nvar m_baseX = 0.0;\nvar m_baseY = 0.0;\nvar m_init = false;\nvar m_cooldown = 0;\n\n\
-         function initialize() {{\n\tCommon.toLocalState(LState.ACTIVE);\n}}\n\n\
+         function initialize() {{\n\tself.setState(PState.ACTIVE);\n\tCommon.toLocalState(LState.ACTIVE);\n}}\n\n\
          function update() {{\n\
          \tif (!m_init) {{ m_baseX = self.getX(); m_baseY = self.getY(); m_init = true; }}\n\
          \tm_frame = m_frame + 1;\n\
@@ -655,7 +655,7 @@ fn hazard_script_hx(hz: &Hazard) -> String {
 
 fn hazard_gameobject_stats_hx(hid: &str) -> String {
     format!(
-        "// GameObjectStats for {hid}\n{{\n\tspriteContent: \"{hid}\",\n\tinitialState: 0,\n\
+        "// GameObjectStats for {hid}\n{{\n\tspriteContent: \"{hid}\",\n\tinitialState: PState.ACTIVE,\n\
          \tbaseScaleX: 1,\n\tbaseScaleY: 1,\n\tweight: 100,\n\tgravity: 0,\n\tfriction: 0\n}}\n")
 }
 
