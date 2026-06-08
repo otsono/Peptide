@@ -621,15 +621,18 @@ fn fm_config_fields(code: &hlbc::Bytecode) -> Vec<String> {
     }).collect()
 }
 
-/// Mode names of an abstract-enum statics type (`@:enum abstract`, compiled to a statics Obj of
-/// `Int` constants like `BOUNDS`/`PAN`/`DEPTH`). Keeps the all-uppercase-letter members, dropping
-/// the reflection plumbing (`CONSTANT_MAP`, `constToString`, `__`-prefixed slots).
+/// Mode names of an abstract-enum statics type (`@:enum abstract`, compiled to a statics Obj
+/// whose members are `Int` constants like `BOUNDS`/`PAN`/`DEPTH`). Selects by FIELD TYPE (the
+/// members are the `Int` slots), which survives a recompile and any added modes, while dropping
+/// the reflection plumbing by type (`CONSTANT_MAP`/`CONSTANT_MAP_NAME` are maps, `constToString`
+/// is a function) and the `__`-prefixed base slots.
 fn fm_mode_constants(code: &hlbc::Bytecode, statics_name: &str) -> Vec<String> {
     let Some(ti) = crate::find_type(code, statics_name) else { return Vec::new() };
     let Some(o) = code.types[ti].get_type_obj() else { return Vec::new() };
     o.own_fields.iter().filter_map(|f| {
         let n = code.strings[f.name.0].as_str();
-        (!n.is_empty() && n.chars().all(|c| c.is_ascii_uppercase())).then(|| n.to_string())
+        let is_int = matches!(code.types.get(f.t.0), Some(hlbc::types::Type::I32));
+        (is_int && !n.starts_with("__")).then(|| n.to_string())
     }).collect()
 }
 
