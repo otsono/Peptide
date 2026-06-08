@@ -329,7 +329,6 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // ChunkTerrain, CollisonBox [sic], ground) is a solid floor. Check `platform` first so
     // `terrainGround_platform` (both words) is classified drop-through.
     let mut platforms: Vec<Platform> = Vec::new();
-    let mut moving_count = 0usize;
     for inst in &instances {
         let sn = inst.sym_name.to_ascii_lowercase();
         // `back`/`fore`ground are ART, not collision — exclude them (they contain the
@@ -341,17 +340,22 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         // their start position; the motion itself is bespoke per stage and not ported yet.
         let moving = inst.moving;
         if !is_art_bg && sn.contains("platform") {
-            if moving { moving_count += 1; }
             platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: true, profile: None, moving });
         } else if !is_art_bg && ["terrain", "collison", "collision", "ground"].iter().any(|m| sn.contains(m)) {
             // solid terrain can be curved/sloped (e.g. a hilly island), so trace its top
             // surface as a polyline instead of a flat line.
             let profile = shape_defs.get(&inst.shape_id)
                 .and_then(|s| floor_profile(s, &inst.aabb, ox, oy, scale));
-            if moving { moving_count += 1; }
             platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: false, profile, moving });
         }
     }
+    // Dedupe near-coincident collision platforms: a moving-platform container MC (e.g.
+    // `tos_movingplatform`) and the collision child inside it both match the platform/terrain
+    // naming, so the same platform gets emitted twice (overlapping rects a few px apart). Drop
+    // a platform when another of the same kind covers most of it; keep the larger. Distinct
+    // platforms (battlefield's three soft platforms, stacked floors) don't overlap, so they stay.
+    dedupe_platforms(&mut platforms);
+    let moving_count = platforms.iter().filter(|p| p.moving).count();
 
     // --- boundaries: identified by the carried name (the boundary clip is placed with
     // a PlaceObject name like `deathBoundary`, which the walk carries down to its shape).
@@ -670,13 +674,44 @@ fn render_art_layers(
                 i.plane, i.sym_name, i.aabb.x, i.aabb.y, i.aabb.w, i.aabb.h);
         }
     }
-    let foreground = composite(base_insts, &[ArtKind::Foreground]);
+    // The SSF2 stageMC `foreground` plane is the structure's FRONT FACE, drawn over the same
+    // `background` structure for SSF2's 2.5D depth. Drawn as an FM foreground (in front of
+    // fighters) it re-draws the whole platform on top of them — reads as a duplicate platform.
+    // So fold a foreground that substantially overlaps the background plane back INTO the
+    // background (behind fighters, composited once). Distinct foreground PROPS (offset `*_fg`
+    // trees, bushes) keep a low overlap and stay in front, where they belong.
+    let bg_union: Option<(f64, f64, f64, f64)> = {
+        let bgs: Vec<&Instance> = base_insts.iter().filter(|i| art_kind(i) == ArtKind::Background).collect();
+        (!bgs.is_empty()).then(|| (
+            bgs.iter().map(|i| i.aabb.left()).fold(f64::MAX, f64::min),
+            bgs.iter().map(|i| i.aabb.top()).fold(f64::MAX, f64::min),
+            bgs.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max),
+            bgs.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max),
+        ))
+    };
+    // fraction of `a`'s area that lies inside the background union.
+    let frac_in_bg = move |a: &Rect| -> f64 {
+        let Some((l, t, r, b)) = bg_union else { return 0.0 };
+        let ix = (a.right().min(r) - a.left().max(l)).max(0.0);
+        let iy = (a.bottom().min(b) - a.top().max(t)).max(0.0);
+        let area = a.w * a.h;
+        if area <= 0.0 { 0.0 } else { (ix * iy) / area }
+    };
+    let is_dup_fg = move |i: &Instance| art_kind(i) == ArtKind::Foreground && frac_in_bg(&i.aabb) >= 0.6;
+    // composite an explicit instance group (back-to-front = walk order), scaled like `composite`.
+    let composite_grp = |group: Vec<&Instance>| -> Option<StageArt> {
+        composite_layer(&group, shape_defs, bitmaps, ox, oy).map(|mut a| { a.x *= scale; a.y *= scale; a })
+    };
+
+    // foreground = the genuine in-front props only (non-overlapping foreground).
+    let foreground = composite_grp(base_insts.iter().filter(|i| art_kind(i) == ArtKind::Foreground && !is_dup_fg(i)).collect());
     // when the backdrop carries `_cambg` parallax layers, each backdrop/cambg LAYER (grouped
     // by symbol) becomes its own camera-relative plane with its own auto-derived pan rate (so
     // the sky, sun rays, trees, ... scroll at different rates, reading as depth — and the rays
     // draw in front of the sky, not occluded by it). The stageMC `background` plane (the
     // island fighters stand near) stays a fixed near-layer in front. Without parallax, backdrop
-    // + background fold into one fixed bg.
+    // + background fold into one fixed bg. The folded structure-foreground draws last (in front
+    // of the background structure, still behind fighters).
     let has_parallax = base_insts.iter().any(|i| art_kind(i) == ArtKind::Parallax);
     let (background, parallax) = if has_parallax {
         let mut order: Vec<&str> = Vec::new();
@@ -697,9 +732,9 @@ fn render_art_layers(
                 ParallaxLayer { art, mode, x_pan, y_pan }
             })
         }).collect();
-        (composite(base_insts, &[ArtKind::Background]), layers)
+        (composite_grp(base_insts.iter().filter(|i| art_kind(i) == ArtKind::Background || is_dup_fg(i)).collect()), layers)
     } else {
-        (composite(base_insts, &[ArtKind::Backdrop, ArtKind::Background]), Vec::new())
+        (composite_grp(base_insts.iter().filter(|i| matches!(art_kind(i), ArtKind::Backdrop | ArtKind::Background) || is_dup_fg(i)).collect()), Vec::new())
     };
 
     // Emit a multi-frame stage animation only when the samples form a CLEAN animation:
@@ -893,6 +928,35 @@ fn stage_package_metadata(swf_data: &[u8]) -> Option<crate::abc_parser::MainPack
         }
     }
     None
+}
+
+/// Drop collision platforms that are near-duplicates of another (a moving-platform container
+/// MC and its collision child both match the platform/terrain naming → the same platform twice).
+/// A platform is removed when another platform of the SAME kind covers >=70% of its area; the
+/// larger of an overlapping pair survives. Genuinely separate platforms don't overlap, so they
+/// are untouched. A removed platform's `moving` flag is OR'd onto the survivor.
+fn dedupe_platforms(platforms: &mut Vec<Platform>) {
+    let area = |r: &Rect| (r.w * r.h).max(1.0);
+    let covered = |a: &Rect, b: &Rect| -> f64 {
+        let ix = (a.right().min(b.right()) - a.left().max(b.left())).max(0.0);
+        let iy = (a.bottom().min(b.bottom()) - a.top().max(b.top())).max(0.0);
+        (ix * iy) / area(a) // fraction of `a` inside `b`
+    };
+    let mut keep = vec![true; platforms.len()];
+    for i in 0..platforms.len() {
+        if !keep[i] { continue; }
+        for j in 0..platforms.len() {
+            if i == j || !keep[j] || platforms[i].drop_through != platforms[j].drop_through { continue; }
+            // j is the smaller (or equal, broken by index) -> drop j into i.
+            let (bigger, smaller) = if area(&platforms[i].rect) >= area(&platforms[j].rect) { (i, j) } else { continue };
+            if covered(&platforms[smaller].rect, &platforms[bigger].rect) >= 0.7 {
+                keep[smaller] = false;
+                if platforms[smaller].moving { platforms[bigger].moving = true; }
+            }
+        }
+    }
+    let mut idx = 0;
+    platforms.retain(|_| { let k = keep[idx]; idx += 1; k });
 }
 
 /// Title-case an SSF2 lowercase-concatenated id for a display name: capitalize the first
