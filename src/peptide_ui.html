@@ -745,10 +745,16 @@
   }
   function stageParamsText(p){
     if(!p) return "";
-    let s = "engine: "+(p.label||p.engine)+"\nsource: "+(p.source||"")+"\nview: "+p.view_w+"x"+p.view_h+"   rate = "+(p.formula||"");
+    let s = "engine: "+(p.label||p.engine)+"\nsource: "+(p.source||"")+"\nview: "+p.view_w+"x"+p.view_h;
+    if(p.fps) s += " @ "+p.fps+"fps";
+    s += "   rate = "+(p.formula||"");
+    if(p.modes && p.modes.length) s += "\nmodes: "+p.modes.join(", ");
+    if(p.config_fields && p.config_fields.length){
+      s += "\nconfig ("+p.config_fields.length+" fields pulled live): "+p.config_fields.join(", ");
+    }
     if(STAGE.loaded){
       const rows = STAGE.layers.filter(l=>l.parallax && l.w).map(l=>"  "+l.name.padEnd(14)+" "+layerRate(l).x.toFixed(3));
-      if(rows.length) s += "\n"+rows.join("\n");
+      if(rows.length) s += "\nper-layer rate:\n"+rows.join("\n");
     }
     return s;
   }

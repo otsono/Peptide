@@ -353,6 +353,11 @@ fn main() -> anyhow::Result<()> {
                                 .unwrap_or_else(|| format!("t{}", fl.t.0));
                             eprintln!("  field {i:3}: {:?} : {tn}", s(&code, fl.name));
                         }
+                    } else if let hlbc::types::Type::Enum { constructs, .. } = &code.types[ti] {
+                        eprintln!("  (enum, {} constructs)", constructs.len());
+                        for (i, c) in constructs.iter().enumerate() {
+                            eprintln!("  construct {i:3}: {:?} ({} params)", s(&code, c.name), c.params.len());
+                        }
                     } else {
                         eprintln!("  (kind: {:?})", std::mem::discriminant(&code.types[ti]));
                     }

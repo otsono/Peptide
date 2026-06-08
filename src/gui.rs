@@ -561,21 +561,27 @@ fn engine_params_json(engine: &str) -> Result<String, String> {
                 .into_iter().find(|p| p.is_file())
                 .ok_or_else(|| format!("SSF2.swf not found under {}", app.display()))?;
             let bytes = std::fs::read(&swf).map_err(|e| e.to_string())?;
-            let (vw, vh) = ssf2_converter::engine_probe::ssf2_view_dims(&bytes)
-                .ok_or_else(|| "could not read Main.m_width/m_height from SSF2.swf".to_string())?;
+            let e = ssf2_converter::engine_probe::ssf2_engine(&bytes)
+                .ok_or_else(|| "could not read engine params from SSF2.swf".to_string())?;
+            // The mode the camera-background uses is the string value the engine stores (panMode).
+            let modes: Vec<String> = e.modes.iter().map(|(_, v)| v.clone()).collect();
             Ok(serde_json::json!({
-                "engine": "ssf2", "label": "SSF2", "view_w": vw, "view_h": vh,
-                "auto": true, "divisor": 2, "formula": format!("(w - {vw}) / (2·w)"),
+                "engine": "ssf2", "label": "SSF2", "view_w": e.view_w, "view_h": e.view_h,
+                "auto": true, "divisor": 2, "formula": format!("(w - {}) / (2·w)", e.view_w),
+                "fps": e.fps, "modes": modes, "config_fields": e.config_fields,
                 "source": format!("{} · Vcam / Main", swf.display()),
             }).to_string())
         }
         "fraymakers" => {
             let root = cfg.fraymakers_root().ok_or_else(|| "Fraymakers not configured (Setup → Fraymakers path)".to_string())?;
             let hlboot = root.join(crate::config::Config::load().boot_name());
-            let present = fm_has_parallax(&hlboot);
+            let fm = fm_engine(&hlboot)
+                .ok_or_else(|| format!("could not read parallax params from {}", hlboot.display()))?;
+            let present = !fm.config_fields.is_empty();
             Ok(serde_json::json!({
                 "engine": "fraymakers", "label": "Fraymakers", "view_w": 640, "view_h": 360,
                 "auto": false, "divisor": 2, "formula": "explicit xPanMultiplier (inherits the SSF2 rate)",
+                "modes": fm.modes, "config_fields": fm.config_fields,
                 "source": format!("{} · ParallaxBG{}", hlboot.display(), if present { " ✓" } else { " (class not found)" }),
             }).to_string())
         }
@@ -583,14 +589,48 @@ fn engine_params_json(engine: &str) -> Result<String, String> {
     }
 }
 
-/// `true` if the Fraymakers `hlboot` defines the `ParallaxBG` camera-background class (confirms
-/// the engine's parallax model live, without depending on the converter's output).
-fn fm_has_parallax(hlboot: &std::path::Path) -> bool {
+/// Parallax params pulled live from the Fraymakers `hlboot` bytecode.
+struct FmEngine {
+    /// `ParallaxMode` modes (e.g. BOUNDS / PAN / DEPTH).
+    modes: Vec<String>,
+    /// `ParallaxBGConfig` author-facing fields (the camera-background config schema).
+    config_fields: Vec<String>,
+}
+
+/// Read the Fraymakers camera-background parallax schema out of `hlboot` (the engine class +
+/// its mode enum), so the preview is driven by the real engine, not the converter's ported
+/// constants. `None` if the bytecode can't be read or the parallax class is absent.
+fn fm_engine(hlboot: &std::path::Path) -> Option<FmEngine> {
     use std::io::BufReader;
-    let Ok(file) = std::fs::File::open(hlboot) else { return false };
-    let mut r = BufReader::new(file);
-    let Ok(code) = hlbc::Bytecode::deserialize(&mut r) else { return false };
-    crate::find_type(&code, "pxf.core.camera.ParallaxBG").is_some()
+    let mut r = BufReader::new(std::fs::File::open(hlboot).ok()?);
+    let code = hlbc::Bytecode::deserialize(&mut r).ok()?;
+    crate::find_type(&code, "pxf.core.camera.ParallaxBG")?; // confirm the engine class is present
+    let config_fields = fm_config_fields(&code);
+    let modes = fm_mode_constants(&code, "pxf.core.camera.$ParallaxMode");
+    Some(FmEngine { modes, config_fields })
+}
+
+/// Author-facing fields of `ParallaxBGConfig` (its own declared fields, not the inherited
+/// disposable/serialization base-class plumbing), the camera-background config schema.
+fn fm_config_fields(code: &hlbc::Bytecode) -> Vec<String> {
+    let Some(ti) = crate::find_type(code, "pxf.core.camera.ParallaxBGConfig") else { return Vec::new() };
+    let Some(o) = code.types[ti].get_type_obj() else { return Vec::new() };
+    o.own_fields.iter().filter_map(|f| {
+        let n = code.strings[f.name.0].as_str();
+        (!n.is_empty() && !n.starts_with("__")).then(|| n.to_string())
+    }).collect()
+}
+
+/// Mode names of an abstract-enum statics type (`@:enum abstract`, compiled to a statics Obj of
+/// `Int` constants like `BOUNDS`/`PAN`/`DEPTH`). Keeps the all-uppercase-letter members, dropping
+/// the reflection plumbing (`CONSTANT_MAP`, `constToString`, `__`-prefixed slots).
+fn fm_mode_constants(code: &hlbc::Bytecode, statics_name: &str) -> Vec<String> {
+    let Some(ti) = crate::find_type(code, statics_name) else { return Vec::new() };
+    let Some(o) = code.types[ti].get_type_obj() else { return Vec::new() };
+    o.own_fields.iter().filter_map(|f| {
+        let n = code.strings[f.name.0].as_str();
+        (!n.is_empty() && n.chars().all(|c| c.is_ascii_uppercase())).then(|| n.to_string())
+    }).collect()
 }
 
 /// Reconstruct a stage's preview layers from its emitted FrayTools package: each IMAGE layer's
