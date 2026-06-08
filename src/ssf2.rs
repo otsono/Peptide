@@ -659,6 +659,12 @@ fn cmd_stage(args: &[String]) -> Result<()> {
     for s in &model.respawns {
         println!("  respawn  {}: ({:.1},{:.1})", s.index, s.x, s.y);
     }
+    // art layer composition: backdrop/background (behind), parallax camera-bgs, stage-depth
+    // frames, and a foreground (in front of fighters). A structure-foreground folds into the
+    // background, so `fg` here means a DISTINCT in-front prop survived.
+    let a = &model.art;
+    println!("  art: background={} foreground={} parallax={} stage_frames={}",
+        a.background.is_some(), a.foreground.is_some(), a.parallax.len(), a.stage_frames.len());
     for w in &model.warnings {
         eprintln!("  warning: {w}");
     }
