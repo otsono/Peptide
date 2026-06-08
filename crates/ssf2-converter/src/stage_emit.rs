@@ -374,12 +374,16 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
             }));
         } else if p.drop_through {
             plat_n += 1;
-            b.add_line_segment(&format!("Platform {plat_n} Floor"), &[(r.left(), r.top()), (r.right(), r.top())], json!({
+            // tag moving platforms in the label so an author opening the entity in FrayTools
+            // can find the ones meant to move (their motion isn't ported, see StageModel.moving).
+            let tag = if p.moving { " (SSF2 moving, static)" } else { "" };
+            b.add_line_segment(&format!("Platform {plat_n} Floor{tag}"), &[(r.left(), r.top()), (r.right(), r.top())], json!({
                 "structureType": "FLOOR", "leftLedge": false, "rightLedge": false, "dropThrough": true
             }));
         } else {
             plat_n += 1;
-            b.add_line_segment(&format!("Solid {plat_n} Floor"), &surface(vec![(r.left(), r.top()), (r.right(), r.top())]), json!({
+            let tag = if p.moving { " (SSF2 moving, static)" } else { "" };
+            b.add_line_segment(&format!("Solid {plat_n} Floor{tag}"), &surface(vec![(r.left(), r.top()), (r.right(), r.top())]), json!({
                 "structureType": "FLOOR", "leftLedge": false, "rightLedge": false, "dropThrough": false
             }));
         }

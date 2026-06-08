@@ -62,6 +62,10 @@ pub struct Platform {
     /// The walkable TOP surface as a polyline in FM coords (left to right), when the terrain
     /// is curved/sloped. `None` for a flat platform (use `rect.top()` as a level line).
     pub profile: Option<Vec<(f64, f64)>>,
+    /// `true` if the SSF2 source moves this platform (its instance name carries `moving`).
+    /// Emitted as a STATIC platform at its start position: SSF2 moving-platform motion is
+    /// bespoke per stage (custom AS3 / timeline animation) and isn't ported yet.
+    pub moving: bool,
 }
 
 /// A player beacon (match-start "entrance" or respawn point) in FM coords.
@@ -213,6 +217,10 @@ struct Instance {
     cy: f64,
     /// `-1.0` if mirrored along x (facing left).
     x_sign: f64,
+    /// `true` if this shape descends from a `moving`-named ancestor (an SSF2 moving
+    /// platform/foreground). The collision child is usually named `terrainGround_platform`,
+    /// so the `moving` signal lives on the parent container and is propagated down.
+    moving: bool,
 }
 
 /// Parse the SSF2 stage at `path` into a [`StageModel`], rendering its art (read-only).
@@ -305,7 +313,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // Collect every placed shape instance (with world AABB) and find the stageMC origin.
     let mut instances: Vec<Instance> = Vec::new();
     let mut origin: Option<(f64, f64)> = None;
-    walk(&swf.tags, Mat::id(), &sym_names, &shape_bounds, &sprites, 0, None, None, &mut instances, &mut origin);
+    walk(&swf.tags, Mat::id(), &sym_names, &shape_bounds, &sprites, 0, None, None, false, &mut instances, &mut origin);
 
     let (ox, oy) = origin.unwrap_or((275.0, 200.0)); // SWF stage center fallback
     // Fraymakers space = SSF2 space scaled up by `size_multiplier` (the same knob the
@@ -321,21 +329,27 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // ChunkTerrain, CollisonBox [sic], ground) is a solid floor. Check `platform` first so
     // `terrainGround_platform` (both words) is classified drop-through.
     let mut platforms: Vec<Platform> = Vec::new();
+    let mut moving_count = 0usize;
     for inst in &instances {
         let sn = inst.sym_name.to_ascii_lowercase();
         // `back`/`fore`ground are ART, not collision — exclude them (they contain the
         // substring "ground", which would otherwise read as a floor).
         let is_art_bg = sn.contains("background") || sn.contains("foreground");
-        let is_solid = !is_art_bg
-            && ["terrain", "collison", "collision", "ground"].iter().any(|m| sn.contains(m));
+        // SSF2 moving platforms carry `moving` in the linkage (movingplatform_N,
+        // tos_movingplatform_6, movingPlatformTerrain_14) — usually on the parent container,
+        // not the collision child, so the walk propagates it down. We collide with them at
+        // their start position; the motion itself is bespoke per stage and not ported yet.
+        let moving = inst.moving;
         if !is_art_bg && sn.contains("platform") {
-            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: true, profile: None });
-        } else if is_solid {
+            if moving { moving_count += 1; }
+            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: true, profile: None, moving });
+        } else if !is_art_bg && ["terrain", "collison", "collision", "ground"].iter().any(|m| sn.contains(m)) {
             // solid terrain can be curved/sloped (e.g. a hilly island), so trace its top
             // surface as a polyline instead of a flat line.
             let profile = shape_defs.get(&inst.shape_id)
                 .and_then(|s| floor_profile(s, &inst.aabb, ox, oy, scale));
-            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: false, profile });
+            if moving { moving_count += 1; }
+            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: false, profile, moving });
         }
     }
 
@@ -393,6 +407,10 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     if camera_box.is_none() { warnings.push("camera bounds not parsed (no camBoundary)".into()); }
     if entrances.is_empty() { warnings.push("no match-start entrances parsed (pN_Start)".into()); }
     if !platforms.iter().any(|p| !p.drop_through) { warnings.push("no solid floor parsed".into()); }
+    if moving_count > 0 {
+        warnings.push(format!("{moving_count} moving platform(s) emitted as static (SSF2 \
+            moving-platform motion is bespoke per stage and not ported yet)"));
+    }
 
     Ok(StageModel { id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, art, warnings, scale })
 }
@@ -573,6 +591,7 @@ fn walk_frame(
                 plane: my_plane.map(str::to_string),
                 aabb: Rect { x: xmn, y: ymn, w: xmx - xmn, h: ymx - ymn },
                 cx: world.tx, cy: world.ty, x_sign: world.x_sign(),
+                moving: false, // art-path instances classify by plane, not collision
             });
         }
         if let Some(frames) = sprite_frames.get(id) {
@@ -914,7 +933,7 @@ fn walk<'a>(
     sym_names: &BTreeMap<u16, String>,
     shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
     sprites: &BTreeMap<u16, &'a Vec<swf::Tag>>,
-    rec: usize, carried_sym: Option<&str>, plane: Option<&str>,
+    rec: usize, carried_sym: Option<&str>, plane: Option<&str>, moving_anc: bool,
     out: &mut Vec<Instance>, origin: &mut Option<(f64, f64)>,
 ) {
     if rec > 8 { return; }
@@ -932,6 +951,11 @@ fn walk<'a>(
         let inst_name = po.name.as_ref().map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
         let sym = sym_names.get(&id).cloned().unwrap_or_default();
         let my_plane = plane_tag(inst_name.as_deref(), &sym).or(plane);
+        // sticky once any ancestor (or this node) is `moving`-named — the collision child
+        // is named separately, so the signal must flow down the subtree.
+        let here_moving = moving_anc
+            || inst_name.as_deref().is_some_and(|n| n.to_ascii_lowercase().contains("moving"))
+            || sym.to_ascii_lowercase().contains("moving");
 
         if std::env::var("PEPTIDE_STAGE_TREE").is_ok() {
             let kind = if sprites.contains_key(&id) { "MC" } else if shape_bounds.contains_key(&id) { "shape" } else { "?" };
@@ -960,6 +984,7 @@ fn walk<'a>(
                 aabb: Rect { x: xmn, y: ymn, w: xmx - xmn, h: ymx - ymn },
                 cx: world.tx, cy: world.ty,
                 x_sign: world.x_sign(),
+                moving: here_moving,
             });
         }
         if let Some(child) = sprites.get(&id) {
@@ -967,7 +992,7 @@ fn walk<'a>(
             // else inherit the parent's carried symbol.
             let next = inst_name.as_deref().or(if sym.is_empty() { carried_sym } else { Some(&sym) });
             let next = next.map(|s| s.to_string());
-            walk(child, world, sym_names, shape_bounds, sprites, rec + 1, next.as_deref(), my_plane, out, origin);
+            walk(child, world, sym_names, shape_bounds, sprites, rec + 1, next.as_deref(), my_plane, here_moving, out, origin);
         }
     }
 }

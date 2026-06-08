@@ -29,6 +29,35 @@ fn all_corpus_stages_parse() {
     assert!(failed.is_empty(), "{}/{} stages failed to parse:\n{}", failed.len(), total, failed.join("\n"));
 }
 
+/// Moving platforms: SSF2 stages with moving platforms (the `moving`-named containers)
+/// are detected and flagged. The motion isn't ported (bespoke per stage), but the platform
+/// is kept as static collision and a warning surfaces it. Battlefield (no moving platforms)
+/// must NOT be flagged. Corpus-gated.
+#[test]
+fn moving_platforms_detected_and_flagged() {
+    let dir = common::ssfs_dir().join("stages");
+    if !common::present(&dir) {
+        return;
+    }
+    // a stage with moving platforms (the `moving` signal lives on the parent container and
+    // is propagated to the collision child).
+    let tos = dir.join("towerofsalvation.ssf");
+    if common::present(&tos) {
+        let m = parse_stage(&tos).expect("parse towerofsalvation");
+        let moving = m.platforms.iter().filter(|p| p.moving).count();
+        assert!(moving > 0, "towerofsalvation has moving platforms");
+        assert!(m.warnings.iter().any(|w| w.contains("moving platform")),
+            "a moving-platform warning surfaces, got {:?}", m.warnings);
+    }
+    // battlefield has none — no false positive, no warning.
+    let bf = dir.join("battlefield.ssf");
+    if common::present(&bf) {
+        let m = parse_stage(&bf).expect("parse battlefield");
+        assert!(m.platforms.iter().all(|p| !p.moving), "battlefield has no moving platforms");
+        assert!(!m.warnings.iter().any(|w| w.contains("moving platform")), "no moving-platform warning");
+    }
+}
+
 /// Battlefield is the iteration target: a 4-platform stage with death/camera
 /// boxes and 4 spawn points. Parse it and check the extracted geometry is sane.
 #[test]
