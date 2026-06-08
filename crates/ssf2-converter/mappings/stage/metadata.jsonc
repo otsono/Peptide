@@ -16,10 +16,13 @@
   // — a damaging hitbox volume the author can then flesh out. fields (all FM coords/units;
   // stage center = 0,0, +y down): x,y (spawn), w,h (hitbox size, default 60), damage (default 8),
   // knockback, angle, interval (on/off pulse period in frames; 0 = always on), active (frames
-  // active per pulse, default 20), label. example:
-  //   "bowserscastle": { "name": "Bowser's Castle", "hazards": [
-  //     { "x": 0, "y": 120, "w": 200, "h": 40, "damage": 12, "knockback": 60, "angle": 90,
-  //       "interval": 180, "active": 40, "label": "Lava" } ] }
+  // active per pulse, default 20), label. movement to match the SSF2 hazard: motion =
+  // "static" (default) | "oscillateX" | "oscillateY" | "circle" | "fall" (thwomp), with range
+  // (amplitude px) + period (cycle frames, default 120). examples:
+  //   "bowserscastle": { "hazards": [
+  //     { "x": 0, "y": 120, "w": 200, "h": 40, "damage": 12, "knockback": 60, "label": "Lava" },
+  //     { "x": -150, "y": -40, "w": 80, "h": 70, "damage": 14, "motion": "fall", "range": 180,
+  //       "period": 150, "label": "Thwomp" } ] }
   "default_music": "bgm_welkinwonderland",
   "stages": {
     "battlefield":  { "name": "Battlefield" },
