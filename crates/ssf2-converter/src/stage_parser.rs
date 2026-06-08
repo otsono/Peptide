@@ -636,9 +636,17 @@ fn render_art_layers(
     let n_samples = full_len.min(ANIM_FRAME_CAP);
     let sample_frame = |i: usize| -> usize { i * full_len / n_samples };
 
+    // The ROOT timeline usually has just ONE content frame (the backdrop + stageMC placements);
+    // many SSF2 stages reserve frame 0 as an empty preloader and put the content on frame 1.
+    // Sampling the root by `g % root_len` can then miss the content frame entirely (when the
+    // global stride and root length are both even, every sample lands on the empty frame 0),
+    // dropping the whole backdrop. So anchor the root at its RICHEST frame (the content layout);
+    // the sprites INSIDE still cycle by the global frame, so animation is preserved.
+    let root_idx = root_frames.iter().enumerate().max_by_key(|(_, f)| f.len()).map(|(i, _)| i).unwrap_or(0);
+
     // instances at a given global frame, classified + composited per layer.
     let frame_instances = |g: usize| -> Vec<Instance> {
-        let root = &root_frames[g % root_frames.len()];
+        let root = &root_frames[root_idx];
         let mut out = Vec::new();
         walk_frame(root, Mat::id(), g, None, None, sym_names, shape_defs, &sprite_frames, &mut out, 0);
         // exclude non-art PLANES (terrain/masks/spawns, by instance name) and any stray
@@ -688,13 +696,20 @@ fn render_art_layers(
     // So fold a foreground that substantially overlaps the background plane back INTO the
     // background (behind fighters, composited once). Distinct foreground PROPS (offset `*_fg`
     // trees, bushes) keep a low overlap and stay in front, where they belong.
+    // build the union from the SIGNIFICANT background instances only — the main structure.
+    // small scattered background props (e.g. junglehijinx's flying-bird sprites way off to the
+    // sides) would otherwise inflate the union and make a distinct foreground prop read as
+    // ">60% inside the structure" and wrongly fold. Keep background instances at least 25% of
+    // the largest's area.
     let bg_union: Option<(f64, f64, f64, f64)> = {
         let bgs: Vec<&Instance> = base_insts.iter().filter(|i| art_kind(i) == ArtKind::Background).collect();
-        (!bgs.is_empty()).then(|| (
-            bgs.iter().map(|i| i.aabb.left()).fold(f64::MAX, f64::min),
-            bgs.iter().map(|i| i.aabb.top()).fold(f64::MAX, f64::min),
-            bgs.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max),
-            bgs.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max),
+        let max_area = bgs.iter().map(|i| i.aabb.w * i.aabb.h).fold(0.0, f64::max);
+        let big: Vec<&&Instance> = bgs.iter().filter(|i| i.aabb.w * i.aabb.h >= max_area * 0.25).collect();
+        (!big.is_empty()).then(|| (
+            big.iter().map(|i| i.aabb.left()).fold(f64::MAX, f64::min),
+            big.iter().map(|i| i.aabb.top()).fold(f64::MAX, f64::min),
+            big.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max),
+            big.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max),
         ))
     };
     // fraction of `a`'s area that lies inside the background union.
