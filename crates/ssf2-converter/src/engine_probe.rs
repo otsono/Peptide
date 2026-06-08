@@ -21,37 +21,57 @@ pub struct Ssf2Engine {
     pub config_fields: Vec<String>,
 }
 
-/// Pull [`Ssf2Engine`] out of `SSF2.swf` bytes. `None` if the SWF/ABC can't be read or `Main`'s
-/// view dimensions aren't found.
-pub fn ssf2_engine(swf_bytes: &[u8]) -> Option<Ssf2Engine> {
+/// Decompress `SSF2.swf` and parse its largest ABC block. Returns the SWF frame rate and the
+/// parsed ABC. `None` if the SWF/ABC can't be read. Shared by [`ssf2_engine`] and [`ssf2_doctor`].
+fn load_swf_abc(swf_bytes: &[u8]) -> Option<(f32, Abc)> {
     let inner = crate::ssf::decompress(swf_bytes).ok()?;
     let buf = swf::decompress_swf(&inner[..]).ok()?;
     let parsed = swf::parse_swf(&buf).ok()?;
-    let fps = Some(parsed.header.frame_rate().to_f32());
+    let fps = parsed.header.frame_rate().to_f32();
     let abc_bytes = parsed.tags.iter().filter_map(|t| match t {
         swf::Tag::DoAbc2(a) => Some(a.data.to_vec()),
         swf::Tag::DoAbc(a) => Some(a.to_vec()),
         _ => None,
     }).max_by_key(|b| b.len())?;
     let abc = abc_codec::parse(&abc_bytes).ok()?;
+    Some((fps, abc))
+}
 
-    // Main.m_width / m_height
-    let (mut view_w, mut view_h) = (None, None);
-    if let Some(ci) = class_named(&abc, "Main") {
-        if let Some(body) = body_for(&abc, abc.classes[ci].cinit) {
-            for_each_set(&abc, &body.code, |name, c| match (name, c) {
-                ("m_width", Const::Int(v)) => view_w = Some(*v as u32),
-                ("m_height", Const::Int(v)) => view_h = Some(*v as u32),
+/// Read `Main`'s logical view size out of its class initializer (`m_width` / `m_height`).
+fn main_view_dims(abc: &Abc) -> (Option<i64>, Option<i64>) {
+    let (mut w, mut h) = (None, None);
+    if let Some(ci) = class_named(abc, "Main") {
+        if let Some(body) = body_for(abc, abc.classes[ci].cinit) {
+            for_each_set(abc, &body.code, |name, c| match (name, c) {
+                ("m_width", Const::Int(v)) => w = Some(*v),
+                ("m_height", Const::Int(v)) => h = Some(*v),
                 _ => {}
             });
         }
     }
+    (w, h)
+}
+
+/// The `VcamBGSettings` class index (camera-background / parallax config), under either its
+/// fully-qualified or bare name.
+fn vcam_settings(abc: &Abc) -> Option<usize> {
+    class_named(abc, "com.mcleodgaming.ssf2.util.VcamBGSettings")
+        .or_else(|| class_named(abc, "VcamBGSettings"))
+}
+
+/// Pull [`Ssf2Engine`] out of `SSF2.swf` bytes. `None` if the SWF/ABC can't be read or `Main`'s
+/// view dimensions aren't found.
+pub fn ssf2_engine(swf_bytes: &[u8]) -> Option<Ssf2Engine> {
+    let (fps, abc) = load_swf_abc(swf_bytes)?;
+    let fps = Some(fps);
+
+    // Main.m_width / m_height
+    let (view_w, view_h) = main_view_dims(&abc);
+    let (view_w, view_h) = (view_w.map(|v| v as u32), view_h.map(|v| v as u32));
 
     // VcamBGSettings: the camera-background config schema + the mode string constants.
     let (mut modes, mut config_fields) = (Vec::new(), Vec::new());
-    if let Some(ci) = class_named(&abc, "com.mcleodgaming.ssf2.util.VcamBGSettings")
-        .or_else(|| class_named(&abc, "VcamBGSettings"))
-    {
+    if let Some(ci) = vcam_settings(&abc) {
         config_fields = slot_field_names(&abc, ci);
         if let Some(body) = body_for(&abc, abc.classes[ci].cinit) {
             for_each_set(&abc, &body.code, |name, c| {
@@ -63,6 +83,56 @@ pub fn ssf2_engine(swf_bytes: &[u8]) -> Option<Ssf2Engine> {
     }
 
     Some(Ssf2Engine { view_w: view_w?, view_h: view_h?, fps, modes, config_fields })
+}
+
+/// One resolved/missing SSF2 engine symbol, for `peptide ssf2 doctor`.
+pub struct EngineCheck {
+    /// Subsystem grouping (e.g. `view`, `parallax`).
+    pub group: &'static str,
+    /// Human label of the symbol.
+    pub label: &'static str,
+    /// Why Peptide depends on it (shown when missing).
+    pub why: &'static str,
+    /// `true` -> the converter can't work without it; a miss is fatal.
+    pub critical: bool,
+    /// Whether it resolved against this SSF2 build.
+    pub ok: bool,
+}
+
+/// Resolve, BY NAME, every `SSF2.swf` symbol Peptide's stage/parallax path depends on, and
+/// report per-symbol pass/fail — the SSF2 analogue of the Fraymakers `doctor`. A recompiled SSF2
+/// renumbers every class/trait, so a name lookup that still resolves means the build is
+/// compatible. `None` only if the SWF/ABC can't be read at all.
+pub fn ssf2_doctor(swf_bytes: &[u8]) -> Option<Vec<EngineCheck>> {
+    let (fps, abc) = load_swf_abc(swf_bytes)?;
+    let mk = |group, label, why, critical, ok| EngineCheck { group, label, why, critical, ok };
+    let mut checks = Vec::new();
+
+    // view: Main + its view dims drive the stage scale and the parallax pan formula.
+    let main = class_named(&abc, "Main");
+    checks.push(mk("view", "Main", "owns the logical view size", true, main.is_some()));
+    let (w, h) = main_view_dims(&abc);
+    checks.push(mk("view", "Main.m_width", "view width drives the pan-rate formula", true, w.is_some()));
+    checks.push(mk("view", "Main.m_height", "view height drives the vertical pan formula", true, h.is_some()));
+    checks.push(mk("view", "SWF frame rate", "engine tick rate (physics + scaling)", false, fps > 0.0));
+
+    // parallax: VcamBGSettings backs the camera-background preview (rare: ~1/110 stages).
+    let vcam = vcam_settings(&abc);
+    checks.push(mk("parallax", "VcamBGSettings", "camera-background (parallax) config class", false, vcam.is_some()));
+    let fields = vcam.map(|ci| slot_field_names(&abc, ci)).unwrap_or_default();
+    checks.push(mk("parallax", "VcamBGSettings.xPanMultiplier", "per-layer pan-rate field", false,
+        fields.iter().any(|f| f == "xPanMultiplier")));
+    let mut has_mode = false;
+    if let Some(ci) = vcam {
+        if let Some(body) = body_for(&abc, abc.classes[ci].cinit) {
+            for_each_set(&abc, &body.code, |name, c| {
+                if matches!(c, Const::Str(_)) && name.ends_with("_MODE") { has_mode = true; }
+            });
+        }
+    }
+    checks.push(mk("parallax", "VcamBGSettings *_MODE consts", "PAN/BOUNDS mode string constants", false, has_mode));
+
+    Some(checks)
 }
 
 /// Back-compat: just the view dims.
@@ -139,5 +209,17 @@ mod tests {
         assert!((1.0..=120.0).contains(&fps), "fps in a sane range (fixed-point decode), got {fps}");
         assert!(e.config_fields.iter().any(|f| f == "xPanMultiplier"), "config schema, got {:?}", e.config_fields);
         assert!(e.modes.iter().any(|(k, _)| k == "PAN_MODE"), "mode constants, got {:?}", e.modes);
+    }
+
+    #[test]
+    fn ssf2_doctor_resolves_live() {
+        let Ok(p) = std::env::var("PEPTIDE_SSF2_SWF") else { return };
+        if !std::path::Path::new(&p).exists() { return; }
+        let checks = super::ssf2_doctor(&std::fs::read(&p).unwrap()).expect("ssf2 doctor");
+        let crit_miss: Vec<_> = checks.iter().filter(|c| c.critical && !c.ok).map(|c| c.label).collect();
+        assert!(crit_miss.is_empty(), "critical SSF2 symbols missing: {crit_miss:?}");
+        // every check resolves on a stock SSF2 build
+        let miss: Vec<_> = checks.iter().filter(|c| !c.ok).map(|c| c.label).collect();
+        assert!(miss.is_empty(), "unresolved SSF2 symbols: {miss:?}");
     }
 }

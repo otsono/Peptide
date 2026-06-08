@@ -1,5 +1,7 @@
-//! The single source of truth for every Fraymakers engine symbol Peptide's
-//! bytecode patcher depends on.
+//! The single source of truth for every Fraymakers engine symbol Peptide
+//! depends on — the bytecode patcher (critical entries) plus the few read-only
+//! features that read engine classes by name (e.g. the stage-parallax preview;
+//! non-critical, a miss only degrades the feature).
 //!
 //! WHY THIS FILE EXISTS
 //! --------------------
@@ -233,6 +235,16 @@ pub const MANIFEST: &[Symbol] = &[
     // ── Engine console ('c' command) ────────────────────────────────────────
     sym!(fn "runCommand" in "h2d.Console",       "console", "run an engine console command", false),
     sym!(fn "set_enabled" in "pxf.core.ImprovedConsole", "console", "open the console overlay", false),
+
+    // ── Stage parallax preview (read-only, not the patcher) ─────────────────
+    // Backs the GUI stage parallax preview's "pull params from the engine" path
+    // (gui.rs fm_engine), so the preview carries no ported engine constants. The
+    // preview is read-only — a miss just degrades it to a fallback rate, never
+    // corrupts anything — so every entry is non-critical.
+    sym!(type "pxf.core.camera.ParallaxBG",       "stage-parallax", "camera-background class (the engine's parallax model)", false),
+    sym!(type "pxf.core.camera.ParallaxBGConfig", "stage-parallax", "per-layer parallax config schema", false),
+    sym!(field "xPanMultiplier" of "pxf.core.camera.ParallaxBGConfig", "stage-parallax", "the explicit per-layer pan rate the converter writes", false),
+    sym!(type "pxf.core.camera.$ParallaxMode",    "stage-parallax", "BOUNDS/PAN/DEPTH mode constants", false),
 ];
 
 /// `true` when stderr is an interactive terminal (so live progress bars are

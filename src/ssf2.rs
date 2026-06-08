@@ -568,6 +568,48 @@ fn cmd_identify(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `peptide ssf2 doctor`
+///
+/// The SSF2 analogue of `peptide <fraymakers.dat> _ doctor`: resolve every `SSF2.swf` engine
+/// symbol the stage/parallax path depends on BY NAME against the installed SSF2, and print a
+/// pass/fail checklist. A recompiled SSF2 renumbers every class/trait, so this triages a new
+/// build in one command. Exits non-zero if a critical symbol is gone.
+fn cmd_doctor(_args: &[String]) -> Result<()> {
+    let app = ssf2_app();
+    let swf = ssf2_swf_path(&app);
+    if !swf.exists() { bail!("SSF2.swf not found at {}", swf.display()); }
+    let bytes = std::fs::read(&swf)?;
+    let checks = ssf2_converter::engine_probe::ssf2_doctor(&bytes)
+        .ok_or_else(|| anyhow!("could not read ABC from {}", swf.display()))?;
+
+    eprintln!("\nPeptide SSF2 doctor — {}", swf.display());
+    eprintln!("{}", "-".repeat(60));
+    let (mut ok, mut crit, mut warn) = (0usize, 0usize, 0usize);
+    let mut last = "";
+    for c in &checks {
+        if c.group != last { eprintln!("  {}:", c.group); last = c.group; }
+        if c.ok {
+            ok += 1;
+            eprintln!("    [ ok ] {}", c.label);
+        } else {
+            let tag = if c.critical { crit += 1; "CRITICAL" } else { warn += 1; "warn" };
+            eprintln!("    [MISS] {:<32} MISSING ({tag}) — {}", c.label, c.why);
+        }
+    }
+    eprintln!("\n  {ok}/{} resolved · {crit} critical missing · {warn} warnings", checks.len());
+    if crit > 0 {
+        bail!("{crit} critical SSF2 symbol(s) gone — this SSF2 build isn't compatible with the \
+               converter. Re-find the names above and update crates/ssf2-converter/src/engine_probe.rs");
+    }
+    if warn > 0 {
+        eprintln!("  -> converter is compatible; {warn} non-critical symbol(s) changed (the \
+                   camera-background parallax preview degrades to a fallback rate).");
+    } else {
+        eprintln!("doctor: all SSF2 engine symbols resolved — converter is compatible with this build");
+    }
+    Ok(())
+}
+
 /// `peptide ssf2 stage <file.ssf> [--out <dir>] [--id <id>] [--info]`
 ///
 /// Parse an SSF2 stage `.ssf` into a geometry model and emit a Fraymakers stage
@@ -646,6 +688,10 @@ USAGE:
         Convert an SSF2 stage .ssf into a Fraymakers stage package (geometry-only:
         floor + soft platforms, death/camera boxes, entrance/respawn points). Prints
         the parsed model; --info skips emitting; --id overrides the output id.
+  peptide ssf2 doctor
+        Resolve, by name, every SSF2.swf engine symbol the stage/parallax path
+        depends on (view dims, VcamBGSettings schema + mode consts) against the
+        installed SSF2 and print a pass/fail checklist. Triages a new SSF2 build.
   peptide ssf2 launch
         Quickboot the standalone SSF2.app for manual observation.
 
@@ -676,6 +722,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         "scale" => cmd_scale(rest),
         "identify" => cmd_identify(rest),
         "stage" => cmd_stage(rest),
+        "doctor" => cmd_doctor(rest),
         "patch" => cmd_patch(rest),
         "install" => cmd_install(rest).map(|_| ()),
         "selftest" => cmd_selftest(rest),
