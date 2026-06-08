@@ -565,22 +565,38 @@ fn hazard_entity(hid: &str, hz: &Hazard, sprite_guid: &str) -> Value {
 }
 
 fn hazard_script_hx(hz: &Hazard) -> String {
-    // The hitbox fires automatically while `gameObjectIdle` plays (the HIT_BOX layer + the
-    // HitboxStats entry). For a pulsing hazard, stop/restart the animation on the duty cycle.
-    let pulse = if hz.interval > 0 {
-        format!(
-            "\tvar t = self.getAnimationFrame();\n\
-             \tif (t % {interval} == 0) {{ self.playAnimation(\"gameObjectIdle\"); }}\n\
-             \telse if (t % {interval} == {active}) {{ self.stopAnimation(); }}\n",
-            interval = hz.interval, active = hz.active)
+    // Damage is applied from the script by overlap test: a stage hazard has no fighter owner,
+    // so the team-based hitbox system can't resolve a hit. Each active frame, any character whose
+    // body is inside the hazard box takes `damage` + knockback, then a short per-hazard cooldown
+    // prevents melting. `interval`/`active` give an on/off pulse (0 interval = always on).
+    let (hw, hh) = (hz.w / 2.0, hz.h / 2.0);
+    let active_test = if hz.interval > 0 {
+        format!("(m_frame % {} < {})", hz.interval, hz.active)
     } else {
-        String::new()
+        "true".to_string()
     };
     format!(
         "// Stage hazard (custom game object) — converted from SSF2 (bespoke behavior not ported).\n\
-         // Edit this to give the hazard real movement/behavior; the damage comes from HitboxStats.\n\n\
+         // A damaging box at the hazard's position. Edit for real movement/behavior.\n\n\
+         var HALF_W = {hw:.1};\nvar HALF_H = {hh:.1};\nvar DAMAGE = {dmg};\nvar KB = {kb};\nvar ANGLE = {ang};\n\
+         var m_frame = 0;\nvar m_cooldown = 0;\n\n\
          function initialize() {{\n\tself.playAnimation(\"gameObjectIdle\");\n}}\n\n\
-         function update() {{\n{pulse}}}\n")
+         function update() {{\n\
+         \tm_frame = m_frame + 1;\n\
+         \tif (m_cooldown > 0) {{ m_cooldown = m_cooldown - 1; return; }}\n\
+         \tif (!{active_test}) return;\n\
+         \tvar chars = match.getCharacters();\n\
+         \tvar hx = self.getX();\n\tvar hy = self.getY();\n\
+         \tfor (i in 0...chars.length) {{\n\
+         \t\tvar c = chars[i];\n\
+         \t\tif (Math.abs(c.getX() - hx) < HALF_W && Math.abs(c.getY() - hy) < HALF_H) {{\n\
+         \t\t\tc.addDamage(DAMAGE);\n\
+         \t\t\tc.setKnockback(KB, ANGLE);\n\
+         \t\t\tm_cooldown = 24;\n\
+         \t\t}}\n\
+         \t}}\n\
+         }}\n",
+        dmg = hz.damage, kb = hz.knockback, ang = hz.angle)
 }
 
 fn hazard_gameobject_stats_hx(hid: &str) -> String {
