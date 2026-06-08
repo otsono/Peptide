@@ -1,0 +1,18 @@
+{
+  // per-stage display + music overrides for the SSF2 -> Fraymakers stage converter.
+  // key = the SSF2 stage id (Main.id in the stage DAT, before the "ssf2" suffix).
+  //
+  // every field is optional. fallbacks when an entry (or field) is absent:
+  //   name  -> the SSF2 id, title-cased ("battlefield" -> "Battlefield"). SSF2 ids are
+  //            lowercase-concatenated, so multi-word stages need an entry here for a
+  //            clean name ("finaldestination" -> "Final Destination").
+  //   music -> default_music below. these MUST be real Fraymakers public bgm resource
+  //            ids (the SSF2 soundtrack is not shipped with FM); the original SSF2 track
+  //            ids are always recorded in the stage description regardless.
+  //   series -> none.
+  "default_music": "bgm_welkinwonderland",
+  "stages": {
+    "battlefield":  { "name": "Battlefield" },
+    "junglehijinx": { "name": "Jungle Hijinx", "series": "Donkey Kong" }
+  }
+}

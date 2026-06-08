@@ -194,6 +194,14 @@ fn main() {
         }
         "disasm" => disasm_class_method(&abc, &args[3], &args[4], false),
         "disasm-static" => disasm_class_method(&abc, &args[3], &args[4], true),
+        "iinit" => {
+            // disasm a class's instance initializer (the AS3 constructor) — where stage
+            // DATs `register(...)` their metadata. Not a named trait, so it needs its own path.
+            let Some(ci) = find_class(&abc, &args[3]) else { eprintln!("no class"); return; };
+            let iinit = abc.instances[ci].iinit;
+            println!("// {}::iinit method#{iinit}", &args[3]);
+            if let Some(b) = body_for(&abc, iinit) { disasm(&abc, &b.code); }
+        }
         "cinit" => {
             let Some(ci) = find_class(&abc, &args[3]) else { eprintln!("no class"); return; };
             let cinit = abc.classes[ci].cinit;

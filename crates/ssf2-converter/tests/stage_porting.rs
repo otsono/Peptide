@@ -68,6 +68,15 @@ fn battlefield_parses_to_geometry() {
     // battlefield carries the full SSF2 stage linkage set, so validation is clean.
     assert!(m.warnings.is_empty(), "battlefield should validate clean, got: {:?}", m.warnings);
 
+    // metadata: clean display name (override map) + the original SSF2 soundtrack pulled
+    // from the DAT, and a real FM bgm to actually play.
+    assert_eq!(m.id, "battlefield", "model id is the raw SSF2 id (suffix applied by the cmd)");
+    assert_eq!(m.display_name, "Battlefield");
+    assert!(m.ssf2_music.contains(&"bgm_battlefield".to_string()),
+        "extracted SSF2 soundtrack, got {:?}", m.ssf2_music);
+    assert!(m.fm_music.iter().all(|b| b.starts_with("bgm_")) && !m.fm_music.is_empty(),
+        "a real FM bgm is referenced, got {:?}", m.fm_music);
+
     // art: the painted backdrop (`background` plane) and the foreground both rasterize.
     // The collision masks (the `terrain` plane) are NOT art, so the stage-depth bucket is
     // empty (the fix for the doubled-stage render). Battlefield has no `_cambg` layers, so

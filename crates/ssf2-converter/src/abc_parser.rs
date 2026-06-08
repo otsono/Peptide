@@ -1373,6 +1373,10 @@ pub struct MainPackageMetadata {
     /// engine's roster order). Empty when the walk failed — callers
     /// fall back to the path 2 instance-method enumeration.
     pub characters: Vec<(String, String)>,
+    /// `register("music", {id:...}, …)` track ids (the `bgm_*` resource names) in
+    /// order. For a stage, its intended SSF2 soundtrack; empty for characters / when
+    /// no music block is present.
+    pub music: Vec<String>,
 }
 
 /// Read Main's constructor and pull out `id`, `guid`, and the
@@ -1384,7 +1388,39 @@ pub fn extract_main_package_metadata(abc: &AbcFile) -> Option<MainPackageMetadat
         id:         scan_register_string_arg(body, abc, "id"),
         guid:       scan_register_string_arg(body, abc, "guid"),
         characters: scan_register_characters_array(body, abc),
+        music:      scan_register_music_ids(body, abc),
     })
+}
+
+/// Walk Main's constructor to collect the `register("music", {id:...}, …)` track
+/// ids — every `bgm_*` string between the `"music"` key and the `register` call that
+/// consumes it (the SSF2 stage's intended soundtrack, in order).
+fn scan_register_music_ids(body: &MethodBody, abc: &AbcFile) -> Vec<String> {
+    let Some(music_key) = abc.strings.iter().position(|s| &**s == "music") else { return Vec::new() };
+    let bc = &body.bytecode;
+    let (mut i, mut out, mut collecting) = (0usize, Vec::new(), false);
+    while i < bc.len() {
+        let op = bc[i];
+        if op == OP_PUSHSTRING {
+            let mut j = i + 1;
+            if let Some(s_idx) = read_u30_at(bc, &mut j) {
+                if s_idx as usize == music_key {
+                    collecting = true;
+                } else if collecting {
+                    if let Some(s) = abc.strings.get(s_idx as usize) {
+                        if s.starts_with("bgm_") { out.push(s.to_string()); }
+                    }
+                }
+            }
+            i = j;
+            continue;
+        }
+        // the first call after the "music" key is `register("music", …)` — end of block.
+        if collecting && (op == OP_CALLPROPVOID || op == OP_CALLPROPERTY) { break; }
+        i += 1;
+        skip_opcode_operands(op, bc, &mut i);
+    }
+    out
 }
 
 /// Walk a method body to find `pushstring KEY ; pushstring VALUE ;
