@@ -151,9 +151,10 @@ pub struct StageModel {
 /// and parallax-scroll the background.
 #[derive(Clone, Debug, Default)]
 pub struct StageArtSet {
-    /// Fixed painted backdrop (SSF2 `<id>_bg` / `background`), drawn behind everything.
-    /// Moves 1:1 with the world (it carries the surface fighters stand on).
-    pub background: Option<StageArt>,
+    /// Painted backdrop (SSF2 `<id>_bg` / `background`), drawn behind everything; moves 1:1 with
+    /// the world (it carries the surface fighters stand on). One frame = static; more than one =
+    /// the SSF2 backdrop animates (clouds, water, Whispy, ...) and the emitter loops the frames.
+    pub background: Vec<StageArt>,
     /// Camera-relative parallax layers (the SSF2 `<id>_bg` backdrop + the `_cambg` layers that
     /// `SSF2Stage.getCameraBackgrounds` returns), back-to-front. Each is its OWN plane with its
     /// OWN pan rate (SSF2 auto-derives it from the layer size). Empty for the 109/110 corpus
@@ -170,7 +171,7 @@ impl StageArtSet {
     /// `true` if no layer rasterized (e.g. a stage with only bitmap fills we can't
     /// decode) — the emitter then falls back to a geometry placeholder.
     pub fn is_empty(&self) -> bool {
-        self.background.is_none() && self.parallax.is_empty()
+        self.background.is_empty() && self.parallax.is_empty()
             && self.stage_frames.is_empty() && self.foreground.is_none()
     }
 }
@@ -769,7 +770,7 @@ fn render_art_layers(
     // + background fold into one fixed bg. The folded structure-foreground draws last (in front
     // of the background structure, still behind fighters).
     let has_parallax = base_insts.iter().any(|i| art_kind(i) == ArtKind::Parallax);
-    let (background, parallax) = if has_parallax {
+    let (background, parallax): (Vec<StageArt>, Vec<ParallaxLayer>) = if has_parallax {
         let mut order: Vec<&str> = Vec::new();
         let mut groups: BTreeMap<&str, Vec<&Instance>> = BTreeMap::new();
         for i in base_insts.iter().filter(|i| matches!(art_kind(i), ArtKind::Backdrop | ArtKind::Parallax)) {
@@ -788,9 +789,20 @@ fn render_art_layers(
                 ParallaxLayer { art, mode, x_pan, y_pan }
             })
         }).collect();
-        (composite_grp(base_insts.iter().filter(|i| art_kind(i) == ArtKind::Background || is_dup_fg(i)).collect()), layers)
+        // parallax stages keep a single fixed near-background (the cambg layers carry the motion).
+        let bg = composite_grp(base_insts.iter().filter(|i| art_kind(i) == ArtKind::Background || is_dup_fg(i)).collect());
+        (bg.into_iter().collect(), layers)
     } else {
-        (composite_grp(base_insts.iter().filter(|i| matches!(art_kind(i), ArtKind::Backdrop | ArtKind::Background) || is_dup_fg(i)).collect()), Vec::new())
+        // No parallax: composite the whole backdrop (+ folded structure-fg) PER FRAME so an
+        // animated SSF2 backdrop (clouds, water, Whispy, …) actually animates. If every sampled
+        // frame is identical it's a static backdrop (one frame); the emitter loops > 1 frame.
+        let bg_frames: Vec<StageArt> = sampled.iter().filter_map(|(insts, _)| {
+            composite_grp(insts.iter().filter(|i| matches!(art_kind(i), ArtKind::Backdrop | ArtKind::Background) || is_dup_fg(i)).collect())
+        }).collect();
+        let animated = bg_frames.len() == n_samples && bg_frames.windows(2).any(|w| w[0].png != w[1].png);
+        let bg = if animated { bg_frames }
+            else { composite_grp(base_insts.iter().filter(|i| matches!(art_kind(i), ArtKind::Backdrop | ArtKind::Background) || is_dup_fg(i)).collect()).into_iter().collect() };
+        (bg, Vec::new())
     };
 
     // Emit a multi-frame stage animation only when the samples form a CLEAN animation:
