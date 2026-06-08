@@ -88,6 +88,22 @@ fn overlapping_platforms_are_deduped() {
     }
 }
 
+/// The richest-frame pick must consider art of ANY plane. Final Destination puts ALL its art
+/// in the backdrop/background plane (no Stage-plane art); the old code chose the base frame by
+/// counting only Stage-plane instances, so it landed on an empty animation frame and dropped
+/// the entire backdrop — FD (and ~half the corpus) rendered as a bare placeholder. Now FD must
+/// extract its real backdrop art. Corpus-gated.
+#[test]
+fn backdrop_only_stage_extracts_art() {
+    let p = common::ssfs_dir().join("stages").join("finaldestination.ssf");
+    if !common::present(&p) {
+        return;
+    }
+    let m = parse_stage(&p).expect("parse finaldestination");
+    assert!(m.art.background.is_some(),
+        "FD's backdrop art is extracted (richest frame picked by total art, not Stage-plane only)");
+}
+
 /// Background-plane art named with a collision keyword must NOT become a floor. Homeruncontest
 /// has `hrc_groundloop` field-texture shapes in the BACKGROUND plane whose names contain
 /// "ground"; the name-keyed classifier used to pick the widest of them (~3700px, off at

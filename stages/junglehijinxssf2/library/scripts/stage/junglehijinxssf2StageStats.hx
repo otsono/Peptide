@@ -52,14 +52,14 @@
 				spriteContent: self.getResource().getContent("junglehijinxssf2"),
 				animationId: "parallax2",
 				mode: ParallaxMode.PAN,
-				originalBGWidth: 3199,
-				originalBGHeight: 875,
+				originalBGWidth: 3826,
+				originalBGHeight: 1065,
 				horizontalScroll: false,
 				verticalScroll: false,
 				loopWidth: 0,
 				loopHeight: 0,
-				xPanMultiplier: 0.3999687402313223,
-				yPanMultiplier: 0.29428571428571426,
+				xPanMultiplier: 0.4163617354939885,
+				yPanMultiplier: 0.33098591549295775,
 				scaleMultiplier: 1.3,
 				foreground: false,
 				depth: 1980
@@ -79,6 +79,22 @@
 				scaleMultiplier: 1.3,
 				foreground: false,
 				depth: 1970
+			},
+			{
+				spriteContent: self.getResource().getContent("junglehijinxssf2"),
+				animationId: "parallax4",
+				mode: ParallaxMode.PAN,
+				originalBGWidth: 299,
+				originalBGHeight: 264,
+				horizontalScroll: false,
+				verticalScroll: false,
+				loopWidth: 0,
+				loopHeight: 0,
+				xPanMultiplier: 0,
+				yPanMultiplier: 0,
+				scaleMultiplier: 1.3,
+				foreground: false,
+				depth: 1960
 			}
 		]
 	}

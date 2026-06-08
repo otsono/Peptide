@@ -667,9 +667,12 @@ fn render_art_layers(
         .map(|(insts, _)| insts.iter().filter(|x| art_kind(x) == ArtKind::Stage).count()).collect();
     let max_count = stage_counts.iter().copied().max().unwrap_or(0);
 
-    // background / foreground from the richest frame (an animated stage's frame 0 can be
-    // empty; pick the frame with the most content for the static layers).
-    let base_idx = stage_counts.iter().enumerate().max_by_key(|(_, c)| **c).map(|(i, _)| i).unwrap_or(0);
+    // background / foreground / parallax from the richest frame — the one with the most ART of
+    // ANY plane (an animated stage's frame 0 is often empty; many stages put ALL their art in
+    // the backdrop/background plane, so counting only Stage-plane art would leave base_idx on
+    // an empty frame and drop the whole backdrop — half the corpus rendered as a placeholder).
+    let total_counts: Vec<usize> = sampled.iter().map(|(insts, _)| insts.len()).collect();
+    let base_idx = total_counts.iter().enumerate().max_by_key(|(_, c)| **c).map(|(i, _)| i).unwrap_or(0);
     let base_insts = &sampled[base_idx].0;
     if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
         eprintln!("=== art instances (richest frame {base_idx}, {} insts) ===", base_insts.len());
