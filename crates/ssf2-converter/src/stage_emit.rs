@@ -64,8 +64,16 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         .map(|(i, layer)| write_layer(&format!("parallax{i}"), &layer.art)
             .map(|r| ParallaxRef { art: r, mode: layer.mode, x_pan: layer.x_pan, y_pan: layer.y_pan }))
         .collect::<Result<_>>()?;
+    // single (static) backdrop keeps the bare `bg` name; an animated backdrop is `bg0..N`.
+    let bg_refs: Vec<ArtRef> = if model.art.background.len() == 1 {
+        vec![write_layer("bg", &model.art.background[0])?]
+    } else {
+        model.art.background.iter().enumerate()
+            .map(|(i, a)| write_layer(&format!("bg{i}"), a))
+            .collect::<Result<_>>()?
+    };
     let art = ArtRefs {
-        background: model.art.background.as_ref().map(|a| write_layer("bg", a)).transpose()?,
+        background: bg_refs,
         parallax: parallax_refs,
         stage: stage_refs,
         foreground: model.art.foreground.as_ref().map(|a| write_layer("fg", a)).transpose()?,
@@ -117,8 +125,10 @@ struct EntityBuilder<'a> {
     /// One `(animationName, layerId)` per parallax camera-background layer (`parallax0`,
     /// `parallax1`, …) — each `_cambg` layer scrolls at its own rate, so each is its own.
     parallax_anims: Vec<(String, String)>,
-    /// Length of the stage animation in frames (static layers hold for this many).
+    /// Length of the stage animation in engine frames (static layers hold for this many).
     frame_len: usize,
+    /// Engine frames each SSF2 source frame holds (2 = play a 30fps SSF2 clip at FM's 60fps).
+    frame_hold: usize,
     /// SSF2 -> FM art scale (`size_multiplier`): native-resolution art PNGs render at this
     /// scale so they match the scaled-up geometry + fighters.
     scale: f64,
@@ -126,7 +136,7 @@ struct EntityBuilder<'a> {
 
 impl<'a> EntityBuilder<'a> {
     fn new(id: &'a str) -> Self {
-        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], parallax_anims: vec![], frame_len: 1, scale: 1.0 }
+        EntityBuilder { id, seq: 0, symbols: vec![], keyframes: vec![], layers: vec![], anim_layers: vec![], parallax_anims: vec![], frame_len: 1, frame_hold: 1, scale: 1.0 }
     }
     /// A stable per-entity uuid for `role` (e.g. `"layer:Floor"`).
     fn uid(&mut self, role: &str) -> String {
@@ -238,7 +248,7 @@ impl<'a> EntityBuilder<'a> {
                 "pluginMetadata": {}
             }));
             let kf = self.uid(&format!("kf:{name}:{i}"));
-            self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE" }));
+            self.keyframes.push(json!({ "$id": kf, "length": self.frame_hold, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE" }));
             kfs.push(kf);
         }
         let lid = self.uid(&format!("layer:{name}"));
@@ -275,7 +285,7 @@ struct ArtRef { guid: String, x: f64, y: f64, w: u32, h: u32 }
 struct ParallaxRef { art: ArtRef, mode: ParallaxMode, x_pan: f64, y_pan: f64 }
 
 /// The depth layers the entity lays out. `stage` is the frame sequence (1 = static).
-struct ArtRefs { background: Option<ArtRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Option<ArtRef> }
+struct ArtRefs { background: Vec<ArtRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Option<ArtRef> }
 
 /// Render the floor + soft platforms as filled rectangles on a transparent canvas
 /// covering their bounding box (1px = 1 stage unit). Gives the stage visible content
@@ -319,16 +329,24 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     let id = &model.id;
     let mut b = EntityBuilder::new(id);
     b.scale = model.scale;
-    // the stage animation runs for as many frames as the stage art has (1 = static);
-    // static layers hold across all of them.
-    b.frame_len = art.stage.len().max(1);
+    // the stage animation runs for as many frames as the richest animated layer (background or
+    // stage art); 1 = static. SSF2 plays at 30fps and Fraymakers at 60, so each source frame
+    // holds 2 engine frames (`frame_hold`) to match the original speed. Static layers hold for
+    // the whole `frame_len`.
+    let frame_count = art.background.len().max(art.stage.len()).max(1);
+    b.frame_hold = if frame_count > 1 { 2 } else { 1 };
+    b.frame_len = frame_count * b.frame_hold;
 
     // ── render order (first = back): the painted backdrop, background depth containers,
     // the stage art (behind fighters), the character containers, the foreground art (in
     // front of fighters), the foreground containers, then the invisible collision / spawns.
     // The backdrop is FIXED, not parallax-scrolled: the SSF2 `<id>_bg` plane includes the
     // surface fighters stand on, so it has to stay aligned with the collision. ──
-    if let Some(a) = &art.background { b.add_image("Background Art", &a.guid, a.x, a.y); }
+    match art.background.as_slice() {
+        [] => {}
+        [a] => b.add_image("Background Art", &a.guid, a.x, a.y),
+        frames => b.add_image_frames("Background Art", &frames.iter().map(|a| (a.guid.clone(), a.x, a.y)).collect::<Vec<_>>()),
+    }
     b.add_container("Background Behind", "BACKGROUND_BEHIND_CONTAINER");
     b.add_container("Background Effects", "BACKGROUND_EFFECTS_CONTAINER");
     b.add_container("Background Shadows", "BACKGROUND_SHADOWS_CONTAINER");

@@ -664,7 +664,7 @@ fn cmd_stage(args: &[String]) -> Result<()> {
     // background, so `fg` here means a DISTINCT in-front prop survived.
     let a = &model.art;
     println!("  art: background={} foreground={} parallax={} stage_frames={}",
-        a.background.is_some(), a.foreground.is_some(), a.parallax.len(), a.stage_frames.len());
+        a.background.len(), a.foreground.is_some(), a.parallax.len(), a.stage_frames.len());
     for w in &model.warnings {
         eprintln!("  warning: {w}");
     }

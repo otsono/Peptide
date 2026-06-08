@@ -100,7 +100,7 @@ fn backdrop_only_stage_extracts_art() {
         return;
     }
     let m = parse_stage(&p).expect("parse finaldestination");
-    assert!(m.art.background.is_some(),
+    assert!(!m.art.background.is_empty(),
         "FD's backdrop art is extracted (richest frame picked by total art, not Stage-plane only)");
 }
 
@@ -175,7 +175,7 @@ fn battlefield_parses_to_geometry() {
     // The collision masks (the `terrain` plane) are NOT art, so the stage-depth bucket is
     // empty (the fix for the doubled-stage render). Battlefield has no `_cambg` layers, so
     // its background is fixed (no parallax).
-    assert!(m.art.background.is_some(), "painted backdrop rasterizes");
+    assert!(!m.art.background.is_empty(), "painted backdrop rasterizes");
     // battlefield's SSF2 `foreground` plane is the platform's front face, which overlaps the
     // `background` structure. Drawn as an FM foreground it would re-draw the platform in front
     // of fighters (a visible duplicate), so it folds into the background instead — no separate
@@ -208,7 +208,7 @@ fn junglehijinx_has_parallax() {
     // tiling/wrapping mode.
     assert!(m.art.parallax.iter().all(|p| p.mode == ssf2_converter::ParallaxMode::Pan),
         "cambg layers use PAN mode (BOUNDS is for tiling backdrops)");
-    assert!(m.art.background.is_some(), "fixed near-background (island) present");
+    assert!(!m.art.background.is_empty(), "fixed near-background (island) present");
     // junglehijinx's foreground is the `*_fg` jungle foliage — a DISTINCT prop offset from the
     // island, low overlap with the background, so it stays in front (NOT folded like a
     // structure front-face would be). This is the half of the fold heuristic that must survive.
