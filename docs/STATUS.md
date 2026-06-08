@@ -42,8 +42,14 @@ the converted stage carries a clean display name (the SSF2 id title-cased, or an
 `mappings/stage/metadata.jsonc`) and records its original SSF2 soundtrack (the `bgm_*` ids
 pulled from the stage DAT) in the description. it plays a real FM bgm (the override map's pick
 or `default_music`) since the SSF2 audio isn't shipped with FM. the content id is suffixed
-`<id>ssf2` so it can't shadow a built-in stage. follow-ups: hazards, moving platforms,
-per-stage FM-music mapping, porting the actual SSF2 audio (licensing-permitting).
+`<id>ssf2` so it can't shadow a built-in stage.
+
+moving platforms are detected (the `moving`-named SSF2 container, propagated to its collision
+child) and kept as static collision at their start position, labelled `(SSF2 moving, static)`
+in the entity and surfaced in a warning. the motion itself isn't ported: SSF2 moving platforms
+are bespoke per stage (custom AS3 classes / timeline animation), so reproducing them is
+per-stage work like porting a character special. follow-ups: the moving-platform motion,
+hazards/enemies, per-stage FM-music mapping, porting the actual SSF2 audio (licensing-permitting).
 
 ## hitbox-stat parity
 
