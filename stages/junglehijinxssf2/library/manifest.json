@@ -1,7 +1,7 @@
 {
   "content": [
     {
-      "description": "junglehijinxssf2 — converted from Super Smash Flash 2",
+      "description": "Jungle Hijinx — converted from Super Smash Flash 2 (Donkey Kong). Original SSF2 soundtrack: bgm_dkislandswing, bgm_brambleblast",
       "id": "junglehijinxssf2",
       "metadata": {
         "ui": {
@@ -18,7 +18,7 @@
           "resourceId": "bgm_welkinwonderland"
         }
       ],
-      "name": "junglehijinxssf2",
+      "name": "Jungle Hijinx",
       "objectStatsId": "junglehijinxssf2StageStats",
       "scriptId": "junglehijinxssf2Script",
       "type": "stage"

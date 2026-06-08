@@ -630,10 +630,17 @@ fn cmd_stage(args: &[String]) -> Result<()> {
     let target = PathBuf::from(target);
 
     let mut model = ssf2_converter::parse_stage(&target)?;
+    // suffix the content id (`<id>ssf2`) so a converted stage can't shadow a built-in FM
+    // stage; the display name stays the clean SSF2 name. `--id` overrides outright.
     if let Some(id) = id_override { model.id = id; }
+    else if !model.id.ends_with("ssf2") { model.id = format!("{}ssf2", model.id); }
 
     // print the parsed model (the phase-2 exit criteria: platforms + bounds + spawns).
-    println!("stage '{}' (from {})", model.id, target.display());
+    println!("stage '{}' \"{}\" (from {})", model.id, model.display_name, target.display());
+    if !model.fm_music.is_empty() {
+        println!("  music: {} (FM){}", model.fm_music.join(", "),
+            if model.ssf2_music.is_empty() { String::new() } else { format!("  [SSF2: {}]", model.ssf2_music.join(", ")) });
+    }
     if let Some(f) = model.main_floor() {
         println!("  main floor: x[{:.1},{:.1}] top y={:.1} (w={:.1})", f.rect.left(), f.rect.right(), f.rect.top(), f.rect.w);
     }

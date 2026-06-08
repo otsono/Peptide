@@ -36,7 +36,14 @@ is live-verified: `spawn sandbag battlefieldssf2` (drive with `FRAY_STAGE=<stage
 stage, the fighter stands on the platforms, walks, and falls off the edges into the blast
 zone (KO + respawn), no crash. NB: a stage needs visible content to place players (the engine
 sizes it from the sprite bounds); the sprite is the SSF2 art (vector shapes + bitmap backgrounds rasterized + composited);
-stages with no rasterizable art fall back to a geometry placeholder. follow-ups: parallax backgrounds, hazards, moving platforms, music.
+stages with no rasterizable art fall back to a geometry placeholder.
+
+the converted stage carries a clean display name (the SSF2 id title-cased, or an override in
+`mappings/stage/metadata.jsonc`) and records its original SSF2 soundtrack (the `bgm_*` ids
+pulled from the stage DAT) in the description. it plays a real FM bgm (the override map's pick
+or `default_music`) since the SSF2 audio isn't shipped with FM. the content id is suffixed
+`<id>ssf2` so it can't shadow a built-in stage. follow-ups: hazards, moving platforms,
+per-stage FM-music mapping, porting the actual SSF2 audio (licensing-permitting).
 
 ## hitbox-stat parity
 

@@ -80,7 +80,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     }
     write_json(&lib.join("entities").join(format!("{id}.entity")), &entity)?;
 
-    write_json(&lib.join("manifest.json"), &build_manifest(id))?;
+    write_json(&lib.join("manifest.json"), &build_manifest(model))?;
     write_meta(&lib.join("manifest.json.meta"), id, "manifest", "json", None, None)?;
 
     let scripts = lib.join("scripts").join("stage");
@@ -460,16 +460,25 @@ fn validate_fm_entity(entity: &Value) -> Vec<String> {
 
 // ───────────────────────── manifest / scripts / project ─────────────────────
 
-fn build_manifest(id: &str) -> Value {
-    // a match needs at least one music track to start; reference a public bgm that ships
-    // with the engine (matching what a shipped stage declares).
-    let music = json!([{ "namespace": "public", "resourceId": "bgm_welkinwonderland", "contentId": "bgm_welkinwonderland" }]);
+fn build_manifest(model: &StageModel) -> Value {
+    let id = &model.id;
+    // a match needs at least one music track to start, and it must be a real public FM bgm
+    // (the SSF2 soundtrack isn't shipped with the engine). `fm_music` is the override-map
+    // pick or the configured default; the original SSF2 track ids go in the description.
+    let music: Vec<Value> = model.fm_music.iter().map(|bgm| json!({
+        "namespace": "public", "resourceId": bgm, "contentId": bgm
+    })).collect();
+    let mut description = format!("{} — converted from Super Smash Flash 2", model.display_name);
+    if let Some(series) = &model.series { description.push_str(&format!(" ({series})")); }
+    if !model.ssf2_music.is_empty() {
+        description.push_str(&format!(". Original SSF2 soundtrack: {}", model.ssf2_music.join(", ")));
+    }
     json!({
         "resourceId": id,
         "content": [{
             "id": id,
-            "name": id,
-            "description": format!("{id} — converted from Super Smash Flash 2"),
+            "name": model.display_name,
+            "description": description,
             "type": "stage",
             "objectStatsId": format!("{id}StageStats"),
             "scriptId": format!("{id}Script"),

@@ -779,6 +779,36 @@ pub fn projectile_tables() -> &'static ProjectileTables {
     })
 }
 
+/// Per-stage display + music overrides for the SSF2 -> Fraymakers stage converter
+/// (`mappings/stage/metadata.jsonc`). Looked up by the SSF2 stage id; missing entries
+/// fall back to a title-cased name + `default_music`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StageMetadataMap {
+    /// FM bgm referenced when a stage has no `music` override. Must be a real public
+    /// Fraymakers resource (the SSF2 soundtrack is not shipped with FM).
+    #[serde(default)]
+    pub default_music: String,
+    /// SSF2 id -> overrides.
+    #[serde(default)]
+    pub stages: std::collections::BTreeMap<String, StageMetadataEntry>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StageMetadataEntry {
+    /// Human display name (e.g. "Final Destination"). None -> title-cased id.
+    pub name: Option<String>,
+    /// FM bgm resource ids to play. Empty -> `default_music`.
+    #[serde(default)]
+    pub music: Vec<String>,
+    /// Source series, for the description. Optional.
+    pub series: Option<String>,
+}
+
+pub fn stage_metadata() -> &'static StageMetadataMap {
+    static CACHE: OnceLock<StageMetadataMap> = OnceLock::new();
+    CACHE.get_or_init(|| load("mappings/stage/metadata.jsonc"))
+}
+
 pub fn character_hitbox_stats() -> &'static HitboxStatsMapping {
     static CACHE: OnceLock<HitboxStatsMapping> = OnceLock::new();
     CACHE.get_or_init(|| {

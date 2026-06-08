@@ -78,8 +78,20 @@ pub struct SpawnPoint {
 /// The parsed SSF2 stage geometry, in FM stage coordinates.
 #[derive(Clone, Debug)]
 pub struct StageModel {
-    /// Content id (from `Main.id`, fallback file stem).
+    /// Content id (from `Main.id`, fallback file stem). The emitter may suffix this
+    /// (`<id>ssf2`) so it can't shadow a built-in stage; `display_name` stays clean.
     pub id: String,
+    /// Human display name for the stage-select screen (override map, else the SSF2 id
+    /// title-cased).
+    pub display_name: String,
+    /// Source series (for the description), if known from the override map.
+    pub series: Option<String>,
+    /// The stage's original SSF2 soundtrack track ids (`bgm_*`), preserved in the
+    /// description. Not playable in FM (the audio isn't shipped), recorded for the author.
+    pub ssf2_music: Vec<String>,
+    /// FM bgm resource ids the converted stage actually references (override map, else the
+    /// configured default). Must be real public FM resources so the match can start.
+    pub fm_music: Vec<String>,
     /// Collision platforms (floor + soft platforms), top surfaces are `rect.top()`.
     pub platforms: Vec<Platform>,
     /// Blast zone (KO boundary).
@@ -217,9 +229,21 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     let buf = swf::decompress_swf(&swf_data[..]).context("decompress SWF")?;
     let swf = swf::parse_swf(&buf).context("parse SWF")?;
 
-    let id = stage_id(&swf_data).unwrap_or_else(|| {
+    let meta = stage_package_metadata(&swf_data);
+    let id = meta.as_ref().and_then(|m| m.id.clone()).unwrap_or_else(|| {
         path.file_stem().and_then(|s| s.to_str()).unwrap_or("stage").to_string()
     });
+    let ssf2_music = meta.map(|m| m.music).unwrap_or_default();
+    // display name + FM music: the override map keyed by the SSF2 id, else title-case +
+    // the default bgm. The original SSF2 soundtrack (ssf2_music) is preserved separately.
+    let smeta = crate::mappings::stage_metadata();
+    let entry = smeta.stages.get(&id);
+    let display_name = entry.and_then(|e| e.name.clone()).unwrap_or_else(|| title_case(&id));
+    let series = entry.and_then(|e| e.series.clone());
+    let fm_music = match entry.map(|e| &e.music) {
+        Some(m) if !m.is_empty() => m.clone(),
+        _ => vec![smeta.default_music.clone()],
+    };
 
     // SymbolClass id -> name; DefineShape bounds; DefineSprite tag lists.
     let mut sym_names: BTreeMap<u16, String> = BTreeMap::new();
@@ -370,7 +394,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     if entrances.is_empty() { warnings.push("no match-start entrances parsed (pN_Start)".into()); }
     if !platforms.iter().any(|p| !p.drop_through) { warnings.push("no solid floor parsed".into()); }
 
-    Ok(StageModel { id, platforms, death_box, camera_box, entrances, respawns, ledges, art, warnings, scale })
+    Ok(StageModel { id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, art, warnings, scale })
 }
 
 /// Validate that the SSF2 source carries the linkages a playable stage needs. Returns a
@@ -838,17 +862,32 @@ fn ssf_decompress(raw: &[u8], path: &Path) -> Result<Vec<u8>> {
     crate::ssf::decompress(raw).with_context(|| format!("decompress {}", path.display()))
 }
 
-/// Read `Main.id` from any ABC block (the content id the engine knows the stage by).
-fn stage_id(swf_data: &[u8]) -> Option<String> {
+/// Read the stage DAT's `Main` package metadata (`id`, `guid`, `music`) from the first
+/// ABC block that carries an `id` (the content id the engine knows the stage by).
+fn stage_package_metadata(swf_data: &[u8]) -> Option<crate::abc_parser::MainPackageMetadata> {
     let swf = crate::swf_parser::parse(swf_data).ok()?;
     for abc_bytes in &swf.abc_blocks {
         if let Ok(abc) = crate::abc_parser::parse(abc_bytes) {
             if let Some(md) = crate::abc_parser::extract_main_package_metadata(&abc) {
-                if let Some(id) = md.id { return Some(id); }
+                if md.id.is_some() { return Some(md); }
             }
         }
     }
     None
+}
+
+/// Title-case an SSF2 lowercase-concatenated id for a display name: capitalize the first
+/// letter and any after an underscore/space ("battlefield" -> "Battlefield"). Multi-word
+/// ids that aren't underscore-separated stay one word; add an override in the metadata map.
+fn title_case(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    let mut cap = true;
+    for c in id.chars() {
+        if c == '_' || c == '-' { out.push(' '); cap = true; }
+        else if cap { out.extend(c.to_uppercase()); cap = false; }
+        else { out.push(c); }
+    }
+    out
 }
 
 /// Extract a 0-based player index from a symbol name like

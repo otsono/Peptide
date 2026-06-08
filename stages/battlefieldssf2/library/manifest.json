@@ -1,7 +1,7 @@
 {
   "content": [
     {
-      "description": "battlefieldssf2 — converted from Super Smash Flash 2",
+      "description": "Battlefield — converted from Super Smash Flash 2. Original SSF2 soundtrack: bgm_battlefield, bgm_multimansmash, bgm_cruelsmash",
       "id": "battlefieldssf2",
       "metadata": {
         "ui": {
@@ -18,7 +18,7 @@
           "resourceId": "bgm_welkinwonderland"
         }
       ],
-      "name": "battlefieldssf2",
+      "name": "Battlefield",
       "objectStatsId": "battlefieldssf2StageStats",
       "scriptId": "battlefieldssf2Script",
       "type": "stage"
