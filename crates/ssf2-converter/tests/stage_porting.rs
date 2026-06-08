@@ -88,6 +88,25 @@ fn overlapping_platforms_are_deduped() {
     }
 }
 
+/// Background-plane art named with a collision keyword must NOT become a floor. Homeruncontest
+/// has `hrc_groundloop` field-texture shapes in the BACKGROUND plane whose names contain
+/// "ground"; the name-keyed classifier used to pick the widest of them (~3700px, off at
+/// x~2500) as the main floor, burying the real terrain. The plane exclusion fixes it: the
+/// floor must be the real terrain (reasonably sized, near the stage center). Corpus-gated.
+#[test]
+fn background_art_is_not_collision() {
+    let p = common::ssfs_dir().join("stages").join("homeruncontest.ssf");
+    if !common::present(&p) {
+        return;
+    }
+    let m = parse_stage(&p).expect("parse homeruncontest");
+    let floor = m.main_floor().expect("main floor");
+    // the spurious ground-loop floor was ~3700px wide starting at x~2500; the real terrain is
+    // far narrower and near the origin.
+    assert!(floor.rect.w < 2000.0, "floor is the real terrain, not the wide ground-loop art (w={:.0})", floor.rect.w);
+    assert!(floor.rect.left() < 500.0, "floor sits near the stage center, not off at x~2500 (left={:.0})", floor.rect.left());
+}
+
 /// Battlefield is the iteration target: a 4-platform stage with death/camera
 /// boxes and 4 spawn points. Parse it and check the extracted geometry is sane.
 #[test]

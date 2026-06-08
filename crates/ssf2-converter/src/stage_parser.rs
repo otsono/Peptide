@@ -333,7 +333,12 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         let sn = inst.sym_name.to_ascii_lowercase();
         // `back`/`fore`ground are ART, not collision — exclude them (they contain the
         // substring "ground", which would otherwise read as a floor).
-        let is_art_bg = sn.contains("background") || sn.contains("foreground");
+        let is_art_bg = sn.contains("background") || sn.contains("foreground")
+            // and exclude clearly-behind art PLANES: a background/backdrop/parallax shape named
+            // with "ground"/"platform" (e.g. homeruncontest's `hrc_groundloop` field texture)
+            // is scenery, not collision. (Foreground stays eligible — some stages put a
+            // standable moving platform in the foreground plane.)
+            || matches!(inst.plane.as_deref(), Some("background" | "backdrop" | "cambg"));
         // SSF2 moving platforms carry `moving` in the linkage (movingplatform_N,
         // tos_movingplatform_6, movingPlatformTerrain_14) — usually on the parent container,
         // not the collision child, so the walk propagates it down. We collide with them at
