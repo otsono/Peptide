@@ -68,6 +68,26 @@ pub struct Platform {
     pub moving: bool,
 }
 
+/// A stage hazard, emitted as a Fraymakers custom game object (a damaging hitbox volume the
+/// stage spawns). Position is in FM coords; `w`/`h` size the hitbox; the rest are FM
+/// HitboxStats values. `interval`/`active` drive a simple on/off pulse (0 interval = always on).
+#[derive(Clone, Debug)]
+pub struct Hazard {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub damage: f64,
+    pub knockback: f64,
+    pub angle: f64,
+    /// Period in frames of the on/off pulse (0 = always active).
+    pub interval: u32,
+    /// Frames the hitbox stays active within each `interval` (ignored when interval is 0).
+    pub active: u32,
+    /// Display label (for the entity/layer names).
+    pub label: String,
+}
+
 /// A player beacon (match-start "entrance" or respawn point) in FM coords.
 #[derive(Clone, Debug)]
 pub struct SpawnPoint {
@@ -109,6 +129,11 @@ pub struct StageModel {
     /// Grabbable ledge x-positions `(left, right)` from the SSF2 `ledge_mc` instances,
     /// in FM coords. Used as the main floor's left/right endpoints.
     pub ledges: Option<(f64, f64)>,
+    /// Stage hazards, each emitted as a Fraymakers custom game object the stage spawns. SSF2
+    /// hazards are bespoke per-stage AS3 (lava, thwomps, …) so they aren't auto-ported; these
+    /// are declared opt-in in `mappings/stage/metadata.jsonc` and become real, author-editable
+    /// FM custom-game-object hazards (a damaging hitbox volume).
+    pub hazards: Vec<Hazard>,
     /// Rendered stage art, split into depth layers (the painted backdrop, the main
     /// stage at character depth, and a foreground that draws in front of fighters).
     pub art: StageArtSet,
@@ -252,6 +277,14 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         Some(m) if !m.is_empty() => m.clone(),
         _ => vec![smeta.default_music.clone()],
     };
+    // hazards: opt-in per stage (SSF2 hazards are bespoke, not auto-detected). Each becomes an
+    // FM custom-game-object hazard the stage spawns.
+    let hazards: Vec<Hazard> = entry.map(|e| e.hazards.iter().enumerate().map(|(i, h)| Hazard {
+        x: h.x, y: h.y, w: h.w, h: h.h,
+        damage: h.damage, knockback: h.knockback, angle: h.angle,
+        interval: h.interval, active: h.active,
+        label: h.label.clone().unwrap_or_else(|| format!("Hazard {}", i + 1)),
+    }).collect()).unwrap_or_default();
 
     // SymbolClass id -> name; DefineShape bounds; DefineSprite tag lists.
     let mut sym_names: BTreeMap<u16, String> = BTreeMap::new();
@@ -421,7 +454,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             moving-platform motion is bespoke per stage and not ported yet)"));
     }
 
-    Ok(StageModel { id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, art, warnings, scale })
+    Ok(StageModel { id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, art, warnings, scale })
 }
 
 /// Validate that the SSF2 source carries the linkages a playable stage needs. Returns a

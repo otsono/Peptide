@@ -10,6 +10,16 @@
   //            ids (the SSF2 soundtrack is not shipped with FM); the original SSF2 track
   //            ids are always recorded in the stage description regardless.
   //   series -> none.
+  // hazards: opt-in per stage. SSF2 hazards are bespoke per-stage AS3 (lava, thwomps, podoboos,
+  // ...) so they are not auto-ported; declare them here and each becomes a Fraymakers custom
+  // game object (objectType CUSTOM_GAME_OBJECT) the stage spawns via match.createCustomGameObject
+  // — a damaging hitbox volume the author can then flesh out. fields (all FM coords/units;
+  // stage center = 0,0, +y down): x,y (spawn), w,h (hitbox size, default 60), damage (default 8),
+  // knockback, angle, interval (on/off pulse period in frames; 0 = always on), active (frames
+  // active per pulse, default 20), label. example:
+  //   "bowserscastle": { "name": "Bowser's Castle", "hazards": [
+  //     { "x": 0, "y": 120, "w": 200, "h": 40, "damage": 12, "knockback": 60, "angle": 90,
+  //       "interval": 180, "active": 40, "label": "Lava" } ] }
   "default_music": "bgm_welkinwonderland",
   "stages": {
     "battlefield":  { "name": "Battlefield" },
