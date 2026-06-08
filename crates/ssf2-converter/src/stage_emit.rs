@@ -554,42 +554,46 @@ fn emit_hazards(model: &StageModel, lib: &Path) -> Result<Vec<Value>> {
 /// (index 0), sized to the hazard. Mirrors a projectile entity (the proven hitbox carrier).
 fn hazard_entity(hid: &str, hz: &Hazard, sprite_guid: &str) -> Value {
     let g = |s: &str| det_uuid(&format!("hazard::{hid}::{s}"));
-    let (img_sym, box_sym) = (g("imgsym"), g("boxsym"));
-    let (img_layer, box_layer) = (g("imglayer"), g("boxlayer"));
-    let (img_kf, box_kf) = (g("imgkf"), g("boxkf"));
     let (hw, hh) = (hz.w / 2.0, hz.h / 2.0);
+    let img_sym = |s: &str| json!({ "$id": g(&format!("imgsym{s}")), "type": "IMAGE", "imageAsset": sprite_guid, "x": -hw, "y": -hh, "pivotX": 0.0, "pivotY": 0.0, "scaleX": 1.0, "scaleY": 1.0, "rotation": 0.0, "alpha": 1.0, "pluginMetadata": {} });
+    let img_kf = |s: &str| json!({ "$id": g(&format!("imgkf{s}")), "symbol": g(&format!("imgsym{s}")), "length": 1, "tweened": false, "tweenType": "LINEAR", "type": "IMAGE", "pluginMetadata": {} });
+    let img_layer = |s: &str| json!({ "$id": g(&format!("imglayer{s}")), "name": "art", "type": "IMAGE", "hidden": false, "locked": false, "keyframes": [g(&format!("imgkf{s}"))], "pluginMetadata": {} });
     json!({
         "export": true, "guid": g("entity"), "id": hid, "version": 5,
         "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "objectType": "CUSTOM_GAME_OBJECT", "version": "0.4.0" } },
         "plugins": ["com.fraymakers.FraymakersTypes", "com.fraymakers.FraymakersMetadata"],
         "tags": [], "paletteMap": {}, "tilesets": [], "terrains": [],
         "symbols": [
-            { "$id": img_sym, "type": "IMAGE", "imageAsset": sprite_guid, "x": -hw, "y": -hh, "pivotX": 0.0, "pivotY": 0.0, "scaleX": 1.0, "scaleY": 1.0, "rotation": 0.0, "alpha": 1.0, "pluginMetadata": {} },
-            { "$id": box_sym, "type": "COLLISION_BOX", "x": -hw, "y": -hh, "pivotX": hw, "pivotY": hh, "scaleX": hz.w, "scaleY": hz.h, "rotation": 0.0, "alpha": 0.5, "color": "0xff0000", "pluginMetadata": {} }
+            img_sym("A"), img_sym("B"),
+            { "$id": g("boxsym"), "type": "COLLISION_BOX", "x": -hw, "y": -hh, "pivotX": hw, "pivotY": hh, "scaleX": hz.w, "scaleY": hz.h, "rotation": 0.0, "alpha": 0.5, "color": "0xff0000", "pluginMetadata": {} }
         ],
         "keyframes": [
-            { "$id": img_kf, "symbol": img_sym, "length": 1, "tweened": false, "pluginMetadata": {} },
-            { "$id": box_kf, "symbol": box_sym, "length": 1, "tweened": false, "pluginMetadata": {} }
+            img_kf("A"), img_kf("B"),
+            { "$id": g("boxkf"), "symbol": g("boxsym"), "length": 1, "tweened": false, "tweenType": "LINEAR", "type": "COLLISION_BOX", "pluginMetadata": {} }
         ],
         "layers": [
-            { "$id": img_layer, "name": "art", "type": "IMAGE", "hidden": false, "locked": false, "keyframes": [img_kf], "pluginMetadata": {} },
-            { "$id": box_layer, "name": "hitbox0", "type": "COLLISION_BOX", "hidden": false, "locked": false, "defaultAlpha": 0.5, "defaultColor": "0xff0000", "keyframes": [box_kf],
+            img_layer("A"), img_layer("B"),
+            { "$id": g("boxlayer"), "name": "hitbox0", "type": "COLLISION_BOX", "hidden": false, "locked": false, "defaultAlpha": 0.5, "defaultColor": "0xff0000", "keyframes": [g("boxkf")],
               "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "collisionBoxType": "HIT_BOX", "index": 0 } } }
         ],
+        // gameObjectIdle = sprite + the HIT_BOX (damages); gameObjectInactive = sprite only (safe,
+        // for the pulse off-phase). The Script's local state machine plays one or the other.
         "animations": [
-            { "$id": g("anim"), "name": "gameObjectIdle", "layers": [img_layer, box_layer], "pluginMetadata": {} }
+            { "$id": g("anim"), "name": "gameObjectIdle", "layers": [g("imglayerA"), g("boxlayer")], "pluginMetadata": {} },
+            { "$id": g("anim2"), "name": "gameObjectInactive", "layers": [g("imglayerB")], "pluginMetadata": {} }
         ]
     })
 }
 
 fn hazard_script_hx(hz: &Hazard) -> String {
-    // Damage is applied from the script by overlap test: a stage hazard has no fighter owner,
-    // so the team-based hitbox system can't resolve a hit. Each active frame, any character whose
-    // body is inside the (moving) hazard box takes `damage` + knockback, then a short per-hazard
-    // cooldown prevents melting. `interval`/`active` give an on/off pulse (0 = always on). The
-    // `motion` pattern reproduces the SSF2 hazard's movement (oscillate / circle / fall=thwomp).
+    // A stage hazard is a custom game object with no fighter owner (null owner). The local state
+    // machine (Common.*LocalState) plays its animations cleanly — ACTIVE (the damaging frame,
+    // carrying the HIT_BOX) and INACTIVE (safe) for the on/off pulse. Damage is applied while in
+    // ACTIVE by an overlap test (addDamage + setKnockback + a cooldown): the native HIT_BOX is
+    // wired into the entity, but a null-owner custom game object's hitbox doesn't resolve hits
+    // through the team-based system, so the script drives the hit — which also makes the hazard
+    // neutral (hits everyone), as a stage hazard should. `motion` moves the whole entity.
     let (hw, hh) = (hz.w / 2.0, hz.h / 2.0);
-    let active_test = if hz.interval > 0 { format!("(m_frame % {} < {})", hz.interval, hz.active) } else { "true".to_string() };
     let tau = "6.2831853";
     let motion = match hz.motion.as_str() {
         "oscillateX" => format!("\tself.setX(m_baseX + {r} * Math.sin(m_frame * {tau} / {p}));\n", r = hz.range, p = hz.period),
@@ -599,30 +603,54 @@ fn hazard_script_hx(hz: &Hazard) -> String {
         "fall" => format!("\tself.setY(m_baseY + ((m_frame % {p}) < {p} * 7 / 10 ? 0 : {r}));\n", r = hz.range, p = hz.period),
         _ => String::new(),
     };
+    // pulse: toggle the active (hitbox) and inactive (no hitbox) states on the duty cycle.
+    let pulse = if hz.interval > 0 {
+        format!(
+            "\tvar on = (m_frame % {iv}) < {ac};\n\
+             \tif (on && Common.inLocalState(LState.INACTIVE)) {{ Common.toLocalState(LState.ACTIVE); }}\n\
+             \telse if (!on && Common.inLocalState(LState.ACTIVE)) {{ Common.toLocalState(LState.INACTIVE); }}\n",
+            iv = hz.interval, ac = hz.active)
+    } else {
+        String::new()
+    };
     format!(
         "// Stage hazard (custom game object) — converted from SSF2.\n\
-         // A damaging box at the hazard's position; `motion` reproduces the SSF2 movement.\n\n\
+         // Local state machine (clean multi-animation on a non-character entity) + the native\n\
+         // hitbox (HitboxStats). null owner is fine for damage. `motion` = the SSF2 movement.\n\n\
+         function _prepLocalState(animation:String, ?index:Int=Math.NaN):Int {{\n\
+         \tif (!__hasInitLocalStateMachine) {{ Common.initLocalStateMachine(); __hasInitLocalStateMachine = true; }}\n\
+         \tif (index != Math.NaN) {{ index = __localStatePrepIndex++; }}\n\
+         \tCommon.registerLocalState(index, animation);\n\
+         \treturn index;\n\
+         }}\n\
+         var __hasInitLocalStateMachine = false;\n\
+         var __localStatePrepIndex = -1;\n\
+         var LState = {{\n\
+         \tUNINITIALIZED: _prepLocalState(\"#n/a\", -1),\n\
+         \tACTIVE: _prepLocalState(\"gameObjectIdle\"),\n\
+         \tINACTIVE: _prepLocalState(\"gameObjectInactive\")\n\
+         }};\n\n\
          var HALF_W = {hw:.1};\nvar HALF_H = {hh:.1};\nvar DAMAGE = {dmg};\nvar KB = {kb};\nvar ANGLE = {ang};\n\
-         var m_frame = 0;\nvar m_cooldown = 0;\nvar m_baseX = 0.0;\nvar m_baseY = 0.0;\nvar m_init = false;\n\n\
-         function initialize() {{\n\tself.playAnimation(\"gameObjectIdle\");\n}}\n\n\
+         var m_frame = 0;\nvar m_baseX = 0.0;\nvar m_baseY = 0.0;\nvar m_init = false;\nvar m_cooldown = 0;\n\n\
+         function initialize() {{\n\tCommon.toLocalState(LState.ACTIVE);\n}}\n\n\
          function update() {{\n\
          \tif (!m_init) {{ m_baseX = self.getX(); m_baseY = self.getY(); m_init = true; }}\n\
          \tm_frame = m_frame + 1;\n\
-{motion}\
-         \tif (m_cooldown > 0) {{ m_cooldown = m_cooldown - 1; return; }}\n\
-         \tif (!{active_test}) return;\n\
-         \tvar chars = match.getCharacters();\n\
-         \tvar hx = self.getX();\n\tvar hy = self.getY();\n\
-         \tfor (i in 0...chars.length) {{\n\
-         \t\tvar c = chars[i];\n\
-         \t\tif (Math.abs(c.getX() - hx) < HALF_W && Math.abs(c.getY() - hy) < HALF_H) {{\n\
-         \t\t\tc.addDamage(DAMAGE);\n\
-         \t\t\tc.setKnockback(KB, ANGLE);\n\
-         \t\t\tm_cooldown = 24;\n\
+{motion}{pulse}\
+         \t// deal damage while ACTIVE (overlap test; neutral, owner-independent)\n\
+         \tif (m_cooldown > 0) {{ m_cooldown = m_cooldown - 1; }}\n\
+         \telse if (Common.inLocalState(LState.ACTIVE)) {{\n\
+         \t\tvar chars = match.getCharacters();\n\
+         \t\tvar hx = self.getX(); var hy = self.getY();\n\
+         \t\tfor (i in 0...chars.length) {{\n\
+         \t\t\tvar c = chars[i];\n\
+         \t\t\tif (Math.abs(c.getX() - hx) < HALF_W && Math.abs(c.getY() - hy) < HALF_H) {{\n\
+         \t\t\t\tc.addDamage(DAMAGE); c.setKnockback(KB, ANGLE); m_cooldown = 24;\n\
+         \t\t\t}}\n\
          \t\t}}\n\
          \t}}\n\
          }}\n",
-        dmg = hz.damage, kb = hz.knockback, ang = hz.angle)
+        hw = hw, hh = hh, dmg = hz.damage, kb = hz.knockback, ang = hz.angle)
 }
 
 fn hazard_gameobject_stats_hx(hid: &str) -> String {
@@ -634,12 +662,14 @@ fn hazard_gameobject_stats_hx(hid: &str) -> String {
 fn hazard_hitbox_stats_hx(hz: &Hazard) -> String {
     format!(
         "// HitboxStats for the stage hazard. damage/knockback/angle from mappings/stage/metadata.jsonc.\n\
-         {{\n\tgameObjectIdle: {{\n\t\thitbox0: {{ damage: {}, angle: {}, baseKnockback: {}, knockbackGrowth: 30, hitstun: 1.0 }}\n\t}}\n}}\n",
+         {{\n\tgameObjectIdle: {{\n\t\thitbox0: {{ damage: {}, angle: {}, baseKnockback: {}, knockbackGrowth: 40, \
+         hitstop: 6, hitstun: 24, reversibleAngle: true, directionalInfluence: true, reflectable: false }}\n\t}},\n\
+         \tgameObjectInactive: {{}}\n}}\n",
         hz.damage, hz.angle, hz.knockback)
 }
 
 fn hazard_animation_stats_hx() -> String {
-    "// AnimationStats for the stage hazard.\n{\n\tgameObjectIdle: { endType: AnimationEndType.NONE }\n}\n".to_string()
+    "// AnimationStats for the stage hazard.\n{\n\tgameObjectIdle: { endType: AnimationEndType.NONE },\n\tgameObjectInactive: { endType: AnimationEndType.NONE }\n}\n".to_string()
 }
 
 /// hscript the stage Script runs to spawn its hazards (createCustomGameObject + position).
@@ -647,11 +677,10 @@ fn hazard_spawn_lines(model: &StageModel) -> String {
     let mut out = String::new();
     for (i, hz) in model.hazards.iter().enumerate() {
         let hid = hazard_id(&model.id, i);
-        // owner is null: the spawner must be a GameObjectApi and a stage's `self` is a StageApi
-        // (cast fails); a hazard belongs to no fighter, so null owner is correct.
+        // owned by a character (a GameObject) so the hitbox registers; setX/setY positions it.
         out.push_str(&format!(
-            "\tvar _hz{i} = match.createCustomGameObject(self.getResource().getContent(\"{hid}\"), null);\n\
-             \tif (_hz{i} != null) {{ _hz{i}.setX({:.1}); _hz{i}.setY({:.1}); }}\n",
+            "\t\t\tvar _hz{i} = match.createCustomGameObject(self.getResource().getContent(\"{hid}\"), owner);\n\
+             \t\t\tif (_hz{i} != null) {{ _hz{i}.setX({:.1}); _hz{i}.setY({:.1}); }}\n",
             hz.x, hz.y));
     }
     out
@@ -786,15 +815,28 @@ fn stage_stats_hx(id: &str, parallax: &[ParallaxRef], scale: f64) -> String {
 /// StageStats, so no manual scroll is needed.
 fn script_hx(id: &str, animated: bool, hazard_spawns: &str) -> String {
     let init = if animated { "\t// animated stage clips play + loop on the timeline" } else { "\tself.pause();" };
-    let hazards = if hazard_spawns.is_empty() { String::new() }
-        else { format!("\t// spawn the stage's hazards (custom game objects)\n{hazard_spawns}") };
+    // hazards spawn DEFERRED in update() once a character exists (so the spawn can be owned by a
+    // real GameObject — the spawner cast requires it), one-shot via a flag.
+    let (haz_var, haz_body) = if hazard_spawns.is_empty() {
+        (String::new(), String::new())
+    } else {
+        ("var m_hazardsSpawned = false;\n".to_string(),
+         format!("\tif (!m_hazardsSpawned) {{\n\
+                  \t\tvar chars = match.getCharacters();\n\
+                  \t\tif (chars.length > 0) {{\n\
+                  \t\t\tm_hazardsSpawned = true;\n\
+                  \t\t\tvar owner = chars[0];\n\
+{hazard_spawns}\
+                  \t\t}}\n\
+                  \t}}\n"))
+    };
     format!(
         "// API Script for {id} (converted from SSF2)\n\n\
+{haz_var}\
 function initialize() {{\n\
 {init}\n\
-{hazards}\
 }}\n\
-function update() {{}}\n\
+function update() {{\n{haz_body}}}\n\
 function onTeardown() {{}}\n\
 function onKill() {{}}\n\
 function onStale() {{}}\n\
