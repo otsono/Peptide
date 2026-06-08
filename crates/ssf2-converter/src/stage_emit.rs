@@ -80,11 +80,14 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     }
     write_json(&lib.join("entities").join(format!("{id}.entity")), &entity)?;
 
-    write_json(&lib.join("manifest.json"), &build_manifest(model))?;
+    // hazards (custom game objects) the stage spawns, if any are declared for this stage.
+    let hazard_entries = emit_hazards(model, &lib)?;
+
+    write_json(&lib.join("manifest.json"), &build_manifest(model, &hazard_entries))?;
     write_meta(&lib.join("manifest.json.meta"), id, "manifest", "json", None, None)?;
 
     let scripts = lib.join("scripts").join("stage");
-    std::fs::write(scripts.join(format!("{id}Script.hx")), script_hx(id, art.stage.len() > 1))?;
+    std::fs::write(scripts.join(format!("{id}Script.hx")), script_hx(id, art.stage.len() > 1, &hazard_spawn_lines(model)))?;
     write_meta(&scripts.join(format!("{id}Script.hx.meta")), id, &format!("{id}Script"), "", Some("STAGE"), None)?;
     std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id, &art.parallax, model.scale))?;
     write_meta(&scripts.join(format!("{id}StageStats.hx.meta")), id, &format!("{id}StageStats"), "hscript", None, None)?;
@@ -464,7 +467,155 @@ fn validate_fm_entity(entity: &Value) -> Vec<String> {
 
 // ───────────────────────── manifest / scripts / project ─────────────────────
 
-fn build_manifest(model: &StageModel) -> Value {
+// ───────────────────────── stage hazards (custom game objects) ──────────────
+// Each declared hazard (mappings/stage/metadata.jsonc) becomes a Fraymakers CUSTOM_GAME_OBJECT:
+// an entity with a sprite + a HIT_BOX, a HitboxStats giving the damage, a GameObjectStats, and a
+// Script that keeps it active. The stage Script spawns each via match.createCustomGameObject.
+// SSF2 hazards are bespoke per stage, so this is the framework + an author-editable hazard, not
+// an auto-port of the original behavior.
+
+use crate::stage_parser::Hazard;
+
+/// camelCase content id for hazard `idx` of stage `id` (e.g. `battlefieldssf2hazard0`).
+fn hazard_id(stage_id: &str, idx: usize) -> String { format!("{stage_id}hazard{idx}") }
+
+/// Emit every hazard custom game object (entity + Script/GameObjectStats/HitboxStats/
+/// AnimationStats + sprite) under the library. Returns the manifest content entries.
+fn emit_hazards(model: &StageModel, lib: &Path) -> Result<Vec<Value>> {
+    let mut entries = Vec::new();
+    if model.hazards.is_empty() { return Ok(entries); }
+    let sprites = lib.join("sprites").join("Hazard");
+    let scripts = lib.join("scripts").join("hazard");
+    std::fs::create_dir_all(&sprites).context("mkdir sprites/Hazard")?;
+    std::fs::create_dir_all(&scripts).context("mkdir scripts/hazard")?;
+
+    for (i, hz) in model.hazards.iter().enumerate() {
+        let hid = hazard_id(&model.id, i);
+        // a translucent red hitbox-volume sprite (w x h).
+        let (w, h) = (hz.w.max(8.0) as u32, hz.h.max(8.0) as u32);
+        let mut img = image::RgbaImage::new(w, h);
+        for px in img.pixels_mut() { *px = image::Rgba([220, 40, 40, 130]); }
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .context("encode hazard png")?;
+        let sprite_guid = det_uuid(&format!("hazard::{hid}::sprite"));
+        std::fs::write(sprites.join(format!("{hid}.png")), &png)?;
+        write_json(&sprites.join(format!("{hid}.png.meta")), &json!({
+            "export": false, "guid": sprite_guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
+        }))?;
+
+        write_json(&lib.join("entities").join(format!("{hid}.entity")), &hazard_entity(&hid, hz, &sprite_guid))?;
+        write_meta(&lib.join("entities").join(format!("{hid}.entity.meta")), &hid, &hid, "", Some("CUSTOM_GAME_OBJECT"), None)?;
+
+        let files = [
+            ("Script", hazard_script_hx(hz)),
+            ("GameObjectStats", hazard_gameobject_stats_hx(&hid)),
+            ("HitboxStats", hazard_hitbox_stats_hx(hz)),
+            ("AnimationStats", hazard_animation_stats_hx()),
+        ];
+        for (kind, body) in files {
+            let fname = format!("{hid}{kind}");
+            std::fs::write(scripts.join(format!("{fname}.hx")), body)?;
+            write_meta(&scripts.join(format!("{fname}.hx.meta")), &hid, &fname,
+                if kind == "Script" { "" } else { "hscript" },
+                if kind == "Script" { Some("CUSTOM_GAME_OBJECT") } else { None }, None)?;
+        }
+        entries.push(json!({
+            "type": "customGameObject", "id": hid,
+            "scriptId": format!("{hid}Script"),
+            "objectStatsId": format!("{hid}GameObjectStats"),
+            "hitboxStatsId": format!("{hid}HitboxStats"),
+            "animationStatsId": format!("{hid}AnimationStats"),
+            "name": hz.label.clone(),
+        }));
+    }
+    Ok(entries)
+}
+
+/// The CUSTOM_GAME_OBJECT entity: one `gameObjectIdle` animation with an IMAGE + a HIT_BOX
+/// (index 0), sized to the hazard. Mirrors a projectile entity (the proven hitbox carrier).
+fn hazard_entity(hid: &str, hz: &Hazard, sprite_guid: &str) -> Value {
+    let g = |s: &str| det_uuid(&format!("hazard::{hid}::{s}"));
+    let (img_sym, box_sym) = (g("imgsym"), g("boxsym"));
+    let (img_layer, box_layer) = (g("imglayer"), g("boxlayer"));
+    let (img_kf, box_kf) = (g("imgkf"), g("boxkf"));
+    let (hw, hh) = (hz.w / 2.0, hz.h / 2.0);
+    json!({
+        "export": true, "guid": g("entity"), "id": hid, "version": 5,
+        "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "objectType": "CUSTOM_GAME_OBJECT", "version": "0.4.0" } },
+        "plugins": ["com.fraymakers.FraymakersTypes", "com.fraymakers.FraymakersMetadata"],
+        "tags": [], "paletteMap": {}, "tilesets": [], "terrains": [],
+        "symbols": [
+            { "$id": img_sym, "type": "IMAGE", "imageAsset": sprite_guid, "x": -hw, "y": -hh, "pivotX": 0.0, "pivotY": 0.0, "scaleX": 1.0, "scaleY": 1.0, "rotation": 0.0, "alpha": 1.0, "pluginMetadata": {} },
+            { "$id": box_sym, "type": "COLLISION_BOX", "x": -hw, "y": -hh, "pivotX": hw, "pivotY": hh, "scaleX": hz.w, "scaleY": hz.h, "rotation": 0.0, "alpha": 0.5, "color": "0xff0000", "pluginMetadata": {} }
+        ],
+        "keyframes": [
+            { "$id": img_kf, "symbol": img_sym, "length": 1, "tweened": false, "pluginMetadata": {} },
+            { "$id": box_kf, "symbol": box_sym, "length": 1, "tweened": false, "pluginMetadata": {} }
+        ],
+        "layers": [
+            { "$id": img_layer, "name": "art", "type": "IMAGE", "hidden": false, "locked": false, "keyframes": [img_kf], "pluginMetadata": {} },
+            { "$id": box_layer, "name": "hitbox0", "type": "COLLISION_BOX", "hidden": false, "locked": false, "defaultAlpha": 0.5, "defaultColor": "0xff0000", "keyframes": [box_kf],
+              "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "collisionBoxType": "HIT_BOX", "index": 0 } } }
+        ],
+        "animations": [
+            { "$id": g("anim"), "name": "gameObjectIdle", "layers": [img_layer, box_layer], "pluginMetadata": {} }
+        ]
+    })
+}
+
+fn hazard_script_hx(hz: &Hazard) -> String {
+    // The hitbox fires automatically while `gameObjectIdle` plays (the HIT_BOX layer + the
+    // HitboxStats entry). For a pulsing hazard, stop/restart the animation on the duty cycle.
+    let pulse = if hz.interval > 0 {
+        format!(
+            "\tvar t = self.getAnimationFrame();\n\
+             \tif (t % {interval} == 0) {{ self.playAnimation(\"gameObjectIdle\"); }}\n\
+             \telse if (t % {interval} == {active}) {{ self.stopAnimation(); }}\n",
+            interval = hz.interval, active = hz.active)
+    } else {
+        String::new()
+    };
+    format!(
+        "// Stage hazard (custom game object) — converted from SSF2 (bespoke behavior not ported).\n\
+         // Edit this to give the hazard real movement/behavior; the damage comes from HitboxStats.\n\n\
+         function initialize() {{\n\tself.playAnimation(\"gameObjectIdle\");\n}}\n\n\
+         function update() {{\n{pulse}}}\n")
+}
+
+fn hazard_gameobject_stats_hx(hid: &str) -> String {
+    format!(
+        "// GameObjectStats for {hid}\n{{\n\tspriteContent: \"{hid}\",\n\tinitialState: 0,\n\
+         \tbaseScaleX: 1,\n\tbaseScaleY: 1,\n\tweight: 100,\n\tgravity: 0,\n\tfriction: 0\n}}\n")
+}
+
+fn hazard_hitbox_stats_hx(hz: &Hazard) -> String {
+    format!(
+        "// HitboxStats for the stage hazard. damage/knockback/angle from mappings/stage/metadata.jsonc.\n\
+         {{\n\tgameObjectIdle: {{\n\t\thitbox0: {{ damage: {}, angle: {}, baseKnockback: {}, knockbackGrowth: 30, hitstun: 1.0 }}\n\t}}\n}}\n",
+        hz.damage, hz.angle, hz.knockback)
+}
+
+fn hazard_animation_stats_hx() -> String {
+    "// AnimationStats for the stage hazard.\n{\n\tgameObjectIdle: { endType: AnimationEndType.NONE }\n}\n".to_string()
+}
+
+/// hscript the stage Script runs to spawn its hazards (createCustomGameObject + position).
+fn hazard_spawn_lines(model: &StageModel) -> String {
+    let mut out = String::new();
+    for (i, hz) in model.hazards.iter().enumerate() {
+        let hid = hazard_id(&model.id, i);
+        // owner is null: the spawner must be a GameObjectApi and a stage's `self` is a StageApi
+        // (cast fails); a hazard belongs to no fighter, so null owner is correct.
+        out.push_str(&format!(
+            "\tvar _hz{i} = match.createCustomGameObject(self.getResource().getContent(\"{hid}\"), null);\n\
+             \tif (_hz{i} != null) {{ _hz{i}.setX({:.1}); _hz{i}.setY({:.1}); }}\n",
+            hz.x, hz.y));
+    }
+    out
+}
+
+fn build_manifest(model: &StageModel, hazard_entries: &[Value]) -> Value {
     let id = &model.id;
     // a match needs at least one music track to start, and it must be a real public FM bgm
     // (the SSF2 soundtrack isn't shipped with the engine). `fm_music` is the override-map
@@ -477,21 +628,20 @@ fn build_manifest(model: &StageModel) -> Value {
     if !model.ssf2_music.is_empty() {
         description.push_str(&format!(". Original SSF2 soundtrack: {}", model.ssf2_music.join(", ")));
     }
-    json!({
-        "resourceId": id,
-        "content": [{
-            "id": id,
-            "name": model.display_name,
-            "description": description,
-            "type": "stage",
-            "objectStatsId": format!("{id}StageStats"),
-            "scriptId": format!("{id}Script"),
-            "music": music,
-            "metadata": {
-                "ui": { "entityId": id, "render": { "animation": "stage" } }
-            }
-        }]
-    })
+    let mut content = vec![json!({
+        "id": id,
+        "name": model.display_name,
+        "description": description,
+        "type": "stage",
+        "objectStatsId": format!("{id}StageStats"),
+        "scriptId": format!("{id}Script"),
+        "music": music,
+        "metadata": {
+            "ui": { "entityId": id, "render": { "animation": "stage" } }
+        }
+    })];
+    content.extend(hazard_entries.iter().cloned());
+    json!({ "resourceId": id, "content": content })
 }
 
 fn build_fraytools() -> Value {
@@ -592,12 +742,15 @@ fn stage_stats_hx(id: &str, parallax: &[ParallaxRef], scale: f64) -> String {
 /// Stage Script.hx — pause a static stage on frame 1; let an animated stage's timeline
 /// play (the SSF2 animated clips loop). The parallax background is camera-scrolled by
 /// StageStats, so no manual scroll is needed.
-fn script_hx(id: &str, animated: bool) -> String {
+fn script_hx(id: &str, animated: bool, hazard_spawns: &str) -> String {
     let init = if animated { "\t// animated stage clips play + loop on the timeline" } else { "\tself.pause();" };
+    let hazards = if hazard_spawns.is_empty() { String::new() }
+        else { format!("\t// spawn the stage's hazards (custom game objects)\n{hazard_spawns}") };
     format!(
         "// API Script for {id} (converted from SSF2)\n\n\
 function initialize() {{\n\
 {init}\n\
+{hazards}\
 }}\n\
 function update() {{}}\n\
 function onTeardown() {{}}\n\
