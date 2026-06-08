@@ -824,6 +824,13 @@ pub struct HazardSpec {
     #[serde(default)] pub interval: u32,
     /// Frames active within each pulse period.
     #[serde(default = "hz_default_active")] pub active: u32,
+    /// Movement pattern to match the SSF2 hazard: "static" (default), "oscillateX",
+    /// "oscillateY", "circle", or "fall" (thwomp: hold, drop, return).
+    #[serde(default)] pub motion: Option<String>,
+    /// Movement amplitude in px (oscillate/circle/fall travel distance).
+    #[serde(default)] pub range: f64,
+    /// Movement period in frames (one full cycle).
+    #[serde(default = "hz_default_period")] pub period: u32,
     /// Optional label.
     pub label: Option<String>,
 }
@@ -831,6 +838,7 @@ pub struct HazardSpec {
 fn hz_default_w() -> f64 { 60.0 }
 fn hz_default_damage() -> f64 { 8.0 }
 fn hz_default_active() -> u32 { 20 }
+fn hz_default_period() -> u32 { 120 }
 
 pub fn stage_metadata() -> &'static StageMetadataMap {
     static CACHE: OnceLock<StageMetadataMap> = OnceLock::new();

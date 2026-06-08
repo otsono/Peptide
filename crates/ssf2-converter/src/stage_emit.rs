@@ -585,22 +585,30 @@ fn hazard_entity(hid: &str, hz: &Hazard, sprite_guid: &str) -> Value {
 fn hazard_script_hx(hz: &Hazard) -> String {
     // Damage is applied from the script by overlap test: a stage hazard has no fighter owner,
     // so the team-based hitbox system can't resolve a hit. Each active frame, any character whose
-    // body is inside the hazard box takes `damage` + knockback, then a short per-hazard cooldown
-    // prevents melting. `interval`/`active` give an on/off pulse (0 interval = always on).
+    // body is inside the (moving) hazard box takes `damage` + knockback, then a short per-hazard
+    // cooldown prevents melting. `interval`/`active` give an on/off pulse (0 = always on). The
+    // `motion` pattern reproduces the SSF2 hazard's movement (oscillate / circle / fall=thwomp).
     let (hw, hh) = (hz.w / 2.0, hz.h / 2.0);
-    let active_test = if hz.interval > 0 {
-        format!("(m_frame % {} < {})", hz.interval, hz.active)
-    } else {
-        "true".to_string()
+    let active_test = if hz.interval > 0 { format!("(m_frame % {} < {})", hz.interval, hz.active) } else { "true".to_string() };
+    let tau = "6.2831853";
+    let motion = match hz.motion.as_str() {
+        "oscillateX" => format!("\tself.setX(m_baseX + {r} * Math.sin(m_frame * {tau} / {p}));\n", r = hz.range, p = hz.period),
+        "oscillateY" => format!("\tself.setY(m_baseY + {r} * Math.sin(m_frame * {tau} / {p}));\n", r = hz.range, p = hz.period),
+        "circle" => format!("\tself.setX(m_baseX + {r} * Math.cos(m_frame * {tau} / {p}));\n\tself.setY(m_baseY + {r} * Math.sin(m_frame * {tau} / {p}));\n", r = hz.range, p = hz.period),
+        // thwomp: hold up for 70% of the cycle, then slam down to base+range and hold.
+        "fall" => format!("\tself.setY(m_baseY + ((m_frame % {p}) < {p} * 7 / 10 ? 0 : {r}));\n", r = hz.range, p = hz.period),
+        _ => String::new(),
     };
     format!(
-        "// Stage hazard (custom game object) — converted from SSF2 (bespoke behavior not ported).\n\
-         // A damaging box at the hazard's position. Edit for real movement/behavior.\n\n\
+        "// Stage hazard (custom game object) — converted from SSF2.\n\
+         // A damaging box at the hazard's position; `motion` reproduces the SSF2 movement.\n\n\
          var HALF_W = {hw:.1};\nvar HALF_H = {hh:.1};\nvar DAMAGE = {dmg};\nvar KB = {kb};\nvar ANGLE = {ang};\n\
-         var m_frame = 0;\nvar m_cooldown = 0;\n\n\
+         var m_frame = 0;\nvar m_cooldown = 0;\nvar m_baseX = 0.0;\nvar m_baseY = 0.0;\nvar m_init = false;\n\n\
          function initialize() {{\n\tself.playAnimation(\"gameObjectIdle\");\n}}\n\n\
          function update() {{\n\
+         \tif (!m_init) {{ m_baseX = self.getX(); m_baseY = self.getY(); m_init = true; }}\n\
          \tm_frame = m_frame + 1;\n\
+{motion}\
          \tif (m_cooldown > 0) {{ m_cooldown = m_cooldown - 1; return; }}\n\
          \tif (!{active_test}) return;\n\
          \tvar chars = match.getCharacters();\n\

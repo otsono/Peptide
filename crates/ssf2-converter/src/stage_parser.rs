@@ -84,6 +84,11 @@ pub struct Hazard {
     pub interval: u32,
     /// Frames the hitbox stays active within each `interval` (ignored when interval is 0).
     pub active: u32,
+    /// Movement pattern: "static" / "oscillateX" / "oscillateY" / "circle" / "fall".
+    pub motion: String,
+    /// Movement amplitude (px) and period (frames) for the pattern.
+    pub range: f64,
+    pub period: u32,
     /// Display label (for the entity/layer names).
     pub label: String,
 }
@@ -284,6 +289,8 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         x: h.x, y: h.y, w: h.w, h: h.h,
         damage: h.damage, knockback: h.knockback, angle: h.angle,
         interval: h.interval, active: h.active,
+        motion: h.motion.clone().unwrap_or_else(|| "static".to_string()),
+        range: h.range, period: h.period.max(1),
         label: h.label.clone().unwrap_or_else(|| format!("Hazard {}", i + 1)),
     }).collect()).unwrap_or_default();
 
