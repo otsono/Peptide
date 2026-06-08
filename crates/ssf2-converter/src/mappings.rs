@@ -802,7 +802,35 @@ pub struct StageMetadataEntry {
     pub music: Vec<String>,
     /// Source series, for the description. Optional.
     pub series: Option<String>,
+    /// Stage hazards to emit as FM custom game objects (damaging hitbox volumes the stage
+    /// spawns). Opt-in: SSF2 hazards are bespoke per stage and not auto-ported.
+    #[serde(default)]
+    pub hazards: Vec<HazardSpec>,
 }
+
+/// One declared stage hazard (a Fraymakers custom game object). All in FM coords/units.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HazardSpec {
+    /// Spawn position (stage center is 0,0; +y is down).
+    pub x: f64,
+    pub y: f64,
+    /// Hitbox size.
+    #[serde(default = "hz_default_w")] pub w: f64,
+    #[serde(default = "hz_default_w")] pub h: f64,
+    #[serde(default = "hz_default_damage")] pub damage: f64,
+    #[serde(default)] pub knockback: f64,
+    #[serde(default)] pub angle: f64,
+    /// On/off pulse period in frames (0 = always active).
+    #[serde(default)] pub interval: u32,
+    /// Frames active within each pulse period.
+    #[serde(default = "hz_default_active")] pub active: u32,
+    /// Optional label.
+    pub label: Option<String>,
+}
+
+fn hz_default_w() -> f64 { 60.0 }
+fn hz_default_damage() -> f64 { 8.0 }
+fn hz_default_active() -> u32 { 20 }
 
 pub fn stage_metadata() -> &'static StageMetadataMap {
     static CACHE: OnceLock<StageMetadataMap> = OnceLock::new();
