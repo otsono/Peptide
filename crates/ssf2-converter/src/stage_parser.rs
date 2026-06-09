@@ -403,10 +403,14 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         for (cid, n) in &sym_names { eprintln!("  id={cid} linkage={n:?}"); }
     }
 
+    // the AS3-derived plane map (empty if the stage has no parseable SSF2Stage subclass → the
+    // name heuristic in plane_tag takes over).
+    let planes: PlaneMap = abc_model.as_ref().map(|m| m.planes.clone()).unwrap_or_default();
+
     // Collect every placed shape instance (with world AABB) and find the stageMC origin.
     let mut instances: Vec<Instance> = Vec::new();
     let mut origin: Option<(f64, f64)> = None;
-    walk(&swf.tags, Mat::id(), &sym_names, &shape_bounds, &sprites, 0, None, None, false, None, &mut instances, &mut origin);
+    walk(&swf.tags, Mat::id(), &sym_names, &shape_bounds, &sprites, &planes, 0, None, None, false, None, &mut instances, &mut origin);
 
     let (ox, oy) = origin.unwrap_or((275.0, 200.0)); // SWF stage center fallback
     // Fraymakers space = SSF2 space scaled up by `size_multiplier` (the same knob the
@@ -544,7 +548,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // IMAGE layers at `scale`, matching the geometry.
     let keep_foreground = entry.map(|e| e.keep_foreground).unwrap_or(false);
     let art = if render_art_flag {
-        render_art_layers(&swf.tags, &sprites, &sym_names, &shape_defs, &bitmaps, ox, oy, scale, keep_foreground)
+        render_art_layers(&swf.tags, &sprites, &sym_names, &shape_defs, &bitmaps, ox, oy, scale, keep_foreground, &planes)
     } else {
         StageArtSet::default()
     };
@@ -623,8 +627,14 @@ fn is_non_art_plane(plane: Option<&str>) -> bool {
 /// root backdrop container carries no instance name but the explicit linkage `<id>_bg`, so
 /// an unnamed `*_bg` instance tags `background`. Instance/linkage signals generalize across
 /// stages; fla-prefixed timeline symbol names do not.
-fn plane_tag(inst_name: Option<&str>, sym: &str) -> Option<&'static str> {
+fn plane_tag(inst_name: Option<&str>, sym: &str, planes: &PlaneMap) -> Option<&'static str> {
     let n = inst_name.unwrap_or("");
+    // AS3-authoritative: if the stage's own `initialize` assigned this instance (or its symbol)
+    // to a plane, that wins over the name heuristic (e.g. `bowsers_lightmask` -> foreground, not
+    // the `mask` the heuristic would infer).
+    if let Some(p) = planes.get(n).or_else(|| planes.get(sym)) {
+        return Some(p.code());
+    }
     let nl = n.to_ascii_lowercase();
     if nl.contains("cambg") { Some("cambg") }
     else if nl == "foreground" || nl.contains("_fg") { Some("foreground") }
@@ -796,6 +806,10 @@ const ANIM_FRAME_CAP: usize = 24;
 /// One placed child in a sprite's timeline frame: `(character id, local matrix, name)`.
 type PlacedChild = (u16, Mat, Option<String>);
 
+/// instance/symbol name -> AS3-assigned render plane (from `stage_abc::extract_stage`). empty when
+/// the stage has no parseable SSF2Stage subclass, in which case `plane_tag` falls back to heuristics.
+type PlaneMap = BTreeMap<String, crate::stage_abc::StagePlane>;
+
 /// Build a sprite/root timeline: the placed-child state snapshotted at each `ShowFrame`
 /// (Flash semantics — Place/Replace set a depth, Modify updates its matrix, Remove clears
 /// it). At least one frame.
@@ -835,7 +849,7 @@ fn build_frames(tags: &[swf::Tag]) -> Vec<Vec<PlacedChild>> {
 #[allow(clippy::too_many_arguments)]
 fn walk_frame(
     children: &[PlacedChild], parent: Mat, global_frame: usize, carried_sym: Option<&str>,
-    plane: Option<&str>,
+    plane: Option<&str>, planes: &PlaneMap,
     sym_names: &BTreeMap<u16, String>, shape_defs: &BTreeMap<u16, &swf::Shape>,
     sprite_frames: &BTreeMap<u16, Vec<Vec<PlacedChild>>>, out: &mut Vec<Instance>, rec: usize,
 ) {
@@ -843,9 +857,9 @@ fn walk_frame(
     for (id, local, name) in children {
         let world = parent.mul(local);
         let sym = sym_names.get(id).cloned().unwrap_or_default();
-        // an instance establishes a plane for its subtree by instance name (or the `_bg`
-        // linkage for the unnamed root backdrop); otherwise it inherits the parent's plane.
-        let my_plane = plane_tag(name.as_deref(), &sym).or(plane);
+        // an instance establishes a plane for its subtree: the stage's AS3 plane map (authoritative)
+        // first, then the instance-name heuristic, otherwise it inherits the parent's plane.
+        let my_plane = plane_tag(name.as_deref(), &sym, planes).or(plane);
         if let Some(s) = shape_defs.get(id) {
             let b = &s.shape_bounds;
             let (x0, y0, x1, y1) = (b.x_min.get() as f64/20.0, b.y_min.get() as f64/20.0, b.x_max.get() as f64/20.0, b.y_max.get() as f64/20.0);
@@ -866,7 +880,7 @@ fn walk_frame(
         if let Some(frames) = sprite_frames.get(id) {
             let next = name.as_deref().or(if sym.is_empty() { carried_sym } else { Some(&sym) }).map(|s| s.to_string());
             let f = &frames[global_frame % frames.len()];
-            walk_frame(f, world, global_frame, next.as_deref(), my_plane, sym_names, shape_defs, sprite_frames, out, rec + 1);
+            walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1);
         }
     }
 }
@@ -883,6 +897,7 @@ fn render_art_layers(
     bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
     ox: f64, oy: f64, scale: f64,
     keep_foreground: bool,
+    planes: &PlaneMap,
 ) -> StageArtSet {
     // per-sprite + root frame timelines.
     let mut sprite_frames: BTreeMap<u16, Vec<Vec<PlacedChild>>> = BTreeMap::new();
@@ -909,7 +924,7 @@ fn render_art_layers(
     let frame_instances = |g: usize| -> Vec<Instance> {
         let root = &root_frames[root_idx];
         let mut out = Vec::new();
-        walk_frame(root, Mat::id(), g, None, None, sym_names, shape_defs, &sprite_frames, &mut out, 0);
+        walk_frame(root, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0);
         // exclude non-art PLANES (terrain/masks/spawns, by instance name) and any stray
         // collision/scaffolding markers (by linkage suffix) that slipped into an art plane.
         out.retain(|i| shape_defs.contains_key(&i.shape_id)
@@ -1361,6 +1376,7 @@ fn walk<'a>(
     sym_names: &BTreeMap<u16, String>,
     shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
     sprites: &BTreeMap<u16, &'a Vec<swf::Tag>>,
+    planes: &PlaneMap,
     rec: usize, carried_sym: Option<&str>, plane: Option<&str>, moving_anc: bool,
     hazard_anc: Option<HazardKind>,
     out: &mut Vec<Instance>, origin: &mut Option<(f64, f64)>,
@@ -1379,7 +1395,7 @@ fn walk<'a>(
         let world = parent.mul(&local);
         let inst_name = po.name.as_ref().map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
         let sym = sym_names.get(&id).cloned().unwrap_or_default();
-        let my_plane = plane_tag(inst_name.as_deref(), &sym).or(plane);
+        let my_plane = plane_tag(inst_name.as_deref(), &sym, planes).or(plane);
         // sticky once any ancestor (or this node) is `moving`-named — the collision child
         // is named separately, so the signal must flow down the subtree.
         let here_moving = moving_anc
@@ -1427,7 +1443,7 @@ fn walk<'a>(
             // else inherit the parent's carried symbol.
             let next = inst_name.as_deref().or(if sym.is_empty() { carried_sym } else { Some(&sym) });
             let next = next.map(|s| s.to_string());
-            walk(child, world, sym_names, shape_bounds, sprites, rec + 1, next.as_deref(), my_plane, here_moving, here_hazard, out, origin);
+            walk(child, world, sym_names, shape_bounds, sprites, planes, rec + 1, next.as_deref(), my_plane, here_moving, here_hazard, out, origin);
         }
     }
 }

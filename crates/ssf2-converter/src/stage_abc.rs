@@ -25,7 +25,9 @@ pub enum StagePlane {
 }
 
 impl StagePlane {
-    fn code(self) -> &'static str {
+    /// the lowercase plane name the stage parser's `plane_tag`/`art_kind` use
+    /// (`background`/`foreground`/`midground`/`cambg`).
+    pub fn code(self) -> &'static str {
         match self {
             StagePlane::Background => "background",
             StagePlane::Foreground => "foreground",
