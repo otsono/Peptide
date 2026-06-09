@@ -310,6 +310,18 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         path.file_stem().and_then(|s| s.to_str()).unwrap_or("stage").to_string()
     });
     let ssf2_music = meta.map(|m| m.music).unwrap_or_default();
+    // the stage's AS3 plane assignments + spawned actors (authoritative; heuristic is the fallback).
+    let abc_model = stage_abc_model(&swf_data);
+    if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+        match &abc_model {
+            Some(m) => {
+                eprintln!("[as3] doc_class={} planes={} actors={}", m.doc_class, m.planes.len(), m.actors.len());
+                for (clip, plane) in &m.planes { eprintln!("  plane {:<10?} <- {clip}", plane); }
+                for a in &m.actors { eprintln!("  actor {} @ (x={:?}, y={:?})", a.class_name, a.x, a.y); }
+            }
+            None => eprintln!("[as3] no SSF2Stage subclass found (heuristic fallback)"),
+        }
+    }
     // display name + FM music: the override map keyed by the SSF2 id, else title-case +
     // the default bgm. The original SSF2 soundtrack (ssf2_music) is preserved separately.
     let smeta = crate::mappings::stage_metadata();
@@ -1261,6 +1273,15 @@ fn ssf_decompress(raw: &[u8], path: &Path) -> Result<Vec<u8>> {
 
 /// Read the stage DAT's `Main` package metadata (`id`, `guid`, `music`) from the first
 /// ABC block that carries an `id` (the content id the engine knows the stage by).
+/// the stage's AS3 layer assignments + spawned actors (the document class extending `SSF2Stage`).
+/// `None` if the stage has no parseable SSF2Stage subclass (the heuristic path then takes over).
+fn stage_abc_model(swf_data: &[u8]) -> Option<crate::stage_abc::StageAbcModel> {
+    let swf = crate::swf_parser::parse(swf_data).ok()?;
+    swf.abc_blocks.iter()
+        .filter_map(|b| crate::abc_parser::parse(b).ok())
+        .find_map(|abc| crate::stage_abc::extract_stage(&abc))
+}
+
 fn stage_package_metadata(swf_data: &[u8]) -> Option<crate::abc_parser::MainPackageMetadata> {
     let swf = crate::swf_parser::parse(swf_data).ok()?;
     for abc_bytes in &swf.abc_blocks {
