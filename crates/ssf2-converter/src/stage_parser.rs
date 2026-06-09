@@ -185,8 +185,10 @@ pub struct StageArtSet {
     /// The main stage art (terrain / platforms / props) at character depth. More than
     /// one frame when the source has animated clips (the emitter loops them).
     pub stage_frames: Vec<StageArt>,
-    /// Art that draws in front of the fighters (SSF2 `foreground`).
-    pub foreground: Option<StageArt>,
+    /// Art that draws in front of the fighters (SSF2 `foreground`), as a possibly-animated,
+    /// semi-transparent overlay (bowserscastle's shimmering lava-glow sheet). One frame = static,
+    /// more = the emitter loops it. Empty = no foreground.
+    pub foreground: Vec<StageArt>,
 }
 
 impl StageArtSet {
@@ -194,7 +196,7 @@ impl StageArtSet {
     /// decode) — the emitter then falls back to a geometry placeholder.
     pub fn is_empty(&self) -> bool {
         self.background.is_empty() && self.parallax.is_empty()
-            && self.stage_frames.is_empty() && self.foreground.is_none()
+            && self.stage_frames.is_empty() && self.foreground.is_empty()
     }
 }
 
@@ -1021,8 +1023,20 @@ fn render_art_layers(
         }).collect()
     };
 
-    // foreground = the genuine in-front props only (non-overlapping foreground).
-    let foreground = composite_grp(base_insts.iter().filter(|i| art_kind(i) == ArtKind::Foreground && !is_dup_fg(i)).collect());
+    // foreground = the genuine in-front props (non-overlapping foreground), sampled PER FRAME so
+    // an animated SSF2 foreground (bowserscastle's shimmering lava-glow sheet over the floor)
+    // actually animates instead of freezing on one frame. static foregrounds collapse to one frame.
+    let fg_member = |i: &Instance| art_kind(i) == ArtKind::Foreground && !is_dup_fg(i);
+    let fg_per_frame: Vec<StageArt> = sampled.iter()
+        .filter_map(|(insts, _)| composite_grp(insts.iter().filter(|i| fg_member(i)).collect()))
+        .collect();
+    let fg_animated = fg_per_frame.len() == n_samples
+        && fg_per_frame.windows(2).any(|w| w[0].png != w[1].png);
+    let foreground: Vec<StageArt> = if fg_animated {
+        rle(fg_per_frame)
+    } else {
+        composite_grp(base_insts.iter().filter(|i| fg_member(i)).collect()).into_iter().collect()
+    };
     // when the backdrop carries `_cambg` parallax layers, each backdrop/cambg LAYER (grouped
     // by symbol) becomes its own camera-relative plane with its own auto-derived pan rate (so
     // the sky, sun rays, trees, ... scroll at different rates, reading as depth — and the rays

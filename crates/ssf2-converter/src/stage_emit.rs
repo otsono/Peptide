@@ -90,7 +90,8 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         background: bg_refs,
         parallax: parallax_refs,
         stage: stage_refs,
-        foreground: model.art.foreground.as_ref().map(|a| write_layer("fg", a)).transpose()?,
+        foreground: model.art.foreground.iter().enumerate()
+            .map(|(i, a)| write_layer(&format!("fg{i}"), a)).collect::<Result<_>>()?,
         platform_sprites,
     };
 
@@ -113,7 +114,9 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     // animated if ANY looping art layer has multiple frames — the background (lava/fire/Bowser on
     // bowserscastle) animates just as much as the stage plane, so checking only the stage plane
     // froze background-animated stages (the Script paused the whole timeline).
-    let animated = art.background.iter().any(|l| l.frames.len() > 1) || art.stage.len() > 1;
+    // the foreground glow flickers (its own animated layer), so it also requires a playing timeline.
+    let animated = art.background.iter().any(|l| l.frames.len() > 1) || art.stage.len() > 1
+        || !art.foreground.is_empty();
     // the stage spawns its moving-platform structures + hazards in its Script.
     let mut spawns = structure_spawn_ids.iter()
         .map(|cid| format!("\t\t\tmatch.createStructure(self.getResource().getContent(\"{cid}\"));\n"))
@@ -231,9 +234,13 @@ impl<'a> EntityBuilder<'a> {
     /// Create an IMAGE layer (in the entity pools) at `img_scale` and return its layer id.
     /// The caller pushes the id into whichever animation it belongs to (stage vs parallax).
     fn make_image(&mut self, name: &str, image_asset: &str, x: f64, y: f64, img_scale: f64) -> String {
+        self.make_image_alpha(name, image_asset, x, y, img_scale, 1.0)
+    }
+    /// `make_image` with an explicit symbol alpha (for a semi-transparent overlay).
+    fn make_image_alpha(&mut self, name: &str, image_asset: &str, x: f64, y: f64, img_scale: f64, alpha: f64) -> String {
         let sym = self.uid(&format!("sym:{name}"));
         self.symbols.push(json!({
-            "$id": sym, "type": "IMAGE", "imageAsset": image_asset, "alpha": 1,
+            "$id": sym, "type": "IMAGE", "imageAsset": image_asset, "alpha": alpha,
             "x": x, "y": y, "scaleX": img_scale, "scaleY": img_scale, "rotation": 0, "pivotX": 0, "pivotY": 0,
             "pluginMetadata": {}
         }));
@@ -279,6 +286,39 @@ impl<'a> EntityBuilder<'a> {
         let lid = self.make_image(name, image_asset, x, y, self.scale);
         self.anim_layers.push(lid);
     }
+    /// Add a semi-transparent overlay whose ALPHA flickers in a smooth loop (one keyframe of the
+    /// same image per step, alpha following a sine), reproducing SSF2's animated lava-glow light
+    /// (its `bowsers_lightmask` flickers the glow's brightness — a property animation a static
+    /// shape rasterization can't carry). The loop fills `frame_len` so it cycles with the stage.
+    fn add_image_glow_flicker(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
+        let total = self.frame_len.max(8);
+        let step = 3usize; // FM frames per flicker keyframe (~20Hz update, smooth)
+        let n = (total / step).max(4);
+        let mut kfs = Vec::new();
+        let mut acc = 0usize;
+        for i in 0..n {
+            let len = if i == n - 1 { total - acc } else { step };
+            acc += len;
+            // ~2 brightness cycles over the loop; alpha 0.30..0.62 reads as a gentle lava throb.
+            let phase = (i as f64) / (n as f64) * std::f64::consts::TAU * 2.0;
+            let alpha = 0.46 + 0.16 * phase.sin();
+            let sym = self.uid(&format!("sym:{name}:{i}"));
+            self.symbols.push(json!({
+                "$id": sym, "type": "IMAGE", "imageAsset": image_asset, "alpha": alpha,
+                "x": x, "y": y, "scaleX": self.scale, "scaleY": self.scale, "rotation": 0, "pivotX": 0, "pivotY": 0,
+                "pluginMetadata": {}
+            }));
+            let kf = self.uid(&format!("kf:{name}:{i}"));
+            self.keyframes.push(json!({ "$id": kf, "length": len.max(1), "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": true, "type": "IMAGE" }));
+            kfs.push(kf);
+        }
+        let lid = self.uid(&format!("layer:{name}"));
+        self.layers.push(json!({
+            "$id": lid, "hidden": false, "locked": false, "name": name, "type": "IMAGE",
+            "keyframes": kfs, "pluginMetadata": {}
+        }));
+        self.anim_layers.push(lid);
+    }
     /// Add a parallax camera-background layer as its own `parallax{idx}` animation. The IMAGE
     /// symbol stays at scale 1: the camera's ParallaxBG sizes it from
     /// `originalBGWidth × scaleMultiplier` (set in StageStats), so scaling the symbol too
@@ -290,11 +330,15 @@ impl<'a> EntityBuilder<'a> {
     /// Add an animated IMAGE layer to the `stage` animation: one keyframe per frame, each
     /// referencing that frame's image, so the layer plays through them (loops).
     fn add_image_frames(&mut self, name: &str, frames: &[(String, f64, f64, usize)]) {
+        self.add_image_frames_alpha(name, frames, 1.0);
+    }
+    /// `add_image_frames` with an explicit symbol alpha (a semi-transparent animated overlay).
+    fn add_image_frames_alpha(&mut self, name: &str, frames: &[(String, f64, f64, usize)], alpha: f64) {
         let mut kfs = Vec::new();
         for (i, (guid, x, y, hold)) in frames.iter().enumerate() {
             let sym = self.uid(&format!("sym:{name}:{i}"));
             self.symbols.push(json!({
-                "$id": sym, "type": "IMAGE", "imageAsset": guid, "alpha": 1,
+                "$id": sym, "type": "IMAGE", "imageAsset": guid, "alpha": alpha,
                 "x": x, "y": y, "scaleX": self.scale, "scaleY": self.scale, "rotation": 0, "pivotX": 0, "pivotY": 0,
                 "pluginMetadata": {}
             }));
@@ -361,7 +405,7 @@ fn bg_layer_name(sym: &str, idx: usize) -> String {
 
 /// The depth layers the entity lays out. `stage` is the frame sequence (1 = static);
 /// `background` is the ordered per-element backdrop layers (each 1 = static).
-struct ArtRefs { background: Vec<BgLayerRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Option<ArtRef>, platform_sprites: Vec<(String, f64, f64)> }
+struct ArtRefs { background: Vec<BgLayerRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Vec<ArtRef>, platform_sprites: Vec<(String, f64, f64)> }
 
 /// Render the floor + soft platforms as filled rectangles on a transparent canvas
 /// covering their bounding box (1px = 1 stage unit). Gives the stage visible content
@@ -442,7 +486,17 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     b.add_container("Characters Back", "CHARACTERS_BACK_CONTAINER");
     b.add_container("Characters", "CHARACTERS_CONTAINER");
     b.add_container("Characters Front", "CHARACTERS_FRONT_CONTAINER");
-    if let Some(a) = &art.foreground { b.add_image("Foreground Art", &a.guid, a.x, a.y); }
+    // the foreground draws IN FRONT of fighters as a semi-transparent overlay (bowserscastle's
+    // lava-glow sheet); one frame = static, more = an animated loop. ~0.5 alpha so it reads as a
+    // glow, not an opaque sheet.
+    match art.foreground.as_slice() {
+        [] => {}
+        // a static glow SHEET (bowserscastle): flicker its alpha so it reads as animated lava light.
+        [a] => b.add_image_glow_flicker("Foreground Art", &a.guid, a.x, a.y),
+        // a genuinely shape-animated foreground: play its frames at a fixed semi-transparent alpha.
+        frames => b.add_image_frames_alpha("Foreground Art",
+            &frames.iter().map(|a| (a.guid.clone(), a.x, a.y, a.hold)).collect::<Vec<_>>(), 0.5),
+    }
     b.add_container("Foreground Structures", "FOREGROUND_STRUCTURES_CONTAINER");
     b.add_container("Foreground Shadows", "FOREGROUND_SHADOWS_CONTAINER");
     b.add_container("Foreground Effects", "FOREGROUND_EFFECTS_CONTAINER");
