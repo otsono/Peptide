@@ -38,6 +38,10 @@ zone (KO + respawn), no crash. NB: a stage needs visible content to place player
 sizes it from the sprite bounds); the sprite is the SSF2 art (vector shapes + bitmap backgrounds rasterized + composited);
 stages with no rasterizable art fall back to a geometry placeholder.
 
+the SSF2 `foreground` plane normally folds behind fighters (it's usually a structure's re-drawn
+front face, which would read as a duplicate platform); a `keep_foreground` metadata flag opts a
+stage out so a genuine overlay stays in front (bowserscastle's glowing lava sheet over the floor).
+
 the backdrop is emitted the way SSF2 authors it: each animated element (lava bubbles, torches,
 embers, podoboos, a spectator) is its own FM layer/animation on its own loop, in back-to-front
 draw order, rather than one baked composite. elements are grouped by their SSF2 symbol id; a
@@ -59,12 +63,15 @@ platforms are bespoke per stage (custom AS3 classes / timeline animation), so re
 is per-stage work like porting a character special.
 
 declared `platforms` in metadata become real FM moving Structures (the engine idiom from the
-stage-template): one shared grey `platformSprite` animation (an IMAGE + a FLOOR line segment),
-and one structure CONTENT per platform that the stage spawns and that moves itself in its own
-Script. bowserscastle uses this for the grey standing platforms the thwomp lands on and pushes
-down into the lava: the shared sink/rise Script polls the stage's custom game objects, sinks the
-column the thwomp landed on, holds, then rises back. the thwomp is a custom game object that
-falls, damages on landing, cycles across the platform columns, and re-arms its hitbox each cycle.
+stage-template): a per-platform grey block animation (an IMAGE sized to the platform + a FLOOR
+line segment) and one structure CONTENT per platform that the stage spawns and that moves itself
+in its own Script. bowserscastle has three grey standing platforms RE'd from the SSF2 terrain
+(two wide ledge-bounded side platforms + the small central `terrainGround` block, at their real
+positions and widths, in the SSF2 platform grey), sitting over the lava. the thwomp lands on
+them and pushes them down: the shared sink/rise Script polls the stage's custom game objects,
+sinks the column the thwomp landed on, holds, then rises back. the thwomp is a custom game object
+that falls onto each platform column in turn (each at its own height), damages on landing,
+re-arms its hitbox each cycle, then rises and moves to the next column.
 
 stage hazards become Fraymakers custom game objects the stage spawns with a null owner, so each
 is neutral and damages everyone. damage and knockback come from the entity's native HIT_BOX

@@ -84,14 +84,14 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     // itself in its own Script (the sink/rise cycle). emit_platform_structures writes the per-
     // platform Stats + the shared Script + the grey sprite, and returns what the manifest + stage
     // Script need.
-    let (platform_sprite, structure_contents, structure_spawn_ids) =
+    let (platform_sprites, structure_contents, structure_spawn_ids) =
         emit_platform_structures(model, &lib, &sprites)?;
     let art = ArtRefs {
         background: bg_refs,
         parallax: parallax_refs,
         stage: stage_refs,
         foreground: model.art.foreground.as_ref().map(|a| write_layer("fg", a)).transpose()?,
-        platform_sprite,
+        platform_sprites,
     };
 
     let entity = build_entity(model, &art);
@@ -251,8 +251,8 @@ impl<'a> EntityBuilder<'a> {
     /// Build a `platformSprite` animation (an IMAGE + a structure LINE_SEGMENT, in LOCAL coords
     /// centered on the object origin) that a moving Structure references by animationId. The grey
     /// PNG is native size `w x h`; the standable line is the top edge. Stored in `extra_anims`.
-    fn add_platform_animation(&mut self, grey_guid: &str, w: f64, _h: f64) {
-        let img = self.make_image("platformImage", grey_guid, -w / 2.0, 0.0, 1.0);
+    fn add_platform_animation(&mut self, idx: usize, grey_guid: &str, w: f64, _h: f64) {
+        let img = self.make_image(&format!("platformImage{idx}"), grey_guid, -w / 2.0, 0.0, 1.0);
         // a solid floor line across the top, with grabbable ledges at both ends.
         let pm = json!({ "structureType": "FLOOR", "leftLedge": true, "rightLedge": true, "dropThrough": false });
         let sym = self.uid("sym:platformLine");
@@ -268,9 +268,9 @@ impl<'a> EntityBuilder<'a> {
             "$id": line, "hidden": false, "locked": false, "name": "Line Segment Layer", "type": "LINE_SEGMENT",
             "keyframes": [kf], "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "lineSegmentType": "LINE_SEGMENT_STRUCTURE" } }
         }));
-        let aid = self.uid("anim:platformSprite");
+        let aid = self.uid(&format!("anim:platformSprite{idx}"));
         self.extra_anims.push(json!({
-            "$id": aid, "name": "platformSprite", "pluginMetadata": {}, "layers": [img, line]
+            "$id": aid, "name": format!("platformSprite{idx}"), "pluginMetadata": {}, "layers": [img, line]
         }));
     }
     /// Add an IMAGE layer to the `stage` animation at the current depth (rendered at the
@@ -361,7 +361,7 @@ fn bg_layer_name(sym: &str, idx: usize) -> String {
 
 /// The depth layers the entity lays out. `stage` is the frame sequence (1 = static);
 /// `background` is the ordered per-element backdrop layers (each 1 = static).
-struct ArtRefs { background: Vec<BgLayerRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Option<ArtRef>, platform_sprite: Option<(String, f64, f64)> }
+struct ArtRefs { background: Vec<BgLayerRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Option<ArtRef>, platform_sprites: Vec<(String, f64, f64)> }
 
 /// Render the floor + soft platforms as filled rectangles on a transparent canvas
 /// covering their bounding box (1px = 1 stage unit). Gives the stage visible content
@@ -436,8 +436,8 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     }
     // moving platforms reference the shared `platformSprite` animation (grey surface + a structure
     // line segment); the stage spawns them as Structures that move themselves. Add that animation.
-    if let Some((grey, w, h)) = &art.platform_sprite {
-        b.add_platform_animation(grey, *w, *h);
+    for (i, (grey, w, h)) in art.platform_sprites.iter().enumerate() {
+        b.add_platform_animation(i, grey, *w, *h);
     }
     b.add_container("Characters Back", "CHARACTERS_BACK_CONTAINER");
     b.add_container("Characters", "CHARACTERS_CONTAINER");
@@ -590,55 +590,62 @@ use crate::stage_parser::{Hazard, Platform};
 /// content ids the stage Script spawns with `match.createStructure`.
 #[allow(clippy::type_complexity)]
 fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
-    -> Result<(Option<(String, f64, f64)>, Vec<Value>, Vec<String>)>
+    -> Result<(Vec<(String, f64, f64)>, Vec<Value>, Vec<String>)>
 {
     let vis: Vec<&Platform> = model.platforms.iter().filter(|p| p.visible).collect();
-    if vis.is_empty() { return Ok((None, Vec::new(), Vec::new())); }
+    if vis.is_empty() { return Ok((Vec::new(), Vec::new(), Vec::new())); }
     let id = &model.id;
     let scripts = lib.join("scripts").join("platform");
     std::fs::create_dir_all(&scripts).context("mkdir scripts/platform")?;
-    // shared grey stone sprite (FM px = the platform size; placed at scale 1 in platformSprite).
-    let (pw, ph) = (vis[0].rect.w.round().max(8.0) as u32, vis[0].rect.h.round().max(8.0) as u32);
-    let top = (ph / 5).max(2);
-    let mut img = image::RgbaImage::new(pw, ph);
-    for (_, y, px) in img.enumerate_pixels_mut() {
-        *px = if y < top { image::Rgba([172, 174, 186, 255]) }
-            else if y < top + 2 { image::Rgba([88, 90, 102, 255]) }
-            else { image::Rgba([118, 120, 132, 255]) };
-    }
-    let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .context("encode platform png")?;
-    let grey = det_uuid(&format!("stage::{id}::platformSprite"));
-    std::fs::write(sprites.join(format!("{id}_platformSprite.png")), &png)?;
-    write_json(&sprites.join(format!("{id}_platformSprite.png.meta")), &json!({
-        "export": false, "guid": grey, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
-    }))?;
-    // shared sink/rise structure Script.
+    // shared sink/rise structure Script. HALF_W gates which platform a Thwomp landed on; the
+    // platforms sit far apart (columns ~330px), so a generous-but-sub-spacing half-width assigns
+    // the Thwomp to exactly one without bleeding into its neighbour.
     let script_id = format!("{id}platformScript");
-    std::fs::write(scripts.join(format!("{script_id}.hx")), platform_script_hx(vis[0].rect.w / 2.0 + 20.0))?;
+    std::fs::write(scripts.join(format!("{script_id}.hx")), platform_script_hx(150.0))?;
     write_meta(&scripts.join(format!("{script_id}.hx.meta")), id, &script_id, "hscript", Some("LINE_SEGMENT_STRUCTURE"), None)?;
-    // per-platform Stats (startX/startY) + a structure content entry + the spawn id.
+    // per-platform: a grey block sprite sized to THIS platform (the SSF2 standing platforms are
+    // different widths), its own `platformSprite{i}` animation, Stats (startX/startY), a structure
+    // content entry, and the spawn id. The grey matches the SSF2 terrainGround block (rgb 151).
+    let mut sprite_dims = Vec::new();
     let mut contents = Vec::new();
     let mut spawn_ids = Vec::new();
     for (i, p) in vis.iter().enumerate() {
+        let (pw, ph) = (p.rect.w.round().max(8.0) as u32, p.rect.h.round().max(10.0) as u32);
+        let top = (ph / 5).max(2);
+        let mut img = image::RgbaImage::new(pw, ph);
+        for (_, y, px) in img.enumerate_pixels_mut() {
+            // a lighter top lip, a thin dark seam, then the SSF2 platform grey body.
+            *px = if y < top { image::Rgba([176, 176, 178, 235]) }
+                else if y < top + 2 { image::Rgba([96, 96, 100, 235]) }
+                else { image::Rgba([151, 151, 151, 220]) };
+        }
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .context("encode platform png")?;
+        let guid = det_uuid(&format!("stage::{id}::platformSprite{i}"));
+        std::fs::write(sprites.join(format!("{id}_platformSprite{i}.png")), &png)?;
+        write_json(&sprites.join(format!("{id}_platformSprite{i}.png.meta")), &json!({
+            "export": false, "guid": guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
+        }))?;
+        sprite_dims.push((guid, pw as f64, ph as f64));
+
         let cid = format!("{id}platform{i}");
         let stats_id = format!("{cid}Stats");
         let (sx, sy) = (p.rect.x + p.rect.w / 2.0, p.rect.y);
-        std::fs::write(scripts.join(format!("{stats_id}.hx")), platform_stats_hx(id, sx, sy))?;
+        std::fs::write(scripts.join(format!("{stats_id}.hx")), platform_stats_hx(id, sx, sy, i))?;
         write_meta(&scripts.join(format!("{stats_id}.hx.meta")), id, &stats_id, "hscript", None, None)?;
         contents.push(json!({ "id": cid, "type": "structure", "objectStatsId": stats_id, "scriptId": script_id }));
         spawn_ids.push(cid);
     }
-    Ok((Some((grey, pw as f64, ph as f64)), contents, spawn_ids))
+    Ok((sprite_dims, contents, spawn_ids))
 }
 
 /// Stats for one moving platform: which sprite + animation gives its geometry, and where it spawns.
-fn platform_stats_hx(stage_id: &str, start_x: f64, start_y: f64) -> String {
+fn platform_stats_hx(stage_id: &str, start_x: f64, start_y: f64, idx: usize) -> String {
     format!(
         "// Moving-platform stats (sink/rise) for {stage_id}\n{{\n\
          \tspriteContent: self.getResource().getContent(\"{stage_id}\"),\n\
-         \tanimationId: \"platformSprite\",\n\tstartX: {start_x:.1},\n\tstartY: {start_y:.1}\n}}\n")
+         \tanimationId: \"platformSprite{idx}\",\n\tstartX: {start_x:.1},\n\tstartY: {start_y:.1}\n}}\n")
 }
 
 /// The sink/rise state machine for a bowserscastle-style platform, ported from the SSF2
@@ -697,9 +704,8 @@ fn emit_hazards(model: &StageModel, lib: &Path) -> Result<Vec<Value>> {
     std::fs::create_dir_all(&scripts).context("mkdir scripts/hazard")?;
     // a `thwomp`-motion hazard cycles through the stage's platform columns, falling onto each so
     // the platform under it sinks (its standable top y is the thwomp's land height).
-    let cols: Vec<f64> = model.platforms.iter().filter(|p| p.visible)
-        .map(|p| p.rect.x + p.rect.w / 2.0).collect();
-    let land_y = model.platforms.iter().find(|p| p.visible).map(|p| p.rect.y).unwrap_or(0.0);
+    let cols: Vec<(f64, f64)> = model.platforms.iter().filter(|p| p.visible)
+        .map(|p| (p.rect.x + p.rect.w / 2.0, p.rect.y)).collect();
 
     for (i, hz) in model.hazards.iter().enumerate() {
         let hid = hazard_id(&model.id, i);
@@ -728,7 +734,7 @@ fn emit_hazards(model: &StageModel, lib: &Path) -> Result<Vec<Value>> {
         write_meta(&lib.join("entities").join(format!("{hid}.entity.meta")), &hid, &hid, "", Some("CUSTOM_GAME_OBJECT"), None)?;
 
         let script = if hz.motion == "thwomp" && !cols.is_empty() {
-            thwomp_script_hx(&cols, land_y)
+            thwomp_script_hx(&cols)
         } else {
             hazard_script_hx(hz)
         };
@@ -796,10 +802,13 @@ fn hazard_entity(hid: &str, hz: &Hazard, sprite_guid: &str, img_x: f64, img_y: f
 /// stage's platform columns, accelerating down onto each (a gravity slam), holding, then rising
 /// and moving to the next column. Its native HIT_BOX damages on contact, and the platform it lands
 /// on detects it (a custom game object on its surface) and sinks, exactly as SSF2's thwomp calls
-/// `platform.sink()`. `cols` are the platform x-centers, `land_y` their standable top.
-fn thwomp_script_hx(cols: &[f64], land_y: f64) -> String {
-    let cols_lit = cols.iter().map(|x| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
-    let top_y = land_y - 340.0;
+/// `platform.sink()`. `cols` are the platform `(x-center, standable-top-y)` pairs; the Thwomp
+/// falls onto each in turn, landing at THAT platform's top (they sit at different heights).
+fn thwomp_script_hx(cols: &[(f64, f64)]) -> String {
+    let cols_lit = cols.iter().map(|(x, _)| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
+    let land_lit = cols.iter().map(|(_, y)| format!("{y:.1}")).collect::<Vec<_>>().join(", ");
+    // the rest height is well above the highest platform top (smallest y).
+    let top_y = cols.iter().map(|(_, y)| *y).fold(f64::MAX, f64::min) - 340.0;
     format!(
         "// Thwomp (converted from SSF2). Falls onto a platform column -> that platform sinks; then\n\
          // rises and moves to the next column. Native HIT_BOX (HitboxStats) damages on contact.\n\n\
@@ -809,16 +818,17 @@ fn thwomp_script_hx(cols: &[f64], land_y: f64) -> String {
          \tCommon.registerLocalState(index, animation);\n\treturn index;\n}}\n\
          var __hasInitLocalStateMachine = false;\nvar __localStatePrepIndex = -1;\n\
          var LState = {{\n\tUNINITIALIZED: _prepLocalState(\"#n/a\", -1),\n\tACTIVE: _prepLocalState(\"gameObjectIdle\"),\n\tINACTIVE: _prepLocalState(\"gameObjectInactive\")\n}};\n\n\
-         var COLUMNS = [{cols_lit}];\nvar TOP_Y = {top_y:.1};\nvar LAND_Y = {land_y:.1};\n\
+         var COLUMNS = [{cols_lit}];\nvar LAND_YS = [{land_lit}];\nvar TOP_Y = {top_y:.1};\n\
          var m_col = 0;\nvar m_phase = 0;\nvar m_fallV = 0.0;\nvar m_timer = 0;\nvar m_cool = 0;\nvar m_init = false;\n\n\
          function initialize() {{\n\tself.setState(PState.ACTIVE);\n\tCommon.toLocalState(LState.ACTIVE);\n}}\n\n\
          function update() {{\n\
          \tif (!m_init) {{ m_init = true; self.setX(COLUMNS[m_col]); self.setY(TOP_Y); }}\n\
+         \tvar landY = LAND_YS[m_col];\n\
          \t// keep the native hitbox live so it damages fighters it falls through.\n\
          \tif (m_cool > 0) {{ m_cool = m_cool - 1; }} else {{ self.reactivateHitboxes(); m_cool = 18; }}\n\
          \tif (m_phase == 0) {{\n\
          \t\tm_fallV = m_fallV + 0.9;\n\t\tself.setY(self.getY() + m_fallV);\n\
-         \t\tif (self.getY() >= LAND_Y) {{ self.setY(LAND_Y); m_phase = 1; m_timer = 0; }}\n\
+         \t\tif (self.getY() >= landY) {{ self.setY(landY); m_phase = 1; m_timer = 0; }}\n\
          \t}} else if (m_phase == 1) {{\n\
          \t\tm_timer = m_timer + 1;\n\t\tif (m_timer >= 80) {{ m_phase = 2; }}\n\
          \t}} else {{\n\

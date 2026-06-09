@@ -647,6 +647,13 @@ fn cmd_stage(args: &[String]) -> Result<()> {
     for p in model.platforms.iter().filter(|p| p.drop_through) {
         println!("  platform:   x[{:.1},{:.1}] top y={:.1} (w={:.1}) drop-through", p.rect.left(), p.rect.right(), p.rect.top(), p.rect.w);
     }
+    if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+        for p in &model.platforms {
+            println!("  [all-plat] x[{:.1},{:.1}] y[{:.1},{:.1}] w={:.1} solid={} cx={:.1}",
+                p.rect.left(), p.rect.right(), p.rect.top(), p.rect.bottom(), p.rect.w, !p.drop_through, p.rect.x + p.rect.w/2.0);
+        }
+        if let Some((l, r)) = model.ledges { println!("  [ledges] left={:.1} right={:.1}", l, r); }
+    }
     if let Some(r) = &model.death_box {
         println!("  death box:  x[{:.1},{:.1}] y[{:.1},{:.1}]", r.left(), r.right(), r.top(), r.bottom());
     }
