@@ -286,39 +286,6 @@ impl<'a> EntityBuilder<'a> {
         let lid = self.make_image(name, image_asset, x, y, self.scale);
         self.anim_layers.push(lid);
     }
-    /// Add a semi-transparent overlay whose ALPHA flickers in a smooth loop (one keyframe of the
-    /// same image per step, alpha following a sine), reproducing SSF2's animated lava-glow light
-    /// (its `bowsers_lightmask` flickers the glow's brightness — a property animation a static
-    /// shape rasterization can't carry). The loop fills `frame_len` so it cycles with the stage.
-    fn add_image_glow_flicker(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
-        let total = self.frame_len.max(8);
-        let step = 3usize; // FM frames per flicker keyframe (~20Hz update, smooth)
-        let n = (total / step).max(4);
-        let mut kfs = Vec::new();
-        let mut acc = 0usize;
-        for i in 0..n {
-            let len = if i == n - 1 { total - acc } else { step };
-            acc += len;
-            // ~2 brightness cycles over the loop; alpha 0.30..0.62 reads as a gentle lava throb.
-            let phase = (i as f64) / (n as f64) * std::f64::consts::TAU * 2.0;
-            let alpha = 0.46 + 0.16 * phase.sin();
-            let sym = self.uid(&format!("sym:{name}:{i}"));
-            self.symbols.push(json!({
-                "$id": sym, "type": "IMAGE", "imageAsset": image_asset, "alpha": alpha,
-                "x": x, "y": y, "scaleX": self.scale, "scaleY": self.scale, "rotation": 0, "pivotX": 0, "pivotY": 0,
-                "pluginMetadata": {}
-            }));
-            let kf = self.uid(&format!("kf:{name}:{i}"));
-            self.keyframes.push(json!({ "$id": kf, "length": len.max(1), "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": true, "type": "IMAGE" }));
-            kfs.push(kf);
-        }
-        let lid = self.uid(&format!("layer:{name}"));
-        self.layers.push(json!({
-            "$id": lid, "hidden": false, "locked": false, "name": name, "type": "IMAGE",
-            "keyframes": kfs, "pluginMetadata": {}
-        }));
-        self.anim_layers.push(lid);
-    }
     /// Add a parallax camera-background layer as its own `parallax{idx}` animation. The IMAGE
     /// symbol stays at scale 1: the camera's ParallaxBG sizes it from
     /// `originalBGWidth × scaleMultiplier` (set in StageStats), so scaling the symbol too
@@ -486,16 +453,12 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     b.add_container("Characters Back", "CHARACTERS_BACK_CONTAINER");
     b.add_container("Characters", "CHARACTERS_CONTAINER");
     b.add_container("Characters Front", "CHARACTERS_FRONT_CONTAINER");
-    // the foreground draws IN FRONT of fighters as a semi-transparent overlay (bowserscastle's
-    // lava-glow sheet); one frame = static, more = an animated loop. ~0.5 alpha so it reads as a
-    // glow, not an opaque sheet.
-    match art.foreground.as_slice() {
-        [] => {}
-        // a static glow SHEET (bowserscastle): flicker its alpha so it reads as animated lava light.
-        [a] => b.add_image_glow_flicker("Foreground Art", &a.guid, a.x, a.y),
-        // a genuinely shape-animated foreground: play its frames at a fixed semi-transparent alpha.
-        frames => b.add_image_frames_alpha("Foreground Art",
-            &frames.iter().map(|a| (a.guid.clone(), a.x, a.y, a.hold)).collect::<Vec<_>>(), 0.5),
+    // the foreground (bowserscastle's lava-glow sheet + lightmask, classified foreground by the
+    // AS3 plane map) draws IN FRONT of fighters as a semi-transparent overlay at ~0.5 alpha — the
+    // REAL clip art, one keyframe per real frame (no synthesized flicker).
+    if !art.foreground.is_empty() {
+        b.add_image_frames_alpha("Foreground Art",
+            &art.foreground.iter().map(|a| (a.guid.clone(), a.x, a.y, a.hold)).collect::<Vec<_>>(), 0.5);
     }
     b.add_container("Foreground Structures", "FOREGROUND_STRUCTURES_CONTAINER");
     b.add_container("Foreground Shadows", "FOREGROUND_SHADOWS_CONTAINER");
