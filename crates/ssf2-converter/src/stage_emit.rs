@@ -620,34 +620,20 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
     let script_id = format!("{id}platformScript");
     std::fs::write(scripts.join(format!("{script_id}.hx")), platform_script_hx(150.0))?;
     write_meta(&scripts.join(format!("{script_id}.hx.meta")), id, &script_id, "hscript", Some("LINE_SEGMENT_STRUCTURE"), None)?;
-    // per-platform: a grey block sprite sized to THIS platform (the SSF2 standing platforms are
-    // different widths), its own `platformSprite{i}` animation, Stats (startX/startY), a structure
-    // content entry, and the spawn id. The grey matches the SSF2 terrainGround block (rgb 151).
+    // per-platform: a sprite sized to THIS platform (the SSF2 standing platforms are different
+    // widths), its own `platformSprite{i}` animation, Stats (startX/startY), a structure content
+    // entry, and the spawn id. the fill is the REAL SSF2 terrain grey (sampled rgb 151 at the
+    // terrain's translucent alpha), not a synthesized brick texture, with a lighter top lip.
     let mut sprite_dims = Vec::new();
     let mut contents = Vec::new();
     let mut spawn_ids = Vec::new();
     for (i, p) in vis.iter().enumerate() {
         let (pw, ph) = (p.rect.w.round().max(8.0) as u32, p.rect.h.round().max(10.0) as u32);
-        let cap = (ph / 6).max(3);
+        let cap = (ph / 6).max(2);
         let mut img = image::RgbaImage::new(pw, ph);
-        // SSF2's standing platforms are castle BRICK masonry (the same stone as the walls), not a
-        // flat grey slab: a lighter sandstone cap, then a brick body laid in mortar courses. the
-        // neutral grey-brown reads as castle stone, and the lava-glow foreground tints it warm/red
-        // in-engine the way it looks in SSF2.
-        for (x, y, px) in img.enumerate_pixels_mut() {
-            *px = if y < cap {
-                image::Rgba([198, 182, 156, 240])            // sandstone cap (top surface)
-            } else if y < cap + 2 {
-                image::Rgba([92, 76, 60, 240])               // dark seam under the cap
-            } else {
-                // brick courses: a darker mortar grid (horizontal every ~9px, vertical joints
-                // offset every other course) over a warm grey-brown brick face.
-                let row = (y - cap) / 9;
-                let h_mortar = (y - cap) % 9 == 0;
-                let v_mortar = (x + if row % 2 == 0 { 0 } else { 11 }) % 22 == 0;
-                if h_mortar || v_mortar { image::Rgba([96, 78, 62, 230]) }
-                else { image::Rgba([150, 126, 100, 226]) }
-            };
+        for (_x, y, px) in img.enumerate_pixels_mut() {
+            *px = if y < cap { image::Rgba([176, 176, 178, 200]) }   // lighter top lip
+                else { image::Rgba([151, 151, 151, 170]) };          // real SSF2 terrain grey
         }
         let mut png = Vec::new();
         image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
@@ -678,46 +664,14 @@ fn platform_stats_hx(stage_id: &str, start_x: f64, start_y: f64, idx: usize) -> 
          \tanimationId: \"platformSprite{idx}\",\n\tstartX: {start_x:.1},\n\tstartY: {start_y:.1}\n}}\n")
 }
 
-/// The sink/rise state machine for a bowserscastle-style platform, ported from the SSF2
-/// `BowsersCastlePlatform`: idle until a Thwomp lands on it, then sink into the lava, hold, rise
-/// back. The structure moves ITSELF via setY (the FM moving-platform idiom). The trigger is the
-/// Thwomp object overlapping the platform's top (a custom game object at the platform's x, near
-/// its idle surface), exactly like SSF2's `Thwomp` calling `platform.sink()` on landing.
-fn platform_script_hx(half_w: f64) -> String {
-    format!(
-        "// Sinking platform (converted from SSF2 BowsersCastlePlatform). The structure moves itself;\n\
-         // a falling Thwomp landing on it triggers the sink (SSF2's thwomp.sink() call).\n\
-         var SINK_SPEED = 3.0;\nvar RISE_SPEED = 2.0;\nvar SINK_DEPTH = 210.0;\nvar WAIT_FRAMES = 120;\n\
-         var HALF_W = {half_w:.1};\n\
-         var m_startY = self.makeFloat(0.0);\nvar m_action = self.makeInt(0);\nvar m_timer = self.makeInt(0);\n\n\
-         function initialize() {{\n\tm_startY.set(self.getY());\n}}\n\n\
-         function thwompLanded() {{\n\
-         \t// a Thwomp (the only custom game object near my idle surface) is on top of me.\n\
-         \tvar objs = match.getCustomGameObjects();\n\
-         \tvar px = self.getX();\n\
-         \tfor (i in 0...objs.length) {{\n\
-         \t\tvar o = objs[i];\n\
-         \t\tif (Math.abs(o.getX() - px) < HALF_W && Math.abs(o.getY() - m_startY.get()) < 70) {{ return true; }}\n\
-         \t}}\n\
-         \treturn false;\n\
-         }}\n\n\
-         function update() {{\n\
-         \tvar a = m_action.get();\n\
-         \tif (a == 0) {{\n\
-         \t\tif (thwompLanded()) {{ m_action.set(1); }}\n\
-         \t}} else if (a == 1) {{\n\
-         \t\tself.setY(self.getY() + SINK_SPEED);\n\
-         \t\tif (self.getY() >= m_startY.get() + SINK_DEPTH) {{ self.setY(m_startY.get() + SINK_DEPTH); m_action.set(2); m_timer.set(0); }}\n\
-         \t}} else if (a == 2) {{\n\
-         \t\tm_timer.set(m_timer.get() + 1);\n\
-         \t\tif (m_timer.get() >= WAIT_FRAMES) {{ m_action.set(3); }}\n\
-         \t}} else {{\n\
-         \t\tself.setY(self.getY() - RISE_SPEED);\n\
-         \t\tif (self.getY() <= m_startY.get()) {{ self.setY(m_startY.get()); m_action.set(0); m_timer.set(0); }}\n\
-         \t}}\n\
-         }}\n\n\
-         function onTeardown() {{}}\nfunction onKill() {{}}\nfunction onStale() {{}}\n\
-         function afterPushState() {{}}\nfunction afterPopState() {{}}\nfunction afterFlushStates() {{}}\n")
+/// A STATIC standing-platform structure. SSF2's standing platforms don't sink (the Thwomp drops
+/// with its own self-platform); the structure just holds its spawn position and provides the floor
+/// line segment from its `platformSprite{i}` animation.
+fn platform_script_hx(_half_w: f64) -> String {
+    "// Static standing platform (its floor line segment comes from the platformSprite animation).\n\
+     function initialize() {}\nfunction update() {}\n\
+     function onTeardown() {}\nfunction onKill() {}\nfunction onStale() {}\n\
+     function afterPushState() {}\nfunction afterPopState() {}\nfunction afterFlushStates() {}\n".to_string()
 }
 
 /// camelCase content id for hazard `idx` of stage `id` (e.g. `battlefieldssf2hazard0`).

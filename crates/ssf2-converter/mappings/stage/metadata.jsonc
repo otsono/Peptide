@@ -26,15 +26,13 @@
     "bowserscastle": { "name": "Bowser's Castle", "series": "Super Mario",
       "non_floor_terrain": ["lavafloor"],
       "keep_foreground": true,
-      // three grey standing platforms (RE'd from the SSF2 terrain: two ledge-bounded side
-      // platforms + the central terrainGround block). x = center, y = top surface, w = width.
-      // the Thwomp cycles across these and sinks whichever it lands on into the lava.
+      // three standing platforms (RE'd from the SSF2 terrain: two ledge-bounded side platforms +
+      // the central terrainGround block). x = center, y = top surface, w = width. STATIC collision
+      // (the SSF2 platforms don't sink; the Thwomp drops with its own self-platform). their visual
+      // is the real SSF2 terrain grey, not a synthesized brick. hazards (the lava glow + Thwomp)
+      // come from the stage's AS3 spawnEnemy calls, not hand-declared here.
       "platforms": [
-        { "x": 438, "y": 660, "w": 448 }, { "x": 770, "y": 616, "w": 118 }, { "x": 1100, "y": 660, "w": 442 } ],
-      "hazards": [
-        { "x": 770, "y": 250, "w": 130, "h": 130, "damage": 16, "knockback": 75, "angle": 90,
-          "motion": "thwomp", "label": "Thwomp" },
-        { "x": 748, "y": 760, "w": 1700, "h": 200, "damage": 14, "knockback": 70, "angle": 90, "label": "Lava" } ] },
+        { "x": 438, "y": 660, "w": 448 }, { "x": 770, "y": 616, "w": 118 }, { "x": 1100, "y": 660, "w": 442 } ] },
     "butterbuilding": { "name": "Butter Building", "series": "Kirby" },
     "casinonightzone": { "name": "Casino Night Zone", "series": "Sonic the Hedgehog" },
     "castlesiege": { "name": "Castle Siege", "series": "Fire Emblem" },
