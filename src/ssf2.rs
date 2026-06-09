@@ -665,6 +665,10 @@ fn cmd_stage(args: &[String]) -> Result<()> {
     let a = &model.art;
     println!("  art: background={} foreground={} parallax={} stage_frames={}",
         a.background.len(), a.foreground.is_some(), a.parallax.len(), a.stage_frames.len());
+    for hz in &model.hazards {
+        println!("  hazard: {:<12} ({:.0},{:.0}) {:.0}x{:.0} dmg={} kb={} motion={}",
+            hz.label, hz.x, hz.y, hz.w, hz.h, hz.damage, hz.knockback, hz.motion);
+    }
     for w in &model.warnings {
         eprintln!("  warning: {w}");
     }

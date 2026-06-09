@@ -192,6 +192,23 @@ fn main() {
                 }
             }
         }
+        "methods" => {
+            // List every named method trait of a class (instance + static) with its method#, so a
+            // stage object's behavior + frame scripts can be enumerated then disassembled.
+            let Some(ci) = find_class(&abc, &args[3]) else { eprintln!("no class"); return; };
+            println!("== {} instance methods ==", &args[3]);
+            for t in &abc.instances[ci].traits {
+                if let Some(m) = trait_method(t) {
+                    println!("  {:<40} method#{m}", abc.multiname_local(t.name).unwrap_or_default());
+                }
+            }
+            println!("== static methods ==");
+            for t in &abc.classes[ci].traits {
+                if let Some(m) = trait_method(t) {
+                    println!("  {:<40} method#{m}", abc.multiname_local(t.name).unwrap_or_default());
+                }
+            }
+        }
         "disasm" => disasm_class_method(&abc, &args[3], &args[4], false),
         "disasm-static" => disasm_class_method(&abc, &args[3], &args[4], true),
         "iinit" => {

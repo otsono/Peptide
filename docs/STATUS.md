@@ -38,18 +38,57 @@ zone (KO + respawn), no crash. NB: a stage needs visible content to place player
 sizes it from the sprite bounds); the sprite is the SSF2 art (vector shapes + bitmap backgrounds rasterized + composited);
 stages with no rasterizable art fall back to a geometry placeholder.
 
-the converted stage carries a clean display name (the SSF2 id title-cased, or an override in
-`mappings/stage/metadata.jsonc`) and records its original SSF2 soundtrack (the `bgm_*` ids
+the backdrop is emitted the way SSF2 authors it: each animated element (lava bubbles, torches,
+embers, podoboos, a spectator) is its own FM layer/animation on its own loop, in back-to-front
+draw order, rather than one baked composite. elements are grouped by their SSF2 symbol id; a
+static element is one frame, an animated one keeps its loop (run-length-encoded at the 30->60fps
+doubling, so a held source frame reads as a pause). a single-element backdrop is one layer, same
+as before.
+
+the converted stage carries a clean display name (a per-stage override in
+`mappings/stage/metadata.jsonc`, with the SSF2 id title-cased as the fallback) plus a source
+series, and records its original SSF2 soundtrack (the `bgm_*` ids
 pulled from the stage DAT) in the description. it plays a real FM bgm (the override map's pick
 or `default_music`) since the SSF2 audio isn't shipped with FM. the content id is suffixed
 `<id>ssf2` so it can't shadow a built-in stage.
 
-moving platforms are detected (the `moving`-named SSF2 container, propagated to its collision
-child) and kept as static collision at their start position, labelled `(SSF2 moving, static)`
-in the entity and surfaced in a warning. the motion itself isn't ported: SSF2 moving platforms
-are bespoke per stage (custom AS3 classes / timeline animation), so reproducing them is
-per-stage work like porting a character special. follow-ups: the moving-platform motion,
-hazards/enemies, per-stage FM-music mapping, porting the actual SSF2 audio (licensing-permitting).
+auto-detected moving platforms (the `moving`-named SSF2 container, propagated to its collision
+child) are kept as static collision at their start position, labelled `(SSF2 moving, static)`
+in the entity and surfaced in a warning. the motion itself isn't ported there: SSF2 moving
+platforms are bespoke per stage (custom AS3 classes / timeline animation), so reproducing them
+is per-stage work like porting a character special.
+
+declared `platforms` in metadata become real FM moving Structures (the engine idiom from the
+stage-template): one shared grey `platformSprite` animation (an IMAGE + a FLOOR line segment),
+and one structure CONTENT per platform that the stage spawns and that moves itself in its own
+Script. bowserscastle uses this for the grey standing platforms the thwomp lands on and pushes
+down into the lava: the shared sink/rise Script polls the stage's custom game objects, sinks the
+column the thwomp landed on, holds, then rises back. the thwomp is a custom game object that
+falls, damages on landing, cycles across the platform columns, and re-arms its hitbox each cycle.
+
+stage hazards become Fraymakers custom game objects the stage spawns with a null owner, so each
+is neutral and damages everyone. damage and knockback come from the entity's native HIT_BOX
+(HitboxStats), and three pieces are load-bearing for that hitbox to connect: a null owner (passes
+team-hit validation), `stateTransitionMapOverrides` mapping `PState.ACTIVE` to the hitbox
+animation (so an animation actually plays and the collision detector resolves it against the
+HitboxStats map), and a content-ref `spriteContent` (a bare id string doesn't load the sprite). a
+local state machine plays the active/inactive animations for the on/off pulse, and the hitbox is
+re-armed on a cadence (`rehit`) so a lingering fighter keeps taking hits. movement patterns
+(oscillate / circle / thwomp-fall) move the whole object. each hazard renders its real rasterized
+SSF2 art (the thwomp's stone face, the bumper, the lava) recovered from the placement tree; a
+hand-declared hazard borrows the detected sprite of its kind, and only a hazard with no recoverable
+art falls back to a translucent placeholder box.
+
+damaging hazards auto-detect from the SSF2 placement tree (lava, acid, thwomps, spikes, bumpers,
+tornados, damage zones, podoboos, piranhas) by linkage name. the kind is propagated down from the
+named container, leaf shapes of one hazard cluster into a single box, and the result is filtered to
+the reachable area inside the blast zone (so a hazard parked off-screen at frame 0 doesn't ship as a
+phantom hitbox). a `hazards` list in metadata overrides detection for a stage (full manual control,
+e.g. a thwomp whose frame-0 position is parked, or a dynamically-spawned hazard); `no_hazards: true`
+suppresses a false positive. dynamically-spawned hazards (cannonballs, arwing lasers, birdo eggs,
+holy lances) that don't sit in the static tree are a per-stage follow-up, declared by hand as the
+need arises. follow-ups: the moving-platform motion, dynamically-spawned hazards, per-stage FM-music
+mapping, porting the actual SSF2 audio (licensing-permitting).
 
 ## hitbox-stat parity
 
