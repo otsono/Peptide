@@ -803,9 +803,35 @@ pub struct StageMetadataEntry {
     /// Source series, for the description. Optional.
     pub series: Option<String>,
     /// Stage hazards to emit as FM custom game objects (damaging hitbox volumes the stage
-    /// spawns). Opt-in: SSF2 hazards are bespoke per stage and not auto-ported.
+    /// spawns). A declared list wins over auto-detection (full manual control of that stage).
     #[serde(default)]
     pub hazards: Vec<HazardSpec>,
+    /// Suppress auto-detected hazards for this stage (e.g. when the heuristic produces a
+    /// false-positive on cosmetic geometry and no hand-declared hazards are wanted).
+    #[serde(default)]
+    pub no_hazards: bool,
+    /// Hand-declared standable platforms (FM coords), appended to the parsed collision. For stages
+    /// whose real platforms are AS3-spawned objects (not static terrain shapes), e.g. bowserscastle
+    /// where the standable surfaces are `BowsersCastlePlatform` instances, not the lava floor.
+    #[serde(default)]
+    pub platforms: Vec<PlatformSpec>,
+    /// Linkage-name substrings whose terrain shapes are NOT a standable floor (they're lava/acid
+    /// the fighter falls into, handled as a hazard). e.g. "lavafloor" on bowserscastle.
+    #[serde(default)]
+    pub non_floor_terrain: Vec<String>,
+}
+
+/// One hand-declared standable platform. FM coords; stage center 0,0, +y down.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlatformSpec {
+    /// Center x and top-surface y.
+    pub x: f64,
+    pub y: f64,
+    /// Full width.
+    pub w: f64,
+    /// Drop-through (soft) vs solid. Default solid.
+    #[serde(default)]
+    pub drop_through: bool,
 }
 
 /// One declared stage hazard (a Fraymakers custom game object). All in FM coords/units.
@@ -831,6 +857,9 @@ pub struct HazardSpec {
     #[serde(default)] pub range: f64,
     /// Movement period in frames (one full cycle).
     #[serde(default = "hz_default_period")] pub period: u32,
+    /// Frames between native-hitbox re-arms while a fighter lingers in the hazard (a hitbox hits
+    /// each target once per attack id; re-arming re-hits). SSF2 hazards re-tick roughly twice/sec.
+    #[serde(default = "hz_default_rehit")] pub rehit: u32,
     /// Optional label.
     pub label: Option<String>,
 }
@@ -839,6 +868,7 @@ fn hz_default_w() -> f64 { 60.0 }
 fn hz_default_damage() -> f64 { 8.0 }
 fn hz_default_active() -> u32 { 20 }
 fn hz_default_period() -> u32 { 120 }
+fn hz_default_rehit() -> u32 { 30 }
 
 pub fn stage_metadata() -> &'static StageMetadataMap {
     static CACHE: OnceLock<StageMetadataMap> = OnceLock::new();

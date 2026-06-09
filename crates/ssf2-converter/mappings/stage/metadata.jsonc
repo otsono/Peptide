@@ -1,31 +1,141 @@
 {
-  // per-stage display + music overrides for the SSF2 -> Fraymakers stage converter.
-  // key = the SSF2 stage id (Main.id in the stage DAT, before the "ssf2" suffix).
+  // per-stage display + music + hazard config for the SSF2 -> Fraymakers stage converter.
+  // key = the SSF2 stage id (Main.id in the stage DAT, before the "ssf2" suffix). all fields
+  // optional. fallbacks: name -> the SSF2 id title-cased ("battlefield" -> "Battlefield"); music
+  // -> default_music below (these MUST be real Fraymakers public bgm ids, since the SSF2
+  // soundtrack isn't shipped with FM; the original SSF2 track ids are recorded in the stage
+  // description regardless); series -> none.
   //
-  // every field is optional. fallbacks when an entry (or field) is absent:
-  //   name  -> the SSF2 id, title-cased ("battlefield" -> "Battlefield"). SSF2 ids are
-  //            lowercase-concatenated, so multi-word stages need an entry here for a
-  //            clean name ("finaldestination" -> "Final Destination").
-  //   music -> default_music below. these MUST be real Fraymakers public bgm resource
-  //            ids (the SSF2 soundtrack is not shipped with FM); the original SSF2 track
-  //            ids are always recorded in the stage description regardless.
-  //   series -> none.
-  // hazards: opt-in per stage. SSF2 hazards are bespoke per-stage AS3 (lava, thwomps, podoboos,
-  // ...) so they are not auto-ported; declare them here and each becomes a Fraymakers custom
-  // game object (objectType CUSTOM_GAME_OBJECT) the stage spawns via match.createCustomGameObject
-  // — a damaging hitbox volume the author can then flesh out. fields (all FM coords/units;
+  // hazards: damaging stage hazards are AUTO-DETECTED from the SSF2 placement tree (lava, acid,
+  // thwomps, spikes, bumpers, tornados, damage zones, …) and emitted as Fraymakers custom game
+  // objects (null owner, so neutral -> they damage everyone) whose native HIT_BOX deals the
+  // damage. auto-detected hazards are filtered to the reachable area (inside the blast zone).
+  // declare a `hazards` list to OVERRIDE auto-detection for a stage (full manual control, e.g. a
+  // hazard whose frame-0 position is parked off-screen, or a dynamically-spawned one auto-detection
+  // can't place); set `no_hazards: true` to suppress a false positive. fields (all FM coords/units;
   // stage center = 0,0, +y down): x,y (spawn), w,h (hitbox size, default 60), damage (default 8),
-  // knockback, angle, interval (on/off pulse period in frames; 0 = always on), active (frames
-  // active per pulse, default 20), label. movement to match the SSF2 hazard: motion =
-  // "static" (default) | "oscillateX" | "oscillateY" | "circle" | "fall" (thwomp), with range
-  // (amplitude px) + period (cycle frames, default 120). examples:
-  //   "bowserscastle": { "hazards": [
-  //     { "x": 0, "y": 120, "w": 200, "h": 40, "damage": 12, "knockback": 60, "label": "Lava" },
-  //     { "x": -150, "y": -40, "w": 80, "h": 70, "damage": 14, "motion": "fall", "range": 180,
-  //       "period": 150, "label": "Thwomp" } ] }
+  // knockback, angle, interval (on/off pulse period in frames; 0 = always on), active (frames active
+  // per pulse, default 20), rehit (frames between re-hits while a fighter lingers, default 30),
+  // label, and motion = "static" (default) | "oscillateX" | "oscillateY" | "circle" | "fall"
+  // (thwomp) with range (amplitude px) + period (cycle frames, default 120).
   "default_music": "bgm_welkinwonderland",
   "stages": {
-    "battlefield":  { "name": "Battlefield" },
-    "junglehijinx": { "name": "Jungle Hijinx", "series": "Donkey Kong" }
+    "battlefield": { "name": "Battlefield" },
+    "battlefield2": { "name": "Battlefield (Melee)" },
+    "bombfactory": { "name": "Bomb Factory", "series": "Bomberman" },
+    "bowserscastle": { "name": "Bowser's Castle", "series": "Super Mario",
+      "non_floor_terrain": ["lavafloor"],
+      "platforms": [
+        { "x": 269, "y": 564, "w": 140 }, { "x": 421, "y": 564, "w": 140 }, { "x": 573, "y": 564, "w": 140 },
+        { "x": 926, "y": 564, "w": 140 }, { "x": 1078, "y": 564, "w": 140 }, { "x": 1230, "y": 564, "w": 140 } ],
+      "hazards": [
+        { "x": 767, "y": 250, "w": 130, "h": 130, "damage": 16, "knockback": 75, "angle": 90,
+          "motion": "thwomp", "label": "Thwomp" },
+        { "x": 748, "y": 760, "w": 1700, "h": 200, "damage": 14, "knockback": 70, "angle": 90, "label": "Lava" } ] },
+    "butterbuilding": { "name": "Butter Building", "series": "Kirby" },
+    "casinonightzone": { "name": "Casino Night Zone", "series": "Sonic the Hedgehog" },
+    "castlesiege": { "name": "Castle Siege", "series": "Fire Emblem" },
+    "centralhighway": { "name": "Central Highway", "series": "Mega Man" },
+    "chaosshrine": { "name": "Chaos Shrine", "series": "Final Fantasy" },
+    "clocktown": { "name": "Clock Town", "series": "The Legend of Zelda" },
+    "crateria": { "name": "Crateria", "series": "Metroid" },
+    "crystalsmash": { "name": "Crystal Smash" },
+    "crystalsmash2": { "name": "Crystal Smash 2" },
+    "dededearena": { "name": "Dedede's Arena", "series": "Kirby" },
+    "desk": { "name": "Desk" },
+    "devilsmachine": { "name": "The Devil's Machine", "series": "Mother" },
+    "draculascastle": { "name": "Dracula's Castle", "series": "Castlevania" },
+    "dreamland": { "name": "Dream Land", "series": "Kirby" },
+    "emeraldcave": { "name": "Emerald Cave" },
+    "fairyglade": { "name": "Fairy Glade", "series": "Rayman" },
+    "finaldestination": { "name": "Final Destination" },
+    "finalvalley": { "name": "The Final Valley", "series": "Naruto" },
+    "flatzoneplus": { "name": "Flat Zone Plus", "series": "Game & Watch" },
+    "fourside": { "name": "Fourside", "series": "EarthBound" },
+    "galaxytours": { "name": "Galaxy Tours" },
+    "gangplankgalleon": { "name": "Gangplank Galleon", "series": "Donkey Kong" },
+    "greenhillzone": { "name": "Green Hill Zone", "series": "Sonic the Hedgehog" },
+    "homeruncontest": { "name": "Home-Run Contest" },
+    "huecomundo": { "name": "Hueco Mundo", "series": "Bleach" },
+    "hylianskies": { "name": "Hylian Skies", "series": "The Legend of Zelda" },
+    "hyrulecastle64": { "name": "Hyrule Castle", "series": "The Legend of Zelda" },
+    "hyruletemple": { "name": "Hyrule Temple", "series": "The Legend of Zelda" },
+    "junglehijinx": { "name": "Jungle Hijinx", "series": "Donkey Kong" },
+    "jungleisland": { "name": "Jungle Island", "series": "Donkey Kong" },
+    "kingdom1": { "name": "Mushroom Kingdom", "series": "Super Mario" },
+    "kingdom2": { "name": "Mushroom Kingdom II", "series": "Super Mario" },
+    "konohavillage": { "name": "Konoha Village", "series": "Naruto" },
+    "krazoapalace": { "name": "Krazoa Palace", "series": "Star Fox" },
+    "lakeofrage": { "name": "Lake of Rage", "series": "Pokemon" },
+    "lunarcore": { "name": "Lunar Core", "series": "Metroid" },
+    "metalcavern": { "name": "Metal Cavern" },
+    "meteovoyage": { "name": "Meteo Voyage", "series": "Star Fox" },
+    "mushroomkingdom3": { "name": "Mushroom Kingdom III", "series": "Super Mario" },
+    "nintendo3ds": { "name": "Nintendo 3DS" },
+    "pacmaze": { "name": "Pac-Maze", "series": "Pac-Man" },
+    "palaceoftwilight": { "name": "Palace of Twilight", "series": "The Legend of Zelda" },
+    "palutenasshrine": { "name": "Palutena's Shrine", "series": "Kid Icarus" },
+    "peachscastle": { "name": "Peach's Castle", "series": "Super Mario" },
+    "phase8": { "name": "Phase 8", "series": "Metroid" },
+    "planetnamek": { "name": "Planet Namek", "series": "Dragon Ball" },
+    "pokemoncolosseum": { "name": "Pokemon Colosseum", "series": "Pokemon" },
+    "racetothefinish": { "name": "Race to the Finish" },
+    "rainbowroute": { "name": "Rainbow Route", "series": "Kirby" },
+    "restarea": { "name": "Rest Area" },
+    "saffroncity": { "name": "Saffron City", "series": "Pokemon" },
+    "sandbagbasketball": { "name": "Sandbag Basketball" },
+    "sandbagsoccer": { "name": "Sandbag Soccer" },
+    "sandocean": { "name": "Sand Ocean", "series": "F-Zero" },
+    "saturnvalley": { "name": "Saturn Valley", "series": "EarthBound" },
+    "sectorz": { "name": "Sector Z", "series": "Star Fox" },
+    "skullfortress": { "name": "Skull Fortress", "series": "Mega Man" },
+    "skypillar": { "name": "Sky Pillar", "series": "Pokemon" },
+    "skysanctuary": { "name": "Sky Sanctuary", "series": "Sonic the Hedgehog" },
+    "smashville": { "name": "Smashville", "series": "Animal Crossing" },
+    "snowpointtemple": { "name": "Snowpoint Temple", "series": "Pokemon" },
+    "steeldiver": { "name": "Steel Diver" },
+    "suzakucastle": { "name": "Suzaku Castle", "series": "Street Fighter" },
+    "targettest": { "name": "Target Test" },
+    "targettest2": { "name": "Target Test 2" },
+    "targettest3": { "name": "Target Test 3" },
+    "targettest4": { "name": "Target Test 4" },
+    "targettest_bandanadee": { "name": "Target Test (Bandana Dee)" },
+    "targettest_blackmage": { "name": "Target Test (Black Mage)" },
+    "targettest_bomberman": { "name": "Target Test (Bomberman)" },
+    "targettest_bowser": { "name": "Target Test (Bowser)" },
+    "targettest_captainfalcon": { "name": "Target Test (Captain Falcon)" },
+    "targettest_donkeykong": { "name": "Target Test (Donkey Kong)" },
+    "targettest_jigglypuff": { "name": "Target Test (Jigglypuff)" },
+    "targettest_link": { "name": "Target Test (Link)" },
+    "targettest_lucario": { "name": "Target Test (Lucario)" },
+    "targettest_luigi": { "name": "Target Test (Luigi)" },
+    "targettest_mario": { "name": "Target Test (Mario)" },
+    "targettest_marth": { "name": "Target Test (Marth)" },
+    "targettest_megaman": { "name": "Target Test (Megaman)" },
+    "targettest_metaknight": { "name": "Target Test (Meta Knight)" },
+    "targettest_pikachu": { "name": "Target Test (Pikachu)" },
+    "targettest_sheik": { "name": "Target Test (Sheik)" },
+    "targettest_simon": { "name": "Target Test (Simon)" },
+    "targettest_sora": { "name": "Target Test (Sora)" },
+    "targettest_waluigi": { "name": "Target Test (Waluigi)" },
+    "targettest_wario": { "name": "Target Test (Wario)" },
+    "targettest_yoshi": { "name": "Target Test (Yoshi)" },
+    "targettest_zamus": { "name": "Target Test (Zero Suit Samus)" },
+    "targettest_zelda": { "name": "Target Test (Zelda)" },
+    "theworldthatneverwas": { "name": "The World That Never Was", "series": "Kingdom Hearts" },
+    "thousandsunny": { "name": "Thousand Sunny", "series": "One Piece" },
+    "tinystage": { "name": "Tiny Stage" },
+    "tourian": { "name": "Tourian", "series": "Metroid" },
+    "towerofsalvation": { "name": "Tower of Salvation", "series": "Tales of Symphonia" },
+    "traininggrid": { "name": "Training Grid" },
+    "twilighttown": { "name": "Twilight Town", "series": "Kingdom Hearts" },
+    "urbanchampion": { "name": "Urban Champion" },
+    "venuslighthouse": { "name": "Venus Lighthouse", "series": "Golden Sun" },
+    "waitingroom": { "name": "Waiting Room" },
+    "warioware": { "name": "WarioWare, Inc.", "series": "Wario" },
+    "worldtournament": { "name": "World Tournament", "series": "Dragon Ball" },
+    "yoshisisland": { "name": "Yoshi's Island", "series": "Yoshi" },
+    "yoshisisland64": { "name": "Yoshi's Island 64", "series": "Yoshi" },
+    "yoshisstory": { "name": "Yoshi's Story", "series": "Yoshi" }
   }
 }

@@ -299,3 +299,35 @@ fn battlefield_emits_consistent_entity() {
     let image_layers = layers.iter().filter(|l| l["type"] == "IMAGE").count();
     assert_eq!(image_layers, 1, "battlefield has exactly 1 art layer (backdrop, structure-foreground folded in), no duplicate platform / collision silhouette");
 }
+
+/// Stage hazards: damaging hazards auto-detect from the placement tree (filtered to the blast
+/// zone) and emit as FM custom game objects. A hand-declared metadata entry overrides detection.
+/// Corpus-gated.
+#[test]
+fn hazard_stages_emit_hazards() {
+    let dir = common::ssfs_dir().join("stages");
+    if !common::present(&dir) {
+        return;
+    }
+    // casinonightzone: auto-detected pinball bumpers (a real stage, hazards inside the view).
+    let cnz = parse_stage(&dir.join("casinonightzone.ssf")).unwrap();
+    assert!(cnz.hazards.iter().any(|h| h.label == "Bumper"),
+        "casinonightzone should auto-detect bumpers, got {:?}",
+        cnz.hazards.iter().map(|h| &h.label).collect::<Vec<_>>());
+
+    // bowserscastle: a hand-declared thwomp (metadata override) that cycles the platform columns
+    // (motion "thwomp"); it borrows the detected thwomp sprite so it renders as the real SSF2
+    // thwomp, not a placeholder box. it also declares the 6 sinking platforms + the lava.
+    let bc = parse_stage(&dir.join("bowserscastle.ssf")).unwrap();
+    let thwomp = bc.hazards.iter().find(|h| h.label == "Thwomp" && h.motion == "thwomp");
+    assert!(thwomp.is_some(), "bowserscastle should carry the declared thwomp, got {:?}",
+        bc.hazards.iter().map(|h| (&h.label, &h.motion)).collect::<Vec<_>>());
+    assert!(thwomp.unwrap().art.is_some(), "the declared thwomp should borrow the real SSF2 sprite");
+    assert!(bc.platforms.iter().filter(|p| p.visible).count() == 6,
+        "bowserscastle declares 6 sinking platforms, got {}", bc.platforms.iter().filter(|p| p.visible).count());
+
+    // battlefield: a clean flat stage with no hazards (auto-detection must not false-positive).
+    let bf = parse_stage(&dir.join("battlefield.ssf")).unwrap();
+    assert!(bf.hazards.is_empty(), "battlefield must stay hazard-free, got {:?}",
+        bf.hazards.iter().map(|h| &h.label).collect::<Vec<_>>());
+}

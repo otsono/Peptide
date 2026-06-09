@@ -66,6 +66,10 @@ pub struct Platform {
     /// Emitted as a STATIC platform at its start position: SSF2 moving-platform motion is
     /// bespoke per stage (custom AS3 / timeline animation) and isn't ported yet.
     pub moving: bool,
+    /// `true` if this platform needs a drawn grey surface (a hand-declared platform whose visual
+    /// isn't in the stage art, e.g. bowserscastle's columns over lava). Parsed terrain platforms
+    /// already have their art in the background, so they stay invisible collision.
+    pub visible: bool,
 }
 
 /// A stage hazard, emitted as a Fraymakers custom game object (a damaging hitbox volume the
@@ -89,8 +93,18 @@ pub struct Hazard {
     /// Movement amplitude (px) and period (frames) for the pattern.
     pub range: f64,
     pub period: u32,
+    /// Frames between native-hitbox re-arms (so a lingering fighter keeps taking hits).
+    pub rehit: u32,
     /// Display label (for the entity/layer names).
     pub label: String,
+    /// The rasterized SSF2 hazard sprite (the real art), if recovered from the placement tree.
+    /// `None` falls back to a generated placeholder box in the emitter.
+    pub art: Option<StageArt>,
+}
+
+impl Hazard {
+    /// Re-arm cadence for the native hitbox, in frames (min 1).
+    pub fn rehit(&self) -> u32 { self.rehit.max(1) }
 }
 
 /// A player beacon (match-start "entrance" or respawn point) in FM coords.
@@ -156,10 +170,13 @@ pub struct StageModel {
 /// and parallax-scroll the background.
 #[derive(Clone, Debug, Default)]
 pub struct StageArtSet {
-    /// Painted backdrop (SSF2 `<id>_bg` / `background`), drawn behind everything; moves 1:1 with
-    /// the world (it carries the surface fighters stand on). One frame = static; more than one =
-    /// the SSF2 backdrop animates (clouds, water, Whispy, ...) and the emitter loops the frames.
-    pub background: Vec<StageArt>,
+    /// Painted backdrop (SSF2 `<id>_bg` / `background`) as ORDERED per-element layers, back-to-
+    /// front. SSF2 authors each animated backdrop element (lava, torches, embers, podoboos, ...)
+    /// as its own movieclip on its own loop, so each becomes its own FM layer/animation rather
+    /// than one baked composite. A layer with one frame is static (drawn once); more than one =
+    /// that element animates and the emitter loops its frames at its own pace. The whole list
+    /// moves 1:1 with the world (it carries the surface fighters stand on).
+    pub background: Vec<BgLayer>,
     /// Camera-relative parallax layers (the SSF2 `<id>_bg` backdrop + the `_cambg` layers that
     /// `SSF2Stage.getCameraBackgrounds` returns), back-to-front. Each is its OWN plane with its
     /// OWN pan rate (SSF2 auto-derives it from the layer size). Empty for the 109/110 corpus
@@ -204,6 +221,16 @@ pub struct ParallaxLayer {
     pub y_pan: f64,
 }
 
+/// One backdrop element as its own animated layer (the SSF2 movieclip model: each animated
+/// backdrop object is separate, on its own loop). `name` is the SSF2 symbol id (e.g.
+/// `bowsers_torches_lit_bg`) used to name the FM layer; `frames` is 1 (static) or the
+/// element's RLE'd animation loop.
+#[derive(Clone, Debug)]
+pub struct BgLayer {
+    pub name: String,
+    pub frames: Vec<StageArt>,
+}
+
 /// A composited stage-art image ready to drop in as an IMAGE layer / parallax bg.
 #[derive(Clone, Debug)]
 pub struct StageArt {
@@ -215,6 +242,10 @@ pub struct StageArt {
     /// Pixel dimensions (for parallax `originalBGWidth/Height`).
     pub w: u32,
     pub h: u32,
+    /// Frames to display this image before advancing (FM 60fps frames). For an animated layer
+    /// this is the run length of identical source frames times the 30->60fps doubling, so the
+    /// loop matches the SSF2 duration and held frames read as pauses. 1 for a static layer.
+    pub hold: u32,
 }
 
 impl StageModel {
@@ -252,6 +283,10 @@ struct Instance {
     /// platform/foreground). The collision child is usually named `terrainGround_platform`,
     /// so the `moving` signal lives on the parent container and is propagated down.
     moving: bool,
+    /// The hazard kind this shape descends from, if any. SSF2 hazards (lava/thwomp/…) are named
+    /// sprite containers whose leaf shapes carry deeper auto-named symbols, so the hazard signal
+    /// lives on an ancestor and is propagated down the subtree (like [`Instance::moving`]).
+    hazard: Option<HazardKind>,
 }
 
 /// Parse the SSF2 stage at `path` into a [`StageModel`], rendering its art (read-only).
@@ -283,16 +318,19 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         Some(m) if !m.is_empty() => m.clone(),
         _ => vec![smeta.default_music.clone()],
     };
-    // hazards: opt-in per stage (SSF2 hazards are bespoke, not auto-detected). Each becomes an
-    // FM custom-game-object hazard the stage spawns.
-    let hazards: Vec<Hazard> = entry.map(|e| e.hazards.iter().enumerate().map(|(i, h)| Hazard {
+    // hazards: a stage with declared hazards in metadata uses those verbatim (manual override,
+    // full control); otherwise they're auto-detected from the placement tree below. SSF2 hazards
+    // are bespoke AS3, so a hand-declared entry always wins over the heuristic.
+    let meta_hazards: Vec<Hazard> = entry.map(|e| e.hazards.iter().enumerate().map(|(i, h)| Hazard {
         x: h.x, y: h.y, w: h.w, h: h.h,
         damage: h.damage, knockback: h.knockback, angle: h.angle,
         interval: h.interval, active: h.active,
         motion: h.motion.clone().unwrap_or_else(|| "static".to_string()),
-        range: h.range, period: h.period.max(1),
+        range: h.range, period: h.period.max(1), rehit: h.rehit,
         label: h.label.clone().unwrap_or_else(|| format!("Hazard {}", i + 1)),
+        art: None,
     }).collect()).unwrap_or_default();
+    let suppress_auto_hazards = entry.map(|e| e.no_hazards).unwrap_or(false);
 
     // SymbolClass id -> name; DefineShape bounds; DefineSprite tag lists.
     let mut sym_names: BTreeMap<u16, String> = BTreeMap::new();
@@ -354,7 +392,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // Collect every placed shape instance (with world AABB) and find the stageMC origin.
     let mut instances: Vec<Instance> = Vec::new();
     let mut origin: Option<(f64, f64)> = None;
-    walk(&swf.tags, Mat::id(), &sym_names, &shape_bounds, &sprites, 0, None, None, false, &mut instances, &mut origin);
+    walk(&swf.tags, Mat::id(), &sym_names, &shape_bounds, &sprites, 0, None, None, false, None, &mut instances, &mut origin);
 
     let (ox, oy) = origin.unwrap_or((275.0, 200.0)); // SWF stage center fallback
     // Fraymakers space = SSF2 space scaled up by `size_multiplier` (the same knob the
@@ -385,14 +423,19 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         // not the collision child, so the walk propagates it down. We collide with them at
         // their start position; the motion itself is bespoke per stage and not ported yet.
         let moving = inst.moving;
+        // a stage can flag terrain that is NOT a standable floor (lava/acid you fall into); skip it
+        // from collision (it's handled as a hazard instead).
+        if entry.map(|e| e.non_floor_terrain.iter().any(|s| sn.contains(&s.to_ascii_lowercase()))).unwrap_or(false) {
+            continue;
+        }
         if !is_art_bg && sn.contains("platform") {
-            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: true, profile: None, moving });
+            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: true, profile: None, moving, visible: false });
         } else if !is_art_bg && ["terrain", "collison", "collision", "ground"].iter().any(|m| sn.contains(m)) {
             // solid terrain can be curved/sloped (e.g. a hilly island), so trace its top
             // surface as a polyline instead of a flat line.
             let profile = shape_defs.get(&inst.shape_id)
                 .and_then(|s| floor_profile(s, &inst.aabb, ox, oy, scale));
-            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: false, profile, moving });
+            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: false, profile, moving, visible: false });
         }
     }
     // Dedupe near-coincident collision platforms: a moving-platform container MC (e.g.
@@ -401,6 +444,16 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // a platform when another of the same kind covers most of it; keep the larger. Distinct
     // platforms (battlefield's three soft platforms, stacked floors) don't overlap, so they stay.
     dedupe_platforms(&mut platforms);
+    // hand-declared platforms (FM coords) for stages whose real standable surfaces are AS3-spawned
+    // objects, not static terrain (e.g. bowserscastle's BowsersCastlePlatform columns over lava).
+    for p in entry.map(|e| e.platforms.as_slice()).unwrap_or(&[]) {
+        // collision is the top edge (rect.top()); the taller rect just gives the drawn grey block
+        // visible height (a chunky stone platform, not a thin line).
+        platforms.push(Platform {
+            rect: Rect { x: p.x - p.w / 2.0, y: p.y, w: p.w, h: 64.0 },
+            drop_through: p.drop_through, profile: None, moving: false, visible: true,
+        });
+    }
     let moving_count = platforms.iter().filter(|p| p.moving).count();
 
     // --- boundaries: identified by the carried name (the boundary clip is placed with
@@ -412,6 +465,37 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         if label.contains("deathboundary") { death_box = Some(to_fm(&inst.aabb)); }
         else if label.contains("camboundary") { camera_box = Some(to_fm(&inst.aabb)); }
     }
+
+    // hazards: a hand-declared metadata entry wins (full manual control); otherwise auto-detect
+    // placed hazards from the placement tree, unless the stage opts out (`no_hazards`). Auto-
+    // detected hazards are filtered to the reachable area (inside the death box, with margin) so a
+    // hazard clip parked off-screen at frame 0 (a thwomp resting below the pit) doesn't ship as a
+    // phantom hitbox a fighter can never reach.
+    let detected = detect_hazards(&instances, &to_fm, &shape_defs, &bitmaps, ox, oy, render_art_flag);
+    let hazards: Vec<Hazard> = if !meta_hazards.is_empty() {
+        // hand-declared hazards win, but borrow a detected sprite of the same kind so a declared
+        // thwomp renders as the real SSF2 thwomp (not a placeholder) at its declared position.
+        meta_hazards.into_iter().map(|mut h| {
+            if h.art.is_none() {
+                if let Some(k) = hazard_kind(&h.label) {
+                    h.art = detected.iter().find(|(dk, dh)| *dk == k && dh.art.is_some())
+                        .and_then(|(_, dh)| dh.art.clone());
+                }
+            }
+            h
+        }).collect()
+    } else if suppress_auto_hazards {
+        Vec::new()
+    } else {
+        // auto-detected: keep only hazards inside the reachable area (death box, with margin) so a
+        // clip parked off-screen at frame 0 doesn't ship as a phantom hitbox.
+        let bound = death_box.or(camera_box);
+        detected.into_iter().map(|(_, h)| h).filter(|h| match &bound {
+            Some(b) => h.x >= b.x - 60.0 && h.x <= b.x + b.w + 60.0
+                    && h.y >= b.y - 60.0 && h.y <= b.y + b.h + 60.0,
+            None => true,
+        }).collect()
+    };
 
     // --- spawns: pN_Start -> entrances, pN_Spawn -> respawns (by symbol-class name).
     let mut entrances: Vec<SpawnPoint> = Vec::new();
@@ -571,9 +655,128 @@ fn is_non_art(label: &str) -> bool {
     is_collision_linkage(label) || is_scaffold_linkage(label)
 }
 
+/// A damaging stage-hazard type, recognised from an SSF2 linkage name. Carries the FM hitbox
+/// defaults (damage / knockback / angle / motion) the auto-detected hazard emits — tunable per
+/// stage in `mappings/stage/metadata.jsonc`. SSF2 hazard behaviour is bespoke AS3; these are
+/// best-effort defaults keyed off the hazard's nature.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum HazardKind { Lava, Acid, Spike, Saw, Thwomp, Podoboo, Tornado, Bumper, DamageZone, Piranha }
+
+impl HazardKind {
+    /// (motion, damage, knockback, angle) defaults for this hazard type.
+    fn defaults(self) -> (&'static str, f64, f64, f64) {
+        match self {
+            HazardKind::Lava       => ("static",     14.0, 80.0, 90.0),
+            HazardKind::Acid       => ("static",     10.0, 50.0, 90.0),
+            HazardKind::Spike      => ("static",      9.0, 60.0, 90.0),
+            HazardKind::Saw        => ("circle",     12.0, 70.0, 45.0),
+            HazardKind::Thwomp     => ("fall",       16.0, 70.0, 90.0),
+            HazardKind::Podoboo    => ("oscillateY", 12.0, 70.0, 90.0),
+            HazardKind::Tornado    => ("oscillateX",  8.0, 50.0, 80.0),
+            HazardKind::Bumper     => ("static",      4.0, 90.0, 45.0),
+            HazardKind::DamageZone => ("static",     12.0, 60.0, 90.0),
+            HazardKind::Piranha    => ("oscillateY", 11.0, 60.0, 80.0),
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            HazardKind::Lava => "Lava", HazardKind::Acid => "Acid", HazardKind::Spike => "Spikes",
+            HazardKind::Saw => "Saw", HazardKind::Thwomp => "Thwomp", HazardKind::Podoboo => "Podoboo",
+            HazardKind::Tornado => "Tornado", HazardKind::Bumper => "Bumper",
+            HazardKind::DamageZone => "Damage Zone", HazardKind::Piranha => "Piranha Plant",
+        }
+    }
+}
+
+/// Classify an SSF2 linkage/instance name as a damaging hazard, or `None`. Cosmetic sub-clips
+/// (sound, vfx, splash, the landing/impact/break/intro frames, embers/torches/particles) and
+/// background art are excluded so one hazard isn't detected as several — the leaf shapes that
+/// survive cluster into a single hazard by position. Deliberately conservative: only clearly
+/// damaging hazards, since a misplaced or cosmetic false-positive ships a phantom hitbox.
+fn hazard_kind(label: &str) -> Option<HazardKind> {
+    let l = label.to_ascii_lowercase();
+    // cosmetic / non-damaging sub-elements and scenery — never a hazard hitbox.
+    const COSMETIC: &[&str] = &[
+        "bg", "background", "foreground", "shadow", "mask", "sfx", "snd", "sound", "splash",
+        "ember", "torch", "particle", "sparkle", "vfx", "glow", "hud", "cloud", "rain", "snow",
+        "intro", "_land", "_hit", "_break", "_pop", "_wave", "_shake", "_entrance", "_entrace",
+        "fill", "button", "door", "checkpoint", "screen", "building", "spectator", "balloon",
+        "fairy", "sprite", "_egg", "explode", "_fly", "_wall", "bub", "_proj", "projectile",
+        "effect", "_growl", "_roar", "_cry", "spit", "warp", "transition", "_boost", "_quake",
+    ];
+    if COSMETIC.iter().any(|m| l.contains(m)) { return None; }
+    // damaging hazards by keyword (ordered: more specific first).
+    let kind = if l.contains("thwomp") { HazardKind::Thwomp }
+        else if l.contains("podobo") { HazardKind::Podoboo }
+        else if l.contains("lava") || l.contains("magma") { HazardKind::Lava }
+        else if l.contains("acid") { HazardKind::Acid }
+        else if l.contains("spike") || l.contains("thorn") { HazardKind::Spike }
+        else if l.contains("saw") { HazardKind::Saw }
+        else if l.contains("tornado") || l.contains("nado") { HazardKind::Tornado }
+        else if l.contains("bumper") { HazardKind::Bumper }
+        else if l.contains("damagezone") || l.contains("damage_zone") { HazardKind::DamageZone }
+        else if l.contains("piranha") { HazardKind::Piranha }
+        else { return None };
+    Some(kind)
+}
+
+/// Auto-detect placed hazards from the stage's shape instances: classify each by linkage
+/// ([`hazard_kind`]), cluster the several leaf shapes of one hazard clip into a single hazard
+/// (same-kind boxes that overlap or sit within `MERGE_GAP` px), and rasterize each cluster's real
+/// SSF2 art (via [`composite_layer`]) as the hazard sprite. Positions/sizes come from the
+/// placement tree (FM coords via `to_fm`); motion/damage from the kind. Returns the kind with each
+/// hazard so a hand-declared hazard can borrow a detected sprite of the same kind.
+fn detect_hazards(
+    instances: &[Instance], to_fm: &impl Fn(&Rect) -> Rect,
+    shape_defs: &BTreeMap<u16, &swf::Shape>, bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
+    ox: f64, oy: f64, with_art: bool,
+) -> Vec<(HazardKind, Hazard)> {
+    // hazard leaf shapes (kind propagated from a named ancestor). Background/backdrop/parallax
+    // planes are scenery (e.g. decorative bg podoboos), never a hitbox, so they're skipped.
+    let hazard_insts: Vec<&Instance> = instances.iter().filter(|i| {
+        i.hazard.is_some() && !matches!(i.plane.as_deref(), Some("background" | "backdrop" | "cambg"))
+    }).collect();
+    // cluster: group same-kind leaf shapes whose AABBs overlap or are within MERGE_GAP px (in FM
+    // coords), keeping the instances so the cluster's art can be rasterized.
+    const MERGE_GAP: f64 = 40.0;
+    let mut clusters: Vec<(HazardKind, Rect, Vec<&Instance>)> = Vec::new();
+    'next: for inst in hazard_insts {
+        let k = inst.hazard.unwrap();
+        let r = to_fm(&inst.aabb);
+        for c in clusters.iter_mut() {
+            if c.0 == k && rects_near(&c.1, &r, MERGE_GAP) {
+                c.1 = union_rect(&c.1, &r); c.2.push(inst); continue 'next;
+            }
+        }
+        clusters.push((k, r, vec![inst]));
+    }
+    clusters.into_iter().map(|(k, r, insts)| {
+        let (motion, damage, knockback, angle) = k.defaults();
+        let art = if with_art { composite_layer(&insts, shape_defs, bitmaps, ox, oy) } else { None };
+        (k, Hazard {
+            // hazard hitbox = the detected box center + size (FM coords; +y down).
+            x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, w: r.w.max(20.0), h: r.h.max(20.0),
+            damage, knockback, angle, interval: 0, active: 20,
+            motion: motion.to_string(), range: 60.0, period: 120, rehit: 30,
+            label: k.label().to_string(), art,
+        })
+    }).collect()
+}
+
+/// `true` if two rects overlap or are within `gap` px of each other on both axes.
+fn rects_near(a: &Rect, b: &Rect, gap: f64) -> bool {
+    a.x - gap < b.x + b.w && b.x - gap < a.x + a.w && a.y - gap < b.y + b.h && b.y - gap < a.y + a.h
+}
+
+/// Smallest rect covering both inputs.
+fn union_rect(a: &Rect, b: &Rect) -> Rect {
+    let x = a.x.min(b.x); let y = a.y.min(b.y);
+    Rect { x, y, w: (a.x + a.w).max(b.x + b.w) - x, h: (a.y + a.h).max(b.y + b.h) - y }
+}
+
 /// Cap on stage-animation frames (SSF2 clips can be hundreds of frames; we loop a short
 /// slice). Background/foreground are single-frame.
-const ANIM_FRAME_CAP: usize = 12;
+const ANIM_FRAME_CAP: usize = 24;
 
 /// One placed child in a sprite's timeline frame: `(character id, local matrix, name)`.
 type PlacedChild = (u16, Mat, Option<String>);
@@ -642,6 +845,7 @@ fn walk_frame(
                 aabb: Rect { x: xmn, y: ymn, w: xmx - xmn, h: ymx - ymn },
                 cx: world.tx, cy: world.ty, x_sign: world.x_sign(),
                 moving: false, // art-path instances classify by plane, not collision
+                hazard: None,  // hazards come from the geometry walk, not the art-frame walk
             });
         }
         if let Some(frames) = sprite_frames.get(id) {
@@ -767,6 +971,51 @@ fn render_art_layers(
         composite_layer(&group, shape_defs, bitmaps, ox, oy).map(|mut a| { a.x *= scale; a.y *= scale; a })
     };
 
+    // timing: SSF2 runs at 30fps, Fraymakers at 60, so each SSF2 source frame is exactly 2 FM
+    // frames. each emitted frame holds 2, and consecutive identical frames are run-length-encoded
+    // into one longer hold so a held source frame (an element's pause between cycles) reads as a
+    // break rather than re-animating every tick.
+    let base_hold = 2u32;
+    let rle = |frames: Vec<StageArt>| -> Vec<StageArt> {
+        if frames.len() <= 1 { return frames; }
+        let mut out: Vec<StageArt> = Vec::new();
+        for mut f in frames {
+            f.hold = base_hold;
+            match out.last_mut() {
+                Some(prev) if prev.png == f.png => prev.hold += base_hold,
+                _ => out.push(f),
+            }
+        }
+        out
+    };
+    // Group a set of bg-plane instances into ORDERED per-element layers (the SSF2 movieclip
+    // model: each animated backdrop object is its own clip). `member` selects bg-plane art;
+    // each distinct `sym_name` becomes one layer in first-appearance (back-to-front) draw order.
+    // An element that changes across the sampled frames keeps its own animation loop; a static
+    // one collapses to its single base-frame image.
+    let group_bg_layers = |member: &dyn Fn(&Instance) -> bool| -> Vec<BgLayer> {
+        let mut order: Vec<String> = Vec::new();
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for i in base_insts.iter().filter(|i| member(i)) {
+            if seen.insert(i.sym_name.clone()) { order.push(i.sym_name.clone()); }
+        }
+        order.iter().filter_map(|key| {
+            let per_frame: Vec<StageArt> = sampled.iter().filter_map(|(insts, _)| {
+                let grp: Vec<&Instance> = insts.iter().filter(|i| member(i) && &i.sym_name == key).collect();
+                composite_grp(grp)
+            }).collect();
+            let animated = per_frame.len() == n_samples
+                && per_frame.windows(2).any(|w| w[0].png != w[1].png);
+            let frames = if animated {
+                rle(per_frame)
+            } else {
+                let grp: Vec<&Instance> = base_insts.iter().filter(|i| member(i) && &i.sym_name == key).collect();
+                composite_grp(grp).into_iter().collect()
+            };
+            (!frames.is_empty()).then(|| BgLayer { name: key.clone(), frames })
+        }).collect()
+    };
+
     // foreground = the genuine in-front props only (non-overlapping foreground).
     let foreground = composite_grp(base_insts.iter().filter(|i| art_kind(i) == ArtKind::Foreground && !is_dup_fg(i)).collect());
     // when the backdrop carries `_cambg` parallax layers, each backdrop/cambg LAYER (grouped
@@ -777,7 +1026,7 @@ fn render_art_layers(
     // + background fold into one fixed bg. The folded structure-foreground draws last (in front
     // of the background structure, still behind fighters).
     let has_parallax = base_insts.iter().any(|i| art_kind(i) == ArtKind::Parallax);
-    let (background, parallax): (Vec<StageArt>, Vec<ParallaxLayer>) = if has_parallax {
+    let (background, parallax): (Vec<BgLayer>, Vec<ParallaxLayer>) = if has_parallax {
         let mut order: Vec<&str> = Vec::new();
         let mut groups: BTreeMap<&str, Vec<&Instance>> = BTreeMap::new();
         for i in base_insts.iter().filter(|i| matches!(art_kind(i), ArtKind::Backdrop | ArtKind::Parallax)) {
@@ -796,20 +1045,18 @@ fn render_art_layers(
                 ParallaxLayer { art, mode, x_pan, y_pan }
             })
         }).collect();
-        // parallax stages keep a single fixed near-background (the cambg layers carry the motion).
-        let bg = composite_grp(base_insts.iter().filter(|i| art_kind(i) == ArtKind::Background || is_dup_fg(i)).collect());
-        (bg.into_iter().collect(), layers)
+        // parallax stages keep the fixed near-background (the cambg layers carry the motion),
+        // split into per-element layers so any animated near-bg object stays on its own loop.
+        let near_member = |i: &Instance| art_kind(i) == ArtKind::Background || is_dup_fg(i);
+        (group_bg_layers(&near_member), layers)
     } else {
-        // No parallax: composite the whole backdrop (+ folded structure-fg) PER FRAME so an
-        // animated SSF2 backdrop (clouds, water, Whispy, …) actually animates. If every sampled
-        // frame is identical it's a static backdrop (one frame); the emitter loops > 1 frame.
-        let bg_frames: Vec<StageArt> = sampled.iter().filter_map(|(insts, _)| {
-            composite_grp(insts.iter().filter(|i| matches!(art_kind(i), ArtKind::Backdrop | ArtKind::Background) || is_dup_fg(i)).collect())
-        }).collect();
-        let animated = bg_frames.len() == n_samples && bg_frames.windows(2).any(|w| w[0].png != w[1].png);
-        let bg = if animated { bg_frames }
-            else { composite_grp(base_insts.iter().filter(|i| matches!(art_kind(i), ArtKind::Backdrop | ArtKind::Background) || is_dup_fg(i)).collect()).into_iter().collect() };
-        (bg, Vec::new())
+        // No parallax: each backdrop/background ELEMENT (lava, torches, embers, podoboos, ...)
+        // becomes its own layer on its own loop, in back-to-front draw order, so an animated SSF2
+        // backdrop element actually animates without forcing every other element onto one shared
+        // composite timeline. The folded structure-foreground (e.g. bowserscastle's stone walkway)
+        // rides along as its own element, drawn after the backdrop it sits on.
+        let bg_member = |i: &Instance| matches!(art_kind(i), ArtKind::Backdrop | ArtKind::Background) || is_dup_fg(i);
+        (group_bg_layers(&bg_member), Vec::new())
     };
 
     // Emit a multi-frame stage animation only when the samples form a CLEAN animation:
@@ -826,7 +1073,9 @@ fn render_art_layers(
         sampled[base_idx].1.clone().into_iter().collect()
     };
 
-    StageArtSet { background, parallax, stage_frames, foreground }
+    // background is already grouped into per-element layers (each RLE'd at the 30->60fps doubling);
+    // the stage plane still needs the same RLE pass so a held source frame reads as a break.
+    StageArtSet { background, parallax, stage_frames: rle(stage_frames), foreground }
 }
 
 /// Composite a set of art instances (back-to-front = walk order) into one RGBA image
@@ -913,7 +1162,7 @@ fn composite_layer(
         image::codecs::png::PngEncoder::new(&mut png)
             .write_image(canvas.as_raw(), cw, ch, image::ExtendedColorType::Rgba8).ok()?;
     }
-    Some(StageArt { png, x: min_x - ox, y: min_y - oy, w: cw, h: ch })
+    Some(StageArt { png, x: min_x - ox, y: min_y - oy, w: cw, h: ch, hold: 1 })
 }
 
 /// Trace a solid terrain shape's walkable TOP surface as a polyline in FM coords (left to
@@ -1073,6 +1322,7 @@ fn walk<'a>(
     shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
     sprites: &BTreeMap<u16, &'a Vec<swf::Tag>>,
     rec: usize, carried_sym: Option<&str>, plane: Option<&str>, moving_anc: bool,
+    hazard_anc: Option<HazardKind>,
     out: &mut Vec<Instance>, origin: &mut Option<(f64, f64)>,
 ) {
     if rec > 8 { return; }
@@ -1095,6 +1345,11 @@ fn walk<'a>(
         let here_moving = moving_anc
             || inst_name.as_deref().is_some_and(|n| n.to_ascii_lowercase().contains("moving"))
             || sym.to_ascii_lowercase().contains("moving");
+        // sticky hazard kind: once an ancestor (or this node) is named like a hazard, every
+        // descendant shape inherits it (the leaf shapes carry deeper auto-named symbols).
+        let here_hazard = hazard_anc
+            .or_else(|| inst_name.as_deref().and_then(hazard_kind))
+            .or_else(|| hazard_kind(&sym));
 
         if std::env::var("PEPTIDE_STAGE_TREE").is_ok() {
             let kind = if sprites.contains_key(&id) { "MC" } else if shape_bounds.contains_key(&id) { "shape" } else { "?" };
@@ -1124,6 +1379,7 @@ fn walk<'a>(
                 cx: world.tx, cy: world.ty,
                 x_sign: world.x_sign(),
                 moving: here_moving,
+                hazard: here_hazard,
             });
         }
         if let Some(child) = sprites.get(&id) {
@@ -1131,7 +1387,63 @@ fn walk<'a>(
             // else inherit the parent's carried symbol.
             let next = inst_name.as_deref().or(if sym.is_empty() { carried_sym } else { Some(&sym) });
             let next = next.map(|s| s.to_string());
-            walk(child, world, sym_names, shape_bounds, sprites, rec + 1, next.as_deref(), my_plane, here_moving, out, origin);
+            walk(child, world, sym_names, shape_bounds, sprites, rec + 1, next.as_deref(), my_plane, here_moving, here_hazard, out, origin);
         }
+    }
+}
+
+#[cfg(test)]
+mod hazard_classifier_tests {
+    use super::*;
+
+    // The damaging-hazard vocabulary + cosmetic exclusions. These guard the auto-detection: a
+    // missed keyword silently ships no hazard, a missed exclusion silently ships a phantom one.
+    #[test]
+    fn damaging_hazards_are_recognised() {
+        for (label, want) in [
+            ("bowserscastle_lava", HazardKind::Lava),
+            ("MK3Lava", HazardKind::Lava),
+            ("SR388_AcidWaterfall", HazardKind::Acid),
+            ("thwomp_mc", HazardKind::Thwomp),
+            ("PodobooMC", HazardKind::Podoboo),
+            ("CNZBumper", HazardKind::Bumper),
+            ("HyruleTornado", HazardKind::Tornado),
+            ("DamageZone", HazardKind::DamageZone),
+            ("spike_floor", HazardKind::Spike),
+            ("PiranhaPlant", HazardKind::Piranha),
+        ] {
+            assert_eq!(hazard_kind(label), Some(want), "{label} should be a hazard");
+        }
+    }
+
+    #[test]
+    fn cosmetic_and_scenery_are_excluded() {
+        // sound/vfx/impact sub-clips, decorative bg, and projectile/effect spawns are NOT hitboxes.
+        for label in [
+            "thwomp_land", "thwomp_vfx", "thwomp_shake", "lava_splash", "bowsers_podoboos_bg",
+            "lavabub", "lava_land", "plant_fireball", "birdo_egg", "castlevania_thunder_sfx",
+            "background", "ember", "torchembers",
+        ] {
+            assert_eq!(hazard_kind(label), None, "{label} should NOT be a hazard");
+        }
+    }
+
+    #[test]
+    fn same_kind_boxes_cluster_into_one() {
+        // two adjacent lava leaf shapes (one hazard split across shapes) merge into a single box.
+        let id = |r: &Rect| *r;
+        let insts = vec![
+            Instance { shape_id: 1, inst_name: None, sym_name: "x".into(), plane: None,
+                aabb: Rect { x: 0.0, y: 0.0, w: 100.0, h: 20.0 }, cx: 50.0, cy: 10.0, x_sign: 1.0,
+                moving: false, hazard: Some(HazardKind::Lava) },
+            Instance { shape_id: 2, inst_name: None, sym_name: "x".into(), plane: None,
+                aabb: Rect { x: 110.0, y: 0.0, w: 100.0, h: 20.0 }, cx: 160.0, cy: 10.0, x_sign: 1.0,
+                moving: false, hazard: Some(HazardKind::Lava) },
+        ];
+        let shapes = std::collections::BTreeMap::new();
+        let bitmaps = std::collections::BTreeMap::new();
+        let hz = detect_hazards(&insts, &id, &shapes, &bitmaps, 0.0, 0.0, false);
+        assert_eq!(hz.len(), 1, "adjacent same-kind hazards merge");
+        assert!(hz[0].1.w >= 210.0, "merged box spans both: {}", hz[0].1.w);
     }
 }

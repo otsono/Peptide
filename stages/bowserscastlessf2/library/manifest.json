@@ -1,0 +1,82 @@
+{
+  "content": [
+    {
+      "description": "Bowser's Castle — converted from Super Smash Flash 2 (Super Mario). Original SSF2 soundtrack: bgm_bowserscastle, bgm_MKDDBowsersCastle, bgm_bowsersrampage",
+      "id": "bowserscastlessf2",
+      "metadata": {
+        "ui": {
+          "entityId": "bowserscastlessf2",
+          "render": {
+            "animation": "stage"
+          }
+        }
+      },
+      "music": [
+        {
+          "contentId": "bgm_welkinwonderland",
+          "namespace": "public",
+          "resourceId": "bgm_welkinwonderland"
+        }
+      ],
+      "name": "Bowser's Castle",
+      "objectStatsId": "bowserscastlessf2StageStats",
+      "scriptId": "bowserscastlessf2Script",
+      "type": "stage"
+    },
+    {
+      "animationStatsId": "bowserscastlessf2hazard0AnimationStats",
+      "hitboxStatsId": "bowserscastlessf2hazard0HitboxStats",
+      "id": "bowserscastlessf2hazard0",
+      "name": "Thwomp",
+      "objectStatsId": "bowserscastlessf2hazard0GameObjectStats",
+      "scriptId": "bowserscastlessf2hazard0Script",
+      "type": "customGameObject"
+    },
+    {
+      "animationStatsId": "bowserscastlessf2hazard1AnimationStats",
+      "hitboxStatsId": "bowserscastlessf2hazard1HitboxStats",
+      "id": "bowserscastlessf2hazard1",
+      "name": "Lava",
+      "objectStatsId": "bowserscastlessf2hazard1GameObjectStats",
+      "scriptId": "bowserscastlessf2hazard1Script",
+      "type": "customGameObject"
+    },
+    {
+      "id": "bowserscastlessf2platform0",
+      "objectStatsId": "bowserscastlessf2platform0Stats",
+      "scriptId": "bowserscastlessf2platformScript",
+      "type": "structure"
+    },
+    {
+      "id": "bowserscastlessf2platform1",
+      "objectStatsId": "bowserscastlessf2platform1Stats",
+      "scriptId": "bowserscastlessf2platformScript",
+      "type": "structure"
+    },
+    {
+      "id": "bowserscastlessf2platform2",
+      "objectStatsId": "bowserscastlessf2platform2Stats",
+      "scriptId": "bowserscastlessf2platformScript",
+      "type": "structure"
+    },
+    {
+      "id": "bowserscastlessf2platform3",
+      "objectStatsId": "bowserscastlessf2platform3Stats",
+      "scriptId": "bowserscastlessf2platformScript",
+      "type": "structure"
+    },
+    {
+      "id": "bowserscastlessf2platform4",
+      "objectStatsId": "bowserscastlessf2platform4Stats",
+      "scriptId": "bowserscastlessf2platformScript",
+      "type": "structure"
+    },
+    {
+      "id": "bowserscastlessf2platform5",
+      "objectStatsId": "bowserscastlessf2platform5Stats",
+      "scriptId": "bowserscastlessf2platformScript",
+      "type": "structure"
+    }
+  ],
+  "resourceId": "bowserscastlessf2"
+}

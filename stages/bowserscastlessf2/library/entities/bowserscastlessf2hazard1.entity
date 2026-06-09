@@ -1,0 +1,154 @@
+{
+  "animations": [
+    {
+      "$id": "e33980d8-a23e-593e-b2b9-086e1ca1a58c",
+      "layers": [
+        "8b776a34-26fc-570f-9075-56bf2c8250e9",
+        "5c91013d-634d-5801-a2b1-854e127c1ad4"
+      ],
+      "name": "gameObjectIdle",
+      "pluginMetadata": {}
+    },
+    {
+      "$id": "7098f6c7-c2ad-5016-967a-26b346b3d864",
+      "layers": [
+        "1776ce19-d3f4-5304-8a59-dfef7e7a71a3"
+      ],
+      "name": "gameObjectInactive",
+      "pluginMetadata": {}
+    }
+  ],
+  "export": true,
+  "guid": "8f1e5544-c6fa-5655-a838-e622a8f59430",
+  "id": "bowserscastlessf2hazard1",
+  "keyframes": [
+    {
+      "$id": "8ca644f8-f617-58f8-872a-95e3a5e17b3e",
+      "length": 1,
+      "pluginMetadata": {},
+      "symbol": "a206189d-18bc-5b8f-8dbc-0458f7cd1f14",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "IMAGE"
+    },
+    {
+      "$id": "c7ee8b8c-fc17-549c-bbed-d906cb0fa590",
+      "length": 1,
+      "pluginMetadata": {},
+      "symbol": "5b2c11df-44bd-5fcf-968d-2314c75561dd",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "IMAGE"
+    },
+    {
+      "$id": "5157f69d-dc29-5ee5-a7f0-1193fd9818b4",
+      "length": 1,
+      "pluginMetadata": {},
+      "symbol": "642fdeaf-f0f6-5d2b-b039-872fc7e79cc3",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "COLLISION_BOX"
+    }
+  ],
+  "layers": [
+    {
+      "$id": "8b776a34-26fc-570f-9075-56bf2c8250e9",
+      "hidden": false,
+      "keyframes": [
+        "8ca644f8-f617-58f8-872a-95e3a5e17b3e"
+      ],
+      "locked": false,
+      "name": "art",
+      "pluginMetadata": {},
+      "type": "IMAGE"
+    },
+    {
+      "$id": "1776ce19-d3f4-5304-8a59-dfef7e7a71a3",
+      "hidden": false,
+      "keyframes": [
+        "c7ee8b8c-fc17-549c-bbed-d906cb0fa590"
+      ],
+      "locked": false,
+      "name": "art",
+      "pluginMetadata": {},
+      "type": "IMAGE"
+    },
+    {
+      "$id": "5c91013d-634d-5801-a2b1-854e127c1ad4",
+      "defaultAlpha": 0.5,
+      "defaultColor": "0xff0000",
+      "hidden": false,
+      "keyframes": [
+        "5157f69d-dc29-5ee5-a7f0-1193fd9818b4"
+      ],
+      "locked": false,
+      "name": "hitbox0",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "collisionBoxType": "HIT_BOX",
+          "index": 0
+        }
+      },
+      "type": "COLLISION_BOX"
+    }
+  ],
+  "paletteMap": {},
+  "pluginMetadata": {
+    "com.fraymakers.FraymakersMetadata": {
+      "objectType": "CUSTOM_GAME_OBJECT",
+      "version": "0.4.0"
+    }
+  },
+  "plugins": [
+    "com.fraymakers.FraymakersTypes",
+    "com.fraymakers.FraymakersMetadata"
+  ],
+  "symbols": [
+    {
+      "$id": "a206189d-18bc-5b8f-8dbc-0458f7cd1f14",
+      "alpha": 1.0,
+      "imageAsset": "7fcc45a8-c23e-595a-a0be-303dc7301636",
+      "pivotX": 0.0,
+      "pivotY": 0.0,
+      "pluginMetadata": {},
+      "rotation": 0.0,
+      "scaleX": 1.3,
+      "scaleY": 1.3,
+      "type": "IMAGE",
+      "x": -1248.65,
+      "y": -234.65
+    },
+    {
+      "$id": "5b2c11df-44bd-5fcf-968d-2314c75561dd",
+      "alpha": 1.0,
+      "imageAsset": "7fcc45a8-c23e-595a-a0be-303dc7301636",
+      "pivotX": 0.0,
+      "pivotY": 0.0,
+      "pluginMetadata": {},
+      "rotation": 0.0,
+      "scaleX": 1.3,
+      "scaleY": 1.3,
+      "type": "IMAGE",
+      "x": -1248.65,
+      "y": -234.65
+    },
+    {
+      "$id": "642fdeaf-f0f6-5d2b-b039-872fc7e79cc3",
+      "alpha": 0.5,
+      "color": "0xff0000",
+      "pivotX": 850.0,
+      "pivotY": 100.0,
+      "pluginMetadata": {},
+      "rotation": 0.0,
+      "scaleX": 1700.0,
+      "scaleY": 200.0,
+      "type": "COLLISION_BOX",
+      "x": -850.0,
+      "y": -100.0
+    }
+  ],
+  "tags": [],
+  "terrains": [],
+  "tilesets": [],
+  "version": 5
+}

@@ -1,0 +1,17 @@
+{
+  "export": true,
+  "guid": "d481f061-79e6-56b8-9d9a-e4c705014a0f",
+  "id": "bowserscastlessf2hazard0",
+  "language": "",
+  "pluginMetadata": {
+    "com.fraymakers.FraymakersMetadata": {
+      "objectType": "CUSTOM_GAME_OBJECT",
+      "version": "0.4.0"
+    }
+  },
+  "plugins": [
+    "com.fraymakers.FraymakersMetadata"
+  ],
+  "tags": [],
+  "version": 1
+}
