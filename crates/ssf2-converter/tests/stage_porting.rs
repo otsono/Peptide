@@ -315,17 +315,18 @@ fn hazard_stages_emit_hazards() {
         "casinonightzone should auto-detect bumpers, got {:?}",
         cnz.hazards.iter().map(|h| &h.label).collect::<Vec<_>>());
 
-    // bowserscastle: a hand-declared thwomp (metadata override) that cycles the platform columns
-    // (motion "thwomp"); it borrows the detected thwomp sprite so it renders as the real SSF2
-    // thwomp, not a placeholder box. it also declares the 3 sinking platforms (two ledge-bounded
-    // side platforms + the central terrainGround block, RE'd from the SSF2 terrain) + the lava.
+    // bowserscastle: the lava glow + Thwomp hazards come from the stage's AS3 spawnEnemy calls
+    // (BowsersCastleLava + Thwomp), not hand-declared; the Thwomp borrows the detected sprite so it
+    // renders as the real SSF2 thwomp. it also keeps the 3 STATIC standing platforms (two
+    // ledge-bounded side platforms + the central terrainGround block, RE'd from the SSF2 terrain).
     let bc = parse_stage(&dir.join("bowserscastle.ssf")).unwrap();
-    let thwomp = bc.hazards.iter().find(|h| h.label == "Thwomp" && h.motion == "thwomp");
-    assert!(thwomp.is_some(), "bowserscastle should carry the declared thwomp, got {:?}",
+    let thwomp = bc.hazards.iter().find(|h| h.label == "Thwomp");
+    assert!(thwomp.is_some(), "bowserscastle should carry the AS3-spawned thwomp, got {:?}",
         bc.hazards.iter().map(|h| (&h.label, &h.motion)).collect::<Vec<_>>());
-    assert!(thwomp.unwrap().art.is_some(), "the declared thwomp should borrow the real SSF2 sprite");
+    assert!(bc.hazards.iter().any(|h| h.label == "Lava"), "and the AS3-spawned lava glow");
+    assert!(thwomp.unwrap().art.is_some(), "the thwomp borrows the real SSF2 sprite");
     assert!(bc.platforms.iter().filter(|p| p.visible).count() == 3,
-        "bowserscastle declares 3 sinking platforms, got {}", bc.platforms.iter().filter(|p| p.visible).count());
+        "bowserscastle keeps its 3 standing platforms, got {}", bc.platforms.iter().filter(|p| p.visible).count());
 
     // battlefield: a clean flat stage with no hazards (auto-detection must not false-positive).
     let bf = parse_stage(&dir.join("battlefield.ssf")).unwrap();

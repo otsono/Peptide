@@ -490,6 +490,12 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // hazard clip parked off-screen at frame 0 (a thwomp resting below the pit) doesn't ship as a
     // phantom hitbox a fighter can never reach.
     let detected = detect_hazards(&instances, &to_fm, &shape_defs, &bitmaps, ox, oy, render_art_flag);
+    // AS3-sourced hazards: the stage's own `spawnEnemy(<Class>)` calls (e.g. bowserscastle's
+    // BowsersCastleLava + Thwomp). these win over the placement-tree heuristic when present.
+    let bound_ref = death_box.as_ref().or(camera_box.as_ref());
+    let as3_hazards: Vec<Hazard> = abc_model.as_ref().map(|m| m.actors.iter()
+        .filter_map(|a| actor_to_hazard(a, ox, oy, scale, bound_ref))
+        .collect()).unwrap_or_default();
     let hazards: Vec<Hazard> = if !meta_hazards.is_empty() {
         // hand-declared hazards win, but borrow a detected sprite of the same kind so a declared
         // thwomp renders as the real SSF2 thwomp (not a placeholder) at its declared position.
@@ -501,6 +507,21 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
                 }
             }
             h
+        }).collect()
+    } else if !as3_hazards.is_empty() {
+        // AS3 spawnEnemy hazards: borrow a detected sprite of the same kind so each renders as the
+        // real SSF2 actor, and keep only those inside the reachable area.
+        let bound = death_box.or(camera_box);
+        as3_hazards.into_iter().map(|mut h| {
+            if let Some(k) = hazard_kind(&h.label) {
+                h.art = detected.iter().find(|(dk, dh)| *dk == k && dh.art.is_some())
+                    .and_then(|(_, dh)| dh.art.clone());
+            }
+            h
+        }).filter(|h| match &bound {
+            Some(b) => h.x >= b.x - 60.0 && h.x <= b.x + b.w + 60.0
+                    && h.y >= b.y - 60.0 && h.y <= b.y + b.h + 60.0,
+            None => true,
         }).collect()
     } else if suppress_auto_hazards {
         Vec::new()
@@ -743,6 +764,24 @@ fn hazard_kind(label: &str) -> Option<HazardKind> {
         else if l.contains("piranha") { HazardKind::Piranha }
         else { return None };
     Some(kind)
+}
+
+/// Convert an AS3-spawned actor (`SSF2API.spawnEnemy(<Class>)`) into a Fraymakers hazard: the
+/// class name picks the kind ([`hazard_kind`] -> damage/knockback/angle/motion), and the literal
+/// `setX`/`setY` coords map to FM space. an actor with no literal coords (a random-drop Thwomp)
+/// falls back to the top-center of the reachable bound so it still drops into play.
+fn actor_to_hazard(actor: &crate::stage_abc::SpawnedActor, ox: f64, oy: f64, scale: f64, bound: Option<&Rect>) -> Option<Hazard> {
+    let kind = hazard_kind(&actor.class_name)?;
+    let (motion, damage, knockback, angle) = kind.defaults();
+    let x = actor.x.map(|x| (x - ox) * scale)
+        .unwrap_or_else(|| bound.map(|b| b.x + b.w / 2.0).unwrap_or(0.0));
+    let y = actor.y.map(|y| (y - oy) * scale)
+        .unwrap_or_else(|| bound.map(|b| b.y + 40.0).unwrap_or(0.0));
+    Some(Hazard {
+        x, y, w: 130.0, h: 130.0, damage, knockback, angle,
+        interval: 0, active: 20, motion: motion.to_string(),
+        range: 0.0, period: 120, rehit: 30, label: kind.label().to_string(), art: None,
+    })
 }
 
 /// Auto-detect placed hazards from the stage's shape instances: classify each by linkage
