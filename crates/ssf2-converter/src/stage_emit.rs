@@ -611,13 +611,26 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
     let mut spawn_ids = Vec::new();
     for (i, p) in vis.iter().enumerate() {
         let (pw, ph) = (p.rect.w.round().max(8.0) as u32, p.rect.h.round().max(10.0) as u32);
-        let top = (ph / 5).max(2);
+        let cap = (ph / 6).max(3);
         let mut img = image::RgbaImage::new(pw, ph);
-        for (_, y, px) in img.enumerate_pixels_mut() {
-            // a lighter top lip, a thin dark seam, then the SSF2 platform grey body.
-            *px = if y < top { image::Rgba([176, 176, 178, 235]) }
-                else if y < top + 2 { image::Rgba([96, 96, 100, 235]) }
-                else { image::Rgba([151, 151, 151, 220]) };
+        // SSF2's standing platforms are castle BRICK masonry (the same stone as the walls), not a
+        // flat grey slab: a lighter sandstone cap, then a brick body laid in mortar courses. the
+        // neutral grey-brown reads as castle stone, and the lava-glow foreground tints it warm/red
+        // in-engine the way it looks in SSF2.
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            *px = if y < cap {
+                image::Rgba([198, 182, 156, 240])            // sandstone cap (top surface)
+            } else if y < cap + 2 {
+                image::Rgba([92, 76, 60, 240])               // dark seam under the cap
+            } else {
+                // brick courses: a darker mortar grid (horizontal every ~9px, vertical joints
+                // offset every other course) over a warm grey-brown brick face.
+                let row = (y - cap) / 9;
+                let h_mortar = (y - cap) % 9 == 0;
+                let v_mortar = (x + if row % 2 == 0 { 0 } else { 11 }) % 22 == 0;
+                if h_mortar || v_mortar { image::Rgba([96, 78, 62, 230]) }
+                else { image::Rgba([150, 126, 100, 226]) }
+            };
         }
         let mut png = Vec::new();
         image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
