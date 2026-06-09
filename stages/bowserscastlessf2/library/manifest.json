@@ -58,24 +58,6 @@
       "objectStatsId": "bowserscastlessf2platform2Stats",
       "scriptId": "bowserscastlessf2platformScript",
       "type": "structure"
-    },
-    {
-      "id": "bowserscastlessf2platform3",
-      "objectStatsId": "bowserscastlessf2platform3Stats",
-      "scriptId": "bowserscastlessf2platformScript",
-      "type": "structure"
-    },
-    {
-      "id": "bowserscastlessf2platform4",
-      "objectStatsId": "bowserscastlessf2platform4Stats",
-      "scriptId": "bowserscastlessf2platformScript",
-      "type": "structure"
-    },
-    {
-      "id": "bowserscastlessf2platform5",
-      "objectStatsId": "bowserscastlessf2platform5Stats",
-      "scriptId": "bowserscastlessf2platformScript",
-      "type": "structure"
     }
   ],
   "resourceId": "bowserscastlessf2"

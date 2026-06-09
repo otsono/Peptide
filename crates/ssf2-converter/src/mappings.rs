@@ -819,6 +819,12 @@ pub struct StageMetadataEntry {
     /// the fighter falls into, handled as a hazard). e.g. "lavafloor" on bowserscastle.
     #[serde(default)]
     pub non_floor_terrain: Vec<String>,
+    /// Keep the SSF2 `foreground` plane as a real FM foreground (drawn IN FRONT of fighters)
+    /// instead of folding it into the background. The default fold avoids re-drawing a structure's
+    /// front face over fighters (a duplicate platform), but some stages put a genuine overlay here
+    /// (bowserscastle's glowing lava sheet over the floor) that must stay in front.
+    #[serde(default)]
+    pub keep_foreground: bool,
 }
 
 /// One hand-declared standable platform. FM coords; stage center 0,0, +y down.

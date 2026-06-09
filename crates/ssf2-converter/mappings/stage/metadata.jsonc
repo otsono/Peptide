@@ -25,11 +25,14 @@
     "bombfactory": { "name": "Bomb Factory", "series": "Bomberman" },
     "bowserscastle": { "name": "Bowser's Castle", "series": "Super Mario",
       "non_floor_terrain": ["lavafloor"],
+      "keep_foreground": true,
+      // three grey standing platforms (RE'd from the SSF2 terrain: two ledge-bounded side
+      // platforms + the central terrainGround block). x = center, y = top surface, w = width.
+      // the Thwomp cycles across these and sinks whichever it lands on into the lava.
       "platforms": [
-        { "x": 269, "y": 564, "w": 140 }, { "x": 421, "y": 564, "w": 140 }, { "x": 573, "y": 564, "w": 140 },
-        { "x": 926, "y": 564, "w": 140 }, { "x": 1078, "y": 564, "w": 140 }, { "x": 1230, "y": 564, "w": 140 } ],
+        { "x": 438, "y": 660, "w": 448 }, { "x": 770, "y": 616, "w": 118 }, { "x": 1100, "y": 660, "w": 442 } ],
       "hazards": [
-        { "x": 767, "y": 250, "w": 130, "h": 130, "damage": 16, "knockback": 75, "angle": 90,
+        { "x": 770, "y": 250, "w": 130, "h": 130, "damage": 16, "knockback": 75, "angle": 90,
           "motion": "thwomp", "label": "Thwomp" },
         { "x": 748, "y": 760, "w": 1700, "h": 200, "damage": 14, "knockback": 70, "angle": 90, "label": "Lava" } ] },
     "butterbuilding": { "name": "Butter Building", "series": "Kirby" },

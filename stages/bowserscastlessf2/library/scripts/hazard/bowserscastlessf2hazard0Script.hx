@@ -15,9 +15,9 @@ var LState = {
 	INACTIVE: _prepLocalState("gameObjectInactive")
 };
 
-var COLUMNS = [269.0, 421.0, 573.0, 926.0, 1078.0, 1230.0];
-var TOP_Y = 224.0;
-var LAND_Y = 564.0;
+var COLUMNS = [438.0, 770.0, 1100.0];
+var LAND_YS = [660.0, 616.0, 660.0];
+var TOP_Y = 276.0;
 var m_col = 0;
 var m_phase = 0;
 var m_fallV = 0.0;
@@ -32,12 +32,13 @@ function initialize() {
 
 function update() {
 	if (!m_init) { m_init = true; self.setX(COLUMNS[m_col]); self.setY(TOP_Y); }
+	var landY = LAND_YS[m_col];
 	// keep the native hitbox live so it damages fighters it falls through.
 	if (m_cool > 0) { m_cool = m_cool - 1; } else { self.reactivateHitboxes(); m_cool = 18; }
 	if (m_phase == 0) {
 		m_fallV = m_fallV + 0.9;
 		self.setY(self.getY() + m_fallV);
-		if (self.getY() >= LAND_Y) { self.setY(LAND_Y); m_phase = 1; m_timer = 0; }
+		if (self.getY() >= landY) { self.setY(landY); m_phase = 1; m_timer = 0; }
 	} else if (m_phase == 1) {
 		m_timer = m_timer + 1;
 		if (m_timer >= 80) { m_phase = 2; }

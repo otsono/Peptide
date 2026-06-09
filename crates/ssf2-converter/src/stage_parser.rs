@@ -528,8 +528,9 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // --- art: rasterize the stage's shapes, split into background / stage / foreground.
     // The PNGs stay native-resolution; placement is scaled here and the emitter renders the
     // IMAGE layers at `scale`, matching the geometry.
+    let keep_foreground = entry.map(|e| e.keep_foreground).unwrap_or(false);
     let art = if render_art_flag {
-        render_art_layers(&swf.tags, &sprites, &sym_names, &shape_defs, &bitmaps, ox, oy, scale)
+        render_art_layers(&swf.tags, &sprites, &sym_names, &shape_defs, &bitmaps, ox, oy, scale, keep_foreground)
     } else {
         StageArtSet::default()
     };
@@ -867,6 +868,7 @@ fn render_art_layers(
     shape_defs: &BTreeMap<u16, &swf::Shape>,
     bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
     ox: f64, oy: f64, scale: f64,
+    keep_foreground: bool,
 ) -> StageArtSet {
     // per-sprite + root frame timelines.
     let mut sprite_frames: BTreeMap<u16, Vec<Vec<PlacedChild>>> = BTreeMap::new();
@@ -965,7 +967,10 @@ fn render_art_layers(
         let area = a.w * a.h;
         if area <= 0.0 { 0.0 } else { (ix * iy) / area }
     };
-    let is_dup_fg = move |i: &Instance| art_kind(i) == ArtKind::Foreground && frac_in_bg(&i.aabb) >= 0.6;
+    // a foreground that substantially overlaps the structure is normally a re-drawn front face
+    // (fold it behind fighters to avoid a duplicate platform); `keep_foreground` opts a stage out
+    // (its foreground is a real overlay, e.g. bowserscastle's glowing lava sheet) so it stays in front.
+    let is_dup_fg = move |i: &Instance| !keep_foreground && art_kind(i) == ArtKind::Foreground && frac_in_bg(&i.aabb) >= 0.6;
     // composite an explicit instance group (back-to-front = walk order), scaled like `composite`.
     let composite_grp = |group: Vec<&Instance>| -> Option<StageArt> {
         composite_layer(&group, shape_defs, bitmaps, ox, oy).map(|mut a| { a.x *= scale; a.y *= scale; a })
