@@ -48,7 +48,8 @@ pub use convert::{run_conversion, ConversionSummary, ConvertOptions};
 pub mod classify;
 pub use classify::{classify_ssf, AssetKind, SsfClassification};
 
-// SSF2 stage geometry parser + Fraymakers stage emitter (the stage-porting pipeline).
+// SSF2 stage AS3 reader (plane assignments + spawned actors) + geometry parser + emitter.
+pub mod stage_abc;
 pub mod stage_parser;
 pub use stage_parser::{parse_stage, parse_stage_opts, ParallaxLayer, ParallaxMode, Platform, Rect, SpawnPoint, StageArt, StageArtSet, StageModel};
 pub mod stage_emit;

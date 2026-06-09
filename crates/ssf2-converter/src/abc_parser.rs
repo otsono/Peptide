@@ -1628,7 +1628,7 @@ pub fn extract_indexed_string_fields(
 /// literals (`newobject`) that carry SSF2 attack / projectile / stat /
 /// costume data.
 #[derive(Debug, Clone)]
-enum StackVal {
+pub(crate) enum StackVal {
     Str(String),
     Num(f64),
     Bool(()),  // unused field — kept for stack value compatibility
@@ -1637,6 +1637,11 @@ enum StackVal {
     Obj(BTreeMap<String, StackVal>),
     /// A parsed array from newarray
     Arr(Vec<StackVal>),
+    /// A visitor-defined marker carried on the simulated stack (e.g. a plane
+    /// accessor's result, or a `getlex` class name). The scanner never creates
+    /// these itself — only the property/lex hooks do — so default visitors
+    /// (which don't override the hooks) never see them.
+    Tag(String),
     Unknown,
 }
 
@@ -1665,7 +1670,7 @@ enum StackVal {
 
 /// What `AbcVisitor::on_newobject` wants the scanner to do with the
 /// freshly-built object literal.
-enum NewObjectAction {
+pub(crate) enum NewObjectAction {
     /// Push StackVal::Obj(obj) onto the stack — the default for visitors
     /// that may need to look at this object again as a sub-value in a
     /// later newobject.
@@ -1683,7 +1688,7 @@ enum NewObjectAction {
 /// Hook surface for `scan_method`. Default impls match the
 /// attack/projectile/stats simulators' common semantics; the costume
 /// visitor overrides a couple of behaviours where its parsing differs.
-trait AbcVisitor {
+pub(crate) trait AbcVisitor {
     /// Called when a `newobject(N)` opcode completes. The scanner has
     /// already drained 2N items from the stack and built the obj map;
     /// the visitor decides what to record, then returns an action
@@ -1715,17 +1720,48 @@ trait AbcVisitor {
     /// Unknown, matching the attack/projectile sims' post-§3.5-fix
     /// behaviour.
     fn costume_getproperty_semantics(&self) -> bool { false }
+
+    // ── Property/lex hooks (for the stage plane-map + actor visitors) ──
+    // All default to `None`, meaning "scanner keeps its existing behavior"
+    // (push Unknown). So the attack/projectile/stats/costume visitors, which
+    // don't override these, are byte-for-byte unaffected. A stage visitor
+    // returns `Some(StackVal::Tag(...))` to carry a marker (a plane, a class
+    // name, a spawned-actor handle) forward on the simulated stack.
+
+    /// `getlex <Name>` / `findpropstrict <Name>`: the resolved name. Return a
+    /// marker to put on the stack (e.g. the class name for a following call).
+    fn on_getlex(&mut self, _name: &str) -> Option<StackVal> { None }
+    /// `callproperty/callpropvoid <method>(args)` on `receiver` (already drained
+    /// from the stack: receiver + args). For callproperty the return is pushed
+    /// (Unknown if None); for callpropvoid it's only a side-effect hook.
+    fn on_callproperty(&mut self, _method: &str, _args: &[StackVal], _receiver: &StackVal) -> Option<StackVal> { None }
+    /// `constructprop <Class>(args)`. Return a marker for the constructed value.
+    fn on_constructprop(&mut self, _class: &str, _args: &[StackVal]) -> Option<StackVal> { None }
+    /// `getproperty <prop>` on `receiver`. Return a marker to propagate the
+    /// receiver's tag through a chained access (e.g. `getBackground().clip`).
+    fn on_getproperty(&mut self, _prop: &str, _receiver: &StackVal) -> Option<StackVal> { None }
+    /// Opt in to locals tracking: `setlocal N` stores the stack top into a
+    /// locals array and `getlocal N` reloads it, so a visitor can follow a
+    /// value stashed in a temp (e.g. a spawned actor reloaded for `setX`).
+    /// Default false = `getlocal` pushes Unknown, exactly as before.
+    fn track_locals(&self) -> bool { false }
 }
 
 /// One pass over a method body. Built-in handlers cover every opcode
 /// every former simulator handled. The visitor's hooks decide what to
 /// record on newobject / newarray and (optionally) how to treat
 /// getproperty — see the trait above.
-fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
+pub(crate) fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
     let mut stack: Vec<StackVal> = Vec::new();
     let mut current_char: Option<String> = None;
     let mut i = 0;
     let costume_mode = visitor.costume_getproperty_semantics();
+    let track_locals = visitor.track_locals();
+    let mut locals: Vec<StackVal> = Vec::new();
+    fn set_local(locals: &mut Vec<StackVal>, n: usize, v: StackVal) {
+        if n >= locals.len() { locals.resize(n + 1, StackVal::Unknown); }
+        locals[n] = v;
+    }
 
     while i < bytecode.len() {
         let op = bytecode[i];
@@ -1799,20 +1835,28 @@ fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
                 }
             }
 
-            // ── Calls & construction (drain args+receiver, push unknown) ─
+            // ── Calls & construction (drain args+receiver, hook, push) ──
             OP_CALLPROPERTY | OP_CALLPROPVOID => {
-                read_u30_at(bytecode, &mut i);
+                let mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
                 let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                let method = abc.multinames.get(mn_idx as usize).map(|m| m.name.to_string()).unwrap_or_default();
                 let drain = stack.len().min(argc + 1);
-                stack.drain(stack.len() - drain..);
-                if op == OP_CALLPROPERTY { stack.push(StackVal::Unknown); }
+                let drained: Vec<StackVal> = stack.drain(stack.len() - drain..).collect();
+                let (receiver, args) = drained.split_first()
+                    .map(|(r, a)| (r.clone(), a.to_vec()))
+                    .unwrap_or((StackVal::Null, Vec::new()));
+                let hooked = visitor.on_callproperty(&method, &args, &receiver);
+                if op == OP_CALLPROPERTY { stack.push(hooked.unwrap_or(StackVal::Unknown)); }
             }
             OP_CONSTRUCTPROP => {
-                read_u30_at(bytecode, &mut i);
+                let mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
                 let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                let class = abc.multinames.get(mn_idx as usize).map(|m| m.name.to_string()).unwrap_or_default();
                 let drain = stack.len().min(argc + 1);
-                stack.drain(stack.len() - drain..);
-                stack.push(StackVal::Unknown);
+                let drained: Vec<StackVal> = stack.drain(stack.len() - drain..).collect();
+                let args: Vec<StackVal> = drained.into_iter().skip(1).collect();
+                let hooked = visitor.on_constructprop(&class, &args);
+                stack.push(hooked.unwrap_or(StackVal::Unknown));
             }
             OP_CONSTRUCT => {
                 let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
@@ -1877,14 +1921,23 @@ fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
                         }
                     }
                 } else {
-                    stack.pop();
-                    stack.push(StackVal::Unknown);
+                    let mn = abc.multinames.get(mn_idx as usize);
+                    let name = mn.map(|m| m.name.to_string()).unwrap_or_default();
+                    // a stage visitor (track_locals) wants an accurate stack: a RUNTIME multiname
+                    // (RTQNameL 0x1B / MultinameL 0x1C, e.g. `arr[0]`) takes its index off the stack
+                    // BELOW the receiver, so pop it first or a chain desyncs (`getCameraBackgrounds()[0].mc`).
+                    if track_locals && mn.map(|m| m.kind == 0x1B || m.kind == 0x1C).unwrap_or(false) {
+                        stack.pop();
+                    }
+                    let receiver = stack.pop().unwrap_or(StackVal::Null);
+                    stack.push(visitor.on_getproperty(&name, &receiver).unwrap_or(StackVal::Unknown));
                 }
             }
 
             OP_FINDPROPSTRICT | OP_FINDPROP | OP_GETLEX => {
-                read_u30_at(bytecode, &mut i);
-                stack.push(StackVal::Unknown);
+                let mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
+                let name = abc.multinames.get(mn_idx as usize).map(|m| m.name.to_string()).unwrap_or_default();
+                stack.push(visitor.on_getlex(&name).unwrap_or(StackVal::Unknown));
             }
 
             // ── Coerce / convert — operand-bearing but mostly no-ops ────
@@ -1916,10 +1969,23 @@ fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
                     _ => stack.push(StackVal::Unknown),
                 }
             }
-            OP_GETLOCAL0 | OP_GETLOCAL1 | OP_GETLOCAL2 | OP_GETLOCAL3 => stack.push(StackVal::Unknown),
-            OP_GETLOCAL => { read_u30_at(bytecode, &mut i); stack.push(StackVal::Unknown); }
-            OP_SETLOCAL0 | OP_SETLOCAL1 | OP_SETLOCAL2 | OP_SETLOCAL3 => { stack.pop(); }
-            OP_SETLOCAL => { read_u30_at(bytecode, &mut i); stack.pop(); }
+            OP_GETLOCAL0 | OP_GETLOCAL1 | OP_GETLOCAL2 | OP_GETLOCAL3 => {
+                let n = (op - OP_GETLOCAL0) as usize;
+                stack.push(if track_locals { locals.get(n).cloned().unwrap_or(StackVal::Unknown) } else { StackVal::Unknown });
+            }
+            OP_GETLOCAL => {
+                let n = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                stack.push(if track_locals { locals.get(n).cloned().unwrap_or(StackVal::Unknown) } else { StackVal::Unknown });
+            }
+            OP_SETLOCAL0 | OP_SETLOCAL1 | OP_SETLOCAL2 | OP_SETLOCAL3 => {
+                let v = stack.pop().unwrap_or(StackVal::Null);
+                if track_locals { set_local(&mut locals, (op - OP_SETLOCAL0) as usize, v); }
+            }
+            OP_SETLOCAL => {
+                let n = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                let v = stack.pop().unwrap_or(StackVal::Null);
+                if track_locals { set_local(&mut locals, n, v); }
+            }
             OP_RETURNVALUE => { stack.pop(); }
             OP_RETURNVOID => {}
             OP_JUMP | OP_IFTRUE | OP_IFFALSE | OP_IFEQ | OP_IFNE | OP_IFLT |
