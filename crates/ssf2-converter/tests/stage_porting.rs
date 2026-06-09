@@ -181,7 +181,7 @@ fn battlefield_parses_to_geometry() {
     // of fighters (a visible duplicate), so it folds into the background instead — no separate
     // foreground layer. (Distinct foreground props on other stages, e.g. junglehijinx's trees,
     // do NOT overlap and stay in front.)
-    assert!(m.art.foreground.is_none(), "battlefield's structure-foreground folds into the background (no duplicate)");
+    assert!(m.art.foreground.is_empty(), "battlefield's structure-foreground folds into the background (no duplicate)");
     assert!(m.art.stage_frames.is_empty(), "collision masks must not render as stage art");
     assert!(m.art.parallax.is_empty(), "battlefield has no parallax (fixed background)");
 }
@@ -212,7 +212,7 @@ fn junglehijinx_has_parallax() {
     // junglehijinx's foreground is the `*_fg` jungle foliage — a DISTINCT prop offset from the
     // island, low overlap with the background, so it stays in front (NOT folded like a
     // structure front-face would be). This is the half of the fold heuristic that must survive.
-    assert!(m.art.foreground.is_some(), "distinct foreground props (jungle foliage) stay in front");
+    assert!(!m.art.foreground.is_empty(), "distinct foreground props (jungle foliage) stay in front");
     // the island terrain is sloped, so the main floor traces a polyline, not a flat line.
     let floor = m.main_floor().expect("main floor");
     let profile = floor.profile.as_ref().expect("curved floor has a traced profile");
