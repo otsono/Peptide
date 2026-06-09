@@ -257,7 +257,11 @@ fn append_missing_template_animations(
         missing.len(), missing.join(", "));
 }
 
-fn double_keyframe_lengths(keyframes: &mut [Value]) {
+/// Double every keyframe `length` for the SSF2 30fps -> Fraymakers 60fps move (one source frame =
+/// two FM frames). FrayTools timelines are laid out purely by sequential keyframe length, so
+/// doubling each keyframe doubles every layer span + keyframe start in lockstep. Shared by the
+/// stage emitter so stage/hazard animations get the SAME timing treatment as characters.
+pub(crate) fn double_keyframe_lengths(keyframes: &mut [Value]) {
     for kf in keyframes {
         if let Some(len) = kf.get("length").and_then(Value::as_u64) {
             kf["length"] = json!(len * 2);
