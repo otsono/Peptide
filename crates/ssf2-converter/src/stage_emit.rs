@@ -546,6 +546,12 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     }
     animations.extend(b.extra_anims.clone());
 
+    // SSF2 30fps -> Fraymakers 60fps: double every keyframe length, exactly like the character
+    // port (entity_gen::double_keyframe_lengths). every layer (bg clips, foreground, platforms,
+    // containers, points, line segments) was built in SSF2 frame units, so this doubling keeps
+    // them all in lockstep at the right real-time speed.
+    crate::entity_gen::double_keyframe_lengths(&mut b.keyframes);
+
     json!({
         "version": 14,
         "id": id,
@@ -755,7 +761,7 @@ fn hazard_entity(hid: &str, hz: &Hazard, sprite_guid: &str, img_x: f64, img_y: f
     let img_sym = |s: &str| json!({ "$id": g(&format!("imgsym{s}")), "type": "IMAGE", "imageAsset": sprite_guid, "x": img_x, "y": img_y, "pivotX": 0.0, "pivotY": 0.0, "scaleX": img_scale, "scaleY": img_scale, "rotation": 0.0, "alpha": 1.0, "pluginMetadata": {} });
     let img_kf = |s: &str| json!({ "$id": g(&format!("imgkf{s}")), "symbol": g(&format!("imgsym{s}")), "length": 1, "tweened": false, "tweenType": "LINEAR", "type": "IMAGE", "pluginMetadata": {} });
     let img_layer = |s: &str| json!({ "$id": g(&format!("imglayer{s}")), "name": "art", "type": "IMAGE", "hidden": false, "locked": false, "keyframes": [g(&format!("imgkf{s}"))], "pluginMetadata": {} });
-    json!({
+    let mut e = json!({
         "export": true, "guid": g("entity"), "id": hid, "version": 5,
         "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "objectType": "CUSTOM_GAME_OBJECT", "version": "0.4.0" } },
         "plugins": ["com.fraymakers.FraymakersTypes", "com.fraymakers.FraymakersMetadata"],
@@ -779,7 +785,12 @@ fn hazard_entity(hid: &str, hz: &Hazard, sprite_guid: &str, img_x: f64, img_y: f
             { "$id": g("anim"), "name": "gameObjectIdle", "layers": [g("imglayerA"), g("boxlayer")], "pluginMetadata": {} },
             { "$id": g("anim2"), "name": "gameObjectInactive", "layers": [g("imglayerB")], "pluginMetadata": {} }
         ]
-    })
+    });
+    // SSF2 30fps -> FM 60fps doubling, same as the stage entity + the character port.
+    if let Some(kfs) = e.get_mut("keyframes").and_then(|k| k.as_array_mut()) {
+        crate::entity_gen::double_keyframe_lengths(kfs);
+    }
+    e
 }
 
 /// The Thwomp (converted from SSF2 `Thwomp` + `bowserscastle::update`): it cycles through the

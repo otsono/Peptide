@@ -1044,11 +1044,11 @@ fn render_art_layers(
         composite_layer(&group, shape_defs, bitmaps, ox, oy).map(|mut a| { a.x *= scale; a.y *= scale; a })
     };
 
-    // timing: SSF2 runs at 30fps, Fraymakers at 60, so each SSF2 source frame is exactly 2 FM
-    // frames. each emitted frame holds 2, and consecutive identical frames are run-length-encoded
-    // into one longer hold so a held source frame (an element's pause between cycles) reads as a
-    // break rather than re-animating every tick.
-    let base_hold = 2u32;
+    // timing: holds are in SSF2 frame units (one source frame = one hold). consecutive identical
+    // frames are run-length-encoded into one longer hold so a held source frame (an element's pause
+    // between cycles) reads as a break. the emitter applies the SSF2 30fps -> FM 60fps doubling
+    // uniformly (entity_gen::double_keyframe_lengths), exactly like the character port.
+    let base_hold = 1u32;
     let rle = |frames: Vec<StageArt>| -> Vec<StageArt> {
         if frames.len() <= 1 { return frames; }
         let mut out: Vec<StageArt> = Vec::new();
