@@ -628,18 +628,30 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
     write_meta(&scripts.join(format!("{script_id}.hx.meta")), id, &script_id, "hscript", Some("LINE_SEGMENT_STRUCTURE"), None)?;
     // per-platform: a sprite sized to THIS platform (the SSF2 standing platforms are different
     // widths), its own `platformSprite{i}` animation, Stats (startX/startY), a structure content
-    // entry, and the spawn id. the fill is the REAL SSF2 terrain grey (sampled rgb 151 at the
-    // terrain's translucent alpha), not a synthesized brick texture, with a lighter top lip.
+    // entry, and the spawn id. the fill is an opaque shaded grey stone block matching SSF2's
+    // lava-lit terrain rendering (see the per-pixel shading below).
     let mut sprite_dims = Vec::new();
     let mut contents = Vec::new();
     let mut spawn_ids = Vec::new();
     for (i, p) in vis.iter().enumerate() {
         let (pw, ph) = (p.rect.w.round().max(8.0) as u32, p.rect.h.round().max(10.0) as u32);
-        let cap = (ph / 6).max(2);
+        // SSF2 renders its standing platforms as opaque shaded grey stone blocks (lava-lit), not
+        // a flat translucent fill. Match that: an OPAQUE block with a top-lit vertical shade
+        // (lighter standable lip -> darker base, grey ~182..96 sampled from SSF2) plus a faint
+        // mortar lattice (stone courses + offset joints) so it reads as terrain, not a placeholder.
+        let lip = (ph / 8).max(3);
+        let course = 18u32; // px between horizontal stone courses
+        let joint = 30u32;  // px between vertical joints (offset every other course)
         let mut img = image::RgbaImage::new(pw, ph);
-        for (_x, y, px) in img.enumerate_pixels_mut() {
-            *px = if y < cap { image::Rgba([176, 176, 178, 200]) }   // lighter top lip
-                else { image::Rgba([151, 151, 151, 170]) };          // real SSF2 terrain grey
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            if y < lip { *px = image::Rgba([200, 200, 204, 255]); continue; } // lit standable lip
+            let yf = y as f32 / ph.max(1) as f32;            // 0 top .. 1 bottom
+            let mut v = (182.0 - 86.0 * yf) as i32;          // top-lit vertical shade
+            let row = y / course;
+            let off = (row % 2) * (joint / 2);               // brick-offset alternate courses
+            if (y % course) < 2 || ((x + off) % joint) < 2 { v -= 34; } // darker mortar
+            let v = v.clamp(60, 220) as u8;
+            *px = image::Rgba([v, v, v, 255]);
         }
         let mut png = Vec::new();
         image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
