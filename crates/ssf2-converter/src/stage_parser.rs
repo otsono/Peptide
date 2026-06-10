@@ -1100,25 +1100,6 @@ fn build_frames(tags: &[swf::Tag]) -> Vec<Vec<PlacedChild>> {
 
 /// Walk the placement tree at a fixed global frame (every animated sprite shows its
 /// `global_frame % len` frame — Flash advances all clips together), collecting the placed
-/// The alpha-weighted horizontal centroid of a frame's LOWER region (its bottom ~third) in canvas
-/// pixels — the "bottom-center" anchor used to keep a flickering decorative clip from drifting
-/// left/right. `None` if the lower region is empty.
-fn bottom_centroid_x(a: &StageArt) -> Option<f64> {
-    let img = image::load_from_memory(&a.png).ok()?.to_rgba8();
-    let (w, h) = img.dimensions();
-    if w == 0 || h == 0 { return None; }
-    let y0 = (h as f64 * 0.66) as u32;
-    let (mut wsum, mut xsum) = (0.0f64, 0.0f64);
-    for y in y0..h {
-        for x in 0..w {
-            let alpha = img.get_pixel(x, y)[3] as f64;
-            wsum += alpha;
-            xsum += alpha * x as f64;
-        }
-    }
-    (wsum > 0.0).then(|| xsum / wsum)
-}
-
 /// Collect the world position of every movieclip placement (for the even-desync rank map). Walks
 /// the base layout (frame 0 of each clip) since clip POSITIONS are fixed across frames.
 fn collect_clip_positions(
@@ -1405,7 +1386,7 @@ fn render_art_layers(
             }).collect();
             let animated = per_frame.len() == n_samples
                 && per_frame.windows(2).any(|w| w[0].png != w[1].png);
-            let mut frames = if animated {
+            let frames = if animated {
                 // truncate to the element's OWN loop period (it was sampled over the stage's
                 // longest clip), so its VFX loops at its own length, not the whole stage's.
                 let p = loop_period(&per_frame);
@@ -1414,22 +1395,6 @@ fn render_art_layers(
                 let grp: Vec<&Instance> = base_insts.iter().filter(|i| matches(i)).collect();
                 composite_grp(grp, bounds).into_iter().collect()
             };
-            // bottom-center anchor: a decorative flicker clip (torch flame, lamp) is registered at
-            // its base and should animate IN PLACE -- the bottom-center stays put while the top
-            // flickers. our per-frame raster can let the lower content drift a few px as the shape
-            // changes (the "wiggling left and right"). re-align every frame so the alpha centroid of
-            // its lower region sits at the same x (shift the IMAGE offset to compensate, in FM units
-            // = canvas px x scale). vertical motion (a podoboo's jump) is untouched -- x only.
-            if frames.len() > 1 {
-                if let Some(ref_cx) = bottom_centroid_x(&frames[0]) {
-                    let base_x = frames[0].x;
-                    for f in frames.iter_mut() {
-                        if let Some(cx) = bottom_centroid_x(f) {
-                            f.x = base_x + (ref_cx - cx) * scale;
-                        }
-                    }
-                }
-            }
             (!frames.is_empty()).then(|| BgLayer { name: sname.clone(), frames })
         }).collect()
     };
