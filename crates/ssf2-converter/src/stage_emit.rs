@@ -1383,7 +1383,7 @@ fn hazard_animation_stats_hx() -> String {
 // animation is just that element's frames on LOOP (its own clock), and the stage reparents its
 // view into a stage CONTAINER so it draws at the right depth:
 //   var e = match.createCustomGameObject(getContent(eid), null);
-//   self.getBackgroundEffectsContainer().addChild(e.getViewRootContainer());
+//   self.getBackgroundBehindContainer().addChild(e.getViewRootContainer());
 // the depth control is the Stage container API (getBackground*Container / getCharactersBackContainer
 // / getForeground*Container, each returns a Container) + Entity.getViewRootContainer() +
 // Container.addChild(DisplayObject). a plain createVfx with VfxLayer drew at the wrong depth; the
@@ -1479,7 +1479,7 @@ fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path) -> 
         // not the GameObject the owner expects, so pass null (not self).
         spawns.push_str(&format!(
             "\t\t\tvar _bg{i} = match.createCustomGameObject(self.getResource().getContent(\"{eid}\"), null);\n\
-             \t\t\tif (_bg{i} != null) {{ self.getBackgroundEffectsContainer().addChild(_bg{i}.getViewRootContainer()); }}\n"));
+             \t\t\tif (_bg{i} != null) {{ self.getBackgroundBehindContainer().addChild(_bg{i}.getViewRootContainer()); }}\n"));
     }
     Ok((entries, spawns))
 }

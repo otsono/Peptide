@@ -206,18 +206,24 @@ literals (game space) or a live measurement, never from the parked placement.
     whose `gameObjectIdle` animation is just that element's frames on LOOP (its own clock), and the
     stage reparents its view into a background CONTAINER for depth:
     `var e = match.createCustomGameObject(getContent(eid), null);
-    self.getBackgroundEffectsContainer().addChild(e.getViewRootContainer());`
-    the depth control is the Stage container API: `getBackgroundBehind/Structures/Shadows/Effects
-    Container()`, `getCharactersBack/Characters/CharactersFrontContainer()`,
-    `getForeground*Container()` (each returns a `Container`), plus `Entity.getViewRootContainer()`
-    and `Container.addChild(DisplayObject)`. a plain `createVfx` with `VfxLayer.BACKGROUND_EFFECTS`
-    drew at the wrong depth; the explicit container reparent puts the element in front of the static
-    background art and behind the fighters. null owner: createCustomGameObject's owner is optional,
-    and a stage's `self` is a StageApi (not the GameObject the owner expects), so pass null.
-    LIVE-VERIFIED on bowserscastle: the 5 animated elements (Bubbles at 134f was the non-divisor of
-    the 284 master) loop at their own length, removed from the baked entity (no double-render), zero
-    stage script errors, rendering in front of the background and behind the fighters. remaining
-    tuning: per-element container choice (some elements may want BACKGROUND_BEHIND vs STRUCTURES).
+    self.getBackgroundBehindContainer().addChild(e.getViewRootContainer());`
+    each distinct SSF2 backdrop symbol becomes its OWN entity (grouped by symbol id in
+    stage_parser `group_bg_layers`), so the elements are NOT merged into one composite image --
+    bowserscastle yields 5 (BowserSpectator, Torches Lit, Torchembers, Podoboos, Bubbles).
+    the depth control is the Stage container API. there is NO generic background container; the
+    background is four sub-bands (back to front): `getBackgroundBehindContainer()` (deepest, in
+    front of the painted backdrop), `getBackgroundEffectsContainer()`, `getBackgroundShadows
+    Container()`, `getBackgroundStructuresContainer()` (static structures, just behind characters),
+    then `getCharactersBack/Characters/CharactersFrontContainer()` and `getForeground*Container()`
+    (each returns a `Container`), plus `Entity.getViewRootContainer()` and
+    `Container.addChild(DisplayObject)`. use BACKGROUND_BEHIND for scenery (the default); a plain
+    `createVfx` with VfxLayer drew at the wrong depth, and BACKGROUND_EFFECTS is for particle fx,
+    not scenery. null owner: createCustomGameObject's owner is optional, and a stage's `self` is a
+    StageApi (not the GameObject the owner expects), so pass null. LIVE-VERIFIED on bowserscastle:
+    the 5 elements (Bubbles 134f, the non-divisor of the 284 master) loop on their own clock,
+    removed from the baked entity (no double-render), zero stage script errors, rendering behind
+    the fighters and in front of the painted background (window capture confirmed). remaining
+    tuning: per-element band (embers/bubbles could go to EFFECTS, torches/Bowser to BEHIND).
 - **behavior scripts** (`stage_emit.rs` script generators): port the disasm'd state machine
   1:1 with the unit table above. comment each constant with its SSF2 source.
 
