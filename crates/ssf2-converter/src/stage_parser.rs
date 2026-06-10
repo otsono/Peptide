@@ -70,6 +70,10 @@ pub struct Platform {
     /// isn't in the stage art, e.g. bowserscastle's columns over lava). Parsed terrain platforms
     /// already have their art in the background, so they stay invisible collision.
     pub visible: bool,
+    /// `true` for a standable floor that must not anchor the stage (a molten lake the fighter
+    /// lands ON while its hazard hitbox burns them). Excluded from main-floor selection and
+    /// engine-layer alignment; still real collision.
+    pub hazard_floor: bool,
 }
 
 /// A stage hazard, emitted as a Fraymakers custom game object (a damaging hitbox volume the
@@ -94,17 +98,46 @@ pub struct Hazard {
     pub range: f64,
     pub period: u32,
     /// Frames between native-hitbox re-arms (so a lingering fighter keeps taking hits).
+    /// = the SSF2 attack's `refreshRate`, frame-doubled.
     pub rehit: u32,
+    /// FM knockbackGrowth (= the SSF2 attack's `kbConstant`, per the shared key map).
+    pub kb_growth: f64,
     /// Display label (for the entity/layer names).
     pub label: String,
     /// The rasterized SSF2 hazard sprite (the real art), if recovered from the placement tree.
     /// `None` falls back to a generated placeholder box in the emitter.
     pub art: Option<StageArt>,
+    /// The hazard's labelled sub-animations (e.g. a Thwomp's `entrance`/`fall`/`idle`), recovered
+    /// from its SSF2 animation clip's frame labels. When present, the emitter builds a
+    /// multi-animation custom game object whose Substate machine switches between them; empty falls
+    /// back to the single-animation [`Hazard::art`].
+    pub anims: Vec<ClipAnim>,
+}
+
+/// One labelled animation of an SSF2 movieclip (a frame-label segment, e.g. `idle`/`fall`), as a
+/// sequence of rasterized frames. Universal: used for multi-animation hazard CGOs and any other
+/// stage clip whose code switches animations by label. Frame lengths are SSF2 (30fps) units; the
+/// emitter applies the same 30->60fps doubling as the rest of the stage.
+#[derive(Clone, Debug)]
+pub struct ClipAnim {
+    /// FM animation name (the SSF2 frame label, camelCased + prefixed by the emitter).
+    pub label: String,
+    /// The animation's frames, in order (one rasterized image per source frame).
+    pub frames: Vec<StageArt>,
 }
 
 impl Hazard {
     /// Re-arm cadence for the native hitbox, in frames (min 1).
     pub fn rehit(&self) -> u32 { self.rehit.max(1) }
+}
+
+/// Anchor points the placement walk records: the stage MC's world registration (the FM-space
+/// origin) and the terrain MC's world registration (the GAME-space origin — the coordinate
+/// space SSF2's AS3 spawn calls and runtime X/Y use).
+#[derive(Default)]
+struct WalkAnchors {
+    origin: Option<(f64, f64)>,
+    terrain: Option<(f64, f64)>,
 }
 
 /// A player beacon (match-start "entrance" or respawn point) in FM coords.
@@ -153,6 +186,10 @@ pub struct StageModel {
     /// are declared opt-in in `mappings/stage/metadata.jsonc` and become real, author-editable
     /// FM custom-game-object hazards (a damaging hitbox volume).
     pub hazards: Vec<Hazard>,
+    /// Thwomp-style hazard target columns as FM x coords, converted from the GAME-space values
+    /// in `metadata.jsonc` (read 1:1 from the stage class's `update` disasm). Empty when the
+    /// stage has none; the emitter drives the falling-hazard cycle over them.
+    pub sink_columns: Vec<f64>,
     /// Rendered stage art, split into depth layers (the painted backdrop, the main
     /// stage at character depth, and a foreground that draws in front of fighters).
     pub art: StageArtSet,
@@ -186,9 +223,14 @@ pub struct StageArtSet {
     /// one frame when the source has animated clips (the emitter loops them).
     pub stage_frames: Vec<StageArt>,
     /// Art that draws in front of the fighters (SSF2 `foreground`), as a possibly-animated,
-    /// semi-transparent overlay (bowserscastle's shimmering lava-glow sheet). One frame = static,
-    /// more = the emitter loops it. Empty = no foreground.
+    /// semi-transparent overlay (bowserscastle's shimmering lava-glow sheet + lightmask tint). One
+    /// frame = static, more = the emitter loops it. Empty = no foreground.
     pub foreground: Vec<StageArt>,
+    /// OPAQUE foreground occluders that draw in front of the fighter but BEHIND the semi-transparent
+    /// `foreground` tint: the near face of a standable structure SSF2 split off as a separate piece
+    /// (bowscastle's bridge parapet) so a fighter standing on the deck is occluded from the front.
+    /// Rendered at full alpha (a translucent occluder would show the fighter through solid brick).
+    pub foreground_occluders: Vec<StageArt>,
 }
 
 impl StageArtSet {
@@ -253,7 +295,9 @@ pub struct StageArt {
 impl StageModel {
     /// The main (solid) floor: the widest non-drop-through platform, if any.
     pub fn main_floor(&self) -> Option<&Platform> {
-        self.platforms.iter().filter(|p| !p.drop_through).max_by(|a, b| a.rect.w.total_cmp(&b.rect.w))
+        // a hazard floor (a standable molten lake) never anchors the stage, however wide.
+        self.platforms.iter().filter(|p| !p.drop_through && !p.hazard_floor)
+            .max_by(|a, b| a.rect.w.total_cmp(&b.rect.w))
     }
 }
 
@@ -340,9 +384,9 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         damage: h.damage, knockback: h.knockback, angle: h.angle,
         interval: h.interval, active: h.active,
         motion: h.motion.clone().unwrap_or_else(|| "static".to_string()),
-        range: h.range, period: h.period.max(1), rehit: h.rehit,
+        range: h.range, period: h.period.max(1), rehit: h.rehit, kb_growth: 40.0,
         label: h.label.clone().unwrap_or_else(|| format!("Hazard {}", i + 1)),
-        art: None,
+        art: None, anims: vec![],
     }).collect()).unwrap_or_default();
     let suppress_auto_hazards = entry.map(|e| e.no_hazards).unwrap_or(false);
 
@@ -409,10 +453,15 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
 
     // Collect every placed shape instance (with world AABB) and find the stageMC origin.
     let mut instances: Vec<Instance> = Vec::new();
-    let mut origin: Option<(f64, f64)> = None;
-    walk(&swf.tags, Mat::id(), &sym_names, &shape_bounds, &sprites, &planes, 0, None, None, false, None, &mut instances, &mut origin);
+    let mut anchors = WalkAnchors::default();
+    walk(&swf.tags, Mat::id(), &sym_names, &shape_bounds, &sprites, &planes, 0, None, None, false, None, &mut instances, &mut anchors);
 
-    let (ox, oy) = origin.unwrap_or((275.0, 200.0)); // SWF stage center fallback
+    let (ox, oy) = anchors.origin.unwrap_or((275.0, 200.0)); // SWF stage center fallback
+    // GAME-space origin: the terrain MC's registration relative to the stage MC. The stage's
+    // own AS3 (spawnEnemy coords) and the engine's runtime X/Y are terrain-local, so
+    // FM = (game + terrain_off) × scale. Verified live on bowserscastle: terrain at
+    // stageMC-local (338.85, 381.7); ledge anchors confirm pure translation (scale 1.0).
+    let terrain_off = anchors.terrain.map(|(tx, ty)| (tx - ox, ty - oy));
     // Fraymakers space = SSF2 space scaled up by `size_multiplier` (the same knob the
     // character converter scales sprites by, default 1.3), so the stage matches the
     // scaled-up fighters and the art fills the FM camera the way it did in SSF2.
@@ -446,14 +495,18 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         if entry.map(|e| e.non_floor_terrain.iter().any(|s| sn.contains(&s.to_ascii_lowercase()))).unwrap_or(false) {
             continue;
         }
+        // a molten lake (hazard floor) IS standable in SSF2 — the fighter lands ON it and the
+        // lava hitbox above it does the damage — but must not anchor the stage (main floor /
+        // engine-layer alignment), so it carries the flag.
+        let hazard_floor = entry.map(|e| e.hazard_floors.iter().any(|s| sn.contains(&s.to_ascii_lowercase()))).unwrap_or(false);
         if !is_art_bg && sn.contains("platform") {
-            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: true, profile: None, moving, visible: false });
+            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: true, profile: None, moving, visible: false, hazard_floor });
         } else if !is_art_bg && ["terrain", "collison", "collision", "ground"].iter().any(|m| sn.contains(m)) {
             // solid terrain can be curved/sloped (e.g. a hilly island), so trace its top
             // surface as a polyline instead of a flat line.
             let profile = shape_defs.get(&inst.shape_id)
                 .and_then(|s| floor_profile(s, &inst.aabb, ox, oy, scale));
-            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: false, profile, moving, visible: false });
+            platforms.push(Platform { rect: to_fm(&inst.aabb), drop_through: false, profile, moving, visible: false, hazard_floor });
         }
     }
     // Dedupe near-coincident collision platforms: a moving-platform container MC (e.g.
@@ -470,6 +523,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         platforms.push(Platform {
             rect: Rect { x: p.x - p.w / 2.0, y: p.y, w: p.w, h: 64.0 },
             drop_through: p.drop_through, profile: None, moving: false, visible: true,
+            hazard_floor: false,
         });
     }
     let moving_count = platforms.iter().filter(|p| p.moving).count();
@@ -490,11 +544,25 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // hazard clip parked off-screen at frame 0 (a thwomp resting below the pit) doesn't ship as a
     // phantom hitbox a fighter can never reach.
     let detected = detect_hazards(&instances, &to_fm, &shape_defs, &bitmaps, ox, oy, render_art_flag);
+    if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+        for (k, h) in &detected {
+            eprintln!("[detected-hazard] {:?} ({:.1},{:.1}) {:.0}x{:.0} top_y={:.1} bottom_y={:.1}",
+                k, h.x, h.y, h.w, h.h, h.y - h.h / 2.0, h.y + h.h / 2.0);
+        }
+    }
     // AS3-sourced hazards: the stage's own `spawnEnemy(<Class>)` calls (e.g. bowserscastle's
     // BowsersCastleLava + Thwomp). these win over the placement-tree heuristic when present.
+    // Each actor's hazard clip (the SymbolClass whose linkage carries the kind keyword) supplies
+    // its own collision box so the hitbox lands EXACTLY where SSF2 puts it (terrain-space).
     let bound_ref = death_box.as_ref().or(camera_box.as_ref());
+    let actor_box = |class_name: &str| -> Option<Rect> {
+        let kw = hazard_kind(class_name).map(|k| k.label().to_ascii_lowercase())?;
+        sym_names.iter()
+            .filter(|(id, name)| name.to_ascii_lowercase().contains(&kw) && sprites.contains_key(id))
+            .find_map(|(id, _)| clip_attack_box(*id, &sprites, &sym_names, &shape_bounds))
+    };
     let as3_hazards: Vec<Hazard> = abc_model.as_ref().map(|m| m.actors.iter()
-        .filter_map(|a| actor_to_hazard(a, ox, oy, scale, bound_ref))
+        .filter_map(|a| actor_to_hazard(a, scale, bound_ref, terrain_off, actor_box(&a.class_name).as_ref()))
         .collect()).unwrap_or_default();
     let hazards: Vec<Hazard> = if !meta_hazards.is_empty() {
         // hand-declared hazards win, but borrow a detected sprite of the same kind so a declared
@@ -536,6 +604,40 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         }).collect()
     };
 
+    // --- hazard ANIMATIONS: recover each hazard's labelled sub-animations from its SSF2 clip so
+    // the emitter can build a multi-animation Substate CGO (a Thwomp's entrance/fall/idle, not one
+    // frozen pose). The source clip is the SymbolClass whose linkage matches the hazard's class
+    // keyword and which carries frame labels; universal across hazards.
+    let mut hazards = hazards;
+    if render_art_flag {
+        for hz in hazards.iter_mut() {
+            let kw = hz.label.to_ascii_lowercase();
+            // the hazard's animation clip = the SymbolClass whose linkage contains the hazard's
+            // class keyword and carries the MOST frame labels (the top-level selector clip, e.g.
+            // `thwomp_mc` with entrance/fall/idle, not a sub-clip like `thwomp_idle` with one).
+            let clip = sym_names.iter()
+                .filter(|(id, name)| name.to_ascii_lowercase().contains(&kw) && sprites.contains_key(id))
+                .map(|(id, _)| (*id, crate::sprite_parser::extract_frame_labels_from_tags(sprites[id]).len()))
+                .filter(|(_, n)| *n > 0)
+                .max_by_key(|(_, n)| *n)
+                .map(|(id, _)| id);
+            if let Some(cid) = clip {
+                // origin 0,0: the frames stay in the clip's LOCAL space, so the emitter centres them
+                // on the CGO (which is spawned at setX/setY) rather than the stage origin.
+                let anims = extract_labeled_clip_anims(cid, &sprites, &sym_names, &shape_defs, &bitmaps, &planes, 0.0, 0.0);
+                // only adopt a multi-animation CGO when it's genuinely animated (>1 label or any
+                // multi-frame segment); a single static label is just the placeholder art.
+                if anims.len() > 1 || anims.iter().any(|a| a.frames.len() > 1) {
+                    hz.anims = anims;
+                }
+                if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+                    eprintln!("[hz-anims] {} clip={cid}: {:?}", hz.label,
+                        hz.anims.iter().map(|a| (a.label.clone(), a.frames.len(), a.frames.first().map(|f| (f.w, f.h)))).collect::<Vec<_>>());
+                }
+            }
+        }
+    }
+
     // --- spawns: pN_Start -> entrances, pN_Spawn -> respawns (by symbol-class name).
     let mut entrances: Vec<SpawnPoint> = Vec::new();
     let mut respawns: Vec<SpawnPoint> = Vec::new();
@@ -568,8 +670,13 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // The PNGs stay native-resolution; placement is scaled here and the emitter renders the
     // IMAGE layers at `scale`, matching the geometry.
     let keep_foreground = entry.map(|e| e.keep_foreground).unwrap_or(false);
+    // the main solid floor's top y (FM coords), so an engine-added standable bg layer (e.g.
+    // bowserscastle's brick bridge) aligns its surface to where fighters actually stand.
+    // hazard floors (a standable molten lake) never anchor, however wide.
+    let main_floor_y = platforms.iter().filter(|p| !p.drop_through && !p.hazard_floor)
+        .max_by(|a, b| a.rect.w.total_cmp(&b.rect.w)).map(|p| p.rect.y);
     let art = if render_art_flag {
-        render_art_layers(&swf.tags, &sprites, &sym_names, &shape_defs, &bitmaps, ox, oy, scale, keep_foreground, &planes)
+        render_art_layers(&swf.tags, &sprites, &sym_names, &shape_defs, &bitmaps, ox, oy, scale, keep_foreground, &planes, main_floor_y)
     } else {
         StageArtSet::default()
     };
@@ -586,7 +693,14 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             moving-platform motion is bespoke per stage and not ported yet)"));
     }
 
-    Ok(StageModel { id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, art, warnings, scale })
+    // thwomp-style target columns: GAME (terrain-local) x values from the metadata (read 1:1
+    // from the stage class's update disasm) -> FM x via the terrain origin.
+    let sink_columns: Vec<f64> = match terrain_off {
+        Some(t) => entry.map(|e| e.sink_columns.iter().map(|x| (x + t.0) * scale).collect()).unwrap_or_default(),
+        None => Vec::new(),
+    };
+
+    Ok(StageModel { id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, sink_columns, art, warnings, scale })
 }
 
 /// Validate that the SSF2 source carries the linkages a playable stage needs. Returns a
@@ -712,16 +826,29 @@ impl HazardKind {
     /// (motion, damage, knockback, angle) defaults for this hazard type.
     fn defaults(self) -> (&'static str, f64, f64, f64) {
         match self {
-            HazardKind::Lava       => ("static",     14.0, 80.0, 90.0),
+            // Lava/Thwomp: 1:1 from the bowserscastle getAttackStats disasm (the SSF2 key map:
+            // power -> baseKnockback, direction -> angle). lava: damage 6, direction 90,
+            // power 70. thwomp `fall`: damage 30, power 125 (two boxes, directions 135/45 —
+            // the emitter splits them; 90 here is the single-box fallback).
+            HazardKind::Lava       => ("static",      6.0, 70.0, 90.0),
             HazardKind::Acid       => ("static",     10.0, 50.0, 90.0),
             HazardKind::Spike      => ("static",      9.0, 60.0, 90.0),
             HazardKind::Saw        => ("circle",     12.0, 70.0, 45.0),
-            HazardKind::Thwomp     => ("fall",       16.0, 70.0, 90.0),
+            HazardKind::Thwomp     => ("fall",       30.0, 125.0, 90.0),
             HazardKind::Podoboo    => ("oscillateY", 12.0, 70.0, 90.0),
             HazardKind::Tornado    => ("oscillateX",  8.0, 50.0, 80.0),
             HazardKind::Bumper     => ("static",      4.0, 90.0, 45.0),
             HazardKind::DamageZone => ("static",     12.0, 60.0, 90.0),
             HazardKind::Piranha    => ("oscillateY", 11.0, 60.0, 80.0),
+        }
+    }
+    /// `(rehit frames @60fps, FM knockbackGrowth)` — from the SSF2 attack stats where known
+    /// (refreshRate ×2, kbConstant 1:1 per the shared key map); generic 30/40 otherwise.
+    fn hit_tuning(self) -> (u32, f64) {
+        match self {
+            HazardKind::Lava   => (30, 125.0), // refreshRate 15, kbConstant 125 (disasm)
+            HazardKind::Thwomp => (60, 12.0),  // refreshRate 30, kbConstant 12 (disasm)
+            _ => (30, 40.0),
         }
     }
     fn label(self) -> &'static str {
@@ -770,17 +897,99 @@ fn hazard_kind(label: &str) -> Option<HazardKind> {
 /// class name picks the kind ([`hazard_kind`] -> damage/knockback/angle/motion), and the literal
 /// `setX`/`setY` coords map to FM space. an actor with no literal coords (a random-drop Thwomp)
 /// falls back to the top-center of the reachable bound so it still drops into play.
-fn actor_to_hazard(actor: &crate::stage_abc::SpawnedActor, ox: f64, oy: f64, scale: f64, bound: Option<&Rect>) -> Option<Hazard> {
+/// The collision box placed inside a hazard clip (the SSF2 `attackBox`: a `CollisonBox` child
+/// sprite whose inner shape is the box), as a CLIP-LOCAL rect — the placement matrix applied to
+/// the inner shape's bounds. Searched across all the clip's frames, one level of nesting deep
+/// (SSF2 hazards put the box under a `stance` wrapper). Static data, live-verified: the
+/// bowserscastle lava box computed here matches the running engine's attackBox exactly.
+fn clip_attack_box(
+    clip_id: u16,
+    sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
+    sym_names: &BTreeMap<u16, String>,
+    shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
+) -> Option<Rect> {
+    fn box_of(
+        tags: &[swf::Tag], mat: Mat, depth: usize,
+        sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
+        sym_names: &BTreeMap<u16, String>,
+        shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
+    ) -> Option<Rect> {
+        if depth > 3 { return None; }
+        for frame in build_frames(tags) {
+            for (id, local, name) in &frame {
+                let m = mat.mul(local);
+                let is_box = name.as_deref() == Some("attackBox")
+                    || sym_names.get(id).is_some_and(|s| {
+                        let l = s.to_ascii_lowercase();
+                        l.contains("collison") || l.contains("collision")
+                    });
+                if is_box {
+                    // the box sprite's inner shape, through its own placement matrix.
+                    if let Some(btags) = sprites.get(id) {
+                        for inner in build_frames(btags) {
+                            for (sid, smat, _) in &inner {
+                                if let Some((x0, y0, x1, y1)) = shape_bounds.get(sid) {
+                                    let mm = m.mul(smat);
+                                    let c = [mm.apply(*x0, *y0), mm.apply(*x1, *y0), mm.apply(*x1, *y1), mm.apply(*x0, *y1)];
+                                    let xmn = c.iter().map(|p| p.0).fold(f64::MAX, f64::min);
+                                    let xmx = c.iter().map(|p| p.0).fold(f64::MIN, f64::max);
+                                    let ymn = c.iter().map(|p| p.1).fold(f64::MAX, f64::min);
+                                    let ymx = c.iter().map(|p| p.1).fold(f64::MIN, f64::max);
+                                    return Some(Rect { x: xmn, y: ymn, w: xmx - xmn, h: ymx - ymn });
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(child) = sprites.get(id) {
+                    if let Some(r) = box_of(child, m, depth + 1, sprites, sym_names, shape_bounds) {
+                        return Some(r);
+                    }
+                }
+            }
+        }
+        None
+    }
+    box_of(sprites.get(&clip_id)?, Mat::id(), 0, sprites, sym_names, shape_bounds)
+}
+
+fn actor_to_hazard(
+    actor: &crate::stage_abc::SpawnedActor, scale: f64, bound: Option<&Rect>,
+    terrain_off: Option<(f64, f64)>, attack_box: Option<&Rect>,
+) -> Option<Hazard> {
     let kind = hazard_kind(&actor.class_name)?;
     let (motion, damage, knockback, angle) = kind.defaults();
-    let x = actor.x.map(|x| (x - ox) * scale)
-        .unwrap_or_else(|| bound.map(|b| b.x + b.w / 2.0).unwrap_or(0.0));
-    let y = actor.y.map(|y| (y - oy) * scale)
-        .unwrap_or_else(|| bound.map(|b| b.y + 40.0).unwrap_or(0.0));
+    // The actor's setX/setY literals are GAME (terrain-local) coords; FM = (game + terrain_off)
+    // × scale. With the clip's own collision box (clip-local), the hazard hitbox is placed
+    // EXACTLY where SSF2 puts it — no band heuristics. Verified live on bowserscastle (the
+    // computed lava box matches the running engine's attackBox).
+    let molten = matches!(kind, HazardKind::Lava | HazardKind::Acid);
+    let (x, y, w, h) = match (terrain_off, actor.x, actor.y, attack_box) {
+        (Some(t), Some(ax), Some(ay), Some(b)) => (
+            (ax + b.x + b.w / 2.0 + t.0) * scale,
+            (ay + b.y + b.h / 2.0 + t.1) * scale,
+            b.w * scale,
+            b.h * scale,
+        ),
+        _ if molten => {
+            // no AS3 coords / no box recovered: fall back to a wide band over the lower
+            // play area (better than nothing for an unscouted lava stage).
+            if let Some(b) = bound {
+                (b.x + b.w / 2.0, b.y + b.h * 0.80, b.w * 0.62, b.h * 0.28)
+            } else { (0.0, 0.0, 800.0, 200.0) }
+        }
+        _ => {
+            let x = actor.x.zip(terrain_off).map(|(ax, t)| (ax + t.0) * scale)
+                .unwrap_or_else(|| bound.map(|b| b.x + b.w / 2.0).unwrap_or(0.0));
+            let y = actor.y.zip(terrain_off).map(|(ay, t)| (ay + t.1) * scale)
+                .unwrap_or_else(|| bound.map(|b| b.y + 40.0).unwrap_or(0.0));
+            (x, y, 130.0, 130.0)
+        }
+    };
+    let (rehit, kb_growth) = kind.hit_tuning();
     Some(Hazard {
-        x, y, w: 130.0, h: 130.0, damage, knockback, angle,
+        x, y, w, h, damage, knockback, angle,
         interval: 0, active: 20, motion: motion.to_string(),
-        range: 0.0, period: 120, rehit: 30, label: kind.label().to_string(), art: None,
+        range: 0.0, period: 120, rehit, kb_growth, label: kind.label().to_string(), art: None, anims: vec![],
     })
 }
 
@@ -816,13 +1025,14 @@ fn detect_hazards(
     }
     clusters.into_iter().map(|(k, r, insts)| {
         let (motion, damage, knockback, angle) = k.defaults();
-        let art = if with_art { composite_layer(&insts, shape_defs, bitmaps, ox, oy) } else { None };
+        let (rehit, kb_growth) = k.hit_tuning();
+        let art = if with_art { composite_layer(&insts, shape_defs, bitmaps, ox, oy, None) } else { None };
         (k, Hazard {
             // hazard hitbox = the detected box center + size (FM coords; +y down).
             x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, w: r.w.max(20.0), h: r.h.max(20.0),
             damage, knockback, angle, interval: 0, active: 20,
-            motion: motion.to_string(), range: 60.0, period: 120, rehit: 30,
-            label: k.label().to_string(), art,
+            motion: motion.to_string(), range: 60.0, period: 120, rehit, kb_growth,
+            label: k.label().to_string(), art, anims: vec![],
         })
     }).collect()
 }
@@ -837,10 +1047,6 @@ fn union_rect(a: &Rect, b: &Rect) -> Rect {
     let x = a.x.min(b.x); let y = a.y.min(b.y);
     Rect { x, y, w: (a.x + a.w).max(b.x + b.w) - x, h: (a.y + a.h).max(b.y + b.h) - y }
 }
-
-/// Cap on stage-animation frames (SSF2 clips can be hundreds of frames; we loop a short
-/// slice). Background/foreground are single-frame.
-const ANIM_FRAME_CAP: usize = 24;
 
 /// One placed child in a sprite's timeline frame: `(character id, local matrix, name)`.
 type PlacedChild = (u16, Mat, Option<String>);
@@ -918,7 +1124,14 @@ fn walk_frame(
         }
         if let Some(frames) = sprite_frames.get(id) {
             let next = name.as_deref().or(if sym.is_empty() { carried_sym } else { Some(&sym) }).map(|s| s.to_string());
-            let f = &frames[global_frame % frames.len()];
+            // PER-INSTANCE PHASE: SSF2 desyncs repeated decorative clips (the wall lamps/embers,
+            // chandeliers, bowser spectators) by WHERE they're placed, so they don't blink in
+            // unison. Flash plays sibling instances of one symbol in sync, but these were authored
+            // out of phase; approximate that by offsetting each instance's playhead by its placement
+            // position. A single-instance clip just starts at a shifted (still-looping) frame, so
+            // this is a no-op for it.
+            let phase = (local.tx.abs().round() as usize).wrapping_add((local.ty.abs().round() as usize).wrapping_mul(7));
+            let f = &frames[(global_frame + phase) % frames.len()];
             walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1);
         }
     }
@@ -937,19 +1150,33 @@ fn render_art_layers(
     ox: f64, oy: f64, scale: f64,
     keep_foreground: bool,
     planes: &PlaneMap,
+    surface_y_fm: Option<f64>,
 ) -> StageArtSet {
     // per-sprite + root frame timelines.
     let mut sprite_frames: BTreeMap<u16, Vec<Vec<PlacedChild>>> = BTreeMap::new();
     for (id, tags) in sprites { sprite_frames.insert(*id, build_frames(tags)); }
     let root_frames = build_frames(root_tags);
 
-    // full animation length = longest timeline. We sample ANIM_FRAME_CAP frames spread
-    // EVENLY across it (a 645-frame clip's first 12 frames are usually a static slice, so
-    // sampling end-to-end captures the motion); the emitter loops the samples.
+    if let Ok(want) = std::env::var("PEPTIDE_CLIP_ANIMS") {
+        for (id, name) in sym_names.iter() {
+            if !name.to_ascii_lowercase().contains(&want.to_ascii_lowercase()) { continue; }
+            if let Some(tags) = sprites.get(id) {
+                let labels = crate::sprite_parser::extract_frame_labels_from_tags(tags);
+                let frames = build_frames(tags);
+                eprintln!("[clip] {name} id={id}: {} frames; labels={labels:?}", frames.len());
+            }
+        }
+    }
+
+    // full animation length = longest timeline. Port EVERY source frame 1:1 (no sampling): each
+    // SSF2 frame becomes one keyframe of length 1, and the shared 30fps->60fps doubling
+    // (entity_gen::double_keyframe_lengths, exactly the character port's tool) stretches each to
+    // length 2. Identical consecutive frames RLE into one longer hold. Shorter-looping elements
+    // repeat within the global timeline, matching SSF2's per-clip frame advancement.
     let full_len = sprite_frames.values().map(|f| f.len())
         .chain(std::iter::once(root_frames.len())).max().unwrap_or(1);
-    let n_samples = full_len.min(ANIM_FRAME_CAP);
-    let sample_frame = |i: usize| -> usize { i * full_len / n_samples };
+    let n_samples = full_len;
+    let sample_frame = |i: usize| -> usize { i };
 
     // The ROOT timeline usually has just ONE content frame (the backdrop + stageMC placements);
     // many SSF2 stages reserve frame 0 as an empty preloader and put the content on frame 1.
@@ -958,6 +1185,7 @@ fn render_art_layers(
     // dropping the whole backdrop. So anchor the root at its RICHEST frame (the content layout);
     // the sprites INSIDE still cycle by the global frame, so animation is preserved.
     let root_idx = root_frames.iter().enumerate().max_by_key(|(_, f)| f.len()).map(|(i, _)| i).unwrap_or(0);
+
 
     // instances at a given global frame, classified + composited per layer.
     let frame_instances = |g: usize| -> Vec<Instance> {
@@ -975,7 +1203,7 @@ fn render_art_layers(
         let group: Vec<&Instance> = insts.iter().filter(|i| kinds.contains(&art_kind(i))).collect();
         // PNG stays native-resolution; only the placement is scaled (the emitter renders the
         // IMAGE layer at `scale`), so the art and geometry share one scale with no upscaling.
-        composite_layer(&group, shape_defs, bitmaps, ox, oy).map(|mut a| {
+        composite_layer(&group, shape_defs, bitmaps, ox, oy, None).map(|mut a| {
             a.x *= scale; a.y *= scale; a
         })
     };
@@ -1040,14 +1268,22 @@ fn render_art_layers(
     // (its foreground is a real overlay, e.g. bowserscastle's glowing lava sheet) so it stays in front.
     let is_dup_fg = move |i: &Instance| !keep_foreground && art_kind(i) == ArtKind::Foreground && frac_in_bg(&i.aabb) >= 0.6;
     // composite an explicit instance group (back-to-front = walk order), scaled like `composite`.
-    let composite_grp = |group: Vec<&Instance>| -> Option<StageArt> {
-        composite_layer(&group, shape_defs, bitmaps, ox, oy).map(|mut a| { a.x *= scale; a.y *= scale; a })
+    let composite_grp = |group: Vec<&Instance>, bounds: Option<(f64, f64, f64, f64)>| -> Option<StageArt> {
+        composite_layer(&group, shape_defs, bitmaps, ox, oy, bounds).map(|mut a| { a.x *= scale; a.y *= scale; a })
+    };
+    // union raw bounds of an instance set (None if empty) — the fixed canvas for an animated layer.
+    let union_bounds = |insts: &[&Instance]| -> Option<(f64, f64, f64, f64)> {
+        (!insts.is_empty()).then(|| (
+            insts.iter().map(|i| i.aabb.left()).fold(f64::MAX, f64::min),
+            insts.iter().map(|i| i.aabb.top()).fold(f64::MAX, f64::min),
+            insts.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max),
+            insts.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max),
+        ))
     };
 
-    // timing: holds are in SSF2 frame units (one source frame = one hold). consecutive identical
-    // frames are run-length-encoded into one longer hold so a held source frame (an element's pause
-    // between cycles) reads as a break. the emitter applies the SSF2 30fps -> FM 60fps doubling
-    // uniformly (entity_gen::double_keyframe_lengths), exactly like the character port.
+    // one SSF2 source frame = one hold unit (the 30fps->60fps doubling is applied uniformly by the
+    // emitter, exactly like the character port). Consecutive identical frames RLE into one longer
+    // hold so a held source frame reads as a pause.
     let base_hold = 1u32;
     let rle = |frames: Vec<StageArt>| -> Vec<StageArt> {
         if frames.len() <= 1 { return frames; }
@@ -1073,9 +1309,14 @@ fn render_art_layers(
             if seen.insert(i.sym_name.clone()) { order.push(i.sym_name.clone()); }
         }
         order.iter().filter_map(|key| {
+            // fixed canvas = the union of this element's bounds across ALL frames, so the layer
+            // stays put while its content animates (no wiggle as the flame bbox flickers).
+            let all: Vec<&Instance> = sampled.iter()
+                .flat_map(|(insts, _)| insts.iter().filter(|i| member(i) && &i.sym_name == key)).collect();
+            let bounds = union_bounds(&all);
             let per_frame: Vec<StageArt> = sampled.iter().filter_map(|(insts, _)| {
                 let grp: Vec<&Instance> = insts.iter().filter(|i| member(i) && &i.sym_name == key).collect();
-                composite_grp(grp)
+                composite_grp(grp, bounds)
             }).collect();
             let animated = per_frame.len() == n_samples
                 && per_frame.windows(2).any(|w| w[0].png != w[1].png);
@@ -1083,7 +1324,7 @@ fn render_art_layers(
                 rle(per_frame)
             } else {
                 let grp: Vec<&Instance> = base_insts.iter().filter(|i| member(i) && &i.sym_name == key).collect();
-                composite_grp(grp).into_iter().collect()
+                composite_grp(grp, bounds).into_iter().collect()
             };
             (!frames.is_empty()).then(|| BgLayer { name: key.clone(), frames })
         }).collect()
@@ -1093,15 +1334,17 @@ fn render_art_layers(
     // an animated SSF2 foreground (bowserscastle's shimmering lava-glow sheet over the floor)
     // actually animates instead of freezing on one frame. static foregrounds collapse to one frame.
     let fg_member = |i: &Instance| art_kind(i) == ArtKind::Foreground && !is_dup_fg(i);
+    let fg_all: Vec<&Instance> = sampled.iter().flat_map(|(insts, _)| insts.iter().filter(|i| fg_member(i))).collect();
+    let fg_bounds = union_bounds(&fg_all);
     let fg_per_frame: Vec<StageArt> = sampled.iter()
-        .filter_map(|(insts, _)| composite_grp(insts.iter().filter(|i| fg_member(i)).collect()))
+        .filter_map(|(insts, _)| composite_grp(insts.iter().filter(|i| fg_member(i)).collect(), fg_bounds))
         .collect();
     let fg_animated = fg_per_frame.len() == n_samples
         && fg_per_frame.windows(2).any(|w| w[0].png != w[1].png);
     let foreground: Vec<StageArt> = if fg_animated {
         rle(fg_per_frame)
     } else {
-        composite_grp(base_insts.iter().filter(|i| fg_member(i)).collect()).into_iter().collect()
+        composite_grp(base_insts.iter().filter(|i| fg_member(i)).collect(), fg_bounds).into_iter().collect()
     };
     // when the backdrop carries `_cambg` parallax layers, each backdrop/cambg LAYER (grouped
     // by symbol) becomes its own camera-relative plane with its own auto-derived pan rate (so
@@ -1124,7 +1367,7 @@ fn render_art_layers(
         // PAN; `PEPTIDE_PARALLAX_BOUNDS` forces BOUNDS to exercise that path.
         let mode = if std::env::var("PEPTIDE_PARALLAX_BOUNDS").is_ok() { ParallaxMode::Bounds } else { ParallaxMode::Pan };
         let layers: Vec<ParallaxLayer> = order.iter().filter_map(|key| {
-            composite_layer(&groups[*key], shape_defs, bitmaps, ox, oy).map(|mut art| {
+            composite_layer(&groups[*key], shape_defs, bitmaps, ox, oy, None).map(|mut art| {
                 art.x *= scale; art.y *= scale;
                 let (x_pan, y_pan) = parallax_pan(art.w, art.h);
                 ParallaxLayer { art, mode, x_pan, y_pan }
@@ -1158,18 +1401,163 @@ fn render_art_layers(
         sampled[base_idx].1.clone().into_iter().collect()
     };
 
+    // engine-added background layers: orphan library bitmaps the SSF2 engine instantiates as named
+    // bg children (e.g. bowserscastle's standable brick bridge). Placed centred on the backdrop;
+    // appended frontmost-of-background (in front of the painted lava, behind the fighters).
+    let backdrop_bounds = {
+        let bg: Vec<&Instance> = base_insts.iter()
+            .filter(|i| matches!(art_kind(i), ArtKind::Backdrop | ArtKind::Background))
+            .collect();
+        (!bg.is_empty()).then(|| (
+            bg.iter().map(|i| i.aabb.x).fold(f64::MAX, f64::min),
+            bg.iter().map(|i| i.aabb.y).fold(f64::MAX, f64::min),
+            bg.iter().map(|i| i.aabb.x + i.aabb.w).fold(f64::MIN, f64::max),
+            bg.iter().map(|i| i.aabb.y + i.aabb.h).fold(f64::MIN, f64::max),
+        ))
+    };
+    let mut background = background;
+    // engine-added orphan bitmaps: standable bg layers (the bridge deck) PLUS any foreground
+    // occluder pieces SSF2 splits off them (the near parapet that draws in front of the fighter).
+    let (eng_bg, foreground_occluders) = engine_added_bg_layers(root_tags, shape_defs, bitmaps, sprites, backdrop_bounds, surface_y_fm, ox, oy, scale);
+    background.extend(eng_bg);
+
     // background is already grouped into per-element layers (each RLE'd at the 30->60fps doubling);
     // the stage plane still needs the same RLE pass so a held source frame reads as a break.
-    StageArtSet { background, parallax, stage_frames: rle(stage_frames), foreground }
+    StageArtSet { background, parallax, stage_frames: rle(stage_frames), foreground, foreground_occluders }
 }
 
-/// Composite a set of art instances (back-to-front = walk order) into one RGBA image
+/// Engine-added background layers: bitmaps in the stage library that NO shape fill, PlaceObject,
+/// or timeline references. The SSF2 engine instantiates these at runtime as named background
+/// children (e.g. bowserscastle's standable `bowsers_bridge_bg` brick walkway) — they live in the
+/// stage's library but never in any movieclip, so the placement walk structurally can't see them.
+/// We detect the orphan bitmaps directly and emit each distinct one as its own background layer,
+/// centered on the backdrop at its standable height. Same-size orphans are one layer's animation
+/// frames; tiny orphans (animation swap-frames of a placed bitmap) are skipped. Generalizes to any
+/// stage built this way. `backdrop` is the raw-coord union bounds of the placed background art.
+#[allow(clippy::too_many_arguments)]
+fn engine_added_bg_layers(
+    root_tags: &[swf::Tag],
+    shape_defs: &BTreeMap<u16, &swf::Shape>,
+    bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
+    sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
+    backdrop: Option<(f64, f64, f64, f64)>,
+    surface_y_fm: Option<f64>,
+    ox: f64, oy: f64, scale: f64,
+) -> (Vec<BgLayer>, Vec<StageArt>) {
+    use std::collections::{BTreeMap as Map, BTreeSet};
+    let Some((bx0, by0, bx1, by1)) = backdrop else { return (Vec::new(), Vec::new()) };
+    // every character id referenced by a shape fill / sprite placement / root placement, and the
+    // pixel dims of every referenced bitmap (so a placed clip's animation swap-frame is excluded).
+    let mut referenced: BTreeSet<u16> = BTreeSet::new();
+    let mut ref_dims: BTreeSet<(u32, u32)> = BTreeSet::new();
+    let note = |id: u16, bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>, refd: &mut BTreeSet<u16>, dims: &mut BTreeSet<(u32, u32)>| {
+        refd.insert(id);
+        if let Some((w, h, _)) = bitmaps.get(&id) { dims.insert((*w, *h)); }
+    };
+    for s in shape_defs.values() {
+        for f in &s.styles.fill_styles {
+            if let swf::FillStyle::Bitmap { id, .. } = f { note(*id, bitmaps, &mut referenced, &mut ref_dims); }
+        }
+    }
+    for tags in sprites.values() {
+        for frame in build_frames(tags) { for (cid, _, _) in frame { note(cid, bitmaps, &mut referenced, &mut ref_dims); } }
+    }
+    for t in root_tags {
+        if let swf::Tag::PlaceObject(po) = t {
+            if let swf::PlaceObjectAction::Place(id) | swf::PlaceObjectAction::Replace(id) = po.action { note(id, bitmaps, &mut referenced, &mut ref_dims); }
+        }
+    }
+    // orphan + large + not a swap-frame of a placed bitmap; group equal-size orphans (frames).
+    let mut by_dim: Map<(u32, u32), Vec<u16>> = Map::new();
+    for (id, (w, h, _)) in bitmaps.iter() {
+        if !referenced.contains(id) && w * h > 50_000 && !ref_dims.contains(&(*w, *h)) {
+            by_dim.entry((*w, *h)).or_default().push(*id);
+        }
+    }
+    if std::env::var("PEPTIDE_ORPHAN_DEBUG").is_ok() {
+        eprintln!("=== bitmap inventory ({} total) ===", bitmaps.len());
+        for (id, (w, h, _)) in bitmaps.iter() {
+            let orphan = !referenced.contains(id);
+            let swap = ref_dims.contains(&(*w, *h));
+            eprintln!("  id={id} {w}x{h} ({} px)  orphan={orphan} swapframe-dim={swap}{}",
+                w * h, if orphan && w * h > 50_000 && !swap { "  <- ENGINE LAYER" } else { "" });
+            if std::env::var("PEPTIDE_ORPHAN_DUMP").is_ok() && orphan && w * h > 50_000 && !swap {
+                if let Some(im) = image::RgbaImage::from_raw(*w, *h, bitmaps[id].2.clone()) {
+                    let _ = im.save(format!("/tmp/orphan_{id}.png"));
+                }
+            }
+        }
+    }
+    // horizontal centre of the backdrop, in FM coords (the emitter scales the IMAGE by `scale`).
+    let center_x_fm = ((bx0 + bx1) / 2.0 - ox) * scale;
+    // opaque coverage of bitmap `id`'s row `y` (fraction of the width that's solid).
+    let row_cov = |id: &u16, y: u32| -> f64 {
+        let (bw, bh, rgba) = &bitmaps[id];
+        if y >= *bh { return 0.0; }
+        let op = (0..*bw).filter(|&x| rgba[((y * *bw + x) * 4 + 3) as usize] > 40).count();
+        op as f64 / *bw as f64
+    };
+    // the topmost row of bitmap `id` opaque across most of the width (its standable surface).
+    let surf_row = |id: &u16| -> u32 {
+        let (_, bh, _) = &bitmaps[id];
+        (0..*bh).find(|&y| row_cov(id, y) > 0.5).unwrap_or(0)
+    };
+    let to_art = |id: &u16, x_fm: f64, y_fm: f64| -> Option<StageArt> {
+        let (bw, bh, rgba) = &bitmaps[id];
+        let im = image::RgbaImage::from_raw(*bw, *bh, rgba.clone())?;
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(im).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
+        Some(StageArt { png, x: x_fm, y: y_fm, w: *bw, h: *bh, hold: 1 })
+    };
+    let mut bg_layers: Vec<BgLayer> = Vec::new();
+    let mut fg_arts: Vec<StageArt> = Vec::new();
+    for (li, ((w, _h), ids)) in by_dim.into_iter().enumerate() {
+        let x_fm = center_x_fm - w as f64 * scale / 2.0;
+        // DETECT the walkway's standable surface: the topmost row opaque across most of the width
+        // (the flat brick deck; the banner/throne above it are narrow). The BACKGROUND piece is the
+        // one solid at that deck row (fighters stand ON it); align THAT to the main collision floor.
+        // Fall back to the backdrop's vertical centre when there's no floor.
+        // Pick the deck row from whichever same-size orphan has the highest (topmost) solid deck.
+        let deck_row = ids.iter().map(&surf_row).min().unwrap_or(0);
+        // SSF2 splits a standable structure (e.g. bowscastle's bridge) into a background piece
+        // (solid deck, drawn behind the fighter) and a foreground piece (the near parapet, deck cut
+        // OUT so the fighter shows through, drawn in front to occlude their feet). Both are orphan
+        // bitmaps of the same size. Classify each by its coverage at the deck row: solid -> behind,
+        // cut-out -> in front. Animation-frame groups (all solid) keep one background layer.
+        let probe = (deck_row + 4).min(bitmaps[&ids[0]].1.saturating_sub(1));
+        let mut bg_id = ids[0];
+        let mut bg_cov = row_cov(&bg_id, probe);
+        for id in &ids {
+            let c = row_cov(id, probe);
+            if c > bg_cov { bg_cov = c; bg_id = *id; }
+        }
+        let surface_off = surf_row(&bg_id) as f64;
+        let y_fm = match surface_y_fm {
+            Some(s) => s - surface_off * scale,
+            None => ((by0 + by1) / 2.0 - oy) * scale,
+        };
+        // background = the deck-solid piece (one static frame for now; sub-animation is polish).
+        if let Some(art) = to_art(&bg_id, x_fm, y_fm) {
+            bg_layers.push(BgLayer { name: format!("engineLayer{li}"), frames: vec![art] });
+        }
+        // foreground = any same-size sibling whose deck row is clearly CUT OUT (a near parapet that
+        // must draw IN FRONT of the fighter). Pixel-aligned to the background piece (same x/y/size).
+        for id in &ids {
+            if *id != bg_id && row_cov(id, probe) < 0.25 && bg_cov > 0.4 {
+                if let Some(art) = to_art(id, x_fm, y_fm) { fg_arts.push(art); }
+            }
+        }
+    }
+    (bg_layers, fg_arts)
+}
+
 /// spanning their union bounds. `None` if nothing rasterized.
 fn composite_layer(
     art: &[&Instance],
     shape_defs: &BTreeMap<u16, &swf::Shape>,
     bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
     ox: f64, oy: f64,
+    fixed_bounds: Option<(f64, f64, f64, f64)>,
 ) -> Option<StageArt> {
     use image::{imageops, RgbaImage};
 
@@ -1185,11 +1573,15 @@ fn composite_layer(
 
     if art.is_empty() { return None; }
 
-    // union bounds (raw world coords) -> canvas. cap to keep the PNG sane.
-    let min_x = art.iter().map(|i| i.aabb.left()).fold(f64::MAX, f64::min);
-    let min_y = art.iter().map(|i| i.aabb.top()).fold(f64::MAX, f64::min);
-    let max_x = art.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max);
-    let max_y = art.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max);
+    // union bounds (raw world coords) -> canvas. cap to keep the PNG sane. `fixed_bounds` (the
+    // union across ALL frames of an animated layer) keeps every frame on one canvas so the layer
+    // doesn't slide as a flickering element's per-frame bbox shifts (the "wiggle").
+    let (min_x, min_y, max_x, max_y) = fixed_bounds.unwrap_or_else(|| (
+        art.iter().map(|i| i.aabb.left()).fold(f64::MAX, f64::min),
+        art.iter().map(|i| i.aabb.top()).fold(f64::MAX, f64::min),
+        art.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max),
+        art.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max),
+    ));
     let cw = ((max_x - min_x).ceil() as u32).clamp(1, 4096);
     let ch = ((max_y - min_y).ceil() as u32).clamp(1, 4096);
     let mut canvas = RgbaImage::new(cw, ch);
@@ -1248,6 +1640,57 @@ fn composite_layer(
             .write_image(canvas.as_raw(), cw, ch, image::ExtendedColorType::Rgba8).ok()?;
     }
     Some(StageArt { png, x: min_x - ox, y: min_y - oy, w: cw, h: ch, hold: 1 })
+}
+
+/// Extract a clip's labelled sub-animations as rasterized frame sequences. Each frame label in the
+/// clip's own timeline (e.g. a Thwomp's `entrance`/`fall`/`idle`) becomes one [`ClipAnim`]: the clip
+/// is held on that label's frame while the nested sub-clip plays through its full timeline,
+/// composited per frame on ONE fixed canvas (the union across the sub-animation, so it doesn't
+/// wiggle). Universal — any multi-animation stage clip (hazards, animated props) uses this.
+#[allow(clippy::too_many_arguments)]
+fn extract_labeled_clip_anims(
+    clip_id: u16,
+    sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
+    sym_names: &BTreeMap<u16, String>,
+    shape_defs: &BTreeMap<u16, &swf::Shape>,
+    bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
+    planes: &PlaneMap,
+    ox: f64, oy: f64,
+) -> Vec<ClipAnim> {
+    let Some(tags) = sprites.get(&clip_id) else { return Vec::new() };
+    let labels = crate::sprite_parser::extract_frame_labels_from_tags(tags);
+    if labels.is_empty() { return Vec::new(); }
+    let mut sprite_frames: BTreeMap<u16, Vec<Vec<PlacedChild>>> = BTreeMap::new();
+    for (id, t) in sprites { sprite_frames.insert(*id, build_frames(t)); }
+    let clip_frames = build_frames(tags);
+    let mut anims = Vec::new();
+    for (label, frame) in &labels {
+        let f = *frame as usize;
+        let Some(children) = clip_frames.get(f) else { continue };
+        // sub-animation length = the longest nested clip placed on this label's frame (1 if static).
+        let sub_len = children.iter()
+            .filter_map(|(id, _, _)| sprite_frames.get(id).map(|fr| fr.len()))
+            .max().unwrap_or(1).max(1);
+        // walk every sub-frame, then composite all frames onto one fixed union canvas (no wiggle).
+        let per_frame: Vec<Vec<Instance>> = (0..sub_len).map(|g| {
+            let mut out = Vec::new();
+            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0);
+            out.retain(|i| shape_defs.contains_key(&i.shape_id));
+            out
+        }).collect();
+        let all: Vec<&Instance> = per_frame.iter().flatten().collect();
+        let bounds = (!all.is_empty()).then(|| (
+            all.iter().map(|i| i.aabb.left()).fold(f64::MAX, f64::min),
+            all.iter().map(|i| i.aabb.top()).fold(f64::MAX, f64::min),
+            all.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max),
+            all.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max),
+        ));
+        let frames: Vec<StageArt> = per_frame.iter()
+            .filter_map(|insts| composite_layer(&insts.iter().collect::<Vec<_>>(), shape_defs, bitmaps, ox, oy, bounds))
+            .collect();
+        if !frames.is_empty() { anims.push(ClipAnim { label: label.clone(), frames }); }
+    }
+    anims
 }
 
 /// Trace a solid terrain shape's walkable TOP surface as a polyline in FM coords (left to
@@ -1418,7 +1861,7 @@ fn walk<'a>(
     planes: &PlaneMap,
     rec: usize, carried_sym: Option<&str>, plane: Option<&str>, moving_anc: bool,
     hazard_anc: Option<HazardKind>,
-    out: &mut Vec<Instance>, origin: &mut Option<(f64, f64)>,
+    out: &mut Vec<Instance>, anchors: &mut WalkAnchors,
 ) {
     if rec > 8 { return; }
     for tag in tags {
@@ -1453,10 +1896,16 @@ fn walk<'a>(
         }
 
         // record the stage origin from the root stageMC instance
-        if origin.is_none()
+        if anchors.origin.is_none()
             && (inst_name.as_deref() == Some("stageMC") || sym.to_ascii_lowercase().starts_with("stage_"))
         {
-            *origin = Some((world.tx, world.ty));
+            anchors.origin = Some((world.tx, world.ty));
+        }
+        // record the terrain MC's REGISTRATION (matrix translate) — the origin of the GAME
+        // coordinate space: the stage's own AS3 (spawnEnemy/setX) and the engine's runtime
+        // X/Y both use terrain-local coords (verified live: pure translation, scale 1).
+        if anchors.terrain.is_none() && inst_name.as_deref() == Some("terrain") {
+            anchors.terrain = Some((world.tx, world.ty));
         }
 
         if let Some((x0, y0, x1, y1)) = shape_bounds.get(&id) {
@@ -1482,7 +1931,7 @@ fn walk<'a>(
             // else inherit the parent's carried symbol.
             let next = inst_name.as_deref().or(if sym.is_empty() { carried_sym } else { Some(&sym) });
             let next = next.map(|s| s.to_string());
-            walk(child, world, sym_names, shape_bounds, sprites, planes, rec + 1, next.as_deref(), my_plane, here_moving, here_hazard, out, origin);
+            walk(child, world, sym_names, shape_bounds, sprites, planes, rec + 1, next.as_deref(), my_plane, here_moving, here_hazard, out, anchors);
         }
     }
 }

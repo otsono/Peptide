@@ -92,6 +92,8 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         stage: stage_refs,
         foreground: model.art.foreground.iter().enumerate()
             .map(|(i, a)| write_layer(&format!("fg{i}"), a)).collect::<Result<_>>()?,
+        foreground_occluders: model.art.foreground_occluders.iter().enumerate()
+            .map(|(i, a)| write_layer(&format!("fgocc{i}"), a)).collect::<Result<_>>()?,
         platform_sprites,
     };
 
@@ -300,20 +302,49 @@ impl<'a> EntityBuilder<'a> {
         self.add_image_frames_alpha(name, frames, 1.0);
     }
     /// `add_image_frames` with an explicit symbol alpha (a semi-transparent animated overlay).
+    /// Every layer must SPAN the whole stage animation (`frame_len`): a layer whose keyframes end
+    /// early goes blank/frozen for the rest of each loop (the "tint flashing" / dead-layer bug).
+    /// A single frame becomes one static full-length keyframe; a shorter cycle TILES (repeats,
+    /// truncating the last repeat) so it keeps playing for the whole loop like an SSF2 movieclip.
     fn add_image_frames_alpha(&mut self, name: &str, frames: &[(String, f64, f64, usize)], alpha: f64) {
-        let mut kfs = Vec::new();
-        for (i, (guid, x, y, hold)) in frames.iter().enumerate() {
+        let mut syms = Vec::new();
+        for (i, (guid, x, y, _)) in frames.iter().enumerate() {
             let sym = self.uid(&format!("sym:{name}:{i}"));
             self.symbols.push(json!({
                 "$id": sym, "type": "IMAGE", "imageAsset": guid, "alpha": alpha,
                 "x": x, "y": y, "scaleX": self.scale, "scaleY": self.scale, "rotation": 0, "pivotX": 0, "pivotY": 0,
                 "pluginMetadata": {}
             }));
-            let kf = self.uid(&format!("kf:{name}:{i}"));
-            // per-frame hold = the run length of identical source frames (RLE), so held frames
-            // read as pauses and the loop runs at the SSF2 pace.
-            self.keyframes.push(json!({ "$id": kf, "length": (*hold).max(1), "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE" }));
+            syms.push(sym);
+        }
+        let cycle: usize = frames.iter().map(|(_, _, _, h)| (*h).max(1)).sum();
+        let target = self.frame_len.max(1);
+        let mut kfs = Vec::new();
+        if frames.len() == 1 {
+            // static: one keyframe spanning the whole animation.
+            let kf = self.uid(&format!("kf:{name}:0"));
+            self.keyframes.push(json!({ "$id": kf, "length": target, "pluginMetadata": {}, "symbol": syms[0], "tweenType": "LINEAR", "tweened": false, "type": "IMAGE" }));
             kfs.push(kf);
+        } else {
+            // animated: per-frame hold = the run length of identical source frames (RLE), so held
+            // frames read as pauses and the loop runs at the SSF2 pace. Tile cycles to fill.
+            let mut filled = 0usize;
+            let mut rep = 0usize;
+            'tile: while filled < target {
+                for (i, (_, _, _, hold)) in frames.iter().enumerate() {
+                    let mut len = (*hold).max(1);
+                    if filled + len > target { len = target - filled; }
+                    if len == 0 { break 'tile; }
+                    let kf = self.uid(&format!("kf:{name}:{rep}:{i}"));
+                    self.keyframes.push(json!({ "$id": kf, "length": len, "pluginMetadata": {}, "symbol": syms[i], "tweenType": "LINEAR", "tweened": false, "type": "IMAGE" }));
+                    kfs.push(kf);
+                    filled += len;
+                    if filled >= target { break 'tile; }
+                }
+                rep += 1;
+                // safety: a degenerate zero-length cycle can't fill anything.
+                if cycle == 0 || rep > target { break; }
+            }
         }
         let lid = self.uid(&format!("layer:{name}"));
         self.layers.push(json!({
@@ -372,7 +403,7 @@ fn bg_layer_name(sym: &str, idx: usize) -> String {
 
 /// The depth layers the entity lays out. `stage` is the frame sequence (1 = static);
 /// `background` is the ordered per-element backdrop layers (each 1 = static).
-struct ArtRefs { background: Vec<BgLayerRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Vec<ArtRef>, platform_sprites: Vec<(String, f64, f64)> }
+struct ArtRefs { background: Vec<BgLayerRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Vec<ArtRef>, foreground_occluders: Vec<ArtRef>, platform_sprites: Vec<(String, f64, f64)> }
 
 /// Render the floor + soft platforms as filled rectangles on a transparent canvas
 /// covering their bounding box (1px = 1 stage unit). Gives the stage visible content
@@ -453,6 +484,13 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     b.add_container("Characters Back", "CHARACTERS_BACK_CONTAINER");
     b.add_container("Characters", "CHARACTERS_CONTAINER");
     b.add_container("Characters Front", "CHARACTERS_FRONT_CONTAINER");
+    // opaque foreground occluders (a standable structure's near face SSF2 split off — bowscastle's
+    // bridge parapet) draw IN FRONT of fighters at FULL alpha, so a fighter on the deck is occluded
+    // from the front. Behind the semi-transparent tint below (the red light reddens the parapet too).
+    if !art.foreground_occluders.is_empty() {
+        b.add_image_frames("Foreground Occluder",
+            &art.foreground_occluders.iter().map(|a| (a.guid.clone(), a.x, a.y, a.hold)).collect::<Vec<_>>());
+    }
     // the foreground (bowserscastle's lava-glow sheet + lightmask, classified foreground by the
     // AS3 plane map) draws IN FRONT of fighters as a semi-transparent overlay at ~0.5 alpha — the
     // REAL clip art, one keyframe per real frame (no synthesized flicker).
@@ -624,23 +662,22 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
     // platforms sit far apart (columns ~330px), so a generous-but-sub-spacing half-width assigns
     // the Thwomp to exactly one without bleeding into its neighbour.
     let script_id = format!("{id}platformScript");
-    std::fs::write(scripts.join(format!("{script_id}.hx")), platform_script_hx(150.0))?;
+    // SSF2 BowsersCastlePlatform sinks 145 local px (rest 155 -> 300); scale to FM space.
+    // HALF_W covers the widest declared platform so an edge landing still sinks its deck.
+    let half_w = vis.iter().map(|p| p.rect.w / 2.0).fold(150.0, f64::max);
+    std::fs::write(scripts.join(format!("{script_id}.hx")), platform_script_hx(half_w, 145.0 * model.scale))?;
     write_meta(&scripts.join(format!("{script_id}.hx.meta")), id, &script_id, "hscript", Some("LINE_SEGMENT_STRUCTURE"), None)?;
     // per-platform: a sprite sized to THIS platform (the SSF2 standing platforms are different
     // widths), its own `platformSprite{i}` animation, Stats (startX/startY), a structure content
-    // entry, and the spawn id. the fill is the REAL SSF2 terrain grey (sampled rgb 151 at the
-    // terrain's translucent alpha), not a synthesized brick texture, with a lighter top lip.
+    // entry, and the spawn id. The sprite is TRANSPARENT (collision-only): the visible standable
+    // surface is the engine-added bg layer the stage renders (e.g. bowserscastle's brick bridge),
+    // so the structure just carries the floor line segment at the platform's position.
     let mut sprite_dims = Vec::new();
     let mut contents = Vec::new();
     let mut spawn_ids = Vec::new();
     for (i, p) in vis.iter().enumerate() {
         let (pw, ph) = (p.rect.w.round().max(8.0) as u32, p.rect.h.round().max(10.0) as u32);
-        let cap = (ph / 6).max(2);
-        let mut img = image::RgbaImage::new(pw, ph);
-        for (_x, y, px) in img.enumerate_pixels_mut() {
-            *px = if y < cap { image::Rgba([176, 176, 178, 200]) }   // lighter top lip
-                else { image::Rgba([151, 151, 151, 170]) };          // real SSF2 terrain grey
-        }
+        let img: image::RgbaImage = image::RgbaImage::new(pw, ph); // transparent collision footprint
         let mut png = Vec::new();
         image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .context("encode platform png")?;
@@ -673,11 +710,41 @@ fn platform_stats_hx(stage_id: &str, start_x: f64, start_y: f64, idx: usize) -> 
 /// A STATIC standing-platform structure. SSF2's standing platforms don't sink (the Thwomp drops
 /// with its own self-platform); the structure just holds its spawn position and provides the floor
 /// line segment from its `platformSprite{i}` animation.
-fn platform_script_hx(_half_w: f64) -> String {
-    "// Static standing platform (its floor line segment comes from the platformSprite animation).\n\
-     function initialize() {}\nfunction update() {}\n\
-     function onTeardown() {}\nfunction onKill() {}\nfunction onStale() {}\n\
-     function afterPushState() {}\nfunction afterPopState() {}\nfunction afterFlushStates() {}\n".to_string()
+fn platform_script_hx(half_w: f64, sink_depth: f64) -> String {
+    // 1:1 from the SSF2 BowsersCastlePlatform disasm: idle until a Thwomp (a custom game object)
+    // lands on it, then sink (shaking ±1px) to rest+145 (terrain 155 -> 300), hold 390f, rise back.
+    // Constants converted: SINK_SPEED 30 px/f -> 19.5 FM px/frame; RISE_SPEED 1 -> 0.65;
+    // waitTimer 390f -> 780 FM frames; sink depth 145 px × scale. The structure moves itself via
+    // setX/setY; persistent state via self.make*. Shared by all platforms (each captures its own
+    // start position), so any column the Thwomp drops on sinks.
+    format!(
+        "// Sinking platform — 1:1 from the SSF2 BowsersCastlePlatform disasm, frame-doubled.\n\
+         var SINK_SPEED = 19.5;\nvar RISE_SPEED = 0.65;\nvar SINK_DEPTH = {sink_depth:.1};\nvar WAIT = 780;\nvar HALF_W = {half_w:.1};\n\
+         var m_init = self.makeBool(false);\nvar m_startY = self.makeFloat(0.0);\nvar m_startX = self.makeFloat(0.0);\n\
+         var m_action = self.makeInt(0);\nvar m_timer = self.makeInt(0);\nvar m_shake = self.makeBool(false);\n\n\
+         function thwompLanded() {{\n\
+         \tvar objs = match.getCustomGameObjects();\n\tvar px = m_startX.get();\n\
+         \tfor (i in 0...objs.length) {{\n\
+         \t\tvar o = objs[i];\n\
+         \t\tif (Math.abs(o.getX() - px) < HALF_W && Math.abs(o.getY() - m_startY.get()) < 90) {{ return true; }}\n\
+         \t}}\n\treturn false;\n}}\n\n\
+         function update() {{\n\
+         \tif (!m_init.get()) {{ m_init.set(true); m_startY.set(self.getY()); m_startX.set(self.getX()); }}\n\
+         \tvar a = m_action.get();\n\
+         \tif (a == 0) {{ if (thwompLanded()) {{ m_action.set(1); }} }}\n\
+         \telse if (a == 1) {{ // sink + shake\n\
+         \t\tvar sh = -1.3; if (m_shake.get()) {{ sh = 1.3; }}\n\
+         \t\tself.setX(m_startX.get() + sh); m_shake.set(!m_shake.get());\n\
+         \t\tself.setY(self.getY() + SINK_SPEED);\n\
+         \t\tif (self.getY() >= m_startY.get() + SINK_DEPTH) {{ self.setY(m_startY.get() + SINK_DEPTH); self.setX(m_startX.get()); m_action.set(2); m_timer.set(0); }}\n\
+         \t}} else if (a == 2) {{ m_timer.set(m_timer.get() + 1); if (m_timer.get() >= WAIT) {{ m_action.set(3); }} }}\n\
+         \telse {{ // rise\n\
+         \t\tself.setY(self.getY() - RISE_SPEED);\n\
+         \t\tif (self.getY() <= m_startY.get()) {{ self.setY(m_startY.get()); m_action.set(0); }}\n\
+         \t}}\n\
+         }}\n\
+         function initialize() {{}}\nfunction onTeardown() {{}}\nfunction onKill() {{}}\nfunction onStale() {{}}\n\
+         function afterPushState() {{}}\nfunction afterPopState() {{}}\nfunction afterFlushStates() {{}}\n")
 }
 
 /// camelCase content id for hazard `idx` of stage `id` (e.g. `battlefieldssf2hazard0`).
@@ -692,13 +759,32 @@ fn emit_hazards(model: &StageModel, lib: &Path) -> Result<Vec<Value>> {
     let scripts = lib.join("scripts").join("hazard");
     std::fs::create_dir_all(&sprites).context("mkdir sprites/Hazard")?;
     std::fs::create_dir_all(&scripts).context("mkdir scripts/hazard")?;
-    // a `thwomp`-motion hazard cycles through the stage's platform columns, falling onto each so
-    // the platform under it sinks (its standable top y is the thwomp's land height).
-    let cols: Vec<(f64, f64)> = model.platforms.iter().filter(|p| p.visible)
-        .map(|p| (p.rect.x + p.rect.w / 2.0, p.rect.y)).collect();
+    // a `thwomp`-motion hazard cycles target columns: the stage's AS3-declared sink columns
+    // (1:1 from its update disasm, already FM x) when present, each landing on the platform
+    // under it; else fall back to the visible platforms' centers.
+    let land_y_at = |x: f64| -> f64 {
+        model.platforms.iter()
+            .filter(|p| !p.hazard_floor && x >= p.rect.left() && x <= p.rect.right())
+            .map(|p| p.rect.y).fold(f64::INFINITY, f64::min)
+    };
+    let cols: Vec<(f64, f64)> = if !model.sink_columns.is_empty() {
+        model.sink_columns.iter().map(|&x| (x, land_y_at(x))).filter(|(_, y)| y.is_finite()).collect()
+    } else {
+        model.platforms.iter().filter(|p| p.visible)
+            .map(|p| (p.rect.x + p.rect.w / 2.0, p.rect.y)).collect()
+    };
 
     for (i, hz) in model.hazards.iter().enumerate() {
         let hid = hazard_id(&model.id, i);
+        // a hazard whose SSF2 clip has labelled sub-animations (e.g. a Thwomp's entrance/fall/idle)
+        // becomes a MULTI-animation custom game object: one FM animation per label, the local state
+        // machine switching between them, the HIT_BOX riding only the active (damaging) ones. This
+        // is universal — any multi-animation hazard goes down this path; the single-art path below
+        // handles a static/looping hazard with no labelled phases (lava, a spike, …).
+        if !hz.anims.is_empty() {
+            emit_multi_anim_hazard(&hid, hz, model, &sprites, &scripts, lib, &cols, &mut entries)?;
+            continue;
+        }
         // sprite: the real rasterized SSF2 hazard art if we recovered it, else a translucent red
         // hitbox-volume placeholder (w x h). real art renders at the stage scale, centered on the
         // hazard; the placeholder fills the hitbox 1:1.
@@ -723,7 +809,11 @@ fn emit_hazards(model: &StageModel, lib: &Path) -> Result<Vec<Value>> {
         write_json(&lib.join("entities").join(format!("{hid}.entity")), &hazard_entity(&hid, hz, &sprite_guid, img_x, img_y, img_scale))?;
         write_meta(&lib.join("entities").join(format!("{hid}.entity.meta")), &hid, &hid, "", Some("CUSTOM_GAME_OBJECT"), None)?;
 
-        let script = if hz.motion == "thwomp" && !cols.is_empty() {
+        // a Thwomp (SSF2 falls onto platform columns, sinks them, rises, repeats) uses the real
+        // column-cycling script; everything else uses the generic motion. Keyed by label since the
+        // kind's default motion is "fall", not the legacy "thwomp" sentinel.
+        let is_thwomp = hz.label == "Thwomp" || hz.motion == "thwomp";
+        let script = if is_thwomp && !cols.is_empty() {
             thwomp_script_hx(&cols)
         } else {
             hazard_script_hx(hz)
@@ -793,6 +883,199 @@ fn hazard_entity(hid: &str, hz: &Hazard, sprite_guid: &str, img_x: f64, img_y: f
     e
 }
 
+/// One labelled FM animation of a multi-animation hazard CGO: the FM animation name (the SSF2
+/// frame label), its per-frame sprite guids (in order), the shared image placement + canvas size
+/// (scaled into FM world units), and whether it carries the HIT_BOX (a damaging phase).
+struct HzAnim {
+    name: String,
+    frame_guids: Vec<String>,
+    /// IMAGE placement (frame canvas top-left, already × stage scale).
+    x: f64,
+    y: f64,
+    /// Canvas size (× stage scale) — the HIT_BOX volume for an active phase.
+    w: f64,
+    h: f64,
+    /// Stage scale applied to the IMAGE symbol (native-res PNG → scaled geometry).
+    scale: f64,
+    /// `true` = a damaging phase (carries the HIT_BOX); `false` = a safe phase (sprite only).
+    active: bool,
+}
+
+/// A valid FM animation/identifier name from an SSF2 frame label (alphanumerics only, lower-cased
+/// first char-run kept; falls back to `anim` if it sanitizes to empty).
+fn sanitize_anim(label: &str) -> String {
+    let s: String = label.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    if s.is_empty() { return "anim".to_string(); }
+    if s.chars().next().is_some_and(|c| c.is_ascii_digit()) { format!("a{s}") } else { s }
+}
+
+/// Whether an animation label names a DAMAGING phase (so it carries the HIT_BOX). A Thwomp's
+/// `fall`/`land`/`slam` hit; its `entrance`/`idle` don't. Universal keyword test.
+fn is_active_anim(label: &str) -> bool {
+    let l = label.to_ascii_lowercase();
+    ["fall", "land", "slam", "attack", "strike", "active", "shake", "hit"].iter().any(|k| l.contains(k))
+}
+
+/// Emit a multi-animation hazard CGO: write each labelled animation's frames as sprite PNGs, build
+/// a CUSTOM_GAME_OBJECT entity with one FM animation per label (HIT_BOX on the damaging ones), and
+/// a local-state-machine Script that switches animations by phase. Universal across stages; the
+/// Thwomp is the first user (entrance/fall/idle).
+#[allow(clippy::too_many_arguments)]
+fn emit_multi_anim_hazard(
+    hid: &str, hz: &Hazard, model: &StageModel, sprites: &Path, scripts: &Path, lib: &Path,
+    cols: &[(f64, f64)], entries: &mut Vec<Value>,
+) -> Result<()> {
+    let scale = model.scale;
+    let mut hzanims: Vec<HzAnim> = Vec::new();
+    for anim in &hz.anims {
+        let fm_name = sanitize_anim(&anim.label);
+        let active = is_active_anim(&anim.label);
+        let mut guids = Vec::new();
+        for (fi, fr) in anim.frames.iter().enumerate() {
+            let base = format!("{hid}_{fm_name}_{fi}");
+            let guid = det_uuid(&format!("hazard::{hid}::{fm_name}::{fi}"));
+            std::fs::write(sprites.join(format!("{base}.png")), &fr.png)?;
+            write_json(&sprites.join(format!("{base}.png.meta")), &json!({
+                "export": false, "guid": guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
+            }))?;
+            guids.push(guid);
+        }
+        // frames of one label share a fixed union canvas, so frame 0 carries the placement + size.
+        let f0 = &anim.frames[0];
+        hzanims.push(HzAnim {
+            name: fm_name, frame_guids: guids,
+            x: f0.x * scale, y: f0.y * scale,
+            w: f0.w as f64 * scale, h: f0.h as f64 * scale,
+            scale, active,
+        });
+    }
+    if hzanims.is_empty() { return Ok(()); }
+
+    // the resting/default animation (idle), the entrance (played at spawn), and the damaging
+    // falling animation (fall), resolved by keyword so the state machine and stats line up
+    // regardless of the source's exact labels.
+    let fall_name = hzanims.iter().find(|a| a.active)
+        .map(|a| a.name.clone()).unwrap_or_else(|| hzanims[0].name.clone());
+    let idle_name = hzanims.iter().find(|a| a.name.contains("idle") || a.name.contains("rest"))
+        .or_else(|| hzanims.iter().find(|a| !a.active))
+        .map(|a| a.name.clone()).unwrap_or_else(|| hzanims[0].name.clone());
+    let entrance_name = hzanims.iter().find(|a| a.name.contains("entrance") || a.name.contains("intro"))
+        .map(|a| a.name.clone()).unwrap_or_else(|| idle_name.clone());
+
+    let is_thwomp = hz.label == "Thwomp" || hz.motion == "thwomp" || hz.motion == "fall";
+    write_json(&lib.join("entities").join(format!("{hid}.entity")), &hazard_entity_multi(hid, &hzanims, is_thwomp))?;
+    write_meta(&lib.join("entities").join(format!("{hid}.entity.meta")), hid, hid, "", Some("CUSTOM_GAME_OBJECT"), None)?;
+
+    let script = if is_thwomp && !cols.is_empty() {
+        // hover/spawn height: SSF2 spawns the thwomp AT getDeathBounds().y with
+        // surviveDeathBounds=true. FM kills a game object outside the blast zone, so park
+        // just INSIDE the top bound — still above the camera ceiling, so visually identical.
+        let spawn_y = model.death_box.as_ref().map(|b| b.y + 60.0)
+            .unwrap_or_else(|| cols.iter().map(|(_, y)| *y).fold(f64::MAX, f64::min) - 520.0);
+        thwomp_multi_script_hx(cols, spawn_y, &entrance_name, &idle_name, &fall_name)
+    } else {
+        hazard_anim_loop_script_hx(hz, &hzanims, &idle_name)
+    };
+    let files = [
+        ("Script", script),
+        ("GameObjectStats", hazard_gameobject_stats_multi(hid, &idle_name)),
+        ("HitboxStats", hazard_hitbox_stats_multi(hz, &hzanims, is_thwomp)),
+        ("AnimationStats", hazard_animation_stats_multi(&hzanims)),
+    ];
+    for (kind, body) in files {
+        let fname = format!("{hid}{kind}");
+        std::fs::write(scripts.join(format!("{fname}.hx")), body)?;
+        write_meta(&scripts.join(format!("{fname}.hx.meta")), hid, &fname,
+            if kind == "Script" { "" } else { "hscript" },
+            if kind == "Script" { Some("CUSTOM_GAME_OBJECT") } else { None }, None)?;
+    }
+    entries.push(json!({
+        "type": "customGameObject", "id": hid,
+        "scriptId": format!("{hid}Script"),
+        "objectStatsId": format!("{hid}GameObjectStats"),
+        "hitboxStatsId": format!("{hid}HitboxStats"),
+        "animationStatsId": format!("{hid}AnimationStats"),
+        "name": hz.label.clone(),
+    }));
+    Ok(())
+}
+
+/// The multi-animation CGO entity: one IMAGE layer per labelled animation (a keyframe per source
+/// frame, 30→60fps doubled), and HIT_BOX layer(s) riding the damaging animations. Each FM animation
+/// references its image layer (+ its hitbox layers when active). `dual` splits the hit volume into
+/// left/right half boxes (index 0/1) so the stats can send fighters away from center on each side
+/// (the SSF2 thwomp's two attackBoxes).
+fn hazard_entity_multi(hid: &str, anims: &[HzAnim], dual: bool) -> Value {
+    let g = |s: &str| det_uuid(&format!("hazard::{hid}::{s}"));
+    let mut symbols = Vec::new();
+    let mut keyframes = Vec::new();
+    let mut layers = Vec::new();
+    let mut animations = Vec::new();
+    for (ai, a) in anims.iter().enumerate() {
+        let mut kf_ids = Vec::new();
+        for (fi, guid) in a.frame_guids.iter().enumerate() {
+            let symid = g(&format!("imgsym{ai}_{fi}"));
+            symbols.push(json!({ "$id": symid, "type": "IMAGE", "imageAsset": guid, "x": a.x, "y": a.y, "pivotX": 0.0, "pivotY": 0.0, "scaleX": a.scale, "scaleY": a.scale, "rotation": 0.0, "alpha": 1.0, "pluginMetadata": {} }));
+            let kfid = g(&format!("imgkf{ai}_{fi}"));
+            keyframes.push(json!({ "$id": kfid, "symbol": symid, "length": 1, "tweened": false, "tweenType": "LINEAR", "type": "IMAGE", "pluginMetadata": {} }));
+            kf_ids.push(kfid);
+        }
+        let img_layer = g(&format!("imglayer{ai}"));
+        layers.push(json!({ "$id": img_layer, "name": "art", "type": "IMAGE", "hidden": false, "locked": false, "keyframes": kf_ids, "pluginMetadata": {} }));
+        let mut anim_layers = vec![img_layer];
+        if a.active {
+            let span = a.frame_guids.len().max(1) as u64;
+            // one full-size box, or two half-width boxes (left=index 0, right=index 1).
+            let boxes: Vec<(f64, f64)> = if dual {
+                vec![(a.x, a.w / 2.0), (a.x + a.w / 2.0, a.w / 2.0)]
+            } else {
+                vec![(a.x, a.w)]
+            };
+            for (bi, (bx, bw)) in boxes.iter().enumerate() {
+                let (hw, hh) = (bw / 2.0, a.h / 2.0);
+                let boxsym = g(&format!("boxsym{ai}_{bi}"));
+                symbols.push(json!({ "$id": boxsym, "type": "COLLISION_BOX", "x": bx, "y": a.y, "pivotX": hw, "pivotY": hh, "scaleX": bw, "scaleY": a.h, "rotation": 0.0, "alpha": 0.5, "color": "0xff0000", "pluginMetadata": {} }));
+                let boxkf = g(&format!("boxkf{ai}_{bi}"));
+                keyframes.push(json!({ "$id": boxkf, "symbol": boxsym, "length": span, "tweened": false, "tweenType": "LINEAR", "type": "COLLISION_BOX", "pluginMetadata": {} }));
+                let boxlayer = g(&format!("boxlayer{ai}_{bi}"));
+                layers.push(json!({ "$id": boxlayer, "name": format!("hitbox{bi}"), "type": "COLLISION_BOX", "hidden": false, "locked": false, "defaultAlpha": 0.5, "defaultColor": "0xff0000", "keyframes": [boxkf],
+                    "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "collisionBoxType": "HIT_BOX", "index": bi } } }));
+                anim_layers.push(boxlayer);
+            }
+        }
+        animations.push(json!({ "$id": g(&format!("anim{ai}")), "name": a.name.clone(), "layers": anim_layers, "pluginMetadata": {} }));
+    }
+    let mut e = json!({
+        "export": true, "guid": g("entity"), "id": hid, "version": 5,
+        "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "objectType": "CUSTOM_GAME_OBJECT", "version": "0.4.0" } },
+        "plugins": ["com.fraymakers.FraymakersTypes", "com.fraymakers.FraymakersMetadata"],
+        "tags": [], "paletteMap": {}, "tilesets": [], "terrains": [],
+        "symbols": symbols, "keyframes": keyframes, "layers": layers, "animations": animations
+    });
+    if let Some(kfs) = e.get_mut("keyframes").and_then(|k| k.as_array_mut()) {
+        crate::entity_gen::double_keyframe_lengths(kfs);
+    }
+    e
+}
+
+/// Build the `LState` registration block + `_prepLocalState` helper for a hazard whose animations
+/// are `anims` (registers each FM animation name as a local state, upper-cased; plus the standard
+/// UNINITIALIZED sentinel). Shared by the thwomp + the generic animated-hazard scripts.
+fn local_state_block(anims: &[HzAnim]) -> String {
+    let mut regs = vec!["\tUNINITIALIZED: _prepLocalState(\"#n/a\", -1)".to_string()];
+    for a in anims {
+        regs.push(format!("\t{}: _prepLocalState(\"{}\")", a.name.to_ascii_uppercase(), a.name));
+    }
+    format!(
+        "function _prepLocalState(animation:String, ?index:Int=Math.NaN):Int {{\n\
+         \tif (!__hasInitLocalStateMachine) {{ Common.initLocalStateMachine(); __hasInitLocalStateMachine = true; }}\n\
+         \tif (index != Math.NaN) {{ index = __localStatePrepIndex++; }}\n\
+         \tCommon.registerLocalState(index, animation);\n\treturn index;\n}}\n\
+         var __hasInitLocalStateMachine = false;\nvar __localStatePrepIndex = -1;\n\
+         var LState = {{\n{}\n}};\n",
+        regs.join(",\n"))
+}
+
 /// The Thwomp (converted from SSF2 `Thwomp` + `bowserscastle::update`): it cycles through the
 /// stage's platform columns, accelerating down onto each (a gravity slam), holding, then rising
 /// and moving to the next column. Its native HIT_BOX damages on contact, and the platform it lands
@@ -802,8 +1085,9 @@ fn hazard_entity(hid: &str, hz: &Hazard, sprite_guid: &str, img_x: f64, img_y: f
 fn thwomp_script_hx(cols: &[(f64, f64)]) -> String {
     let cols_lit = cols.iter().map(|(x, _)| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
     let land_lit = cols.iter().map(|(_, y)| format!("{y:.1}")).collect::<Vec<_>>().join(", ");
-    // the rest height is well above the highest platform top (smallest y).
-    let top_y = cols.iter().map(|(_, y)| *y).fold(f64::MAX, f64::min) - 340.0;
+    // rest off-screen above the stage (well above the highest platform top = smallest y), so the
+    // Thwomp only appears as it drops in.
+    let top_y = cols.iter().map(|(_, y)| *y).fold(f64::MAX, f64::min) - 520.0;
     format!(
         "// Thwomp (converted from SSF2). Falls onto a platform column -> that platform sinks; then\n\
          // rises and moves to the next column. Native HIT_BOX (HitboxStats) damages on contact.\n\n\
@@ -814,23 +1098,164 @@ fn thwomp_script_hx(cols: &[(f64, f64)]) -> String {
          var __hasInitLocalStateMachine = false;\nvar __localStatePrepIndex = -1;\n\
          var LState = {{\n\tUNINITIALIZED: _prepLocalState(\"#n/a\", -1),\n\tACTIVE: _prepLocalState(\"gameObjectIdle\"),\n\tINACTIVE: _prepLocalState(\"gameObjectInactive\")\n}};\n\n\
          var COLUMNS = [{cols_lit}];\nvar LAND_YS = [{land_lit}];\nvar TOP_Y = {top_y:.1};\n\
-         var m_col = 0;\nvar m_phase = 0;\nvar m_fallV = 0.0;\nvar m_timer = 0;\nvar m_cool = 0;\nvar m_init = false;\n\n\
+         // SSF2: the stage spawns a Thwomp every 300 frames @30fps (=600 @60fps) at a random column;\n\
+         // it falls (gravity), lands (the platform sinks), waits, then rises off. We model one\n\
+         // persistent Thwomp on that cadence: rest -> fall random column -> land -> wait -> rise.\n\
+         var REST = 600;\nvar LAND_WAIT = 110;\nvar GRAV = 1.4;\nvar RISE = 8.0;\n\
+         // persistent state (a plain var resets every frame on a custom game object).\n\
+         var m_phase = self.makeInt(3);\nvar m_col = self.makeInt(0);\nvar m_fallV = self.makeFloat(0.0);\n\
+         var m_timer = self.makeInt(0);\nvar m_cool = self.makeInt(0);\nvar m_init = self.makeBool(false);\n\n\
          function initialize() {{\n\tself.setState(PState.ACTIVE);\n\tCommon.toLocalState(LState.ACTIVE);\n}}\n\n\
          function update() {{\n\
-         \tif (!m_init) {{ m_init = true; self.setX(COLUMNS[m_col]); self.setY(TOP_Y); }}\n\
-         \tvar landY = LAND_YS[m_col];\n\
+         \tif (!m_init.get()) {{ m_init.set(true); m_col.set(Random.getInt(0, COLUMNS.length - 1)); self.setX(COLUMNS[m_col.get()]); self.setY(TOP_Y); }}\n\
          \t// keep the native hitbox live so it damages fighters it falls through.\n\
-         \tif (m_cool > 0) {{ m_cool = m_cool - 1; }} else {{ self.reactivateHitboxes(); m_cool = 18; }}\n\
-         \tif (m_phase == 0) {{\n\
-         \t\tm_fallV = m_fallV + 0.9;\n\t\tself.setY(self.getY() + m_fallV);\n\
-         \t\tif (self.getY() >= landY) {{ self.setY(landY); m_phase = 1; m_timer = 0; }}\n\
-         \t}} else if (m_phase == 1) {{\n\
-         \t\tm_timer = m_timer + 1;\n\t\tif (m_timer >= 80) {{ m_phase = 2; }}\n\
-         \t}} else {{\n\
-         \t\tself.setY(self.getY() - 6.0);\n\
-         \t\tif (self.getY() <= TOP_Y) {{ self.setY(TOP_Y); m_phase = 0; m_fallV = 0.0; m_col = (m_col + 1) % COLUMNS.length; self.setX(COLUMNS[m_col]); }}\n\
+         \tif (m_cool.get() > 0) {{ m_cool.set(m_cool.get() - 1); }} else {{ self.reactivateHitboxes(); m_cool.set(18); }}\n\
+         \tvar p = m_phase.get();\n\
+         \tif (p == 0) {{ // fall\n\
+         \t\tm_fallV.set(m_fallV.get() + GRAV);\n\t\tself.setY(self.getY() + m_fallV.get());\n\
+         \t\tif (self.getY() >= LAND_YS[m_col.get()]) {{ self.setY(LAND_YS[m_col.get()]); m_phase.set(1); m_timer.set(0); }}\n\
+         \t}} else if (p == 1) {{ // landed (its platform sinks); wait\n\
+         \t\tm_timer.set(m_timer.get() + 1);\n\t\tif (m_timer.get() >= LAND_WAIT) {{ m_phase.set(2); }}\n\
+         \t}} else if (p == 2) {{ // rise back to the top\n\
+         \t\tself.setY(self.getY() - RISE);\n\
+         \t\tif (self.getY() <= TOP_Y) {{ self.setY(TOP_Y); m_phase.set(3); m_timer.set(0); m_fallV.set(0.0); }}\n\
+         \t}} else {{ // rest above the stage, then drop on a fresh random column\n\
+         \t\tm_timer.set(m_timer.get() + 1);\n\
+         \t\tif (m_timer.get() >= REST) {{ m_col.set(Random.getInt(0, COLUMNS.length - 1)); self.setX(COLUMNS[m_col.get()]); m_phase.set(0); m_timer.set(0); }}\n\
          \t}}\n\
          }}\n")
+}
+
+/// The multi-animation Thwomp script — 1:1 from the SSF2 disasm (bowserscastle::update +
+/// Thwomp::initialize/update), frame-doubled (×2 frames) and velocity-converted (×0.65 =
+/// size 1.3 × half-rate):
+///   stage:  spawnTimer 300f -> spawn at (random column, deathBounds top) -> waitTimer 300f
+///           -> repeat  ⇒ one spawn every 600 SSF2 f = 1200 FM frames (recycled CGO).
+///   thwomp: `entrance` anim, 60f hover (gravity 0)  ⇒ 120 FM frames at the spawn point;
+///           then gravity 30 with max_ySpeed 30 ⇒ constant 30 px/f fall = 19.5 FM px/frame;
+///           land -> `idle` anim + the column platform sinks, wait 90f ⇒ 180 FM;
+///           rise at YSpeed -6 ⇒ 3.9 FM px/frame and despawn (here: hide + restart cycle).
+/// Cross-frame state via `self.make*` (a plain `var` re-inits every frame on a game object).
+fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, entrance: &str, idle: &str, fall: &str) -> String {
+    let cols_lit = cols.iter().map(|(x, _)| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
+    let land_lit = cols.iter().map(|(_, y)| format!("{y:.1}")).collect::<Vec<_>>().join(", ");
+    let (entr_s, idle_s, fall_s) = (entrance.to_ascii_uppercase(), idle.to_ascii_uppercase(), fall.to_ascii_uppercase());
+    format!(
+        "// Thwomp — 1:1 from the SSF2 disasm (stage spawn cycle + Thwomp class), frame-doubled.\n\
+         // Native HIT_BOXes (HitboxStats: two half boxes, angles 135/45) damage on contact.\n\n\
+         function _prepLocalState(animation:String, ?index:Int=Math.NaN):Int {{\n\
+         \tif (!__hasInitLocalStateMachine) {{ Common.initLocalStateMachine(); __hasInitLocalStateMachine = true; }}\n\
+         \tif (index != Math.NaN) {{ index = __localStatePrepIndex++; }}\n\
+         \tCommon.registerLocalState(index, animation);\n\treturn index;\n}}\n\
+         var __hasInitLocalStateMachine = false;\nvar __localStatePrepIndex = -1;\n\
+         var LState = {{\n\tUNINITIALIZED: _prepLocalState(\"#n/a\", -1),\n\tENTRANCE: _prepLocalState(\"{entrance}\"),\n\tIDLE: _prepLocalState(\"{idle}\"),\n\tFALL: _prepLocalState(\"{fall}\")\n}};\n\n\
+         // SSF2 constants, frame-doubled / velocity-converted (see the header comment).\n\
+         var COLUMNS = [{cols_lit}];\nvar LAND_YS = [{land_lit}];\nvar SPAWN_Y = {spawn_y:.1};\n\
+         var SPAWN_PERIOD = 1200;\nvar ENTRANCE_T = 120;\nvar FALL_V = 19.5;\nvar LAND_WAIT = 180;\nvar RISE_V = 3.9;\n\
+         // persistent state (a plain var resets every frame on a custom game object).\n\
+         var m_phase = self.makeInt(0);\nvar m_col = self.makeInt(0);\nvar m_timer = self.makeInt(0);\n\
+         var m_cycle = self.makeInt(0);\nvar m_cool = self.makeInt(0);\nvar m_init = self.makeBool(false);\n\n\
+         function initialize() {{\n\tself.setState(PState.ACTIVE);\n\tCommon.toLocalState(LState.{entr_s});\n}}\n\n\
+         function update() {{\n\
+         \t// match start: park at the spawn point; SSF2's first spawn lands at t=300f (=600 FM),\n\
+         \t// so pre-advance the spawn clock by half a period.\n\
+         \tif (!m_init.get()) {{ m_init.set(true); self.setX(COLUMNS[0]); self.setY(SPAWN_Y); m_phase.set(0); m_cycle.set(SPAWN_PERIOD - 600); }}\n\
+         \tif (m_cool.get() > 0) {{ m_cool.set(m_cool.get() - 1); }} else {{ self.reactivateHitboxes(); m_cool.set(60); }}\n\
+         \t// spawn-to-spawn clock: SSF2 spawns every 600f (=1200 FM) regardless of phase timing.\n\
+         \tm_cycle.set(m_cycle.get() + 1);\n\
+         \tvar p = m_phase.get();\n\
+         \tif (p == 0) {{ // resting between spawns (parked at the spawn point above the stage)\n\
+         \t\tif (m_cycle.get() >= SPAWN_PERIOD) {{\n\
+         \t\t\tm_col.set(Random.getInt(0, COLUMNS.length - 1)); self.setX(COLUMNS[m_col.get()]); self.setY(SPAWN_Y);\n\
+         \t\t\tm_phase.set(1); m_timer.set(0); m_cycle.set(0); Common.toLocalState(LState.{entr_s});\n\
+         \t\t}}\n\
+         \t}} else if (p == 1) {{ // entrance: hover at the spawn point (SSF2 delayTimer 60f)\n\
+         \t\tm_timer.set(m_timer.get() + 1);\n\
+         \t\tif (m_timer.get() >= ENTRANCE_T) {{ m_phase.set(2); Common.toLocalState(LState.{fall_s}); }}\n\
+         \t}} else if (p == 2) {{ // fall: constant terminal velocity (gravity 30 capped at 30)\n\
+         \t\tself.setY(self.getY() + FALL_V);\n\
+         \t\tif (self.getY() >= LAND_YS[m_col.get()]) {{ self.setY(LAND_YS[m_col.get()]); m_phase.set(3); m_timer.set(0); Common.toLocalState(LState.{idle_s}); }}\n\
+         \t}} else if (p == 3) {{ // landed: the column platform under it sinks; hold (SSF2 waitTimer 90f)\n\
+         \t\tm_timer.set(m_timer.get() + 1);\n\t\tif (m_timer.get() >= LAND_WAIT) {{ m_phase.set(4); }}\n\
+         \t}} else {{ // rise at SSF2 YSpeed -6 until past the spawn point, then rest\n\
+         \t\tself.setY(self.getY() - RISE_V);\n\
+         \t\tif (self.getY() <= SPAWN_Y) {{ self.setY(SPAWN_Y); m_phase.set(0); m_timer.set(0); }}\n\
+         \t}}\n\
+         }}\n")
+}
+
+/// A generic animated-hazard script (non-thwomp multi-animation hazards): registers every labelled
+/// animation, plays the resting `idle` one, and keeps the native HIT_BOX re-armed so a lingering
+/// fighter keeps taking hits. Universal fallback for any future multi-animation stage hazard.
+fn hazard_anim_loop_script_hx(hz: &Hazard, anims: &[HzAnim], idle: &str) -> String {
+    let idle_s = idle.to_ascii_uppercase();
+    format!(
+        "// Animated stage hazard (custom game object) — converted from SSF2. Local state machine\n\
+         // across the labelled animations; native HIT_BOX (HitboxStats) on the active ones.\n\
+         // Cross-frame state via self.make* (a plain var re-inits every frame on a game object).\n\n\
+         {states}\n\
+         var REHIT = {rehit};\nvar m_cooldown = self.makeInt(0);\n\n\
+         function initialize() {{\n\tself.setState(PState.ACTIVE);\n\tCommon.toLocalState(LState.{idle_s});\n}}\n\n\
+         function update() {{\n\
+         \tif (m_cooldown.get() > 0) {{ m_cooldown.set(m_cooldown.get() - 1); }}\n\
+         \telse {{ self.reactivateHitboxes(); m_cooldown.set(REHIT); }}\n\
+         }}\n",
+        states = local_state_block(anims), rehit = hz.rehit())
+}
+
+/// GameObjectStats for a multi-animation hazard: PState.ACTIVE plays the resting `idle` animation
+/// (the local state machine swaps in the others), so the engine always has a current animation for
+/// the collision detector to resolve the native HIT_BOX against.
+fn hazard_gameobject_stats_multi(hid: &str, idle: &str) -> String {
+    format!(
+        "// GameObjectStats for {hid}\n{{\n\tspriteContent: self.getResource().getContent(\"{hid}\"),\n\tinitialState: PState.ACTIVE,\n\
+         \tstateTransitionMapOverrides: [\n\t\tPState.ACTIVE => {{ animation: \"{idle}\" }}\n\t],\n\
+         \tbaseScaleX: 1,\n\tbaseScaleY: 1,\n\tweight: 100,\n\tgravity: 0,\n\tfriction: 0\n}}\n")
+}
+
+/// HitboxStats for a multi-animation hazard: entries on each ACTIVE (damaging) animation, empty on
+/// the safe ones. Keyed by FM animation name, matching the entity's HIT_BOX layers. `dual` splits
+/// the hit into left/right half boxes with mirrored away-from-center angles (the SSF2 thwomp's two
+/// attackBoxes: direction 135 on the left half, 45 on the right).
+fn hazard_hitbox_stats_multi(hz: &Hazard, anims: &[HzAnim], dual: bool) -> String {
+    let mut entries = Vec::new();
+    for a in anims {
+        if a.active {
+            if dual {
+                entries.push(format!(
+                    "\t{n}: {{\n\
+                     \t\thitbox0: {{ damage: {d}, angle: 135, baseKnockback: {kb}, knockbackGrowth: {g}, \
+                     hitstop: 6, hitstun: 24, reversibleAngle: false, directionalInfluence: true, reflectable: false }},\n\
+                     \t\thitbox1: {{ damage: {d}, angle: 45, baseKnockback: {kb}, knockbackGrowth: {g}, \
+                     hitstop: 6, hitstun: 24, reversibleAngle: false, directionalInfluence: true, reflectable: false }}\n\t}}",
+                    n = a.name, d = hz.damage, kb = hz.knockback, g = hz.kb_growth));
+            } else {
+                entries.push(format!(
+                    "\t{}: {{\n\t\thitbox0: {{ damage: {}, angle: {}, baseKnockback: {}, knockbackGrowth: {}, \
+                     hitstop: 6, hitstun: 24, reversibleAngle: true, directionalInfluence: true, reflectable: false }}\n\t}}",
+                    a.name, hz.damage, hz.angle, hz.knockback, hz.kb_growth));
+            }
+        } else {
+            entries.push(format!("\t{}: {{}}", a.name));
+        }
+    }
+    format!(
+        "// HitboxStats for the stage hazard — 1:1 from the SSF2 getAttackStats disasm\n\
+         // (power -> baseKnockback, kbConstant -> knockbackGrowth, direction -> angle).\n{{\n{}\n}}\n",
+        entries.join(",\n"))
+}
+
+/// AnimationStats for a multi-animation hazard: cyclic phases (idle face, fall speed-lines) LOOP
+/// like the SSF2 movieclips; a one-shot entrance/intro plays once and holds its last frame (the
+/// script's local state machine does the switching).
+fn hazard_animation_stats_multi(anims: &[HzAnim]) -> String {
+    let entries: Vec<String> = anims.iter()
+        .map(|a| {
+            let one_shot = a.name.contains("entrance") || a.name.contains("intro");
+            let end = if one_shot { "NONE" } else { "LOOP" };
+            format!("\t{}: {{ endType: AnimationEndType.{end} }}", a.name)
+        }).collect();
+    format!("// AnimationStats for the stage hazard.\n{{\n{}\n}}\n", entries.join(",\n"))
 }
 
 fn hazard_script_hx(hz: &Hazard) -> String {
@@ -844,25 +1269,26 @@ fn hazard_script_hx(hz: &Hazard) -> String {
     // resolves against the HitboxStats map) and spriteContent as a real content ref. The hitbox is
     // re-armed on a cadence so a lingering fighter keeps taking damage. `motion` moves the entity.
     let tau = "6.2831853";
+    // motion reads persistent state through `.get()` (m_frame/m_baseX/m_baseY are `self.make*`).
     let motion = match hz.motion.as_str() {
-        "oscillateX" => format!("\tself.setX(m_baseX + {r} * Math.sin(m_frame * {tau} / {p}));\n", r = hz.range, p = hz.period),
-        "oscillateY" => format!("\tself.setY(m_baseY + {r} * Math.sin(m_frame * {tau} / {p}));\n", r = hz.range, p = hz.period),
-        "circle" => format!("\tself.setX(m_baseX + {r} * Math.cos(m_frame * {tau} / {p}));\n\tself.setY(m_baseY + {r} * Math.sin(m_frame * {tau} / {p}));\n", r = hz.range, p = hz.period),
+        "oscillateX" => format!("\tself.setX(m_baseX.get() + {r} * Math.sin(m_frame.get() * {tau} / {p}));\n", r = hz.range, p = hz.period),
+        "oscillateY" => format!("\tself.setY(m_baseY.get() + {r} * Math.sin(m_frame.get() * {tau} / {p}));\n", r = hz.range, p = hz.period),
+        "circle" => format!("\tself.setX(m_baseX.get() + {r} * Math.cos(m_frame.get() * {tau} / {p}));\n\tself.setY(m_baseY.get() + {r} * Math.sin(m_frame.get() * {tau} / {p}));\n", r = hz.range, p = hz.period),
         // thwomp: hover at the top, accelerate DOWN (quadratic, a gravity slam), rest at the
         // bottom, then ease back up. SMOOTH per-frame Y (no teleport) so it doesn't flicker.
         "fall" => format!(
-            "\tvar _t = m_frame % {p};\n\
-             \tif (_t < {p} * 0.5) {{ self.setY(m_baseY); }}\n\
-             \telse if (_t < {p} * 0.62) {{ var _f = (_t - {p} * 0.5) / ({p} * 0.12); self.setY(m_baseY + {r} * _f * _f); }}\n\
-             \telse if (_t < {p} * 0.78) {{ self.setY(m_baseY + {r}); }}\n\
-             \telse {{ var _f = (_t - {p} * 0.78) / ({p} * 0.22); self.setY(m_baseY + {r} * (1.0 - _f)); }}\n",
+            "\tvar _t = m_frame.get() % {p};\n\
+             \tif (_t < {p} * 0.5) {{ self.setY(m_baseY.get()); }}\n\
+             \telse if (_t < {p} * 0.62) {{ var _f = (_t - {p} * 0.5) / ({p} * 0.12); self.setY(m_baseY.get() + {r} * _f * _f); }}\n\
+             \telse if (_t < {p} * 0.78) {{ self.setY(m_baseY.get() + {r}); }}\n\
+             \telse {{ var _f = (_t - {p} * 0.78) / ({p} * 0.22); self.setY(m_baseY.get() + {r} * (1.0 - _f)); }}\n",
             r = hz.range, p = hz.period),
         _ => String::new(),
     };
     // pulse: toggle the active (hitbox) and inactive (no hitbox) states on the duty cycle.
     let pulse = if hz.interval > 0 {
         format!(
-            "\tvar on = (m_frame % {iv}) < {ac};\n\
+            "\tvar on = (m_frame.get() % {iv}) < {ac};\n\
              \tif (on && Common.inLocalState(LState.INACTIVE)) {{ Common.toLocalState(LState.ACTIVE); }}\n\
              \telse if (!on && Common.inLocalState(LState.ACTIVE)) {{ Common.toLocalState(LState.INACTIVE); }}\n",
             iv = hz.interval, ac = hz.active)
@@ -887,17 +1313,19 @@ fn hazard_script_hx(hz: &Hazard) -> String {
          \tINACTIVE: _prepLocalState(\"gameObjectInactive\")\n\
          }};\n\n\
          var REHIT = {rehit};\n\
-         var m_frame = 0;\nvar m_baseX = 0.0;\nvar m_baseY = 0.0;\nvar m_init = false;\nvar m_cooldown = 0;\n\n\
+         // persistent state (a plain var resets every frame on a custom game object).\n\
+         var m_frame = self.makeInt(0);\nvar m_baseX = self.makeFloat(0.0);\nvar m_baseY = self.makeFloat(0.0);\n\
+         var m_init = self.makeBool(false);\nvar m_cooldown = self.makeInt(0);\n\n\
          function initialize() {{\n\tself.setState(PState.ACTIVE);\n\tCommon.toLocalState(LState.ACTIVE);\n}}\n\n\
          function update() {{\n\
-         \tif (!m_init) {{ m_baseX = self.getX(); m_baseY = self.getY(); m_init = true; }}\n\
-         \tm_frame = m_frame + 1;\n\
+         \tif (!m_init.get()) {{ m_baseX.set(self.getX()); m_baseY.set(self.getY()); m_init.set(true); }}\n\
+         \tm_frame.set(m_frame.get() + 1);\n\
 {motion}{pulse}\
          \t// re-arm the native HIT_BOX so a fighter standing in the hazard keeps taking hits\n\
          \t// (a hitbox hits each target once per attack id; reactivateHitboxes issues a fresh one).\n\
          \tif (Common.inLocalState(LState.ACTIVE)) {{\n\
-         \t\tif (m_cooldown > 0) {{ m_cooldown = m_cooldown - 1; }}\n\
-         \t\telse {{ self.reactivateHitboxes(); m_cooldown = REHIT; }}\n\
+         \t\tif (m_cooldown.get() > 0) {{ m_cooldown.set(m_cooldown.get() - 1); }}\n\
+         \t\telse {{ self.reactivateHitboxes(); m_cooldown.set(REHIT); }}\n\
          \t}}\n\
          }}\n",
         rehit = hz.rehit())
@@ -917,11 +1345,12 @@ fn hazard_gameobject_stats_hx(hid: &str) -> String {
 
 fn hazard_hitbox_stats_hx(hz: &Hazard) -> String {
     format!(
-        "// HitboxStats for the stage hazard. damage/knockback/angle from mappings/stage/metadata.jsonc.\n\
-         {{\n\tgameObjectIdle: {{\n\t\thitbox0: {{ damage: {}, angle: {}, baseKnockback: {}, knockbackGrowth: 40, \
+        "// HitboxStats for the stage hazard — SSF2 attack stats (power -> baseKnockback,\n\
+         // kbConstant -> knockbackGrowth, direction -> angle).\n\
+         {{\n\tgameObjectIdle: {{\n\t\thitbox0: {{ damage: {}, angle: {}, baseKnockback: {}, knockbackGrowth: {}, \
          hitstop: 6, hitstun: 24, reversibleAngle: true, directionalInfluence: true, reflectable: false }}\n\t}},\n\
          \tgameObjectInactive: {{}}\n}}\n",
-        hz.damage, hz.angle, hz.knockback)
+        hz.damage, hz.angle, hz.knockback, hz.kb_growth)
 }
 
 fn hazard_animation_stats_hx() -> String {
@@ -1119,7 +1548,7 @@ mod hazard_tests {
             x: 0.0, y: 150.0, w: 700.0, h: 160.0,
             damage: 10.0, knockback: 0.0, angle: 45.0,
             interval: 0, active: 20, motion: "static".into(),
-            range: 0.0, period: 120, rehit: 30, label: "TestHazard".into(), art: None,
+            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![],
         }
     }
 
@@ -1148,6 +1577,31 @@ mod hazard_tests {
         assert!(s.contains("Common.toLocalState(LState.ACTIVE)"), "no local-state activation: {s}");
         // no script-overlap damage fallback — damage comes from the native HIT_BOX.
         assert!(!s.contains("addDamage"), "script-overlap damage should be gone: {s}");
+    }
+
+    // A plain `var counter = 0` in a custom-game-object script RE-INITIALIZES every frame, so any
+    // cross-frame accumulator silently never advances (the thwomp froze at spawn, dealt 0 damage).
+    // Cross-frame state MUST be `self.make*` + .get()/.set(). Assert no naked mutable counter leaks
+    // back into the hazard/thwomp scripts — this failure is invisible at convert time and only shows
+    // as a dead hazard in-engine.
+    #[test]
+    fn hazard_scripts_use_persistent_state_not_plain_vars() {
+        let cols = [(438.0, 660.0), (770.0, 616.0), (1100.0, 660.0)];
+        let mut hz = demo_hazard();
+        hz.motion = "oscillateX".into();
+        hz.range = 40.0;
+        for (name, s) in [
+            ("hazard_script", hazard_script_hx(&hz)),
+            ("thwomp_single", thwomp_script_hx(&cols)),
+            ("thwomp_multi", thwomp_multi_script_hx(&cols, -67.0, "entrance", "idle", "fall")),
+        ] {
+            assert!(s.contains("self.makeInt(") || s.contains("self.makeFloat(") || s.contains("self.makeBool("),
+                "{name}: no persistent state (self.make*) — counters reset every frame: {s}");
+            // the bug shape: a top-level mutable counter as a plain numeric var.
+            for bad in ["var m_phase = 3;", "var m_timer = 0;", "var m_frame = 0;", "var m_cooldown = 0;", "var m_cool = 0;"] {
+                assert!(!s.contains(bad), "{name}: plain-var counter `{bad}` re-inits every frame: {s}");
+            }
+        }
     }
 
     #[test]

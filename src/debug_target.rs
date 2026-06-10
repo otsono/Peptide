@@ -49,6 +49,13 @@ pub trait DebugTarget {
     fn char_icon(&mut self, slot: u32) -> Result<Option<String>> {
         Ok(non_empty(strip_eval(self.eval(&format!("iconFeed({slot})"))?)))
     }
+
+    /// Dump the live object tree to `depth` — the stage-triage ground truth (every
+    /// live object's name/class/position/size/frame). SSF2 walks its display list
+    /// via reflection; an engine without a tree walk declares the gap.
+    fn tree(&mut self, _depth: u32) -> Result<String> {
+        Ok("tree: no live object-tree walk on this engine yet (SSF2-only)".into())
+    }
 }
 
 /// Drop a leading `E:` (the Fraymakers eval-reply wrapper) so feed payloads are
@@ -85,6 +92,7 @@ pub fn run_command(target: &mut dyn DebugTarget, line: &str) -> Result<Option<St
             Some(out)
         }
         Command::Console => Some(target.console()?),
+        Command::Tree(depth) => Some(target.tree(depth)?),
         Command::AddCharacter => Some(target.add_character()?),
         Command::Exit => { target.exit()?; Some("exit".into()) }
         Command::Load => Some(target.load()?),
