@@ -198,6 +198,18 @@ literals (game space) or a live measurement, never from the parked placement.
   - the multi-animation hazard CGO (frame-label clips -> one FM animation per label, HIT_BOX
     on the damaging labels, Substate switching).
   - per-layer span filling (static layers stretch, short cycles tile) in the entity builder.
+  - independent-loop backdrop elements (`PEPTIDE_BG_ELEMENTS`, PROTOTYPE): a single FM stage
+    animation gives every baked layer ONE shared master clock, so a long element loop tiles to
+    the master length and a non-divisor loop phase-jumps each restart (Flash nested movieclips
+    loop independently of the parent; you also can't put two distinct objects on one layer+frame).
+    the flag promotes each ANIMATED backdrop element to its own CUSTOM_GAME_OBJECT whose
+    `gameObjectIdle` animation is just that element's frames on LOOP, spawned + positioned by the
+    stage Script (the hazard-CGO pattern minus the hitbox). proven on bowserscastle: the 5
+    animated elements (Bubbles at 134f was the non-divisor of the 284 master) each loop at their
+    own length, removed from the baked entity (no double-render). LIVE-UNKNOWN: the draw DEPTH of
+    a stage-spawned object (the `BACKGROUND_*` container assignment) -- the spawn marks it TODO;
+    until a live probe confirms the layer API, a promoted element renders at the default
+    game-object depth (in front), so the flag is off by default.
 - **behavior scripts** (`stage_emit.rs` script generators): port the disasm'd state machine
   1:1 with the unit table above. comment each constant with its SSF2 source.
 
