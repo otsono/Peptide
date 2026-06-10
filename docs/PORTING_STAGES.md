@@ -207,9 +207,12 @@ literals (game space) or a live measurement, never from the parked placement.
     stage reparents its view into a background CONTAINER for depth:
     `var e = match.createCustomGameObject(getContent(eid), null);
     self.getBackgroundBehindContainer().addChild(e.getViewRootContainer());`
-    each distinct SSF2 backdrop symbol becomes its OWN entity (grouped by symbol id in
-    stage_parser `group_bg_layers`), so the elements are NOT merged into one composite image --
-    bowserscastle yields 5 (BowserSpectator, Torches Lit, Torchembers, Podoboos, Bubbles).
+    each distinct SSF2 PLACEMENT becomes its OWN object, not each symbol: `group_bg_layers` keys
+    by (symbol, instance anchor = the world position of the nearest named-MC ancestor, recorded as
+    `Instance::inst_anchor` during the walk), so 16 torch-ember emitters placed around the castle
+    become 16 separate objects at their own positions (each a small per-placement sprite), NOT one
+    merged union-bounds image. bowserscastle yields 20 (16 embers + BowserSpectator, Torches Lit,
+    Podoboos, Bubbles).
     the depth control is the Stage container API. there is NO generic background container; the
     background is four sub-bands (back to front): `getBackgroundBehindContainer()` (deepest, in
     front of the painted backdrop), `getBackgroundEffectsContainer()`, `getBackgroundShadows
