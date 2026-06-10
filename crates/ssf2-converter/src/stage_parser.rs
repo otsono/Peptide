@@ -1153,14 +1153,12 @@ fn walk_frame(
             // wall positions) each carry a distinct anchor and split into their own objects. an
             // unnamed/structural sprite inherits the parent's anchor.
             let child_anchor = if name.is_some() { (world.tx, world.ty) } else { inst_anchor };
-            // PER-INSTANCE PHASE: SSF2 desyncs repeated decorative clips (the wall lamps/embers,
-            // chandeliers, bowser spectators) by WHERE they're placed, so they don't blink in
-            // unison. Flash plays sibling instances of one symbol in sync, but these were authored
-            // out of phase; approximate that by offsetting each instance's playhead by its placement
-            // position. A single-instance clip just starts at a shifted (still-looping) frame, so
-            // this is a no-op for it.
-            let phase = (local.tx.abs().round() as usize).wrapping_add((local.ty.abs().round() as usize).wrapping_mul(7));
-            let f = &frames[(global_frame + phase) % frames.len()];
+            // Flash plays every movieclip instance IN SYNC with the parent timeline -- sibling
+            // instances of one symbol (the row of wall torches/lamps, the embers) all show the
+            // SAME frame, flickering together in place. Show each clip's own `global_frame % len`.
+            // (an earlier position-based phase offset desynced them, which made a row of repeated
+            // clips read as a traveling wave -- the torches "wiggling left and right.")
+            let f = &frames[global_frame % frames.len()];
             walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1, child_anchor);
         }
     }
