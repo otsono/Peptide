@@ -1326,6 +1326,16 @@ fn render_art_layers(
         }
         out
     };
+    // The smallest period at which a captured frame sequence repeats. Each backdrop ELEMENT loops
+    // on its OWN movieclip clock, but we sample every element over `n_samples` (the longest clip on
+    // the stage), so a short element loop comes back repeated N times. Truncating to one period
+    // gives the element's REAL loop length, so its emitted VFX loops at its own rate instead of the
+    // stage's (a 6-frame ember stays 6 frames, not 142). Returns the full length if it never
+    // repeats within the sample window.
+    let loop_period = |frames: &[StageArt]| -> usize {
+        let n = frames.len();
+        (1..n).find(|&p| (0..n - p).all(|i| frames[i].png == frames[i + p].png)).unwrap_or(n)
+    };
     // Group a set of bg-plane instances into ORDERED per-element layers (the SSF2 movieclip
     // model: each animated backdrop object is its own clip). `member` selects bg-plane art;
     // each distinct `sym_name` becomes one layer in first-appearance (back-to-front) draw order.
@@ -1359,7 +1369,10 @@ fn render_art_layers(
             let animated = per_frame.len() == n_samples
                 && per_frame.windows(2).any(|w| w[0].png != w[1].png);
             let frames = if animated {
-                rle(per_frame)
+                // truncate to the element's OWN loop period (it was sampled over the stage's
+                // longest clip), so its VFX loops at its own length, not the whole stage's.
+                let p = loop_period(&per_frame);
+                rle(per_frame[..p].to_vec())
             } else {
                 let grp: Vec<&Instance> = base_insts.iter().filter(|i| matches(i)).collect();
                 composite_grp(grp, bounds).into_iter().collect()
