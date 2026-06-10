@@ -2038,10 +2038,158 @@ impl AbcVisitor for AttackVisitor {
     }
 }
 
-fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, AttackData> {
+pub(crate) fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, AttackData> {
     let mut v = AttackVisitor { result: BTreeMap::new() };
     scan_method(bytecode, abc, &mut v);
     v.result
+}
+
+/// Captures the single getAttackStats newobject that yields the MOST hitboxes — for a HAZARD,
+/// whose getAttackStats returns the attack object DIRECTLY (`{ attackBoxes: {...} }`), not the
+/// character pattern of an object keyed by move name. (The nested `attackBoxes` map fires its own
+/// newobject too; "most hitboxes" picks the complete one and dedups the partial.)
+struct HazardAttackVisitor {
+    best: Vec<BTreeMap<String, f64>>,
+}
+impl AbcVisitor for HazardAttackVisitor {
+    fn on_newobject(&mut self, obj: BTreeMap<String, StackVal>, _c: &Option<String>) -> NewObjectAction {
+        let hbs = extract_hitboxes_from_val(&StackVal::Obj(obj.clone()));
+        if hbs.len() > self.best.len() {
+            self.best = hbs;
+        }
+        NewObjectAction::PushObj(obj)
+    }
+}
+
+/// The behavior values a hazard class's `update()`/`initialize()` actually use, recovered by
+/// stepping the class instead of hardcoding them: the camera-shake amplitude (`shake`/`shakeCamera`
+/// argument), the rise speed (`setYSpeed`), the fall gravity (`updateEnemyStats({gravity})`), the
+/// self-platform box (`createSelfPlatform`), the dust effect (`attachEffect`), and the sounds
+/// (`playSound`). The FM CGO script is driven by these so the hazard's behavior comes from its own
+/// code, not a per-hazard template of constants.
+#[derive(Default, Clone, Debug)]
+pub(crate) struct EnemyBehavior {
+    pub shake: Option<f64>,
+    pub rise_yspeed: Option<f64>,
+    pub fall_gravity: Option<f64>,
+    pub self_platform: Option<(f64, f64, f64, f64)>,
+    pub dust: Option<(String, f64, f64)>,
+    pub sounds: Vec<String>,
+}
+struct BehaviorVisitor {
+    b: EnemyBehavior,
+}
+impl AbcVisitor for BehaviorVisitor {
+    fn on_callproperty(&mut self, method: &str, args: &[StackVal], _r: &StackVal) -> Option<StackVal> {
+        let num = |i: usize| if let Some(StackVal::Num(n)) = args.get(i) { Some(*n) } else { None };
+        match method {
+            "shake" | "shakeCamera" => { if let Some(n) = num(0) { self.b.shake = Some(n); } }
+            "setYSpeed" => { if let Some(n) = num(0) { if n < 0.0 { self.b.rise_yspeed = Some(n); } } }
+            "updateEnemyStats" => {
+                if let Some(StackVal::Obj(o)) = args.first() {
+                    if let Some(StackVal::Num(g)) = o.get("gravity") { if *g > 0.0 { self.b.fall_gravity = Some(*g); } }
+                }
+            }
+            "createSelfPlatform" => {
+                if let (Some(a), Some(b), Some(c), Some(d)) = (num(0), num(1), num(2), num(3)) {
+                    self.b.self_platform = Some((a, b, c, d));
+                }
+            }
+            "attachEffect" => {
+                if let Some(StackVal::Str(name)) = args.first() {
+                    let (mut sx, mut sy) = (1.0, 1.0);
+                    if let Some(StackVal::Obj(o)) = args.get(1) {
+                        if let Some(StackVal::Num(v)) = o.get("scaleX") { sx = *v; }
+                        if let Some(StackVal::Num(v)) = o.get("scaleY") { sy = *v; }
+                    }
+                    self.b.dust = Some((name.clone(), sx, sy));
+                }
+            }
+            "playSound" => { if let Some(StackVal::Str(s)) = args.first() { if !self.b.sounds.contains(s) { self.b.sounds.push(s.clone()); } } }
+            _ => {}
+        }
+        None
+    }
+}
+pub(crate) fn extract_enemy_behavior(abc: &AbcFile, class_name: &str) -> EnemyBehavior {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return EnemyBehavior::default() };
+    let mut v = BehaviorVisitor { b: EnemyBehavior::default() };
+    for m in ["initialize", "update", "runAI", "move", "releaseEnemy"] {
+        if let Some(t) = class.instance_methods.iter().find(|t| &*t.name == m) {
+            if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
+                scan_method(&body.bytecode, abc, &mut v);
+            }
+        }
+    }
+    v.b
+}
+
+/// Collects the animation labels a hazard class plays via `forceAttack("<label>")` — stepping the
+/// class's lifecycle methods to learn its REAL animation set (the Thwomp's entrance/idle/fall, the
+/// HyruleTornado's "stand"), the code-referenced handle to its art clip, instead of matching a
+/// library symbol by keyword.
+#[derive(Default)]
+struct ForceAttackVisitor {
+    labels: Vec<String>,
+}
+impl AbcVisitor for ForceAttackVisitor {
+    fn on_callproperty(&mut self, method: &str, args: &[StackVal], _r: &StackVal) -> Option<StackVal> {
+        if method == "forceAttack" {
+            if let Some(StackVal::Str(s)) = args.first() {
+                if !s.is_empty() && !self.labels.contains(s) { self.labels.push(s.clone()); }
+            }
+        }
+        None
+    }
+}
+pub(crate) fn extract_force_attack_labels(abc: &AbcFile, class_name: &str) -> Vec<String> {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return vec![] };
+    let mut v = ForceAttackVisitor::default();
+    for m in ["initialize", "update", "runAI", "move", "releaseEnemy", "setState"] {
+        if let Some(t) = class.instance_methods.iter().find(|t| &*t.name == m) {
+            if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
+                scan_method(&body.bytecode, abc, &mut v);
+            }
+        }
+    }
+    v.labels
+}
+
+/// The getAttackStats hitbox maps a HAZARD class declares (damage/direction/power/kbConstant + any
+/// geometry), authoritative per-hazard instead of a generic per-kind default. Empty if the class
+/// has no getAttackStats or no recoverable hitbox. Pairs with [`extract_own_stats_for`].
+pub(crate) fn extract_attack_stats_for(abc: &AbcFile, class_name: &str) -> Vec<BTreeMap<String, f64>> {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return vec![] };
+    let Some(t) = class.instance_methods.iter().find(|t| &*t.name == "getAttackStats") else { return vec![] };
+    let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { return vec![] };
+    let mut v = HazardAttackVisitor { best: vec![] };
+    scan_method(&body.bytecode, abc, &mut v);
+    v.best
+}
+
+/// The flat scalar fields a hazard class's `getOwnStats` declares (size, speeds, timers — e.g. the
+/// HyruleTornado's `xSpeed`/`maxTime`). Authoritative motion/own params instead of guessed defaults.
+pub(crate) fn extract_own_stats_for(abc: &AbcFile, class_name: &str) -> BTreeMap<String, f64> {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return BTreeMap::new() };
+    let Some(t) = class.instance_methods.iter().find(|t| &*t.name == "getOwnStats") else { return BTreeMap::new() };
+    let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { return BTreeMap::new() };
+    let mut v = OwnStatsVisitor { best: BTreeMap::new() };
+    scan_method(&body.bytecode, abc, &mut v);
+    v.best
+}
+struct OwnStatsVisitor {
+    best: BTreeMap<String, f64>,
+}
+impl AbcVisitor for OwnStatsVisitor {
+    fn on_newobject(&mut self, obj: BTreeMap<String, StackVal>, _c: &Option<String>) -> NewObjectAction {
+        let nums: BTreeMap<String, f64> = obj.iter()
+            .filter_map(|(k, v)| if let StackVal::Num(n) = v { Some((k.clone(), *n)) } else { None })
+            .collect();
+        if nums.len() > self.best.len() {
+            self.best = nums;
+        }
+        NewObjectAction::PushObj(obj)
+    }
 }
 
 /// Extract per-projectile stat objects from a `getProjectileStats()`
