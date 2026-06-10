@@ -198,35 +198,39 @@ literals (game space) or a live measurement, never from the parked placement.
   - the multi-animation hazard CGO (frame-label clips -> one FM animation per label, HIT_BOX
     on the damaging labels, Substate switching).
   - per-layer span filling (static layers stretch, short cycles tile) in the entity builder.
-  - independent-loop backdrop elements (`PEPTIDE_BG_ELEMENTS`, prototype, off by default): a
-    single FM stage animation gives every baked layer ONE shared master clock, so a long element
-    loop tiles to the master length and a non-divisor loop phase-jumps each restart (Flash nested
-    movieclips loop independently of the parent; you also can't put two distinct objects on one
-    layer+frame). the flag promotes each ANIMATED backdrop element to its own CUSTOM_GAME_OBJECT
-    whose `gameObjectIdle` animation is just that element's frames on LOOP (its own clock), and the
-    stage reparents its view into a background CONTAINER for depth:
-    `var e = match.createCustomGameObject(getContent(eid), null);
-    self.getBackgroundBehindContainer().addChild(e.getViewRootContainer());`
-    each distinct SSF2 PLACEMENT becomes its OWN object, not each symbol: `group_bg_layers` keys
-    by (symbol, instance anchor = the world position of the nearest named-MC ancestor, recorded as
+  - independent-loop backdrop elements (AUTOMATIC, every stage): a single FM stage animation gives
+    every baked layer ONE shared master clock, so a long element loop tiles to the master length
+    and a non-divisor loop phase-jumps each restart (Flash nested movieclips loop independently of
+    the parent; you also can't put two distinct objects on one layer+frame). the converter
+    UNIVERSALLY promotes each ANIMATED backdrop element (weather embers, jumping podoboos, lava
+    bubbles/splashes, flickering torches, a spectating Bowser, …) to its own looping VFX -- there's
+    no flag, any animated bg element on any stage is treated this way; static (1-frame) elements
+    stay baked. `PEPTIDE_BG_INLINE=1` forces the old all-baked behavior for diffing. each element
+    is a VFX content (objectType "VFX", no scripts/stats/manifest, resolved by id via getContent)
+    spawned + depth-placed by the stage Script:
+    `var v = match.createVfx(new VfxStats({ spriteContent: getContent(eid), animation: "active",
+    loop: true, timeout: -1, relativeWith: false }));
+    self.getBackgroundBehindContainer().addChild(v.getSprite());`
+    each distinct SSF2 PLACEMENT becomes its OWN VFX, not each symbol: `group_bg_layers` keys by
+    (symbol, instance anchor = the world position of the nearest named-MC ancestor, recorded as
     `Instance::inst_anchor` during the walk), so 16 torch-ember emitters placed around the castle
-    become 16 separate objects at their own positions (each a small per-placement sprite), NOT one
+    become 16 separate VFX at their own positions (each a small per-placement sprite), NOT one
     merged union-bounds image. bowserscastle yields 20 (16 embers + BowserSpectator, Torches Lit,
-    Podoboos, Bubbles).
-    the depth control is the Stage container API. there is NO generic background container; the
+    Podoboos, Bubbles); dreamland 1, casinonightzone 7, smashville 15.
+    the depth control is the Stage container API: spawn the VFX, then `addChild` its `getSprite()`
+    (a DisplayObject) into a stage container. there is NO generic background container; the
     background is four sub-bands (back to front): `getBackgroundBehindContainer()` (deepest, in
-    front of the painted backdrop), `getBackgroundEffectsContainer()`, `getBackgroundShadows
-    Container()`, `getBackgroundStructuresContainer()` (static structures, just behind characters),
-    then `getCharactersBack/Characters/CharactersFrontContainer()` and `getForeground*Container()`
-    (each returns a `Container`), plus `Entity.getViewRootContainer()` and
-    `Container.addChild(DisplayObject)`. use BACKGROUND_BEHIND for scenery (the default); a plain
-    `createVfx` with VfxLayer drew at the wrong depth, and BACKGROUND_EFFECTS is for particle fx,
-    not scenery. null owner: createCustomGameObject's owner is optional, and a stage's `self` is a
-    StageApi (not the GameObject the owner expects), so pass null. LIVE-VERIFIED on bowserscastle:
-    the 5 elements (Bubbles 134f, the non-divisor of the 284 master) loop on their own clock,
-    removed from the baked entity (no double-render), zero stage script errors, rendering behind
-    the fighters and in front of the painted background (window capture confirmed). remaining
-    tuning: per-element band (embers/bubbles could go to EFFECTS, torches/Bowser to BEHIND).
+    front of the painted backdrop -- the scenery default), `getBackgroundEffectsContainer()`,
+    `getBackgroundShadowsContainer()`, `getBackgroundStructuresContainer()` (just behind
+    characters), then `getCharactersBack/Characters/CharactersFrontContainer()` and
+    `getForeground*Container()`. a plain VfxLayer drew at the wrong depth, so the explicit container
+    reparent is authoritative (no VfxLayer, no owner). LIVE-VERIFIED on bowserscastle: the elements
+    (Bubbles 134f, the non-divisor of the 284 master; 16 embers at their wall positions) loop on
+    their own clocks, removed from the baked entity (no double-render), zero stage script errors,
+    rendering behind the fighters and in front of the painted background (window capture confirmed).
+    remaining tuning: per-element band (embers/bubbles could go to EFFECTS, scenery to BEHIND); the
+    runtime AS3 weather classes (EmberWeather/RainWeather/SnowWeather) are camera-space and NOT in
+    the static tree, so they're a separate port, not caught here.
 - **behavior scripts** (`stage_emit.rs` script generators): port the disasm'd state machine
   1:1 with the unit table above. comment each constant with its SSF2 source.
 
