@@ -202,19 +202,22 @@ literals (game space) or a live measurement, never from the parked placement.
     single FM stage animation gives every baked layer ONE shared master clock, so a long element
     loop tiles to the master length and a non-divisor loop phase-jumps each restart (Flash nested
     movieclips loop independently of the parent; you also can't put two distinct objects on one
-    layer+frame). the flag promotes each ANIMATED backdrop element to its own VFX content
-    (objectType "VFX", the same kind the character port spawns), and the stage spawns it with
-    `match.createVfx(new VfxStats({ spriteContent: getContent(eid), animation: "active",
-    layer: VfxLayer.BACKGROUND_EFFECTS, loop: true, timeout: -1, relativeWith: false }))`.
-    `loop:true`+`timeout:-1` give the independent forever-loop; `layer` (a VfxLayer constant) sets
-    the draw DEPTH -- the piece CUSTOM_GAME_OBJECT lacks (GameObject has setAlpha/setVisible but no
-    layer method). NO owner arg: createVfx's optional owner is a GameObject, but a stage's `self`
-    is a StageApi, so passing it fails a live cast. LIVE-VERIFIED on bowserscastle: the 5 animated
-    elements (Bubbles at 134f was the non-divisor of the 284 master) spawn as background VFX with
-    zero script errors, loop at their own length, removed from the baked entity (no double-render),
-    and render BEHIND the fighters. the VfxLayer bands (BACKGROUND_BEHIND/EFFECTS/SHADOWS/STRUCTURES,
-    CHARACTERS_*, FOREGROUND_*) match the stage entity's CONTAINER bands 1:1; per-element band
-    assignment (vs the single BACKGROUND_EFFECTS default) is the remaining tuning.
+    layer+frame). the flag promotes each ANIMATED backdrop element to its own CUSTOM_GAME_OBJECT
+    whose `gameObjectIdle` animation is just that element's frames on LOOP (its own clock), and the
+    stage reparents its view into a background CONTAINER for depth:
+    `var e = match.createCustomGameObject(getContent(eid), null);
+    self.getBackgroundEffectsContainer().addChild(e.getViewRootContainer());`
+    the depth control is the Stage container API: `getBackgroundBehind/Structures/Shadows/Effects
+    Container()`, `getCharactersBack/Characters/CharactersFrontContainer()`,
+    `getForeground*Container()` (each returns a `Container`), plus `Entity.getViewRootContainer()`
+    and `Container.addChild(DisplayObject)`. a plain `createVfx` with `VfxLayer.BACKGROUND_EFFECTS`
+    drew at the wrong depth; the explicit container reparent puts the element in front of the static
+    background art and behind the fighters. null owner: createCustomGameObject's owner is optional,
+    and a stage's `self` is a StageApi (not the GameObject the owner expects), so pass null.
+    LIVE-VERIFIED on bowserscastle: the 5 animated elements (Bubbles at 134f was the non-divisor of
+    the 284 master) loop at their own length, removed from the baked entity (no double-render), zero
+    stage script errors, rendering in front of the background and behind the fighters. remaining
+    tuning: per-element container choice (some elements may want BACKGROUND_BEHIND vs STRUCTURES).
 - **behavior scripts** (`stage_emit.rs` script generators): port the disasm'd state machine
   1:1 with the unit table above. comment each constant with its SSF2 source.
 
