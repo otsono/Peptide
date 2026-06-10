@@ -12,11 +12,10 @@ function update() {
 			var owner = null;
 			match.createStructure(self.getResource().getContent("bowserscastlessf2platform0"));
 			match.createStructure(self.getResource().getContent("bowserscastlessf2platform1"));
-			match.createStructure(self.getResource().getContent("bowserscastlessf2platform2"));
 			var _hz0 = match.createCustomGameObject(self.getResource().getContent("bowserscastlessf2hazard0"), owner);
-			if (_hz0 != null) { _hz0.setX(770.0); _hz0.setY(250.0); }
+			if (_hz0 != null) { _hz0.setX(772.9); _hz0.setY(1057.8); }
 			var _hz1 = match.createCustomGameObject(self.getResource().getContent("bowserscastlessf2hazard1"), owner);
-			if (_hz1 != null) { _hz1.setX(748.0); _hz1.setY(760.0); }
+			if (_hz1 != null) { _hz1.setX(750.8); _hz1.setY(-27.1); }
 		}
 	}
 }

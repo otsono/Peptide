@@ -15,6 +15,11 @@ FrayTools to publish. see [`README.md`](README.md) for the pitch.
 - [`DEVELOPMENT.md`](DEVELOPMENT.md) -- converter dev guide: build, the pipeline, every module,
   the mapping config, output layout.
 - [`TESTING.md`](TESTING.md) -- the two validation harnesses + the iteration loop.
+- [`docs/PORTING_STAGES.md`](docs/PORTING_STAGES.md) -- the deep-RE playbook for porting a stage
+  accurately (static inventory, AS3 disasm, live probing, coordinate model, verification gates).
+  follow it phase by phase for EVERY stage.
+- [`docs/PORTING_CHARACTERS.md`](docs/PORTING_CHARACTERS.md) -- the character analogue: the
+  audit procedure for verifying a converted character move by move against both live engines.
 - [`docs/STATUS.md`](docs/STATUS.md) -- the single home for status, known issues, and TODOs.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) -- the per-change checklist (run it before a PR).
 

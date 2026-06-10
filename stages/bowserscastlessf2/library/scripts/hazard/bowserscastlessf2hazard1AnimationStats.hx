@@ -1,5 +1,6 @@
 // AnimationStats for the stage hazard.
 {
-	gameObjectIdle: { endType: AnimationEndType.NONE },
-	gameObjectInactive: { endType: AnimationEndType.NONE }
+	entrance: { endType: AnimationEndType.NONE },
+	fall: { endType: AnimationEndType.LOOP },
+	idle: { endType: AnimationEndType.LOOP }
 }

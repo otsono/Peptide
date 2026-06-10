@@ -27,7 +27,7 @@
       "animationStatsId": "bowserscastlessf2hazard0AnimationStats",
       "hitboxStatsId": "bowserscastlessf2hazard0HitboxStats",
       "id": "bowserscastlessf2hazard0",
-      "name": "Thwomp",
+      "name": "Lava",
       "objectStatsId": "bowserscastlessf2hazard0GameObjectStats",
       "scriptId": "bowserscastlessf2hazard0Script",
       "type": "customGameObject"
@@ -36,7 +36,7 @@
       "animationStatsId": "bowserscastlessf2hazard1AnimationStats",
       "hitboxStatsId": "bowserscastlessf2hazard1HitboxStats",
       "id": "bowserscastlessf2hazard1",
-      "name": "Lava",
+      "name": "Thwomp",
       "objectStatsId": "bowserscastlessf2hazard1GameObjectStats",
       "scriptId": "bowserscastlessf2hazard1Script",
       "type": "customGameObject"
@@ -50,12 +50,6 @@
     {
       "id": "bowserscastlessf2platform1",
       "objectStatsId": "bowserscastlessf2platform1Stats",
-      "scriptId": "bowserscastlessf2platformScript",
-      "type": "structure"
-    },
-    {
-      "id": "bowserscastlessf2platform2",
-      "objectStatsId": "bowserscastlessf2platform2Stats",
       "scriptId": "bowserscastlessf2platformScript",
       "type": "structure"
     }

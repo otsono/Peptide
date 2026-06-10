@@ -227,16 +227,33 @@ fn main() {
         }
         "slots" => {
             let Some(ci) = find_class(&abc, &args[3]) else { eprintln!("no class"); return; };
+            // a slot trait can carry a DEFAULT value (vkind selects the constant pool; pool
+            // vectors store [1..], so vec index = vindex-1). Print it so class constants
+            // (e.g. a platform's SINK_SPEED) are readable without a live probe.
+            let slot_default = |vindex: u32, vkind: u8| -> String {
+                if vindex == 0 { return String::new(); }
+                let i = (vindex as usize).saturating_sub(1);
+                let v = match vkind {
+                    3 => abc.ints.get(i).map(|v| v.to_string()),
+                    4 => abc.uints.get(i).map(|v| v.to_string()),
+                    6 => abc.doubles.get(i).map(|v| v.to_string()),
+                    1 => abc.strings.get(i).map(|s| format!("{s:?}")),
+                    11 => Some("true".into()),
+                    12 => Some("false".into()),
+                    _ => None,
+                };
+                v.map(|v| format!(" = {v}")).unwrap_or_else(|| format!(" = <vkind {vkind}#{vindex}>"))
+            };
             println!("== instance slots ==");
             for t in &abc.instances[ci].traits {
-                if let TraitKindData::Slot { slot_id, type_name, .. } | TraitKindData::Const { slot_id, type_name, .. } = &t.data {
-                    println!("  slot{slot_id:<3} {:<32} type={:?}", abc.multiname_local(t.name).unwrap_or_default(), abc.multiname_local(*type_name));
+                if let TraitKindData::Slot { slot_id, type_name, vindex, vkind } | TraitKindData::Const { slot_id, type_name, vindex, vkind } = &t.data {
+                    println!("  slot{slot_id:<3} {:<32} type={:?}{}", abc.multiname_local(t.name).unwrap_or_default(), abc.multiname_local(*type_name), slot_default(*vindex, *vkind));
                 }
             }
             println!("== static slots ==");
             for t in &abc.classes[ci].traits {
-                if let TraitKindData::Slot { slot_id, type_name, .. } | TraitKindData::Const { slot_id, type_name, .. } = &t.data {
-                    println!("  slot{slot_id:<3} {:<32} type={:?}", abc.multiname_local(t.name).unwrap_or_default(), abc.multiname_local(*type_name));
+                if let TraitKindData::Slot { slot_id, type_name, vindex, vkind } | TraitKindData::Const { slot_id, type_name, vindex, vkind } = &t.data {
+                    println!("  slot{slot_id:<3} {:<32} type={:?}{}", abc.multiname_local(t.name).unwrap_or_default(), abc.multiname_local(*type_name), slot_default(*vindex, *vkind));
                 }
             }
         }

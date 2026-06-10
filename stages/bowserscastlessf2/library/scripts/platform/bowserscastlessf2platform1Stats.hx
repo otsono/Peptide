@@ -2,6 +2,6 @@
 {
 	spriteContent: self.getResource().getContent("bowserscastlessf2"),
 	animationId: "platformSprite1",
-	startX: 770.0,
-	startY: 616.0
+	startX: 1100.0,
+	startY: 692.0
 }

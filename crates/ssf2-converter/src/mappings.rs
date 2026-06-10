@@ -819,6 +819,18 @@ pub struct StageMetadataEntry {
     /// the fighter falls into, handled as a hazard). e.g. "lavafloor" on bowserscastle.
     #[serde(default)]
     pub non_floor_terrain: Vec<String>,
+    /// Linkage-name substrings whose terrain IS a standable floor but must not anchor the stage
+    /// (excluded from main-floor selection / engine-layer alignment). SSF2's molten lakes are
+    /// real collision floors the fighter lands ON (the lava hitbox above them does the damage),
+    /// so they need collision without becoming the "main" floor. e.g. "lavafloor".
+    #[serde(default)]
+    pub hazard_floors: Vec<String>,
+    /// Thwomp-style hazard target columns, in SSF2 GAME coords (the terrain-MC-local space the
+    /// stage's own AS3 uses for spawnEnemy/setX). Read 1:1 from the stage class's `update`
+    /// disasm (e.g. bowserscastle's `[-113, 4, 121, 392, 509, 626]`). The parser converts them
+    /// to FM x via the terrain origin; the emitter drives the hazard cycle over them.
+    #[serde(default)]
+    pub sink_columns: Vec<f64>,
     /// Keep the SSF2 `foreground` plane as a real FM foreground (drawn IN FRONT of fighters)
     /// instead of folding it into the background. The default fold avoids re-drawing a structure's
     /// front face over fighters (a duplicate platform), but some stages put a genuine overlay here

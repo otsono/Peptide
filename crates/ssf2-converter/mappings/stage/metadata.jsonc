@@ -24,15 +24,20 @@
     "battlefield2": { "name": "Battlefield (Melee)" },
     "bombfactory": { "name": "Bomb Factory", "series": "Bomberman" },
     "bowserscastle": { "name": "Bowser's Castle", "series": "Super Mario",
-      "non_floor_terrain": ["lavafloor"],
+      // the molten lake (lavafloor_TerrainMC) IS standable in SSF2 — fighters land ON it and
+      // the lava hitbox above it burns them — so it's a hazard floor (real collision that
+      // never anchors the main floor / bridge alignment), not excluded terrain.
+      "hazard_floors": ["lavafloor"],
       "keep_foreground": true,
-      // three standing platforms (RE'd from the SSF2 terrain: two ledge-bounded side platforms +
-      // the central terrainGround block). x = center, y = top surface, w = width. STATIC collision
-      // (the SSF2 platforms don't sink; the Thwomp drops with its own self-platform). their visual
-      // is the real SSF2 terrain grey, not a synthesized brick. hazards (the lava glow + Thwomp)
-      // come from the stage's AS3 spawnEnemy calls, not hand-declared here.
+      // the two bridge decks. x/w from the ledge_mc pairs (static); y = the ledge line
+      // (terrain y 150.45 -> FM 692; live-verified: a standing fighter's feet read FM 690.7).
+      // the central pedestal is NOT declared: it's real static terrain (terrainGround_platform,
+      // parsed as a drop-through at FM 616) and a declared copy would duplicate it.
       "platforms": [
-        { "x": 438, "y": 660, "w": 448 }, { "x": 770, "y": 616, "w": 118 }, { "x": 1100, "y": 660, "w": 442 } ] },
+        { "x": 438, "y": 692, "w": 448 }, { "x": 1100, "y": 692, "w": 442 } ],
+      // thwomp target columns in SSF2 GAME coords, 1:1 from bowserscastle::update's array
+      // literal [-113, 4, 121, 392, 509, 626] (six columns, three per bridge half).
+      "sink_columns": [-113, 4, 121, 392, 509, 626] },
     "butterbuilding": { "name": "Butter Building", "series": "Kirby" },
     "casinonightzone": { "name": "Casino Night Zone", "series": "Sonic the Hedgehog" },
     "castlesiege": { "name": "Castle Siege", "series": "Fire Emblem" },
