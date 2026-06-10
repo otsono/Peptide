@@ -852,12 +852,20 @@ pub struct PlatformSpec {
     pub drop_through: bool,
 }
 
-/// One declared stage hazard (a Fraymakers custom game object). All in FM coords/units.
+/// One declared stage hazard (a Fraymakers custom game object). FM coords/units by default;
+/// set `game_coords: true` to give x/y/w/h in SSF2 terrain-local GAME coords instead (the raw
+/// setX/setY + getOwnStats width/height literals straight from the AS3 disasm), which the
+/// converter transforms to FM space via the stage's static `terrain_off` + `scale` (the same
+/// path as `sink_columns` and auto-detected actor hazards). prefer this for disasm-sourced
+/// hazards so the JSONC carries the verbatim SSF2 numbers with no hand coordinate math.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HazardSpec {
-    /// Spawn position (stage center is 0,0; +y is down).
+    /// Spawn position (stage center is 0,0; +y is down). GAME coords if `game_coords` is set.
     pub x: f64,
     pub y: f64,
+    /// When true, x/y/w/h are SSF2 game (terrain-local) coords/sizes; the converter applies
+    /// `terrain_off` + `scale` to land them in FM space.
+    #[serde(default)] pub game_coords: bool,
     /// Hitbox size.
     #[serde(default = "hz_default_w")] pub w: f64,
     #[serde(default = "hz_default_w")] pub h: f64,

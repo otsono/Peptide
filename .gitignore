@@ -21,6 +21,8 @@ docs/*
 !docs/PEPTIDE_GUIDE.md
 !docs/PEPTIDE_DESIGN.md
 !docs/STATUS.md
+!docs/PORTING_STAGES.md
+!docs/PORTING_CHARACTERS.md
 
 # macOS .app bundle output from make-app.sh
 

@@ -68,7 +68,21 @@
     "hyruletemple": { "name": "Hyrule Temple", "series": "The Legend of Zelda" },
     "junglehijinx": { "name": "Jungle Hijinx", "series": "Donkey Kong" },
     "jungleisland": { "name": "Jungle Island", "series": "Donkey Kong" },
-    "kingdom1": { "name": "Mushroom Kingdom", "series": "Super Mario" },
+    "kingdom1": { "name": "Mushroom Kingdom", "series": "Super Mario",
+      // two piranha plants in the pipes. positions 1:1 from kingdom1::update spawnEnemy(PiranhaPlant)
+      // + setX/setY literals (game coords): (74,74) and (670,244). stats from PiranhaPlant
+      // getOwnStats (width 35, height 49) + getAttackStats "idle" (damage 5, direction 90 -> angle,
+      // power 90 -> knockback, kbConstant 60, refreshRate 15 -> rehit 30). game_coords applies
+      // terrain_off + scale. motion static: getOwnStats gravity 0 / max_ySpeed 0, and the pop-up bob
+      // amplitude isn't a disasm literal (would need a live read). this overrides the auto-detect,
+      // which put both plants at one wrong spot (the parked frame-0 clip position).
+      // NOT ported (declared gap): PowBlockMK shockwave, an event-triggered onHurt (damage 20,
+      // direction 90, power 90, kbConstant 60) whose spawn position is the runtime powCoordinates
+      // vector, not a disasm literal.
+      "hazards": [
+        { "x": 74,  "y": 74,  "w": 35, "h": 49, "damage": 5, "knockback": 90, "angle": 90, "game_coords": true, "rehit": 30, "label": "Piranha Plant" },
+        { "x": 670, "y": 244, "w": 35, "h": 49, "damage": 5, "knockback": 90, "angle": 90, "game_coords": true, "rehit": 30, "label": "Piranha Plant" }
+      ] },
     "kingdom2": { "name": "Mushroom Kingdom II", "series": "Super Mario" },
     "konohavillage": { "name": "Konoha Village", "series": "Naruto" },
     "krazoapalace": { "name": "Krazoa Palace", "series": "Star Fox" },
