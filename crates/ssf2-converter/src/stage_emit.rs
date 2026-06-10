@@ -947,7 +947,10 @@ fn emit_multi_anim_hazard(
     let mut hzanims: Vec<HzAnim> = Vec::new();
     for anim in &hz.anims {
         let fm_name = sanitize_anim(&anim.label);
-        let active = is_active_anim(&anim.label);
+        // a static hazard (lava) is a persistent hit volume — its damage rides every animation, since
+        // none names a transient "fall/slam" phase the keyword test looks for. an intermittent hazard
+        // (the thwomp) only hits on its active frames.
+        let active = is_active_anim(&anim.label) || hz.motion == "static";
         let mut guids = Vec::new();
         for (fi, fr) in anim.frames.iter().enumerate() {
             let base = format!("{hid}_{fm_name}_{fi}");
@@ -986,8 +989,15 @@ fn emit_multi_anim_hazard(
     // left rects for the COLLISION_BOX emit. If a hazard has no recoverable box, the emitter falls
     // back to the art canvas. This is NOT a guessed/own-stats size: it's the engine attackBox tied
     // to the animation (a HIT_BOX layer that rides the damaging frames).
-    let hit_boxes: Vec<(f64, f64, f64, f64)> = hz.attack_boxes.iter()
+    let mut hit_boxes: Vec<(f64, f64, f64, f64)> = hz.attack_boxes.iter()
         .map(|r| (r.x, r.y, r.w, r.h)).collect();
+    // a static hazard (lava) has no CollisionBox in its art clip — SSF2 checks it by region, not a
+    // shape — so attack_boxes is empty and the art-canvas fallback would shrink the hit volume to one
+    // small lava tile. its damage covers the whole detected lava AABB (hz.w x hz.h), centred on the
+    // CGO origin (the box uses centre-pivot, and the CGO is placed at the AABB centre).
+    if hit_boxes.is_empty() && hz.motion == "static" && hz.w > 0.0 && hz.h > 0.0 {
+        hit_boxes.push((0.0, 0.0, hz.w, hz.h));
+    }
     let dual = hit_boxes.len() >= 2;
     write_json(&lib.join("entities").join(format!("{hid}.entity")), &hazard_entity_multi(hid, &hzanims, &hit_boxes))?;
     write_meta(&lib.join("entities").join(format!("{hid}.entity.meta")), hid, hid, "", Some("CUSTOM_GAME_OBJECT"), None)?;
