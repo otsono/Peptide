@@ -78,6 +78,17 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
             Ok(BgLayerRef { name: bg_layer_name(&layer.name, i), frames })
         })
         .collect::<Result<_>>()?;
+    // PROTOTYPE (PEPTIDE_BG_ELEMENTS): promote each ANIMATED backdrop element to its own spawned
+    // entity with an INDEPENDENT looping animation (the SSF2 movieclip model), instead of baking
+    // it as a layer inside the single `stage` animation where every layer shares one master clock.
+    // that shared clock is the architectural bug: a long element loop (a 260-frame Bowser) gets
+    // tiled/truncated to the master length and phase-jumps each restart. a promoted element is a
+    // CUSTOM_GAME_OBJECT whose `gameObjectIdle` animation is JUST that element's frames on LOOP, so
+    // it runs on its own clock at its own length. static (1-frame) elements have no loop, so they
+    // stay baked (cheaper). off by default; the baked path is unchanged until the flag is set.
+    let promote_bg = std::env::var("PEPTIDE_BG_ELEMENTS").is_ok();
+    let (baked_bg, promoted_bg): (Vec<BgLayerRef>, Vec<BgLayerRef>) =
+        bg_refs.into_iter().partition(|l| !(promote_bg && l.frames.len() > 1));
     // declared platforms become MOVING STRUCTURES (like the official stage-template's moving
     // platform): one shared grey `platformSprite` (an IMAGE + a structure LINE_SEGMENT, in the
     // stage entity), and one structure CONTENT per platform that the stage spawns and that moves
@@ -87,7 +98,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     let (platform_sprites, structure_contents, structure_spawn_ids) =
         emit_platform_structures(model, &lib, &sprites)?;
     let art = ArtRefs {
-        background: bg_refs,
+        background: baked_bg,
         parallax: parallax_refs,
         stage: stage_refs,
         foreground: model.art.foreground.iter().enumerate()
@@ -107,7 +118,13 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     write_json(&lib.join("entities").join(format!("{id}.entity")), &entity)?;
 
     // hazards (custom game objects) the stage spawns, if any are declared for this stage.
-    let hazard_entries = emit_hazards(model, &lib)?;
+    let mut hazard_entries = emit_hazards(model, &lib)?;
+    // promoted backdrop elements (PEPTIDE_BG_ELEMENTS): each animated bg element as its own
+    // independent-loop CUSTOM_GAME_OBJECT, spawned + positioned by the stage Script. they're the
+    // same content kind as hazards (customGameObject), so they ride the same manifest list + the
+    // same deferred-spawn block.
+    let (bg_entries, bg_spawns) = emit_bg_elements(model, &promoted_bg, &lib)?;
+    hazard_entries.extend(bg_entries);
 
     write_json(&lib.join("manifest.json"), &build_manifest(model, &hazard_entries, &structure_contents))?;
     write_meta(&lib.join("manifest.json.meta"), id, "manifest", "json", None, None)?;
@@ -124,6 +141,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         .map(|cid| format!("\t\t\tmatch.createStructure(self.getResource().getContent(\"{cid}\"));\n"))
         .collect::<String>();
     spawns.push_str(&hazard_spawn_lines(model));
+    spawns.push_str(&bg_spawns);
     std::fs::write(scripts.join(format!("{id}Script.hx")), script_hx(id, animated, &spawns))?;
     write_meta(&scripts.join(format!("{id}Script.hx.meta")), id, &format!("{id}Script"), "", Some("STAGE"), None)?;
     std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id, &art.parallax, model.scale))?;
@@ -1355,6 +1373,112 @@ fn hazard_hitbox_stats_hx(hz: &Hazard) -> String {
 
 fn hazard_animation_stats_hx() -> String {
     "// AnimationStats for the stage hazard.\n{\n\tgameObjectIdle: { endType: AnimationEndType.NONE },\n\tgameObjectInactive: { endType: AnimationEndType.NONE }\n}\n".to_string()
+}
+
+// ── PROTOTYPE: animated backdrop element -> independent-loop custom game object ──
+// the architectural fix for Flash's two timeline features the single baked `stage` animation
+// can't represent: (1) a nested movieclip whose loop is INDEPENDENT of the parent (a 260-frame
+// element plays all 260 regardless of the master length), and (2) multiple distinct objects on
+// one layer+frame. each promoted element becomes its own CUSTOM_GAME_OBJECT (the proven thwomp
+// carrier, minus the hitbox) whose `gameObjectIdle` animation is JUST that element's frames on
+// LOOP, so it runs on its own clock at its own length. generalizes the hazard-CGO pattern.
+
+/// One backdrop-element entity: an IMAGE layer of the element's frames as a single looping
+/// `gameObjectIdle` animation, no hitbox. references the bg sprite GUIDs already written by
+/// `write_layer` (no PNG re-write). keyframe lengths are the per-frame holds (already FM 60fps
+/// frames, like the baked bg path), so NO extra 30->60 doubling.
+fn bg_element_entity(eid: &str, layer: &BgLayerRef, scale: f64) -> Value {
+    let g = |s: &str| det_uuid(&format!("bgelem::{eid}::{s}"));
+    let symbols: Vec<Value> = layer.frames.iter().enumerate().map(|(j, f)| json!({
+        "$id": g(&format!("sym{j}")), "type": "IMAGE", "imageAsset": f.guid,
+        "x": f.x, "y": f.y, "pivotX": 0.0, "pivotY": 0.0,
+        "scaleX": scale, "scaleY": scale, "rotation": 0.0, "alpha": 1.0, "pluginMetadata": {}
+    })).collect();
+    let keyframes: Vec<Value> = layer.frames.iter().enumerate().map(|(j, f)| json!({
+        "$id": g(&format!("kf{j}")), "symbol": g(&format!("sym{j}")), "length": f.hold.max(1),
+        "tweened": false, "tweenType": "LINEAR", "type": "IMAGE", "pluginMetadata": {}
+    })).collect();
+    let kf_ids: Vec<String> = (0..layer.frames.len()).map(|j| g(&format!("kf{j}"))).collect();
+    json!({
+        "export": true, "guid": g("entity"), "id": eid, "version": 5,
+        "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "objectType": "CUSTOM_GAME_OBJECT", "version": "0.4.0" } },
+        "plugins": ["com.fraymakers.FraymakersTypes", "com.fraymakers.FraymakersMetadata"],
+        "tags": [], "paletteMap": {}, "tilesets": [], "terrains": [],
+        "symbols": symbols,
+        "keyframes": keyframes,
+        "layers": [ { "$id": g("layer"), "name": "art", "type": "IMAGE", "hidden": false, "locked": false, "keyframes": kf_ids, "pluginMetadata": {} } ],
+        "animations": [ { "$id": g("anim"), "name": "gameObjectIdle", "layers": [g("layer")], "pluginMetadata": {} } ]
+    })
+}
+
+/// AnimationStats for a backdrop element: `gameObjectIdle` LOOPS (an independent backdrop clock),
+/// unlike a hazard's NONE (the hazard Script drives its phases by hand).
+fn bg_element_animation_stats_hx() -> String {
+    "// AnimationStats for a backdrop element (independent loop).\n{\n\tgameObjectIdle: { endType: AnimationEndType.LOOP }\n}\n".to_string()
+}
+
+/// Minimal CUSTOM_GAME_OBJECT lifecycle for a backdrop element: it just renders its looping
+/// animation, so there's no per-frame logic. gravity/friction are 0 (set in GameObjectStats) so
+/// it stays put. (parallax — camera-relative drift — would go in update() per element; the
+/// bowserscastle backdrop is fixed, so not needed here.)
+fn bg_element_script_hx(eid: &str) -> String {
+    format!(
+        "// API Script for backdrop element {eid} (converted from SSF2)\n\n\
+         function initialize() {{}}\n\
+         function update() {{}}\n\
+         function onTeardown() {{}}\n\
+         function onKill() {{}}\n\
+         function onStale() {{}}\n\
+         function afterPushState() {{}}\n\
+         function afterPopState() {{}}\n\
+         function afterFlushStates() {{}}\n")
+}
+
+/// Emit each promoted backdrop element as an independent-loop CUSTOM_GAME_OBJECT (entity + stats +
+/// script + manifest entry) and return the manifest entries + the stage-Script spawn lines.
+fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path) -> Result<(Vec<Value>, String)> {
+    let mut entries = Vec::new();
+    let mut spawns = String::new();
+    if promoted.is_empty() { return Ok((entries, spawns)); }
+    let scripts = lib.join("scripts").join("bgelement");
+    std::fs::create_dir_all(&scripts).context("mkdir scripts/bgelement")?;
+    for (i, layer) in promoted.iter().enumerate() {
+        let eid = format!("{}bg{}", model.id, i);
+        write_json(&lib.join("entities").join(format!("{eid}.entity")), &bg_element_entity(&eid, layer, model.scale))?;
+        write_meta(&lib.join("entities").join(format!("{eid}.entity.meta")), &eid, &eid, "", Some("CUSTOM_GAME_OBJECT"), None)?;
+        // reuse the hazard GameObjectStats (PState.ACTIVE -> gameObjectIdle + spriteContent ref);
+        // a backdrop element needs the same "play this animation" wiring, just no hitbox.
+        let files = [
+            ("Script", bg_element_script_hx(&eid)),
+            ("GameObjectStats", hazard_gameobject_stats_hx(&eid)),
+            ("AnimationStats", bg_element_animation_stats_hx()),
+        ];
+        for (kind, body) in files {
+            let fname = format!("{eid}{kind}");
+            std::fs::write(scripts.join(format!("{fname}.hx")), body)?;
+            write_meta(&scripts.join(format!("{fname}.hx.meta")), &eid, &fname,
+                if kind == "Script" { "" } else { "hscript" },
+                if kind == "Script" { Some("CUSTOM_GAME_OBJECT") } else { None }, None)?;
+        }
+        entries.push(json!({
+            "type": "customGameObject", "id": eid,
+            "scriptId": format!("{eid}Script"),
+            "objectStatsId": format!("{eid}GameObjectStats"),
+            "animationStatsId": format!("{eid}AnimationStats"),
+            "name": layer.name.clone(),
+        }));
+        // spawn at origin: the element's position is baked into its IMAGE keyframe offsets (same
+        // x/y as the baked layer used), so it lands exactly where it did before.
+        // LIVE-UNKNOWN: the draw DEPTH. a CUSTOM_GAME_OBJECT renders at the default game-object
+        // depth (in front of fighters, like the thwomp), but a background element needs to sit
+        // BEHIND them. the FM API to assign a stage-spawned object to a BACKGROUND_* container
+        // isn't confirmed in this repo; until a live probe nails it, the element renders at the
+        // default depth. the independent LOOP (the architectural fix) is correct regardless.
+        spawns.push_str(&format!(
+            "\t\t\tvar _bg{i} = match.createCustomGameObject(self.getResource().getContent(\"{eid}\"), null);\n\
+             \t\t\t// TODO(live): assign _bg{i} to a BACKGROUND draw layer (behind fighters)\n"));
+    }
+    Ok((entries, spawns))
 }
 
 /// hscript the stage Script runs to spawn its hazards (createCustomGameObject + position).
