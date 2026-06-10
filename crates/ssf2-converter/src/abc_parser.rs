@@ -2068,7 +2068,7 @@ impl AbcVisitor for HazardAttackVisitor {
 /// (`playSound`). The FM CGO script is driven by these so the hazard's behavior comes from its own
 /// code, not a per-hazard template of constants.
 #[derive(Default, Clone, Debug)]
-pub(crate) struct EnemyBehavior {
+pub struct EnemyBehavior {
     pub shake: Option<f64>,
     pub rise_yspeed: Option<f64>,
     pub fall_gravity: Option<f64>,

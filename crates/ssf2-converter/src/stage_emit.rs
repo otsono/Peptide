@@ -998,8 +998,9 @@ fn emit_multi_anim_hazard(
     // it never regresses the working template; used to iterate the reconstruction toward 1:1.
     let decomp = std::env::var("PEPTIDE_DECOMP_HAZARD").is_ok();
     let script = if let (true, Some(rs)) = (decomp, hz.reconstructed_script.as_ref()) {
-        format!("// {} reconstructed from its SSF2 update()/initialize() via the character decompiler.\n\
-                 // TODO: field-state (self.m_x -> self.makeInt) + FrameTimer FM helper to run.\n\n{rs}", hz.label)
+        format!("// {} reconstructed from its SSF2 update()/initialize() via the character decompiler,\n\
+                 // then made FM-CGO-runnable (field-state -> self.makeInt, FrameTimer -> counter,\n\
+                 // unmapped calls neutralized so it can't throw).\n\n{}", hz.label, cgo_runnable(rs))
     } else if is_thwomp && !cols.is_empty() {
         // hover/spawn height: SSF2 spawns the thwomp AT getDeathBounds().y with
         // surviveDeathBounds=true. FM kills a game object outside the blast zone, so park
@@ -1182,6 +1183,90 @@ fn thwomp_script_hx(cols: &[(f64, f64)]) -> String {
 ///           then gravity 30 with max_ySpeed 30 ⇒ constant 30 px/f fall = 19.5 FM px/frame;
 ///           land -> `idle` anim + the column platform sinks, wait 90f ⇒ 180 FM;
 ///           rise at YSpeed -6 ⇒ 3.9 FM px/frame and despawn (here: hide + restart cycle).
+/// Make a decompiled SSF2Enemy script runnable as an FM custom game object without erroring. The
+/// decompiler gives the real `update()` state machine, but it references SSF2 instance fields
+/// (`self.m_action`, FrameTimers) and SSF2-only calls an FM CGO can't run. This pass:
+///   - models each `self.m_X` field as FM persistent state (`self.makeInt`), a `FrameTimer(N)` as a
+///     persistent frame counter (`.tick()`/`.completed`/`.reset()` -> counter ops),
+///   - drops SSF2-only object-stat flags (bypassCollisionTesting/surviveDeathBounds) from
+///     `updateGameObjectStats`,
+///   - comments out any line that has no safe FM equivalent (a field bound to an `[SSF2-only]` call
+///     like `createSelfPlatform`, plus `setCamBoxSize`/`addTarget`/`isOnFloor`/`AudioClip.play`/the
+///     `createVfx` dust, which need verified resources) — conservatively, so it never throws.
+/// Returns the rewritten initialize()+update() body plus the persistent-state declarations.
+fn cgo_runnable(raw: &str) -> String {
+    use regex::Regex;
+    use std::collections::{BTreeMap, BTreeSet};
+    // FrameTimer fields -> duration expr; dead fields (bound to an [SSF2-only] call); int fields.
+    let timer_re = Regex::new(r"self\.(m_\w+)\s*=\s*new FrameTimer\(([^;]+)\)").unwrap();
+    let dead_re = Regex::new(r"//\s*\[SSF2-only:[^]]*\]\s*self\.(m_\w+)\s*=").unwrap();
+    let field_re = Regex::new(r"self\.(m_\w+)").unwrap();
+
+    let mut timers: BTreeMap<String, String> = BTreeMap::new();
+    let mut dead: BTreeSet<String> = BTreeSet::new();
+    for c in timer_re.captures_iter(raw) { timers.insert(c[1].to_string(), c[2].trim().to_string()); }
+    for c in dead_re.captures_iter(raw) { dead.insert(c[1].to_string()); }
+    // every other m_X (read or written, not a timer, not dead) becomes an int persistent slot.
+    let mut ints: BTreeSet<String> = BTreeSet::new();
+    for c in field_re.captures_iter(raw) {
+        let f = c[1].to_string();
+        if !timers.contains_key(&f) && !dead.contains(&f) { ints.insert(f); }
+    }
+
+    // risky calls used INSIDE a condition/expression -> replace with a safe literal (commenting the
+    // line would orphan a brace). risky STANDALONE statements -> comment the whole line.
+    let risky_expr: &[(&str, &str)] = &[("self.isOnFloor()", "false"), ("self.isOnGround()", "false")];
+    let risky = ["setCamBoxSize", "addTarget", "AudioClip.play", "createVfx", "setFallthrough", "deleteTarget"];
+
+    let mut out: Vec<String> = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim_start();
+        let indent = &line[..line.len() - trimmed.len()];
+        // already-commented decompiler gaps pass through untouched.
+        if trimmed.starts_with("//") { out.push(line.to_string()); continue; }
+        // FrameTimer construction: the counter IS the state (starts at 0); drop the `new`.
+        if timer_re.is_match(line) { out.push(format!("{indent}// timer init -> persistent counter (below)")); continue; }
+        // a line touching a dead field or a risky unmapped call: neutralize.
+        if dead.iter().any(|f| line.contains(&format!("self.{f}")))
+            || risky.iter().any(|r| line.contains(r)) {
+            out.push(format!("{indent}// [needs-port] {trimmed}"));
+            continue;
+        }
+        let mut s = line.to_string();
+        // risky query in a condition -> safe literal (keeps braces balanced).
+        for (call, lit) in risky_expr { s = s.replace(call, lit); }
+        // timer ops -> counter ops.
+        for (f, dur) in &timers {
+            s = s.replace(&format!("self.{f}.tick()"), &format!("_t_{f}.set(_t_{f}.get() + 1)"));
+            s = s.replace(&format!("self.{f}.completed"), &format!("(_t_{f}.get() >= {dur})"));
+            s = s.replace(&format!("self.{f}.reset()"), &format!("_t_{f}.set(0)"));
+        }
+        // int field write/read -> persistent get/set.
+        for f in &ints {
+            let wre = Regex::new(&format!(r"self\.{f}\s*=\s*")).unwrap();
+            s = wre.replace_all(&s, format!("_s_{f}.__SET__ ")).to_string();
+            s = s.replace(&format!("self.{f}"), &format!("_s_{f}.get()"));
+        }
+        // updateGameObjectStats: drop SSF2-only flags.
+        s = s.replace(", bypassCollisionTesting: false", "").replace(", bypassCollisionTesting: true", "")
+             .replace(", surviveDeathBounds: false", "").replace(", surviveDeathBounds: true", "");
+        out.push(s);
+    }
+    let mut body = out.join("\n");
+    // finalize the write marker into a .set(...) wrapping the rest of the statement.
+    let set_re = Regex::new(r"_s_(m_\w+)\.__SET__ (.*);").unwrap();
+    body = set_re.replace_all(&body, "_s_$1.set($2);").to_string();
+
+    // persistent-state declarations at MODULE scope, exactly like the verified template: the engine's
+    // makeInt(default) returns a call-order-keyed persistent store, so the script re-running each frame
+    // just rebinds the same var to the same store (default applied once). functions close over these by
+    // bare name — never re-call makeInt inside a function (that would shift the call-order keying).
+    let mut preamble = String::new();
+    for f in &ints { preamble.push_str(&format!("var _s_{f} = self.makeInt(0);\n")); }
+    for f in timers.keys() { preamble.push_str(&format!("var _t_{f} = self.makeInt(0);\n")); }
+    format!("{preamble}\n{body}")
+}
+
 /// Cross-frame state via `self.make*` (a plain `var` re-inits every frame on a game object).
 fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fall_v: f64, rise_v: f64, entrance: &str, idle: &str, fall: &str) -> String {
     let cols_lit = cols.iter().map(|(x, _)| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
