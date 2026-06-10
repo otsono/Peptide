@@ -333,6 +333,11 @@ struct Instance {
     /// sprite containers whose leaf shapes carry deeper auto-named symbols, so the hazard signal
     /// lives on an ancestor and is propagated down the subtree (like [`Instance::moving`]).
     hazard: Option<HazardKind>,
+    /// World position of the nearest NAMED MovieClip ancestor (the placement point of this leaf's
+    /// owning instance). Repeated placements of one symbol (e.g. 16 torch-ember emitters) share a
+    /// `sym_name` but get DISTINCT anchors, so the art grouping can split them into one object per
+    /// placement at its own position instead of merging them into one union-bounds image.
+    inst_anchor: (f64, f64),
 }
 
 /// Parse the SSF2 stage at `path` into a [`StageModel`], rendering its art (read-only).
@@ -1114,6 +1119,7 @@ fn walk_frame(
     plane: Option<&str>, planes: &PlaneMap,
     sym_names: &BTreeMap<u16, String>, shape_defs: &BTreeMap<u16, &swf::Shape>,
     sprite_frames: &BTreeMap<u16, Vec<Vec<PlacedChild>>>, out: &mut Vec<Instance>, rec: usize,
+    inst_anchor: (f64, f64),
 ) {
     if rec > 8 { return; }
     for (id, local, name) in children {
@@ -1137,10 +1143,16 @@ fn walk_frame(
                 cx: world.tx, cy: world.ty, x_sign: world.x_sign(),
                 moving: false, // art-path instances classify by plane, not collision
                 hazard: None,  // hazards come from the geometry walk, not the art-frame walk
+                inst_anchor,
             });
         }
         if let Some(frames) = sprite_frames.get(id) {
             let next = name.as_deref().or(if sym.is_empty() { carried_sym } else { Some(&sym) }).map(|s| s.to_string());
+            // a NAMED placement is an instance boundary: its world position becomes the anchor for
+            // its whole subtree, so repeated placements of one symbol (16 ember emitters at 16
+            // wall positions) each carry a distinct anchor and split into their own objects. an
+            // unnamed/structural sprite inherits the parent's anchor.
+            let child_anchor = if name.is_some() { (world.tx, world.ty) } else { inst_anchor };
             // PER-INSTANCE PHASE: SSF2 desyncs repeated decorative clips (the wall lamps/embers,
             // chandeliers, bowser spectators) by WHERE they're placed, so they don't blink in
             // unison. Flash plays sibling instances of one symbol in sync, but these were authored
@@ -1149,7 +1161,7 @@ fn walk_frame(
             // this is a no-op for it.
             let phase = (local.tx.abs().round() as usize).wrapping_add((local.ty.abs().round() as usize).wrapping_mul(7));
             let f = &frames[(global_frame + phase) % frames.len()];
-            walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1);
+            walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1, child_anchor);
         }
     }
 }
@@ -1208,7 +1220,7 @@ fn render_art_layers(
     let frame_instances = |g: usize| -> Vec<Instance> {
         let root = &root_frames[root_idx];
         let mut out = Vec::new();
-        walk_frame(root, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0);
+        walk_frame(root, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0));
         // exclude non-art PLANES (terrain/masks/spawns, by instance name) and any stray
         // collision/scaffolding markers (by linkage suffix) that slipped into an art plane.
         out.retain(|i| shape_defs.contains_key(&i.shape_id)
@@ -1320,19 +1332,28 @@ fn render_art_layers(
     // An element that changes across the sampled frames keeps its own animation loop; a static
     // one collapses to its single base-frame image.
     let group_bg_layers = |member: &dyn Fn(&Instance) -> bool| -> Vec<BgLayer> {
-        let mut order: Vec<String> = Vec::new();
-        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        // one layer per distinct PLACEMENT (sym_name + instance anchor), not per symbol: repeated
+        // placements of one symbol (16 torch-ember emitters at 16 wall positions) become 16 objects
+        // each at its own position, instead of one merged union-bounds image (which both desyncs
+        // their independent loops and wastes a giant mostly-empty texture). a single-instance symbol
+        // is one group, same as before.
+        let akey = |i: &Instance| (i.sym_name.clone(), i.inst_anchor.0.round() as i64, i.inst_anchor.1.round() as i64);
+        let mut order: Vec<(String, i64, i64)> = Vec::new();
+        let mut seen: std::collections::BTreeSet<(String, i64, i64)> = std::collections::BTreeSet::new();
         for i in base_insts.iter().filter(|i| member(i)) {
-            if seen.insert(i.sym_name.clone()) { order.push(i.sym_name.clone()); }
+            let k = akey(i);
+            if seen.insert(k.clone()) { order.push(k); }
         }
-        order.iter().filter_map(|key| {
-            // fixed canvas = the union of this element's bounds across ALL frames, so the layer
+        order.iter().filter_map(|(sname, ax, ay)| {
+            let matches = |i: &Instance| member(i) && &i.sym_name == sname
+                && i.inst_anchor.0.round() as i64 == *ax && i.inst_anchor.1.round() as i64 == *ay;
+            // fixed canvas = the union of THIS placement's bounds across ALL frames, so the layer
             // stays put while its content animates (no wiggle as the flame bbox flickers).
             let all: Vec<&Instance> = sampled.iter()
-                .flat_map(|(insts, _)| insts.iter().filter(|i| member(i) && &i.sym_name == key)).collect();
+                .flat_map(|(insts, _)| insts.iter().filter(|i| matches(i))).collect();
             let bounds = union_bounds(&all);
             let per_frame: Vec<StageArt> = sampled.iter().filter_map(|(insts, _)| {
-                let grp: Vec<&Instance> = insts.iter().filter(|i| member(i) && &i.sym_name == key).collect();
+                let grp: Vec<&Instance> = insts.iter().filter(|i| matches(i)).collect();
                 composite_grp(grp, bounds)
             }).collect();
             let animated = per_frame.len() == n_samples
@@ -1340,10 +1361,10 @@ fn render_art_layers(
             let frames = if animated {
                 rle(per_frame)
             } else {
-                let grp: Vec<&Instance> = base_insts.iter().filter(|i| member(i) && &i.sym_name == key).collect();
+                let grp: Vec<&Instance> = base_insts.iter().filter(|i| matches(i)).collect();
                 composite_grp(grp, bounds).into_iter().collect()
             };
-            (!frames.is_empty()).then(|| BgLayer { name: key.clone(), frames })
+            (!frames.is_empty()).then(|| BgLayer { name: sname.clone(), frames })
         }).collect()
     };
 
@@ -1691,7 +1712,7 @@ fn extract_labeled_clip_anims(
         // walk every sub-frame, then composite all frames onto one fixed union canvas (no wiggle).
         let per_frame: Vec<Vec<Instance>> = (0..sub_len).map(|g| {
             let mut out = Vec::new();
-            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0);
+            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0));
             out.retain(|i| shape_defs.contains_key(&i.shape_id));
             out
         }).collect();
@@ -1941,6 +1962,7 @@ fn walk<'a>(
                 x_sign: world.x_sign(),
                 moving: here_moving,
                 hazard: here_hazard,
+                inst_anchor: (0.0, 0.0), // geometry walk feeds collision/hazards, not art grouping
             });
         }
         if let Some(child) = sprites.get(&id) {
@@ -1996,10 +2018,10 @@ mod hazard_classifier_tests {
         let insts = vec![
             Instance { shape_id: 1, inst_name: None, sym_name: "x".into(), plane: None,
                 aabb: Rect { x: 0.0, y: 0.0, w: 100.0, h: 20.0 }, cx: 50.0, cy: 10.0, x_sign: 1.0,
-                moving: false, hazard: Some(HazardKind::Lava) },
+                moving: false, hazard: Some(HazardKind::Lava), inst_anchor: (0.0, 0.0) },
             Instance { shape_id: 2, inst_name: None, sym_name: "x".into(), plane: None,
                 aabb: Rect { x: 110.0, y: 0.0, w: 100.0, h: 20.0 }, cx: 160.0, cy: 10.0, x_sign: 1.0,
-                moving: false, hazard: Some(HazardKind::Lava) },
+                moving: false, hazard: Some(HazardKind::Lava), inst_anchor: (0.0, 0.0) },
         ];
         let shapes = std::collections::BTreeMap::new();
         let bitmaps = std::collections::BTreeMap::new();
