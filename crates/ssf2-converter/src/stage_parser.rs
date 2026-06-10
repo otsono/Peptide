@@ -1112,6 +1112,24 @@ fn build_frames(tags: &[swf::Tag]) -> Vec<Vec<PlacedChild>> {
 
 /// Walk the placement tree at a fixed global frame (every animated sprite shows its
 /// `global_frame % len` frame — Flash advances all clips together), collecting the placed
+/// Collect the world position of every movieclip placement (for the even-desync rank map). Walks
+/// the base layout (frame 0 of each clip) since clip POSITIONS are fixed across frames.
+fn collect_clip_positions(
+    children: &[PlacedChild], parent: Mat,
+    sprite_frames: &BTreeMap<u16, Vec<Vec<PlacedChild>>>, out: &mut Vec<(i64, i64)>,
+) {
+    if out.len() > 100_000 { return; }
+    for (id, local, _) in children {
+        let world = parent.mul(local);
+        if let Some(frames) = sprite_frames.get(id) {
+            out.push((world.tx.round() as i64, world.ty.round() as i64));
+            if let Some(f) = frames.first() {
+                collect_clip_positions(f, world, sprite_frames, out);
+            }
+        }
+    }
+}
+
 /// shape instances with world AABBs. Mirrors [`walk`] but frame-aware.
 #[allow(clippy::too_many_arguments)]
 fn walk_frame(
@@ -1119,7 +1137,7 @@ fn walk_frame(
     plane: Option<&str>, planes: &PlaneMap,
     sym_names: &BTreeMap<u16, String>, shape_defs: &BTreeMap<u16, &swf::Shape>,
     sprite_frames: &BTreeMap<u16, Vec<Vec<PlacedChild>>>, out: &mut Vec<Instance>, rec: usize,
-    inst_anchor: (f64, f64),
+    inst_anchor: (f64, f64), phase_rank: &std::collections::HashMap<(i64, i64), usize>,
 ) {
     if rec > 8 { return; }
     for (id, local, name) in children {
@@ -1153,13 +1171,13 @@ fn walk_frame(
             // wall positions) each carry a distinct anchor and split into their own objects. an
             // unnamed/structural sprite inherits the parent's anchor.
             let child_anchor = if name.is_some() { (world.tx, world.ty) } else { inst_anchor };
-            // Flash plays every movieclip instance IN SYNC with the parent timeline -- sibling
-            // instances of one symbol (the row of wall torches/lamps, the embers) all show the
-            // SAME frame, flickering together in place. Show each clip's own `global_frame % len`.
-            // (an earlier position-based phase offset desynced them, which made a row of repeated
-            // clips read as a traveling wave -- the torches "wiggling left and right.")
-            let f = &frames[global_frame % frames.len()];
-            walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1, child_anchor);
+            // even desync: each clip's start frame from its position-rank via the golden ratio (a
+            // low-discrepancy sequence), so a row of repeated clips is spread EVENLY across its loop
+            // and their per-frame leans cancel (the row reads as still). see `phase_rank` above.
+            let rank = phase_rank.get(&(world.tx.round() as i64, world.ty.round() as i64)).copied().unwrap_or(0);
+            let phase = ((rank as f64 * 0.618_033_988_75).fract() * frames.len() as f64) as usize;
+            let f = &frames[(global_frame + phase) % frames.len()];
+            walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1, child_anchor, phase_rank);
         }
     }
 }
@@ -1213,12 +1231,25 @@ fn render_art_layers(
     // the sprites INSIDE still cycle by the global frame, so animation is preserved.
     let root_idx = root_frames.iter().enumerate().max_by_key(|(_, f)| f.len()).map(|(i, _)| i).unwrap_or(0);
 
+    // EVEN DESYNC: SSF2 starts each repeated decorative clip (the row of wall torches/lamps, the
+    // embers) on a different frame so the row doesn't flicker in unison. rank every clip by world
+    // position, then give each a low-discrepancy (golden-ratio) start phase. ranking + golden ratio
+    // spreads a row of repeated clips EVENLY across its loop, so their per-frame leans cancel and
+    // the row reads as still -- unlike syncing them (they all lean together) or a linear position
+    // offset (adjacent clips one frame apart = a gradient that travels across the row as a wave).
+    let phase_rank = {
+        let mut pos: Vec<(i64, i64)> = Vec::new();
+        collect_clip_positions(&root_frames[root_idx], Mat::id(), &sprite_frames, &mut pos);
+        pos.sort_unstable();
+        pos.dedup();
+        pos.into_iter().enumerate().map(|(r, p)| (p, r)).collect::<std::collections::HashMap<(i64, i64), usize>>()
+    };
 
     // instances at a given global frame, classified + composited per layer.
     let frame_instances = |g: usize| -> Vec<Instance> {
         let root = &root_frames[root_idx];
         let mut out = Vec::new();
-        walk_frame(root, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0));
+        walk_frame(root, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), &phase_rank);
         // exclude non-art PLANES (terrain/masks/spawns, by instance name) and any stray
         // collision/scaffolding markers (by linkage suffix) that slipped into an art plane.
         out.retain(|i| shape_defs.contains_key(&i.shape_id)
@@ -1712,6 +1743,7 @@ fn extract_labeled_clip_anims(
     let mut sprite_frames: BTreeMap<u16, Vec<Vec<PlacedChild>>> = BTreeMap::new();
     for (id, t) in sprites { sprite_frames.insert(*id, build_frames(t)); }
     let clip_frames = build_frames(tags);
+    let no_phase: std::collections::HashMap<(i64, i64), usize> = std::collections::HashMap::new();
     let mut anims = Vec::new();
     for (label, frame) in &labels {
         let f = *frame as usize;
@@ -1723,7 +1755,7 @@ fn extract_labeled_clip_anims(
         // walk every sub-frame, then composite all frames onto one fixed union canvas (no wiggle).
         let per_frame: Vec<Vec<Instance>> = (0..sub_len).map(|g| {
             let mut out = Vec::new();
-            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0));
+            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), &no_phase);
             out.retain(|i| shape_defs.contains_key(&i.shape_id));
             out
         }).collect();
