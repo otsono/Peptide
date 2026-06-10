@@ -1000,7 +1000,12 @@ fn emit_multi_anim_hazard(
     let script = if let (true, Some(rs)) = (decomp, hz.reconstructed_script.as_ref()) {
         format!("// {} reconstructed from its SSF2 update()/initialize() via the character decompiler,\n\
                  // then made FM-CGO-runnable (field-state -> self.makeInt, FrameTimer -> counter,\n\
-                 // unmapped calls neutralized so it can't throw).\n\n{}", hz.label, cgo_runnable(rs))
+                 // unmapped calls neutralized so it can't throw).\n\n{}", hz.label, {
+            // the entity's real animation names (what registerLocalState/playAnimation need) — the
+            // full clip set, not just the forceAttack subset (the fall clip has no forceAttack).
+            let entity_anims: Vec<String> = hz.anims.iter().map(|a| sanitize_anim(&a.label)).collect();
+            cgo_runnable(rs, &entity_anims)
+        })
     } else if is_thwomp && !cols.is_empty() {
         // hover/spawn height: SSF2 spawns the thwomp AT getDeathBounds().y with
         // surviveDeathBounds=true. FM kills a game object outside the blast zone, so park
@@ -1186,15 +1191,21 @@ fn thwomp_script_hx(cols: &[(f64, f64)]) -> String {
 /// Make a decompiled SSF2Enemy script runnable as an FM custom game object without erroring. The
 /// decompiler gives the real `update()` state machine, but it references SSF2 instance fields
 /// (`self.m_action`, FrameTimers) and SSF2-only calls an FM CGO can't run. This pass:
-///   - models each `self.m_X` field as FM persistent state (`self.makeInt`), a `FrameTimer(N)` as a
-///     persistent frame counter (`.tick()`/`.completed`/`.reset()` -> counter ops),
+///   - detects the field driving the update() switch (the int `m_X` compared against the most integer
+///     literals) and lowers it onto the engine's local-state subsystem: `initLocalStateMachine` +
+///     `registerLocalState(value, anim)` per state, `m_X = N` -> `toLocalState(N)`, `m_X == N` ->
+///     `inLocalState(N)`. the field name isn't assumed (SSF2 authors name it freely),
+///   - models every other `self.m_X` field as FM persistent state (`self.makeInt`), a `FrameTimer(N)`
+///     as a persistent frame counter (`.tick()`/`.completed`/`.reset()` -> counter ops),
 ///   - drops SSF2-only object-stat flags (bypassCollisionTesting/surviveDeathBounds) from
 ///     `updateGameObjectStats`,
 ///   - comments out any line that has no safe FM equivalent (a field bound to an `[SSF2-only]` call
 ///     like `createSelfPlatform`, plus `setCamBoxSize`/`addTarget`/`isOnFloor`/`AudioClip.play`/the
 ///     `createVfx` dust, which need verified resources) — conservatively, so it never throws.
+/// `anims` are the entity's real animation names (the `forceAttack` labels) — a state is registered
+/// against the label nearest its assignment, so `toLocalState` plays a clip that exists.
 /// Returns the rewritten initialize()+update() body plus the persistent-state declarations.
-fn cgo_runnable(raw: &str) -> String {
+fn cgo_runnable(raw: &str, anims: &[String]) -> String {
     use regex::Regex;
     use std::collections::{BTreeMap, BTreeSet};
     // FrameTimer fields -> duration expr; dead fields (bound to an [SSF2-only] call); int fields.
@@ -1212,6 +1223,66 @@ fn cgo_runnable(raw: &str) -> String {
         let f = c[1].to_string();
         if !timers.contains_key(&f) && !dead.contains(&f) { ints.insert(f); }
     }
+
+    // STATE-MACHINE DETECTION: the int field compared against the most integer literals is the
+    // update() switch discriminant (SSF2's `m_action`-style state var). its name isn't fixed.
+    let cmp_re = Regex::new(r"self\.(m_\w+)\s*(?:==|!=)\s*(-?\d+)").unwrap();
+    let mut cmp_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for c in cmp_re.captures_iter(raw) {
+        if ints.contains(&c[1]) { *cmp_counts.entry(c[1].to_string()).or_default() += 1; }
+    }
+    let state_field = cmp_counts.into_iter().filter(|(_, n)| *n >= 1).max_by_key(|(_, n)| *n).map(|(f, _)| f);
+    // the state values + the animation each plays. a value is registered against the forceAttack label
+    // textually nearest its `= N` (initialize sets the entrance state next to forceAttack("entrance"),
+    // a handler plays its anim next to its transition), constrained to a real entity animation.
+    let mut state_regs: BTreeMap<i64, String> = BTreeMap::new();
+    if let Some(st) = &state_field {
+        ints.remove(st); // no makeInt slot — it lives in the local-state machine now.
+        let raw_lines: Vec<&str> = raw.lines().collect();
+        let label_re = Regex::new(r#"forceAttack\("([^"]+)"\)"#).unwrap();
+        let asg_re = Regex::new(&format!(r"self\.{st}\s*=\s*(-?\d+)")).unwrap();
+        let val_re = Regex::new(&format!(r"self\.{st}\s*(?:==|!=|=)\s*(-?\d+)")).unwrap();
+        // a state plays the forceAttack label nearest its `= N` (constrained to a real entity anim).
+        let mut labeled: BTreeMap<i64, String> = BTreeMap::new();
+        for (i, line) in raw_lines.iter().enumerate() {
+            let Some(c) = asg_re.captures(line) else { continue };
+            let Ok(v) = c[1].parse::<i64>() else { continue };
+            let lo = i.saturating_sub(3);
+            let hi = (i + 4).min(raw_lines.len());
+            let mut best: Option<(usize, String)> = None;
+            for (j, near) in raw_lines.iter().enumerate().take(hi).skip(lo) {
+                if let Some(lc) = label_re.captures(near) {
+                    let lbl = lc[1].to_string();
+                    if anims.iter().any(|a| a.eq_ignore_ascii_case(&lbl)) {
+                        let d = i.abs_diff(j);
+                        if best.as_ref().map(|(bd, _)| d < *bd).unwrap_or(true) { best = Some((d, lbl)); }
+                    }
+                }
+            }
+            if let Some((_, lbl)) = best { labeled.insert(v, lbl); }
+        }
+        // every value set or tested must be registered (toLocalState warns on an unregistered value).
+        let mut all_vals: BTreeSet<i64> = BTreeSet::new();
+        for c in val_re.captures_iter(raw) { if let Ok(v) = c[1].parse::<i64>() { all_vals.insert(v); } }
+        // states SSF2 animates implicitly (no adjacent forceAttack, e.g. the gravity-on fall) get the
+        // entity anims no labeled state claimed, handed out in state-value order; idle is the last resort.
+        let claimed: BTreeSet<String> = labeled.values().map(|s| s.to_ascii_lowercase()).collect();
+        let mut spare: Vec<String> = anims.iter().filter(|a| !claimed.contains(&a.to_ascii_lowercase())).cloned().collect();
+        let default_anim = anims.iter().find(|a| a.eq_ignore_ascii_case("idle"))
+            .or_else(|| anims.first()).cloned().unwrap_or_else(|| "idle".to_string());
+        for v in all_vals {
+            let anim = labeled.get(&v).cloned()
+                .unwrap_or_else(|| if spare.is_empty() { default_anim.clone() } else { spare.remove(0) });
+            state_regs.insert(v, anim);
+        }
+    }
+    // state read/compare/assign -> local-state API (compiled once; the field name is fixed here).
+    let state_lower = state_field.as_ref().map(|st| (
+        Regex::new(&format!(r"self\.{st}\s*==\s*(-?\d+)")).unwrap(),
+        Regex::new(&format!(r"self\.{st}\s*!=\s*(-?\d+)")).unwrap(),
+        Regex::new(&format!(r"self\.{st}\s*=\s*(-?\d+)")).unwrap(),
+        st.clone(),
+    ));
 
     // risky calls used INSIDE a condition/expression -> replace with a safe literal (commenting the
     // line would orphan a brace). risky STANDALONE statements -> comment the whole line.
@@ -1235,6 +1306,15 @@ fn cgo_runnable(raw: &str) -> String {
         let mut s = line.to_string();
         // risky query in a condition -> safe literal (keeps braces balanced).
         for (call, lit) in risky_expr { s = s.replace(call, lit); }
+        // the state field -> local-state machine (before the generic int rewrite; it's not in `ints`).
+        // the local-state methods live on EntityScriptCommon (the script's own base class), so they're
+        // called BARE — `self.` resolves the api object, which doesn't carry them ("Invalid function null").
+        if let Some((eq, ne, asg, st)) = &state_lower {
+            s = asg.replace_all(&s, "toLocalState($1)").to_string();
+            s = eq.replace_all(&s, "inLocalState($1)").to_string();
+            s = ne.replace_all(&s, "!inLocalState($1)").to_string();
+            s = s.replace(&format!("self.{st}"), "getLocalState()");
+        }
         // timer ops -> counter ops.
         for (f, dur) in &timers {
             s = s.replace(&format!("self.{f}.tick()"), &format!("_t_{f}.set(_t_{f}.get() + 1)"));
@@ -1256,6 +1336,20 @@ fn cgo_runnable(raw: &str) -> String {
     // finalize the write marker into a .set(...) wrapping the rest of the statement.
     let set_re = Regex::new(r"_s_(m_\w+)\.__SET__ (.*);").unwrap();
     body = set_re.replace_all(&body, "_s_$1.set($2);").to_string();
+
+    // register the local-state machine + each state's animation at the top of initialize() — before the
+    // decompiled body's first toLocalState, and once (initialize runs once per spawn). a hazard always
+    // has initialize(); if a future projectile path lacks one, guard a module-scope init instead.
+    if !state_regs.is_empty() {
+        let mut reg = String::from("\n\tinitLocalStateMachine();");
+        for (v, anim) in &state_regs { reg.push_str(&format!("\n\tregisterLocalState({v}, \"{anim}\");")); }
+        let init_re = Regex::new(r"function initialize\(\) \{").unwrap();
+        if init_re.is_match(&body) {
+            body = init_re.replace(&body, format!("function initialize() {{{reg}").as_str()).to_string();
+        } else {
+            body = format!("var _sm_init = self.makeBool(false);\nif (!_sm_init.get()) {{\n\t_sm_init.set(true);{reg}\n}}\n\n{body}");
+        }
+    }
 
     // persistent-state declarations at MODULE scope, exactly like the verified template: the engine's
     // makeInt(default) returns a call-order-keyed persistent store, so the script re-running each frame
