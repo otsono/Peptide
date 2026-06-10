@@ -378,16 +378,8 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     };
     // hazards: a stage with declared hazards in metadata uses those verbatim (manual override,
     // full control); otherwise they're auto-detected from the placement tree below. SSF2 hazards
-    // are bespoke AS3, so a hand-declared entry always wins over the heuristic.
-    let meta_hazards: Vec<Hazard> = entry.map(|e| e.hazards.iter().enumerate().map(|(i, h)| Hazard {
-        x: h.x, y: h.y, w: h.w, h: h.h,
-        damage: h.damage, knockback: h.knockback, angle: h.angle,
-        interval: h.interval, active: h.active,
-        motion: h.motion.clone().unwrap_or_else(|| "static".to_string()),
-        range: h.range, period: h.period.max(1), rehit: h.rehit, kb_growth: 40.0,
-        label: h.label.clone().unwrap_or_else(|| format!("Hazard {}", i + 1)),
-        art: None, anims: vec![],
-    }).collect()).unwrap_or_default();
+    // are bespoke AS3, so a hand-declared entry always wins over the heuristic. (built below, once
+    // terrain_off + scale are known, so `game_coords` entries can be transformed to FM space.)
     let suppress_auto_hazards = entry.map(|e| e.no_hazards).unwrap_or(false);
 
     // SymbolClass id -> name; DefineShape bounds; DefineSprite tag lists.
@@ -469,6 +461,31 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     let to_fm = |r: &Rect| Rect {
         x: (r.x - ox) * scale, y: (r.y - oy) * scale, w: r.w * scale, h: r.h * scale,
     };
+
+    // declared hazards (built here so `game_coords` entries can use terrain_off + scale). a
+    // game_coords hazard carries the verbatim SSF2 setX/setY + getOwnStats width/height
+    // literals; convert to FM space the same way actor hazards / sink_columns do (terrain-local
+    // + terrain_off, then × scale). without a terrain anchor we can't place it, so fall back to
+    // the raw values treated as FM and let the bound-filter / a wrong position surface it.
+    let meta_hazards: Vec<Hazard> = entry.map(|e| e.hazards.iter().enumerate().map(|(i, h)| {
+        let (x, y, w, hh) = if h.game_coords {
+            match terrain_off {
+                Some(t) => ((h.x + t.0) * scale, (h.y + t.1) * scale, h.w * scale, h.h * scale),
+                None => (h.x, h.y, h.w, h.h),
+            }
+        } else {
+            (h.x, h.y, h.w, h.h)
+        };
+        Hazard {
+            x, y, w, h: hh,
+            damage: h.damage, knockback: h.knockback, angle: h.angle,
+            interval: h.interval, active: h.active,
+            motion: h.motion.clone().unwrap_or_else(|| "static".to_string()),
+            range: h.range, period: h.period.max(1), rehit: h.rehit, kb_growth: 40.0,
+            label: h.label.clone().unwrap_or_else(|| format!("Hazard {}", i + 1)),
+            art: None, anims: vec![],
+        }
+    }).collect()).unwrap_or_default();
 
     // --- platforms: `*platform*` = drop-through soft platform; otherwise any terrain /
     // collision shape (SSF2 stages name these inconsistently: TerrainMC, terrain_mc,

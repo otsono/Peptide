@@ -231,42 +231,54 @@ full audit of all 110 stages: which have scripted actor/hazard classes, what the
 handles, and what's a declared gap. run via `ssf2_objgraph <stage.ssf> scripts` + the
 debug-info pass. corpus conversion: PASS=110 FAIL=0.
 
-**ported and live-verified:**
+**ported** (converter emits a hazard CGO with disasm-sourced stats; none live-verified yet --
+boot `FRAY_STAGE=<id> peptide session --char mario,mario` and watch the out.log hit stream for
+>= 2 cycles to confirm):
 
 | stage | hazard / actor | converter output |
 |---|---|---|
-| bowserscastle | Thwomp (6-column fall), BowsersCastleLava (hazard floor), BowsersCastlePlatform (sinking) | multi-anim CGO + hazard_floor + sinking-platform Structure |
-| casinonightzone | CNZBumper, Bumper1_B/T, Bumper2/3 L/R | 4 Bumper hazard CGOs (detected by class name) |
+| bowserscastle | Thwomp (6-column fall), BowsersCastleLava (hazard floor), BowsersCastlePlatform (sinking) | multi-anim CGO + hazard_floor + sinking-platform Structure (the one live-verified stage) |
+| casinonightzone | CNZBumper, Bumper1_B/T, Bumper2/3 L/R | 4 Bumper hazard CGOs (auto-detected by class name) |
 | hyrulecastle64 | HyruleTornado | Tornado hazard CGO (oscillateX) |
-| kingdom1 | PiranhaPlant | Piranha hazard CGO (oscillateY) |
+| kingdom1 | PiranhaPlant x2 | two static Piranha CGOs at game(74,74)+(670,244) via `game_coords` metadata; disasm stats (w35 h49, damage 5, angle 90, knockback 90, rehit 30). replaced the auto-detect that stacked both at one wrong spot |
 
-**detected but not live-verified** (converter emits them; no one's booted the stage yet
-with the hazard active and watched it land hits):
-any stage where the converter emits a hazard CGO for a non-bowserscastle stage goes here
-until you do the phase-7 boot. check by running `FRAY_STAGE=<id> peptide session
---char mario,mario` and watching the out.log hit stream for at least two hazard cycles.
+**the `game_coords` mechanism.** a metadata `hazards` entry with `"game_coords": true` takes
+the raw SSF2 `setX/setY` + `getOwnStats` width/height literals (terrain-local) and runs them
+through the stage's static `terrain_off` + `scale`, the same transform as `sink_columns` and
+auto-detected actor hazards. use it for any hazard whose position is a static AS3 literal but
+isn't in the placement tree. kingdom1 is the worked example.
 
-**undetected / unported scripted systems** (hazard_kind() doesn't match the class names;
-the converter emits NO hazard for these):
+**unported, with full disasm spec** (the values below are the measured port spec -- the SSF2
+key map is `direction`->angle, `power`->baseKnockback, `kbConstant`->knockbackGrowth,
+`refreshRate`->rehit x2; frames x2, px x1.3 for FM). each is unported because it's a moving /
+flying / projectile-spawning actor whose in-play position needs a live read (placing a static
+box at the offscreen spawn would be a wrong-but-plausible value, worse than a gap), OR its
+damaging attackBox extent isn't a disasm literal:
 
-| stage | class | what it does | port path |
-|---|---|---|---|
-| saffroncity | PokeHazards, CharmanderFire, VenusaurLeaf | pokemon in windows attack fighters on a timer (fire/leaf projectiles from window openings) | disasm PokeHazards::initialize/update; add `charmander\|venusaur\|pokehazard` to hazard_kind(); read position from AS3 setX/setY literals |
-| saffroncity | SaffronCityPlatform | elevator that cycles between floors | per-stage moving-platform port |
-| peachscastle | BonzaiBill | banzai bill crosses the stage as a large projectile hitbox | add `banzai\|bonzai` to hazard_kind(); disasm BonzaiBill for speed/size/damage |
-| peachscastle | PeachsCastleSwitch, ButtonPlatform, PeachsCastleBlock | button platform triggers a block that temporarily lifts | per-stage scripted platform; disasm for button timing |
-| sectorz | Arwing, SectorZLaser | arwings fly past and fire laser beams across the stage | disasm Arwing::initialize for spawn period/position; SectorZLaser for size/speed/damage; add `arwing\|laser` to hazard_kind() |
-| dreamland | WhispyWind | wind from the left pushes fighters; can deal damage on the ground | add `whispywind\|whispy` to hazard_kind(); disasm for push force / damage window |
-| kingdom1 | PowBlockMK | POW block hit sends a shockwave; damages everyone on contact | disasm PowBlockMK::getAttackStats for damage; add `pow\|powblock` |
-| kingdom2 | Birdo | periodically throws eggs (projectile hazard) across the stage | add `birdo` keyword; disasm for spawn rate/projectile speed |
-| kingdom2 | Pidgit | flying enemy carrying a carpet platform | moving platform port |
-| mushroomkingdom3 | (15+ koopa shell clips) | rolling koopa shells as contact hazards | disasm mushroomkingdom3 initialize for spawn/speed; add `koopa` keyword |
-| skullfortress | SniperJoe, Batton, Met | enemies that patrol and fire shots | add `sniperJoe\|batton\|met` + `met_shot`; disasm for fire rate/projectile |
-| yoshisisland | GooniePlatform, YoshisIsland_RotatingPlatform | goonies and windmill-style rotating platforms | per-stage moving platforms; disasm rotation/gooey speed |
-| fourside | FoursideSpaceship | UFO that acts as a moving platform with a beam attack | per-stage CGO; disasm for beam timing/damage |
-| racetothefinish | RTTFDamageZoneHandler | the floor segments disappear on a timer, creating damage zones | add `rttf\|damagezone` keyword or manual hazards entry; disasm for zone timing |
-| junglehijinx | JungleHijinxBarrel | barrel cannon that fires fighters in a set direction | not a damage hazard; a launcher -- out of converter scope for now |
-| pacmaze | EdgeWrap | fighters who exit one side of the stage re-enter the other | stage-level behavior with no FM analog yet; declared gap |
+| stage | class | spawn (game coords) | stats (from getAttackStats / onHurt) | why not static |
+|---|---|---|---|---|
+| dreamland | WhispyWind | (168,137) facing right / (88,137) left; cadence FrameTimer(300); lifetime 300f | damage 0, power 11, kbConstant 1, direction 0 (a pure horizontal wind PUSH, not a hitbox); ghost, width/height 0 | the wind attackBox extent (how far the gust reaches) isn't a disasm literal; needs a live read of the forceAttack("wind") box |
+| kingdom1 | PowBlockMK | runtime `powCoordinates` (NOT a disasm literal) | onHurt: damage 20, direction 90, power 90, kbConstant 60 (shockwave when the block is hit) | event-triggered (ENEMY_HURT) + runtime position |
+| kingdom2 | Birdo | walks in from (-500,98) / (975,98); throw cadence m_spitTimer 20f; stage spawn timer 450f | contact: damage 5, power 46, kbConstant 62, direction -4. egg projectile: damage 1, power 55, kbConstant 5, direction 20, xspeed 8, time_max 300 | walks in from offscreen + throws egg projectiles; both need live position |
+| kingdom2 | Pidgit | walks in from (-500,0) / (975,0); oscillation timer 60f; XSPEED 5, YSPEED 30, scale 2x | carries a carpet platform (not a damage hazard) | moving platform, offscreen spawn |
+| sectorz | Arwing | flies from (1292,-120); decision timers 80-150f; X_SPEED 3, Y_SPEED 4, Y_ACCEL 1; despawn at y<-400 | fires arwing_laser projectile: damage 16, power 80, kbConstant 50, direction 35, xspeed 26 (refreshRate 10) | flies across; the laser is a projectile |
+| sectorz | SectorZLaser | gun at (-83.25,290.85); charge FrameTimer(90), bullet delay 3f | beam: damage 15, power 175, kbConstant 15, direction 175 (+ second box: damage 5, power 125, direction 125) | the beam sweeps; its swept attackBox extent isn't a disasm literal |
+| saffroncity | PokeHazards | window at (450,143); spawn cadence FrameTimer(30 x rand(10,20)) | rotates attacks per pokemon: charmander damage 5/power 45/kb 15/dir -4; venusaur damage 14/power 65/kb 30/dir -3; porygon damage 18/power 65/kb 25/dir -4; electrode damage 30/power 50/kb 100/dir 76/burn | the damage depends on which pokemon spawns (rotating); picking one would be invention |
+| saffroncity | CharmanderFire | NOT IN DISASM (initialize empty) | w23 h23, damage 3, power 45, kbConstant 7, direction 45, burn | a child projectile of PokeHazards |
+| saffroncity | VenusaurLeaf | NOT IN DISASM | w35 h20, damage 3, power 40, kbConstant 70, direction 60, xspeed 25, time_max 20 | a child projectile of PokeHazards |
+| peachscastle | BonzaiBill | digs to (181,-54)/(236,-134)/(288,-53), then flies (SPEED 2, dig 0.1); timers 150/30/90f | explode: damage 10, power 70, kbConstant 125, direction -1, burn. cry/idle: damage 5, power 46, kbConstant 62, direction -9 | digs around then flies across (target (236,308)); fully dynamic path |
+| racetothefinish | RTTFDamageZoneHandler | 4 segments; positions NOT IN DISASM (runtime regions, default (-3000,-3000)) | zone damage 10 | segment positions are runtime-populated |
+| mushroomkingdom3 | koopa0..koopa17 | per-stage timeline | rolling shells | timeline-driven, no getAttackStats class |
+| skullfortress | SniperJoe, Batton, Met | per-stage | patrolling enemies + shots | full enemy AI + projectiles |
+| yoshisisland | GooniePlatform, RotatingPlatform | per-stage | moving platforms | rotation/path, not a hazard |
+| fourside | FoursideSpaceship | per-stage | UFO moving platform + beam | moving platform + beam |
+| junglehijinx | JungleHijinxBarrel | per-stage | barrel cannon (a launcher, not damage) | out of hazard scope |
+| pacmaze | EdgeWrap | n/a | screen-wrap behavior | no FM edge-wrap primitive |
+
+to finish any of these: boot SSF2 on the stage (`PEPTIDE_SSF2_STAGE=<id> peptide ssf2 session
+--char mario`), `tree 3` to read the live in-play position of the actor / its attackBox, then
+add a `game_coords` (or FM-coord) `hazards` entry with the spec above + the measured position,
+and live-verify in FM. the stats are already extracted; only the live position is missing.
 
 **weather / ambient effects** (visual only; no hitbox output needed, but missing from
 converted stages makes them look flat compared to SSF2):
@@ -294,6 +306,17 @@ these are per-character behaviors in the "unknown" stream (not in ssf2_only -- t
 converter doesn't classify at all). the ssf2_only universal gaps (item system, getCharacter,
 getMetalStatus, etc.) are already covered above in "SSF2-only / no-FM-equivalent inventory".
 
+**most "unknown" calls are NOT broken.** an "unknown" tally counts call SITES of functions the
+converter doesn't recognize -- but the author-defined helper functions (`updateAuraPaws`,
+`isDarkPit`, `hurtSelf`, etc.) ARE emitted and translated into the character's `Script.hx`, so
+the calls resolve. e.g. `function isDarkPit()` is emitted at Pit/Script.hx:389 with a real body
+(`return self.getCostumeShader().paletteSwapPA.replacements[76] == 4289855743`). the genuine
+work here is decompiler BODY quality, not call mapping. the one confirmed broken body in the
+corpus is **pichu `hurtSelf`** -- emitted as `function hurtSelf(arg0) {}` (empty; the SSF2
+statements were dropped in decompilation), so pichu's recoil moves never self-damage. fixing it
+needs the real SSF2 body recovered (don't fabricate `setDamage(getDamage()+arg0)` from the name).
+the only intentional empties are `inputUpdateHook` + `handleLinkFrames` (template stubs on all 49).
+
 all 49 characters (47 SSF files, incl. multi-char bowser/wario/zelda) convert exit 0.
 corpus sweep: PASS=49 FAIL=0. the numbers below are aggregate call counts from
 `conversion_log.json :: unknown`.
@@ -309,7 +332,7 @@ corpus sweep: PASS=49 FAIL=0. the numbers below are aggregate call counts from
 | sonic | getFeetFrames | 94 | detects which frames have feet on the ground for step-sfx triggering | port as animation-label checks in the Script.hx; play step SFX on the identified frames |
 | waluigi | tweenRotation | 68 | smooth rotation tween between angles on waluigi's spinning moves | FM: `setRotation()` works in hscript; implement linear tween in Script.hx update loop |
 | pacman | applyColourTo | 45 | changes pacman's hue to match the ghost he's become (red/pink/blue/orange) | FM: `setCostumeShader()` can tint; map ghost type to shader params |
-| pichu | hurtSelf | 35 | pichu's lightning moves deal 1-2% to himself | `takeDamage()` or direct `._damage += n`; disasm pichu to get per-move self-damage values |
+| pichu | hurtSelf | 35 | pichu's electric moves deal recoil to himself; called as `hurtSelf(1.5)` (DAir), etc. | CONFIRMED BROKEN: emitted body is empty `{}` (decompiler dropped the SSF2 statements). recover the real body from the SSF2 frame-script def; don't fabricate it |
 | kirby | becomeSolid | 34 | kirby stone form: temporarily immune to knockback while transformed | FM `becomeInvulnerable()` or `setHitboxActive(false)` for the immune window; check FM API |
 | zelda/sheik | sparkle | 52 | transformation sparkle VFX | port as `createVfx(sparkle_id)` when `sparkle_id` is found in the VFX table |
 | isaac/zelda/sheik | cast | 589 | AS3 type-cast expressions the decompiler surfaced as calls; NOT a gameplay call | zero gameplay impact; cosmetic decompiler artifact in the generated code |
