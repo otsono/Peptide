@@ -576,7 +576,6 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // BowsersCastleLava + Thwomp). these win over the placement-tree heuristic when present.
     // Each actor's hazard clip (the SymbolClass whose linkage carries the kind keyword) supplies
     // its own collision box so the hitbox lands EXACTLY where SSF2 puts it (terrain-space).
-    let bound_ref = death_box.as_ref().or(camera_box.as_ref());
     let actor_box = |class_name: &str| -> Option<Rect> {
         let kw = hazard_kind(class_name).map(|k| k.label().to_ascii_lowercase())?;
         sym_names.iter()
@@ -584,7 +583,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             .find_map(|(id, _)| clip_attack_box(*id, &sprites, &sym_names, &shape_bounds))
     };
     let as3_hazards: Vec<Hazard> = abc_model.as_ref().map(|m| m.actors.iter()
-        .filter_map(|a| actor_to_hazard(a, scale, bound_ref, terrain_off, actor_box(&a.class_name).as_ref()))
+        .filter_map(|a| actor_to_hazard(a, scale, terrain_off, actor_box(&a.class_name).as_ref()))
         .collect()).unwrap_or_default();
     let hazards: Vec<Hazard> = if !meta_hazards.is_empty() {
         // hand-declared hazards win, but borrow a detected sprite of the same kind so a declared
@@ -975,38 +974,27 @@ fn clip_attack_box(
 }
 
 fn actor_to_hazard(
-    actor: &crate::stage_abc::SpawnedActor, scale: f64, bound: Option<&Rect>,
+    actor: &crate::stage_abc::SpawnedActor, scale: f64,
     terrain_off: Option<(f64, f64)>, attack_box: Option<&Rect>,
 ) -> Option<Hazard> {
     let kind = hazard_kind(&actor.class_name)?;
     let (motion, damage, knockback, angle) = kind.defaults();
     // The actor's setX/setY literals are GAME (terrain-local) coords; FM = (game + terrain_off)
     // × scale. With the clip's own collision box (clip-local), the hazard hitbox is placed
-    // EXACTLY where SSF2 puts it — no band heuristics. Verified live on bowserscastle (the
-    // computed lava box matches the running engine's attackBox).
-    let molten = matches!(kind, HazardKind::Lava | HazardKind::Acid);
-    let (x, y, w, h) = match (terrain_off, actor.x, actor.y, attack_box) {
-        (Some(t), Some(ax), Some(ay), Some(b)) => (
-            (ax + b.x + b.w / 2.0 + t.0) * scale,
-            (ay + b.y + b.h / 2.0 + t.1) * scale,
-            b.w * scale,
-            b.h * scale,
-        ),
-        _ if molten => {
-            // no AS3 coords / no box recovered: fall back to a wide band over the lower
-            // play area (better than nothing for an unscouted lava stage).
-            if let Some(b) = bound {
-                (b.x + b.w / 2.0, b.y + b.h * 0.80, b.w * 0.62, b.h * 0.28)
-            } else { (0.0, 0.0, 800.0, 200.0) }
-        }
-        _ => {
-            let x = actor.x.zip(terrain_off).map(|(ax, t)| (ax + t.0) * scale)
-                .unwrap_or_else(|| bound.map(|b| b.x + b.w / 2.0).unwrap_or(0.0));
-            let y = actor.y.zip(terrain_off).map(|(ay, t)| (ay + t.1) * scale)
-                .unwrap_or_else(|| bound.map(|b| b.y + 40.0).unwrap_or(0.0));
-            (x, y, 130.0, 130.0)
-        }
-    };
+    // EXACTLY where SSF2 puts it. Verified live on bowserscastle (the computed lava box matches
+    // the running engine's attackBox).
+    // If any of those three reads is missing (no terrain anchor, a runtime/dynamic spawn position,
+    // or no recoverable collision box), we CAN'T place the hazard exactly -> a declared gap, not an
+    // invented box. a guessed band/default ships a wrong-but-plausible hitbox, which is worse than
+    // none (nobody knows to fix it). such a hazard needs a live measurement to place; declare it in
+    // the gap report instead.
+    let (t, ax, ay, b) = (terrain_off?, actor.x?, actor.y?, attack_box?);
+    let (x, y, w, h) = (
+        (ax + b.x + b.w / 2.0 + t.0) * scale,
+        (ay + b.y + b.h / 2.0 + t.1) * scale,
+        b.w * scale,
+        b.h * scale,
+    );
     let (rehit, kb_growth) = kind.hit_tuning();
     Some(Hazard {
         x, y, w, h, damage, knockback, angle,
