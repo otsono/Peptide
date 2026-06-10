@@ -2155,6 +2155,26 @@ pub(crate) fn extract_force_attack_labels(abc: &AbcFile, class_name: &str) -> Ve
     v.labels
 }
 
+/// Reconstruct a hazard class's lifecycle methods (initialize + update + helpers) as FM hscript by
+/// running them through the SAME `decompile_method` → `translate_ssf2_to_fm` pipeline the character
+/// and projectile ports use — the real state machine, not a hand-written template. The output still
+/// needs a field-state pass (`self.m_x` → `self.makeInt(...)`) + a FrameTimer helper before it RUNS;
+/// returned for the gated reconstruction path to iterate on. Empty if the class has no such methods.
+pub(crate) fn reconstruct_enemy_script(abc: &AbcFile, class_name: &str) -> Option<String> {
+    let class = abc.classes.iter().find(|c| c.name == class_name)?;
+    let mut out = String::new();
+    for m in ["initialize", "update", "runAI", "move", "releaseEnemy"] {
+        if let Some(t) = class.instance_methods.iter().find(|t| &*t.name == m) {
+            if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
+                let raw = crate::decompiler::decompile_method(body, abc, m, &[]);
+                out.push_str(&crate::api_mappings::translate_ssf2_to_fm(&raw));
+                out.push('\n');
+            }
+        }
+    }
+    (!out.trim().is_empty()).then_some(out)
+}
+
 /// The getAttackStats hitbox maps a HAZARD class declares (damage/direction/power/kbConstant + any
 /// geometry), authoritative per-hazard instead of a generic per-kind default. Empty if the class
 /// has no getAttackStats or no recoverable hitbox. Pairs with [`extract_own_stats_for`].

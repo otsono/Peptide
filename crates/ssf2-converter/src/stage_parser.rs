@@ -109,6 +109,10 @@ pub struct Hazard {
     /// CGO script (shake amplitude, rise/fall speeds, self-platform, dust, sounds) from the hazard's
     /// own code rather than hardcoded template constants.
     pub behavior: crate::abc_parser::EnemyBehavior,
+    /// The hazard class's update()/initialize() reconstructed as FM hscript via the character
+    /// decompile→translate pipeline (gated reconstruction path; needs a field-state + FrameTimer
+    /// pass before it runs). None when the class has no lifecycle methods.
+    pub reconstructed_script: Option<String>,
     /// Period in frames of the on/off pulse (0 = always active).
     pub interval: u32,
     /// Frames the hitbox stays active within each `interval` (ignored when interval is 0).
@@ -520,7 +524,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             motion: h.motion.clone().unwrap_or_else(|| "static".to_string()),
             range: h.range, period: h.period.max(1), rehit: h.rehit, kb_growth: 40.0,
             label: h.label.clone().unwrap_or_else(|| format!("Hazard {}", i + 1)),
-            art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(),
+            art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
         }
     }).collect()).unwrap_or_default();
 
@@ -1088,7 +1092,7 @@ fn actor_to_hazard(
     let mut hz = Hazard {
         x, y, w, h, damage, knockback, angle,
         interval: 0, active: 20, motion: motion.to_string(),
-        range: 0.0, period: 120, rehit, kb_growth, label: kind.label().to_string(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(),
+        range: 0.0, period: 120, rehit, kb_growth, label: kind.label().to_string(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
     };
     apply_enemy_stats(&mut hz, actor);
     Some(hz)
@@ -1102,6 +1106,7 @@ fn actor_to_hazard(
 fn apply_enemy_stats(hz: &mut Hazard, actor: &crate::stage_abc::SpawnedActor) {
     hz.anim_labels = actor.anim_labels.clone();
     hz.behavior = actor.behavior.clone();
+    hz.reconstructed_script = actor.reconstructed_script.clone();
     if let Some(h0) = actor.attack_hitboxes.first() {
         if let Some(&d) = h0.get("damage") { hz.damage = d; }
         if let Some(&p) = h0.get("power") { hz.knockback = p; }
@@ -1150,7 +1155,7 @@ fn detect_hazards(
             x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, w: r.w.max(20.0), h: r.h.max(20.0),
             damage, knockback, angle, interval: 0, active: 20,
             motion: motion.to_string(), range: 60.0, period: 120, rehit, kb_growth,
-            label: k.label().to_string(), art, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(),
+            label: k.label().to_string(), art, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
         })
     }).collect()
 }
@@ -1998,6 +2003,11 @@ fn stage_abc_model(swf_data: &[u8]) -> Option<crate::stage_abc::StageAbcModel> {
             for abc in &blocks {
                 let b = crate::abc_parser::extract_enemy_behavior(abc, &a.class_name);
                 if b.shake.is_some() || b.self_platform.is_some() || b.rise_yspeed.is_some() { a.behavior = b; break; }
+            }
+        }
+        if a.reconstructed_script.is_none() {
+            for abc in &blocks {
+                if let Some(s) = crate::abc_parser::reconstruct_enemy_script(abc, &a.class_name) { a.reconstructed_script = Some(s); break; }
             }
         }
     }

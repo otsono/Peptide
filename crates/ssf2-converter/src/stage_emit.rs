@@ -992,7 +992,15 @@ fn emit_multi_anim_hazard(
     write_json(&lib.join("entities").join(format!("{hid}.entity")), &hazard_entity_multi(hid, &hzanims, &hit_boxes))?;
     write_meta(&lib.join("entities").join(format!("{hid}.entity.meta")), hid, hid, "", Some("CUSTOM_GAME_OBJECT"), None)?;
 
-    let script = if is_thwomp && !cols.is_empty() {
+    // EXPERIMENTAL (PEPTIDE_DECOMP_HAZARD): emit the hazard class's update()/initialize()
+    // reconstructed through the character/projectile decompile→translate pipeline, instead of the
+    // hand-written template. Not yet runnable (needs the field-state + FrameTimer pass) — gated so
+    // it never regresses the working template; used to iterate the reconstruction toward 1:1.
+    let decomp = std::env::var("PEPTIDE_DECOMP_HAZARD").is_ok();
+    let script = if let (true, Some(rs)) = (decomp, hz.reconstructed_script.as_ref()) {
+        format!("// {} reconstructed from its SSF2 update()/initialize() via the character decompiler.\n\
+                 // TODO: field-state (self.m_x -> self.makeInt) + FrameTimer FM helper to run.\n\n{rs}", hz.label)
+    } else if is_thwomp && !cols.is_empty() {
         // hover/spawn height: SSF2 spawns the thwomp AT getDeathBounds().y with
         // surviveDeathBounds=true. FM kills a game object outside the blast zone, so park
         // just INSIDE the top bound — still above the camera ceiling, so visually identical.
@@ -1659,7 +1667,7 @@ mod hazard_tests {
             x: 0.0, y: 150.0, w: 700.0, h: 160.0,
             damage: 10.0, knockback: 0.0, angle: 45.0,
             interval: 0, active: 20, motion: "static".into(),
-            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(),
+            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
         }
     }
 
