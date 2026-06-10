@@ -1,0 +1,17 @@
+{
+  "export": true,
+  "guid": "3f2a414c-320a-5a43-a263-ff1b78e2e0f1",
+  "id": "bowserscastlessf2bg16",
+  "language": "",
+  "pluginMetadata": {
+    "com.fraymakers.FraymakersMetadata": {
+      "objectType": "VFX",
+      "version": "0.4.0"
+    }
+  },
+  "plugins": [
+    "com.fraymakers.FraymakersMetadata"
+  ],
+  "tags": [],
+  "version": 1
+}

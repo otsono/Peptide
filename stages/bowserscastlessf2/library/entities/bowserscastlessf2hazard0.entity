@@ -1,23 +1,28 @@
 {
   "animations": [
     {
-      "$id": "fdf615b7-7b87-5834-9630-a3071054fc4f",
+      "$id": "c105614d-aa75-5890-ac3e-e7288e42e9ca",
       "layers": [
-        "d4d831b4-6fed-573b-8d4d-362cf10d4ee6",
-        "27daa055-c8be-5b3b-bc17-f3d42bf55a11"
+        "0bde40d1-3297-52f3-82ee-091fbf51a273"
       ],
-      "name": "gameObjectIdle",
-      "pluginMetadata": {
-      }
+      "name": "idle",
+      "pluginMetadata": {}
+    },
+    {
+      "$id": "cb25ba73-5b86-5f6b-8f78-ce5ad5b921b8",
+      "layers": [
+        "8f5a0f22-d7d3-56c9-899d-e7351584b1cf"
+      ],
+      "name": "wait",
+      "pluginMetadata": {}
     },
     {
       "$id": "8625a2c6-f216-5fad-bc21-43878a96404d",
       "layers": [
-        "8c64e969-6a58-51f0-92a1-c6eb70f43625"
+        "eab1bddd-2e1d-5563-8b66-0695f9121986"
       ],
-      "name": "gameObjectInactive",
-      "pluginMetadata": {
-      }
+      "name": "lose",
+      "pluginMetadata": {}
     }
   ],
   "export": true,
@@ -25,84 +30,69 @@
   "id": "bowserscastlessf2hazard0",
   "keyframes": [
     {
-      "$id": "f50bc68a-62bc-58a6-ab22-a359d08aceda",
+      "$id": "cc8385a8-015a-5822-8708-dab433b6a841",
       "length": 2,
-      "pluginMetadata": {
-      },
-      "symbol": "6b6e500f-2304-55de-bad3-4837abf70820",
+      "pluginMetadata": {},
+      "symbol": "7b1b9933-fff4-5584-8e58-4b5455b84c76",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "IMAGE"
     },
     {
-      "$id": "b55b8bb0-f669-5ebf-8382-d1c77213a3a7",
+      "$id": "6ae0d7a9-49d9-5895-9bde-ad4c9eb3ba00",
       "length": 2,
-      "pluginMetadata": {
-      },
-      "symbol": "a2f34a86-710e-5679-9c9d-5c2b7c93ba9a",
+      "pluginMetadata": {},
+      "symbol": "641d3706-381b-5fc8-96f3-0341ad06ef7d",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "IMAGE"
     },
     {
-      "$id": "e54981ee-7371-59be-840e-6252df0fbb53",
+      "$id": "934ddb1b-64ca-5d1e-b377-556e82986941",
       "length": 2,
-      "pluginMetadata": {
-      },
-      "symbol": "31c47ad8-7686-5af5-902c-787787dcb19d",
+      "pluginMetadata": {},
+      "symbol": "d53b1025-b5b5-5959-b5c8-cc0d1131ee6e",
       "tweenType": "LINEAR",
       "tweened": false,
-      "type": "COLLISION_BOX"
+      "type": "IMAGE"
     }
   ],
   "layers": [
     {
-      "$id": "d4d831b4-6fed-573b-8d4d-362cf10d4ee6",
+      "$id": "0bde40d1-3297-52f3-82ee-091fbf51a273",
       "hidden": false,
       "keyframes": [
-        "f50bc68a-62bc-58a6-ab22-a359d08aceda"
+        "cc8385a8-015a-5822-8708-dab433b6a841"
       ],
       "locked": false,
       "name": "art",
-      "pluginMetadata": {
-      },
+      "pluginMetadata": {},
       "type": "IMAGE"
     },
     {
-      "$id": "8c64e969-6a58-51f0-92a1-c6eb70f43625",
+      "$id": "8f5a0f22-d7d3-56c9-899d-e7351584b1cf",
       "hidden": false,
       "keyframes": [
-        "b55b8bb0-f669-5ebf-8382-d1c77213a3a7"
+        "6ae0d7a9-49d9-5895-9bde-ad4c9eb3ba00"
       ],
       "locked": false,
       "name": "art",
-      "pluginMetadata": {
-      },
+      "pluginMetadata": {},
       "type": "IMAGE"
     },
     {
-      "$id": "27daa055-c8be-5b3b-bc17-f3d42bf55a11",
-      "defaultAlpha": 0.5,
-      "defaultColor": "0x000000",
+      "$id": "eab1bddd-2e1d-5563-8b66-0695f9121986",
       "hidden": false,
       "keyframes": [
-        "e54981ee-7371-59be-840e-6252df0fbb53"
+        "934ddb1b-64ca-5d1e-b377-556e82986941"
       ],
       "locked": false,
-      "name": "hitbox0",
-      "pluginMetadata": {
-        "com.fraymakers.FraymakersMetadata": {
-          "collisionBoxType": "HIT_BOX",
-          "index": 0
-        }
-      },
-      "type": "COLLISION_BOX"
+      "name": "art",
+      "pluginMetadata": {},
+      "type": "IMAGE"
     }
   ],
-  "paletteMap": {
-    "paletteCollection": null,
-    "paletteMap": null
-  },
+  "paletteMap": {},
   "pluginMetadata": {
     "com.fraymakers.FraymakersMetadata": {
       "objectType": "CUSTOM_GAME_OBJECT",
@@ -115,56 +105,50 @@
   ],
   "symbols": [
     {
-      "$id": "6b6e500f-2304-55de-bad3-4837abf70820",
-      "alpha": 1,
-      "imageAsset": "8796ab6c-0b51-5c21-8492-5a30a78042ee",
-      "pivotX": 0,
-      "pivotY": 0,
-      "pluginMetadata": {
-      },
-      "rotation": 0,
+      "$id": "7b1b9933-fff4-5584-8e58-4b5455b84c76",
+      "alpha": 1.0,
+      "imageAsset": "1750a36e-5d06-582b-afa7-f327349fd98b",
+      "pivotX": 0.0,
+      "pivotY": 0.0,
+      "pluginMetadata": {},
+      "rotation": 0.0,
       "scaleX": 1.3,
       "scaleY": 1.3,
       "type": "IMAGE",
-      "x": -1248.65,
-      "y": -234.65
+      "x": -24.7,
+      "y": 0.0
     },
     {
-      "$id": "a2f34a86-710e-5679-9c9d-5c2b7c93ba9a",
-      "alpha": 1,
-      "imageAsset": "8796ab6c-0b51-5c21-8492-5a30a78042ee",
-      "pivotX": 0,
-      "pivotY": 0,
-      "pluginMetadata": {
-      },
-      "rotation": 0,
+      "$id": "641d3706-381b-5fc8-96f3-0341ad06ef7d",
+      "alpha": 1.0,
+      "imageAsset": "17151f15-8387-5381-a6f5-66e32a042243",
+      "pivotX": 0.0,
+      "pivotY": 0.0,
+      "pluginMetadata": {},
+      "rotation": 0.0,
       "scaleX": 1.3,
       "scaleY": 1.3,
       "type": "IMAGE",
-      "x": -1248.65,
-      "y": -234.65
+      "x": -24.7,
+      "y": 0.0
     },
     {
-      "$id": "31c47ad8-7686-5af5-902c-787787dcb19d",
-      "alpha": 0.5,
-      "color": "0xff0000",
-      "pivotX": 1248.212547302246,
-      "pivotY": 234.18437957763672,
-      "pluginMetadata": {
-      },
-      "rotation": 0,
-      "scaleX": 2496,
-      "scaleY": 468,
-      "type": "COLLISION_BOX",
-      "x": -1248.212547302246,
-      "y": -234.18437957763672
+      "$id": "d53b1025-b5b5-5959-b5c8-cc0d1131ee6e",
+      "alpha": 1.0,
+      "imageAsset": "52375235-a175-508e-8ace-9219406a69fc",
+      "pivotX": 0.0,
+      "pivotY": 0.0,
+      "pluginMetadata": {},
+      "rotation": 0.0,
+      "scaleX": 1.3,
+      "scaleY": 1.3,
+      "type": "IMAGE",
+      "x": -24.7,
+      "y": 0.0
     }
   ],
-  "tags": [
-  ],
-  "terrains": [
-  ],
-  "tilesets": [
-  ],
-  "version": 14
+  "tags": [],
+  "terrains": [],
+  "tilesets": [],
+  "version": 5
 }

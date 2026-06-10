@@ -22,9 +22,9 @@ var LAND_YS = [692.0, 692.0, 692.0, 692.0, 692.0, 692.0];
 var SPAWN_Y = -7.1;
 var SPAWN_PERIOD = 1200;
 var ENTRANCE_T = 120;
-var FALL_V = 19.5;
+var FALL_V = 19.50;
 var LAND_WAIT = 180;
-var RISE_V = 3.9;
+var RISE_V = 3.90;
 // persistent state (a plain var resets every frame on a custom game object).
 var m_phase = self.makeInt(0);
 var m_col = self.makeInt(0);
@@ -56,7 +56,7 @@ function update() {
 		if (m_timer.get() >= ENTRANCE_T) { m_phase.set(2); Common.toLocalState(LState.FALL); }
 	} else if (p == 2) { // fall: constant terminal velocity (gravity 30 capped at 30)
 		self.setY(self.getY() + FALL_V);
-		if (self.getY() >= LAND_YS[m_col.get()]) { self.setY(LAND_YS[m_col.get()]); m_phase.set(3); m_timer.set(0); Common.toLocalState(LState.IDLE); }
+		if (self.getY() >= LAND_YS[m_col.get()]) { self.setY(LAND_YS[m_col.get()]); m_phase.set(3); m_timer.set(0); Common.toLocalState(LState.IDLE); match.getCamera().shake(16.9); }
 	} else if (p == 3) { // landed: the column platform under it sinks; hold (SSF2 waitTimer 90f)
 		m_timer.set(m_timer.get() + 1);
 		if (m_timer.get() >= LAND_WAIT) { m_phase.set(4); }
