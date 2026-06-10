@@ -63,6 +63,20 @@ pub struct SpawnedActor {
     pub class_name: String,
     pub x: Option<f64>,
     pub y: Option<f64>,
+    /// The hazard CLASS's own declarations (the "get()" methods the author wrote): each
+    /// `getAttackStats` hitbox map (damage/direction/power/kbConstant — the authoritative hit
+    /// params, not a generic per-kind default) and the `getOwnStats` scalars (width/height/speeds).
+    /// Empty when the class has neither getter.
+    pub attack_hitboxes: Vec<std::collections::BTreeMap<String, f64>>,
+    pub own_stats: std::collections::BTreeMap<String, f64>,
+    /// Animation labels the class plays via `forceAttack("<label>")` (Thwomp: entrance/idle/fall;
+    /// HyruleTornado: stand) — the code-referenced handle to its art clip (the clip carrying those
+    /// frame labels), so the art is found by what the script animates, not a library keyword match.
+    pub anim_labels: Vec<String>,
+    /// Behavior values stepped out of the class's update()/initialize() (shake amplitude, rise
+    /// speed, fall gravity, self-platform, dust, sounds) — drives the FM CGO script from the
+    /// hazard's own code instead of a template of constants.
+    pub behavior: crate::abc_parser::EnemyBehavior,
 }
 
 /// What the AS3 says about a stage: the authoritative plane map + the spawned actors.
@@ -99,7 +113,16 @@ pub fn extract_stage(abc: &AbcFile) -> Option<StageAbcModel> {
     if let Some(body) = method_body(abc, class, "update") {
         scan_method(&body.bytecode, abc, &mut v);
     }
-    Some(StageAbcModel { planes: v.planes, actors: v.actors, doc_class: class.name.clone() })
+    // Pull each spawned hazard's OWN declarations from its class's get* methods — the authoritative
+    // damage/hit params + size/speeds, parsed straight from the SSF2 source instead of guessed.
+    let mut actors = v.actors;
+    for a in &mut actors {
+        a.attack_hitboxes = crate::abc_parser::extract_attack_stats_for(abc, &a.class_name);
+        a.own_stats = crate::abc_parser::extract_own_stats_for(abc, &a.class_name);
+        a.anim_labels = crate::abc_parser::extract_force_attack_labels(abc, &a.class_name);
+        a.behavior = crate::abc_parser::extract_enemy_behavior(abc, &a.class_name);
+    }
+    Some(StageAbcModel { planes: v.planes, actors, doc_class: class.name.clone() })
 }
 
 /// stack-sim visitor: tags plane-accessor results + getlex class names so the chained
@@ -128,7 +151,9 @@ impl AbcVisitor for StageVisitor {
             if let Some(StackVal::Tag(t)) = args.first() {
                 if let Some(class) = t.strip_prefix("lex:") {
                     let idx = self.actors.len();
-                    self.actors.push(SpawnedActor { class_name: class.to_string(), x: None, y: None });
+                    self.actors.push(SpawnedActor { class_name: class.to_string(), x: None, y: None,
+                        attack_hitboxes: Vec::new(), own_stats: std::collections::BTreeMap::new(), anim_labels: Vec::new(),
+                        behavior: crate::abc_parser::EnemyBehavior::default() });
                     return Some(StackVal::Tag(format!("actor:{idx}")));
                 }
             }

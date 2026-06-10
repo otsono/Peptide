@@ -981,7 +981,15 @@ fn emit_multi_anim_hazard(
         .map(|a| a.name.clone()).unwrap_or_else(|| idle_name.clone());
 
     let is_thwomp = hz.label == "Thwomp" || hz.motion == "thwomp" || hz.motion == "fall";
-    write_json(&lib.join("entities").join(format!("{hid}.entity")), &hazard_entity_multi(hid, &hzanims, is_thwomp))?;
+    // The hit volume = the clip's REAL SSF2 attackBox shapes (clip-local, FM-scaled), recovered the
+    // same way the lava's is — the Thwomp's `fall` carries a left + right pair at its slam face. Top-
+    // left rects for the COLLISION_BOX emit. If a hazard has no recoverable box, the emitter falls
+    // back to the art canvas. This is NOT a guessed/own-stats size: it's the engine attackBox tied
+    // to the animation (a HIT_BOX layer that rides the damaging frames).
+    let hit_boxes: Vec<(f64, f64, f64, f64)> = hz.attack_boxes.iter()
+        .map(|r| (r.x, r.y, r.w, r.h)).collect();
+    let dual = hit_boxes.len() >= 2;
+    write_json(&lib.join("entities").join(format!("{hid}.entity")), &hazard_entity_multi(hid, &hzanims, &hit_boxes))?;
     write_meta(&lib.join("entities").join(format!("{hid}.entity.meta")), hid, hid, "", Some("CUSTOM_GAME_OBJECT"), None)?;
 
     let script = if is_thwomp && !cols.is_empty() {
@@ -990,14 +998,25 @@ fn emit_multi_anim_hazard(
         // just INSIDE the top bound — still above the camera ceiling, so visually identical.
         let spawn_y = model.death_box.as_ref().map(|b| b.y + 60.0)
             .unwrap_or_else(|| cols.iter().map(|(_, y)| *y).fold(f64::MAX, f64::min) - 520.0);
-        thwomp_multi_script_hx(cols, spawn_y, &entrance_name, &idle_name, &fall_name)
+        // The thwomp's motion values come from stepping ITS OWN update()/initialize() (not a
+        // hardcoded template): `getCamera().shake(N)` (the slam shake), `updateEnemyStats({gravity})`
+        // (the capped fall speed), and `setYSpeed(-N)` (the rise). 30fps→60fps + the size scale =
+        // ×scale/2 for a per-frame velocity; the shake amplitude is a screen effect, just ×scale.
+        // `match.getCamera().shake` is the FM camera API (RE'd MatchApi::getCamera → CameraApi::shake;
+        // the bare `cameraApi` binding is compiler-injected, absent in interpreted hscript). Per-kind
+        // defaults only apply if the class declared no value.
+        let b = &hz.behavior;
+        let shake_amp = b.shake.unwrap_or(13.0) * scale;
+        let fall_v = b.fall_gravity.unwrap_or(30.0) * scale * 0.5;
+        let rise_v = b.rise_yspeed.map(f64::abs).unwrap_or(6.0) * scale * 0.5;
+        thwomp_multi_script_hx(cols, spawn_y, shake_amp, fall_v, rise_v, &entrance_name, &idle_name, &fall_name)
     } else {
         hazard_anim_loop_script_hx(hz, &hzanims, &idle_name)
     };
     let files = [
         ("Script", script),
         ("GameObjectStats", hazard_gameobject_stats_multi(hid, &idle_name)),
-        ("HitboxStats", hazard_hitbox_stats_multi(hz, &hzanims, is_thwomp)),
+        ("HitboxStats", hazard_hitbox_stats_multi(hz, &hzanims, dual)),
         ("AnimationStats", hazard_animation_stats_multi(&hzanims)),
     ];
     for (kind, body) in files {
@@ -1020,10 +1039,11 @@ fn emit_multi_anim_hazard(
 
 /// The multi-animation CGO entity: one IMAGE layer per labelled animation (a keyframe per source
 /// frame, 30→60fps doubled), and HIT_BOX layer(s) riding the damaging animations. Each FM animation
-/// references its image layer (+ its hitbox layers when active). `dual` splits the hit volume into
-/// left/right half boxes (index 0/1) so the stats can send fighters away from center on each side
-/// (the SSF2 thwomp's two attackBoxes).
-fn hazard_entity_multi(hid: &str, anims: &[HzAnim], dual: bool) -> Value {
+/// references its image layer (+ its hitbox layers when active). `hit_boxes` are the clip's real
+/// SSF2 attackBox rects (clip-local FM top-left x/y, w, h) — one HIT_BOX layer per box (the thwomp's
+/// left+right pair → index 0/1, which the stats angle apart). Empty falls back to the full art
+/// canvas as a single hit volume.
+fn hazard_entity_multi(hid: &str, anims: &[HzAnim], hit_boxes: &[(f64, f64, f64, f64)]) -> Value {
     let g = |s: &str| det_uuid(&format!("hazard::{hid}::{s}"));
     let mut symbols = Vec::new();
     let mut keyframes = Vec::new();
@@ -1043,16 +1063,17 @@ fn hazard_entity_multi(hid: &str, anims: &[HzAnim], dual: bool) -> Value {
         let mut anim_layers = vec![img_layer];
         if a.active {
             let span = a.frame_guids.len().max(1) as u64;
-            // one full-size box, or two half-width boxes (left=index 0, right=index 1).
-            let boxes: Vec<(f64, f64)> = if dual {
-                vec![(a.x, a.w / 2.0), (a.x + a.w / 2.0, a.w / 2.0)]
+            // one HIT_BOX per recovered SSF2 attackBox (the thwomp's left/right pair = index 0/1);
+            // no recovered box -> the art canvas as a single fallback hit volume.
+            let boxes: Vec<(f64, f64, f64, f64)> = if hit_boxes.is_empty() {
+                vec![(a.x, a.y, a.w, a.h)]
             } else {
-                vec![(a.x, a.w)]
+                hit_boxes.to_vec()
             };
-            for (bi, (bx, bw)) in boxes.iter().enumerate() {
-                let (hw, hh) = (bw / 2.0, a.h / 2.0);
+            for (bi, (bx, by, bw, bh)) in boxes.iter().enumerate() {
+                let (hw, hh) = (bw / 2.0, bh / 2.0);
                 let boxsym = g(&format!("boxsym{ai}_{bi}"));
-                symbols.push(json!({ "$id": boxsym, "type": "COLLISION_BOX", "x": bx, "y": a.y, "pivotX": hw, "pivotY": hh, "scaleX": bw, "scaleY": a.h, "rotation": 0.0, "alpha": 0.5, "color": "0xff0000", "pluginMetadata": {} }));
+                symbols.push(json!({ "$id": boxsym, "type": "COLLISION_BOX", "x": bx, "y": by, "pivotX": hw, "pivotY": hh, "scaleX": bw, "scaleY": bh, "rotation": 0.0, "alpha": 0.5, "color": "0xff0000", "pluginMetadata": {} }));
                 let boxkf = g(&format!("boxkf{ai}_{bi}"));
                 keyframes.push(json!({ "$id": boxkf, "symbol": boxsym, "length": span, "tweened": false, "tweenType": "LINEAR", "type": "COLLISION_BOX", "pluginMetadata": {} }));
                 let boxlayer = g(&format!("boxlayer{ai}_{bi}"));
@@ -1154,7 +1175,7 @@ fn thwomp_script_hx(cols: &[(f64, f64)]) -> String {
 ///           land -> `idle` anim + the column platform sinks, wait 90f ⇒ 180 FM;
 ///           rise at YSpeed -6 ⇒ 3.9 FM px/frame and despawn (here: hide + restart cycle).
 /// Cross-frame state via `self.make*` (a plain `var` re-inits every frame on a game object).
-fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, entrance: &str, idle: &str, fall: &str) -> String {
+fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fall_v: f64, rise_v: f64, entrance: &str, idle: &str, fall: &str) -> String {
     let cols_lit = cols.iter().map(|(x, _)| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
     let land_lit = cols.iter().map(|(_, y)| format!("{y:.1}")).collect::<Vec<_>>().join(", ");
     let (entr_s, idle_s, fall_s) = (entrance.to_ascii_uppercase(), idle.to_ascii_uppercase(), fall.to_ascii_uppercase());
@@ -1169,7 +1190,7 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, entrance: &str, idl
          var LState = {{\n\tUNINITIALIZED: _prepLocalState(\"#n/a\", -1),\n\tENTRANCE: _prepLocalState(\"{entrance}\"),\n\tIDLE: _prepLocalState(\"{idle}\"),\n\tFALL: _prepLocalState(\"{fall}\")\n}};\n\n\
          // SSF2 constants, frame-doubled / velocity-converted (see the header comment).\n\
          var COLUMNS = [{cols_lit}];\nvar LAND_YS = [{land_lit}];\nvar SPAWN_Y = {spawn_y:.1};\n\
-         var SPAWN_PERIOD = 1200;\nvar ENTRANCE_T = 120;\nvar FALL_V = 19.5;\nvar LAND_WAIT = 180;\nvar RISE_V = 3.9;\n\
+         var SPAWN_PERIOD = 1200;\nvar ENTRANCE_T = 120;\nvar FALL_V = {fall_v:.2};\nvar LAND_WAIT = 180;\nvar RISE_V = {rise_v:.2};\n\
          // persistent state (a plain var resets every frame on a custom game object).\n\
          var m_phase = self.makeInt(0);\nvar m_col = self.makeInt(0);\nvar m_timer = self.makeInt(0);\n\
          var m_cycle = self.makeInt(0);\nvar m_cool = self.makeInt(0);\nvar m_init = self.makeBool(false);\n\n\
@@ -1192,7 +1213,7 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, entrance: &str, idl
          \t\tif (m_timer.get() >= ENTRANCE_T) {{ m_phase.set(2); Common.toLocalState(LState.{fall_s}); }}\n\
          \t}} else if (p == 2) {{ // fall: constant terminal velocity (gravity 30 capped at 30)\n\
          \t\tself.setY(self.getY() + FALL_V);\n\
-         \t\tif (self.getY() >= LAND_YS[m_col.get()]) {{ self.setY(LAND_YS[m_col.get()]); m_phase.set(3); m_timer.set(0); Common.toLocalState(LState.{idle_s}); }}\n\
+         \t\tif (self.getY() >= LAND_YS[m_col.get()]) {{ self.setY(LAND_YS[m_col.get()]); m_phase.set(3); m_timer.set(0); Common.toLocalState(LState.{idle_s}); match.getCamera().shake({shake_amp:.1}); }}\n\
          \t}} else if (p == 3) {{ // landed: the column platform under it sinks; hold (SSF2 waitTimer 90f)\n\
          \t\tm_timer.set(m_timer.get() + 1);\n\t\tif (m_timer.get() >= LAND_WAIT) {{ m_phase.set(4); }}\n\
          \t}} else {{ // rise at SSF2 YSpeed -6 until past the spawn point, then rest\n\
@@ -1236,17 +1257,20 @@ fn hazard_gameobject_stats_multi(hid: &str, idle: &str) -> String {
 /// the hit into left/right half boxes with mirrored away-from-center angles (the SSF2 thwomp's two
 /// attackBoxes: direction 135 on the left half, 45 on the right).
 fn hazard_hitbox_stats_multi(hz: &Hazard, anims: &[HzAnim], dual: bool) -> String {
+    // per-box launch directions from the class's getAttackStats (the Thwomp's 135 left / 45 right),
+    // falling back to the away-from-center default only if the source declared none.
+    let dir = |i: usize, fallback: f64| hz.hitbox_dirs.get(i).copied().unwrap_or(fallback);
     let mut entries = Vec::new();
     for a in anims {
         if a.active {
             if dual {
                 entries.push(format!(
                     "\t{n}: {{\n\
-                     \t\thitbox0: {{ damage: {d}, angle: 135, baseKnockback: {kb}, knockbackGrowth: {g}, \
+                     \t\thitbox0: {{ damage: {d}, angle: {a0}, baseKnockback: {kb}, knockbackGrowth: {g}, \
                      hitstop: 6, hitstun: 24, reversibleAngle: false, directionalInfluence: true, reflectable: false }},\n\
-                     \t\thitbox1: {{ damage: {d}, angle: 45, baseKnockback: {kb}, knockbackGrowth: {g}, \
+                     \t\thitbox1: {{ damage: {d}, angle: {a1}, baseKnockback: {kb}, knockbackGrowth: {g}, \
                      hitstop: 6, hitstun: 24, reversibleAngle: false, directionalInfluence: true, reflectable: false }}\n\t}}",
-                    n = a.name, d = hz.damage, kb = hz.knockback, g = hz.kb_growth));
+                    n = a.name, d = hz.damage, kb = hz.knockback, g = hz.kb_growth, a0 = dir(0, 135.0), a1 = dir(1, 45.0)));
             } else {
                 entries.push(format!(
                     "\t{}: {{\n\t\thitbox0: {{ damage: {}, angle: {}, baseKnockback: {}, knockbackGrowth: {}, \
@@ -1401,10 +1425,14 @@ fn bg_element_entity(eid: &str, layer: &BgLayerRef, scale: f64) -> Value {
         "x": f.x, "y": f.y, "pivotX": 0.0, "pivotY": 0.0,
         "scaleX": scale, "scaleY": scale, "rotation": 0.0, "alpha": 1.0, "pluginMetadata": {}
     })).collect();
-    let keyframes: Vec<Value> = layer.frames.iter().enumerate().map(|(j, f)| json!({
+    let mut keyframes: Vec<Value> = layer.frames.iter().enumerate().map(|(j, f)| json!({
         "$id": g(&format!("kf{j}")), "symbol": g(&format!("sym{j}")), "length": f.hold.max(1),
         "tweened": false, "tweenType": "LINEAR", "type": "IMAGE", "pluginMetadata": {}
     })).collect();
+    // 30fps SSF2 source -> 60fps engine: double every keyframe length, exactly like the main stage
+    // entity (build_entity) and the hazards. Without this the promoted VFX backdrop elements (the
+    // torches, embers) animate at half the speed of the rest of the stage.
+    crate::entity_gen::double_keyframe_lengths(&mut keyframes);
     let kf_ids: Vec<String> = (0..layer.frames.len()).map(|j| g(&format!("kf{j}"))).collect();
     json!({
         "export": true, "guid": g("entity"), "id": eid, "version": 5,
@@ -1631,7 +1659,7 @@ mod hazard_tests {
             x: 0.0, y: 150.0, w: 700.0, h: 160.0,
             damage: 10.0, knockback: 0.0, angle: 45.0,
             interval: 0, active: 20, motion: "static".into(),
-            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![],
+            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(),
         }
     }
 
@@ -1676,7 +1704,7 @@ mod hazard_tests {
         for (name, s) in [
             ("hazard_script", hazard_script_hx(&hz)),
             ("thwomp_single", thwomp_script_hx(&cols)),
-            ("thwomp_multi", thwomp_multi_script_hx(&cols, -67.0, "entrance", "idle", "fall")),
+            ("thwomp_multi", thwomp_multi_script_hx(&cols, -67.0, 13.0, 19.5, 3.9, "entrance", "idle", "fall")),
         ] {
             assert!(s.contains("self.makeInt(") || s.contains("self.makeFloat(") || s.contains("self.makeBool("),
                 "{name}: no persistent state (self.make*) — counters reset every frame: {s}");

@@ -40,6 +40,15 @@ impl Mat {
     }
     /// `+1.0` if this matrix preserves x-orientation, `-1.0` if mirrored (scaleX < 0).
     fn x_sign(&self) -> f64 { if self.a < 0.0 { -1.0 } else { 1.0 } }
+    /// `(flip_x, flip_y)` for an AXIS-ALIGNED placement (a mirrored decorative element). A
+    /// negative scale on an axis means the art is drawn reversed there; the raster path composites
+    /// onto an axis-aligned AABB and so must mirror the tile to match. Rotated/skewed matrices (b/c
+    /// nonzero) report `(false, false)` — a resize+blit can't represent a true affine warp, and
+    /// background decals are effectively never rotated.
+    fn flips(&self) -> (bool, bool) {
+        let axis_aligned = self.b.abs() < 1e-3 && self.c.abs() < 1e-3;
+        (axis_aligned && self.a < 0.0, axis_aligned && self.d < 0.0)
+    }
 }
 
 /// An axis-aligned box in FM stage coordinates (x/y = top-left, w/h = size).
@@ -88,6 +97,18 @@ pub struct Hazard {
     pub damage: f64,
     pub knockback: f64,
     pub angle: f64,
+    /// Per-hitbox launch directions from the class's `getAttackStats` (the Thwomp's two boxes =
+    /// 135 left / 45 right). Empty falls back to `angle`. Data-driven, so the emitter angles each
+    /// HIT_BOX by what the SSF2 source declares instead of a hardcoded pair.
+    pub hitbox_dirs: Vec<f64>,
+    /// Animation labels the hazard class plays via `forceAttack(...)` — the code-referenced handle
+    /// to its art clip (the clip whose frame labels match these), so the art comes from what the
+    /// script animates, not a library keyword match. Empty falls back to the keyword path.
+    pub anim_labels: Vec<String>,
+    /// Behavior values stepped out of the hazard class's update()/initialize() — drives the emitted
+    /// CGO script (shake amplitude, rise/fall speeds, self-platform, dust, sounds) from the hazard's
+    /// own code rather than hardcoded template constants.
+    pub behavior: crate::abc_parser::EnemyBehavior,
     /// Period in frames of the on/off pulse (0 = always active).
     pub interval: u32,
     /// Frames the hitbox stays active within each `interval` (ignored when interval is 0).
@@ -112,6 +133,11 @@ pub struct Hazard {
     /// multi-animation custom game object whose Substate machine switches between them; empty falls
     /// back to the single-animation [`Hazard::art`].
     pub anims: Vec<ClipAnim>,
+    /// The clip's SSF2 `CollisonBox`/`attackBox` shapes, clip-local and FM-scaled (one per box; the
+    /// Thwomp's `fall` carries a left + right pair). The multi-animation emitter rides these on its
+    /// damaging animation as HIT_BOX layers, so the hit volume is the real SSF2 attackBox geometry
+    /// (recovered like the lava's) instead of the art canvas or a guessed size.
+    pub attack_boxes: Vec<Rect>,
 }
 
 /// One labelled animation of an SSF2 movieclip (a frame-label segment, e.g. `idle`/`fall`), as a
@@ -325,6 +351,12 @@ struct Instance {
     cy: f64,
     /// `-1.0` if mirrored along x (facing left).
     x_sign: f64,
+    /// Axis flips of this leaf's world placement (`scaleX`/`scaleY` < 0). The art is composited
+    /// onto an axis-aligned AABB, so a flipped placement must mirror the rasterized tile to render
+    /// the source orientation. Without this, a mirrored multi-frame element (e.g. a wall torch
+    /// whose flame frames are cropped bitmaps) draws each frame un-mirrored and its content slides
+    /// frame to frame (a false left/right wiggle).
+    flip: (bool, bool),
     /// `true` if this shape descends from a `moving`-named ancestor (an SSF2 moving
     /// platform/foreground). The collision child is usually named `terrainGround_platform`,
     /// so the `moving` signal lives on the parent container and is propagated down.
@@ -488,7 +520,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             motion: h.motion.clone().unwrap_or_else(|| "static".to_string()),
             range: h.range, period: h.period.max(1), rehit: h.rehit, kb_growth: 40.0,
             label: h.label.clone().unwrap_or_else(|| format!("Hazard {}", i + 1)),
-            art: None, anims: vec![],
+            art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(),
         }
     }).collect()).unwrap_or_default();
 
@@ -583,7 +615,19 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             .find_map(|(id, _)| clip_attack_box(*id, &sprites, &sym_names, &shape_bounds))
     };
     let as3_hazards: Vec<Hazard> = abc_model.as_ref().map(|m| m.actors.iter()
-        .filter_map(|a| actor_to_hazard(a, scale, terrain_off, actor_box(&a.class_name).as_ref()))
+        .filter_map(|a| actor_to_hazard(a, scale, terrain_off, actor_box(&a.class_name).as_ref())
+            .or_else(|| {
+                // a coordless AS3 actor — a random-drop / script-positioned hazard like the Thwomp
+                // (`spawnEnemy(Thwomp)` with no literal setX/setY) — can't be placed from literals,
+                // so actor_to_hazard yields None. Adopt the placement-tree DETECTED hazard of the
+                // same kind so it still ships; its script positions it at runtime (the frame-0
+                // parked spot is irrelevant). Without this it falls through every branch and the
+                // whole hazard is silently dropped.
+                let k = hazard_kind(&a.class_name)?;
+                let mut h = detected.iter().find(|(dk, dh)| *dk == k && dh.art.is_some()).map(|(_, dh)| dh.clone())?;
+                apply_enemy_stats(&mut h, a); // adopt the real declared hit params + animation labels
+                Some(h)
+            }))
         .collect()).unwrap_or_default();
     let hazards: Vec<Hazard> = if !meta_hazards.is_empty() {
         // hand-declared hazards win, but borrow a detected sprite of the same kind so a declared
@@ -607,7 +651,11 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
                     .and_then(|(_, dh)| dh.art.clone());
             }
             h
-        }).filter(|h| match &bound {
+        }).filter(|h| h.motion != "static" || match &bound {
+            // a MOVING hazard repositions itself at runtime (a Thwomp drops onto random columns; a
+            // HyruleTornado sweeps across; a saw circles), so its frame-0 parked position is not
+            // where it operates and must NOT gate it. Only a statically-placed hazard (lava sheet)
+            // is reachability-checked, so a phantom off-screen static clip still doesn't ship.
             Some(b) => h.x >= b.x - 60.0 && h.x <= b.x + b.w + 60.0
                     && h.y >= b.y - 60.0 && h.y <= b.y + b.h + 60.0,
             None => true,
@@ -632,17 +680,34 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     let mut hazards = hazards;
     if render_art_flag {
         for hz in hazards.iter_mut() {
-            let kw = hz.label.to_ascii_lowercase();
-            // the hazard's animation clip = the SymbolClass whose linkage contains the hazard's
-            // class keyword and carries the MOST frame labels (the top-level selector clip, e.g.
-            // `thwomp_mc` with entrance/fall/idle, not a sub-clip like `thwomp_idle` with one).
-            let clip = sym_names.iter()
-                .filter(|(id, name)| name.to_ascii_lowercase().contains(&kw) && sprites.contains_key(id))
-                .map(|(id, _)| (*id, crate::sprite_parser::extract_frame_labels_from_tags(sprites[id]).len()))
-                .filter(|(_, n)| *n > 0)
-                .max_by_key(|(_, n)| *n)
-                .map(|(id, _)| id);
+            // CODE-DRIVEN art clip: the hazard CLASS plays its art via `forceAttack("<label>")`, so
+            // the art clip is the one whose frame labels carry those labels (the thing the script
+            // actually animates) — not a library symbol grabbed by keyword. Pick the clip matching
+            // the MOST of the class's forceAttack labels. Only when the class declared none (or none
+            // match) do we fall back to the old linkage-keyword heuristic.
+            let clip = (!hz.anim_labels.is_empty()).then(|| {
+                sprites.keys().filter_map(|id| {
+                    let labels = crate::sprite_parser::extract_frame_labels_from_tags(sprites[id]);
+                    let hits = hz.anim_labels.iter()
+                        .filter(|l| labels.iter().any(|(fl, _)| fl.eq_ignore_ascii_case(l))).count();
+                    (hits > 0).then_some((*id, hits))
+                }).max_by_key(|(_, n)| *n).map(|(id, _)| id)
+            }).flatten().or_else(|| {
+                let kw = hz.label.to_ascii_lowercase();
+                sym_names.iter()
+                    .filter(|(id, name)| name.to_ascii_lowercase().contains(&kw) && sprites.contains_key(id))
+                    .map(|(id, _)| (*id, crate::sprite_parser::extract_frame_labels_from_tags(sprites[id]).len()))
+                    .filter(|(_, n)| *n > 0)
+                    .max_by_key(|(_, n)| *n)
+                    .map(|(id, _)| id)
+            });
             if let Some(cid) = clip {
+                // recover the clip's real SSF2 attackBox shapes (clip-local), FM-scaled to ride the
+                // damaging animation as HIT_BOXes — the data-driven hit volume, same recovery the
+                // lava uses. The Thwomp's `fall` yields its left + right pair.
+                hz.attack_boxes = clip_attack_boxes(cid, &sprites, &sym_names, &shape_bounds).into_iter()
+                    .map(|r| Rect { x: r.x * scale, y: r.y * scale, w: r.w * scale, h: r.h * scale })
+                    .collect();
                 // origin 0,0: the frames stay in the clip's LOCAL space, so the emitter centres them
                 // on the CGO (which is spawned at setX/setY) rather than the stage origin.
                 let anims = extract_labeled_clip_anims(cid, &sprites, &sym_names, &shape_defs, &bitmaps, &planes, 0.0, 0.0);
@@ -923,19 +988,24 @@ fn hazard_kind(label: &str) -> Option<HazardKind> {
 /// the inner shape's bounds. Searched across all the clip's frames, one level of nesting deep
 /// (SSF2 hazards put the box under a `stance` wrapper). Static data, live-verified: the
 /// bowserscastle lava box computed here matches the running engine's attackBox exactly.
-fn clip_attack_box(
+/// EVERY distinct `CollisonBox`/`attackBox` shape under a hazard clip (clip-local rects), in
+/// depth-first placement order, deduped by rounded geometry (a box repeats across frames). A clip
+/// can carry MORE than one — the Thwomp's `fall` has a left + right attackBox — so the multi-box
+/// hazard emit can reproduce both instead of guessing.
+fn clip_attack_boxes(
     clip_id: u16,
     sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
     sym_names: &BTreeMap<u16, String>,
     shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
-) -> Option<Rect> {
-    fn box_of(
+) -> Vec<Rect> {
+    fn walk(
         tags: &[swf::Tag], mat: Mat, depth: usize,
         sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
         sym_names: &BTreeMap<u16, String>,
         shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
-    ) -> Option<Rect> {
-        if depth > 3 { return None; }
+        out: &mut Vec<Rect>,
+    ) {
+        if depth > 3 { return; }
         for frame in build_frames(tags) {
             for (id, local, name) in &frame {
                 let m = mat.mul(local);
@@ -956,21 +1026,40 @@ fn clip_attack_box(
                                     let xmx = c.iter().map(|p| p.0).fold(f64::MIN, f64::max);
                                     let ymn = c.iter().map(|p| p.1).fold(f64::MAX, f64::min);
                                     let ymx = c.iter().map(|p| p.1).fold(f64::MIN, f64::max);
-                                    return Some(Rect { x: xmn, y: ymn, w: xmx - xmn, h: ymx - ymn });
+                                    out.push(Rect { x: xmn, y: ymn, w: xmx - xmn, h: ymx - ymn });
                                 }
                             }
                         }
                     }
                 } else if let Some(child) = sprites.get(id) {
-                    if let Some(r) = box_of(child, m, depth + 1, sprites, sym_names, shape_bounds) {
-                        return Some(r);
-                    }
+                    walk(child, m, depth + 1, sprites, sym_names, shape_bounds, out);
                 }
             }
         }
-        None
     }
-    box_of(sprites.get(&clip_id)?, Mat::id(), 0, sprites, sym_names, shape_bounds)
+    let mut raw = Vec::new();
+    if let Some(tags) = sprites.get(&clip_id) {
+        walk(tags, Mat::id(), 0, sprites, sym_names, shape_bounds, &mut raw);
+    }
+    // dedup by rounded geometry, preserving first-seen (placement) order.
+    let mut seen = std::collections::BTreeSet::new();
+    let boxes: Vec<Rect> = raw.into_iter()
+        .filter(|r| seen.insert((r.x.round() as i64, r.y.round() as i64, r.w.round() as i64, r.h.round() as i64)))
+        .collect();
+    if std::env::var("PEPTIDE_BOX_DEBUG").is_ok() {
+        eprintln!("[boxes] clip={clip_id}: {}", boxes.iter().map(|r| format!("({:.0},{:.0} {:.0}x{:.0})", r.x, r.y, r.w, r.h)).collect::<Vec<_>>().join(" "));
+    }
+    boxes
+}
+
+/// The first attackBox under a hazard clip (the lava's single wide band). See [`clip_attack_boxes`].
+fn clip_attack_box(
+    clip_id: u16,
+    sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
+    sym_names: &BTreeMap<u16, String>,
+    shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
+) -> Option<Rect> {
+    clip_attack_boxes(clip_id, sprites, sym_names, shape_bounds).into_iter().next()
 }
 
 fn actor_to_hazard(
@@ -996,11 +1085,30 @@ fn actor_to_hazard(
         b.h * scale,
     );
     let (rehit, kb_growth) = kind.hit_tuning();
-    Some(Hazard {
+    let mut hz = Hazard {
         x, y, w, h, damage, knockback, angle,
         interval: 0, active: 20, motion: motion.to_string(),
-        range: 0.0, period: 120, rehit, kb_growth, label: kind.label().to_string(), art: None, anims: vec![],
-    })
+        range: 0.0, period: 120, rehit, kb_growth, label: kind.label().to_string(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(),
+    };
+    apply_enemy_stats(&mut hz, actor);
+    Some(hz)
+}
+
+/// Override a hazard's hit params + animation set with the spawned class's OWN declarations (the
+/// authoritative SSF2 source) — `getAttackStats` (SSF2's key map: `power`→baseKnockback,
+/// `kbConstant`→knockbackGrowth, `direction`→angle, `damage`→damage; per-box dirs kept for the dual
+/// emit) and the `forceAttack` animation labels. A hazard whose class declares neither keeps its
+/// per-kind default.
+fn apply_enemy_stats(hz: &mut Hazard, actor: &crate::stage_abc::SpawnedActor) {
+    hz.anim_labels = actor.anim_labels.clone();
+    hz.behavior = actor.behavior.clone();
+    if let Some(h0) = actor.attack_hitboxes.first() {
+        if let Some(&d) = h0.get("damage") { hz.damage = d; }
+        if let Some(&p) = h0.get("power") { hz.knockback = p; }
+        if let Some(&k) = h0.get("kbConstant") { hz.kb_growth = k; }
+        if let Some(&dir) = h0.get("direction") { hz.angle = dir; }
+        hz.hitbox_dirs = actor.attack_hitboxes.iter().filter_map(|h| h.get("direction").copied()).collect();
+    }
 }
 
 /// Auto-detect placed hazards from the stage's shape instances: classify each by linkage
@@ -1042,7 +1150,7 @@ fn detect_hazards(
             x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, w: r.w.max(20.0), h: r.h.max(20.0),
             damage, knockback, angle, interval: 0, active: 20,
             motion: motion.to_string(), range: 60.0, period: 120, rehit, kb_growth,
-            label: k.label().to_string(), art, anims: vec![],
+            label: k.label().to_string(), art, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(),
         })
     }).collect()
 }
@@ -1146,7 +1254,7 @@ fn walk_frame(
                 shape_id: *id, inst_name: name.clone(), sym_name: carried_sym.unwrap_or("").to_string(),
                 plane: my_plane.map(str::to_string),
                 aabb: Rect { x: xmn, y: ymn, w: xmx - xmn, h: ymx - ymn },
-                cx: world.tx, cy: world.ty, x_sign: world.x_sign(),
+                cx: world.tx, cy: world.ty, x_sign: world.x_sign(), flip: world.flips(),
                 moving: false, // art-path instances classify by plane, not collision
                 hazard: None,  // hazards come from the geometry walk, not the art-frame walk
                 inst_anchor,
@@ -1465,7 +1573,13 @@ fn render_art_layers(
         && imgs.len() == n_samples
         && imgs.windows(2).any(|w| w[0].png != w[1].png);          // some motion
     let stage_frames: Vec<StageArt> = if clean {
-        imgs.into_iter().cloned().collect()
+        // truncate to the animation's OWN loop period (sampled over the stage's longest clip), so a
+        // stage with a long looping timeline emits ONE loop, not the whole multi-thousand-frame
+        // sweep (gangplankgalleon's sea animation was 2651 frames). loop_period returns the full
+        // length if it never repeats, so a genuinely non-looping stage is unaffected.
+        let frames: Vec<StageArt> = imgs.into_iter().cloned().collect();
+        let p = loop_period(&frames);
+        frames[..p].to_vec()
     } else {
         sampled[base_idx].1.clone().into_iter().collect()
     };
@@ -1693,8 +1807,17 @@ fn composite_layer(
             ).and_then(|r| RgbaImage::from_raw(r.width, r.height, r.rgba))
                 .map(|t| imageops::resize(&t, tw, th, imageops::FilterType::Triangle))
         };
-        let Some(scaled) = scaled else { continue };
+        let Some(mut scaled) = scaled else { continue };
         if scaled.width() == 0 || scaled.height() == 0 { continue; }
+        // The tile is rasterized in source orientation and placed onto the axis-aligned AABB; a
+        // mirrored placement (scaleX/scaleY < 0) must flip the tile so it lands the same way it
+        // does in SSF2. For a single static shape this is invisible (the AABB is unchanged), but a
+        // mirrored MULTI-FRAME element whose frames are off-center crops (a wall torch's flame
+        // bitmaps) needs it: un-flipped, each frame's content sits at a different spot in its AABB
+        // and the element appears to slide left/right instead of animating in place.
+        let (fx, fy) = inst.flip;
+        if fx { scaled = imageops::flip_horizontal(&scaled); }
+        if fy { scaled = imageops::flip_vertical(&scaled); }
         let ox_px = (inst.aabb.left() - min_x).round() as i64;
         let oy_px = (inst.aabb.top() - min_y).round() as i64;
         imageops::overlay(&mut canvas, &scaled, ox_px, oy_px);
@@ -1844,9 +1967,41 @@ fn ssf_decompress(raw: &[u8], path: &Path) -> Result<Vec<u8>> {
 /// `None` if the stage has no parseable SSF2Stage subclass (the heuristic path then takes over).
 fn stage_abc_model(swf_data: &[u8]) -> Option<crate::stage_abc::StageAbcModel> {
     let swf = crate::swf_parser::parse(swf_data).ok()?;
-    swf.abc_blocks.iter()
-        .filter_map(|b| crate::abc_parser::parse(b).ok())
-        .find_map(|abc| crate::stage_abc::extract_stage(&abc))
+    let blocks: Vec<crate::abc_parser::AbcFile> = swf.abc_blocks.iter()
+        .filter_map(|b| crate::abc_parser::parse(b).ok()).collect();
+    let mut model = blocks.iter().find_map(crate::stage_abc::extract_stage)?;
+    // Resolve each spawned hazard's get*() declarations across ALL abc blocks, not just the stage's.
+    // The enemy class is usually compiled into the same block as the stage (extract_stage already
+    // filled it from there), but a stage CAN split it into another block — and we follow the
+    // `spawnEnemy(<Class>)` reference (`a.class_name`) to find it wherever it lives, rather than
+    // assuming co-location or scanning for SSF2Enemy subclasses by hand.
+    for a in &mut model.actors {
+        if a.attack_hitboxes.is_empty() {
+            for abc in &blocks {
+                let hb = crate::abc_parser::extract_attack_stats_for(abc, &a.class_name);
+                if !hb.is_empty() { a.attack_hitboxes = hb; break; }
+            }
+        }
+        if a.own_stats.is_empty() {
+            for abc in &blocks {
+                let os = crate::abc_parser::extract_own_stats_for(abc, &a.class_name);
+                if !os.is_empty() { a.own_stats = os; break; }
+            }
+        }
+        if a.anim_labels.is_empty() {
+            for abc in &blocks {
+                let al = crate::abc_parser::extract_force_attack_labels(abc, &a.class_name);
+                if !al.is_empty() { a.anim_labels = al; break; }
+            }
+        }
+        if a.behavior.shake.is_none() && a.behavior.self_platform.is_none() {
+            for abc in &blocks {
+                let b = crate::abc_parser::extract_enemy_behavior(abc, &a.class_name);
+                if b.shake.is_some() || b.self_platform.is_some() || b.rise_yspeed.is_some() { a.behavior = b; break; }
+            }
+        }
+    }
+    Some(model)
 }
 
 fn stage_package_metadata(swf_data: &[u8]) -> Option<crate::abc_parser::MainPackageMetadata> {
@@ -1991,7 +2146,7 @@ fn walk<'a>(
                 plane: my_plane.map(str::to_string),
                 aabb: Rect { x: xmn, y: ymn, w: xmx - xmn, h: ymx - ymn },
                 cx: world.tx, cy: world.ty,
-                x_sign: world.x_sign(),
+                x_sign: world.x_sign(), flip: world.flips(),
                 moving: here_moving,
                 hazard: here_hazard,
                 inst_anchor: (0.0, 0.0), // geometry walk feeds collision/hazards, not art grouping
@@ -2049,10 +2204,10 @@ mod hazard_classifier_tests {
         let id = |r: &Rect| *r;
         let insts = vec![
             Instance { shape_id: 1, inst_name: None, sym_name: "x".into(), plane: None,
-                aabb: Rect { x: 0.0, y: 0.0, w: 100.0, h: 20.0 }, cx: 50.0, cy: 10.0, x_sign: 1.0,
+                aabb: Rect { x: 0.0, y: 0.0, w: 100.0, h: 20.0 }, cx: 50.0, cy: 10.0, x_sign: 1.0, flip: (false, false),
                 moving: false, hazard: Some(HazardKind::Lava), inst_anchor: (0.0, 0.0) },
             Instance { shape_id: 2, inst_name: None, sym_name: "x".into(), plane: None,
-                aabb: Rect { x: 110.0, y: 0.0, w: 100.0, h: 20.0 }, cx: 160.0, cy: 10.0, x_sign: 1.0,
+                aabb: Rect { x: 110.0, y: 0.0, w: 100.0, h: 20.0 }, cx: 160.0, cy: 10.0, x_sign: 1.0, flip: (false, false),
                 moving: false, hazard: Some(HazardKind::Lava), inst_anchor: (0.0, 0.0) },
         ];
         let shapes = std::collections::BTreeMap::new();
