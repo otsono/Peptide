@@ -1,0 +1,17 @@
+{
+  "export": true,
+  "guid": "0fc60a9a-9ff1-52d7-bc4c-6a8544d435de",
+  "id": "hyrulecastle64ssf2Script",
+  "language": "",
+  "pluginMetadata": {
+    "com.fraymakers.FraymakersMetadata": {
+      "objectType": "STAGE",
+      "version": "0.4.0"
+    }
+  },
+  "plugins": [
+    "com.fraymakers.FraymakersMetadata"
+  ],
+  "tags": [],
+  "version": 1
+}

@@ -1,67 +1,65 @@
-// Thwomp — 1:1 from the SSF2 disasm (stage spawn cycle + Thwomp class), frame-doubled.
-// Native HIT_BOXes (HitboxStats: two half boxes, angles 135/45) damage on contact.
+// Thwomp reconstructed from its SSF2 update()/initialize() via the character decompiler,
+// then made FM-CGO-runnable (field-state -> self.makeInt, FrameTimer -> counter,
+// unmapped calls neutralized so it can't throw).
 
-function _prepLocalState(animation:String, ?index:Int=Math.NaN):Int {
-	if (!__hasInitLocalStateMachine) { Common.initLocalStateMachine(); __hasInitLocalStateMachine = true; }
-	if (index != Math.NaN) { index = __localStatePrepIndex++; }
-	Common.registerLocalState(index, animation);
-	return index;
-}
-var __hasInitLocalStateMachine = false;
-var __localStatePrepIndex = -1;
-var LState = {
-	UNINITIALIZED: _prepLocalState("#n/a", -1),
-	ENTRANCE: _prepLocalState("entrance"),
-	IDLE: _prepLocalState("idle"),
-	FALL: _prepLocalState("fall")
-};
-
-// SSF2 constants, frame-doubled / velocity-converted (see the header comment).
-var COLUMNS = [293.6, 445.7, 597.8, 950.1, 1102.2, 1254.3];
-var LAND_YS = [692.0, 692.0, 692.0, 692.0, 692.0, 692.0];
-var SPAWN_Y = -7.1;
-var SPAWN_PERIOD = 1200;
-var ENTRANCE_T = 120;
-var FALL_V = 19.50;
-var LAND_WAIT = 180;
-var RISE_V = 3.90;
-// persistent state (a plain var resets every frame on a custom game object).
-var m_phase = self.makeInt(0);
-var m_col = self.makeInt(0);
-var m_timer = self.makeInt(0);
-var m_cycle = self.makeInt(0);
-var m_cool = self.makeInt(0);
-var m_init = self.makeBool(false);
+var _s_m_action = self.makeInt(0);
+var _t_m_delayTimer = self.makeInt(0);
+var _t_m_waitTimer = self.makeInt(0);
 
 function initialize() {
-	self.setState(PState.ACTIVE);
-	Common.toLocalState(LState.ENTRANCE);
+	// [SSF2-only: forceAttack] self.forceAttack("entrance");
+	_s_m_action.set(-1);
+	// timer init -> persistent counter (below)
+	// timer init -> persistent counter (below)
+	// [SSF2-only: createSelfPlatform] self.m_selfPlatform = self.createSelfPlatform(-55, -120, 120, 130);
+	// [needs-port] self.m_selfPlatform.setFallthrough(true);
+	// [needs-port] self.setCamBoxSize(110 + 30, 130 + 30, -15, -15);
+	// [needs-port] match.getCamera().addTarget(self);
+	return;
 }
 
+
 function update() {
-	// match start: park at the spawn point; SSF2's first spawn lands at t=300f (=600 FM),
-	// so pre-advance the spawn clock by half a period.
-	if (!m_init.get()) { m_init.set(true); self.setX(COLUMNS[0]); self.setY(SPAWN_Y); m_phase.set(0); m_cycle.set(SPAWN_PERIOD - 600); }
-	if (m_cool.get() > 0) { m_cool.set(m_cool.get() - 1); } else { self.reactivateHitboxes(); m_cool.set(60); }
-	// spawn-to-spawn clock: SSF2 spawns every 600f (=1200 FM) regardless of phase timing.
-	m_cycle.set(m_cycle.get() + 1);
-	var p = m_phase.get();
-	if (p == 0) { // resting between spawns (parked at the spawn point above the stage)
-		if (m_cycle.get() >= SPAWN_PERIOD) {
-			m_col.set(Random.getInt(0, COLUMNS.length - 1)); self.setX(COLUMNS[m_col.get()]); self.setY(SPAWN_Y);
-			m_phase.set(1); m_timer.set(0); m_cycle.set(0); Common.toLocalState(LState.ENTRANCE);
+	var _v1 = null;
+	_v1 = null;
+	if (_s_m_action.get() != -1) {
+		if (_s_m_action.get() != 0) {
+			if (_s_m_action.get() != 1) {
+				if (_s_m_action.get() != 2) {
+				}
+				return;
+			} else {
+				_t_m_waitTimer.set(_t_m_waitTimer.get() + 1);
+				if ((_t_m_waitTimer.get() >= 30 * 3)) {
+					_s_m_action.set(2);
+					// [SSF2-only: unnattachFromGround] self.unnattachFromGround();
+					self.updateGameObjectStats({ gravity: 0 });
+					self.setYVelocity(-6);
+					_t_m_waitTimer.set(0);
+				}
+			}
+		} else {
+			if (false) {
+			}
+			_s_m_action.set(1);
+			// [SSF2-only: forceAttack] self.forceAttack("idle");
+			// [needs-port] AudioClip.play("thwomp_land");
+			// [needs-port] AudioClip.play("thwomp_vfx");
+			// [needs-port] match.createVfx(new VfxStats({ spriteContent: "global::vfx.vfx", animation: GlobalVfx.DUST_POOF, scaleX: 2, scaleY: 2 }), self);
+			match.getCamera().shake(13);
+			// [SSF2-only: cast] _v1 = SSF2Utils.cast(self.getCurrentPlatform(), BowsersCastlePlatform);
+			// [SSF2-only: cast] if (SSF2Utils.cast(self.getCurrentPlatform(), BowsersCastlePlatform)) {
+				// [SSF2-dead] match.shakeCamera(13);
+				// [SSF2-dead] _v1.sink();
+			// [SSF2-dead] }
 		}
-	} else if (p == 1) { // entrance: hover at the spawn point (SSF2 delayTimer 60f)
-		m_timer.set(m_timer.get() + 1);
-		if (m_timer.get() >= ENTRANCE_T) { m_phase.set(2); Common.toLocalState(LState.FALL); }
-	} else if (p == 2) { // fall: constant terminal velocity (gravity 30 capped at 30)
-		self.setY(self.getY() + FALL_V);
-		if (self.getY() >= LAND_YS[m_col.get()]) { self.setY(LAND_YS[m_col.get()]); m_phase.set(3); m_timer.set(0); Common.toLocalState(LState.IDLE); match.getCamera().shake(16.9); }
-	} else if (p == 3) { // landed: the column platform under it sinks; hold (SSF2 waitTimer 90f)
-		m_timer.set(m_timer.get() + 1);
-		if (m_timer.get() >= LAND_WAIT) { m_phase.set(4); }
-	} else { // rise at SSF2 YSpeed -6 until past the spawn point, then rest
-		self.setY(self.getY() - RISE_V);
-		if (self.getY() <= SPAWN_Y) { self.setY(SPAWN_Y); m_phase.set(0); m_timer.set(0); }
+	} else {
+		_t_m_delayTimer.set(_t_m_delayTimer.get() + 1);
+		if ((_t_m_delayTimer.get() >= 60)) {
+			_s_m_action.set(0);
+			self.updateGameObjectStats({ gravity: 30 });
+			// [needs-port] self.m_selfPlatform.setFallthrough(false);
+		}
 	}
 }
+
