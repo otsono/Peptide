@@ -871,9 +871,15 @@ fn emit_hazards(model: &StageModel, lib: &Path) -> Result<Vec<Value>> {
             let (aw, ah) = (art.w as f64 * model.scale, art.h as f64 * model.scale);
             (art.png.clone(), -aw / 2.0, -ah / 2.0, model.scale)
         } else {
+            // no own art: a STATIC region hazard's visual IS the stage background (the lava lake is
+            // painted bg art; the hazard is just the damage volume) — emit a fully transparent
+            // sprite. A MOVING hazard with no art keeps the translucent red debug volume so the
+            // missing art is visible rather than an invisible killer.
             let (w, h) = (hz.w.max(8.0) as u32, hz.h.max(8.0) as u32);
             let mut img = image::RgbaImage::new(w, h);
-            for px in img.pixels_mut() { *px = image::Rgba([220, 40, 40, 130]); }
+            if hz.motion != "static" {
+                for px in img.pixels_mut() { *px = image::Rgba([220, 40, 40, 130]); }
+            }
             let mut p = Vec::new();
             image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut p), image::ImageFormat::Png)
                 .context("encode hazard png")?;
