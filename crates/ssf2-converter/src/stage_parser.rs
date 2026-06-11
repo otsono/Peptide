@@ -116,6 +116,10 @@ pub struct Hazard {
     /// decompile→translate pipeline (gated reconstruction path; needs a field-state + FrameTimer
     /// pass before it runs). None when the class has no lifecycle methods.
     pub reconstructed_script: Option<String>,
+    /// The SSF2 enemy class this hazard came from (`spawnEnemy(<Class>)`), e.g.
+    /// `BowsersCastleLava` — used for readable emitted content ids. None for detected-only
+    /// hazards with no class reference.
+    pub class_name: Option<String>,
     /// The class's `getOwnStats` maxYSpeed (the SSF2 engine's fall-speed cap) — the terminal
     /// velocity the reconstruction's kinematics integrator honors. None = no cap declared.
     pub max_y_speed: Option<f64>,
@@ -390,6 +394,9 @@ struct Instance {
     /// `sym_name` but get DISTINCT anchors, so the art grouping can split them into one object per
     /// placement at its own position instead of merging them into one union-bounds image.
     inst_anchor: (f64, f64),
+    /// The placement's SWF blend mode, inherited down the subtree (`None` = Normal). The
+    /// compositor emulates the modes it can (HardLight) when baking.
+    blend: Option<swf::BlendMode>,
     /// Hash of the placement-depth chain from the root to this leaf's owning clip. Two sibling
     /// clips placed at the SAME anchor (same symbol, same origin) still differ here, so the art
     /// grouping splits them into independent elements that each loop on their OWN period (a
@@ -472,6 +479,31 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     for tag in &swf.tags {
         if let swf::Tag::DefineShape(s) = tag { shape_defs.insert(s.id, s); }
     }
+    // debug (`PEPTIDE_DUMP_SHAPE=<ids>`): a shape's bounds + fill styles, gradients in full.
+    if let Ok(ids) = std::env::var("PEPTIDE_DUMP_SHAPE") {
+        for id in ids.split(',').filter_map(|x| x.trim().parse::<u16>().ok()) {
+            let Some(sh) = shape_defs.get(&id) else { continue };
+            let b = &sh.shape_bounds;
+            eprintln!("[shape {id}] bounds px=({:.1},{:.1})..({:.1},{:.1})",
+                b.x_min.to_pixels(), b.y_min.to_pixels(), b.x_max.to_pixels(), b.y_max.to_pixels());
+            for (i, f) in sh.styles.fill_styles.iter().enumerate() {
+                match f {
+                    swf::FillStyle::Color(c) => eprintln!("  fill{i}: Color({},{},{},{})", c.r, c.g, c.b, c.a),
+                    swf::FillStyle::LinearGradient(g) | swf::FillStyle::RadialGradient(g)
+                    | swf::FillStyle::FocalGradient { gradient: g, .. } => {
+                        let kind = match f { swf::FillStyle::LinearGradient(_) => "Linear", swf::FillStyle::RadialGradient(_) => "Radial", _ => "Focal" };
+                        eprintln!("  fill{i}: {kind}Gradient matrix=[a={} b={} c={} d={} tx={:.1}px ty={:.1}px] spread={:?}",
+                            g.matrix.a.to_f64(), g.matrix.b.to_f64(), g.matrix.c.to_f64(), g.matrix.d.to_f64(),
+                            g.matrix.tx.to_pixels(), g.matrix.ty.to_pixels(), g.spread);
+                        for r in &g.records {
+                            eprintln!("    stop ratio={} rgba=({},{},{},{})", r.ratio, r.color.r, r.color.g, r.color.b, r.color.a);
+                        }
+                    }
+                    swf::FillStyle::Bitmap { id: bid, .. } => eprintln!("  fill{i}: Bitmap({bid})"),
+                }
+            }
+        }
+    }
     // Bitmap registry (id -> (w, h, RGBA)) for shapes whose fill is a bitmap (stage
     // backgrounds are usually bitmaps, which `vector_raster` can't fill). Only decoded
     // when rendering art (decoding every stage's bitmaps is the slow part).
@@ -545,7 +577,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             motion: h.motion.clone().unwrap_or_else(|| "static".to_string()),
             range: h.range, period: h.period.max(1), rehit: h.rehit, kb_growth: 40.0,
             label: h.label.clone().unwrap_or_else(|| format!("Hazard {}", i + 1)),
-            art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, max_y_speed: None,
+            art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, class_name: None, max_y_speed: None,
         }
     }).collect()).unwrap_or_default();
 
@@ -1139,7 +1171,7 @@ fn clip_attack_boxes(
     ) {
         if depth > 3 { return; }
         for frame in build_frames(tags) {
-            for (id, local, name, _, _) in &frame {
+            for (id, local, name, _, _, _) in &frame {
                 let m = mat.mul(local);
                 let is_box = name.as_deref() == Some("attackBox")
                     || sym_names.get(id).is_some_and(|s| {
@@ -1150,7 +1182,7 @@ fn clip_attack_boxes(
                     // the box sprite's inner shape, through its own placement matrix.
                     if let Some(btags) = sprites.get(id) {
                         for inner in build_frames(btags) {
-                            for (sid, smat, _, _, _) in &inner {
+                            for (sid, smat, _, _, _, _) in &inner {
                                 if let Some((x0, y0, x1, y1)) = shape_bounds.get(sid) {
                                     let mm = m.mul(smat);
                                     let c = [mm.apply(*x0, *y0), mm.apply(*x1, *y0), mm.apply(*x1, *y1), mm.apply(*x0, *y1)];
@@ -1220,7 +1252,7 @@ fn actor_to_hazard(
     let mut hz = Hazard {
         x, y, w, h, damage, knockback, angle,
         interval: 0, active: 20, motion: motion.to_string(),
-        range: 0.0, period: 120, rehit, kb_growth, label: kind.label().to_string(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, max_y_speed: None,
+        range: 0.0, period: 120, rehit, kb_growth, label: kind.label().to_string(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, class_name: None, max_y_speed: None,
     };
     apply_enemy_stats(&mut hz, actor);
     Some(hz)
@@ -1237,6 +1269,7 @@ fn apply_enemy_stats(hz: &mut Hazard, actor: &crate::stage_abc::SpawnedActor) {
     hz.reconstructed_script = actor.reconstructed_script.clone();
     hz.faller = actor.faller.clone();
     hz.max_y_speed = actor.own_stats.get("maxYSpeed").copied();
+    hz.class_name = Some(actor.class_name.clone());
     if let Some(h0) = actor.attack_hitboxes.first() {
         if let Some(&d) = h0.get("damage") { hz.damage = d; }
         if let Some(&p) = h0.get("power") { hz.knockback = p; }
@@ -1285,7 +1318,7 @@ fn detect_hazards(
             x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, w: r.w.max(20.0), h: r.h.max(20.0),
             damage, knockback, angle, interval: 0, active: 20,
             motion: motion.to_string(), range: 60.0, period: 120, rehit, kb_growth,
-            label: k.label().to_string(), art, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, max_y_speed: None,
+            label: k.label().to_string(), art, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, class_name: None, max_y_speed: None,
         })
     }).collect()
 }
@@ -1309,7 +1342,7 @@ fn union_rect(a: &Rect, b: &Rect) -> Rect {
 /// (character id, local matrix, instance name, graphic-pinned, placement depth). The depth is the
 /// SWF display-list slot — stable per child across frames, so it discriminates same-anchor
 /// siblings (a clip whose children all sit at the clip origin, like a multi-emitter bubble set).
-type PlacedChild = (u16, Mat, Option<String>, bool, u16);
+type PlacedChild = (u16, Mat, Option<String>, bool, u16, Option<swf::BlendMode>);
 
 /// instance/symbol name -> AS3-assigned render plane (from `stage_abc::extract_stage`). empty when
 /// the stage has no parseable SSF2Stage subclass, in which case `plane_tag` falls back to heuristics.
@@ -1343,7 +1376,8 @@ fn build_frames(tags: &[swf::Tag]) -> Vec<Vec<PlacedChild>> {
                     let mat = mat_of(po).or_else(|| prev.map(|e| e.1)).unwrap_or(Mat::id());
                     let name = name_of(po).or_else(|| prev.and_then(|e| e.2.clone()));
                     let pinned = po.ratio.is_some() || (po.ratio.is_none() && prev.is_some_and(|e| e.3));
-                    depth.insert(po.depth, (*id, mat, name, pinned, po.depth));
+                    let blend = po.blend_mode.or_else(|| prev.and_then(|e| e.5));
+                    depth.insert(po.depth, (*id, mat, name, pinned, po.depth, blend));
                 }
                 swf::PlaceObjectAction::Modify => {
                     if let Some(e) = depth.get_mut(&po.depth) {
@@ -1370,7 +1404,7 @@ fn collect_clip_positions(
     sprite_frames: &BTreeMap<u16, Vec<Vec<PlacedChild>>>, out: &mut Vec<(i64, i64)>,
 ) {
     if out.len() > 100_000 { return; }
-    for (id, local, _, _, _) in children {
+    for (id, local, _, _, _, _) in children {
         let world = parent.mul(local);
         if let Some(frames) = sprite_frames.get(id) {
             out.push((world.tx.round() as i64, world.ty.round() as i64));
@@ -1388,10 +1422,11 @@ fn walk_frame(
     plane: Option<&str>, planes: &PlaneMap,
     sym_names: &BTreeMap<u16, String>, shape_defs: &BTreeMap<u16, &swf::Shape>,
     sprite_frames: &BTreeMap<u16, Vec<Vec<PlacedChild>>>, out: &mut Vec<Instance>, rec: usize,
-    inst_anchor: (f64, f64), inst_path: u64, phase_rank: &std::collections::HashMap<(i64, i64), usize>,
+    inst_anchor: (f64, f64), inst_path: u64, blend: Option<swf::BlendMode>,
+    phase_rank: &std::collections::HashMap<(i64, i64), usize>,
 ) {
     if rec > 8 { return; }
-    for (id, local, name, pinned, pdepth) in children {
+    for (id, local, name, pinned, pdepth, pblend) in children {
         let world = parent.mul(local);
         let sym = sym_names.get(id).cloned().unwrap_or_default();
         // an instance establishes a plane for its subtree: the stage's AS3 plane map (authoritative)
@@ -1414,6 +1449,7 @@ fn walk_frame(
                 hazard: None,  // hazards come from the geometry walk, not the art-frame walk
                 inst_anchor,
                 inst_path,
+                blend: pblend.or(blend),
             });
         }
         if let Some(frames) = sprite_frames.get(id) {
@@ -1438,7 +1474,7 @@ fn walk_frame(
             let phase = ((rank as f64 * 0.618_033_988_75).fract() * frames.len() as f64) as usize;
             // a graphic-pinned placement shows its FIRST frame, always (it never self-animates).
             let f = if *pinned { &frames[0] } else { &frames[(global_frame + phase) % frames.len()] };
-            walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1, child_anchor, child_path, phase_rank);
+            walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1, child_anchor, child_path, pblend.or(blend), phase_rank);
         }
     }
 }
@@ -1510,7 +1546,7 @@ fn render_art_layers(
     let frame_instances = |g: usize| -> Vec<Instance> {
         let root = &root_frames[root_idx];
         let mut out = Vec::new();
-        walk_frame(root, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, &phase_rank);
+        walk_frame(root, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &phase_rank);
         // exclude non-art PLANES (terrain/masks/spawns, by instance name) and any stray
         // collision/scaffolding markers (by linkage suffix) that slipped into an art plane.
         if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
@@ -1822,7 +1858,7 @@ fn engine_added_bg_layers(
         }
     }
     for tags in sprites.values() {
-        for frame in build_frames(tags) { for (cid, _, _, _, _) in frame { note(cid, bitmaps, &mut referenced, &mut ref_dims); } }
+        for frame in build_frames(tags) { for (cid, _, _, _, _, _) in frame { note(cid, bitmaps, &mut referenced, &mut ref_dims); } }
     }
     for t in root_tags {
         if let swf::Tag::PlaceObject(po) = t {
@@ -2093,7 +2129,32 @@ fn composite_layer(
         if fy { scaled = imageops::flip_vertical(&scaled); }
         let ox_px = (inst.aabb.left() - min_x).round() as i64;
         let oy_px = (inst.aabb.top() - min_y).round() as i64;
-        imageops::overlay(&mut canvas, &scaled, ox_px, oy_px);
+        if inst.blend == Some(swf::BlendMode::HardLight) {
+            // SSF2 draws this placement with HardLight (bowserscastle's lightmask gradient over
+            // the lava). FM stage layers have no blend modes, so emulate in the bake: hard-light
+            // into pixels this composite already painted; where the canvas is empty (the layer
+            // sits over the live scene) fall back to normal alpha as the approximation.
+            let hl = |b: f64, t: f64| if t <= 0.5 { 2.0 * b * t } else { 1.0 - 2.0 * (1.0 - b) * (1.0 - t) };
+            for (x, y, sp) in scaled.enumerate_pixels() {
+                let (cx, cy) = (ox_px + x as i64, oy_px + y as i64);
+                if cx < 0 || cy < 0 || cx >= cw as i64 || cy >= ch as i64 { continue; }
+                let dp = canvas.get_pixel_mut(cx as u32, cy as u32);
+                let sa = sp[3] as f64 / 255.0;
+                if sa <= 0.0 { continue; }
+                let da = dp[3] as f64 / 255.0;
+                for ch_i in 0..3 {
+                    let b = dp[ch_i] as f64 / 255.0;
+                    let t = sp[ch_i] as f64 / 255.0;
+                    // blend result over painted base, plain alpha over unpainted (da lerps them)
+                    let blended = hl(b, t) * da + t * (1.0 - da);
+                    dp[ch_i] = ((b * da * (1.0 - sa) + blended * sa).min(1.0) * 255.0
+                        / (da * (1.0 - sa) + sa).max(1e-6)) as u8;
+                }
+                dp[3] = (((da * (1.0 - sa) + sa) * 255.0).min(255.0)) as u8;
+            }
+        } else {
+            imageops::overlay(&mut canvas, &scaled, ox_px, oy_px);
+        }
         drew = true;
     }
     if !drew { return None; }
@@ -2163,16 +2224,16 @@ fn extract_labeled_clip_anims(
         // e.g. the thwomp's Single Frame fall/idle) shows one fixed frame, never self-animates and
         // never runs its frame scripts, so it doesn't drive the length (1 if everything is static).
         let sub_len = children.iter()
-            .filter(|(_, _, _, pinned, _)| !pinned)
-            .filter_map(|(id, _, _, _, _)| sprite_frames.get(id).map(|fr| fr.len()))
+            .filter(|(_, _, _, pinned, _, _)| !pinned)
+            .filter_map(|(id, _, _, _, _, _)| sprite_frames.get(id).map(|fr| fr.len()))
             .max().unwrap_or(1).max(1);
         // hold-vs-loop comes from the DRIVING nested clip's own timeline: a sub-clip that holds
         // carries a Flash-generated `_fla.` class (frame scripts) bound in SymbolClass. `stop()`
         // freezes where it fires; `gotoAndStop(target)` plays through then freezes at the target
         // (a label in the SUB-clip's own timeline, or a 1-based frame number).
         let driver_id = children.iter()
-            .filter(|(_, _, _, pinned, _)| !pinned)
-            .filter_map(|(id, _, _, _, _)| sprite_frames.get(id).map(|fr| (*id, fr.len())))
+            .filter(|(_, _, _, pinned, _, _)| !pinned)
+            .filter_map(|(id, _, _, _, _, _)| sprite_frames.get(id).map(|fr| (*id, fr.len())))
             .max_by_key(|(_, n)| *n).map(|(id, _)| id);
         let hold = driver_id
             .and_then(|id| sym_names.get(&id))
@@ -2207,7 +2268,7 @@ fn extract_labeled_clip_anims(
         // walk_frame itself pins graphic placements to their first frame.
         let per_frame: Vec<Vec<Instance>> = (0..sub_len).map(|g| {
             let mut out = Vec::new();
-            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, &no_phase);
+            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &no_phase);
             out.retain(|i| shape_defs.contains_key(&i.shape_id));
             out
         }).collect();
@@ -2512,7 +2573,7 @@ fn walk<'a>(
                 x_sign: world.x_sign(), flip: world.flips(),
                 moving: here_moving,
                 hazard: here_hazard,
-                inst_anchor: (0.0, 0.0), inst_path: 0, // geometry walk feeds collision/hazards, not art grouping
+                inst_anchor: (0.0, 0.0), inst_path: 0, blend: None, // geometry walk feeds collision/hazards, not art grouping
             });
         }
         if let Some(child) = sprites.get(&id) {
@@ -2568,10 +2629,10 @@ mod hazard_classifier_tests {
         let insts = vec![
             Instance { shape_id: 1, inst_name: None, sym_name: "x".into(), plane: None,
                 aabb: Rect { x: 0.0, y: 0.0, w: 100.0, h: 20.0 }, cx: 50.0, cy: 10.0, x_sign: 1.0, flip: (false, false),
-                moving: false, hazard: Some(HazardKind::Lava), inst_anchor: (0.0, 0.0), inst_path: 0 },
+                moving: false, hazard: Some(HazardKind::Lava), inst_anchor: (0.0, 0.0), inst_path: 0, blend: None },
             Instance { shape_id: 2, inst_name: None, sym_name: "x".into(), plane: None,
                 aabb: Rect { x: 110.0, y: 0.0, w: 100.0, h: 20.0 }, cx: 160.0, cy: 10.0, x_sign: 1.0, flip: (false, false),
-                moving: false, hazard: Some(HazardKind::Lava), inst_anchor: (0.0, 0.0), inst_path: 0 },
+                moving: false, hazard: Some(HazardKind::Lava), inst_anchor: (0.0, 0.0), inst_path: 0, blend: None },
         ];
         let shapes = std::collections::BTreeMap::new();
         let bitmaps = std::collections::BTreeMap::new();

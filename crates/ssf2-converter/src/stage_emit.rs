@@ -30,6 +30,10 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     let id = &model.id;
     let dir = out_root.join(id);
     let lib = dir.join("library");
+    // the library is fully converter-generated: start clean so renamed content (a hazard id
+    // derived from its class, an element id from its symbol) doesn't leave a stale generation
+    // behind that FrayTools would bundle alongside the new one.
+    if lib.exists() { std::fs::remove_dir_all(&lib).context("clean library")?; }
     std::fs::create_dir_all(lib.join("entities")).context("mkdir entities")?;
     std::fs::create_dir_all(lib.join("scripts").join("stage")).context("mkdir scripts/stage")?;
 
@@ -69,21 +73,23 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
         for (i, layer) in model.art.background.iter().enumerate() {
             let f0 = &layer.frames[0];
-            eprintln!("[bg-emit] bg{i} name={:?} frames={} canvas={}x{} at=({:.1},{:.1}) holds={:?}",
-                layer.name, layer.frames.len(), f0.w, f0.h, f0.x, f0.y,
+            eprintln!("[bg-emit] {} name={:?} frames={} canvas={}x{} at=({:.1},{:.1}) holds={:?}",
+                element_ids(&model.art.background)[i], layer.name, layer.frames.len(), f0.w, f0.h, f0.x, f0.y,
                 layer.frames.iter().map(|f| f.hold).collect::<Vec<_>>());
         }
     }
+    let elem_ids = element_ids(&model.art.background);
     let bg_refs: Vec<BgLayerRef> = model.art.background.iter().enumerate()
         .map(|(i, layer)| -> Result<BgLayerRef> {
+            let eid = &elem_ids[i];
             let frames: Vec<ArtRef> = if layer.frames.len() == 1 {
-                vec![write_layer(&format!("bg{i}"), &layer.frames[0])?]
+                vec![write_layer(eid, &layer.frames[0])?]
             } else {
                 layer.frames.iter().enumerate()
-                    .map(|(j, a)| write_layer(&format!("bg{i}_{j}"), a))
+                    .map(|(j, a)| write_layer(&format!("{eid}_{j}"), a))
                     .collect::<Result<_>>()?
             };
-            Ok(BgLayerRef { name: bg_layer_name(&layer.name, i), frames })
+            Ok(BgLayerRef { name: bg_layer_name(&layer.name, i), eid: eid.clone(), frames })
         })
         .collect::<Result<_>>()?;
     // UNIVERSAL: promote every ANIMATED backdrop element (the weather embers, jumping podoboos,
@@ -466,7 +472,7 @@ struct ArtRef { guid: String, x: f64, y: f64, w: u32, h: u32, hold: usize }
 struct ParallaxRef { art: ArtRef, mode: ParallaxMode, x_pan: f64, y_pan: f64 }
 
 /// One backdrop element as its own layer: a display name + its frame sequence (1 = static).
-struct BgLayerRef { name: String, frames: Vec<ArtRef> }
+struct BgLayerRef { name: String, eid: String, frames: Vec<ArtRef> }
 
 /// A readable FM layer name for a backdrop element from its SSF2 symbol id. Strips the
 /// `_bg` suffix and any `<stage>_` prefix, title-cases the rest; falls back to a numbered
@@ -918,8 +924,38 @@ fn platform_script_hx(half_w: f64, sink_depth: f64, sink_speed: f64, rise_speed:
          function afterPushState() {{}}\nfunction afterPopState() {{}}\nfunction afterFlushStates() {{}}\n")
 }
 
-/// camelCase content id for hazard `idx` of stage `id` (e.g. `battlefieldssf2hazard0`).
-fn hazard_id(stage_id: &str, idx: usize) -> String { format!("{stage_id}hazard{idx}") }
+
+/// File/content-safe element id from the SSF2 source name (instance or linkage), unique across
+/// the stage: `bowsers_bubbles_bg` stays readable instead of `bg37`; repeated placements of one
+/// symbol (16 torch embers) get an ordinal suffix. Empty names fall back to `bg{idx}`.
+fn element_ids(layers: &[crate::stage_parser::BgLayer]) -> Vec<String> {
+    use std::collections::BTreeMap;
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let base: Vec<String> = layers.iter().enumerate().map(|(i, l)| {
+        let b: String = l.name.chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+            .collect::<String>().trim_matches('_').to_string();
+        let b = if b.is_empty() { format!("bg{i}") } else { b };
+        *counts.entry(b.clone()).or_default() += 1;
+        b
+    }).collect();
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    base.into_iter().map(|b| {
+        if counts[&b] == 1 { return b; }
+        let n = seen.entry(b.clone()).or_default();
+        *n += 1;
+        format!("{b}{n}")
+    }).collect()
+}
+
+/// Content id for hazard `idx` of stage `id` — the SSF2 class name when the hazard came from a
+/// `spawnEnemy(<Class>)` reference (`bowserscastlessf2BowsersCastleLava`), else `hazard{idx}`.
+fn hazard_id(stage_id: &str, idx: usize, hz: &Hazard) -> String {
+    match hz.class_name.as_deref().map(|c| c.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>()) {
+        Some(c) if !c.is_empty() => format!("{stage_id}{c}"),
+        _ => format!("{stage_id}hazard{idx}"),
+    }
+}
 
 /// Emit every hazard custom game object (entity + Script/GameObjectStats/HitboxStats/
 /// AnimationStats + sprite) under the library. Returns the manifest content entries.
@@ -946,7 +982,7 @@ fn emit_hazards(model: &StageModel, lib: &Path) -> Result<Vec<Value>> {
     };
 
     for (i, hz) in model.hazards.iter().enumerate() {
-        let hid = hazard_id(&model.id, i);
+        let hid = hazard_id(&model.id, i, hz);
         // a hazard whose SSF2 clip has labelled sub-animations (e.g. a Thwomp's entrance/fall/idle)
         // becomes a MULTI-animation custom game object: one FM animation per label, the local state
         // machine switching between them, the HIT_BOX riding only the active (damaging) ones. This
@@ -1194,8 +1230,8 @@ fn emit_multi_anim_hazard(
             }
         });
         format!("// {} reconstructed from its SSF2 update()/initialize() via the character decompiler,\n\
-                 // then made FM-CGO-runnable: field state -> local states + self.make* slots, FrameTimers ->\n\
-                 // counters, engine physics -> a scripted kinematics integrator (30fps units converted), and\n\
+                 // then made FM-CGO-runnable: field state -> named local states, FrameTimers -> the engine's\n\
+                 // makeFrameTimer, physics -> a scripted kinematics integrator (30fps units converted), and\n\
                  // the STAGE class's spawn cycle synthesized around the enemy class's own state machine.\n\n{}",
                 hz.label, cgo_runnable(rs, &entity_anims, scale, wrap.as_ref()))
     } else if is_thwomp && !cols.is_empty() {
@@ -1550,7 +1586,7 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
         // already-commented decompiler gaps pass through untouched.
         if trimmed.starts_with("//") { out.push(line.to_string()); continue; }
         // FrameTimer construction: the counter IS the state (starts at 0); drop the `new`.
-        if timer_re.is_match(line) { out.push(format!("{indent}// timer init -> persistent counter (below)")); continue; }
+        if timer_re.is_match(line) { out.push(format!("{indent}// FrameTimer construction -> the module-scope makeFrameTimer")); continue; }
         // a line touching a dead field or a risky unmapped call: neutralize.
         if dead.iter().any(|f| line.contains(&format!("self.{f}")))
             || risky.iter().any(|r| line.contains(r)) {
@@ -1574,10 +1610,8 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
         // wrapper there's no frames-in-state counter, so lower onto per-slot counters here.
         // a FrameTimer duration is 30fps frames; the counters tick at 60fps, so x2.
         if wrap.is_none() {
-            for (f, dur) in &timers {
-                s = s.replace(&format!("self.{f}.tick()"), &format!("_t_{f}.inc()"));
-                s = s.replace(&format!("self.{f}.completed"), &format!("(_t_{f}.get() >= ({dur}) * 2)"));
-                s = s.replace(&format!("self.{f}.reset()"), &format!("_t_{f}.set(0)"));
+            for f in timers.keys() {
+                s = s.replace(&format!("self.{f}."), &format!("_t_{f}."));
             }
         }
         // int field write/read -> persistent get/set.
@@ -1647,64 +1681,45 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
     // bare name — never re-call makeInt inside a function (that would shift the call-order keying).
     let mut preamble = String::new();
     for f in &ints { preamble.push_str(&format!("var _s_{f} = self.makeInt(0);\n")); }
-    if wrap.is_none() {
-        for f in timers.keys() { preamble.push_str(&format!("var _t_{f} = self.makeInt(0);\n")); }
+    // FrameTimers lower 1:1 onto the engine's own makeFrameTimer (the tick/completed/reset
+    // vocabulary is identical; a duration is 30fps frames, so x2). The timer counts UP to its
+    // length, exactly like SSF2's.
+    for (f, dur) in &timers {
+        preamble.push_str(&format!("var _t_{f} = self.makeFrameTimer(({dur}) * 2);\n"));
     }
     let mut body = flatten_state_ladder(&body);
     let Some(w) = wrap else { return format!("{preamble}\n{body}") };
 
-    // FrameTimer lowering, PROVEN per timer: when every access (tick/completed/reset) sits inside
-    // exactly ONE rung of the flat state ladder, the timer measures "frames since entering that
-    // state" (SSF2 constructs it at spawn and only that handler ticks it), so it lowers onto the
-    // wrapper's single frames-in-state counter — reset-on-transition comes free, and re-entry
-    // matches SSF2's fresh-instance-per-spawn semantics (the wrapper recycle = instance death).
-    // a timer that DOESN'T prove out keeps an exact per-slot counter and logs a warning.
-    let mut slot_timers: Vec<String> = Vec::new();
-    {
-        let lines: Vec<String> = body.lines().map(str::to_string).collect();
-        // rung extents of the flat ladder: start at an inLocalState guard, end at its brace close.
-        let rung_re = Regex::new(r"if \(inLocalState\(-?\d+\)\) \{").unwrap();
-        let mut rungs: Vec<(usize, usize)> = Vec::new();
-        for (i, l) in lines.iter().enumerate() {
-            if !rung_re.is_match(l) { continue; }
-            let mut depth = 1i32;
-            let mut end = i;
-            for (j, jl) in lines.iter().enumerate().skip(i + 1) {
-                let t = jl.trim_start();
-                if t.starts_with("//") { continue; }
-                for c in t.chars() {
-                    match c { '{' => depth += 1, '}' => depth -= 1, _ => {} }
-                }
-                if depth <= 0 { end = j; break; }
-            }
-            rungs.push((i, end));
-        }
-        for (f, dur) in &timers {
-            let pat = format!("self.{f}.");
-            let mentions: Vec<usize> = lines.iter().enumerate()
-                .filter(|(_, l)| l.contains(&pat)).map(|(i, _)| i).collect();
-            // the innermost rung containing each mention (rungs of an else-if ladder don't nest,
-            // so "innermost" = the latest-starting rung whose extent covers the line).
-            let homes: std::collections::BTreeSet<Option<usize>> = mentions.iter()
-                .map(|&m| rungs.iter().enumerate().rev()
-                    .find(|(_, (s, e))| *s <= m && m <= *e).map(|(k, _)| k))
-                .collect();
-            let proven = !mentions.is_empty() && homes.len() == 1 && !homes.contains(&None);
-            if proven {
-                body = body.replace(&format!("self.{f}.tick();"), "// FrameTimer tick -> the frames-in-state counter");
-                body = body.replace(&format!("self.{f}.completed"), &format!("(_w_state_t.get() >= ({dur}) * 2)"));
-                body = body.replace(&format!("self.{f}.reset();"), "// FrameTimer reset -> frames-in-state resets on transition");
-            } else {
-                eprintln!("  warning: hazard timer {f} is used across handlers; kept a per-slot \
-                           counter (verify its persistence live)");
-                body = body.replace(&format!("self.{f}.tick()"), &format!("_t_{f}.inc()"));
-                body = body.replace(&format!("self.{f}.completed"), &format!("(_t_{f}.get() >= ({dur}) * 2)"));
-                body = body.replace(&format!("self.{f}.reset()"), &format!("_t_{f}.set(0)"));
-                preamble.push_str(&format!("var _t_{f} = self.makeInt(0);\n"));
-                slot_timers.push(f.clone());
-            }
-        }
+    // wrap path: the same 1:1 FrameTimer lowering (the engage below resets each timer, the
+    // fresh-instance semantics SSF2 gets by constructing new timers per spawn).
+    for f in timers.keys() {
+        body = body.replace(&format!("self.{f}."), &format!("_t_{f}."));
     }
+
+    // the update() switch values become named states: SSF2 inlines the constants, so the name is
+    // derived from the animation each state registers (the forceAttack label its handler plays).
+    let mut state_consts: std::collections::BTreeMap<i64, String> = std::collections::BTreeMap::new();
+    {
+        let mut used: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for (v, anim) in &state_regs {
+            let base: String = anim.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' }).collect();
+            let n = used.entry(base.clone()).or_default();
+            *n += 1;
+            let name = if *n == 1 { format!("ST_{base}") } else { format!("ST_{base}_{n}") };
+            state_consts.insert(*v, name);
+        }
+        let st_re = Regex::new(r"(toLocalState|inLocalState)\((-?\d+)\)").unwrap();
+        body = st_re.replace_all(&body, |c: &regex::Captures| {
+            let v: i64 = c[2].parse().unwrap();
+            match state_consts.get(&v) {
+                Some(n) => format!("{}({})", &c[1], n),
+                None => c[0].to_string(),
+            }
+        }).to_string();
+    }
+    let cname = |v: &i64| state_consts.get(v).cloned().unwrap_or_else(|| v.to_string());
+    let mut const_decls = String::new();
+    for (v, name) in &state_consts { const_decls.push_str(&format!("var {name} = {v};\n")); }
 
     // ---- the synthesized stage spawn cycle + kinematics integrator ----
     // SSF2 splits this hazard across two classes: the enemy class (the state machine above) and
@@ -1714,18 +1729,22 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
     // entrance clip's frame-script setYSpeed timeline (a Graphic-pinned clip never self-runs).
     let cols_lit = w.cols.iter().map(|(x, _)| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
     let land_lit = w.cols.iter().map(|(_, y)| format!("{y:.1}")).collect::<Vec<_>>().join(", ");
-    // per-slot fallback timers restart on each engage (a fresh SSF2 instance gets fresh timers).
-    let timer_resets: String = slot_timers.iter()
-        .map(|f| format!("\t\t\t_t_{f}.set(0);\n")).collect();
+    // every class timer restarts on engage (a fresh SSF2 instance constructs fresh timers).
+    let timer_resets: String = timers.keys()
+        .map(|f| format!("\t\t\t_t_{f}.reset();\n")).collect();
     // state registration runs once, behind the wrapper's first-update guard. NOT module scope
     // (make* slots aren't dereferenceable on the first eval, before the CGO api is live) and NOT
     // initialize() (the engine never calls it on a stage custom game object — the template's
     // m_init-in-update guard is the proven pattern).
     let mut state_reg = String::new();
     if !state_regs.is_empty() {
-        state_reg.push_str("\t\tinitLocalStateMachine();\n");
+        state_reg.push_str("var __hasInitLocalStateMachine = false;\n\
+                            if (!__hasInitLocalStateMachine) {\n\
+                            \tinitLocalStateMachine();\n\
+                            \t__hasInitLocalStateMachine = true;\n\
+                            }\n");
         for (v, anim) in &state_regs {
-            state_reg.push_str(&format!("\t\tregisterLocalState({v}, \"{anim}\");\n"));
+            state_reg.push_str(&format!("registerLocalState({}, \"{anim}\");\n", cname(v)));
         }
     }
     // the class's own addToCamera (inside __hazardInit) fires per engage; the wrapper only needs
@@ -1742,18 +1761,35 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
                     (f.saturating_sub(1)) * 2, sp * scale * 0.5))
                 .collect();
             format!("\t// entrance bob: the entrance sub-clip's frame scripts (setYSpeed timeline, 30->60fps)\n\
-                     \tif (inLocalState({v})) {{\n{ladder}\t}}\n")
+                     \tif (inLocalState({})) {{\n{ladder}\t}}\n", cname(v))
         })
         .unwrap_or_default();
+    // the bob ladder is the one consumer of a frames-in-state clock (its keys are frame indices,
+    // which a FrameTimer's completed flag can't address) — only emit the tracker when it's used.
+    let (bob_decls, bob_tracker) = if bob_block.is_empty() { ("", "") } else { (
+        "var _w_prev = self.makeInt(-99);\nvar _w_state_t = self.makeInt(0);\n",
+        "\t// frames-in-state clock for the entrance bob ladder\n\
+         \tif (getLocalState() != _w_prev.get()) {\n\
+         \t\t_w_prev.set(getLocalState());\n\
+         \t\t_w_state_t.set(0);\n\
+         \t} else {\n\
+         \t\t_w_state_t.inc();\n\
+         \t}\n",
+    ) };
     let script = format!(
-        "{preamble}\n\
+        "{const_decls}\
+         // the local-state machine inits + registers at MODULE scope on every eval, exactly like\n\
+         // the proven template idiom (in-update init left make* slots unreliable).\n\
+         {state_reg}\
+         {preamble}\n\
          // stage spawn machine constants (stepped from the stage + enemy classes)\n\
          var COLUMNS = [{cols_lit}];\nvar LAND_YS = [{land_lit}];\n\
          var SPAWN_Y = {spawn_y:.1};\nvar SPAWN_PERIOD = {spawn_period:.0};\nvar TERMINAL_V = {terminal:.2};\n\
          var _w_init = self.makeBool(false);\n\
          var _w_active = self.makeBool(false);\nvar _w_col = self.makeInt(0);\n\
-         var _w_clock = self.makeInt({half_period:.0});\nvar _w_cool = self.makeInt(0);\n\
-         var _w_prev = self.makeInt(-99);\nvar _w_state_t = self.makeInt(0);\n\
+         // the stage's spawn machine (one full spawn-to-spawn period) + the rehit cadence\n\
+         var _w_clock = self.makeFrameTimer(SPAWN_PERIOD);\nvar _w_cool = self.makeFrameTimer(60);\n\
+         {bob_decls}\
          var _kin_vy = self.makeFloat(0.0);\nvar _kin_grav = self.makeFloat(0.0);\n\n\
          // the SSF2 engine's isOnFloor: resting on the spawn column's landing surface.\n\
          function __onFloor():Bool {{\n\treturn self.getY() >= LAND_YS[_w_col.get()];\n}}\n\n\
@@ -1764,35 +1800,30 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
          \tif (!_w_init.get()) {{\n\
          \t\t_w_init.set(true);\n\
          \t\tself.setState(PState.ACTIVE);\n\
-         {state_reg}\
          \t\tself.setX(COLUMNS[0]);\n\
          \t\tself.setY(SPAWN_Y);\n\
+         \t\t// SSF2's first spawn lands half a period in: pre-advance the spawn clock.\n\
+         \t\tfor (i in 0...{half_period:.0}) {{ _w_clock.tick(); }}\n\
          \t}}\n\
          \t// spawn-to-spawn clock (the stage spawn machine runs regardless of the enemy's phase)\n\
-         \t_w_clock.inc();\n\
+         \t_w_clock.tick();\n\
          \tif (!_w_active.get()) {{\n\
-         \t\tif (_w_clock.get() >= SPAWN_PERIOD) {{\n\
-         \t\t\t_w_clock.set(0);\n\
+         \t\tif (_w_clock.completed) {{\n\
+         \t\t\t_w_clock.reset();\n\
          \t\t\t_w_col.set(Random.getInt(0, COLUMNS.length - 1));\n\
          \t\t\tself.setX(COLUMNS[_w_col.get()]);\n\
          \t\t\tself.setY(SPAWN_Y);\n\
          \t\t\t_kin_vy.set(0);\n\
          \t\t\t_kin_grav.set(0);\n\
-         \t\t\t_w_prev.set(-99);\n\
          {timer_resets}\
          \t\t\t__hazardInit();\n\
          \t\t\t_w_active.set(true);\n\
          \t\t}}\n\
          \t\treturn;\n\
          \t}}\n\
-         \t// frames-in-state: every SSF2 FrameTimer here measures time since entering its state\n\
-         \tif (getLocalState() != _w_prev.get()) {{\n\
-         \t\t_w_prev.set(getLocalState());\n\
-         \t\t_w_state_t.set(0);\n\
-         \t}} else {{\n\
-         \t\t_w_state_t.inc();\n\
-         \t}}\n\
-         \tif (_w_cool.get() > 0) {{ _w_cool.dec(); }} else {{ self.reactivateHitboxes(); _w_cool.set(60); }}\n\
+         {bob_tracker}\
+         \t_w_cool.tick();\n\
+         \tif (_w_cool.completed) {{ self.reactivateHitboxes(); _w_cool.reset(); }}\n\
          {bob_block}\
          \t__hazardUpdate();\n\
          \t// kinematics integrator: the SSF2 engine's gravity/yspeed step, 30fps units converted\n\
@@ -2020,7 +2051,8 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fal
          var SPAWN_PERIOD = {spawn_period:.0};\nvar ENTRANCE_T = {entrance_t:.0};\nvar FALL_V = {fall_v:.2};\nvar LAND_WAIT = {land_wait:.0};\nvar RISE_V = {rise_v:.2};\n\
          // persistent state (a plain var resets every frame on a custom game object).\n\
          var m_col = self.makeInt(0);\nvar m_timer = self.makeInt(0);\nvar m_vy = self.makeFloat(0.0);\n\
-         var m_cycle = self.makeInt(0);\nvar m_cool = self.makeInt(0);\nvar m_init = self.makeBool(false);\n\n\
+         var m_cycle = self.makeFrameTimer(SPAWN_PERIOD);\nvar m_cool = self.makeFrameTimer(60);\n\
+         var m_init = self.makeBool(false);\n\n\
          function initialize() {{\n\tself.setState(PState.ACTIVE);\n\tCommon.toLocalState(LState.REST);\n}}\n\n\
          function update() {{\n\
          \t// match start: park at the spawn point; SSF2's first spawn lands at t=300f (=600 FM),\n\
@@ -2029,25 +2061,24 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fal
          \t\tm_init.set(true);\n\
          \t\tself.setX(COLUMNS[0]);\n\
          \t\tself.setY(SPAWN_Y);\n\
-         \t\tm_cycle.set(Math.floor(SPAWN_PERIOD / 2));\n\
+         \t\tfor (i in 0...Math.floor(SPAWN_PERIOD / 2)) {{ m_cycle.tick(); }}\n\
          \t}}\n\
-         \tif (m_cool.get() > 0) {{\n\
-         \t\tm_cool.dec();\n\
-         \t}} else {{\n\
+         \tm_cool.tick();\n\
+         \tif (m_cool.completed) {{\n\
          \t\tself.reactivateHitboxes();\n\
-         \t\tm_cool.set(60);\n\
+         \t\tm_cool.reset();\n\
          \t}}\n\
          \t// spawn-to-spawn clock: SSF2 spawns every 600f (=1200 FM) regardless of phase timing.\n\
-         \tm_cycle.inc();\n\n\
+         \tm_cycle.tick();\n\n\
          \t// --------- SUBSTATE SYSTEM ----------\n\
          \tif (Common.inLocalState(LState.REST)) {{\n\
          \t\t// resting between spawns (parked at the spawn point above the stage)\n\
-         \t\tif (m_cycle.get() >= SPAWN_PERIOD) {{\n\
+         \t\tif (m_cycle.completed) {{\n\
          \t\t\tm_col.set(Random.getInt(0, COLUMNS.length - 1));\n\
          \t\t\tself.setX(COLUMNS[m_col.get()]);\n\
          \t\t\tself.setY(SPAWN_Y);\n\
          \t\t\tm_timer.set(0);\n\
-         \t\t\tm_cycle.set(0);\n\
+         \t\t\tm_cycle.reset();\n\
          \t\t\tm_vy.set(0);\n\
 {cam_add}\
          \t\t\tCommon.toLocalState(LState.ENTRANCE);\n\
@@ -2102,11 +2133,11 @@ fn hazard_anim_loop_script_hx(hz: &Hazard, anims: &[HzAnim], idle: &str) -> Stri
          // across the labelled animations; native HIT_BOX (HitboxStats) on the active ones.\n\
          // Cross-frame state via self.make* (a plain var re-inits every frame on a game object).\n\n\
          {states}\n\
-         var REHIT = {rehit};\nvar m_cooldown = self.makeInt(0);\n\n\
+         var m_cooldown = self.makeFrameTimer({rehit});\n\n\
          function initialize() {{\n\tself.setState(PState.ACTIVE);\n\tCommon.toLocalState(LState.{idle_s});\n}}\n\n\
          function update() {{\n\
-         \tif (m_cooldown.get() > 0) {{ m_cooldown.dec(); }}\n\
-         \telse {{ self.reactivateHitboxes(); m_cooldown.set(REHIT); }}\n\
+         \tm_cooldown.tick();\n\
+         \tif (m_cooldown.completed) {{ self.reactivateHitboxes(); m_cooldown.reset(); }}\n\
          }}\n",
         states = local_state_block(anims), rehit = hz.rehit())
 }
@@ -2325,7 +2356,7 @@ fn bg_element_entity(eid: &str, layer: &BgLayerRef, scale: f64) -> Value {
 fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path) -> Result<String> {
     let mut spawns = String::new();
     for (i, layer) in promoted.iter().enumerate() {
-        let eid = format!("{}bg{}", model.id, i);
+        let eid = format!("{}_{}", model.id, layer.eid);
         write_json(&lib.join("entities").join(format!("{eid}.entity")), &bg_element_entity(&eid, layer, model.scale))?;
         write_meta(&lib.join("entities").join(format!("{eid}.entity.meta")), &eid, &eid, "", Some("VFX"), None)?;
         // createVfx loops the element forever at its baked-in position (relativeWith:false ->
@@ -2344,7 +2375,7 @@ fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path) -> 
 fn hazard_spawn_lines(model: &StageModel) -> String {
     let mut out = String::new();
     for (i, hz) in model.hazards.iter().enumerate() {
-        let hid = hazard_id(&model.id, i);
+        let hid = hazard_id(&model.id, i, hz);
         // owned by a character (a GameObject) so the hitbox registers; setX/setY positions it.
         out.push_str(&format!(
             "\t\t\tvar _hz{i} = match.createCustomGameObject(self.getResource().getContent(\"{hid}\"), owner);\n\
@@ -2531,7 +2562,7 @@ mod hazard_tests {
             x: 0.0, y: 150.0, w: 700.0, h: 160.0,
             damage: 10.0, knockback: 0.0, angle: 45.0,
             interval: 0, active: 20, motion: "static".into(),
-            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, max_y_speed: None,
+            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, class_name: None, max_y_speed: None,
         }
     }
 
