@@ -580,8 +580,9 @@ pub fn command_to_wire(cmd: &Command) -> Translated {
             Translated::Wire(w)
         }
         Command::Console => Translated::Wire("c".into()),
-        // no Fraymakers wire for the tree walk yet — the trait default declares the gap.
-        Command::Tree(_) => Translated::Client("tree: no live object-tree walk on this engine yet (SSF2-only)".into()),
+        // FM tree walk: the 'w' wire handler walks currentMatch.gameObjects in bytecode (hl ArrayObj
+        // doesn't reflect length/index in hscript, so the walk can't be eval-side).
+        Command::Tree(_) => Translated::Wire("w".into()),
         Command::AddCharacter => Translated::Wire("n".into()),
         Command::Exit => Translated::Wire("x".into()),
         Command::Load => Translated::Wire("l".into()),
