@@ -1472,27 +1472,65 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fal
          function update() {{\n\
          \t// match start: park at the spawn point; SSF2's first spawn lands at t=300f (=600 FM),\n\
          \t// so pre-advance the spawn clock by half a period.\n\
-         \tif (!m_init.get()) {{ m_init.set(true); self.setX(COLUMNS[0]); self.setY(SPAWN_Y); m_phase.set(0); m_cycle.set(SPAWN_PERIOD - 600); }}\n\
-         \tif (m_cool.get() > 0) {{ m_cool.set(m_cool.get() - 1); }} else {{ self.reactivateHitboxes(); m_cool.set(60); }}\n\
+         \tif (!m_init.get()) {{\n\
+         \t\tm_init.set(true);\n\
+         \t\tself.setX(COLUMNS[0]);\n\
+         \t\tself.setY(SPAWN_Y);\n\
+         \t\tm_phase.set(0);\n\
+         \t\tm_cycle.set(SPAWN_PERIOD - 600);\n\
+         \t}}\n\
+         \tif (m_cool.get() > 0) {{\n\
+         \t\tm_cool.set(m_cool.get() - 1);\n\
+         \t}} else {{\n\
+         \t\tself.reactivateHitboxes();\n\
+         \t\tm_cool.set(60);\n\
+         \t}}\n\
          \t// spawn-to-spawn clock: SSF2 spawns every 600f (=1200 FM) regardless of phase timing.\n\
          \tm_cycle.set(m_cycle.get() + 1);\n\
          \tvar p = m_phase.get();\n\
          \tif (p == 0) {{ // resting between spawns (parked at the spawn point above the stage)\n\
          \t\tif (m_cycle.get() >= SPAWN_PERIOD) {{\n\
-         \t\t\tm_col.set(Random.getInt(0, COLUMNS.length - 1)); self.setX(COLUMNS[m_col.get()]); self.setY(SPAWN_Y);\n\
-         \t\t\tm_phase.set(1); m_timer.set(0); m_cycle.set(0); Common.toLocalState(LState.{entr_s});\n\
+         \t\t\tm_col.set(Random.getInt(0, COLUMNS.length - 1));\n\
+         \t\t\tself.setX(COLUMNS[m_col.get()]);\n\
+         \t\t\tself.setY(SPAWN_Y);\n\
+         \t\t\tm_phase.set(1);\n\
+         \t\t\tm_timer.set(0);\n\
+         \t\t\tm_cycle.set(0);\n\
+         \t\t\tCommon.toLocalState(LState.{entr_s});\n\
          \t\t}}\n\
          \t}} else if (p == 1) {{ // entrance: hover at the spawn point (SSF2 delayTimer 60f)\n\
          \t\tm_timer.set(m_timer.get() + 1);\n\
-         \t\tif (m_timer.get() >= ENTRANCE_T) {{ m_phase.set(2); Common.toLocalState(LState.{fall_s}); }}\n\
+         \t\tif (m_timer.get() >= ENTRANCE_T) {{\n\
+         \t\t\tm_phase.set(2);\n\
+         \t\t\tCommon.toLocalState(LState.{fall_s});\n\
+         \t\t}}\n\
          \t}} else if (p == 2) {{ // fall: constant terminal velocity (gravity 30 capped at 30)\n\
          \t\tself.setY(self.getY() + FALL_V);\n\
-         \t\tif (self.getY() >= LAND_YS[m_col.get()]) {{ self.setY(LAND_YS[m_col.get()]); m_phase.set(3); m_timer.set(0); Common.toLocalState(LState.{idle_s}); match.getCamera().shake({shake_amp:.1}); match.createVfx(new VfxStats({{ spriteContent: \"global::vfx.vfx\", animation: GlobalVfx.DUST_POOF, scaleX: {dust_scale:.1}, scaleY: {dust_scale:.1} }}), self); }}\n\
+         \t\tif (self.getY() >= LAND_YS[m_col.get()]) {{\n\
+         \t\t\tself.setY(LAND_YS[m_col.get()]);\n\
+         \t\t\tm_phase.set(3);\n\
+         \t\t\tm_timer.set(0);\n\
+         \t\t\tCommon.toLocalState(LState.{idle_s});\n\
+         \t\t\tmatch.getCamera().shake({shake_amp:.1});\n\
+         \t\t\tmatch.createVfx(new VfxStats({{\n\
+         \t\t\t\tspriteContent: \"global::vfx.vfx\",\n\
+         \t\t\t\tanimation: GlobalVfx.DUST_POOF,\n\
+         \t\t\t\tscaleX: {dust_scale:.1},\n\
+         \t\t\t\tscaleY: {dust_scale:.1}\n\
+         \t\t\t}}), self);\n\
+         \t\t}}\n\
          \t}} else if (p == 3) {{ // landed: the column platform under it sinks; hold (SSF2 waitTimer 90f)\n\
-         \t\tm_timer.set(m_timer.get() + 1);\n\t\tif (m_timer.get() >= LAND_WAIT) {{ m_phase.set(4); }}\n\
+         \t\tm_timer.set(m_timer.get() + 1);\n\
+         \t\tif (m_timer.get() >= LAND_WAIT) {{\n\
+         \t\t\tm_phase.set(4);\n\
+         \t\t}}\n\
          \t}} else {{ // rise at SSF2 YSpeed -6 until past the spawn point, then rest\n\
          \t\tself.setY(self.getY() - RISE_V);\n\
-         \t\tif (self.getY() <= SPAWN_Y) {{ self.setY(SPAWN_Y); m_phase.set(0); m_timer.set(0); }}\n\
+         \t\tif (self.getY() <= SPAWN_Y) {{\n\
+         \t\t\tself.setY(SPAWN_Y);\n\
+         \t\t\tm_phase.set(0);\n\
+         \t\t\tm_timer.set(0);\n\
+         \t\t}}\n\
          \t}}\n\
          }}\n")
 }

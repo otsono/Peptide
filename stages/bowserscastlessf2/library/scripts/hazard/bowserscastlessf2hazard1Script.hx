@@ -41,27 +41,64 @@ function initialize() {
 function update() {
 	// match start: park at the spawn point; SSF2's first spawn lands at t=300f (=600 FM),
 	// so pre-advance the spawn clock by half a period.
-	if (!m_init.get()) { m_init.set(true); self.setX(COLUMNS[0]); self.setY(SPAWN_Y); m_phase.set(0); m_cycle.set(SPAWN_PERIOD - 600); }
-	if (m_cool.get() > 0) { m_cool.set(m_cool.get() - 1); } else { self.reactivateHitboxes(); m_cool.set(60); }
+	if (!m_init.get()) {
+		m_init.set(true);
+		self.setX(COLUMNS[0]);
+		self.setY(SPAWN_Y);
+		m_phase.set(0);
+		m_cycle.set(SPAWN_PERIOD - 600);
+	}
+	if (m_cool.get() > 0) {
+		m_cool.set(m_cool.get() - 1);
+	} else {
+		self.reactivateHitboxes();
+		m_cool.set(60);
+	}
 	// spawn-to-spawn clock: SSF2 spawns every 600f (=1200 FM) regardless of phase timing.
 	m_cycle.set(m_cycle.get() + 1);
 	var p = m_phase.get();
 	if (p == 0) { // resting between spawns (parked at the spawn point above the stage)
 		if (m_cycle.get() >= SPAWN_PERIOD) {
-			m_col.set(Random.getInt(0, COLUMNS.length - 1)); self.setX(COLUMNS[m_col.get()]); self.setY(SPAWN_Y);
-			m_phase.set(1); m_timer.set(0); m_cycle.set(0); Common.toLocalState(LState.ENTRANCE);
+			m_col.set(Random.getInt(0, COLUMNS.length - 1));
+			self.setX(COLUMNS[m_col.get()]);
+			self.setY(SPAWN_Y);
+			m_phase.set(1);
+			m_timer.set(0);
+			m_cycle.set(0);
+			Common.toLocalState(LState.ENTRANCE);
 		}
 	} else if (p == 1) { // entrance: hover at the spawn point (SSF2 delayTimer 60f)
 		m_timer.set(m_timer.get() + 1);
-		if (m_timer.get() >= ENTRANCE_T) { m_phase.set(2); Common.toLocalState(LState.FALL); }
+		if (m_timer.get() >= ENTRANCE_T) {
+			m_phase.set(2);
+			Common.toLocalState(LState.FALL);
+		}
 	} else if (p == 2) { // fall: constant terminal velocity (gravity 30 capped at 30)
 		self.setY(self.getY() + FALL_V);
-		if (self.getY() >= LAND_YS[m_col.get()]) { self.setY(LAND_YS[m_col.get()]); m_phase.set(3); m_timer.set(0); Common.toLocalState(LState.IDLE); match.getCamera().shake(16.9); match.createVfx(new VfxStats({ spriteContent: "global::vfx.vfx", animation: GlobalVfx.DUST_POOF, scaleX: 2.6, scaleY: 2.6 }), self); }
+		if (self.getY() >= LAND_YS[m_col.get()]) {
+			self.setY(LAND_YS[m_col.get()]);
+			m_phase.set(3);
+			m_timer.set(0);
+			Common.toLocalState(LState.IDLE);
+			match.getCamera().shake(16.9);
+			match.createVfx(new VfxStats({
+				spriteContent: "global::vfx.vfx",
+				animation: GlobalVfx.DUST_POOF,
+				scaleX: 2.6,
+				scaleY: 2.6
+			}), self);
+		}
 	} else if (p == 3) { // landed: the column platform under it sinks; hold (SSF2 waitTimer 90f)
 		m_timer.set(m_timer.get() + 1);
-		if (m_timer.get() >= LAND_WAIT) { m_phase.set(4); }
+		if (m_timer.get() >= LAND_WAIT) {
+			m_phase.set(4);
+		}
 	} else { // rise at SSF2 YSpeed -6 until past the spawn point, then rest
 		self.setY(self.getY() - RISE_V);
-		if (self.getY() <= SPAWN_Y) { self.setY(SPAWN_Y); m_phase.set(0); m_timer.set(0); }
+		if (self.getY() <= SPAWN_Y) {
+			self.setY(SPAWN_Y);
+			m_phase.set(0);
+			m_timer.set(0);
+		}
 	}
 }
