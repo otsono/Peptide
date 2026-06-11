@@ -684,6 +684,33 @@ pub fn generate_entity(
             anim_layer_ids.push(layer_id);
         }
 
+        // The tumble pose is re-centred on the origin (see the IMAGE placement:
+        // the engine spins the entity about its position during TUMBLE), but the
+        // SSF2 boxes still track the authored art position. Shift the whole box
+        // set (hurtboxes, itemboxes, ECB) by the same correction: move the
+        // hurtbox union's centre onto the origin so the boxes cover the
+        // spinning sprite. Every other animation keeps its boxes verbatim.
+        let box_shift: (f64, f64) = if anim_name == "tumble" {
+            let mut aabb: Option<(f64, f64, f64, f64)> = None; // left,right,top,bottom
+            if let Some(bd) = sprite_boxes.get(source_anim.as_str()) {
+                for lf in 0..frame_count {
+                    if let Some(boxes) = bd.frames.get(&src_frame(lf)) {
+                        for b in boxes {
+                            if b.box_type != crate::sprite_parser::BoxType::Hurtbox { continue; }
+                            let (l, r, t, btm) = (b.x, b.x + b.width, b.y, b.y + b.height);
+                            aabb = Some(match aabb {
+                                None => (l, r, t, btm),
+                                Some((al, ar, at, ab)) => (al.min(l), ar.max(r), at.min(t), ab.max(btm)),
+                            });
+                        }
+                    }
+                }
+            }
+            aabb.map(|(l, r, t, b)| (-(l + r) / 2.0, -(t + b) / 2.0)).unwrap_or((0.0, 0.0))
+        } else {
+            (0.0, 0.0)
+        };
+
         // ── 3. COLLISION_BODY layer (per-frame ECB from hurtbox bounds) ───────
         {
             let layer_id = uuid(char_id, &format!("layer_body_{}", anim_name));
@@ -713,7 +740,8 @@ pub fn generate_entity(
                     if let Some(boxes) = box_data.and_then(|bd| bd.frames.get(&src_f)) {
                         for b in boxes {
                             if b.box_type != crate::sprite_parser::BoxType::Hurtbox { continue; }
-                            let (l, r, t, btm) = (b.x, b.x + b.width, b.y, b.y + b.height);
+                            let (l, r) = (b.x + box_shift.0, b.x + b.width + box_shift.0);
+                            let (t, btm) = (b.y + box_shift.1, b.y + b.height + box_shift.1);
                             aabb = Some(match aabb {
                                 None => (l, r, t, btm),
                                 Some((al, ar, at, ab)) => (al.min(l), ar.max(r), at.min(t), ab.max(btm)),
@@ -902,8 +930,8 @@ pub fn generate_entity(
                         // POINT symbol: bottom-center of the touchBox.
                         // In SSF2, touchBox marks the hold region; the grab hold
                         // position is at the bottom-center (where the opponent's feet anchor).
-                        let cx = round2(fb.x + fb.width / 2.0);
-                        let cy = round2(fb.y + fb.height);
+                        let cx = round2(fb.x + box_shift.0 + fb.width / 2.0);
+                        let cy = round2(fb.y + box_shift.1 + fb.height);
                         symbols.push(json!({
                             "$id": sym_id,
                             "alpha": 1,
@@ -966,8 +994,8 @@ pub fn generate_entity(
                             "scaleX": round2(fb.width),
                             "scaleY": round2(fb.height),
                             "type": "COLLISION_BOX",
-                            "x": round2(box_x),
-                            "y": round2(box_y)
+                            "x": round2(box_x + box_shift.0),
+                            "y": round2(box_y + box_shift.1)
                         }));
                     }
 
@@ -1176,30 +1204,25 @@ pub fn generate_entity(
                             if turn_flip {
                                 fm_x = round2(-fm_x);
                             }
-                            // FM's engine applies its OWN rotation during the TUMBLE state, so a
-                            // baked SSF2 per-frame rotation fights it (the sprite orbits without
-                            // spinning). For tumble ONLY: strip the authored rotation -- place the
-                            // pose unrotated at the position its center occupies (the center is the
-                            // one point a rotating placement keeps fixed) and let the engine spin
-                            // it. Every other animation keeps the corner + rotation form.
+                            // FM's engine applies its OWN rotation during the TUMBLE state, about
+                            // the entity position, so a baked SSF2 per-frame rotation/offset fights
+                            // it (the sprite orbits without spinning). For tumble ONLY: strip the
+                            // authored rotation AND centre the pose on the origin so the engine's
+                            // spin rotates it in place (the official template centres its tumble
+                            // pose the same way). Every other animation keeps the authored
+                            // corner + rotation form. FrayTools places an IMAGE so its centre
+                            // lands at (x + scaleX*w/2, y + scaleY*h/2) with SIGNED scales
+                            // (scaleY is negative under the y-flip), so centring on the origin
+                            // means x = -scaleX*w/2, y = -scaleY*h/2.
                             let mut fm_y = fm_y;
                             let pivot_x = 0.0_f64;
                             let pivot_y = 0.0_f64;
                             let mut emit_rot = ((world_rot % 360.0) + 360.0) % 360.0;
-                            if anim_name == "tumble" && emit_rot > 0.01 && emit_rot < 359.99 {
+                            if anim_name == "tumble" {
                                 if let Some(img) = bitmap_img {
                                     let (hw, hh) = (img.width as f64 / 2.0, img.height as f64 / 2.0);
-                                    // center = corner + (-cos*px + sin*py, sin*px + cos*py), signed
-                                    // scales (fm_sy is negative under the y-flip); the convention is
-                                    // solved numerically against the decomposition's own output.
-                                    // the unrotated corner for that same center = center + (px, -py).
-                                    let (px, py) = (fm_sx * hw, fm_sy * hh);
-                                    // the engine's tumble spin rotates about the ENTITY position,
-                                    // so the pose must center ON the origin or it orbits (r = the
-                                    // center's offset). drop the authored center entirely: place
-                                    // the unrotated pose with its center at (0,0).
-                                    fm_x = round2(px);
-                                    fm_y = round2(-py);
+                                    fm_x = round2(-fm_sx * hw);
+                                    fm_y = round2(-fm_sy * hh);
                                     emit_rot = 0.0;
                                 }
                             }
