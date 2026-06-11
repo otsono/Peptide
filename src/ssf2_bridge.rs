@@ -350,12 +350,37 @@ pub fn session(args: &[String]) -> Result<()> {
         }
     }
 
+    // ANIM state tracking, parity with the Fraymakers session: FM's engine PUSHES
+    // per-frame ANIM telemetry over its socket; SSF2's bridge is synchronous RPC
+    // (nothing engine-initiated), so poll player 0's animation from the same
+    // single-writer loop the commands run on and log a deduped `ANIM:` line on
+    // every change. A failed read (no match yet, mid-load) backs the poll off so
+    // boot/load never stalls command dispatch.
+    let mut last_anim = String::new();
+    let mut next_poll = std::time::Instant::now();
+    let anim_tick = move || {
+        let now = std::time::Instant::now();
+        if now < next_poll { return false; }
+        let target = crate::ssf2_target::Ssf2Target::new();
+        match target.current_anim(0) {
+            Some(anim) => {
+                next_poll = now + Duration::from_millis(300);
+                if anim != last_anim {
+                    last_anim = anim.clone();
+                    slog(&format!("ANIM:{}", anim.to_uppercase()));
+                }
+            }
+            None => { next_poll = now + Duration::from_secs(3); }
+        }
+        false
+    };
+
     // Shared control-file tail loop (see `session::tail_control`); `exit`/`quit` kills the
     // app and stops the loop. SSF2 is synchronous RPC, so each line runs inline here.
     crate::session::tail_control(
         &control,
         Duration::from_millis(50),
-        || false,
+        anim_tick,
         |raw| {
             if raw == "exit" || raw == "quit" {
                 slog("[ssf2-session] exit");
