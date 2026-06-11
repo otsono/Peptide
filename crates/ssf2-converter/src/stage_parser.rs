@@ -161,6 +161,9 @@ pub struct ClipAnim {
     /// Flash-generated `_fla.` timeline class has a stopping frame script). `frames` is already
     /// truncated to this; the emitter maps it to AnimationEndType.NONE. None = the clip loops.
     pub stop_frame: Option<usize>,
+    /// `setYSpeed` actions the sub-clip's frame scripts drive (1-based source frame, 30fps speed)
+    /// — the thwomp entrance's descend/hover/rise bob. Empty for clips without such scripts.
+    pub frame_velocities: Vec<(u32, f64)>,
 }
 
 impl Hazard {
@@ -2066,6 +2069,10 @@ fn extract_labeled_clip_anims(
         let hold = driver_id
             .and_then(|id| sym_names.get(&id))
             .and_then(|class| abcs.iter().find_map(|a| crate::abc_parser::extract_timeline_hold(a, class)));
+        let frame_velocities: Vec<(u32, f64)> = driver_id
+            .and_then(|id| sym_names.get(&id))
+            .map(|class| abcs.iter().flat_map(|a| crate::abc_parser::extract_frame_velocities(a, class)).collect())
+            .unwrap_or_default();
         // resolve to (play-until frame, freeze-at frame), both 0-based sub-frame indices.
         let hold_frames: Option<(usize, usize)> = hold.as_ref().and_then(|h| match h {
             crate::abc_parser::TimelineHold::StopAt(n) => {
@@ -2117,7 +2124,7 @@ fn extract_labeled_clip_anims(
             }
             Some(frames.len() - 1)
         });
-        if !frames.is_empty() { anims.push(ClipAnim { label: label.clone(), frames, stop_frame }); }
+        if !frames.is_empty() { anims.push(ClipAnim { label: label.clone(), frames, stop_frame, frame_velocities }); }
     }
     anims
 }

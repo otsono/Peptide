@@ -9,17 +9,25 @@ function findThwomp() {
 	var objs = match.getCustomGameObjects();
 	for (i in 0...objs.length) {
 		var o = objs[i];
-		for (j in 0...COLS_X.length) { if (Math.abs(o.getX() - COLS_X[j]) < 2) { return o; } }
+		for (j in 0...COLS_X.length) { if (Math.abs(o.getX() - COLS_X[j]) < 2) {
+			return o;
+		} }
 	}
 	return null;
 }
 
 function update() {
 	var t = findThwomp();
-	if (t != null && t.getY() > ENGAGE_Y) { self.setX(t.getX() + OFF_X); self.setY(t.getY() + OFF_Y); }
+	if (t != null && t.getY() > ENGAGE_Y) {
+		self.setX(t.getX() + OFF_X);
+		self.setY(t.getY() + OFF_Y);
+	}
 	// parking carries any remaining rider off-world -> KO, the SSF2 outcome for riding
 	// the thwomp to the top (it crosses the top blast bound there).
-	else { self.setX(-2000); self.setY(-3000); }
+	else {
+		self.setX(-2000);
+		self.setY(-3000);
+	}
 }
 function initialize() {}
 function onTeardown() {}

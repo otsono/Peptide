@@ -3,8 +3,13 @@
 // hitbox (HitboxStats). null owner is fine for damage. `motion` = the SSF2 movement.
 
 function _prepLocalState(animation:String, ?index:Int=Math.NaN):Int {
-	if (!__hasInitLocalStateMachine) { Common.initLocalStateMachine(); __hasInitLocalStateMachine = true; }
-	if (index != Math.NaN) { index = __localStatePrepIndex++; }
+	if (!__hasInitLocalStateMachine) {
+		Common.initLocalStateMachine();
+		__hasInitLocalStateMachine = true;
+	}
+	if (index != Math.NaN) {
+		index = __localStatePrepIndex++;
+	}
 	Common.registerLocalState(index, animation);
 	return index;
 }
@@ -30,12 +35,21 @@ function initialize() {
 }
 
 function update() {
-	if (!m_init.get()) { m_baseX.set(self.getX()); m_baseY.set(self.getY()); m_init.set(true); }
+	if (!m_init.get()) {
+		m_baseX.set(self.getX());
+		m_baseY.set(self.getY());
+		m_init.set(true);
+	}
 	m_frame.set(m_frame.get() + 1);
 	// re-arm the native HIT_BOX so a fighter standing in the hazard keeps taking hits
 	// (a hitbox hits each target once per attack id; reactivateHitboxes issues a fresh one).
 	if (Common.inLocalState(LState.ACTIVE)) {
-		if (m_cooldown.get() > 0) { m_cooldown.dec(); }
-		else { self.reactivateHitboxes(); m_cooldown.set(REHIT); }
+		if (m_cooldown.get() > 0) {
+			m_cooldown.dec();
+		}
+		else {
+			self.reactivateHitboxes();
+			m_cooldown.set(REHIT);
+		}
 	}
 }

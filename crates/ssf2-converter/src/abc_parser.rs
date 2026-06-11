@@ -2088,6 +2088,9 @@ pub struct EnemyBehavior {
     pub self_platform: Option<(f64, f64, f64, f64)>,
     pub dust: Option<(String, f64, f64)>,
     pub sounds: Vec<String>,
+    /// The class adds itself as a camera target (`addToCamera`) — the FM port mirrors it with
+    /// `match.getCamera().addTarget(self)` while the hazard is engaged.
+    pub camera_target: bool,
 }
 struct BehaviorVisitor {
     b: EnemyBehavior,
@@ -2119,6 +2122,7 @@ impl AbcVisitor for BehaviorVisitor {
                 }
             }
             "playSound" => { if let Some(StackVal::Str(s)) = args.first() { if !self.b.sounds.contains(s) { self.b.sounds.push(s.clone()); } } }
+            "addToCamera" => { self.b.camera_target = true; }
             _ => {}
         }
         None
@@ -2290,6 +2294,25 @@ pub(crate) fn dump_class(abc: &AbcFile, class_name: &str) {
             eprintln!("--- {} ---\n{}", t.name, code);
         }
     }
+}
+
+/// The `setYSpeed(N)` timeline a sub-clip's frame scripts drive (the thwomp entrance's
+/// descend-hover-rise bob): `(1-based frame, speed)` per frameN method that sets one. Source
+/// 30fps SSF2 units.
+pub(crate) fn extract_frame_velocities(abc: &AbcFile, class_name: &str) -> Vec<(u32, f64)> {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return Vec::new() };
+    let re = regex::Regex::new(r"setYSpeed\((-?\d+(?:\.\d+)?)\)").unwrap();
+    let mut out: Vec<(u32, f64)> = Vec::new();
+    for t in &class.instance_methods {
+        let Some(n) = t.name.strip_prefix("frame").and_then(|s| s.parse::<u32>().ok()) else { continue };
+        let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
+        let code = decompiler::decompile_method(body, abc, &t.name, &[]);
+        if let Some(c) = re.captures(&code) {
+            if let Ok(v) = c[1].parse::<f64>() { out.push((n, v)); }
+        }
+    }
+    out.sort_by_key(|(f, _)| *f);
+    out
 }
 
 pub(crate) fn extract_timeline_hold(abc: &AbcFile, class_name: &str) -> Option<TimelineHold> {

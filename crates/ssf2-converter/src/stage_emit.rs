@@ -142,9 +142,9 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         .collect::<String>();
     spawns.push_str(&hazard_spawn_lines(model));
     spawns.push_str(&bg_spawns);
-    std::fs::write(scripts.join(format!("{id}Script.hx")), script_hx(id, animated, &spawns))?;
+    write_script(&scripts.join(format!("{id}Script.hx")), &script_hx(id, animated, &spawns))?;
     write_meta(&scripts.join(format!("{id}Script.hx.meta")), id, &format!("{id}Script"), "", Some("STAGE"), None)?;
-    std::fs::write(scripts.join(format!("{id}StageStats.hx")), stage_stats_hx(id, &art.parallax, model.scale))?;
+    write_script(&scripts.join(format!("{id}StageStats.hx")), &stage_stats_hx(id, &art.parallax, model.scale))?;
     write_meta(&scripts.join(format!("{id}StageStats.hx.meta")), id, &format!("{id}StageStats"), "hscript", None, None)?;
 
     let fraytools = dir.join(format!("{id}.fraytools"));
@@ -753,7 +753,7 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
     let rise_speed = pb.rise_speed.unwrap_or(1.0) * model.scale * 0.5;
     let wait = pb.wait_frames.unwrap_or(390.0) * 2.0;
     let sink_depth = pb.sink_depth.unwrap_or(145.0) * model.scale;
-    std::fs::write(scripts.join(format!("{script_id}.hx")), platform_script_hx(half_w, sink_depth, sink_speed, rise_speed, wait))?;
+    write_script(&scripts.join(format!("{script_id}.hx")), &platform_script_hx(half_w, sink_depth, sink_speed, rise_speed, wait))?;
     write_meta(&scripts.join(format!("{script_id}.hx.meta")), id, &script_id, "hscript", Some("LINE_SEGMENT_STRUCTURE"), None)?;
     // per-platform: a sprite sized to THIS platform (the SSF2 standing platforms are different
     // widths), its own `platformSprite{i}` animation, Stats (startX/startY), a structure content
@@ -779,7 +779,7 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
         let cid = format!("{id}platform{i}");
         let stats_id = format!("{cid}Stats");
         let (sx, sy) = (p.rect.x + p.rect.w / 2.0, p.rect.y);
-        std::fs::write(scripts.join(format!("{stats_id}.hx")), platform_stats_hx(id, sx, sy, i))?;
+        write_script(&scripts.join(format!("{stats_id}.hx")), &platform_stats_hx(id, sx, sy, i))?;
         write_meta(&scripts.join(format!("{stats_id}.hx.meta")), id, &stats_id, "hscript", None, None)?;
         contents.push(json!({ "id": cid, "type": "structure", "objectStatsId": stats_id, "scriptId": script_id }));
         spawn_ids.push(cid);
@@ -815,10 +815,10 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
         sprite_dims.push((guid.clone(), deck_w, deck_h, 1));
         let cid = format!("{id}thwompdeck");
         let stats_id = format!("{cid}Stats");
-        std::fs::write(scripts.join(format!("{stats_id}.hx")), platform_stats_hx(id, -2000.0, -3000.0, di))?;
+        write_script(&scripts.join(format!("{stats_id}.hx")), &platform_stats_hx(id, -2000.0, -3000.0, di))?;
         write_meta(&scripts.join(format!("{stats_id}.hx.meta")), id, &stats_id, "hscript", None, None)?;
         let deck_script_id = format!("{id}thwompdeckScript");
-        std::fs::write(scripts.join(format!("{deck_script_id}.hx")), thwomp_deck_script_hx(&cols_x, off_x, off_y, spawn_y + 80.0))?;
+        write_script(&scripts.join(format!("{deck_script_id}.hx")), &thwomp_deck_script_hx(&cols_x, off_x, off_y, spawn_y + 80.0))?;
         write_meta(&scripts.join(format!("{deck_script_id}.hx.meta")), id, &deck_script_id, "hscript", Some("LINE_SEGMENT_STRUCTURE"), None)?;
         contents.push(json!({ "id": cid, "type": "structure", "objectStatsId": stats_id, "scriptId": deck_script_id }));
         spawn_ids.push(cid);
@@ -829,7 +829,7 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
         sprite_dims.push((guid.clone(), deck_w, deck_h, 2));
         let ceil_cid = format!("{id}thwompceiling");
         let ceil_stats_id = format!("{ceil_cid}Stats");
-        std::fs::write(scripts.join(format!("{ceil_stats_id}.hx")), platform_stats_hx(id, -2000.0, -3000.0, ci))?;
+        write_script(&scripts.join(format!("{ceil_stats_id}.hx")), &platform_stats_hx(id, -2000.0, -3000.0, ci))?;
         write_meta(&scripts.join(format!("{ceil_stats_id}.hx.meta")), id, &ceil_stats_id, "hscript", None, None)?;
         contents.push(json!({ "id": ceil_cid, "type": "structure", "objectStatsId": ceil_stats_id, "scriptId": deck_script_id }));
         spawn_ids.push(ceil_cid);
@@ -995,7 +995,7 @@ fn emit_hazards(model: &StageModel, lib: &Path) -> Result<Vec<Value>> {
         ];
         for (kind, body) in files {
             let fname = format!("{hid}{kind}");
-            std::fs::write(scripts.join(format!("{fname}.hx")), body)?;
+            write_script(&scripts.join(format!("{fname}.hx")), &body)?;
             write_meta(&scripts.join(format!("{fname}.hx.meta")), &hid, &fname,
                 if kind == "Script" { "" } else { "hscript" },
                 if kind == "Script" { Some("CUSTOM_GAME_OBJECT") } else { None }, None)?;
@@ -1198,7 +1198,18 @@ fn emit_multi_anim_hazard(
         let spawn_period = fc.spawn_period.unwrap_or(600.0) * 2.0;
         let entrance_t = fc.entrance_delay.unwrap_or(60.0) * 2.0;
         let land_wait = fc.land_wait.unwrap_or(90.0) * 2.0;
-        thwomp_multi_script_hx(cols, spawn_y, shake_amp, fall_v, rise_v, dust_scale, spawn_period, entrance_t, land_wait, &entrance_name, &idle_name, &fall_name)
+        // the entrance bob: the entrance sub-clip's frame scripts drive a setYSpeed timeline
+        // (descend into view, hover, rise) — converted 30->60fps (frame x2, speed x scale/2) into
+        // a timer-keyed velocity ladder the ENTRANCE branch integrates.
+        let entrance_bob: String = hz.anims.iter()
+            .find(|a| sanitize_anim(&a.label) == entrance_name)
+            .map(|a| a.frame_velocities.iter()
+                .map(|(f, v)| format!("\t\tif (m_timer.get() == {}) {{ m_vy.set({:.2}); }}\n",
+                    (f.saturating_sub(1)) * 2, v * scale * 0.5))
+                .collect())
+            .unwrap_or_default();
+        let camera = hz.behavior.camera_target;
+        thwomp_multi_script_hx(cols, spawn_y, shake_amp, fall_v, rise_v, dust_scale, spawn_period, entrance_t, land_wait, &entrance_bob, camera, &entrance_name, &idle_name, &fall_name)
     } else {
         hazard_anim_loop_script_hx(hz, &hzanims, &idle_name)
     };
@@ -1210,7 +1221,7 @@ fn emit_multi_anim_hazard(
     ];
     for (kind, body) in files {
         let fname = format!("{hid}{kind}");
-        std::fs::write(scripts.join(format!("{fname}.hx")), body)?;
+        write_script(&scripts.join(format!("{fname}.hx")), &body)?;
         write_meta(&scripts.join(format!("{fname}.hx.meta")), hid, &fname,
             if kind == "Script" { "" } else { "hscript" },
             if kind == "Script" { Some("CUSTOM_GAME_OBJECT") } else { None }, None)?;
@@ -1543,11 +1554,182 @@ fn cgo_runnable(raw: &str, anims: &[String]) -> String {
     let mut preamble = String::new();
     for f in &ints { preamble.push_str(&format!("var _s_{f} = self.makeInt(0);\n")); }
     for f in timers.keys() { preamble.push_str(&format!("var _t_{f} = self.makeInt(0);\n")); }
+    let body = flatten_state_ladder(&body);
     format!("{preamble}\n{body}")
 }
 
+/// Expand single-line statement blocks (`if (x) { a; b; }`, `} else { c; }`) into multi-line form
+/// so every emitted script reads like hand-written code. Only a `{` preceded by `)`/`else`/`{`
+/// with a top-level `;` inside is a statement block — object literals (`{ gravity: 0 }`) stay
+/// inline. Applied to every script the stage emitter writes.
+fn expand_blocks(code: &str) -> String {
+    fn expand_line(line: &str) -> Option<Vec<String>> {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") { return None; }
+        let indent: String = line.chars().take_while(|c| *c == '\t').collect();
+        let chars: Vec<char> = line.chars().collect();
+        for i in 0..chars.len() {
+            if chars[i] != '{' { continue; }
+            let before: String = chars[..i].iter().collect();
+            let b = before.trim_end();
+            if !(b.ends_with(')') || b.ends_with("else") || b.ends_with('{')) { continue; }
+            // matching close on this line?
+            let (mut d, mut j) = (1i32, i + 1);
+            while j < chars.len() {
+                match chars[j] { '{' => d += 1, '}' => d -= 1, _ => {} }
+                if d == 0 { break; }
+                j += 1;
+            }
+            if j >= chars.len() { continue; }
+            let inner: String = chars[i + 1..j].iter().collect();
+            if inner.trim().is_empty() { continue; }
+            // statements = a `;` at top level inside the block
+            let mut dd = 0i32;
+            let mut has_stmt = false;
+            for c in inner.chars() {
+                match c { '{' | '(' => dd += 1, '}' | ')' => dd -= 1, ';' if dd == 0 => has_stmt = true, _ => {} }
+            }
+            if !has_stmt { continue; }
+            let mut stmts: Vec<String> = Vec::new();
+            let mut cur = String::new();
+            dd = 0;
+            for c in inner.chars() {
+                match c {
+                    '{' | '(' => { dd += 1; cur.push(c); }
+                    '}' | ')' => { dd -= 1; cur.push(c); }
+                    ';' if dd == 0 => { stmts.push(cur.trim().to_string()); cur.clear(); }
+                    _ => cur.push(c),
+                }
+            }
+            if !cur.trim().is_empty() { stmts.push(cur.trim().to_string()); }
+            let head: String = chars[..=i].iter().collect();
+            let tail: String = chars[j + 1..].iter().collect::<String>().trim_start().to_string();
+            let mut out = vec![head.trim_end().to_string()];
+            for st in stmts.into_iter().filter(|st| !st.is_empty()) {
+                out.push(format!("{indent}\t{st};"));
+            }
+            if tail.is_empty() { out.push(format!("{indent}}}")); }
+            else { out.push(format!("{indent}}} {tail}")); }
+            return Some(out);
+        }
+        None
+    }
+    let mut lines: Vec<String> = code.lines().map(str::to_string).collect();
+    loop {
+        let mut changed = false;
+        let mut next: Vec<String> = Vec::with_capacity(lines.len());
+        for line in &lines {
+            match expand_line(line) {
+                Some(ex) => { next.extend(ex); changed = true; }
+                None => next.push(line.clone()),
+            }
+        }
+        lines = next;
+        if !changed { break; }
+    }
+    lines.join("\n")
+}
+
+/// Write an emitted hscript file, expanded to one statement per line.
+fn write_script(path: &std::path::Path, body: &str) -> std::io::Result<()> {
+    std::fs::write(path, expand_blocks(body))
+}
+
+/// Flatten the decompiler's nested-NEGATION state ladder into the canonical substate shape:
+/// `if (!inLocalState(A)) { <deeper ladder> } else { <A handler> }` chains (the natural CFG of a
+/// decompiled switch) become the flat banner form
+/// `if (inLocalState(A)) { <A> } else if (inLocalState(B)) { <B> } ...`.
+/// The deepest rung's fallthrough tail (the all-states-missed `return;`) is dropped. Operates on
+/// lines; brace depth skips comment lines (the [needs-port] markers carry unbalanced braces).
+fn flatten_state_ladder(code: &str) -> String {
+    use regex::Regex;
+    let open_re = Regex::new(r"^\t*if \(!inLocalState\((-?\d+)\)\) \{$").unwrap();
+    let lines: Vec<String> = code.lines().map(|l| l.to_string()).collect();
+    let Some(start) = lines.iter().position(|l| open_re.is_match(l)) else { return code.to_string() };
+    // char-wise rung scan from the `if (!inLocalState(N)) {` line: the if-block's close brace can
+    // share a line with the else opener (`} else {`), so depth is tracked per character. Returns
+    // (if-close line, else-close line if an else block follows).
+    let scan_rung = |open: usize| -> Option<(usize, Option<usize>)> {
+        let mut depth = 0i32;
+        let mut if_close: Option<usize> = None;
+        for (j, l) in lines.iter().enumerate().skip(open) {
+            if l.trim_start().starts_with("//") { continue; }
+            for ch in l.chars() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            match if_close {
+                                None => {
+                                    if !l.contains("else") { return Some((j, None)); }
+                                    if_close = Some(j); // the trailing `{` re-opens to depth 1
+                                }
+                                Some(ic) => return Some((ic, Some(j))),
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
+    };
+    // walk the ladder: rung at `i` yields (state, handler line range), recursing into the if-block.
+    let mut pairs: Vec<(String, Vec<String>)> = Vec::new();
+    let mut i = start;
+    let mut outer_end = start; // line AFTER the outermost rung (set on the first iteration)
+    let mut first = true;
+    loop {
+        let Some(c) = open_re.captures(&lines[i]) else { break };
+        let state = c[1].to_string();
+        let Some((if_close, else_close)) = scan_rung(i) else { return code.to_string() };
+        let (handler, after): (Vec<String>, usize) = match else_close {
+            Some(ec) => (lines[if_close + 1..ec].to_vec(), ec + 1),
+            None => (Vec::new(), if_close + 1),
+        };
+        if first { outer_end = after; first = false; }
+        pairs.push((state, handler));
+        // descend into the if-block: the next rung is its first non-empty line.
+        let inner_first = (i + 1..if_close).find(|&j| !lines[j].trim().is_empty());
+        match inner_first {
+            Some(j) if open_re.is_match(&lines[j]) => { i = j; }
+            _ => break,
+        }
+    }
+    if pairs.len() < 2 { return code.to_string(); }
+    let indent = lines[start].len() - lines[start].trim_start().len();
+    let ind = "\t".repeat(indent);
+    let mut flat = vec![format!("{ind}// --------- SUBSTATE SYSTEM ----------")];
+    for (k, (state, handler)) in pairs.iter().enumerate() {
+        let kw = if k == 0 { format!("{ind}if") } else { format!("{ind}}} else if") };
+        flat.push(format!("{kw} (inLocalState({state})) {{"));
+        // re-indent the handler to one level under the branch.
+        let min_tabs = handler.iter().filter(|l| !l.trim().is_empty())
+            .map(|l| l.len() - l.trim_start_matches('\t').len()).min().unwrap_or(0);
+        for l in handler {
+            if l.trim().is_empty() { flat.push(String::new()); continue; }
+            let stripped = if l.len() >= min_tabs { &l[min_tabs..] } else { l.trim_start() };
+            flat.push(format!("{ind}\t{stripped}"));
+        }
+    }
+    flat.push(format!("{ind}}}"));
+    let mut out: Vec<String> = lines[..start].to_vec();
+    out.extend(flat);
+    out.extend(lines[outer_end..].iter().cloned());
+    out.join("\n")
+}
+
 /// Cross-frame state via `self.make*` (a plain `var` re-inits every frame on a game object).
-fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fall_v: f64, rise_v: f64, dust_scale: f64, spawn_period: f64, entrance_t: f64, land_wait: f64, entrance: &str, idle: &str, fall: &str) -> String {
+#[allow(clippy::too_many_arguments)]
+fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fall_v: f64, rise_v: f64, dust_scale: f64, spawn_period: f64, entrance_t: f64, land_wait: f64, entrance_bob: &str, camera: bool, entrance: &str, idle: &str, fall: &str) -> String {
+    // camera targeting (SSF2 addToCamera/setCamBoxSize): the camera includes the body while it's
+    // engaged; FM's camera frames targets itself, so only add/delete need porting.
+    let cam_add = if camera { "\t\t\tmatch.getCamera().addTarget(self);\n" } else { "" };
+    let cam_del = if camera { "\t\t\tmatch.getCamera().deleteTarget(self);\n" } else { "" };
+    let bob = if entrance_bob.is_empty() { String::new() } else {
+        format!("\t\t// entrance bob: the sub-clip's frame scripts (setYSpeed timeline), 30->60fps\n{entrance_bob}\t\tself.setY(self.getY() + m_vy.get());\n")
+    };
     let cols_lit = cols.iter().map(|(x, _)| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
     let land_lit = cols.iter().map(|(_, y)| format!("{y:.1}")).collect::<Vec<_>>().join(", ");
     format!(
@@ -1571,7 +1753,7 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fal
          var COLUMNS = [{cols_lit}];\nvar LAND_YS = [{land_lit}];\nvar SPAWN_Y = {spawn_y:.1};\n\
          var SPAWN_PERIOD = {spawn_period:.0};\nvar ENTRANCE_T = {entrance_t:.0};\nvar FALL_V = {fall_v:.2};\nvar LAND_WAIT = {land_wait:.0};\nvar RISE_V = {rise_v:.2};\n\
          // persistent state (a plain var resets every frame on a custom game object).\n\
-         var m_col = self.makeInt(0);\nvar m_timer = self.makeInt(0);\n\
+         var m_col = self.makeInt(0);\nvar m_timer = self.makeInt(0);\nvar m_vy = self.makeFloat(0.0);\n\
          var m_cycle = self.makeInt(0);\nvar m_cool = self.makeInt(0);\nvar m_init = self.makeBool(false);\n\n\
          function initialize() {{\n\tself.setState(PState.ACTIVE);\n\tCommon.toLocalState(LState.REST);\n}}\n\n\
          function update() {{\n\
@@ -1600,10 +1782,12 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fal
          \t\t\tself.setY(SPAWN_Y);\n\
          \t\t\tm_timer.set(0);\n\
          \t\t\tm_cycle.set(0);\n\
+         \t\t\tm_vy.set(0);\n\
+{cam_add}\
          \t\t\tCommon.toLocalState(LState.ENTRANCE);\n\
          \t\t}}\n\
          \t}} else if (Common.inLocalState(LState.ENTRANCE)) {{\n\
-         \t\t// hover at the spawn point (SSF2 delayTimer 60f)\n\
+{bob}\
          \t\tm_timer.inc();\n\
          \t\tif (m_timer.get() >= ENTRANCE_T) {{\n\
          \t\t\tCommon.toLocalState(LState.FALL);\n\
@@ -1635,6 +1819,7 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fal
          \t\tif (self.getY() <= SPAWN_Y) {{\n\
          \t\t\tself.setY(SPAWN_Y);\n\
          \t\t\tm_timer.set(0);\n\
+{cam_del}\
          \t\t\tCommon.toLocalState(LState.REST);\n\
          \t\t}}\n\
          \t}}\n\
@@ -2125,7 +2310,7 @@ mod hazard_tests {
         for (name, s) in [
             ("hazard_script", hazard_script_hx(&hz)),
             ("thwomp_single", thwomp_script_hx(&cols)),
-            ("thwomp_multi", thwomp_multi_script_hx(&cols, -67.0, 13.0, 19.5, 3.9, 2.6, 1200.0, 120.0, 180.0, "entrance", "idle", "fall")),
+            ("thwomp_multi", thwomp_multi_script_hx(&cols, -67.0, 13.0, 19.5, 3.9, 2.6, 1200.0, 120.0, 180.0, "", true, "entrance", "idle", "fall")),
         ] {
             assert!(s.contains("self.makeInt(") || s.contains("self.makeFloat(") || s.contains("self.makeBool("),
                 "{name}: no persistent state (self.make*) — counters reset every frame: {s}");

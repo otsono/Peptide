@@ -2,8 +2,13 @@
 // Native HIT_BOXes (HitboxStats: two half boxes, angles 135/45) damage on contact.
 
 function _prepLocalState(animation:String, ?index:Int=Math.NaN):Int {
-	if (!__hasInitLocalStateMachine) { Common.initLocalStateMachine(); __hasInitLocalStateMachine = true; }
-	if (index != Math.NaN) { index = __localStatePrepIndex++; }
+	if (!__hasInitLocalStateMachine) {
+		Common.initLocalStateMachine();
+		__hasInitLocalStateMachine = true;
+	}
+	if (index != Math.NaN) {
+		index = __localStatePrepIndex++;
+	}
 	Common.registerLocalState(index, animation);
 	return index;
 }
@@ -31,6 +36,7 @@ var RISE_V = 3.90;
 // persistent state (a plain var resets every frame on a custom game object).
 var m_col = self.makeInt(0);
 var m_timer = self.makeInt(0);
+var m_vy = self.makeFloat(0.0);
 var m_cycle = self.makeInt(0);
 var m_cool = self.makeInt(0);
 var m_init = self.makeBool(false);
@@ -67,10 +73,22 @@ function update() {
 			self.setY(SPAWN_Y);
 			m_timer.set(0);
 			m_cycle.set(0);
+			m_vy.set(0);
+			match.getCamera().addTarget(self);
 			Common.toLocalState(LState.ENTRANCE);
 		}
 	} else if (Common.inLocalState(LState.ENTRANCE)) {
-		// hover at the spawn point (SSF2 delayTimer 60f)
+		// entrance bob: the sub-clip's frame scripts (setYSpeed timeline), 30->60fps
+		if (m_timer.get() == 0) {
+			m_vy.set(5.20);
+		}
+		if (m_timer.get() == 58) {
+			m_vy.set(0.00);
+		}
+		if (m_timer.get() == 112) {
+			m_vy.set(-2.60);
+		}
+		self.setY(self.getY() + m_vy.get());
 		m_timer.inc();
 		if (m_timer.get() >= ENTRANCE_T) {
 			Common.toLocalState(LState.FALL);
@@ -102,6 +120,7 @@ function update() {
 		if (self.getY() <= SPAWN_Y) {
 			self.setY(SPAWN_Y);
 			m_timer.set(0);
+			match.getCamera().deleteTarget(self);
 			Common.toLocalState(LState.REST);
 		}
 	}
