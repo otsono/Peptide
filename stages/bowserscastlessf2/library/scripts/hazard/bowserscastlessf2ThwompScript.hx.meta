@@ -1,0 +1,17 @@
+{
+  "export": true,
+  "guid": "d0f04d1d-732e-5605-a1c5-dbede0e7ce0e",
+  "id": "bowserscastlessf2ThwompScript",
+  "language": "",
+  "pluginMetadata": {
+    "com.fraymakers.FraymakersMetadata": {
+      "objectType": "CUSTOM_GAME_OBJECT",
+      "version": "0.4.0"
+    }
+  },
+  "plugins": [
+    "com.fraymakers.FraymakersMetadata"
+  ],
+  "tags": [],
+  "version": 1
+}

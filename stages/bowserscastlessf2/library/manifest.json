@@ -24,21 +24,21 @@
       "type": "stage"
     },
     {
-      "animationStatsId": "bowserscastlessf2hazard0AnimationStats",
-      "hitboxStatsId": "bowserscastlessf2hazard0HitboxStats",
-      "id": "bowserscastlessf2hazard0",
+      "animationStatsId": "bowserscastlessf2BowsersCastleLavaAnimationStats",
+      "hitboxStatsId": "bowserscastlessf2BowsersCastleLavaHitboxStats",
+      "id": "bowserscastlessf2BowsersCastleLava",
       "name": "Lava",
-      "objectStatsId": "bowserscastlessf2hazard0GameObjectStats",
-      "scriptId": "bowserscastlessf2hazard0Script",
+      "objectStatsId": "bowserscastlessf2BowsersCastleLavaGameObjectStats",
+      "scriptId": "bowserscastlessf2BowsersCastleLavaScript",
       "type": "customGameObject"
     },
     {
-      "animationStatsId": "bowserscastlessf2hazard1AnimationStats",
-      "hitboxStatsId": "bowserscastlessf2hazard1HitboxStats",
-      "id": "bowserscastlessf2hazard1",
+      "animationStatsId": "bowserscastlessf2ThwompAnimationStats",
+      "hitboxStatsId": "bowserscastlessf2ThwompHitboxStats",
+      "id": "bowserscastlessf2Thwomp",
       "name": "Thwomp",
-      "objectStatsId": "bowserscastlessf2hazard1GameObjectStats",
-      "scriptId": "bowserscastlessf2hazard1Script",
+      "objectStatsId": "bowserscastlessf2ThwompGameObjectStats",
+      "scriptId": "bowserscastlessf2ThwompScript",
       "type": "customGameObject"
     },
     {

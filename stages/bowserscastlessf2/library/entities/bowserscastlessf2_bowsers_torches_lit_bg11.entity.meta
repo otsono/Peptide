@@ -1,0 +1,17 @@
+{
+  "export": true,
+  "guid": "066d1b2d-695f-5864-9b76-01ef5d73dd3c",
+  "id": "bowserscastlessf2_bowsers_torches_lit_bg11",
+  "language": "",
+  "pluginMetadata": {
+    "com.fraymakers.FraymakersMetadata": {
+      "objectType": "VFX",
+      "version": "0.4.0"
+    }
+  },
+  "plugins": [
+    "com.fraymakers.FraymakersMetadata"
+  ],
+  "tags": [],
+  "version": 1
+}
