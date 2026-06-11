@@ -7,8 +7,8 @@ var ST_ENTRANCE = -1;
 var ST_FALL = 0;
 var ST_IDLE = 1;
 var ST_IDLE_2 = 2;
-// the local-state machine inits + registers at MODULE scope on every eval, exactly like
-// the proven template idiom (in-update init left make* slots unreliable).
+// the local-state machine inits + registers at MODULE scope on every eval, the
+// proven template idiom.
 var __hasInitLocalStateMachine = false;
 if (!__hasInitLocalStateMachine) {
 	Common.initLocalStateMachine();
@@ -88,8 +88,8 @@ function __hazardUpdate() {
 
 
 function update() {
-	// one-time setup on the first update (the engine doesn't call initialize() on a stage
-	// CGO, and make* slots aren't live at module scope): register states + park offscreen.
+	// one-time setup on the first update: a position set in initialize() is clobbered
+	// by the engine's stage placement, and make* slots aren't live at module scope.
 	if (!_w_init.get()) {
 		_w_init.set(true);
 		self.setState(PState.ACTIVE);
