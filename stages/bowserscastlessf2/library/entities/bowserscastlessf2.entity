@@ -59,7 +59,7 @@
       "$id": "6c5039ab-396c-58b6-aa36-39c4f0efeb9e",
       "layers": [
         "06f9e3e5-7ef1-5e32-a869-024376cda654",
-        "16970481-5a3a-5ae2-b69c-e2fe7e8055ef"
+        "e1a6ef22-2957-5f12-b97d-baa4eb0c233b"
       ],
       "name": "platformSprite2",
       "pluginMetadata": {}
@@ -184,10 +184,10 @@
       "type": "IMAGE"
     },
     {
-      "$id": "757c98a9-ff5c-5bd2-ac39-1c49d40e88e3",
+      "$id": "586a19a1-bae9-5b9c-a283-8fd7f5fdca41",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "57460334-5c09-5943-b356-aedbb7ccec0a",
+      "symbol": "08673baa-a46a-5245-a466-753e82211121",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "LINE_SEGMENT"
@@ -541,13 +541,13 @@
       "type": "IMAGE"
     },
     {
-      "$id": "16970481-5a3a-5ae2-b69c-e2fe7e8055ef",
+      "$id": "e1a6ef22-2957-5f12-b97d-baa4eb0c233b",
       "hidden": false,
       "keyframes": [
-        "757c98a9-ff5c-5bd2-ac39-1c49d40e88e3"
+        "586a19a1-bae9-5b9c-a283-8fd7f5fdca41"
       ],
       "locked": false,
-      "name": "Line Segment Layer",
+      "name": "Solid Outline Layer",
       "pluginMetadata": {
         "com.fraymakers.FraymakersMetadata": {
           "lineSegmentType": "LINE_SEGMENT_STRUCTURE"
@@ -1042,14 +1042,14 @@
       "y": 0.0
     },
     {
-      "$id": "57460334-5c09-5943-b356-aedbb7ccec0a",
+      "$id": "08673baa-a46a-5245-a466-753e82211121",
       "alpha": 0.5,
       "color": "0xeeeeee",
       "pluginMetadata": {
         "com.fraymakers.FraymakersMetadata": {
           "dropThrough": false,
-          "leftLedge": true,
-          "rightLedge": true,
+          "leftLedge": false,
+          "rightLedge": false,
           "structureType": "FLOOR"
         }
       },
@@ -1057,6 +1057,12 @@
         -78.0,
         0.0,
         78.0,
+        0.0,
+        78.0,
+        169.0,
+        -78.0,
+        169.0,
+        -78.0,
         0.0
       ],
       "type": "LINE_SEGMENT"
