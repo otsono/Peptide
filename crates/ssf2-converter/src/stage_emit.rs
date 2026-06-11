@@ -249,7 +249,7 @@ impl<'a> EntityBuilder<'a> {
     /// profile is FLOOR and fighters slide up steep side faces instead of being blocked.
     /// Ledge grabs attach only to the outer ends of the first/last floor run.
     fn add_typed_surface(&mut self, name: &str, points: &[(f64, f64)], ledges: (bool, bool), drop_through: bool) {
-        const WALL_STEEPNESS_DEG: f64 = 60.0;
+        const WALL_STEEPNESS_DEG: f64 = 75.0;
         let steep = WALL_STEEPNESS_DEG.to_radians().tan();
         // classify each segment, then merge consecutive same-type segments into runs.
         let mut runs: Vec<(&'static str, Vec<(f64, f64)>)> = Vec::new();

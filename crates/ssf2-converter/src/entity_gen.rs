@@ -1082,9 +1082,11 @@ pub fn generate_entity(
                         let world_sy  = entry.map(|e| round2(e.world_sy)).unwrap_or(1.0);
                         let world_rot = entry.map(|e| round2(e.world_rotation)).unwrap_or(0.0);
 
-                        // Run-length encode consecutive frames with identical symbol + world transform
+                        // Run-length encode consecutive frames with identical symbol + world transform.
+                        // run_turn's FIRST frame is mirrored (see below), so it never merges into
+                        // a longer run with the unmirrored frames after it.
                         let mut run = 1u32;
-                        while f + run < total {
+                        while f + run < total && !(anim_name == "run_turn" && f == 0) {
                             let next = held[(f + run) as usize].as_ref();
                             let matches = next.map(|e| e.symbol_name.as_str()) == sym_name
                                 && next.map(|e| round2(e.world_tx))       == Some(world_tx).filter(|_| sym_name.is_some())
@@ -1147,7 +1149,11 @@ pub fn generate_entity(
                                 .and_then(|sid| img_result.shape_fill_scale.get(&sid))
                                 .copied()
                                 .unwrap_or((1.0, 1.0));
-                            let fm_sx = round2(world_sx * fsx) * if anim_name == "stand_turn" { -1.0 } else { 1.0 };
+                            // stand_turn mirrors every frame; run_turn mirrors only its FIRST
+                            // frame (the character still faces the old direction for one frame
+                            // before the engine's facing flip catches up).
+                            let turn_flip = anim_name == "stand_turn" || (anim_name == "run_turn" && f == 0);
+                            let fm_sx = round2(world_sx * fsx) * if turn_flip { -1.0 } else { 1.0 };
                             let fm_sy = round2(world_sy * fsy);
 
                             // World-space matrix components
@@ -1167,7 +1173,7 @@ pub fn generate_entity(
                             // vertical axis (entity x=0). Negating scaleX alone flips about the
                             // sprite's own left edge, sliding it sideways; also negate the x
                             // position so the whole placement reflects about the origin.
-                            if anim_name == "stand_turn" {
+                            if turn_flip {
                                 fm_x = round2(-fm_x);
                             }
                             let pivot_x = 0.0_f64;
