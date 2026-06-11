@@ -70,11 +70,10 @@
     "dizzy": "dizzy",
     "sleep": "sleep",
     "tumble": "tumble",
-    // SSF2's launch sequence is TWO anims: "flying" (SentFlying, the somersault shown
-    // during heavy hitstun) -> hurt_heavy, then "falling" (TumbleFall, the drifting
-    // tumble that follows) -> tumble. NEVER route "falling" to "fall": that pulled
-    // fall's hurtboxes from "falling" while the sprite came from "fall", landing the
-    // boxes ~35px off the body.
+    // SSF2's launch sequence is TWO xframes: "flying" (the somersault shown during
+    // heavy hitstun) -> hurt_heavy, then "falling" (the drifting tumble that follows)
+    // -> tumble. NEVER route "falling" to "fall": that pulled fall's hurtboxes from
+    // "falling" while the sprite came from "fall", landing the boxes ~35px off the body.
     "falling": "tumble",
     "crash": "crash_bounce",
     "frozen": "frozen",
