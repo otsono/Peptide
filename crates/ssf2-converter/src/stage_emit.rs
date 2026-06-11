@@ -1058,9 +1058,11 @@ fn emit_multi_anim_hazard(
     // a static hazard (lava) has no CollisionBox in its art clip — SSF2 checks it by region, not a
     // shape — so attack_boxes is empty and the art-canvas fallback would shrink the hit volume to one
     // small lava tile. its damage covers the whole detected lava AABB (hz.w x hz.h), centred on the
-    // CGO origin (the box uses centre-pivot, and the CGO is placed at the AABB centre).
+    // CGO origin. COLLISION_BOX (x,y) is the box's un-rotated TOP-LEFT (the pivot only matters for
+    // rotation — the convention the character path verified against framy), so centring on the CGO
+    // = minus half the size; (0,0) would hang the whole volume below-right of the hazard.
     if hit_boxes.is_empty() && hz.motion == "static" && hz.w > 0.0 && hz.h > 0.0 {
-        hit_boxes.push((0.0, 0.0, hz.w, hz.h));
+        hit_boxes.push((-hz.w / 2.0, -hz.h / 2.0, hz.w, hz.h));
     }
     let dual = hit_boxes.len() >= 2;
     write_json(&lib.join("entities").join(format!("{hid}.entity")), &hazard_entity_multi(hid, &hzanims, &hit_boxes))?;
