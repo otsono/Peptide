@@ -816,7 +816,7 @@ fn platform_script_hx(half_w: f64, sink_depth: f64) -> String {
          \t\tself.setX(m_startX.get() + sh); m_shake.set(!m_shake.get());\n\
          \t\tself.setY(self.getY() + SINK_SPEED);\n\
          \t\tif (self.getY() >= m_startY.get() + SINK_DEPTH) {{ self.setY(m_startY.get() + SINK_DEPTH); self.setX(m_startX.get()); m_action.set(2); m_timer.set(0); }}\n\
-         \t}} else if (a == 2) {{ m_timer.set(m_timer.get() + 1); if (m_timer.get() >= WAIT) {{ m_action.set(3); }} }}\n\
+         \t}} else if (a == 2) {{ m_timer.inc(); if (m_timer.get() >= WAIT) {{ m_action.set(3); }} }}\n\
          \telse {{ // rise\n\
          \t\tself.setY(self.getY() - RISE_SPEED);\n\
          \t\tif (self.getY() <= m_startY.get()) {{ self.setY(m_startY.get()); m_action.set(0); }}\n\
@@ -1239,7 +1239,7 @@ fn thwomp_script_hx(cols: &[(f64, f64)]) -> String {
          function update() {{\n\
          \tif (!m_init.get()) {{ m_init.set(true); m_col.set(Random.getInt(0, COLUMNS.length - 1)); self.setX(COLUMNS[m_col.get()]); self.setY(TOP_Y); }}\n\
          \t// keep the native hitbox live so it damages fighters it falls through.\n\
-         \tif (m_cool.get() > 0) {{ m_cool.set(m_cool.get() - 1); }} else {{ self.reactivateHitboxes(); m_cool.set(18); }}\n\
+         \tif (m_cool.get() > 0) {{ m_cool.dec(); }} else {{ self.reactivateHitboxes(); m_cool.set(18); }}\n\
          \tvar p = m_phase.get();\n\
          \tif (p == 0) {{ // fall\n\
          \t\tm_fallV.set(m_fallV.get() + GRAV);\n\t\tself.setY(self.getY() + m_fallV.get());\n\
@@ -1404,7 +1404,7 @@ fn cgo_runnable(raw: &str, anims: &[String]) -> String {
         }
         // timer ops -> counter ops.
         for (f, dur) in &timers {
-            s = s.replace(&format!("self.{f}.tick()"), &format!("_t_{f}.set(_t_{f}.get() + 1)"));
+            s = s.replace(&format!("self.{f}.tick()"), &format!("_t_{f}.inc()"));
             s = s.replace(&format!("self.{f}.completed"), &format!("(_t_{f}.get() >= {dur})"));
             s = s.replace(&format!("self.{f}.reset()"), &format!("_t_{f}.set(0)"));
         }
@@ -1452,7 +1452,6 @@ fn cgo_runnable(raw: &str, anims: &[String]) -> String {
 fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fall_v: f64, rise_v: f64, dust_scale: f64, entrance: &str, idle: &str, fall: &str) -> String {
     let cols_lit = cols.iter().map(|(x, _)| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
     let land_lit = cols.iter().map(|(_, y)| format!("{y:.1}")).collect::<Vec<_>>().join(", ");
-    let (entr_s, idle_s, fall_s) = (entrance.to_ascii_uppercase(), idle.to_ascii_uppercase(), fall.to_ascii_uppercase());
     format!(
         "// Thwomp — 1:1 from the SSF2 disasm (stage spawn cycle + Thwomp class), frame-doubled.\n\
          // Native HIT_BOXes (HitboxStats: two half boxes, angles 135/45) damage on contact.\n\n\
@@ -1461,14 +1460,22 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fal
          \tif (index != Math.NaN) {{ index = __localStatePrepIndex++; }}\n\
          \tCommon.registerLocalState(index, animation);\n\treturn index;\n}}\n\
          var __hasInitLocalStateMachine = false;\nvar __localStatePrepIndex = -1;\n\
-         var LState = {{\n\tUNINITIALIZED: _prepLocalState(\"#n/a\", -1),\n\tENTRANCE: _prepLocalState(\"{entrance}\"),\n\tIDLE: _prepLocalState(\"{idle}\"),\n\tFALL: _prepLocalState(\"{fall}\")\n}};\n\n\
+         // one local state per PHASE (several share an animation); toLocalState swaps the anim.\n\
+         var LState = {{\n\
+         \tUNINITIALIZED: _prepLocalState(\"#n/a\", -1),\n\
+         \tREST: _prepLocalState(\"{entrance}\"),\n\
+         \tENTRANCE: _prepLocalState(\"{entrance}\"),\n\
+         \tFALL: _prepLocalState(\"{fall}\"),\n\
+         \tLANDED: _prepLocalState(\"{idle}\"),\n\
+         \tRISE: _prepLocalState(\"{idle}\")\n\
+         }};\n\n\
          // SSF2 constants, frame-doubled / velocity-converted (see the header comment).\n\
          var COLUMNS = [{cols_lit}];\nvar LAND_YS = [{land_lit}];\nvar SPAWN_Y = {spawn_y:.1};\n\
          var SPAWN_PERIOD = 1200;\nvar ENTRANCE_T = 120;\nvar FALL_V = {fall_v:.2};\nvar LAND_WAIT = 180;\nvar RISE_V = {rise_v:.2};\n\
          // persistent state (a plain var resets every frame on a custom game object).\n\
-         var m_phase = self.makeInt(0);\nvar m_col = self.makeInt(0);\nvar m_timer = self.makeInt(0);\n\
+         var m_col = self.makeInt(0);\nvar m_timer = self.makeInt(0);\n\
          var m_cycle = self.makeInt(0);\nvar m_cool = self.makeInt(0);\nvar m_init = self.makeBool(false);\n\n\
-         function initialize() {{\n\tself.setState(PState.ACTIVE);\n\tCommon.toLocalState(LState.{entr_s});\n}}\n\n\
+         function initialize() {{\n\tself.setState(PState.ACTIVE);\n\tCommon.toLocalState(LState.REST);\n}}\n\n\
          function update() {{\n\
          \t// match start: park at the spawn point; SSF2's first spawn lands at t=300f (=600 FM),\n\
          \t// so pre-advance the spawn clock by half a period.\n\
@@ -1476,41 +1483,40 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fal
          \t\tm_init.set(true);\n\
          \t\tself.setX(COLUMNS[0]);\n\
          \t\tself.setY(SPAWN_Y);\n\
-         \t\tm_phase.set(0);\n\
          \t\tm_cycle.set(SPAWN_PERIOD - 600);\n\
          \t}}\n\
          \tif (m_cool.get() > 0) {{\n\
-         \t\tm_cool.set(m_cool.get() - 1);\n\
+         \t\tm_cool.dec();\n\
          \t}} else {{\n\
          \t\tself.reactivateHitboxes();\n\
          \t\tm_cool.set(60);\n\
          \t}}\n\
          \t// spawn-to-spawn clock: SSF2 spawns every 600f (=1200 FM) regardless of phase timing.\n\
-         \tm_cycle.set(m_cycle.get() + 1);\n\
-         \tvar p = m_phase.get();\n\
-         \tif (p == 0) {{ // resting between spawns (parked at the spawn point above the stage)\n\
+         \tm_cycle.inc();\n\n\
+         \t// --------- SUBSTATE SYSTEM ----------\n\
+         \tif (Common.inLocalState(LState.REST)) {{\n\
+         \t\t// resting between spawns (parked at the spawn point above the stage)\n\
          \t\tif (m_cycle.get() >= SPAWN_PERIOD) {{\n\
          \t\t\tm_col.set(Random.getInt(0, COLUMNS.length - 1));\n\
          \t\t\tself.setX(COLUMNS[m_col.get()]);\n\
          \t\t\tself.setY(SPAWN_Y);\n\
-         \t\t\tm_phase.set(1);\n\
          \t\t\tm_timer.set(0);\n\
          \t\t\tm_cycle.set(0);\n\
-         \t\t\tCommon.toLocalState(LState.{entr_s});\n\
+         \t\t\tCommon.toLocalState(LState.ENTRANCE);\n\
          \t\t}}\n\
-         \t}} else if (p == 1) {{ // entrance: hover at the spawn point (SSF2 delayTimer 60f)\n\
-         \t\tm_timer.set(m_timer.get() + 1);\n\
+         \t}} else if (Common.inLocalState(LState.ENTRANCE)) {{\n\
+         \t\t// hover at the spawn point (SSF2 delayTimer 60f)\n\
+         \t\tm_timer.inc();\n\
          \t\tif (m_timer.get() >= ENTRANCE_T) {{\n\
-         \t\t\tm_phase.set(2);\n\
-         \t\t\tCommon.toLocalState(LState.{fall_s});\n\
+         \t\t\tCommon.toLocalState(LState.FALL);\n\
          \t\t}}\n\
-         \t}} else if (p == 2) {{ // fall: constant terminal velocity (gravity 30 capped at 30)\n\
+         \t}} else if (Common.inLocalState(LState.FALL)) {{\n\
+         \t\t// constant terminal velocity (SSF2 gravity 30 capped at 30)\n\
          \t\tself.setY(self.getY() + FALL_V);\n\
          \t\tif (self.getY() >= LAND_YS[m_col.get()]) {{\n\
          \t\t\tself.setY(LAND_YS[m_col.get()]);\n\
-         \t\t\tm_phase.set(3);\n\
          \t\t\tm_timer.set(0);\n\
-         \t\t\tCommon.toLocalState(LState.{idle_s});\n\
+         \t\t\tCommon.toLocalState(LState.LANDED);\n\
          \t\t\tmatch.getCamera().shake({shake_amp:.1});\n\
          \t\t\tmatch.createVfx(new VfxStats({{\n\
          \t\t\t\tspriteContent: \"global::vfx.vfx\",\n\
@@ -1519,17 +1525,19 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fal
          \t\t\t\tscaleY: {dust_scale:.1}\n\
          \t\t\t}}), self);\n\
          \t\t}}\n\
-         \t}} else if (p == 3) {{ // landed: the column platform under it sinks; hold (SSF2 waitTimer 90f)\n\
-         \t\tm_timer.set(m_timer.get() + 1);\n\
+         \t}} else if (Common.inLocalState(LState.LANDED)) {{\n\
+         \t\t// the column platform under it sinks; hold (SSF2 waitTimer 90f)\n\
+         \t\tm_timer.inc();\n\
          \t\tif (m_timer.get() >= LAND_WAIT) {{\n\
-         \t\t\tm_phase.set(4);\n\
+         \t\t\tCommon.toLocalState(LState.RISE);\n\
          \t\t}}\n\
-         \t}} else {{ // rise at SSF2 YSpeed -6 until past the spawn point, then rest\n\
+         \t}} else if (Common.inLocalState(LState.RISE)) {{\n\
+         \t\t// rise at SSF2 YSpeed -6 until past the spawn point, then rest\n\
          \t\tself.setY(self.getY() - RISE_V);\n\
          \t\tif (self.getY() <= SPAWN_Y) {{\n\
          \t\t\tself.setY(SPAWN_Y);\n\
-         \t\t\tm_phase.set(0);\n\
          \t\t\tm_timer.set(0);\n\
+         \t\t\tCommon.toLocalState(LState.REST);\n\
          \t\t}}\n\
          \t}}\n\
          }}\n")
@@ -1548,7 +1556,7 @@ fn hazard_anim_loop_script_hx(hz: &Hazard, anims: &[HzAnim], idle: &str) -> Stri
          var REHIT = {rehit};\nvar m_cooldown = self.makeInt(0);\n\n\
          function initialize() {{\n\tself.setState(PState.ACTIVE);\n\tCommon.toLocalState(LState.{idle_s});\n}}\n\n\
          function update() {{\n\
-         \tif (m_cooldown.get() > 0) {{ m_cooldown.set(m_cooldown.get() - 1); }}\n\
+         \tif (m_cooldown.get() > 0) {{ m_cooldown.dec(); }}\n\
          \telse {{ self.reactivateHitboxes(); m_cooldown.set(REHIT); }}\n\
          }}\n",
         states = local_state_block(anims), rehit = hz.rehit())
@@ -1681,7 +1689,7 @@ fn hazard_script_hx(hz: &Hazard) -> String {
          \t// re-arm the native HIT_BOX so a fighter standing in the hazard keeps taking hits\n\
          \t// (a hitbox hits each target once per attack id; reactivateHitboxes issues a fresh one).\n\
          \tif (Common.inLocalState(LState.ACTIVE)) {{\n\
-         \t\tif (m_cooldown.get() > 0) {{ m_cooldown.set(m_cooldown.get() - 1); }}\n\
+         \t\tif (m_cooldown.get() > 0) {{ m_cooldown.dec(); }}\n\
          \t\telse {{ self.reactivateHitboxes(); m_cooldown.set(REHIT); }}\n\
          \t}}\n\
          }}\n",

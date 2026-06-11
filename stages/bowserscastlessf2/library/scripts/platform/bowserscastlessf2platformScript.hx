@@ -30,7 +30,7 @@ function update() {
 		self.setX(m_startX.get() + sh); m_shake.set(!m_shake.get());
 		self.setY(self.getY() + SINK_SPEED);
 		if (self.getY() >= m_startY.get() + SINK_DEPTH) { self.setY(m_startY.get() + SINK_DEPTH); self.setX(m_startX.get()); m_action.set(2); m_timer.set(0); }
-	} else if (a == 2) { m_timer.set(m_timer.get() + 1); if (m_timer.get() >= WAIT) { m_action.set(3); } }
+	} else if (a == 2) { m_timer.inc(); if (m_timer.get() >= WAIT) { m_action.set(3); } }
 	else { // rise
 		self.setY(self.getY() - RISE_SPEED);
 		if (self.getY() <= m_startY.get()) { self.setY(m_startY.get()); m_action.set(0); }

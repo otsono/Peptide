@@ -26,6 +26,6 @@ function initialize() {
 }
 
 function update() {
-	if (m_cooldown.get() > 0) { m_cooldown.set(m_cooldown.get() - 1); }
+	if (m_cooldown.get() > 0) { m_cooldown.dec(); }
 	else { self.reactivateHitboxes(); m_cooldown.set(REHIT); }
 }
