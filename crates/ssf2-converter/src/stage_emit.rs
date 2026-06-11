@@ -1596,6 +1596,7 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
     let yvel_re = Regex::new(r"^(\s*)self\.setYVelocity\((-?\d+(?:\.\d+)?)\);").unwrap();
     let shake_re = Regex::new(r"\.shake\((-?\d+(?:\.\d+)?)\)").unwrap();
     let vfx_scale_re = Regex::new(r"(scaleX|scaleY): (-?\d+(?:\.\d+)?)").unwrap();
+    let fallthrough_re = Regex::new(r"^(\s*)self\.m_\w+\.setFallthrough\((true|false)\);").unwrap();
 
     let mut out: Vec<String> = Vec::new();
     for line in raw.lines() {
@@ -1620,7 +1621,7 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
         // riders pass through entirely, which is FM's `disabled` stat (dropThrough would only
         // make it a soft platform).
         if wrap.is_some_and(|w| w.self_platform.is_some()) {
-            if let Some(c) = Regex::new(r"^(\s*)self\.m_\w+\.setFallthrough\((true|false)\);").unwrap().captures(line) {
+            if let Some(c) = fallthrough_re.captures(line) {
                 out.push(format!("{}__selfPlatformDisabled({}); // SSF2 setFallthrough({})", &c[1], &c[2], &c[2]));
                 continue;
             }
