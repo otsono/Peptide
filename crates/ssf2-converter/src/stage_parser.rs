@@ -1019,7 +1019,7 @@ fn clip_attack_boxes(
     ) {
         if depth > 3 { return; }
         for frame in build_frames(tags) {
-            for (id, local, name) in &frame {
+            for (id, local, name, _) in &frame {
                 let m = mat.mul(local);
                 let is_box = name.as_deref() == Some("attackBox")
                     || sym_names.get(id).is_some_and(|s| {
@@ -1030,7 +1030,7 @@ fn clip_attack_boxes(
                     // the box sprite's inner shape, through its own placement matrix.
                     if let Some(btags) = sprites.get(id) {
                         for inner in build_frames(btags) {
-                            for (sid, smat, _) in &inner {
+                            for (sid, smat, _, _) in &inner {
                                 if let Some((x0, y0, x1, y1)) = shape_bounds.get(sid) {
                                     let mm = m.mul(smat);
                                     let c = [mm.apply(*x0, *y0), mm.apply(*x1, *y0), mm.apply(*x1, *y1), mm.apply(*x0, *y1)];
@@ -1180,7 +1180,11 @@ fn union_rect(a: &Rect, b: &Rect) -> Rect {
 }
 
 /// One placed child in a sprite's timeline frame: `(character id, local matrix, name)`.
-type PlacedChild = (u16, Mat, Option<String>);
+/// One placed child on a timeline frame: `(character id, local matrix, instance name, graphic-pinned)`.
+/// `graphic-pinned` = the placement carries a `ratio` (the Flash IDE writes one on a sprite placed
+/// as a GRAPHIC symbol for its frame-phase sync; a real MovieClip placement has none) — such a
+/// child shows ONE fixed frame and never self-animates or runs its frame scripts.
+type PlacedChild = (u16, Mat, Option<String>, bool);
 
 /// instance/symbol name -> AS3-assigned render plane (from `stage_abc::extract_stage`). empty when
 /// the stage has no parseable SSF2Stage subclass, in which case `plane_tag` falls back to heuristics.
@@ -1201,7 +1205,7 @@ fn build_frames(tags: &[swf::Tag]) -> Vec<Vec<PlacedChild>> {
         match tag {
             swf::Tag::PlaceObject(po) => match &po.action {
                 swf::PlaceObjectAction::Place(id) | swf::PlaceObjectAction::Replace(id) => {
-                    depth.insert(po.depth, (*id, mat_of(po).unwrap_or(Mat::id()), name_of(po)));
+                    depth.insert(po.depth, (*id, mat_of(po).unwrap_or(Mat::id()), name_of(po), po.ratio.is_some()));
                 }
                 swf::PlaceObjectAction::Modify => {
                     if let Some(e) = depth.get_mut(&po.depth) {
@@ -1228,7 +1232,7 @@ fn collect_clip_positions(
     sprite_frames: &BTreeMap<u16, Vec<Vec<PlacedChild>>>, out: &mut Vec<(i64, i64)>,
 ) {
     if out.len() > 100_000 { return; }
-    for (id, local, _) in children {
+    for (id, local, _, _) in children {
         let world = parent.mul(local);
         if let Some(frames) = sprite_frames.get(id) {
             out.push((world.tx.round() as i64, world.ty.round() as i64));
@@ -1249,7 +1253,7 @@ fn walk_frame(
     inst_anchor: (f64, f64), phase_rank: &std::collections::HashMap<(i64, i64), usize>,
 ) {
     if rec > 8 { return; }
-    for (id, local, name) in children {
+    for (id, local, name, pinned) in children {
         let world = parent.mul(local);
         let sym = sym_names.get(id).cloned().unwrap_or_default();
         // an instance establishes a plane for its subtree: the stage's AS3 plane map (authoritative)
@@ -1286,7 +1290,8 @@ fn walk_frame(
             // and their per-frame leans cancel (the row reads as still). see `phase_rank` above.
             let rank = phase_rank.get(&(world.tx.round() as i64, world.ty.round() as i64)).copied().unwrap_or(0);
             let phase = ((rank as f64 * 0.618_033_988_75).fract() * frames.len() as f64) as usize;
-            let f = &frames[(global_frame + phase) % frames.len()];
+            // a graphic-pinned placement shows its FIRST frame, always (it never self-animates).
+            let f = if *pinned { &frames[0] } else { &frames[(global_frame + phase) % frames.len()] };
             walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1, child_anchor, phase_rank);
         }
     }
@@ -1663,7 +1668,7 @@ fn engine_added_bg_layers(
         }
     }
     for tags in sprites.values() {
-        for frame in build_frames(tags) { for (cid, _, _) in frame { note(cid, bitmaps, &mut referenced, &mut ref_dims); } }
+        for frame in build_frames(tags) { for (cid, _, _, _) in frame { note(cid, bitmaps, &mut referenced, &mut ref_dims); } }
     }
     for t in root_tags {
         if let swf::Tag::PlaceObject(po) = t {
@@ -1984,50 +1989,26 @@ fn extract_labeled_clip_anims(
     let mut sprite_frames: BTreeMap<u16, Vec<Vec<PlacedChild>>> = BTreeMap::new();
     for (id, t) in sprites { sprite_frames.insert(*id, build_frames(t)); }
     let clip_frames = build_frames(tags);
-    // children placed as GRAPHIC symbols: the Flash IDE writes a `ratio` on a sprite placement for
-    // its graphic frame-phase sync (a real MovieClip placement has none — bowserscastle's thwomp_mc:
-    // entrance ratio=None plays + runs its frame scripts; fall/idle ratio=1/2 hold). a graphic child
-    // never self-animates (and never runs scripts) while the parent sits on a label frame, so it
-    // contributes ONE pinned frame instead of driving a sub-animation.
-    let pinned_by_frame: Vec<std::collections::BTreeSet<u16>> = {
-        let mut out: Vec<std::collections::BTreeSet<u16>> = Vec::new();
-        let mut depth_ratio: BTreeMap<u16, (u16, bool)> = BTreeMap::new();
-        for tag in tags.iter() {
-            match tag {
-                swf::Tag::PlaceObject(po) => {
-                    if let swf::PlaceObjectAction::Place(id) | swf::PlaceObjectAction::Replace(id) = po.action {
-                        depth_ratio.insert(po.depth, (id, po.ratio.is_some()));
-                    }
-                }
-                swf::Tag::RemoveObject(r) => { depth_ratio.remove(&r.depth); }
-                swf::Tag::ShowFrame => {
-                    out.push(depth_ratio.values().filter(|(_, r)| *r).map(|(id, _)| *id).collect());
-                }
-                _ => {}
-            }
-        }
-        if out.is_empty() { out.push(Default::default()); }
-        out
-    };
     let no_phase: std::collections::HashMap<(i64, i64), usize> = std::collections::HashMap::new();
     let mut anims = Vec::new();
     for (label, frame) in &labels {
         let f = *frame as usize;
         let Some(children) = clip_frames.get(f) else { continue };
-        let pinned = pinned_by_frame.get(f).cloned().unwrap_or_default();
-        // sub-animation length = the longest nested MOVIECLIP placed on this label's frame (a
-        // graphic-pinned child shows a single frame and doesn't drive the length; 1 if static).
+        // sub-animation length = the longest nested MOVIECLIP placed on this label's frame. a
+        // graphic-pinned child (PlacedChild.3: the placement carries a ratio — a Graphic symbol,
+        // e.g. the thwomp's Single Frame fall/idle) shows one fixed frame, never self-animates and
+        // never runs its frame scripts, so it doesn't drive the length (1 if everything is static).
         let sub_len = children.iter()
-            .filter(|(id, _, _)| !pinned.contains(id))
-            .filter_map(|(id, _, _)| sprite_frames.get(id).map(|fr| fr.len()))
+            .filter(|(_, _, _, pinned)| !pinned)
+            .filter_map(|(id, _, _, _)| sprite_frames.get(id).map(|fr| fr.len()))
             .max().unwrap_or(1).max(1);
         // hold-vs-loop comes from the DRIVING nested clip's own timeline: a sub-clip that holds
         // carries a Flash-generated `_fla.` class (frame scripts) bound in SymbolClass. `stop()`
         // freezes where it fires; `gotoAndStop(target)` plays through then freezes at the target
         // (a label in the SUB-clip's own timeline, or a 1-based frame number).
         let driver_id = children.iter()
-            .filter(|(id, _, _)| !pinned.contains(id))
-            .filter_map(|(id, _, _)| sprite_frames.get(id).map(|fr| (*id, fr.len())))
+            .filter(|(_, _, _, pinned)| !pinned)
+            .filter_map(|(id, _, _, _)| sprite_frames.get(id).map(|fr| (*id, fr.len())))
             .max_by_key(|(_, n)| *n).map(|(id, _)| id);
         let hold = driver_id
             .and_then(|id| sym_names.get(&id))
@@ -2055,14 +2036,10 @@ fn extract_labeled_clip_anims(
                 driver_id.and_then(|id| sym_names.get(&id)));
         }
         // walk every sub-frame, then composite all frames onto one fixed union canvas (no wiggle).
-        // each child walks at its OWN frame (a graphic-pinned child stays on frame 0; the children
-        // are walked one at a time, in placement order, so the paint order is preserved).
+        // walk_frame itself pins graphic placements to their first frame.
         let per_frame: Vec<Vec<Instance>> = (0..sub_len).map(|g| {
             let mut out = Vec::new();
-            for child in children {
-                let gc = if pinned.contains(&child.0) { 0 } else { g };
-                walk_frame(std::slice::from_ref(child), Mat::id(), gc, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), &no_phase);
-            }
+            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), &no_phase);
             out.retain(|i| shape_defs.contains_key(&i.shape_id));
             out
         }).collect();
