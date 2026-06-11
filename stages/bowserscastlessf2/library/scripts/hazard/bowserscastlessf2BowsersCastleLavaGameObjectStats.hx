@@ -9,5 +9,6 @@
 	baseScaleY: 1,
 	weight: 100,
 	gravity: 0,
-	friction: 0
+	friction: 0,
+	immovable: true,  // a stage hazard shoves fighters, never the reverse (windboxes included)
 }
