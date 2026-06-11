@@ -36,6 +36,20 @@ convert CHAR:
 smoke:
     ./tools/rebuild-sandbag.sh
 
+# regression sweep: convert EVERY corpus stage, fail on any error (run after stage-converter changes)
+sweep-stages:
+    #!/usr/bin/env bash
+    set -u
+    fails=0; total=0
+    for f in {{ssfs}}/stages/*.ssf; do
+        total=$((total+1))
+        if ! ./build/release/peptide ssf2 stage "$f" --out build/sweep >/dev/null 2>&1; then
+            echo "FAIL: $(basename "$f")"; fails=$((fails+1))
+        fi
+    done
+    echo "$((total-fails))/$total stages converted clean"
+    exit $fails
+
 # run a dev-tools diagnostic bin, e.g.
 #   just dump dump_collision_box {{ssfs}}/mario.ssf a_air_forward
 dump BIN *ARGS:

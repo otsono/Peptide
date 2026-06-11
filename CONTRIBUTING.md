@@ -46,7 +46,13 @@ a few questions, in order:
    - new diagnostic binary? add a row in DEVELOPMENT §5.7.
    - new mapping JSONC section? update DEVELOPMENT §6.
 
-4. **did you add a host-facing debug command or feature?**
+4. **did you change the stage converter** (`stage_parser.rs` / `stage_emit.rs` / `stage_abc.rs`)?
+   the fix must be universal (pattern detected structurally or from source data, with an
+   exact-semantics fallback + conversion-log warning), never keyed to one stage or hazard by
+   name. then prove the corpus still converts: `just sweep-stages` (110 stages, fails on any
+   error). spot-check one OTHER stage's output if the change touches shared rendering.
+
+5. **did you add a host-facing debug command or feature?**
    it has to work **identically on both engines** (Fraymakers + SSF2). define it once
    through the shared seam: a `DebugTarget` trait method (default = `eval`) plus the engine
    helper in `commands.hsx` AND `src/ssf2_target.rs`, never an `if engine == …` branch in
