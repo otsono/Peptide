@@ -1814,8 +1814,9 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
          {bob_decls}\n\
          {body}\n\n\
          function update() {{\n\
-         \t// one-time setup on the first update: a position set in initialize() is clobbered\n\
-         \t// by the engine's stage placement, and make* slots aren't live at module scope.\n\
+         \t// one-time setup on the first update: the stage script positions this object right\n\
+         \t// after createCustomGameObject (initialize() runs inside the create call, so a park\n\
+         \t// set there would be overridden), and make* slots aren't live at module scope.\n\
          \tif (!_w_init.get()) {{\n\
          \t\t_w_init.set(true);\n\
          \t\tself.setState(PState.ACTIVE);\n\

@@ -345,12 +345,6 @@ Replace chains (bowserscastle's bubble pool cycles 8 slots this way).
 hscript-level behavior of the public CGO scripting surface, learned the hard way.
 each of these cost real debugging time, so trust them before re-deriving:
 
-- `initialize()` IS called on a stage custom game object, and `make*` slots are
-  live inside it (probe: a flag set there survives). BUT a position set in
-  `initialize()` gets clobbered by the engine's stage placement afterwards, so
-  park/position from a first-update guard on a `self.makeBool` slot (the
-  template's `m_init` pattern); one-time non-positional setup may live in
-  `initialize()`.
 - `make*` slots cannot be dereferenced at module scope on the first eval (the api
   is not live yet, `.get()` null-accesses). declare at module scope, deref only
   inside functions. module scope re-runs every frame, so plain `var`s reset each
