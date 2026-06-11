@@ -333,6 +333,33 @@ impl<'a> EntityBuilder<'a> {
             "$id": aid, "name": format!("platformSprite{idx}"), "pluginMetadata": {}, "layers": [img, line]
         }));
     }
+
+    /// Build a `platformSprite` animation whose collision is a CEILING segment along the bottom
+    /// edge of the box (y=h): a FLOOR-typed structure never blocks an upward mover (one-way
+    /// platform semantics), so a solid body's underside must be its own CEILING-typed structure —
+    /// the official content ships separate Ceiling structures for its solid fences the same way.
+    fn add_ceiling_structure_animation(&mut self, idx: usize, sprite_guid: &str, w: f64, h: f64) {
+        let img = self.make_image(&format!("platformImage{idx}"), sprite_guid, -w / 2.0, 0.0, 1.0);
+        let pm = json!({ "structureType": "CEILING", "leftLedge": false, "rightLedge": false, "dropThrough": false });
+        let sym = self.uid("sym:platformCeiling");
+        self.symbols.push(json!({
+            "$id": sym, "type": "LINE_SEGMENT", "alpha": 0.5, "color": "0xeeeeee",
+            "points": [w / 2.0, h, -w / 2.0, h],
+            "pluginMetadata": { "com.fraymakers.FraymakersMetadata": pm }
+        }));
+        let kf = self.uid("kf:platformCeiling");
+        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "LINE_SEGMENT" }));
+        let line = self.uid("layer:platformCeiling");
+        self.layers.push(json!({
+            "$id": line, "hidden": false, "locked": false, "name": "Ceiling Layer", "type": "LINE_SEGMENT",
+            "keyframes": [kf], "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "lineSegmentType": "LINE_SEGMENT_STRUCTURE" } }
+        }));
+        let aid = self.uid(&format!("anim:platformSprite{idx}"));
+        self.extra_anims.push(json!({
+            "$id": aid, "name": format!("platformSprite{idx}"), "pluginMetadata": {}, "layers": [img, line]
+        }));
+    }
+
     /// Add an IMAGE layer to the `stage` animation at the current depth (rendered at the
     /// stage `scale` so the native-resolution art matches the scaled-up geometry).
     fn add_image(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
@@ -454,7 +481,7 @@ fn bg_layer_name(sym: &str, idx: usize) -> String {
 
 /// The depth layers the entity lays out. `stage` is the frame sequence (1 = static);
 /// `background` is the ordered per-element backdrop layers (each 1 = static).
-struct ArtRefs { background: Vec<BgLayerRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Vec<ArtRef>, foreground_occluders: Vec<ArtRef>, platform_sprites: Vec<(String, f64, f64, bool)> }
+struct ArtRefs { background: Vec<BgLayerRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Vec<ArtRef>, foreground_occluders: Vec<ArtRef>, platform_sprites: Vec<(String, f64, f64, u8)> }
 
 /// Render the floor + soft platforms as filled rectangles on a transparent canvas
 /// covering their bounding box (1px = 1 stage unit). Gives the stage visible content
@@ -529,8 +556,9 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     }
     // moving platforms reference the shared `platformSprite` animation (grey surface + a structure
     // line segment); the stage spawns them as Structures that move themselves. Add that animation.
-    for (i, (grey, w, h, solid)) in art.platform_sprites.iter().enumerate() {
-        if *solid { b.add_solid_structure_animation(i, grey, *w, *h); continue; }
+    for (i, (grey, w, h, kind)) in art.platform_sprites.iter().enumerate() {
+        if *kind == 1 { b.add_solid_structure_animation(i, grey, *w, *h); continue; }
+        if *kind == 2 { b.add_ceiling_structure_animation(i, grey, *w, *h); continue; }
         b.add_platform_animation(i, grey, *w, *h);
     }
     b.add_container("Characters Back", "CHARACTERS_BACK_CONTAINER");
@@ -703,7 +731,7 @@ use crate::stage_parser::{Hazard, Platform};
 /// content ids the stage Script spawns with `match.createStructure`.
 #[allow(clippy::type_complexity)]
 fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
-    -> Result<(Vec<(String, f64, f64, bool)>, Vec<Value>, Vec<String>)>
+    -> Result<(Vec<(String, f64, f64, u8)>, Vec<Value>, Vec<String>)>
 {
     let vis: Vec<&Platform> = model.platforms.iter().filter(|p| p.visible).collect();
     if vis.is_empty() { return Ok((Vec::new(), Vec::new(), Vec::new())); }
@@ -717,7 +745,15 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
     // SSF2 BowsersCastlePlatform sinks 145 local px (rest 155 -> 300); scale to FM space.
     // HALF_W covers the widest declared platform so an edge landing still sinks its deck.
     let half_w = vis.iter().map(|p| p.rect.w / 2.0).fold(150.0, f64::max);
-    std::fs::write(scripts.join(format!("{script_id}.hx")), platform_script_hx(half_w, 145.0 * model.scale))?;
+    // the platform class's authored motion, converted 30fps -> 60fps: speeds × scale/2 (per-frame
+    // velocity), the hold × 2 (frame count), depth × scale. The previous hand-RE'd values stay as
+    // the fallback for a stage whose platform class wasn't found.
+    let pb = model.platform_behavior.clone().unwrap_or_default();
+    let sink_speed = pb.sink_speed.unwrap_or(30.0) * model.scale * 0.5;
+    let rise_speed = pb.rise_speed.unwrap_or(1.0) * model.scale * 0.5;
+    let wait = pb.wait_frames.unwrap_or(390.0) * 2.0;
+    let sink_depth = pb.sink_depth.unwrap_or(145.0) * model.scale;
+    std::fs::write(scripts.join(format!("{script_id}.hx")), platform_script_hx(half_w, sink_depth, sink_speed, rise_speed, wait))?;
     write_meta(&scripts.join(format!("{script_id}.hx.meta")), id, &script_id, "hscript", Some("LINE_SEGMENT_STRUCTURE"), None)?;
     // per-platform: a sprite sized to THIS platform (the SSF2 standing platforms are different
     // widths), its own `platformSprite{i}` animation, Stats (startX/startY), a structure content
@@ -738,7 +774,7 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
         write_json(&sprites.join(format!("{id}_platformSprite{i}.png.meta")), &json!({
             "export": false, "guid": guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
         }))?;
-        sprite_dims.push((guid, pw as f64, ph as f64, false));
+        sprite_dims.push((guid, pw as f64, ph as f64, 0));
 
         let cid = format!("{id}platform{i}");
         let stats_id = format!("{cid}Stats");
@@ -776,7 +812,7 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
         write_json(&sprites.join(format!("{id}_platformSprite{di}.png.meta")), &json!({
             "export": false, "guid": guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
         }))?;
-        sprite_dims.push((guid, deck_w, deck_h, true));
+        sprite_dims.push((guid.clone(), deck_w, deck_h, 1));
         let cid = format!("{id}thwompdeck");
         let stats_id = format!("{cid}Stats");
         std::fs::write(scripts.join(format!("{stats_id}.hx")), platform_stats_hx(id, -2000.0, -3000.0, di))?;
@@ -786,6 +822,17 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
         write_meta(&scripts.join(format!("{deck_script_id}.hx.meta")), id, &deck_script_id, "hscript", Some("LINE_SEGMENT_STRUCTURE"), None)?;
         contents.push(json!({ "id": cid, "type": "structure", "objectStatsId": stats_id, "scriptId": deck_script_id }));
         spawn_ids.push(cid);
+        // the body's UNDERSIDE: a FLOOR-typed structure never blocks an upward mover, so the
+        // ceiling face is its own CEILING-typed follower structure (same script, same offsets;
+        // its animation puts the segment at the box's bottom edge).
+        let ci = sprite_dims.len();
+        sprite_dims.push((guid.clone(), deck_w, deck_h, 2));
+        let ceil_cid = format!("{id}thwompceiling");
+        let ceil_stats_id = format!("{ceil_cid}Stats");
+        std::fs::write(scripts.join(format!("{ceil_stats_id}.hx")), platform_stats_hx(id, -2000.0, -3000.0, ci))?;
+        write_meta(&scripts.join(format!("{ceil_stats_id}.hx.meta")), id, &ceil_stats_id, "hscript", None, None)?;
+        contents.push(json!({ "id": ceil_cid, "type": "structure", "objectStatsId": ceil_stats_id, "scriptId": deck_script_id }));
+        spawn_ids.push(ceil_cid);
     }
     Ok((sprite_dims, contents, spawn_ids))
 }
@@ -826,16 +873,16 @@ fn platform_stats_hx(stage_id: &str, start_x: f64, start_y: f64, idx: usize) -> 
 /// A STATIC standing-platform structure. SSF2's standing platforms don't sink (the Thwomp drops
 /// with its own self-platform); the structure just holds its spawn position and provides the floor
 /// line segment from its `platformSprite{i}` animation.
-fn platform_script_hx(half_w: f64, sink_depth: f64) -> String {
-    // 1:1 from the SSF2 BowsersCastlePlatform disasm: idle until a Thwomp (a custom game object)
-    // lands on it, then sink (shaking ±1px) to rest+145 (terrain 155 -> 300), hold 390f, rise back.
-    // Constants converted: SINK_SPEED 30 px/f -> 19.5 FM px/frame; RISE_SPEED 1 -> 0.65;
-    // waitTimer 390f -> 780 FM frames; sink depth 145 px × scale. The structure moves itself via
-    // setX/setY; persistent state via self.make*. Shared by all platforms (each captures its own
-    // start position), so any column the Thwomp drops on sinks.
+fn platform_script_hx(half_w: f64, sink_depth: f64, sink_speed: f64, rise_speed: f64, wait: f64) -> String {
+    // values stepped from the stage's OWN SSF2Platform subclass (extract_platform_behavior): the
+    // per-frame sink/rise speeds (class const slots), the post-sink hold (its FrameTimer), and the
+    // sink depth (the update()'s rest/sunk Y caps) — converted 30fps -> 60fps (speeds × scale/2,
+    // frame counts × 2, depth × scale). Idle until a heavy custom game object lands on this deck,
+    // then sink (shaking ±1px), hold, rise back. Shared by all platforms (each captures its own
+    // start position), so any column the faller drops on sinks.
     format!(
-        "// Sinking platform — 1:1 from the SSF2 BowsersCastlePlatform disasm, frame-doubled.\n\
-         var SINK_SPEED = 19.5;\nvar RISE_SPEED = 0.65;\nvar SINK_DEPTH = {sink_depth:.1};\nvar WAIT = 780;\nvar HALF_W = {half_w:.1};\n\
+        "// Sinking platform — values stepped from the stage's SSF2Platform subclass, frame-doubled.\n\
+         var SINK_SPEED = {sink_speed:.2};\nvar RISE_SPEED = {rise_speed:.2};\nvar SINK_DEPTH = {sink_depth:.1};\nvar WAIT = {wait:.0};\nvar HALF_W = {half_w:.1};\n\
          var m_init = self.makeBool(false);\nvar m_startY = self.makeFloat(0.0);\nvar m_startX = self.makeFloat(0.0);\n\
          var m_action = self.makeInt(0);\nvar m_timer = self.makeInt(0);\nvar m_shake = self.makeBool(false);\n\n\
          function thwompLanded() {{\n\
@@ -934,7 +981,7 @@ fn emit_hazards(model: &StageModel, lib: &Path) -> Result<Vec<Value>> {
         // a Thwomp (SSF2 falls onto platform columns, sinks them, rises, repeats) uses the real
         // column-cycling script; everything else uses the generic motion. Keyed by label since the
         // kind's default motion is "fall", not the legacy "thwomp" sentinel.
-        let is_thwomp = hz.label == "Thwomp" || hz.motion == "thwomp";
+        let is_thwomp = hz.motion == "thwomp" || hz.motion == "fall" || hz.behavior.self_platform.is_some();
         let script = if is_thwomp && !cols.is_empty() {
             thwomp_script_hx(&cols)
         } else {
@@ -1090,7 +1137,7 @@ fn emit_multi_anim_hazard(
     let entrance_name = hzanims.iter().find(|a| a.name.contains("entrance") || a.name.contains("intro"))
         .map(|a| a.name.clone()).unwrap_or_else(|| idle_name.clone());
 
-    let is_thwomp = hz.label == "Thwomp" || hz.motion == "thwomp" || hz.motion == "fall";
+    let is_thwomp = hz.motion == "thwomp" || hz.motion == "fall" || hz.behavior.self_platform.is_some();
     // The hit volume = the clip's REAL SSF2 attackBox shapes (clip-local, FM-scaled), recovered the
     // same way the lava's is — the Thwomp's `fall` carries a left + right pair at its slam face. Top-
     // left rects for the COLLISION_BOX emit. If a hazard has no recoverable box, the emitter falls
@@ -1142,10 +1189,16 @@ fn emit_multi_anim_hazard(
         let shake_amp = b.shake.unwrap_or(13.0) * scale;
         let fall_v = b.fall_gravity.unwrap_or(30.0) * scale * 0.5;
         let rise_v = b.rise_yspeed.map(f64::abs).unwrap_or(6.0) * scale * 0.5;
-        // the landing dust poof (SSF2 attachEffect global_dust_cloud at scale 2): the global-vfx
-        // shape from the mappings' global_vfx_map, scaled to the stage like any screen effect.
-        let dust_scale = 2.0 * scale;
-        thwomp_multi_script_hx(cols, spawn_y, shake_amp, fall_v, rise_v, dust_scale, &entrance_name, &idle_name, &fall_name)
+        // the landing dust poof: the global-vfx shape from the mappings' global_vfx_map, at the
+        // scale the hazard's own attachEffect call declared (× stage scale, a screen effect).
+        let dust_scale = b.dust.as_ref().map(|(_, sx, _)| *sx).unwrap_or(2.0) * scale;
+        // the cycle cadence, stepped from the classes' own FrameTimers (enemy: entrance delay +
+        // landed wait, in declaration order; stage: the spawn machine's two phases), x2 for 60fps.
+        let fc = hz.faller.clone().unwrap_or_default();
+        let spawn_period = fc.spawn_period.unwrap_or(600.0) * 2.0;
+        let entrance_t = fc.entrance_delay.unwrap_or(60.0) * 2.0;
+        let land_wait = fc.land_wait.unwrap_or(90.0) * 2.0;
+        thwomp_multi_script_hx(cols, spawn_y, shake_amp, fall_v, rise_v, dust_scale, spawn_period, entrance_t, land_wait, &entrance_name, &idle_name, &fall_name)
     } else {
         hazard_anim_loop_script_hx(hz, &hzanims, &idle_name)
     };
@@ -1494,7 +1547,7 @@ fn cgo_runnable(raw: &str, anims: &[String]) -> String {
 }
 
 /// Cross-frame state via `self.make*` (a plain `var` re-inits every frame on a game object).
-fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fall_v: f64, rise_v: f64, dust_scale: f64, entrance: &str, idle: &str, fall: &str) -> String {
+fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fall_v: f64, rise_v: f64, dust_scale: f64, spawn_period: f64, entrance_t: f64, land_wait: f64, entrance: &str, idle: &str, fall: &str) -> String {
     let cols_lit = cols.iter().map(|(x, _)| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
     let land_lit = cols.iter().map(|(_, y)| format!("{y:.1}")).collect::<Vec<_>>().join(", ");
     format!(
@@ -1516,7 +1569,7 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fal
          }};\n\n\
          // SSF2 constants, frame-doubled / velocity-converted (see the header comment).\n\
          var COLUMNS = [{cols_lit}];\nvar LAND_YS = [{land_lit}];\nvar SPAWN_Y = {spawn_y:.1};\n\
-         var SPAWN_PERIOD = 1200;\nvar ENTRANCE_T = 120;\nvar FALL_V = {fall_v:.2};\nvar LAND_WAIT = 180;\nvar RISE_V = {rise_v:.2};\n\
+         var SPAWN_PERIOD = {spawn_period:.0};\nvar ENTRANCE_T = {entrance_t:.0};\nvar FALL_V = {fall_v:.2};\nvar LAND_WAIT = {land_wait:.0};\nvar RISE_V = {rise_v:.2};\n\
          // persistent state (a plain var resets every frame on a custom game object).\n\
          var m_col = self.makeInt(0);\nvar m_timer = self.makeInt(0);\n\
          var m_cycle = self.makeInt(0);\nvar m_cool = self.makeInt(0);\nvar m_init = self.makeBool(false);\n\n\
@@ -1528,7 +1581,7 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fal
          \t\tm_init.set(true);\n\
          \t\tself.setX(COLUMNS[0]);\n\
          \t\tself.setY(SPAWN_Y);\n\
-         \t\tm_cycle.set(SPAWN_PERIOD - 600);\n\
+         \t\tm_cycle.set(Math.floor(SPAWN_PERIOD / 2));\n\
          \t}}\n\
          \tif (m_cool.get() > 0) {{\n\
          \t\tm_cool.dec();\n\
@@ -2027,7 +2080,7 @@ mod hazard_tests {
             x: 0.0, y: 150.0, w: 700.0, h: 160.0,
             damage: 10.0, knockback: 0.0, angle: 45.0,
             interval: 0, active: 20, motion: "static".into(),
-            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
+            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
         }
     }
 
@@ -2072,7 +2125,7 @@ mod hazard_tests {
         for (name, s) in [
             ("hazard_script", hazard_script_hx(&hz)),
             ("thwomp_single", thwomp_script_hx(&cols)),
-            ("thwomp_multi", thwomp_multi_script_hx(&cols, -67.0, 13.0, 19.5, 3.9, 2.6, "entrance", "idle", "fall")),
+            ("thwomp_multi", thwomp_multi_script_hx(&cols, -67.0, 13.0, 19.5, 3.9, 2.6, 1200.0, 120.0, 180.0, "entrance", "idle", "fall")),
         ] {
             assert!(s.contains("self.makeInt(") || s.contains("self.makeFloat(") || s.contains("self.makeBool("),
                 "{name}: no persistent state (self.make*) — counters reset every frame: {s}");

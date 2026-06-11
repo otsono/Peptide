@@ -81,6 +81,8 @@ pub struct SpawnedActor {
     /// decompile→translate pipeline (the real update() state machine). Still needs a field-state +
     /// FrameTimer pass to run; used by the gated reconstruction path. None if no such methods.
     pub reconstructed_script: Option<String>,
+    /// The engine-spawned faller cycle (delays/period/columns) stepped from the enemy + stage code.
+    pub faller: Option<crate::abc_parser::FallerCycle>,
 }
 
 /// What the AS3 says about a stage: the authoritative plane map + the spawned actors.
@@ -126,6 +128,7 @@ pub fn extract_stage(abc: &AbcFile) -> Option<StageAbcModel> {
         a.anim_labels = crate::abc_parser::extract_force_attack_labels(abc, &a.class_name);
         a.behavior = crate::abc_parser::extract_enemy_behavior(abc, &a.class_name);
         a.reconstructed_script = crate::abc_parser::reconstruct_enemy_script(abc, &a.class_name);
+        a.faller = crate::abc_parser::extract_faller_cycle(abc, &a.class_name);
     }
     Some(StageAbcModel { planes: v.planes, actors, doc_class: class.name.clone() })
 }
@@ -158,7 +161,7 @@ impl AbcVisitor for StageVisitor {
                     let idx = self.actors.len();
                     self.actors.push(SpawnedActor { class_name: class.to_string(), x: None, y: None,
                         attack_hitboxes: Vec::new(), own_stats: std::collections::BTreeMap::new(), anim_labels: Vec::new(),
-                        behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None });
+                        behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, faller: None });
                     return Some(StackVal::Tag(format!("actor:{idx}")));
                 }
             }
