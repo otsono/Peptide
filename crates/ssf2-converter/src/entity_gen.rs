@@ -1176,30 +1176,30 @@ pub fn generate_entity(
                             if turn_flip {
                                 fm_x = round2(-fm_x);
                             }
-                            // a ROTATED frame anchors at the image CENTER: with a (0,0) pivot the
-                            // rotation pre-bakes a corner orbit into x/y and leaves the anchor to
-                            // the exporter's trim correction, which renders as the sprite circling
-                            // without spinning (mario's tumble). center pivot + the center's world
-                            // position = the canonical form: it spins in place under any anchor
-                            // convention. unrotated frames keep the (0,0)-pivot corner form.
+                            // FM's engine applies its OWN rotation during the TUMBLE state, so a
+                            // baked SSF2 per-frame rotation fights it (the sprite orbits without
+                            // spinning). For tumble ONLY: strip the authored rotation -- place the
+                            // pose unrotated at the position its center occupies (the center is the
+                            // one point a rotating placement keeps fixed) and let the engine spin
+                            // it. Every other animation keeps the corner + rotation form.
                             let mut fm_y = fm_y;
-                            let mut pivot_x = 0.0_f64;
-                            let mut pivot_y = 0.0_f64;
-                            let effective_rot = ((world_rot % 360.0) + 360.0) % 360.0;
-                            if !turn_flip && effective_rot > 0.01 && effective_rot < 359.99 {
+                            let pivot_x = 0.0_f64;
+                            let pivot_y = 0.0_f64;
+                            let mut emit_rot = ((world_rot % 360.0) + 360.0) % 360.0;
+                            if anim_name == "tumble" && emit_rot > 0.01 && emit_rot < 359.99 {
                                 if let Some(img) = bitmap_img {
                                     let (hw, hh) = (img.width as f64 / 2.0, img.height as f64 / 2.0);
-                                    // center = corner + (-cos*px + sin*py, sin*px + cos*py) with
-                                    // SIGNED scales (fm_sy is negative under the y-flip): the sign
-                                    // convention solved numerically against the decomposition's own
-                                    // corner/rotation output, mapping every frame of a rotating
-                                    // placement to one constant center.
+                                    // center = corner + (-cos*px + sin*py, sin*px + cos*py), signed
+                                    // scales (fm_sy is negative under the y-flip); the convention is
+                                    // solved numerically against the decomposition's own output.
+                                    // the unrotated corner for that same center = center + (px, -py).
                                     let (px, py) = (fm_sx * hw, fm_sy * hh);
                                     let (sin, cos) = world_rot.to_radians().sin_cos();
-                                    fm_x = round2(fm_x - cos * px + sin * py);
-                                    fm_y = round2(fm_y + sin * px + cos * py);
-                                    pivot_x = hw;
-                                    pivot_y = hh;
+                                    let cx = fm_x - cos * px + sin * py;
+                                    let cy = fm_y + sin * px + cos * py;
+                                    fm_x = round2(cx + px);
+                                    fm_y = round2(cy - py);
+                                    emit_rot = 0.0;
                                 }
                             }
 
@@ -1212,7 +1212,7 @@ pub fn generate_entity(
                                 "pluginMetadata": {},
                                 // SWF world_rot = atan2(b,a) in y-down coords.
                                 // Normalize to FrayTools 0-360 range (no negation).
-                                "rotation": round2(((world_rot % 360.0) + 360.0) % 360.0),
+                                "rotation": round2(emit_rot),
                                 "scaleX": fm_sx,
                                 "scaleY": fm_sy,
                                 "type": "IMAGE",
