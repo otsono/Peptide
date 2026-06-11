@@ -859,7 +859,8 @@ fn thwomp_deck_script_hx(cols_x: &[f64], off_x: f64, off_y: f64, engage_y: f64) 
     format!(
         "// Thwomp deck — the SSF2 createSelfPlatform box riding the thwomp (standable in\n\
          // fall/land/rise; parked off-world while the thwomp waits at its spawn point).\n\
-         var COLS_X = [{cols_lit}];\nvar OFF_X = {off_x:.1};\nvar OFF_Y = {off_y:.1};\nvar ENGAGE_Y = {engage_y:.1};\n\n\
+         var COLS_X = [{cols_lit}];\nvar OFF_X = {off_x:.1};\nvar OFF_Y = {off_y:.1};\nvar ENGAGE_Y = {engage_y:.1};\n\
+         var m_excluded = self.makeBool(false);\n\n\
          function findThwomp() {{\n\
          \tvar objs = match.getCustomGameObjects();\n\
          \tfor (i in 0...objs.length) {{\n\
@@ -868,6 +869,9 @@ fn thwomp_deck_script_hx(cols_x: &[f64], off_x: f64, off_y: f64, engage_y: f64) 
          \t}}\n\treturn null;\n}}\n\n\
          function update() {{\n\
          \tvar t = findThwomp();\n\
+         \t// SSF2 never grounds an enemy on its OWN self-platform: with an ECB the falling thwomp\n\
+         \t// would land on this follower mid-air, so exclude it from the structure's collision.\n\
+         \tif (t != null && !m_excluded.get()) {{ self.addToBlacklist(t); m_excluded.set(true); }}\n\
          \tif (t != null && t.getY() > ENGAGE_Y) {{ self.setX(t.getX() + OFF_X); self.setY(t.getY() + OFF_Y); }}\n\
          \t// parking carries any remaining rider off-world -> KO, the SSF2 outcome for riding\n\
          \t// the thwomp to the top (it crosses the top blast bound there).\n\
@@ -1275,9 +1279,19 @@ fn emit_multi_anim_hazard(
     } else {
         hazard_anim_loop_script_hx(hz, &hzanims, &idle_name)
     };
+    // ECB for the engine's terrain grounding, only for a hazard that moves: head = body height
+    // above the origin, hips = half-width, from the class's own createSelfPlatform box (its real
+    // SSF2 collision volume) or the detected body as fallback.
+    let ecb = (hz.motion != "static").then(|| {
+        let scale = model.scale;
+        match &hz.behavior.self_platform {
+            Some((_, y, w, _h)) => ((-y) * scale, (w / 2.0) * scale),
+            None => (hz.h, hz.w / 2.0), // hz.w/h are already FM-scaled
+        }
+    });
     let files = [
         ("Script", script),
-        ("GameObjectStats", hazard_gameobject_stats_multi(hid, &idle_name)),
+        ("GameObjectStats", hazard_gameobject_stats_multi(hid, &idle_name, ecb)),
         ("HitboxStats", hazard_hitbox_stats_multi(hz, &hzanims, dual)),
         ("AnimationStats", hazard_animation_stats_multi(&hzanims)),
     ];
@@ -1563,14 +1577,11 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
         st.clone(),
     ));
 
-    // risky calls used INSIDE a condition/expression -> replace with a safe equivalent (commenting
-    // the line would orphan a brace). with the spawn wrapper, isOnFloor gets a real synthesis (the
-    // engine's floor test against the column's landing surface); without it, a safe literal.
-    // camera add/deleteTarget and the createVfx dust are live-verified FM APIs (the template ships
-    // them), so they pass through; setCamBoxSize has no FM port (the camera frames its targets
+    // isOnFloor/setYVelocity/getCamera/createVfx are REAL FM Entity APIs (fraymakers-api-docs
+    // Entity.md) and pass through 1:1 — only their VALUES get unit-converted below. isOnGround
+    // normalizes to the FM spelling. setCamBoxSize has no FM port (the camera frames its targets
     // itself), setFallthrough is ported by the deck-structure follower, and sounds lack resources.
-    let on_floor: &str = if wrap.is_some() { "__onFloor()" } else { "false" };
-    let risky_expr: &[(&str, &str)] = &[("self.isOnFloor()", on_floor), ("self.isOnGround()", on_floor)];
+    let risky_expr: &[(&str, &str)] = &[("self.isOnGround()", "self.isOnFloor()")];
     let risky = ["setCamBoxSize", "AudioClip.play", "setFallthrough"];
     // physics intents -> the scripted kinematics integrator (the wrapper appends the step). units:
     // a 30fps per-frame velocity halves (x scale x 0.5); a per-frame^2 acceleration quarters.
@@ -1583,8 +1594,16 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
     for line in raw.lines() {
         let trimmed = line.trim_start();
         let indent = &line[..line.len() - trimmed.len()];
-        // already-commented decompiler gaps pass through untouched.
-        if trimmed.starts_with("//") { out.push(line.to_string()); continue; }
+        // already-commented decompiler gaps pass through untouched — except the ground-detach,
+        // which has a 1:1 FM equivalent (Entity.unattachFromFloor).
+        if trimmed.starts_with("//") {
+            if trimmed.contains("[SSF2-only: unnattachFromGround]") {
+                out.push(format!("{indent}self.unattachFromFloor(); // SSF2 unnattachFromGround"));
+            } else {
+                out.push(line.to_string());
+            }
+            continue;
+        }
         // FrameTimer construction: the counter IS the state (starts at 0); drop the `new`.
         if timer_re.is_match(line) { out.push(format!("{indent}// FrameTimer construction -> the module-scope makeFrameTimer")); continue; }
         // a line touching a dead field or a risky unmapped call: neutralize.
@@ -1623,15 +1642,18 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
         // updateGameObjectStats: drop SSF2-only flags.
         s = s.replace(", bypassCollisionTesting: false", "").replace(", bypassCollisionTesting: true", "")
              .replace(", surviveDeathBounds: false", "").replace(", surviveDeathBounds: true", "");
-        if wrap.is_some() {
-            // SSF2 physics intents -> the integrator's vars, units converted from 30fps.
-            if let Some(c) = grav_re.captures(&s) {
-                let g: f64 = c[2].parse().unwrap_or(0.0);
-                s = format!("{}_kin_grav.set({:.2}); // SSF2 gravity {} @30fps -> FM accel", &c[1], g * scale * 0.25, g);
-            } else if let Some(c) = yvel_re.captures(&s) {
-                let v: f64 = c[2].parse().unwrap_or(0.0);
-                s = format!("{}_kin_vy.set({:.2}); // SSF2 setYSpeed {} @30fps", &c[1], v * scale * 0.5, v);
-            }
+        // SSF2 physics calls stay NATIVE (the engine integrates gravity/velocity and grounds the
+        // object, so isOnFloor() is the real engine test) — only the VALUES convert from 30fps:
+        // acceleration x scale/4, velocity x scale/2; the class's maxYSpeed caps as terminalVelocity.
+        if let Some(c) = grav_re.captures(&s) {
+            let g: f64 = c[2].parse().unwrap_or(0.0);
+            let term = wrap.filter(|_| g > 0.0)
+                .map(|w| format!(", terminalVelocity: {:.2}", w.terminal)).unwrap_or_default();
+            s = format!("{}self.updateGameObjectStats({{ gravity: {:.2}{} }}); // SSF2 gravity {} @30fps",
+                &c[1], g * scale * 0.25, term, g);
+        } else if let Some(c) = yvel_re.captures(&s) {
+            let v: f64 = c[2].parse().unwrap_or(0.0);
+            s = format!("{}self.setYVelocity({:.2}); // SSF2 setYSpeed {} @30fps", &c[1], v * scale * 0.5, v);
         }
         // screen-space args (camera shake amplitude, the dust vfx scale) x the stage scale.
         if let Some(c) = shake_re.captures(&s) {
@@ -1757,7 +1779,7 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
         .filter(|_| !w.bob.is_empty())
         .map(|(v, _)| {
             let ladder: String = w.bob.iter()
-                .map(|(f, sp)| format!("\t\tif (_w_state_t.get() == {}) {{ _kin_vy.set({:.2}); }}\n",
+                .map(|(f, sp)| format!("\t\tif (_w_state_t.get() == {}) {{ self.setYVelocity({:.2}); }}\n",
                     (f.saturating_sub(1)) * 2, sp * scale * 0.5))
                 .collect();
             format!("\t// entrance bob: the entrance sub-clip's frame scripts (setYSpeed timeline, 30->60fps)\n\
@@ -1784,15 +1806,12 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
          {preamble}\n\
          // stage spawn machine constants (stepped from the stage + enemy classes)\n\
          var COLUMNS = [{cols_lit}];\nvar LAND_YS = [{land_lit}];\n\
-         var SPAWN_Y = {spawn_y:.1};\nvar SPAWN_PERIOD = {spawn_period:.0};\nvar TERMINAL_V = {terminal:.2};\n\
+         var SPAWN_Y = {spawn_y:.1};\nvar SPAWN_PERIOD = {spawn_period:.0};\n\
          var _w_init = self.makeBool(false);\n\
          var _w_active = self.makeBool(false);\nvar _w_col = self.makeInt(0);\n\
          // the stage's spawn machine (one full spawn-to-spawn period) + the rehit cadence\n\
          var _w_clock = self.makeFrameTimer(SPAWN_PERIOD);\nvar _w_cool = self.makeFrameTimer(60);\n\
-         {bob_decls}\
-         var _kin_vy = self.makeFloat(0.0);\nvar _kin_grav = self.makeFloat(0.0);\n\n\
-         // the SSF2 engine's isOnFloor: resting on the spawn column's landing surface.\n\
-         function __onFloor():Bool {{\n\treturn self.getY() >= LAND_YS[_w_col.get()];\n}}\n\n\
+         {bob_decls}\n\
          {body}\n\n\
          function update() {{\n\
          \t// one-time setup on the first update (the engine doesn't call initialize() on a stage\n\
@@ -1813,8 +1832,8 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
          \t\t\t_w_col.set(Random.getInt(0, COLUMNS.length - 1));\n\
          \t\t\tself.setX(COLUMNS[_w_col.get()]);\n\
          \t\t\tself.setY(SPAWN_Y);\n\
-         \t\t\t_kin_vy.set(0);\n\
-         \t\t\t_kin_grav.set(0);\n\
+         \t\t\tself.setYVelocity(0);\n\
+         \t\t\tself.updateGameObjectStats({{ gravity: 0 }});\n\
          {timer_resets}\
          \t\t\t__hazardInit();\n\
          \t\t\t_w_active.set(true);\n\
@@ -1826,25 +1845,15 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
          \tif (_w_cool.completed) {{ self.reactivateHitboxes(); _w_cool.reset(); }}\n\
          {bob_block}\
          \t__hazardUpdate();\n\
-         \t// kinematics integrator: the SSF2 engine's gravity/yspeed step, 30fps units converted\n\
-         \tif (_kin_grav.get() > 0 && _kin_vy.get() < TERMINAL_V) {{\n\
-         \t\t_kin_vy.set(Math.min(_kin_vy.get() + _kin_grav.get(), TERMINAL_V));\n\
-         \t}}\n\
-         \tif (_kin_vy.get() > 0 && self.getY() + _kin_vy.get() >= LAND_YS[_w_col.get()]) {{\n\
-         \t\tself.setY(LAND_YS[_w_col.get()]); // the engine lands it on the column surface\n\
-         \t\t_kin_vy.set(0);\n\
-         \t}} else {{\n\
-         \t\tself.setY(self.getY() + _kin_vy.get());\n\
-         \t}}\n\
          \t// SSF2 culls it past the death bounds (surviveDeathBounds=false); recycle for the next spawn\n\
-         \tif (_kin_vy.get() < 0 && self.getY() <= SPAWN_Y) {{\n\
+         \tif (self.getYVelocity() < 0 && self.getY() <= SPAWN_Y) {{\n\
          \t\tself.setY(SPAWN_Y);\n\
-         \t\t_kin_vy.set(0);\n\
+         \t\tself.setYVelocity(0);\n\
          {cam_del}\
          \t\t_w_active.set(false);\n\
          \t}}\n\
          }}\n",
-        spawn_y = w.spawn_y, spawn_period = w.spawn_period, terminal = w.terminal,
+        spawn_y = w.spawn_y, spawn_period = w.spawn_period,
         half_period = w.spawn_period / 2.0);
     // the local-state subsystem is reached through the live-verified `Common.` binding (the bare
     // names are unproven in a CGO scope; one pass over the assembled script keeps the lowering,
@@ -2145,11 +2154,18 @@ fn hazard_anim_loop_script_hx(hz: &Hazard, anims: &[HzAnim], idle: &str) -> Stri
 /// GameObjectStats for a multi-animation hazard: PState.ACTIVE plays the resting `idle` animation
 /// (the local state machine swaps in the others), so the engine always has a current animation for
 /// the collision detector to resolve the native HIT_BOX against.
-fn hazard_gameobject_stats_multi(hid: &str, idle: &str) -> String {
+fn hazard_gameobject_stats_multi(hid: &str, idle: &str, ecb: Option<(f64, f64)>) -> String {
+    // a MOVING hazard needs an ECB for the engine to ground it on floors (without one a falling
+    // game object passes straight through stage terrain — isOnFloor() never fires). sized from
+    // the hazard's own SSF2 collision box: head = body height above the origin, hips = half-width.
+    let ecb_block = ecb.map(|(head, hipw)| format!(
+        "\tfloorFootPosition: 0,\n\tfloorHeadPosition: {head:.0},\n\tfloorHipWidth: {hipw:.0},\n\
+         \taerialFootPosition: 0,\n\taerialHeadPosition: {head:.0},\n\taerialHipWidth: {hipw:.0},\n"))
+        .unwrap_or_default();
     format!(
         "// GameObjectStats for {hid}\n{{\n\tspriteContent: self.getResource().getContent(\"{hid}\"),\n\tinitialState: PState.ACTIVE,\n\
          \tstateTransitionMapOverrides: [\n\t\tPState.ACTIVE => {{ animation: \"{idle}\" }}\n\t],\n\
-         \tbaseScaleX: 1,\n\tbaseScaleY: 1,\n\tweight: 100,\n\tgravity: 0,\n\tfriction: 0\n}}\n")
+         \tbaseScaleX: 1,\n\tbaseScaleY: 1,\n\tweight: 100,\n\tgravity: 0,\n\tfriction: 0,\n{ecb_block}}}\n")
 }
 
 /// HitboxStats for a multi-animation hazard: entries on each ACTIVE (damaging) animation, empty on
