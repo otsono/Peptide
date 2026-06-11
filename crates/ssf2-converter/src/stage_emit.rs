@@ -1164,14 +1164,32 @@ fn emit_multi_anim_hazard(
     // it never regresses the working template; used to iterate the reconstruction toward 1:1.
     let decomp = std::env::var("PEPTIDE_DECOMP_HAZARD").is_ok();
     let script = if let (true, Some(rs)) = (decomp, hz.reconstructed_script.as_ref()) {
+        // the entity's real animation names (what registerLocalState/playAnimation need) — the
+        // full clip set, not just the forceAttack subset (the fall clip has no forceAttack).
+        let entity_anims: Vec<String> = hz.anims.iter().map(|a| sanitize_anim(&a.label)).collect();
+        // a column-falling hazard gets the synthesized stage spawn cycle (the part of its
+        // lifecycle that lives in the STAGE class, not the enemy class) — same data the template
+        // uses: the spawn machine's period + columns, the spawn height, the fall-speed cap, the
+        // entrance clip's frame-script bob, and the camera-target flag.
+        let wrap = (is_thwomp && !cols.is_empty()).then(|| {
+            let fc = hz.faller.clone().unwrap_or_default();
+            ReconWrap {
+                cols: cols.to_vec(),
+                spawn_y: model.death_box.as_ref().map(|b| b.y + 60.0)
+                    .unwrap_or_else(|| cols.iter().map(|(_, y)| *y).fold(f64::MAX, f64::min) - 520.0),
+                spawn_period: fc.spawn_period.unwrap_or(600.0) * 2.0,
+                terminal: hz.max_y_speed.or(hz.behavior.fall_gravity).unwrap_or(30.0) * scale * 0.5,
+                bob: hz.anims.iter().find(|a| sanitize_anim(&a.label) == entrance_name)
+                    .map(|a| a.frame_velocities.clone()).unwrap_or_default(),
+                camera: hz.behavior.camera_target,
+                entrance_anim: entrance_name.clone(),
+            }
+        });
         format!("// {} reconstructed from its SSF2 update()/initialize() via the character decompiler,\n\
-                 // then made FM-CGO-runnable (field-state -> self.makeInt, FrameTimer -> counter,\n\
-                 // unmapped calls neutralized so it can't throw).\n\n{}", hz.label, {
-            // the entity's real animation names (what registerLocalState/playAnimation need) — the
-            // full clip set, not just the forceAttack subset (the fall clip has no forceAttack).
-            let entity_anims: Vec<String> = hz.anims.iter().map(|a| sanitize_anim(&a.label)).collect();
-            cgo_runnable(rs, &entity_anims)
-        })
+                 // then made FM-CGO-runnable: field state -> local states + self.make* slots, FrameTimers ->\n\
+                 // counters, engine physics -> a scripted kinematics integrator (30fps units converted), and\n\
+                 // the STAGE class's spawn cycle synthesized around the enemy class's own state machine.\n\n{}",
+                hz.label, cgo_runnable(rs, &entity_anims, scale, wrap.as_ref()))
     } else if is_thwomp && !cols.is_empty() {
         // hover/spawn height: SSF2 spawns the thwomp AT getDeathBounds().y with
         // surviveDeathBounds=true. FM kills a game object outside the blast zone, so park
@@ -1391,7 +1409,28 @@ fn thwomp_script_hx(cols: &[(f64, f64)]) -> String {
 /// `anims` are the entity's real animation names (the `forceAttack` labels) — a state is registered
 /// against the label nearest its assignment, so `toLocalState` plays a clip that exists.
 /// Returns the rewritten initialize()+update() body plus the persistent-state declarations.
-fn cgo_runnable(raw: &str, anims: &[String]) -> String {
+/// The stage-side context the reconstruction can't get from the enemy class alone: SSF2 splits a
+/// spawned hazard's lifecycle between the enemy class (the state machine `cgo_runnable` rebuilds)
+/// and the STAGE class (the spawn machine: when/where it appears, when it's culled). These are the
+/// same stepped values the template path uses.
+struct ReconWrap {
+    /// (x-center, landing-surface top y) per spawn column, FM coords.
+    cols: Vec<(f64, f64)>,
+    /// Park/spawn height (just inside the top blast bound).
+    spawn_y: f64,
+    /// Spawn-to-spawn period, FM frames (the stage spawn machine's full cycle).
+    spawn_period: f64,
+    /// Fall-speed cap (the class's getOwnStats maxYSpeed), FM px/frame.
+    terminal: f64,
+    /// The entrance clip's frame-script setYSpeed timeline, raw SSF2 (frame, speed).
+    bob: Vec<(u32, f64)>,
+    /// The class called addToCamera() — mirror with camera add/deleteTarget.
+    camera: bool,
+    /// FM name of the entrance animation (locates the entrance state for the bob gate).
+    entrance_anim: String,
+}
+
+fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap>) -> String {
     use regex::Regex;
     use std::collections::{BTreeMap, BTreeSet};
     // FrameTimer fields -> duration expr; dead fields (bound to an [SSF2-only] call); int fields.
@@ -1480,10 +1519,21 @@ fn cgo_runnable(raw: &str, anims: &[String]) -> String {
         st.clone(),
     ));
 
-    // risky calls used INSIDE a condition/expression -> replace with a safe literal (commenting the
-    // line would orphan a brace). risky STANDALONE statements -> comment the whole line.
-    let risky_expr: &[(&str, &str)] = &[("self.isOnFloor()", "false"), ("self.isOnGround()", "false")];
-    let risky = ["setCamBoxSize", "addTarget", "AudioClip.play", "createVfx", "setFallthrough", "deleteTarget"];
+    // risky calls used INSIDE a condition/expression -> replace with a safe equivalent (commenting
+    // the line would orphan a brace). with the spawn wrapper, isOnFloor gets a real synthesis (the
+    // engine's floor test against the column's landing surface); without it, a safe literal.
+    // camera add/deleteTarget and the createVfx dust are live-verified FM APIs (the template ships
+    // them), so they pass through; setCamBoxSize has no FM port (the camera frames its targets
+    // itself), setFallthrough is ported by the deck-structure follower, and sounds lack resources.
+    let on_floor: &str = if wrap.is_some() { "__onFloor()" } else { "false" };
+    let risky_expr: &[(&str, &str)] = &[("self.isOnFloor()", on_floor), ("self.isOnGround()", on_floor)];
+    let risky = ["setCamBoxSize", "AudioClip.play", "setFallthrough"];
+    // physics intents -> the scripted kinematics integrator (the wrapper appends the step). units:
+    // a 30fps per-frame velocity halves (x scale x 0.5); a per-frame^2 acceleration quarters.
+    let grav_re = Regex::new(r"^(\s*)self\.updateGameObjectStats\(\{ gravity: (-?\d+(?:\.\d+)?) \}\);").unwrap();
+    let yvel_re = Regex::new(r"^(\s*)self\.setYVelocity\((-?\d+(?:\.\d+)?)\);").unwrap();
+    let shake_re = Regex::new(r"\.shake\((-?\d+(?:\.\d+)?)\)").unwrap();
+    let vfx_scale_re = Regex::new(r"(scaleX|scaleY): (-?\d+(?:\.\d+)?)").unwrap();
 
     let mut out: Vec<String> = Vec::new();
     for line in raw.lines() {
@@ -1511,11 +1561,21 @@ fn cgo_runnable(raw: &str, anims: &[String]) -> String {
             s = ne.replace_all(&s, "!inLocalState($1)").to_string();
             s = s.replace(&format!("self.{st}"), "getLocalState()");
         }
-        // timer ops -> counter ops.
+        // timer ops. with the wrapper, a FrameTimer is really "frames since entering this state"
+        // (SSF2 constructs them at spawn and ticks each in exactly one state's handler), so all of
+        // them lower onto the wrapper's single frames-in-state counter — fewer persistent slots,
+        // and reset-on-transition comes free. without the wrapper, a per-timer slot each.
+        // a FrameTimer duration is 30fps frames; the counters tick at 60fps, so x2.
         for (f, dur) in &timers {
-            s = s.replace(&format!("self.{f}.tick()"), &format!("_t_{f}.inc()"));
-            s = s.replace(&format!("self.{f}.completed"), &format!("(_t_{f}.get() >= {dur})"));
-            s = s.replace(&format!("self.{f}.reset()"), &format!("_t_{f}.set(0)"));
+            if wrap.is_some() {
+                s = s.replace(&format!("self.{f}.tick();"), "// FrameTimer tick -> the frames-in-state counter");
+                s = s.replace(&format!("self.{f}.completed"), &format!("(_w_state_t.get() >= ({dur}) * 2)"));
+                s = s.replace(&format!("self.{f}.reset();"), "// FrameTimer reset -> frames-in-state resets on transition");
+            } else {
+                s = s.replace(&format!("self.{f}.tick()"), &format!("_t_{f}.inc()"));
+                s = s.replace(&format!("self.{f}.completed"), &format!("(_t_{f}.get() >= ({dur}) * 2)"));
+                s = s.replace(&format!("self.{f}.reset()"), &format!("_t_{f}.set(0)"));
+            }
         }
         // int field write/read -> persistent get/set.
         for f in &ints {
@@ -1526,6 +1586,26 @@ fn cgo_runnable(raw: &str, anims: &[String]) -> String {
         // updateGameObjectStats: drop SSF2-only flags.
         s = s.replace(", bypassCollisionTesting: false", "").replace(", bypassCollisionTesting: true", "")
              .replace(", surviveDeathBounds: false", "").replace(", surviveDeathBounds: true", "");
+        if wrap.is_some() {
+            // SSF2 physics intents -> the integrator's vars, units converted from 30fps.
+            if let Some(c) = grav_re.captures(&s) {
+                let g: f64 = c[2].parse().unwrap_or(0.0);
+                s = format!("{}_kin_grav.set({:.2}); // SSF2 gravity {} @30fps -> FM accel", &c[1], g * scale * 0.25, g);
+            } else if let Some(c) = yvel_re.captures(&s) {
+                let v: f64 = c[2].parse().unwrap_or(0.0);
+                s = format!("{}_kin_vy.set({:.2}); // SSF2 setYSpeed {} @30fps", &c[1], v * scale * 0.5, v);
+            }
+        }
+        // screen-space args (camera shake amplitude, the dust vfx scale) x the stage scale.
+        if let Some(c) = shake_re.captures(&s) {
+            let a: f64 = c[1].parse().unwrap_or(0.0);
+            s = shake_re.replace(&s, format!(".shake({:.1})", a * scale).as_str()).to_string();
+        }
+        if s.contains("createVfx") {
+            s = vfx_scale_re.replace_all(&s, |c: &regex::Captures| {
+                format!("{}: {:.1}", &c[1], c[2].parse::<f64>().unwrap_or(1.0) * scale)
+            }).to_string();
+        }
         out.push(s);
     }
     let mut body = out.join("\n");
@@ -1533,10 +1613,21 @@ fn cgo_runnable(raw: &str, anims: &[String]) -> String {
     let set_re = Regex::new(r"_s_(m_\w+)\.__SET__ (.*);").unwrap();
     body = set_re.replace_all(&body, "_s_$1.set($2);").to_string();
 
+    // with the spawn wrapper, the decompiled lifecycle becomes inner machinery: the wrapper owns
+    // the engine entry points and re-runs __hazardInit on every spawn-cycle engage. (renaming
+    // BEFORE the state registration below routes the registrations to the one-time module-scope
+    // guard instead of re-registering per engage.)
+    if wrap.is_some() {
+        body = body.replace("function initialize() {", "function __hazardInit() {")
+                   .replace("function update() {", "function __hazardUpdate() {");
+    }
+
     // register the local-state machine + each state's animation at the top of initialize() — before the
     // decompiled body's first toLocalState, and once (initialize runs once per spawn). a hazard always
     // has initialize(); if a future projectile path lacks one, guard a module-scope init instead.
-    if !state_regs.is_empty() {
+    // (with the wrapper, registration moves into the SYNTHESIZED initialize below — a make* slot
+    // dereferenced at module scope null-accesses on the first eval, before the CGO api is live.)
+    if !state_regs.is_empty() && wrap.is_none() {
         let mut reg = String::from("\n\tinitLocalStateMachine();");
         for (v, anim) in &state_regs { reg.push_str(&format!("\n\tregisterLocalState({v}, \"{anim}\");")); }
         let init_re = Regex::new(r"function initialize\(\) \{").unwrap();
@@ -1553,9 +1644,125 @@ fn cgo_runnable(raw: &str, anims: &[String]) -> String {
     // bare name — never re-call makeInt inside a function (that would shift the call-order keying).
     let mut preamble = String::new();
     for f in &ints { preamble.push_str(&format!("var _s_{f} = self.makeInt(0);\n")); }
-    for f in timers.keys() { preamble.push_str(&format!("var _t_{f} = self.makeInt(0);\n")); }
+    if wrap.is_none() {
+        for f in timers.keys() { preamble.push_str(&format!("var _t_{f} = self.makeInt(0);\n")); }
+    }
     let body = flatten_state_ladder(&body);
-    format!("{preamble}\n{body}")
+    let Some(w) = wrap else { return format!("{preamble}\n{body}") };
+
+    // ---- the synthesized stage spawn cycle + kinematics integrator ----
+    // SSF2 splits this hazard across two classes: the enemy class (the state machine above) and
+    // the stage class (spawn cadence/columns, the death-bounds cull). The wrapper rebuilds the
+    // stage half around the decompiled enemy half, plus the parts the SSF2 ENGINE did implicitly:
+    // gravity/yspeed integration with the maxYSpeed cap, landing on the column surface, and the
+    // entrance clip's frame-script setYSpeed timeline (a Graphic-pinned clip never self-runs).
+    let cols_lit = w.cols.iter().map(|(x, _)| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
+    let land_lit = w.cols.iter().map(|(_, y)| format!("{y:.1}")).collect::<Vec<_>>().join(", ");
+    // state registration runs once, behind the wrapper's first-update guard. NOT module scope
+    // (make* slots aren't dereferenceable on the first eval, before the CGO api is live) and NOT
+    // initialize() (the engine never calls it on a stage custom game object — the template's
+    // m_init-in-update guard is the proven pattern).
+    let mut state_reg = String::new();
+    if !state_regs.is_empty() {
+        state_reg.push_str("\t\tinitLocalStateMachine();\n");
+        for (v, anim) in &state_regs {
+            state_reg.push_str(&format!("\t\tregisterLocalState({v}, \"{anim}\");\n"));
+        }
+    }
+    // the class's own addToCamera (inside __hazardInit) fires per engage; the wrapper only needs
+    // the matching deleteTarget at the recycle (SSF2's death-bounds cull dropped the target).
+    let cam_del = if w.camera { "\t\tmatch.getCamera().deleteTarget(self);\n" } else { "" };
+    // the bob plays during the entrance state — locate it by its registered animation. its keys
+    // ride the frames-in-state counter (the entrance clip starts when the state does).
+    let bob_block = state_regs.iter()
+        .find(|(_, a)| a.eq_ignore_ascii_case(&w.entrance_anim))
+        .filter(|_| !w.bob.is_empty())
+        .map(|(v, _)| {
+            let ladder: String = w.bob.iter()
+                .map(|(f, sp)| format!("\t\tif (_w_state_t.get() == {}) {{ _kin_vy.set({:.2}); }}\n",
+                    (f.saturating_sub(1)) * 2, sp * scale * 0.5))
+                .collect();
+            format!("\t// entrance bob: the entrance sub-clip's frame scripts (setYSpeed timeline, 30->60fps)\n\
+                     \tif (inLocalState({v})) {{\n{ladder}\t}}\n")
+        })
+        .unwrap_or_default();
+    let script = format!(
+        "{preamble}\n\
+         // stage spawn machine constants (stepped from the stage + enemy classes)\n\
+         var COLUMNS = [{cols_lit}];\nvar LAND_YS = [{land_lit}];\n\
+         var SPAWN_Y = {spawn_y:.1};\nvar SPAWN_PERIOD = {spawn_period:.0};\nvar TERMINAL_V = {terminal:.2};\n\
+         var _w_init = self.makeBool(false);\n\
+         var _w_active = self.makeBool(false);\nvar _w_col = self.makeInt(0);\n\
+         var _w_clock = self.makeInt({half_period:.0});\nvar _w_cool = self.makeInt(0);\n\
+         var _w_prev = self.makeInt(-99);\nvar _w_state_t = self.makeInt(0);\n\
+         var _kin_vy = self.makeFloat(0.0);\nvar _kin_grav = self.makeFloat(0.0);\n\n\
+         // the SSF2 engine's isOnFloor: resting on the spawn column's landing surface.\n\
+         function __onFloor():Bool {{\n\treturn self.getY() >= LAND_YS[_w_col.get()];\n}}\n\n\
+         {body}\n\n\
+         function update() {{\n\
+         \t// one-time setup on the first update (the engine doesn't call initialize() on a stage\n\
+         \t// CGO, and make* slots aren't live at module scope): register states + park offscreen.\n\
+         \tif (!_w_init.get()) {{\n\
+         \t\t_w_init.set(true);\n\
+         \t\tself.setState(PState.ACTIVE);\n\
+         {state_reg}\
+         \t\tself.setX(COLUMNS[0]);\n\
+         \t\tself.setY(SPAWN_Y);\n\
+         \t}}\n\
+         \t// spawn-to-spawn clock (the stage spawn machine runs regardless of the enemy's phase)\n\
+         \t_w_clock.inc();\n\
+         \tif (!_w_active.get()) {{\n\
+         \t\tif (_w_clock.get() >= SPAWN_PERIOD) {{\n\
+         \t\t\t_w_clock.set(0);\n\
+         \t\t\t_w_col.set(Random.getInt(0, COLUMNS.length - 1));\n\
+         \t\t\tself.setX(COLUMNS[_w_col.get()]);\n\
+         \t\t\tself.setY(SPAWN_Y);\n\
+         \t\t\t_kin_vy.set(0);\n\
+         \t\t\t_kin_grav.set(0);\n\
+         \t\t\t_w_prev.set(-99);\n\
+         \t\t\t__hazardInit();\n\
+         \t\t\t_w_active.set(true);\n\
+         \t\t}}\n\
+         \t\treturn;\n\
+         \t}}\n\
+         \t// frames-in-state: every SSF2 FrameTimer here measures time since entering its state\n\
+         \tif (getLocalState() != _w_prev.get()) {{\n\
+         \t\t_w_prev.set(getLocalState());\n\
+         \t\t_w_state_t.set(0);\n\
+         \t}} else {{\n\
+         \t\t_w_state_t.inc();\n\
+         \t}}\n\
+         \tif (_w_cool.get() > 0) {{ _w_cool.dec(); }} else {{ self.reactivateHitboxes(); _w_cool.set(60); }}\n\
+         {bob_block}\
+         \t__hazardUpdate();\n\
+         \t// kinematics integrator: the SSF2 engine's gravity/yspeed step, 30fps units converted\n\
+         \tif (_kin_grav.get() > 0 && _kin_vy.get() < TERMINAL_V) {{\n\
+         \t\t_kin_vy.set(Math.min(_kin_vy.get() + _kin_grav.get(), TERMINAL_V));\n\
+         \t}}\n\
+         \tif (_kin_vy.get() > 0 && self.getY() + _kin_vy.get() >= LAND_YS[_w_col.get()]) {{\n\
+         \t\tself.setY(LAND_YS[_w_col.get()]); // the engine lands it on the column surface\n\
+         \t\t_kin_vy.set(0);\n\
+         \t}} else {{\n\
+         \t\tself.setY(self.getY() + _kin_vy.get());\n\
+         \t}}\n\
+         \t// SSF2 culls it past the death bounds (surviveDeathBounds=false); recycle for the next spawn\n\
+         \tif (_kin_vy.get() < 0 && self.getY() <= SPAWN_Y) {{\n\
+         \t\tself.setY(SPAWN_Y);\n\
+         \t\t_kin_vy.set(0);\n\
+         {cam_del}\
+         \t\t_w_active.set(false);\n\
+         \t}}\n\
+         }}\n",
+        spawn_y = w.spawn_y, spawn_period = w.spawn_period, terminal = w.terminal,
+        half_period = w.spawn_period / 2.0);
+    // the local-state subsystem is reached through the live-verified `Common.` binding (the bare
+    // names are unproven in a CGO scope; one pass over the assembled script keeps the lowering,
+    // the flattener, and the wrapper all working in bare-name terms).
+    let mut script = script;
+    for f in ["initLocalStateMachine(", "registerLocalState(", "toLocalState(", "inLocalState(", "getLocalState("] {
+        script = script.replace(f, &format!("Common.{f}"));
+    }
+    script
 }
 
 /// Expand single-line statement blocks (`if (x) { a; b; }`, `} else { c; }`) into multi-line form
@@ -2264,7 +2471,7 @@ mod hazard_tests {
             x: 0.0, y: 150.0, w: 700.0, h: 160.0,
             damage: 10.0, knockback: 0.0, angle: 45.0,
             interval: 0, active: 20, motion: "static".into(),
-            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
+            range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, max_y_speed: None,
         }
     }
 

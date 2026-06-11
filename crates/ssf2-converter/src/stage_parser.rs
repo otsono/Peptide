@@ -116,6 +116,9 @@ pub struct Hazard {
     /// decompile→translate pipeline (gated reconstruction path; needs a field-state + FrameTimer
     /// pass before it runs). None when the class has no lifecycle methods.
     pub reconstructed_script: Option<String>,
+    /// The class's `getOwnStats` maxYSpeed (the SSF2 engine's fall-speed cap) — the terminal
+    /// velocity the reconstruction's kinematics integrator honors. None = no cap declared.
+    pub max_y_speed: Option<f64>,
     /// Period in frames of the on/off pulse (0 = always active).
     pub interval: u32,
     /// Frames the hitbox stays active within each `interval` (ignored when interval is 0).
@@ -537,7 +540,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             motion: h.motion.clone().unwrap_or_else(|| "static".to_string()),
             range: h.range, period: h.period.max(1), rehit: h.rehit, kb_growth: 40.0,
             label: h.label.clone().unwrap_or_else(|| format!("Hazard {}", i + 1)),
-            art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
+            art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, max_y_speed: None,
         }
     }).collect()).unwrap_or_default();
 
@@ -1155,7 +1158,7 @@ fn actor_to_hazard(
     let mut hz = Hazard {
         x, y, w, h, damage, knockback, angle,
         interval: 0, active: 20, motion: motion.to_string(),
-        range: 0.0, period: 120, rehit, kb_growth, label: kind.label().to_string(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
+        range: 0.0, period: 120, rehit, kb_growth, label: kind.label().to_string(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, max_y_speed: None,
     };
     apply_enemy_stats(&mut hz, actor);
     Some(hz)
@@ -1171,6 +1174,7 @@ fn apply_enemy_stats(hz: &mut Hazard, actor: &crate::stage_abc::SpawnedActor) {
     hz.behavior = actor.behavior.clone();
     hz.reconstructed_script = actor.reconstructed_script.clone();
     hz.faller = actor.faller.clone();
+    hz.max_y_speed = actor.own_stats.get("maxYSpeed").copied();
     if let Some(h0) = actor.attack_hitboxes.first() {
         if let Some(&d) = h0.get("damage") { hz.damage = d; }
         if let Some(&p) = h0.get("power") { hz.knockback = p; }
@@ -1219,7 +1223,7 @@ fn detect_hazards(
             x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, w: r.w.max(20.0), h: r.h.max(20.0),
             damage, knockback, angle, interval: 0, active: 20,
             motion: motion.to_string(), range: 60.0, period: 120, rehit, kb_growth,
-            label: k.label().to_string(), art, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
+            label: k.label().to_string(), art, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, max_y_speed: None,
         })
     }).collect()
 }
