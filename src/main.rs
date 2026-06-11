@@ -1383,6 +1383,10 @@ fn connect_edit(
     let tree_comma_g = add_string_const(code, ",");
     let tree_close_g = add_string_const(code, ")\n");
     let tree_nomatch_g = add_string_const(code, "TREE: (no live match)\n");
+    // slot-index constants for the UNROLLED walk (a bytecode loop whose body resolves/allocates
+    // corrupts its counter at runtime — same phenomenon as the multiplayer extra-builds; unrolling
+    // with fixed indices sidesteps it entirely).
+    let tree_slot_idx: Vec<usize> = (0..8).map(|i| add_int(code, i)).collect();
     let char_body_f = require_field(code, "pxf.entity.Character", "body")?;
     let char_physics_f = require_field(code, "pxf.entity.Character", "physics")?;
     let char_damage_f = require_field(code, "pxf.entity.Character", "damage")?;
@@ -2866,56 +2870,60 @@ fn connect_edit(
         a.op(Opcode::Null { dst: r_lbl });
         a.op(Opcode::Call3 { dst: r_ret2, fun: RefFun(write_str), arg0: r_out2, arg1: r_acc, arg2: r_lbl });
         // sweep characters + custom game objects + projectiles; gameObjects alone isn't the union.
+        // UNROLLED over fixed slot indices (8 per collection): a bytecode loop whose body makes
+        // resolve/alloc calls corrupts its counter at runtime (the looped version dropped
+        // characters[1] and over-ran customGameObjects[2], killing the handler on an out-of-bounds
+        // GetArray) — the same phenomenon the multiplayer extra-builds hit; fixed indices + forward
+        // jumps sidestep it. 8 slots cover any triage roster (4 players + assists / a stage's CGOs).
         for fld in [characters_field, cgo_field, proj_field] {
-            let body = a.label();
-            let loop_top = a.label();
-            let next_arr = a.label();
-            a.op(Opcode::Int { dst: r_i, ptr: RefInt(zero_idx) });
-            a.place(loop_top);
-            // re-derive the collection chain from the STABLE global each iteration: the per-element
-            // calls (getClass/std_string allocate) leave the scratch object regs stale, but a global
-            // read can't be clobbered, so the length + native-array pointer stay valid. only the int
-            // counter r_i has to persist across the loop (the GC never disturbs an int register).
-            a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(mc_g) });
-            a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
-            a.op(Opcode::Field { dst: r_go, obj: r_cm, field: RefField(fld) });
-            a.jnull(r_go, next_arr);                                       // collection absent -> next
-            a.op(Opcode::Field { dst: r_len, obj: r_go, field: RefField(0) }); // length
-            a.op(Opcode::Field { dst: r_arr, obj: r_go, field: RefField(1) }); // native array
-            a.jslt(r_i, r_len, body);                                     // i < len -> body
-            a.jalways(next_arr);                                          // else -> next collection
-            a.place(body);
-            a.op(Opcode::GetArray { dst: r_el, array: r_arr, index: r_i });
-            a.op(Opcode::Incr { dst: r_i });
-            a.jnull(r_el, loop_top);                                      // null element -> next
-            // class name = Type.getClassName(Type.getClass(el))
-            a.op(Opcode::Call1 { dst: r_cls, fun: RefFun(type_getclass), arg0: r_el });
-            a.op(Opcode::Call1 { dst: r_str, fun: RefFun(type_getclassname), arg0: r_cls });
-            // acc = "  " + class + " @("
-            a.op(Opcode::GetGlobal { dst: r_acc, global: RefGlobal(tree_indent_g) });
-            a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
-            a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(tree_at_g) });
-            a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
-            // x = el.getX()
-            a.op(Opcode::UnsafeCast { dst: r_ent, src: r_el });
-            a.op(Opcode::Call1 { dst: r_f, fun: RefFun(entity_getx), arg0: r_ent });
-            a.op(Opcode::ToDyn { dst: r_dyn, src: r_f });
-            a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
-            a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
-            a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(tree_comma_g) });
-            a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
-            // y = el.getY()
-            a.op(Opcode::Call1 { dst: r_f, fun: RefFun(entity_gety), arg0: r_ent });
-            a.op(Opcode::ToDyn { dst: r_dyn, src: r_f });
-            a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
-            a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
-            a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(tree_close_g) }); // ")\n"
-            a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
-            a.op(Opcode::Null { dst: r_lbl });
-            a.op(Opcode::Call3 { dst: r_ret2, fun: RefFun(write_str), arg0: r_out2, arg1: r_acc, arg2: r_lbl });
-            a.jalways(loop_top);
-            a.place(next_arr);
+            for &slot_idx in &tree_slot_idx {
+                let skip = a.label();
+                // re-derive the collection chain fresh per slot (nothing persists across calls).
+                a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(mc_g) });
+                a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
+                a.jnull(r_cm, skip);
+                a.op(Opcode::Field { dst: r_go, obj: r_cm, field: RefField(fld) });
+                a.jnull(r_go, skip);
+                a.op(Opcode::Field { dst: r_len, obj: r_go, field: RefField(0) }); // length
+                a.op(Opcode::Field { dst: r_arr, obj: r_go, field: RefField(1) }); // native array
+                let in_range = a.label();
+                a.op(Opcode::Int { dst: r_i, ptr: RefInt(slot_idx) });
+                a.jslt(r_i, r_len, in_range);                              // slot < len -> read it
+                a.jalways(skip);
+                a.place(in_range);
+                a.op(Opcode::GetArray { dst: r_el, array: r_arr, index: r_i });
+                a.jnull(r_el, skip);                                       // empty slot -> next
+                // class name = Type.getClassName(Type.getClass(el))
+                a.op(Opcode::Call1 { dst: r_cls, fun: RefFun(type_getclass), arg0: r_el });
+                a.op(Opcode::Call1 { dst: r_str, fun: RefFun(type_getclassname), arg0: r_cls });
+                // acc = "  " + class + " @("
+                a.op(Opcode::GetGlobal { dst: r_acc, global: RefGlobal(tree_indent_g) });
+                a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+                a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(tree_at_g) });
+                a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+                // x = el.getX()
+                a.op(Opcode::UnsafeCast { dst: r_ent, src: r_el });
+                a.op(Opcode::Call1 { dst: r_f, fun: RefFun(entity_getx), arg0: r_ent });
+                a.op(Opcode::ToDyn { dst: r_dyn, src: r_f });
+                a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
+                a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+                a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(tree_comma_g) });
+                a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+                // y = el.getY() (el survives the calls; re-cast for the typed call)
+                a.op(Opcode::UnsafeCast { dst: r_ent, src: r_el });
+                a.op(Opcode::Call1 { dst: r_f, fun: RefFun(entity_gety), arg0: r_ent });
+                a.op(Opcode::ToDyn { dst: r_dyn, src: r_f });
+                a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
+                a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+                a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(tree_close_g) }); // ")\n"
+                a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+                a.op(Opcode::Null { dst: r_lbl });
+                a.op(Opcode::Call3 { dst: r_ret2, fun: RefFun(write_str), arg0: r_out2, arg1: r_acc, arg2: r_lbl });
+                a.place(skip);
+            }
         }
+        // re-fetch the output (r_out2 may be stale after the writes) and flush once.
+        a.op(Opcode::Field { dst: r_out2, obj: r_sock2, field: RefField(out_field) });
         a.op(Opcode::Call1 { dst: r_ret2, fun: RefFun(flush), arg0: r_out2 });
         a.jalways(end);
         a.place(nomatch);
