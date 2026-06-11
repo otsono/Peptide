@@ -34,14 +34,39 @@ var _w_clock = self.makeFrameTimer(SPAWN_PERIOD);
 var _w_cool = self.makeFrameTimer(60);
 var _w_prev = self.makeInt(-99);
 var _w_state_t = self.makeInt(0);
+var _sp_deck = self.makeInt(-1);
+var _sp_ceil = self.makeInt(-1);
+
+function __createSelfPlatform() {
+	if (_sp_deck.get() >= 0) {
+		return;
+	}
+	var n = match.getStructures().length;
+	// solid body outline (riders stand on top; walls block) + the CEILING underside
+	match.createLineSegmentStructure([-71.5, -156.0, 84.5, -156.0, 84.5, 13.0, -71.5, 13.0, -71.5, -156.0], new StructureStats({ startX: -2000, startY: -3000, leftLedge: false, rightLedge: false }));
+	match.createLineSegmentStructure([84.5, 13.0, -71.5, 13.0], new StructureStats({ startX: -2000, startY: -3000, structureType: StructureType.CEILING }));
+	_sp_deck.set(n);
+	_sp_ceil.set(n + 1);
+	// the body never grounds on its own platform (SSF2 self-platform semantics)
+	match.getStructures()[_sp_deck.get()].addToBlacklist(self);
+	match.getStructures()[_sp_ceil.get()].addToBlacklist(self);
+}
+
+function __selfPlatformDisabled(b:Bool) {
+	if (_sp_deck.get() < 0) {
+		return;
+	}
+	match.getStructures()[_sp_deck.get()].updateStructureStats({ disabled: b });
+	match.getStructures()[_sp_ceil.get()].updateStructureStats({ disabled: b });
+}
 
 function __hazardInit() {
 	// [SSF2-only: forceAttack] self.forceAttack("entrance");
 	Common.toLocalState(ST_ENTRANCE);
 	// FrameTimer construction -> the module-scope makeFrameTimer
 	// FrameTimer construction -> the module-scope makeFrameTimer
-	// [SSF2-only: createSelfPlatform] self.m_selfPlatform = self.createSelfPlatform(-55, -120, 120, 130);
-	// [needs-port] self.m_selfPlatform.setFallthrough(true);
+	__createSelfPlatform(); // SSF2 createSelfPlatform: deck + ceiling structures (helpers below)
+	__selfPlatformDisabled(true); // SSF2 setFallthrough(true)
 	// [needs-port] self.setCamBoxSize(110 + 30, 130 + 30, -15, -15);
 	match.getCamera().addTarget(self);
 	return;
@@ -57,7 +82,7 @@ function __hazardUpdate() {
 		if (_t_m_delayTimer.completed) {
 			Common.toLocalState(ST_FALL);
 			self.updateGameObjectStats({ gravity: 9.75, terminalVelocity: 19.50 }); // SSF2 gravity 30 @30fps
-			// [needs-port] self.m_selfPlatform.setFallthrough(false);
+			__selfPlatformDisabled(false); // SSF2 setFallthrough(false)
 		}
 	} else if (Common.inLocalState(ST_FALL)) {
 		if (self.isOnFloor()) {
@@ -88,8 +113,9 @@ function __hazardUpdate() {
 
 
 function update() {
-	// one-time setup on the first update: a position set in initialize() is clobbered
-	// by the engine's stage placement, and make* slots aren't live at module scope.
+	// one-time setup on the first update: the stage script positions this object right
+	// after createCustomGameObject (initialize() runs inside the create call, so a park
+	// set there would be overridden), and make* slots aren't live at module scope.
 	if (!_w_init.get()) {
 		_w_init.set(true);
 		self.setState(PState.ACTIVE);
@@ -142,11 +168,25 @@ function update() {
 		}
 	}
 	__hazardUpdate();
+	// the self-platform rides the body (SSF2 moves it with the enemy)
+	if (_sp_deck.get() >= 0) {
+		match.getStructures()[_sp_deck.get()].setX(self.getX());
+		match.getStructures()[_sp_deck.get()].setY(self.getY());
+		match.getStructures()[_sp_ceil.get()].setX(self.getX());
+		match.getStructures()[_sp_ceil.get()].setY(self.getY());
+	}
 	// SSF2 culls it past the death bounds (surviveDeathBounds=false); recycle for the next spawn
 	if (self.getYVelocity() < 0 && self.getY() <= SPAWN_Y) {
 		self.setY(SPAWN_Y);
 		self.setYVelocity(0);
 		match.getCamera().deleteTarget(self);
+		// park the self-platform off-world (carrying a rider out = KO, the SSF2 outcome)
+		if (_sp_deck.get() >= 0) {
+			match.getStructures()[_sp_deck.get()].setX(-2000);
+			match.getStructures()[_sp_deck.get()].setY(-3000);
+			match.getStructures()[_sp_ceil.get()].setX(-2000);
+			match.getStructures()[_sp_ceil.get()].setY(-3000);
+		}
 		_w_active.set(false);
 	}
 }
