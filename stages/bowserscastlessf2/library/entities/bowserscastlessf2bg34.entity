@@ -46,7 +46,7 @@
     },
     {
       "$id": "948de90b-1714-56e0-adf7-746b438f3b6f",
-      "length": 4,
+      "length": 2,
       "pluginMetadata": {
       },
       "symbol": "78b44ab4-c9ea-5373-a814-8d5cb940397f",
@@ -403,6 +403,16 @@
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "IMAGE"
+    },
+    {
+      "$id": "8eff1d6e-5852-50b4-8e61-c789fee185b8",
+      "length": 2,
+      "pluginMetadata": {
+      },
+      "symbol": "340228bb-0c8f-58c8-998f-d9ccd686b23e",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "IMAGE"
     }
   ],
   "layers": [
@@ -448,7 +458,8 @@
         "7e867cc4-f7d8-5a92-985a-81ce4d9f4647",
         "f3d5bfae-f1ed-5e51-9f50-f35c76435b80",
         "321efa80-70ad-5b0d-afeb-ec604af0c996",
-        "61c5483b-be3c-5196-8db4-a7ba64f93fc3"
+        "61c5483b-be3c-5196-8db4-a7ba64f93fc3",
+        "8eff1d6e-5852-50b4-8e61-c789fee185b8"
       ],
       "locked": false,
       "name": "art",
@@ -1046,6 +1057,21 @@
       "$id": "4853d1f0-adfb-585e-9a0e-f13a7ab5e303",
       "alpha": 1,
       "imageAsset": "acd3ee58-8dd8-5add-9a43-4c8036f13fdd",
+      "pivotX": 0,
+      "pivotY": 0,
+      "pluginMetadata": {
+      },
+      "rotation": 0,
+      "scaleX": 1.3,
+      "scaleY": 1.3,
+      "type": "IMAGE",
+      "x": 118.36500000000002,
+      "y": 548.6
+    },
+    {
+      "$id": "340228bb-0c8f-58c8-998f-d9ccd686b23e",
+      "alpha": 1,
+      "imageAsset": "15b7120a-3b8f-55e8-aca4-2e969b6b0acb",
       "pivotX": 0,
       "pivotY": 0,
       "pluginMetadata": {
