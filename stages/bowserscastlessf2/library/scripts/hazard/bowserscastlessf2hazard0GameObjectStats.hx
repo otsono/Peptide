@@ -3,7 +3,7 @@
 	spriteContent: self.getResource().getContent("bowserscastlessf2hazard0"),
 	initialState: PState.ACTIVE,
 	stateTransitionMapOverrides: [
-		PState.ACTIVE => { animation: "idle" }
+		PState.ACTIVE => { animation: "gameObjectIdle" }
 	],
 	baseScaleX: 1,
 	baseScaleY: 1,

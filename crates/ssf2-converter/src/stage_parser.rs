@@ -691,6 +691,23 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         let hz_abcs: Vec<crate::abc_parser::AbcFile> = crate::swf_parser::parse(&swf_data)
             .map(|s| s.abc_blocks.iter().filter_map(|b| crate::abc_parser::parse(b).ok()).collect())
             .unwrap_or_default();
+        // a hazard's art clip is ENGINE-DRIVEN, not authored scenery: a clip placed inside another
+        // SPRITE's timeline (the stage's background/terrain/foreground MCs) is scenery and must not
+        // be adopted (bowserscastle's Bowser spectator, placed in the background MC, shares the lava
+        // class's idle/wait/lose labels and would otherwise become the "art" of an invisible-region
+        // hazard, doubling him onto the lava CGO). ROOT-timeline placements don't disqualify — an
+        // engine-spawned hazard parks its clip at root frame 0 (the thwomp's below-stage rest spot).
+        let scenery_ids: std::collections::BTreeSet<u16> = {
+            let mut s = std::collections::BTreeSet::new();
+            for tags in sprites.values() {
+                for t in tags.iter() {
+                    if let swf::Tag::PlaceObject(po) = t {
+                        if let swf::PlaceObjectAction::Place(id) | swf::PlaceObjectAction::Replace(id) = po.action { s.insert(id); }
+                    }
+                }
+            }
+            s
+        };
         for hz in hazards.iter_mut() {
             // CODE-DRIVEN art clip: the hazard CLASS plays its art via `forceAttack("<label>")`, so
             // the art clip is the one whose frame labels carry those labels (the thing the script
@@ -698,7 +715,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             // the MOST of the class's forceAttack labels. Only when the class declared none (or none
             // match) do we fall back to the old linkage-keyword heuristic.
             let clip = (!hz.anim_labels.is_empty()).then(|| {
-                sprites.keys().filter_map(|id| {
+                sprites.keys().filter(|id| !scenery_ids.contains(id)).filter_map(|id| {
                     let labels = crate::sprite_parser::extract_frame_labels_from_tags(sprites[id]);
                     let hits = hz.anim_labels.iter()
                         .filter(|l| labels.iter().any(|(fl, _)| fl.eq_ignore_ascii_case(l))).count();
@@ -707,7 +724,8 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             }).flatten().or_else(|| {
                 let kw = hz.label.to_ascii_lowercase();
                 sym_names.iter()
-                    .filter(|(id, name)| name.to_ascii_lowercase().contains(&kw) && sprites.contains_key(id))
+                    .filter(|(id, name)| !scenery_ids.contains(id)
+                        && name.to_ascii_lowercase().contains(&kw) && sprites.contains_key(id))
                     .map(|(id, _)| (*id, crate::sprite_parser::extract_frame_labels_from_tags(sprites[id]).len()))
                     .filter(|(_, n)| *n > 0)
                     .max_by_key(|(_, n)| *n)
