@@ -1501,7 +1501,9 @@ pub fn extract_projectile_frame_images_from_swf(
     };
 
     let mut disp: BTreeMap<u16, (u16, String, ImageLocalMatrix)> = BTreeMap::new();
-    let mut unnamed_placements: BTreeMap<u16, (u16, ImageLocalMatrix, u16)> = BTreeMap::new();
+    // depth -> (sprite id, parent matrix, place frame, graphic frame): a placement with a ratio
+    // is a Graphic symbol showing the ONE frame the ratio selects (Flash's "Single Frame").
+    let mut unnamed_placements: BTreeMap<u16, (u16, ImageLocalMatrix, u16, Option<u16>)> = BTreeMap::new();
     let mut cur_frame: u16 = 0;
     let mut effect_frames: Vec<Vec<(u16, String, ImageLocalMatrix)>> = Vec::new();
 
@@ -1510,10 +1512,13 @@ pub fn extract_projectile_frame_images_from_swf(
             swf::Tag::ShowFrame => {
                 let mut snap: Vec<(u16, String, ImageLocalMatrix)> =
                     disp.values().map(|(id, sym, mat)| (*id, sym.clone(), *mat)).collect();
-                for (&_depth, (unnamed_id, parent_mat, place_frame)) in &unnamed_placements {
+                for (&_depth, (unnamed_id, parent_mat, place_frame, pinned)) in &unnamed_placements {
                     if let Some(uframes) = unnamed_frames.get(unnamed_id) {
-                        let uf_idx = (cur_frame.saturating_sub(*place_frame) as usize)
-                            .min(uframes.len().saturating_sub(1));
+                        let uf_idx = match pinned {
+                            Some(r) => (*r as usize).min(uframes.len().saturating_sub(1)),
+                            None => (cur_frame.saturating_sub(*place_frame) as usize)
+                                .min(uframes.len().saturating_sub(1)),
+                        };
                         for (inner_id, inner_sym, inner_mat) in &uframes[uf_idx] {
                             let composed = parent_mat.compose(inner_mat);
                             snap.push((*inner_id, inner_sym.clone(), composed));
@@ -1541,7 +1546,7 @@ pub fn extract_projectile_frame_images_from_swf(
                             // mario_fla.MarioCut_InPATriangle) is an animation,
                             // not an image — treating it as an image emits a
                             // dangling imageAsset (no PNG is ever written for it).
-                            unnamed_placements.insert(po.depth, (*cid, mat, cur_frame));
+                            unnamed_placements.insert(po.depth, (*cid, mat, cur_frame, po.ratio));
                         } else if let Some(sname) = named {
                             // Named bitmap/shape placed directly → an image.
                             disp.insert(po.depth, (*cid, sname.clone(), mat));
