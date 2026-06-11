@@ -1176,8 +1176,32 @@ pub fn generate_entity(
                             if turn_flip {
                                 fm_x = round2(-fm_x);
                             }
-                            let pivot_x = 0.0_f64;
-                            let pivot_y = 0.0_f64;
+                            // a ROTATED frame anchors at the image CENTER: with a (0,0) pivot the
+                            // rotation pre-bakes a corner orbit into x/y and leaves the anchor to
+                            // the exporter's trim correction, which renders as the sprite circling
+                            // without spinning (mario's tumble). center pivot + the center's world
+                            // position = the canonical form: it spins in place under any anchor
+                            // convention. unrotated frames keep the (0,0)-pivot corner form.
+                            let mut fm_y = fm_y;
+                            let mut pivot_x = 0.0_f64;
+                            let mut pivot_y = 0.0_f64;
+                            let effective_rot = ((world_rot % 360.0) + 360.0) % 360.0;
+                            if !turn_flip && effective_rot > 0.01 && effective_rot < 359.99 {
+                                if let Some(img) = bitmap_img {
+                                    let (hw, hh) = (img.width as f64 / 2.0, img.height as f64 / 2.0);
+                                    // center = corner + (-cos*px + sin*py, sin*px + cos*py) with
+                                    // SIGNED scales (fm_sy is negative under the y-flip): the sign
+                                    // convention solved numerically against the decomposition's own
+                                    // corner/rotation output, mapping every frame of a rotating
+                                    // placement to one constant center.
+                                    let (px, py) = (fm_sx * hw, fm_sy * hh);
+                                    let (sin, cos) = world_rot.to_radians().sin_cos();
+                                    fm_x = round2(fm_x - cos * px + sin * py);
+                                    fm_y = round2(fm_y + sin * px + cos * py);
+                                    pivot_x = hw;
+                                    pivot_y = hh;
+                                }
+                            }
 
                             symbols.push(json!({
                                 "$id": per_placement_sym_id,
