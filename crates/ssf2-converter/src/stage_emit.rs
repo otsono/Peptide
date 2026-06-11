@@ -761,30 +761,19 @@ fn thwomp_deck_script_hx(cols_x: &[f64], off_x: f64, off_y: f64, engage_y: f64) 
     format!(
         "// Thwomp deck — the SSF2 createSelfPlatform box riding the thwomp (standable in\n\
          // fall/land/rise; parked off-world while the thwomp waits at its spawn point).\n\
-         var COLS_X = [{cols_lit}];\nvar OFF_X = {off_x:.1};\nvar OFF_Y = {off_y:.1};\nvar ENGAGE_Y = {engage_y:.1};\n\
-         var m_engaged = self.makeBool(false);\n\n\
+         var COLS_X = [{cols_lit}];\nvar OFF_X = {off_x:.1};\nvar OFF_Y = {off_y:.1};\nvar ENGAGE_Y = {engage_y:.1};\n\n\
          function findThwomp() {{\n\
          \tvar objs = match.getCustomGameObjects();\n\
          \tfor (i in 0...objs.length) {{\n\
          \t\tvar o = objs[i];\n\
          \t\tfor (j in 0...COLS_X.length) {{ if (Math.abs(o.getX() - COLS_X[j]) < 2) {{ return o; }} }}\n\
          \t}}\n\treturn null;\n}}\n\n\
-         // the engine carries a standing rider through ANY structure move (even a far teleport), so\n\
-         // the dismount blacklists every character FIRST (they detach in place and fall, like the\n\
-         // SSF2 thwomp despawning under them), then parks; engaging lifts the blacklist again.\n\
-         function setRiders(allowed:Bool) {{\n\
-         \tvar chars = match.getCharacters();\n\
-         \tfor (i in 0...chars.length) {{\n\
-         \t\tif (allowed) {{ self.removeFromBlacklist(chars[i]); }} else {{ self.addToBlacklist(chars[i]); }}\n\
-         \t}}\n}}\n\n\
          function update() {{\n\
          \tvar t = findThwomp();\n\
-         \tif (t != null && t.getY() > ENGAGE_Y) {{\n\
-         \t\tif (!m_engaged.get()) {{ m_engaged.set(true); setRiders(true); }}\n\
-         \t\tself.setX(t.getX() + OFF_X); self.setY(t.getY() + OFF_Y);\n\
-         \t}} else {{\n\
-         \t\tif (m_engaged.get()) {{ m_engaged.set(false); setRiders(false); }}\n\
-         \t\tself.setX(-2000); self.setY(-3000);\n\t}}\n}}\n\
+         \tif (t != null && t.getY() > ENGAGE_Y) {{ self.setX(t.getX() + OFF_X); self.setY(t.getY() + OFF_Y); }}\n\
+         \t// parking carries any remaining rider off-world -> KO, the SSF2 outcome for riding\n\
+         \t// the thwomp to the top (it crosses the top blast bound there).\n\
+         \telse {{ self.setX(-2000); self.setY(-3000); }}\n}}\n\
          function initialize() {{}}\nfunction onTeardown() {{}}\nfunction onKill() {{}}\nfunction onStale() {{}}\n\
          function afterPushState() {{}}\nfunction afterPopState() {{}}\nfunction afterFlushStates() {{}}\n")
 }
@@ -989,6 +978,9 @@ struct HzAnim {
     scale: f64,
     /// `true` = a damaging phase (carries the HIT_BOX); `false` = a safe phase (sprite only).
     active: bool,
+    /// `true` = the SWF sub-clip stop()s (Flash timeline class with a stopping frame script), so
+    /// the FM animation plays once and HOLDS (endType NONE); `false` = the clip genuinely loops.
+    hold: bool,
 }
 
 /// A valid FM animation/identifier name from an SSF2 frame label (alphanumerics only, lower-cased
@@ -1039,7 +1031,7 @@ fn emit_multi_anim_hazard(
             name: fm_name, frame_guids: guids,
             x: f0.x * scale, y: f0.y * scale,
             w: f0.w as f64 * scale, h: f0.h as f64 * scale,
-            scale, active,
+            scale, active, hold: anim.stop_frame.is_some(),
         });
     }
     if hzanims.is_empty() { return Ok(()); }
@@ -1575,7 +1567,10 @@ fn hazard_hitbox_stats_multi(hz: &Hazard, anims: &[HzAnim], dual: bool) -> Strin
 fn hazard_animation_stats_multi(anims: &[HzAnim]) -> String {
     let entries: Vec<String> = anims.iter()
         .map(|a| {
-            let one_shot = a.name.contains("entrance") || a.name.contains("intro");
+            // hold-vs-loop is the SWF's own declaration: a sub-clip with a stop() frame script
+            // holds (NONE), one without loops — read from the timeline class, not guessed. The
+            // entrance/intro keyword stays only as a fallback for clips with no script data.
+            let one_shot = a.hold || a.name.contains("entrance") || a.name.contains("intro");
             let end = if one_shot { "NONE" } else { "LOOP" };
             format!("\t{}: {{ endType: AnimationEndType.{end} }}", a.name)
         }).collect();

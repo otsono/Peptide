@@ -154,6 +154,10 @@ pub struct ClipAnim {
     pub label: String,
     /// The animation's frames, in order (one rasterized image per source frame).
     pub frames: Vec<StageArt>,
+    /// 0-based frame the SWF timeline stop()s on, if the sub-clip HOLDS instead of looping (its
+    /// Flash-generated `_fla.` timeline class has a stopping frame script). `frames` is already
+    /// truncated to this; the emitter maps it to AnimationEndType.NONE. None = the clip loops.
+    pub stop_frame: Option<usize>,
 }
 
 impl Hazard {
@@ -683,6 +687,10 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // keyword and which carries frame labels; universal across hazards.
     let mut hazards = hazards;
     if render_art_flag {
+        // the ABC blocks, for hold-vs-loop: a sub-clip that stop()s carries a Flash timeline class.
+        let hz_abcs: Vec<crate::abc_parser::AbcFile> = crate::swf_parser::parse(&swf_data)
+            .map(|s| s.abc_blocks.iter().filter_map(|b| crate::abc_parser::parse(b).ok()).collect())
+            .unwrap_or_default();
         for hz in hazards.iter_mut() {
             // CODE-DRIVEN art clip: the hazard CLASS plays its art via `forceAttack("<label>")`, so
             // the art clip is the one whose frame labels carry those labels (the thing the script
@@ -714,7 +722,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
                     .collect();
                 // origin 0,0: the frames stay in the clip's LOCAL space, so the emitter centres them
                 // on the CGO (which is spawned at setX/setY) rather than the stage origin.
-                let anims = extract_labeled_clip_anims(cid, &sprites, &sym_names, &shape_defs, &bitmaps, &planes, 0.0, 0.0);
+                let anims = extract_labeled_clip_anims(cid, &sprites, &sym_names, &shape_defs, &bitmaps, &planes, &hz_abcs, 0.0, 0.0);
                 // only adopt a multi-animation CGO when it's genuinely animated (>1 label or any
                 // multi-frame segment); a single static label is just the placeholder art.
                 if anims.len() > 1 || anims.iter().any(|a| a.frames.len() > 1) {
@@ -1845,6 +1853,7 @@ fn composite_layer(
 /// composited per frame on ONE fixed canvas (the union across the sub-animation, so it doesn't
 /// wiggle). Universal — any multi-animation stage clip (hazards, animated props) uses this.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn extract_labeled_clip_anims(
     clip_id: u16,
     sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
@@ -1852,6 +1861,7 @@ fn extract_labeled_clip_anims(
     shape_defs: &BTreeMap<u16, &swf::Shape>,
     bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
     planes: &PlaneMap,
+    abcs: &[crate::abc_parser::AbcFile],
     ox: f64, oy: f64,
 ) -> Vec<ClipAnim> {
     let Some(tags) = sprites.get(&clip_id) else { return Vec::new() };
@@ -1869,6 +1879,38 @@ fn extract_labeled_clip_anims(
         let sub_len = children.iter()
             .filter_map(|(id, _, _)| sprite_frames.get(id).map(|fr| fr.len()))
             .max().unwrap_or(1).max(1);
+        // hold-vs-loop comes from the DRIVING nested clip's own timeline: a sub-clip that holds
+        // carries a Flash-generated `_fla.` class (frame scripts) bound in SymbolClass. `stop()`
+        // freezes where it fires; `gotoAndStop(target)` plays through then freezes at the target
+        // (a label in the SUB-clip's own timeline, or a 1-based frame number).
+        let driver_id = children.iter()
+            .filter_map(|(id, _, _)| sprite_frames.get(id).map(|fr| (*id, fr.len())))
+            .max_by_key(|(_, n)| *n).map(|(id, _)| id);
+        let hold = driver_id
+            .and_then(|id| sym_names.get(&id))
+            .and_then(|class| abcs.iter().find_map(|a| crate::abc_parser::extract_timeline_hold(a, class)));
+        // resolve to (play-until frame, freeze-at frame), both 0-based sub-frame indices.
+        let hold_frames: Option<(usize, usize)> = hold.as_ref().and_then(|h| match h {
+            crate::abc_parser::TimelineHold::StopAt(n) => {
+                let f = (*n as usize).saturating_sub(1);
+                Some((f, f))
+            }
+            crate::abc_parser::TimelineHold::GotoStop(target, n) => {
+                let until = (*n as usize).saturating_sub(1);
+                let at = if let Ok(num) = target.parse::<usize>() { num.saturating_sub(1) } else {
+                    let sub_labels = driver_id.and_then(|id| sprites.get(&id))
+                        .map(|t| crate::sprite_parser::extract_frame_labels_from_tags(t))
+                        .unwrap_or_default();
+                    sub_labels.iter().find(|(l, _)| l.eq_ignore_ascii_case(target))
+                        .map(|(_, f)| *f as usize)?
+                };
+                Some((until, at))
+            }
+        });
+        if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+            eprintln!("[hz-hold] label={label:?} driver={driver_id:?} class={:?} hold={hold:?} -> {hold_frames:?}",
+                driver_id.and_then(|id| sym_names.get(&id)));
+        }
         // walk every sub-frame, then composite all frames onto one fixed union canvas (no wiggle).
         let per_frame: Vec<Vec<Instance>> = (0..sub_len).map(|g| {
             let mut out = Vec::new();
@@ -1883,10 +1925,21 @@ fn extract_labeled_clip_anims(
             all.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max),
             all.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max),
         ));
-        let frames: Vec<StageArt> = per_frame.iter()
+        let mut frames: Vec<StageArt> = per_frame.iter()
             .filter_map(|insts| composite_layer(&insts.iter().collect::<Vec<_>>(), shape_defs, bitmaps, ox, oy, bounds))
             .collect();
-        if !frames.is_empty() { anims.push(ClipAnim { label: label.clone(), frames }); }
+        // arrange the frames so FM's play-once-and-hold (endType NONE) freezes on the SAME frame
+        // SSF2 freezes on: truncate at the play-until frame, and when the freeze target differs
+        // (gotoAndStop to a label) append that frame as the final held one.
+        let stop_frame = hold_frames.and_then(|(until, at)| {
+            if until + 1 < frames.len() { frames.truncate(until + 1); }
+            if at != until {
+                let held = frames.get(at).or(frames.first()).cloned()?;
+                frames.push(held);
+            }
+            Some(frames.len() - 1)
+        });
+        if !frames.is_empty() { anims.push(ClipAnim { label: label.clone(), frames, stop_frame }); }
     }
     anims
 }
