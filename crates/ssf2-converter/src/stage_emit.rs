@@ -241,6 +241,43 @@ impl<'a> EntityBuilder<'a> {
     /// A LINE_SEGMENT layer (walkable surface). `points` is the polyline (>= 2 points; a
     /// flat floor is 2, a curved/sloped terrain traces its surface). `pm` is the per-symbol
     /// FraymakersMetadata (structureType + ledge/dropThrough flags).
+    /// Emit a terrain surface polyline split into TYPED runs: a segment steeper than
+    /// `WALL_STEEPNESS_DEG` from horizontal is a wall (the side a fighter is blocked from
+    /// depends on travel direction: surfaces trace left to right with the solid below, so a
+    /// descending steep segment is the landmass's right face = RIGHT_WALL, an ascending one
+    /// its left face = LEFT_WALL); everything else is floor. Without the split the whole
+    /// profile is FLOOR and fighters slide up steep side faces instead of being blocked.
+    /// Ledge grabs attach only to the outer ends of the first/last floor run.
+    fn add_typed_surface(&mut self, name: &str, points: &[(f64, f64)], ledges: (bool, bool), drop_through: bool) {
+        const WALL_STEEPNESS_DEG: f64 = 60.0;
+        let steep = WALL_STEEPNESS_DEG.to_radians().tan();
+        // classify each segment, then merge consecutive same-type segments into runs.
+        let mut runs: Vec<(&'static str, Vec<(f64, f64)>)> = Vec::new();
+        for w in points.windows(2) {
+            let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+            let ty = if dy.abs() > dx.abs() * steep {
+                if dy > 0.0 { "RIGHT_WALL" } else { "LEFT_WALL" }
+            } else {
+                "FLOOR"
+            };
+            match runs.last_mut() {
+                Some((t, run)) if *t == ty => run.push(w[1]),
+                _ => runs.push((ty, vec![w[0], w[1]])),
+            }
+        }
+        let floor_idx: Vec<usize> = runs.iter().enumerate()
+            .filter(|(_, (t, _))| *t == "FLOOR").map(|(i, _)| i).collect();
+        for (i, (ty, run)) in runs.iter().enumerate() {
+            let left_ledge = ledges.0 && floor_idx.first() == Some(&i);
+            let right_ledge = ledges.1 && floor_idx.last() == Some(&i);
+            let label = if runs.len() == 1 { name.to_string() } else { format!("{name} {} {}", ty.to_lowercase().replace('_', " "), i) };
+            self.add_line_segment(&label, run, json!({
+                "structureType": ty, "leftLedge": left_ledge, "rightLedge": right_ledge,
+                "dropThrough": drop_through
+            }));
+        }
+    }
+
     fn add_line_segment(&mut self, name: &str, points: &[(f64, f64)], pm: Value) {
         let flat: Vec<f64> = points.iter().flat_map(|&(x, y)| [x, y]).collect();
         let sym = self.uid(&format!("sym:{name}"));
@@ -626,9 +663,7 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
             p.profile.clone().filter(|pf| pf.len() >= 2).unwrap_or(default)
         };
         if !p.drop_through && main_floor.as_ref().map(|m| m.rect == *r).unwrap_or(false) {
-            b.add_line_segment("Floor", &surface(vec![(lx, r.top()), (rx, r.top())]), json!({
-                "structureType": "FLOOR", "leftLedge": true, "rightLedge": true, "dropThrough": false
-            }));
+            b.add_typed_surface("Floor", &surface(vec![(lx, r.top()), (rx, r.top())]), (true, true), false);
         } else if p.drop_through {
             plat_n += 1;
             // tag moving platforms in the label so an author opening the entity in FrayTools
@@ -640,9 +675,7 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
         } else {
             plat_n += 1;
             let tag = if p.moving { " (SSF2 moving, static)" } else { "" };
-            b.add_line_segment(&format!("Solid {plat_n} Floor{tag}"), &surface(vec![(r.left(), r.top()), (r.right(), r.top())]), json!({
-                "structureType": "FLOOR", "leftLedge": false, "rightLedge": false, "dropThrough": false
-            }));
+            b.add_typed_surface(&format!("Solid {plat_n}{tag}"), &surface(vec![(r.left(), r.top()), (r.right(), r.top())]), (false, false), false);
         }
     }
 
@@ -1799,38 +1832,31 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
         Some((bx, by, bw, bh)) => {
             let (l, t, r, b) = (bx * scale, by * scale, (bx + bw) * scale, (by + bh) * scale);
             (
-                "var _sp_deck = self.makeInt(-1);\nvar _sp_ceil = self.makeInt(-1);\n".to_string(),
+                "var _sp_deck = self.makeInt(-1);\n".to_string(),
                 format!(
                     "function __createSelfPlatform() {{\n\
                      \tif (_sp_deck.get() >= 0) {{ return; }}\n\
                      \tvar n = match.getStructures().length;\n\
-                     \t// solid body outline (riders stand on top; walls block) + the CEILING underside\n\
-                     \tmatch.createLineSegmentStructure([{l:.1}, {t:.1}, {r:.1}, {t:.1}, {r:.1}, {b:.1}, {l:.1}, {b:.1}, {l:.1}, {t:.1}], new StructureStats({{ startX: -2000, startY: -3000, leftLedge: false, rightLedge: false }}));\n\
-                     \tmatch.createLineSegmentStructure([{r:.1}, {b:.1}, {l:.1}, {b:.1}], new StructureStats({{ startX: -2000, startY: -3000, structureType: StructureType.CEILING }}));\n\
+                     \t// the solid body outline, AUTO-typed: the engine classifies each face by its\n\
+                     \t// orientation (top = floor, steep sides = walls, underside = ceiling).\n\
+                     \tmatch.createLineSegmentStructure([{l:.1}, {t:.1}, {r:.1}, {t:.1}, {r:.1}, {b:.1}, {l:.1}, {b:.1}, {l:.1}, {t:.1}], new StructureStats({{ startX: -2000, startY: -3000, structureType: StructureType.AUTO, leftLedge: false, rightLedge: false }}));\n\
                      \t_sp_deck.set(n);\n\
-                     \t_sp_ceil.set(n + 1);\n\
                      \t// the body never grounds on its own platform (SSF2 self-platform semantics)\n\
                      \tmatch.getStructures()[_sp_deck.get()].addToBlacklist(self);\n\
-                     \tmatch.getStructures()[_sp_ceil.get()].addToBlacklist(self);\n\
                      }}\n\n\
                      function __selfPlatformDisabled(b:Bool) {{\n\
                      \tif (_sp_deck.get() < 0) {{ return; }}\n\
                      \tmatch.getStructures()[_sp_deck.get()].updateStructureStats({{ disabled: b }});\n\
-                     \tmatch.getStructures()[_sp_ceil.get()].updateStructureStats({{ disabled: b }});\n\
                      }}\n\n"),
                 "\t// the self-platform rides the body (SSF2 moves it with the enemy)\n\
                  \tif (_sp_deck.get() >= 0) {\n\
                  \t\tmatch.getStructures()[_sp_deck.get()].setX(self.getX());\n\
                  \t\tmatch.getStructures()[_sp_deck.get()].setY(self.getY());\n\
-                 \t\tmatch.getStructures()[_sp_ceil.get()].setX(self.getX());\n\
-                 \t\tmatch.getStructures()[_sp_ceil.get()].setY(self.getY());\n\
                  \t}\n".to_string(),
                 "\t\t// park the self-platform off-world (carrying a rider out = KO, the SSF2 outcome)\n\
                  \t\tif (_sp_deck.get() >= 0) {\n\
                  \t\t\tmatch.getStructures()[_sp_deck.get()].setX(-2000);\n\
                  \t\t\tmatch.getStructures()[_sp_deck.get()].setY(-3000);\n\
-                 \t\t\tmatch.getStructures()[_sp_ceil.get()].setX(-2000);\n\
-                 \t\t\tmatch.getStructures()[_sp_ceil.get()].setY(-3000);\n\
                  \t\t}\n".to_string(),
             )
         }

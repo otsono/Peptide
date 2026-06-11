@@ -1,7 +1,7 @@
 {
   "animations": [
     {
-      "$id": "d317c884-8cb1-5fb4-a148-5f2a0b8cb9db",
+      "$id": "e0471aae-7f33-5514-b986-bdbcf876f5c3",
       "layers": [
         "6a9779eb-f53d-5d76-93a6-5cecdd3eb17c",
         "7c1978a4-1639-5141-8e61-ef440745ed09",
@@ -24,15 +24,23 @@
         "b686fbcc-5d33-578a-942e-143566ffefcb",
         "e7bd25e8-1a72-5d0c-b5b1-624543a062ca",
         "1339cd94-64f7-54f2-96f1-f668b683de13",
-        "2e863652-a9f7-5902-bcf2-94f899636d37",
-        "565c861f-602d-5348-9084-654f3bc8ab2c",
-        "6b57a7b8-600d-5e5c-98e8-cefc5ef97142",
-        "85f4a088-32c4-53d6-be0d-ada7f7195d3c",
-        "3213b024-29d3-523f-9914-04f03ff090da",
-        "71edac89-5398-5853-95e6-a143b7d5267b",
-        "2c46b5c3-239a-593c-969f-b022dafd551d",
-        "df3b6b53-bc2d-5a88-b25f-142659eaa3b7",
-        "98ae169c-4879-5ff5-aec6-1aa5f5aed4aa"
+        "f43ec488-ca9f-5369-afb3-6be08ab6f801",
+        "9738d477-ec96-50f9-82cc-ab7c4c58d840",
+        "adcc43f4-dfc4-568e-a139-b55ba07d99a1",
+        "a47e951e-5dd8-56eb-86ae-6fd40f2f00f9",
+        "fcd7e9d8-2a1f-58d3-b53f-e5ab2d753373",
+        "00389169-ec38-515b-98ed-db454fc1b58e",
+        "9c3c2264-d082-5acb-9ccc-ce85e94ac220",
+        "90c8c428-90c0-566a-a9e7-a1617bd56b1c",
+        "747201d4-8296-53c9-a8fa-653cf8ea6a84",
+        "fb060b1b-0f4d-52a1-a749-5c2fc9498506",
+        "bfdeb3e8-4429-5151-9ebd-23a5045aed57",
+        "46bb92e5-4368-5e94-8dec-ae93587333f5",
+        "eeb8738e-7e2f-5773-ab51-693d6d07e2aa",
+        "d122f324-218c-5688-8cfa-795b3c3337c1",
+        "8af45ce0-109c-55b0-9425-be98e3c11448",
+        "40d12d83-c303-5ab5-98b4-182b840e4901",
+        "545fa02c-3b76-5893-be25-5fa67716d4c4"
       ],
       "name": "stage",
       "pluginMetadata": {}
@@ -253,82 +261,154 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "6617aacb-2b91-5fc9-9bdc-9330ef69bd31",
+      "$id": "398eabc3-7b9d-58d9-afef-03ecddfade26",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "317e75d7-c87b-571e-be82-788a58d72802",
+      "symbol": "a7e9ae78-3b2c-51dc-baa7-8a2ba5387a7a",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "9507cca2-772c-561e-bddf-8ca9e6657b01",
+      "$id": "a04353d0-fadf-50d4-b639-62bc9e174a5b",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "fc272d3b-bd23-54c6-a365-9721a50afd10",
+      "symbol": "7a83a361-0223-543e-becd-1a58ea52f2c2",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "30b8503d-8f10-5697-ba7a-a51ea3305f20",
+      "length": 2,
+      "pluginMetadata": {},
+      "symbol": "b119d743-bb44-5d7d-ac3e-39ba257783bb",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "b6e1b20a-6bd7-5452-a1a1-be15aabb65ef",
+      "length": 2,
+      "pluginMetadata": {},
+      "symbol": "48589a92-949f-59d7-9543-8ff52fd1a723",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "390d8454-57d5-519c-b828-02bd0056b168",
+      "length": 2,
+      "pluginMetadata": {},
+      "symbol": "61e77d07-ce2c-5649-9d29-73045eb015b3",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "07608c58-4481-5676-99b7-fef43d8b4c94",
+      "length": 2,
+      "pluginMetadata": {},
+      "symbol": "298535cc-e88c-5133-aeb6-a16650f8333c",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "418d5107-3635-51f4-ac8f-a1ff5a01a532",
+      "length": 2,
+      "pluginMetadata": {},
+      "symbol": "d1df3506-f7e2-5524-85c8-9d8da1469612",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "3174bed4-6635-56c4-83ee-21930fa65208",
+      "length": 2,
+      "pluginMetadata": {},
+      "symbol": "3e582e12-37e6-59dc-a2ce-2a83afaca6ed",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "7263b8e1-2a2a-5ef6-840a-89b540335313",
+      "length": 2,
+      "pluginMetadata": {},
+      "symbol": "66e10dec-cc55-510f-9bc7-fdd9035340e1",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "573ce432-fa4f-50b1-98c1-4856c06ac9da",
+      "length": 2,
+      "pluginMetadata": {},
+      "symbol": "3adbd63d-c1dc-5375-80a7-db9ff1f9f10c",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "d94bbe1f-843c-5cbd-a0ca-078593c7f9b3",
+      "$id": "50cc1eea-38f7-55c4-a955-cbb9d28b269b",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "96decb8b-50f1-5d70-9cd7-0d09ef942b2b",
+      "symbol": "af2e3bd7-cb91-5c33-8ebd-34ee78caecf3",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "6a70ccda-9bae-502b-b949-b82117f9194c",
+      "$id": "552902d9-6cd0-5195-8020-f3a7da5cbfb7",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "a9283f2a-dc3b-5586-974b-eb4ffcaa0185",
+      "symbol": "ce603784-7025-53a3-aafd-abbfd8aff806",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "f4562e40-6a95-5af2-b9f5-9534e6bf56e9",
+      "$id": "6a642857-7a53-5e13-8350-a93a49b700a6",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "37988407-47c5-5d60-8200-d301f735fdba",
+      "symbol": "e5186c89-9c0a-5c33-9a61-562da63468ef",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "01bc9703-b832-57ac-b805-ea7e85fea57c",
+      "$id": "e104637e-ef18-5306-a2b4-78638514f715",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "0b0e3d53-0733-584d-8f2b-6f72136ac8f1",
+      "symbol": "3013dfe2-770d-56b7-847f-4e3c54b791b1",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "ccac8a6d-6fa1-5d10-b968-7112ec72a641",
+      "$id": "4210499c-208a-5b6d-ab13-5bc36a043193",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "c9575547-d5a3-5ec2-b2ad-b3a10d6051b6",
+      "symbol": "e388bfdb-05f1-5b03-8950-51e2cbae95b7",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "c9db1290-513d-54a7-97bb-e0457d553feb",
+      "$id": "a4b9030a-d9b0-52d1-a5ae-c3a7274cec01",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "1df9033b-3359-50d6-bea4-7beae3196a65",
+      "symbol": "7d6c9792-287d-57cf-bee4-0dce73fefc88",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "ff377baa-db02-5b1c-a88a-1e02f6edd97f",
+      "$id": "033acd16-e89f-5c7e-ac00-c99c49eaba90",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "54806bce-f01a-53db-b160-4a13ce3ea285",
+      "symbol": "f91f0a49-bad9-59f3-9272-ad9c541c1f30",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
@@ -679,13 +759,13 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "2e863652-a9f7-5902-bcf2-94f899636d37",
+      "$id": "f43ec488-ca9f-5369-afb3-6be08ab6f801",
       "hidden": false,
       "keyframes": [
-        "6617aacb-2b91-5fc9-9bdc-9330ef69bd31"
+        "398eabc3-7b9d-58d9-afef-03ecddfade26"
       ],
       "locked": false,
-      "name": "Solid 2 Floor",
+      "name": "Solid 2 floor 0",
       "pluginMetadata": {
         "com.fraymakers.FraymakersMetadata": {
           "lineSegmentType": "LINE_SEGMENT_STRUCTURE"
@@ -694,10 +774,130 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "565c861f-602d-5348-9084-654f3bc8ab2c",
+      "$id": "9738d477-ec96-50f9-82cc-ab7c4c58d840",
       "hidden": false,
       "keyframes": [
-        "9507cca2-772c-561e-bddf-8ca9e6657b01"
+        "a04353d0-fadf-50d4-b639-62bc9e174a5b"
+      ],
+      "locked": false,
+      "name": "Solid 2 left wall 1",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "lineSegmentType": "LINE_SEGMENT_STRUCTURE"
+        }
+      },
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "adcc43f4-dfc4-568e-a139-b55ba07d99a1",
+      "hidden": false,
+      "keyframes": [
+        "30b8503d-8f10-5697-ba7a-a51ea3305f20"
+      ],
+      "locked": false,
+      "name": "Solid 2 floor 2",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "lineSegmentType": "LINE_SEGMENT_STRUCTURE"
+        }
+      },
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "a47e951e-5dd8-56eb-86ae-6fd40f2f00f9",
+      "hidden": false,
+      "keyframes": [
+        "b6e1b20a-6bd7-5452-a1a1-be15aabb65ef"
+      ],
+      "locked": false,
+      "name": "Solid 2 right wall 3",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "lineSegmentType": "LINE_SEGMENT_STRUCTURE"
+        }
+      },
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "fcd7e9d8-2a1f-58d3-b53f-e5ab2d753373",
+      "hidden": false,
+      "keyframes": [
+        "390d8454-57d5-519c-b828-02bd0056b168"
+      ],
+      "locked": false,
+      "name": "Solid 2 floor 4",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "lineSegmentType": "LINE_SEGMENT_STRUCTURE"
+        }
+      },
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "00389169-ec38-515b-98ed-db454fc1b58e",
+      "hidden": false,
+      "keyframes": [
+        "07608c58-4481-5676-99b7-fef43d8b4c94"
+      ],
+      "locked": false,
+      "name": "Solid 2 left wall 5",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "lineSegmentType": "LINE_SEGMENT_STRUCTURE"
+        }
+      },
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "9c3c2264-d082-5acb-9ccc-ce85e94ac220",
+      "hidden": false,
+      "keyframes": [
+        "418d5107-3635-51f4-ac8f-a1ff5a01a532"
+      ],
+      "locked": false,
+      "name": "Solid 2 floor 6",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "lineSegmentType": "LINE_SEGMENT_STRUCTURE"
+        }
+      },
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "90c8c428-90c0-566a-a9e7-a1617bd56b1c",
+      "hidden": false,
+      "keyframes": [
+        "3174bed4-6635-56c4-83ee-21930fa65208"
+      ],
+      "locked": false,
+      "name": "Solid 2 right wall 7",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "lineSegmentType": "LINE_SEGMENT_STRUCTURE"
+        }
+      },
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "747201d4-8296-53c9-a8fa-653cf8ea6a84",
+      "hidden": false,
+      "keyframes": [
+        "7263b8e1-2a2a-5ef6-840a-89b540335313"
+      ],
+      "locked": false,
+      "name": "Solid 2 floor 8",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "lineSegmentType": "LINE_SEGMENT_STRUCTURE"
+        }
+      },
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "fb060b1b-0f4d-52a1-a749-5c2fc9498506",
+      "hidden": false,
+      "keyframes": [
+        "573ce432-fa4f-50b1-98c1-4856c06ac9da"
       ],
       "locked": false,
       "name": "Entrance 0",
@@ -710,10 +910,10 @@
       "type": "POINT"
     },
     {
-      "$id": "6b57a7b8-600d-5e5c-98e8-cefc5ef97142",
+      "$id": "bfdeb3e8-4429-5151-9ebd-23a5045aed57",
       "hidden": false,
       "keyframes": [
-        "d94bbe1f-843c-5cbd-a0ca-078593c7f9b3"
+        "50cc1eea-38f7-55c4-a955-cbb9d28b269b"
       ],
       "locked": false,
       "name": "Entrance 1",
@@ -726,10 +926,10 @@
       "type": "POINT"
     },
     {
-      "$id": "85f4a088-32c4-53d6-be0d-ada7f7195d3c",
+      "$id": "46bb92e5-4368-5e94-8dec-ae93587333f5",
       "hidden": false,
       "keyframes": [
-        "6a70ccda-9bae-502b-b949-b82117f9194c"
+        "552902d9-6cd0-5195-8020-f3a7da5cbfb7"
       ],
       "locked": false,
       "name": "Entrance 2",
@@ -742,10 +942,10 @@
       "type": "POINT"
     },
     {
-      "$id": "3213b024-29d3-523f-9914-04f03ff090da",
+      "$id": "eeb8738e-7e2f-5773-ab51-693d6d07e2aa",
       "hidden": false,
       "keyframes": [
-        "f4562e40-6a95-5af2-b9f5-9534e6bf56e9"
+        "6a642857-7a53-5e13-8350-a93a49b700a6"
       ],
       "locked": false,
       "name": "Entrance 3",
@@ -758,10 +958,10 @@
       "type": "POINT"
     },
     {
-      "$id": "71edac89-5398-5853-95e6-a143b7d5267b",
+      "$id": "d122f324-218c-5688-8cfa-795b3c3337c1",
       "hidden": false,
       "keyframes": [
-        "01bc9703-b832-57ac-b805-ea7e85fea57c"
+        "e104637e-ef18-5306-a2b4-78638514f715"
       ],
       "locked": false,
       "name": "Respawn 0",
@@ -774,10 +974,10 @@
       "type": "POINT"
     },
     {
-      "$id": "2c46b5c3-239a-593c-969f-b022dafd551d",
+      "$id": "8af45ce0-109c-55b0-9425-be98e3c11448",
       "hidden": false,
       "keyframes": [
-        "ccac8a6d-6fa1-5d10-b968-7112ec72a641"
+        "4210499c-208a-5b6d-ab13-5bc36a043193"
       ],
       "locked": false,
       "name": "Respawn 1",
@@ -790,10 +990,10 @@
       "type": "POINT"
     },
     {
-      "$id": "df3b6b53-bc2d-5a88-b25f-142659eaa3b7",
+      "$id": "40d12d83-c303-5ab5-98b4-182b840e4901",
       "hidden": false,
       "keyframes": [
-        "c9db1290-513d-54a7-97bb-e0457d553feb"
+        "a4b9030a-d9b0-52d1-a5ae-c3a7274cec01"
       ],
       "locked": false,
       "name": "Respawn 2",
@@ -806,10 +1006,10 @@
       "type": "POINT"
     },
     {
-      "$id": "98ae169c-4879-5ff5-aec6-1aa5f5aed4aa",
+      "$id": "545fa02c-3b76-5893-be25-5fa67716d4c4",
       "hidden": false,
       "keyframes": [
-        "ff377baa-db02-5b1c-a88a-1e02f6edd97f"
+        "033acd16-e89f-5c7e-ac00-c99c49eaba90"
       ],
       "locked": false,
       "name": "Respawn 3",
@@ -1051,7 +1251,7 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "317e75d7-c87b-571e-be82-788a58d72802",
+      "$id": "a7e9ae78-3b2c-51dc-baa7-8a2ba5387a7a",
       "alpha": 0.5,
       "color": "0xeeeeee",
       "pluginMetadata": {
@@ -1066,19 +1266,163 @@
         -390.1299900817871,
         917.4100000000001,
         194.87000991821287,
+        917.4100000000001
+      ],
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "7a83a361-0223-543e-becd-1a58ea52f2c2",
+      "alpha": 0.5,
+      "color": "0xeeeeee",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "dropThrough": false,
+          "leftLedge": false,
+          "rightLedge": false,
+          "structureType": "LEFT_WALL"
+        }
+      },
+      "points": [
+        194.87000991821287,
         917.4100000000001,
+        218.27000991821288,
+        691.21
+      ],
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "b119d743-bb44-5d7d-ac3e-39ba257783bb",
+      "alpha": 0.5,
+      "color": "0xeeeeee",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "dropThrough": false,
+          "leftLedge": false,
+          "rightLedge": false,
+          "structureType": "FLOOR"
+        }
+      },
+      "points": [
         218.27000991821288,
         691.21,
         639.4700099182129,
+        691.21
+      ],
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "48589a92-949f-59d7-9543-8ff52fd1a723",
+      "alpha": 0.5,
+      "color": "0xeeeeee",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "dropThrough": false,
+          "leftLedge": false,
+          "rightLedge": false,
+          "structureType": "RIGHT_WALL"
+        }
+      },
+      "points": [
+        639.4700099182129,
         691.21,
+        662.8700099182129,
+        917.4100000000001
+      ],
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "61e77d07-ce2c-5649-9d29-73045eb015b3",
+      "alpha": 0.5,
+      "color": "0xeeeeee",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "dropThrough": false,
+          "leftLedge": false,
+          "rightLedge": false,
+          "structureType": "FLOOR"
+        }
+      },
+      "points": [
         662.8700099182129,
         917.4100000000001,
         873.4700099182129,
+        917.4100000000001
+      ],
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "298535cc-e88c-5133-aeb6-a16650f8333c",
+      "alpha": 0.5,
+      "color": "0xeeeeee",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "dropThrough": false,
+          "leftLedge": false,
+          "rightLedge": false,
+          "structureType": "LEFT_WALL"
+        }
+      },
+      "points": [
+        873.4700099182129,
         917.4100000000001,
+        896.8700099182129,
+        691.21
+      ],
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "d1df3506-f7e2-5524-85c8-9d8da1469612",
+      "alpha": 0.5,
+      "color": "0xeeeeee",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "dropThrough": false,
+          "leftLedge": false,
+          "rightLedge": false,
+          "structureType": "FLOOR"
+        }
+      },
+      "points": [
         896.8700099182129,
         691.21,
         1318.070009918213,
+        691.21
+      ],
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "3e582e12-37e6-59dc-a2ce-2a83afaca6ed",
+      "alpha": 0.5,
+      "color": "0xeeeeee",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "dropThrough": false,
+          "leftLedge": false,
+          "rightLedge": false,
+          "structureType": "RIGHT_WALL"
+        }
+      },
+      "points": [
+        1318.070009918213,
         691.21,
+        1341.470009918213,
+        917.4100000000001
+      ],
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "66e10dec-cc55-510f-9bc7-fdd9035340e1",
+      "alpha": 0.5,
+      "color": "0xeeeeee",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "dropThrough": false,
+          "leftLedge": false,
+          "rightLedge": false,
+          "structureType": "FLOOR"
+        }
+      },
+      "points": [
         1341.470009918213,
         917.4100000000001,
         1884.870009918213,
@@ -1087,7 +1431,7 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "fc272d3b-bd23-54c6-a365-9721a50afd10",
+      "$id": "3adbd63d-c1dc-5375-80a7-db9ff1f9f10c",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1097,7 +1441,7 @@
       "y": 660.205
     },
     {
-      "$id": "96decb8b-50f1-5d70-9cd7-0d09ef942b2b",
+      "$id": "af2e3bd7-cb91-5c33-8ebd-34ee78caecf3",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1107,7 +1451,7 @@
       "y": 661.245
     },
     {
-      "$id": "a9283f2a-dc3b-5586-974b-eb4ffcaa0185",
+      "$id": "ce603784-7025-53a3-aafd-abbfd8aff806",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1117,7 +1461,7 @@
       "y": 660.205
     },
     {
-      "$id": "37988407-47c5-5d60-8200-d301f735fdba",
+      "$id": "e5186c89-9c0a-5c33-9a61-562da63468ef",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1127,7 +1471,7 @@
       "y": 661.245
     },
     {
-      "$id": "0b0e3d53-0733-584d-8f2b-6f72136ac8f1",
+      "$id": "3013dfe2-770d-56b7-847f-4e3c54b791b1",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1137,7 +1481,7 @@
       "y": 478.075
     },
     {
-      "$id": "c9575547-d5a3-5ec2-b2ad-b3a10d6051b6",
+      "$id": "e388bfdb-05f1-5b03-8950-51e2cbae95b7",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1147,7 +1491,7 @@
       "y": 478.075
     },
     {
-      "$id": "1df9033b-3359-50d6-bea4-7beae3196a65",
+      "$id": "7d6c9792-287d-57cf-bee4-0dce73fefc88",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1157,7 +1501,7 @@
       "y": 478.075
     },
     {
-      "$id": "54806bce-f01a-53db-b160-4a13ce3ea285",
+      "$id": "f91f0a49-bad9-59f3-9272-ad9c541c1f30",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},

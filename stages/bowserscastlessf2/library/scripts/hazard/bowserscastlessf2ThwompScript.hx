@@ -35,21 +35,18 @@ var _w_cool = self.makeFrameTimer(60);
 var _w_prev = self.makeInt(-99);
 var _w_state_t = self.makeInt(0);
 var _sp_deck = self.makeInt(-1);
-var _sp_ceil = self.makeInt(-1);
 
 function __createSelfPlatform() {
 	if (_sp_deck.get() >= 0) {
 		return;
 	}
 	var n = match.getStructures().length;
-	// solid body outline (riders stand on top; walls block) + the CEILING underside
-	match.createLineSegmentStructure([-71.5, -156.0, 84.5, -156.0, 84.5, 13.0, -71.5, 13.0, -71.5, -156.0], new StructureStats({ startX: -2000, startY: -3000, leftLedge: false, rightLedge: false }));
-	match.createLineSegmentStructure([84.5, 13.0, -71.5, 13.0], new StructureStats({ startX: -2000, startY: -3000, structureType: StructureType.CEILING }));
+	// the solid body outline, AUTO-typed: the engine classifies each face by its
+	// orientation (top = floor, steep sides = walls, underside = ceiling).
+	match.createLineSegmentStructure([-71.5, -156.0, 84.5, -156.0, 84.5, 13.0, -71.5, 13.0, -71.5, -156.0], new StructureStats({ startX: -2000, startY: -3000, structureType: StructureType.AUTO, leftLedge: false, rightLedge: false }));
 	_sp_deck.set(n);
-	_sp_ceil.set(n + 1);
 	// the body never grounds on its own platform (SSF2 self-platform semantics)
 	match.getStructures()[_sp_deck.get()].addToBlacklist(self);
-	match.getStructures()[_sp_ceil.get()].addToBlacklist(self);
 }
 
 function __selfPlatformDisabled(b:Bool) {
@@ -57,7 +54,6 @@ function __selfPlatformDisabled(b:Bool) {
 		return;
 	}
 	match.getStructures()[_sp_deck.get()].updateStructureStats({ disabled: b });
-	match.getStructures()[_sp_ceil.get()].updateStructureStats({ disabled: b });
 }
 
 function __hazardInit() {
@@ -172,8 +168,6 @@ function update() {
 	if (_sp_deck.get() >= 0) {
 		match.getStructures()[_sp_deck.get()].setX(self.getX());
 		match.getStructures()[_sp_deck.get()].setY(self.getY());
-		match.getStructures()[_sp_ceil.get()].setX(self.getX());
-		match.getStructures()[_sp_ceil.get()].setY(self.getY());
 	}
 	// SSF2 culls it past the death bounds (surviveDeathBounds=false); recycle for the next spawn
 	if (self.getYVelocity() < 0 && self.getY() <= SPAWN_Y) {
@@ -184,8 +178,6 @@ function update() {
 		if (_sp_deck.get() >= 0) {
 			match.getStructures()[_sp_deck.get()].setX(-2000);
 			match.getStructures()[_sp_deck.get()].setY(-3000);
-			match.getStructures()[_sp_ceil.get()].setX(-2000);
-			match.getStructures()[_sp_ceil.get()].setY(-3000);
 		}
 		_w_active.set(false);
 	}
