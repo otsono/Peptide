@@ -1253,6 +1253,16 @@
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "IMAGE"
+    },
+    {
+      "$id": "73d38199-7045-5927-a1ee-b8eaa7369089",
+      "length": 2,
+      "pluginMetadata": {
+      },
+      "symbol": "ad32354d-5b06-5eb5-84d9-f6dffef37f60",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "IMAGE"
     }
   ],
   "layers": [
@@ -1437,7 +1447,8 @@
         "9b83609c-3443-57a5-949a-4485de2ae5a8",
         "2c69cc6f-d719-5afe-b4ea-a2b1d6af4797",
         "ce3442e5-3749-5141-929c-c4d5ad5c87f9",
-        "118937df-729c-5c03-a58b-25eba839bfa0"
+        "118937df-729c-5c03-a58b-25eba839bfa0",
+        "73d38199-7045-5927-a1ee-b8eaa7369089"
       ],
       "locked": false,
       "name": "art",
@@ -3280,6 +3291,21 @@
       "$id": "4820464c-d5ba-5229-9561-c6d4ef9d3bd0",
       "alpha": 1,
       "imageAsset": "5b5c5b8d-ceac-5c47-898e-6d72d394222e",
+      "pivotX": 0,
+      "pivotY": 0,
+      "pluginMetadata": {
+      },
+      "rotation": 0,
+      "scaleX": 1.3,
+      "scaleY": 1.3,
+      "type": "IMAGE",
+      "x": -81.9,
+      "y": -165.94500000000002
+    },
+    {
+      "$id": "ad32354d-5b06-5eb5-84d9-f6dffef37f60",
+      "alpha": 1,
+      "imageAsset": "0661d07c-728f-5f02-bb65-d8f4ed77911a",
       "pivotX": 0,
       "pivotY": 0,
       "pluginMetadata": {

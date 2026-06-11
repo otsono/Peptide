@@ -2142,6 +2142,41 @@ impl AbcVisitor for ForceAttackVisitor {
         None
     }
 }
+/// How an SWF sub-clip's own timeline ENDS its playback, recovered from its Flash-generated
+/// `<doc>_fla.<Clip>_NN` class (the 1-based `frameN` instance methods carry the frame scripts,
+/// decompiled through the standard pipeline). A clip with no bound class or no hold genuinely loops.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum TimelineHold {
+    /// `stop()` at 1-based frame N: plays to N and freezes there.
+    StopAt(u32),
+    /// `gotoAndStop(target)` at 1-based frame N: plays to N, then freezes at `target`
+    /// (a frame-label name, or a 1-based frame number rendered as digits).
+    GotoStop(String, u32),
+}
+
+pub(crate) fn extract_timeline_hold(abc: &AbcFile, class_name: &str) -> Option<TimelineHold> {
+    let class = abc.classes.iter().find(|c| c.name == class_name)?;
+    let stop_re = regex::Regex::new(r"\bstop\(\)").unwrap();
+    let goto_re = regex::Regex::new(r#"gotoAndStop\((?:"([^"]+)"|(\d+))"#).unwrap();
+    // playback freezes at the FIRST frame whose script holds (it never plays past it).
+    let mut best: Option<(u32, TimelineHold)> = None;
+    for t in &class.instance_methods {
+        let Some(n) = t.name.strip_prefix("frame").and_then(|s| s.parse::<u32>().ok()) else { continue };
+        let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
+        let code = decompiler::decompile_method(body, abc, &t.name, &[]);
+        let hold = if let Some(c) = goto_re.captures(&code) {
+            let target = c.get(1).or_else(|| c.get(2)).map(|m| m.as_str().to_string()).unwrap_or_default();
+            Some(TimelineHold::GotoStop(target, n))
+        } else if stop_re.is_match(&code) {
+            Some(TimelineHold::StopAt(n))
+        } else { None };
+        if let Some(h) = hold {
+            if best.as_ref().map(|(bn, _)| n < *bn).unwrap_or(true) { best = Some((n, h)); }
+        }
+    }
+    best.map(|(_, h)| h)
+}
+
 pub(crate) fn extract_force_attack_labels(abc: &AbcFile, class_name: &str) -> Vec<String> {
     let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return vec![] };
     let mut v = ForceAttackVisitor::default();
