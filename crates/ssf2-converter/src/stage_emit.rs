@@ -1800,8 +1800,8 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
     ) };
     let script = format!(
         "{const_decls}\
-         // the local-state machine inits + registers at MODULE scope on every eval, exactly like\n\
-         // the proven template idiom (in-update init left make* slots unreliable).\n\
+         // the local-state machine inits + registers at MODULE scope on every eval, the\n\
+         // proven template idiom.\n\
          {state_reg}\
          {preamble}\n\
          // stage spawn machine constants (stepped from the stage + enemy classes)\n\
@@ -1814,8 +1814,8 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
          {bob_decls}\n\
          {body}\n\n\
          function update() {{\n\
-         \t// one-time setup on the first update (the engine doesn't call initialize() on a stage\n\
-         \t// CGO, and make* slots aren't live at module scope): register states + park offscreen.\n\
+         \t// one-time setup on the first update: a position set in initialize() is clobbered\n\
+         \t// by the engine's stage placement, and make* slots aren't live at module scope.\n\
          \tif (!_w_init.get()) {{\n\
          \t\t_w_init.set(true);\n\
          \t\tself.setState(PState.ACTIVE);\n\
