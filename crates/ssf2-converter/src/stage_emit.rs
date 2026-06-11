@@ -805,7 +805,10 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
     // custom game object by matching its x against the spawn columns, engages only once the thwomp
     // has dropped below its spawn hover (SSF2 keeps fallthrough on during the entrance), and parks
     // off-world between cycles.
-    if let Some(hz) = model.hazards.iter().find(|h| h.behavior.self_platform.is_some()) {
+    // (the decompiler-reconstruction path creates these at the class's own createSelfPlatform
+    // call site instead, so the pre-spawned follower pair is template-path only.)
+    let decomp_selfplatform = std::env::var("PEPTIDE_DECOMP_HAZARD").is_ok();
+    if let Some(hz) = model.hazards.iter().find(|h| h.behavior.self_platform.is_some() && !decomp_selfplatform) {
         let (bx, by, bw, bh) = hz.behavior.self_platform.unwrap();
         let s = model.scale;
         let deck_w = (bw * s).round().max(8.0);
@@ -1231,6 +1234,7 @@ fn emit_multi_anim_hazard(
                     .map(|a| a.frame_velocities.clone()).unwrap_or_default(),
                 camera: hz.behavior.camera_target,
                 entrance_anim: entrance_name.clone(),
+                self_platform: hz.behavior.self_platform,
             }
         });
         format!("// {} reconstructed from its SSF2 update()/initialize() via the character decompiler,\n\
@@ -1486,6 +1490,9 @@ struct ReconWrap {
     camera: bool,
     /// FM name of the entrance animation (locates the entrance state for the bob gate).
     entrance_anim: String,
+    /// The class's own createSelfPlatform box (raw SSF2 coords, relative to the body origin):
+    /// lowered to runtime structures created at the call site.
+    self_platform: Option<(f64, f64, f64, f64)>,
 }
 
 fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap>) -> String {
@@ -1599,6 +1606,9 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
         if trimmed.starts_with("//") {
             if trimmed.contains("[SSF2-only: unnattachFromGround]") {
                 out.push(format!("{indent}self.unattachFromFloor(); // SSF2 unnattachFromGround"));
+            } else if trimmed.contains("[SSF2-only: createSelfPlatform]")
+                && wrap.is_some_and(|w| w.self_platform.is_some()) {
+                out.push(format!("{indent}__createSelfPlatform(); // SSF2 createSelfPlatform: deck + ceiling structures (helpers below)"));
             } else {
                 out.push(line.to_string());
             }
@@ -1606,6 +1616,15 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
         }
         // FrameTimer construction: the counter IS the state (starts at 0); drop the `new`.
         if timer_re.is_match(line) { out.push(format!("{indent}// FrameTimer construction -> the module-scope makeFrameTimer")); continue; }
+        // the self-platform's fallthrough toggle lowers natively: SSF2 fallthrough(true) means
+        // riders pass through entirely, which is FM's `disabled` stat (dropThrough would only
+        // make it a soft platform).
+        if wrap.is_some_and(|w| w.self_platform.is_some()) {
+            if let Some(c) = Regex::new(r"^(\s*)self\.m_\w+\.setFallthrough\((true|false)\);").unwrap().captures(line) {
+                out.push(format!("{}__selfPlatformDisabled({}); // SSF2 setFallthrough({})", &c[1], &c[2], &c[2]));
+                continue;
+            }
+        }
         // a line touching a dead field or a risky unmapped call: neutralize.
         if dead.iter().any(|f| line.contains(&format!("self.{f}")))
             || risky.iter().any(|r| line.contains(r)) {
@@ -1772,6 +1791,50 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
     // the class's own addToCamera (inside __hazardInit) fires per engage; the wrapper only needs
     // the matching deleteTarget at the recycle (SSF2's death-bounds cull dropped the target).
     let cam_del = if w.camera { "\t\tmatch.getCamera().deleteTarget(self);\n" } else { "" };
+    // SSF2 createSelfPlatform lowering: the body's solid box as runtime structures created at
+    // the class's own call site. hscript can't hold object handles across frames (make* slots
+    // are scalars), so the structures' indices in match.getStructures() are stashed instead.
+    let (sp_decls, sp_helpers, sp_follow, sp_park) = match w.self_platform {
+        Some((bx, by, bw, bh)) => {
+            let (l, t, r, b) = (bx * scale, by * scale, (bx + bw) * scale, (by + bh) * scale);
+            (
+                "var _sp_deck = self.makeInt(-1);\nvar _sp_ceil = self.makeInt(-1);\n".to_string(),
+                format!(
+                    "function __createSelfPlatform() {{\n\
+                     \tif (_sp_deck.get() >= 0) {{ return; }}\n\
+                     \tvar n = match.getStructures().length;\n\
+                     \t// solid body outline (riders stand on top; walls block) + the CEILING underside\n\
+                     \tmatch.createLineSegmentStructure([{l:.1}, {t:.1}, {r:.1}, {t:.1}, {r:.1}, {b:.1}, {l:.1}, {b:.1}, {l:.1}, {t:.1}], new StructureStats({{ startX: -2000, startY: -3000, leftLedge: false, rightLedge: false }}));\n\
+                     \tmatch.createLineSegmentStructure([{r:.1}, {b:.1}, {l:.1}, {b:.1}], new StructureStats({{ startX: -2000, startY: -3000, structureType: StructureType.CEILING }}));\n\
+                     \t_sp_deck.set(n);\n\
+                     \t_sp_ceil.set(n + 1);\n\
+                     \t// the body never grounds on its own platform (SSF2 self-platform semantics)\n\
+                     \tmatch.getStructures()[_sp_deck.get()].addToBlacklist(self);\n\
+                     \tmatch.getStructures()[_sp_ceil.get()].addToBlacklist(self);\n\
+                     }}\n\n\
+                     function __selfPlatformDisabled(b:Bool) {{\n\
+                     \tif (_sp_deck.get() < 0) {{ return; }}\n\
+                     \tmatch.getStructures()[_sp_deck.get()].updateStructureStats({{ disabled: b }});\n\
+                     \tmatch.getStructures()[_sp_ceil.get()].updateStructureStats({{ disabled: b }});\n\
+                     }}\n\n"),
+                "\t// the self-platform rides the body (SSF2 moves it with the enemy)\n\
+                 \tif (_sp_deck.get() >= 0) {\n\
+                 \t\tmatch.getStructures()[_sp_deck.get()].setX(self.getX());\n\
+                 \t\tmatch.getStructures()[_sp_deck.get()].setY(self.getY());\n\
+                 \t\tmatch.getStructures()[_sp_ceil.get()].setX(self.getX());\n\
+                 \t\tmatch.getStructures()[_sp_ceil.get()].setY(self.getY());\n\
+                 \t}\n".to_string(),
+                "\t\t// park the self-platform off-world (carrying a rider out = KO, the SSF2 outcome)\n\
+                 \t\tif (_sp_deck.get() >= 0) {\n\
+                 \t\t\tmatch.getStructures()[_sp_deck.get()].setX(-2000);\n\
+                 \t\t\tmatch.getStructures()[_sp_deck.get()].setY(-3000);\n\
+                 \t\t\tmatch.getStructures()[_sp_ceil.get()].setX(-2000);\n\
+                 \t\t\tmatch.getStructures()[_sp_ceil.get()].setY(-3000);\n\
+                 \t\t}\n".to_string(),
+            )
+        }
+        None => (String::new(), String::new(), String::new(), String::new()),
+    };
     // the bob plays during the entrance state — locate it by its registered animation. its keys
     // ride the frames-in-state counter (the entrance clip starts when the state does).
     let bob_block = state_regs.iter()
@@ -1811,7 +1874,8 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
          var _w_active = self.makeBool(false);\nvar _w_col = self.makeInt(0);\n\
          // the stage's spawn machine (one full spawn-to-spawn period) + the rehit cadence\n\
          var _w_clock = self.makeFrameTimer(SPAWN_PERIOD);\nvar _w_cool = self.makeFrameTimer(60);\n\
-         {bob_decls}\n\
+         {bob_decls}{sp_decls}\n\
+         {sp_helpers}\
          {body}\n\n\
          function update() {{\n\
          \t// one-time setup on the first update: the stage script positions this object right\n\
@@ -1846,11 +1910,13 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
          \tif (_w_cool.completed) {{ self.reactivateHitboxes(); _w_cool.reset(); }}\n\
          {bob_block}\
          \t__hazardUpdate();\n\
+         {sp_follow}\
          \t// SSF2 culls it past the death bounds (surviveDeathBounds=false); recycle for the next spawn\n\
          \tif (self.getYVelocity() < 0 && self.getY() <= SPAWN_Y) {{\n\
          \t\tself.setY(SPAWN_Y);\n\
          \t\tself.setYVelocity(0);\n\
          {cam_del}\
+         {sp_park}\
          \t\t_w_active.set(false);\n\
          \t}}\n\
          }}\n",
