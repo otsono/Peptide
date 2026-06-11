@@ -2,5 +2,5 @@
 {
 	entrance: { endType: AnimationEndType.NONE },
 	fall: { endType: AnimationEndType.LOOP },
-	idle: { endType: AnimationEndType.NONE }
+	idle: { endType: AnimationEndType.LOOP }
 }
