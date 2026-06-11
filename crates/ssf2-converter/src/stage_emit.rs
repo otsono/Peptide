@@ -714,7 +714,79 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
         contents.push(json!({ "id": cid, "type": "structure", "objectStatsId": stats_id, "scriptId": script_id }));
         spawn_ids.push(cid);
     }
+    // a hazard that declares createSelfPlatform (the Thwomp) gets a DECK structure riding it: the
+    // standable box on the falling/landed/rising body (riding it up is real SSF2 gameplay). the
+    // deck finds the thwomp custom game object by matching its x against the spawn columns,
+    // engages only once the thwomp has dropped below its spawn hover (SSF2 keeps fallthrough on
+    // during the entrance), and parks off-world between cycles.
+    if let Some(hz) = model.hazards.iter().find(|h| h.behavior.self_platform.is_some()) {
+        let (bx, by, bw, _bh) = hz.behavior.self_platform.unwrap();
+        let s = model.scale;
+        let deck_w = (bw * s).round().max(8.0);
+        let off_x = (bx + bw / 2.0) * s; // box centre relative to the body origin
+        let off_y = by * s;              // standable top edge
+        let cols_x: Vec<f64> = if !model.sink_columns.is_empty() { model.sink_columns.clone() }
+            else { vis.iter().map(|p| p.rect.x + p.rect.w / 2.0).collect() };
+        let spawn_y = model.death_box.as_ref().map(|b| b.y + 60.0)
+            .unwrap_or_else(|| vis.iter().map(|p| p.rect.y).fold(f64::MAX, f64::min) - 520.0);
+        let di = sprite_dims.len();
+        let img: image::RgbaImage = image::RgbaImage::new(deck_w as u32, 10); // transparent, collision-only
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .context("encode deck png")?;
+        let guid = det_uuid(&format!("stage::{id}::platformSprite{di}"));
+        std::fs::write(sprites.join(format!("{id}_platformSprite{di}.png")), &png)?;
+        write_json(&sprites.join(format!("{id}_platformSprite{di}.png.meta")), &json!({
+            "export": false, "guid": guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
+        }))?;
+        sprite_dims.push((guid, deck_w, 10.0));
+        let cid = format!("{id}thwompdeck");
+        let stats_id = format!("{cid}Stats");
+        std::fs::write(scripts.join(format!("{stats_id}.hx")), platform_stats_hx(id, -2000.0, -3000.0, di))?;
+        write_meta(&scripts.join(format!("{stats_id}.hx.meta")), id, &stats_id, "hscript", None, None)?;
+        let deck_script_id = format!("{id}thwompdeckScript");
+        std::fs::write(scripts.join(format!("{deck_script_id}.hx")), thwomp_deck_script_hx(&cols_x, off_x, off_y, spawn_y + 80.0))?;
+        write_meta(&scripts.join(format!("{deck_script_id}.hx.meta")), id, &deck_script_id, "hscript", Some("LINE_SEGMENT_STRUCTURE"), None)?;
+        contents.push(json!({ "id": cid, "type": "structure", "objectStatsId": stats_id, "scriptId": deck_script_id }));
+        spawn_ids.push(cid);
+    }
     Ok((sprite_dims, contents, spawn_ids))
+}
+
+/// The Thwomp's rideable deck — 1:1 from SSF2 `createSelfPlatform`: a line-segment structure that
+/// follows the thwomp custom game object (matched by column x), standable once the thwomp drops
+/// below its spawn hover, parked off-world between cycles.
+fn thwomp_deck_script_hx(cols_x: &[f64], off_x: f64, off_y: f64, engage_y: f64) -> String {
+    let cols_lit = cols_x.iter().map(|x| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
+    format!(
+        "// Thwomp deck — the SSF2 createSelfPlatform box riding the thwomp (standable in\n\
+         // fall/land/rise; parked off-world while the thwomp waits at its spawn point).\n\
+         var COLS_X = [{cols_lit}];\nvar OFF_X = {off_x:.1};\nvar OFF_Y = {off_y:.1};\nvar ENGAGE_Y = {engage_y:.1};\n\
+         var m_engaged = self.makeBool(false);\n\n\
+         function findThwomp() {{\n\
+         \tvar objs = match.getCustomGameObjects();\n\
+         \tfor (i in 0...objs.length) {{\n\
+         \t\tvar o = objs[i];\n\
+         \t\tfor (j in 0...COLS_X.length) {{ if (Math.abs(o.getX() - COLS_X[j]) < 2) {{ return o; }} }}\n\
+         \t}}\n\treturn null;\n}}\n\n\
+         // the engine carries a standing rider through ANY structure move (even a far teleport), so\n\
+         // the dismount blacklists every character FIRST (they detach in place and fall, like the\n\
+         // SSF2 thwomp despawning under them), then parks; engaging lifts the blacklist again.\n\
+         function setRiders(allowed:Bool) {{\n\
+         \tvar chars = match.getCharacters();\n\
+         \tfor (i in 0...chars.length) {{\n\
+         \t\tif (allowed) {{ self.removeFromBlacklist(chars[i]); }} else {{ self.addToBlacklist(chars[i]); }}\n\
+         \t}}\n}}\n\n\
+         function update() {{\n\
+         \tvar t = findThwomp();\n\
+         \tif (t != null && t.getY() > ENGAGE_Y) {{\n\
+         \t\tif (!m_engaged.get()) {{ m_engaged.set(true); setRiders(true); }}\n\
+         \t\tself.setX(t.getX() + OFF_X); self.setY(t.getY() + OFF_Y);\n\
+         \t}} else {{\n\
+         \t\tif (m_engaged.get()) {{ m_engaged.set(false); setRiders(false); }}\n\
+         \t\tself.setX(-2000); self.setY(-3000);\n\t}}\n}}\n\
+         function initialize() {{}}\nfunction onTeardown() {{}}\nfunction onKill() {{}}\nfunction onStale() {{}}\n\
+         function afterPushState() {{}}\nfunction afterPopState() {{}}\nfunction afterFlushStates() {{}}\n")
 }
 
 /// Stats for one moving platform: which sprite + animation gives its geometry, and where it spawns.
@@ -1033,7 +1105,10 @@ fn emit_multi_anim_hazard(
         let shake_amp = b.shake.unwrap_or(13.0) * scale;
         let fall_v = b.fall_gravity.unwrap_or(30.0) * scale * 0.5;
         let rise_v = b.rise_yspeed.map(f64::abs).unwrap_or(6.0) * scale * 0.5;
-        thwomp_multi_script_hx(cols, spawn_y, shake_amp, fall_v, rise_v, &entrance_name, &idle_name, &fall_name)
+        // the landing dust poof (SSF2 attachEffect global_dust_cloud at scale 2): the global-vfx
+        // shape from the mappings' global_vfx_map, scaled to the stage like any screen effect.
+        let dust_scale = 2.0 * scale;
+        thwomp_multi_script_hx(cols, spawn_y, shake_amp, fall_v, rise_v, dust_scale, &entrance_name, &idle_name, &fall_name)
     } else {
         hazard_anim_loop_script_hx(hz, &hzanims, &idle_name)
     };
@@ -1382,7 +1457,7 @@ fn cgo_runnable(raw: &str, anims: &[String]) -> String {
 }
 
 /// Cross-frame state via `self.make*` (a plain `var` re-inits every frame on a game object).
-fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fall_v: f64, rise_v: f64, entrance: &str, idle: &str, fall: &str) -> String {
+fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fall_v: f64, rise_v: f64, dust_scale: f64, entrance: &str, idle: &str, fall: &str) -> String {
     let cols_lit = cols.iter().map(|(x, _)| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
     let land_lit = cols.iter().map(|(_, y)| format!("{y:.1}")).collect::<Vec<_>>().join(", ");
     let (entr_s, idle_s, fall_s) = (entrance.to_ascii_uppercase(), idle.to_ascii_uppercase(), fall.to_ascii_uppercase());
@@ -1420,7 +1495,7 @@ fn thwomp_multi_script_hx(cols: &[(f64, f64)], spawn_y: f64, shake_amp: f64, fal
          \t\tif (m_timer.get() >= ENTRANCE_T) {{ m_phase.set(2); Common.toLocalState(LState.{fall_s}); }}\n\
          \t}} else if (p == 2) {{ // fall: constant terminal velocity (gravity 30 capped at 30)\n\
          \t\tself.setY(self.getY() + FALL_V);\n\
-         \t\tif (self.getY() >= LAND_YS[m_col.get()]) {{ self.setY(LAND_YS[m_col.get()]); m_phase.set(3); m_timer.set(0); Common.toLocalState(LState.{idle_s}); match.getCamera().shake({shake_amp:.1}); }}\n\
+         \t\tif (self.getY() >= LAND_YS[m_col.get()]) {{ self.setY(LAND_YS[m_col.get()]); m_phase.set(3); m_timer.set(0); Common.toLocalState(LState.{idle_s}); match.getCamera().shake({shake_amp:.1}); match.createVfx(new VfxStats({{ spriteContent: \"global::vfx.vfx\", animation: GlobalVfx.DUST_POOF, scaleX: {dust_scale:.1}, scaleY: {dust_scale:.1} }}), self); }}\n\
          \t}} else if (p == 3) {{ // landed: the column platform under it sinks; hold (SSF2 waitTimer 90f)\n\
          \t\tm_timer.set(m_timer.get() + 1);\n\t\tif (m_timer.get() >= LAND_WAIT) {{ m_phase.set(4); }}\n\
          \t}} else {{ // rise at SSF2 YSpeed -6 until past the spawn point, then rest\n\
@@ -1911,7 +1986,7 @@ mod hazard_tests {
         for (name, s) in [
             ("hazard_script", hazard_script_hx(&hz)),
             ("thwomp_single", thwomp_script_hx(&cols)),
-            ("thwomp_multi", thwomp_multi_script_hx(&cols, -67.0, 13.0, 19.5, 3.9, "entrance", "idle", "fall")),
+            ("thwomp_multi", thwomp_multi_script_hx(&cols, -67.0, 13.0, 19.5, 3.9, 2.6, "entrance", "idle", "fall")),
         ] {
             assert!(s.contains("self.makeInt(") || s.contains("self.makeFloat(") || s.contains("self.makeBool("),
                 "{name}: no persistent state (self.make*) — counters reset every frame: {s}");

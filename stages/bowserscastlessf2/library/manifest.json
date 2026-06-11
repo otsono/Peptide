@@ -52,6 +52,12 @@
       "objectStatsId": "bowserscastlessf2platform1Stats",
       "scriptId": "bowserscastlessf2platformScript",
       "type": "structure"
+    },
+    {
+      "id": "bowserscastlessf2thwompdeck",
+      "objectStatsId": "bowserscastlessf2thwompdeckStats",
+      "scriptId": "bowserscastlessf2thwompdeckScript",
+      "type": "structure"
     }
   ],
   "resourceId": "bowserscastlessf2"

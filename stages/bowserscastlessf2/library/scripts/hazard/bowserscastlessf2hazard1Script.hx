@@ -56,7 +56,7 @@ function update() {
 		if (m_timer.get() >= ENTRANCE_T) { m_phase.set(2); Common.toLocalState(LState.FALL); }
 	} else if (p == 2) { // fall: constant terminal velocity (gravity 30 capped at 30)
 		self.setY(self.getY() + FALL_V);
-		if (self.getY() >= LAND_YS[m_col.get()]) { self.setY(LAND_YS[m_col.get()]); m_phase.set(3); m_timer.set(0); Common.toLocalState(LState.IDLE); match.getCamera().shake(16.9); }
+		if (self.getY() >= LAND_YS[m_col.get()]) { self.setY(LAND_YS[m_col.get()]); m_phase.set(3); m_timer.set(0); Common.toLocalState(LState.IDLE); match.getCamera().shake(16.9); match.createVfx(new VfxStats({ spriteContent: "global::vfx.vfx", animation: GlobalVfx.DUST_POOF, scaleX: 2.6, scaleY: 2.6 }), self); }
 	} else if (p == 3) { // landed: the column platform under it sinks; hold (SSF2 waitTimer 90f)
 		m_timer.set(m_timer.get() + 1);
 		if (m_timer.get() >= LAND_WAIT) { m_phase.set(4); }
