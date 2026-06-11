@@ -1,7 +1,7 @@
 {
   "animations": [
     {
-      "$id": "db2ff3e3-690d-5540-a68b-6089f63be9ad",
+      "$id": "874c0ffe-215b-5d85-907d-2ab18ae99107",
       "layers": [
         "6a9779eb-f53d-5d76-93a6-5cecdd3eb17c",
         "7c1978a4-1639-5141-8e61-ef440745ed09",
@@ -12,27 +12,27 @@
         "2096da71-bf91-5b48-904e-f01fff470121",
         "e1155df8-237f-5037-a9ff-622813577ae7",
         "126beca2-54ce-5426-9002-58d767368993",
-        "6599a949-1e2f-5933-9357-af427687733b",
-        "cbc60981-7fb3-5a86-b1ea-60bcb39a9abc",
-        "6087efcb-b7ae-50bc-b069-db4887d690b3",
-        "eb89d110-b6e6-5ded-a738-0d2760417779",
-        "ee7df9d8-8dc5-5660-b335-b984a202c00c",
-        "5cdef036-2779-598d-bd14-305912a63924",
-        "c95113c0-7bc7-582d-8147-3bb65086bfbf",
-        "99569e22-fd7b-5dd7-bfca-27000f1ba30c",
-        "44c4cd75-2efe-54f7-bbcb-0daefaa6e985",
-        "e80a3834-b3bf-54b7-9918-85302159c626",
-        "b353308d-4189-507e-9115-3210291cf1af",
-        "b5f6498a-e81c-5639-bfe9-273cc1e95296",
-        "10b6376e-f2d5-5cea-b24d-b7a506e265e4",
-        "65049340-834e-5c04-8cfe-7eb960b76fdf",
-        "bc1fc041-5d3f-5257-9f49-9e3b10938c15",
-        "f17d89bd-64e4-5736-a703-5bb17e827aaa",
-        "d9234718-8e1a-5924-9cb3-20772917acdb",
-        "0c21cd7c-9c1b-58c8-b330-3d8c5585702e",
-        "57d312a9-f447-5c89-9a5f-fddf58379f93",
-        "fb756adf-04bc-53cf-ae59-708bb8bbdaaf",
-        "b3f2ded7-e89e-5bd9-8ca2-1f87ddd05f33"
+        "531b4aae-9a20-5d4c-866d-a1728c55577c",
+        "45161e57-e125-5c46-8020-7f10e3b247cb",
+        "6c60fb26-51ad-5df8-b940-e246cd63aa2d",
+        "4a79e6be-f70f-552e-a58c-0b419986868b",
+        "35120e0c-9426-5139-ade6-41274d654d5e",
+        "6f123a17-c50a-542a-848b-114f90de1996",
+        "da467710-e4d9-54ce-9da0-06d9f7778116",
+        "4ae07bf1-cfba-53b7-8a4b-6cf772c86ec6",
+        "47873702-82de-52cc-a2e4-dc01e5a606d5",
+        "23ea0c04-18ef-5a6a-b7f8-71bb21f4ca27",
+        "86a08ba2-d2cf-5ec1-a1b3-9078fe628674",
+        "1e862c2c-cf63-52a7-a4e1-18667f59dac2",
+        "df8400c1-1703-52e9-8eca-4de7d036fc9e",
+        "247a3e4b-e65b-5342-a9ed-c839efeb9662",
+        "298dd232-afb1-53d8-8579-3941f4ef1d88",
+        "e236831a-964f-5f3a-8175-8c3d34842797",
+        "dc5f8709-17ef-5da4-9495-2edc4ffe8de6",
+        "9f3270a9-b877-5372-ba49-70cac1fa97b5",
+        "0df26096-9b93-5890-a65f-2194ad0037c7",
+        "1665588a-9ec1-59a5-8470-e9ac8097225a",
+        "35c3636b-6960-53bb-81ae-a7b663e34a8a"
       ],
       "name": "stage",
       "pluginMetadata": {}
@@ -62,6 +62,15 @@
         "e1a6ef22-2957-5f12-b97d-baa4eb0c233b"
       ],
       "name": "platformSprite2",
+      "pluginMetadata": {}
+    },
+    {
+      "$id": "2475a073-b587-5f63-9eaf-49ac7641a219",
+      "layers": [
+        "297e8f2d-7546-5c94-a0ef-822a7f833807",
+        "7556599f-ab98-5f96-b14a-b9113cf548c4"
+      ],
+      "name": "platformSprite3",
       "pluginMetadata": {}
     }
   ],
@@ -193,169 +202,187 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "63507bf8-e83c-5100-bdf7-160ad2828dc0",
+      "$id": "5601f6b0-985c-5da3-b7a5-1ef4e19ce244",
       "length": 2,
       "pluginMetadata": {},
-      "type": "CONTAINER"
-    },
-    {
-      "$id": "b97db377-6e55-5558-84dc-c5428202b640",
-      "length": 2,
-      "pluginMetadata": {},
-      "type": "CONTAINER"
-    },
-    {
-      "$id": "56dbdf52-d81d-58ea-871d-888addc87bde",
-      "length": 2,
-      "pluginMetadata": {},
-      "type": "CONTAINER"
-    },
-    {
-      "$id": "03432de0-4164-5ebd-92db-a07b2ad49d0f",
-      "length": 2,
-      "pluginMetadata": {},
-      "symbol": "04acfcb2-d292-501f-acdc-b625d75d73bf",
+      "symbol": "12a205f3-e92d-5b09-8eee-d4257f37cf46",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "IMAGE"
     },
     {
-      "$id": "dab1c52e-2650-5c05-921a-efd541e0c7a5",
+      "$id": "91829236-dbc6-558f-8d1a-89db06cf4f4d",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "7b8d479e-3c20-5be2-b826-de5ecdcf5045",
+      "symbol": "b89d66b4-33b6-57f6-83b7-51bdb0b76213",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "19063f4f-06e4-5cc2-b1fb-4e9d21376df2",
+      "length": 2,
+      "pluginMetadata": {},
+      "type": "CONTAINER"
+    },
+    {
+      "$id": "7145b415-a84a-5fdc-b4b4-cf47e00abebf",
+      "length": 2,
+      "pluginMetadata": {},
+      "type": "CONTAINER"
+    },
+    {
+      "$id": "3ae6e580-b109-594e-9788-55bca6135866",
+      "length": 2,
+      "pluginMetadata": {},
+      "type": "CONTAINER"
+    },
+    {
+      "$id": "fbbda73f-8414-55b6-902b-9284d8310e0c",
+      "length": 2,
+      "pluginMetadata": {},
+      "symbol": "52f749f5-a73c-5615-a5da-ef033cb965f8",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "IMAGE"
     },
     {
-      "$id": "493d57c8-0a9b-58f1-a94b-a4cc3328b313",
+      "$id": "81e8eca5-6bfa-57ce-ad3b-50e68a852157",
+      "length": 2,
+      "pluginMetadata": {},
+      "symbol": "554c0778-b169-591c-93cd-01a5ccb8775e",
+      "tweenType": "LINEAR",
+      "tweened": false,
+      "type": "IMAGE"
+    },
+    {
+      "$id": "1e3f393b-ea74-57e8-9332-72dbef7fbe11",
       "length": 2,
       "pluginMetadata": {},
       "type": "CONTAINER"
     },
     {
-      "$id": "b3d9060c-1f89-5844-bf94-3c10a3bdd9c1",
+      "$id": "5bd1a721-fa98-5e78-81d8-de458d26a056",
       "length": 2,
       "pluginMetadata": {},
       "type": "CONTAINER"
     },
     {
-      "$id": "ed70363c-3b78-58f3-94c2-3a30678ae03a",
+      "$id": "229d8a49-61b4-5f2a-b7a9-beae6b56e6f0",
       "length": 2,
       "pluginMetadata": {},
       "type": "CONTAINER"
     },
     {
-      "$id": "878eed19-5b92-51a7-ad94-7ebd10eeda69",
+      "$id": "dbb10c95-1a7b-531b-b0cb-958f2bd32601",
       "length": 2,
       "pluginMetadata": {},
       "type": "CONTAINER"
     },
     {
-      "$id": "ef33eff3-66cb-51b2-a96c-4d50d48acd16",
+      "$id": "12e0215f-4e2f-5b63-a6ee-5a051bad8279",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "bfde07d9-4df5-5056-b2e2-cef4eb288325",
+      "symbol": "cd2c0d51-c98e-5623-9cc8-70ad9d01b02b",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "COLLISION_BOX"
     },
     {
-      "$id": "0d9796b3-0575-584c-8548-bb5c7c05ff87",
+      "$id": "1ca0f2a1-e5dc-5808-ad86-9222c7475b56",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "139e62d0-2e20-57a2-9368-f88d654ab56d",
+      "symbol": "190181ed-fd40-586e-b819-1976d2f730f3",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "COLLISION_BOX"
     },
     {
-      "$id": "7acea75b-de1f-547c-8ed8-852682d55014",
+      "$id": "3fc102a2-0416-53ed-bb1d-4c19d332b69d",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "ce1b1c4a-f710-585d-9ca8-446487365724",
+      "symbol": "7457d5e4-c609-5061-a9ee-f674c156c571",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "040644e2-ae9e-5673-b414-32b764f0ebfa",
+      "$id": "91bf0693-9323-5933-86c2-dbc94449e911",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "4e2293ef-79f8-5b7e-915c-659d37674813",
+      "symbol": "f79fd10e-b004-50ba-a50c-53e4bd92cabd",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "b27b6a33-5516-5a4b-9bab-b3d5bae72dc5",
+      "$id": "311b0b96-703c-5c29-91ff-f4ccc239378e",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "b888862f-457e-5879-bb16-95a61198a677",
+      "symbol": "6d6597f2-1254-5fd6-ac0c-8f123221cf26",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "721a8d41-2406-57a0-9260-e77d45684a0b",
+      "$id": "01ac021d-a7a7-5830-a946-126fddb88b45",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "2fb16b99-80e2-52aa-952a-b5bbe79f70a8",
+      "symbol": "2835a52f-5775-57d9-bf9b-18af80a13759",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "14dcfff7-ce33-5c7e-bb0e-d1b93ce01ecf",
+      "$id": "dfc0c4a3-464f-58c9-bfbc-06532488c4f1",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "6131b26c-2928-5314-8701-0f8c67bbdf5b",
+      "symbol": "74de9977-7c31-50f4-8a0d-3866b4be3972",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "401c5cfb-44f9-52fa-96ca-a4a5f32a2079",
+      "$id": "9b687a88-64c6-54a7-bf40-6338df6e8ce3",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "9f21a507-2293-5a04-bbda-0b15ec63ce5a",
+      "symbol": "c8809bd7-7c5b-56da-ac81-08b48980cd37",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "e4ffd3ce-61b3-549e-853a-8c0b27f0eb95",
+      "$id": "bad60bae-fbb6-52cb-aedf-902cce8d5a39",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "4659d75c-0fd9-56fa-83f3-26c4d541c034",
+      "symbol": "5ee841a5-81e9-5c49-ae57-08e350dcfaf5",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "50f65786-eee5-59e8-841e-7bb17d6f778c",
+      "$id": "214142d6-8bf7-50a9-ba8e-763db81828f1",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "bd39f923-742f-5ca0-939e-31e13e830098",
+      "symbol": "17f8b82b-f916-54db-b50b-6286bd753bd2",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "545e57de-557a-56fe-b2f3-1434bd400bb3",
+      "$id": "e32de190-a836-550f-9521-bd15fcc6655b",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "18a25ee4-0e19-5263-84ef-a04a1057d055",
+      "symbol": "8eabcbf3-87d9-5c0f-869a-0b6afa0f8b6f",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
     },
     {
-      "$id": "bab0f865-131c-5483-804a-88705b8c5a2e",
+      "$id": "973b3998-d6ab-5943-bd31-7737df7a1efd",
       "length": 2,
       "pluginMetadata": {},
-      "symbol": "d0c00205-7896-53db-8fe5-f9fad34d8c24",
+      "symbol": "d1405613-2231-542f-9bb0-f217808d5260",
       "tweenType": "LINEAR",
       "tweened": false,
       "type": "POINT"
@@ -556,10 +583,36 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "6599a949-1e2f-5933-9357-af427687733b",
+      "$id": "297e8f2d-7546-5c94-a0ef-822a7f833807",
       "hidden": false,
       "keyframes": [
-        "63507bf8-e83c-5100-bdf7-160ad2828dc0"
+        "5601f6b0-985c-5da3-b7a5-1ef4e19ce244"
+      ],
+      "locked": false,
+      "name": "platformImage3",
+      "pluginMetadata": {},
+      "type": "IMAGE"
+    },
+    {
+      "$id": "7556599f-ab98-5f96-b14a-b9113cf548c4",
+      "hidden": false,
+      "keyframes": [
+        "91829236-dbc6-558f-8d1a-89db06cf4f4d"
+      ],
+      "locked": false,
+      "name": "Ceiling Layer",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "lineSegmentType": "LINE_SEGMENT_STRUCTURE"
+        }
+      },
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "531b4aae-9a20-5d4c-866d-a1728c55577c",
+      "hidden": false,
+      "keyframes": [
+        "19063f4f-06e4-5cc2-b1fb-4e9d21376df2"
       ],
       "locked": false,
       "name": "Characters Back",
@@ -571,10 +624,10 @@
       "type": "CONTAINER"
     },
     {
-      "$id": "cbc60981-7fb3-5a86-b1ea-60bcb39a9abc",
+      "$id": "45161e57-e125-5c46-8020-7f10e3b247cb",
       "hidden": false,
       "keyframes": [
-        "b97db377-6e55-5558-84dc-c5428202b640"
+        "7145b415-a84a-5fdc-b4b4-cf47e00abebf"
       ],
       "locked": false,
       "name": "Characters",
@@ -586,10 +639,10 @@
       "type": "CONTAINER"
     },
     {
-      "$id": "6087efcb-b7ae-50bc-b069-db4887d690b3",
+      "$id": "6c60fb26-51ad-5df8-b940-e246cd63aa2d",
       "hidden": false,
       "keyframes": [
-        "56dbdf52-d81d-58ea-871d-888addc87bde"
+        "3ae6e580-b109-594e-9788-55bca6135866"
       ],
       "locked": false,
       "name": "Characters Front",
@@ -601,10 +654,10 @@
       "type": "CONTAINER"
     },
     {
-      "$id": "eb89d110-b6e6-5ded-a738-0d2760417779",
+      "$id": "4a79e6be-f70f-552e-a58c-0b419986868b",
       "hidden": false,
       "keyframes": [
-        "03432de0-4164-5ebd-92db-a07b2ad49d0f"
+        "fbbda73f-8414-55b6-902b-9284d8310e0c"
       ],
       "locked": false,
       "name": "Foreground Occluder",
@@ -612,10 +665,10 @@
       "type": "IMAGE"
     },
     {
-      "$id": "ee7df9d8-8dc5-5660-b335-b984a202c00c",
+      "$id": "35120e0c-9426-5139-ade6-41274d654d5e",
       "hidden": false,
       "keyframes": [
-        "dab1c52e-2650-5c05-921a-efd541e0c7a5"
+        "81e8eca5-6bfa-57ce-ad3b-50e68a852157"
       ],
       "locked": false,
       "name": "Foreground Art",
@@ -623,10 +676,10 @@
       "type": "IMAGE"
     },
     {
-      "$id": "5cdef036-2779-598d-bd14-305912a63924",
+      "$id": "6f123a17-c50a-542a-848b-114f90de1996",
       "hidden": false,
       "keyframes": [
-        "493d57c8-0a9b-58f1-a94b-a4cc3328b313"
+        "1e3f393b-ea74-57e8-9332-72dbef7fbe11"
       ],
       "locked": false,
       "name": "Foreground Structures",
@@ -638,10 +691,10 @@
       "type": "CONTAINER"
     },
     {
-      "$id": "c95113c0-7bc7-582d-8147-3bb65086bfbf",
+      "$id": "da467710-e4d9-54ce-9da0-06d9f7778116",
       "hidden": false,
       "keyframes": [
-        "b3d9060c-1f89-5844-bf94-3c10a3bdd9c1"
+        "5bd1a721-fa98-5e78-81d8-de458d26a056"
       ],
       "locked": false,
       "name": "Foreground Shadows",
@@ -653,10 +706,10 @@
       "type": "CONTAINER"
     },
     {
-      "$id": "99569e22-fd7b-5dd7-bfca-27000f1ba30c",
+      "$id": "4ae07bf1-cfba-53b7-8a4b-6cf772c86ec6",
       "hidden": false,
       "keyframes": [
-        "ed70363c-3b78-58f3-94c2-3a30678ae03a"
+        "229d8a49-61b4-5f2a-b7a9-beae6b56e6f0"
       ],
       "locked": false,
       "name": "Foreground Effects",
@@ -668,10 +721,10 @@
       "type": "CONTAINER"
     },
     {
-      "$id": "44c4cd75-2efe-54f7-bbcb-0daefaa6e985",
+      "$id": "47873702-82de-52cc-a2e4-dc01e5a606d5",
       "hidden": false,
       "keyframes": [
-        "878eed19-5b92-51a7-ad94-7ebd10eeda69"
+        "dbb10c95-1a7b-531b-b0cb-958f2bd32601"
       ],
       "locked": false,
       "name": "Foreground Front",
@@ -683,12 +736,12 @@
       "type": "CONTAINER"
     },
     {
-      "$id": "e80a3834-b3bf-54b7-9918-85302159c626",
+      "$id": "23ea0c04-18ef-5a6a-b7f8-71bb21f4ca27",
       "defaultAlpha": 0.5,
       "defaultColor": "0xd1d1d1",
       "hidden": false,
       "keyframes": [
-        "ef33eff3-66cb-51b2-a96c-4d50d48acd16"
+        "12e0215f-4e2f-5b63-a6ee-5a051bad8279"
       ],
       "locked": false,
       "name": "Death Box",
@@ -700,12 +753,12 @@
       "type": "COLLISION_BOX"
     },
     {
-      "$id": "b353308d-4189-507e-9115-3210291cf1af",
+      "$id": "86a08ba2-d2cf-5ec1-a1b3-9078fe628674",
       "defaultAlpha": 0.5,
       "defaultColor": "0xd1d1d1",
       "hidden": false,
       "keyframes": [
-        "0d9796b3-0575-584c-8548-bb5c7c05ff87"
+        "1ca0f2a1-e5dc-5808-ad86-9222c7475b56"
       ],
       "locked": false,
       "name": "Camera Box",
@@ -717,10 +770,10 @@
       "type": "COLLISION_BOX"
     },
     {
-      "$id": "b5f6498a-e81c-5639-bfe9-273cc1e95296",
+      "$id": "1e862c2c-cf63-52a7-a4e1-18667f59dac2",
       "hidden": false,
       "keyframes": [
-        "7acea75b-de1f-547c-8ed8-852682d55014"
+        "3fc102a2-0416-53ed-bb1d-4c19d332b69d"
       ],
       "locked": false,
       "name": "Platform 1 Floor",
@@ -732,10 +785,10 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "10b6376e-f2d5-5cea-b24d-b7a506e265e4",
+      "$id": "df8400c1-1703-52e9-8eca-4de7d036fc9e",
       "hidden": false,
       "keyframes": [
-        "040644e2-ae9e-5673-b414-32b764f0ebfa"
+        "91bf0693-9323-5933-86c2-dbc94449e911"
       ],
       "locked": false,
       "name": "Solid 2 Floor",
@@ -747,10 +800,10 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "65049340-834e-5c04-8cfe-7eb960b76fdf",
+      "$id": "247a3e4b-e65b-5342-a9ed-c839efeb9662",
       "hidden": false,
       "keyframes": [
-        "b27b6a33-5516-5a4b-9bab-b3d5bae72dc5"
+        "311b0b96-703c-5c29-91ff-f4ccc239378e"
       ],
       "locked": false,
       "name": "Entrance 0",
@@ -763,10 +816,10 @@
       "type": "POINT"
     },
     {
-      "$id": "bc1fc041-5d3f-5257-9f49-9e3b10938c15",
+      "$id": "298dd232-afb1-53d8-8579-3941f4ef1d88",
       "hidden": false,
       "keyframes": [
-        "721a8d41-2406-57a0-9260-e77d45684a0b"
+        "01ac021d-a7a7-5830-a946-126fddb88b45"
       ],
       "locked": false,
       "name": "Entrance 1",
@@ -779,10 +832,10 @@
       "type": "POINT"
     },
     {
-      "$id": "f17d89bd-64e4-5736-a703-5bb17e827aaa",
+      "$id": "e236831a-964f-5f3a-8175-8c3d34842797",
       "hidden": false,
       "keyframes": [
-        "14dcfff7-ce33-5c7e-bb0e-d1b93ce01ecf"
+        "dfc0c4a3-464f-58c9-bfbc-06532488c4f1"
       ],
       "locked": false,
       "name": "Entrance 2",
@@ -795,10 +848,10 @@
       "type": "POINT"
     },
     {
-      "$id": "d9234718-8e1a-5924-9cb3-20772917acdb",
+      "$id": "dc5f8709-17ef-5da4-9495-2edc4ffe8de6",
       "hidden": false,
       "keyframes": [
-        "401c5cfb-44f9-52fa-96ca-a4a5f32a2079"
+        "9b687a88-64c6-54a7-bf40-6338df6e8ce3"
       ],
       "locked": false,
       "name": "Entrance 3",
@@ -811,10 +864,10 @@
       "type": "POINT"
     },
     {
-      "$id": "0c21cd7c-9c1b-58c8-b330-3d8c5585702e",
+      "$id": "9f3270a9-b877-5372-ba49-70cac1fa97b5",
       "hidden": false,
       "keyframes": [
-        "e4ffd3ce-61b3-549e-853a-8c0b27f0eb95"
+        "bad60bae-fbb6-52cb-aedf-902cce8d5a39"
       ],
       "locked": false,
       "name": "Respawn 0",
@@ -827,10 +880,10 @@
       "type": "POINT"
     },
     {
-      "$id": "57d312a9-f447-5c89-9a5f-fddf58379f93",
+      "$id": "0df26096-9b93-5890-a65f-2194ad0037c7",
       "hidden": false,
       "keyframes": [
-        "50f65786-eee5-59e8-841e-7bb17d6f778c"
+        "214142d6-8bf7-50a9-ba8e-763db81828f1"
       ],
       "locked": false,
       "name": "Respawn 1",
@@ -843,10 +896,10 @@
       "type": "POINT"
     },
     {
-      "$id": "fb756adf-04bc-53cf-ae59-708bb8bbdaaf",
+      "$id": "1665588a-9ec1-59a5-8470-e9ac8097225a",
       "hidden": false,
       "keyframes": [
-        "545e57de-557a-56fe-b2f3-1434bd400bb3"
+        "e32de190-a836-550f-9521-bd15fcc6655b"
       ],
       "locked": false,
       "name": "Respawn 2",
@@ -859,10 +912,10 @@
       "type": "POINT"
     },
     {
-      "$id": "b3f2ded7-e89e-5bd9-8ca2-1f87ddd05f33",
+      "$id": "35c3636b-6960-53bb-81ae-a7b663e34a8a",
       "hidden": false,
       "keyframes": [
-        "bab0f865-131c-5483-804a-88705b8c5a2e"
+        "973b3998-d6ab-5943-bd31-7737df7a1efd"
       ],
       "locked": false,
       "name": "Respawn 3",
@@ -1068,7 +1121,41 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "04acfcb2-d292-501f-acdc-b625d75d73bf",
+      "$id": "12a205f3-e92d-5b09-8eee-d4257f37cf46",
+      "alpha": 1.0,
+      "imageAsset": "a5836cd3-2007-52a7-a59e-24f4572eda49",
+      "pivotX": 0,
+      "pivotY": 0,
+      "pluginMetadata": {},
+      "rotation": 0,
+      "scaleX": 1.0,
+      "scaleY": 1.0,
+      "type": "IMAGE",
+      "x": -78.0,
+      "y": 0.0
+    },
+    {
+      "$id": "b89d66b4-33b6-57f6-83b7-51bdb0b76213",
+      "alpha": 0.5,
+      "color": "0xeeeeee",
+      "pluginMetadata": {
+        "com.fraymakers.FraymakersMetadata": {
+          "dropThrough": false,
+          "leftLedge": false,
+          "rightLedge": false,
+          "structureType": "CEILING"
+        }
+      },
+      "points": [
+        78.0,
+        169.0,
+        -78.0,
+        169.0
+      ],
+      "type": "LINE_SEGMENT"
+    },
+    {
+      "$id": "52f749f5-a73c-5615-a5da-ef033cb965f8",
       "alpha": 1.0,
       "imageAsset": "387c8fc7-c2ac-5fa7-9c8c-544934184951",
       "pivotX": 0,
@@ -1082,7 +1169,7 @@
       "y": 590.2
     },
     {
-      "$id": "7b8d479e-3c20-5be2-b826-de5ecdcf5045",
+      "$id": "554c0778-b169-591c-93cd-01a5ccb8775e",
       "alpha": 0.5,
       "imageAsset": "37cba0cb-de46-5be0-839a-00621a2da88b",
       "pivotX": 0,
@@ -1096,7 +1183,7 @@
       "y": 302.12000000000023
     },
     {
-      "$id": "bfde07d9-4df5-5056-b2e2-cef4eb288325",
+      "$id": "cd2c0d51-c98e-5623-9cc8-70ad9d01b02b",
       "alpha": null,
       "color": null,
       "pivotX": 1127.5344821929932,
@@ -1110,7 +1197,7 @@
       "y": -67.0933062744141
     },
     {
-      "$id": "139e62d0-2e20-57a2-9368-f88d654ab56d",
+      "$id": "190181ed-fd40-586e-b819-1976d2f730f3",
       "alpha": null,
       "color": null,
       "pivotX": 780.6100345611572,
@@ -1124,7 +1211,7 @@
       "y": 169.30337432861327
     },
     {
-      "$id": "ce1b1c4a-f710-585d-9ca8-446487365724",
+      "$id": "7457d5e4-c609-5061-a9ee-f674c156c571",
       "alpha": 0.5,
       "color": "0xeeeeee",
       "pluginMetadata": {
@@ -1144,7 +1231,7 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "4e2293ef-79f8-5b7e-915c-659d37674813",
+      "$id": "f79fd10e-b004-50ba-a50c-53e4bd92cabd",
       "alpha": 0.5,
       "color": "0xeeeeee",
       "pluginMetadata": {
@@ -1180,7 +1267,7 @@
       "type": "LINE_SEGMENT"
     },
     {
-      "$id": "b888862f-457e-5879-bb16-95a61198a677",
+      "$id": "6d6597f2-1254-5fd6-ac0c-8f123221cf26",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1190,7 +1277,7 @@
       "y": 660.205
     },
     {
-      "$id": "2fb16b99-80e2-52aa-952a-b5bbe79f70a8",
+      "$id": "2835a52f-5775-57d9-bf9b-18af80a13759",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1200,7 +1287,7 @@
       "y": 661.245
     },
     {
-      "$id": "6131b26c-2928-5314-8701-0f8c67bbdf5b",
+      "$id": "74de9977-7c31-50f4-8a0d-3866b4be3972",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1210,7 +1297,7 @@
       "y": 660.205
     },
     {
-      "$id": "9f21a507-2293-5a04-bbda-0b15ec63ce5a",
+      "$id": "c8809bd7-7c5b-56da-ac81-08b48980cd37",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1220,7 +1307,7 @@
       "y": 661.245
     },
     {
-      "$id": "4659d75c-0fd9-56fa-83f3-26c4d541c034",
+      "$id": "5ee841a5-81e9-5c49-ae57-08e350dcfaf5",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1230,7 +1317,7 @@
       "y": 478.075
     },
     {
-      "$id": "bd39f923-742f-5ca0-939e-31e13e830098",
+      "$id": "17f8b82b-f916-54db-b50b-6286bd753bd2",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1240,7 +1327,7 @@
       "y": 478.075
     },
     {
-      "$id": "18a25ee4-0e19-5263-84ef-a04a1057d055",
+      "$id": "8eabcbf3-87d9-5c0f-869a-0b6afa0f8b6f",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},
@@ -1250,7 +1337,7 @@
       "y": 478.075
     },
     {
-      "$id": "d0c00205-7896-53db-8fe5-f9fad34d8c24",
+      "$id": "d1405613-2231-542f-9bb0-f217808d5260",
       "alpha": 1,
       "color": "0xff0000",
       "pluginMetadata": {},

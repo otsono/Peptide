@@ -47,7 +47,7 @@ function update() {
 		m_init.set(true);
 		self.setX(COLUMNS[0]);
 		self.setY(SPAWN_Y);
-		m_cycle.set(SPAWN_PERIOD - 600);
+		m_cycle.set(Math.floor(SPAWN_PERIOD / 2));
 	}
 	if (m_cool.get() > 0) {
 		m_cool.dec();

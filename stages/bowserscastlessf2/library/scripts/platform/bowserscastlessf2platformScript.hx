@@ -1,5 +1,5 @@
-// Sinking platform — 1:1 from the SSF2 BowsersCastlePlatform disasm, frame-doubled.
-var SINK_SPEED = 19.5;
+// Sinking platform — values stepped from the stage's SSF2Platform subclass, frame-doubled.
+var SINK_SPEED = 19.50;
 var RISE_SPEED = 0.65;
 var SINK_DEPTH = 188.5;
 var WAIT = 780;

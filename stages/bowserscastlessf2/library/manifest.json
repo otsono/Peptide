@@ -58,6 +58,12 @@
       "objectStatsId": "bowserscastlessf2thwompdeckStats",
       "scriptId": "bowserscastlessf2thwompdeckScript",
       "type": "structure"
+    },
+    {
+      "id": "bowserscastlessf2thwompceiling",
+      "objectStatsId": "bowserscastlessf2thwompceilingStats",
+      "scriptId": "bowserscastlessf2thwompdeckScript",
+      "type": "structure"
     }
   ],
   "resourceId": "bowserscastlessf2"

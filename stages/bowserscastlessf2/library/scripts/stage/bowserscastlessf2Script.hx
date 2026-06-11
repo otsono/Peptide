@@ -13,6 +13,7 @@ function update() {
 			match.createStructure(self.getResource().getContent("bowserscastlessf2platform0"));
 			match.createStructure(self.getResource().getContent("bowserscastlessf2platform1"));
 			match.createStructure(self.getResource().getContent("bowserscastlessf2thwompdeck"));
+			match.createStructure(self.getResource().getContent("bowserscastlessf2thwompceiling"));
 			var _hz0 = match.createCustomGameObject(self.getResource().getContent("bowserscastlessf2hazard0"), owner);
 			if (_hz0 != null) { _hz0.setX(772.9); _hz0.setY(1057.8); }
 			var _hz1 = match.createCustomGameObject(self.getResource().getContent("bowserscastlessf2hazard1"), owner);

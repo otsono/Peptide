@@ -105,6 +105,9 @@ pub struct Hazard {
     /// to its art clip (the clip whose frame labels match these), so the art comes from what the
     /// script animates, not a library keyword match. Empty falls back to the keyword path.
     pub anim_labels: Vec<String>,
+    /// The engine-spawned faller cycle (entrance delay, landed wait, spawn period, column xs),
+    /// stepped from the enemy + stage classes' own code. None for non-spawned hazards.
+    pub faller: Option<crate::abc_parser::FallerCycle>,
     /// Behavior values stepped out of the hazard class's update()/initialize() — drives the emitted
     /// CGO script (shake amplitude, rise/fall speeds, self-platform, dust, sounds) from the hazard's
     /// own code rather than hardcoded template constants.
@@ -224,6 +227,9 @@ pub struct StageModel {
     /// in `metadata.jsonc` (read 1:1 from the stage class's `update` disasm). Empty when the
     /// stage has none; the emitter drives the falling-hazard cycle over them.
     pub sink_columns: Vec<f64>,
+    /// The sinking-platform class's authored motion (sink/rise speeds, hold, depth), stepped from
+    /// its own code; None when the stage has no SSF2Platform subclass.
+    pub platform_behavior: Option<crate::abc_parser::PlatformBehavior>,
     /// Rendered stage art, split into depth layers (the painted backdrop, the main
     /// stage at character depth, and a foreground that draws in front of fighters).
     pub art: StageArtSet,
@@ -528,7 +534,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             motion: h.motion.clone().unwrap_or_else(|| "static".to_string()),
             range: h.range, period: h.period.max(1), rehit: h.rehit, kb_growth: 40.0,
             label: h.label.clone().unwrap_or_else(|| format!("Hazard {}", i + 1)),
-            art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
+            art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
         }
     }).collect()).unwrap_or_default();
 
@@ -691,6 +697,9 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         let hz_abcs: Vec<crate::abc_parser::AbcFile> = crate::swf_parser::parse(&swf_data)
             .map(|s| s.abc_blocks.iter().filter_map(|b| crate::abc_parser::parse(b).ok()).collect())
             .unwrap_or_default();
+        if let Ok(want) = std::env::var("PEPTIDE_DUMP_CLASS") {
+            for abc in &hz_abcs { crate::abc_parser::dump_class(abc, &want); }
+        }
         // a hazard's art clip is ENGINE-DRIVEN, not authored scenery: a clip placed inside another
         // SPRITE's timeline (the stage's background/terrain/foreground MCs) is scenery and must not
         // be adopted (bowserscastle's Bowser spectator, placed in the background MC, shares the lava
@@ -812,11 +821,36 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     // thwomp-style target columns: GAME (terrain-local) x values from the metadata (read 1:1
     // from the stage class's update disasm) -> FM x via the terrain origin.
     let sink_columns: Vec<f64> = match terrain_off {
-        Some(t) => entry.map(|e| e.sink_columns.iter().map(|x| (x + t.0) * scale).collect()).unwrap_or_default(),
+        Some(t) => {
+            // prefer the columns stepped from the stage class's own spawnEnemy code (the int-array
+            // literal in its update); the hand-maintained metadata stays as the fallback.
+            let from_code: Vec<f64> = hazards.iter()
+                .filter_map(|h| h.faller.as_ref())
+                .find(|f| !f.columns.is_empty())
+                .map(|f| f.columns.iter().map(|x| (x + t.0) * scale).collect())
+                .unwrap_or_default();
+            if !from_code.is_empty() {
+                if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+                    eprintln!("[sink-columns] from CODE: {from_code:?}");
+                }
+                from_code
+            }
+            else { entry.map(|e| e.sink_columns.iter().map(|x| (x + t.0) * scale).collect()).unwrap_or_default() }
+        }
         None => Vec::new(),
     };
 
-    Ok(StageModel { id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, sink_columns, art, warnings, scale })
+    // the sinking-platform class's authored motion (sink/rise/hold/depth), from its own code.
+    let platform_behavior = crate::swf_parser::parse(&swf_data).ok().and_then(|sw| {
+        sw.abc_blocks.iter()
+            .filter_map(|b| crate::abc_parser::parse(b).ok())
+            .find_map(|abc| crate::abc_parser::extract_platform_behavior(&abc))
+    });
+    if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+        eprintln!("[platform-behavior] {platform_behavior:?}");
+    }
+
+    Ok(StageModel { id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, sink_columns, platform_behavior, art, warnings, scale })
 }
 
 /// Validate that the SSF2 source carries the linkages a playable stage needs. Returns a
@@ -1118,7 +1152,7 @@ fn actor_to_hazard(
     let mut hz = Hazard {
         x, y, w, h, damage, knockback, angle,
         interval: 0, active: 20, motion: motion.to_string(),
-        range: 0.0, period: 120, rehit, kb_growth, label: kind.label().to_string(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
+        range: 0.0, period: 120, rehit, kb_growth, label: kind.label().to_string(), art: None, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
     };
     apply_enemy_stats(&mut hz, actor);
     Some(hz)
@@ -1133,6 +1167,7 @@ fn apply_enemy_stats(hz: &mut Hazard, actor: &crate::stage_abc::SpawnedActor) {
     hz.anim_labels = actor.anim_labels.clone();
     hz.behavior = actor.behavior.clone();
     hz.reconstructed_script = actor.reconstructed_script.clone();
+    hz.faller = actor.faller.clone();
     if let Some(h0) = actor.attack_hitboxes.first() {
         if let Some(&d) = h0.get("damage") { hz.damage = d; }
         if let Some(&p) = h0.get("power") { hz.knockback = p; }
@@ -1181,7 +1216,7 @@ fn detect_hazards(
             x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, w: r.w.max(20.0), h: r.h.max(20.0),
             damage, knockback, angle, interval: 0, active: 20,
             motion: motion.to_string(), range: 60.0, period: 120, rehit, kb_growth,
-            label: k.label().to_string(), art, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
+            label: k.label().to_string(), art, anims: vec![], attack_boxes: vec![], hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None,
         })
     }).collect()
 }
@@ -2193,6 +2228,13 @@ fn stage_abc_model(swf_data: &[u8]) -> Option<crate::stage_abc::StageAbcModel> {
             for abc in &blocks {
                 let al = crate::abc_parser::extract_force_attack_labels(abc, &a.class_name);
                 if !al.is_empty() { a.anim_labels = al; break; }
+            }
+        }
+        if a.faller.is_none() {
+            for abc in &blocks {
+                if let Some(fc) = crate::abc_parser::extract_faller_cycle(abc, &a.class_name) {
+                    a.faller = Some(fc); break;
+                }
             }
         }
         if a.behavior.shake.is_none() && a.behavior.self_platform.is_none() {

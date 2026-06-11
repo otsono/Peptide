@@ -122,6 +122,10 @@ pub struct Trait {
     pub kind: u8,
     pub method_idx: u32,
     pub slot_idx: u32,
+    /// Slot/Const default value, when numeric (the ABC trait's vindex/vkind resolved against the
+    /// int/uint/double pools) — e.g. a class constant like `SINK_SPEED = 30`.
+    #[serde(default)]
+    pub default: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -499,7 +503,7 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
         let trait_count = r.read_u30()? as usize;
         let mut instance_methods = Vec::new();
         for _ in 0..trait_count {
-            if let Ok(t) = parse_trait(&mut r, &strings, &multinames) {
+            if let Ok(t) = parse_trait(&mut r, &strings, &multinames, &ints, &uints, &doubles) {
                 instance_methods.push(t);
             }
         }
@@ -527,7 +531,7 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
         let _static_init = r.read_u30()?;
         let trait_count = r.read_u30()? as usize;
         for _ in 0..trait_count {
-            if let Ok(t) = parse_trait(&mut r, &strings, &multinames) {
+            if let Ok(t) = parse_trait(&mut r, &strings, &multinames, &ints, &uints, &doubles) {
                 class.class_methods.push(t);
             }
         }
@@ -541,7 +545,7 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
         let trait_count = r.read_u30()? as usize;
         let mut traits = Vec::new();
         for _ in 0..trait_count {
-            if let Ok(t) = parse_trait(&mut r, &strings, &multinames) {
+            if let Ok(t) = parse_trait(&mut r, &strings, &multinames, &ints, &uints, &doubles) {
                 traits.push(t);
             }
         }
@@ -582,7 +586,7 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
         let trait_count = r.read_u30().unwrap_or(0) as usize;
         let mut activation_traits = Vec::new();
         for _ in 0..trait_count {
-            match parse_trait(&mut r, &strings, &multinames) {
+            match parse_trait(&mut r, &strings, &multinames, &ints, &uints, &doubles) {
                 Ok(t) => activation_traits.push(t),
                 Err(_) => break,
             }
@@ -596,19 +600,28 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
     Ok(AbcFile { strings, ints, uints, doubles, multinames, methods, classes, scripts, method_bodies })
 }
 
-fn parse_trait(r: &mut Reader, _strings: &[Arc<str>], multinames: &[Multiname]) -> Result<Trait> {
+fn parse_trait(r: &mut Reader, _strings: &[Arc<str>], multinames: &[Multiname], ints: &[i32], uints: &[u32], doubles: &[f64]) -> Result<Trait> {
     let name_idx = r.read_u30()?;
     let kind_byte = r.read_u8()?;
     let kind = kind_byte & 0x0F;
     let has_metadata = kind_byte & 0x40 != 0;
     let name = multinames.get(name_idx as usize).map(|m| m.name.to_string()).unwrap_or_default();
 
+    let mut default: Option<f64> = None;
     let (method_idx, slot_idx) = match kind {
         0 | 6 => { // Slot, Const
             let slot_id = r.read_u30()?;
             let _type_name = r.read_u30()?;
             let vindex = r.read_u30()?;
-            if vindex != 0 { r.read_u8()?; } // vkind
+            if vindex != 0 {
+                let vkind = r.read_u8()?;
+                default = match vkind {
+                    0x03 => ints.get(vindex as usize).map(|v| *v as f64),
+                    0x04 => uints.get(vindex as usize).map(|v| *v as f64),
+                    0x06 => doubles.get(vindex as usize).copied(),
+                    _ => None,
+                };
+            }
             (0, slot_id)
         }
         1..=3 => { // Method, Getter, Setter
@@ -631,7 +644,7 @@ fn parse_trait(r: &mut Reader, _strings: &[Arc<str>], multinames: &[Multiname]) 
         for _ in 0..mc { r.read_u30()?; }
     }
 
-    Ok(Trait { name, kind, method_idx, slot_idx })
+    Ok(Trait { name, kind, method_idx, slot_idx, default })
 }
 
 // ─── Character data extraction ────────────────────────────────────────────────
@@ -2152,6 +2165,131 @@ pub(crate) enum TimelineHold {
     /// `gotoAndStop(target)` at 1-based frame N: plays to N, then freezes at `target`
     /// (a frame-label name, or a 1-based frame number rendered as digits).
     GotoStop(String, u32),
+}
+
+/// A stage's engine-spawned FALLER cycle (the thwomp pattern), stepped from the code: the enemy
+/// class's entrance delay + landed wait (its initialize's FrameTimers, in declaration order), the
+/// stage class's spawn cadence (the sum of its two largest timers: active + rest phases of the
+/// spawn machine — an approximation until the stage update() is fully reconstructed), and the
+/// spawn column x choices (the int-array literal in the stage update near spawnEnemy, terrain-x).
+#[derive(Clone, Debug, Default)]
+pub struct FallerCycle {
+    pub entrance_delay: Option<f64>,
+    pub land_wait: Option<f64>,
+    pub spawn_period: Option<f64>,
+    pub columns: Vec<f64>,
+}
+
+pub(crate) fn extract_faller_cycle(abc: &AbcFile, enemy_class: &str) -> Option<FallerCycle> {
+    fn eval_expr(e: &str) -> Option<f64> {
+        let e = e.trim();
+        if let Some((a, b)) = e.split_once('*') {
+            return Some(a.trim().parse::<f64>().ok()? * b.trim().parse::<f64>().ok()?);
+        }
+        e.parse::<f64>().ok()
+    }
+    let timer_re = regex::Regex::new(r"new FrameTimer\(([^)]+)\)").unwrap();
+    let decompiled = |class: &Class, m: &str| -> String {
+        class.instance_methods.iter().find(|t| t.name == m)
+            .and_then(|t| abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx))
+            .map(|b| decompiler::decompile_method(b, abc, m, &[]))
+            .unwrap_or_default()
+    };
+    let enemy = abc.classes.iter().find(|c| c.name == enemy_class)?;
+    let enemy_timers: Vec<f64> = timer_re.captures_iter(&decompiled(enemy, "initialize"))
+        .filter_map(|c| eval_expr(&c[1])).collect();
+    let mut out = FallerCycle {
+        entrance_delay: enemy_timers.first().copied(),
+        land_wait: enemy_timers.get(1).copied(),
+        ..Default::default()
+    };
+    if let Some(stage) = abc.classes.iter().find(|c| c.super_name == "SSF2Stage") {
+        let mut stage_timers: Vec<f64> = timer_re.captures_iter(&decompiled(stage, "initialize"))
+            .filter_map(|c| eval_expr(&c[1])).collect();
+        stage_timers.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        if stage_timers.len() >= 2 { out.spawn_period = Some(stage_timers[0] + stage_timers[1]); }
+        else if let Some(&t) = stage_timers.first() { out.spawn_period = Some(t); }
+        // spawn columns: the int-array literal in the stage update near the spawnEnemy call.
+        let upd = decompiled(stage, "update");
+        if upd.contains("spawnEnemy") {
+            let arr_re = regex::Regex::new(r"\[(-?\d+(?:, *-?\d+){2,})\]").unwrap();
+            if let Some(c) = arr_re.captures(&upd) {
+                out.columns = c[1].split(',').filter_map(|v| v.trim().parse::<f64>().ok()).collect();
+            }
+        }
+    }
+    Some(out)
+}
+
+/// A sinking-platform class's authored motion, stepped from its OWN code (decompile + read):
+/// the per-frame sink/rise speeds (class const slots referenced by `setY(getY() ± self.X)`),
+/// the post-sink hold (`new FrameTimer(expr)` in initialize), and the rest/sunk Y caps from the
+/// `getY() <op> N` comparisons in update(). All values in SSF2 30fps source units.
+#[derive(Clone, Debug, Default)]
+pub struct PlatformBehavior {
+    pub sink_speed: Option<f64>,
+    pub rise_speed: Option<f64>,
+    pub wait_frames: Option<f64>,
+    pub sink_depth: Option<f64>,
+}
+
+/// Extract [`PlatformBehavior`] from the first class extending `SSF2Platform` (the sinking
+/// platform kind). None when the stage has no such class.
+pub(crate) fn extract_platform_behavior(abc: &AbcFile) -> Option<PlatformBehavior> {
+    let class = abc.classes.iter().find(|c| c.super_name == "SSF2Platform")?;
+    let body_of = |name: &str| class.instance_methods.iter().find(|t| t.name == name)
+        .and_then(|t| abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx));
+    let code_of = |name: &str| body_of(name)
+        .map(|b| decompiler::decompile_method(b, abc, name, &[]))
+        .unwrap_or_default();
+    let init = code_of("initialize");
+    let update = code_of("update");
+    let slot_default = |name: &str| class.instance_methods.iter()
+        .find(|t| t.name == name).and_then(|t| t.default);
+    // tiny eval for the FrameTimer arg ("30 * 13" / "390")
+    fn eval_expr(e: &str) -> Option<f64> {
+        let e = e.trim();
+        if let Some((a, b)) = e.split_once('*') {
+            return Some(a.trim().parse::<f64>().ok()? * b.trim().parse::<f64>().ok()?);
+        }
+        e.parse::<f64>().ok()
+    }
+    let mut out = PlatformBehavior::default();
+    if let Some(c) = regex::Regex::new(r"new FrameTimer\(([^)]+)\)").unwrap().captures(&init) {
+        out.wait_frames = eval_expr(&c[1]);
+    }
+    // speeds: the slot referenced when moving down (+) is the sink, up (-) the rise.
+    if let Some(c) = regex::Regex::new(r"getY\(\) \+ self\.(\w+)").unwrap().captures(&update) {
+        out.sink_speed = slot_default(&c[1]);
+    }
+    if let Some(c) = regex::Regex::new(r"getY\(\) - self\.(\w+)").unwrap().captures(&update) {
+        out.rise_speed = slot_default(&c[1]);
+    }
+    // the rest/sunk caps: the two getY() comparisons; depth = max - min.
+    let caps: Vec<f64> = regex::Regex::new(r"getY\(\) *(?:<=|>=|<|>) *(-?\d+(?:\.\d+)?)").unwrap()
+        .captures_iter(&update)
+        .filter_map(|c| c[1].parse::<f64>().ok())
+        .collect();
+    if caps.len() >= 2 {
+        let lo = caps.iter().cloned().fold(f64::MAX, f64::min);
+        let hi = caps.iter().cloned().fold(f64::MIN, f64::max);
+        if hi > lo { out.sink_depth = Some(hi - lo); }
+    }
+    Some(out)
+}
+
+/// Debug aid (`PEPTIDE_DUMP_CLASS=<name>`): decompile every instance method of a class through
+/// the standard pipeline and print it — the quickest way to read an SSF2 class's authored logic.
+pub(crate) fn dump_class(abc: &AbcFile, class_name: &str) {
+    let Some(class) = abc.classes.iter()
+        .find(|c| c.name == class_name || c.name.ends_with(&format!(".{class_name}"))) else { return };
+    eprintln!("[dump-class] {} extends {}", class.name, class.super_name);
+    for t in &class.instance_methods {
+        if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
+            let code = decompiler::decompile_method(body, abc, &t.name, &[]);
+            eprintln!("--- {} ---\n{}", t.name, code);
+        }
+    }
 }
 
 pub(crate) fn extract_timeline_hold(abc: &AbcFile, class_name: &str) -> Option<TimelineHold> {
