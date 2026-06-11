@@ -1680,8 +1680,7 @@ fn flatten_state_ladder(code: &str) -> String {
     let mut i = start;
     let mut outer_end = start; // line AFTER the outermost rung (set on the first iteration)
     let mut first = true;
-    loop {
-        let Some(c) = open_re.captures(&lines[i]) else { break };
+    while let Some(c) = open_re.captures(&lines[i]) {
         let state = c[1].to_string();
         let Some((if_close, else_close)) = scan_rung(i) else { return code.to_string() };
         let (handler, after): (Vec<String>, usize) = match else_close {
