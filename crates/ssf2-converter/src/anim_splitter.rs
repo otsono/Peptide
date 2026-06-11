@@ -604,7 +604,7 @@ pub fn split_animations(
         ("hurt_light_middle",  "hurt"),
         ("hurt_light_high",    "hurt"),
         ("hurt_medium",        "hurt"),
-        // hurt_heavy comes from SSF2 "flying" (SentFlying, the launched somersault),
+        // hurt_heavy comes from the SSF2 "flying" xframe (the launched somersault),
         // not the light-hurt reuse.
         ("hurt_thrown",        "hurt"),
         // Crouch exit reuses the crouch entry (SSF2 has no separate un-crouch sprite).
