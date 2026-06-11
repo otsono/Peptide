@@ -365,6 +365,24 @@ harness`'s `rendered_anchor` is FrayTools' ground truth to bake against.
   them and they only clear on a full reboot. a wedged orphan does **not** block a new engine
   from launching, so the "kill prior instance" step gets a hard ~2-second budget, then move on.
   don't loop / retry / wait it out.
+- **stale `.fra` haunting -- verify the LOADED file, not just the source.** converter fixes
+  silently never reach the game until every affected `.fra` is re-exported. before judging any
+  in-game behavior: check `ls -la <install>/custom/*/` dates against the fix date, and grep the
+  install `.fra` for a marker only the new build emits (`grep -ac <marker> <install .fra>`).
+  a week-old character `.fra` once presented as a fresh animation-mapping bug ("spinning
+  falls"), and a stage `.fra` raced an export twice and faked two thwomp regressions.
+- **serialize session tests.** overlapping launches make the log reader match the PREVIOUS
+  session's `out.log`. the discipline: kill `peptide session` AND the engine process, sleep a
+  few seconds, regen + export, verify the install `.fra` marker, truncate `out.log` in the
+  FOREGROUND, then launch once and wait for `LAUNCHED`.
+- **silent engine-launch failure after heavy cycling.** occasionally a launch produces no
+  engine process and an empty `out.log` (distinct from the harmless wedged-`U` orphans above).
+  kill the session daemon, wait ~12 s, retry once; it has always come up on the second try.
+- **live probing without a debugger.** the `.fra` embeds hscript SOURCE, so same-length text
+  swaps byte-patched into the install `.fra` make cheap probes: rename a call (`inc()` to
+  `inq()`) and the SCRIPTERR line number proves the statement runs; replace a condition with a
+  padded `true` to test a branch body. for value probes, encode state in position
+  (`self.setX(800 + bitmask)`) and read it through the `tree` command.
 - **output is not the deliverable.** `characters/` is git-ignored, so converter output never
   shows in git. commit `src/` + docs changes, and re-derive output by re-running the converter
   (deterministic GUIDs make regen idempotent).
