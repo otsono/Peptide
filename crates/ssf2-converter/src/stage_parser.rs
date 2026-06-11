@@ -1362,6 +1362,12 @@ fn render_art_layers(
         walk_frame(root, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), &phase_rank);
         // exclude non-art PLANES (terrain/masks/spawns, by instance name) and any stray
         // collision/scaffolding markers (by linkage suffix) that slipped into an art plane.
+        if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+            for i in out.iter().filter(|i| !shape_defs.contains_key(&i.shape_id)) {
+                eprintln!("[no-shapedef] id={} plane={:?} aabb=({:.0},{:.0} {:.0}x{:.0})",
+                    i.shape_id, i.plane, i.aabb.x, i.aabb.y, i.aabb.w, i.aabb.h);
+            }
+        }
         out.retain(|i| shape_defs.contains_key(&i.shape_id)
             && !is_non_art_plane(i.plane.as_deref())
             && !is_non_art(i.inst_name.as_deref().unwrap_or("")) && !is_non_art(&i.sym_name));
@@ -1614,7 +1620,7 @@ fn render_art_layers(
     let mut background = background;
     // engine-added orphan bitmaps: standable bg layers (the bridge deck) PLUS any foreground
     // occluder pieces SSF2 splits off them (the near parapet that draws in front of the fighter).
-    let (eng_bg, foreground_occluders) = engine_added_bg_layers(root_tags, shape_defs, bitmaps, sprites, backdrop_bounds, surface_y_fm, ox, oy, scale);
+    let (eng_bg, foreground_occluders) = engine_added_bg_layers(root_tags, shape_defs, bitmaps, sprites, base_insts, backdrop_bounds, surface_y_fm, ox, oy, scale);
     background.extend(eng_bg);
 
     // background is already grouped into per-element layers (each RLE'd at the 30->60fps doubling);
@@ -1636,6 +1642,7 @@ fn engine_added_bg_layers(
     shape_defs: &BTreeMap<u16, &swf::Shape>,
     bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>,
     sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
+    instances: &[Instance],
     backdrop: Option<(f64, f64, f64, f64)>,
     surface_y_fm: Option<f64>,
     ox: f64, oy: f64, scale: f64,
@@ -1670,6 +1677,15 @@ fn engine_added_bg_layers(
             by_dim.entry((*w, *h)).or_default().push(*id);
         }
     }
+    if let Ok(ids) = std::env::var("PEPTIDE_DUMP_BMPS") {
+        for id in ids.split(',').filter_map(|s| s.trim().parse::<u16>().ok()) {
+            if let Some((w, h, rgba)) = bitmaps.get(&id) {
+                if let Some(im) = image::RgbaImage::from_raw(*w, *h, rgba.clone()) {
+                    let _ = im.save(format!("/tmp/bmp_{id}.png"));
+                }
+            }
+        }
+    }
     if std::env::var("PEPTIDE_ORPHAN_DEBUG").is_ok() {
         eprintln!("=== bitmap inventory ({} total) ===", bitmaps.len());
         for (id, (w, h, _)) in bitmaps.iter() {
@@ -1686,6 +1702,76 @@ fn engine_added_bg_layers(
     }
     // horizontal centre of the backdrop, in FM coords (the emitter scales the IMAGE by `scale`).
     let center_x_fm = ((bx0 + bx1) / 2.0 - ox) * scale;
+    // the TRUE placement of an engine-bound orphan: SSF2 authors a placed shape whose bitmap fill
+    // is a PLACEHOLDER (id 0xFFFF) the engine binds the orphan into at runtime (bowserscastle's
+    // bridge: the background-plane shape hosts the deck piece, the foreground-plane shape the
+    // parapet — at DIFFERENT y's, which is why "pixel-align the pair" mis-stacked them). Recover
+    // the placeholder region by rasterizing a mask of just that fill and mapping its bbox through
+    // the placed instance's world AABB; the region's dims must match the orphan's.
+    // bbox of the subpaths painted by a GIVEN bitmap fill, walked straight off the shape records
+    // (same conventions as `rasterize_shape`: bounds-relative px, absolute moveTo, delta edges,
+    // mid-shape new-style arrays reset the fill indices). These "orphan" bitmaps are in fact
+    // referenced — by fills inside mid-shape new-styles groups, which the top-level `referenced`
+    // scan (and the composite's single-bitmap render path) don't see. The region IS the bitmap's
+    // authored placement.
+    fn bitmap_fill_bbox(shape: &swf::Shape, want_id: u16) -> Option<(f64, f64, f64, f64)> {
+        let is_want = |fills: &[swf::FillStyle], idx: usize|
+            idx > 0 && matches!(fills.get(idx - 1), Some(swf::FillStyle::Bitmap { id, .. }) if *id == want_id);
+        let min_x = shape.shape_bounds.x_min.to_pixels();
+        let min_y = shape.shape_bounds.y_min.to_pixels();
+        let mut fills: &[swf::FillStyle] = &shape.styles.fill_styles;
+        let (mut fs0, mut fs1) = (0usize, 0usize);
+        let (mut px, mut py) = (-min_x, -min_y);
+        let mut bb: Option<(f64, f64, f64, f64)> = None;
+        fn extend(bb: &mut Option<(f64, f64, f64, f64)>, x: f64, y: f64) {
+            *bb = Some(match *bb {
+                None => (x, y, x, y),
+                Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+            });
+        }
+        for rec in &shape.shape {
+            match rec {
+                swf::ShapeRecord::StyleChange(sc) => {
+                    if let Some(ns) = &sc.new_styles { fills = &ns.fill_styles; fs0 = 0; fs1 = 0; }
+                    if let Some(f) = sc.fill_style_0 { fs0 = f as usize; }
+                    if let Some(f) = sc.fill_style_1 { fs1 = f as usize; }
+                    if let Some(mv) = &sc.move_to { px = mv.x.to_pixels() - min_x; py = mv.y.to_pixels() - min_y; }
+                    if is_want(fills, fs0) || is_want(fills, fs1) { extend(&mut bb, px, py); }
+                }
+                swf::ShapeRecord::StraightEdge { delta } => {
+                    px += delta.dx.to_pixels(); py += delta.dy.to_pixels();
+                    if is_want(fills, fs0) || is_want(fills, fs1) { extend(&mut bb, px, py); }
+                }
+                swf::ShapeRecord::CurvedEdge { control_delta, anchor_delta } => {
+                    let cx = px + control_delta.dx.to_pixels(); let cy = py + control_delta.dy.to_pixels();
+                    px = cx + anchor_delta.dx.to_pixels(); py = cy + anchor_delta.dy.to_pixels();
+                    if is_want(fills, fs0) || is_want(fills, fs1) { extend(&mut bb, cx, cy); extend(&mut bb, px, py); }
+                }
+            }
+        }
+        bb
+    }
+    // the authored FM placement of bitmap `id`: the fill region painting it in any placed shape,
+    // mapped through that instance's world AABB.
+    let bitmap_host = |id: u16| -> Option<(f64, f64)> {
+        for inst in instances {
+            let Some(shape) = shape_defs.get(&inst.shape_id) else { continue };
+            let Some((x0, y0, _x1, _y1)) = bitmap_fill_bbox(shape, id) else { continue };
+            let shape_w = (shape.shape_bounds.x_max - shape.shape_bounds.x_min).to_pixels();
+            let shape_h = (shape.shape_bounds.y_max - shape.shape_bounds.y_min).to_pixels();
+            if shape_w <= 0.0 || shape_h <= 0.0 { continue; }
+            let (fx, fy) = (
+                (inst.aabb.x + x0 * (inst.aabb.w / shape_w) - ox) * scale,
+                (inst.aabb.y + y0 * (inst.aabb.h / shape_h) - oy) * scale,
+            );
+            if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+                eprintln!("[bmp-host] bitmap {id}: shape {} plane {:?} region@({x0:.0},{y0:.0}) -> FM ({fx:.1},{fy:.1})",
+                    inst.shape_id, inst.plane);
+            }
+            return Some((fx, fy));
+        }
+        None
+    };
     // opaque coverage of bitmap `id`'s row `y` (fraction of the width that's solid).
     let row_cov = |id: &u16, y: u32| -> f64 {
         let (bw, bh, rgba) = &bitmaps[id];
@@ -1727,20 +1813,25 @@ fn engine_added_bg_layers(
             let c = row_cov(id, probe);
             if c > bg_cov { bg_cov = c; bg_id = *id; }
         }
-        let surface_off = surf_row(&bg_id) as f64;
-        let y_fm = match surface_y_fm {
-            Some(s) => s - surface_off * scale,
-            None => ((by0 + by1) / 2.0 - oy) * scale,
-        };
-        // background = the deck-solid piece (one static frame for now; sub-animation is polish).
-        if let Some(art) = to_art(&bg_id, x_fm, y_fm) {
+        // background = the deck-solid piece, at its AUTHORED fill-region placement when a placed
+        // shape paints it (the authoritative position), else anchored to the collision floor.
+        let (bg_x, bg_y) = bitmap_host(bg_id).unwrap_or_else(|| {
+            let y_fm = match surface_y_fm {
+                Some(s) => s - surf_row(&bg_id) as f64 * scale,
+                None => ((by0 + by1) / 2.0 - oy) * scale,
+            };
+            (x_fm, y_fm)
+        });
+        if let Some(art) = to_art(&bg_id, bg_x, bg_y) {
             bg_layers.push(BgLayer { name: format!("engineLayer{li}"), frames: vec![art] });
         }
         // foreground = any same-size sibling whose deck row is clearly CUT OUT (a near parapet that
-        // must draw IN FRONT of the fighter). Pixel-aligned to the background piece (same x/y/size).
+        // must draw IN FRONT of the fighter), at ITS OWN authored placement, falling back to the
+        // background piece's.
         for id in &ids {
             if *id != bg_id && row_cov(id, probe) < 0.25 && bg_cov > 0.4 {
-                if let Some(art) = to_art(id, x_fm, y_fm) { fg_arts.push(art); }
+                let (fx, fy) = bitmap_host(*id).unwrap_or((bg_x, bg_y));
+                if let Some(art) = to_art(id, fx, fy) { fg_arts.push(art); }
             }
         }
     }
