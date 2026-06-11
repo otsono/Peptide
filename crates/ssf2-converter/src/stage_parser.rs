@@ -1853,7 +1853,6 @@ fn composite_layer(
 /// composited per frame on ONE fixed canvas (the union across the sub-animation, so it doesn't
 /// wiggle). Universal — any multi-animation stage clip (hazards, animated props) uses this.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn extract_labeled_clip_anims(
     clip_id: u16,
     sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
