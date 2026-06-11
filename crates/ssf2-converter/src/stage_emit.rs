@@ -1281,8 +1281,18 @@ fn cgo_runnable(raw: &str, anims: &[String]) -> String {
         let default_anim = anims.iter().find(|a| a.eq_ignore_ascii_case("idle"))
             .or_else(|| anims.first()).cloned().unwrap_or_else(|| "idle".to_string());
         for v in all_vals {
-            let anim = labeled.get(&v).cloned()
-                .unwrap_or_else(|| if spare.is_empty() { default_anim.clone() } else { spare.remove(0) });
+            let (anim, guessed) = match labeled.get(&v) {
+                Some(a) => (a.clone(), false),
+                None if !spare.is_empty() => (spare.remove(0), true),
+                None => (default_anim.clone(), true),
+            };
+            if guessed {
+                // no forceAttack sat next to this state's assignment, so its animation is a guess (the
+                // next unclaimed entity clip in value order, idle as the last resort). flag it so a
+                // wrong-looking hazard animation is traceable to here, not assumed correct.
+                eprintln!("  warning: hazard state {v} has no labelled animation; \
+                           guessed \"{anim}\" by value order (verify the clip is right)");
+            }
             state_regs.insert(v, anim);
         }
     }
