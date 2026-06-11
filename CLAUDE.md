@@ -30,6 +30,13 @@ FrayTools to publish. see [`README.md`](README.md) for the pitch.
   data, not the code. (DEVELOPMENT §6.)
 - **engine-side code: minimum bytecode, maximum hscript.** put engine behavior in
   `commands.hsx`, not hand-emitted bytecode. (AGENT_CONTEXT.)
+- **no per-content fixes.** a converter change must be a universal mechanism, never keyed to
+  one stage/character/hazard by name: detect the pattern structurally (or from data stepped
+  out of the source content), transform, fall back to exact semantics when detection fails,
+  and log a conversion warning. template names like the "thwomp" faller are PATTERN names
+  selected by detected data (motion, declared engine calls), not by content id. prove a fix
+  didn't regress other content before merging: `cargo test` (the character goldens) +
+  `just sweep-stages` (converts the whole stage corpus).
 - **ONE command vocabulary, TWO engines.** a host-facing feature must behave the same on
   Fraymakers and SSF2 via the `DebugTarget` seam, never an `if engine == ...` branch in feature
   logic. (enforced by `crates/ssf2-converter/tests/conventions.rs`.)
