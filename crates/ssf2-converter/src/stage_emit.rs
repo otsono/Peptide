@@ -66,6 +66,14 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         .collect::<Result<_>>()?;
     // each backdrop ELEMENT is its own layer (the SSF2 movieclip model). a static element is one
     // frame (`bgN`); an animated element is its loop (`bgN_0..M`). draw order = list order.
+    if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+        for (i, layer) in model.art.background.iter().enumerate() {
+            let f0 = &layer.frames[0];
+            eprintln!("[bg-emit] bg{i} name={:?} frames={} canvas={}x{} at=({:.1},{:.1}) holds={:?}",
+                layer.name, layer.frames.len(), f0.w, f0.h, f0.x, f0.y,
+                layer.frames.iter().map(|f| f.hold).collect::<Vec<_>>());
+        }
+    }
     let bg_refs: Vec<BgLayerRef> = model.art.background.iter().enumerate()
         .map(|(i, layer)| -> Result<BgLayerRef> {
             let frames: Vec<ArtRef> = if layer.frames.len() == 1 {

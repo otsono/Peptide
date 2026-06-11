@@ -390,6 +390,11 @@ struct Instance {
     /// `sym_name` but get DISTINCT anchors, so the art grouping can split them into one object per
     /// placement at its own position instead of merging them into one union-bounds image.
     inst_anchor: (f64, f64),
+    /// Hash of the placement-depth chain from the root to this leaf's owning clip. Two sibling
+    /// clips placed at the SAME anchor (same symbol, same origin) still differ here, so the art
+    /// grouping splits them into independent elements that each loop on their OWN period (a
+    /// merged capture cuts every child whose cycle doesn't divide the parent's).
+    inst_path: u64,
 }
 
 /// Parse the SSF2 stage at `path` into a [`StageModel`], rendering its art (read-only).
@@ -856,7 +861,64 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         eprintln!("[platform-behavior] {platform_behavior:?}");
     }
 
-    Ok(StageModel { id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, sink_columns, platform_behavior, art, warnings, scale })
+    let mut model = StageModel { id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, sink_columns, platform_behavior, art, warnings, scale };
+    extend_art_to_death_bounds(&mut model);
+    Ok(model)
+}
+
+/// SSF2 fills the space between a painted hazard surface and the blast zone with runtime engine
+/// effects (bowserscastle mounts an animated lava sheet + a `lavafade` gradient below the floor;
+/// neither lives in the stage file), so an art layer that stops mid-hazard shows a hard edge with
+/// the backdrop behind it in FM. Data-driven repair: any art layer whose bottom edge lands INSIDE
+/// a static full-width hazard's declared region is that hazard's visible surface cut short —
+/// extend it by repeating its bottom row (opaque down to the death bounds, then fading out), the
+/// same visual role the runtime fade plays.
+fn extend_art_to_death_bounds(model: &mut StageModel) {
+    use image::{GenericImageView, RgbaImage};
+    let Some(db) = model.death_box else { return };
+    let scale = model.scale;
+    let stage_w = model.platforms.iter().map(|p| p.rect.w).fold(0.0, f64::max);
+    // static, stage-spanning hazard regions (the lava pool), FM coords centered on (x, y).
+    let regions: Vec<Rect> = model.hazards.iter()
+        .filter(|h| h.motion == "static" && h.w >= stage_w)
+        .map(|h| Rect { x: h.x - h.w / 2.0, y: h.y - h.h / 2.0, w: h.w, h: h.h })
+        .collect();
+    if regions.is_empty() { return; }
+    let fade_rows = 100u32;
+    let extend = |art: &mut StageArt| {
+        let bottom = art.y + art.h as f64 * scale;
+        let inside = regions.iter().any(|r| bottom > r.top() + 4.0 && bottom < r.bottom() - 4.0
+            && art.x < r.right() && art.x + art.w as f64 * scale > r.left());
+        if !inside { return; }
+        let gap_raw = ((db.bottom() - bottom) / scale).ceil();
+        let opaque = gap_raw.clamp(0.0, 600.0) as u32;
+        let add = opaque + fade_rows;
+        let Ok(img) = image::load_from_memory(&art.png) else { return };
+        let (w, h) = img.dimensions();
+        let img = img.to_rgba8();
+        let mut out = RgbaImage::new(w, h + add);
+        image::imageops::overlay(&mut out, &img, 0, 0);
+        for dy in 0..add {
+            let f = if dy < opaque { 1.0 } else { 1.0 - (dy - opaque + 1) as f64 / fade_rows as f64 };
+            for x in 0..w {
+                let mut p = *img.get_pixel(x, h - 1);
+                p[3] = (p[3] as f64 * f) as u8;
+                out.put_pixel(x, h + dy, p);
+            }
+        }
+        let mut png = Vec::new();
+        {
+            use image::ImageEncoder;
+            if image::codecs::png::PngEncoder::new(&mut png)
+                .write_image(out.as_raw(), w, h + add, image::ExtendedColorType::Rgba8).is_err() { return; }
+        }
+        art.png = png;
+        art.h += add;
+    };
+    for a in model.art.foreground.iter_mut() { extend(a); }
+    for l in model.art.background.iter_mut() {
+        for a in l.frames.iter_mut() { extend(a); }
+    }
 }
 
 /// Validate that the SSF2 source carries the linkages a playable stage needs. Returns a
@@ -1077,7 +1139,7 @@ fn clip_attack_boxes(
     ) {
         if depth > 3 { return; }
         for frame in build_frames(tags) {
-            for (id, local, name, _) in &frame {
+            for (id, local, name, _, _) in &frame {
                 let m = mat.mul(local);
                 let is_box = name.as_deref() == Some("attackBox")
                     || sym_names.get(id).is_some_and(|s| {
@@ -1088,7 +1150,7 @@ fn clip_attack_boxes(
                     // the box sprite's inner shape, through its own placement matrix.
                     if let Some(btags) = sprites.get(id) {
                         for inner in build_frames(btags) {
-                            for (sid, smat, _, _) in &inner {
+                            for (sid, smat, _, _, _) in &inner {
                                 if let Some((x0, y0, x1, y1)) = shape_bounds.get(sid) {
                                     let mm = m.mul(smat);
                                     let c = [mm.apply(*x0, *y0), mm.apply(*x1, *y0), mm.apply(*x1, *y1), mm.apply(*x0, *y1)];
@@ -1244,7 +1306,10 @@ fn union_rect(a: &Rect, b: &Rect) -> Rect {
 /// `graphic-pinned` = the placement carries a `ratio` (the Flash IDE writes one on a sprite placed
 /// as a GRAPHIC symbol for its frame-phase sync; a real MovieClip placement has none) — such a
 /// child shows ONE fixed frame and never self-animates or runs its frame scripts.
-type PlacedChild = (u16, Mat, Option<String>, bool);
+/// (character id, local matrix, instance name, graphic-pinned, placement depth). The depth is the
+/// SWF display-list slot — stable per child across frames, so it discriminates same-anchor
+/// siblings (a clip whose children all sit at the clip origin, like a multi-emitter bubble set).
+type PlacedChild = (u16, Mat, Option<String>, bool, u16);
 
 /// instance/symbol name -> AS3-assigned render plane (from `stage_abc::extract_stage`). empty when
 /// the stage has no parseable SSF2Stage subclass, in which case `plane_tag` falls back to heuristics.
@@ -1265,7 +1330,20 @@ fn build_frames(tags: &[swf::Tag]) -> Vec<Vec<PlacedChild>> {
         match tag {
             swf::Tag::PlaceObject(po) => match &po.action {
                 swf::PlaceObjectAction::Place(id) | swf::PlaceObjectAction::Replace(id) => {
-                    depth.insert(po.depth, (*id, mat_of(po).unwrap_or(Mat::id()), name_of(po), po.ratio.is_some()));
+                    if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok()
+                        && (po.clip_depth.is_some() || po.blend_mode.is_some() || po.color_transform.is_some()) {
+                        eprintln!("[place-mod] id={} depth={} clip_depth={:?} blend={:?} cxform={}",
+                            id, po.depth, po.clip_depth, po.blend_mode, po.color_transform.is_some());
+                    }
+                    // Replace (and move-style Place) without a matrix/name/ratio KEEPS the slot's
+                    // existing state and only swaps the character — bowserscastle's bubble pool
+                    // Replace()s 8 depth slots through bubble variants with mat=false; resetting
+                    // to identity stacked all 8 at the clip origin.
+                    let prev = depth.get(&po.depth);
+                    let mat = mat_of(po).or_else(|| prev.map(|e| e.1)).unwrap_or(Mat::id());
+                    let name = name_of(po).or_else(|| prev.and_then(|e| e.2.clone()));
+                    let pinned = po.ratio.is_some() || (po.ratio.is_none() && prev.is_some_and(|e| e.3));
+                    depth.insert(po.depth, (*id, mat, name, pinned, po.depth));
                 }
                 swf::PlaceObjectAction::Modify => {
                     if let Some(e) = depth.get_mut(&po.depth) {
@@ -1292,7 +1370,7 @@ fn collect_clip_positions(
     sprite_frames: &BTreeMap<u16, Vec<Vec<PlacedChild>>>, out: &mut Vec<(i64, i64)>,
 ) {
     if out.len() > 100_000 { return; }
-    for (id, local, _, _) in children {
+    for (id, local, _, _, _) in children {
         let world = parent.mul(local);
         if let Some(frames) = sprite_frames.get(id) {
             out.push((world.tx.round() as i64, world.ty.round() as i64));
@@ -1310,10 +1388,10 @@ fn walk_frame(
     plane: Option<&str>, planes: &PlaneMap,
     sym_names: &BTreeMap<u16, String>, shape_defs: &BTreeMap<u16, &swf::Shape>,
     sprite_frames: &BTreeMap<u16, Vec<Vec<PlacedChild>>>, out: &mut Vec<Instance>, rec: usize,
-    inst_anchor: (f64, f64), phase_rank: &std::collections::HashMap<(i64, i64), usize>,
+    inst_anchor: (f64, f64), inst_path: u64, phase_rank: &std::collections::HashMap<(i64, i64), usize>,
 ) {
     if rec > 8 { return; }
-    for (id, local, name, pinned) in children {
+    for (id, local, name, pinned, pdepth) in children {
         let world = parent.mul(local);
         let sym = sym_names.get(id).cloned().unwrap_or_default();
         // an instance establishes a plane for its subtree: the stage's AS3 plane map (authoritative)
@@ -1335,16 +1413,24 @@ fn walk_frame(
                 moving: false, // art-path instances classify by plane, not collision
                 hazard: None,  // hazards come from the geometry walk, not the art-frame walk
                 inst_anchor,
+                inst_path,
             });
         }
         if let Some(frames) = sprite_frames.get(id) {
             let next = name.as_deref().or(if sym.is_empty() { carried_sym } else { Some(&sym) }).map(|s| s.to_string());
+            if let Ok(pat) = std::env::var("PEPTIDE_WALK_TRACE") {
+                if next.as_deref().is_some_and(|n| n.to_ascii_lowercase().contains(&pat.to_ascii_lowercase())) {
+                    eprintln!("[walk-trace] clip id={id} pdepth={pdepth} path={inst_path} name={:?} sym={:?} plane={:?} frames={} at=({:.0},{:.0})",
+                        name, sym, my_plane, frames.len(), world.tx, world.ty);
+                }
+            }
             // EVERY movieclip placement is its own instance: its world position becomes the anchor
             // for its subtree, so each repeated clip (the 16 ember emitters, the 8 wall torches --
             // even when unnamed) splits into its OWN object at its own position, instead of being
             // merged into the parent element. each then animates + stabilizes independently (a torch
             // can't drift left/right because the whole row's average shifts -- it's its own clip).
             let child_anchor = (world.tx, world.ty);
+            let child_path = inst_path.wrapping_mul(31).wrapping_add(*pdepth as u64 + 1);
             // even desync: each clip's start frame from its position-rank via the golden ratio (a
             // low-discrepancy sequence), so a row of repeated clips is spread EVENLY across its loop
             // and their per-frame leans cancel (the row reads as still). see `phase_rank` above.
@@ -1352,7 +1438,7 @@ fn walk_frame(
             let phase = ((rank as f64 * 0.618_033_988_75).fract() * frames.len() as f64) as usize;
             // a graphic-pinned placement shows its FIRST frame, always (it never self-animates).
             let f = if *pinned { &frames[0] } else { &frames[(global_frame + phase) % frames.len()] };
-            walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1, child_anchor, phase_rank);
+            walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1, child_anchor, child_path, phase_rank);
         }
     }
 }
@@ -1424,7 +1510,7 @@ fn render_art_layers(
     let frame_instances = |g: usize| -> Vec<Instance> {
         let root = &root_frames[root_idx];
         let mut out = Vec::new();
-        walk_frame(root, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), &phase_rank);
+        walk_frame(root, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, &phase_rank);
         // exclude non-art PLANES (terrain/masks/spawns, by instance name) and any stray
         // collision/scaffolding markers (by linkage suffix) that slipped into an art plane.
         if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
@@ -1468,8 +1554,8 @@ fn render_art_layers(
         eprintln!("=== art instances (richest frame {base_idx}, {} insts) ===", base_insts.len());
         for i in base_insts {
             let k = match art_kind(i) { ArtKind::Backdrop => "BKDRP", ArtKind::Parallax => "PARLX", ArtKind::Background => "BG", ArtKind::Stage => "STAGE", ArtKind::Foreground => "FG" };
-            eprintln!("  [{k:5}] plane={:?} sym={:?} aabb=({:.0},{:.0} {:.0}x{:.0})",
-                i.plane, i.sym_name, i.aabb.x, i.aabb.y, i.aabb.w, i.aabb.h);
+            eprintln!("  [{k:5}] plane={:?} sym={:?} name={:?} shape={} aabb=({:.0},{:.0} {:.0}x{:.0})",
+                i.plane, i.sym_name, i.inst_name, i.shape_id, i.aabb.x, i.aabb.y, i.aabb.w, i.aabb.h);
         }
     }
     // The SSF2 stageMC `foreground` plane is the structure's FRONT FACE, drawn over the same
@@ -1557,24 +1643,32 @@ fn render_art_layers(
         // each at its own position, instead of one merged union-bounds image (which both desyncs
         // their independent loops and wastes a giant mostly-empty texture). a single-instance symbol
         // is one group, same as before.
-        let akey = |i: &Instance| (i.sym_name.clone(), i.inst_anchor.0.round() as i64, i.inst_anchor.1.round() as i64);
-        let mut order: Vec<(String, i64, i64)> = Vec::new();
-        let mut seen: std::collections::BTreeSet<(String, i64, i64)> = std::collections::BTreeSet::new();
+        let akey = |i: &Instance| (i.sym_name.clone(), i.inst_anchor.0.round() as i64, i.inst_anchor.1.round() as i64, i.inst_path);
+        let mut order: Vec<(String, i64, i64, u64)> = Vec::new();
+        let mut seen: std::collections::BTreeSet<(String, i64, i64, u64)> = std::collections::BTreeSet::new();
         for i in base_insts.iter().filter(|i| member(i)) {
             let k = akey(i);
             if seen.insert(k.clone()) { order.push(k); }
         }
-        order.iter().filter_map(|(sname, ax, ay)| {
+        order.iter().filter_map(|(sname, ax, ay, apath)| {
             let matches = |i: &Instance| member(i) && &i.sym_name == sname
-                && i.inst_anchor.0.round() as i64 == *ax && i.inst_anchor.1.round() as i64 == *ay;
+                && i.inst_anchor.0.round() as i64 == *ax && i.inst_anchor.1.round() as i64 == *ay
+                && i.inst_path == *apath;
             // fixed canvas = the union of THIS placement's bounds across ALL frames, so the layer
             // stays put while its content animates (no wiggle as the flame bbox flickers).
             let all: Vec<&Instance> = sampled.iter()
                 .flat_map(|(insts, _)| insts.iter().filter(|i| matches(i))).collect();
             let bounds = union_bounds(&all);
+            // a frame where the element is INVISIBLE (a bubble between pops, a podoboo between
+            // leaps) is a real frame of its loop: emit it as a blank, not a gap. dropping it
+            // both broke the animated test (collapsing the element to one static frame) and
+            // compressed the quiet stretches out of the loop.
+            let blank = || bounds.map(|(l, t, _, _)| StageArt {
+                png: blank_png(), x: (l - ox) * scale, y: (t - oy) * scale, w: 1, h: 1, hold: 1,
+            });
             let per_frame: Vec<StageArt> = sampled.iter().filter_map(|(insts, _)| {
                 let grp: Vec<&Instance> = insts.iter().filter(|i| matches(i)).collect();
-                composite_grp(grp, bounds)
+                composite_grp(grp, bounds).or_else(blank)
             }).collect();
             let animated = per_frame.len() == n_samples
                 && per_frame.windows(2).any(|w| w[0].png != w[1].png);
@@ -1728,7 +1822,7 @@ fn engine_added_bg_layers(
         }
     }
     for tags in sprites.values() {
-        for frame in build_frames(tags) { for (cid, _, _, _) in frame { note(cid, bitmaps, &mut referenced, &mut ref_dims); } }
+        for frame in build_frames(tags) { for (cid, _, _, _, _) in frame { note(cid, bitmaps, &mut referenced, &mut ref_dims); } }
     }
     for t in root_tags {
         if let swf::Tag::PlaceObject(po) = t {
@@ -1904,6 +1998,16 @@ fn engine_added_bg_layers(
 }
 
 /// spanning their union bounds. `None` if nothing rasterized.
+/// A 1x1 fully transparent PNG: the canvas for an element frame where nothing is visible.
+fn blank_png() -> Vec<u8> {
+    use image::ImageEncoder;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&[0u8, 0, 0, 0], 1, 1, image::ExtendedColorType::Rgba8)
+        .expect("encode 1x1 png");
+    png
+}
+
 fn composite_layer(
     art: &[&Instance],
     shape_defs: &BTreeMap<u16, &swf::Shape>,
@@ -2059,16 +2163,16 @@ fn extract_labeled_clip_anims(
         // e.g. the thwomp's Single Frame fall/idle) shows one fixed frame, never self-animates and
         // never runs its frame scripts, so it doesn't drive the length (1 if everything is static).
         let sub_len = children.iter()
-            .filter(|(_, _, _, pinned)| !pinned)
-            .filter_map(|(id, _, _, _)| sprite_frames.get(id).map(|fr| fr.len()))
+            .filter(|(_, _, _, pinned, _)| !pinned)
+            .filter_map(|(id, _, _, _, _)| sprite_frames.get(id).map(|fr| fr.len()))
             .max().unwrap_or(1).max(1);
         // hold-vs-loop comes from the DRIVING nested clip's own timeline: a sub-clip that holds
         // carries a Flash-generated `_fla.` class (frame scripts) bound in SymbolClass. `stop()`
         // freezes where it fires; `gotoAndStop(target)` plays through then freezes at the target
         // (a label in the SUB-clip's own timeline, or a 1-based frame number).
         let driver_id = children.iter()
-            .filter(|(_, _, _, pinned)| !pinned)
-            .filter_map(|(id, _, _, _)| sprite_frames.get(id).map(|fr| (*id, fr.len())))
+            .filter(|(_, _, _, pinned, _)| !pinned)
+            .filter_map(|(id, _, _, _, _)| sprite_frames.get(id).map(|fr| (*id, fr.len())))
             .max_by_key(|(_, n)| *n).map(|(id, _)| id);
         let hold = driver_id
             .and_then(|id| sym_names.get(&id))
@@ -2103,7 +2207,7 @@ fn extract_labeled_clip_anims(
         // walk_frame itself pins graphic placements to their first frame.
         let per_frame: Vec<Vec<Instance>> = (0..sub_len).map(|g| {
             let mut out = Vec::new();
-            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), &no_phase);
+            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, &no_phase);
             out.retain(|i| shape_defs.contains_key(&i.shape_id));
             out
         }).collect();
@@ -2408,7 +2512,7 @@ fn walk<'a>(
                 x_sign: world.x_sign(), flip: world.flips(),
                 moving: here_moving,
                 hazard: here_hazard,
-                inst_anchor: (0.0, 0.0), // geometry walk feeds collision/hazards, not art grouping
+                inst_anchor: (0.0, 0.0), inst_path: 0, // geometry walk feeds collision/hazards, not art grouping
             });
         }
         if let Some(child) = sprites.get(&id) {
@@ -2464,10 +2568,10 @@ mod hazard_classifier_tests {
         let insts = vec![
             Instance { shape_id: 1, inst_name: None, sym_name: "x".into(), plane: None,
                 aabb: Rect { x: 0.0, y: 0.0, w: 100.0, h: 20.0 }, cx: 50.0, cy: 10.0, x_sign: 1.0, flip: (false, false),
-                moving: false, hazard: Some(HazardKind::Lava), inst_anchor: (0.0, 0.0) },
+                moving: false, hazard: Some(HazardKind::Lava), inst_anchor: (0.0, 0.0), inst_path: 0 },
             Instance { shape_id: 2, inst_name: None, sym_name: "x".into(), plane: None,
                 aabb: Rect { x: 110.0, y: 0.0, w: 100.0, h: 20.0 }, cx: 160.0, cy: 10.0, x_sign: 1.0, flip: (false, false),
-                moving: false, hazard: Some(HazardKind::Lava), inst_anchor: (0.0, 0.0) },
+                moving: false, hazard: Some(HazardKind::Lava), inst_anchor: (0.0, 0.0), inst_path: 0 },
         ];
         let shapes = std::collections::BTreeMap::new();
         let bitmaps = std::collections::BTreeMap::new();
