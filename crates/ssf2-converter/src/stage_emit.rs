@@ -300,6 +300,39 @@ impl<'a> EntityBuilder<'a> {
             "$id": aid, "name": format!("platformSprite{idx}"), "pluginMetadata": {}, "layers": [img, line]
         }));
     }
+
+    /// Build a `platformSprite` animation whose collision is SOLID ON ALL SIDES: one line-segment
+    /// structure layer carrying a CLOSED clockwise rect outline (floor -> right wall -> ceiling ->
+    /// left wall; segment winding sets each face's collision side, the same way the official
+    /// content builds solid fences from wall/ceiling segments). Local coords: top edge at y=0
+    /// (same convention as the floor-line variant, so a follower script's offsets are unchanged),
+    /// spanning x -w/2..w/2 and down to y=h. No grabbable ledges — it's a solid body, not a deck.
+    fn add_solid_structure_animation(&mut self, idx: usize, sprite_guid: &str, w: f64, h: f64) {
+        let img = self.make_image(&format!("platformImage{idx}"), sprite_guid, -w / 2.0, 0.0, 1.0);
+        let pm = json!({ "structureType": "FLOOR", "leftLedge": false, "rightLedge": false, "dropThrough": false });
+        let sym = self.uid("sym:platformSolid");
+        self.symbols.push(json!({
+            "$id": sym, "type": "LINE_SEGMENT", "alpha": 0.5, "color": "0xeeeeee",
+            "points": [
+                -w / 2.0, 0.0,  w / 2.0, 0.0,   // floor (left -> right)
+                 w / 2.0, h,                    // right wall (down)
+                -w / 2.0, h,                    // ceiling (right -> left)
+                -w / 2.0, 0.0                   // left wall (up, closing the loop)
+            ],
+            "pluginMetadata": { "com.fraymakers.FraymakersMetadata": pm }
+        }));
+        let kf = self.uid("kf:platformSolid");
+        self.keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "LINE_SEGMENT" }));
+        let line = self.uid("layer:platformSolid");
+        self.layers.push(json!({
+            "$id": line, "hidden": false, "locked": false, "name": "Solid Outline Layer", "type": "LINE_SEGMENT",
+            "keyframes": [kf], "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "lineSegmentType": "LINE_SEGMENT_STRUCTURE" } }
+        }));
+        let aid = self.uid(&format!("anim:platformSprite{idx}"));
+        self.extra_anims.push(json!({
+            "$id": aid, "name": format!("platformSprite{idx}"), "pluginMetadata": {}, "layers": [img, line]
+        }));
+    }
     /// Add an IMAGE layer to the `stage` animation at the current depth (rendered at the
     /// stage `scale` so the native-resolution art matches the scaled-up geometry).
     fn add_image(&mut self, name: &str, image_asset: &str, x: f64, y: f64) {
@@ -421,7 +454,7 @@ fn bg_layer_name(sym: &str, idx: usize) -> String {
 
 /// The depth layers the entity lays out. `stage` is the frame sequence (1 = static);
 /// `background` is the ordered per-element backdrop layers (each 1 = static).
-struct ArtRefs { background: Vec<BgLayerRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Vec<ArtRef>, foreground_occluders: Vec<ArtRef>, platform_sprites: Vec<(String, f64, f64)> }
+struct ArtRefs { background: Vec<BgLayerRef>, parallax: Vec<ParallaxRef>, stage: Vec<ArtRef>, foreground: Vec<ArtRef>, foreground_occluders: Vec<ArtRef>, platform_sprites: Vec<(String, f64, f64, bool)> }
 
 /// Render the floor + soft platforms as filled rectangles on a transparent canvas
 /// covering their bounding box (1px = 1 stage unit). Gives the stage visible content
@@ -496,7 +529,8 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> Value {
     }
     // moving platforms reference the shared `platformSprite` animation (grey surface + a structure
     // line segment); the stage spawns them as Structures that move themselves. Add that animation.
-    for (i, (grey, w, h)) in art.platform_sprites.iter().enumerate() {
+    for (i, (grey, w, h, solid)) in art.platform_sprites.iter().enumerate() {
+        if *solid { b.add_solid_structure_animation(i, grey, *w, *h); continue; }
         b.add_platform_animation(i, grey, *w, *h);
     }
     b.add_container("Characters Back", "CHARACTERS_BACK_CONTAINER");
@@ -669,7 +703,7 @@ use crate::stage_parser::{Hazard, Platform};
 /// content ids the stage Script spawns with `match.createStructure`.
 #[allow(clippy::type_complexity)]
 fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
-    -> Result<(Vec<(String, f64, f64)>, Vec<Value>, Vec<String>)>
+    -> Result<(Vec<(String, f64, f64, bool)>, Vec<Value>, Vec<String>)>
 {
     let vis: Vec<&Platform> = model.platforms.iter().filter(|p| p.visible).collect();
     if vis.is_empty() { return Ok((Vec::new(), Vec::new(), Vec::new())); }
@@ -704,7 +738,7 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
         write_json(&sprites.join(format!("{id}_platformSprite{i}.png.meta")), &json!({
             "export": false, "guid": guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
         }))?;
-        sprite_dims.push((guid, pw as f64, ph as f64));
+        sprite_dims.push((guid, pw as f64, ph as f64, false));
 
         let cid = format!("{id}platform{i}");
         let stats_id = format!("{cid}Stats");
@@ -715,22 +749,25 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
         spawn_ids.push(cid);
     }
     // a hazard that declares createSelfPlatform (the Thwomp) gets a DECK structure riding it: the
-    // standable box on the falling/landed/rising body (riding it up is real SSF2 gameplay). the
-    // deck finds the thwomp custom game object by matching its x against the spawn columns,
-    // engages only once the thwomp has dropped below its spawn hover (SSF2 keeps fallthrough on
-    // during the entrance), and parks off-world between cycles.
+    // SSF2 self-platform is a SOLID box (floor + walls + ceiling — fighters can't pass through the
+    // body), so it emits as a RECT_STRUCTURE sized to the whole declared box, riding the
+    // falling/landed/rising body (riding it up is real SSF2 gameplay). the deck finds the thwomp
+    // custom game object by matching its x against the spawn columns, engages only once the thwomp
+    // has dropped below its spawn hover (SSF2 keeps fallthrough on during the entrance), and parks
+    // off-world between cycles.
     if let Some(hz) = model.hazards.iter().find(|h| h.behavior.self_platform.is_some()) {
-        let (bx, by, bw, _bh) = hz.behavior.self_platform.unwrap();
+        let (bx, by, bw, bh) = hz.behavior.self_platform.unwrap();
         let s = model.scale;
         let deck_w = (bw * s).round().max(8.0);
+        let deck_h = (bh * s).round().max(8.0);
         let off_x = (bx + bw / 2.0) * s; // box centre relative to the body origin
-        let off_y = by * s;              // standable top edge
+        let off_y = by * s;              // solid top edge (the rect extends deck_h below it)
         let cols_x: Vec<f64> = if !model.sink_columns.is_empty() { model.sink_columns.clone() }
             else { vis.iter().map(|p| p.rect.x + p.rect.w / 2.0).collect() };
         let spawn_y = model.death_box.as_ref().map(|b| b.y + 60.0)
             .unwrap_or_else(|| vis.iter().map(|p| p.rect.y).fold(f64::MAX, f64::min) - 520.0);
         let di = sprite_dims.len();
-        let img: image::RgbaImage = image::RgbaImage::new(deck_w as u32, 10); // transparent, collision-only
+        let img: image::RgbaImage = image::RgbaImage::new(deck_w as u32, deck_h as u32); // transparent, collision-only
         let mut png = Vec::new();
         image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .context("encode deck png")?;
@@ -739,7 +776,7 @@ fn emit_platform_structures(model: &StageModel, lib: &Path, sprites: &Path)
         write_json(&sprites.join(format!("{id}_platformSprite{di}.png.meta")), &json!({
             "export": false, "guid": guid, "id": "", "pluginMetadata": {}, "plugins": [], "tags": [], "version": 2
         }))?;
-        sprite_dims.push((guid, deck_w, 10.0));
+        sprite_dims.push((guid, deck_w, deck_h, true));
         let cid = format!("{id}thwompdeck");
         let stats_id = format!("{cid}Stats");
         std::fs::write(scripts.join(format!("{stats_id}.hx")), platform_stats_hx(id, -2000.0, -3000.0, di))?;
