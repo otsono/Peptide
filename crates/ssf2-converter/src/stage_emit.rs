@@ -1561,17 +1561,12 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
             s = ne.replace_all(&s, "!inLocalState($1)").to_string();
             s = s.replace(&format!("self.{st}"), "getLocalState()");
         }
-        // timer ops. with the wrapper, a FrameTimer is really "frames since entering this state"
-        // (SSF2 constructs them at spawn and ticks each in exactly one state's handler), so all of
-        // them lower onto the wrapper's single frames-in-state counter — fewer persistent slots,
-        // and reset-on-transition comes free. without the wrapper, a per-timer slot each.
+        // timer ops lower in a post-flatten pass (the frames-in-state form needs the flat ladder
+        // to PROVE per timer that all its accesses live in one state handler). without the
+        // wrapper there's no frames-in-state counter, so lower onto per-slot counters here.
         // a FrameTimer duration is 30fps frames; the counters tick at 60fps, so x2.
-        for (f, dur) in &timers {
-            if wrap.is_some() {
-                s = s.replace(&format!("self.{f}.tick();"), "// FrameTimer tick -> the frames-in-state counter");
-                s = s.replace(&format!("self.{f}.completed"), &format!("(_w_state_t.get() >= ({dur}) * 2)"));
-                s = s.replace(&format!("self.{f}.reset();"), "// FrameTimer reset -> frames-in-state resets on transition");
-            } else {
+        if wrap.is_none() {
+            for (f, dur) in &timers {
                 s = s.replace(&format!("self.{f}.tick()"), &format!("_t_{f}.inc()"));
                 s = s.replace(&format!("self.{f}.completed"), &format!("(_t_{f}.get() >= ({dur}) * 2)"));
                 s = s.replace(&format!("self.{f}.reset()"), &format!("_t_{f}.set(0)"));
@@ -1647,8 +1642,61 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
     if wrap.is_none() {
         for f in timers.keys() { preamble.push_str(&format!("var _t_{f} = self.makeInt(0);\n")); }
     }
-    let body = flatten_state_ladder(&body);
+    let mut body = flatten_state_ladder(&body);
     let Some(w) = wrap else { return format!("{preamble}\n{body}") };
+
+    // FrameTimer lowering, PROVEN per timer: when every access (tick/completed/reset) sits inside
+    // exactly ONE rung of the flat state ladder, the timer measures "frames since entering that
+    // state" (SSF2 constructs it at spawn and only that handler ticks it), so it lowers onto the
+    // wrapper's single frames-in-state counter — reset-on-transition comes free, and re-entry
+    // matches SSF2's fresh-instance-per-spawn semantics (the wrapper recycle = instance death).
+    // a timer that DOESN'T prove out keeps an exact per-slot counter and logs a warning.
+    let mut slot_timers: Vec<String> = Vec::new();
+    {
+        let lines: Vec<String> = body.lines().map(str::to_string).collect();
+        // rung extents of the flat ladder: start at an inLocalState guard, end at its brace close.
+        let rung_re = Regex::new(r"if \(inLocalState\(-?\d+\)\) \{").unwrap();
+        let mut rungs: Vec<(usize, usize)> = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            if !rung_re.is_match(l) { continue; }
+            let mut depth = 1i32;
+            let mut end = i;
+            for (j, jl) in lines.iter().enumerate().skip(i + 1) {
+                let t = jl.trim_start();
+                if t.starts_with("//") { continue; }
+                for c in t.chars() {
+                    match c { '{' => depth += 1, '}' => depth -= 1, _ => {} }
+                }
+                if depth <= 0 { end = j; break; }
+            }
+            rungs.push((i, end));
+        }
+        for (f, dur) in &timers {
+            let pat = format!("self.{f}.");
+            let mentions: Vec<usize> = lines.iter().enumerate()
+                .filter(|(_, l)| l.contains(&pat)).map(|(i, _)| i).collect();
+            // the innermost rung containing each mention (rungs of an else-if ladder don't nest,
+            // so "innermost" = the latest-starting rung whose extent covers the line).
+            let homes: std::collections::BTreeSet<Option<usize>> = mentions.iter()
+                .map(|&m| rungs.iter().enumerate().rev()
+                    .find(|(_, (s, e))| *s <= m && m <= *e).map(|(k, _)| k))
+                .collect();
+            let proven = !mentions.is_empty() && homes.len() == 1 && !homes.contains(&None);
+            if proven {
+                body = body.replace(&format!("self.{f}.tick();"), "// FrameTimer tick -> the frames-in-state counter");
+                body = body.replace(&format!("self.{f}.completed"), &format!("(_w_state_t.get() >= ({dur}) * 2)"));
+                body = body.replace(&format!("self.{f}.reset();"), "// FrameTimer reset -> frames-in-state resets on transition");
+            } else {
+                eprintln!("  warning: hazard timer {f} is used across handlers; kept a per-slot \
+                           counter (verify its persistence live)");
+                body = body.replace(&format!("self.{f}.tick()"), &format!("_t_{f}.inc()"));
+                body = body.replace(&format!("self.{f}.completed"), &format!("(_t_{f}.get() >= ({dur}) * 2)"));
+                body = body.replace(&format!("self.{f}.reset()"), &format!("_t_{f}.set(0)"));
+                preamble.push_str(&format!("var _t_{f} = self.makeInt(0);\n"));
+                slot_timers.push(f.clone());
+            }
+        }
+    }
 
     // ---- the synthesized stage spawn cycle + kinematics integrator ----
     // SSF2 splits this hazard across two classes: the enemy class (the state machine above) and
@@ -1658,6 +1706,9 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
     // entrance clip's frame-script setYSpeed timeline (a Graphic-pinned clip never self-runs).
     let cols_lit = w.cols.iter().map(|(x, _)| format!("{x:.1}")).collect::<Vec<_>>().join(", ");
     let land_lit = w.cols.iter().map(|(_, y)| format!("{y:.1}")).collect::<Vec<_>>().join(", ");
+    // per-slot fallback timers restart on each engage (a fresh SSF2 instance gets fresh timers).
+    let timer_resets: String = slot_timers.iter()
+        .map(|f| format!("\t\t\t_t_{f}.set(0);\n")).collect();
     // state registration runs once, behind the wrapper's first-update guard. NOT module scope
     // (make* slots aren't dereferenceable on the first eval, before the CGO api is live) and NOT
     // initialize() (the engine never calls it on a stage custom game object — the template's
@@ -1720,6 +1771,7 @@ fn cgo_runnable(raw: &str, anims: &[String], scale: f64, wrap: Option<&ReconWrap
          \t\t\t_kin_vy.set(0);\n\
          \t\t\t_kin_grav.set(0);\n\
          \t\t\t_w_prev.set(-99);\n\
+         {timer_resets}\
          \t\t\t__hazardInit();\n\
          \t\t\t_w_active.set(true);\n\
          \t\t}}\n\
