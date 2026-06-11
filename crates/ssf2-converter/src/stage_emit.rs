@@ -2165,7 +2165,7 @@ fn hazard_gameobject_stats_multi(hid: &str, idle: &str, ecb: Option<(f64, f64)>)
     format!(
         "// GameObjectStats for {hid}\n{{\n\tspriteContent: self.getResource().getContent(\"{hid}\"),\n\tinitialState: PState.ACTIVE,\n\
          \tstateTransitionMapOverrides: [\n\t\tPState.ACTIVE => {{ animation: \"{idle}\" }}\n\t],\n\
-         \tbaseScaleX: 1,\n\tbaseScaleY: 1,\n\tweight: 100,\n\tgravity: 0,\n\tfriction: 0,\n{ecb_block}}}\n")
+         \tbaseScaleX: 1,\n\tbaseScaleY: 1,\n\tweight: 100,\n\tgravity: 0,\n\tfriction: 0,\n\timmovable: true,  // a stage hazard shoves fighters, never the reverse (windboxes included)\n{ecb_block}}}\n")
 }
 
 /// HitboxStats for a multi-animation hazard: entries on each ACTIVE (damaging) animation, empty on
@@ -2301,7 +2301,7 @@ fn hazard_gameobject_stats_hx(hid: &str) -> String {
     format!(
         "// GameObjectStats for {hid}\n{{\n\tspriteContent: self.getResource().getContent(\"{hid}\"),\n\tinitialState: PState.ACTIVE,\n\
          \tstateTransitionMapOverrides: [\n\t\tPState.ACTIVE => {{ animation: \"gameObjectIdle\" }}\n\t],\n\
-         \tbaseScaleX: 1,\n\tbaseScaleY: 1,\n\tweight: 100,\n\tgravity: 0,\n\tfriction: 0\n}}\n")
+         \tbaseScaleX: 1,\n\tbaseScaleY: 1,\n\tweight: 100,\n\tgravity: 0,\n\tfriction: 0,\n\timmovable: true,  // a stage hazard shoves fighters, never the reverse (windboxes included)\n}}\n")
 }
 
 fn hazard_hitbox_stats_hx(hz: &Hazard) -> String {
