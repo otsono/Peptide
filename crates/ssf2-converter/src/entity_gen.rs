@@ -1194,11 +1194,12 @@ pub fn generate_entity(
                                     // solved numerically against the decomposition's own output.
                                     // the unrotated corner for that same center = center + (px, -py).
                                     let (px, py) = (fm_sx * hw, fm_sy * hh);
-                                    let (sin, cos) = world_rot.to_radians().sin_cos();
-                                    let cx = fm_x - cos * px + sin * py;
-                                    let cy = fm_y + sin * px + cos * py;
-                                    fm_x = round2(cx + px);
-                                    fm_y = round2(cy - py);
+                                    // the engine's tumble spin rotates about the ENTITY position,
+                                    // so the pose must center ON the origin or it orbits (r = the
+                                    // center's offset). drop the authored center entirely: place
+                                    // the unrotated pose with its center at (0,0).
+                                    fm_x = round2(px);
+                                    fm_y = round2(-py);
                                     emit_rot = 0.0;
                                 }
                             }
