@@ -1337,6 +1337,8 @@ fn connect_edit(
         .ok_or_else(|| anyhow::anyhow!("Match.customGameObjects field not found"))?;
     let proj_field = find_field(code, match_t, "projectiles")
         .ok_or_else(|| anyhow::anyhow!("Match.projectiles field not found"))?;
+    let structures_field = find_field(code, match_t, "structures")
+        .ok_or_else(|| anyhow::anyhow!("Match.structures field not found"))?;
     let m_idx = add_int(code, 'm' as i32);
     let t_idx = add_int(code, 't' as i32);
     let m_ack_g = add_string_const(code, "M:JAB\n");
@@ -2875,7 +2877,7 @@ fn connect_edit(
         // characters[1] and over-ran customGameObjects[2], killing the handler on an out-of-bounds
         // GetArray) — the same phenomenon the multiplayer extra-builds hit; fixed indices + forward
         // jumps sidestep it. 8 slots cover any triage roster (4 players + assists / a stage's CGOs).
-        for fld in [characters_field, cgo_field, proj_field] {
+        for fld in [characters_field, cgo_field, proj_field, structures_field] {
             for &slot_idx in &tree_slot_idx {
                 let skip = a.label();
                 // re-derive the collection chain fresh per slot (nothing persists across calls).
