@@ -4,6 +4,7 @@ var COLS_X = [293.6, 445.7, 597.8, 950.1, 1102.2, 1254.3];
 var OFF_X = 6.5;
 var OFF_Y = -156.0;
 var ENGAGE_Y = 72.9;
+var m_excluded = self.makeBool(false);
 
 function findThwomp() {
 	var objs = match.getCustomGameObjects();
@@ -18,6 +19,12 @@ function findThwomp() {
 
 function update() {
 	var t = findThwomp();
+	// SSF2 never grounds an enemy on its OWN self-platform: with an ECB the falling thwomp
+	// would land on this follower mid-air, so exclude it from the structure's collision.
+	if (t != null && !m_excluded.get()) {
+		self.addToBlacklist(t);
+		m_excluded.set(true);
+	}
 	if (t != null && t.getY() > ENGAGE_Y) {
 		self.setX(t.getX() + OFF_X);
 		self.setY(t.getY() + OFF_Y);
