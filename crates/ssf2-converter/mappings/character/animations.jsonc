@@ -70,10 +70,11 @@
     "dizzy": "dizzy",
     "sleep": "sleep",
     "tumble": "tumble",
-    // SSF2 "falling" is the tumble/launched state (a distinct 20-frame anim), NOT
-    // the fall loop. Mapping it to "fall" made fm "fall" pull its hurtboxes from
-    // "falling" while the sprite came from "fall" (Fall_20) — so the boxes landed
-    // ~35px off the body. Route it to "tumble" so "fall" keeps its own matching boxes.
+    // SSF2's launch sequence is TWO anims: "flying" (SentFlying, the somersault shown
+    // during heavy hitstun) -> hurt_heavy, then "falling" (TumbleFall, the drifting
+    // tumble that follows) -> tumble. NEVER route "falling" to "fall": that pulled
+    // fall's hurtboxes from "falling" while the sprite came from "fall", landing the
+    // boxes ~35px off the body.
     "falling": "tumble",
     "crash": "crash_bounce",
     "frozen": "frozen",
@@ -90,7 +91,7 @@
     "taunt": "taunt",
     "swim": "swim",
     "ladder": "ladder",
-    "flying": "fly",
+    "flying": "hurt_heavy",
     "special": "special",
     "tech_ground": "tech",
     "tech_roll": "tech_roll",
