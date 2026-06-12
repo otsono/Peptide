@@ -92,6 +92,7 @@ read, so the same lines drive both:
 | `hold` / `release` / `seq` / `scenario` | yes | yes (input applicator) |
 | `addCharacter` | yes (live deferred-spawn) | yes (live add into a reserved slot) |
 | `tune` | yes (`tune p0 <hitboxIndex> …`) | yes (`tune p0 <moveName> …`) |
+| `status` (matchStatus feed) | yes | partial (not 100% yet) |
 
 notes on the SSF2 realizations:
 - `hold`/`seq` control masks are translated to SSF2's control-bit layout host-side; `scenario`'s
