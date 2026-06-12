@@ -544,11 +544,11 @@ points here).
     live on SSF2 (the evaluator handles a `;`-joined multi-statement line, an `[…]` array literal,
     the `damage._damage` getter/setter idiom, position/velocity setters as property writes, and
     `toState(neutral)` as the SSF2 state setter); `console` declares its gap (SSF2 has no debug
-    console). `dmg`/`info`/`kill` are verified on Fraymakers too. still open:
-    - **input injection** (`hold`/`release`/`seq`, and `scenario`'s timeline) on SSF2: needs a
-      per-frame applicator on the SSF2 side, the one remaining cohort. tracked under #1/#4.
-    - **`addCharacter`** and **`tune`** on SSF2: a live mid-match add and SSF2's per-attack-box
-      stat model, respectively, both deeper than the eval-macro layer.
+    console). `dmg`/`info`/`kill` are verified on Fraymakers too. input injection
+    (`hold`/`release`/`seq`, `scenario`'s timeline), `addCharacter`, and `tune` all work on SSF2
+    now (see #1/#3/#4/#5). parity is NOT closed out; still open:
+    - **the `status` feed on SSF2** isn't working 100% yet (the matchStatus readout the GUI
+      widgets consume), so the command set is close but not at parity.
     - **`reset` on Fraymakers** trips a script error (one of its setters / `toState` resolves to
       null on the FM character); the SSF2 path is unaffected. pre-existing, unrelated to the SSF2
       parity work, worth a separate look.
