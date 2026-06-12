@@ -1,0 +1,17 @@
+{
+  "export": true,
+  "guid": "dcaf7c7f-0370-539d-9603-09f9a1b44029",
+  "id": "junglehijinxssf2_hijinx_highbirds_bg",
+  "language": "",
+  "pluginMetadata": {
+    "com.fraymakers.FraymakersMetadata": {
+      "objectType": "VFX",
+      "version": "0.4.0"
+    }
+  },
+  "plugins": [
+    "com.fraymakers.FraymakersMetadata"
+  ],
+  "tags": [],
+  "version": 1
+}

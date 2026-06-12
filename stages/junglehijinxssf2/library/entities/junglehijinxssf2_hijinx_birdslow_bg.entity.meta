@@ -1,0 +1,17 @@
+{
+  "export": true,
+  "guid": "9764fcc7-203c-52b2-880a-40aa3d3edb20",
+  "id": "junglehijinxssf2_hijinx_birdslow_bg",
+  "language": "",
+  "pluginMetadata": {
+    "com.fraymakers.FraymakersMetadata": {
+      "objectType": "VFX",
+      "version": "0.4.0"
+    }
+  },
+  "plugins": [
+    "com.fraymakers.FraymakersMetadata"
+  ],
+  "tags": [],
+  "version": 1
+}
