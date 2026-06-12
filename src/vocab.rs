@@ -124,6 +124,33 @@ pub fn cstate_value(arg: &str) -> Option<i64> {
     CSTATES.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| *v)
 }
 
+/// Host control bit (the [`crate::interpreter::CONTROLS`] layout the `hold`/`seq`
+/// parser produces) → SSF2 `ControlsObject.controls` bit. The two engines number
+/// their control bits differently, so the host mask is translated to SSF2's layout
+/// before it goes on the wire (Fraymakers consumes the host layout verbatim, SSF2
+/// needs this remap). SSF2 bits are `1 << pos` from `ControlsObject`'s static
+/// constants (UP=1<<11, BUTTON1=1<<6, …); `action` maps to SSF2 GRAB.
+const HOST_TO_SSF2_BITS: &[(u32, u32)] = &[
+    (0x01, 1 << 11), // up    → UP
+    (0x02, 1 << 10), // down  → DOWN
+    (0x04, 1 << 9),  // left  → LEFT
+    (0x08, 1 << 8),  // right → RIGHT
+    (0x10, 1 << 6),  // attack→ BUTTON1
+    (0x20, 1 << 5),  // special→BUTTON2
+    (0x40, 1 << 4),  // action→ GRAB
+    (0x80, 1 << 7),  // jump  → JUMP
+];
+
+/// Translate a host control mask ([`crate::interpreter::controls_mask`] output) to
+/// the SSF2 `ControlsObject.controls` bitmask the engine-side input applicator
+/// writes each frame. Unknown high bits are dropped (only the 8 mapped controls
+/// cross the seam).
+pub fn fm_mask_to_ssf2(mask: u32) -> u32 {
+    HOST_TO_SSF2_BITS.iter().fold(0, |acc, (host, ssf2)| {
+        if mask & host != 0 { acc | ssf2 } else { acc }
+    })
+}
+
 /// SSF2 verbs for a root identifier (case-insensitive), or `None` to fall back to
 /// a generic member read off the document root.
 pub fn root_ssf2(name: &str) -> Option<&'static [&'static str]> {
@@ -172,6 +199,17 @@ mod tests {
         assert!(is_passthrough("body"));
         assert!(is_passthrough("physics"));
         assert!(!is_passthrough("damage"));
+    }
+
+    #[test]
+    fn host_mask_translates_to_ssf2_bits() {
+        // single controls land on the SSF2 ControlsObject bit positions
+        assert_eq!(fm_mask_to_ssf2(0x08), 1 << 8);  // right → RIGHT
+        assert_eq!(fm_mask_to_ssf2(0x80), 1 << 7);  // jump  → JUMP
+        assert_eq!(fm_mask_to_ssf2(0x20), 1 << 5);  // special→BUTTON2
+        // combos OR together (down+special)
+        assert_eq!(fm_mask_to_ssf2(0x22), (1 << 10) | (1 << 5));
+        assert_eq!(fm_mask_to_ssf2(0), 0);
     }
 
     #[test]

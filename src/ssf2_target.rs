@@ -251,6 +251,22 @@ fn fmt_num(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") }
 }
 
+/// Map a Fraymakers hitbox stat name to the SSF2 `AttackDamage` public setter that tune
+/// drives, or `None` for a stat with no SSF2 analogue (skipped best-effort). The stored
+/// `AttackBoxes["attackBox"]` is an AttackDamage (sealed) with public accessors
+/// Damage/KBConstant/Power/Direction/WeightKB; mutating it persists (re-read each hit).
+fn tune_accessor(fm: &str) -> Option<&'static str> {
+    Some(match fm {
+        "damage" => "Damage",
+        "baseKnockback" => "KBConstant",
+        "knockbackGrowth" => "Power",
+        "angle" => "Direction",
+        "weightKnockback" | "weightKB" => "WeightKB",
+        "shieldDamage" => "ShieldDamage",
+        _ => return None,
+    })
+}
+
 // ─────────────────────────── reflection mapping ───────────────────────────
 
 impl Ssf2Target {
@@ -299,6 +315,7 @@ impl DebugTarget for Ssf2Target {
     fn eval(&mut self, expr: &str) -> Result<String> {
         let expr = expr.trim();
         if expr.is_empty() { return Ok(String::new()); }
+
         // bare verb passthrough: allow raw reflection verbs (GC/GET/READ/SPAWN/…)
         let head = expr.split_whitespace().next().unwrap_or("");
         if matches!(head, "GC"|"RM"|"STATS"|"MC"|"ROOT"|"GET"|"IDX"|"CALL"|"CALL1"|"CALLS"|"SETP"|"READ"|"PING"|"SPAWN"|"GO"|"QUEUE"|"LOADED"|"LOADNEXT") {
@@ -329,6 +346,15 @@ impl DebugTarget for Ssf2Target {
                 .map(|e| self.eval(e).map(|v| v.trim().to_string()).unwrap_or_else(|_| "?".into()))
                 .collect();
             return Ok(format!("[{}]", parts.join(", ")));
+        }
+
+        // tune (`<player>.updateHitboxStats(<move>, {stat:val,…})`). FM addresses a live
+        // hitbox by index; SSF2 addresses by MOVE NAME (its attacks are move-name + per-box
+        // data), so on SSF2 the index slot carries a move name. We navigate cur to the
+        // player, then mutate stored attack box 0 of that move via the TUNE verb (which
+        // sets the AttackDamage public setters Damage/KBConstant/Direction/Power).
+        if let Some(rest) = expr.split_once(".updateHitboxStats(") {
+            return self.eval_tune(rest.0, rest.1);
         }
 
         // commands.hsx composite globals that aren't a plain navigation: handle
@@ -422,10 +448,15 @@ impl DebugTarget for Ssf2Target {
             vec![args.character().to_string()]
         } else { args.characters.clone() };
         let n = chars.len().max(1);
+        // Reserve one spare slot (capped at SSF2's 4-player max) so `addCharacter` has a
+        // pre-allocated slot to fill live — the match's player containers are fixed-size
+        // at startGame, so a slot can't be grown afterward. The spare is marked
+        // exist=false + null character below, so startGame skips it (no ghost fighter).
+        let slots = (n + 1).min(4);
 
-        // SPAWN: build a VERSUS Game with N player slots, set player 0's character,
-        // queue stage+char0, load. (3rd arg = player count → Game(N, VERSUS).)
-        self.op(&format!("SPAWN\t{}\t{}\t{}", chars[0], stage, n))?;
+        // SPAWN: build a VERSUS Game with `slots` player slots, set player 0's character,
+        // queue stage+char0, load. (3rd arg = slot count → Game(slots, VERSUS).)
+        self.op(&format!("SPAWN\t{}\t{}\t{}", chars[0], stage, slots))?;
 
         // Add players 1..N: each is an idle dummy — a human slot (so NO CPU AI) that
         // simply never receives input (only player 0 is driven by the input injector),
@@ -439,6 +470,14 @@ impl DebugTarget for Ssf2Target {
             let _ = self.op(&format!("QUEUE1\t{ch}"));
         }
         if n > 1 { let _ = self.op("MLOAD"); }
+
+        // Mark reserved spare slots [n..slots) as non-participating (exist=false, null
+        // character) so startGame's makePlayer loop skips them and the match doesn't count
+        // them as fighters. addCharacter later flips exist=true and fills one.
+        for i in n..slots {
+            let _ = self.op("GC"); let _ = self.op("GET\tcurrentGame"); let _ = self.op("GET\tPlayerSettings"); let _ = self.op(&format!("IDX\t{i}"));
+            let _ = self.op("SETP\texist\t0"); // character stays null from PlayerSetting.init() → startGame skips it
+        }
 
         // Apply the FULL match config on the REAL config objects BEFORE startMatch reads
         // them. Global rules live on Game.LevelData (GameSettings, lowercase slots); the
@@ -488,13 +527,23 @@ impl DebugTarget for Ssf2Target {
     }
 
     fn hold(&mut self, mask: u32) -> Result<String> {
-        // SSF2 input injection isn't wired through the engine's controller yet;
-        // expose the mask so callers see it took effect at the protocol level.
-        Ok(format!("hold mask={mask} (ssf2 input injection: see autojump for YSpeed-level control)"))
+        // Translate the host control mask to SSF2's ControlsObject bit layout and set
+        // it as the persistent held mask for the controlled player (p0 → Characters[0]).
+        // The per-frame applicator (inject_input_applicator) drives it; release = mask 0.
+        let ssf2 = crate::vocab::fm_mask_to_ssf2(mask);
+        self.op(&format!("HOLD\t0\t{ssf2}"))?;
+        Ok(format!("hold mask={mask} (ssf2 controls={ssf2}, p0)"))
     }
 
     fn seq(&mut self, masks: &[u32]) -> Result<String> {
-        Ok(format!("seq {} frames (ssf2 input timeline not yet wired)", masks.len()))
+        // Queue a frame-accurate input timeline for p0. Each host mask is translated to
+        // SSF2's bit layout; the engine-side applicator drains one per frame and
+        // auto-releases at the end (mirrors Fraymakers draining one `i` line per frame).
+        let csv = masks.iter()
+            .map(|m| crate::vocab::fm_mask_to_ssf2(*m).to_string())
+            .collect::<Vec<_>>().join(",");
+        self.op(&format!("SEQ\t0\t{csv}"))?;
+        Ok(format!("seq {} frames (ssf2, p0)", masks.len()))
     }
 
     /// SSF2 has no debug console (the engine's interactive command console is a
@@ -516,7 +565,34 @@ impl DebugTarget for Ssf2Target {
         Ok(out)
     }
 
-    fn add_character(&mut self) -> Result<String> { Ok("addCharacter: not supported on SSF2 yet\n".into()) }
+    /// Live add-player: drop the `sandbag` dummy into a RESERVED match slot. spawn reserves
+    /// a spare slot (exist=false, null character); this finds it, loads the dummy's stats
+    /// (Stats.getStats, what the Character ctor reads), then the ADDCHAR verb fills the slot
+    /// and constructs the Character live (self-registering into the match). Returns the
+    /// engine reply (ADDCHAR surfaces any engine-side error via the bridge).
+    fn add_character(&mut self) -> Result<String> {
+        let ch = "sandbag";
+        // find the first reserved/empty slot (character is null) in PlayerSettings
+        let slot = (0..4).find(|i| {
+            let _ = self.op("GC"); let _ = self.op("GET\tcurrentGame"); let _ = self.op("GET\tPlayerSettings"); let _ = self.op(&format!("IDX\t{i}"));
+            matches!(self.op("GET\tcharacter").and_then(|_| self.op("READ")),
+                     Ok(r) if r == "null" || r == "undefined" || r.trim().is_empty())
+        });
+        let Some(slot) = slot else {
+            return Ok("addCharacter: no free slot (match is full at 4 players). spawn fewer to leave room.".into());
+        };
+        let _ = self.op(&format!("QUEUE1\t{ch}"));
+        let _ = self.op("MLOAD");
+        // wait for the dummy's stats to load (exactly what the Character ctor reads)
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(400));
+            let _ = self.op("STATS");
+            if self.op(&format!("CALLS\tgetStats\t{ch}")).is_ok()
+                && self.op("READ").map(|r| r.contains("[object")).unwrap_or(false) { break; }
+        }
+        let r = self.op(&format!("ADDCHAR\t{ch}\t{slot}"))?;
+        Ok(format!("addCharacter {ch} → slot {slot}: {r}"))
+    }
     fn exit(&mut self) -> Result<()> { let _ = std::process::Command::new("pkill").args(["-f", "SSF2-patched"]).status(); Ok(()) }
     fn load(&mut self) -> Result<String> { self.op("LOADED") }
 
@@ -560,6 +636,47 @@ impl Ssf2Target {
         let mut last = String::new();
         for op in ops { last = self.op(op)?; }
         if read { self.op("READ") } else { Ok(last) }
+    }
+
+    /// tune on SSF2: `<player>` + the `updateHitboxStats(...)` arg text
+    /// `<move>, { stat: val, … })`. Navigates the bridge's `peptideCur` to the player's
+    /// Character, then for each stat sends a TUNE verb that mutates stored attack box 0 of
+    /// the named move (SSF2 addresses attacks by move name, not a flat hitbox index).
+    fn eval_tune(&self, player: &str, args: &str) -> Result<String> {
+        let args = args.trim().trim_end_matches(')').trim();
+        // split "<move>, { … }" at the first comma → move name + object text
+        let (mv, obj) = args.split_once(',')
+            .ok_or_else(|| anyhow!("tune: expected `<move>, {{stats}}` (got {args:?})"))?;
+        let mv = mv.trim();
+        let obj = obj.trim().trim_start_matches('{').trim_end_matches('}');
+        // navigate cur → the target Character (p0/p1/…)
+        for op in self.emit_root(player)? { self.op(&op)?; }
+        // apply each stat that maps to an SSF2 AttackDamage setter
+        let mut applied: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        for pair in obj.split(',') {
+            let pair = pair.trim();
+            if pair.is_empty() { continue; }
+            let (k, v) = pair.split_once(':')
+                .ok_or_else(|| anyhow!("tune: bad stat `{pair}` (expected key:value)"))?;
+            let (k, v) = (k.trim(), v.trim());
+            match tune_accessor(k) {
+                Some(acc) => {
+                    // the TUNE verb reads the box stat back after setting; surface any
+                    // engine-side error (e.g. an unknown move name → null) instead of
+                    // falsely reporting success.
+                    let r = self.op(&format!("TUNE\t{mv}\t{acc}\t{v}"))?;
+                    if r.contains("ERR") {
+                        return Err(anyhow!("tune {player} {mv}: {r} (is {mv:?} a valid move name?)"));
+                    }
+                    applied.push(format!("{k}={} (box0 {acc}={})", v, r.trim()));
+                }
+                None => skipped.push(k.to_string()),
+            }
+        }
+        let mut out = format!("tune {player} {mv}: {}", if applied.is_empty() { "nothing applied".into() } else { applied.join(", ") });
+        if !skipped.is_empty() { out.push_str(&format!(" (no SSF2 analogue: {})", skipped.join(", "))); }
+        Ok(out)
     }
 
     /// Handle the `commands.hsx` globals that are whole helpers rather than a plain

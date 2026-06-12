@@ -301,7 +301,14 @@ pub fn install_patched(port: u16, fastboot: Option<(&str, &str)>) -> Result<Path
     let dst_swf = ssf2_swf_path(&dst_app);
     let traj = crate::ssf2_bridge::traj_path();
     ssf2_converter::abc_inject::patch_file_with(&src_swf, &dst_swf, |abc| {
+        // resilience preflight: abort loudly (naming what moved) if a critical SSF2 engine
+        // symbol the injections depend on was renamed/repackaged by an SSF2 update, instead
+        // of emitting a patch whose injected calls fail silently at runtime.
+        ssf2_converter::abc_inject::preflight(abc)?;
         ssf2_converter::abc_inject::inject_socket_bridge(abc, SSF2_DOC_CLASS, "127.0.0.1", port)?;
+        // per-frame input applicator (hold/seq/scenario): reads the bridge's HOLD/SEQ
+        // state and drives the target player's controls each frame.
+        ssf2_converter::abc_inject::inject_input_applicator(abc, SSF2_DOC_CLASS)?;
         match fastboot {
             Some((ch, stage)) => {
                 // Headless quick boot: skip the disclaimer/menus at the call site and queue
@@ -720,6 +727,10 @@ USAGE:
         Quickboot the standalone SSF2.app for manual observation.
 
   ── runtime code-execution bridge (AVM2 injection; see docs/ssf2-runtime-bridge.md) ──
+  peptide ssf2 doctor
+        Resolve every SSF2 engine symbol the injections need against the installed
+        SSF2.swf and print a checklist (run after an SSF2 update; exits non-zero if a
+        critical symbol moved).
   peptide ssf2 patch <in.swf> <out.swf>
         Inject the debug bridge into an SSF2 SWF.
   peptide ssf2 install [--heartbeat|--echo]
@@ -737,16 +748,44 @@ docs/ssf2-scaling-validation.md.
 ");
 }
 
+/// The injection half of `peptide ssf2 doctor` — resolve every SSF2 engine symbol the
+/// runtime-bridge injections depend on against the installed SSF2.swf and print a grouped
+/// checklist (the stage/parallax half is `cmd_doctor`). Exits non-zero if a critical
+/// symbol is missing.
+fn cmd_doctor_injections(_args: &[String]) -> Result<()> {
+    let app = ssf2_app();
+    let swf = ssf2_swf_path(&app);
+    if !swf.exists() { bail!("SSF2.swf not found at {}", swf.display()); }
+    let abc = ssf2_converter::abc_inject::read_abc(&swf)?;
+    let results = ssf2_converter::abc_inject::verify_symbols(&abc);
+    let mut group = "";
+    let (mut ok_n, mut miss_crit, mut miss_warn) = (0usize, 0usize, 0usize);
+    println!("SSF2 symbol doctor — {}\n", swf.display());
+    for (sym, ok) in &results {
+        if sym.group != group { group = sym.group; println!("  [{group}]"); }
+        let label = match sym.member { Some(m) => format!("{}.{}", sym.class, m), None => sym.class.to_string() };
+        if *ok { ok_n += 1; println!("    ok      {label}"); }
+        else if sym.critical { miss_crit += 1; println!("    MISSING {label}  ({})", sym.why); }
+        else { miss_warn += 1; println!("    warn    {label}  ({})", sym.why); }
+    }
+    println!("\n{ok_n} ok, {miss_crit} missing (critical), {miss_warn} missing (non-critical)");
+    if miss_crit > 0 {
+        eprintln!("\ncritical SSF2 symbols moved — patching is blocked. update SSF2_MANIFEST + the inject_* helpers.");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 pub fn run_cli(args: &[String]) -> Result<()> {
     // args == everything after the `ssf2` word.
     let sub = args.first().map(|s| s.as_str()).unwrap_or("help");
     let rest = if args.len() > 1 { &args[1..] } else { &[] };
     match sub {
+        "doctor" => cmd_doctor(rest).and_then(|()| cmd_doctor_injections(rest)),
         "stats" => cmd_stats(rest),
         "scale" => cmd_scale(rest),
         "identify" => cmd_identify(rest),
         "stage" => cmd_stage(rest),
-        "doctor" => cmd_doctor(rest),
         "patch" => cmd_patch(rest),
         "install" => cmd_install(rest).map(|_| ()),
         "selftest" => cmd_selftest(rest),

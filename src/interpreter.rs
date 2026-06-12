@@ -509,7 +509,7 @@ fn parse_scenario(rest: &[&str]) -> Command {
 /// non-numeric values (e.g. an AttackLimb enum) pass through verbatim, so
 /// `tune p0 0 limb=AttackLimb.FOOT` works too.
 fn parse_tune(rest: &[&str]) -> Command {
-    const USAGE: &str = "usage: tune <player> <hitboxIndex> <stat>=<value> …\n  e.g. tune p0 0 damage=15 baseKnockback=50 angle=45   (live updateHitboxStats; no relaunch)\n";
+    const USAGE: &str = "usage: tune <player> <hitbox> <stat>=<value> …\n  Fraymakers: <hitbox> = a hitbox index (e.g. tune p0 0 damage=15 baseKnockback=50 angle=45).\n  SSF2: <hitbox> = a move name (e.g. tune p0 AttackS3 damage=15 angle=45); mutates that move's stored box 0.\n  live updateHitboxStats; no relaunch.\n";
     if rest.len() < 3 {
         return Command::Client(USAGE.into());
     }
@@ -518,10 +518,13 @@ fn parse_tune(rest: &[&str]) -> Command {
     if !player.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Command::Client(format!("tune: {player:?} is not a valid player reference\n"));
     }
-    let idx = match rest[1].parse::<i64>() {
-        Ok(n) if n >= 0 => n,
-        _ => return Command::Client(format!("tune: hitbox index must be a non-negative integer (got {:?})\n", rest[1])),
-    };
+    // hitbox selector: a non-negative integer (Fraymakers hitbox index) OR an identifier
+    // (SSF2 move name). Passed verbatim into updateHitboxStats; each engine interprets it.
+    let idx = rest[1];
+    let is_index = idx.parse::<i64>().map(|n| n >= 0).unwrap_or(false);
+    if !is_index && !idx.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Command::Client(format!("tune: hitbox selector must be a non-negative integer or a move name (got {idx:?})\n"));
+    }
     let mut fields = Vec::new();
     for kv in &rest[2..] {
         let (k, v) = match kv.split_once('=') {
@@ -1103,11 +1106,14 @@ mod tests {
                    "e p0.updateHitboxStats(0, { damage: 15, baseKnockback: 50 })");
         assert_eq!(wire("tune p1 2 limb=AttackLimb.FOOT"),
                    "e p1.updateHitboxStats(2, { limb: AttackLimb.FOOT })");
+        // a move-name selector (SSF2 addressing) is accepted and passed verbatim.
+        assert_eq!(wire("tune p0 AttackS3 damage=15 angle=45"),
+                   "e p0.updateHitboxStats(AttackS3, { damage: 15, angle: 45 })");
         // shape errors are client-side (never sent).
         assert!(matches!(translate("tune p0 0"), Translated::Client(_)));        // no stats
-        assert!(matches!(translate("tune p0 x damage=1"), Translated::Client(_))); // bad index
         assert!(matches!(translate("tune p0 0 damage"), Translated::Client(_)));  // not key=value
-        assert!(matches!(translate("tune p0 -1 damage=1"), Translated::Client(_))); // negative index
+        assert!(matches!(translate("tune p0 -1 damage=1"), Translated::Client(_))); // negative index, not a valid name
+        assert!(matches!(translate("tune p0 1.5 damage=1"), Translated::Client(_))); // not int, not a bare identifier
     }
 
     #[test]

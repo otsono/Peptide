@@ -474,29 +474,46 @@ points here).
    and `match.getCharacters().length` reports the real count (read host-side from the live match, since
    hscript lacks RTTI on the raw character list). verified live: rosters of 1/2/2-distinct/3/4 ->
    `getCharacters()` 2/2/2/3/4, zero crashes, `p3.getStateName()` drivable. `spawn --versus a,b` forces
-   versus mode for a 1-2 player roster (wire byte `S`). still open: they don't yet take hits in a
-   verified way, and the SSF2 side. prerequisite for #6. (impl note: extras are built as UNROLLED straight-line blocks -- emitting the
+   versus mode for a 1-2 player roster (wire byte `S`). SSF2 input injection is live too:
+   `hold`/`release`/`seq` drive the controlled player via a per-frame applicator injected into
+   `Controller.getControlStatus` (host control masks translated to SSF2's control-bit layout),
+   verified live (`hold right` walks: XSpeed 0 -> 4 -> 0 on release; `seq jump:…` leaves the
+   ground). still open: they don't yet take hits in a verified way. prerequisite for #6. (impl note:
+   extras are built as UNROLLED straight-line blocks -- emitting the
    char-resolve helper inside a runtime back-branch corrupts the loop counter, so each of the <=3
    extras is its own guarded block.)
-3. **`addCharacter`** -- drop one more fighter into the LIVE match on the fly. the command
-   (`addCharacter`, aliases `addchar`/`add`, wire `n`) re-arms the per-frame deferred-spawn from a
-   stashed copy of the roster and fires one extra spawn, verified firing live. now that the launch
-   path lands the full roster up front (#1), the typical use case is covered there; this is for adding
-   a fighter mid-match. open: the deferred per-frame add hasn't been re-verified against a versus-mode
-   match for slots past the initial roster.
+3. **`addCharacter`** -- drop one more fighter into the LIVE match on the fly, **working on both
+   engines**. Fraymakers (`addCharacter`, aliases `addchar`/`add`, wire `n`) re-arms the per-frame
+   deferred-spawn. SSF2 does a real live add: its per-match player containers are fixed-size at
+   `StageData.startGame`, so `spawn` reserves one spare slot (exist=false, null character, capped at
+   4) and `addCharacter` fills it -- set the slot's PlayerSetting, importData the stats, then
+   construct the Character directly (its ctor self-registers via `addPlayer`/`addCharacter`),
+   bracketed by de/activateCharacters like makePlayer, skipping makePlayer's start-game-only
+   attachHealthBox. verified live: `addCharacter` on a 1-char match adds a real drivable `sandbag`
+   (count 1->2, walks under input, match stable). note: the added fighter can bind to a different
+   `pN` slot than expected. open on FM: the deferred add hasn't been re-verified against a
+   versus-mode match for slots past the initial roster.
 4. **scenario replay test env.** the `scenario` command sets up a deterministic, re-runnable
    scene: `scenario <p0 x,y[,vx,vy]> <p1 x,y[,vx,vy]> [<ctrl:frames>…]` places both players at
    fixed positions (optionally with world-space momentum), resets them to neutral STAND, then
    plays an input timeline on p0. re-run the exact line to replay it. host-side macro composing
-   `eval` + `seq` through the DebugTarget seam (so it works on both engines). still open: setting
+   `eval` + `seq` through the DebugTarget seam, working on **both engines** (verified live on SSF2:
+   the setup lowers `setX`/`setY`/`setXVelocity` to field writes and `toState(CState.STAND)` to
+   `setState(0)`, then the input timeline plays via the SSF2 input applicator). still open: setting
    a precise animation FRAME (not just the state) and the hit-measurement readback (#6) that makes
    a scenario's outcome quantifiable.
-5. **live move-tuning** -- the `tune <player> <hitboxIndex> <stat>=<value> …` command
-   hot-reloads a move's hitbox stats into the running match with no relaunch (e.g.
-   `tune p0 0 damage=15 baseKnockback=50 angle=45`), via the engine's own
-   `updateHitboxStats`. host-side eval wrapper, validated + unit-tested. still open: the
-   UI surface for it, tweaking move *code* (not just stats) on the fly, and persisting
-   tweaks back to the source stats files.
+5. **live move-tuning** -- the `tune <player> <hitbox> <stat>=<value> …` command hot-reloads a
+   move's hitbox stats into the running match with no relaunch, **working on both engines**.
+   Fraymakers addresses a hitbox by INDEX (`tune p0 0 damage=15 baseKnockback=50 angle=45`) via the
+   engine's `updateHitboxStats`. SSF2 addresses by MOVE NAME (its attacks are move-name keyed):
+   `tune p0 a damage=15 angle=45` mutates the `a` move's stored `AttackBoxes["attackBox"]` (an
+   AttackDamage with public setters) via the TUNE verb -- `AttackDataObj()` (protected getter,
+   reused QName) -> `getAttack(move)` -> the box -> set Damage/KBConstant/Power/Direction, read back
+   as confirmation. mutating the stored box persists (it's re-imported each hit). move keys are the
+   raw SSF2 attack names (`a`, `a_forward_tilt`, `special`, …). verified live: `tune p0 a damage=77`
+   -> box0 Damage=77; `tune p0 a_forward_tilt damage=33 angle=200` -> Damage=33, Direction=200.
+   still open: the UI surface, tweaking move *code* (not just stats) on the fly, persisting tweaks
+   back to source, and tuning boxes past box 0 / by frame.
 6. **in-engine hit measurement** (needs #1): hit-result readback (damage dealt, knockback
    distance + angle, hitstun frames), KO-threshold search (binary-search the dummy's % for
    the lowest KO), and an active-box dump (every active hit/hurt box this frame). damage
@@ -527,11 +544,11 @@ points here).
     live on SSF2 (the evaluator handles a `;`-joined multi-statement line, an `[…]` array literal,
     the `damage._damage` getter/setter idiom, position/velocity setters as property writes, and
     `toState(neutral)` as the SSF2 state setter); `console` declares its gap (SSF2 has no debug
-    console). `dmg`/`info`/`kill` are verified on Fraymakers too. still open:
-    - **input injection** (`hold`/`release`/`seq`, and `scenario`'s timeline) on SSF2: needs a
-      per-frame applicator on the SSF2 side, the one remaining cohort. tracked under #1/#4.
-    - **`addCharacter`** and **`tune`** on SSF2: a live mid-match add and SSF2's per-attack-box
-      stat model, respectively, both deeper than the eval-macro layer.
+    console). `dmg`/`info`/`kill` are verified on Fraymakers too. input injection
+    (`hold`/`release`/`seq`, `scenario`'s timeline), `addCharacter`, and `tune` all work on SSF2
+    now (see #1/#3/#4/#5). parity is NOT closed out; still open:
+    - **the `status` feed on SSF2** isn't working 100% yet (the matchStatus readout the GUI
+      widgets consume), so the command set is close but not at parity.
     - **`reset` on Fraymakers** trips a script error (one of its setters / `toState` resolves to
       null on the FM character); the SSF2 path is unaffected. pre-existing, unrelated to the SSF2
       parity work, worth a separate look.
