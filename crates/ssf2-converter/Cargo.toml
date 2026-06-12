@@ -43,6 +43,11 @@ sha2 = "0.10"
 tempfile = "3"
 
 [[bin]]
+name = "dump_stage_tree"
+path = "src/bin/dump_stage_tree.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
 name = "dump_raw_stats"
 path = "src/bin/dump_raw_stats.rs"
 required-features = ["dev-tools"]
@@ -246,4 +251,9 @@ required-features = ["dev-tools"]
 [[bin]]
 name = "dump_bindata"
 path = "src/bin/dump_bindata.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_xframe_transforms"
+path = "src/bin/dump_xframe_transforms.rs"
 required-features = ["dev-tools"]

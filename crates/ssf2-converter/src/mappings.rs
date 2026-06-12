@@ -779,6 +779,128 @@ pub fn projectile_tables() -> &'static ProjectileTables {
     })
 }
 
+/// Per-stage display + music overrides for the SSF2 -> Fraymakers stage converter
+/// (`mappings/stage/metadata.jsonc`). Looked up by the SSF2 stage id; missing entries
+/// fall back to a title-cased name + `default_music`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StageMetadataMap {
+    /// FM bgm referenced when a stage has no `music` override. Must be a real public
+    /// Fraymakers resource (the SSF2 soundtrack is not shipped with FM).
+    #[serde(default)]
+    pub default_music: String,
+    /// SSF2 id -> overrides.
+    #[serde(default)]
+    pub stages: std::collections::BTreeMap<String, StageMetadataEntry>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StageMetadataEntry {
+    /// Human display name (e.g. "Final Destination"). None -> title-cased id.
+    pub name: Option<String>,
+    /// FM bgm resource ids to play. Empty -> `default_music`.
+    #[serde(default)]
+    pub music: Vec<String>,
+    /// Source series, for the description. Optional.
+    pub series: Option<String>,
+    /// Stage hazards to emit as FM custom game objects (damaging hitbox volumes the stage
+    /// spawns). A declared list wins over auto-detection (full manual control of that stage).
+    #[serde(default)]
+    pub hazards: Vec<HazardSpec>,
+    /// Suppress auto-detected hazards for this stage (e.g. when the heuristic produces a
+    /// false-positive on cosmetic geometry and no hand-declared hazards are wanted).
+    #[serde(default)]
+    pub no_hazards: bool,
+    /// Hand-declared standable platforms (FM coords), appended to the parsed collision. For stages
+    /// whose real platforms are AS3-spawned objects (not static terrain shapes), e.g. bowserscastle
+    /// where the standable surfaces are `BowsersCastlePlatform` instances, not the lava floor.
+    #[serde(default)]
+    pub platforms: Vec<PlatformSpec>,
+    /// Linkage-name substrings whose terrain shapes are NOT a standable floor (they're lava/acid
+    /// the fighter falls into, handled as a hazard). e.g. "lavafloor" on bowserscastle.
+    #[serde(default)]
+    pub non_floor_terrain: Vec<String>,
+    /// Linkage-name substrings whose terrain IS a standable floor but must not anchor the stage
+    /// (excluded from main-floor selection / engine-layer alignment). SSF2's molten lakes are
+    /// real collision floors the fighter lands ON (the lava hitbox above them does the damage),
+    /// so they need collision without becoming the "main" floor. e.g. "lavafloor".
+    #[serde(default)]
+    pub hazard_floors: Vec<String>,
+    /// Thwomp-style hazard target columns, in SSF2 GAME coords (the terrain-MC-local space the
+    /// stage's own AS3 uses for spawnEnemy/setX). Read 1:1 from the stage class's `update`
+    /// disasm (e.g. bowserscastle's `[-113, 4, 121, 392, 509, 626]`). The parser converts them
+    /// to FM x via the terrain origin; the emitter drives the hazard cycle over them.
+    #[serde(default)]
+    pub sink_columns: Vec<f64>,
+    /// Keep the SSF2 `foreground` plane as a real FM foreground (drawn IN FRONT of fighters)
+    /// instead of folding it into the background. The default fold avoids re-drawing a structure's
+    /// front face over fighters (a duplicate platform), but some stages put a genuine overlay here
+    /// (bowserscastle's glowing lava sheet over the floor) that must stay in front.
+    #[serde(default)]
+    pub keep_foreground: bool,
+}
+
+/// One hand-declared standable platform. FM coords; stage center 0,0, +y down.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlatformSpec {
+    /// Center x and top-surface y.
+    pub x: f64,
+    pub y: f64,
+    /// Full width.
+    pub w: f64,
+    /// Drop-through (soft) vs solid. Default solid.
+    #[serde(default)]
+    pub drop_through: bool,
+}
+
+/// One declared stage hazard (a Fraymakers custom game object). FM coords/units by default;
+/// set `game_coords: true` to give x/y/w/h in SSF2 terrain-local GAME coords instead (the raw
+/// setX/setY + getOwnStats width/height literals straight from the AS3 disasm), which the
+/// converter transforms to FM space via the stage's static `terrain_off` + `scale` (the same
+/// path as `sink_columns` and auto-detected actor hazards). prefer this for disasm-sourced
+/// hazards so the JSONC carries the verbatim SSF2 numbers with no hand coordinate math.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HazardSpec {
+    /// Spawn position (stage center is 0,0; +y is down). GAME coords if `game_coords` is set.
+    pub x: f64,
+    pub y: f64,
+    /// When true, x/y/w/h are SSF2 game (terrain-local) coords/sizes; the converter applies
+    /// `terrain_off` + `scale` to land them in FM space.
+    #[serde(default)] pub game_coords: bool,
+    /// Hitbox size.
+    #[serde(default = "hz_default_w")] pub w: f64,
+    #[serde(default = "hz_default_w")] pub h: f64,
+    #[serde(default = "hz_default_damage")] pub damage: f64,
+    #[serde(default)] pub knockback: f64,
+    #[serde(default)] pub angle: f64,
+    /// On/off pulse period in frames (0 = always active).
+    #[serde(default)] pub interval: u32,
+    /// Frames active within each pulse period.
+    #[serde(default = "hz_default_active")] pub active: u32,
+    /// Movement pattern to match the SSF2 hazard: "static" (default), "oscillateX",
+    /// "oscillateY", "circle", or "fall" (thwomp: hold, drop, return).
+    #[serde(default)] pub motion: Option<String>,
+    /// Movement amplitude in px (oscillate/circle/fall travel distance).
+    #[serde(default)] pub range: f64,
+    /// Movement period in frames (one full cycle).
+    #[serde(default = "hz_default_period")] pub period: u32,
+    /// Frames between native-hitbox re-arms while a fighter lingers in the hazard (a hitbox hits
+    /// each target once per attack id; re-arming re-hits). SSF2 hazards re-tick roughly twice/sec.
+    #[serde(default = "hz_default_rehit")] pub rehit: u32,
+    /// Optional label.
+    pub label: Option<String>,
+}
+
+fn hz_default_w() -> f64 { 60.0 }
+fn hz_default_damage() -> f64 { 8.0 }
+fn hz_default_active() -> u32 { 20 }
+fn hz_default_period() -> u32 { 120 }
+fn hz_default_rehit() -> u32 { 30 }
+
+pub fn stage_metadata() -> &'static StageMetadataMap {
+    static CACHE: OnceLock<StageMetadataMap> = OnceLock::new();
+    CACHE.get_or_init(|| load("mappings/stage/metadata.jsonc"))
+}
+
 pub fn character_hitbox_stats() -> &'static HitboxStatsMapping {
     static CACHE: OnceLock<HitboxStatsMapping> = OnceLock::new();
     CACHE.get_or_init(|| {

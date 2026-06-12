@@ -62,6 +62,11 @@
     { "from": "SSF2API.generateUID()", "to": "Engine.makeUid()" },
     { "from": "SSF2API.getUID()", "to": "Engine.makeUid()" },
     { "from": "SSF2API.playSound(", "to": "AudioClip.play(" },                    // SSF2 linkage string vs FM resource content — verify id
+    // SSF2Enemy/SSF2GameObject self-methods (stage hazards decompiled as CGOs). updateEnemyStats's
+    // object fields (gravity, …) carry over to updateGameObjectStats; SSF2-only flags like
+    // bypassCollisionTesting/surviveDeathBounds have no FM field and are dropped on touch-up.
+    { "from": ".updateEnemyStats(", "to": ".updateGameObjectStats(" },
+    { "from": ".setYSpeed(", "to": ".setYVelocity(" },                            // y velocity is world-space (not facing-relative like setXSpeed)
     //   No FM equivalent but read in an expression → resolve to a usable literal
     //   (a bare comment would break the assignment) and tag inline for manual review.
     { "from": "SSF2API.getAverageFPS()", "to": "60 /* [SSF2-only: getAverageFPS] FM runs at 60fps; no FPS query */" },
@@ -910,7 +915,7 @@
     { "category": "no_equivalent", "name": "shootOutOpponent", "note": "Kirby inhale spit-out — Kirby mechanic, no FM analog" },
     { "category": "no_equivalent", "name": "spawnEnemy", "note": "SSF2 Enemy spawn; no FM Enemy type." },
     { "category": "no_equivalent", "name": "toToss", "note": "item-toss state — no FM item system" },
-    { "category": "no_equivalent", "name": "updateEnemyStats", "note": "SSF2Enemy.updateEnemyStats(obj); no FM enemy system. ssf2_only." },
+    { "category": "mapped", "name": "updateEnemyStats", "note": "SSF2Enemy.updateEnemyStats(obj) -> FM updateGameObjectStats(obj) (see replacements). object fields carry; SSF2-only flags dropped on touch-up." },
     { "category": "no_equivalent", "name": "updateItemStats", "note": "SSF2Item.updateItemStats(obj); no FM item system. ssf2_only." },
   ]
 

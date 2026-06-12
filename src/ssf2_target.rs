@@ -27,6 +27,60 @@ impl Ssf2Target {
 
     /// Send one reflection verb line ("VERB\ta1\ta2") and return the reply.
     fn op(&self, wire: &str) -> Result<String> { request(wire, T) }
+
+    // ── live display-tree walk (the `tree` command) ────────────────────────
+
+    /// Point the reflection cursor at the display node addressed by `path`
+    /// (child indices from the document root).
+    fn nav_node(&self, path: &[u32]) -> Result<()> {
+        self.op("ROOT")?;
+        for i in path { self.op(&format!("CALL1\tgetChildAt\t{i}"))?; }
+        Ok(())
+    }
+
+    /// Read one property of the node at `path`. Re-navigates first (a GET moves
+    /// the cursor onto the property). `"?"` on any error so a node that lacks the
+    /// property (e.g. `currentFrame` on a Bitmap) doesn't abort the walk.
+    fn node_prop(&self, path: &[u32], prop: &str) -> String {
+        let r = (|| -> Result<String> {
+            self.nav_node(path)?;
+            self.op(&format!("GET\t{prop}"))?;
+            self.op("READ")
+        })();
+        r.unwrap_or_else(|_| "?".into())
+    }
+
+    /// Recursive node visit: print this node's line, then its children (bounded by
+    /// `max_depth` and a per-container child cap so a huge particle pool can't run away).
+    fn walk_node(&self, path: &mut Vec<u32>, max_depth: u32, out: &mut String) -> Result<()> {
+        self.nav_node(path)?;
+        let class = self.op("READ").unwrap_or_else(|_| "?".into());
+        let name = self.node_prop(path, "name");
+        let x = self.node_prop(path, "x");
+        let y = self.node_prop(path, "y");
+        let w = self.node_prop(path, "width");
+        let h = self.node_prop(path, "height");
+        let vis = self.node_prop(path, "visible");
+        let frame = self.node_prop(path, "currentFrame");
+        let total = self.node_prop(path, "totalFrames");
+        let label = self.node_prop(path, "currentFrameLabel");
+        let indent = "  ".repeat(path.len());
+        let idx = path.last().map(|i| format!("[{i}] ")).unwrap_or_default();
+        let anim = if frame != "?" && frame != "undefined" {
+            format!(" frame={frame}/{total}{}", if label != "?" && label != "null" && label != "undefined" { format!(" '{label}'") } else { String::new() })
+        } else { String::new() };
+        out.push_str(&format!("{indent}{idx}{class} \"{name}\" @({x},{y}) {w}x{h} vis={vis}{anim}\n"));
+        if (path.len() as u32) < max_depth {
+            let n: u32 = self.node_prop(path, "numChildren").parse().unwrap_or(0);
+            for i in 0..n.min(48) {
+                path.push(i);
+                self.walk_node(path, max_depth, out)?;
+                path.pop();
+            }
+            if n > 48 { out.push_str(&format!("{indent}  … {} more children elided\n", n - 48)); }
+        }
+        Ok(())
+    }
 }
 
 impl Default for Ssf2Target { fn default() -> Self { Self::new() } }
@@ -323,6 +377,19 @@ impl DebugTarget for Ssf2Target {
     }
 
     fn console(&mut self) -> Result<String> { self.op("ROOT") }
+
+    /// Walk the LIVE display list from the document root — the stage-triage ground
+    /// truth. Re-navigates per node by child-index path (the reflection cursor is
+    /// stateful), reading each node's class/name/position/size/visibility/frame.
+    /// Display `.x/.y` here are PARENT-RELATIVE display coords; game-space coords
+    /// live on the game objects' capital fields (`.X`/`.Y`), readable via `e`.
+    fn tree(&mut self, depth: u32) -> Result<String> {
+        let mut out = String::new();
+        let mut path: Vec<u32> = Vec::new();
+        self.walk_node(&mut path, depth.max(1), &mut out)?;
+        Ok(out)
+    }
+
     fn add_character(&mut self) -> Result<String> { Ok("addCharacter: not supported on SSF2 yet\n".into()) }
     fn exit(&mut self) -> Result<()> { let _ = std::process::Command::new("pkill").args(["-f", "SSF2-patched"]).status(); Ok(()) }
     fn load(&mut self) -> Result<String> { self.op("LOADED") }
@@ -417,6 +484,17 @@ impl Ssf2Target {
             out.push_str(&format!("{id}|{dmg}|{anim}"));
         }
         Ok(out)
+    }
+
+    /// A character's current animation name, read live (None when there's no
+    /// match or the read fails). The Fraymakers session gets per-frame `ANIM:`
+    /// telemetry PUSHED by the engine; SSF2's bridge is synchronous RPC with
+    /// nothing engine-initiated, so the session POLLS this instead to surface
+    /// the same state-change feed in the log and overlay.
+    pub fn current_anim(&self, idx: usize) -> Option<String> {
+        let sane = |s: String| if s == "null" || s == "undefined" || s.is_empty() { None } else { Some(s) };
+        self.eval_quiet(&format!("match.getCharacter({idx}).CurrentAnimation.Name"))
+            .ok().and_then(sane)
     }
 
     /// Like `eval`, but never recurses into the commands.hsx interceptor and is

@@ -353,6 +353,11 @@ fn main() -> anyhow::Result<()> {
                                 .unwrap_or_else(|| format!("t{}", fl.t.0));
                             eprintln!("  field {i:3}: {:?} : {tn}", s(&code, fl.name));
                         }
+                    } else if let hlbc::types::Type::Enum { constructs, .. } = &code.types[ti] {
+                        eprintln!("  (enum, {} constructs)", constructs.len());
+                        for (i, c) in constructs.iter().enumerate() {
+                            eprintln!("  construct {i:3}: {:?} ({} params)", s(&code, c.name), c.params.len());
+                        }
                     } else {
                         eprintln!("  (kind: {:?})", std::mem::discriminant(&code.types[ti]));
                     }
@@ -1237,6 +1242,19 @@ fn connect_edit(
     // global is needed here.)
     let stage_bare_g = add_string_const(code, sname);
     let assist_bare_g = add_string_const(code, aname);
+    // CUSTOM STAGE self-bootstrap (geometry-MVP): a converted SSF2 stage lives at
+    // custom/<stage>/<stage>.fra but, unlike a built-in, is never registered in the
+    // resource pool (fast-boot skips the bulk UGC scan), so Match.setupStage gets null.
+    // If the baked stage has a custom .fra on disk (patch-time check, same gate idea as
+    // base_p1 for the char), bake its private:: resid + path and emit a trimmed load
+    // (build Resource + fetchThreaded + finishLoading + addResource) before the stage
+    // resolve. No sprite-entity caching — a geometry-only stage has no art to render, its
+    // collision/bounds/spawns come straight from the .entity. Built-in stages skip this
+    // (no custom .fra) and resolve via the normal load-on-demand path.
+    let stage_custom_path = format!("{install_dir}/custom/{sname}/{sname}.fra");
+    let custom_stage = std::path::Path::new(&stage_custom_path).exists();
+    let stage_resid_g = add_string_const(code, &format!("private::{sname}"));
+    let stage_path_g = add_string_const(code, &stage_custom_path);
     let _ = (&char_resid, &stage_fqid, &assist_fqid); // full ids no longer baked (resolve from bare)
     let assist_str = add_string(code, "assist");
     let launched_g = add_string_const(code, "LAUNCHED\n");
@@ -1312,6 +1330,15 @@ fn connect_edit(
         .ok_or_else(|| anyhow::anyhow!("CState.JAB field not found"))?;
     let characters_field = find_field(code, match_t, "characters")
         .ok_or_else(|| anyhow::anyhow!("Match.characters field not found"))?;
+    // Match collections walked by `tree` (the FM analog of the SSF2 display list). gameObjects alone
+    // isn't the union, so the walk sweeps characters + custom game objects + projectiles; the runtime
+    // class name on each entity disambiguates the kind.
+    let cgo_field = find_field(code, match_t, "customGameObjects")
+        .ok_or_else(|| anyhow::anyhow!("Match.customGameObjects field not found"))?;
+    let proj_field = find_field(code, match_t, "projectiles")
+        .ok_or_else(|| anyhow::anyhow!("Match.projectiles field not found"))?;
+    let structures_field = find_field(code, match_t, "structures")
+        .ok_or_else(|| anyhow::anyhow!("Match.structures field not found"))?;
     let m_idx = add_int(code, 'm' as i32);
     let t_idx = add_int(code, 't' as i32);
     let m_ack_g = add_string_const(code, "M:JAB\n");
@@ -1344,6 +1371,24 @@ fn connect_edit(
     let body_t = require_type(code, "pxf.components.Body")?;
     let physics_t = require_type(code, "pxf.components.Physics")?;
     let damage_t = require_type(code, "pxf.components.Damage")?;
+    // ---- 'w' (tree walk): symbols to read each gameObject's class + position ----
+    let w_idx = add_int(code, 'w' as i32);
+    let output_t = require_type(code, "haxe.io.Output")?;
+    let entity_t = require_type(code, "pxf.entity.Entity")?;
+    let entity_getx = require_fn(code, "getX", Some("pxf.entity.Entity"))?;
+    let entity_gety = require_fn(code, "getY", Some("pxf.entity.Entity"))?;
+    let type_getclass = require_fn(code, "getClass", Some("$Type"))?;
+    let type_getclassname = require_fn(code, "getClassName", Some("$Type"))?;
+    let tree_hdr_g = add_string_const(code, "TREE:\n");
+    let tree_indent_g = add_string_const(code, "  ");
+    let tree_at_g = add_string_const(code, " @(");
+    let tree_comma_g = add_string_const(code, ",");
+    let tree_close_g = add_string_const(code, ")\n");
+    let tree_nomatch_g = add_string_const(code, "TREE: (no live match)\n");
+    // slot-index constants for the UNROLLED walk (a bytecode loop whose body resolves/allocates
+    // corrupts its counter at runtime — same phenomenon as the multiplayer extra-builds; unrolling
+    // with fixed indices sidesteps it entirely).
+    let tree_slot_idx: Vec<usize> = (0..8).map(|i| add_int(code, i)).collect();
     let char_body_f = require_field(code, "pxf.entity.Character", "body")?;
     let char_physics_f = require_field(code, "pxf.entity.Character", "physics")?;
     let char_damage_f = require_field(code, "pxf.entity.Character", "damage")?;
@@ -2423,6 +2468,34 @@ fn connect_edit(
     let idx_stage_done = ops.len();
     if let Opcode::JSLt { offset, .. } = &mut ops[idx_stage_jdef] { *offset = idx_stage_def as i32 - idx_stage_jdef as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_stage_jdone] { *offset = idx_stage_done as i32 - idx_stage_jdone as i32 - 1; }
+    // CUSTOM STAGE self-bootstrap (only emitted when the baked stage has a custom .fra).
+    // rr(55) holds the stage name (parts[2]/baked); we DON'T touch it — the load uses the
+    // baked private:: resid + path + bare name, so emit_resolve below still sees rr(55).
+    if custom_stage {
+        // idempotent: skip if already in the pool. NB: requiredMediaIds=["*"] is left as
+        // the char self-bootstrap (which runs first for a custom p1) set it, so this block
+        // never touches rr(32) = parts.array (the downstream stage/assist resolves need it).
+        ops.push(Opcode::GetGlobal { dst: rr(58), global: RefGlobal(stage_resid_g) });
+        ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(getpxf_fn), arg0: rr(58) });
+        let idx_st_jskip = ops.len();
+        ops.push(Opcode::JNotNull { reg: rr(60), offset: 0 });                 // already loaded -> skip
+        ops.push(Opcode::New { dst: rr(71) });
+        ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(stage_bare_g) }); // Resource id = bare name
+        ops.push(Opcode::GetGlobal { dst: rr(56), global: RefGlobal(stage_path_g) });
+        ops.push(Opcode::Null { dst: rr(73) });
+        ops.push(Opcode::Call4 { dst: r_ret, fun: RefFun(resource_ctor), arg0: rr(71), arg1: rr(53), arg2: rr(56), arg3: rr(73) });
+        ops.push(Opcode::Bool { dst: rr(64), value: ValBool(true) });
+        ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_isabs_field), src: rr(64) });
+        ops.push(Opcode::GetGlobal { dst: rr(72), global: RefGlobal(rt_global) });
+        ops.push(Opcode::Field { dst: rr(16), obj: rr(72), field: RefField(pxf_field) });
+        ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_type_field), src: rr(16) });
+        ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(fetch_threaded), arg0: rr(71) });
+        ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(finish_loading), arg0: rr(71) });
+        ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(add_resource), arg0: rr(71) });
+        let idx_st_skip = ops.len();
+        if let Opcode::JNotNull { offset, .. } = &mut ops[idx_st_jskip] { *offset = idx_st_skip as i32 - idx_st_jskip as i32 - 1; }
+        eprintln!("custom-stage self-bootstrap: emitted (private::{sname} <- {stage_custom_path})");
+    }
     emit_resolve(&mut ops, 55, 25, stage_cmap_field); // stage ref (loads on demand)
     // ASSIST: parts.length >= 4 ? parts[3] : baked assist default.
     ops.push(Opcode::Field { dst: rr(16), obj: rr(52), field: RefField(0) }); // parts.length
@@ -2759,7 +2832,113 @@ fn connect_edit(
     ops.push(Opcode::JAlways { offset: 0 });                              // -> k_loop
     let idx_k_done = ops.len();
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
-    // k handler done; fall through to the 'l' check.
+    // k handler done; fall through to the 'w' check.
+
+    // ---- 'w' command: FM live tree walk (the SSF2 `tree` analog) ----
+    // hl ArrayObj doesn't reflect length/index in hscript, so this is bytecode: read
+    // currentMatch.gameObjects (length=field0, native array=field1) and emit one line per entity —
+    // "  <class> @(x,y)\n" (class via Type.getClassName(Type.getClass(el)), pos via Entity.getX/Y).
+    let idx_w_check = ops.len();
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(w_idx) });
+    let idx_jne_w = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });            // not 'w' -> 'l' check (patched)
+    {
+        let mut a = Asm::new(f.regs.len() as u32);
+        let nomatch = a.label();
+        let end = a.label();
+        let r_out2 = a.reg(output_t);
+        let r_mc   = a.reg(mc_statics_t);
+        let r_cm   = a.reg(match_t);
+        let r_go   = a.reg(38);              // ArrayObj
+        let r_len  = a.reg(3);
+        let r_i    = a.reg(3);
+        let r_arr  = a.reg(11);              // native array
+        let r_el   = a.reg(9);               // dynobj element
+        let r_ent  = a.reg(entity_t);
+        let r_cls  = a.reg(9);               // Class<Dynamic>, passed by pointer
+        let r_str  = a.reg(str_t);           // class name / Std.string scratch
+        let r_f    = a.reg(6);               // Float
+        let r_dyn  = a.reg(9);               // boxed Float
+        let r_acc  = a.reg(str_t);
+        let r_lbl  = a.reg(str_t);
+        let r_ret2 = a.reg(9);               // call-result throwaway
+        // out = socket.output
+        a.op(Opcode::Field { dst: r_out2, obj: r_sock2, field: RefField(out_field) });
+        a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(mc_g) });
+        a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
+        a.jnull(r_cm, nomatch);
+        // header "TREE:\n"
+        a.op(Opcode::GetGlobal { dst: r_acc, global: RefGlobal(tree_hdr_g) });
+        a.op(Opcode::Null { dst: r_lbl });
+        a.op(Opcode::Call3 { dst: r_ret2, fun: RefFun(write_str), arg0: r_out2, arg1: r_acc, arg2: r_lbl });
+        // sweep characters + custom game objects + projectiles; gameObjects alone isn't the union.
+        // UNROLLED over fixed slot indices (8 per collection): a bytecode loop whose body makes
+        // resolve/alloc calls corrupts its counter at runtime (the looped version dropped
+        // characters[1] and over-ran customGameObjects[2], killing the handler on an out-of-bounds
+        // GetArray) — the same phenomenon the multiplayer extra-builds hit; fixed indices + forward
+        // jumps sidestep it. 8 slots cover any triage roster (4 players + assists / a stage's CGOs).
+        for fld in [characters_field, cgo_field, proj_field, structures_field] {
+            for &slot_idx in &tree_slot_idx {
+                let skip = a.label();
+                // re-derive the collection chain fresh per slot (nothing persists across calls).
+                a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(mc_g) });
+                a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
+                a.jnull(r_cm, skip);
+                a.op(Opcode::Field { dst: r_go, obj: r_cm, field: RefField(fld) });
+                a.jnull(r_go, skip);
+                a.op(Opcode::Field { dst: r_len, obj: r_go, field: RefField(0) }); // length
+                a.op(Opcode::Field { dst: r_arr, obj: r_go, field: RefField(1) }); // native array
+                let in_range = a.label();
+                a.op(Opcode::Int { dst: r_i, ptr: RefInt(slot_idx) });
+                a.jslt(r_i, r_len, in_range);                              // slot < len -> read it
+                a.jalways(skip);
+                a.place(in_range);
+                a.op(Opcode::GetArray { dst: r_el, array: r_arr, index: r_i });
+                a.jnull(r_el, skip);                                       // empty slot -> next
+                // class name = Type.getClassName(Type.getClass(el))
+                a.op(Opcode::Call1 { dst: r_cls, fun: RefFun(type_getclass), arg0: r_el });
+                a.op(Opcode::Call1 { dst: r_str, fun: RefFun(type_getclassname), arg0: r_cls });
+                // acc = "  " + class + " @("
+                a.op(Opcode::GetGlobal { dst: r_acc, global: RefGlobal(tree_indent_g) });
+                a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+                a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(tree_at_g) });
+                a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+                // x = el.getX()
+                a.op(Opcode::UnsafeCast { dst: r_ent, src: r_el });
+                a.op(Opcode::Call1 { dst: r_f, fun: RefFun(entity_getx), arg0: r_ent });
+                a.op(Opcode::ToDyn { dst: r_dyn, src: r_f });
+                a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
+                a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+                a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(tree_comma_g) });
+                a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+                // y = el.getY() (el survives the calls; re-cast for the typed call)
+                a.op(Opcode::UnsafeCast { dst: r_ent, src: r_el });
+                a.op(Opcode::Call1 { dst: r_f, fun: RefFun(entity_gety), arg0: r_ent });
+                a.op(Opcode::ToDyn { dst: r_dyn, src: r_f });
+                a.op(Opcode::Call1 { dst: r_str, fun: RefFun(std_string), arg0: r_dyn });
+                a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_str });
+                a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(tree_close_g) }); // ")\n"
+                a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
+                a.op(Opcode::Null { dst: r_lbl });
+                a.op(Opcode::Call3 { dst: r_ret2, fun: RefFun(write_str), arg0: r_out2, arg1: r_acc, arg2: r_lbl });
+                a.place(skip);
+            }
+        }
+        // re-fetch the output (r_out2 may be stale after the writes) and flush once.
+        a.op(Opcode::Field { dst: r_out2, obj: r_sock2, field: RefField(out_field) });
+        a.op(Opcode::Call1 { dst: r_ret2, fun: RefFun(flush), arg0: r_out2 });
+        a.jalways(end);
+        a.place(nomatch);
+        a.op(Opcode::GetGlobal { dst: r_acc, global: RefGlobal(tree_nomatch_g) });
+        a.op(Opcode::Null { dst: r_lbl });
+        a.op(Opcode::Call3 { dst: r_ret2, fun: RefFun(write_str), arg0: r_out2, arg1: r_acc, arg2: r_lbl });
+        a.op(Opcode::Call1 { dst: r_ret2, fun: RefFun(flush), arg0: r_out2 });
+        a.place(end);
+        let (a_ops, a_regs) = a.finish();
+        add_regs(f, &a_regs);
+        ops.extend(a_ops);
+    }
+    // w handler done; fall through to the 'l' check.
 
     // ---- 'l' command: synchronous custom-.fra load (sandbag), bypassing the worker thread ----
     // Build a PXF Resource for custom/sandbag/sandbag.fra and call fetchThreaded directly
@@ -3657,7 +3836,8 @@ fn connect_edit(
     if let Opcode::JSLte { offset, .. } = &mut ops[idx_q_jm_empty] { *offset = idx_q_truly_none as i32 - idx_q_jm_empty as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_q_jm_done] { *offset = n - idx_q_jm_done as i32 - 1; }
     // k-command jumps ('k' no-match now routes to the 'l' check, not L_ORIG)
-    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_k] { *offset = idx_l_check as i32 - idx_jne_k as i32 - 1; }
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_k] { *offset = idx_w_check as i32 - idx_jne_k as i32 - 1; }
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_w] { *offset = idx_l_check as i32 - idx_jne_w as i32 - 1; }
     // l-command jumps ('l' no-match -> m-check; getPXFResource null -> L:FAIL; done -> m-check)
     if let Opcode::JNotEq { offset, .. } = &mut ops[idx_jne_l] { *offset = idx_m_check as i32 - idx_jne_l as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_l_jfail] { *offset = idx_l_fail as i32 - idx_l_jfail as i32 - 1; }

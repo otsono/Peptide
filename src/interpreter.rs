@@ -60,6 +60,8 @@ pub const COMMANDS: &[Cmd] = &[
           args: "",                              help: "synchronous custom-.fra load probe (diagnostic; spawn does this itself)" },
     Cmd { name: "console", aliases: &["c"],                 wire: 'c',
           args: "",                              help: "run the engine's debug console `help` command (RAN) — a side-effecting call hscript can't make, so it stays a wire byte" },
+    Cmd { name: "tree",    aliases: &["dump"],              wire: '\0',
+          args: "[depth]",                       help: "dump the live object tree (name/class/position/size/frame per node) — the stage-triage ground truth. SSF2 walks the display list; depth defaults to 6" },
     Cmd { name: "addCharacter", aliases: &["addchar", "add"], wire: 'n',
           args: "",                              help: "drop one more fighter into the LIVE match on demand (re-spawns the last roster char via the deferred-spawn path) — no relaunch (peptide todo #3)" },
     Cmd { name: "exit",    aliases: &["quit", "stop", "x"], wire: 'x',
@@ -343,6 +345,9 @@ pub enum Command {
     Scenario { setup: String, masks: Vec<u32> },
     /// Run the engine's debug console.
     Console,
+    /// Dump the live object tree to the given depth — the stage-triage ground truth
+    /// (every live game object with its name/class/position/size/frame).
+    Tree(u32),
     /// Drop one more fighter into the live match (peptide todo #3).
     AddCharacter,
     /// Cleanly shut the engine down.
@@ -445,6 +450,10 @@ pub fn parse(line: &str) -> Command {
                 return Command::Eval(format!("{player}.setY({player}.getY() + 3000)"));
             }
             "console" => return Command::Console,
+            "tree" => {
+                let depth = rest.first().and_then(|d| d.parse().ok()).unwrap_or(6);
+                return Command::Tree(depth);
+            }
             "addCharacter" => return Command::AddCharacter,
             "exit" => return Command::Exit,
             "load" => return Command::Load,
@@ -571,6 +580,9 @@ pub fn command_to_wire(cmd: &Command) -> Translated {
             Translated::Wire(w)
         }
         Command::Console => Translated::Wire("c".into()),
+        // FM tree walk: the 'w' wire handler walks currentMatch.gameObjects in bytecode (hl ArrayObj
+        // doesn't reflect length/index in hscript, so the walk can't be eval-side).
+        Command::Tree(_) => Translated::Wire("w".into()),
         Command::AddCharacter => Translated::Wire("n".into()),
         Command::Exit => Translated::Wire("x".into()),
         Command::Load => Translated::Wire("l".into()),

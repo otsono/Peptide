@@ -122,6 +122,10 @@ pub struct Trait {
     pub kind: u8,
     pub method_idx: u32,
     pub slot_idx: u32,
+    /// Slot/Const default value, when numeric (the ABC trait's vindex/vkind resolved against the
+    /// int/uint/double pools) — e.g. a class constant like `SINK_SPEED = 30`.
+    #[serde(default)]
+    pub default: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -499,7 +503,7 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
         let trait_count = r.read_u30()? as usize;
         let mut instance_methods = Vec::new();
         for _ in 0..trait_count {
-            if let Ok(t) = parse_trait(&mut r, &strings, &multinames) {
+            if let Ok(t) = parse_trait(&mut r, &strings, &multinames, &ints, &uints, &doubles) {
                 instance_methods.push(t);
             }
         }
@@ -527,7 +531,7 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
         let _static_init = r.read_u30()?;
         let trait_count = r.read_u30()? as usize;
         for _ in 0..trait_count {
-            if let Ok(t) = parse_trait(&mut r, &strings, &multinames) {
+            if let Ok(t) = parse_trait(&mut r, &strings, &multinames, &ints, &uints, &doubles) {
                 class.class_methods.push(t);
             }
         }
@@ -541,7 +545,7 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
         let trait_count = r.read_u30()? as usize;
         let mut traits = Vec::new();
         for _ in 0..trait_count {
-            if let Ok(t) = parse_trait(&mut r, &strings, &multinames) {
+            if let Ok(t) = parse_trait(&mut r, &strings, &multinames, &ints, &uints, &doubles) {
                 traits.push(t);
             }
         }
@@ -582,7 +586,7 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
         let trait_count = r.read_u30().unwrap_or(0) as usize;
         let mut activation_traits = Vec::new();
         for _ in 0..trait_count {
-            match parse_trait(&mut r, &strings, &multinames) {
+            match parse_trait(&mut r, &strings, &multinames, &ints, &uints, &doubles) {
                 Ok(t) => activation_traits.push(t),
                 Err(_) => break,
             }
@@ -596,19 +600,28 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
     Ok(AbcFile { strings, ints, uints, doubles, multinames, methods, classes, scripts, method_bodies })
 }
 
-fn parse_trait(r: &mut Reader, _strings: &[Arc<str>], multinames: &[Multiname]) -> Result<Trait> {
+fn parse_trait(r: &mut Reader, _strings: &[Arc<str>], multinames: &[Multiname], ints: &[i32], uints: &[u32], doubles: &[f64]) -> Result<Trait> {
     let name_idx = r.read_u30()?;
     let kind_byte = r.read_u8()?;
     let kind = kind_byte & 0x0F;
     let has_metadata = kind_byte & 0x40 != 0;
     let name = multinames.get(name_idx as usize).map(|m| m.name.to_string()).unwrap_or_default();
 
+    let mut default: Option<f64> = None;
     let (method_idx, slot_idx) = match kind {
         0 | 6 => { // Slot, Const
             let slot_id = r.read_u30()?;
             let _type_name = r.read_u30()?;
             let vindex = r.read_u30()?;
-            if vindex != 0 { r.read_u8()?; } // vkind
+            if vindex != 0 {
+                let vkind = r.read_u8()?;
+                default = match vkind {
+                    0x03 => ints.get(vindex as usize).map(|v| *v as f64),
+                    0x04 => uints.get(vindex as usize).map(|v| *v as f64),
+                    0x06 => doubles.get(vindex as usize).copied(),
+                    _ => None,
+                };
+            }
             (0, slot_id)
         }
         1..=3 => { // Method, Getter, Setter
@@ -631,7 +644,7 @@ fn parse_trait(r: &mut Reader, _strings: &[Arc<str>], multinames: &[Multiname]) 
         for _ in 0..mc { r.read_u30()?; }
     }
 
-    Ok(Trait { name, kind, method_idx, slot_idx })
+    Ok(Trait { name, kind, method_idx, slot_idx, default })
 }
 
 // ─── Character data extraction ────────────────────────────────────────────────
@@ -1373,6 +1386,10 @@ pub struct MainPackageMetadata {
     /// engine's roster order). Empty when the walk failed — callers
     /// fall back to the path 2 instance-method enumeration.
     pub characters: Vec<(String, String)>,
+    /// `register("music", {id:...}, …)` track ids (the `bgm_*` resource names) in
+    /// order. For a stage, its intended SSF2 soundtrack; empty for characters / when
+    /// no music block is present.
+    pub music: Vec<String>,
 }
 
 /// Read Main's constructor and pull out `id`, `guid`, and the
@@ -1384,7 +1401,39 @@ pub fn extract_main_package_metadata(abc: &AbcFile) -> Option<MainPackageMetadat
         id:         scan_register_string_arg(body, abc, "id"),
         guid:       scan_register_string_arg(body, abc, "guid"),
         characters: scan_register_characters_array(body, abc),
+        music:      scan_register_music_ids(body, abc),
     })
+}
+
+/// Walk Main's constructor to collect the `register("music", {id:...}, …)` track
+/// ids — every `bgm_*` string between the `"music"` key and the `register` call that
+/// consumes it (the SSF2 stage's intended soundtrack, in order).
+fn scan_register_music_ids(body: &MethodBody, abc: &AbcFile) -> Vec<String> {
+    let Some(music_key) = abc.strings.iter().position(|s| &**s == "music") else { return Vec::new() };
+    let bc = &body.bytecode;
+    let (mut i, mut out, mut collecting) = (0usize, Vec::new(), false);
+    while i < bc.len() {
+        let op = bc[i];
+        if op == OP_PUSHSTRING {
+            let mut j = i + 1;
+            if let Some(s_idx) = read_u30_at(bc, &mut j) {
+                if s_idx as usize == music_key {
+                    collecting = true;
+                } else if collecting {
+                    if let Some(s) = abc.strings.get(s_idx as usize) {
+                        if s.starts_with("bgm_") { out.push(s.to_string()); }
+                    }
+                }
+            }
+            i = j;
+            continue;
+        }
+        // the first call after the "music" key is `register("music", …)` — end of block.
+        if collecting && (op == OP_CALLPROPVOID || op == OP_CALLPROPERTY) { break; }
+        i += 1;
+        skip_opcode_operands(op, bc, &mut i);
+    }
+    out
 }
 
 /// Walk a method body to find `pushstring KEY ; pushstring VALUE ;
@@ -1592,7 +1641,7 @@ pub fn extract_indexed_string_fields(
 /// literals (`newobject`) that carry SSF2 attack / projectile / stat /
 /// costume data.
 #[derive(Debug, Clone)]
-enum StackVal {
+pub(crate) enum StackVal {
     Str(String),
     Num(f64),
     Bool(()),  // unused field — kept for stack value compatibility
@@ -1601,6 +1650,11 @@ enum StackVal {
     Obj(BTreeMap<String, StackVal>),
     /// A parsed array from newarray
     Arr(Vec<StackVal>),
+    /// A visitor-defined marker carried on the simulated stack (e.g. a plane
+    /// accessor's result, or a `getlex` class name). The scanner never creates
+    /// these itself — only the property/lex hooks do — so default visitors
+    /// (which don't override the hooks) never see them.
+    Tag(String),
     Unknown,
 }
 
@@ -1629,7 +1683,7 @@ enum StackVal {
 
 /// What `AbcVisitor::on_newobject` wants the scanner to do with the
 /// freshly-built object literal.
-enum NewObjectAction {
+pub(crate) enum NewObjectAction {
     /// Push StackVal::Obj(obj) onto the stack — the default for visitors
     /// that may need to look at this object again as a sub-value in a
     /// later newobject.
@@ -1647,7 +1701,7 @@ enum NewObjectAction {
 /// Hook surface for `scan_method`. Default impls match the
 /// attack/projectile/stats simulators' common semantics; the costume
 /// visitor overrides a couple of behaviours where its parsing differs.
-trait AbcVisitor {
+pub(crate) trait AbcVisitor {
     /// Called when a `newobject(N)` opcode completes. The scanner has
     /// already drained 2N items from the stack and built the obj map;
     /// the visitor decides what to record, then returns an action
@@ -1679,17 +1733,48 @@ trait AbcVisitor {
     /// Unknown, matching the attack/projectile sims' post-§3.5-fix
     /// behaviour.
     fn costume_getproperty_semantics(&self) -> bool { false }
+
+    // ── Property/lex hooks (for the stage plane-map + actor visitors) ──
+    // All default to `None`, meaning "scanner keeps its existing behavior"
+    // (push Unknown). So the attack/projectile/stats/costume visitors, which
+    // don't override these, are byte-for-byte unaffected. A stage visitor
+    // returns `Some(StackVal::Tag(...))` to carry a marker (a plane, a class
+    // name, a spawned-actor handle) forward on the simulated stack.
+
+    /// `getlex <Name>` / `findpropstrict <Name>`: the resolved name. Return a
+    /// marker to put on the stack (e.g. the class name for a following call).
+    fn on_getlex(&mut self, _name: &str) -> Option<StackVal> { None }
+    /// `callproperty/callpropvoid <method>(args)` on `receiver` (already drained
+    /// from the stack: receiver + args). For callproperty the return is pushed
+    /// (Unknown if None); for callpropvoid it's only a side-effect hook.
+    fn on_callproperty(&mut self, _method: &str, _args: &[StackVal], _receiver: &StackVal) -> Option<StackVal> { None }
+    /// `constructprop <Class>(args)`. Return a marker for the constructed value.
+    fn on_constructprop(&mut self, _class: &str, _args: &[StackVal]) -> Option<StackVal> { None }
+    /// `getproperty <prop>` on `receiver`. Return a marker to propagate the
+    /// receiver's tag through a chained access (e.g. `getBackground().clip`).
+    fn on_getproperty(&mut self, _prop: &str, _receiver: &StackVal) -> Option<StackVal> { None }
+    /// Opt in to locals tracking: `setlocal N` stores the stack top into a
+    /// locals array and `getlocal N` reloads it, so a visitor can follow a
+    /// value stashed in a temp (e.g. a spawned actor reloaded for `setX`).
+    /// Default false = `getlocal` pushes Unknown, exactly as before.
+    fn track_locals(&self) -> bool { false }
 }
 
 /// One pass over a method body. Built-in handlers cover every opcode
 /// every former simulator handled. The visitor's hooks decide what to
 /// record on newobject / newarray and (optionally) how to treat
 /// getproperty — see the trait above.
-fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
+pub(crate) fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
     let mut stack: Vec<StackVal> = Vec::new();
     let mut current_char: Option<String> = None;
     let mut i = 0;
     let costume_mode = visitor.costume_getproperty_semantics();
+    let track_locals = visitor.track_locals();
+    let mut locals: Vec<StackVal> = Vec::new();
+    fn set_local(locals: &mut Vec<StackVal>, n: usize, v: StackVal) {
+        if n >= locals.len() { locals.resize(n + 1, StackVal::Unknown); }
+        locals[n] = v;
+    }
 
     while i < bytecode.len() {
         let op = bytecode[i];
@@ -1763,20 +1848,28 @@ fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
                 }
             }
 
-            // ── Calls & construction (drain args+receiver, push unknown) ─
+            // ── Calls & construction (drain args+receiver, hook, push) ──
             OP_CALLPROPERTY | OP_CALLPROPVOID => {
-                read_u30_at(bytecode, &mut i);
+                let mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
                 let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                let method = abc.multinames.get(mn_idx as usize).map(|m| m.name.to_string()).unwrap_or_default();
                 let drain = stack.len().min(argc + 1);
-                stack.drain(stack.len() - drain..);
-                if op == OP_CALLPROPERTY { stack.push(StackVal::Unknown); }
+                let drained: Vec<StackVal> = stack.drain(stack.len() - drain..).collect();
+                let (receiver, args) = drained.split_first()
+                    .map(|(r, a)| (r.clone(), a.to_vec()))
+                    .unwrap_or((StackVal::Null, Vec::new()));
+                let hooked = visitor.on_callproperty(&method, &args, &receiver);
+                if op == OP_CALLPROPERTY { stack.push(hooked.unwrap_or(StackVal::Unknown)); }
             }
             OP_CONSTRUCTPROP => {
-                read_u30_at(bytecode, &mut i);
+                let mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
                 let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                let class = abc.multinames.get(mn_idx as usize).map(|m| m.name.to_string()).unwrap_or_default();
                 let drain = stack.len().min(argc + 1);
-                stack.drain(stack.len() - drain..);
-                stack.push(StackVal::Unknown);
+                let drained: Vec<StackVal> = stack.drain(stack.len() - drain..).collect();
+                let args: Vec<StackVal> = drained.into_iter().skip(1).collect();
+                let hooked = visitor.on_constructprop(&class, &args);
+                stack.push(hooked.unwrap_or(StackVal::Unknown));
             }
             OP_CONSTRUCT => {
                 let argc = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
@@ -1841,14 +1934,23 @@ fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
                         }
                     }
                 } else {
-                    stack.pop();
-                    stack.push(StackVal::Unknown);
+                    let mn = abc.multinames.get(mn_idx as usize);
+                    let name = mn.map(|m| m.name.to_string()).unwrap_or_default();
+                    // a stage visitor (track_locals) wants an accurate stack: a RUNTIME multiname
+                    // (RTQNameL 0x1B / MultinameL 0x1C, e.g. `arr[0]`) takes its index off the stack
+                    // BELOW the receiver, so pop it first or a chain desyncs (`getCameraBackgrounds()[0].mc`).
+                    if track_locals && mn.map(|m| m.kind == 0x1B || m.kind == 0x1C).unwrap_or(false) {
+                        stack.pop();
+                    }
+                    let receiver = stack.pop().unwrap_or(StackVal::Null);
+                    stack.push(visitor.on_getproperty(&name, &receiver).unwrap_or(StackVal::Unknown));
                 }
             }
 
             OP_FINDPROPSTRICT | OP_FINDPROP | OP_GETLEX => {
-                read_u30_at(bytecode, &mut i);
-                stack.push(StackVal::Unknown);
+                let mn_idx = read_u30_at(bytecode, &mut i).unwrap_or(0);
+                let name = abc.multinames.get(mn_idx as usize).map(|m| m.name.to_string()).unwrap_or_default();
+                stack.push(visitor.on_getlex(&name).unwrap_or(StackVal::Unknown));
             }
 
             // ── Coerce / convert — operand-bearing but mostly no-ops ────
@@ -1880,10 +1982,23 @@ fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor: &mut V) {
                     _ => stack.push(StackVal::Unknown),
                 }
             }
-            OP_GETLOCAL0 | OP_GETLOCAL1 | OP_GETLOCAL2 | OP_GETLOCAL3 => stack.push(StackVal::Unknown),
-            OP_GETLOCAL => { read_u30_at(bytecode, &mut i); stack.push(StackVal::Unknown); }
-            OP_SETLOCAL0 | OP_SETLOCAL1 | OP_SETLOCAL2 | OP_SETLOCAL3 => { stack.pop(); }
-            OP_SETLOCAL => { read_u30_at(bytecode, &mut i); stack.pop(); }
+            OP_GETLOCAL0 | OP_GETLOCAL1 | OP_GETLOCAL2 | OP_GETLOCAL3 => {
+                let n = (op - OP_GETLOCAL0) as usize;
+                stack.push(if track_locals { locals.get(n).cloned().unwrap_or(StackVal::Unknown) } else { StackVal::Unknown });
+            }
+            OP_GETLOCAL => {
+                let n = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                stack.push(if track_locals { locals.get(n).cloned().unwrap_or(StackVal::Unknown) } else { StackVal::Unknown });
+            }
+            OP_SETLOCAL0 | OP_SETLOCAL1 | OP_SETLOCAL2 | OP_SETLOCAL3 => {
+                let v = stack.pop().unwrap_or(StackVal::Null);
+                if track_locals { set_local(&mut locals, (op - OP_SETLOCAL0) as usize, v); }
+            }
+            OP_SETLOCAL => {
+                let n = read_u30_at(bytecode, &mut i).unwrap_or(0) as usize;
+                let v = stack.pop().unwrap_or(StackVal::Null);
+                if track_locals { set_local(&mut locals, n, v); }
+            }
             OP_RETURNVALUE => { stack.pop(); }
             OP_RETURNVOID => {}
             OP_JUMP | OP_IFTRUE | OP_IFFALSE | OP_IFEQ | OP_IFNE | OP_IFLT |
@@ -1936,10 +2051,361 @@ impl AbcVisitor for AttackVisitor {
     }
 }
 
-fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, AttackData> {
+pub(crate) fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, AttackData> {
     let mut v = AttackVisitor { result: BTreeMap::new() };
     scan_method(bytecode, abc, &mut v);
     v.result
+}
+
+/// Captures the single getAttackStats newobject that yields the MOST hitboxes — for a HAZARD,
+/// whose getAttackStats returns the attack object DIRECTLY (`{ attackBoxes: {...} }`), not the
+/// character pattern of an object keyed by move name. (The nested `attackBoxes` map fires its own
+/// newobject too; "most hitboxes" picks the complete one and dedups the partial.)
+struct HazardAttackVisitor {
+    best: Vec<BTreeMap<String, f64>>,
+}
+impl AbcVisitor for HazardAttackVisitor {
+    fn on_newobject(&mut self, obj: BTreeMap<String, StackVal>, _c: &Option<String>) -> NewObjectAction {
+        let hbs = extract_hitboxes_from_val(&StackVal::Obj(obj.clone()));
+        if hbs.len() > self.best.len() {
+            self.best = hbs;
+        }
+        NewObjectAction::PushObj(obj)
+    }
+}
+
+/// The behavior values a hazard class's `update()`/`initialize()` actually use, recovered by
+/// stepping the class instead of hardcoding them: the camera-shake amplitude (`shake`/`shakeCamera`
+/// argument), the rise speed (`setYSpeed`), the fall gravity (`updateEnemyStats({gravity})`), the
+/// self-platform box (`createSelfPlatform`), the dust effect (`attachEffect`), and the sounds
+/// (`playSound`). The FM CGO script is driven by these so the hazard's behavior comes from its own
+/// code, not a per-hazard template of constants.
+#[derive(Default, Clone, Debug)]
+pub struct EnemyBehavior {
+    pub shake: Option<f64>,
+    pub rise_yspeed: Option<f64>,
+    pub fall_gravity: Option<f64>,
+    pub self_platform: Option<(f64, f64, f64, f64)>,
+    pub dust: Option<(String, f64, f64)>,
+    pub sounds: Vec<String>,
+    /// The class adds itself as a camera target (`addToCamera`) — the FM port mirrors it with
+    /// `match.getCamera().addTarget(self)` while the hazard is engaged.
+    pub camera_target: bool,
+}
+struct BehaviorVisitor {
+    b: EnemyBehavior,
+}
+impl AbcVisitor for BehaviorVisitor {
+    fn on_callproperty(&mut self, method: &str, args: &[StackVal], _r: &StackVal) -> Option<StackVal> {
+        let num = |i: usize| if let Some(StackVal::Num(n)) = args.get(i) { Some(*n) } else { None };
+        match method {
+            "shake" | "shakeCamera" => { if let Some(n) = num(0) { self.b.shake = Some(n); } }
+            "setYSpeed" => { if let Some(n) = num(0) { if n < 0.0 { self.b.rise_yspeed = Some(n); } } }
+            "updateEnemyStats" => {
+                if let Some(StackVal::Obj(o)) = args.first() {
+                    if let Some(StackVal::Num(g)) = o.get("gravity") { if *g > 0.0 { self.b.fall_gravity = Some(*g); } }
+                }
+            }
+            "createSelfPlatform" => {
+                if let (Some(a), Some(b), Some(c), Some(d)) = (num(0), num(1), num(2), num(3)) {
+                    self.b.self_platform = Some((a, b, c, d));
+                }
+            }
+            "attachEffect" => {
+                if let Some(StackVal::Str(name)) = args.first() {
+                    let (mut sx, mut sy) = (1.0, 1.0);
+                    if let Some(StackVal::Obj(o)) = args.get(1) {
+                        if let Some(StackVal::Num(v)) = o.get("scaleX") { sx = *v; }
+                        if let Some(StackVal::Num(v)) = o.get("scaleY") { sy = *v; }
+                    }
+                    self.b.dust = Some((name.clone(), sx, sy));
+                }
+            }
+            "playSound" => { if let Some(StackVal::Str(s)) = args.first() { if !self.b.sounds.contains(s) { self.b.sounds.push(s.clone()); } } }
+            "addToCamera" => { self.b.camera_target = true; }
+            _ => {}
+        }
+        None
+    }
+}
+pub(crate) fn extract_enemy_behavior(abc: &AbcFile, class_name: &str) -> EnemyBehavior {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return EnemyBehavior::default() };
+    let mut v = BehaviorVisitor { b: EnemyBehavior::default() };
+    for m in ["initialize", "update", "runAI", "move", "releaseEnemy"] {
+        if let Some(t) = class.instance_methods.iter().find(|t| &*t.name == m) {
+            if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
+                scan_method(&body.bytecode, abc, &mut v);
+            }
+        }
+    }
+    v.b
+}
+
+/// Collects the animation labels a hazard class plays via `forceAttack("<label>")` — stepping the
+/// class's lifecycle methods to learn its REAL animation set (the Thwomp's entrance/idle/fall, the
+/// HyruleTornado's "stand"), the code-referenced handle to its art clip, instead of matching a
+/// library symbol by keyword.
+#[derive(Default)]
+struct ForceAttackVisitor {
+    labels: Vec<String>,
+}
+impl AbcVisitor for ForceAttackVisitor {
+    fn on_callproperty(&mut self, method: &str, args: &[StackVal], _r: &StackVal) -> Option<StackVal> {
+        if method == "forceAttack" {
+            if let Some(StackVal::Str(s)) = args.first() {
+                if !s.is_empty() && !self.labels.contains(s) { self.labels.push(s.clone()); }
+            }
+        }
+        None
+    }
+}
+/// How an SWF sub-clip's own timeline ENDS its playback, recovered from its Flash-generated
+/// `<doc>_fla.<Clip>_NN` class (the 1-based `frameN` instance methods carry the frame scripts,
+/// decompiled through the standard pipeline). A clip with no bound class or no hold genuinely loops.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum TimelineHold {
+    /// `stop()` at 1-based frame N: plays to N and freezes there.
+    StopAt(u32),
+    /// `gotoAndStop(target)` at 1-based frame N: plays to N, then freezes at `target`
+    /// (a frame-label name, or a 1-based frame number rendered as digits).
+    GotoStop(String, u32),
+}
+
+/// A stage's engine-spawned FALLER cycle (the thwomp pattern), stepped from the code: the enemy
+/// class's entrance delay + landed wait (its initialize's FrameTimers, in declaration order), the
+/// stage class's spawn cadence (the sum of its two largest timers: active + rest phases of the
+/// spawn machine — an approximation until the stage update() is fully reconstructed), and the
+/// spawn column x choices (the int-array literal in the stage update near spawnEnemy, terrain-x).
+#[derive(Clone, Debug, Default)]
+pub struct FallerCycle {
+    pub entrance_delay: Option<f64>,
+    pub land_wait: Option<f64>,
+    pub spawn_period: Option<f64>,
+    pub columns: Vec<f64>,
+}
+
+pub(crate) fn extract_faller_cycle(abc: &AbcFile, enemy_class: &str) -> Option<FallerCycle> {
+    fn eval_expr(e: &str) -> Option<f64> {
+        let e = e.trim();
+        if let Some((a, b)) = e.split_once('*') {
+            return Some(a.trim().parse::<f64>().ok()? * b.trim().parse::<f64>().ok()?);
+        }
+        e.parse::<f64>().ok()
+    }
+    let timer_re = regex::Regex::new(r"new FrameTimer\(([^)]+)\)").unwrap();
+    let decompiled = |class: &Class, m: &str| -> String {
+        class.instance_methods.iter().find(|t| t.name == m)
+            .and_then(|t| abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx))
+            .map(|b| decompiler::decompile_method(b, abc, m, &[]))
+            .unwrap_or_default()
+    };
+    let enemy = abc.classes.iter().find(|c| c.name == enemy_class)?;
+    let enemy_timers: Vec<f64> = timer_re.captures_iter(&decompiled(enemy, "initialize"))
+        .filter_map(|c| eval_expr(&c[1])).collect();
+    let mut out = FallerCycle {
+        entrance_delay: enemy_timers.first().copied(),
+        land_wait: enemy_timers.get(1).copied(),
+        ..Default::default()
+    };
+    if let Some(stage) = abc.classes.iter().find(|c| c.super_name == "SSF2Stage") {
+        let mut stage_timers: Vec<f64> = timer_re.captures_iter(&decompiled(stage, "initialize"))
+            .filter_map(|c| eval_expr(&c[1])).collect();
+        stage_timers.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        if stage_timers.len() >= 2 { out.spawn_period = Some(stage_timers[0] + stage_timers[1]); }
+        else if let Some(&t) = stage_timers.first() { out.spawn_period = Some(t); }
+        // spawn columns: the int-array literal in the stage update near the spawnEnemy call.
+        let upd = decompiled(stage, "update");
+        if upd.contains("spawnEnemy") {
+            let arr_re = regex::Regex::new(r"\[(-?\d+(?:, *-?\d+){2,})\]").unwrap();
+            if let Some(c) = arr_re.captures(&upd) {
+                out.columns = c[1].split(',').filter_map(|v| v.trim().parse::<f64>().ok()).collect();
+            }
+        }
+    }
+    Some(out)
+}
+
+/// A sinking-platform class's authored motion, stepped from its OWN code (decompile + read):
+/// the per-frame sink/rise speeds (class const slots referenced by `setY(getY() ± self.X)`),
+/// the post-sink hold (`new FrameTimer(expr)` in initialize), and the rest/sunk Y caps from the
+/// `getY() <op> N` comparisons in update(). All values in SSF2 30fps source units.
+#[derive(Clone, Debug, Default)]
+pub struct PlatformBehavior {
+    pub sink_speed: Option<f64>,
+    pub rise_speed: Option<f64>,
+    pub wait_frames: Option<f64>,
+    pub sink_depth: Option<f64>,
+}
+
+/// Extract [`PlatformBehavior`] from the first class extending `SSF2Platform` (the sinking
+/// platform kind). None when the stage has no such class.
+pub(crate) fn extract_platform_behavior(abc: &AbcFile) -> Option<PlatformBehavior> {
+    let class = abc.classes.iter().find(|c| c.super_name == "SSF2Platform")?;
+    let body_of = |name: &str| class.instance_methods.iter().find(|t| t.name == name)
+        .and_then(|t| abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx));
+    let code_of = |name: &str| body_of(name)
+        .map(|b| decompiler::decompile_method(b, abc, name, &[]))
+        .unwrap_or_default();
+    let init = code_of("initialize");
+    let update = code_of("update");
+    let slot_default = |name: &str| class.instance_methods.iter()
+        .find(|t| t.name == name).and_then(|t| t.default);
+    // tiny eval for the FrameTimer arg ("30 * 13" / "390")
+    fn eval_expr(e: &str) -> Option<f64> {
+        let e = e.trim();
+        if let Some((a, b)) = e.split_once('*') {
+            return Some(a.trim().parse::<f64>().ok()? * b.trim().parse::<f64>().ok()?);
+        }
+        e.parse::<f64>().ok()
+    }
+    let mut out = PlatformBehavior::default();
+    if let Some(c) = regex::Regex::new(r"new FrameTimer\(([^)]+)\)").unwrap().captures(&init) {
+        out.wait_frames = eval_expr(&c[1]);
+    }
+    // speeds: the slot referenced when moving down (+) is the sink, up (-) the rise.
+    if let Some(c) = regex::Regex::new(r"getY\(\) \+ self\.(\w+)").unwrap().captures(&update) {
+        out.sink_speed = slot_default(&c[1]);
+    }
+    if let Some(c) = regex::Regex::new(r"getY\(\) - self\.(\w+)").unwrap().captures(&update) {
+        out.rise_speed = slot_default(&c[1]);
+    }
+    // the rest/sunk caps: the two getY() comparisons; depth = max - min.
+    let caps: Vec<f64> = regex::Regex::new(r"getY\(\) *(?:<=|>=|<|>) *(-?\d+(?:\.\d+)?)").unwrap()
+        .captures_iter(&update)
+        .filter_map(|c| c[1].parse::<f64>().ok())
+        .collect();
+    if caps.len() >= 2 {
+        let lo = caps.iter().cloned().fold(f64::MAX, f64::min);
+        let hi = caps.iter().cloned().fold(f64::MIN, f64::max);
+        if hi > lo { out.sink_depth = Some(hi - lo); }
+    }
+    Some(out)
+}
+
+/// Debug aid (`PEPTIDE_DUMP_CLASS=<name>`): decompile every instance method of a class through
+/// the standard pipeline and print it — the quickest way to read an SSF2 class's authored logic.
+pub(crate) fn dump_class(abc: &AbcFile, class_name: &str) {
+    let Some(class) = abc.classes.iter()
+        .find(|c| c.name == class_name || c.name.ends_with(&format!(".{class_name}"))) else { return };
+    eprintln!("[dump-class] {} extends {}", class.name, class.super_name);
+    for t in &class.instance_methods {
+        if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
+            let code = decompiler::decompile_method(body, abc, &t.name, &[]);
+            eprintln!("--- {} ---\n{}", t.name, code);
+        }
+    }
+}
+
+/// The `setYSpeed(N)` timeline a sub-clip's frame scripts drive (the thwomp entrance's
+/// descend-hover-rise bob): `(1-based frame, speed)` per frameN method that sets one. Source
+/// 30fps SSF2 units.
+pub(crate) fn extract_frame_velocities(abc: &AbcFile, class_name: &str) -> Vec<(u32, f64)> {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return Vec::new() };
+    let re = regex::Regex::new(r"setYSpeed\((-?\d+(?:\.\d+)?)\)").unwrap();
+    let mut out: Vec<(u32, f64)> = Vec::new();
+    for t in &class.instance_methods {
+        let Some(n) = t.name.strip_prefix("frame").and_then(|s| s.parse::<u32>().ok()) else { continue };
+        let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
+        let code = decompiler::decompile_method(body, abc, &t.name, &[]);
+        if let Some(c) = re.captures(&code) {
+            if let Ok(v) = c[1].parse::<f64>() { out.push((n, v)); }
+        }
+    }
+    out.sort_by_key(|(f, _)| *f);
+    out
+}
+
+pub(crate) fn extract_timeline_hold(abc: &AbcFile, class_name: &str) -> Option<TimelineHold> {
+    let class = abc.classes.iter().find(|c| c.name == class_name)?;
+    let stop_re = regex::Regex::new(r"\bstop\(\)").unwrap();
+    let goto_re = regex::Regex::new(r#"gotoAndStop\((?:"([^"]+)"|(\d+))"#).unwrap();
+    // playback freezes at the FIRST frame whose script holds (it never plays past it).
+    let mut best: Option<(u32, TimelineHold)> = None;
+    for t in &class.instance_methods {
+        let Some(n) = t.name.strip_prefix("frame").and_then(|s| s.parse::<u32>().ok()) else { continue };
+        let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
+        let code = decompiler::decompile_method(body, abc, &t.name, &[]);
+        let hold = if let Some(c) = goto_re.captures(&code) {
+            let target = c.get(1).or_else(|| c.get(2)).map(|m| m.as_str().to_string()).unwrap_or_default();
+            Some(TimelineHold::GotoStop(target, n))
+        } else if stop_re.is_match(&code) {
+            Some(TimelineHold::StopAt(n))
+        } else { None };
+        if let Some(h) = hold {
+            if best.as_ref().map(|(bn, _)| n < *bn).unwrap_or(true) { best = Some((n, h)); }
+        }
+    }
+    best.map(|(_, h)| h)
+}
+
+pub(crate) fn extract_force_attack_labels(abc: &AbcFile, class_name: &str) -> Vec<String> {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return vec![] };
+    let mut v = ForceAttackVisitor::default();
+    for m in ["initialize", "update", "runAI", "move", "releaseEnemy", "setState"] {
+        if let Some(t) = class.instance_methods.iter().find(|t| &*t.name == m) {
+            if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
+                scan_method(&body.bytecode, abc, &mut v);
+            }
+        }
+    }
+    v.labels
+}
+
+/// Reconstruct a hazard class's lifecycle methods (initialize + update + helpers) as FM hscript by
+/// running them through the SAME `decompile_method` → `translate_ssf2_to_fm` pipeline the character
+/// and projectile ports use — the real state machine, not a hand-written template. The output still
+/// needs a field-state pass (`self.m_x` → `self.makeInt(...)`) + a FrameTimer helper before it RUNS;
+/// returned for the gated reconstruction path to iterate on. Empty if the class has no such methods.
+pub(crate) fn reconstruct_enemy_script(abc: &AbcFile, class_name: &str) -> Option<String> {
+    let class = abc.classes.iter().find(|c| c.name == class_name)?;
+    let mut out = String::new();
+    for m in ["initialize", "update", "runAI", "move", "releaseEnemy"] {
+        if let Some(t) = class.instance_methods.iter().find(|t| &*t.name == m) {
+            if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
+                let raw = crate::decompiler::decompile_method(body, abc, m, &[]);
+                out.push_str(&crate::api_mappings::translate_ssf2_to_fm(&raw));
+                out.push('\n');
+            }
+        }
+    }
+    (!out.trim().is_empty()).then_some(out)
+}
+
+/// The getAttackStats hitbox maps a HAZARD class declares (damage/direction/power/kbConstant + any
+/// geometry), authoritative per-hazard instead of a generic per-kind default. Empty if the class
+/// has no getAttackStats or no recoverable hitbox. Pairs with [`extract_own_stats_for`].
+pub(crate) fn extract_attack_stats_for(abc: &AbcFile, class_name: &str) -> Vec<BTreeMap<String, f64>> {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return vec![] };
+    let Some(t) = class.instance_methods.iter().find(|t| &*t.name == "getAttackStats") else { return vec![] };
+    let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { return vec![] };
+    let mut v = HazardAttackVisitor { best: vec![] };
+    scan_method(&body.bytecode, abc, &mut v);
+    v.best
+}
+
+/// The flat scalar fields a hazard class's `getOwnStats` declares (size, speeds, timers — e.g. the
+/// HyruleTornado's `xSpeed`/`maxTime`). Authoritative motion/own params instead of guessed defaults.
+pub(crate) fn extract_own_stats_for(abc: &AbcFile, class_name: &str) -> BTreeMap<String, f64> {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return BTreeMap::new() };
+    let Some(t) = class.instance_methods.iter().find(|t| &*t.name == "getOwnStats") else { return BTreeMap::new() };
+    let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { return BTreeMap::new() };
+    let mut v = OwnStatsVisitor { best: BTreeMap::new() };
+    scan_method(&body.bytecode, abc, &mut v);
+    v.best
+}
+struct OwnStatsVisitor {
+    best: BTreeMap<String, f64>,
+}
+impl AbcVisitor for OwnStatsVisitor {
+    fn on_newobject(&mut self, obj: BTreeMap<String, StackVal>, _c: &Option<String>) -> NewObjectAction {
+        let nums: BTreeMap<String, f64> = obj.iter()
+            .filter_map(|(k, v)| if let StackVal::Num(n) = v { Some((k.clone(), *n)) } else { None })
+            .collect();
+        if nums.len() > self.best.len() {
+            self.best = nums;
+        }
+        NewObjectAction::PushObj(obj)
+    }
 }
 
 /// Extract per-projectile stat objects from a `getProjectileStats()`

@@ -129,6 +129,25 @@ FRAY_CHAR=<id> ./tools/runseq.sh 3 "spawn <id>" \
 **the #1 gotcha:** the published `.fra` in `custom/<id>/` only gets rebuilt by the FrayTools
 publish step, not the converter. skip step 2 and you're testing stale output!
 
+## identifying SSF2 assets (`peptide ssf2 identify`)
+
+SSF2 ships its content as numbered `DATn.ssf` archives (characters, stages, items, ui, audio)
+with no type field. to find what a `.ssf` actually is without converting it:
+
+```
+# classify one file, or scan a whole dir (e.g. the SSF2 install's data folder)
+./build/release/peptide ssf2 identify <dir|file> [--kind character|stage|other]
+
+# copy the stages out (renamed to <id>.ssf) for iteration
+./build/release/peptide ssf2 identify "<SSF2.app>/Contents/Resources/data" \
+  --kind stage --copy-stages ../ssf2-ssfs/stages
+```
+
+it prints `file / id / kind / detail` per `.ssf`: **character** (declares a `characters[]`
+roster), **stage** (carries the boundary instances `deathBoundary`/`camBoundary`/`smashBallBoundary`),
+or **other** (audio `bgm_*`, items, ui). this is the front end for stage porting -- it locates a
+stage's source DAT (e.g. battlefield = `DAT328.ssf`).
+
 ## batch-testing, recipes, and regression checks
 
 - **`tools/tests/batch_spawn_test.sh <id> …`** regenerates, exports, and spawn-drives each

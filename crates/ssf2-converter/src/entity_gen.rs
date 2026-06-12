@@ -257,7 +257,11 @@ fn append_missing_template_animations(
         missing.len(), missing.join(", "));
 }
 
-fn double_keyframe_lengths(keyframes: &mut [Value]) {
+/// Double every keyframe `length` for the SSF2 30fps -> Fraymakers 60fps move (one source frame =
+/// two FM frames). FrayTools timelines are laid out purely by sequential keyframe length, so
+/// doubling each keyframe doubles every layer span + keyframe start in lockstep. Shared by the
+/// stage emitter so stage/hazard animations get the SAME timing treatment as characters.
+pub(crate) fn double_keyframe_lengths(keyframes: &mut [Value]) {
     for kf in keyframes {
         if let Some(len) = kf.get("length").and_then(Value::as_u64) {
             kf["length"] = json!(len * 2);
@@ -680,6 +684,38 @@ pub fn generate_entity(
             anim_layer_ids.push(layer_id);
         }
 
+        // The launched-state slots (tumble, hurt_heavy) anchor the BODY on the
+        // entity position -- the official character template's convention -- but
+        // their SSF2 source xframes carry root-timeline stance placements that
+        // are preview positions, not runtime anchors (mario's "flying" sits a
+        // full body-height BELOW the origin; every grounded xframe sits feet-at-
+        // origin). Correction: move the hurtbox union's centre onto the origin
+        // and shift the whole box set (hurtboxes, itemboxes, ECB) by that one
+        // delta. The IMAGE placement applies the same correction (tumble
+        // re-centres per-frame because it also strips rotation; hurt_heavy
+        // translates by this exact shift, keeping art-box registration intact).
+        // Every other animation keeps its placement and boxes verbatim.
+        let box_shift: (f64, f64) = if anim_name == "tumble" || anim_name == "hurt_heavy" {
+            let mut aabb: Option<(f64, f64, f64, f64)> = None; // left,right,top,bottom
+            if let Some(bd) = sprite_boxes.get(source_anim.as_str()) {
+                for lf in 0..frame_count {
+                    if let Some(boxes) = bd.frames.get(&src_frame(lf)) {
+                        for b in boxes {
+                            if b.box_type != crate::sprite_parser::BoxType::Hurtbox { continue; }
+                            let (l, r, t, btm) = (b.x, b.x + b.width, b.y, b.y + b.height);
+                            aabb = Some(match aabb {
+                                None => (l, r, t, btm),
+                                Some((al, ar, at, ab)) => (al.min(l), ar.max(r), at.min(t), ab.max(btm)),
+                            });
+                        }
+                    }
+                }
+            }
+            aabb.map(|(l, r, t, b)| (-(l + r) / 2.0, -(t + b) / 2.0)).unwrap_or((0.0, 0.0))
+        } else {
+            (0.0, 0.0)
+        };
+
         // ── 3. COLLISION_BODY layer (per-frame ECB from hurtbox bounds) ───────
         {
             let layer_id = uuid(char_id, &format!("layer_body_{}", anim_name));
@@ -709,7 +745,8 @@ pub fn generate_entity(
                     if let Some(boxes) = box_data.and_then(|bd| bd.frames.get(&src_f)) {
                         for b in boxes {
                             if b.box_type != crate::sprite_parser::BoxType::Hurtbox { continue; }
-                            let (l, r, t, btm) = (b.x, b.x + b.width, b.y, b.y + b.height);
+                            let (l, r) = (b.x + box_shift.0, b.x + b.width + box_shift.0);
+                            let (t, btm) = (b.y + box_shift.1, b.y + b.height + box_shift.1);
                             aabb = Some(match aabb {
                                 None => (l, r, t, btm),
                                 Some((al, ar, at, ab)) => (al.min(l), ar.max(r), at.min(t), ab.max(btm)),
@@ -898,8 +935,8 @@ pub fn generate_entity(
                         // POINT symbol: bottom-center of the touchBox.
                         // In SSF2, touchBox marks the hold region; the grab hold
                         // position is at the bottom-center (where the opponent's feet anchor).
-                        let cx = round2(fb.x + fb.width / 2.0);
-                        let cy = round2(fb.y + fb.height);
+                        let cx = round2(fb.x + box_shift.0 + fb.width / 2.0);
+                        let cy = round2(fb.y + box_shift.1 + fb.height);
                         symbols.push(json!({
                             "$id": sym_id,
                             "alpha": 1,
@@ -962,8 +999,8 @@ pub fn generate_entity(
                             "scaleX": round2(fb.width),
                             "scaleY": round2(fb.height),
                             "type": "COLLISION_BOX",
-                            "x": round2(box_x),
-                            "y": round2(box_y)
+                            "x": round2(box_x + box_shift.0),
+                            "y": round2(box_y + box_shift.1)
                         }));
                     }
 
@@ -1078,9 +1115,11 @@ pub fn generate_entity(
                         let world_sy  = entry.map(|e| round2(e.world_sy)).unwrap_or(1.0);
                         let world_rot = entry.map(|e| round2(e.world_rotation)).unwrap_or(0.0);
 
-                        // Run-length encode consecutive frames with identical symbol + world transform
+                        // Run-length encode consecutive frames with identical symbol + world transform.
+                        // run_turn's FIRST frame is mirrored (see below), so it never merges into
+                        // a longer run with the unmirrored frames after it.
                         let mut run = 1u32;
-                        while f + run < total {
+                        while f + run < total && !(anim_name == "run_turn" && f == 0) {
                             let next = held[(f + run) as usize].as_ref();
                             let matches = next.map(|e| e.symbol_name.as_str()) == sym_name
                                 && next.map(|e| round2(e.world_tx))       == Some(world_tx).filter(|_| sym_name.is_some())
@@ -1143,7 +1182,11 @@ pub fn generate_entity(
                                 .and_then(|sid| img_result.shape_fill_scale.get(&sid))
                                 .copied()
                                 .unwrap_or((1.0, 1.0));
-                            let fm_sx = round2(world_sx * fsx) * if anim_name == "stand_turn" { -1.0 } else { 1.0 };
+                            // stand_turn mirrors every frame; run_turn mirrors only its FIRST
+                            // frame (the character still faces the old direction for one frame
+                            // before the engine's facing flip catches up).
+                            let turn_flip = anim_name == "stand_turn" || (anim_name == "run_turn" && f == 0);
+                            let fm_sx = round2(world_sx * fsx) * if turn_flip { -1.0 } else { 1.0 };
                             let fm_sy = round2(world_sy * fsy);
 
                             // World-space matrix components
@@ -1163,11 +1206,40 @@ pub fn generate_entity(
                             // vertical axis (entity x=0). Negating scaleX alone flips about the
                             // sprite's own left edge, sliding it sideways; also negate the x
                             // position so the whole placement reflects about the origin.
-                            if anim_name == "stand_turn" {
+                            if turn_flip {
                                 fm_x = round2(-fm_x);
                             }
+                            // FM's engine applies its OWN rotation during the TUMBLE state, about
+                            // the entity position, so a baked SSF2 per-frame rotation/offset fights
+                            // it (the sprite orbits without spinning). For tumble ONLY: strip the
+                            // authored rotation AND centre the pose on the origin so the engine's
+                            // spin rotates it in place (the official template centres its tumble
+                            // pose the same way). Every other animation keeps the authored
+                            // corner + rotation form. FrayTools places an IMAGE so its centre
+                            // lands at (x + scaleX*w/2, y + scaleY*h/2) with SIGNED scales
+                            // (scaleY is negative under the y-flip), so centring on the origin
+                            // means x = -scaleX*w/2, y = -scaleY*h/2.
+                            let mut fm_y = fm_y;
                             let pivot_x = 0.0_f64;
                             let pivot_y = 0.0_f64;
+                            let mut emit_rot = ((world_rot % 360.0) + 360.0) % 360.0;
+                            if anim_name == "tumble" {
+                                if let Some(img) = bitmap_img {
+                                    let (hw, hh) = (img.width as f64 / 2.0, img.height as f64 / 2.0);
+                                    fm_x = round2(-fm_sx * hw);
+                                    fm_y = round2(-fm_sy * hh);
+                                    emit_rot = 0.0;
+                                }
+                            }
+                            // hurt_heavy is also a launched pose (see box_shift above): translate
+                            // the art by the same hurtbox-union-to-origin delta as the boxes, so
+                            // the body centres on the entity position with art-box registration
+                            // preserved exactly. No rotation strip -- the engine doesn't spin
+                            // hurt_heavy.
+                            if anim_name == "hurt_heavy" {
+                                fm_x = round2(fm_x + box_shift.0);
+                                fm_y = round2(fm_y + box_shift.1);
+                            }
 
                             symbols.push(json!({
                                 "$id": per_placement_sym_id,
@@ -1178,7 +1250,7 @@ pub fn generate_entity(
                                 "pluginMetadata": {},
                                 // SWF world_rot = atan2(b,a) in y-down coords.
                                 // Normalize to FrayTools 0-360 range (no negation).
-                                "rotation": round2(((world_rot % 360.0) + 360.0) % 360.0),
+                                "rotation": round2(emit_rot),
                                 "scaleX": fm_sx,
                                 "scaleY": fm_sy,
                                 "type": "IMAGE",

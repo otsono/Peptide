@@ -895,8 +895,10 @@ fn build_anim_frame_images(
                 if anim_by_sprite.contains_key(&sprite.id) { continue; }
 
                 let mut disp: BTreeMap<u16, (u16, String, ImageLocalMatrix)> = BTreeMap::new();
-                // depth → (unnamed_sprite_id, place_parent_mat, frame_started)
-                let mut unnamed_placements: BTreeMap<u16, (u16, ImageLocalMatrix, u16)> = BTreeMap::new();
+                // depth → (unnamed_sprite_id, place_parent_mat, frame_started, graphic_frame)
+                // graphic_frame = the placement's ratio (a Graphic-symbol placement: it shows the
+                // ONE frame the ratio selects — Flash's "Single Frame" — and never self-animates).
+                let mut unnamed_placements: BTreeMap<u16, (u16, ImageLocalMatrix, u16, Option<u16>)> = BTreeMap::new();
                 let mut cur_frame: u16 = 0;
                 let mut effect_frames: Vec<Vec<(u16, String, ImageLocalMatrix)>> = Vec::new();
 
@@ -906,10 +908,14 @@ fn build_anim_frame_images(
                             let mut snap: Vec<(u16, String, ImageLocalMatrix)> = disp.values()
                                 .map(|(id, sym, mat)| (*id, sym.clone(), *mat)).collect();
                             // Expand unnamed sub-sprites: pick their frame at (cur_frame - place_frame)
-                            for (&_depth, (unnamed_id, parent_mat, place_frame)) in &unnamed_placements {
+                            for (&_depth, (unnamed_id, parent_mat, place_frame, pinned)) in &unnamed_placements {
                                 if let Some(uframes) = unnamed_frames.get(unnamed_id) {
-                                    let uf_idx = (cur_frame.saturating_sub(*place_frame) as usize)
-                                        .min(uframes.len().saturating_sub(1));
+                                    // a graphic-pinned placement shows the ratio-selected frame, always.
+                                    let uf_idx = match pinned {
+                                        Some(r) => (*r as usize).min(uframes.len().saturating_sub(1)),
+                                        None => (cur_frame.saturating_sub(*place_frame) as usize)
+                                            .min(uframes.len().saturating_sub(1)),
+                                    };
                                     for (inner_id, inner_sym, inner_mat) in &uframes[uf_idx] {
                                         let composed = parent_mat.compose(inner_mat);
                                         snap.push((*inner_id, inner_sym.clone(), composed));
@@ -938,7 +944,7 @@ fn build_anim_frame_images(
                                             disp.insert(po.depth, (*cid, img.symbol_name.clone(), local_mat));
                                         }
                                     } else if unnamed_frames.contains_key(cid) {
-                                        unnamed_placements.insert(po.depth, (*cid, local_mat, cur_frame));
+                                        unnamed_placements.insert(po.depth, (*cid, local_mat, cur_frame, po.ratio));
                                     }
                                 }
                                 swf::PlaceObjectAction::Modify => {
@@ -1000,8 +1006,10 @@ fn build_anim_frame_images(
             let mut current_frame: u16 = 0;
             // depth → (shape_id, symbol_name, local_matrix) — the active display list
             let mut display_list: BTreeMap<u16, (u16, String, ImageLocalMatrix)> = BTreeMap::new();
-            // depth → (effect_sprite_id, place_frame, parent_matrix) — sub-sprite placements
-            let mut sub_sprite_placements: BTreeMap<u16, (u16, u16, ImageLocalMatrix)> = BTreeMap::new();
+            // depth → (effect_sprite_id, place_frame, parent_matrix, graphic_frame) — sub-sprite
+            // placements; graphic_frame = the placement's ratio (a Graphic-symbol placement shows
+            // the ONE frame the ratio selects — Flash's "Single Frame" — never self-animating).
+            let mut sub_sprite_placements: BTreeMap<u16, (u16, u16, ImageLocalMatrix, Option<u16>)> = BTreeMap::new();
             let mut frames: BTreeMap<u16, Vec<FrameImageEntry>> = BTreeMap::new();
 
             for stag in &sprite.tags {
@@ -1048,13 +1056,16 @@ fn build_anim_frame_images(
                         // unnamed sub-sprites placed directly in the timeline
                         // (e.g. item_homerun's body movieclips) live in
                         // unnamed_frames.
-                        for (&depth, (effect_id, place_frame, parent_mat)) in &sub_sprite_placements {
+                        for (&depth, (effect_id, place_frame, parent_mat, pinned)) in &sub_sprite_placements {
                             if let Some(effect_frames) = effect_sprites.get(effect_id)
                                 .or_else(|| unnamed_frames.get(effect_id))
                             {
-                                let eff_frame = (current_frame.saturating_sub(*place_frame)) as usize;
-                                // Clamp to last frame (effect may loop or hold)
-                                let eff_frame = eff_frame.min(effect_frames.len().saturating_sub(1));
+                                // a graphic-pinned placement shows the ratio-selected frame, always.
+                                let eff_frame = match pinned {
+                                    Some(r) => (*r as usize).min(effect_frames.len().saturating_sub(1)),
+                                    None => (current_frame.saturating_sub(*place_frame) as usize)
+                                        .min(effect_frames.len().saturating_sub(1)),
+                                };
                                 // The effect sub-sprite rotates around its own local origin (0,0).
                                 // In world space that's root_xf.apply(parent_mat.tx, parent_mat.ty).
                                 let (effect_origin_x, effect_origin_y) = root_xf.apply(parent_mat.tx, parent_mat.ty);
@@ -1127,14 +1138,14 @@ fn build_anim_frame_images(
                                     // Effect sprite (nested _fla. movieclip)? Track as sub-sprite.
                                     if lower.contains("_fla.") {
                                         if effect_sprites.contains_key(char_id) {
-                                            sub_sprite_placements.insert(depth, (*char_id, current_frame, local_mat));
+                                            sub_sprite_placements.insert(depth, (*char_id, current_frame, local_mat, po.ratio));
                                         }
                                         continue;
                                     }
                                     display_list.insert(depth, (*char_id, sym_name.clone(), local_mat));
                                 } else if effect_sprites.contains_key(char_id) {
                                     // Unnamed sub-sprite that was pre-built as an effect sprite
-                                    sub_sprite_placements.insert(depth, (*char_id, current_frame, local_mat));
+                                    sub_sprite_placements.insert(depth, (*char_id, current_frame, local_mat, po.ratio));
                                 } else if shape_to_bitmap.contains_key(char_id) {
                                     // Unnamed shape with a bitmap fill — resolve to bitmap symbol
                                     let bitmap_id = shape_to_bitmap[char_id];
@@ -1143,7 +1154,7 @@ fn build_anim_frame_images(
                                     }
                                 } else if all_sprites.contains_key(char_id) {
                                     // Unnamed sub-sprite not pre-built — track as effect
-                                    sub_sprite_placements.insert(depth, (*char_id, current_frame, local_mat));
+                                    sub_sprite_placements.insert(depth, (*char_id, current_frame, local_mat, po.ratio));
                                 }
                             }
                             swf::PlaceObjectAction::Modify => {
@@ -1250,7 +1261,7 @@ fn apply_image_fallbacks(result: &mut BTreeMap<String, AnimFrameImages>) {
 }
 
 /// Decode DefineBitsLossless/DefineBitsLossless2 → RGBA pixels
-fn decode_lossless(bmp: &swf::DefineBitsLossless) -> Result<Vec<u8>> {
+pub(crate) fn decode_lossless(bmp: &swf::DefineBitsLossless) -> Result<Vec<u8>> {
     use flate2::read::ZlibDecoder;
     use std::io::Read;
 
@@ -1339,7 +1350,7 @@ fn decode_lossless(bmp: &swf::DefineBitsLossless) -> Result<Vec<u8>> {
 }
 
 /// Decode DefineBitsJpeg3 → (width, height, RGBA pixels)
-fn decode_jpeg3(jpeg: &swf::DefineBitsJpeg3) -> Result<(u32, u32, Vec<u8>)> {
+pub(crate) fn decode_jpeg3(jpeg: &swf::DefineBitsJpeg3) -> Result<(u32, u32, Vec<u8>)> {
     use image::ImageReader;
     use std::io::Cursor;
 
@@ -1490,7 +1501,9 @@ pub fn extract_projectile_frame_images_from_swf(
     };
 
     let mut disp: BTreeMap<u16, (u16, String, ImageLocalMatrix)> = BTreeMap::new();
-    let mut unnamed_placements: BTreeMap<u16, (u16, ImageLocalMatrix, u16)> = BTreeMap::new();
+    // depth -> (sprite id, parent matrix, place frame, graphic frame): a placement with a ratio
+    // is a Graphic symbol showing the ONE frame the ratio selects (Flash's "Single Frame").
+    let mut unnamed_placements: BTreeMap<u16, (u16, ImageLocalMatrix, u16, Option<u16>)> = BTreeMap::new();
     let mut cur_frame: u16 = 0;
     let mut effect_frames: Vec<Vec<(u16, String, ImageLocalMatrix)>> = Vec::new();
 
@@ -1499,10 +1512,13 @@ pub fn extract_projectile_frame_images_from_swf(
             swf::Tag::ShowFrame => {
                 let mut snap: Vec<(u16, String, ImageLocalMatrix)> =
                     disp.values().map(|(id, sym, mat)| (*id, sym.clone(), *mat)).collect();
-                for (&_depth, (unnamed_id, parent_mat, place_frame)) in &unnamed_placements {
+                for (&_depth, (unnamed_id, parent_mat, place_frame, pinned)) in &unnamed_placements {
                     if let Some(uframes) = unnamed_frames.get(unnamed_id) {
-                        let uf_idx = (cur_frame.saturating_sub(*place_frame) as usize)
-                            .min(uframes.len().saturating_sub(1));
+                        let uf_idx = match pinned {
+                            Some(r) => (*r as usize).min(uframes.len().saturating_sub(1)),
+                            None => (cur_frame.saturating_sub(*place_frame) as usize)
+                                .min(uframes.len().saturating_sub(1)),
+                        };
                         for (inner_id, inner_sym, inner_mat) in &uframes[uf_idx] {
                             let composed = parent_mat.compose(inner_mat);
                             snap.push((*inner_id, inner_sym.clone(), composed));
@@ -1530,7 +1546,7 @@ pub fn extract_projectile_frame_images_from_swf(
                             // mario_fla.MarioCut_InPATriangle) is an animation,
                             // not an image — treating it as an image emits a
                             // dangling imageAsset (no PNG is ever written for it).
-                            unnamed_placements.insert(po.depth, (*cid, mat, cur_frame));
+                            unnamed_placements.insert(po.depth, (*cid, mat, cur_frame, po.ratio));
                         } else if let Some(sname) = named {
                             // Named bitmap/shape placed directly → an image.
                             disp.insert(po.depth, (*cid, sname.clone(), mat));

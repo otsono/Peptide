@@ -19,7 +19,7 @@
 //!
 //! SSF2 install location: $PEPTIDE_SSF2_APP, else the standalone Mac default.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -486,6 +486,216 @@ fn cmd_launch(_args: &[String]) -> Result<()> {
     }
 }
 
+/// `--key value` string flag (sibling of [`flag_f64`]).
+fn flag_str(args: &[String], name: &str) -> Option<String> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+}
+
+/// `peptide ssf2 identify <dir|file> [--copy-stages <dest>] [--kind character|stage|other]`
+///
+/// Classify SSF2 `.ssf` resources (character / stage / other) without converting them.
+/// Over a directory it scans every `.ssf` and prints a table; `--copy-stages <dest>`
+/// copies the stages out (renamed to `<Main.id>.ssf`) for iteration. `--kind` filters
+/// the printed rows. This is how we find which `DATn.ssf` are stages to port.
+fn cmd_identify(args: &[String]) -> Result<()> {
+    let copy_dest = flag_str(args, "--copy-stages").map(PathBuf::from);
+    let kind_filter = flag_str(args, "--kind");
+    // first positional that isn't a flag or a flag's value.
+    let flag_vals: std::collections::HashSet<&String> =
+        ["--copy-stages", "--kind"].iter().filter_map(|f| {
+            args.iter().position(|a| a == f).and_then(|i| args.get(i + 1))
+        }).collect();
+    let target = args.iter()
+        .find(|a| !a.starts_with("--") && !flag_vals.contains(a))
+        .ok_or_else(|| anyhow!("usage: peptide ssf2 identify <dir|file> [--copy-stages <dest>] [--kind character|stage|other]"))?;
+    let target = PathBuf::from(target);
+
+    // collect the .ssf files to classify (a single file, or every .ssf in a dir).
+    let mut files: Vec<PathBuf> = Vec::new();
+    if target.is_dir() {
+        for entry in std::fs::read_dir(&target).with_context(|| format!("read dir {}", target.display()))? {
+            let p = entry?.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("ssf") { files.push(p); }
+        }
+        files.sort_by_key(|p| natural_key(p.file_name().and_then(|s| s.to_str()).unwrap_or("")));
+    } else {
+        files.push(target.clone());
+    }
+    if files.is_empty() { bail!("no .ssf files found at {}", target.display()); }
+
+    if let Some(dest) = &copy_dest {
+        std::fs::create_dir_all(dest).with_context(|| format!("create {}", dest.display()))?;
+    }
+
+    let (mut n_char, mut n_stage, mut n_other, mut n_err, mut copied) = (0, 0, 0, 0, 0);
+    println!("{:<16} {:<22} {:<10} detail", "file", "id", "kind");
+    println!("{}", "-".repeat(72));
+    for f in &files {
+        let stem = f.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+        match ssf2_converter::classify_ssf(f) {
+            Ok(c) => {
+                let id = c.id.clone().unwrap_or_else(|| "-".into());
+                let detail = match &c.kind {
+                    ssf2_converter::AssetKind::Character(ids) => format!("chars: {}", ids.join(",")),
+                    ssf2_converter::AssetKind::Stage => format!("markers: {}", c.markers.join(",")),
+                    ssf2_converter::AssetKind::Other => String::new(),
+                };
+                match c.kind {
+                    ssf2_converter::AssetKind::Character(_) => n_char += 1,
+                    ssf2_converter::AssetKind::Stage => n_stage += 1,
+                    ssf2_converter::AssetKind::Other => n_other += 1,
+                }
+                let show = kind_filter.as_deref().map(|k| k == c.kind.label()).unwrap_or(true);
+                if show {
+                    println!("{:<16} {:<22} {:<10} {}", stem, id, c.kind.label(), detail);
+                }
+                // copy stages out, named by Main.id (fallback: original stem).
+                if let (Some(dest), ssf2_converter::AssetKind::Stage) = (&copy_dest, &c.kind) {
+                    let name = c.id.clone().unwrap_or_else(|| stem.trim_end_matches(".ssf").to_string());
+                    let out = dest.join(format!("{name}.ssf"));
+                    std::fs::copy(f, &out).with_context(|| format!("copy {} -> {}", f.display(), out.display()))?;
+                    copied += 1;
+                }
+            }
+            Err(e) => { n_err += 1; eprintln!("{:<16} <error: {}>", stem, e); }
+        }
+    }
+    println!("\n{} files: {} character, {} stage, {} other, {} error",
+             files.len(), n_char, n_stage, n_other, n_err);
+    if let Some(dest) = &copy_dest {
+        println!("copied {copied} stage(s) to {}", dest.display());
+    }
+    Ok(())
+}
+
+/// `peptide ssf2 doctor`
+///
+/// The SSF2 analogue of `peptide <fraymakers.dat> _ doctor`: resolve every `SSF2.swf` engine
+/// symbol the stage/parallax path depends on BY NAME against the installed SSF2, and print a
+/// pass/fail checklist. A recompiled SSF2 renumbers every class/trait, so this triages a new
+/// build in one command. Exits non-zero if a critical symbol is gone.
+fn cmd_doctor(_args: &[String]) -> Result<()> {
+    let app = ssf2_app();
+    let swf = ssf2_swf_path(&app);
+    if !swf.exists() { bail!("SSF2.swf not found at {}", swf.display()); }
+    let bytes = std::fs::read(&swf)?;
+    let checks = ssf2_converter::engine_probe::ssf2_doctor(&bytes)
+        .ok_or_else(|| anyhow!("could not read ABC from {}", swf.display()))?;
+
+    eprintln!("\nPeptide SSF2 doctor — {}", swf.display());
+    eprintln!("{}", "-".repeat(60));
+    let (mut ok, mut crit, mut warn) = (0usize, 0usize, 0usize);
+    let mut last = "";
+    for c in &checks {
+        if c.group != last { eprintln!("  {}:", c.group); last = c.group; }
+        if c.ok {
+            ok += 1;
+            eprintln!("    [ ok ] {}", c.label);
+        } else {
+            let tag = if c.critical { crit += 1; "CRITICAL" } else { warn += 1; "warn" };
+            eprintln!("    [MISS] {:<32} MISSING ({tag}) — {}", c.label, c.why);
+        }
+    }
+    eprintln!("\n  {ok}/{} resolved · {crit} critical missing · {warn} warnings", checks.len());
+    if crit > 0 {
+        bail!("{crit} critical SSF2 symbol(s) gone — this SSF2 build isn't compatible with the \
+               converter. Re-find the names above and update crates/ssf2-converter/src/engine_probe.rs");
+    }
+    if warn > 0 {
+        eprintln!("  -> converter is compatible; {warn} non-critical symbol(s) changed (the \
+                   camera-background parallax preview degrades to a fallback rate).");
+    } else {
+        eprintln!("doctor: all SSF2 engine symbols resolved — converter is compatible with this build");
+    }
+    Ok(())
+}
+
+/// `peptide ssf2 stage <file.ssf> [--out <dir>] [--id <id>] [--info]`
+///
+/// Parse an SSF2 stage `.ssf` into a geometry model and emit a Fraymakers stage
+/// package (geometry-only MVP) under `<out>/<id>/`. `--info` prints the parsed
+/// model without emitting; `--id` overrides the output id (e.g. to avoid clashing
+/// with a built-in FM stage id). This is the SSF2->FM stage converter front end.
+fn cmd_stage(args: &[String]) -> Result<()> {
+    let out_dir = flag_str(args, "--out").unwrap_or_else(|| "stages".to_string());
+    let id_override = flag_str(args, "--id");
+    let info_only = args.iter().any(|a| a == "--info");
+    let flag_vals: std::collections::HashSet<&String> =
+        ["--out", "--id"].iter().filter_map(|f| {
+            args.iter().position(|a| a == f).and_then(|i| args.get(i + 1))
+        }).collect();
+    let target = args.iter()
+        .find(|a| !a.starts_with("--") && !flag_vals.contains(a))
+        .ok_or_else(|| anyhow!("usage: peptide ssf2 stage <file.ssf> [--out <dir>] [--id <id>] [--info]"))?;
+    let target = PathBuf::from(target);
+
+    let mut model = ssf2_converter::parse_stage(&target)?;
+    // suffix the content id (`<id>ssf2`) so a converted stage can't shadow a built-in FM
+    // stage; the display name stays the clean SSF2 name. `--id` overrides outright.
+    if let Some(id) = id_override { model.id = id; }
+    else if !model.id.ends_with("ssf2") { model.id = format!("{}ssf2", model.id); }
+
+    // print the parsed model (the phase-2 exit criteria: platforms + bounds + spawns).
+    println!("stage '{}' \"{}\" (from {})", model.id, model.display_name, target.display());
+    if !model.fm_music.is_empty() {
+        println!("  music: {} (FM){}", model.fm_music.join(", "),
+            if model.ssf2_music.is_empty() { String::new() } else { format!("  [SSF2: {}]", model.ssf2_music.join(", ")) });
+    }
+    if let Some(f) = model.main_floor() {
+        println!("  main floor: x[{:.1},{:.1}] top y={:.1} (w={:.1})", f.rect.left(), f.rect.right(), f.rect.top(), f.rect.w);
+    }
+    for p in model.platforms.iter().filter(|p| p.drop_through) {
+        println!("  platform:   x[{:.1},{:.1}] top y={:.1} (w={:.1}) drop-through", p.rect.left(), p.rect.right(), p.rect.top(), p.rect.w);
+    }
+    if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
+        for p in &model.platforms {
+            println!("  [all-plat] x[{:.1},{:.1}] y[{:.1},{:.1}] w={:.1} solid={} cx={:.1}",
+                p.rect.left(), p.rect.right(), p.rect.top(), p.rect.bottom(), p.rect.w, !p.drop_through, p.rect.x + p.rect.w/2.0);
+        }
+        if let Some((l, r)) = model.ledges { println!("  [ledges] left={:.1} right={:.1}", l, r); }
+    }
+    if let Some(r) = &model.death_box {
+        println!("  death box:  x[{:.1},{:.1}] y[{:.1},{:.1}]", r.left(), r.right(), r.top(), r.bottom());
+    }
+    if let Some(r) = &model.camera_box {
+        println!("  camera box: x[{:.1},{:.1}] y[{:.1},{:.1}]", r.left(), r.right(), r.top(), r.bottom());
+    }
+    for s in &model.entrances {
+        println!("  entrance {}: ({:.1},{:.1}){}", s.index, s.x, s.y, if s.face_left { " <-" } else { " ->" });
+    }
+    for s in &model.respawns {
+        println!("  respawn  {}: ({:.1},{:.1})", s.index, s.x, s.y);
+    }
+    // art layer composition: backdrop/background (behind), parallax camera-bgs, stage-depth
+    // frames, and a foreground (in front of fighters). A structure-foreground folds into the
+    // background, so `fg` here means a DISTINCT in-front prop survived.
+    let a = &model.art;
+    println!("  art: background={} foreground={} parallax={} stage_frames={}",
+        a.background.len(), !a.foreground.is_empty(), a.parallax.len(), a.stage_frames.len());
+    for hz in &model.hazards {
+        println!("  hazard: {:<12} ({:.0},{:.0}) {:.0}x{:.0} dmg={} kb={} motion={}",
+            hz.label, hz.x, hz.y, hz.w, hz.h, hz.damage, hz.knockback, hz.motion);
+    }
+    for w in &model.warnings {
+        eprintln!("  warning: {w}");
+    }
+
+    if info_only { return Ok(()); }
+
+    let out_root = PathBuf::from(&out_dir);
+    let (dir, fraytools) = ssf2_converter::emit_stage(&model, &out_root)?;
+    println!("\nemitted FM stage package -> {}", dir.display());
+    println!("publish with: peptide export --project \"{}\"", fraytools.display());
+    Ok(())
+}
+
+/// Sort key that orders `DAT2.ssf` before `DAT10.ssf` (numeric run aware).
+fn natural_key(s: &str) -> (String, u64) {
+    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+    let prefix: String = s.chars().take_while(|c| !c.is_ascii_digit()).collect();
+    (prefix, digits.parse().unwrap_or(0))
+}
+
 fn help() {
     print!("\
 peptide ssf2 — SSF2 engine integration (physics model + scaling + quickboot)
@@ -495,6 +705,17 @@ USAGE:
         Raw SSF2 constants → simulated ground-truth motion → derived Fraymakers stats.
   peptide ssf2 scale  <file.ssf> [char] [--size-mult N]
         Compact raw → derived scaling table (velocity_scale / accel_scale).
+  peptide ssf2 identify <dir|file> [--copy-stages <dest>] [--kind character|stage|other]
+        Classify SSF2 .ssf resources (character / stage / other). Over a dir, scans
+        every .ssf and prints a table; --copy-stages copies the stages out (named by id).
+  peptide ssf2 stage <file.ssf> [--out <dir>] [--id <id>] [--info]
+        Convert an SSF2 stage .ssf into a Fraymakers stage package (geometry-only:
+        floor + soft platforms, death/camera boxes, entrance/respawn points). Prints
+        the parsed model; --info skips emitting; --id overrides the output id.
+  peptide ssf2 doctor
+        Resolve, by name, every SSF2.swf engine symbol the stage/parallax path
+        depends on (view dims, VcamBGSettings schema + mode consts) against the
+        installed SSF2 and print a pass/fail checklist. Triages a new SSF2 build.
   peptide ssf2 launch
         Quickboot the standalone SSF2.app for manual observation.
 
@@ -523,6 +744,9 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     match sub {
         "stats" => cmd_stats(rest),
         "scale" => cmd_scale(rest),
+        "identify" => cmd_identify(rest),
+        "stage" => cmd_stage(rest),
+        "doctor" => cmd_doctor(rest),
         "patch" => cmd_patch(rest),
         "install" => cmd_install(rest).map(|_| ()),
         "selftest" => cmd_selftest(rest),

@@ -633,6 +633,23 @@ ledgegrabbox / holdbox / absorbbox / custom × 3) and the `frame_rate: 60` / `pa
 `det_uuid(seed)` -- RFC-4122 **UUID v5** (SHA-1 namespace). every GUID is
 `det_uuid("{char_id}::{context}")`, which is what makes conversions reproducible.
 
+### 5.6b debug environment variables
+
+env-gated diagnostics on the normal `peptide convert` / `peptide ssf2 stage` runs, no
+rebuild or special binary needed:
+
+| Variable | Effect |
+|---|---|
+| `PEPTIDE_STAGE_DEBUG` | stage parse trace: per-instance art walk, plane map, element emission (`[bg-emit]` name/frames/canvas/holds), placement modifiers (clip_depth/blend/cxform), platform + faller extraction |
+| `PEPTIDE_DUMP_CLASS=<name>` | decompile every instance method of an AS3 class in the input |
+| `PEPTIDE_CLIP_TAGS=<ids>` | raw timeline dump of a sprite (frames, labels, PlaceObject depth + ratio) |
+| `PEPTIDE_DUMP_SHAPE=<ids>` | a shape's bounds + fill styles, gradients with stops + matrices |
+| `PEPTIDE_DUMP_BMPS=<ids>` | write bitmaps to `/tmp/bmp_<id>.png` |
+| `PEPTIDE_WALK_TRACE=<substr>` | trace clip placements whose name/symbol matches during the stage walk |
+| `PEPTIDE_DUMP_ANIM_LABELS` | each character source animation's internal frame labels + content-switch frames |
+| `PEPTIDE_BG_INLINE` | force backdrop elements baked into the stage layer (debug/diff aid) |
+| `PEPTIDE_DECOMP_HAZARD` | emit stage hazards via the decompiler reconstruction instead of the template |
+
 ### 5.7 diagnostic binaries (`src/bin/`)
 
 **reverse-engineering / debugging tools**, separate from the conversion, each its own executable

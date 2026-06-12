@@ -25,6 +25,85 @@ a few are hand-verified deep (drive moves + physics + anim): `sandbag` (the refe
 `mario` (the deepest, a full 18-move sweep), `kirby`, `bowser`, `fox`. everybody else is
 batch-verified (spawn + jab + special_neutral, no crash).
 
+## stage porting
+
+`peptide ssf2 stage <file.ssf>` converts an SSF2 stage to a playable Fraymakers stage. it
+parses the SSF2 placement tree for the floor, soft platforms, death/camera boxes, and
+entrance/respawn beacons, rasterizes the stage's art (vector shapes + bitmap backgrounds) into the stage sprite, and emits
+the FM `.entity` + manifest + StageStats/Script + `.fraytools`; FrayTools builds + publishes
+the `.fra` to the engine's `custom/` dir. all 110 corpus stages convert. battlefield (DAT328)
+is live-verified: `spawn sandbag battlefieldssf2` (drive with `FRAY_STAGE=<stage>`) loads the
+stage, the fighter stands on the platforms, walks, and falls off the edges into the blast
+zone (KO + respawn), no crash. NB: a stage needs visible content to place players (the engine
+sizes it from the sprite bounds); the sprite is the SSF2 art (vector shapes + bitmap backgrounds rasterized + composited);
+stages with no rasterizable art fall back to a geometry placeholder.
+
+the SSF2 `foreground` plane normally folds behind fighters (it's usually a structure's re-drawn
+front face, which would read as a duplicate platform); a `keep_foreground` metadata flag opts a
+stage out so a genuine overlay stays in front (bowserscastle's glowing lava sheet over the floor).
+
+the backdrop is emitted the way SSF2 authors it: each animated element (lava bubbles, torches,
+embers, podoboos, a spectator) is its own FM layer/animation on its own loop, in back-to-front
+draw order, rather than one baked composite. elements are grouped by their SSF2 symbol id; a
+static element is one frame, an animated one keeps its loop (run-length-encoded at the 30->60fps
+doubling, so a held source frame reads as a pause). a single-element backdrop is one layer, same
+as before.
+
+the converted stage carries a clean display name (a per-stage override in
+`mappings/stage/metadata.jsonc`, with the SSF2 id title-cased as the fallback) plus a source
+series, and records its original SSF2 soundtrack (the `bgm_*` ids
+pulled from the stage DAT) in the description. it plays a real FM bgm (the override map's pick
+or `default_music`) since the SSF2 audio isn't shipped with FM. the content id is suffixed
+`<id>ssf2` so it can't shadow a built-in stage.
+
+auto-detected moving platforms (the `moving`-named SSF2 container, propagated to its collision
+child) are kept as static collision at their start position, labelled `(SSF2 moving, static)`
+in the entity and surfaced in a warning. the motion itself isn't ported there: SSF2 moving
+platforms are bespoke per stage (custom AS3 classes / timeline animation), so reproducing them
+is per-stage work like porting a character special.
+
+declared `platforms` in metadata become real FM moving Structures (the engine idiom from the
+stage-template): a per-platform grey block animation (an IMAGE sized to the platform + a FLOOR
+line segment) and one structure CONTENT per platform that the stage spawns and that moves itself
+in its own Script. bowserscastle has three grey standing platforms RE'd from the SSF2 terrain
+(two wide ledge-bounded side platforms + the small central `terrainGround` block, at their real
+positions and widths, in the SSF2 platform grey), sitting over the lava. the thwomp lands on
+them and pushes them down: the shared sink/rise Script polls the stage's custom game objects,
+sinks the column the thwomp landed on, holds, then rises back. the thwomp is a custom game object
+that falls onto each platform column in turn (each at its own height), damages on landing,
+re-arms its hitbox each cycle, then rises and moves to the next column.
+
+stage hazards become Fraymakers custom game objects the stage spawns with a null owner, so each
+is neutral and damages everyone. damage and knockback come from the entity's native HIT_BOX
+(HitboxStats), and three pieces are load-bearing for that hitbox to connect: a null owner (passes
+team-hit validation), `stateTransitionMapOverrides` mapping `PState.ACTIVE` to the hitbox
+animation (so an animation actually plays and the collision detector resolves it against the
+HitboxStats map), and a content-ref `spriteContent` (a bare id string doesn't load the sprite). a
+local state machine plays the active/inactive animations for the on/off pulse, and the hitbox is
+re-armed on a cadence (`rehit`) so a lingering fighter keeps taking hits. movement patterns
+(oscillate / circle / thwomp-fall) move the whole object. each hazard renders its real rasterized
+SSF2 art (the thwomp's stone face, the bumper, the lava) recovered from the placement tree; a
+hand-declared hazard borrows the detected sprite of its kind, and only a hazard with no recoverable
+art falls back to a translucent placeholder box.
+
+damaging hazards auto-detect from the SSF2 placement tree (lava, acid, thwomps, spikes, bumpers,
+tornados, damage zones, podoboos, piranhas) by linkage name. the kind is propagated down from the
+named container, leaf shapes of one hazard cluster into a single box, and the result is filtered to
+the reachable area inside the blast zone (so a hazard parked off-screen at frame 0 doesn't ship as a
+phantom hitbox). a `hazards` list in metadata overrides detection for a stage (full manual control,
+e.g. a thwomp whose frame-0 position is parked, or a dynamically-spawned hazard); `no_hazards: true`
+suppresses a false positive. dynamically-spawned hazards (cannonballs, arwing lasers, birdo eggs,
+holy lances) that don't sit in the static tree are a per-stage follow-up, declared by hand as the
+need arises. follow-ups: the moving-platform motion, dynamically-spawned hazards, per-stage FM-music
+mapping, porting the actual SSF2 audio (licensing-permitting).
+
+stage porting is NOT finished. bowserscastle is the deepest port and the working testbed, and
+even it has gaps: chunks of the reconstructed stage behavior are still commented out in the
+emitted scripts pending verification (SFX calls among them), so the in-game stage is missing
+sound effects and whatever else those blocks drive. other complex stages haven't had the same
+1:1 treatment yet (each stage's gimmicks are bespoke AS3 that needs its own RE pass; the
+machinery here generalizes, the per-stage work doesn't come for free).
+
 ## hitbox-stat parity
 
 **every character's hitbox stats match the SSF2 source. no exceptions right now.**
@@ -153,6 +232,136 @@ behavior (a dummy opponent plus post-hit readback), and that's the next focused 
 
 ---
 
+## stage hazard inventory
+
+full audit of all 110 stages: which have scripted actor/hazard classes, what the converter
+handles, and what's a declared gap. run via `ssf2_objgraph <stage.ssf> scripts` + the
+debug-info pass. corpus conversion: PASS=110 FAIL=0.
+
+**ported** (converter emits a hazard CGO with disasm-sourced stats; none live-verified yet --
+boot `FRAY_STAGE=<id> peptide session --char mario,mario` and watch the out.log hit stream for
+>= 2 cycles to confirm):
+
+| stage | hazard / actor | converter output |
+|---|---|---|
+| bowserscastle | Thwomp (6-column fall), BowsersCastleLava (hazard floor), BowsersCastlePlatform (sinking) | multi-anim CGO + hazard_floor + sinking-platform Structure (the one live-verified stage) |
+| casinonightzone | CNZBumper, Bumper1_B/T, Bumper2/3 L/R | 4 Bumper hazard CGOs (auto-detected by class name) |
+| hyrulecastle64 | HyruleTornado | Tornado hazard CGO (oscillateX) |
+| kingdom1 | PiranhaPlant x2 | two static Piranha CGOs at game(74,74)+(670,244) via `game_coords` metadata; disasm stats (w35 h49, damage 5, angle 90, knockback 90, rehit 30). replaced the auto-detect that stacked both at one wrong spot |
+
+**the `game_coords` mechanism.** a metadata `hazards` entry with `"game_coords": true` takes
+the raw SSF2 `setX/setY` + `getOwnStats` width/height literals (terrain-local) and runs them
+through the stage's static `terrain_off` + `scale`, the same transform as `sink_columns` and
+auto-detected actor hazards. use it for any hazard whose position is a static AS3 literal but
+isn't in the placement tree. kingdom1 is the worked example.
+
+**unported, with full disasm spec** (the values below are the measured port spec -- the SSF2
+key map is `direction`->angle, `power`->baseKnockback, `kbConstant`->knockbackGrowth,
+`refreshRate`->rehit x2; frames x2, px x1.3 for FM). each is unported because it's a moving /
+flying / projectile-spawning actor whose in-play position needs a live read (placing a static
+box at the offscreen spawn would be a wrong-but-plausible value, worse than a gap), OR its
+damaging attackBox extent isn't a disasm literal:
+
+| stage | class | spawn (game coords) | stats (from getAttackStats / onHurt) | why not static |
+|---|---|---|---|---|
+| dreamland | WhispyWind | (168,137) facing right / (88,137) left; cadence FrameTimer(300); lifetime 300f | damage 0, power 11, kbConstant 1, direction 0 (a pure horizontal wind PUSH, not a hitbox); ghost, width/height 0 | the wind attackBox extent (how far the gust reaches) isn't a disasm literal; needs a live read of the forceAttack("wind") box |
+| kingdom1 | PowBlockMK | runtime `powCoordinates` (NOT a disasm literal) | onHurt: damage 20, direction 90, power 90, kbConstant 60 (shockwave when the block is hit) | event-triggered (ENEMY_HURT) + runtime position |
+| kingdom2 | Birdo | walks in from (-500,98) / (975,98); throw cadence m_spitTimer 20f; stage spawn timer 450f | contact: damage 5, power 46, kbConstant 62, direction -4. egg projectile: damage 1, power 55, kbConstant 5, direction 20, xspeed 8, time_max 300 | walks in from offscreen + throws egg projectiles; both need live position |
+| kingdom2 | Pidgit | walks in from (-500,0) / (975,0); oscillation timer 60f; XSPEED 5, YSPEED 30, scale 2x | carries a carpet platform (not a damage hazard) | moving platform, offscreen spawn |
+| sectorz | Arwing | flies from (1292,-120); decision timers 80-150f; X_SPEED 3, Y_SPEED 4, Y_ACCEL 1; despawn at y<-400 | fires arwing_laser projectile: damage 16, power 80, kbConstant 50, direction 35, xspeed 26 (refreshRate 10) | flies across; the laser is a projectile |
+| sectorz | SectorZLaser | gun at (-83.25,290.85); charge FrameTimer(90), bullet delay 3f | beam: damage 15, power 175, kbConstant 15, direction 175 (+ second box: damage 5, power 125, direction 125) | the beam sweeps; its swept attackBox extent isn't a disasm literal |
+| saffroncity | PokeHazards | window at (450,143); spawn cadence FrameTimer(30 x rand(10,20)) | rotates attacks per pokemon: charmander damage 5/power 45/kb 15/dir -4; venusaur damage 14/power 65/kb 30/dir -3; porygon damage 18/power 65/kb 25/dir -4; electrode damage 30/power 50/kb 100/dir 76/burn | the damage depends on which pokemon spawns (rotating); picking one would be invention |
+| saffroncity | CharmanderFire | NOT IN DISASM (initialize empty) | w23 h23, damage 3, power 45, kbConstant 7, direction 45, burn | a child projectile of PokeHazards |
+| saffroncity | VenusaurLeaf | NOT IN DISASM | w35 h20, damage 3, power 40, kbConstant 70, direction 60, xspeed 25, time_max 20 | a child projectile of PokeHazards |
+| peachscastle | BonzaiBill | digs to (181,-54)/(236,-134)/(288,-53), then flies (SPEED 2, dig 0.1); timers 150/30/90f | explode: damage 10, power 70, kbConstant 125, direction -1, burn. cry/idle: damage 5, power 46, kbConstant 62, direction -9 | digs around then flies across (target (236,308)); fully dynamic path |
+| racetothefinish | RTTFDamageZoneHandler | 4 segments; positions NOT IN DISASM (runtime regions, default (-3000,-3000)) | zone damage 10 | segment positions are runtime-populated |
+| mushroomkingdom3 | koopa0..koopa17 | per-stage timeline | rolling shells | timeline-driven, no getAttackStats class |
+| skullfortress | SniperJoe, Batton, Met | per-stage | patrolling enemies + shots | full enemy AI + projectiles |
+| yoshisisland | GooniePlatform, RotatingPlatform | per-stage | moving platforms | rotation/path, not a hazard |
+| fourside | FoursideSpaceship | per-stage | UFO moving platform + beam | moving platform + beam |
+| junglehijinx | JungleHijinxBarrel | per-stage | barrel cannon (a launcher, not damage) | out of hazard scope |
+| pacmaze | EdgeWrap | n/a | screen-wrap behavior | no FM edge-wrap primitive |
+
+to finish any of these: boot SSF2 on the stage (`PEPTIDE_SSF2_STAGE=<id> peptide ssf2 session
+--char mario`), `tree 3` to read the live in-play position of the actor / its attackBox, then
+add a `game_coords` (or FM-coord) `hazards` entry with the spec above + the measured position,
+and live-verify in FM. the stats are already extracted; only the live position is missing.
+
+**weather / ambient effects** (visual only; no hitbox output needed, but missing from
+converted stages makes them look flat compared to SSF2):
+
+| class | stages | what it adds |
+|---|---|---|
+| EmberWeather | bowserscastle | rising fire embers (camera-space, 50 particles, 6x6px, 2px/frame rise at 30fps) -- measured but unported |
+| RainWeather | clocktown, crateria, finalvalley, smashville | rain particle field |
+| SnowWeather | snowpointtemple, waitingroom | snow particle field |
+| FairyGladeWeather | fairyglade | firefly sparkle field |
+| WaterSplash | fairyglade, gangplankgalleon, lakeofrage, planetnamek | splash vfx on landing near water |
+
+**stage-level special behaviors** (not hazards; structural/gameplay gaps):
+
+- `pacmaze` EdgeWrap: FM has no native edge-wrap API; requires engine-side custom behavior or
+  scripted position teleport in the stage Script. gap until FM exposes that primitive.
+- moving platforms across every affected stage: the converter marks them `(SSF2 moving, static)`.
+  each is a per-stage AS3 class; see PORTING_STAGES.md for the disasm recipe.
+
+---
+
+## character system gaps
+
+these are per-character behaviors in the "unknown" stream (not in ssf2_only -- they're calls the
+converter doesn't classify at all). the ssf2_only universal gaps (item system, getCharacter,
+getMetalStatus, etc.) are already covered above in "SSF2-only / no-FM-equivalent inventory".
+
+**most "unknown" calls are NOT broken.** an "unknown" tally counts call SITES of functions the
+converter doesn't recognize -- but the author-defined helper functions (`updateAuraPaws`,
+`isDarkPit`, `hurtSelf`, etc.) ARE emitted and translated into the character's `Script.hx`, so
+the calls resolve. e.g. `function isDarkPit()` is emitted at Pit/Script.hx:389 with a real body
+(`return self.getCostumeShader().paletteSwapPA.replacements[76] == 4289855743`). the genuine
+work here is decompiler BODY quality, not call mapping. the one confirmed broken body in the
+corpus is **pichu `hurtSelf`** -- emitted as `function hurtSelf(arg0) {}` (empty; the SSF2
+statements were dropped in decompilation), so pichu's recoil moves never self-damage. fixing it
+needs the real SSF2 body recovered (don't fabricate `setDamage(getDamage()+arg0)` from the name).
+the only intentional empties are `inputUpdateHook` + `handleLinkFrames` (template stubs on all 49).
+
+all 49 characters (47 SSF files, incl. multi-char bowser/wario/zelda) convert exit 0.
+corpus sweep: PASS=49 FAIL=0. the numbers below are aggregate call counts from
+`conversion_log.json :: unknown`.
+
+**per-character unported systems:**
+
+| char | unknown call | count | what it is | port path |
+|---|---|---|---|---|
+| lucario | updateAuraPaws | 507 | aura system: scales damage+KB with lucario's own % damage; the "paws" are visual rings | FM has no built-in % scaling; needs a Script.hx hook on each hit to read `getSelfDamage()` and call `updateHitboxStats` |
+| goku | resetKaioKenBackEffect | 66 | kaioken VFX cleanup (resets a back-glow MC) | FM no analog; port as createVfx remove call when it surfaces |
+| goku | applyDamageMod | 62 | kaioken damage multiplier (scales outgoing damage while powered up) | same hook as lucario aura; read a "power level" state var, multiply via `updateHitboxStats` |
+| pit | isDarkPit | 167 | checks whether the current costume is dark pit (different specials) | FM costume index: `getCostumeIndex()` returns the palette slot; check `== 1` for dark pit costume |
+| sonic | getFeetFrames | 94 | detects which frames have feet on the ground for step-sfx triggering | port as animation-label checks in the Script.hx; play step SFX on the identified frames |
+| waluigi | tweenRotation | 68 | smooth rotation tween between angles on waluigi's spinning moves | FM: `setRotation()` works in hscript; implement linear tween in Script.hx update loop |
+| pacman | applyColourTo | 45 | changes pacman's hue to match the ghost he's become (red/pink/blue/orange) | FM: `setCostumeShader()` can tint; map ghost type to shader params |
+| pichu | hurtSelf | 35 | pichu's electric moves deal recoil to himself; called as `hurtSelf(1.5)` (DAir), etc. | CONFIRMED BROKEN: emitted body is empty `{}` (decompiler dropped the SSF2 statements). recover the real body from the SSF2 frame-script def; don't fabricate it |
+| kirby | becomeSolid | 34 | kirby stone form: temporarily immune to knockback while transformed | FM `becomeInvulnerable()` or `setHitboxActive(false)` for the immune window; check FM API |
+| zelda/sheik | sparkle | 52 | transformation sparkle VFX | port as `createVfx(sparkle_id)` when `sparkle_id` is found in the VFX table |
+| isaac/zelda/sheik | cast | 589 | AS3 type-cast expressions the decompiler surfaced as calls; NOT a gameplay call | zero gameplay impact; cosmetic decompiler artifact in the generated code |
+| wario/wario_man | clearTimers | 48 | wario-man transformation: resets all active timers on transform in/out | FM timer API: iterate and cancel timers; or just reset state in the transformation trigger |
+| (38 chars) | forceGrabbedHurtFrame | 206 | tells the grabbed character to hold a specific hurt frame while being thrown | FM: grabbed characters are set to state `GRABBED`; the frame is driven by the grabber's animation; likely can just drop this call |
+| metaknight | toString | 203 | `toString()` calls the decompiler emitted for string formatting; not a gameplay call | zero gameplay impact; decompiler artifact |
+
+**universal unknown calls** (all 48 chars):
+
+| call | total count | what it is |
+|---|---|---|
+| set / get | 7491 / 1811 | AS3 property accessor syntax that the decompiler surfaced as method calls; harmless |
+| createVfx | 7233 | visual effect spawner; mapped to FM createVfx equivalent; logged as unknown because the VFX id lookup isn't confirmed |
+| setAutocancel | 1820 | autocancel window (the frame range an attack can be cancelled into a landing); no confirmed FM equivalent yet |
+| activateItem / deactivateItem | 770 / 574 | item grab/drop; part of the item system gap |
+| getJumpSpeed | 74 | reads character's current jump speed for mid-jump state checks; use `physics.currentVelocityY` |
+| split | 84 | string split calls; decompiler artifact |
+| parseFloat | 43 | string-to-float; decompiler artifact |
+| removeChild | 48 | Flash display list; already flagged in ssf2_only section |
+
+---
+
 ## known issues & gaps
 
 the live list of open converter issues. strike an entry when you fix it.
@@ -208,32 +417,45 @@ the live list of open converter issues. strike an entry when you fix it.
 
 ## prioritized next steps
 
-roughly the order a fresh agent should pick these up.
+roughly the order a fresh agent should pick these up. the stage and character system gaps
+are catalogued in the two new sections above; the items here are the main converter work.
 
-1. **keep the full-corpus convert sweep green.** re-run the whole `../ssf2-ssfs/` corpus
-   against the current converter after any decompiler/parser change, and trace anything that
-   hard-fails before it quietly regresses the clean status. (currently green: 47/47 convert
-   exit 0, 45/46 fighters with zero `validation_warnings`; `misc.ssf`, a palette archive, is
-   the only one with a benign "no attacks" note.)
+1. **keep the full-corpus sweeps green.** after any parser/emitter change: characters
+   (49/49 exit 0), stages (110/110 emitted), and `cargo test --workspace &&
+   cargo clippy -- -D warnings`. (currently all green.)
 
-2. **shape-only head rasterizer.** add a minimal SWF shape rasterizer (or pull one out of
-   `ruffle`) so the `donkeykong` / `fox` / `marth` menu portraits actually have pixels
-   instead of placeholders.
+2. **stage hazard keywords: sectorz, saffroncity, peachscastle, dreamland.**
+   add `arwing|laser`, `pokehazard|charmander|venusaur`, `banzai|bonzai`, and
+   `whispywind|whispy` to `hazard_kind()` in `stage_parser.rs`. all four have the actor
+   parsed already (confirmed by debug output: actors listed with class name + x=None means
+   they're dynamically spawned so position must come from disasm). for each: disasm
+   initialize/update for spawn position, timing, damage, and size; add a metadata entry
+   with the measured values; live-verify via phase-7 (boot + watch hit stream).
 
-3. **verify mario in FrayTools.** re-run mario, open him in FrayTools, scrub frame by frame,
-   and tune any leftover placement / rotation / scale issues.
+3. **shape-only head rasterizer.** `donkeykong`, `fox`, `marth` portraits are placeholders.
+   add a minimal SWF shape rasterizer (or pull from `ruffle`) for the `*_head` symbol.
 
-4. **projectile behaviour.** swap the `// TODO` stubs in the projectile `<Pascal>Script.hx`
-   generators for real translated logic, reusing the decompiler + JSONC rewriter pipeline we
-   already have.
+4. **verify mario in FrayTools.** re-run mario, scrub frame by frame in FrayTools.
 
-5. **validate stat scaling** against a handful of hand-tuned reference characters and tighten
-   the `stats.jsonc :: multipliers`.
+5. **projectile behaviour.** the `<Pascal>Script.hx` stubs need real translated logic from
+   the decompiler + JSONC pipeline.
 
-6. **delete the path 2 enumeration fallback** in `detect_char_names` once a shipped release
-   confirms the constructor walker handles everything in the wild (a full local corpus sweep
-   already never trips its warn). that collapses `derive_id_from_getter` and
-   `derive_id_from_bundle_method_name` into a single identity.
+6. **character system gaps (in priority order):**
+   a. `setAutocancel` (1820 calls, all 48 chars) -- find the FM equivalent in the API types
+      and add a mapping in `commands.jsonc`. this is the highest-count universal unknown.
+   b. `pichu` hurtSelf (35 calls) -- simple: disasm pichu per-move self-damage values, add
+      a `damageSelf` shim in commands.jsonc mapping to `takeDamage` or direct % write.
+   c. `lucario` updateAuraPaws (507 calls) -- aura system needs a Script.hx hook; the
+      per-hit damage multiplier read from getSelfDamage() + updateHitboxStats call.
+   d. `pit` isDarkPit (167 calls) -- map to `getCostumeIndex() == 1`; add to commands.jsonc.
+   e. `waluigi` tweenRotation (68 calls) -- implement a linear tween helper in Script.hx.
+   f. `goku` applyDamageMod (62 calls) -- same updateHitboxStats hook as lucario.
+   g. `forceGrabbedHurtFrame` (206 calls, 38 chars) -- investigate if the FM grabbed state
+      already drives the correct frame; if yes, comment these out as no-ops.
+
+7. **validate stat scaling** against hand-tuned reference characters.
+
+8. **delete the path 2 enumeration fallback** once a shipped release confirms it's unused.
 
 ---
 

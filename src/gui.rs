@@ -117,6 +117,8 @@ const CONVERT_PREFIX: &str = "@@convert:start:";   // @@convert:start:<json>
 const PUBLISH_PREFIX: &str = "@@publish:add:";      // @@publish:add:<json {char, output}>
 const PROJECTS_LIST: &str = "@@projects:list";      // enumerate .fraytools projects (launch modal)
 const FRAY_PREFIX: &str = "@@fray:";                // @@fray:export|render|harness:<json>
+const STAGE_OPEN: &str = "@@stage:open";           // pick a stage .fraytools + recreate it for the parallax preview
+const STAGE_ENGINE_PREFIX: &str = "@@stage:engine:"; // @@stage:engine:<ssf2|fraymakers> — pull that engine's parallax params live
 
 pub fn launch() -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
@@ -223,6 +225,38 @@ pub fn launch() -> std::io::Result<()> {
                 eprintln!("[gui-trace] AUTOBOOT -> {msg}");
                 let _ = px.send_event(Ev::Js(format!(
                     "window.ipc && window.ipc.postMessage({})", js_str(&msg))));
+            });
+        }
+    }
+    //   PEPTIDE_STAGE_PREVIEW=<.fraytools>  open that stage in the parallax preview on launch
+    //                                       (skips the file picker; handy for testing).
+    if let Ok(p) = std::env::var("PEPTIDE_STAGE_PREVIEW") {
+        if !p.trim().is_empty() {
+            let (px, path) = (event_loop.create_proxy(), std::path::PathBuf::from(p.trim()));
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(3500));
+                let _ = px.send_event(Ev::Js("window.showScreen && showScreen('stage')".into()));
+                match stage_preview_json(&path) {
+                    Ok(json) => { let _ = px.send_event(Ev::Js(format!("window.onStagePreview && onStagePreview({json})"))); }
+                    Err(e) => eprintln!("[gui-trace] stage-preview load failed: {e}"),
+                }
+                // test hook: force the virtual mouse to (x,y) in 0..1 so a screenshot shows a
+                // specific camera pan (otherwise the preview tracks the real mouse).
+                if let Ok(m) = std::env::var("PEPTIDE_STAGE_PREVIEW_MOUSE") {
+                    thread::sleep(Duration::from_millis(400));
+                    let mut it = m.split(',');
+                    let x: f64 = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0.5);
+                    let y: f64 = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0.5);
+                    let _ = px.send_event(Ev::Js(format!("window.stageSetMouse && stageSetMouse({x},{y})")));
+                }
+                if std::env::var("PEPTIDE_STAGE_PREVIEW_TARGETS").is_ok() {
+                    thread::sleep(Duration::from_millis(450));
+                    let _ = px.send_event(Ev::Js("window.stageDemoTargets && stageDemoTargets()".into()));
+                }
+                if let Ok(e) = std::env::var("PEPTIDE_STAGE_PREVIEW_ENGINE") {
+                    thread::sleep(Duration::from_millis(500));
+                    let _ = px.send_event(Ev::Js(format!("window.stageSetEngine && stageSetEngine({})", js_str(e.trim()))));
+                }
             });
         }
     }
@@ -479,8 +513,221 @@ fn handle_screen_verb(verb: &str, proxy: &EventLoopProxy<Ev>) {
         // export:<json> | render:<json> | harness:<json>
         let (rest, px) = (rest.to_string(), proxy.clone());
         thread::spawn(move || run_fraytools(&rest, &px));
+    } else if verb == STAGE_OPEN {
+        let px = proxy.clone();
+        thread::spawn(move || open_stage_preview(&px));
+    } else if let Some(engine) = verb.strip_prefix(STAGE_ENGINE_PREFIX) {
+        let (engine, px) = (engine.to_string(), proxy.clone());
+        thread::spawn(move || {
+            let js = match engine_params_json(&engine) {
+                Ok(j) => format!("window.onEngineParams && onEngineParams({j})"),
+                Err(e) => format!("window.onEngineParams && onEngineParams({})",
+                    serde_json::json!({ "engine": engine, "error": e })),
+            };
+            let _ = px.send_event(Ev::Js(js));
+        });
     }
     // Unknown @@verbs are ignored (forward-compat with the page).
+}
+
+/// Pick a stage `.fraytools` and recreate its layers (art + per-layer parallax rate) for the
+/// in-GUI parallax preview. Reads the emitted package back (entity + StageStats + sprite PNGs),
+/// sends the layer list to the page as `onStagePreview(json)`.
+fn open_stage_preview(proxy: &EventLoopProxy<Ev>) {
+    let mut d = rfd::FileDialog::new().add_filter("FrayTools stage", &["fraytools"]);
+    if let Some(start) = resolved_project_dir() { d = d.set_directory(start); }
+    let Some(path) = d.pick_file() else { return };
+    match stage_preview_json(&path) {
+        Ok(json) => { let _ = proxy.send_event(Ev::Js(format!("window.onStagePreview && onStagePreview({json})"))); }
+        Err(e) => { let _ = proxy.send_event(Ev::Js(format!(
+            "window.onStagePreviewError && onStagePreviewError({})", js_str(&e.to_string())))); }
+    }
+}
+
+/// Pull a game engine's camera-background parallax parameters LIVE out of its executable, so
+/// the preview is driven by the real engines (not the converter's ported constants). SSF2:
+/// read the logical view size (`Main.m_width`/`m_height`) from `SSF2.swf`; its `Vcam`
+/// auto-derives each layer's pan rate `(w-viewW)/(2w)`. Fraymakers: confirm the `ParallaxBG`
+/// engine class in `hlboot`; it has no auto-pan (it applies the explicit per-layer multiplier
+/// the converter wrote, computed via SSF2's formula) and reads the view from each stage's
+/// `GameCameraConfig` (the 640x360 default), so the rate is the same — the switch verifies the
+/// conversion is 1:1.
+fn engine_params_json(engine: &str) -> Result<String, String> {
+    let cfg = crate::config::Config::load();
+    match engine {
+        "ssf2" => {
+            let app = cfg.ssf2_app().ok_or_else(|| "SSF2 app not configured (Setup → SSF2 path)".to_string())?;
+            let swf = [app.join("Contents/Resources/SSF2.swf"), app.join("SSF2.swf"), app.clone()]
+                .into_iter().find(|p| p.is_file())
+                .ok_or_else(|| format!("SSF2.swf not found under {}", app.display()))?;
+            let bytes = std::fs::read(&swf).map_err(|e| e.to_string())?;
+            let e = ssf2_converter::engine_probe::ssf2_engine(&bytes)
+                .ok_or_else(|| "could not read engine params from SSF2.swf".to_string())?;
+            // The mode the camera-background uses is the string value the engine stores (panMode).
+            let modes: Vec<String> = e.modes.iter().map(|(_, v)| v.clone()).collect();
+            Ok(serde_json::json!({
+                "engine": "ssf2", "label": "SSF2", "view_w": e.view_w, "view_h": e.view_h,
+                "auto": true, "divisor": 2, "formula": format!("(w - {}) / (2·w)", e.view_w),
+                "fps": e.fps, "modes": modes, "config_fields": e.config_fields,
+                "source": format!("{} · Vcam / Main", swf.display()),
+            }).to_string())
+        }
+        "fraymakers" => {
+            let root = cfg.fraymakers_root().ok_or_else(|| "Fraymakers not configured (Setup → Fraymakers path)".to_string())?;
+            let hlboot = root.join(crate::config::Config::load().boot_name());
+            let fm = fm_engine(&hlboot)
+                .ok_or_else(|| format!("could not read parallax params from {}", hlboot.display()))?;
+            let present = !fm.config_fields.is_empty();
+            Ok(serde_json::json!({
+                "engine": "fraymakers", "label": "Fraymakers", "view_w": 640, "view_h": 360,
+                "auto": false, "divisor": 2, "formula": "explicit xPanMultiplier (inherits the SSF2 rate)",
+                "modes": fm.modes, "config_fields": fm.config_fields,
+                "source": format!("{} · ParallaxBG{}", hlboot.display(), if present { " ✓" } else { " (class not found)" }),
+            }).to_string())
+        }
+        other => Err(format!("unknown engine {other:?}")),
+    }
+}
+
+/// Parallax params pulled live from the Fraymakers `hlboot` bytecode.
+struct FmEngine {
+    /// `ParallaxMode` modes (e.g. BOUNDS / PAN / DEPTH).
+    modes: Vec<String>,
+    /// `ParallaxBGConfig` author-facing fields (the camera-background config schema).
+    config_fields: Vec<String>,
+}
+
+/// Read the Fraymakers camera-background parallax schema out of `hlboot` (the engine class +
+/// its mode enum), so the preview is driven by the real engine, not the converter's ported
+/// constants. `None` if the bytecode can't be read or the parallax class is absent.
+fn fm_engine(hlboot: &std::path::Path) -> Option<FmEngine> {
+    use std::io::BufReader;
+    let mut r = BufReader::new(std::fs::File::open(hlboot).ok()?);
+    let code = hlbc::Bytecode::deserialize(&mut r).ok()?;
+    crate::find_type(&code, "pxf.core.camera.ParallaxBG")?; // confirm the engine class is present
+    let config_fields = fm_config_fields(&code);
+    let modes = fm_mode_constants(&code, "pxf.core.camera.$ParallaxMode");
+    Some(FmEngine { modes, config_fields })
+}
+
+/// Author-facing fields of `ParallaxBGConfig` (its own declared fields, not the inherited
+/// disposable/serialization base-class plumbing), the camera-background config schema.
+fn fm_config_fields(code: &hlbc::Bytecode) -> Vec<String> {
+    let Some(ti) = crate::find_type(code, "pxf.core.camera.ParallaxBGConfig") else { return Vec::new() };
+    let Some(o) = code.types[ti].get_type_obj() else { return Vec::new() };
+    o.own_fields.iter().filter_map(|f| {
+        let n = code.strings[f.name.0].as_str();
+        (!n.is_empty() && !n.starts_with("__")).then(|| n.to_string())
+    }).collect()
+}
+
+/// Mode names of an abstract-enum statics type (`@:enum abstract`, compiled to a statics Obj
+/// whose members are `Int` constants like `BOUNDS`/`PAN`/`DEPTH`). Selects by FIELD TYPE (the
+/// members are the `Int` slots), which survives a recompile and any added modes, while dropping
+/// the reflection plumbing by type (`CONSTANT_MAP`/`CONSTANT_MAP_NAME` are maps, `constToString`
+/// is a function) and the `__`-prefixed base slots.
+fn fm_mode_constants(code: &hlbc::Bytecode, statics_name: &str) -> Vec<String> {
+    let Some(ti) = crate::find_type(code, statics_name) else { return Vec::new() };
+    let Some(o) = code.types[ti].get_type_obj() else { return Vec::new() };
+    o.own_fields.iter().filter_map(|f| {
+        let n = code.strings[f.name.0].as_str();
+        let is_int = matches!(code.types.get(f.t.0), Some(hlbc::types::Type::I32));
+        (is_int && !n.starts_with("__")).then(|| n.to_string())
+    }).collect()
+}
+
+/// Reconstruct a stage's preview layers from its emitted FrayTools package: each IMAGE layer's
+/// placement (x/y/scale) from the `.entity`, its sprite as a base64 data URL (matched by the
+/// `imageAsset` guid), and its parallax rate (`xPanMultiplier` from the StageStats camera
+/// backgrounds; fixed stage layers get rate 1). Returns the JSON the page renders.
+fn stage_preview_json(fraytools: &std::path::Path) -> Result<String, String> {
+    use std::collections::HashMap;
+    let err = |m: String| m;
+    let dir = fraytools.parent().ok_or_else(|| "stage path has no parent".to_string())?;
+    let lib = dir.join("library");
+    // the single .entity under library/entities/
+    let ent_dir = lib.join("entities");
+    let entity_path = std::fs::read_dir(&ent_dir).map_err(|e| err(format!("read {}: {e}", ent_dir.display())))?
+        .filter_map(|e| e.ok()).map(|e| e.path())
+        .find(|p| p.extension().and_then(|x| x.to_str()) == Some("entity"))
+        .ok_or_else(|| "no .entity in the project's library/entities".to_string())?;
+    let id = entity_path.file_stem().and_then(|s| s.to_str()).unwrap_or("stage").to_string();
+    let entity: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&entity_path).map_err(|e| err(e.to_string()))?
+    ).map_err(|e| err(format!("parse entity: {e}")))?;
+
+    // guid -> data URL, from the sprite .meta (guid) + sibling .png.
+    let sprites = lib.join("sprites").join("Stage");
+    let mut guid_url: HashMap<String, String> = HashMap::new();
+    if let Ok(rd) = std::fs::read_dir(&sprites) {
+        for e in rd.filter_map(|e| e.ok()) {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("meta") { continue; }
+            let Ok(meta) = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&p).unwrap_or_default()) else { continue };
+            let Some(guid) = meta["guid"].as_str() else { continue };
+            let png = p.with_extension(""); // strip ".meta" -> "<name>.png"
+            if let Ok(bytes) = std::fs::read(&png) {
+                guid_url.insert(guid.to_string(), format!("data:image/png;base64,{}", base64_encode(&bytes)));
+            }
+        }
+    }
+
+    // parallax rates: scan the StageStats for each `animationId: "parallaxN" … xPanMultiplier: v`.
+    let stats = std::fs::read_to_string(lib.join("scripts").join("stage").join(format!("{id}StageStats.hx"))).unwrap_or_default();
+    let rates = parse_parallax_rates(&stats);
+
+    // index the entity pools.
+    let arr = |v: &serde_json::Value, k: &str| v[k].as_array().cloned().unwrap_or_default();
+    let id_of = |v: &serde_json::Value| v["$id"].as_str().unwrap_or("").to_string();
+    let layers_by_id: HashMap<String, serde_json::Value> = arr(&entity, "layers").into_iter().map(|l| (id_of(&l), l)).collect();
+    let kf_sym: HashMap<String, String> = arr(&entity, "keyframes").into_iter()
+        .map(|k| (id_of(&k), k["symbol"].as_str().unwrap_or("").to_string())).collect();
+    let sym_by_id: HashMap<String, serde_json::Value> = arr(&entity, "symbols").into_iter().map(|s| (id_of(&s), s)).collect();
+
+    // collect IMAGE layers, parallax animations first (drawn farthest-back), then the stage
+    // animation (the fixed backdrop / stage art / foreground, in order).
+    let anims = arr(&entity, "animations");
+    let ordered: Vec<&serde_json::Value> = anims.iter().filter(|a| a["name"].as_str().unwrap_or("").starts_with("parallax"))
+        .chain(anims.iter().filter(|a| a["name"].as_str() == Some("stage"))).collect();
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for a in ordered {
+        let aname = a["name"].as_str().unwrap_or("");
+        let parallax = aname.starts_with("parallax");
+        let rate = if parallax { rates.get(aname).copied().unwrap_or(0.5) } else { 1.0 };
+        for lid in a["layers"].as_array().cloned().unwrap_or_default() {
+            let Some(layer) = layers_by_id.get(lid.as_str().unwrap_or("")) else { continue };
+            if layer["type"].as_str() != Some("IMAGE") { continue; }
+            let Some(kf) = layer["keyframes"].as_array().and_then(|k| k.first()).and_then(|k| k.as_str()) else { continue };
+            let Some(sym) = kf_sym.get(kf).and_then(|s| sym_by_id.get(s)) else { continue };
+            let Some(url) = sym["imageAsset"].as_str().and_then(|g| guid_url.get(g)) else { continue };
+            out.push(serde_json::json!({
+                "name": layer["name"], "url": url,
+                "x": sym["x"], "y": sym["y"], "scale": sym["scaleX"],
+                "rate": rate, "parallax": parallax,
+            }));
+        }
+    }
+    Ok(serde_json::json!({ "id": id, "layers": out }).to_string())
+}
+
+/// Map each `parallaxN` camera background to its `xPanMultiplier`, scanned from the StageStats.
+fn parse_parallax_rates(stats: &str) -> std::collections::HashMap<String, f64> {
+    let mut out = std::collections::HashMap::new();
+    let mut cur: Option<String> = None;
+    for line in stats.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("animationId:") {
+            let name = rest.trim().trim_matches([' ', '"', ',']).to_string();
+            cur = name.starts_with("parallax").then_some(name);
+        } else if let Some(rest) = t.strip_prefix("xPanMultiplier:") {
+            if let Some(a) = &cur {
+                if let Ok(v) = rest.trim().trim_end_matches(',').trim().parse::<f64>() {
+                    out.insert(a.clone(), v);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Minimal JSON-string-field extractor for the small, flat objects the page
