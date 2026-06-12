@@ -516,8 +516,22 @@ points here).
 9. **batch commands / inputs from a file** -- the UI half. the CLI half is `peptide tell
    --file <path>` (one command per line, `#` comments skipped; mixes engine cmds, `e`
    hscript, and `seq`/`hold` inputs through the one dispatch path).
-10. **way more hscript commands.** convenience commands now wrap common eval patterns through
-    the one dispatch path (so they work on both engines): `scenario` (#4), `tune` (#5),
-    `dmg <player> <value>` (set damage percent), and `info` (one-shot readout of both players'
-    x / state / damage / team). all validated + unit-tested. more can be added the same way (a
-    `Cmd` registry entry + a `parse_*` that returns `Command::Eval`).
+10. **way more hscript commands.** convenience commands wrap common eval patterns through the
+    one dispatch path: `scenario` (#4), `tune` (#5), `dmg <player> <value>` (set damage percent),
+    `info` (one-shot readout of both players' x / state / damage / team), `reset` (neutral state +
+    zero momentum), and `kill <player>` (force a KO into the bottom blast zone). all validated +
+    unit-tested. more can be added the same way (a `Cmd` registry entry + a `parse_*` that returns
+    `Command::Eval`).
+11. **SSF2 command parity.** the SSF2 backend lowers the same command vocabulary to reflection
+    verbs, so the host-side eval macros work there too. `dmg`/`info`/`reset`/`kill` are verified
+    live on SSF2 (the evaluator handles a `;`-joined multi-statement line, an `[…]` array literal,
+    the `damage._damage` getter/setter idiom, position/velocity setters as property writes, and
+    `toState(neutral)` as the SSF2 state setter); `console` declares its gap (SSF2 has no debug
+    console). `dmg`/`info`/`kill` are verified on Fraymakers too. still open:
+    - **input injection** (`hold`/`release`/`seq`, and `scenario`'s timeline) on SSF2: needs a
+      per-frame applicator on the SSF2 side, the one remaining cohort. tracked under #1/#4.
+    - **`addCharacter`** and **`tune`** on SSF2: a live mid-match add and SSF2's per-attack-box
+      stat model, respectively, both deeper than the eval-macro layer.
+    - **`reset` on Fraymakers** trips a script error (one of its setters / `toState` resolves to
+      null on the FM character); the SSF2 path is unaffected. pre-existing, unrelated to the SSF2
+      parity work, worth a separate look.

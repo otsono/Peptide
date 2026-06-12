@@ -77,7 +77,52 @@ pub const CALLS: &[CallSpec] = &[
     CallSpec { names: &["getCharacter", "getPlayer"], lowering: CallLowering::OpsThenIndex(&["GET\tCharacters"]) },
     CallSpec { names: &["getStateName", "getState"],  lowering: CallLowering::Ops(&["GET\tState"]) },
     CallSpec { names: &["characterCount"],            lowering: CallLowering::Ops(&["GET\tCharacters", "GET\tlength"]) },
+    // Read getters the debug macros (info/kill) call. FM spells these as methods
+    // (getX/getY/getTeam); SSF2 reads the same concept off the character as a field.
+    CallSpec { names: &["getX"],                      lowering: CallLowering::Ops(&["GET\tX"]) },
+    CallSpec { names: &["getY"],                      lowering: CallLowering::Ops(&["GET\tY"]) },
+    CallSpec { names: &["getTeam"],                   lowering: CallLowering::Ops(&["GET\tTeam"]) },
+    CallSpec { names: &["getXSpeed", "getXVelocity"], lowering: CallLowering::Ops(&["GET\tXSpeed"]) },
+    CallSpec { names: &["getYSpeed", "getYVelocity"], lowering: CallLowering::Ops(&["GET\tYSpeed"]) },
 ];
+
+/// The `damage._damage` idiom. FM reads/writes a character's damage percent through
+/// the `damage` wrapper's `_damage` field; SSF2 exposes it as getter/setter methods.
+/// So `p.damage._damage` lowers to `getDamage()` (read) / `setDamage(v)` (write).
+pub const DAMAGE_GETTER: &str = "getDamage";
+pub const DAMAGE_SETTER: &str = "setDamage";
+
+/// Fraymakers position/velocity SETTER method → the SSF2 property it writes. FM
+/// exposes setX/setY/setXVelocity/setYVelocity as methods; SSF2 has no such methods,
+/// but the same concept is a writable property (X/Y/XSpeed/YSpeed), so a setter call
+/// lowers to a property SET. (`setXSpeed`/`setYSpeed` accepted as aliases.)
+pub const SETTERS: &[(&str, &str)] = &[
+    ("setX", "X"), ("setY", "Y"),
+    ("setXVelocity", "XSpeed"), ("setYVelocity", "YSpeed"),
+    ("setXSpeed", "XSpeed"), ("setYSpeed", "YSpeed"),
+];
+
+/// The SSF2 property a Fraymakers setter method writes, or `None` if `name` isn't a
+/// position/velocity setter (then it's a plain method call).
+pub fn setter_field(name: &str) -> Option<&'static str> {
+    SETTERS.iter().find(|(k, _)| *k == name).map(|(_, v)| *v)
+}
+
+/// The method SSF2 uses to change a character's state (FM uses `toState`).
+pub const STATE_SETTER: &str = "setState";
+
+/// Fraymakers `CState` name → the SSF2 numeric `State` value. SSF2 changes state via
+/// `setState(<n>)`; the neutral STAND state is 0. Accepts `CState.STAND` or `STAND`.
+pub const CSTATES: &[(&str, i64)] = &[("STAND", 0)];
+
+/// Map a `CState.<NAME>` (or bare `<NAME>`) to its SSF2 numeric state, or `None` if
+/// unknown. A bare integer passes through as itself.
+pub fn cstate_value(arg: &str) -> Option<i64> {
+    let a = arg.trim();
+    if let Ok(n) = a.parse::<i64>() { return Some(n); }
+    let name = a.rsplit('.').next().unwrap_or(a);
+    CSTATES.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| *v)
+}
 
 /// SSF2 verbs for a root identifier (case-insensitive), or `None` to fall back to
 /// a generic member read off the document root.
@@ -134,6 +179,26 @@ mod tests {
         assert!(matches!(call_lowering("getCharacters"), Some(CallLowering::Ops(_))));
         assert!(matches!(call_lowering("getCharacter"), Some(CallLowering::OpsThenIndex(_))));
         assert!(matches!(call_lowering("characterCount"), Some(CallLowering::Ops(_))));
-        assert!(call_lowering("toState").is_none()); // FM-only → generic call
+        // read getters the info/kill macros use lower to the matching SSF2 field
+        assert!(matches!(call_lowering("getX"), Some(CallLowering::Ops(_))));
+        assert!(matches!(call_lowering("getTeam"), Some(CallLowering::Ops(_))));
+        assert!(call_lowering("toState").is_none()); // a state change, not a read → handled specially
+    }
+
+    #[test]
+    fn setters_lower_to_properties() {
+        assert_eq!(setter_field("setX"), Some("X"));
+        assert_eq!(setter_field("setXVelocity"), Some("XSpeed"));
+        assert_eq!(setter_field("setYVelocity"), Some("YSpeed"));
+        assert_eq!(setter_field("setDamage"), None); // a real method, not a property set
+        assert_eq!(setter_field("toState"), None);
+    }
+
+    #[test]
+    fn cstate_neutral_lowers_to_zero() {
+        assert_eq!(cstate_value("CState.STAND"), Some(0));
+        assert_eq!(cstate_value("STAND"), Some(0));
+        assert_eq!(cstate_value("5"), Some(5)); // bare int passes through
+        assert_eq!(cstate_value("CState.JAB"), None); // unmapped → caller declares the gap
     }
 }

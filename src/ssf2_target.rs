@@ -179,14 +179,76 @@ fn read_args(it: &mut std::iter::Peekable<std::str::Chars>) -> Result<Vec<String
     loop {
         match it.next() {
             None => return Err(anyhow!("unterminated argument list")),
-            Some('(') | Some('[') => { depth += 1; cur.push(' '); }
+            // Keep nested ()/[] verbatim so an arg that is itself a call survives
+            // (e.g. `kill` = `setY(getY() + 3000)`); only the OUTER ')' closes the list.
+            Some(c @ ('(' | '[')) => { depth += 1; cur.push(c); }
             Some(')') if depth == 0 => { if !cur.trim().is_empty() { args.push(cur.trim().to_string()); } break; }
-            Some(')') | Some(']') => { depth -= 1; }
+            Some(c @ (')' | ']')) => { depth -= 1; cur.push(c); }
             Some(',') if depth == 0 => { args.push(cur.trim().to_string()); cur.clear(); }
             Some(c) => cur.push(c),
         }
     }
     Ok(args)
+}
+
+/// Split `s` on `sep` at the TOP level only — separators inside `()`/`[]`/`{}` or a
+/// string literal are left intact. Used to drive a `;`-joined multi-statement line
+/// (`reset`) and an `[a, b, …]` array literal (`info`) one element at a time on SSF2.
+/// Empty/whitespace pieces are dropped; each kept piece is trimmed.
+fn split_top_level(s: &str, sep: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    for c in s.chars() {
+        if let Some(q) = quote {
+            cur.push(c);
+            if c == q { quote = None; }
+            continue;
+        }
+        match c {
+            '"' | '\'' => { quote = Some(c); cur.push(c); }
+            '(' | '[' | '{' => { depth += 1; cur.push(c); }
+            ')' | ']' | '}' => { depth -= 1; cur.push(c); }
+            _ if c == sep && depth == 0 => {
+                if !cur.trim().is_empty() { out.push(cur.trim().to_string()); }
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.trim().is_empty() { out.push(cur.trim().to_string()); }
+    out
+}
+
+/// Find a single top-level binary `+`/`-` in `s` (one that has a left operand — so a
+/// leading sign or negative literal is NOT mistaken for an operator). Returns
+/// `(op, lhs, rhs)`. Used to host-resolve a setter argument that's itself a read plus
+/// an offset (`kill` = `setY(getY() + 3000)`).
+fn split_binary(s: &str) -> Option<(char, &str, &str)> {
+    let b = s.as_bytes();
+    let mut depth = 0i32;
+    let mut found = None;
+    for i in 0..b.len() {
+        match b[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'+' | b'-' if depth == 0 => {
+                let prev = s[..i].trim_end().bytes().last();
+                if matches!(prev, Some(c) if c.is_ascii_alphanumeric() || c == b')' || c == b']' || c == b'.') {
+                    found = Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    found.map(|p| (b[p] as char, &s[..p], &s[p + 1..]))
+}
+
+/// Format a resolved numeric value compactly: an integer-valued float prints without a
+/// `.0` tail (so SETP gets `0`, not `0.0`), a fractional one prints normally.
+fn fmt_num(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") }
 }
 
 // ─────────────────────────── reflection mapping ───────────────────────────
@@ -243,6 +305,32 @@ impl DebugTarget for Ssf2Target {
             return self.op(&expr.split_whitespace().collect::<Vec<_>>().join("\t"));
         }
 
+        // Multi-statement line (`stmt; stmt; …`, e.g. the `reset` macro): SSF2's
+        // reflection bridge runs one navigation at a time, so drive each statement
+        // separately and join the replies, instead of the `;`-joined hscript line FM
+        // forwards whole. (A single statement has no top-level `;` and falls through.)
+        let stmts = split_top_level(expr, ';');
+        if stmts.len() > 1 {
+            let mut out = Vec::new();
+            for s in &stmts {
+                if s.is_empty() { continue; }
+                out.push(self.eval(s)?);
+            }
+            return Ok(out.join("\n"));
+        }
+
+        // Array literal (`[a, b, …]`, e.g. the `info` macro): SSF2 can't eval an
+        // array literal, so compose the readout host-side — evaluate each element via
+        // reflection and join. A missing/sealed element degrades to `?` (e.g. p1 in a
+        // 1-player match) rather than failing the whole readout.
+        if expr.starts_with('[') && expr.ends_with(']') {
+            let inner = &expr[1..expr.len() - 1];
+            let parts: Vec<String> = split_top_level(inner, ',').iter()
+                .map(|e| self.eval(e).map(|v| v.trim().to_string()).unwrap_or_else(|_| "?".into()))
+                .collect();
+            return Ok(format!("[{}]", parts.join(", ")));
+        }
+
         // commands.hsx composite globals that aren't a plain navigation: handle
         // them whole so `log(x)` / `matchStatus()` produce the same effect SSF2-side
         // as the hscript helpers do on Fraymakers.
@@ -256,6 +344,19 @@ impl DebugTarget for Ssf2Target {
         let mut i = 0;
         while i < accesses.len() {
             match &accesses[i] {
+                // `damage._damage` idiom → getDamage()/setDamage(v). FM reads/writes
+                // the damage percent through this wrapper field; SSF2 uses methods.
+                Access::Member(m) if m == "damage"
+                    && matches!(accesses.get(i + 1), Some(Access::Member(n)) if n == "_damage") =>
+                {
+                    if assign.is_some() && i + 2 == accesses.len() {
+                        let v = self.resolve_value(assign.as_ref().unwrap())?;
+                        ops.push(format!("CALL1\t{}\t{v}", crate::vocab::DAMAGE_SETTER));
+                        return self.run_ops(&ops, false);
+                    }
+                    ops.push(format!("CALL\t{}", crate::vocab::DAMAGE_GETTER));
+                    i += 2; continue;
+                }
                 Access::Member(m) if crate::vocab::is_passthrough(m) && i + 1 < accesses.len() => {
                     // .body.x → X ; .physics.currentVelocityX → XSpeed
                     if let Access::Member(next) = &accesses[i + 1] {
@@ -275,6 +376,26 @@ impl DebugTarget for Ssf2Target {
                     ops.push(format!("GET\t{mapped}"));
                 }
                 Access::Index(n) => ops.push(format!("IDX\t{n}")),
+                // Position/velocity setter call (setX/setY/setXVelocity/…) → property
+                // SET, and toState(CState.X) → setState(<n>). FM exposes these as live
+                // methods; SSF2 writes the property (or calls its state setter). The arg
+                // may itself be a read (`kill` = setY(getY()+3000)), resolved host-side.
+                Access::Call(name, args)
+                    if i + 1 == accesses.len()
+                        && (crate::vocab::setter_field(name).is_some() || name == "toState") =>
+                {
+                    if let Some(field) = crate::vocab::setter_field(name) {
+                        let raw = args.first().map(String::as_str).unwrap_or("0");
+                        let v = self.resolve_value(raw)?;
+                        ops.push(format!("SETP\t{field}\t{v}"));
+                    } else {
+                        let raw = args.first().map(String::as_str).unwrap_or("");
+                        let n = crate::vocab::cstate_value(raw)
+                            .ok_or_else(|| anyhow!("toState({raw:?}): no SSF2 state mapping (only neutral STAND is mapped)"))?;
+                        ops.push(format!("CALL1\t{}\t{n}", crate::vocab::STATE_SETTER));
+                    }
+                    return self.run_ops(&ops, false);
+                }
                 Access::Call(name, args) => ops.extend(self.emit_call(name, args)?),
             }
             i += 1;
@@ -376,7 +497,12 @@ impl DebugTarget for Ssf2Target {
         Ok(format!("seq {} frames (ssf2 input timeline not yet wired)", masks.len()))
     }
 
-    fn console(&mut self) -> Result<String> { self.op("ROOT") }
+    /// SSF2 has no debug console (the engine's interactive command console is a
+    /// Fraymakers-only capability). Declare the gap explicitly rather than silently
+    /// degrading to a reflection readout, mirroring how `char_icon` reports its gap.
+    fn console(&mut self) -> Result<String> {
+        Ok("console: SSF2 has no debug console (Fraymakers-only capability)\n".into())
+    }
 
     /// Walk the LIVE display list from the document root — the stage-triage ground
     /// truth. Re-navigates per node by child-index path (the reflection cursor is
@@ -410,6 +536,24 @@ impl DebugTarget for Ssf2Target {
 }
 
 impl Ssf2Target {
+    /// Resolve a setter argument to a numeric string, host-side, so a setter whose
+    /// argument is itself a read (`kill` = `setY(getY() + 3000)`) lowers to a single
+    /// property SET. Handles a plain number, a `CState.<NAME>`, one top-level `+`/`-`
+    /// between two operands, and otherwise a nested expression evaluated via reflection.
+    fn resolve_value(&self, raw: &str) -> Result<String> {
+        let s = raw.trim();
+        if let Ok(n) = s.parse::<f64>() { return Ok(fmt_num(n)); }
+        if let Some((op, lhs, rhs)) = split_binary(s) {
+            let a: f64 = self.resolve_value(lhs)?.parse().map_err(|_| anyhow!("non-numeric operand {lhs:?}"))?;
+            let b: f64 = self.resolve_value(rhs)?.parse().map_err(|_| anyhow!("non-numeric operand {rhs:?}"))?;
+            return Ok(fmt_num(if op == '+' { a + b } else { a - b }));
+        }
+        if let Some(n) = crate::vocab::cstate_value(s) { return Ok(n.to_string()); }
+        let r = self.eval_quiet(s)?;
+        r.trim().parse::<f64>().map(fmt_num)
+            .map_err(|_| anyhow!("value {s:?} did not evaluate to a number (got {r:?})"))
+    }
+
     /// Run a sequence of navigation ops, then READ (or, for an assignment that
     /// already emitted SETP, just confirm).
     fn run_ops(&self, ops: &[String], read: bool) -> Result<String> {
