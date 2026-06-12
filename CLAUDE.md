@@ -15,6 +15,11 @@ FrayTools to publish. see [`README.md`](README.md) for the pitch.
 - [`DEVELOPMENT.md`](DEVELOPMENT.md) -- converter dev guide: build, the pipeline, every module,
   the mapping config, output layout.
 - [`TESTING.md`](TESTING.md) -- the two validation harnesses + the iteration loop.
+- [`docs/PORTING_STAGES.md`](docs/PORTING_STAGES.md) -- the deep-RE playbook for porting a stage
+  accurately (static inventory, AS3 disasm, live probing, coordinate model, verification gates).
+  follow it phase by phase for EVERY stage.
+- [`docs/PORTING_CHARACTERS.md`](docs/PORTING_CHARACTERS.md) -- the character analogue: the
+  audit procedure for verifying a converted character move by move against both live engines.
 - [`docs/STATUS.md`](docs/STATUS.md) -- the single home for status, known issues, and TODOs.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) -- the per-change checklist (run it before a PR).
 
@@ -25,6 +30,13 @@ FrayTools to publish. see [`README.md`](README.md) for the pitch.
   data, not the code. (DEVELOPMENT §6.)
 - **engine-side code: minimum bytecode, maximum hscript.** put engine behavior in
   `commands.hsx`, not hand-emitted bytecode. (AGENT_CONTEXT.)
+- **no per-content fixes.** a converter change must be a universal mechanism, never keyed to
+  one stage/character/hazard by name: detect the pattern structurally (or from data stepped
+  out of the source content), transform, fall back to exact semantics when detection fails,
+  and log a conversion warning. template names like the "thwomp" faller are PATTERN names
+  selected by detected data (motion, declared engine calls), not by content id. prove a fix
+  didn't regress other content before merging: `cargo test` (the character goldens) +
+  `just sweep-stages` (converts the whole stage corpus).
 - **ONE command vocabulary, TWO engines.** a host-facing feature must behave the same on
   Fraymakers and SSF2 via the `DebugTarget` seam, never an `if engine == ...` branch in feature
   logic. (enforced by `crates/ssf2-converter/tests/conventions.rs`.)

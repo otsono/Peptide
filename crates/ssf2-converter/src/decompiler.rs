@@ -1553,8 +1553,12 @@ impl<'a> StructuredDecoder<'a> {
 
         match (then_final_exit, else_final_exit) {
             (Some(a), Some(b)) if a == b => Some(a),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
+            // A one-sided exit can be chain_exit's branch-stop AT the branch's own start (the
+            // then-body is a single block ending in an inner if). Taking that as the merge yields
+            // an empty then-body with the real body leaking out below the if — so only trust an
+            // exit that actually left its own side; otherwise fall back to the skip target.
+            (Some(a), None) if a != then_start => Some(a),
+            (None, Some(b)) if b != else_start => Some(b),
             _ => {
                 if else_start > then_start { Some(else_start) } else { None }
             }

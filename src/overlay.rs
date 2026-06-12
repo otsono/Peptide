@@ -20,10 +20,11 @@ use wry::WebViewBuilder;
 
 enum Ev {
     Line(String),
-    /// Move the overlay to (x, y) screen points — the follow thread keeps it pinned to the
-    /// game window's top-left corner. Only sent on macOS (the follow thread is macOS-only).
+    /// Pin the overlay to (x, y) screen points AND restack it directly above the game window
+    /// (the CG window number) so it rides the game's z-order instead of floating over every app.
+    /// The follow thread keeps it glued to the game window's top-left corner. Only sent on macOS.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    Move(f64, f64),
+    Follow(f64, f64, i64),
 }
 
 fn arg_val(args: &[String], flag: &str) -> Option<String> {
@@ -96,7 +97,9 @@ pub fn run(args: &[String]) -> std::io::Result<()> {
         .with_title("Peptide Overlay")
         .with_decorations(false)
         .with_transparent(true)
-        .with_always_on_top(true)
+        // NOT always-on-top: the follow thread restacks the overlay directly above the game
+        // window each poll, so it tracks the game's z-order and drops behind whatever app the
+        // user switches to (instead of floating over everything — the old disruptive behavior).
         .with_resizable(false)
         .with_inner_size(LogicalSize::new(396.0, 240.0))
         .build(&event_loop)
@@ -144,21 +147,20 @@ pub fn run(args: &[String]) -> std::io::Result<()> {
     {
         let proxy = proxy.clone();
         std::thread::spawn(move || {
-            let mut last: Option<(i64, i64)> = None;
             let mut ever_seen = false;
             let mut gone_polls = 0u32;
             loop {
                 std::thread::sleep(Duration::from_millis(500));
                 match find_game_window() {
-                    Some((gx, gy, _w, _h)) => {
+                    Some((gx, gy, _w, _h, win_num)) => {
                         ever_seen = true;
                         gone_polls = 0;
-                        let pos = ((gx + 16.0) as i64, (gy + 16.0) as i64);
-                        if last != Some(pos) {
-                            last = Some(pos);
-                            if proxy.send_event(Ev::Move(pos.0 as f64, pos.1 as f64)).is_err() {
-                                return;
-                            }
+                        // Send every poll (not just on move): the restack must be re-applied as
+                        // the user focuses other apps, so the overlay keeps riding just above the
+                        // game. set_outer_position is idempotent when unchanged.
+                        let (px, py) = ((gx + 16.0) as i64, (gy + 16.0) as i64);
+                        if proxy.send_event(Ev::Follow(px as f64, py as f64, win_num)).is_err() {
+                            return;
                         }
                     }
                     None => {
@@ -195,8 +197,10 @@ pub fn run(args: &[String]) -> std::io::Result<()> {
             Event::UserEvent(Ev::Line(line)) => {
                 let _ = _webview.evaluate_script(&format!("window.push && push({})", json_str(&line)));
             }
-            Event::UserEvent(Ev::Move(x, y)) => {
+            Event::UserEvent(Ev::Follow(x, y, _win_num)) => {
                 window.set_outer_position(LogicalPosition::new(x, y));
+                #[cfg(target_os = "macos")]
+                order_above_game(&window, _win_num);
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
                 *control_flow = ControlFlow::Exit;
@@ -228,18 +232,40 @@ fn apply_macos_transparency(window: &tao::window::Window) {
     }
 }
 
-/// Find the on-screen bounds (x, y, width, height in screen points) of the Fraymakers game
+/// Restack the overlay directly above the game window (`win_num` = its CG window number) without
+/// activating/raising the game or stealing focus. Re-applied each follow poll so the overlay rides
+/// the game's z-order: visible over the game when it's frontmost, and dropping behind whatever app
+/// the user switches to. Must run on the main (event-loop) thread — NSWindow ops aren't thread-safe.
+#[cfg(target_os = "macos")]
+fn order_above_game(window: &tao::window::Window, win_num: i64) {
+    use objc2_app_kit::{NSWindow, NSWindowOrderingMode};
+    use tao::platform::macos::WindowExtMacOS;
+    let ptr = window.ns_window();
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: tao hands back the live NSWindow pointer; objc2's NSWindow is a transparent wrapper
+    // over that objc object, valid for the call duration. `orderWindow:relativeTo:` accepts another
+    // process's global window number to position relative to (best-effort cross-process ordering).
+    unsafe {
+        let nsw: &NSWindow = &*(ptr as *const NSWindow);
+        nsw.orderWindow_relativeTo(NSWindowOrderingMode::Above, win_num as isize);
+    }
+}
+
+/// Find the on-screen bounds (x, y, width, height in screen points) + CG window number of the game
 /// window via the CoreGraphics window list. Raw CF FFI to dodge the typed wrappers' generics.
 /// Returns the first sufficiently-large window owned by the engine process.
 #[cfg(target_os = "macos")]
-fn find_game_window() -> Option<(f64, f64, f64, f64)> {
+fn find_game_window() -> Option<(f64, f64, f64, f64, i64)> {
     use core_foundation::array::CFArrayRef;
     use core_foundation::base::TCFType;
     use core_foundation::string::{CFString, CFStringRef};
-    use core_graphics::window::{kCGWindowBounds, kCGWindowListOptionOnScreenOnly, kCGWindowOwnerName};
+    use core_graphics::window::{kCGWindowBounds, kCGWindowListOptionOnScreenOnly, kCGWindowNumber, kCGWindowOwnerName};
     use std::ffi::c_void;
 
     const FLOAT64: i64 = 6; // kCFNumberFloat64Type
+    const SINT64: i64 = 4; // kCFNumberSInt64Type
     extern "C" {
         fn CGWindowListCopyWindowInfo(option: u32, relative: u32) -> CFArrayRef;
         fn CFArrayGetCount(arr: CFArrayRef) -> isize;
@@ -262,6 +288,16 @@ fn find_game_window() -> Option<(f64, f64, f64, f64)> {
         let v = dict_get(d, key.as_concrete_TypeRef() as *const c_void)?;
         let mut n: f64 = 0.0;
         if CFNumberGetValue(v, FLOAT64, &mut n as *mut f64 as *mut c_void) != 0 {
+            Some(n)
+        } else {
+            None
+        }
+    }
+    // The window number is keyed directly on the window dict (not under Bounds), read as an int.
+    unsafe fn dict_int(d: *const c_void, key: *const c_void) -> Option<i64> {
+        let v = dict_get(d, key)?;
+        let mut n: i64 = 0;
+        if CFNumberGetValue(v, SINT64, &mut n as *mut i64 as *mut c_void) != 0 {
             Some(n)
         } else {
             None
@@ -301,7 +337,8 @@ fn find_game_window() -> Option<(f64, f64, f64, f64)> {
                 continue;
             };
             if w >= 200.0 && h >= 150.0 {
-                found = Some((x, y, w, h));
+                let win_num = dict_int(dict, kCGWindowNumber as *const c_void).unwrap_or(0);
+                found = Some((x, y, w, h, win_num));
                 break;
             }
         }

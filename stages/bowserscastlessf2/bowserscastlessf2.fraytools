@@ -1,0 +1,22 @@
+{
+  "frame_rate": 60,
+  "paletteShaderMode": "RG_MAP",
+  "pluginMetadata": {},
+  "plugins": [
+    "com.fraymakers.ContentExporter",
+    "com.fraymakers.FraymakersTypes",
+    "com.fraymakers.FraymakersMetadata"
+  ],
+  "publishFolders": [
+    {
+      "id": "build0",
+      "path": "./build"
+    },
+    {
+      "id": "fraymakers0",
+      "path": "../../../../../../../Library/Application Support/Steam/steamapps/common/Fraymakers/custom/bowserscastlessf2"
+    }
+  ],
+  "snapToPixel": true,
+  "version": 12
+}

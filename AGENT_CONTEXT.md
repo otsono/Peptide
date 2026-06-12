@@ -331,6 +331,122 @@ emitted COLLISION_BOX symbol uses `pivotY = height` (instead of `height / 2`) so
 rotation pivots around the hand. `itemBox` is the only routinely rotated collision
 box, so the pivot-at-bottom convention matters here.
 
+### graphic-symbol placements (applies to characters, stages, projectiles)
+
+a sprite PlaceObject that carries a `ratio` is a Graphic-symbol placement (Flash's
+"Single Frame" insert): it shows the ONE frame the ratio selects, never self-animates,
+and never runs its frame scripts. a placement with `ratio=None` is a real MovieClip.
+Replace (and move-style Place) tags without a matrix/name/ratio KEEP the depth slot's
+existing state and only swap the character, so a slot's transform persists across
+Replace chains (bowserscastle's bubble pool cycles 8 slots this way).
+
+### custom game object scripting contracts (live-verified)
+
+hscript-level behavior of the public CGO scripting surface, learned the hard way.
+each of these cost real debugging time, so trust them before re-deriving:
+
+- `make*` slots cannot be dereferenced at module scope on the first eval (the api
+  is not live yet, `.get()` null-accesses). declare at module scope, deref only
+  inside functions. module scope re-runs every frame, so plain `var`s reset each
+  frame and `make*` slots are the only cross-frame state.
+- local-state calls go through the `Common.` binding
+  (`Common.initLocalStateMachine()` etc.), registered at module scope each eval,
+  the template idiom.
+- a CGO outside the death bounds is culled and respawned with its script state
+  WIPED, every frame it stays outside. spawn wrappers lean on this deliberately
+  (fresh instance = fresh timers), but a probe that teleports its reporter
+  off-stage measures the wipe, not what it meant to measure.
+- a moving game object needs an ECB in its GameObjectStats
+  (`floor/aerialFootPosition`, `HeadPosition`, `HipWidth`) or it falls straight
+  through stage terrain and `isOnFloor()` never fires. size it from the hazard's
+  own SSF2 collision box. with an ECB it will also ground on its OWN follower
+  structures, so a self-platform structure must `addToBlacklist` its hazard.
+- stage hazards set `immovable: true` (shove fighters, ignore windboxes, never
+  pushed back), the SSF2 enemy contract.
+- `self.makeFrameTimer(frames)` with `tick()`/`completed`/`reset()` is the real
+  FrameTimer and lowers 1:1 from SSF2's (both count UP to a length).
+
+### Fraymakers canonical character animation names
+
+from the public `Fraymakers/character-template` repo (`character.entity`): the
+airborne set is `fall_in` / `fall_loop` / `fall_special` / `tumble`, there is NO
+plain "fall". walk and crouch follow the same `_in` / `_loop` split. the hurt set
+is `hurt_light_low/middle/high`, `hurt_medium`, `hurt_heavy`, `hurt_thrown`.
+SSF2's launch sequence is two xframes: "flying" (the hitstun somersault) maps to
+`hurt_heavy`, then "falling" (the drifting tumble) maps to `tumble`. refer to
+SSF2 animations by xframe name or linkage id only, never by fla symbol names.
+
+### SSF2 stage structure
+
+some of what SSF2 shows at runtime is NOT in the stage file at all: the engine
+mounts quality-tier effect layers from its own library (bowserscastle's animated
+lava sheet + `lavafade` gradient occur once in the stage SWF bytes, the ABC pool
+reference only, no placement). the converter repairs the visible gap data-driven:
+an art layer whose bottom edge lands inside a static stage-wide hazard region is
+extended by bottom-row repeat with a fade below the death bounds.
+
+a stage `.ssf` is a SWF whose document root places two things: the `<id>_bg` backdrop
+container (linkage `<id>_bg`, no instance name) and the `stageMC` (linkage `stage_<id>`).
+the AS3 `stage_<id>` class exposes the stage to the engine via named slots, and the placement
+uses those same INSTANCE names. identify layers by instance name + linkage id + the AS3
+slots, NOT by the fla-prefixed timeline symbol names (`<id>_fla.<thing>_<n>`), which are
+auto-generated and don't generalize.
+
+the planes (stage-root child instance names = AS3 slots), back to front:
+
+| instance name | role | maps to |
+|---|---|---|
+| `<id>_bg` (linkage, unnamed) | painted backdrop, fixed (moves 1:1 with the world) | FM background IMAGE |
+| `*_cambg` (inside `<id>_bg`) | camera-relative parallax layers (`getCameraBackgrounds`) | FM camera background |
+| `background` | fixed backdrop plane | FM background IMAGE |
+| `terrain` | collision masks (invisible in SSF2) | FM collision boxes / line segments |
+| `foreground` / `*_fg` | draws in front of fighters | FM foreground IMAGE |
+| `shadowMask` / `reflectionMask` | masks (not art) | dropped |
+| `stance` | spawn-pose beacons | dropped (spawns come from the markers below) |
+
+markers live inside `terrain`, identified by LINKAGE suffix (no instance name): `*TerrainMC*`
+(solid floor), `terrainGround_platform*` (drop-through), `CollisonBox*` [sic], `ledge_mc_*`,
+`pN_Start` / `pN_Spawn` (spawns), `boundary_clip` / `deathBoundary` / `camBoundary`,
+`warningbounds_*`, `itemGen_mc`.
+
+the `SSF2Stage` AS3 class (visible in any stage's ABC via `ssf2_objgraph <stage.ssf> slots
+SSF2Stage`) confirms the model: `getBackground` / `getMidground` / `getForeground` are the
+fixed planes; `getCameraBackgrounds` is the separate parallax system. parallax is rare (1 of
+110 corpus stages, junglehijinx); the rest have a single fixed backdrop.
+
+**parallax math (from the SSF2 game engine `Vcam`/`VcamBG`/`VcamBGSettings`).** each
+camera-background layer (`<id>_bg` content + the `_cambg` layers) is its OWN parallax plane,
+and SSF2 auto-derives its pan rate from the layer's pixel size vs the 640x360 game view:
+```
+xPanMultiplier = (bgWidth  - 640) / (2 * bgWidth)     (clamp < 0 to 0)
+yPanMultiplier = (bgHeight - 360) / (2 * bgHeight)
+```
+so a wide layer scrolls slower-than-stage by a larger factor and a layer <= the view size is
+screen-fixed (multiplier 0). this is per-LAYER (a 3095px sunray plane -> 0.40, a 1255px tree
+plane -> 0.245, a 396px sun -> 0), which is what makes the depth read. `VcamBGSettings` is
+field-for-field the same as the Fraymakers camera-background config (`xPanMultiplier`/`mode`/
+`autoPanMultiplier`/`foreground`/... -- shared McLeodGaming lineage), so the converter computes
+each layer's multiplier with the formula above (native px) and emits it explicitly per layer.
+
+**PAN vs BOUNDS mode (`VcamBGSettings.mode`).** SSF2 has two camera-background modes:
+- `PAN`: `Vcam.syncPositions` sets `bg.x = centX + cameraOffset * xPanMultiplier` -- a straight
+  parallax pan at the per-layer multiplier. this is what the `_cambg` layers use (the
+  `autoPanMultiplier` formula above feeds `xPanMultiplier`, which only `PAN` consumes), so it's
+  the correct/default mode for converted parallax.
+- `BOUNDS` (with `horizontalScroll`): `Vcam.changeBG` makes left/right copies of the sprite at
+  `±width_override` so it tiles seamlessly, anchored to the camera bounds -- for a repeating
+  backdrop (clouds/gradient that wraps), not discrete elements.
+both map to `ParallaxMode.PAN` / `ParallaxMode.BOUNDS` on the Fraymakers side and the converter
+emits either; it defaults to PAN (no corpus stage tiles) and uses BOUNDS for a layer flagged to
+loop.
+
+**scale.** Fraymakers space is SSF2 space scaled up by `size_multiplier` (the same knob the
+character converter scales sprites by, default 1.3; in world-units-per-second the spatial
+scale works out to exactly `size_multiplier`). so the stage parser scales every coordinate
+(floor / platforms / bounds / spawns / ledges + art placement) by it, and the emitter renders
+the native-resolution art IMAGE layers at that scale. a 1:1 stage would be too small for the
+scaled-up fighters, and the backdrop wouldn't fill the FM camera.
+
 ### image sprites
 
 each animation's visual content sits inside its DefineSprite as a stack of `PlaceObject`

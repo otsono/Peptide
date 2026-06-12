@@ -66,6 +66,12 @@ pub fn split_animations(
         // Helper: find frame for a label, defaulting to end of animation
         let _lf = |lbl: &str| -> u16 { *label_map.get(lbl).unwrap_or(&total) };
 
+        // debug (`PEPTIDE_DUMP_ANIM_LABELS`): each source animation's internal frame labels.
+        if std::env::var("PEPTIDE_DUMP_ANIM_LABELS").is_ok() {
+            eprintln!("[anim-labels] {anim_name} total={total} labels={labels:?} switches={:?}",
+                sb.map(|s| s.content_switches.clone()).unwrap_or_default());
+        }
+
         match anim_name.as_str() {
 
             // ── Aerials: split active frames + land animation ──────────────────
@@ -598,7 +604,8 @@ pub fn split_animations(
         ("hurt_light_middle",  "hurt"),
         ("hurt_light_high",    "hurt"),
         ("hurt_medium",        "hurt"),
-        ("hurt_heavy",         "hurt"),
+        // hurt_heavy comes from the SSF2 "flying" xframe (the launched somersault),
+        // not the light-hurt reuse.
         ("hurt_thrown",        "hurt"),
         // Crouch exit reuses the crouch entry (SSF2 has no separate un-crouch sprite).
         ("crouch_out",   "crouch_in"),

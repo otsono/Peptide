@@ -146,6 +146,11 @@ pub struct AnimationBoxData {
     pub sprite_frame_offset: u16,
     /// Frame labels within this animation: (label_name, frame_index relative to sub-anim start)
     pub frame_labels: Vec<(String, u16)>,
+    /// Frames where the displayed CONTENT changes (a Place/Replace/Remove altered the display
+    /// set since the previous frame) — matrix-only Modify ticks don't count. Lets the splitter
+    /// find phase boundaries in label-less clips (SSF2's falling: the hurt-image sequence
+    /// switches every few frames, then one tumble image spins by matrix alone).
+    pub content_switches: Vec<u16>,
 }
 
 /// Root MovieClip placement transform for one xframe animation.
@@ -457,6 +462,31 @@ pub(crate) fn build_anim_sprite_map(
         .collect()
 }
 
+/// Frames (0-based) where a sprite's displayed content changes: any Place/Replace/Remove since
+/// the previous ShowFrame. Matrix-only Modify tags don't count, so an image spinning in place
+/// (the SSF2 tumble) reads as a single content run.
+fn extract_content_switch_frames(sprite: &swf::Sprite) -> Vec<u16> {
+    let mut out = Vec::new();
+    let mut frame: u16 = 0;
+    let mut changed = false;
+    for tag in &sprite.tags {
+        match tag {
+            swf::Tag::PlaceObject(po) => match &po.action {
+                swf::PlaceObjectAction::Place(_) | swf::PlaceObjectAction::Replace(_) => changed = true,
+                swf::PlaceObjectAction::Modify => {}
+            },
+            swf::Tag::RemoveObject(_) => changed = true,
+            swf::Tag::ShowFrame => {
+                if changed { out.push(frame); }
+                changed = false;
+                frame += 1;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Same as `parse_sprite_boxes` but operates on an already-parsed SWF and
 /// a precomputed xform_map. Main.rs parses each character's SWF once and
 /// computes its xform_map once, then threads both here to skip the
@@ -509,6 +539,7 @@ pub fn parse_sprite_boxes_from_swf(
             let frame_labels = extract_frame_labels_from_tags(&sprite.tags);
 
             let frames = extract_frame_boxes(sprite, &sym_names, box_base_size, xform);
+            let content_switches = extract_content_switch_frames(sprite);
 
             log::debug!("Sprite '{}' → ssf2='{}' fm='{}': {} frames with boxes, {} labels",
                 sym, ssf2_name, fm_name, frames.len(), frame_labels.len());
@@ -526,6 +557,7 @@ pub fn parse_sprite_boxes_from_swf(
                     frames,
                     sprite_frame_offset: 0,
                     frame_labels: frame_labels.clone(),
+                    content_switches,
                 });
             } else {
                 // Split into multiple FM animations
@@ -552,6 +584,9 @@ pub fn parse_sprite_boxes_from_swf(
                         frames: sliced_frames,
                         sprite_frame_offset: start_frame,
                         frame_labels: sliced_labels,
+                        content_switches: content_switches.iter()
+                            .filter(|&&f| f >= start_frame && f < end_frame)
+                            .map(|f| f - start_frame).collect(),
                     });
                 }
             }
@@ -1003,6 +1038,7 @@ pub fn extract_boxes_for_sprite_id_from_swf(
                 frames,
                 sprite_frame_offset: 0,
                 frame_labels: vec![],
+                content_switches: extract_content_switch_frames(sprite),
             }));
         }
     }

@@ -18,11 +18,16 @@ use ssf2_converter::abc_codec::{self, Abc, Multiname, TraitKindData};
 
 fn load(path: &str) -> Abc {
     let data = std::fs::read(path).expect("read swf");
-    let buf = swf::decompress_swf(&data[..]).expect("decompress");
+    // SSF2 ships stages/chars as DAT-wrapped archives; unwrap to the inner SWF first
+    // (raw swf::decompress_swf fails on the DAT container), then decompress the SWF.
+    let inner = ssf2_converter::ssf::decompress(&data).expect("ssf decompress");
+    let buf = swf::decompress_swf(&inner[..]).expect("decompress");
     let parsed = swf::parse_swf(&buf).expect("parse swf");
-    let abc_bytes = parsed.tags.iter().find_map(|t| {
+    // a SWF can carry several DoAbc2 tags (per-frame ABC); merge by taking the largest
+    // (the engine/stage class table is the bulk one). Fall back to the first.
+    let abc_bytes = parsed.tags.iter().filter_map(|t| {
         if let swf::Tag::DoAbc2(a) = t { Some(a.data.to_vec()) } else { None }
-    }).expect("DoAbc2");
+    }).max_by_key(|b| b.len()).expect("DoAbc2");
     abc_codec::parse(&abc_bytes).expect("parse abc")
 }
 
@@ -187,8 +192,33 @@ fn main() {
                 }
             }
         }
+        "methods" => {
+            // List every named method trait of a class (instance + static) with its method#, so a
+            // stage object's behavior + frame scripts can be enumerated then disassembled.
+            let Some(ci) = find_class(&abc, &args[3]) else { eprintln!("no class"); return; };
+            println!("== {} instance methods ==", &args[3]);
+            for t in &abc.instances[ci].traits {
+                if let Some(m) = trait_method(t) {
+                    println!("  {:<40} method#{m}", abc.multiname_local(t.name).unwrap_or_default());
+                }
+            }
+            println!("== static methods ==");
+            for t in &abc.classes[ci].traits {
+                if let Some(m) = trait_method(t) {
+                    println!("  {:<40} method#{m}", abc.multiname_local(t.name).unwrap_or_default());
+                }
+            }
+        }
         "disasm" => disasm_class_method(&abc, &args[3], &args[4], false),
         "disasm-static" => disasm_class_method(&abc, &args[3], &args[4], true),
+        "iinit" => {
+            // disasm a class's instance initializer (the AS3 constructor) — where stage
+            // DATs `register(...)` their metadata. Not a named trait, so it needs its own path.
+            let Some(ci) = find_class(&abc, &args[3]) else { eprintln!("no class"); return; };
+            let iinit = abc.instances[ci].iinit;
+            println!("// {}::iinit method#{iinit}", &args[3]);
+            if let Some(b) = body_for(&abc, iinit) { disasm(&abc, &b.code); }
+        }
         "cinit" => {
             let Some(ci) = find_class(&abc, &args[3]) else { eprintln!("no class"); return; };
             let cinit = abc.classes[ci].cinit;
@@ -197,16 +227,33 @@ fn main() {
         }
         "slots" => {
             let Some(ci) = find_class(&abc, &args[3]) else { eprintln!("no class"); return; };
+            // a slot trait can carry a DEFAULT value (vkind selects the constant pool; pool
+            // vectors store [1..], so vec index = vindex-1). Print it so class constants
+            // (e.g. a platform's SINK_SPEED) are readable without a live probe.
+            let slot_default = |vindex: u32, vkind: u8| -> String {
+                if vindex == 0 { return String::new(); }
+                let i = (vindex as usize).saturating_sub(1);
+                let v = match vkind {
+                    3 => abc.ints.get(i).map(|v| v.to_string()),
+                    4 => abc.uints.get(i).map(|v| v.to_string()),
+                    6 => abc.doubles.get(i).map(|v| v.to_string()),
+                    1 => abc.strings.get(i).map(|s| format!("{s:?}")),
+                    11 => Some("true".into()),
+                    12 => Some("false".into()),
+                    _ => None,
+                };
+                v.map(|v| format!(" = {v}")).unwrap_or_else(|| format!(" = <vkind {vkind}#{vindex}>"))
+            };
             println!("== instance slots ==");
             for t in &abc.instances[ci].traits {
-                if let TraitKindData::Slot { slot_id, type_name, .. } | TraitKindData::Const { slot_id, type_name, .. } = &t.data {
-                    println!("  slot{slot_id:<3} {:<32} type={:?}", abc.multiname_local(t.name).unwrap_or_default(), abc.multiname_local(*type_name));
+                if let TraitKindData::Slot { slot_id, type_name, vindex, vkind } | TraitKindData::Const { slot_id, type_name, vindex, vkind } = &t.data {
+                    println!("  slot{slot_id:<3} {:<32} type={:?}{}", abc.multiname_local(t.name).unwrap_or_default(), abc.multiname_local(*type_name), slot_default(*vindex, *vkind));
                 }
             }
             println!("== static slots ==");
             for t in &abc.classes[ci].traits {
-                if let TraitKindData::Slot { slot_id, type_name, .. } | TraitKindData::Const { slot_id, type_name, .. } = &t.data {
-                    println!("  slot{slot_id:<3} {:<32} type={:?}", abc.multiname_local(t.name).unwrap_or_default(), abc.multiname_local(*type_name));
+                if let TraitKindData::Slot { slot_id, type_name, vindex, vkind } | TraitKindData::Const { slot_id, type_name, vindex, vkind } = &t.data {
+                    println!("  slot{slot_id:<3} {:<32} type={:?}{}", abc.multiname_local(t.name).unwrap_or_default(), abc.multiname_local(*type_name), slot_default(*vindex, *vkind));
                 }
             }
         }

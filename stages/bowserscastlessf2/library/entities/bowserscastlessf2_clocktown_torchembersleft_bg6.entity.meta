@@ -1,0 +1,17 @@
+{
+  "export": true,
+  "guid": "9f7fb1be-915a-5213-8e20-0d3c8b4b7b3a",
+  "id": "bowserscastlessf2_clocktown_torchembersleft_bg6",
+  "language": "",
+  "pluginMetadata": {
+    "com.fraymakers.FraymakersMetadata": {
+      "objectType": "VFX",
+      "version": "0.4.0"
+    }
+  },
+  "plugins": [
+    "com.fraymakers.FraymakersMetadata"
+  ],
+  "tags": [],
+  "version": 1
+}

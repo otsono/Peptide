@@ -37,8 +37,20 @@ pub mod fraytools_transform;
 pub mod vector_raster;
 pub mod physics_sim;
 pub mod abc_codec;
+pub mod engine_probe;
 pub mod abc_inject;
 
 // In-process conversion entry point (was the `ssf2_converter` binary's main()).
 pub mod convert;
 pub use convert::{run_conversion, ConversionSummary, ConvertOptions};
+
+// Asset classification (identify which `.ssf` is a character / stage / other).
+pub mod classify;
+pub use classify::{classify_ssf, AssetKind, SsfClassification};
+
+// SSF2 stage AS3 reader (plane assignments + spawned actors) + geometry parser + emitter.
+pub mod stage_abc;
+pub mod stage_parser;
+pub use stage_parser::{parse_stage, parse_stage_opts, ParallaxLayer, ParallaxMode, Platform, Rect, SpawnPoint, StageArt, StageArtSet, StageModel};
+pub mod stage_emit;
+pub use stage_emit::emit_stage;
