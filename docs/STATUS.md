@@ -97,6 +97,13 @@ holy lances) that don't sit in the static tree are a per-stage follow-up, declar
 need arises. follow-ups: the moving-platform motion, dynamically-spawned hazards, per-stage FM-music
 mapping, porting the actual SSF2 audio (licensing-permitting).
 
+stage porting is NOT finished. bowserscastle is the deepest port and the working testbed, and
+even it has gaps: chunks of the reconstructed stage behavior are still commented out in the
+emitted scripts pending verification (SFX calls among them), so the in-game stage is missing
+sound effects and whatever else those blocks drive. other complex stages haven't had the same
+1:1 treatment yet (each stage's gimmicks are bespoke AS3 that needs its own RE pass; the
+machinery here generalizes, the per-stage work doesn't come for free).
+
 ## hitbox-stat parity
 
 **every character's hitbox stats match the SSF2 source. no exceptions right now.**
