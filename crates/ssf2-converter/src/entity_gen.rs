@@ -684,13 +684,18 @@ pub fn generate_entity(
             anim_layer_ids.push(layer_id);
         }
 
-        // The tumble pose is re-centred on the origin (see the IMAGE placement:
-        // the engine spins the entity about its position during TUMBLE), but the
-        // SSF2 boxes still track the authored art position. Shift the whole box
-        // set (hurtboxes, itemboxes, ECB) by the same correction: move the
-        // hurtbox union's centre onto the origin so the boxes cover the
-        // spinning sprite. Every other animation keeps its boxes verbatim.
-        let box_shift: (f64, f64) = if anim_name == "tumble" {
+        // The launched-state slots (tumble, hurt_heavy) anchor the BODY on the
+        // entity position -- the official character template's convention -- but
+        // their SSF2 source xframes carry root-timeline stance placements that
+        // are preview positions, not runtime anchors (mario's "flying" sits a
+        // full body-height BELOW the origin; every grounded xframe sits feet-at-
+        // origin). Correction: move the hurtbox union's centre onto the origin
+        // and shift the whole box set (hurtboxes, itemboxes, ECB) by that one
+        // delta. The IMAGE placement applies the same correction (tumble
+        // re-centres per-frame because it also strips rotation; hurt_heavy
+        // translates by this exact shift, keeping art-box registration intact).
+        // Every other animation keeps its placement and boxes verbatim.
+        let box_shift: (f64, f64) = if anim_name == "tumble" || anim_name == "hurt_heavy" {
             let mut aabb: Option<(f64, f64, f64, f64)> = None; // left,right,top,bottom
             if let Some(bd) = sprite_boxes.get(source_anim.as_str()) {
                 for lf in 0..frame_count {
@@ -1225,6 +1230,15 @@ pub fn generate_entity(
                                     fm_y = round2(-fm_sy * hh);
                                     emit_rot = 0.0;
                                 }
+                            }
+                            // hurt_heavy is also a launched pose (see box_shift above): translate
+                            // the art by the same hurtbox-union-to-origin delta as the boxes, so
+                            // the body centres on the entity position with art-box registration
+                            // preserved exactly. No rotation strip -- the engine doesn't spin
+                            // hurt_heavy.
+                            if anim_name == "hurt_heavy" {
+                                fm_x = round2(fm_x + box_shift.0);
+                                fm_y = round2(fm_y + box_shift.1);
                             }
 
                             symbols.push(json!({

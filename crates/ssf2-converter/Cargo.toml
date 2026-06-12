@@ -252,3 +252,8 @@ required-features = ["dev-tools"]
 name = "dump_bindata"
 path = "src/bin/dump_bindata.rs"
 required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_xframe_transforms"
+path = "src/bin/dump_xframe_transforms.rs"
+required-features = ["dev-tools"]
