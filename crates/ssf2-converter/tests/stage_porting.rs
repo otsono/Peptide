@@ -209,10 +209,14 @@ fn junglehijinx_has_parallax() {
     assert!(m.art.parallax.iter().all(|p| p.mode == ssf2_converter::ParallaxMode::Pan),
         "cambg layers use PAN mode (BOUNDS is for tiling backdrops)");
     assert!(!m.art.background.is_empty(), "fixed near-background (island) present");
-    // junglehijinx's foreground is the `*_fg` jungle foliage — a DISTINCT prop offset from the
-    // island, low overlap with the background, so it stays in front (NOT folded like a
-    // structure front-face would be). This is the half of the fold heuristic that must survive.
-    assert!(!m.art.foreground.is_empty(), "distinct foreground props (jungle foliage) stay in front");
+    // the `hijinx_trees_fg` foliage lives on SSF2's BACKGROUND plane (its own initialize
+    // fetches it via getBackground(); the `_fg` linkage suffix is composition naming, not an
+    // engine plane) — the AS3-authoritative plane map keeps it there, behind fighters,
+    // faithful to SSF2. assert it isn't LOST: the background composite must span the
+    // foliage's wide canvas (the 1255px trees strip), not just the 590px island.
+    assert!(m.art.background.iter().flat_map(|l| &l.frames).any(|f| f.w >= 1000),
+        "the wide trees foliage strip stays in the background art, got widths {:?}",
+        m.art.background.iter().flat_map(|l| &l.frames).map(|f| f.w).collect::<Vec<_>>());
     // the island terrain is sloped, so the main floor traces a polyline, not a flat line.
     let floor = m.main_floor().expect("main floor");
     let profile = floor.profile.as_ref().expect("curved floor has a traced profile");
@@ -285,9 +289,9 @@ fn battlefield_emits_consistent_entity() {
     assert_eq!(man["content"][0]["type"], "stage");
 
     // the required Fraymakers stage layers are present (emit_stage bails otherwise, but
-    // assert here too so a regression names the missing layer). For battlefield the only IMAGE
-    // layer is the backdrop: the collision masks don't render (the doubled-silhouette fix) and
-    // the structure-foreground folds into the backdrop (the doubled-platform fix).
+    // assert here too so a regression names the missing layer). Art layers are emitted one
+    // per SSF2 plane with SOURCE names (battlefield: the painted backdrop 'Battlefield', the
+    // structure 'Background', the structure front face 'Foreground').
     let layers = v["layers"].as_array().unwrap();
     let named = |n: &str| layers.iter().any(|l| l["name"] == n);
     let meta_eq = |key: &str, val: &str| layers.iter().any(|l|
@@ -295,9 +299,18 @@ fn battlefield_emits_consistent_entity() {
     assert!(meta_eq("containerType", "CHARACTERS_CONTAINER"), "has Characters container");
     assert!(meta_eq("pointType", "ENTRANCE_POINT"), "has an entrance point");
     assert!(meta_eq("pointType", "RESPAWN_POINT"), "has a respawn point");
-    assert!(named("Background Art"), "has the painted backdrop layer");
-    let image_layers = layers.iter().filter(|l| l["type"] == "IMAGE").count();
-    assert_eq!(image_layers, 1, "battlefield has exactly 1 art layer (backdrop, structure-foreground folded in), no duplicate platform / collision silhouette");
+    assert!(named("Battlefield"), "has the painted backdrop layer (source-named)");
+    // the layer array draws back-to-front, so the duplicate-platform guard is positional:
+    // battlefield's SSF2 'foreground' is the structure's re-drawn front face, and over
+    // fighters it reads as a duplicate platform — every IMAGE art layer must sit BEHIND the
+    // Characters container. (a stage with a genuine overlay opts out via keep_foreground and
+    // emits its foreground AFTER Characters; battlefield has none.)
+    let chars_idx = layers.iter().position(|l|
+        l.pointer("/pluginMetadata/com.fraymakers.FraymakersMetadata/containerType").and_then(|x| x.as_str())
+            == Some("CHARACTERS_CONTAINER")).expect("Characters container");
+    let last_image = layers.iter().rposition(|l| l["type"] == "IMAGE").unwrap();
+    assert!(last_image < chars_idx,
+        "battlefield draws all art behind fighters (no duplicate platform face over them); IMAGE at {last_image} >= Characters at {chars_idx}");
 }
 
 /// Stage hazards: damaging hazards auto-detect from the placement tree (filtered to the blast
@@ -317,16 +330,20 @@ fn hazard_stages_emit_hazards() {
 
     // bowserscastle: the lava glow + Thwomp hazards come from the stage's AS3 spawnEnemy calls
     // (BowsersCastleLava + Thwomp), not hand-declared; the Thwomp borrows the detected sprite so it
-    // renders as the real SSF2 thwomp. it also keeps the 3 STATIC standing platforms (two
-    // ledge-bounded side platforms + the central terrainGround block, RE'd from the SSF2 terrain).
+    // renders as the real SSF2 thwomp. the standing surfaces are the 2 DECLARED bridge decks
+    // (visible grey platforms from metadata) plus the central pedestal, which is real parsed
+    // terrain (terrainGround_platform, a drop-through) — declaring it too would duplicate the
+    // collision (see mappings/stage/metadata.jsonc).
     let bc = parse_stage(&dir.join("bowserscastle.ssf")).unwrap();
     let thwomp = bc.hazards.iter().find(|h| h.label == "Thwomp");
     assert!(thwomp.is_some(), "bowserscastle should carry the AS3-spawned thwomp, got {:?}",
         bc.hazards.iter().map(|h| (&h.label, &h.motion)).collect::<Vec<_>>());
     assert!(bc.hazards.iter().any(|h| h.label == "Lava"), "and the AS3-spawned lava glow");
     assert!(thwomp.unwrap().art.is_some(), "the thwomp borrows the real SSF2 sprite");
-    assert!(bc.platforms.iter().filter(|p| p.visible).count() == 3,
-        "bowserscastle keeps its 3 standing platforms, got {}", bc.platforms.iter().filter(|p| p.visible).count());
+    assert!(bc.platforms.iter().filter(|p| p.visible).count() == 2,
+        "bowserscastle keeps its 2 declared bridge decks, got {}", bc.platforms.iter().filter(|p| p.visible).count());
+    assert!(bc.platforms.iter().any(|p| !p.visible && p.drop_through),
+        "and the central pedestal stays as real parsed drop-through terrain");
 
     // battlefield: a clean flat stage with no hazards (auto-detection must not false-positive).
     let bf = parse_stage(&dir.join("battlefield.ssf")).unwrap();
