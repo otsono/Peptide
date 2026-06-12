@@ -26,6 +26,7 @@ const OP_SETLOCAL: u8 = 0x63;
 const OP_GETLOCAL: u8 = 0x62;
 const OP_CALLPROPERTY: u8 = 0x46;
 const OP_CONVERT_S: u8 = 0x70;
+const OP_CONVERT_I: u8 = 0x73;
 const OP_RETURNVOID: u8 = 0x47;
 // branches + stack/value ops for the reflection dispatcher
 const OP_JUMP: u8 = 0x10;
@@ -34,6 +35,7 @@ const OP_IFFALSE: u8 = 0x12;
 const OP_IFSTRICTEQ: u8 = 0x19;
 #[allow(dead_code)] const OP_IFSTRICTNE: u8 = 0x1A;
 const OP_DUP: u8 = 0x2A;
+const OP_SWAP: u8 = 0x2B;
 const OP_POP: u8 = 0x29;
 const OP_SETPROPERTY: u8 = 0x61;
 #[allow(dead_code)] // kept for completeness of the opcode set
@@ -50,6 +52,18 @@ const OP_PUSHSHORT: u8 = 0x25;
 
 // AVM2 namespace kinds
 const NS_PACKAGE: u8 = 0x16; // CONSTANT_PackageNamespace
+
+// ── SSF2 engine namespaces (single source of truth) ──
+// Every injected call into the live engine resolves its symbols BY NAME against one
+// of these package namespaces, so a recompile of SSF2 survives as long as the symbol
+// still exists. If SSF2 is ever repackaged, this is the one place the package paths
+// change; `ssf2_manifest()` + `verify_symbols()` then flag any class/member that moved
+// (run via `peptide ssf2 doctor` and the patch preflight) instead of silently breaking.
+pub const SSF2_PKG: &str = "com.mcleodgaming.ssf2";              // Main (document class)
+pub const SSF2_NS_CONTROLLERS: &str = "com.mcleodgaming.ssf2.controllers"; // GameController, Game, MenuController, PlayerSetting
+pub const SSF2_NS_ENGINE: &str = "com.mcleodgaming.ssf2.engine"; // Character, StageData, AttackData/Object, Stats
+pub const SSF2_NS_UTIL: &str = "com.mcleodgaming.ssf2.util";     // Controller, ControlsObject, ResourceManager
+pub const SSF2_NS_ENUMS: &str = "com.mcleodgaming.ssf2.enums";   // Mode
 
 /// A tiny opcode emitter with the AVM2 u30 var-encoding + label/branch fixups.
 #[derive(Default)]
@@ -78,6 +92,8 @@ impl Code {
     fn new_label(&mut self) -> usize { self.labels.push(None); self.labels.len() - 1 }
     /// Mark the current position as label `l`'s target.
     fn place(&mut self, l: usize) { self.labels[l] = Some(self.b.len()); }
+    /// Byte position of a placed label (for exception-table from/to/target offsets).
+    fn pos(&self, l: usize) -> u32 { self.labels[l].expect("unplaced label") as u32 }
     /// Emit a branch opcode `op` targeting label `l`. AVM2 s24 offset is relative
     /// to the byte AFTER the 3 offset bytes. Records a fixup resolved by `finish`.
     fn branch(&mut self, op: u8, l: usize) {
@@ -99,6 +115,145 @@ impl Code {
         }
         self.b
     }
+}
+
+/// Prepend `payload` to a method body: splice it before the existing code and shift the
+/// absolute exception-table offsets by the payload length. AVM2 branches are relative
+/// (shift-invariant), so only the exception from/to/target need fixing. This is the one
+/// home for the "inject at method entry" mechanics every `inject_*` helper relies on;
+/// callers still set their own frame requirements (max_stack / max_scope_depth /
+/// local_count) since those are payload-specific.
+fn prepend_code(body: &mut MethodBody, payload: &[u8]) {
+    let n = payload.len() as u32;
+    let mut spliced = payload.to_vec();
+    spliced.extend_from_slice(&body.code);
+    body.code = spliced;
+    // shift the absolute exception-table offsets by the prepend length (relative
+    // branches are shift-invariant, so only from/to/target need fixing).
+    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
+}
+
+// ───────────────────────────── symbol manifest ─────────────────────────────
+// The SSF2 analogue of src/manifest.rs (the Fraymakers side): the single table of
+// every engine symbol the injected bridge + verbs depend on. Each is resolved BY NAME
+// against the loaded SSF2 ABC, so a recompile of SSF2 survives as long as the symbol
+// still exists. `verify_symbols` runs at the top of every patch (and `peptide ssf2
+// doctor`): if a class or member has moved, the patch ABORTS with the missing symbol
+// named, instead of producing a SWF whose injected calls fail silently at runtime.
+//
+// Any NEW SSF2 symbol an injection comes to depend on MUST be listed here.
+
+/// One SSF2 engine dependency: a class by local name, optionally a member on it.
+pub struct Ssf2Symbol {
+    /// Instance class local name (matched by `find_class_by_name`).
+    pub class: &'static str,
+    /// A method/getter/setter/slot the class must declare, or `None` for "class exists".
+    pub member: Option<&'static str>,
+    /// Subsystem, for grouping the doctor checklist.
+    pub group: &'static str,
+    /// Why we depend on it (shown when missing).
+    pub why: &'static str,
+    /// `true` → the patch can't function without it (a miss aborts); `false` → a loud
+    /// warning but the patch proceeds (graceful-degradation site).
+    pub critical: bool,
+}
+
+macro_rules! ssf2_sym {
+    ($class:literal $(. $member:literal)?, $group:literal, $why:literal, $crit:literal) => {
+        Ssf2Symbol { class: $class, member: ssf2_sym!(@m $($member)?), group: $group, why: $why, critical: $crit }
+    };
+    (@m $member:literal) => { Some($member) };
+    (@m) => { None };
+}
+
+/// Every SSF2 class/member the injected bridge + command verbs resolve at runtime.
+/// Grouped by the feature that needs them; keep in step with the `inject_*` helpers
+/// and the host-side `Ssf2Target` verbs.
+pub const SSF2_MANIFEST: &[Ssf2Symbol] = &[
+    // ── document + boot hooks (resolved by name at patch time too) ──
+    ssf2_sym!("Main",                              "boot", "document class: socket bridge + listeners attach to its ctor", true),
+    ssf2_sym!("DisclaimerMenu"."checkDisclaimer",  "boot", "event-driven READY hook (boot-complete signal)", true),
+    ssf2_sym!("MenuController"."showInitialMenu",  "boot", "quick-boot: rewritten to queue the match + skip menus", true),
+    // ── socket bridge / match launch ──
+    ssf2_sym!("GameController"."stageData",         "bridge", "the live match graph root (characters live under it)", true),
+    ssf2_sym!("GameController"."currentGame",       "bridge", "the Game the spawn verbs build + startMatch reads", true),
+    ssf2_sym!("GameController"."startMatch",        "bridge", "start the programmatically-built match", true),
+    ssf2_sym!("MenuController"."disposeAllMenus",   "bridge", "tear menus down after a programmatic startMatch", true),
+    ssf2_sym!("Game",                               "bridge", "constructed (N player slots) by the SPAWN verb", true),
+    ssf2_sym!("Mode",                               "bridge", "Mode.VERSUS for the built Game", true),
+    ssf2_sym!("ResourceManager"."queueResources",   "bridge", "queue stage + character resources to load", true),
+    ssf2_sym!("ResourceManager"."load",             "bridge", "drive the in-context async resource load", true),
+    ssf2_sym!("PlayerSetting"."character",          "bridge", "per-slot character id the match builds from", true),
+    ssf2_sym!("Stats"."getStats",                   "bridge", "CharacterData lookup (makePlayer/ctor read it)", true),
+    // ── live match graph (reflection bridge navigation) ──
+    ssf2_sym!("StageData"."Characters",             "reflect", "per-player character nodes (p0..p3 resolve through it)", true),
+    ssf2_sym!("Character"."getDamage",              "reflect", "matchStatus + dmg/info read the damage percent", false),
+    // ── input injection (hold/seq/scenario) ──
+    ssf2_sym!("Controller"."getControlStatus",      "input", "per-frame input read we prepend the applicator to", true),
+    ssf2_sym!("Character"."ControlSettings",        "input", "public getter to the player's Controller (targeting)", true),
+    ssf2_sym!("ControlsObject"."controls",          "input", "the control bitmask the applicator writes per frame", true),
+    ssf2_sym!("Character"."setState",               "input", "scenario's toState(STAND) lowering", false),
+    // ── addCharacter (live add into a reserved slot) ──
+    ssf2_sym!("StageData"."activateCharacters",     "addchar", "re-activate after constructing the added Character", true),
+    ssf2_sym!("StageData"."deactivateCharacters",   "addchar", "bracket the construct like makePlayer does", true),
+    ssf2_sym!("Character",                           "addchar", "constructed directly (its ctor self-registers)", true),
+    ssf2_sym!("PlayerSetting"."exist",              "addchar", "reserved-slot flag flipped true when filled", true),
+    // ── tune (mutate a move's stored hitbox stats) ──
+    ssf2_sym!("Character"."AttackDataObj",          "tune", "protected getter to the AttackData (move table)", true),
+    ssf2_sym!("AttackData"."getAttack",             "tune", "look up a move's AttackObject by name", true),
+    ssf2_sym!("AttackObject"."AttackBoxes",         "tune", "the move's stored attack boxes (string-keyed)", true),
+    ssf2_sym!("AttackDamage"."Damage",              "tune", "a stored box's mutable stat setter (Damage/KBConstant/…)", true),
+];
+
+/// Does class index `ci` (or any of its superclasses) declare a trait named `member`
+/// (method/getter/setter/slot)? Walks the super chain so inherited members resolve
+/// (e.g. `AttackDataObj`/`getDamage` live on `InteractiveSprite`, the parent of
+/// `Character`). Stops at the first super that isn't a user class (a builtin like
+/// Object/Sprite), and guards against cycles.
+fn class_has_member(abc: &Abc, ci: usize, member: &str) -> bool {
+    let named = |abc: &Abc, c: usize| {
+        let m = |ts: &[Trait]| ts.iter().any(|t| abc.multiname_local(t.name).as_deref() == Some(member));
+        m(&abc.instances[c].traits) || m(&abc.classes[c].traits)
+    };
+    let mut cur = Some(ci);
+    for _ in 0..32 { // depth guard
+        let Some(c) = cur else { return false };
+        if named(abc, c) { return true; }
+        cur = abc.multiname_local(abc.instances[c].super_name)
+            .and_then(|s| abc.find_class_by_name(&s));
+    }
+    false
+}
+
+/// Resolve each manifest symbol against `abc`, returning `(symbol, resolved?)` for the
+/// doctor checklist and the patch preflight.
+pub fn verify_symbols(abc: &Abc) -> Vec<(&'static Ssf2Symbol, bool)> {
+    SSF2_MANIFEST.iter().map(|s| {
+        let ok = match abc.find_class_by_name(s.class) {
+            None => false,
+            Some(ci) => s.member.map(|m| class_has_member(abc, ci, m)).unwrap_or(true),
+        };
+        (s, ok)
+    }).collect()
+}
+
+/// Patch preflight: abort if any CRITICAL manifest symbol is missing, naming what moved
+/// (and why) so a SSF2 layout change fails loudly instead of corrupting the patch.
+pub fn preflight(abc: &Abc) -> anyhow::Result<()> {
+    let missing: Vec<String> = verify_symbols(abc).into_iter()
+        .filter(|(s, ok)| s.critical && !ok)
+        .map(|(s, _)| match s.member {
+            Some(m) => format!("  {}.{} — {}", s.class, m, s.why),
+            None => format!("  {} — {}", s.class, s.why),
+        })
+        .collect();
+    if missing.is_empty() { return Ok(()); }
+    anyhow::bail!(
+        "SSF2 symbol preflight failed — {} critical engine symbol(s) moved or were renamed \
+         (SSF2 likely updated). Peptide resolves these by name; update SSF2_MANIFEST + the \
+         inject_* helpers to the new names:\n{}",
+        missing.len(), missing.join("\n")
+    )
 }
 
 /// Resolved multiname indices for the AIR filesystem API we call.
@@ -196,21 +351,15 @@ pub fn inject_startup_marker(abc: &mut Abc, doc_class_local: &str, native_path: 
     let l_fs = l_file + 1;
 
     let payload = emit_marker_payload(abc, native_path, content, l_file, l_fs);
-    let n = payload.len() as u32;
 
     let body = &mut abc.bodies[body_idx];
     // prepend payload
-    let mut new_code = payload;
-    new_code.extend_from_slice(&body.code);
-    body.code = new_code;
+    prepend_code(body, &payload);
     // bump frame requirements
     body.local_count = l_fs + 1;
     body.max_stack = body.max_stack.max(4);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
     // fix absolute exception offsets (relative branches are shift-invariant)
-    for e in &mut body.exceptions {
-        e.from += n; e.to += n; e.target += n;
-    }
     Ok(())
 }
 
@@ -291,18 +440,14 @@ pub fn inject_enterframe_heartbeat(abc: &mut Abc, doc_class_local: &str, native_
     c.op_u30_u30(OP_CALLPROPVOID, mn_addel, 2);
     c.op(OP_POPSCOPE);
     let payload = c.b;
-    let n = payload.len() as u32;
 
     let iinit = abc.instances[ci].iinit;
     let body_idx = abc.bodies.iter().position(|b| b.method == iinit)
         .ok_or_else(|| anyhow::anyhow!("no ctor body for {doc_class_local}"))?;
     let body = &mut abc.bodies[body_idx];
-    let mut new_code = payload;
-    new_code.extend_from_slice(&body.code);
-    body.code = new_code;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(3);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -371,14 +516,13 @@ pub fn inject_command_channel(abc: &mut Abc, doc_class_local: &str, cmd_path: &s
     c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_tick);
     c.op_u30_u30(OP_CALLPROPVOID, mn_addel, 2);
     c.op(OP_POPSCOPE);
-    let payload = c.b; let n = payload.len() as u32;
+    let payload = c.b;
     let iinit = abc.instances[ci].iinit;
     let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
     let body = &mut abc.bodies[body_idx];
-    let mut new_code = payload; new_code.extend_from_slice(&body.code); body.code = new_code;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(3);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -399,6 +543,24 @@ pub fn inject_command_channel(abc: &mut Abc, doc_class_local: &str, cmd_path: &s
 /// SSF2's async resource loader (the flaw of the old per-frame FileStream bridge).
 /// That also removes the need for the execute-once guard. The engine dials into the
 /// host's loopback server at `host:port` from the document ctor.
+/// Find an existing `QName` multiname in the pool by local name, preferring one whose
+/// qualified name mentions `prefer_owner` — so a protected-namespace member is reused by
+/// exact (ns, name) match (runtime callproperty resolves by exact match) rather than
+/// forged public.
+fn find_qname_by_local_owned(abc: &Abc, local: &str, prefer_owner: &str) -> Option<u32> {
+    let mut fallback = None;
+    for (i, mn) in abc.multinames.iter().enumerate() {
+        let idx = i as u32 + 1;
+        if matches!(mn, Multiname::QName { .. }) && abc.multiname_local(idx).as_deref() == Some(local) {
+            if abc.multiname_qualified(idx).map(|q| q.contains(prefer_owner)).unwrap_or(false) {
+                return Some(idx);
+            }
+            fallback.get_or_insert(idx);
+        }
+    }
+    fallback
+}
+
 pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, port: u16) -> anyhow::Result<()> {
     let ci = abc.find_class_by_name(doc_class_local)
         .ok_or_else(|| anyhow::anyhow!("class {doc_class_local} not found"))?;
@@ -421,12 +583,12 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     let mn_ondata = q(abc, pub_ns, "peptideOnData");
     let n_ondata = abc.intern_string("peptideOnData");
     // GameController static singleton (reaches the live match / characters)
-    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string(SSF2_NS_CONTROLLERS); abc.intern_namespace(NS_PACKAGE, s) };
     let mn_gc = q(abc, ctrl_ns, "GameController");
     let s_v_gc = abc.intern_string("GC");
     let s_v_setp = abc.intern_string("SETP");
     // SPAWN: build Game(1, Mode.TRAINING) + set stage/char + GameController.startMatch
-    let enums_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.enums"); abc.intern_namespace(NS_PACKAGE, s) };
+    let enums_ns = { let s = abc.intern_string(SSF2_NS_ENUMS); abc.intern_namespace(NS_PACKAGE, s) };
     let mn_game = q(abc, ctrl_ns, "Game");
     let mn_mode = q(abc, enums_ns, "Mode");
     let mn_versus = q(abc, pub_ns, "VERSUS");
@@ -440,7 +602,7 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     let s_v_spawn = abc.intern_string("SPAWN");
     let s_spawned = abc.intern_string("spawned");
     // resource preload verbs (QUEUE ids, LOADNEXT kicks the async loader, LOADED reports done)
-    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let util_ns = { let s = abc.intern_string(SSF2_NS_UTIL); abc.intern_namespace(NS_PACKAGE, s) };
     let mn_rm = q(abc, util_ns, "ResourceManager");
     let mn_queueresources = q(abc, pub_ns, "queueResources");
     let mn_loadnext = q(abc, pub_ns, "loadNext");
@@ -461,7 +623,7 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     let s_v_calls = abc.intern_string("CALLS");
     let s_multimode = abc.intern_string("multimode");
     // RM/STATS root verbs (cur = the static class) for probing the resource pool / stats
-    let engine_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.engine"); abc.intern_namespace(NS_PACKAGE, s) };
+    let engine_ns = { let s = abc.intern_string(SSF2_NS_ENGINE); abc.intern_namespace(NS_PACKAGE, s) };
     let mn_stats_real = q(abc, engine_ns, "Stats");
     let s_v_rm = abc.intern_string("RM");
     let s_v_stats = abc.intern_string("STATS");
@@ -496,6 +658,62 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     // the reply IS the observable, same as the E:logged:… line Fraymakers returns).
     let s_v_log = abc.intern_string("LOG");
     let s_logged = abc.intern_string("logged: ");
+    // error reporting: a thrown command (e.g. a bad reflection path) is caught and the
+    // reply becomes "ERR:<exception>" instead of timing out the host silently.
+    let s_errpfx = abc.intern_string("ERR:");
+    // HOLD <idx> <mask> / SEQ <idx> <csv-masks>: host input injection. These write
+    // per-frame state directly onto the TARGET player's Controller (reached via the
+    // public Characters[idx].ControlSettings chain); the per-frame applicator
+    // (inject_input_applicator) reads it off that same controller. SSF2's controls are
+    // frame-paced engine-side (a queued mask list drained one per frame), mirroring how
+    // Fraymakers drains one `i` line per frame. State lives on the controller (not the
+    // document) because the applicator runs inside Controller and the document singleton
+    // Main.ROOT is a non-public static the reflection seam can't reach.
+    let s_v_hold = abc.intern_string("HOLD");
+    let s_v_seq = abc.intern_string("SEQ");
+    let s_comma = abc.intern_string(",");
+    // controller-state slots (added to the Controller class by inject_input_applicator;
+    // here we just need the public multinames to set them on the target controller)
+    let mn_holdmask = q(abc, pub_ns, "peptideHoldMask");   // persistent held mask (release = 0)
+    let mn_seqlist = q(abc, pub_ns, "peptideSeq");         // Array of per-frame masks, or null
+    let mn_seqidx = q(abc, pub_ns, "peptideSeqIdx");       // next index into peptideSeq
+    let mn_active = q(abc, pub_ns, "peptideActive");       // injection on for this controller
+    // nav to the target controller: GameController.stageData.Characters[idx].ControlSettings
+    let mn_stagedata2 = q(abc, pub_ns, "stageData");
+    let mn_characters2 = q(abc, pub_ns, "Characters");
+    let mn_controlsettings = q(abc, pub_ns, "ControlSettings");
+    // ADDCHAR <char>: live add-player into the running match (build PlayerSetting, push,
+    // StageData.makePlayer). makePlayer lives in StageData's protected namespace, so reuse
+    // the engine's own multiname from the pool; Vector.push is the AS3 builtin ns.
+    let s_v_addchar = abc.intern_string("ADDCHAR");
+    let mn_expansion = q(abc, pub_ns, "expansion");
+    let mn_team = q(abc, pub_ns, "team");
+    let mn_exist = q(abc, pub_ns, "exist");
+    // direct Character construction (skips makePlayer's HUD attach, which assumes the
+    // start-game per-slot setup). The Character ctor self-registers into the live match
+    // via StageData.addPlayer/addCharacter. importData/de/activateCharacters are public
+    // (only makePlayer itself is protected).
+    let mn_character_class = q(abc, engine_ns, "Character");
+    let mn_getstats = q(abc, pub_ns, "getStats");
+    let mn_importdata = q(abc, pub_ns, "importData");
+    let mn_deactivate = q(abc, pub_ns, "deactivateCharacters");
+    let mn_activate = q(abc, pub_ns, "activateCharacters");
+    let mn_x_start = q(abc, pub_ns, "x_start");
+    let mn_y_start = q(abc, pub_ns, "y_start");
+    let s_player_id = abc.intern_string("player_id");
+    let s_shieldtype = abc.intern_string("shieldType");
+    let s_shield = abc.intern_string("shield");
+    let s_stamina = abc.intern_string("stamina");
+    // TUNE <move> <accessor> <value>: mutate a stored attack box's stat on the current
+    // peptideCur (a Character). cur.AttackDataObj().getAttack(move).AttackBoxes[0] is an
+    // AttackDamage with public setters (Damage/KBConstant/Direction/Power); we set the
+    // accessor by runtime name. AttackDataObj is protected → reuse the engine's QName.
+    let s_v_tune = abc.intern_string("TUNE");
+    let mn_attackdataobj = find_qname_by_local_owned(abc, "AttackDataObj", "InteractiveSprite")
+        .ok_or_else(|| anyhow::anyhow!("AttackDataObj multiname not found in pool"))?;
+    let mn_getattack = q(abc, pub_ns, "getAttack");
+    let mn_attackboxes = q(abc, pub_ns, "AttackBoxes");
+    let s_attackbox = abc.intern_string("attackBox"); // the default box key (AttackBoxes is string-keyed)
 
     // add the persistent register + the socket slot to the class
     abc.add_instance_slot(ci, mn_cur);
@@ -522,6 +740,11 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     field(&mut c, 4, l_a3); // optional 3rd arg (e.g. SPAWN player count); undefined when absent
     // result = "?"
     c.op_u30(OP_PUSHSTRING, s_q); c.op_u30(OP_SETLOCAL, l_res);
+
+    // try-region start: the whole dispatch is wrapped so a thrown command (bad path,
+    // unresolved member, engine-side null-deref) reports "ERR:<exception>" instead of
+    // killing the handler silently (which would time the host out).
+    let l_try_start = c.new_label(); c.place(l_try_start);
 
     let l_done = c.new_label();
     // No execute-once guard: this is event-driven (one socketData = one command), so
@@ -685,6 +908,99 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     c.place(next); next = c.new_label();
     c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_loaded); c.branch(OP_IFSTRICTNE, next);
     c.op_u30(OP_GETLEX, mn_rm); c.op_u30_u30(OP_CALLPROPERTY, mn_isfullyloaded, 0); c.op(OP_CONVERT_S); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // HOLD <idx> <mask>: set the persistent held mask on Characters[idx]'s controller.
+    // release = mask 0. (peptideSeq cleared so a stale timeline can't override the hold.)
+    // No-op when no match is live (stageData null). ctrl is stashed in l_a3 (free here).
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_hold); c.branch(OP_IFSTRICTNE, next);
+    let l_hold_skip = c.new_label();
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata2); c.op_u30(OP_SETLOCAL, l_a3);
+    c.op_u30(OP_GETLOCAL, l_a3); c.branch(OP_IFFALSE, l_hold_skip);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op_u30(OP_GETPROPERTY, mn_characters2);
+    c.op_u30(OP_GETLOCAL, l_a1); c.op(OP_CONVERT_D); c.op_u30(OP_GETPROPERTY, mnl);
+    c.op_u30(OP_GETPROPERTY, mn_controlsettings); c.op_u30(OP_SETLOCAL, l_a3); // l_a3 = ctrl
+    c.op_u30(OP_GETLOCAL, l_a3); c.op_u30(OP_GETLOCAL, l_a2); c.op(OP_CONVERT_D); c.op_u30(OP_SETPROPERTY, mn_holdmask);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_PUSHNULL); c.op_u30(OP_SETPROPERTY, mn_seqlist);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_PUSHTRUE); c.op_u30(OP_SETPROPERTY, mn_active);
+    c.place(l_hold_skip);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // SEQ <idx> <m,m,…>: queue a per-frame mask timeline on Characters[idx]'s controller;
+    // the applicator drains one per frame and auto-releases (mask 0) once exhausted.
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_seq); c.branch(OP_IFSTRICTNE, next);
+    let l_seq_skip = c.new_label();
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata2); c.op_u30(OP_SETLOCAL, l_a3);
+    c.op_u30(OP_GETLOCAL, l_a3); c.branch(OP_IFFALSE, l_seq_skip);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op_u30(OP_GETPROPERTY, mn_characters2);
+    c.op_u30(OP_GETLOCAL, l_a1); c.op(OP_CONVERT_D); c.op_u30(OP_GETPROPERTY, mnl);
+    c.op_u30(OP_GETPROPERTY, mn_controlsettings); c.op_u30(OP_SETLOCAL, l_a3); // l_a3 = ctrl
+    // ctrl.peptideSeq = a2.split(",")
+    c.op_u30(OP_GETLOCAL, l_a3); c.op_u30(OP_GETLOCAL, l_a2); c.op_u30(OP_PUSHSTRING, s_comma); c.op_u30_u30(OP_CALLPROPERTY, mn_split, 1); c.op_u30(OP_SETPROPERTY, mn_seqlist);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETPROPERTY, mn_seqidx);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETPROPERTY, mn_holdmask);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_PUSHTRUE); c.op_u30(OP_SETPROPERTY, mn_active);
+    c.place(l_seq_skip);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // ADDCHAR <char> <slot>: live add-player into a RESERVED (pre-allocated, empty) slot.
+    // The match's player containers are fixed-size at startGame, so spawn reserves spare
+    // slots (exist=false, null character) and addCharacter fills one here: set the slot's
+    // PlayerSetting, importData the stats, then construct the Character directly (the ctor
+    // self-registers via StageData.addPlayer/addCharacter), bracketed by de/activate like
+    // makePlayer. We skip makePlayer's attachHealthBox (its HUD attach assumes start-game
+    // per-slot setup). No-op if no match is live. l_g=currentGame, l_ps=the slot's
+    // PlayerSetting, l_a3=stats CharacterData.
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_addchar); c.branch(OP_IFSTRICTNE, next);
+    let l_ac_skip = c.new_label();
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_currentgame); c.op_u30(OP_SETLOCAL, l_g);
+    c.op_u30(OP_GETLOCAL, l_g); c.branch(OP_IFFALSE, l_ac_skip);
+    // ps = g.PlayerSettings[Number(slot)]  (the reserved slot)
+    c.op_u30(OP_GETLOCAL, l_g); c.op_u30(OP_GETPROPERTY, mn_playersettings); c.op_u30(OP_GETLOCAL, l_a2); c.op(OP_CONVERT_D); c.op_u30(OP_GETPROPERTY, mnl); c.op_u30(OP_SETLOCAL, l_ps);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op_u30(OP_GETLOCAL, l_a1); c.op_u30(OP_SETPROPERTY, mn_character);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHTRUE); c.op_u30(OP_SETPROPERTY, mn_human);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHTRUE); c.op_u30(OP_SETPROPERTY, mn_exist);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETPROPERTY, mn_costume);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETPROPERTY, mn_expansion);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHBYTE); c.op(0xFF); c.op_u30(OP_SETPROPERTY, mn_team); // team = -1 (FFA)
+    c.op_u30(OP_GETLOCAL, l_ps); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETPROPERTY, mn_x_start);
+    c.op_u30(OP_GETLOCAL, l_ps); c.op_u30(OP_PUSHSHORT, 100); c.op_u30(OP_SETPROPERTY, mn_y_start);
+    // stats = Stats.getStats(char)
+    c.op_u30(OP_GETLEX, mn_stats_real); c.op_u30(OP_GETLOCAL, l_a1); c.op_u30_u30(OP_CALLPROPERTY, mn_getstats, 1); c.op_u30(OP_SETLOCAL, l_a3);
+    // stats.importData({player_id: Number(slot)+1 (1-based, matching makePlayer's blue), shieldType:"shield", stamina:0})
+    c.op_u30(OP_GETLOCAL, l_a3);
+    c.op_u30(OP_PUSHSTRING, s_player_id); c.op_u30(OP_GETLOCAL, l_a2); c.op(OP_CONVERT_D); c.op(OP_PUSHBYTE); c.op(1); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_shieldtype); c.op_u30(OP_PUSHSTRING, s_shield);
+    c.op_u30(OP_PUSHSTRING, s_stamina); c.op(OP_PUSHBYTE); c.op(0);
+    c.op_u30(OP_NEWOBJECT, 3);
+    c.op_u30_u30(OP_CALLPROPVOID, mn_importdata, 1);
+    // stageData.deactivateCharacters()  (makePlayer brackets the construct with de/activate)
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata2); c.op_u30_u30(OP_CALLPROPVOID, mn_deactivate, 0);
+    // new Character(stats, ps, stageData) — ctor self-registers via addPlayer/addCharacter
+    c.op_u30(OP_FINDPROPSTRICT, mn_character_class);
+    c.op_u30(OP_GETLOCAL, l_a3); c.op_u30(OP_GETLOCAL, l_ps);
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata2);
+    c.op_u30_u30(OP_CONSTRUCTPROP, mn_character_class, 3); c.op(OP_POP);
+    // stageData.activateCharacters()
+    c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata2); c.op_u30_u30(OP_CALLPROPVOID, mn_activate, 0);
+    c.place(l_ac_skip);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // TUNE <move> <accessor> <value>: mutate stored attack box 0's stat on peptideCur.
+    // cur.AttackDataObj().getAttack(a1).AttackBoxes[0][a2] = Number(a3). AttackDataObj is
+    // protected (reused QName); getAttack/AttackBoxes/the AttackDamage setter are public.
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_tune); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur);
+    c.op_u30(OP_GETPROPERTY, mn_attackdataobj);                    // AttackDataObj is a GETTER
+    c.op_u30(OP_GETLOCAL, l_a1); c.op_u30_u30(OP_CALLPROPERTY, mn_getattack, 1); // getAttack(move) is a method
+    c.op_u30(OP_GETPROPERTY, mn_attackboxes);                      // AttackBoxes is a GETTER (string-keyed)
+    c.op_u30(OP_PUSHSTRING, s_attackbox); c.op_u30(OP_GETPROPERTY, mnl); // box = AttackBoxes["attackBox"]
+    c.op(OP_DUP);                                                  // [box, box]
+    c.op_u30(OP_GETLOCAL, l_a2);                                   // accessor (runtime name)
+    c.op_u30(OP_GETLOCAL, l_a3); c.op(OP_CONVERT_D);               // Number(value)
+    c.op_u30(OP_SETPROPERTY, mnl);                                 // box[accessor] = value ; leaves [box]
+    c.op_u30(OP_GETLOCAL, l_a2); c.op_u30(OP_GETPROPERTY, mnl);    // read box[accessor] back
+    c.op(OP_CONVERT_S); c.op_u30(OP_SETLOCAL, l_res);             // result = the new value (confirmation)
+    c.branch(OP_JUMP, l_done);
     // LOG <msg>: result = "logged: " + a1  (commands.hsx log() parity)
     c.place(next); next = c.new_label();
     c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_log); c.branch(OP_IFSTRICTNE, next);
@@ -695,6 +1011,19 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur); c.op(OP_CONVERT_S); c.op_u30(OP_SETLOCAL, l_res);
 
     c.place(l_done);
+    // try-region end. Normal path skips the catch handler; a thrown command lands here
+    // with the exception on the operand stack.
+    let l_try_end = c.new_label(); c.place(l_try_end);
+    let l_reply = c.new_label();
+    c.branch(OP_JUMP, l_reply);
+    // catch handler: result = "ERR:" + String(exception). Re-push the scope the unwind
+    // dropped (so the scope depth matches the normal path at l_reply).
+    let l_catch = c.new_label(); c.place(l_catch);
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);          // operand: [exc] ; scope restored to depth 1
+    c.op(OP_CONVERT_S);                              // [String(exc)]
+    c.op_u30(OP_PUSHSTRING, s_errpfx); c.op(OP_SWAP); c.op(OP_ADD); // ["ERR:" + String(exc)]
+    c.op_u30(OP_SETLOCAL, l_res);
+    c.place(l_reply);
     // ── write reply over the socket: peptideSock.writeUTFBytes(seq + " " + result + "\n"); flush() ──
     c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_sock);                                   // socket (receiver)
     c.op_u30(OP_GETLOCAL, l_seq); c.op_u30(OP_PUSHSTRING, s_sp); c.op(OP_ADD);
@@ -704,7 +1033,10 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     c.op(OP_RETURNVOID);
 
     let handler = abc.add_method(MethodInfo { param_types: vec![0], return_type: 0, name: n_ondata, flags: 0, options: vec![], param_names: vec![] });
-    abc.add_body(MethodBody { method: handler, max_stack: 7, local_count: 14, init_scope_depth: 0, max_scope_depth: 2, code: c.finish(), exceptions: vec![], traits: vec![] });
+    // exception-table entry covering the whole dispatch (catch-all: exc_type 0). Capture
+    // the byte offsets before finish() consumes the Code.
+    let exc = Exception { from: c.pos(l_try_start), to: c.pos(l_try_end), target: c.pos(l_catch), exc_type: 0, var_name: 0 };
+    abc.add_body(MethodBody { method: handler, max_stack: 7, local_count: 14, init_scope_depth: 0, max_scope_depth: 2, code: c.finish(), exceptions: vec![exc], traits: vec![] });
     abc.add_instance_method_trait(ci, mn_ondata, handler);
 
     // ctor: this.peptideSock = new Socket(); addEventListener("socketData", this.peptideOnData);
@@ -724,14 +1056,123 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     ic.op_u30(OP_PUSHSTRING, s_host); ic.op_u30(OP_PUSHSTRING, s_port);
     ic.op_u30_u30(OP_CALLPROPVOID, mn_connect, 2);
     ic.op(OP_POPSCOPE);
-    let payload = ic.finish(); let n = payload.len() as u32;
+    let payload = ic.finish();
     let iinit = abc.instances[ci].iinit;
     let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
     let body = &mut abc.bodies[body_idx];
-    let mut new_code = payload; new_code.extend_from_slice(&body.code); body.code = new_code;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(3);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
+    Ok(())
+}
+
+/// Inject the per-frame INPUT APPLICATOR — the SSF2 half of host input injection
+/// (`hold`/`release`/`seq`/`scenario`). This is the SSF2 analogue of Fraymakers'
+/// per-frame control-mask epilogue: each frame the engine reads a player's controls
+/// once, and we make that read return a host-supplied mask.
+///
+/// SSF2's per-frame input read flows through `Controller.getControlStatus()` (a
+/// human player's `Character.m_getKey` calls it once per frame, then derives
+/// held/pressed from it via the controls buffer). We PREPEND a guarded early-return:
+/// when `this.peptideActive` is set, it returns a `ControlsObject` whose `controls`
+/// is the mask for this frame, so held/pressed semantics are computed natively
+/// downstream (a first-frame mask reads as "pressed", subsequent identical frames as
+/// "held" — exactly like a real button). Otherwise it falls through to the stock
+/// keyboard read untouched.
+///
+/// State lives on the CONTROLLER itself (added here as instance slots; set by the
+/// socket bridge's HOLD/SEQ verbs via the public `Characters[idx].ControlSettings`
+/// chain), not the document — the applicator runs inside `Controller`, so reading off
+/// `this` needs no global anchor (the document singleton `Main.ROOT` is a non-public
+/// static the reflection seam can't reach), and only the targeted controller carries
+/// `peptideActive`, so no per-frame identity comparison is needed:
+///   * `peptideActive`   — injection on for this controller
+///   * `peptideHoldMask` — the persistent held mask (`release` = 0)
+///   * `peptideSeq`      — a per-frame mask Array (or null); drained one/frame
+///   * `peptideSeqIdx`   — next index into `peptideSeq`; auto-releases at the end
+///
+/// Reads off `this` can't throw; an idle/un-targeted controller has `peptideActive`
+/// undefined → falls through to the unmodified body.
+pub fn inject_input_applicator(abc: &mut Abc, _doc_class_local: &str) -> anyhow::Result<()> {
+    // hook Controller.getControlStatus (resolved by NAME — version-resilient)
+    let ctrl_ci = abc.find_class_by_name("Controller")
+        .ok_or_else(|| anyhow::anyhow!("Controller not found"))?;
+    let method = abc.instances[ctrl_ci].traits.iter().find_map(|t| match t.data {
+        TraitKindData::Method { method, .. }
+            if abc.multiname_local(t.name).as_deref() == Some("getControlStatus") => Some(method),
+        _ => None,
+    }).ok_or_else(|| anyhow::anyhow!("Controller.getControlStatus not found"))?;
+    let body_idx = abc.bodies.iter().position(|b| b.method == method)
+        .ok_or_else(|| anyhow::anyhow!("no body for getControlStatus"))?;
+
+    let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
+    let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
+    // per-controller injection-state slots (must match the public QNames the socket
+    // bridge sets on the target controller)
+    let mn_active = q(abc, pub_ns, "peptideActive");
+    let mn_holdmask = q(abc, pub_ns, "peptideHoldMask");
+    let mn_seqlist = q(abc, pub_ns, "peptideSeq");
+    let mn_seqidx = q(abc, pub_ns, "peptideSeqIdx");
+    let mn_controls = q(abc, pub_ns, "controls");
+    let mn_length = q(abc, pub_ns, "length");
+    let util_ns = { let s = abc.intern_string(SSF2_NS_UTIL); abc.intern_namespace(NS_PACKAGE, s) };
+    let mn_controlsobject = q(abc, util_ns, "ControlsObject");
+    let pub_nsset = abc.intern_ns_set(vec![pub_ns]);
+    let mnl = abc.intern_multinamel(pub_nsset); // runtime [idx] access
+
+    // add the state slots to the Controller class (public, untyped)
+    abc.add_instance_slot(ctrl_ci, mn_active);
+    abc.add_instance_slot(ctrl_ci, mn_holdmask);
+    abc.add_instance_slot(ctrl_ci, mn_seqlist);
+    abc.add_instance_slot(ctrl_ci, mn_seqidx);
+
+    // scratch local (getControlStatus uses only local_0/local_1)
+    let l_mask = 2u32;
+    let mut c = Code::default();
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
+    let l_fall = c.new_label();
+    let l_use_hold = c.new_label();
+    let l_seq_live = c.new_label();
+    let l_apply = c.new_label();
+    // if (!this.peptideActive) fall
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_active); c.branch(OP_IFFALSE, l_fall);
+    // if (this.peptideSeq == null) use hold
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_seqlist); c.branch(OP_IFFALSE, l_use_hold);
+    // if (this.peptideSeqIdx < this.peptideSeq.length) seq-live, else exhausted
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_seqidx);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_seqlist); c.op_u30(OP_GETPROPERTY, mn_length);
+    c.branch(OP_IFLT, l_seq_live);
+    // exhausted: mask = 0 ; this.peptideSeq = null (auto-release)
+    c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETLOCAL, l_mask);
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHNULL); c.op_u30(OP_SETPROPERTY, mn_seqlist);
+    c.branch(OP_JUMP, l_apply);
+    // seq-live: mask = int(this.peptideSeq[this.peptideSeqIdx]) ; this.peptideSeqIdx += 1
+    c.place(l_seq_live);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_seqlist);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_seqidx); c.op_u30(OP_GETPROPERTY, mnl);
+    c.op(OP_CONVERT_I); c.op_u30(OP_SETLOCAL, l_mask);
+    c.op(OP_GETLOCAL0);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_seqidx); c.op(OP_PUSHBYTE); c.op(1); c.op(OP_ADD);
+    c.op_u30(OP_SETPROPERTY, mn_seqidx);
+    c.branch(OP_JUMP, l_apply);
+    // use-hold: mask = int(this.peptideHoldMask)
+    c.place(l_use_hold);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_holdmask); c.op(OP_CONVERT_I); c.op_u30(OP_SETLOCAL, l_mask);
+    // apply: return a ControlsObject whose controls = mask
+    c.place(l_apply);
+    c.op_u30(OP_FINDPROPSTRICT, mn_controlsobject); c.op_u30_u30(OP_CONSTRUCTPROP, mn_controlsobject, 0);
+    c.op(OP_DUP); c.op_u30(OP_GETLOCAL, l_mask); c.op_u30(OP_SETPROPERTY, mn_controls);
+    c.op(OP_POPSCOPE); c.op(OP_RETURNVALUE);
+    // fall-through: restore scope, then the original keyboard-read body runs
+    c.place(l_fall);
+    c.op(OP_POPSCOPE);
+    let payload = c.finish();
+
+    let body = &mut abc.bodies[body_idx];
+    prepend_code(body, &payload);
+    body.local_count = body.local_count.max(l_mask + 1);
+    body.max_stack = body.max_stack.max(4);
+    body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
     Ok(())
 }
 
@@ -824,15 +1265,11 @@ pub fn inject_ready_signal(abc: &mut Abc, doc_class_local: &str) -> anyhow::Resu
     c.place(l_skip);
     c.op(OP_POPSCOPE);
     let payload = c.finish();
-    let n = payload.len() as u32;
 
     let body = &mut abc.bodies[body_idx];
-    let mut new_code = payload;
-    new_code.extend_from_slice(&body.code);
-    body.code = new_code;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(3);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -850,8 +1287,8 @@ pub fn inject_ready_signal(abc: &mut Abc, doc_class_local: &str) -> anyhow::Resu
 /// original is ~6 ops: `disclaimerMenu.show()`), so the disclaimer call simply isn't emitted.
 pub fn inject_quickboot(abc: &mut Abc, char_id: &str, stage_id: &str) -> anyhow::Result<()> {
     let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
-    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
-    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
+    let util_ns = { let s = abc.intern_string(SSF2_NS_UTIL); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string(SSF2_NS_CONTROLLERS); abc.intern_namespace(NS_PACKAGE, s) };
     let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
     let mn_rm = q(abc, util_ns, "ResourceManager");
     let mn_queueres = q(abc, pub_ns, "queueResources");
@@ -904,7 +1341,7 @@ pub fn inject_jump_probe(abc: &mut Abc, doc_class_local: &str, traj_path: &str, 
     let fs_ns = { let s = abc.intern_string("flash.filesystem"); abc.intern_namespace(NS_PACKAGE, s) };
     let utils_ns = { let s = abc.intern_string("flash.utils"); abc.intern_namespace(NS_PACKAGE, s) };
     let events_ns = { let s = abc.intern_string("flash.events"); abc.intern_namespace(NS_PACKAGE, s) };
-    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string(SSF2_NS_CONTROLLERS); abc.intern_namespace(NS_PACKAGE, s) };
     let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
     let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
     let mn_file = q(abc, fs_ns, "File");
@@ -973,14 +1410,13 @@ pub fn inject_jump_probe(abc: &mut Abc, doc_class_local: &str, traj_path: &str, 
     ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_probe);
     ic.op_u30_u30(OP_CALLPROPVOID, mn_addel, 2);
     ic.op(OP_POPSCOPE);
-    let payload = ic.finish(); let n = payload.len() as u32;
+    let payload = ic.finish();
     let iinit = abc.instances[ci].iinit;
     let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
     let body = &mut abc.bodies[body_idx];
-    let mut new_code = payload; new_code.extend_from_slice(&body.code); body.code = new_code;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(3);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -994,10 +1430,10 @@ pub fn inject_load_test(abc: &mut Abc, doc_class_local: &str, marker: &str, char
     let ci = abc.find_class_by_name(doc_class_local).ok_or_else(|| anyhow::anyhow!("class not found"))?;
     let fs_ns = { let s = abc.intern_string("flash.filesystem"); abc.intern_namespace(NS_PACKAGE, s) };
     let utils_ns = { let s = abc.intern_string("flash.utils"); abc.intern_namespace(NS_PACKAGE, s) };
-    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
-    let enums_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.enums"); abc.intern_namespace(NS_PACKAGE, s) };
-    let engine_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.engine"); abc.intern_namespace(NS_PACKAGE, s) };
-    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string(SSF2_NS_CONTROLLERS); abc.intern_namespace(NS_PACKAGE, s) };
+    let enums_ns = { let s = abc.intern_string(SSF2_NS_ENUMS); abc.intern_namespace(NS_PACKAGE, s) };
+    let engine_ns = { let s = abc.intern_string(SSF2_NS_ENGINE); abc.intern_namespace(NS_PACKAGE, s) };
+    let util_ns = { let s = abc.intern_string(SSF2_NS_UTIL); abc.intern_namespace(NS_PACKAGE, s) };
     let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
     let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
     let mn_file = q(abc, fs_ns, "File"); let mn_fstream = q(abc, fs_ns, "FileStream"); let mn_fmode = q(abc, fs_ns, "FileMode");
@@ -1063,13 +1499,12 @@ pub fn inject_load_test(abc: &mut Abc, doc_class_local: &str, marker: &str, char
     ic.op_u30(OP_FINDPROPSTRICT, mn_settimeout); ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_kick); ic.op_u30(OP_PUSHSHORT, 3000); ic.op_u30_u30(OP_CALLPROPVOID, mn_settimeout, 2);
     ic.op_u30(OP_FINDPROPSTRICT, mn_setinterval); ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_check); ic.op_u30(OP_PUSHSHORT, 1500); ic.op_u30_u30(OP_CALLPROPVOID, mn_setinterval, 2);
     ic.op(OP_POPSCOPE);
-    let payload = ic.finish(); let n = payload.len() as u32;
+    let payload = ic.finish();
     let iinit = abc.instances[ci].iinit;
     let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
     let body = &mut abc.bodies[body_idx];
-    let mut nc = payload; nc.extend_from_slice(&body.code); body.code = nc;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(4); body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -1090,10 +1525,10 @@ const OP_IFLT: u8 = 0x15;
 pub fn inject_autospawn(abc: &mut Abc, doc_class_local: &str, char_id: &str, stage_id: &str, delay_ms: u32) -> anyhow::Result<()> {
     let ci = abc.find_class_by_name(doc_class_local).ok_or_else(|| anyhow::anyhow!("class not found"))?;
     let utils_ns = { let s = abc.intern_string("flash.utils"); abc.intern_namespace(NS_PACKAGE, s) };
-    let ctrl_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.controllers"); abc.intern_namespace(NS_PACKAGE, s) };
-    let enums_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.enums"); abc.intern_namespace(NS_PACKAGE, s) };
-    let engine_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.engine"); abc.intern_namespace(NS_PACKAGE, s) };
-    let util_ns = { let s = abc.intern_string("com.mcleodgaming.ssf2.util"); abc.intern_namespace(NS_PACKAGE, s) };
+    let ctrl_ns = { let s = abc.intern_string(SSF2_NS_CONTROLLERS); abc.intern_namespace(NS_PACKAGE, s) };
+    let enums_ns = { let s = abc.intern_string(SSF2_NS_ENUMS); abc.intern_namespace(NS_PACKAGE, s) };
+    let engine_ns = { let s = abc.intern_string(SSF2_NS_ENGINE); abc.intern_namespace(NS_PACKAGE, s) };
+    let util_ns = { let s = abc.intern_string(SSF2_NS_UTIL); abc.intern_namespace(NS_PACKAGE, s) };
     let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
     let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
     let mn_game = q(abc, ctrl_ns, "Game"); let mn_mode = q(abc, enums_ns, "Mode"); let mn_training = q(abc, pub_ns, "TRAINING");
@@ -1208,13 +1643,12 @@ pub fn inject_autospawn(abc: &mut Abc, doc_class_local: &str, char_id: &str, sta
     ic.op_u30(OP_FINDPROPSTRICT, mn_settimeout); ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_kick); ic.op_u30(OP_PUSHSHORT, delay_ms); ic.op_u30_u30(OP_CALLPROPVOID, mn_settimeout, 2);
     ic.op_u30(OP_FINDPROPSTRICT, mn_setinterval); ic.op(OP_GETLOCAL0); ic.op_u30(OP_GETPROPERTY, mn_tick); ic.op_u30(OP_PUSHSHORT, 250); ic.op_u30_u30(OP_CALLPROPVOID, mn_setinterval, 2);
     ic.op(OP_POPSCOPE);
-    let payload = ic.finish(); let n = payload.len() as u32;
+    let payload = ic.finish();
     let iinit = abc.instances[ci].iinit;
     let body_idx = abc.bodies.iter().position(|b| b.method == iinit).ok_or_else(|| anyhow::anyhow!("no ctor body"))?;
     let body = &mut abc.bodies[body_idx];
-    let mut nc = payload; nc.extend_from_slice(&body.code); body.code = nc;
+    prepend_code(body, &payload);
     body.max_stack = body.max_stack.max(4); body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
-    for e in &mut body.exceptions { e.from += n; e.to += n; e.target += n; }
     Ok(())
 }
 
@@ -1265,6 +1699,16 @@ pub fn patch_file(
 
 /// Patch SSF2's ABC with an arbitrary injection step `f`, byte-splicing the
 /// DoAbc2 tag and recompressing. The general form of `patch_file`.
+/// Decompress an SSF2 SWF and parse its DoAbc2 block into an [`Abc`]. The read-only
+/// front half of `patch_file_with`, shared so `peptide ssf2 doctor` checks the exact
+/// same bytecode the patch would.
+pub fn read_abc(in_swf: &Path) -> anyhow::Result<Abc> {
+    let data = std::fs::read(in_swf)?;
+    let buf = swf::decompress_swf(&data[..]).map_err(|e| anyhow::anyhow!("decompress: {e}"))?;
+    let (_, _, abc_off, abc_len) = find_doabc2(&buf.data)?;
+    parse(&buf.data[abc_off..abc_off + abc_len])
+}
+
 pub fn patch_file_with(
     in_swf: &Path, out_swf: &Path,
     f: impl FnOnce(&mut Abc) -> anyhow::Result<()>,
@@ -1332,11 +1776,58 @@ mod tests {
         let abc = crate::abc_codec::parse(abc_bytes).expect("re-parse injected abc (full consume)");
         eprintln!("patched ABC re-parses: strings={} multinames={} bodies={}", abc.strings.len(), abc.multinames.len(), abc.bodies.len());
     }
+
+    /// The whole SSF2_MANIFEST must resolve against the installed SSF2 — a regression
+    /// guard so a wrong/renamed manifest entry is caught here, and `preflight` passes on
+    /// the supported build. Skips cleanly when the SSF2 corpus isn't present.
+    #[test]
+    fn manifest_resolves_against_real_ssf2() {
+        let inp = std::path::Path::new("/Users/jimmy/Downloads/SSF2BetaMac_v1.4.0.1-standalone 2/SSF2.app/Contents/Resources/SSF2.swf");
+        if !inp.exists() { eprintln!("SSF2.swf missing; skip"); return; }
+        let abc = read_abc(inp).expect("read abc");
+        let missing: Vec<_> = verify_symbols(&abc).into_iter().filter(|(_, ok)| !ok)
+            .map(|(s, _)| s.member.map(|m| format!("{}.{m}", s.class)).unwrap_or_else(|| s.class.into()))
+            .collect();
+        assert!(missing.is_empty(), "manifest symbols not resolving: {missing:?}");
+        preflight(&abc).expect("preflight should pass on the supported SSF2 build");
+    }
+
+    /// The detection logic itself: a real class resolves (walking the super chain for an
+    /// inherited member), a bogus class/member does not.
+    #[test]
+    fn verify_detects_missing_symbols() {
+        let inp = std::path::Path::new("/Users/jimmy/Downloads/SSF2BetaMac_v1.4.0.1-standalone 2/SSF2.app/Contents/Resources/SSF2.swf");
+        if !inp.exists() { eprintln!("SSF2.swf missing; skip"); return; }
+        let abc = read_abc(inp).expect("read abc");
+        assert!(abc.find_class_by_name("NoSuchClass_xyz").is_none());
+        let ci = abc.find_class_by_name("Character").expect("Character exists");
+        assert!(class_has_member(&abc, ci, "AttackDataObj"), "inherited member resolves via super chain");
+        assert!(!class_has_member(&abc, ci, "noSuchMember_xyz"), "bogus member is reported missing");
+    }
 }
 
 #[cfg(test)]
 mod asm_tests {
     use super::*;
+
+    /// prepend_code MUST shift the exception-table offsets by the payload length, not
+    /// just splice the code — a body with a try/catch (e.g. Main.iinit) is silently
+    /// corrupted otherwise (the catch points mid-instruction → AVM2 verify failure).
+    /// This guards the exact regression where a refactor dropped the shift.
+    #[test]
+    fn prepend_code_shifts_exceptions() {
+        let mut body = MethodBody {
+            method: 0, max_stack: 0, local_count: 0, init_scope_depth: 0, max_scope_depth: 0,
+            code: vec![0xAA, 0xBB],
+            exceptions: vec![Exception { from: 1, to: 2, target: 1, exc_type: 0, var_name: 0 }],
+            traits: vec![],
+        };
+        prepend_code(&mut body, &[0x10, 0x20, 0x30]); // 3-byte payload
+        assert_eq!(body.code, vec![0x10, 0x20, 0x30, 0xAA, 0xBB], "payload prepended before old code");
+        let e = &body.exceptions[0];
+        assert_eq!((e.from, e.to, e.target), (4, 5, 4), "exception offsets shifted by payload len (3)");
+    }
+
     #[test]
     fn branch_fixup_offsets() {
         // jump FWD; <pop>; place FWD: forward jump should skip the pop.
