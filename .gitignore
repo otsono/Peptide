@@ -14,6 +14,8 @@ __pycache__/
 .claude/scheduled_tasks.lock
 # Generated binary/image assets inside character output — track .hx, .json, .entity etc but not media
 characters/
+# Converted stage output — derivative of SSF2 source, never commit
+stages/
 
 # Scratch / working notes — gitignored by default. The dir is NOT fully ignored
 # (docs/* + negations) so intentionally-tracked docs can be re-included below.
