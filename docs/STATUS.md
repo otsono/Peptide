@@ -2738,16 +2738,23 @@ are catalogued in the two new sections above; the items here are the main conver
    measured (`runtime_cost.py mario`, two fighters, the time a frame saves with each part
    stubbed): standing, 5.67 ms a frame, of which the runtime's update is 2.73; `sync` 1.73,
    `kind.engineFrame` 1.33, `kind.frame` 0.85, `MovieClip.tick` 0.68, `Effects.show` 0.49.
-   fighting, 10.8 ms, update 7.6, `follow` 2.9. the fighting baseline climbs from 10.8 to 15.3
-   ms over the run: a match gets slower the longer it goes. the parts overlap, so these are a
-   guide, not a split.
+   fighting, 10.8 ms, update 7.6, `follow` 2.9. the parts overlap, so these are a guide, not a
+   split (and the tool's own stubbing drifts its fighting baseline; an unstubbed fight holds near
+   12 ms).
+
+   a stage object costs about 1.0 ms a frame, idle: bomb factory's blocks, by the slope of frame
+   time over live blocks (five points a run). the stage keeps adding blocks until its grid is
+   full, so a long match there runs past 60 ms a frame. of a block's cost, the runtime's update
+   is about 0.65 ms (its frame code 0.27, of which the block's own code 0.12; `sync` 0.14;
+   the kind's upkeep 0.08; the clip tick about 0.1) and the engine's own object and faces the
+   rest. this is the case to measure every item below against.
 
    the order, cheapest loss first:
 
    a. **no loss, do first.**
-      - `Objects.made` never shrinks and every `Objects.view` scans it, so each object a match
-        makes slows every lookup after it (the climbing baseline). hold the view on the engine
-        object and drop it at teardown.
+      - per-object upkeep first: every idle stage object runs the whole update twice a source
+        frame. what it does not need (an object with no frame code, a clip that does not move)
+        is the largest share left once the steps below are done.
       - the clock reconcile (`sync`, `follow`, `settle`, `pin`): read the animation, frame and
         length once per update and merge the two follow and settle passes. the largest measured
         cost, standing and fighting.
@@ -2759,8 +2766,9 @@ are catalogued in the two new sections above; the items here are the main conver
         worked out once (not polled every frame), launch fade only during a launch, the dying
         watcher only once destroying, the hold timer only when the code reads it, landing
         re-enable only when something is disabled.
-      - `MovieClip.tick`: one global half-frame parity, no walk on the off frame, skip clips
-        with no scripts or labels. `leadIn` and `isPlane` worked out once, not per call.
+      - `MovieClip.tick`: skip clips with no scripts or labels (a global half-frame parity would move
+        frame scripts by an engine frame, so it belongs in c). `isPlane` worked out once, not per
+        call.
       - compiler side: `getX`/`getY`/`isFacingRight` on a fighter or on self, the math helpers
         and the camera fields lower straight to the engine call.
    b. **rounding-error rules that go native.** the standing push (the engine's own solid push;
