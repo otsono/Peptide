@@ -19,6 +19,7 @@
 var PeptideRuntime = {};
 PeptideRuntime.data = null;
 PeptideRuntime.pieceIndex = null;
+PeptideRuntime.firstFrames = null;
 PeptideRuntime.projectileKnown = null;
 PeptideRuntime.projectile = false;
 PeptideRuntime.fm = null;
@@ -56,6 +57,7 @@ PeptideRuntime.start = function(fm, data, kind) {
 	PeptideRuntime.fm = fm;
 	PeptideRuntime.data = data;
 	PeptideRuntime.pieceIndex = null;
+	PeptideRuntime.firstFrames = null;
 	var o = data.object;
 	PeptideRuntime.kind = kind;
 	PeptideRuntime.statics(data);
@@ -163,9 +165,15 @@ PeptideRuntime.clocked = function(clip) {
 PeptideRuntime.leadIn = function(clip) {
 	// (an object's, a projectile's: a fighter or a stage plays on in its own animations)
 	if (clip == null || clip.__sym == null || PeptideRuntime.kind.playsOut) return false;
-	var first = 1000000;
-	for (q in PeptideRuntime.data.pieces) if (q.sym == clip.__sym && q.from < first) first = q.from;
-	return first < 1000000 && clip.currentFrame < first;
+	// each symbol's first drawn frame, worked out once: asked several times a frame
+	var firsts = PeptideRuntime.firstFrames;
+	if (firsts == null) {
+		firsts = new haxe.ds.IntMap();
+		for (q in PeptideRuntime.data.pieces) if (!firsts.exists(q.sym) || q.from < firsts.get(q.sym)) firsts.set(q.sym, q.from);
+		PeptideRuntime.firstFrames = firsts;
+	}
+	var first = firsts.get(clip.__sym);
+	return first != null && clip.currentFrame < first;
 };
 
 // a keyframe whose frame's script is written on it: the clip, when the engine is entering that
