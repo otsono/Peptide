@@ -1961,6 +1961,10 @@ before treating one as a gap.
 
 ## known issues & gaps
 
+**the SSF2 test fixture's platforms draw with the floor's art.** a platform draws with the clip
+named by its `linkage_id`, and the fixture answers with its terrain clip for everything
+([`SSF2_PACKAGE_FORMAT.md`](SSF2_PACKAGE_FORMAT.md)). collision is unaffected.
+
 **accurate stage-failure accounting (2026-09-10).** several saved gate reports predate this
 session's fixes and read as failures a re-gate clears: yoshisisland64 now passes 7/7 (its S4
 "FlyGuy gone" was stale -- the FlyGuy is live and flying, measured). DAT61 and rest area pass
@@ -2824,6 +2828,11 @@ are catalogued in the two new sections above; the items here are the main conver
 
 ## peptide / harness todos
 
+- **a compiled `.hl` path for engine-side features.** engine features with real control flow
+  are hscript today. a compiled Haxe module would mean merging it into the engine's bytecode at
+  patch time (the engine has no module loader), remapping every function, type and string index
+  across the two; `hlbc` can read and write those tables, but the remapping is a cross-module
+  linker and needs a feasibility spike before any feature leans on it.
 - **a converted fighter costs the engine about 1 ms a frame standing still and 2 fighting.**
   two converted marios run 6.4 ms a frame idle and about 8.2 fighting where two built-in fighters
   run 4 (the engine at full speed, `runtime_cost.py`, `--fight`). what is left is spread thin; a

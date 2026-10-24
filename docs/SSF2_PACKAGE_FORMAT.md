@@ -201,12 +201,6 @@ surface takes one, and a forwarder that drops them succeeds while doing the wron
 declare the whole surface, not just the calls that look useful. the game calls what it likes, and
 a missing one is a property-not-found from inside its own code.
 
-## known gap
-
-art. a platform draws with the clip named by its `linkage_id`, and the fixture answers with its
-terrain clip for everything, so the platform borrows the floor's appearance. collision is
-unaffected, and a fixture is about geometry rather than looks.
-
 ## the fixture in Fraymakers
 
 the same file converts and runs on the other engine with no special handling:

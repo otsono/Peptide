@@ -121,18 +121,6 @@ emergent behavior** (what a move actually does to an opponent), built on a dummy
 post-hit readback. the live, tracked todo list for all of this lives in
 [`STATUS.md`](STATUS.md) "peptide / harness todos".
 
-### the hscript / `.hl` direction
-
-features with real control flow should be written in Haxe (hscript text today, a compiled
-`.hl` module later) instead of hand-emitted opcodes, so the fragile hand-bytecode surface
-stops growing. the engine's bytecode is *monolithic* with no runtime module-load facility, so a
-compiled-`.hl` path most likely means **merging** a Haxe-compiled `.hl` into the engine
-bytecode at patch time (remapping every function / type / string index across the two
-modules). `hlbc` (already a dependency) gives read/write access to those tables, so it's
-mechanically possible, but the index-remapping is a hefty cross-module linker and needs a
-dedicated feasibility spike before any feature leans on it. until then, complex features stay
-on the hscript-eval or Rust-generated-`Asm` path.
-
 ## IP boundary
 
 Peptide contains **no** Fraymakers code, bytecode, strings, or assets. it reads the user's

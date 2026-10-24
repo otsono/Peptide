@@ -887,15 +887,6 @@ cargo run -p ssf2_converter --features dev-tools --bin dump_collision_box -- ../
 
 ---
 
-## known issues / open questions
-
-open converter issues and the prioritized TODO list live in
-[`docs/STATUS.md`](docs/STATUS.md) -- the single home for converter status and
-next steps. this document is the format reference, not the issue tracker; check
-STATUS.md for what's currently broken, approximate, or unverified (shape-only menu
-portraits, vector-only effect sprites, projectile-behaviour stubs, stat-scaling
-approximations, and the rest).
-
 ## source file summary
 
 | File | Purpose |

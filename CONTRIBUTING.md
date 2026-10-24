@@ -120,10 +120,10 @@ deletion is the doc-drift case the tests have the hardest time catching. the con
 
 ## when you fix a "known issue"
 
-known issues, the code-quality backlog, and prioritized next steps all live in
+known issues and prioritized next steps all live in
 **`docs/STATUS.md`** (the single home for converter status and TODOs). when you fix
 something, strike its entry in the "known issues & gaps" list there, plus the matching
-"prioritized next steps" / "code-quality backlog" item.
+"prioritized next steps" item.
 
 ## tooling
 

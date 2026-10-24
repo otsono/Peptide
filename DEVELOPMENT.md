@@ -33,8 +33,7 @@
 8. [input format: SSF2 `.ssf`](#8-input-format-ssf2-ssf)
 9. [output format: Fraymakers character package](#9-output-format-fraymakers-character-package)
 10. [current status -- what works](#10-current-status--what-works)
-11. [known issues & next steps → STATUS.md](#11-known-issues-and-next-steps)
-12. [tips for the next agent](#12-tips-for-the-next-agent)
+11. [tips for the next agent](#11-tips-for-the-next-agent)
 
 ---
 
@@ -1162,15 +1161,7 @@ what is solid:
 
 ---
 
-## 11. known issues and next steps
-
-these live in **[`docs/STATUS.md`](docs/STATUS.md)**, the single home for converter status
-and TODOs: "known issues & gaps", "prioritized next steps" and "peptide / harness todos".
-when you fix something, take it out there.
-
----
-
-## 12. tips for the next agent
+## 11. tips for the next agent
 
 - **smoke test = `sandbag`.** `./tools/rebuild-sandbag.sh` is the fast loop.
   mario is the heavy, full-featured test (projectiles, costumes, big
