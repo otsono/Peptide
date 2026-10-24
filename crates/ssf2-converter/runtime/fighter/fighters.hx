@@ -115,19 +115,6 @@ Fighters.attackStartSlow = function(me) {
 	fm.setXSpeed(Objects.slowed(fm.getXSpeed(), 3 * Objects.slideStep(fm, false) / 1.5));
 };
 
-// a stood fighter pushed the way behind it: the source turns it and walks it off on the same frame,
-// where this engine plays its turn first (falco, walked left 8 frames from a stand facing right, went
-// 42 pixels there and 19 here)
-Fighters.turnWalk = function(me) {
-	var fm = me.__fm;
-	if (!fm.inState(CState.STAND_TURN)) return;
-	var c = fm.getHeldControls();
-	if (c == null || c.LEFT == c.RIGHT) return;
-	if (c.LEFT == true && fm.isFacingRight()) fm.faceLeft();
-	else if (c.RIGHT == true && !fm.isFacingRight()) fm.faceRight();
-	fm.toState(CState.WALK_IN);
-};
-
 // an attack in the air catches a ledge its grab box meets, as the source's does for any attack and
 // whichever way the fighter faces (falco's side special, dashed off the stage facing away from it,
 // hangs from the ledge there; it fell past it here): this engine tries a grab only from the states
@@ -149,11 +136,6 @@ Fighters.engineFrame = function(me) {
 	Fighters.freezeSlow(me);
 	Fighters.attackLedge(me);
 	Fighters.attackStartSlow(me);
-	Fighters.turnWalk(me);
-	// a jump's first frame off the floor: the source has the fighter a pixel higher than this engine
-	// does from then on (measured with hop_trace.py, the same 1 source pixel for every fighter
-	// whatever its gravity, so it is the take-off, not the arc)
-	if (me.__stood == true && !me.__fm.isOnFloor() && me.__fm.inState(CState.JUMP_IN)) me.__fm.setY(me.__fm.getY() - PeptideRuntime.data.units.size);
 	me.__stood = me.__fm.isOnFloor();
 	Fighters.relaunch(me);
 	Attacks.carry(me);
@@ -182,7 +164,6 @@ Fighters.engineFrame = function(me) {
 	for (st in me.__selfPlatforms) { st.setX(me.__fm.getX()); st.setY(me.__fm.getY()); }
 	Fighters.rocketFrame(me);
 	Fighters.launchFade(me);
-	Fighters.pushFrame(me);
 	if (me.__xHold != null) {
 		var fm = me.__fm;
 		if (fm.getAnimation() != me.__xHold) me.__xHold = null;
@@ -203,18 +184,12 @@ Fighters.launchFade = function(me) {
 	var kx = fm.getXKnockback();
 	var ky = fm.getYKnockback();
 	if (me.__launchX != null && me.__fadeX != null) {
-		var k = me.__bouncedLaunch == true ? Fighters.fadedShare(me.__launchX, kx) : Fighters.faded(me.__launchX, kx, me.__fadeX);
+		var k = Fighters.faded(me.__launchX, kx, me.__fadeX);
 		if (k != kx) { fm.setXKnockback(k); kx = k; }
-		k = me.__bouncedLaunch == true ? Fighters.fadedShare(me.__launchY, ky) : Fighters.faded(me.__launchY, ky, me.__fadeY);
+		k = Fighters.faded(me.__launchY, ky, me.__fadeY);
 		if (k != ky) { fm.setYKnockback(k); ky = k; }
 	}
-	if (Fighters.newLaunch(me.__launchX, kx) || Fighters.newLaunch(me.__launchY, ky)) {
-		Fighters.fadeOf(me, kx, ky);
-		// a launch off the floor (HIT_RECEIVED) is the runtime's own, its share of the source's
-		// worked out with this engine's fade given back by its share (Fighters.fadedShare)
-		me.__bouncedLaunch = me.__bounceHit == true;
-		me.__bounceHit = false;
-	}
+	if (Fighters.newLaunch(me.__launchX, kx) || Fighters.newLaunch(me.__launchY, ky)) Fighters.fadeOf(me, kx, ky);
 	// a launch's first frame of gravity (Fighters.gravityOut), on its first frame out
 	if (me.__gravNext == true && fm.getHitstop() <= 0) Fighters.gravityOut(me);
 	me.__launchX = kx;
@@ -235,13 +210,6 @@ Fighters.fadeOf = function(me, kx, ky) {
 	var m = Math.sqrt(kx * kx + ky * ky);
 	me.__fadeX = m > 0 ? Fighters.launchFadeRate * Math.abs(kx) / m : 0;
 	me.__fadeY = m > 0 ? Fighters.launchFadeRate * Math.abs(ky) / m : 0;
-};
-// a launch component faded by the source's share of this engine's own fade, for a launch the
-// runtime bounced off the floor (its 0.62 was measured against this fade: mario's down air struck
-// a second time with the source's own)
-Fighters.fadedShare = function(was, now) {
-	if (was == null || was == 0 || now == 0 || (was > 0) != (now > 0) || Math.abs(now) >= Math.abs(was)) return now;
-	return now + (was - now) * (1 - 0.232 / 0.304);
 };
 Fighters.newLaunch = function(was, now) {
 	if (now == 0) return false;
@@ -317,35 +285,6 @@ Fighters.gravityOut = function(me) {
 	me.__fm.setYSpeed(me.__fm.getYSpeed() + frames * me.__fm.getGameObjectStat("gravity"));
 };
 
-// two fighters standing into each other part as the source parts them: each source frame a
-// grounded fighter whose hurt boxes overlap another grounded one's moves that one a source pixel
-// away from its own x, whatever the one pushing is doing, and only a fighter standing still is
-// moved (not attacking, shielding, dodging, hurt, crouching, landing, grabbing or held). this
-// engine's own push leaves a fighter standing in front of an attacking one where it is, and slides a
-// hurt one through its freeze: bowser's down tilt began 51 from its fighter on both engines, the
-// source's pushed it a pixel a frame through the move's start and the second kick missed it, this
-// engine's struck it. the fighter is made not solid, as an object and in each animation it plays,
-// and parts the others itself
-Fighters.pushable = function(o) {
-	if (!o.isOnFloor() || o.getXSpeed() != 0) return false;
-	return o.inState(CState.STAND) || o.inState(CState.STAND_TURN) || o.inState(CState.JUMP_SQUAT) || o.inState(CState.WALK_IN) || o.inState(CState.WALK_LOOP) || o.inState(CState.WALK_OUT);
-};
-Fighters.pushFrame = function(me) {
-	var fm = me.__fm;
-	var anim = fm.getAnimation();
-	if (me.__unsolidAnim != anim) { me.__unsolidAnim = anim; fm.updateAnimationStats({ solid: false }); }
-	if (PeptideRuntime.frame % 2 != 1 || !fm.isOnFloor()) return;
-	var step = PeptideRuntime.data.units.size;
-	for (o in match.getCharacters()) {
-		if (o == fm || !Fighters.pushable(o)) continue;
-		var res = fm.hitTestEntity(o, CollisionBoxType.HURT, CollisionBoxType.HURT);
-		if (res == null || res.length == 0) continue;
-		// off a ledge it climbs or rolls from, the fighter pushes the way it faces
-		var right = (fm.inState(CState.LEDGE_ROLL) || fm.inState(CState.LEDGE_CLIMB)) ? fm.isFacingRight() : fm.getX() < o.getX();
-		o.setX(o.getX() + (right ? step : -step));
-	}
-};
-
 // a FIXED hit (`weightKB`) launches by the weight of the fighter it hits on the source, its launch
 // `(weightKB * 0.5 + 1) * 1.4 * 200 / (weight + 100) + 18`, times its growth, plus its power; this
 // engine scales a fixed launch by nothing, and the conversion works it out for a fighter of 95
@@ -395,7 +334,6 @@ Fighters.relaunch = function(me) {
 
 // as the fighter is made
 Fighters.begin = function(me) {
-	me.__fm.updateGameObjectStats({ solid: false });
 	me.__fm.addEventListener(GameObjectEvent.ENTER_HITSTOP, function(?e) { Fighters.relaunch(me); }, { persistent: true });
 	me.__used = new haxe.ds.StringMap();
 	me.__usedAt = new haxe.ds.StringMap();
@@ -586,42 +524,27 @@ Fighters.begin = function(me) {
 		if (me.__stunSet == true || !f.isOnFloor()) return;
 		if (f.inState(CState.HURT_LIGHT) || f.inState(CState.HURT_MEDIUM) || f.inState(CState.HURT_HEAVY)) f.toState(CState.IDLE);
 	}, { persistent: true });
-	// a hit aimed down at it as it stands bounces it up off the floor on both engines, and the
-	// source keeps less of the launch through the bounce: 0.62 of this engine's, measured on link's,
-	// naruto's, peach's and simon's down tilts and samus's up tilt. this engine has bounced it by
-	// the time it is told (its launch points up, and it has left the floor it stood on a frame ago)
 	me.__fm.addEventListener(GameObjectEvent.HIT_RECEIVED, function(?e) {
 		var f = me.__fm;
 		// the freshness the hit's thrower deals on top (Attacks.freshDealt), taken here too: a
 		// projectile gone as it hits tells its thrower nothing (ness's pk flash paid 0.947)
 		var by = e == null || e.data == null || e.data.foe == null || e.data.foe.exports == null ? null : e.data.foe.exports.__source;
 		if (by != null && by.__freshAdd != null) Attacks.freshDealt(by, f);
-		if (me.__stood == true && !f.isOnFloor() && f.getYKnockback() < 0) {
-			me.__bounced = true;
-			f.setXKnockback(f.getXKnockback() * Fighters.groundBounce);
-			f.setYKnockback(f.getYKnockback() * Fighters.groundBounce);
-		}
-		// one too weak for this engine to bounce keeps pointing into the floor here and slides
-		// the fighter along it; the source sends it up at the mirrored angle, its whole launch
-		// (lucario's jab, stated at 291 degrees, pops a standing fighter up at 69)
-		else if (me.__stood == true && f.isOnFloor() && f.getYKnockback() > 0) {
+		// a hit aimed down at a standing fighter too weak for this engine to bounce keeps pointing
+		// into the floor here and slides the fighter along it; the source sends it up at the
+		// mirrored angle, its whole launch (lucario's jab, stated at 291 degrees, pops it up at 69)
+		if (me.__stood == true && f.isOnFloor() && f.getYKnockback() > 0) {
 			me.__bounced = true;
 			f.setYKnockback(-f.getYKnockback());
 		}
-		// launched up off the floor it stands on, the source lifts it a pixel as the hit lands (a 55
-		// degree launch read 133.25 then 132.25 through the freeze; a flat one stays put), as it does
-		// a fighter leaving the floor on a jump
-		else if (me.__stood == true && f.isOnFloor() && f.getYKnockback() < 0) f.setY(f.getY() - PeptideRuntime.data.units.size);
 		// an upward launch takes a first frame of gravity as its freeze ends (Fighters.gravityOut)
 		me.__gravNext = me.__bounced != true && f.getYKnockback() < 0;
 		// a hit with no freeze moves the fighter once before its next frame of its own, a frame of
 		// its gravity owed on top (the engine clears a fall speed given here as the launch starts)
 		me.__gravLate = me.__gravNext && f.getHitstop() <= 0;
-		me.__bounceHit = me.__bounced == true;
 		me.__bounced = false;
 	}, { persistent: true });
 };
-Fighters.groundBounce = 0.62;
 // a launch here against the source's, a frame each (hit_parity.py's expected ratio), and the
 // source's hitstun for a launch, in its frames
 Fighters.launchScale = 0.65;

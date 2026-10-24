@@ -6,12 +6,6 @@
 // defines itself keeps its own; a member listed here that content hands around as a value (a
 // listener) is still answered by the runtime until it moves too.
 {
-  // plain arithmetic the source's utility class does, written in place
-  "PeptideUtils.toRadians": "AS3.num({0}) * 0.017453292519943295",
-  "PeptideUtils.toDegrees": "AS3.num({0}) * 57.29577951308232",
-  "PeptideUtils.calculateXSpeed": "AS3.num({0}) * Math.cos(AS3.num({1}) * 0.017453292519943295)",
-  "PeptideUtils.calculateYSpeed": "AS3.num({0}) * Math.sin(AS3.num({1}) * 0.017453292519943295)",
-  "PeptideUtils.calculateSpeed": "Math.sqrt(Math.pow(AS3.num({0}), 2) + Math.pow(AS3.num({1}), 2))",
   // where it is and how it moves
   "getX": "{eng}.getX() / {size}",
   "getSmashTimer": "Objects.smashTimer({eng})",
