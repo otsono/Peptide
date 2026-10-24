@@ -168,10 +168,8 @@ function update() { PeptideRuntime.update(); }
   package's tables, as literals.
 - **the engine plays the animations.** the clip an animation shows follows the engine's frame.
   a source frame is two engine frames: its script runs as the first is entered. nothing counts
-  frames of its own: the source's timers are the engine's at twice the frames, two frames less
-  when made in a frame's script (a one-frame one runs at once) and one less when made in an
-  update (the source's ticks the frame it lands in, ahead of the movement; the engine's after that
-  frame's update). the code the source runs every frame (the object's update, its enter-frame
+  frames of its own: the source's timers are the engine's at twice the frames (frames an object
+  stands frozen by a hit still do not count toward its timers). the code the source runs every frame (the object's update, its enter-frame
   listeners) runs whole, as written, on every second engine frame (a modulo on the object's own
   frame count), and so do the clips the engine does not play. the runtime's own rules still run
   every engine frame, since they read the engine's controls and physics. an animation the engine starts is entered at

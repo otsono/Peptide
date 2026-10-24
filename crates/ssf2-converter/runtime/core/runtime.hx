@@ -102,9 +102,6 @@ PeptideRuntime.start = function(fm, data, kind) {
 PeptideRuntime.updating = false;
 // whether the code running is a timer's (a timer made there counts its whole frames)
 PeptideRuntime.inTimer = false;
-// whether the code running is a frame's script its object entered as it was made, run at its first
-// update (PeptideRuntime.held)
-PeptideRuntime.inHeld = false;
 // whether the code running is a frame's script from its keyframe, ahead of the update
 PeptideRuntime.inFrame = false;
 // what comes due once the frame's script is done (a one-frame timer it started)
@@ -436,10 +433,7 @@ PeptideRuntime.clockedUpdate = function() {
 		// fired): its clips go there first, and a held frame they have left does not run, as a new
 		// clip's first frame does not in the source once it is sent on before it plays
 		if (PeptideRuntime.fm.getAnimation() != PeptideRuntime.madeOn) PeptideRuntime.follow();
-		PeptideRuntime.inHeld = true;
 		for (h in held) if (h.clip.__held == h && h.clip.currentFrame == h.frame) MovieClip.runFrame(h.clip, h.frame);
-		PeptideRuntime.inHeld = false;
-		PeptideRuntime.frameDone();
 	}
 	// the engine's own change of animation first: a jump still waiting from the clip it has left
 	// is that clip's, and moot

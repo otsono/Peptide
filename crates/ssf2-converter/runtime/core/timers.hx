@@ -22,30 +22,12 @@ Timers.create = function(owner, frames, repeat, fn, ?opts) {
 	var keep = !PeptideRuntime.isFighter(fm) || (opts != null && AS3.truthy(opts.persistent));
 	var fighterKey = !keep && key.__fm != null && !key.__fm.isDisposed();
 	var rec = { fn: fn, fm: fm, id: -1, keep: keep, entry: fighterKey ? Events.entry(key) : -1 };
-	// the source's timer comes due within the Nth source frame after the one it was made in, ahead
-	// of that frame's movement: one made in a frame's script ticks the frame it is made in too
-	// (measured: falcon's kick makes a one-frame timer on frame 7 and moves on its speed for the
-	// whole of frame 7). the engine's comes due once its delay has run, after the update of the
-	// frame it lands on. so one made in a frame's script (which runs before the update) is given
-	// two frames less, and a one-frame one runs once that script is done (the source ticks its
-	// timers after the frame's scripts: samus's forward air starts one before it sets what the
-	// timer moves); one made in an update, a frame less; one
-	// made in another timer, which runs past the update, its whole frames (and one made in an
-	// event's code, which runs where the engine raises it, a frame less). one that repeats keeps
-	// the whole period after that first time
-	// (a frame's script run as its object is made counts as an update's: the object's clips are
-	// placed by its first update, and a timer that ticked at once found a named child missing,
-	// waluigi's dice spinner)
-	var first = PeptideRuntime.inTimer == true ? 2 * n : (PeptideRuntime.inFrame == true && PeptideRuntime.making != true ? 2 * n - 2 : 2 * n - 1);
-	// a projectile's comes due after its owner's code of the same frame, as the source runs the
-	// fighters before what they fire: this engine runs the projectile first, so it ticks a frame
-	// later (zelda's din's fire grew its charge once past the release that stops it)
-	if (PeptideRuntime.kind != null && PeptideRuntime.kind.order > 0 && fm == PeptideRuntime.fm) first += 1;
-	// one made by a projectile's own frame script as it was fired, which waited for its first update
-	// here: the source ran that script in the frame it was fired and ticked the timer in that frame
-	// too, so it is due as soon as those scripts are done (ness's pk flash grows its charge from the
-	// frame it is fired, and blows up for that charge's damage)
-	if (PeptideRuntime.inHeld == true && PeptideRuntime.kind != null && PeptideRuntime.kind.order > 0 && fm == PeptideRuntime.fm) first = 2 * n - 2;
+	// one made in a frame's script comes due two engine frames sooner, and a one-frame one runs as
+	// that script is done: the source ticks the frame it is made in too, ahead of that frame's
+	// movement (captain falcon's kick makes a one-frame timer on frame 7 and moves on its speed for
+	// the whole of that frame; on the plain delay the kick ran three source frames short)
+	// (not one run as its object is made, before its clips are placed: waluigi's dice spinner)
+	var first = PeptideRuntime.inFrame == true && PeptideRuntime.inTimer != true && PeptideRuntime.making != true ? 2 * n - 2 : 2 * n;
 	// a timer made with a condition (`condition`, a function) runs its code only while that holds:
 	// chibi-robo's timer fires his telly whenever he has none, and fired a new one every frame here
 	// (the last ended, the next made at the spawn, never moving off it)
@@ -106,7 +88,8 @@ Timers.create = function(owner, frames, repeat, fn, ?opts) {
 		rec.id = fm.addTimer(first, 1, function(?t) {
 			if (fm.isDisposed()) return;
 			rec.due(function() {
-				if (r != 1) { rec.armed = frozenOf(); rec.repeat(2 * n, r < 0 ? -1 : r - 1); } else Timers.drop(key, rec);
+				rec.armed = frozenOf();
+				rec.repeat(2 * n, r < 0 ? -1 : r - 1);
 				fire();
 			});
 		}, { persistent: keep });

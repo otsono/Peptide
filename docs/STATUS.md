@@ -2771,8 +2771,7 @@ are catalogued in the two new sections above; the items here are the main conver
         call.
       - compiler side: the camera fields lower straight to the engine call (positions and speeds
         already do). helpers Fraymakers has no call for (the utility class's math) stay ported.
-   b. **rounding-error rules that go native.** timer phase corrections
-      (keep the frozen frames owed), `deathBoundsDestroy` for projectiles nobody listens to the
+   b. **rounding-error rules that go native.** `deathBoundsDestroy` for projectiles nobody listens to the
       end of, fired-and-forgotten single-piece effects as plain `createVfx`, static backdrop
       pieces as native camera backgrounds, pieces riding an object as owner-relative vfx, and
       platforms moved by their plane's labels as structure animation. the last three need a live
