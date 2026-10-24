@@ -389,8 +389,9 @@ Bodies.engineFrame = function(me) {
 	if (me.__moves != null && me.__moves.length > 0) Bodies.move(me);
 	var x = fm.getX();
 	var y = fm.getY();
-	for (f in me.__bodyFaces) { f.st.setX(x); f.st.setY(y); }
-	for (f in me.__selfPlatforms) { f.st.setX(x); f.st.setY(y); }
+	// each face is written only when it is not already there (a body at rest is most of them)
+	for (f in me.__bodyFaces) if (f.__x != x || f.__y != y) { f.st.setX(x); f.st.setY(y); f.__x = x; f.__y = y; }
+	for (f in me.__selfPlatforms) if (f.__x != x || f.__y != y) { f.st.setX(x); f.st.setY(y); f.__x = x; f.__y = y; }
 	var mc = PeptideRuntime.root;
 	if (mc != null && (mc.visible == true) != me.__shown) { me.__shown = mc.visible == true; fm.setVisible(me.__shown); }
 	if (me.__clipRead != true && mc != null) Bodies.clipSays(me, mc);
