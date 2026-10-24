@@ -2735,6 +2735,59 @@ are catalogued in the two new sections above; the items here are the main conver
    answer for. judge each rule by whether a player could tell, not by whether a probe can
    measure it.
 
+   measured (`runtime_cost.py mario`, two fighters, the time a frame saves with each part
+   stubbed): standing, 5.67 ms a frame, of which the runtime's update is 2.73; `sync` 1.73,
+   `kind.engineFrame` 1.33, `kind.frame` 0.85, `MovieClip.tick` 0.68, `Effects.show` 0.49.
+   fighting, 10.8 ms, update 7.6, `follow` 2.9. the fighting baseline climbs from 10.8 to 15.3
+   ms over the run: a match gets slower the longer it goes. the parts overlap, so these are a
+   guide, not a split.
+
+   the order, cheapest loss first:
+
+   a. **no loss, do first.**
+      - `Objects.made` never shrinks and every `Objects.view` scans it, so each object a match
+        makes slows every lookup after it (the climbing baseline). hold the view on the engine
+        object and drop it at teardown.
+      - the clock reconcile (`sync`, `follow`, `settle`, `pin`): read the animation, frame and
+        length once per update and merge the two follow and settle passes. the largest measured
+        cost, standing and fighting.
+      - read each engine value once a frame (held controls, state, floor, animation, hitstop)
+        and pass it down: fighters read the same few values 3 to 5 times a frame.
+      - write only on change: effect frames, the camera clip, stage schedules and tints,
+        placed-body faces, library clips, pan containers.
+      - gate idle upkeep on what the object declares or listens for: projectile stat features
+        worked out once (not polled every frame), launch fade only during a launch, the dying
+        watcher only once destroying, the hold timer only when the code reads it, landing
+        re-enable only when something is disabled.
+      - `MovieClip.tick`: one global half-frame parity, no walk on the off frame, skip clips
+        with no scripts or labels. `leadIn` and `isPlane` worked out once, not per call.
+      - compiler side: `getX`/`getY`/`isFacingRight` on a fighter or on self, the math helpers
+        and the camera fields lower straight to the engine call.
+   b. **rounding-error rules that go native.** the standing push (the engine's own solid push;
+      the spacing gap is already accepted), the take-off pixel, turn-walk from a stand, the
+      0.62 floor-bounce cut, the speed hand-off bookkeeping (`slideTo`, `lift`, `medium`,
+      `slideShare`; scripted dashes land a pixel or a frame off), timer phase corrections
+      (keep the frozen frames owed), `deathBoundsDestroy` for projectiles nobody listens to the
+      end of, fired-and-forgotten single-piece effects as plain `createVfx`, static backdrop
+      pieces as native camera backgrounds, pieces riding an object as owner-relative vfx, and
+      platforms moved by their plane's labels as structure animation. the last three need a live
+      check that depth and phase hold.
+   c. **try, then judge by feel.** running the content's per-frame code on the due frame only,
+      at step 1 (halves the content's update; check the speed and gravity carry first), the
+      smash input window (FM's own strong input), freshness folded into damage.
+   d. **keep.** everything paid per hit, which saves nothing per frame and is what players feel:
+      hitstun hold, launch fade and first-frame gravity, throw relaunch, weight knockback,
+      attacker freeze, hit gating, staling queue, refresh counting. also the AS3 value
+      semantics, listener lifetime, held construction scripts, homing and the declared
+      projectile stats.
+   e. **measure before deciding.** plain content fields when not online (every field access
+      goes through a container today) and typed AS3 operators where the compiler can prove the
+      type. both are compiler-wide and could outweigh everything in a.
+
+   `rocketAttack` keeps a per-fighter attack table the source's engine keeps too, so a fighter
+   added later rockets in nothing until it gains a row; it should come from what the source
+   declares, if the source declares it anywhere.
+
 3. **the portrait is the head clip, composited and MASKED**. a head clip is a little
    scene: pieces stacked at depths, the character art scaled down inside it, and a mask cropping
    the result to a window. taking one placement out of it got the drop shadow; taking the art
