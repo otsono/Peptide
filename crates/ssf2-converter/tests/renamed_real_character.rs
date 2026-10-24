@@ -236,7 +236,7 @@ fn the_converter_handles_a_character_it_has_never_seen() {
     let header = swf::Header {
         compression: parsed_swf_buf.header.compression(),
         version: parsed_swf_buf.header.version(),
-        stage_size: parsed_swf_buf.header.stage_size().clone(),
+        stage_size: *parsed_swf_buf.header.stage_size(),
         frame_rate: parsed_swf_buf.header.frame_rate(),
         num_frames: parsed_swf_buf.header.num_frames(),
     };

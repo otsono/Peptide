@@ -7174,7 +7174,7 @@ fn placed_picture_shapes(
             edge(tw, zero), edge(zero, th), edge(-tw, zero), edge(zero, -th),
         ];
         let sh: &'static swf::Shape = Box::leak(Box::new(swf::Shape {
-            version: 3, id, shape_bounds: bounds.clone(), edge_bounds: bounds, flags: swf::ShapeFlag::empty(), styles, shape,
+            version: 3, id, shape_bounds: bounds, edge_bounds: bounds, flags: swf::ShapeFlag::empty(), styles, shape,
         }));
         Some((id, sh))
     }).collect()
@@ -7187,7 +7187,7 @@ fn morph_start_shapes(root: &[swf::Tag<'_>]) -> Vec<(u16, &'static swf::Shape)> 
     root.iter().filter_map(|t| {
         let swf::Tag::DefineMorphShape(m) = t else { return None };
         let sh: &'static swf::Shape = Box::leak(Box::new(swf::Shape {
-            version: 3, id: m.id, shape_bounds: m.start.shape_bounds.clone(), edge_bounds: m.start.edge_bounds.clone(),
+            version: 3, id: m.id, shape_bounds: m.start.shape_bounds, edge_bounds: m.start.edge_bounds,
             flags: swf::ShapeFlag::empty(),
             styles: swf::ShapeStyles { fill_styles: m.start.fill_styles.clone(), line_styles: m.start.line_styles.clone() },
             shape: m.start.shape.clone(),

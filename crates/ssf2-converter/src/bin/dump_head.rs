@@ -78,7 +78,7 @@ fn inspect(swf: &swf::Swf<'_>, id: u16) -> Report {
 
 fn sp_shape<'a>(swf: &'a swf::Swf<'a>, id: u16) -> Option<&'a swf::Shape> {
     swf.tags.iter().find_map(|t| match t {
-        swf::Tag::DefineShape(s) if s.id == id => Some(s),
+        swf::Tag::DefineShape(s) if s.id == id => Some(&**s),
         _ => None,
     })
 }

@@ -11,7 +11,7 @@ met by this file when the project is redistributed.
 
 ## SWF / Flash parsing
 
-* **`swf` 0.2** -- part of the [Ruffle](https://github.com/ruffle-rs/ruffle) project. MIT OR
+* **`swf` 0.3** -- part of the [Ruffle](https://github.com/ruffle-rs/ruffle) project. MIT OR
   Apache-2.0. the converter's entire Flash-parsing path (decompression, tag walking, ABC block
   extraction) sits on top of this crate. ABC decompilation and SSF-wrapper handling are written
   from scratch in this repo, but the SWF binary parsing itself is `swf`'s.
@@ -60,7 +60,7 @@ the crates the shipped `peptide` binary links, across the `peptide`, `ssf2_conve
 | serde           | 1.0     | MIT OR Apache-2.0 |
 | serde_json      | 1.0     | MIT OR Apache-2.0 |
 | sha1            | 0.10    | MIT OR Apache-2.0 |
-| **swf**         | 0.2     | MIT OR Apache-2.0 (Ruffle) |
+| **swf**         | 0.3     | MIT OR Apache-2.0 (Ruffle) |
 | tao             | 0.35    | Apache-2.0 |
 | **tiny-skia**   | 0.11    | **BSD-3-Clause** -- vector-shape rasteriser |
 | toml            | 0.8     | MIT OR Apache-2.0 |

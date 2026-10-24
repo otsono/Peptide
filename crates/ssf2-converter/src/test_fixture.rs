@@ -148,7 +148,7 @@ fn rect_shape(id: u16, x0: f64, y0: f64, x1: f64, y1: f64, colour: swf::Color) -
         }).collect()
     };
     let (w, h) = (x1 - x0, y1 - y0);
-    Tag::DefineShape(swf::Shape {
+    Tag::DefineShape(Box::new(swf::Shape {
         version: 3,
         id,
         shape_bounds: rect(x0, y0, x1, y1),
@@ -173,7 +173,7 @@ fn rect_shape(id: u16, x0: f64, y0: f64, x1: f64, y1: f64, colour: swf::Color) -
         .chain(run(-w, true))
         .chain(run(-h, false))
         .collect(),
-    })
+    }))
 }
 
 /// Wrap a shape in its own sprite so it can be placed with an instance name and given a

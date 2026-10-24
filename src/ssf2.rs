@@ -972,7 +972,7 @@ fn cmd_tags(args: &[String]) -> Result<()> {
     // collision clip can be read without converting the stage
     if let Some(want) = flag_str(args, "--sprite").and_then(|s| s.parse::<u16>().ok()) {
         let shapes: std::collections::BTreeMap<u16, &ssf2_converter::swf::Shape> = swf.tags.iter()
-            .filter_map(|t| if let ssf2_converter::swf::Tag::DefineShape(s) = t { Some((s.id, s)) } else { None }).collect();
+            .filter_map(|t| if let ssf2_converter::swf::Tag::DefineShape(s) = t { Some((s.id, &**s)) } else { None }).collect();
         let Some(sprite) = swf.tags.iter().find_map(|t| match t {
             ssf2_converter::swf::Tag::DefineSprite(s) if s.id == want => Some(s), _ => None }) else { bail!("no sprite #{want}") };
         println!("sprite#{want}{}: {} frames", names.get(&want).map(|n| format!(" ({n})")).unwrap_or_default(), sprite.num_frames);

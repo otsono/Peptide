@@ -3795,7 +3795,7 @@ pub fn patch_file_with(
     let header = swf::Header {
         compression: h.compression(),
         version: h.version(),
-        stage_size: h.stage_size().clone(),
+        stage_size: *h.stage_size(),
         frame_rate: h.frame_rate(),
         num_frames: h.num_frames(),
     };
