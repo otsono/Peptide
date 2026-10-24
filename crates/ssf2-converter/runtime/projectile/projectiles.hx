@@ -565,14 +565,17 @@ Projectiles.outOfBounds = function(me) {
 	if (fm.exports.__holder != null) return;
 	// one its owner steers lives on wherever it is steered
 	if (Projectiles.num(me, "controlDirection", -1) != -1) return;
-	var a = stage == null ? null : stage.getDeathBounds();
-	var r = a == null ? null : a.getRectangle();
-	if (r == null) return;
-	var left = a.getX() + r.x;
-	var top = a.getY() + r.y;
+	// (the bounds read once for the projectile: they do not move while it flies)
+	if (me.__bounds == null) {
+		var a = stage == null ? null : stage.getDeathBounds();
+		var r = a == null ? null : a.getRectangle();
+		if (r == null) return;
+		me.__bounds = [a.getX() + r.x, a.getY() + r.y, a.getX() + r.x + r.width, a.getY() + r.y + r.height];
+	}
+	var b = me.__bounds;
 	var x = fm.getX();
 	var y = fm.getY();
-	if (x < left || x > left + r.width || y < top || y > top + r.height) Objects.remove(me);
+	if (x < b[0] || x > b[2] || y < b[1] || y > b[3]) Objects.remove(me);
 };
 
 // one whose package ships no code for it dies where the source's engine ends it: on the floor,

@@ -2771,8 +2771,7 @@ are catalogued in the two new sections above; the items here are the main conver
         call.
       - compiler side: the camera fields lower straight to the engine call (positions and speeds
         already do). helpers Fraymakers has no call for (the utility class's math) stay ported.
-   b. **rounding-error rules that go native.** `deathBoundsDestroy` for projectiles nobody listens to the
-      end of, fired-and-forgotten single-piece effects as plain `createVfx`, static backdrop
+   b. **rounding-error rules that go native.** fired-and-forgotten single-piece effects as plain `createVfx`, static backdrop
       pieces as native camera backgrounds, pieces riding an object as owner-relative vfx, and
       platforms moved by their plane's labels as structure animation. the last three need a live
       check that depth and phase hold.
@@ -2783,8 +2782,9 @@ are catalogued in the two new sections above; the items here are the main conver
    d. **keep.** everything paid per hit, which saves nothing per frame and is what players feel:
       hitstun hold, launch fade and first-frame gravity, throw relaunch, weight knockback,
       attacker freeze, hit gating, staling queue, refresh counting. also the AS3 value
-      semantics, listener lifetime, held construction scripts, homing and the declared
-      projectile stats.
+      semantics, listener lifetime, held construction scripts, homing, the declared
+      projectile stats, and a projectile's own death bounds (the engine's runs none of its end code
+      and tells no one, and content waits on that end to fire again).
    e. **measure before deciding.** plain content fields when not online (every field access
       goes through a container today) and typed AS3 operators where the compiler can prove the
       type. both are compiler-wide and could outweigh everything in a.
