@@ -91,7 +91,6 @@ helper strings in Rust and the TOML templates, and the decompiler's own renames 
 | `runtime/entry/` | each object kind's entry (`initialize`, `update`, what the gates ask), emitted last |
 | `runtime/engine.names` | the engine's own script globals, measured in a running fighter; a content class by one of these names is written with a `_` after it |
 | `runtime/api_calls.jsonc` | content's API calls written as the Fraymakers calls they are, at conversion (`getX` is `{eng}.getX() / 1.3`); a listed call leaves nothing for the runtime to answer, and the runtime member it replaces is deleted. `by_kind` holds the rows one kind writes its own way (a stage's planes are its own clips; anyone else's are the fighters' layer) |
-| `runtime/steps.jsonc` | the code the source runs every frame (methods, events) and the setter/getter pairs its steps are read through |
 | `runtime/api_names.jsonc` | SSF2's API and SDK names against the runtime's own (`SSF2Character` is `PeptideCharacter`; `stancePlayFrame` takes Fraymakers' `playFrame`, and a verb takes Fraymakers' name wherever it has one); the runtime's core is `PeptideRuntime`; the model is renamed through it as a package is read, so output carries this runtime's names |
 
 files are read from disk at convert time, like `commands.hsx` and the jsonc tables, so an edit
@@ -172,16 +171,10 @@ function update() { PeptideRuntime.update(); }
   frames of its own: the source's timers are the engine's at twice the frames, two frames less
   when made in a frame's script (a one-frame one runs at once) and one less when made in an
   update (the source's ticks the frame it lands in, ahead of the movement; the engine's after that
-  frame's update), and the code the
-  source runs every frame (the object's update, a listener of an event raised every frame, and
-  the methods only those call) runs every engine frame, with what it adds each frame halved at
-  conversion (`runtime/steps.jsonc`: `x += d` is `x += d * 0.5`, `x *= k` is `x *= sqrt(k)`, a
-  setter stepping from its own getter takes half the step; a method run both every frame and
-  otherwise steps by `AS3.step` as it runs). a write made only when something happens (in a
-  branch, in no loop, in a method no loop calls) takes its whole step once a source frame instead:
-  `PeptideRuntime.once(object, site)` is 1 the first time that write runs on that object in a
-  source frame and 0 after, so a countdown and a one-off event both come out right. a clip the engine does not play
-  moves on every second engine frame of its own. an animation the engine starts is entered at
+  frame's update). the code the source runs every frame (the object's update, its enter-frame
+  listeners) runs whole, as written, on every second engine frame (a modulo on the object's own
+  frame count), and so do the clips the engine does not play. the runtime's own rules still run
+  every engine frame, since they read the engine's controls and physics. an animation the engine starts is entered at
   the next update, once the engine has entered its state. a jump by the source's code moves the
   engine to the frame that shows where it landed once the code is done (whatever ran the code: an
   update, a timer, an event), and a jump into a frame

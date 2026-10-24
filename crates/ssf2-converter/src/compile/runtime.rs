@@ -26,17 +26,6 @@ pub struct RuntimeClass {
     pub own: BTreeSet<String>,
 }
 
-/// the code the source runs every frame (`steps.jsonc`)
-#[derive(Default, Debug, Clone)]
-pub struct Steps {
-    /// methods an object's runtime calls every frame
-    pub methods: BTreeSet<String>,
-    /// events raised every frame, by constant or by value
-    pub events: BTreeSet<String>,
-    /// setters and the getter (method or field) whose value they step from, where the names do not pair
-    pub pairs: BTreeMap<String, String>,
-}
-
 #[derive(Default, Clone, Debug)]
 pub struct Runtime {
     pub classes: BTreeMap<String, RuntimeClass>,
@@ -54,8 +43,6 @@ pub struct Runtime {
     pub calls: BTreeMap<String, String>,
     /// the rows one kind of object writes its own way (`api_calls.jsonc`'s `by_kind`), by kind
     pub kind_calls: BTreeMap<String, BTreeMap<String, String>>,
-    /// the code the source runs every frame (`steps.jsonc`)
-    pub steps: Steps,
     /// methods that do nothing here, by class, and classes whose making only makes a value
     /// (`inert.jsonc`)
     pub inert_calls: BTreeMap<String, BTreeSet<String>>,
@@ -115,16 +102,6 @@ impl Runtime {
                     .filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default())).collect();
             }
             rt.inert_values = json["values"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-        }
-        if let Ok(text) = std::fs::read_to_string(dir.join("steps.jsonc")) {
-            let json: serde_json::Value = serde_json::from_str(&crate::mappings::strip_jsonc(&text))
-                .unwrap_or_else(|e| panic!("runtime/steps.jsonc is malformed: {e}"));
-            let list = |k: &str| json[k].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
-            rt.steps.methods = list("methods");
-            rt.steps.events = list("events");
-            if let Some(o) = json["pairs"].as_object() {
-                rt.steps.pairs = o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect();
-            }
         }
         if let Ok(text) = std::fs::read_to_string(dir.join("engine.names")) {
             rt.engine_names = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(String::from).collect();

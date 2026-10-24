@@ -31,11 +31,6 @@ AS3.truthy = function(v) {
 
 // ---- numbers ---------------------------------------------------------------------------------------
 
-// what code adds to a value each time it runs, as a share of a source frame: the code the source
-// runs every frame runs every engine frame here, two to the source's one, so it adds half (the
-// compiler writes each accumulation as `x + d * AS3.step`); everything else runs once, and adds all
-AS3.step = 1;
-
 AS3.num = function(v) {
 	if (v == null) return 0;
 	if (v == true) return 1;

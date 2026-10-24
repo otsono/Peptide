@@ -3,9 +3,8 @@
 // The source runs at 30 frames a second and this engine at 60. its frames are doubled rather than
 // clocked: every animation holds each source frame for two engine frames, its timers are the
 // engine's at twice the frames, and the code it runs every frame (the object's update, its
-// enter-frame listeners) runs every engine frame at half its step (`AS3.step`: what that code adds
-// to a value each frame, the compiler scales by it). a clip the engine does not play moves on every
-// second engine frame of its own.
+// enter-frame listeners) runs whole on every second engine frame, as do the clips the engine does
+// not play.
 //
 // Showing a frame: a frame set during the engine's update is advanced once before it is drawn,
 // so setting frame F draws F+1. The engine's frames are the source's doubled (the source's frame
@@ -506,35 +505,20 @@ PeptideRuntime.teardown = function(?fm) {
 PeptideRuntime.sourceFrame = function() {
 	if (PeptideAPI.camera != null) PeptideCamera.refresh(PeptideAPI.camera);
 	var me = PeptideRuntime.object;
-	AS3.step = 0.5;
+	// the kind's own rules count the engine's frames (a press shows for one of them): every one
 	PeptideRuntime.kind.frame(me);
+	// the source's code runs once a source frame, whole, on every other engine frame (the first
+	// update is one of them)
+	if (PeptideRuntime.frame % 2 == 0) return;
 	if (me.update != null) PeptideRuntime.run(me.update);
 	Events.dispatch(me, "gameTickEnd");
 	Events.dispatch(PeptideAPI, "gameTickEnd");
 	for (o in Events.everyFrame.copy()) Events.dispatch(o, "enterFrame");
-	AS3.step = 1;
 	// the first one finishes making the object: nothing moves on yet
 	if (PeptideRuntime.fresh == true) { PeptideRuntime.fresh = false; return; }
 	PeptideRuntime.kind.beforeTick(me);
 	MovieClip.tick(PeptideRuntime.root);
 	Effects.frame();
-};
-
-// a write the source makes when something happens, in code that runs twice a source frame here:
-// 1 the first time it runs on its object (by its site) in a source frame, 0 the second time, so it
-// takes its whole step once whichever of the two it lands in (anywhere else it runs once: 1)
-PeptideRuntime.onceAt = new haxe.ds.StringMap();
-PeptideRuntime.once = function(o, site) {
-	if (AS3.step == 1) return 1;
-	var sf = Std.int((PeptideRuntime.frame + 1) / 2);
-	var at = PeptideRuntime.onceAt;
-	if (o != null && !Std.isOfType(o, String) && !Std.isOfType(o, Float) && !Std.isOfType(o, Bool)) {
-		if (o.__onceAt == null) o.__onceAt = new haxe.ds.StringMap();
-		at = o.__onceAt;
-	}
-	if (at.get(site) == sf) return 0;
-	at.set(site, sf);
-	return 1;
 };
 
 // run the source's code; what it throws is reported once and does not stop the rest

@@ -578,7 +578,7 @@ PeptideEnemy.fadeStep = 0.1;
 PeptideEnemy.fade = function(me, to) {
 	var fm = me.__fm;
 	var a = fm.getAlpha();
-	var d = PeptideEnemy.fadeStep * AS3.step;
+	var d = PeptideEnemy.fadeStep;
 	a = to > a ? Math.min(to, a + d) : Math.max(to, a - d);
 	fm.setAlpha(a);
 	me.__fading = a != to;

@@ -93,11 +93,11 @@ Rollback.copy = function(v) {
 Rollback.saveClip = function(c) {
 	var kids = [];
 	if (c.__kids != null) for (k in c.__kids) kids.push({ depth: k.depth, sym: k.sym, clip: k.clip });
-	return [c, c.currentFrame, c.currentLabel, c.__playing, c.__half, c.__part, kids, c.__enteredOn, c.__held,
+	return [c, c.currentFrame, c.currentLabel, c.__playing, null, c.__part, kids, c.__enteredOn, c.__held,
 		c.x, c.y, c.visible, c.alpha, c.rotation, c.scaleX, c.scaleY, c.parent, c.name, c.__loops, c.__was, c.__anim,
 		c.__looses == null ? null : c.__looses.copy(), c.__cellHolds == null ? null : Rollback.cellsOf(c),
 		c.__listeners == null ? null : c.__listeners.copy(), c.__timers == null ? null : c.__timers.copy(), c.xframe, c.currentFrameLabel,
-		c.__onceAt == null ? null : c.__onceAt.copy(), c.__tlAt];
+		null, c.__tlAt];
 };
 // which containers a clip's fields are in (once it is gone its fields are plain values)
 Rollback.cellsOf = function(c) {
@@ -108,7 +108,7 @@ Rollback.cellsOf = function(c) {
 };
 Rollback.loadClip = function(s) {
 	var c = s[0];
-	c.currentFrame = s[1]; c.currentLabel = s[2]; c.__playing = s[3]; c.__half = s[4]; c.__part = s[5];
+	c.currentFrame = s[1]; c.currentLabel = s[2]; c.__playing = s[3]; c.__part = s[5];
 	var kids = [];
 	for (k in s[6]) kids.push({ depth: k.depth, sym: k.sym, clip: k.clip });
 	c.__kids = kids;
@@ -122,7 +122,6 @@ Rollback.loadClip = function(s) {
 	// the frame label a move's clip says it is in, where the content keeps it as a plain field
 	if (c.__c_xframe == null) c.xframe = s[25];
 	c.currentFrameLabel = s[26];
-	c.__onceAt = s[27] == null ? null : s[27].copy();
 	// where its frame last put it (a place the code then changed is the code's)
 	c.__tlAt = s[28];
 };
@@ -148,7 +147,7 @@ Rollback.save = function(t) {
 		exports: fm == null ? null : Rollback.saveExports(fm.exports),
 		rt: [PeptideRuntime.frame, PeptideRuntime.shown, PeptideRuntime.shownBy, PeptideRuntime.dirty, PeptideRuntime.landing,
 			Rollback.copy(PeptideRuntime.held), PeptideRuntime.fresh, PeptideRuntime.ended, PeptideRuntime.lastEngineFrame, PeptideRuntime.root,
-			PeptideRuntime.onceAt.copy(), PeptideRuntime.lastEngineAnim],
+			null, PeptideRuntime.lastEngineAnim],
 		live: Effects.live.copy(),
 		everyFrame: Events.everyFrame.copy(),
 		made: Objects.made.copy(),
@@ -161,7 +160,6 @@ Rollback.load = function(r) {
 	PeptideRuntime.frame = rt[0]; PeptideRuntime.shown = rt[1]; PeptideRuntime.shownBy = rt[2]; PeptideRuntime.dirty = rt[3];
 	PeptideRuntime.landing = rt[4]; PeptideRuntime.held = Rollback.copy(rt[5]); PeptideRuntime.fresh = rt[6]; PeptideRuntime.ended = rt[7];
 	PeptideRuntime.lastEngineFrame = rt[8]; PeptideRuntime.root = rt[9];
-	PeptideRuntime.onceAt = rt[10].copy();
 	PeptideRuntime.lastEngineAnim = rt[11];
 	for (c in r.clips) Rollback.loadClip(c);
 	for (o in r.objects) Rollback.loadObject(o[0], o[1]);

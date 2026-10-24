@@ -62,7 +62,7 @@ AttackRules.charge = function(me) {
 	var held = c != null && AS3.truthy(c.SPECIAL);
 	var go = null;
 	if (xf == "charging") {
-		me.__chargeT = (me.__chargeT == null ? 0 : me.__chargeT) + AS3.step;
+		me.__chargeT = (me.__chargeT == null ? 0 : me.__chargeT) + 0.5;
 		var air = AttackRules.stat(me, "chargeInAir");
 		if (!fm.isOnFloor() && air != null && AS3.num(air) == 0) go = "attack";
 		else if (!held) go = "attack";

@@ -69,12 +69,6 @@ pub enum Expr {
     TypeApply(Box<Expr>, Vec<Expr>),
     /// something the decoder could not read, and why
     Unreadable(String),
-    /// what code adds each time it runs as a share of a source frame, as it runs (the runtime's
-    /// step): for code run both every frame and once
-    Step,
-    /// 1 the first time this write (by its site) runs on this object in a source frame, 0 after:
-    /// a write code run twice a source frame makes only when something happens
-    Once(Box<Expr>, String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -387,8 +381,6 @@ impl fmt::Display for Expr {
             ScopeOf(n) => write!(f, "scopeOf({n})"),
             TypeApply(c, a) => write!(f, "{}.<{}>", paren(c), list(a)),
             Unreadable(r) => write!(f, "/*unreadable: {r}*/"),
-            Step => write!(f, "step"),
-            Once(o, site) => write!(f, "once({o}, {site})"),
         }
     }
 }

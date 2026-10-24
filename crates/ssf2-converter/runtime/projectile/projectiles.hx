@@ -289,7 +289,7 @@ Projectiles.frame = function(me) {
 	// is a projectile's, and pac-man's hydrant went a hundred frames early on it)
 	var enemy = fm.exports.__isEnemy == true;
 	var life = enemy && (me.__stats == null || !me.__stats.exists("time_max")) ? 0 : Projectiles.num(me, "time_max", 0);
-	if (fm.exports.__holder == null) me.__age += AS3.step;
+	if (fm.exports.__holder == null) me.__age += 0.5;
 	if (life > 0 && me.__age >= life) { Objects.remove(me); return; }
 	// the source tells a projectile's floor listeners the first frame it finds it on the floor,
 	// one made there too; this engine only tells one that comes down onto it, and only lands one

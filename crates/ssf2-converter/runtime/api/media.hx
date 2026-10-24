@@ -121,12 +121,11 @@ Effects.frame = function() {
 	for (c in Effects.live.copy()) {
 		if (c.__vfx.isDisposed()) { Effects.live.remove(c); continue; }
 		if (c.__born == PeptideRuntime.frame || c.__global == true) continue;
-		var due = MovieClip.due(c);
-		if (due && c.__playing && c.currentFrame >= c.totalFrames) {
+		if (c.__playing && c.currentFrame >= c.totalFrames) {
 			c.__loops--;
 			if (c.__loops == 0) { Effects.remove(c); continue; }
 		}
-		MovieClip.tick(c, due);
+		MovieClip.tick(c);
 	}
 };
 

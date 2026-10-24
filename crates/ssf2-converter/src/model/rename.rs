@@ -155,7 +155,6 @@ fn expr(e: &mut Expr, names: &Names) {
         Expr::Delete(p) => place(p, names),
         Expr::Undefined | Expr::Null | Expr::Bool(_) | Expr::Num(_) | Expr::Int(_) | Expr::Str(_)
         | Expr::This | Expr::Local(_) | Expr::Join { .. } | Expr::Temp(_) | Expr::HasNext2 { .. }
-        | Expr::Global | Expr::Activation | Expr::Caught(_) | Expr::Class(_) | Expr::Unreadable(_) | Expr::Step => {}
-        Expr::Once(o, _) => expr(o, names),
+        | Expr::Global | Expr::Activation | Expr::Caught(_) | Expr::Class(_) | Expr::Unreadable(_) => {}
     }
 }

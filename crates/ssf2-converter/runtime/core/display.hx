@@ -120,8 +120,8 @@ MovieClip.build = function(me) {
 	me.stop = function() { if (life.on != true) return; me.__playing = false; PeptideRuntime.hold(me, true); };
 	me.gotoAndPlay = function(frame, ?scene) { if (life.on != true) return; me.__playing = true; MovieClip.goto(me, frame); };
 	me.gotoAndStop = function(frame, ?scene) { if (life.on != true) return; me.__playing = false; MovieClip.goto(me, frame); };
-	if (all || uses.nextFrame == true) me.nextFrame = function() { if (life.on != true) return; me.__playing = false; MovieClip.goto(me, me.currentFrame + AS3.step); };
-	if (all || uses.prevFrame == true) me.prevFrame = function() { if (life.on != true) return; me.__playing = false; MovieClip.goto(me, me.currentFrame - AS3.step); };
+	if (all || uses.nextFrame == true) me.nextFrame = function() { if (life.on != true) return; me.__playing = false; MovieClip.goto(me, me.currentFrame + 1); };
+	if (all || uses.prevFrame == true) me.prevFrame = function() { if (life.on != true) return; me.__playing = false; MovieClip.goto(me, me.currentFrame - 1); };
 	me.getChildByName = function(n) {
 		for (k in me.__kids) if (k.clip.name == n) return k.clip;
 		return null;
@@ -365,23 +365,17 @@ MovieClip.put = function(c, at) {
 MovieClip.movedX = function(c) { return AS3.num(c.x) - (c.__tlAt == null ? 0.0 : AS3.num(c.__tlAt[0])); };
 MovieClip.movedY = function(c) { return AS3.num(c.y) - (c.__tlAt == null ? 0.0 : AS3.num(c.__tlAt[1])); };
 
-// every engine frame: on every second one of its own, the playhead moves on (round to the first
-// frame at the end, as Flash does) unless it is stopped; then the children that were already there
-// do the same. `due` is that second frame, when the caller has already asked
-MovieClip.due = function(me) {
-	me.__half = me.__half == true ? false : true;
-	return me.__half == false;
-};
-MovieClip.tick = function(me, ?due) {
+// once a source frame: the playhead moves on (round to the first frame at the end, as Flash does)
+// unless it is stopped; then the children that were already there do the same
+MovieClip.tick = function(me) {
 	// put on its frame by the engine's state entry this same frame: it is already where the
 	// source's frame shows it
 	if (me.__enteredOn == PeptideRuntime.frame) return;
-	if (due == null) { me.__half = me.__half == true ? false : true; due = me.__half == false; }
 	// (the children as they were before this frame moved it; nothing copied when there are none)
 	var before = me.__kids.length == 0 ? null : me.__kids.copy();
 	// the clip an engine animation shows moves with the engine's frame (PeptideRuntime.sync); its
 	// children still move here. asked only of a clip that would move
-	if (due && me.__playing && me.totalFrames > 1 && !PeptideRuntime.clocked(me)) {
+	if (me.__playing && me.totalFrames > 1 && !PeptideRuntime.clocked(me)) {
 		MovieClip.enter(me, me.currentFrame >= me.totalFrames ? 1 : me.currentFrame + 1);
 	}
 	// (a child of one frame with none of its own has nothing to move: not visited)

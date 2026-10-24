@@ -17,7 +17,7 @@ PeptideFrameTimer.build = function(?me) {
 	me.get_elapsedFrames = function() { return me.__ran; };
 	me.set_elapsedFrames = function(?v) { me.__ran = Math.max(0, Math.min(AS3.num(v), me.__length)); return v; };
 	// ticked by code the source runs every frame, it moves half a frame each of this engine's
-	me.tick = function(?n) { me.set_elapsedFrames(me.__ran + (n == null ? 1 : AS3.num(n)) * AS3.step); };
+	me.tick = function(?n) { me.set_elapsedFrames(me.__ran + (n == null ? 1 : AS3.num(n))); };
 	me.__copy = function() { var t = PeptideFrameTimer.create(me.__length); t.__ran = me.__ran; t.__data = me.__data; return t; };
 	me.finish = function() { me.__ran = me.__length; };
 	me.reset = function() { me.__ran = 0; };

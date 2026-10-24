@@ -28,33 +28,8 @@ pub struct ClassWriter<'p, 'a> {
     /// compiled with the class, into `detached_text`, and not given to the object
     pub detached: BTreeSet<String>,
     pub detached_text: BTreeMap<String, String>,
-    /// the methods the source runs every frame (`steps.jsonc`), and whether the code being written
-    /// is one of them: there an accumulation adds half its step, since the engine runs it twice to
-    /// the source's once
-    per_frame: BTreeSet<String>,
-    /// the methods run both every frame and otherwise (called from code that runs every frame and
-    /// from code that does not): there an accumulation adds the step the runtime is at as it runs
-    per_frame_some: BTreeSet<String>,
-    stepping: bool,
-    /// the code being written steps by the runtime's step rather than half
-    stepping_live: bool,
     /// untyped fields that only ever hold whole numbers (`whole_number_fields`)
     int_fields: BTreeSet<String>,
-    /// how deep the code being written is in branches and in loops of its function, and the
-    /// methods a loop calls (their writes run once an element): a write in a branch and in no
-    /// loop happens when something does, and takes its whole step once a source frame
-    branches: usize,
-    loops: usize,
-    /// what the conditions of the loops being lowered read: a loop's own counter, which steps once
-    /// a pass whatever frame the loop runs in
-    counters: Vec<Expr>,
-    looped: BTreeSet<String>,
-    method: String,
-    sites: std::cell::Cell<usize>,
-    /// what a function written as an argument of the call being written runs as: every frame (a
-    /// listener of an event raised every frame, an array's iteration in code that runs every
-    /// frame) or not (anything else it is handed to)
-    closure_step: Option<bool>,
     /// this clip's frames as the engine's animations, for its own jumps by label
     pub jumps: Option<super::ClipJumps>,
     /// the landings the engine makes for this class's code
@@ -87,11 +62,9 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         for f in class.methods.iter().map(|m| &m.function).chain([&class.constructor]) {
             walk_exprs(&f.body, &mut |e| if let Expr::SuperCall(n, _) | Expr::SuperMember(n) = e { if !n.is_empty() { supers_used.insert(n.clone()); } });
         }
-        let (per_frame, per_frame_some) = per_frame_methods(class, &pkg.runtime.steps);
-        let looped = looped_methods(class);
         let int_fields = whole_number_fields(pkg, class);
         ClassWriter { pkg, class, int_fields, problems: Vec::new(), unknown: BTreeSet::new(), scopes: Vec::new(), uniq: 0, supers_used, shapes: None,
-            detached: BTreeSet::new(), detached_text: BTreeMap::new(), per_frame, per_frame_some, stepping: false, stepping_live: false, branches: 0, loops: 0, counters: Vec::new(), looped, method: String::new(), sites: std::cell::Cell::new(0), closure_step: None, jumps: None, landings: Vec::new() }
+            detached: BTreeSet::new(), detached_text: BTreeMap::new(), jumps: None, landings: Vec::new() }
     }
 
     fn problem(&mut self, p: impl Into<String>) { self.problems.push(p.into()) }
@@ -162,12 +135,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         }
         for m in c.methods.iter().filter(|m| !m.is_static) {
             let name = match m.kind { MethodKind::Getter => format!("get_{}", m.name), MethodKind::Setter => format!("set_{}", m.name), _ => m.name.clone() };
-            self.stepping_live = m.kind == MethodKind::Method && self.per_frame_some.contains(&m.name);
-            self.stepping = m.kind == MethodKind::Method && self.per_frame.contains(&m.name) || self.stepping_live;
-            self.method = m.name.clone();
             let f = self.function(&m.function, 1, Some(false));
-            self.stepping = false;
-            self.stepping_live = false;
             if m.kind == MethodKind::Method && self.detached.contains(&m.name) {
                 self.detached_text.insert(m.name.clone(), f);
                 continue;
@@ -244,16 +212,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
     /// A function. `method`: Some(static?) for a method of this class, None for a closure or a
     /// lone function.
     pub fn function(&mut self, f: &Function, depth: usize, method: Option<bool>) -> String {
-        // a function's body is its own: it runs when it is called, not in the branch it is written in
-        let (branches, loops) = (self.branches, self.loops);
-        let counters = std::mem::take(&mut self.counters);
-        self.branches = 0;
-        self.loops = 0;
-        let out = self.function_body(f, depth, method);
-        self.branches = branches;
-        self.loops = loops;
-        self.counters = counters;
-        out
+        self.function_body(f, depth, method)
     }
 
     fn function_body(&mut self, f: &Function, depth: usize, method: Option<bool>) -> String {
@@ -324,39 +283,8 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
 
     fn stmts(&mut self, list: &[Stmt], depth: usize) -> String {
         let mut out = String::new();
-        for (i, s) in list.iter().enumerate() {
-            match self.stepped_through_registers(list, i) {
-                Some(s) => out.push_str(&self.stmt(&s, depth)),
-                None => out.push_str(&self.stmt(s, depth)),
-            }
-        }
+        for s in list { out.push_str(&self.stmt(s, depth)); }
         out
-    }
-
-    /// every frame, a write that reaches its place through registers (`r2 = this; r3 = x - 1;
-    /// r2.x = r3`, how a decrement on a field is often compiled): the write as the place and the
-    /// value the registers hold, so it steps like the same write made directly
-    fn stepped_through_registers(&self, list: &[Stmt], i: usize) -> Option<Stmt> {
-        if !self.stepping || i == 0 { return None }
-        let Stmt::Assign(p, Expr::Local(v)) = &list[i] else { return None };
-        let Stmt::Assign(Place::Local(r), e) = &list[i - 1] else { return None };
-        if r != v { return None }
-        // the register an object is reached through, by the last thing written to it before here
-        let held = |reg: u32| list[..i - 1].iter().rev().find_map(|st| match st {
-            Stmt::Assign(Place::Local(x), e) if *x == reg => Some(e.clone()),
-            _ => None,
-        });
-        let place = match p {
-            Place::Member(o, n) => match o {
-                Expr::Local(a) => Place::Member(held(*a).filter(|e| matches!(e, Expr::This))?, n.clone()),
-                _ => p.clone(),
-            },
-            Place::Name(_) => p.clone(),
-            _ => return None,
-        };
-        let target = self.place_read(&place)?;
-        self.step_value(&target, e)?;
-        Some(Stmt::Assign(place, e.clone()))
     }
 
     fn block(&mut self, list: &[Stmt], depth: usize) -> String {
@@ -376,13 +304,11 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             Stmt::Assign(p, v) => format!("{t}{};\n", self.assign(p, v)),
             Stmt::If(c, a, b) => {
                 let cond = self.cond(c);
-                self.branches += 1;
                 let then = self.stmts(a, depth + 1);
                 // a test whose branches come to nothing (a drawing call that does nothing here),
                 // and whose working out does nothing either: nothing is written
                 if then.trim().is_empty() && pure(c, &self.pkg.runtime.inert_values)
                     && (b.is_empty() || b.iter().all(|x| matches!(x, Stmt::Expr(Expr::Call(f, g)) if self.inert_call(f, g)))) {
-                    self.branches -= 1;
                     return String::new();
                 }
                 let mut out = format!("{t}if ({cond}) {{\n{then}{t}}}");
@@ -390,33 +316,24 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
                     if let [Stmt::If(..)] = b.as_slice() {
                         let inner = self.stmt(&b[0], depth);
                         out.push_str(&format!(" else {}", inner.trim_start()));
-                        self.branches -= 1;
-                        return out;
+                            return out;
                     }
                     out.push_str(&format!(" else {}", self.block(b, depth)));
                 }
-                self.branches -= 1;
                 out.push('\n');
                 out
             }
-            Stmt::Loop(b) => { self.loops += 1; let o = format!("{t}while (true) {}\n", self.block(b, depth)); self.loops -= 1; o }
+            Stmt::Loop(b) => format!("{t}while (true) {}\n", self.block(b, depth)),
             Stmt::While(c, b) if self.counting_loop(c, b).is_some() => {
                 let rep = self.counting_loop(c, b).unwrap();
                 self.stmt(&rep, depth)
             }
             Stmt::While(c, b) => {
                 let cond = self.cond(c);
-                let n = self.push_counters(c);
-                self.loops += 1; let o = format!("{t}while ({cond}) {}\n", self.block(b, depth)); self.loops -= 1;
-                self.counters.truncate(n);
-                o
+                format!("{t}while ({cond}) {}\n", self.block(b, depth))
             }
             Stmt::DoWhile(b, c) => {
-                let n = self.push_counters(c);
-                self.loops += 1;
                 let body = self.block(b, depth);
-                self.loops -= 1;
-                self.counters.truncate(n);
                 format!("{t}do {body} while ({});\n", self.cond(c))
             }
             Stmt::Break => format!("{t}break;\n"),
@@ -496,9 +413,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
                 }
             }
         }
-        // every frame, an accumulation on something that outlives the frame adds half its step
-        let stepped = if self.stepping { self.place_read(p).and_then(|t| self.step_value(&t, v)) } else { None };
-        let val = self.expr(stepped.as_ref().unwrap_or(v));
+        let val = self.expr(v);
         match p {
             Place::Local(r) => format!("{} = {val}", self.reg(*r)),
             Place::Temp(t) => format!("__t{t} = {val}"),
@@ -540,93 +455,6 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
                 }
             }
         }
-    }
-
-    /// the value a place holds, read back, when it outlives the frame (anything but a variable)
-    fn place_read(&self, p: &Place) -> Option<Expr> {
-        match p {
-            Place::Member(o, n) => Some(Expr::Member(Box::new(o.clone()), n.clone())),
-            Place::Name(n) if self.local_name(n).is_none() => Some(Expr::Name(n.clone())),
-            Place::Index(o, k) => Some(Expr::Index(Box::new(o.clone()), Box::new(k.clone()))),
-            Place::SuperMember(n) => Some(Expr::SuperMember(n.clone())),
-            _ => None,
-        }
-    }
-
-    /// `v` written to what `target` reads, when it is `target` plus or minus a number (half the
-    /// number, then) or `target` times or over a positive constant (its square root): what code
-    /// run twice a source frame adds each time. an int keeps the halves, so the whole part moves
-    /// once they make one
-    /// the places a loop's condition reads, kept while its body is lowered; the length to cut back to
-    fn push_counters(&mut self, cond: &Expr) -> usize {
-        let n = self.counters.len();
-        // a place it reads, or a getter it asks (`while (hit(getY())) setY(getY() - 1)`)
-        cond.walk(&mut |x| if matches!(x, Expr::Member(..) | Expr::Name(_) | Expr::Local(_))
-            || matches!(x, Expr::Call(_, a) if a.is_empty()) { self.counters.push(x.clone()) });
-        n
-    }
-
-    fn step_value(&self, target: &Expr, v: &Expr) -> Option<Expr> {
-        // the counter of a loop it is in moves a whole step a pass: the loop runs whole in one frame
-        if self.counters.iter().any(|c| c == peel(target)) { return None }
-        let numeric_wrap = matches!(v, Expr::Convert(Conv::Number | Conv::Int | Conv::Uint, _))
-            || matches!(v, Expr::Coerce(t, _) if matches!(short(t), "Number" | "int" | "uint"));
-        let numeric = |d: &Expr| !self.is_string(d) && !self.is_string(target)
-            && (matches!(d, Expr::Num(_) | Expr::Int(_)) || numeric_wrap || (self.is_primitive(d) && !matches!(d, Expr::Bool(_)))
-                || matches!(target, Expr::Member(o, n) if self.is_me(o) && matches!(self.field_type(n).as_deref().map(short), Some("Number" | "int" | "uint"))));
-        // a write made only when something happens (in a branch, in no loop, of a method no loop
-        // calls) takes its whole step the first time it runs on its object in a source frame
-        let once = self.branches > 0 && self.loops == 0 && !self.looped.contains(&self.method);
-        let holder = match target { Expr::Member(o, _) | Expr::Index(o, _) => (**o).clone(), _ => Expr::This };
-        let step = if once {
-            self.sites.set(self.sites.get() + 1);
-            Expr::Once(Box::new(holder), format!("{}#{}", short(&self.class.name), self.sites.get()))
-        } else if self.stepping_live { Expr::Step } else { Expr::Num(0.5) };
-        let half = |d: &Expr| Box::new(Expr::Binary(BinOp::Mul, Box::new(d.clone()), Box::new(step.clone())));
-        match peel(v) {
-            Expr::Binary(op @ (BinOp::Add | BinOp::Sub), a, d) if peel(a) == target && numeric(d) =>
-                Some(Expr::Binary(*op, a.clone(), half(d))),
-            Expr::Binary(BinOp::Add, d, a) if peel(a) == target && numeric(d) =>
-                Some(Expr::Binary(BinOp::Add, a.clone(), half(d))),
-            Expr::Binary(op @ (BinOp::Mul | BinOp::Div), a, k) if peel(a) == target && !self.stepping_live && !once => {
-                let k = match peel(k) { Expr::Num(x) => *x, Expr::Int(i) => *i as f64, _ => return None };
-                (k > 0.0 && k != 1.0).then(|| Expr::Binary(*op, a.clone(), Box::new(Expr::Num(k.sqrt()))))
-            }
-            _ => None,
-        }
-    }
-
-    /// a setter handed its own getter's value plus a step (`setXSpeed(getXSpeed() + a)`), every
-    /// frame: the argument with half the step
-    fn step_setter(&self, callee: &Expr, args: &[Expr]) -> Option<Vec<Expr>> {
-        if args.len() != 1 { return None }
-        let (recv, m) = match callee {
-            Expr::Member(o, m) => (Some(&**o), m),
-            Expr::Name(m) if self.local_name(m).is_none() => (None, m),
-            _ => return None,
-        };
-        let getter = match self.pkg.runtime.steps.pairs.get(m.as_str()) {
-            Some(g) => g.clone(),
-            None => format!("get{}", m.strip_prefix("set").filter(|k| k.starts_with(|c: char| c.is_ascii_uppercase()))?),
-        };
-        let same = |r: Option<&Expr>| r.map(peel) == recv.map(peel);
-        let base = |e: &Expr| -> Option<Expr> {
-            match peel(e) {
-                Expr::Call(c, a) if a.is_empty() => match &**c {
-                    Expr::Member(o, g) if *g == getter && same(Some(o)) => Some(peel(e).clone()),
-                    Expr::Name(g) if *g == getter && recv.is_none() => Some(peel(e).clone()),
-                    _ => None,
-                },
-                Expr::Member(o, g) if *g == getter && same(Some(o)) => Some(peel(e).clone()),
-                _ => None,
-            }
-        };
-        let arg = &args[0];
-        let target = match peel(arg) {
-            Expr::Binary(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, a, d) => base(a).or_else(|| base(d))?,
-            _ => return None,
-        };
-        Some(vec![self.step_value(&target, arg)?])
     }
 
     // ---- expressions ---------------------------------------------------------------------------------
@@ -875,14 +703,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             }
             Expr::Function(f) => {
                 let depth = self.scopes.len();
-                // a function written in place runs as the call it is handed to says, else as the
-                // code around it does
-                let (stepping, handed) = (self.stepping, self.closure_step.take());
-                self.stepping = handed.unwrap_or(stepping);
-                let out = self.function(f, depth, None);
-                self.stepping = stepping;
-                self.closure_step = handed;
-                out
+                self.function(f, depth, None)
             }
             Expr::Assign(p, v) => format!("({})", self.assign(p, v)),
             Expr::Delete(p) => match &**p {
@@ -898,11 +719,6 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             Expr::NextValue(o, i) => format!("AS3.nextValue({}, {})", self.expr(o), self.expr(i)),
             Expr::HasNext(o, i) => format!("AS3.nextIndex({}, {})", self.expr(o), self.expr(i)),
             Expr::Global => { self.problem("the global object"); "null".into() }
-            Expr::Step => "AS3.step".into(),
-            Expr::Once(o, site) => {
-                let holder = if matches!(**o, Expr::This) && self.scopes.iter().any(|sc| sc.is_static) { "null".to_string() } else { self.expr(o) };
-                format!("PeptideRuntime.once({holder}, {})", quote(site))
-            }
             Expr::Activation => { self.problem("the activation object"); "null".into() }
             Expr::Caught(i) => {
                 for s in self.scopes.iter().rev() { if let Some(n) = s.caught.get(i) { return n.clone() } }
@@ -1431,9 +1247,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         Some(format!("({{ {vars}{out}; }})"))
     }
 
-    /// a call. every frame, a setter stepping from its own getter takes half the step; a function
-    /// handed to it runs as the call says (every frame when it listens for an event raised every
-    /// frame, or is an array's iteration in code that runs every frame)
+    /// a call
     fn call(&mut self, callee: &Expr, args: &[Expr]) -> String {
         // the clip's own jump by label, while the engine shows this clip: the engine's own jump
         if let (Expr::Member(recv, m), [Expr::Str(label)]) = (callee, args) {
@@ -1473,27 +1287,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
                 }
             }
         }
-        if self.stepping {
-            if let Some(stepped) = self.step_setter(callee, args) {
-                self.stepping = false;
-                let out = self.call(callee, &stepped);
-                self.stepping = true;
-                return out;
-            }
-        }
-        let m = match callee { Expr::Member(_, m) | Expr::Name(m) => m.as_str(), _ => "" };
-        let steps = &self.pkg.runtime.steps;
-        let every_frame_event = |e: &Expr| match e {
-            Expr::Str(s) => steps.events.contains(s),
-            Expr::Member(_, n) => steps.events.contains(n),
-            _ => false,
-        };
-        let runs = if m == "addEventListener" && args.first().is_some_and(every_frame_event) { true }
-            else { self.stepping && matches!(m, "forEach" | "map" | "filter" | "some" | "every") };
-        let saved = self.closure_step.replace(runs);
-        let out = self.call_inner(callee, args);
-        self.closure_step = saved;
-        out
+        self.call_inner(callee, args)
     }
 
     fn call_inner(&mut self, callee: &Expr, args: &[Expr]) -> String {
@@ -2044,114 +1838,6 @@ fn strip_enclosing(e: String) -> String {
         }
     }
     strip_enclosing(e[1..e.len() - 1].to_string())
-}
-
-/// a value without the conversions around it
-fn peel(e: &Expr) -> &Expr {
-    match e { Expr::Convert(_, x) | Expr::Coerce(_, x) => peel(x), _ => e }
-}
-
-/// The methods of a class the source runs every frame: the ones its runtime calls every frame
-/// (`steps.jsonc`), the ones handed to a listener of an event raised every frame, and the ones only
-/// those call (a method handed anywhere as a value, or called from anything else, is not one).
-/// the class's own methods a loop calls (directly, or through methods those call): their writes
-/// are made once an element, so none of them is once a source frame
-fn looped_methods(class: &ClassModel) -> BTreeSet<String> {
-    let own: BTreeSet<&str> = class.methods.iter().filter(|m| !m.is_static).map(|m| m.name.as_str()).collect();
-    let name_of = |e: &Expr| -> Option<String> {
-        match e {
-            Expr::Member(o, n) if matches!(**o, Expr::This) && own.contains(n.as_str()) => Some(n.clone()),
-            Expr::Name(n) if own.contains(n.as_str()) => Some(n.clone()),
-            _ => None,
-        }
-    };
-    // every expression with whether a loop holds it: a loop is walked whole as looped, anything
-    // else whole as not, and its blocks again so a loop inside a branch is found
-    fn in_loops(list: &[Stmt], f: &mut dyn FnMut(&Expr, bool)) {
-        for st in list {
-            if matches!(st, Stmt::Loop(_) | Stmt::While(..) | Stmt::DoWhile(..)) {
-                walk_exprs(std::slice::from_ref(st), &mut |e| f(e, true));
-            } else {
-                walk_exprs(std::slice::from_ref(st), &mut |e| f(e, false));
-                for b in st.blocks() { in_loops(b, f) }
-            }
-        }
-    }
-    let mut set: BTreeSet<String> = BTreeSet::new();
-    let mut calls: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for m in &class.methods {
-        in_loops(&m.function.body, &mut |e, looped| {
-            if let Expr::Call(c, _) = e {
-                if let Some(n) = name_of(c) {
-                    if looped { set.insert(n.clone()); }
-                    calls.entry(m.name.clone()).or_default().insert(n);
-                }
-            }
-        });
-    }
-    loop {
-        let more: Vec<String> = set.iter().flat_map(|m| calls.get(m).cloned().unwrap_or_default()).filter(|n| !set.contains(n)).collect();
-        if more.is_empty() { break }
-        set.extend(more);
-    }
-    set
-}
-
-/// the methods the source runs every frame, and the ones it runs both every frame and otherwise
-fn per_frame_methods(class: &ClassModel, steps: &super::runtime::Steps) -> (BTreeSet<String>, BTreeSet<String>) {
-    let own: BTreeSet<&str> = class.methods.iter().filter(|m| !m.is_static && m.kind == MethodKind::Method).map(|m| m.name.as_str()).collect();
-    let own_name = |e: &Expr| -> Option<String> {
-        match e {
-            Expr::Member(o, n) if matches!(**o, Expr::This) && own.contains(n.as_str()) => Some(n.clone()),
-            Expr::Name(n) if own.contains(n.as_str()) => Some(n.clone()),
-            _ => None,
-        }
-    };
-    let every_frame_event = |e: &Expr| match e {
-        Expr::Str(s) => steps.events.contains(s),
-        Expr::Member(_, n) => steps.events.contains(n),
-        _ => false,
-    };
-    let mut set: BTreeSet<String> = own.iter().filter(|n| steps.methods.contains(**n)).map(|n| n.to_string()).collect();
-    let mut refs: BTreeMap<String, usize> = BTreeMap::new();
-    let mut calls: BTreeMap<String, usize> = BTreeMap::new();
-    let mut callers: BTreeMap<String, BTreeSet<Option<String>>> = BTreeMap::new();
-    let bodies = class.methods.iter().map(|m| (if m.is_static || m.kind != MethodKind::Method { None } else { Some(m.name.clone()) }, &m.function.body))
-        .chain([(None, &class.constructor.body), (None, &class.static_init.body)]);
-    for (who, body) in bodies {
-        walk_exprs(body, &mut |e| {
-            if let Some(n) = own_name(e) { *refs.entry(n).or_default() += 1 }
-            if let Expr::Call(c, args) = e {
-                if let Some(n) = own_name(c) {
-                    *calls.entry(n.clone()).or_default() += 1;
-                    callers.entry(n).or_default().insert(who.clone());
-                }
-                let add = matches!(&**c, Expr::Member(_, m) | Expr::Name(m) if m == "addEventListener");
-                if add && args.len() >= 2 && every_frame_event(&args[0]) {
-                    if let Some(h) = own_name(&args[1]) { set.insert(h); }
-                }
-            }
-        });
-    }
-    loop {
-        let more: Vec<String> = callers.iter()
-            .filter(|(n, from)| !set.contains(*n) && refs.get(*n) == calls.get(*n)
-                && from.iter().all(|w| w.as_ref().is_some_and(|w| set.contains(w))))
-            .map(|(n, _)| n.clone()).collect();
-        if more.is_empty() { break }
-        set.extend(more);
-    }
-    // called by name only, from at least one method that runs every frame (or runs both ways)
-    let mut some: BTreeSet<String> = BTreeSet::new();
-    loop {
-        let more: Vec<String> = callers.iter()
-            .filter(|(n, from)| !set.contains(*n) && !some.contains(*n) && refs.get(*n) == calls.get(*n)
-                && from.iter().any(|w| w.as_ref().is_some_and(|w| set.contains(w) || some.contains(w))))
-            .map(|(n, _)| n.clone()).collect();
-        if more.is_empty() { break }
-        some.extend(more);
-    }
-    (set, some)
 }
 
 /// a plain number a value states (a boolean as 1 or 0)
