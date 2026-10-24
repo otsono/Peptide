@@ -120,37 +120,30 @@ pub fn build_timed(lib: &Library, opts: Options, clock: &dyn Fn() -> f64) -> Res
     }
 
     // ---- every picture decoded and trimmed to its opaque bounds, side by side ----
+    // only each picture's trimmed size, offset and fingerprint are kept: the pixels are decoded
+    // again when their sheet is drawn, so a library never has every picture in memory at once
     let used: Vec<(&String, &BTreeMap<String, ()>)> = usage.iter().collect();
-    let decoded: Vec<(RgbaImage, u32, u32, u64)> = used.par_iter().map(|(guid, _)| -> Result<_> {
-        let full = if guid.is_empty() {
-            RgbaImage::new(1, 1)
-        } else {
-            let bytes = lib.images.get(*guid)
-                .ok_or_else(|| anyhow!("pack: an entity references image {guid} that is not in library/sprites"))?;
-            image::load_from_memory(bytes).with_context(|| format!("decoding image {guid}"))?.to_rgba8()
-        };
-        let mut full = full;
-        as_the_editor_stores(&mut full);
-        let (img, tx, ty) = trimmed(&full);
+    let decoded: Vec<(u32, u32, u32, u32, u64)> = used.par_iter().map(|(guid, _)| -> Result<_> {
+        let (img, tx, ty) = picture(lib, guid)?;
         let hash = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             (img.width(), img.height()).hash(&mut h); img.as_raw().hash(&mut h); h.finish()
         };
-        Ok((img, tx, ty, hash))
+        Ok((img.width(), img.height(), tx, ty, hash))
     }).collect::<Result<_>>()?;
 
     step("decode");
     // ---- sheets: one per group, identical pictures packed once, shelf-packed ----
-    struct Item { guids: Vec<(String, u32, u32)>, img: RgbaImage }
+    struct Item { guids: Vec<(String, u32, u32)>, w: u32, h: u32 }
     let mut per_group: BTreeMap<String, Vec<Item>> = BTreeMap::new();
     let mut same: HashMap<(String, u64), usize> = HashMap::new(); // (group, picture hash) -> item
-    for ((guid, groups), (img, tx, ty, hash)) in used.iter().zip(decoded) {
+    for ((guid, groups), (w, h, tx, ty, hash)) in used.iter().zip(decoded) {
         for g in groups.keys() {
             let items = per_group.entry(g.clone()).or_default();
             match same.get(&(g.clone(), hash)) {
                 Some(&i) => items[i].guids.push(((*guid).clone(), tx, ty)),
-                None => { same.insert((g.clone(), hash), items.len()); items.push(Item { guids: vec![((*guid).clone(), tx, ty)], img: img.clone() }); }
+                None => { same.insert((g.clone(), hash), items.len()); items.push(Item { guids: vec![((*guid).clone(), tx, ty)], w, h }); }
             }
         }
     }
@@ -162,7 +155,7 @@ pub fn build_timed(lib: &Library, opts: Options, clock: &dyn Fn() -> f64) -> Res
     for items in per_group.values_mut() {
         // tallest first, then a shelf per row; a group that does not fit one texture goes on
         // as many as it takes, each a sheet of the same group, and a keyframe names its sheet
-        items.sort_by(|a, b| b.img.height().cmp(&a.img.height()).then(a.guids[0].0.cmp(&b.guids[0].0)));
+        items.sort_by(|a, b| b.h.cmp(&a.h).then(a.guids[0].0.cmp(&b.guids[0].0)));
     }
     for (group, items) in &per_group {
         let mut sheet_no = 0usize;
@@ -178,7 +171,7 @@ pub fn build_timed(lib: &Library, opts: Options, clock: &dyn Fn() -> f64) -> Res
                 w: pot(used_w.max(1)), h: pot(used_h.max(1)) });
         };
         for (idx, it) in items.iter().enumerate() {
-            let (w, h) = it.img.dimensions();
+            let (w, h) = (it.w, it.h);
             if w > SHEET_MAX || h > SHEET_MAX { bail!("pack: a picture in sheet group {group:?} is larger than a {SHEET_MAX}x{SHEET_MAX} texture"); }
             if x > 0 && x + w > SHEET_MAX { x = 0; y += row_h + GAP; row_h = 0; }
             if y + h > SHEET_MAX {
@@ -194,12 +187,16 @@ pub fn build_timed(lib: &Library, opts: Options, clock: &dyn Fn() -> f64) -> Res
         }
     }
     step("layout");
-    let sheets: Vec<(String, Vec<u32>, Vec<u8>)> = layout.par_iter().map(|s| -> Result<_> {
+    // one sheet at a time, each drawn and encoded by every thread: a full sheet is 64 MB of
+    // pixels, so sheets side by side would cost that again per thread
+    let sheets: Vec<(String, Vec<u32>, Vec<u8>)> = layout.iter().map(|s| -> Result<_> {
+        let pictures: Vec<RgbaImage> = s.at.par_iter()
+            .map(|&(it, _, _)| picture(lib, &s.items[it].guids[0].0).map(|(img, _, _)| img))
+            .collect::<Result<_>>()?;
         let mut sheet = RgbaImage::new(s.w, s.h);
         let mut frames: Vec<u32> = Vec::with_capacity(s.at.len() * 4);
-        for &(it, rx, ry) in &s.at {
-            let img = &s.items[it].img;
-            image::imageops::replace(&mut sheet, img, rx as i64, ry as i64);
+        for (&(_, rx, ry), img) in s.at.iter().zip(pictures) {
+            image::imageops::replace(&mut sheet, &img, rx as i64, ry as i64);
             frames.extend([rx, ry, img.width(), img.height()]);
         }
         Ok((s.group.clone(), frames, encode_png(&sheet)))
@@ -407,6 +404,21 @@ fn adler32_combine(a1: u32, a2: u32, len2: usize) -> u32 {
 }
 
 fn pot(n: u32) -> u32 { let mut p = 1; while p < n { p <<= 1; } p }
+
+/// The picture `guid` as it goes on a sheet: decoded, its colours stored as the editor stores
+/// them, and trimmed to its opaque bounds, with where the trim starts. No guid is the blank
+/// picture an image symbol with no asset draws.
+fn picture(lib: &Library, guid: &str) -> Result<(RgbaImage, u32, u32)> {
+    let mut full = if guid.is_empty() {
+        RgbaImage::new(1, 1)
+    } else {
+        let bytes = lib.images.get(guid)
+            .ok_or_else(|| anyhow!("pack: an entity references image {guid} that is not in library/sprites"))?;
+        image::load_from_memory(bytes).with_context(|| format!("decoding image {guid}"))?.to_rgba8()
+    };
+    as_the_editor_stores(&mut full);
+    Ok(trimmed(&full))
+}
 
 /// The colours a picture has once the editor has drawn it: it holds pictures with their colour
 /// multiplied by their alpha, a byte each, so a faint pixel keeps only as many shades of colour
