@@ -90,7 +90,7 @@ Fighters.freezeSlow = function(me) {
 };
 // whether the source slows a fighter in its attack this frame: always, but under a direction held
 // where the attack gives control and lets it run (both declared, read as the source's defaults when
-// not); an attack that keeps a share of its speed instead slows by that share (Objects.slideShare)
+// not); an attack that keeps a share of its speed instead slows by that share
 Fighters.attackSlows = function(me, air) {
 	if ((air ? me.__decayMulAir : me.__decayMul) != null) return false;
 	var c = me.__fm.getHeldControls();
@@ -110,7 +110,7 @@ Fighters.attackStartSlow = function(me) {
 	var was = me.__wasAttacking;
 	me.__wasAttacking = on;
 	if (!on || was == true || !fm.isOnFloor()) return;
-	if (me.__slid != null && me.__slid.at == PeptideRuntime.frame) return;
+	if (fm.exports != null && fm.exports.__wroteX == PeptideRuntime.frame) return;
 	if (!Fighters.attackSlows(me, false)) return;
 	fm.setXSpeed(Objects.slowed(fm.getXSpeed(), 3 * Objects.slideStep(fm, false) / 1.5));
 };
@@ -178,7 +178,6 @@ Fighters.engineFrame = function(me) {
 			me.__fm.forceStartHitstun(want);
 		}
 	}
-	Objects.medium(me);
 	AttackRules.engineFrame(me);
 	for (st in me.__selfPlatforms) { st.setX(me.__fm.getX()); st.setY(me.__fm.getY()); }
 	Fighters.rocketFrame(me);

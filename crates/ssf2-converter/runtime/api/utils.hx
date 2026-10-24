@@ -4,15 +4,10 @@
 
 // class PeptideUtils
 var PeptideUtils = { name: "PeptideUtils" };
-PeptideUtils.toRadians = function(a) { return AS3.num(a) * (Math.PI / 180); };
-PeptideUtils.toDegrees = function(a) { return AS3.num(a) * (180 / Math.PI); };
 PeptideUtils.getDistance = function(a, b) {
 	if (a == null || b == null) return 0;
 	return Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2));
 };
-PeptideUtils.calculateXSpeed = function(speed, angle) { return AS3.num(speed) * Math.cos(AS3.num(angle) * Math.PI / 180); };
-PeptideUtils.calculateYSpeed = function(speed, angle) { return AS3.num(speed) * Math.sin(AS3.num(angle) * Math.PI / 180); };
-PeptideUtils.calculateSpeed = function(x, y) { return Math.sqrt(Math.pow(AS3.num(x), 2) + Math.pow(AS3.num(y), 2)); };
 PeptideUtils.forceBase360 = function(a) {
 	a = AS3.num(a);
 	while (a < 0) a += 360;

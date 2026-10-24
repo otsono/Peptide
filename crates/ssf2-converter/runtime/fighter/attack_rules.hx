@@ -80,7 +80,7 @@ AttackRules.charge = function(me) {
 // speed into its climb without it)
 AttackRules.reset = function(me) {
 	var fm = me.__fm;
-	if (AS3.truthy(AttackRules.stat(me, "resetMovement"))) { fm.setXVelocity(0); fm.setYVelocity(Objects.fallHeld(fm)); }
+	if (AS3.truthy(AttackRules.stat(me, "resetMovement"))) { fm.setXVelocity(0); fm.setYVelocity(0); }
 };
 // an attack begins: its declared motion, control, statuses and eases take hold
 AttackRules.began = function(me, ?entering) {
@@ -161,7 +161,6 @@ AttackRules.motion = function(me) {
 	var written = Attacks.overrides(me);
 	var o = {};
 	var any = false;
-	var was = Objects.slideShare(fm);
 	me.__decayMul = null;
 	me.__decayMulAir = null;
 	var v = AttackRules.stat(me, "xSpeedDecay");
@@ -174,10 +173,6 @@ AttackRules.motion = function(me) {
 	if (written.exists("xSpeedAccel")) { o.groundSpeedAcceleration = AS3.num(written.get("xSpeedAccel")) * u.accel; any = true; }
 	if (written.exists("xSpeedAccelAir")) { o.aerialSpeedAcceleration = AS3.num(written.get("xSpeedAccelAir")) * u.accel; any = true; }
 	if (any) fm.updateAnimationStats(o);
-	// a share that starts (or changes) mid-move takes the speed the fighter has now as the
-	// source's does, from this frame (falcon's kick keeps 0.75 of its 20 from the frame it says so)
-	var now = Objects.slideShare(fm);
-	if (now != was) fm.setXSpeed(fm.getXSpeed() / was * now);
 };
 
 // steering. the conversion puts what an attack declares, and what its code writes as a plain
@@ -270,21 +265,16 @@ AttackRules.ease = function(me) {
 	// the source clamps the fall to it on the spot; this engine only stops gravity past it
 	if (cap != null && me.__fm.getYVelocity() > cap) me.__fm.setYVelocity(cap);
 };
-// the fall its attack's ease holds it to, in this engine's units (null when none is in force),
-// kept on the fighter for any script that writes its speed (Objects.ySpeedTo): the source adds
-// no gravity past the ease, so the frame of gravity a written speed is held ahead stops there
-// (simon's swing writes its ease and then the same speed, and swung a frame of gravity low)
+// the fall its attack's ease holds it to, in this engine's units (null when none is in force)
 AttackRules.easeCap = function(me) {
 	var ease = me.__rulesBase == null ? null : AttackRules.stat(me, "air_ease");
-	var cap = ease == null || AS3.num(ease) < 0 ? null : AS3.num(ease) * PeptideRuntime.data.units.speed;
-	if (me.__fm.exports != null) me.__fm.exports.__easeCap = cap;
-	return cap;
+	return ease == null || AS3.num(ease) < 0 ? null : AS3.num(ease) * PeptideRuntime.data.units.speed;
 };
 // every engine frame
 AttackRules.engineFrame = function(me) {
 	var fm = me.__fm;
 	AttackRules.track(me);
-	if (me.__rulesBase == null) { if (fm.exports != null) fm.exports.__easeCap = null; return; }
+	if (me.__rulesBase == null) return;
 	AttackRules.refresh(me);
 	if (me.__resetAgain == true) {
 		me.__resetAgain = false;
@@ -305,8 +295,6 @@ AttackRules.engineFrame = function(me) {
 	// where holding the fall here (or popping it up) kept them in the air for a second hit
 	var m = fm.isOnFloor() ? me.__decayMul : me.__decayMulAir;
 	if (m != null) fm.setXVelocity(fm.getXVelocity() * m);
-	// the ease it holds the fall to, kept current for the code that writes its speed
-	AttackRules.easeCap(me);
 	// invincibility and super armor it declares (or its writes switch), held for the attack
 	var status = null;
 	if (AS3.truthy(AttackRules.stat(me, "invincible"))) status = AS3.truthy(AttackRules.stat(me, "forceGrabbable")) ? BodyStatus.INVINCIBLE_GRABBABLE : BodyStatus.INVINCIBLE;

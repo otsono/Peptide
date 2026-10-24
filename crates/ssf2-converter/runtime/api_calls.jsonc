@@ -6,14 +6,20 @@
 // defines itself keeps its own; a member listed here that content hands around as a value (a
 // listener) is still answered by the runtime until it moves too.
 {
+  // plain arithmetic the source's utility class does, written in place
+  "PeptideUtils.toRadians": "AS3.num({0}) * 0.017453292519943295",
+  "PeptideUtils.toDegrees": "AS3.num({0}) * 57.29577951308232",
+  "PeptideUtils.calculateXSpeed": "AS3.num({0}) * Math.cos(AS3.num({1}) * 0.017453292519943295)",
+  "PeptideUtils.calculateYSpeed": "AS3.num({0}) * Math.sin(AS3.num({1}) * 0.017453292519943295)",
+  "PeptideUtils.calculateSpeed": "Math.sqrt(Math.pow(AS3.num({0}), 2) + Math.pow(AS3.num({1}), 2))",
   // where it is and how it moves
-  "getX": "Objects.readX({eng}) / {size}",
+  "getX": "{eng}.getX() / {size}",
   "getSmashTimer": "Objects.smashTimer({eng})",
-  "getY": "Objects.readY({eng}) / {size}",
+  "getY": "{eng}.getY() / {size}",
   "setX": "{eng}.setX(AS3.num({0}) * {size})",
   "setY": "{eng}.setY(AS3.num({0}) * {size})",
-  "getXSpeed": "Objects.slideHeld({eng}) / {speed}",
-  "getYSpeed": "({eng}.getYSpeed() - Objects.fallHeld({eng})) / {speed}",
+  "getXSpeed": "Objects.xSpeed({eng}) / {speed}",
+  "getYSpeed": "{eng}.getYSpeed() / {speed}",
   "isFacingRight": "Objects.facingRight({eng})",
   "faceRight": "Objects.face({eng}, true)",
   "faceLeft": "Objects.face({eng}, false)",
@@ -105,7 +111,7 @@
   "stopSound": "Sounds.stop({0})",
   "shake": "Effects.shake({0})",
   "setColorFilters": "Visuals.filters({recv}, {0})",
-  "setYSpeed": "{eng}.setYSpeed(Objects.ySpeedTo({eng}, AS3.num({0}) * {speed}))",
+  "setYSpeed": "{eng}.setYSpeed(AS3.num({0}) * {speed})",
   "bringBehind": "Stage.order({recv}, {0}, false)",
   "bringInFront": "Stage.order({recv}, {0}, true)",
   "swapDepths": "Stage.layer.swapChildren({recv}.__mc, {0} == null ? null : ({0}.__fm != null ? {0}.__mc : {0}))",
@@ -185,7 +191,7 @@
   "flip": "Objects.face({eng}, !Objects.facingRight({eng}))",
   "flipX": "{eng}.flipX({0})",
   "resetKnockback": "{eng}.setXKnockback(0); {eng}.setYKnockback(0)",
-  "resetMovement": "{eng}.setXSpeed(0); {eng}.setYSpeed(Objects.fallHeld({eng}))",
+  "resetMovement": "{eng}.setXSpeed(0); {eng}.setYSpeed(0)",
   "takeDamage": "PeptideGameObject.takeDamage({recv}, {0}, {1})",
   "getHitBox": "PeptideRuntime.gap(\"getHitBox: a named box's rectangle\")",
   "removeFromCamera": "{eng}.getType() == EntityType.CHARACTER ? null : match.getCamera().deleteTarget({eng})",
@@ -333,7 +339,7 @@
   // what any object does, by what it has (its engine object, its data)
   "getType": "{recv}.__type",
   "getMC": "{recv}.__mc",
-  "setXSpeed": "{eng}.setXSpeed(Objects.slideTo({eng}, AS3.num({0}) * {speed}))",
+  "setXSpeed": "Objects.setXSpeed({eng}, AS3.num({0}) * {speed})",
   "playFrame": "PeptideGameObject.playFrame({recv}, {0})",
   "inState": "PeptideGameObject.inState({recv}, {0})",
   "toIdle": "Objects.toIdle({recv})",

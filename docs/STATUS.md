@@ -2769,12 +2769,12 @@ are catalogued in the two new sections above; the items here are the main conver
       - `MovieClip.tick`: skip clips with no scripts or labels (a global half-frame parity would move
         frame scripts by an engine frame, so it belongs in c). `isPlane` worked out once, not per
         call.
-      - compiler side: `getX`/`getY`/`isFacingRight` on a fighter or on self, the math helpers
-        and the camera fields lower straight to the engine call.
+      - compiler side: the camera fields lower straight to the engine call (positions, speeds and
+        the utility class's arithmetic already do; `api_calls.jsonc` takes `Class.member` rows for
+        a runtime static).
    b. **rounding-error rules that go native.** the standing push (the engine's own solid push;
       the spacing gap is already accepted), the take-off pixel, turn-walk from a stand, the
-      0.62 floor-bounce cut, the speed hand-off bookkeeping (`slideTo`, `lift`, `medium`,
-      `slideShare`; scripted dashes land a pixel or a frame off), timer phase corrections
+      0.62 floor-bounce cut, timer phase corrections
       (keep the frozen frames owed), `deathBoundsDestroy` for projectiles nobody listens to the
       end of, fired-and-forgotten single-piece effects as plain `createVfx`, static backdrop
       pieces as native camera backgrounds, pieces riding an object as owner-relative vfx, and

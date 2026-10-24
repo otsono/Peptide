@@ -1342,6 +1342,14 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
                 let recv = self.expr_atom(o);
                 if let Some(c) = self.api_call(&recv, m, args) { return c }
             }
+            // a static of the runtime's that is plain arithmetic: written in place (`Class.member` rows)
+            if let Expr::Name(cls) = &**o {
+                let key = format!("{cls}.{m}");
+                if static_side && self.pkg.runtime.calls.contains_key(&key) {
+                    let a: Vec<String> = args.iter().map(|x| self.expr(x)).collect();
+                    if let Some(c) = self.api_text("null", &key, &a) { return c }
+                }
+            }
             if let Expr::Name(cls) = &**o {
                 if cls == "Math" && self.local_name(cls).is_none() {
                     let a: Vec<String> = args.iter().map(|x| self.expr(x)).collect();

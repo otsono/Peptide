@@ -186,7 +186,7 @@ PeptideGameObject.homeTowardsTarget = function(me, speed, target) {
 	var ys = -AS3.num(speed) * Math.sin(a);
 	if (xs <= 0) fm.faceLeft(); else fm.faceRight();
 	fm.setXSpeed(Math.abs(xs) * PeptideRuntime.data.units.speed);
-	fm.setYSpeed(ys * PeptideRuntime.data.units.speed + Objects.fallStep(fm));
+	fm.setYSpeed(ys * PeptideRuntime.data.units.speed);
 };
 // ---- how it looks ----
 PeptideGameObject.paletteData = function(me) {
@@ -392,105 +392,18 @@ Objects.face = function(fm, right) {
 Objects.smashTimer = function(fm) {
 	return fm == null || fm.exports == null || fm.exports.__smashT == null ? 99 : fm.exports.__smashT;
 };
-// where an object is, as the code asking would see it in the source: the source moves a fighter
-// in its own update, before its projectiles' code runs, where this engine moves everything after
-// every update and timer. so a projectile's code reading a fighter in its update sees it where it
-// is about to be (sora's strike raid rides his hand, and trailed a frame of his rise behind it)
-Objects.readX = function(fm) {
-	var v = fm.getX();
-	return Objects.ahead(fm) ? v + fm.getNetXVelocity() : v;
-};
-Objects.readY = function(fm) {
-	var v = fm.getY();
-	return Objects.ahead(fm) ? v + fm.getNetYVelocity() : v;
-};
-Objects.ahead = function(fm) {
-	var k = PeptideRuntime.kind;
-	if (k == null || !(k.order > 0) || fm == PeptideRuntime.fm) return false;
-	if (PeptideRuntime.updating != true && PeptideRuntime.inTimer != true) return false;
-	return fm.getType() == EntityType.CHARACTER && !fm.isDisposed();
-};
-// a y speed, between the two engines. the source's engine adds a frame's gravity and then moves;
-// this one moves and then adds it, twice a source frame (measured: y moves by the speed it had,
-// then the speed takes on the gravity stat). a speed the source sets follows the same path here
-// when it is held a step of gravity ahead: gravity * 1.5 of this engine's units, which is three
-// quarters of a source frame's. a speed read back from a fighter in the air carries that step,
-// and it comes back off, so code that reads its speed and writes it again moves as the source's
-// does. a fighter falls by its own gravity; other objects run the source's own fall
-Objects.fallStep = function(fm) { return fm.getType() == EntityType.CHARACTER ? fm.getCharacterStat("gravity") * 1.5 : 0; };
-Objects.fallHeld = function(fm) { return fm.isOnFloor() ? 0 : Objects.fallStep(fm); };
-// an x speed, the same way: the source's engine takes a frame's slowdown and then moves, this
-// one moves and then takes it (measured: falcon's kick, written 20 a frame, moves 18.65 in the
-// source and the whole write on this engine's first frame; ganondorf's hop, written 8, moves 7.8
-// in the air). a speed the source sets follows its path here when it is held a step and a half
-// of the slowdown short of it, toward rest; read back it comes on again. the slowdown is the
-// floor's friction on the floor and the air's in the air, the attack's own where it states one
-// and the fighter's otherwise; a write that comes with a leap (ganondorf's hop sets both speeds)
-// meets the air's. anything else keeps its speed as written.
-// an attack that keeps a share of the speed each frame instead (a positive slowdown) takes it
-// here as its root m twice a source frame, from the frame after the write: the write moves
-// w*m then w*m*m where the source moves w*share, so it is held at 2m/(1+m) of the source's
+// a fighter's slowdown a source frame, in this engine's units: the animation's own where it states
+// one, the fighter's otherwise (the rules that slow a fighter in its attack pay it)
 Objects.slideStep = function(fm, ?air) {
 	if (fm.getType() != EntityType.CHARACTER) return 0;
 	if (air == null) air = !fm.isOnFloor();
-	// the animation's own slowdown where it states one, the fighter's otherwise
 	var f = fm.getAnimationStat(air ? "aerialFriction" : "friction");
 	if (f == null || f < 0) f = fm.getCharacterStat(air ? "aerialFriction" : "friction");
 	return f == null ? 0 : f * 1.5;
 };
-Objects.slideShare = function(fm) {
-	if (fm.getType() != EntityType.CHARACTER) return 1;
-	var me = Objects.view(fm);
-	var m = fm.isOnFloor() ? me.__decayMul : me.__decayMulAir;
-	return m == null ? 1 : 2 * m / (1 + m);
-};
 Objects.slowed = function(v, s) {
 	if (s == 0 || v == 0) return v;
 	return v > 0 ? Math.max(v - s, 0) : Math.min(v + s, 0);
-};
-Objects.slideTo = function(fm, v) {
-	if (fm.getType() != EntityType.CHARACTER) return Objects.alongThrow(fm, v);
-	var me = Objects.view(fm);
-	v = v * Objects.slideShare(fm);
-	var air = !fm.isOnFloor() || fm.getYVelocity() < 0;
-	me.__slid = air ? null : { at: PeptideRuntime.frame, v: v };
-	me.__floorWas = !air;
-	return Objects.slowed(v, Objects.slideStep(fm, air));
-};
-// a y speed a script writes: lifted off the floor and held the step of gravity ahead (above), the
-// step stopping at its attack's ease, past which the source adds no gravity (AttackRules.easeCap);
-// the speed written itself stands, whatever the ease (dedede's up special dives past its own)
-Objects.ySpeedTo = function(fm, vy) {
-	var raw = Objects.lift(fm, vy);
-	var v = raw + Objects.fallStep(fm);
-	var cap = fm.getType() == EntityType.CHARACTER && fm.exports != null ? fm.exports.__easeCap : null;
-	return cap != null && v > cap ? Math.max(raw, cap) : v;
-};
-// a y speed written up off the floor: an x speed the same code wrote a moment ago meets the
-// air's slowdown, not the floor's
-Objects.lift = function(fm, vy) {
-	if (vy < 0 && fm.getType() == EntityType.CHARACTER) {
-		var me = Objects.view(fm);
-		if (me.__slid != null && me.__slid.at == PeptideRuntime.frame) { fm.setXSpeed(Objects.slowed(me.__slid.v, Objects.slideStep(fm, true))); me.__floorWas = false; }
-		me.__slid = null;
-	}
-	return vy;
-};
-// a fighter that lands or leaves the floor: the speed it carries is held short by the slowdown
-// of where it now is, not of where it was (ganondorf's dive, landed, slid on the air's step and
-// ran two frames past the source's slide)
-Objects.medium = function(me) {
-	var fm = me.__fm;
-	var floor = fm.isOnFloor();
-	if (me.__floorWas != null && floor != me.__floorWas) {
-		var v = fm.getXSpeed();
-		if (v != 0) {
-			var was = Objects.slideStep(fm, floor);
-			var src = v > 0 ? v + was : v - was;
-			fm.setXSpeed(Objects.slowed(src, Objects.slideStep(fm, !floor)));
-		}
-	}
-	me.__floorWas = floor;
 };
 // what isn't a fighter reads and sets its x speed along the way it was thrown in the source, and
 // says it faces right until its own code turns it; turning it changes neither (link's arrow and
@@ -501,15 +414,15 @@ Objects.alongThrow = function(fm, v) {
 	var thrown = fm.exports == null || fm.exports.__thrownRight == null ? true : fm.exports.__thrownRight == true;
 	return fm.isFacingRight() == thrown ? v : -v;
 };
-Objects.slideHeld = function(fm) {
-	// what isn't a fighter states its x speed across the world in the source, where this engine
-	// keeps it along the way the object faces (simon's cross, thrown left, read its speed, slowed
-	// it and set it back, and came straight back the way it was thrown)
-	if (fm.getType() != EntityType.CHARACTER) return Objects.alongThrow(fm, fm.getXSpeed());
-	var v = fm.getXSpeed() / Objects.slideShare(fm);
-	var s = Objects.slideStep(fm);
-	if (s == 0 || v == 0) return v;
-	return v > 0 ? v + s : v - s;
+// an x speed as the source's code reads and writes it: a fighter's as it is (a write noted, so the
+// slowdown an attack starts with leaves it alone), anything else's along its throw
+Objects.xSpeed = function(fm) {
+	return fm.getType() == EntityType.CHARACTER ? fm.getXSpeed() : Objects.alongThrow(fm, fm.getXSpeed());
+};
+Objects.setXSpeed = function(fm, v) {
+	if (fm.getType() != EntityType.CHARACTER) { fm.setXSpeed(Objects.alongThrow(fm, v)); return; }
+	if (fm.exports != null) fm.exports.__wroteX = PeptideRuntime.frame;
+	fm.setXSpeed(v);
 };
 // taken off: a surface stops being one; an item goes at once; anything else ends the way the
 // source's engine ends a projectile, telling whoever listens for its end
