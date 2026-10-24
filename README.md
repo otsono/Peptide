@@ -4,9 +4,8 @@
 
 **Peptide is a master orchestrator for building Fraymakers mods.** It hooks into
 Fraymakers and FrayTools and makes them do what you want -- debug a live match,
-quick-launch into a sandbox, export a project hands-free -- and it ships a full Super
-Smash
-Flash 2 interpreter that rebuilds SSF2 characters into a working Fraymakers starting
+quick-launch into a sandbox, export a project hands-free -- and it ships a Super Smash
+Flash 2 converter that rebuilds SSF2 characters into a working Fraymakers starting
 point you can keep building on. one app, one binary. 🚀
 
 ---
@@ -56,9 +55,8 @@ Peptide + FrayTools. (WIP, roughly 70% of the way there.)
 peptide convert mario.ssf      # → a Fraymakers character you can keep building 🎉
 ```
 
-> 💡 there's a whole Flash interpreter in here (built on [Ruffle](https://ruffle.rs)),
-> so even logic Peptide doesn't auto-convert still lands as human-readable hscript in
-> the entity scripts. nothing's a black box.
+> 💡 Peptide reads the Flash files itself and translates their code, so even logic it
+> doesn't fully convert still lands as human-readable hscript in the entity scripts. nothing's a black box.
 
 ---
 
@@ -142,5 +140,5 @@ attribution is collected in [`NOTICE.md`](NOTICE.md).
 > for the dumb, labor-intensive plumbing a nonprofit tool like this needs. keep using
 > your brain and your imagination -- that's the part no machine can do. 🙂
 
-> 🛡️ Peptide contains **no copyrighted code** from Fraymakers or Adobe. the SWF
-> interpreter is built on [Ruffle](https://ruffle.rs).
+> 🛡️ Peptide contains **no copyrighted code** from Fraymakers or Adobe. SWF
+> files are parsed with [Ruffle](https://ruffle.rs)'s `swf` crate.
