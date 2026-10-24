@@ -13,13 +13,14 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use crate::arg_val;
 
-pub fn pack(args: &[String]) -> Result<()> {
+/// the warnings the packer gave (what it packed anyway), once the package is written
+pub fn pack(args: &[String]) -> Result<Vec<String>> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("peptide pack --project <abs.fraytools> [--out <dir>]...\n\n\
 build the engine package from the project's library, in-process, and write it to every\n\
 publish folder the project names (or only to the --out dirs when given). prints the path\n\
 of each package written.");
-        return Ok(());
+        return Ok(Vec::new());
     }
     let project = arg_val(args, "--project").ok_or_else(|| anyhow!("pack: --project <.fraytools> is required"))?;
     // absolute, so the project's publish folders (relative to it) resolve against it and not
@@ -52,9 +53,10 @@ of each package written.");
         std::fs::write(&path, &built.bytes).with_context(|| format!("writing {}", path.display()))?;
         println!("{}", path.display());
     }
+    for w in &built.warnings { eprintln!("pack: warning: {w}"); }
     eprintln!("pack: {} entities, {} scripts, {} audio, {} sheet(s), {} bytes",
         built.entities, built.scripts, built.audio, built.sheets, built.bytes.len());
-    Ok(())
+    Ok(built.warnings)
 }
 
 fn read_json(p: &Path) -> Result<Value> {

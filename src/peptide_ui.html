@@ -1509,12 +1509,14 @@
   window.onPackResult = function(ok, msg){
     if(pendingBuildBoot){ buildBootDone(ok, msg); return; }
     $("p-bar").classList.remove("show");
-    showResult("p-result", msg, ok?"ok":"warn");
+    // published with warnings (a sprite drawn as the placeholder) reads as a warning, one per line
+    const warned = ok && (msg||"").indexOf("\nWarning:") >= 0;
+    showResult("p-result", msg, ok && !warned ? "ok" : "warn");
   };
 
   function showResult(id, text, kind){
     const el=$(id); if(!el) return;
-    el.innerHTML = "<span class='"+(kind==="warn"?"rwarn":(kind==="ok"?"rok":""))+"'>"+escapeHtml(text)+"</span>";
+    el.innerHTML = "<span class='"+(kind==="warn"?"rwarn":(kind==="ok"?"rok":""))+"'>"+escapeHtml(text).replace(/\n/g, "<br>")+"</span>";
   }
   function escapeHtml(s){ return (s||"").replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 

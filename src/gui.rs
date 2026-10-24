@@ -1023,8 +1023,11 @@ fn run_pack(json: &str, proxy: &EventLoopProxy<Ev>) {
     let project = std::fs::canonicalize(&project).map(|p| p.display().to_string()).unwrap_or(project);
     let argv = vec!["--project".to_string(), project.clone()];
     let js = match crate::pack::pack(&argv) {
-        Ok(()) => format!("window.onPackResult && onPackResult(true, {})",
-            js_str(&format!("Published {project} to its publish folders"))),
+        Ok(warnings) => {
+            let mut msg = format!("Published {project} to its publish folders");
+            for w in &warnings { msg.push_str(&format!("\nWarning: {w}")); }
+            format!("window.onPackResult && onPackResult(true, {})", js_str(&msg))
+        }
         Err(e) => format!("window.onPackResult && onPackResult(false, {})", js_str(&e.to_string())),
     };
     let _ = proxy.send_event(Ev::Js(js));

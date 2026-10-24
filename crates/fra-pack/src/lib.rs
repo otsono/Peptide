@@ -60,6 +60,9 @@ pub struct Built {
     pub scripts: usize,
     pub audio: usize,
     pub sheets: usize,
+    /// what was packed anyway, worth telling whoever published: an entity's image symbol whose
+    /// picture is not in the library, drawn as the editor's placeholder
+    pub warnings: Vec<String>,
 }
 
 /// the engine-facing plugin metadata of a library object, or an empty object
@@ -118,6 +121,12 @@ pub fn build_timed(lib: &Library, opts: Options, clock: &dyn Fn() -> f64) -> Res
             }
         }
     }
+
+    // an image symbol whose picture is not in the library is packed anyway, as the editor packs it
+    let warnings: Vec<String> = usage.iter()
+        .filter(|(g, _)| !g.is_empty() && !lib.images.contains_key(*g))
+        .map(|(g, groups)| format!("image {g} (in {}) is not in library/sprites: drawn as the editor's placeholder", groups.keys().cloned().collect::<Vec<_>>().join(", ")))
+        .collect();
 
     // ---- every picture decoded and trimmed to its opaque bounds, side by side ----
     // only each picture's trimmed size, offset and fingerprint are kept: the pixels are decoded
@@ -280,7 +289,7 @@ pub fn build_timed(lib: &Library, opts: Options, clock: &dyn Fn() -> f64) -> Res
     for b in blobs { bytes.extend_from_slice(b); }
     step("assemble");
     Ok((Built { name, bytes, entities: entities.len(), scripts: lib.scripts.len() + 1 + lib.palettes.len(),
-               audio: lib.audio.len(), sheets: sheets.len() }, steps))
+               audio: lib.audio.len(), sheets: sheets.len(), warnings }, steps))
 }
 
 /// `serde_json`'s compact text of `v`, byte for byte, with the elements of every long array
@@ -412,12 +421,20 @@ fn picture(lib: &Library, guid: &str) -> Result<(RgbaImage, u32, u32)> {
     let mut full = if guid.is_empty() {
         RgbaImage::new(1, 1)
     } else {
-        let bytes = lib.images.get(guid)
-            .ok_or_else(|| anyhow!("pack: an entity references image {guid} that is not in library/sprites"))?;
-        image::load_from_memory(bytes).with_context(|| format!("decoding image {guid}"))?.to_rgba8()
+        match lib.images.get(guid) {
+            Some(bytes) => image::load_from_memory(bytes).with_context(|| format!("decoding image {guid}"))?.to_rgba8(),
+            // a picture the library does not have: the editor packs its placeholder in its place
+            None => missing_picture(),
+        }
     };
     as_the_editor_stores(&mut full);
     Ok(trimmed(&full))
+}
+
+/// what the editor packs for an image symbol whose picture is not in the library: a square of solid
+/// pink, which the symbol stretches to its own size (read from the editor's own package)
+fn missing_picture() -> RgbaImage {
+    RgbaImage::from_pixel(100, 100, image::Rgba([255, 20, 147, 255]))
 }
 
 /// The colours a picture has once the editor has drawn it: it holds pictures with their colour
@@ -625,5 +642,27 @@ mod tests {
         let b = build_timed(&lib, Options { parallel_json: false }, &|| 0.0).unwrap().0;
         assert_eq!(a.name, "pkg");
         assert_eq!(a.bytes, b.bytes);
+    }
+    #[test]
+    fn a_missing_picture_packs_as_the_editors_placeholder_with_a_warning() {
+        let entity = json!({
+            "id": "e", "guid": "g", "animations": [{ "name": "idle", "layers": ["l"] }],
+            "layers": [{ "$id": "l", "type": "IMAGE", "name": "art", "keyframes": ["k"] }],
+            "keyframes": [{ "$id": "k", "length": 2, "symbol": "s" }],
+            "symbols": [{ "$id": "s", "type": "IMAGE", "imageAsset": "gone" }],
+        });
+        let lib = Library { entities: vec![entity], manifest: json!({ "resourceId": "pkg" }), manifest_meta: json!({ "guid": "m" }), ..Default::default() };
+        let built = build(&lib).expect("packs anyway");
+        assert_eq!(built.warnings.len(), 1);
+        assert!(built.warnings[0].contains("gone"));
+        // the one sheet holds the placeholder: solid pink, 100 square
+        let n = u32::from_be_bytes(built.bytes[..4].try_into().unwrap()) as usize;
+        let head: Value = serde_json::from_slice(&built.bytes[4..4 + n]).unwrap();
+        let sheet = &head["spritesheets"][0];
+        let at = 4 + n + sheet["bytesOffset"].as_u64().unwrap() as usize;
+        let png = &built.bytes[at..at + sheet["bytesLength"].as_u64().unwrap() as usize];
+        let img = image::load_from_memory(png).unwrap().to_rgba8();
+        assert_eq!(&sheet["frames"].as_array().unwrap()[2..4], &[json!(100), json!(100)]);
+        assert_eq!(img.get_pixel(50, 50).0, [255, 20, 147, 255]);
     }
 }
