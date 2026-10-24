@@ -1,0 +1,20 @@
+// the source's autolink (a hit pulls the one struck toward a point beside the fighter) as this
+// engine's own, settled at conversion: the move's hitboxes take the engine's autolink angle while
+// its code has the autolink on, and its animation carries the point as an autolink point, one
+// per hitbox (`autolinkpoint<n>` pairs with `hitbox<n>`).
+{
+  // what a hitbox states while the autolink is on. the source's pull replaces the box's launch
+  // with one that grows with the distance to the point; the engine's autolink launch is its pull
+  // speed times the growth over 100, plus the base, and all growth with no base lands the
+  // source's (measured on sonic's up tilt stood 22 and 34 away: 0.59 and 0.64 of the source's
+  // launch against the 0.63 a speed converts by)
+  "box": {
+    "angle": "SpecialAngle.AUTOLINK_STRONGER",
+    "baseKnockback": "0",
+    "knockbackGrowth": "100"
+  },
+  // the engine reads the point without the fighter's own scale: the point is written that many
+  // times farther out so it lands where the source's does (unscaled, sonic's up tilt pulled at
+  // 147 degrees against the source's 106; scaled, at 127)
+  "point_scaled": true
+}

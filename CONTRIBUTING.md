@@ -46,18 +46,28 @@ a few questions, in order:
    - new diagnostic binary? add a row in DEVELOPMENT §5.7.
    - new mapping JSONC section? update DEVELOPMENT §6.
 
-4. **did you change the stage converter** (`stage_parser.rs` / `stage_emit.rs` / `stage_abc.rs`)?
+4. **did you change what the converter emits, for stages or characters?**
+   run the verify sample: `just verify` (`tools/verify.py sample`). it converts, publishes,
+   boots and drives ten stages and ten fighters chosen for coverage, and a subject only passes
+   when its own running script reports what the converter planned. it is the bar for "ported";
+   a green `cargo test` is not (TESTING "the verify gates"). one subject: `tools/verify.py
+   stage <id>` / `char <id>`.
+
+5. **did you change the stage converter** (`stage_parser.rs` / `stage_emit.rs` / `stage_abc.rs`)?
    the fix must be universal (pattern detected structurally or from source data, with an
    exact-semantics fallback + conversion-log warning), never keyed to one stage or hazard by
-   name. then prove stages still convert: `just sweep-stages` (fails on any error). that is a
+   name. then prove stages still convert: `just sweep-stages` (fails on any error, and reads
+   what was emitted for the shapes the engine refuses: it drops a script it cannot parse WHOLE,
+   so one stray bracket costs a stage every object it makes, silently). that is a
    fixed TEN-stage sample, not the corpus: converting all 110 takes hours and writes tens of
-   gigabytes (one stage emits 687MB on its own), so the exhaustive `just sweep-stages-all` is
-   for when a change touches shared art or geometry rendering and you want the full answer. the
+   gigabytes (one stage emits 687MB on its own). there is deliberately no full-corpus convert
+   recipe: the sample IS the gate. when you need to know how widespread something is, SCAN with
+   `peptide ssf2 stage <file> --info`, which parses without emitting. the
    sample covers plain geometry, hazards declared in both initialize and update, weather, moving
    platforms, backdrop elements, and boundary/parallax handling. spot-check one OTHER stage's
    output if the change touches shared rendering.
 
-5. **did you add a host-facing debug command or feature?**
+6. **did you add a host-facing debug command or feature?**
    it has to work **identically on both engines** (Fraymakers + SSF2). define it once
    through the shared seam: a `DebugTarget` trait method (default = `eval`) plus the engine
    helper in `commands.hsx` AND `src/ssf2_target.rs`, never an `if engine == …` branch in
@@ -134,6 +144,14 @@ we don't gate on docs. we do have two light checks:
   -- guards the detection invariant (constructor walk and the fallback enumeration agree
   across the corpus). don't bypass this; fix the underlying divergence.
 
+- **the other platforms, from a mac.** CI lints and tests on linux, and the release builds a
+  windows `.exe`; code a `#[cfg]` hides on one platform can fail only on another (a POSIX call on
+  windows, a constant only macOS uses read as dead on linux). before a release:
+  `cargo xwin clippy --workspace --release --target x86_64-pc-windows-msvc -- -D warnings`, and
+  for linux the same with `--target x86_64-unknown-linux-gnu`, run with `PKG_CONFIG` pointed at a
+  stand-in that reports every library present (a type check links nothing, and the GUI's system
+  libraries are not on a mac) and `PKG_CONFIG_ALLOW_CROSS=1`.
+
 no pre-commit / pre-push hooks. they add friction for a one-person / small-team flow and
 miss the real failure mode anyway (someone confidently breaking a doc reference). the test
 suite + the checklist are the gates.
@@ -165,7 +183,7 @@ logs, RE findings mid-flight, throwaway plans).
 
 the rule: **if a scratch note would help anyone else** (a fact, a gotcha, an RE finding, a
 design decision, a "what's still open") **promote it into the relevant durable doc** (a
-top-level doc, or one of the three `docs/` files), then delete the scratch note. don't let
+top-level doc, or one of the tracked `docs/` files), then delete the scratch note. don't let
 durable knowledge live only in untracked scratch, because the next person (or agent) cloning
 the repo never sees it.
 

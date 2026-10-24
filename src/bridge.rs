@@ -12,6 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::interpreter::{translate, gloss, Translated};
+use crate::arg_val;
 
 const DEFAULT_PORT: u16 = 17999;
 
@@ -74,12 +75,20 @@ impl<F: FnMut(&str, &str)> crate::session::FrayStreamSink for CliStreamSink<'_, 
     // breadcrumb for the crash report and logs it), matching the prior behavior.
     fn on_resdiag(&mut self, line: &str) { (self.emit)(line, &Self::pretty(line)); }
     // channel feeds: dropped (no-op) — they belong to widgets, not the CLI/log.
-    fn on_anim(&mut self, state: &str) {
-        if state != self.last_anim {
-            self.last_anim = state.to_string();
-            let line = format!("ANIM:{state}");
-            (self.emit)(&line, &Self::pretty(&line));
-        }
+    // the state-change hook fires for EVERY fighter in the match, the training dummy's hurt
+    // and landing included, and nothing on the line says whose it was. the per-frame stream
+    // is the driven fighter's alone, so its animation changes are what the log announces.
+    fn on_anim(&mut self, _state: &str) {}
+    fn on_frame(&mut self, payload: &str) {
+        let mut f = payload.split('|');
+        let mut anim = f.next().unwrap_or("").trim();
+        // the intro is a state the fighter stands through, not a stand: announced as itself so
+        // a driver waiting for the fighter to be ready does not act during it
+        if f.next().map(str::trim) == Some("INTRO") { anim = "INTRO"; }
+        if anim.is_empty() || anim == self.last_anim { return; }
+        self.last_anim = anim.to_string();
+        let line = format!("ANIM:{}", anim.to_uppercase());
+        (self.emit)(&line, &Self::pretty(&line));
     }
     fn on_line(&mut self, raw: &str) { (self.emit)(raw, &Self::pretty(raw)); }
 }
@@ -195,7 +204,7 @@ pub fn serve(port: u16, token: Option<&str>) {
             first = false;
             continue;
         }
-        if let crate::interpreter::Command::Trace { raw } = parsed {
+        if let crate::interpreter::Command::Trace { raw, .. } = parsed {
             let frames = crate::debug_target::fm_frames_take();
             if raw {
                 for l in crate::debug_target::fmt_trace_raw(&frames).lines() { println!("<< {l}"); }
@@ -206,6 +215,14 @@ pub fn serve(port: u16, token: Option<&str>) {
             for l in crate::debug_target::fmt_trace(frames.len(), &runs, &[]).lines() {
                 println!("<< {l}");
             }
+            first = false;
+            continue;
+        }
+        // Hits is host-side: the poll runs here over this session's reply channel. Same helper
+        // serves the daemon path so `tell "hits"` measures identically.
+        if let crate::interpreter::Command::Hits { idx, frames, raw, ref masks } = parsed {
+            let msg = hits_over_socket(&mut write_half, &eval_rx, idx, frames, raw, masks);
+            for l in msg.lines() { println!("<< {l}"); }
             first = false;
             continue;
         }
@@ -390,10 +407,23 @@ pub(crate) fn default_session_dir() -> PathBuf {
     base.join(".peptide").join("session")
 }
 
-/// Value of `--flag <value>` if present.
-fn arg_val(args: &[String], flag: &str) -> Option<String> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
+/// `--attach` asks to drive the session that is already running rather than start another.
+fn wants_attach(args: &[String]) -> bool { args.iter().any(|a| a == "--attach") }
+
+/// The command text of a `peptide tell` argument list: every word that is not a
+/// `--dir D` pair, in order, so the flag may lead or trail the command.
+pub fn tell_command(args: &[String]) -> String {
+    let mut words: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--dir" { i += 2; continue; }
+        words.push(args[i].as_str());
+        i += 1;
+    }
+    words.join(" ")
 }
+
+
 
 fn session_dir(args: &[String]) -> PathBuf {
     arg_val(args, "--dir").map(PathBuf::from).unwrap_or_else(default_session_dir)
@@ -420,17 +450,53 @@ fn slog(log: &Arc<Mutex<std::fs::File>>, s: &str) {
 /// frame-accurate measurement quietly degraded to wall-clock polling. Anything host-side has to
 /// work identically on both paths or the pacing primitive isn't actually available where the
 /// work happens.
+/// Poll one character's damage + velocity over the live socket and report every hit.
+///
+/// Host-side because a hit is only visible AS IT HAPPENS: the engine keeps no record of what a
+/// move did, so the outcome has to be sampled frame by frame. Both drivers (interactive `serve`
+/// and the session daemon) call this so a measurement means the same thing either way.
+fn hits_over_socket(
+    writer: &mut TcpStream, eval_rx: &mpsc::Receiver<String>, idx: usize, frames: u32, raw: bool,
+    masks: &[u32],
+) -> String {
+    crate::debug_target::watch_hits_with(idx, frames, raw, |mask| {
+        // an input frame goes out with the sample, so the move plays out inside the window
+        if let Some(m) = mask { send_wire(writer, &format!("i {m}")); }
+        if !send_wire(writer, &format!("e hitFeed({idx})")) { return None; }
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        while Instant::now() < deadline {
+            match eval_rx.recv_timeout(Duration::from_millis(200)) {
+                // replies from EARLIER commands are still queued, so take the next one that
+                // actually parses as a sample rather than whatever is first off the channel
+                Ok(v) => {
+                    if let Some(st) = crate::debug_target::HitState::parse(&v) { return Some(st); }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(_) => return None,
+            }
+        }
+        None
+    }, masks)
+}
+
 fn run_host_side(
     writer: &mut TcpStream, raw: &str, eval_rx: &mpsc::Receiver<String>,
 ) -> Option<Vec<String>> {
     use crate::interpreter::Command;
     let parsed = crate::interpreter::parse(raw);
+    // a wait on the engine's own frame clock: the pacing primitive, host-side on both engines
+    if let Command::Tick { n } = parsed {
+        return Some(vec![crate::session::frame_wait_reply(n)]);
+    }
+    if let Command::Clock = parsed {
+        return Some(vec![format!("CLOCK:{} frames", crate::session::frames_seen())]);
+    }
     // record/trace are pure buffer operations over the FRAME: telemetry the engine pushes.
     if let Command::Record { on } = parsed {
         if on { crate::debug_target::fm_frames_clear(); }
         return Some(crate::debug_target::fmt_record(on).lines().map(str::to_string).collect());
     }
-    if let Command::Trace { raw } = parsed {
+    if let Command::Trace { raw, .. } = parsed {
         let frames = crate::debug_target::fm_frames_take();
         if raw {
             return Some(crate::debug_target::fmt_trace_raw(&frames).lines().map(str::to_string).collect());
@@ -438,6 +504,64 @@ fn run_host_side(
         let runs = crate::debug_target::rle_frames(&frames);
         return Some(crate::debug_target::fmt_trace(frames.len(), &runs, &[])
             .lines().map(str::to_string).collect());
+    }
+    if let Command::Hits { idx, frames, raw, ref masks } = parsed {
+        return Some(hits_over_socket(writer, eval_rx, idx, frames, raw, masks).lines().map(str::to_string).collect());
+    }
+    // catch = record + play out `budget` frames on the engine's own clock + scan the window for
+    // the first frame the driven fighter reaches `label`, in one round trip. composed from the
+    // same FRAME: buffer record/trace read, so it reports the same on both engines.
+    if let Command::Catch { ref label, budget } = parsed {
+        crate::debug_target::fm_frames_clear();
+        crate::session::frame_wait(budget as u64, Duration::from_millis(500 + 200 * budget as u64));
+        let frames = crate::debug_target::fm_frames_take();
+        let hit = frames.iter().enumerate()
+            .find(|(_, f)| f.split('|').next().unwrap_or("").trim().eq_ignore_ascii_case(label));
+        return Some(vec![match hit {
+            Some((i, f)) => format!("CATCH:{label} at frame {i} ({})", f.trim()),
+            None => format!("CATCH:{label} not seen in {budget} frames"),
+        }]);
+    }
+    // an eval inside one entity's script: sent, and its reply waited for, so an entity whose
+    // script is compiled (a built-in fighter: no interpreter to enter, no locals to reach) gets
+    // the console's eval with `self` bound to it instead, the way the other engine answers
+    // a fighter's named value: the eval inside the fighter's own script that reads or sets it
+    let parsed = match parsed {
+        Command::Var { idx, ref name, value } =>
+            Command::EvalIn { target: idx.to_string(), expr: crate::debug_target::fm_var_expr(name, value) },
+        other => other,
+    };
+    if let Command::EvalIn { ref target, ref expr } = parsed {
+        while eval_rx.try_recv().is_ok() {}   // replies nobody waited for
+        let wire = format!("j{}{expr}", target.chars().next().unwrap_or('s'));
+        if !send_wire(writer, &wire) { return Some(vec!["E:ERR: engine gone".to_string()]); }
+        let reply = match eval_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(v) => v,
+            Err(_) => return Some(vec!["E:ERR: no reply from the engine".to_string()]),
+        };
+        if !reply.contains("script is compiled") {
+            return Some(vec![format!("E:{reply}")]);
+        }
+        let root = crate::debug_target::self_root(target);
+        let bound = crate::debug_target::bind_self(target, expr);
+        if !send_wire(writer, &format!("e {bound}")) { return Some(vec!["E:ERR: engine gone".to_string()]); }
+        return Some(match eval_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(v) => vec![format!("E:{v}  (compiled script: run on the console with self = {root})")],
+            Err(_) => vec!["E:ERR: no reply from the engine".to_string()],
+        });
+    }
+    // a NAMED move: the two engines spell it differently, and over this socket the Fraymakers
+    // spelling is the one that goes
+    if let Command::Move { idx, ref name } = parsed {
+        // a jab's pieces (`jab1`, `jab2`) are one state here, started from its first; the name
+        // asked for as it is made no state at all, and the fighter did nothing
+        let state = if name.starts_with("jab") && name[3..].chars().all(|c| c.is_ascii_digit()) {
+            "JAB".to_string()
+        } else {
+            name.to_ascii_uppercase()
+        };
+        crate::bridge::send_wire(writer, &format!("e p{idx}.toState(CState.{state})"));
+        return Some(vec![format!("MOVE:p{idx} {name}")]);
     }
     if !matches!(parsed, Command::Await { .. } | Command::AwaitMatch { .. }) { return None; }
     let idx = match parsed {
@@ -532,6 +656,20 @@ fn spawn_stdin_feeder(control: PathBuf, log: Arc<Mutex<std::fs::File>>) {
 /// `peptide session [--dir D] [--char C | --full] [--no-boot --port N --token T] [-i|--no-input]`
 /// Boot (or attach to) an engine and run the persistent command loop.
 pub fn session(args: &[String]) {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("peptide session — boot (or adopt) a Fraymakers engine and hold the link\n\n\
+\x20 --char <a[,b…]>   character(s) to bake for the fast boot\n\
+\x20 --stage <id>      stage to bake alongside them\n\
+\x20 --attach          drive the session already running instead of starting another\n\
+\x20 --full            boot to the title with the bridge only (no baked match)\n\
+\x20 --no-boot         launch nothing; wait for an engine to dial in on --port\n\
+\x20 --versus          force versus mode for 1-2 players\n\
+\x20 --dir <path>      session directory (default ~/.peptide/session)\n\n\
+A session and the game it drives are ONE pairing: starting another replaces it,\n\
+so you never end up with two engines fighting over the same control file.\n\n\
+Drive it with `peptide tell \"<cmd>\"`, watch it with `peptide log`.");
+        return;
+    }
     let dir = session_dir(args);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("peptide session: cannot create session dir {}: {e}", dir.display());
@@ -541,10 +679,35 @@ pub fn session(args: &[String]) {
     let logp = dir.join("out.log");
     let metap = dir.join("meta");
 
+    // ONE PAIRING AT A TIME. A session and the game it drives are a pair, and a second pair
+    // on the same session dir is not a second workspace: both daemons read the same control
+    // file, so a command lands in whichever got there first, and the game left over from the
+    // first pair goes on rendering a match nobody is talking to.
+    //   --attach : adopt the pair that is already running and drive it, launching nothing.
+    //   default  : stand the old pair down and take its place.
+    match crate::session::live_pairing(&dir) {
+        Some(p) if wants_attach(args) => {
+            println!("peptide session: attaching to the {} session already running \
+                      (pid {}, port {}) — nothing new launched.\n  drive it with: peptide tell \"<cmd>\"\n  watch it with: peptide log",
+                     p.engine, p.pid, p.port);
+            return;
+        }
+        Some(p) => {
+            let opts = crate::fastboot::BootOptions::from_cli(args);
+            let cmd = crate::fastboot::command(crate::fastboot::Engine::Fraymakers, &opts);
+            if crate::session::adopt_pairing(&p, cmd.as_deref(), args, "peptide tell") { return; }
+            eprintln!("peptide session: replacing the {} session already running (pid {})", p.engine, p.pid);
+            crate::session::end_pairing(&p);
+        }
+        None => {}
+    }
+
     // Acquire the engine connection. Default: BOOT a throwaway engine we own (a
     // baked --char triggers headless fast-boot; --full does a Title/UGC bridge
     // boot you then drive with `spawn`). `--no-boot`/`--attach`: connect to an
     // engine someone else launched on --port/--token.
+    // `--attach` is handled above (adopt a running pair). With no pair to adopt it falls
+    // through to here and means what it always did: do not boot, wait for an engine to dial in.
     let no_boot = args.iter().any(|a| a == "--no-boot" || a == "--attach");
     // When we BOOT a headless engine with a baked char (not --full, not --attach), the
     // engine reaches READY with all match content loaded but parked — the `s` start-match
@@ -552,7 +715,7 @@ pub fn session(args: &[String]) {
     // match, so we auto-fire a single bare `s` once READY arrives (uses the baked default
     // char/stage/assist). Set below in the boot branch; None for --full / --attach.
     let mut autostart = false;
-    let (reader, write_half, port, token, _guard) = if no_boot {
+    let (reader, write_half, port, token, mut _guard) = if no_boot {
         let port = parse_port(args);
         let token = parse_token(args);
         eprintln!("peptide session: attaching on :{port} (waiting for engine to dial in)…");
@@ -575,6 +738,8 @@ pub fn session(args: &[String]) {
         let bake_stage = arg_val(args, "--stage");
         match crate::ui::patch_and_launch_with_progress(None, bake.as_deref(), bake_stage.as_deref()) {
             Ok((port, token, guard)) => {
+                // a session runs behind whatever the user is doing
+                if let Some(pid) = guard.engine_pid() { crate::platform::keep_behind(pid); }
                 eprintln!("peptide session: engine launched on :{port}; waiting for it to dial in…");
                 match crate::ui::reawait(port, &token, 45) {
                     Some((r, w)) => (r, w, port, token, Some(guard)),
@@ -593,14 +758,14 @@ pub fn session(args: &[String]) {
         Err(e) => { eprintln!("peptide session: cannot open log {}: {e}", logp.display()); return; }
     };
     let _ = std::fs::write(&control, b"");
-    let _ = std::fs::write(&metap, format!(
-        "port={port}\ntoken={token}\ncontrol={}\nlog={}\npid={}\n",
-        control.display(), logp.display(), std::process::id()));
+    let _ = &metap;
+    crate::session::write_pairing(&dir, "fraymakers", port, &token,
+                                  _guard.as_ref().and_then(|g| g.engine_pid()));
 
     // Float the transparent debugger HUD over the game, tailing this session's log. Engine-
     // agnostic: the SSF2 session spawns it the same way. On by default; opt out with
     // --no-overlay or PEPTIDE_OVERLAY=0. Killed when the session ends (drop + pid watchdog).
-    let _overlay = crate::overlay::spawn_for_session(&logp, args);
+    let _overlay = crate::overlay::spawn_for_session(&logp, args, "fraymakers,hl");
 
     // socket -> log (+ stdout); signal READY once the engine reports it. Shares the
     // reader with `serve` via pump_engine_lines; the emit closure mirrors each line
@@ -677,6 +842,12 @@ pub fn session(args: &[String]) {
         || {
             if done.load(Relaxed) {
                 slog(&log, "[session] engine gone; exiting");
+                // a moment for the process to be reaped, then the one fact that tells a crash
+                // from a kill from a quit
+                thread::sleep(Duration::from_millis(300));
+                if let Some(how) = _guard.as_mut().and_then(|g| g.exit_status()) {
+                    slog(&log, &format!("[session] the game ended: {how}"));
+                }
                 true
             } else {
                 false
@@ -772,19 +943,15 @@ pub fn tell(args: &[String]) {
         return;
     }
 
-    // The command is everything after the flags (so both quoted "spawn sandbag"
-    // and bare `tell spawn sandbag` work). `--dir D` must precede the command.
-    let mut i = 0;
-    let mut cmd: Option<String> = None;
-    while i < args.len() {
-        if args[i] == "--dir" { i += 2; continue; }
-        cmd = Some(args[i..].join(" "));
-        break;
+    // The command is everything that is not a flag (so both quoted "spawn sandbag"
+    // and bare `tell spawn sandbag` work), and `--dir D` may sit on either side of it:
+    // a trailing `--dir` used to ride into the command text, where `seq` read it as a
+    // control name and dropped the whole line.
+    let cmd = tell_command(args);
+    if cmd.trim().is_empty() {
+        eprintln!("usage: peptide tell [--dir D] \"<command>\"  |  peptide tell --file <path>");
+        std::process::exit(2);
     }
-    let cmd = match cmd {
-        Some(c) if !c.trim().is_empty() => c,
-        _ => { eprintln!("usage: peptide tell [--dir D] \"<command>\"  |  peptide tell --file <path>"); std::process::exit(2); }
-    };
     match std::fs::OpenOptions::new().append(true).open(&control) {
         Ok(mut f) => {
             if writeln!(f, "{}", cmd.trim()).is_ok() {
@@ -836,5 +1003,18 @@ pub fn log(args: &[String]) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tell_tests {
+    use super::tell_command;
+    fn v(a: &[&str]) -> Vec<String> { a.iter().map(|s| s.to_string()).collect() }
+    #[test]
+    fn dir_flag_on_either_side_of_the_command() {
+        assert_eq!(tell_command(&v(&["--dir", "/x", "seq right:20"])), "seq right:20");
+        assert_eq!(tell_command(&v(&["seq right:20", "--dir", "/x"])), "seq right:20");
+        assert_eq!(tell_command(&v(&["spawn", "sandbag"])), "spawn sandbag");
+        assert_eq!(tell_command(&v(&["--dir", "/x"])), "");
     }
 }

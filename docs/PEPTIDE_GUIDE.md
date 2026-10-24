@@ -56,10 +56,13 @@ script API. run `./build/release/peptide help` for the live list.
 | `spawn <char[,…]> [stage] [assist] [--versus]` | start a 1-4 player match (loads your custom `.fra`s); comma-separate the roster (e.g. `spawn sandbag,sandbag` mirror, `spawn sandbag,mario,sandbag,mario` 4-player); 3-4 players auto-engage versus mode, `--versus` forces it for 1-2; stage/assist default to thespire / commandervideoassist |
 | `eval <hscript>` | run an hscript expression and print `E:<result>`. **also the default for any unrecognized line** |
 | `dmg <player> <value>` | set a player's damage percent (e.g. `dmg p1 80`) for knockback / KO-threshold testing |
+| `gvar <player> <name> [value]` | read or set a value a fighter keeps by name between its moves, on either engine (a stored charge: `gvar p0 NarutoNSpecCharge 30`), so a move that carries state is measured from a known one |
+| `gvar <player> __peptideHits` | which box landed each hit the fighter dealt, in order (`attackBox,attackBox2,…`), on either engine; `gvar <player> __peptideHits 0` starts it afresh. two boxes of one move that state the same numbers can only be told apart this way |
 | `info` | one-shot readout of both players: `[x, state, damage, team]` for p0 and p1 |
 | `reset` | reset both players to neutral with zero momentum (clean slate between tests) |
 | `kill <player>` | fling a player into the bottom blast zone to force a KO (e.g. `kill p1`) for respawn / stock testing |
 | `hold <control[+control…]>` | hold control inputs (e.g. `hold down+special`); feeds the engine's input→action mapping, not a synthetic keypress. *Fraymakers; SSF2 input injection is pending.* |
+| `speed <1..8>` | run N engine frames per tick (1 = the engine's own rate). every measurement paces on the frame count, so a test arrives sooner and reads the same; SSF2 answers that it runs at its own rate |
 | `release` | release all injected controls. *Fraymakers; SSF2 input injection is pending.* |
 | `seq <controls:frames> …` | play a frame-accurate input timeline (e.g. `seq down+special:2 right:12`), one input per frame, auto-releases at the end. *Fraymakers; SSF2 input injection is pending.* |
 | `load` | synchronous custom-`.fra` load probe (diagnostic; `spawn` does this itself) |
@@ -89,9 +92,11 @@ read, so the same lines drive both:
 | command | fraymakers | ssf2 |
 |---|---|---|
 | `spawn` / `eval` / `load` / `console` | yes | yes |
+| `eval@<p0..p3|stage>` (run inside an entity's own script) | yes. a converted fighter or stage: that script's own interpreter, its locals and its `self`. a built-in fighter, whose script is compiled: an interpreter made for it on the spot, with `self` the same character api a scripted fighter gets, `match` live, `script` the compiled object (its state is fields: `script.beamTime.get()`), `exports` its exports; kept beside the entity, so what one line declares the next still has, and a new match gets fresh ones | yes (`self` bound to that entity; no per-script interpreter to enter) |
 | `hold` / `release` / `seq` / `scenario` | yes | yes (input applicator) |
 | `addCharacter` | yes (live deferred-spawn) | yes (live add into a reserved slot) |
 | `tune` | yes (`tune p0 <hitboxIndex> …`) | yes (`tune p0 <moveName> …`) |
+| `hits` (hit measurement) | yes (about one sample per frame) | yes (one sample covers many frames) |
 | `status` (matchStatus feed) | yes | partial (not 100% yet) |
 
 notes on the SSF2 realizations:
@@ -104,6 +109,11 @@ notes on the SSF2 realizations:
   index): `tune p0 a damage=15 angle=45` mutates the `a` move's stored box. move keys are the
   raw SSF2 attack names (`a`, `a_forward_tilt`, `special`, …). it maps damage/baseKnockback/
   knockbackGrowth/angle to the SSF2 box's Damage/KBConstant/Power/Direction.
+- `hits [pN] [frames] [raw]` samples damage + position and reports each hit as damage dealt plus
+  the launch it gave (distance per sample, angle 0 = right, counter-clockwise). the reads are each
+  engine's own (`getDamage()` + `X`/`Y` on SSF2), so the record compared is the same one. SSF2's
+  reflection round trips make a sample cover many frames, so its launch is per sample, not per
+  frame; damage totals are unaffected because damage persists.
 - the bridge reports engine-side errors as `ERR:<exception>` (e.g. an unknown move name) instead
   of timing out silently.
 

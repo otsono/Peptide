@@ -9,7 +9,12 @@
     -webkit-user-select: none; user-select: none;
   }
   #panel {
+    /* fills the overlay window, which the host sizes against the game underneath */
     margin: 8px;
+    height: calc(100vh - 16px);
+    box-sizing: border-box;
+    display: flex; flex-direction: column;
+    overflow: hidden;
     background: rgba(12, 13, 18, 0.62);
     border: 1px solid rgba(255,255,255,0.10);
     border-radius: 10px;
@@ -28,9 +33,20 @@
   #dot.stale { background: #6b7280; box-shadow: none; }
   #state { color: #7fd4ff; }
   #state b { color: #d7dae0; font-weight: 600; }
-  #errwrap { margin-top: 6px; }
-  #errs { display: flex; flex-direction: column; gap: 2px; }
-  .err { color: #ff8a8a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 360px; }
+  #errwrap { margin-top: 6px; display: flex; flex-direction: column; min-height: 0; flex: 1; }
+  #errs { display: flex; flex-direction: column; gap: 3px; overflow: hidden; min-height: 0; }
+  /* An engine error is a sentence, not a token: let it WRAP rather than run off the edge, and
+     hang the continuation lines so it still reads as one message in a list of them. Breaking is
+     between words only -- a path or an identifier stays whole and is allowed to overrun rather
+     than be split somewhere that changes what it says. */
+  .err {
+    color: #ff8a8a;
+    white-space: pre-wrap;
+    overflow-wrap: normal;
+    word-break: normal;
+    padding-left: 1.5em;
+    text-indent: -1.5em;
+  }
   .err .loc { color: #ffd07a; }
   #count { color: #ff8a8a; font-weight: 600; }
   .empty { color: #5b6472; font-style: italic; }
@@ -49,7 +65,7 @@
 <script>
   var errCount = 0;
   var recent = [];          // last N unique-ish error lines
-  var MAX = 6;
+  var MAX = 6;         // what fits the panel's height once a long one wraps to two lines
   var lastBeat = Date.now();
 
   function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }

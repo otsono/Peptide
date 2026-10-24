@@ -1,0 +1,64 @@
+// an attack's stats as this engine's own animation stats, settled at conversion. an attack's
+// declared stats go into its animation's AnimationStats; a write its code makes while it plays
+// (`updateAttackStats({...})`) becomes `updateAnimationStats({...})` on the spot. a stat with no
+// row here stays with the runtime.
+//
+// each row: the engine field it sets and how its value converts.
+//   bool      the value, as true or false
+//   not       the value turned over
+//   speed     the value in this engine's speed units
+//   accel     the value in this engine's acceleration units
+//   less      a slowdown the source states as a negative amount a frame, as this engine's
+//             friction (a positive one keeps a share of the speed instead: `share` below)
+//   cap       a speed cap in this engine's speed units, or off (-1) when the source's is negative
+//   zero      0
+//   unset     -1, which the engine reads as the fighter's own value
+// `when`: `negative` or `positive` limits a row to values of that sign; `true` or `false` to a
+// value that is so.
+// `rank`: which of two stats setting one field wins, whatever order the source wrote them in:
+// `over` holds against the others, `under` never replaces one
+// `clamp`: the fighter's fall speed is held to the new value on the spot too. the source clamps
+// the fall after gravity every frame; this engine only stops gravity adding past its terminal
+// velocity, so a speed written above it would stay (ganondorf's dive sets its speed and then
+// its ease, and fell 1.5 of his gravity too far a frame)
+{
+  "stats": {
+    "xSpeedDecay":            [{ "field": "friction", "as": "less", "when": "negative" }],
+    "xSpeedDecayAir":         [{ "field": "aerialFriction", "as": "less", "when": "negative" }],
+    "xSpeedCap":              [{ "field": "groundSpeedCap", "as": "speed" }],
+    "xSpeedAccel":            [{ "field": "groundSpeedAcceleration", "as": "accel" }],
+    "xSpeedAccelAir":         [{ "field": "aerialSpeedAcceleration", "as": "accel" }],
+    // a cap on the fall while it is in force (0 hangs in the air: sora's side special), off when
+    // negative; the engine holds it through its own physics, after timers
+    "air_ease":               [{ "field": "terminalVelocity", "as": "cap", "clamp": true }],
+    "cancelWhenAirborne":     [{ "field": "leaveGroundCancel", "as": "bool" }],
+    "canFallOff":             [{ "field": "slideOff", "as": "bool" }],
+    "allowJump":              [{ "field": "allowJump", "as": "bool" }],
+    "jumpCancelAttack":       [{ "field": "allowJump", "as": "bool" }],
+    "disableJump":            [{ "field": "allowJump", "as": "not" }],
+    "allowTurn":              [{ "field": "allowTurn", "as": "bool" }],
+    "allowFastFall":          [{ "field": "allowFastFall", "as": "bool" }],
+    "allowFullInterrupt":     [{ "field": "interruptible", "as": "bool" }],
+    "doubleJumpCancelAttack": [{ "field": "doubleJumpCancel", "as": "bool" }],
+    // steering: in the air by `allowControl`, and on the floor only when `allowControlGround`
+    // also allows it (no ground acceleration, else the fighter's own)
+    "allowControl":           [{ "field": "allowMovement", "as": "bool" }],
+    "allowControlGround":     [{ "field": "groundSpeedAcceleration", "as": "zero", "when": "false", "rank": "over" },
+                               { "field": "groundSpeedAcceleration", "as": "unset", "when": "true", "rank": "under" }]
+    // resetMovement has no row: the engine's speed conservation sets a standstill as exactly 0,
+    // where the source's rest in the air is a speed a step of gravity ahead here (a y speed is),
+    // and the fighter is put back at the height it started from (peach's parasol, zeroed by the
+    // engine, rose 7 higher and landed 3 frames late); the runtime starts it (AttackRules.reset)
+  },
+  // what an attack that states nothing has: it goes off a floor's edge and ends once airborne
+  "defaults": { "leaveGroundCancel": true, "slideOff": true },
+  // stats a landing's own animation takes that an attack's would not: a landing animation is only
+  // ever on the floor, so steering there is off when the floor's steering is
+  "landing": {
+    "allowControl":           [{ "field": "allowMovement", "as": "bool" }],
+    "allowControlGround":     [{ "field": "allowMovement", "as": "bool", "when": "false", "rank": "over" }]
+  },
+  // the source's calls that land a fighter in its landing state: a floor-touch listener that is
+  // one of them is the engine's own landing (`LandType.NORMAL`) into that animation
+  "landings": { "toLand": "land_light", "toHeavyLand": "land_heavy" }
+}

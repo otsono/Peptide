@@ -157,7 +157,9 @@ fn sandbag_conversion_matches_golden_hashes() {
         msg.push('\n');
     }
     msg.push_str("To accept the new output as the baseline, regenerate hashes:\n");
-    msg.push_str("  cargo run -p peptide -- convert ../ssf2-ssfs/sandbag.ssf --output /tmp/sb && \\\n");
+    // with no installed game in view: the test converts without one, and a golden that pulled
+    // this machine's shared sounds in would fail everywhere else
+    msg.push_str("  PEPTIDE_SSF2_APP=/nonexistent cargo run -p peptide -- convert ../ssf2-ssfs/sandbag.ssf --output /tmp/sb -y && \\\n");
     msg.push_str("  cd /tmp/sb/sandbag && \\\n");
     msg.push_str("  find . -type f \\( -name '*.hx' -o -name '*.entity' -o -name '*.json' -o -name '*.meta' \\\n");
     msg.push_str("       -o -name '*.palettes' -o -name '*.fraytools' \\) \\\n");

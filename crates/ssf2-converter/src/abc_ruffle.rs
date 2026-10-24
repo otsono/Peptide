@@ -99,15 +99,58 @@ fn default_value(pool: &rt::ConstantPool, v: &rt::DefaultValue) -> Option<f64> {
     }
 }
 
+/// The value as the literal the port writes, every kind the source declares a default in.
+fn default_literal(pool: &rt::ConstantPool, v: &rt::DefaultValue) -> Option<String> {
+    match v {
+        rt::DefaultValue::Int(i) => pool.ints.get(i.0 as usize - 1).map(|v| format!("{v}")),
+        rt::DefaultValue::Uint(i) => pool.uints.get(i.0 as usize - 1).map(|v| format!("{v}")),
+        rt::DefaultValue::Double(i) => pool.doubles.get(i.0 as usize - 1)
+            .map(|v| if v.fract() == 0.0 && v.abs() < 1e15 { format!("{}", *v as i64) } else { format!("{v}") }),
+        rt::DefaultValue::String(i) => Some(format!("\"{}\"", string_at(&pool.strings, i.0).replace('\\', "\\\\").replace('"', "\\\""))),
+        rt::DefaultValue::True => Some("true".to_string()),
+        rt::DefaultValue::False => Some("false".to_string()),
+        // a null default changes nothing on the way in
+        _ => None,
+    }
+}
+
+/// The value when it is a STRING -- a constant is as often a name as a number.
+fn default_string(pool: &rt::ConstantPool, v: &rt::DefaultValue) -> Option<String> {
+    match v {
+        rt::DefaultValue::String(i) => Some(string_at(&pool.strings, i.0).to_string()),
+        _ => None,
+    }
+}
+
 fn convert_trait(pool: &rt::ConstantPool, t: &rt::Trait) -> Trait {
     let (_, name_idx, _) = multiname_parts(
         pool.multinames.get(t.name.0 as usize - 1).unwrap_or(&rt::Multiname::RTQNameL));
     let name = string_at(&pool.strings, name_idx).to_string();
+    let default_str = match &t.kind {
+        rt::TraitKind::Slot { value, .. } | rt::TraitKind::Const { value, .. } =>
+            value.as_ref().and_then(|v| default_string(pool, v)),
+        _ => None,
+    };
+    // a field's `true`/`false`/`null` is that literal, not a number (a parameter's numeric
+    // default is another question, answered by `default_value`)
+    let default_lit = match &t.kind {
+        rt::TraitKind::Slot { value, .. } | rt::TraitKind::Const { value, .. } => match value {
+            Some(rt::DefaultValue::True) => Some("true".to_string()),
+            Some(rt::DefaultValue::False) => Some("false".to_string()),
+            Some(rt::DefaultValue::Null) | Some(rt::DefaultValue::Undefined) => Some("null".to_string()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let field_value = |v: &rt::DefaultValue| match v {
+        rt::DefaultValue::True | rt::DefaultValue::False | rt::DefaultValue::Null | rt::DefaultValue::Undefined => None,
+        v => default_value(pool, v),
+    };
     let (kind, method_idx, slot_idx, default) = match &t.kind {
         rt::TraitKind::Slot { slot_id, value, .. } =>
-            (trait_kind::SLOT, 0, *slot_id, value.as_ref().and_then(|v| default_value(pool, v))),
+            (trait_kind::SLOT, 0, *slot_id, value.as_ref().and_then(field_value)),
         rt::TraitKind::Const { slot_id, value, .. } =>
-            (trait_kind::CONST, 0, *slot_id, value.as_ref().and_then(|v| default_value(pool, v))),
+            (trait_kind::CONST, 0, *slot_id, value.as_ref().and_then(field_value)),
         rt::TraitKind::Method { disp_id: _, method } =>
             (trait_kind::METHOD, method.0, 0, None),
         rt::TraitKind::Getter { disp_id: _, method } =>
@@ -119,7 +162,18 @@ fn convert_trait(pool: &rt::ConstantPool, t: &rt::Trait) -> Trait {
         rt::TraitKind::Function { slot_id, function } =>
             (trait_kind::FUNCTION, function.0, *slot_id, None),
     };
-    Trait { name, kind, method_idx, slot_idx, default }
+    // the slot's declared type, by the name its multiname carries (0 = untyped)
+    let type_name = match &t.kind {
+        rt::TraitKind::Slot { type_name, .. } | rt::TraitKind::Const { type_name, .. } => {
+            let idx = type_name.0 as usize;
+            (idx > 0).then(|| pool.multinames.get(idx - 1)).flatten().map(|m| {
+                let (_, n, _) = multiname_parts(m);
+                string_at(&pool.strings, n).to_string()
+            })
+        }
+        _ => None,
+    };
+    Trait { name, kind, method_idx, slot_idx, default, default_str, default_lit, type_name }
 }
 
 /// Read an ABC file with Ruffle's parser and present it as this crate's [`AbcFile`].
@@ -149,6 +203,9 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
         return_type_idx: m.return_type.0,
         optionals: m.params.iter()
             .map(|p| p.default_value.as_ref().and_then(|v| default_value(pool, v)))
+            .collect(),
+        optional_defaults: m.params.iter()
+            .map(|p| p.default_value.as_ref().and_then(|v| default_literal(pool, v)))
             .collect(),
     }).collect();
 
@@ -183,6 +240,7 @@ pub fn parse(data: &[u8]) -> Result<AbcFile> {
                 .map(|c| c.traits.iter().map(|t| convert_trait(pool, t)).collect())
                 .unwrap_or_default(),
             constructor_idx: inst.init_method.0,
+            class_init_idx: abc.classes.get(i).map(|c| c.init_method.0).unwrap_or(0),
         }
     }).collect();
 

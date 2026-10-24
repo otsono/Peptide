@@ -163,6 +163,7 @@ pub const MANIFEST: &[Symbol] = &[
     sym!(native "socket_init",                   "socket-bridge", "winsock/posix socket bring-up", true),
     sym!(native "socket_recv_char",              "socket-bridge", "read a command byte", true),
     sym!(fn "exit" in "hxd.$System",             "socket-bridge", "clean 'x' shutdown (else kill -9)", false),
+    sym!(fn "init" in "pxf.client.$ClientApi",   "offline-client", "boot without the storefront (else the engine needs it running)", false),
 
     // ── Boot / headless launch ──────────────────────────────────────────────
     sym!(fn "update" in "fraymakers.Main",       "boot", "per-frame hook = our command pump", true),
@@ -225,6 +226,23 @@ pub const MANIFEST: &[Symbol] = &[
     sym!(fn "applyInterpreterGlobals" in "fraymakers.api.$FraymakersScriptGlobals", "hscript-eval", "engine globals callback (pinned fallback if missing)", false),
     sym!(fn "interpretScript" in "pxf.api.$ApiScript", "hscript-eval", "engine's wrapped run (pinned fallback if missing)", false),
     sym!(fn "log" in "pxf.core.$Tildebugger",    "hscript-eval", "engine console log facade (pinned fallback if missing)", false),
+    // an interpreter made for a compiled (built-in) script: `e@p0` on a fighter the engine ships
+    sym!(type "pxf.api.runners.haxescript.HaxeScriptRunner", "eval-in-entity", "the runner a compiled script runs on", true),
+    sym!(field "haxeScript" of "pxf.api.runners.haxescript.HaxeScriptRunner", "eval-in-entity", "the compiled script object it runs", true),
+    sym!(type "pxf.api.HaxeScript", "eval-in-entity", "the compiled script base", true),
+    sym!(field "Common" of "pxf.api.HaxeScript", "eval-in-entity", "the slot the fighter's own script object sits in", true),
+    sym!(field "exports" of "pxf.api.HaxeScript", "eval-in-entity", "the script's exports", true),
+    sym!(fn "applyInterpreterGlobals" in "pxf.api.$ApiScript", "eval-in-entity", "readies an interpreter the way the engine's runner does", true),
+    sym!(fn "createCharacterApi" in "fraymakers.util.$FraymakersClassFactory", "eval-in-entity", "the character api a scripted fighter gets, from an entity", true),
+    sym!(fn "createMatchApi" in "fraymakers.util.$FraymakersClassFactory", "eval-in-entity", "the match api a script gets, from the match", true),
+    sym!(type "fraymakers.api.FraymakersCharacterApi", "eval-in-entity", "what `self` is in a fighter's script", true),
+    sym!(type "fraymakers.api.FraymakersMatchApi", "eval-in-entity", "what `match` is in a script", true),
+
+    // ── Content-mistake guards ──────────────────────────────────────────────
+    // Not critical: without them the guard is skipped and the engine behaves as it always did
+    // (a content mistake here ends the match). See `inject_animation_guard`.
+    sym!(fn "playAnimation" in "pxf.api.EntityApi", "guards", "the door every script plays an animation through", false),
+    sym!(fn "hasAnimation" in "pxf.api.EntityApi",  "guards", "the engine's own answer to whether it can", false),
 
     // ── Line-command parsing primitives ─────────────────────────────────────
     sym!(fn "alloc" in "haxe.io.$Bytes",         "line-cmd", "buffer received arg bytes", true),

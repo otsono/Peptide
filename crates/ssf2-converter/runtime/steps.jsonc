@@ -1,0 +1,14 @@
+// the code the source runs every frame, which runs every engine frame here (two to the source's
+// one), and what it adds each frame, halved at conversion.
+//
+// a method is run every frame when it is one of `methods` on its object, when it is handed to
+// `addEventListener` for one of `events`, or when only such methods call it. in that code an
+// accumulation on something that outlives the frame (a field, a static, an element) adds half its
+// step: `x += d` is `x += d * 0.5`, `x *= k` (k a positive number) is `x *= sqrt(k)`, and a setter
+// given its own getter plus a step (`setXSpeed(getXSpeed() + a)`) takes half the step. a getter
+// pairs with its setter by name (`getK` with `setK`); `pairs` lists the ones that do not.
+{
+  "methods": ["update"],
+  "events": ["ENTER_FRAME", "GAME_TICK_END", "enterFrame", "gameTickEnd"],
+  "pairs": { "gotoAndStop": "currentFrame", "gotoAndPlay": "currentFrame" }
+}

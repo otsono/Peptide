@@ -47,12 +47,13 @@ if [ "$PUBLISH" = "1" ] && [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
-# ---- 1. Bump version in both Cargo.toml files + refresh the lock --------------
+# ---- 1. Bump version in every crate's Cargo.toml + refresh the lock ------------
 echo "==> Bumping version to $CARGO_VERSION…"
 sed -i '' "s/^version = \"[^\"]*\"/version = \"$CARGO_VERSION\"/" Cargo.toml
 sed -i '' "s/^version = \"[^\"]*\"/version = \"$CARGO_VERSION\"/" crates/ssf2-converter/Cargo.toml
+sed -i '' "s/^version = \"[^\"]*\"/version = \"$CARGO_VERSION\"/" crates/fra-pack/Cargo.toml
 # Update only Peptide's own entries in Cargo.lock (keeps the build reproducible).
-cargo update -p peptide -p ssf2_converter --precise "$CARGO_VERSION" 2>/dev/null \
+cargo update -p peptide -p ssf2_converter -p fra_pack --precise "$CARGO_VERSION" 2>/dev/null \
   || cargo build --release -p peptide --bin peptide >/dev/null
 
 # ---- 2. Build both platforms (version flows in via PEPTIDE_VERSION) -----------
@@ -82,12 +83,12 @@ fi
 # ---- 4. Commit the version bump, tag, and publish -----------------------------
 # Idempotent: re-running for the same version updates the tag + release assets
 # in place rather than erroring on "already exists".
-if [ -n "$(git status --porcelain Cargo.toml crates/ssf2-converter/Cargo.toml Cargo.lock)" ]; then
+if [ -n "$(git status --porcelain Cargo.toml crates/ssf2-converter/Cargo.toml crates/fra-pack/Cargo.toml Cargo.lock)" ]; then
   echo "==> Committing version bump…"
-  git add Cargo.toml crates/ssf2-converter/Cargo.toml Cargo.lock
+  git add Cargo.toml crates/ssf2-converter/Cargo.toml crates/fra-pack/Cargo.toml Cargo.lock
   git commit -m "peptide: release $TAG
 
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 else
   echo "==> Version already at $CARGO_VERSION; no bump commit needed."
 fi

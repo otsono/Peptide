@@ -44,6 +44,8 @@ const RECONNECT: &str = "@@reconnect";     // TCP back into the current session
 const BOOT_QUICK: &str = "@@boot:quick";   // launch a fresh engine, auto-spawn for testing
 const BOOT_REGULAR: &str = "@@boot:regular"; // launch a fresh engine, no auto-spawn
 const BOOT_SSF2: &str = "@@boot:ssf2";     // launch the patched SSF2 app + drive the same console
+const BOOT_SSF2_QUICK: &str = "@@boot:ssf2quick"; // ...straight into a match with SSF2's default fighter
+const PACK_PREFIX: &str = "@@pack:";          // @@pack:<json{project}> — build the .fra in-process
 const DISCONNECT: &str = "@@disconnect";   // tear down the current engine (status-button menu)
 
 /// Which engine the live console is attached to. The whole console — commands,
@@ -107,7 +109,7 @@ fn spawn_standalone_overlay() {
     }
 }
 // Screen-router verbs (Home / Setup / Converter / FrayTools Hook). Heavy work
-// (conversion, FrayTools CDP, file dialogs) runs on a worker thread and posts
+// (conversion, FrayTools, file dialogs) runs on a worker thread and posts
 // results back via Ev::Js — never block the tao event loop.
 const PICK_DIR_PREFIX: &str = "@@pick:dir:";       // @@pick:dir:<replyFn>
 const PICK_FILE_PREFIX: &str = "@@pick:file:";     // @@pick:file:<replyFn>[:<ext>]
@@ -296,6 +298,11 @@ pub fn launch() -> std::io::Result<()> {
             } else if b.starts_with(BOOT_REGULAR) {
                 let chosen = boot_char(b, BOOT_REGULAR).unwrap_or(ch);
                 thread::spawn(move || boot_new(w, cl, cn, px, chosen, false));
+            } else if b == BOOT_SSF2_QUICK {
+                // a match with nothing picked: SSF2's own default fighter, the launch the
+                // command line makes for `peptide ssf2 session`
+                let chosen = Some(crate::config::Config::load().ssf2_char());
+                thread::spawn(move || boot_ssf2(cl, px, chosen));
             } else if b.starts_with(BOOT_SSF2) {
                 // @@boot:ssf2[:<char>] — patch + launch SSF2 and attach the console to it.
                 // With a character: fast-boot (auto-spawn it). Without: a normal boot to
@@ -430,10 +437,6 @@ fn config_json() -> String {
     let s = |v: &str| js_str(v);
     let frayroot = cfg.fraymakers_root().map(|p| p.display().to_string()).unwrap_or_default();
     let frayexe = cfg.fraytools_exe().map(|p| p.display().to_string()).unwrap_or_default();
-    // Whether FrayTools resolves to a file that actually exists on disk (not just a
-    // configured-but-missing path). The "isn't built yet" modal uses this to decide
-    // between offering an inline Export and sending the user to Setup.
-    let fraytools_ready = cfg.fraytools_exe().map(|p| p.is_file()).unwrap_or(false);
     // Autodetect for the wizard: did we find each tool on disk? And the path to
     // pre-fill FrayTools with when the user hasn't set one yet.
     let fraymakers_detected = crate::platform::fraymakers_root().is_some();
@@ -458,7 +461,7 @@ fn config_json() -> String {
         "{{\"configured\":{},\"setupComplete\":{},\"currentChar\":{},\"stage\":{},\"assist\":{},\
           \"fraymakersRoot\":{},\
           \"fraymakersDetected\":{},\"fraytoolsPath\":{},\"fraytoolsDetected\":{},\
-          \"fraytoolsExe\":{},\"fraytoolsReady\":{},\
+          \"fraytoolsExe\":{},\
           \"ssf2App\":{},\"ssf2Detected\":{},\"ssf2Ready\":{},\
           \"outputDir\":{},\"miscSsf\":{}}}",
         cfg.configured,
@@ -471,7 +474,6 @@ fn config_json() -> String {
         s(&fraytools_val),
         fraytools_detected,
         s(&frayexe),
-        fraytools_ready,
         s(&ssf2_val),
         ssf2_detected,
         ssf2_ready,
@@ -481,7 +483,7 @@ fn config_json() -> String {
 }
 
 /// Dispatch a screen-router control message. Everything that blocks (file
-/// dialogs, conversion, FrayTools CDP) runs on a worker thread that posts results
+/// dialogs, conversion, FrayTools) runs on a worker thread that posts results
 /// back via Ev::Js — the tao event loop must never block.
 fn handle_screen_verb(verb: &str, proxy: &EventLoopProxy<Ev>) {
     if let Some(rest) = verb.strip_prefix(PICK_DIR_PREFIX) {
@@ -509,6 +511,9 @@ fn handle_screen_verb(verb: &str, proxy: &EventLoopProxy<Ev>) {
     } else if let Some(json) = verb.strip_prefix(PUBLISH_PREFIX) {
         let (json, px) = (json.to_string(), proxy.clone());
         thread::spawn(move || add_publish_folder(&json, &px));
+    } else if let Some(json) = verb.strip_prefix(PACK_PREFIX) {
+        let (json, px) = (json.to_string(), proxy.clone());
+        thread::spawn(move || run_pack(&json, &px));
     } else if let Some(rest) = verb.strip_prefix(FRAY_PREFIX) {
         // export:<json> | render:<json> | harness:<json>
         let (rest, px) = (rest.to_string(), proxy.clone());
@@ -730,28 +735,9 @@ fn parse_parallax_rates(stats: &str) -> std::collections::HashMap<String, f64> {
     out
 }
 
-/// Minimal JSON-string-field extractor for the small, flat objects the page
-/// sends (`{"k":"v",...}`). Avoids pulling serde_json's Value into the hot path
-/// and is enough for our known keys. Returns the unescaped string value for `key`.
+/// A string field of the flat object the page sends (`{"k":"v",...}`), unescaped.
 fn json_str_field(json: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\"");
-    let i = json.find(&needle)? + needle.len();
-    let rest = &json[i..];
-    let colon = rest.find(':')?;
-    let after = rest[colon + 1..].trim_start();
-    let mut chars = after.chars();
-    if chars.next()? != '"' { return None; }
-    let mut out = String::new();
-    let mut esc = false;
-    for c in chars {
-        if esc { out.push(c); esc = false; continue; }
-        match c {
-            '\\' => esc = true,
-            '"' => return Some(out),
-            _ => out.push(c),
-        }
-    }
-    None
+    serde_json::from_str::<serde_json::Value>(json).ok()?.get(key)?.as_str().map(str::to_string)
 }
 
 /// The configured FrayTools project folder (`output_dir`) as an absolute, existing
@@ -959,7 +945,7 @@ fn apply_default_linux_env_vars() {
     set_default_env_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1", true);
 }
 
-/// Drive the FrayTools CDP harness for the Hook screen. `rest` is
+/// Drive the FrayTools harness for the Hook screen. `rest` is
 /// `export:<json>` | `render:<json>` | `harness:<json>` where json carries the
 /// flags (project / entity / animation / frame). Reuses the same fraytools::*
 /// entry points the CLI uses, by assembling an argv.
@@ -1021,6 +1007,27 @@ fn run_fraytools(rest: &str, proxy: &EventLoopProxy<Ev>) {
                 "window.onFrayResult && onFrayResult(false, {})", js_str(&e.to_string()))));
         }
     }
+}
+
+/// `@@pack:<json>`: the package built from the project's library, in-process, and written to
+/// every publish folder the project names (the game's custom folder among them). the same
+/// packer the verify gates publish with; FrayTools is not involved.
+fn run_pack(json: &str, proxy: &EventLoopProxy<Ev>) {
+    let Some(project) = json_str_field(json, "project").filter(|s| !s.is_empty()) else {
+        let _ = proxy.send_event(Ev::Js("window.onPackResult && onPackResult(false, \"Pick a .fraytools project first.\")".into()));
+        return;
+    };
+    let _ = proxy.send_event(Ev::Js(format!(
+        "window.onPackProgress && onPackProgress({})", js_str(&format!("Publishing {project}…")))));
+    // an absolute path, whatever the page was handed: the packer resolves the library beside it
+    let project = std::fs::canonicalize(&project).map(|p| p.display().to_string()).unwrap_or(project);
+    let argv = vec!["--project".to_string(), project.clone()];
+    let js = match crate::pack::pack(&argv) {
+        Ok(()) => format!("window.onPackResult && onPackResult(true, {})",
+            js_str(&format!("Published {project} to its publish folders"))),
+        Err(e) => format!("window.onPackResult && onPackResult(false, {})", js_str(&e.to_string())),
+    };
+    let _ = proxy.send_event(Ev::Js(js));
 }
 
 /// JSON array of strings for evaluate_script payloads.
@@ -1280,7 +1287,11 @@ fn read_crash_log() -> Option<String> {
     let text = std::fs::read_to_string(root.join("error.log")).ok()?;
     let t = text.trim();
     if t.is_empty() { return None; }
-    Some(if t.len() > 1600 { format!("…{}", &t[t.len() - 1600..]) } else { t.to_string() })
+    if t.len() <= 1600 { return Some(t.to_string()); }
+    // the tail, cut on a character boundary: the log can carry text that is not ASCII
+    let mut start = t.len() - 1600;
+    while !t.is_char_boundary(start) { start += 1; }
+    Some(format!("…{}", &t[start..]))
 }
 
 /// The engine's connection ended. If it left a crash log, surface the crash modal with it;

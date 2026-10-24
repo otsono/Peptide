@@ -23,13 +23,28 @@ Peptide keeps Fraymakers from falling over when it loads broken or half-finished
 files, and tells you *why* a file is broken instead of just dying. iterate without
 fear.
 
+### 🧯 guards -- a mod bug shouldn't end the match
+Some content mistakes don't raise an error, they take the whole game down. Ask for an
+animation your entity doesn't have and Fraymakers dies deep in the camera, saying
+nothing about which script asked for what. Peptide's patched engine checks first and
+tells you instead:
+
+```
+SCRIPTERR: playAnimation: this entity has no animation named uncrouch
+```
+
+your fighter keeps playing what it was playing, the move looks wrong, and you go fix
+the typo. a bug you can see beats a game that vanished. more guards get added as we
+find them -- [TESTING.md](TESTING.md) says how to add one. 🧑‍🔧
+
 ### ⚡ quick-launch -- straight into a match
 Boot directly into a sandbox-mode match from the command line, about 10x faster than
 clicking through menus. perfect for a tight test loop.
 
-### 🛠️ drive FrayTools -- export hands-free
-Hook your local FrayTools and tell it to publish a project to `.fra`. no manual
-clicking, no babysitting the export.
+### 🛠️ publish -- hands-free
+Build a project's `.fra` straight into the game's custom folder from the app's home
+screen (Publish a Project) or the console's status menu, in a fraction of a second, or
+hook your local FrayTools and let it publish. no manual clicking, no babysitting.
 
 ### 🔄 convert from SSF2 -- a whole character, one command
 Point Peptide at a single `.ssf` file and it rebuilds the fighter as a ready-to-open

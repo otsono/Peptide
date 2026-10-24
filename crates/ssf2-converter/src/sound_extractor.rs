@@ -346,3 +346,110 @@ pub fn extract_all_sounds(swf: &swf::Swf, out_dir: &Path, char_id: &str) -> Resu
 
     Ok(sounds)
 }
+
+
+/// Every sound a compressed package holds, by id. The caller supplies the DECOMPRESSED movie
+/// bytes; this opens and reads them, so a tool can look through packages without depending on the
+/// swf crate itself.
+pub fn sound_names_in_movie(data: &[u8]) -> Vec<String> {
+    let Ok(buf) = swf::decompress_swf(data) else { return Vec::new() };
+    let Ok(parsed) = swf::parse_swf(&buf) else { return Vec::new() };
+    parse_sounds(&parsed).into_iter().map(|s| s.name).collect()
+}
+
+/// Every SYMBOL a package exports by name, which is how a clip is asked for across packages.
+pub fn symbol_names_in_movie(data: &[u8]) -> Vec<String> {
+    let Ok(buf) = swf::decompress_swf(data) else { return Vec::new() };
+    let Ok(parsed) = swf::parse_swf(&buf) else { return Vec::new() };
+    let mut out = Vec::new();
+    for tag in &parsed.tags {
+        if let swf::Tag::SymbolClass(links) = tag {
+            for l in links {
+                out.push(l.class_name.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
+            }
+        }
+        if let swf::Tag::ExportAssets(assets) = tag {
+            for a in assets {
+                out.push(a.name.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Every sound id a piece of source code NAMES, in either spelling the source uses.
+pub fn sound_ids_named_in(code: &str) -> Vec<String> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r#"(?:playSound|AudioClip\.play)\(\s*"([^"]+)""#).expect("sound id regex")
+    });
+    re.captures_iter(code).map(|c| c[1].to_string()).collect()
+}
+
+/// Bring across the sounds a piece of content ASKS FOR that its own package does not carry.
+///
+/// The game keeps shared packages loaded, and a sound resolves out of them exactly as a class
+/// does: mario names `jump_common` and the six `screw*` clips and carries none of them, so every
+/// one of those plays fell back to silence. Only the named ones are taken, since a shared package
+/// carries every borrowed sound at once.
+///
+/// Returns what it found, already written into `audio_dir`; `want` is left holding whatever no
+/// package carries.
+pub fn pull_shared_sounds(
+    want: &mut std::collections::BTreeSet<String>,
+    audio_dir: &Path,
+    content_id: &str,
+) -> Vec<SoundEntry> {
+    if want.is_empty() { return Vec::new() }
+    let _ = std::fs::create_dir_all(audio_dir);
+    let mut got: Vec<SoundEntry> = Vec::new();
+    let mut take = |found: Vec<SoundEntry>, from: &str, want: &mut std::collections::BTreeSet<String>| {
+        let mut mine = Vec::new();
+        for e in found {
+            let safe: String = e.name.chars()
+                .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+            if convert_to_wav(&e, &audio_dir.join(format!("{safe}.wav"))).is_ok() {
+                want.remove(&e.name);
+                mine.push(e);
+            }
+        }
+        if !mine.is_empty() {
+            let _ = crate::haxe_gen::generate_sound_entries(audio_dir, content_id, &mine);
+            log::info!("{} sounds came across from {from}", mine.len());
+            got.extend(mine);
+        }
+    };
+    for (id, swf) in crate::shared_packages::every_package() {
+        if want.is_empty() { break }
+        let Ok(buf) = swf::decompress_swf(&swf[..]) else { continue };
+        let Ok(parsed) = swf::parse_swf(&buf) else { continue };
+        let found: Vec<_> = parse_sounds(&parsed).into_iter().filter(|e| want.contains(&e.name)).collect();
+        if found.is_empty() { continue }
+        take(found, &format!("the shared '{id}' package"), want);
+    }
+    // then every package beside the game, named by the manifest or not: a shared sound bank need
+    // not be one of the packages the game keeps loaded
+    if !want.is_empty() {
+        for (id, swf) in crate::shared_packages::all_data_packages() {
+            if want.is_empty() { break }
+            let Ok(buf) = swf::decompress_swf(&swf[..]) else { continue };
+            let Ok(parsed) = swf::parse_swf(&buf) else { continue };
+            let found: Vec<_> = parse_sounds(&parsed).into_iter().filter(|e| want.contains(&e.name)).collect();
+            if found.is_empty() { continue }
+            take(found, &format!("the '{id}' package"), want);
+        }
+    }
+    // and finally the game's own movie, where what its fighters share is kept
+    if !want.is_empty() {
+        if let Some(movie) = crate::shared_packages::game_movie() {
+            if let Ok(found) = swf::decompress_swf(&movie[..]).and_then(|b| {
+                let p = swf::parse_swf(&b)?;
+                Ok(parse_sounds(&p))
+            }) {
+                let found: Vec<_> = found.into_iter().filter(|e| want.contains(&e.name)).collect();
+                take(found, "the game's own movie", want);
+            }
+        }
+    }
+    got
+}

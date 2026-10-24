@@ -58,7 +58,9 @@ fn dump_sprite(sprite: &swf::Sprite, sym_names: &BTreeMap<u16, String>, indent: 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: dump_sprites <file.ssf> [filter]");
     let filter = std::env::args().nth(2);
-    let data = std::fs::read(&path).expect("read file");
+    let raw = std::fs::read(&path).expect("read file");
+    // shipped content is wrapped; a plain SWF reads as it is
+    let data = ssf2_converter::ssf::decompress(&raw).unwrap_or(raw);
     let swf_buf = swf::decompress_swf(Cursor::new(&data)).expect("decompress");
     let swf = swf::parse_swf(&swf_buf).expect("parse");
 

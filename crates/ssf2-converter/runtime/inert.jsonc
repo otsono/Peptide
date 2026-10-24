@@ -1,0 +1,15 @@
+// what this engine does nothing for, so the conversion writes nothing for it.
+//
+// `calls`: methods of a runtime class that draw pixels this engine never shows (runtime/flash/
+// misc.hx answers each as a gap). a statement that is only such a call, on an object its class
+// declares as that class, and whose arguments do nothing on their own, is left out: the
+// arguments are a picture's rectangle and point made every frame, and krazoa palace spent a
+// quarter of its frame building them for calls that draw nothing.
+// `values`: classes whose making does nothing but make the value (an argument made with one of
+// these, from fields, numbers and arithmetic, does nothing on its own).
+{
+  "calls": {
+    "BitmapData": ["copyPixels", "setPixel", "setPixel32", "fillRect", "draw", "colorTransform", "lock", "unlock"]
+  },
+  "values": ["Rectangle", "Point", "Matrix", "ColorTransform"]
+}

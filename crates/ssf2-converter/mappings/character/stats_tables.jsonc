@@ -12,40 +12,37 @@
     { "section": "MISC ATTACKS",    "moves": ["ledge_attack","crash_attack","emote"] }
   ],
 
-  // CharacterStats.hx flat-constant field groups. Values come from stats.jsonc
-  // `constants`; `anno` (ECB only) is an inline comment suffix.
+  // CharacterStats.hx field groups. The engine MERGES a character's stats over its own defaults
+  // (Util.setDefaults), so a field emitted here is not a default -- it OVERRIDES the engine's,
+  // and when the value came from a stock character's file it overrides it with somebody else's.
+  // So a group lists only what the SOURCE states; the rest is left out and the engine answers.
+  // Values still come from stats.jsonc `constants`; `anno` (ECB only) is an inline comment.
   "stats_fields": {
+    // the body the source states, and nothing else: the hip offsets and how far the body hangs
+    // below the origin in the air are the engine's to answer
     "ecb": [
-      { "field": "floorHeadPosition",  "anno": " /*TODO*/" },
-      { "field": "floorHipWidth",      "anno": " /*TODO*/" },
-      { "field": "floorHipXOffset",    "anno": "" },
-      { "field": "floorHipYOffset",    "anno": "" },
-      { "field": "floorFootPosition",  "anno": "" },
-      { "field": "aerialHeadPosition", "anno": " /*TODO*/" },
-      { "field": "aerialHipWidth",     "anno": " /*TODO*/" },
-      { "field": "aerialHipXOffset",   "anno": "" },
-      { "field": "aerialHipYOffset",   "anno": "" },
-      { "field": "aerialFootPosition", "anno": " /*TODO*/" }
+      { "field": "floorHeadPosition",  "anno": "" },
+      { "field": "floorHipWidth",      "anno": "" },
+      { "field": "aerialHeadPosition", "anno": "" },
+      { "field": "aerialHipWidth",     "anno": "" }
     ],
-    "camera": ["cameraBoxOffsetX","cameraBoxOffsetY","cameraBoxWidth","cameraBoxHeight"],
-    "roll": [
-      "techRollSpeed","techRollSpeedStartFrame","techRollSpeedLength",
-      "dodgeRollSpeed","dodgeRollSpeedStartFrame","dodgeRollSpeedLength",
-      "getupRollSpeed","getupRollSpeedStartFrame","getupRollSpeedLength",
-      "ledgeRollSpeed","ledgeRollSpeedStartFrame","ledgeRollSpeedLength",
-      "ledgeJumpXSpeed","ledgeJumpYSpeed"
-    ],
-    "airdash": ["airdashInitialSpeed","airdashSpeedCap","airdashAccelMultiplier","airdashCancelSpeedConservation"],
-    "shield": [
-      "shieldCrossupThreshold","shieldFrontNineSliceContent","shieldFrontXOffset",
-      "shieldFrontYOffset","shieldFrontWidth","shieldFrontHeight",
-      "shieldBackNineSliceContent","shieldBackXOffset","shieldBackYOffset",
-      "shieldBackWidth","shieldBackHeight"
-    ],
+    // the camera box and the shield are not stated by the source at all
+    "camera": [],
+    // the source states how fast a roll travels, never for how long, and never the ledge jump.
+    // its dodge roll moves from its first frame (falco's 16 there on frame 1), where this engine's
+    // waits for its own start frame (3 unless stated): the start is written as 1 (stats.jsonc; 0
+    // never starts it), which still moves a frame after the source's, and the length left one frame
+    "roll": ["techRollSpeed","dodgeRollSpeed","dodgeRollSpeedStartFrame","getupRollSpeed","ledgeRollSpeed"],
+    // the source has no air dash: its air dodge leaves the fighter where it is, keeping its
+    // momentum (measured). this engine's airdash blinks a fighter across the stage in one frame
+    // (measured on a stock fighter too), so it is switched off and the fighter plays its own
+    // air-dodge clip instead
+    "airdash": ["airdashLimit"],
+    "shield": [],
+    // the voice LISTS are the character's own content; how often a voice is skipped is not stated
+    // by the source and is the engine's to answer
     "voice": [
-      "attackVoiceIds","hurtLightVoiceIds","hurtMediumVoiceIds","hurtHeavyVoiceIds","koVoiceIds",
-      "attackVoiceSilenceRate","hurtLightSilenceRate","hurtMediumSilenceRate",
-      "hurtHeavySilenceRate","koVoiceSilenceRate"
+      "attackVoiceIds","hurtLightVoiceIds","hurtMediumVoiceIds","hurtHeavyVoiceIds","koVoiceIds"
     ]
   },
 

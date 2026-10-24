@@ -33,9 +33,6 @@ pub struct AnimationMappings {
     /// SSF2 xframe/animation name → Fraymakers animation slot.
     #[serde(default)]
     pub ssf2_to_fm: BTreeMap<String, String>,
-    /// Sprite-symbol AnimLabel (lowercased, suffix stripped) → SSF2 animation name.
-    #[serde(default)]
-    pub label_to_ssf2: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -57,6 +54,24 @@ pub struct StatMappings {
     /// Fraymakers stat field → ordered list of SSF2 key names to try.
     #[serde(default)]
     pub field_keys: BTreeMap<String, Vec<String>>,
+    /// The stats this engine HAS, for a write made while the match is running. A name
+    /// not in here has nothing to land on and the engine refuses the whole write.
+    #[serde(default)]
+    pub fm_runtime_stats: Vec<String>,
+    /// What a stat read while the match runs is called here, source name → engine name.
+    #[serde(default)]
+    pub fm_runtime_read_names: BTreeMap<String, String>,
+    /// What a stat this engine does not have answers when read: the source's default for it.
+    #[serde(default)]
+    pub runtime_read_defaults: BTreeMap<String, serde_json::Value>,
+    /// The unit each runtime stat is held in here ("accel" / "speed" -> the stat names), so a
+    /// read can scale it back to the source's units.
+    #[serde(default)]
+    pub runtime_read_units: BTreeMap<String, Vec<String>>,
+    /// A stat this engine keeps under another shape, read while the match runs: the source's
+    /// name → the expression that answers it here (`{recv}` is the object asked).
+    #[serde(default)]
+    pub runtime_read_exprs: BTreeMap<String, String>,
     /// Named scaling factors applied to raw SSF2 stat values.
     #[serde(default)]
     pub multipliers: BTreeMap<String, StatMultiplier>,
@@ -106,8 +121,10 @@ impl StatMappings {
             // multipliers configured elsewhere).
             _ => return self.multipliers.get(name).map(|m| m.apply(raw)).unwrap_or(raw),
         };
-        let floor = self.multipliers.get(name).map(|m| m.floor).unwrap_or(0.0);
-        (raw * factor).max(floor)
+        // no floor on a physics scale: a value reaches here only when the source stated one (a
+        // missing one takes the template default before it is scaled), and a floor clamped the
+        // lightest fighters to someone else's number (kirby's gravity 0.276 came out 0.3)
+        raw * factor
     }
 
     /// Integer offset for a stat (0 if none configured).
@@ -135,6 +152,27 @@ pub struct HitboxField {
     /// If true, the value is a frame count and is doubled for 30fps -> 60fps.
     #[serde(default)]
     pub isframe: bool,
+    /// Multiplied into the value on the way out. The knockback fields carry one: the two engines
+    /// launch a victim at different speeds for the same numbers, and the factor is measured.
+    #[serde(default)]
+    pub scale: Option<f64>,
+    /// Added to the value BEFORE the frame doubling. A freeze field carries 1: SSF2 counts the
+    /// frames a hit freezes the victim for AFTER the frame it lands on, and Fraymakers counts
+    /// the whole freeze including that frame. Measured on both engines.
+    #[serde(default)]
+    pub plus_frames: f64,
+    /// What one unit of a FIXED launch is worth before the scale (see `fixed_knockback` in
+    /// hitbox_stats.jsonc), and what the engine adds to it whatever the field says.
+    #[serde(default)]
+    pub per_unit: Option<f64>,
+    #[serde(default)]
+    pub constant: Option<f64>,
+    /// A freeze a hit does not STATE, worked out from its damage the way the source does:
+    /// `floor(damage * unstated_per_damage + unstated_constant)` source frames.
+    #[serde(default)]
+    pub unstated_per_damage: Option<f64>,
+    #[serde(default)]
+    pub unstated_constant: Option<f64>,
 }
 
 /// SSF2 -> Fraymakers hitbox-stats conversion (character-scoped).
@@ -142,9 +180,76 @@ pub struct HitboxField {
 pub struct HitboxStatsMapping {
     #[serde(default)]
     pub fields: Vec<HitboxField>,
+    /// Source hitbox fields this engine has no counterpart for, each refused BY NAME when asked.
+    /// A write carrying one is rejected WHOLE, so they are dropped from runtime writes.
+    #[serde(default)]
+    pub no_counterpart: Vec<String>,
+    /// The stats this engine HAS. Anything a source write names that is not in here
+    /// has nothing to land on, and the engine refuses the whole write for it.
+    #[serde(default)]
+    pub fm_stats: Vec<String>,
+    /// A source box's true-or-false field stated under an engine field (see hitbox_stats.jsonc).
+    #[serde(default)]
+    pub flags: Vec<HitboxFlag>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HitboxFlag {
+    pub ssf2_key: String,
+    pub when: bool,
+    pub fm_field: String,
+    pub value: String,
 }
 
 impl HitboxStatsMapping {
+    /// the engine fields a source box's flags give it, as `(field, value as written)`
+    pub fn flag_fields(&self, raw: &std::collections::BTreeMap<String, f64>) -> Vec<(String, String)> {
+        self.flags.iter()
+            .filter(|f| raw.get(f.ssf2_key.as_str()).is_some_and(|v| (*v != 0.0) == f.when))
+            .map(|f| (f.fm_field.clone(), f.value.clone())).collect()
+    }
+
+    /// Whether a source hitbox states FIXED knockback (`weightKB`), which does not grow with the
+    /// victim's damage. Measured on both engines: such a hit launches identically at 0% and at
+    /// 62%, where a `power` hit doubles over the same range. Every path that emits a hitbox asks
+    /// this, so a projectile and a stage hazard read the same rule a fighter's own move does.
+    pub fn is_fixed_knockback(obj: &std::collections::BTreeMap<String, f64>) -> bool {
+        obj.get("weightKB").is_some_and(|w| *w > 0.0)
+    }
+
+    /// The launch a FIXED hit gives, in the source's own units: what the field states is not it.
+    /// `(weightKB * per_unit + constant) * kbConstant/100 + power`, for a victim of the table's
+    /// weight (the source scales it against the victim's, and nothing here carries that).
+    pub fn fixed_knockback(&self, obj: &std::collections::BTreeMap<String, f64>) -> Option<f64> {
+        let w = obj.get("weightKB").copied().filter(|w| *w > 0.0)?;
+        let f = self.fields.iter().find(|f| f.fm_field == "fixed_knockback")?;
+        let growth = obj.get("kbConstant").copied().unwrap_or(100.0) / 100.0;
+        // the box's own power is added on top (mario's down air states 30 of each, and launched
+        // at 0.39 of the source's with the power left out, 0.66 with it)
+        let power = obj.get("power").copied().unwrap_or(0.0);
+        Some((w * f.per_unit? + f.constant?) * growth + power)
+    }
+
+    /// The freeze, in SOURCE frames, a hit of `damage` gets for a field it does not state, when the
+    /// mapping says how the source works it out.
+    pub fn unstated_freeze(&self, fm_field: &str, damage: f64) -> Option<f64> {
+        let f = self.fields.iter().find(|f| f.fm_field == fm_field)?;
+        Some((damage * f.unstated_per_damage? + f.unstated_constant?).floor())
+    }
+
+    /// What is added to a Fraymakers field's value before the frame doubling (0.0 if none).
+    pub fn plus_frames_for(&self, fm_field: &str) -> f64 {
+        self.fields.iter().find(|f| f.fm_field == fm_field).map(|f| f.plus_frames).unwrap_or(0.0)
+    }
+
+    /// What a Fraymakers hitbox field's value is multiplied by on the way out (1.0 if none).
+    pub fn scale_for(&self, fm_field: &str) -> f64 {
+        self.fields.iter()
+            .find(|f| f.fm_field == fm_field)
+            .and_then(|f| f.scale)
+            .unwrap_or(1.0)
+    }
+
     /// SSF2 source keys for a Fraymakers hitbox field (empty if unmapped).
     pub fn keys_for(&self, fm_field: &str) -> &[String] {
         self.fields.iter()
@@ -173,6 +278,28 @@ pub struct Replacement {
 /// dropping/rewriting arguments, dispatching on argument shape, etc.
 /// `pattern` is a Rust `regex` crate pattern; `replacement` follows the
 /// standard `$1` / `${name}` capture-substitution syntax.
+/// A call rewritten by its parsed arguments rather than by a pattern over its text: the
+/// arguments are read with brackets and strings balanced, so a nested call or a string holding a
+/// bracket is one argument, as it is to the language.
+///   call      the method name (`setScale`)
+///   receiver  "any" (default: whatever the call is made on), "self" (only on `self`), "other" (anything but `self`), or "none"
+///             (a bare call)
+///   args      the number of arguments the rewrite applies to; any when absent
+///   template  the replacement: `{recv}` the receiver, `{1}`.. an argument, `{args}` all of them,
+///             `{1.name}` the value of field `name` of an object-literal argument (the rewrite
+///             does not apply where that field is missing)
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallRewrite {
+    pub call: String,
+    #[serde(default)]
+    pub receiver: String,
+    #[serde(default)]
+    pub args: Option<usize>,
+    pub template: String,
+    #[serde(default)]
+    pub note: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegexReplacement {
     pub pattern: String,
@@ -202,6 +329,11 @@ pub struct FrameParam {
     /// unchanged (e.g. 255 for the hitStun/hitLag "no override" sentinel).
     #[serde(default)]
     pub sentinel: Option<i64>,
+    /// Optional: added to the value before doubling. The freeze fields carry 1, because SSF2
+    /// counts the frames a hit freezes for AFTER the frame it lands on and Fraymakers counts
+    /// the whole freeze (see mappings/character/hitbox_stats.jsonc, measured on both).
+    #[serde(default)]
+    pub plus: i64,
     /// Optional: when true, a literal `1` is left unchanged instead of doubled.
     /// SSF2 plays at 30fps and FM at 60fps, so most frame counts double — but a
     /// per-frame timer (`createTimer(1, …)`) should keep firing every engine
@@ -264,6 +396,12 @@ pub enum CallSplitFieldMapping {
         /// TODO line emitted when the value doesn't match value_map).
         #[serde(default)]
         todo: Option<String>,
+        /// The unit a numeric value is converted by on the way through: `speed` (velocity
+        /// scale), `accel` (acceleration scale), `decay` (a NEGATIVE per-frame slowdown, as
+        /// the source states one, becomes this engine's positive friction). A value that is
+        /// not a plain number, or a decay that is not negative, passes through with a TODO.
+        #[serde(default)]
+        unit: Option<String>,
     },
 }
 
@@ -319,11 +457,26 @@ pub struct ApiCommands {
     #[serde(default)]
     pub regex_replacements: Vec<RegexReplacement>,
     #[serde(default)]
+    pub call_rewrites: Vec<CallRewrite>,
+    #[serde(default)]
     pub call_splits: std::collections::BTreeMap<String, CallSplit>,
+    /// What a call means when the object it is asked of is a PROJECTILE rather than a fighter:
+    /// the rest of this table reads the fighter's meaning.
+    #[serde(default)]
+    pub projectile_self: ProjectileSelf,
     #[serde(default)]
     pub attach_effect_props: std::collections::BTreeMap<String, AttachEffectPropMapping>,
     #[serde(default)]
     pub global_vfx_map: std::collections::BTreeMap<String, String>,
+    /// What the source's api answers for an object's type, by this engine's entity kind.
+    #[serde(default)]
+    pub entity_type_names: std::collections::BTreeMap<String, String>,
+    /// The source's character states by name, and the states here each covers.
+    #[serde(default)]
+    pub source_state_names: std::collections::BTreeMap<String, Vec<String>>,
+    /// Accessors the source answers from a declared stat, by the stat's name.
+    #[serde(default)]
+    pub stat_accessors: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub global_sound_map: std::collections::BTreeMap<String, String>,
     #[serde(default)]
@@ -334,6 +487,10 @@ pub struct ApiCommands {
     pub haxe_builtins: Vec<NamedApi>,
     #[serde(default)]
     pub ssf2_only: Vec<NamedApi>,
+    /// Calls a converter pass translates by name (not a table row): a base-class method of the
+    /// same name is theirs, not something to carry over.
+    #[serde(default)]
+    pub translated_in_code: Vec<String>,
 }
 
 // ─── Script.hx output templates ──────────────────────────────────────────────
@@ -345,22 +502,6 @@ pub struct ApiCommands {
 // the control flow / data assembly stays in Rust. Empty by default —
 // `require_template` panics with the qualified key if a needed one is missing.
 
-/// playAttackSound / playVoiceSound helper block (api_mappings::generate_sound_helpers).
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct AudioTemplates {
-    pub header_comment: String,
-    pub attack_sounds_decl: String,
-    pub voice_sounds_decl: String,
-    pub active_voice_clip_decl: String,
-    pub play_attack_sound_fn: String,
-    pub play_voice_sound_fn: String,
-    pub play_resolved_sound_resolver: String,
-    pub global_sound_case: String,
-    pub voice_teardown_cleanup: String,
-    pub placeholder_array_entry_todo: String,
-}
-
 /// Per-frame playSound("id") rewrite (api_mappings::build_sound_call).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -371,45 +512,20 @@ pub struct PlaySoundTemplates {
     pub placeholder_unmapped: String,
 }
 
-/// Jab chain helpers (haxe_gen::generate_jab_scripts).
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct JabTemplates {
-    pub chain_helpers: String,
-}
-
-/// Character Script.hx framework scaffolding (haxe_gen::generate_script).
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct FrameworkTemplates {
-    pub header: String,
-    pub instance_vars_comment: String,
-    pub ext_var_decl: String,
-    pub ext_var_init_assign: String,
-    pub general_functions_begin: String,
-    pub general_functions_end: String,
-    pub decompiled_ext_header: String,
-    pub link_frames_listener: String,
-    pub fn_close: String,
-    pub initialize_header: String,
-    pub initialize_sig: String,
-    pub input_update_hook_header: String,
-    pub input_update_hook_sig: String,
-    pub handle_link_frames_header: String,
-    pub handle_link_frames_sig: String,
-    pub update_sig: String,
-    pub onteardown_sig: String,
-}
-
 /// Projectile Script.hx generator (haxe_gen::generate_projectile_script).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ProjectileTemplates {
     pub single_state: String,
     pub multi_state: String,
+    /// Used only for a projectile whose package ships no code for it.
+    pub default_handlers: String,
+    pub default_listeners: String,
+    /// What a projectile uses to end itself once it is dying.
+    pub death_watch: String,
+    pub death_watch_handler: String,
     pub lstate_idle_prep: String,
     pub lstate_prep_line: String,
-    pub update_branch: String,
 }
 
 /// Fetch a Script.hx template, panicking with the qualified key if it's empty.
@@ -425,8 +541,6 @@ pub fn require_template<'a>(path: &str, val: &'a str) -> &'a str {
             Some("global")     => "global_helpers.toml",
             Some("character")  => "character_helpers.toml",
             Some("projectile") => "projectile_helpers.toml",
-            Some("stage")      => "stage_helpers.toml",
-            Some("item")       => "item_helpers.toml",
             _                  => "commands.jsonc",
         };
         panic!("script_templates.{path} is empty — check {file}");
@@ -486,7 +600,6 @@ pub struct ProjStatsTemplates {
     pub proj_stats_source_default: String,
     pub proj_hitbox_body: String,
     pub proj_hitbox_active_block: String,
-    pub proj_hitbox_empty_block: String,
     pub proj_hitbox_idle_matched: String,
     pub proj_hitbox_idle_default: String,
     pub proj_hitbox_source_matched: String,
@@ -502,9 +615,6 @@ pub struct GlobalHelpers {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct CharacterHelpers {
-    pub audio: AudioTemplates,
-    pub jab: JabTemplates,
-    pub framework: FrameworkTemplates,
     pub stats: CharStatsTemplates,
 }
 
@@ -515,23 +625,12 @@ pub struct ProjectileHelpers {
     pub stats: ProjStatsTemplates,
 }
 
-/// Placeholder scopes — no templates yet (TODO files).
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct StageHelpers {}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct ItemHelpers {}
-
-/// Aggregate of the 5 per-entity template files.
+/// Aggregate of the per-entity template files.
 #[derive(Debug, Clone, Default)]
 pub struct HelperTemplates {
     pub global: GlobalHelpers,
     pub character: CharacterHelpers,
     pub projectile: ProjectileHelpers,
-    pub stage: StageHelpers,
-    pub item: ItemHelpers,
 }
 
 /// Like `load`, but for TOML template files (no comment-stripping needed —
@@ -542,15 +641,13 @@ fn load_toml<T: for<'de> Deserialize<'de>>(rel: &str) -> T {
         .unwrap_or_else(|e| panic!("template file {} is malformed: {e}", path.display()))
 }
 
-/// The per-entity Script.hx templates, loaded once from the 5 TOML files.
+/// The per-entity Script.hx templates, loaded once from their TOML files.
 pub fn script_templates() -> &'static HelperTemplates {
     static CACHE: OnceLock<HelperTemplates> = OnceLock::new();
     CACHE.get_or_init(|| HelperTemplates {
         global:     load_toml("mappings/global_helpers.toml"),
         character:  load_toml("mappings/character_helpers.toml"),
         projectile: load_toml("mappings/projectile_helpers.toml"),
-        stage:      load_toml("mappings/stage_helpers.toml"),
-        item:       load_toml("mappings/item_helpers.toml"),
     })
 }
 
@@ -561,7 +658,7 @@ pub fn script_templates() -> &'static HelperTemplates {
 /// String-aware — comment markers and commas inside string literals are
 /// preserved. `serde_json` is used (not a JSON5 crate) because it keeps the
 /// integer/float distinction the `constants` section relies on.
-fn strip_jsonc(src: &str) -> String {
+pub(crate) fn strip_jsonc(src: &str) -> String {
     // Pass 1 — remove comments.
     let mut decommented = String::with_capacity(src.len());
     let mut chars = src.chars().peekable();
@@ -660,6 +757,12 @@ fn candidate_paths(rel: &str) -> Vec<PathBuf> {
     // 5. the converter crate's source tree (absolute; always valid in a checkout)
     paths.push(PathBuf::from(CRATE_DIR).join(rel));
     paths
+}
+
+/// The raw text of a mapping/template file, for a check that wants to read the vocabulary the
+/// templates are written IN rather than the values they parse to.
+pub fn mapping_file_text(rel: &str) -> Option<String> {
+    candidate_paths(rel).into_iter().find_map(|p| std::fs::read_to_string(p).ok())
 }
 
 /// Read a mapping/template file from disk, trying each candidate location.
@@ -764,16 +867,75 @@ pub fn character_stats_tables() -> &'static CharacterStatsTables {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct PhysMap { pub ssf2: String, pub fm: String }
+pub struct PhysMap {
+    pub ssf2: String,
+    pub fm: String,
+    /// How the value converts: "velocity" (per-frame speed), "accel" (per-frame^2), "size"
+    /// (source pixels, which the entity states in its own units), or absent for a plain copy.
+    #[serde(default)]
+    pub scale: String,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FieldValue { pub field: String, pub value: String }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct FlagMap {
+    pub ssf2: String,
+    pub fm: String,
+    /// The two engines ask the opposite question (survive vs destroy).
+    #[serde(default)]
+    pub invert: bool,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ProjectileTables {
+    /// Every stat the engine will take on a projectile.
+    #[serde(default)]
+    pub fm_stats: Vec<String>,
     pub physics_map: Vec<PhysMap>,
+    #[serde(default)]
+    pub flag_map: Vec<FlagMap>,
     pub scaffolding: Vec<FieldValue>,
+    /// Source keys with no engine ProjectileStats field that the port applies anyway (in the
+    /// projectile's script or at the spawn). Kept out of the "no mapping" TODOs.
+    #[serde(default)]
+    pub handled_in_script: Vec<HandledElsewhere>,
+    /// What a projectile has when it states nothing: the source's own starting values, in its
+    /// own units, applied the same way a stated one is.
+    #[serde(default)]
+    pub source_defaults: std::collections::BTreeMap<String, f64>,
+    /// The same for the flags a projectile declares about itself (reversible, absorbable).
+    #[serde(default)]
+    pub source_flag_defaults: std::collections::BTreeMap<String, bool>,
+}
+
+/// A source stat with no engine ProjectileStats field that the port still applies elsewhere.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct HandledElsewhere {
+    pub ssf2: String,
+    /// One-line note the stats file prints instead of a "no mapping" TODO.
+    #[serde(default)]
+    pub r#where: String,
+}
+
+/// The published api's method names.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct FmApi {
+    pub methods: Vec<String>,
+    /// What a game object answers to, which is less than a character does.
+    pub game_object_methods: Vec<String>,
+    /// What the match itself answers to. A name it does not have is a null, not a fall-through.
+    pub match_methods: Vec<String>,
+    /// Not the engine's at all: arrays, strings, numbers, and this converter's own wrappers.
+    pub standard_methods: Vec<String>,
+}
+
+pub fn fm_api() -> &'static FmApi {
+    static CACHE: OnceLock<FmApi> = OnceLock::new();
+    CACHE.get_or_init(|| load("mappings/fm_api.jsonc"))
 }
 
 pub fn projectile_tables() -> &'static ProjectileTables {
@@ -806,99 +968,7 @@ pub struct StageMetadataEntry {
     pub music: Vec<String>,
     /// Source series, for the description. Optional.
     pub series: Option<String>,
-    /// Stage hazards to emit as FM custom game objects (damaging hitbox volumes the stage
-    /// spawns). A declared list wins over auto-detection (full manual control of that stage).
-    #[serde(default)]
-    pub hazards: Vec<HazardSpec>,
-    /// Suppress auto-detected hazards for this stage (e.g. when the heuristic produces a
-    /// false-positive on cosmetic geometry and no hand-declared hazards are wanted).
-    #[serde(default)]
-    pub no_hazards: bool,
-    /// Hand-declared standable platforms (FM coords), appended to the parsed collision. For stages
-    /// whose real platforms are AS3-spawned objects (not static terrain shapes), e.g. bowserscastle
-    /// where the standable surfaces are `BowsersCastlePlatform` instances, not the lava floor.
-    #[serde(default)]
-    pub platforms: Vec<PlatformSpec>,
-    /// Linkage-name substrings whose terrain shapes are NOT a standable floor (they're lava/acid
-    /// the fighter falls into, handled as a hazard). e.g. "lavafloor" on bowserscastle.
-    #[serde(default)]
-    pub non_floor_terrain: Vec<String>,
-    /// Linkage-name substrings whose terrain IS a standable floor but must not anchor the stage
-    /// (excluded from main-floor selection / engine-layer alignment). SSF2's molten lakes are
-    /// real collision floors the fighter lands ON (the lava hitbox above them does the damage),
-    /// so they need collision without becoming the "main" floor. e.g. "lavafloor".
-    #[serde(default)]
-    pub hazard_floors: Vec<String>,
-    /// Thwomp-style hazard target columns, in SSF2 GAME coords (the terrain-MC-local space the
-    /// stage's own AS3 uses for spawnEnemy/setX). Read 1:1 from the stage class's `update`
-    /// disasm (e.g. bowserscastle's `[-113, 4, 121, 392, 509, 626]`). The parser converts them
-    /// to FM x via the terrain origin; the emitter drives the hazard cycle over them.
-    #[serde(default)]
-    pub sink_columns: Vec<f64>,
-    /// Keep the SSF2 `foreground` plane as a real FM foreground (drawn IN FRONT of fighters)
-    /// instead of folding it into the background. The default fold avoids re-drawing a structure's
-    /// front face over fighters (a duplicate platform), but some stages put a genuine overlay here
-    /// (bowserscastle's glowing lava sheet over the floor) that must stay in front.
-    #[serde(default)]
-    pub keep_foreground: bool,
 }
-
-/// One hand-declared standable platform. FM coords; stage center 0,0, +y down.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PlatformSpec {
-    /// Center x and top-surface y.
-    pub x: f64,
-    pub y: f64,
-    /// Full width.
-    pub w: f64,
-    /// Drop-through (soft) vs solid. Default solid.
-    #[serde(default)]
-    pub drop_through: bool,
-}
-
-/// One declared stage hazard (a Fraymakers custom game object). FM coords/units by default;
-/// set `game_coords: true` to give x/y/w/h in SSF2 terrain-local GAME coords instead (the raw
-/// setX/setY + getOwnStats width/height literals straight from the AS3 disasm), which the
-/// converter transforms to FM space via the stage's static `terrain_off` + `scale` (the same
-/// path as `sink_columns` and auto-detected actor hazards). prefer this for disasm-sourced
-/// hazards so the JSONC carries the verbatim SSF2 numbers with no hand coordinate math.
-#[derive(Debug, Clone, Deserialize)]
-pub struct HazardSpec {
-    /// Spawn position (stage center is 0,0; +y is down). GAME coords if `game_coords` is set.
-    pub x: f64,
-    pub y: f64,
-    /// When true, x/y/w/h are SSF2 game (terrain-local) coords/sizes; the converter applies
-    /// `terrain_off` + `scale` to land them in FM space.
-    #[serde(default)] pub game_coords: bool,
-    /// Hitbox size.
-    #[serde(default = "hz_default_w")] pub w: f64,
-    #[serde(default = "hz_default_w")] pub h: f64,
-    #[serde(default = "hz_default_damage")] pub damage: f64,
-    #[serde(default)] pub knockback: f64,
-    #[serde(default)] pub angle: f64,
-    /// On/off pulse period in frames (0 = always active).
-    #[serde(default)] pub interval: u32,
-    /// Frames active within each pulse period.
-    #[serde(default = "hz_default_active")] pub active: u32,
-    /// Movement pattern to match the SSF2 hazard: "static" (default), "oscillateX",
-    /// "oscillateY", "circle", or "fall" (thwomp: hold, drop, return).
-    #[serde(default)] pub motion: Option<String>,
-    /// Movement amplitude in px (oscillate/circle/fall travel distance).
-    #[serde(default)] pub range: f64,
-    /// Movement period in frames (one full cycle).
-    #[serde(default = "hz_default_period")] pub period: u32,
-    /// Frames between native-hitbox re-arms while a fighter lingers in the hazard (a hitbox hits
-    /// each target once per attack id; re-arming re-hits). SSF2 hazards re-tick roughly twice/sec.
-    #[serde(default = "hz_default_rehit")] pub rehit: u32,
-    /// Optional label.
-    pub label: Option<String>,
-}
-
-fn hz_default_w() -> f64 { 60.0 }
-fn hz_default_damage() -> f64 { 8.0 }
-fn hz_default_active() -> u32 { 20 }
-fn hz_default_period() -> u32 { 120 }
-fn hz_default_rehit() -> u32 { 30 }
 
 pub fn stage_metadata() -> &'static StageMetadataMap {
     static CACHE: OnceLock<StageMetadataMap> = OnceLock::new();
@@ -975,4 +1045,12 @@ pub fn evaluate_stat_derivation(name: &str, vars: &BTreeMap<String, f64>) -> Opt
         }
     };
     compiled.instr.eval(&compiled.slab, &mut ns).ok()
+}
+
+/// `commands.jsonc :: projectile_self`.
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+pub struct ProjectileSelf {
+    /// split destinations (`method.field`) a projectile does not take on itself
+    #[serde(default)]
+    pub call_split_drops: Vec<String>,
 }

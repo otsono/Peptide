@@ -56,7 +56,7 @@ fn class_local(abc: &Abc, ci: usize) -> String {
 
 fn find_class(abc: &Abc, name: &str) -> Option<usize> { abc.find_class_by_name(name) }
 
-fn body_for<'a>(abc: &'a Abc, method: u32) -> Option<&'a abc_codec::MethodBody> {
+fn body_for(abc: &Abc, method: u32) -> Option<&abc_codec::MethodBody> {
     abc.bodies.iter().find(|b| b.method == method)
 }
 
@@ -179,7 +179,7 @@ fn main() {
             let buf = swf::decompress_swf(&inner[..]).expect("decompress");
             let sw = swf::parse_swf(&buf).expect("parse swf");
             let want = args.get(3).cloned().unwrap_or_default().to_ascii_lowercase();
-            let mut show = |owner: String, tags: &[swf::Tag]| {
+            let show = |owner: String, tags: &[swf::Tag]| {
                 for t in tags {
                     if let swf::Tag::PlaceObject(po) = t {
                         if let Some(n) = &po.name {
@@ -273,8 +273,9 @@ fn main() {
             let stage = args.get(3).cloned().unwrap_or_default();
             for b in &sw.abc_blocks {
                 let Ok(a) = ssf2_converter::abc_parser::parse(b) else { continue };
-                if let Some(w) = ssf2_converter::abc_parser::extract_stage_weather(&a, &stage) {
-                    println!("{w:#?}");
+                let found = ssf2_converter::abc_parser::extract_stage_weather(&a, &stage);
+                if !found.is_empty() {
+                    for w in &found { println!("{w:#?}"); }
                     return;
                 }
             }
@@ -427,7 +428,7 @@ fn body_refs_name(abc: &Abc, code: &[u8], target: &str) -> bool {
                 if abc.multiname_local(v).as_deref() == Some(target) { return true; }
             }
             0x24 | 0x63 | 0x62 | 0x65 | 0x6c | 0x6d | 0x2c | 0x2d | 0x2e | 0x2f | 0x25 => { let _ = rd_u30(code, &mut i); }
-            0x10 | 0x11 | 0x12 | 0x13 | 0x14 | 0x15 | 0x16 | 0x17 | 0x18 | 0x19 | 0x1a => { i += 3; }
+            0x10..=0x1a => { i += 3; }
             0xef => { i += 8; }
             _ => {}
         }

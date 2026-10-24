@@ -61,6 +61,8 @@ pub const ENGINE_SYMBOL_NEEDLES: &[&str] = &[
     "disclaimerMenu",
     "loadingMenu",
     "queueResources",
+    // the Fraymakers match's internal object list
+    "currentMatch",
 ];
 
 /// Directory holding the `.ssf` corpus (see module docs for resolution order).
@@ -167,7 +169,7 @@ pub fn shared_conversion(name: &str) -> Option<PathBuf> {
         return None;
     }
 
-    // newest mtime across the converter sources + mappings + this corpus file
+    // newest mtime across the converter sources + mappings + runtime + this corpus file
     fn newest(dir: &std::path::Path, best: &mut u64) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for e in entries.flatten() {
@@ -184,6 +186,7 @@ pub fn shared_conversion(name: &str) -> Option<PathBuf> {
     let mut stamp = 0u64;
     newest(&crate_dir.join("src"), &mut stamp);
     newest(&crate_dir.join("mappings"), &mut stamp);
+    newest(&crate_dir.join("runtime"), &mut stamp);
     if let Ok(t) = std::fs::metadata(&ssf).and_then(|m| m.modified()) {
         stamp = stamp.max(t.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
     }

@@ -40,6 +40,15 @@ use serde::Deserialize;
 /// tuning tools use it directly. `size_multiplier` is the one knob to tweak.
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct ScaleParams {
+    /// The speed the source's engine throws a held item with (source px per frame).
+    #[serde(default)]
+    pub item_toss_speed: f64,
+    /// What the source's engine pulls a thrown item down with (source px per frame per frame).
+    #[serde(default)]
+    pub item_gravity: f64,
+    /// The fall cap of a thrown item (source px per frame) when it declares none.
+    #[serde(default)]
+    pub item_max_fall: f64,
     /// Spatial scale: how much larger the sprite renders in Fraymakers than in
     /// SSF2. The experimental knob.
     #[serde(default = "default_size_multiplier")]
@@ -61,6 +70,9 @@ fn default_fm_fps() -> f64 { 60.0 }
 impl Default for ScaleParams {
     fn default() -> Self {
         ScaleParams {
+            item_toss_speed: 0.0,
+            item_gravity: 0.0,
+            item_max_fall: 0.0,
             size_multiplier: default_size_multiplier(),
             ssf2_fps: default_ssf2_fps(),
             fm_fps: default_fm_fps(),

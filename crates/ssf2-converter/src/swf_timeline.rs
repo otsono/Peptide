@@ -48,6 +48,39 @@ impl Matrix {
 /// The fields beyond the matrix are the ones that were being dropped. They are not decoration:
 /// `alpha` is how Flash writes a fade or a flash, `visible` is how it hides something without
 /// removing it, `ratio` pins a graphic to one of its frames, and `blend` changes how it composites.
+/// A per-channel multiply and offset, as SWF stores a colour transform and as the engine's colour
+/// shader consumes one. Identity is all-ones, all-zeros.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tint {
+    pub mul: [f64; 4],
+    pub add: [f64; 4],
+}
+
+impl Tint {
+    pub const ID: Tint = Tint { mul: [1.0; 4], add: [0.0; 4] };
+    pub fn of(ct: &swf::ColorTransform) -> Tint {
+        Tint {
+            mul: [f32::from(ct.r_multiply) as f64, f32::from(ct.g_multiply) as f64,
+                  f32::from(ct.b_multiply) as f64, f32::from(ct.a_multiply) as f64],
+            add: [ct.r_add as f64, ct.g_add as f64, ct.b_add as f64, ct.a_add as f64],
+        }
+    }
+    pub fn is_id(&self) -> bool {
+        self.mul.iter().all(|m| (m - 1.0).abs() < 1e-6) && self.add.iter().all(|a| a.abs() < 1e-6)
+    }
+    /// This transform seen THROUGH a parent's: the child's colours are scaled by the parent's
+    /// multiply, and the parent's offset lands on top of the child's already-scaled offset. Same
+    /// composition the display tree does, and the same one alpha already gets.
+    pub fn under(&self, parent: &Tint) -> Tint {
+        let mut t = Tint::ID;
+        for i in 0..4 {
+            t.mul[i] = self.mul[i] * parent.mul[i];
+            t.add[i] = self.add[i] * parent.mul[i] + parent.add[i];
+        }
+        t
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Placed {
     /// The placed character (shape or sprite) id.
@@ -60,11 +93,24 @@ pub struct Placed {
     pub name: Option<String>,
     /// A `ratio` on a sprite placement pins it to that frame ("Single Frame" in Flash).
     pub ratio: Option<u16>,
+    /// Set when this placement is a MASK. Flash masks by depth range: the placement is not drawn,
+    /// and instead clips everything from its own depth up to this one. It is the only thing in the
+    /// format that says "this shape is a hole", so a reader that drops it cannot tell a mask from
+    /// a piece of art placed over the stage.
+    pub clip_depth: Option<u16>,
+    /// The placement's COLOUR transform, per channel: a multiply and an offset. SSF2 washes a whole
+    /// stage from day to night with this, so reading only its alpha loses the wash and leaves the
+    /// art at its painted colours, changing only when a cel does -- a hard step where the source
+    /// slides. Kept whole because the engine's colour shader takes exactly these terms.
+    pub tint: Option<Tint>,
     pub blend: Option<swf::BlendMode>,
     /// The colour transform's alpha, as a multiplier in `0..=1` (1.0 when it has none).
     pub alpha: f64,
     /// The placement's visibility flag; `true` unless the source turned it off.
     pub visible: bool,
+    /// The placement's display FILTERS, in the order Flash applies them (empty when it has none).
+    /// Part of how the art looks, not a hint: a glow here is the halo around fourside's moon.
+    pub filters: Vec<swf::Filter>,
 }
 
 /// Snapshot the display list at every `ShowFrame`.
@@ -82,12 +128,33 @@ pub fn frames(tags: &[swf::Tag]) -> Vec<Vec<Placed>> {
     for tag in tags {
         match tag {
             swf::Tag::PlaceObject(po) => {
+                if std::env::var("PEPTIDE_ALPHA").is_ok() {
+                    if let Some(ct) = po.color_transform.as_ref() {
+                        let am = f32::from(ct.a_multiply);
+                        if ct.a_add != 0 || (am - 1.0).abs() > 0.001 {
+                            eprintln!("ALPHAT depth={} a_mul={am:.3} a_add={}", po.depth, ct.a_add);
+                        }
+                    }
+                }
+                if std::env::var("PEPTIDE_TINT").is_ok() {
+                    if let Some(ct) = po.color_transform.as_ref() {
+                        let (r,g,b) = (f32::from(ct.r_multiply), f32::from(ct.g_multiply), f32::from(ct.b_multiply));
+                        let (ra,ga,ba) = (ct.r_add, ct.g_add, ct.b_add);
+                        if (r-1.0).abs()>0.001 || (g-1.0).abs()>0.001 || (b-1.0).abs()>0.001
+                            || ra!=0 || ga!=0 || ba!=0 {
+                            eprintln!("TINT depth={} mul=({r:.3},{g:.3},{b:.3}) add=({ra},{ga},{ba})", po.depth);
+                        }
+                    }
+                }
                 let name = po.name.as_ref()
                     .map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
                 let alpha_of = |ct: &swf::ColorTransform| {
                     let m = f32::from(ct.a_multiply) as f64;
                     (m + f32::from(ct.a_add) as f64 / 255.0).clamp(0.0, 1.0)
                 };
+                if std::env::var("PEPTIDE_PLACE_TRACE").is_ok() {
+                    eprintln!("[place] frame={} depth={} {:?} matrix={}", out.len(), po.depth, po.action, po.matrix.is_some());
+                }
                 match po.action {
                     swf::PlaceObjectAction::Place(cid) | swf::PlaceObjectAction::Replace(cid) => {
                         // A Replace (or a move-style Place) that carries no matrix/name/ratio KEEPS
@@ -102,7 +169,12 @@ pub fn frames(tags: &[swf::Tag]) -> Vec<Vec<Placed>> {
                                 .or_else(|| prev.map(|p| p.matrix)).unwrap_or_default(),
                             name: name.or_else(|| prev.and_then(|p| p.name.clone())),
                             ratio: po.ratio.or_else(|| prev.and_then(|p| p.ratio)),
+                            clip_depth: po.clip_depth.or_else(|| prev.and_then(|p| p.clip_depth)),
+                            tint: po.color_transform.as_ref().map(Tint::of)
+                                .or_else(|| prev.and_then(|p| p.tint)),
                             blend: po.blend_mode.or_else(|| prev.and_then(|p| p.blend)),
+                            filters: po.filters.clone()
+                                .or_else(|| prev.map(|p| p.filters.clone())).unwrap_or_default(),
                             alpha: po.color_transform.as_ref().map(alpha_of)
                                 .or_else(|| prev.map(|p| p.alpha)).unwrap_or(1.0),
                             visible: po.is_visible.or_else(|| prev.map(|p| p.visible)).unwrap_or(true),
@@ -114,8 +186,13 @@ pub fn frames(tags: &[swf::Tag]) -> Vec<Vec<Placed>> {
                             if let Some(m) = po.matrix.as_ref() { e.matrix = Matrix::of(m); }
                             if let Some(n) = name { e.name = Some(n); }
                             if let Some(r) = po.ratio { e.ratio = Some(r); }
+                            if let Some(c) = po.clip_depth { e.clip_depth = Some(c); }
                             if let Some(b) = po.blend_mode { e.blend = Some(b); }
-                            if let Some(ct) = po.color_transform.as_ref() { e.alpha = alpha_of(ct); }
+                            if let Some(f) = po.filters.clone() { e.filters = f; }
+                            if let Some(ct) = po.color_transform.as_ref() {
+                                e.alpha = alpha_of(ct);
+                                e.tint = Some(Tint::of(ct));
+                            }
                             if let Some(v) = po.is_visible { e.visible = v; }
                         }
                     }

@@ -12,10 +12,30 @@ the per-change build/iterate mechanics live in [`TESTING.md`](../TESTING.md) and
 
 1. every value comes from a static read, a live measurement, or a declared gap. never a guess.
 2. derived values get verified against a second source at least once per mechanism.
-3. per-character tuning goes in the JSONC mappings; code changes must be universal and proven
-   by the conversion sweep.
-4. convert-time success is not success: only live-engine behavior counts.
-5. never hand-edit converter OUTPUT; fix the converter and regenerate.
+3. never invent a CATEGORY either. the converter does not need to know WHICH character it is
+   looking at, only what that character's own data and classes say to do. no table keyed by
+   character id, no per-character branch in the emitter, no template that only one fighter fits.
+   a table you would have to add a row to before a NEW character converts is a bug, however
+   honestly its current rows were measured.
+4. per-character tuning goes in the JSONC mappings; code changes must be universal and proven on
+   a small sample (`cargo test` goldens + a few conversions). never convert the whole corpus.
+5. convert-time success is not success: only live-engine behavior counts.
+6. never hand-edit converter OUTPUT; fix the converter and regenerate.
+
+## what a port actually IS
+
+the same model as stages (see PORTING_STAGES "what a port actually IS"), and for the same reason:
+the SSF2 corpus is a sample, not the target, and mods will bring characters nobody has named yet.
+
+  the character's own stats    ->  read from getOwnStats / getAttackStats, never a per-name table
+  its moves that are CODE      ->  translated from its class methods, not matched to a template
+  its animation labels         ->  its own labels, split by the SSF2 naming CONVENTION
+  anything still unmapped      ->  a declared gap in the conversion log, never a plausible default
+
+the line to hold: SSF2's FORMAT vocabulary is fair game, content names are not. `getOwnStats`,
+`_loop`, the taunt label names, the attack-move names are all part of the format contract, so any
+mod that uses SSF2 uses them too, and matching on them is reading the source. `"donkeykong"` is
+not: it is one fighter that shipped, and matching it converts nothing new.
 
 ## phase 0: setup
 
@@ -94,6 +114,11 @@ move timings (currentFrame/totalFrames of the live anim while holding inputs).
 
 ## phase 4: live FM verification
 
+the gate for this phase is `tools/verify.py char <id>` (TESTING "the verify gates"): it
+publishes, boots, reads the fighter's own frame counter, measures its ground speed against
+the gait it declares and drives every move off the engine's per-frame trace. everything below
+is how to look closer when a gate fails.
+
 ```bash
 # the .fra the engine loads is built by FrayTools. ALWAYS re-export after regenerating:
 peptide export --project "$(pwd)/characters/<id>/<id>.fraytools"
@@ -132,9 +157,9 @@ accel/ease is static. verify each projectile live on both sides.
 ## phase 6: regression gates
 
 ```bash
-# the whole character corpus must still convert
-for f in ../ssf2-ssfs/*.ssf; do peptide convert "$f" --out /tmp/charcorpus || echo "FAIL $f"; done
+just verify                              # the ten-fighter, ten-stage sample, every gate
 cargo test --workspace && cargo clippy --workspace -- -D warnings
+tools/verify.py corpus --chars           # every fighter, when a change touches them all
 ```
 
 ## the per-character completion checklist
@@ -157,6 +182,54 @@ cargo test --workspace && cargo clippy --workspace -- -D warnings
   error means the main Script has a parse error upstream.
 - SSF2 `setXSpeed` is facing-relative; keep it 1:1 (mapping it to a world-space velocity
   reverses momentum when facing left).
+- the engine walks the fighter: a walk clip's frame scripts write the x speed as they play
+  (a lean-in frame writes 0, the loop re-states the walk), and the source's own walk speed
+  wins over those writes every frame (bowser's clip writes 2.0 and 0 while he walks a flat
+  2.46 there), so a literal x-speed write inside `walk_in`/`walk_loop`/`walk_out` is dropped
+  in the port; a computed one stays. measure it as per-frame x off `trace raw`, not a window
+  average: a six-frame stall a lap reads as a slow walk.
+- a speed a script sets or reads crosses the boundary (`__sv`/`__isv`, DEVELOPMENT §7); a
+  move that reaches something frames early or late in the port, with the same animation
+  lengths, is a speed that missed it (a `setXVelocity(<number>)` with no `__sv` around it).
+- both engines' `trace raw` rows carry the animation frame (SSF2's second column, Fraymakers'
+  fifth), so a label jump shows as the frame number leaping; compare those, not run lengths,
+  when a move's length depends on where something else is.
+- `peptide session --char X` boots the INSTALLED pack under the engine's custom folder; it does
+  not repack. after a reconversion run `peptide pack characters/X --project
+  characters/X/X.fraytools` before an ad-hoc probe, or the probe tests the old script (the
+  verify gates pack for themselves).
+- a match option this engine lacks (the source's `levelData.<x>`) reads as off through
+  `__optionOff`, an object whose `toString(radix)` is "0", so a bit-field test runs and takes
+  the plain-match branch; a chained `reverse()` renders as `__arrayReversed(..)` because the
+  host's reverses in place and answers nothing; `endAttack("<state>")` ends into that state.
+- a frame whose script ends the move (`endAttack`) is never shown in the source, the clip's
+  last frame included (measured on the source's own per-frame record: pichu's down special
+  shows its 59th of 60, simon's jab its 24th of 25). the port trims it and joins its script
+  to the last shown frame's, where this engine runs it after that frame has shown, which is
+  when the source runs it. the one exception is a clip of a single frame that ends the move
+  on it (an air special the source refuses): its end goes one frame past, since ending a
+  state on the first frame this engine has entered it takes the engine down natively.
+- `air_ease` is a cap on the fighter's downward speed (-1 is none): an animation starts with
+  what its attack declares, a frame script's write replaces it, and the port clamps to it in
+  `update` through `__applyAirEase`. a move that floats or falls wrong on the port while its
+  source sets `air_ease` is the first thing to check, with `tools/trajectory.py` (both
+  engines' records side by side by source frame).
+- a fighter's or projectile's script speed crosses the boundary unchanged (the source's api
+  layer already divides by the size-and-rate factor); a port that rises two thirds as high as
+  the source on a scripted write is scaling that write twice. a y write carries one source
+  frame of gravity (`__svy`); a port that rises one row's worth higher than the source on
+  every scripted rise has lost it.
+- a zero x speed a script writes on the floor holds until the next write (`__xHold`); a port
+  that creeps forward where the source stands still under a held direction has lost it.
+- a position a script states crosses the size scale (`__sp`/`__isp`); a thing placed by its
+  script a third too close on the port has lost it.
+- the harness runs both engines on the same stage (the source's battlefield and its port). a
+  move that reads three times as long on the port with a `heavyland` follower on the source
+  is usually landing on a platform there: check the stage before the move.
+- a fighter the script set on the floor (a move that lands by its own code) is not attached in
+  this engine: `isOnFloor()` answers false and `attachToFloor()` fails there. `__scriptFloor`
+  is the script's own flag, and a stand from there goes through a one-pixel fall the engine
+  lands.
 - SSF2 timer repeat 0 means "forever" (AS3 convention); FM uses -1. the converter rewrites
   this; if a polled behavior fires once and dies, suspect a timer that missed the rewrite.
 - persistent cross-frame state in scripts uses `self.make*` + `.get()/.set()`; a plain `var`

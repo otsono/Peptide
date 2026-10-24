@@ -24,6 +24,7 @@ const OP_PUSHTRUE:      u8 = 0x26;
 const OP_PUSHFALSE:     u8 = 0x27;
 const OP_PUSHNULL:      u8 = 0x20;
 const OP_PUSHNAN:       u8 = 0x28;
+const OP_PUSHUNDEFINED:  u8 = 0x21;
 const OP_NEWOBJECT:     u8 = 0x55;
 const OP_NEWARRAY:      u8 = 0x56;
 const OP_CALLPROPERTY:  u8 = 0x46;
@@ -118,6 +119,11 @@ pub struct Method {
     /// area from these.
     #[serde(default)]
     pub optionals: Vec<Option<f64>>,
+    /// The same defaults rendered as literals, every kind the source can declare: a number, a
+    /// bool, a string, null. game and watch's `startTimer(start = true)` is called bare and the
+    /// source starts the timer; read without its `true` the port stopped it.
+    #[serde(default)]
+    pub optional_defaults: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +133,9 @@ pub struct Class {
     pub instance_methods: Vec<Trait>,
     pub class_methods: Vec<Trait>,
     pub constructor_idx: u32,
+    /// The class's static initializer: where a `static const` with a computed value (a list of
+    /// points) is filled in. 0 when the file carries none.
+    pub class_init_idx: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +148,19 @@ pub struct Trait {
     /// int/uint/double pools) — e.g. a class constant like `SINK_SPEED = 30`.
     #[serde(default)]
     pub default: Option<f64>,
+    /// Slot/Const default value when it is a STRING -- an animation or state name the
+    /// class states once and its methods read by name.
+    #[serde(default)]
+    pub default_str: Option<String>,
+    /// Slot/Const default when it is `true`, `false` or `null` (or `undefined`, which reads as
+    /// null here), as that literal. These are not numbers: a field declared `= null` and read as
+    /// 0 fails every `== null` test the class makes of it.
+    #[serde(default)]
+    pub default_lit: Option<String>,
+    /// The slot's declared type, when it names one (`int`, `Boolean`, ...): what a slot with no
+    /// stated value starts as follows from it.
+    #[serde(default)]
+    pub type_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,6 +195,14 @@ pub struct ExtractedCharacter {
     pub frame_scripts: BTreeMap<String, Vec<FrameAction>>,
     /// Decompiled Ext class methods translated to Fraymakers Haxe
     pub ext_methods: BTreeMap<String, String>,
+    /// The names the source declares as GETTERS. Reading one is calling it, which is the whole
+    /// point of a getter, and a port that leaves the read bare hands the function itself to
+    /// whatever wanted the number.
+    pub getters: Vec<String>,
+    /// Names two classes in this package both declared, where the second had to keep its own
+    /// under `<name>__own`. Whoever registers one of these by name means its own, and the
+    /// package is split across blocks, so the rewiring finishes where they are all together.
+    pub renamed_own: Vec<String>,
     /// Names of instance Slot/Const traits on the Ext class (the SSF2
     /// `public var foo:T;` declarations).
     pub ext_vars: Vec<String>,
@@ -180,6 +210,9 @@ pub struct ExtractedCharacter {
     /// constructor (iinit). `(name, rhs_expression)`; one per var that the
     /// constructor actually assigns.
     pub ext_var_inits: Vec<(String, String)>,
+    /// The type each field is declared with (`int`, `Number`, ...), `*` when two declarations
+    /// disagree. A write to an `int` field keeps only the whole part in the source.
+    pub ext_var_types: Vec<(String, String)>,
     /// frame method name → SSF2 animation name (from self.xframe = "...")
     pub xframe_map: XframeMap,
     /// SSF2 `attackSound{N}_id` values (1-based, contiguous) — the per-attack
@@ -189,6 +222,13 @@ pub struct ExtractedCharacter {
     /// SSF2 `attackVoice{N}_id` values (1-based, contiguous) — the voice/grunt
     /// table indexed by `playVoiceSound(N)`. Voice playback does not overlap.
     pub voice_sounds: Vec<String>,
+    /// The clip this character's stats name as its `thumbnail` -- the picture SSF2's damage
+    /// counter shows for it. The source stating which of its clips is the portrait, so the
+    /// converter never has to guess from a name.
+    pub thumbnail: Option<String>,
+    /// The id the character's stats declare for itself (`linkage_id`): what the source's own
+    /// code compares against when it asks an object who owns it.
+    pub linkage_id: Option<String>,
     /// Populated when this character's bundle method's `cData.normalStats_id`
     /// disagrees with `char_name` — i.e. this is a transformation /
     /// alternate form of a parent character (Giga Bowser, Wario Man).
@@ -219,11 +259,18 @@ pub struct CostumeData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttackData {
     pub hitboxes: Vec<BTreeMap<String, f64>>,
+    /// the attack's own numbers besides its boxes (`chargetime_max`, …): what the source reads
+    /// back through `getAttackStat`
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stats: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CharStats {
     pub values: BTreeMap<String, f64>,
+    /// the stats it states as text (the id it is known by among its stats)
+    #[serde(default)]
+    pub names: BTreeMap<String, String>,
 }
 
 /// One projectile-stat entry extracted from SSF2's `getProjectileStats()`.
@@ -234,9 +281,21 @@ pub struct CharStats {
 ///   - a nested `attackBoxes` object with the projectile's hitboxes
 /// Hitbox shape mirrors `AttackData.hitboxes` so it can share the
 /// `hitbox_stats.jsonc` SSF2→FM field-name canon.
+/// The key a declared box carries its index under (`attackBox` 0, `attackBox2` 1, …), so its stats
+/// land on the box the entity draws under that name.
+pub const BOX_INDEX_KEY: &str = "__box";
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectileData {
     pub stats:    BTreeMap<String, f64>,
+    /// The `true`/`false` fields the declaration carries (`ghost`, `canBePocketed`, …). Kept
+    /// because they are behaviour: dropping them silently is how a projectile ends up ignoring
+    /// half of what its own package says about it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub flags:    BTreeMap<String, bool>,
+    /// The named fields (`linkage_id`, `effect_id`, …).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub names:    BTreeMap<String, String>,
     pub hitboxes: Vec<BTreeMap<String, f64>>,
 }
 
@@ -463,10 +522,16 @@ pub fn parse_by_hand(data: &[u8]) -> Result<AbcFile> {
                 Multiname { kind, name_idx: 0, ns_idx: 0, name: Arc::from("") }
             }
             0x1D => { // TypeName (generic)
-                let _qname = r.read_u30()?;
+                // A GENERIC IS STILL CALLED SOMETHING. `Vector.<int>` names Vector and then what
+                // it holds; left nameless, it reads as a name worked out at runtime, and the
+                // statement around it is rebuilt as one -- `m_underWaterList = new Vector.<int>()`
+                // came back as `Vector.m_underWaterList = int.new()`, which assigns a field of the
+                // wrong thing and leaves the real one null for the rest of the match. What it
+                // holds does not survive the trip anyway, so it is carried by its base name.
+                let base = r.read_u30()?;
                 let param_count = r.read_u30()? as usize;
                 for _ in 0..param_count { r.read_u30()?; }
-                Multiname { kind, name_idx: 0, ns_idx: 0, name: Arc::from("") }
+                Multiname { kind, name_idx: base, ns_idx: 0, name: Arc::from("") }
             }
             _ => {
                 log::warn!("Unknown multiname kind: 0x{:02X}", kind);
@@ -474,6 +539,16 @@ pub fn parse_by_hand(data: &[u8]) -> Result<AbcFile> {
             }
         };
         multinames.push(mn);
+    }
+    // ...and it is named from the one it is built on, which is only known once they all are.
+    let generic_bases: Vec<(usize, usize)> = multinames.iter().enumerate()
+        .filter(|(_, m)| m.kind == 0x1D && m.name.is_empty())
+        .map(|(i, m)| (i, m.name_idx as usize))
+        .collect();
+    for (at, base) in generic_bases {
+        if let Some(name) = multinames.get(base).map(|m| m.name.clone()) {
+            if !name.is_empty() { multinames[at].name = name; }
+        }
     }
 
     // ── Methods ───────────────────────────────────────────────────────────────
@@ -487,6 +562,7 @@ pub fn parse_by_hand(data: &[u8]) -> Result<AbcFile> {
         let name_idx = r.read_u30()?;
         let flags = r.read_u8()?;
         let mut optionals: Vec<Option<f64>> = Vec::new();
+        let mut optional_defaults: Vec<Option<String>> = Vec::new();
         if flags & 0x08 != 0 { // HAS_OPTIONAL
             let opt_count = r.read_u30()? as usize;
             for _ in 0..opt_count {
@@ -498,13 +574,22 @@ pub fn parse_by_hand(data: &[u8]) -> Result<AbcFile> {
                     0x06 => doubles.get(vidx).copied(),             // Double
                     _ => None,
                 });
+                optional_defaults.push(match kind {
+                    0x03 => ints.get(vidx).map(|v| format!("{v}")),
+                    0x04 => uints.get(vidx).map(|v| format!("{v}")),
+                    0x06 => doubles.get(vidx).map(|v| if v.fract() == 0.0 && v.abs() < 1e15 { format!("{}", *v as i64) } else { format!("{v}") }),
+                    0x01 => strings.get(vidx).map(|v| format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))), // Utf8
+                    0x0B => Some("true".to_string()),
+                    0x0A => Some("false".to_string()),
+                    _ => None, // a null default (0x0C) changes nothing on the way in
+                });
             }
         }
         if flags & 0x80 != 0 { // HAS_PARAM_NAMES
             for _ in 0..param_count { r.read_u30()?; }
         }
         let name = strings.get(name_idx as usize).cloned().unwrap_or_default();
-        methods.push(Method { name_idx, name, param_count, return_type_idx, optionals });
+        methods.push(Method { name_idx, name, param_count, return_type_idx, optionals, optional_defaults });
     }
 
     // ── Metadata ──────────────────────────────────────────────────────────────
@@ -553,13 +638,13 @@ pub fn parse_by_hand(data: &[u8]) -> Result<AbcFile> {
             } else { mn.name.to_string() }
         } else { name.clone() };
         let full_name = if ns_name != name && ns_name.contains("_fla.") { ns_name } else { name.clone() };
-        classes.push(Class { name: full_name, super_name, instance_methods, class_methods: vec![], constructor_idx });
+        classes.push(Class { name: full_name, super_name, instance_methods, class_methods: vec![], constructor_idx, class_init_idx: 0 });
     }
 
     // Class infos (static traits). One class_info per class, in order — the first
     // loop pushed exactly `class_count` entries, so we can walk them directly.
     for class in classes.iter_mut() {
-        let _static_init = r.read_u30()?;
+        class.class_init_idx = r.read_u30()?;
         let trait_count = r.read_u30()? as usize;
         for _ in 0..trait_count {
             if let Ok(t) = parse_trait(&mut r, &strings, &multinames, &ints, &uints, &doubles) {
@@ -631,7 +716,74 @@ pub fn parse_by_hand(data: &[u8]) -> Result<AbcFile> {
     Ok(AbcFile { strings, ints, uints, doubles, multinames, methods, classes, scripts, method_bodies })
 }
 
-fn parse_trait(r: &mut Reader, _strings: &[Arc<str>], multinames: &[Multiname], ints: &[i32], uints: &[u32], doubles: &[f64]) -> Result<Trait> {
+/// Every constant and field a class states a value for (or a type whose zero is the value):
+/// `(name, value as the target writes it)`, statics first. What a projectile's behaviour class
+/// keeps as `HAND_X_OFFSET = 30` is read by its clips as a bare name, so the script has to
+/// declare it with that value.
+pub fn class_const_values(abc: &AbcFile, class_name: &str) -> Vec<(String, String)> {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return vec![] };
+    let mut out: Vec<(String, String)> = Vec::new();
+    for t in class.class_methods.iter().chain(class.instance_methods.iter()) {
+        if !(t.kind == 0 || t.kind == 6) || t.name.is_empty() { continue }
+        if out.iter().any(|(n, _)| n == &t.name) { continue }
+        if let Some(rhs) = const_rhs(t) { out.push((t.name.clone(), rhs)); }
+    }
+    out
+}
+
+/// Whether a class is the api layer's own binding rather than content: its methods forward to
+/// the engine object it wraps (`return _api.getX()`), which is the shape of the surface the
+/// package ships for every object kind, not of anything a character wrote. A declaration that
+/// names such a class as its behaviour has no code of its own to carry over.
+pub fn is_api_binding_class(abc: &AbcFile, class_name: &str) -> bool {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return false };
+    let body_by_method: BTreeMap<u32, &MethodBody> =
+        abc.method_bodies.iter().map(|b| (b.method_idx, b)).collect();
+    let (mut methods, mut forwards) = (0usize, 0usize);
+    for t in &class.instance_methods {
+        if !matches!(t.kind, 1..=3) || t.name.is_empty() { continue }
+        let Some(body) = body_by_method.get(&t.method_idx) else { continue };
+        let params: Vec<String> = abc.methods.get(body.method_idx as usize)
+            .map(|m| (0..m.param_count).map(|i| format!("arg{i}")).collect())
+            .unwrap_or_default();
+        let code = decompiler::decompile_method(body, abc, &t.name, &params);
+        methods += 1;
+        if code.contains("_api.") || code.contains("m_api.") { forwards += 1; }
+    }
+    methods >= 4 && forwards * 2 >= methods
+}
+
+/// Note the type a field is declared with; two declarations that disagree leave it unknown.
+pub(crate) fn note_declared_type(types: &mut Vec<(String, String)>, name: &str, ty: Option<&str>) {
+    let ty = ty.unwrap_or("*");
+    match types.iter_mut().find(|(n, _)| n == name) {
+        Some((_, t)) => if t != ty { *t = "*".to_string(); },
+        None => types.push((name.to_string(), ty.to_string())),
+    }
+}
+
+/// The value a class states for one of its constants, written the way the target reads it.
+pub(crate) fn const_rhs(t: &Trait) -> Option<String> {
+    if let Some(v) = t.default {
+        return Some(if v.fract() == 0.0 && v.abs() < 9e15 {
+            format!("{}", v as i64)
+        } else {
+            format!("{v}")
+        });
+    }
+    if let Some(s) = t.default_str.as_ref() { return Some(format!("{s:?}")); }
+    if let Some(l) = t.default_lit.as_ref() { return Some(l.clone()); }
+    // a typed slot with no stated value starts at its type's zero: a counter declared `int`
+    // is 0 before anything writes it (dream land's whispy counts fighters from it every idle
+    // frame, and a null there reads past the list)
+    match t.type_name.as_deref() {
+        Some("int") | Some("uint") | Some("Number") => Some("0".to_string()),
+        Some("Boolean") => Some("false".to_string()),
+        _ => None,
+    }
+}
+
+fn parse_trait(r: &mut Reader, strings: &[Arc<str>], multinames: &[Multiname], ints: &[i32], uints: &[u32], doubles: &[f64]) -> Result<Trait> {
     let name_idx = r.read_u30()?;
     let kind_byte = r.read_u8()?;
     let kind = kind_byte & 0x0F;
@@ -639,10 +791,16 @@ fn parse_trait(r: &mut Reader, _strings: &[Arc<str>], multinames: &[Multiname], 
     let name = multinames.get(name_idx as usize).map(|m| m.name.to_string()).unwrap_or_default();
 
     let mut default: Option<f64> = None;
+    let mut default_str: Option<String> = None;
+    let mut default_lit: Option<String> = None;
+    let mut type_name: Option<String> = None;
     let (method_idx, slot_idx) = match kind {
         0 | 6 => { // Slot, Const
             let slot_id = r.read_u30()?;
-            let _type_name = r.read_u30()?;
+            let type_idx = r.read_u30()?;
+            if type_idx != 0 {
+                type_name = multinames.get(type_idx as usize).map(|m| m.name.to_string());
+            }
             let vindex = r.read_u30()?;
             if vindex != 0 {
                 let vkind = r.read_u8()?;
@@ -650,6 +808,17 @@ fn parse_trait(r: &mut Reader, _strings: &[Arc<str>], multinames: &[Multiname], 
                     0x03 => ints.get(vindex as usize).map(|v| *v as f64),
                     0x04 => uints.get(vindex as usize).map(|v| *v as f64),
                     0x06 => doubles.get(vindex as usize).copied(),
+                    _ => None,
+                };
+                // A constant is as often a NAME as a number -- which animation to play,
+                // which state to go to. Read as nothing, the move it names never plays.
+                if vkind == 0x01 {
+                    default_str = strings.get(vindex as usize).map(|v| v.to_string());
+                }
+                default_lit = match vkind {
+                    0x0B => Some("true".to_string()),
+                    0x0A => Some("false".to_string()),
+                    0x0C | 0x00 => Some("null".to_string()),
                     _ => None,
                 };
             }
@@ -675,7 +844,7 @@ fn parse_trait(r: &mut Reader, _strings: &[Arc<str>], multinames: &[Multiname], 
         for _ in 0..mc { r.read_u30()?; }
     }
 
-    Ok(Trait { name, kind, method_idx, slot_idx, default })
+    Ok(Trait { name, kind, method_idx, slot_idx, default, default_str, default_lit, type_name })
 }
 
 // ─── Character data extraction ────────────────────────────────────────────────
@@ -685,7 +854,7 @@ fn parse_trait(r: &mut Reader, _strings: &[Arc<str>], multinames: &[Multiname], 
 /// (e.g. "a__frame2", "stand__frame0").
 /// Root xframe setters just do `self.xframe = "..."; self.stop();` and have
 /// no gameplay value in Fraymakers — they only drive animation name extraction.
-fn is_root_xframe_method(name: &str) -> bool {
+pub(crate) fn is_root_xframe_method(name: &str) -> bool {
     name.starts_with("frame")
         && name["frame".len()..].chars().all(|c| c.is_ascii_digit())
         && !name["frame".len()..].is_empty()
@@ -732,16 +901,40 @@ fn extract_xframe_name(bytecode: &[u8], abc: &AbcFile) -> Option<String> {
 /// ext methods, ext vars + inits) comes from the per-character `<X>Ext`
 /// class plus the main character MovieClip and per-character sub-MCs.
 pub fn extract_character(abc: &AbcFile, char_name: &str) -> Result<ExtractedCharacter> {
-    extract_character_with_timeline(abc, char_name, &BTreeMap::new())
+    extract_character_with_timeline(abc, char_name, &BTreeMap::new(), &Default::default(), &Default::default())
 }
 
 /// As `extract_character`, but with the main timeline's own answer for what each sub-MC class is
 /// (see `sprite_parser::class_to_ssf2_anim`). Without it a clip whose label the mapping file does
 /// not list cannot be named, and its frame scripts are dropped.
+
+/// Rename a bare name everywhere it is CODE, and nowhere it is a string: a label spelled like
+/// a method (`playAnimation("bounce")` beside a `bounce` the timeline had to keep under
+/// `__own`) is still the label.
+fn rename_outside_strings(code: &str, re: &regex::Regex, to: &str) -> String {
+    static STR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let strings = STR.get_or_init(|| regex::Regex::new(r#""(?:[^"\\]|\\.)*""#).unwrap());
+    let mut out = String::with_capacity(code.len());
+    let mut cursor = 0;
+    for m in strings.find_iter(code) {
+        out.push_str(&re.replace_all(&code[cursor..m.start()], to));
+        out.push_str(m.as_str());
+        cursor = m.end();
+    }
+    out.push_str(&re.replace_all(&code[cursor..], to));
+    out
+}
+
 pub fn extract_character_with_timeline(
     abc: &AbcFile,
     char_name: &str,
     class_anim: &BTreeMap<String, String>,
+    // clips the TIMELINE places under another object (a projectile's stance clips): their code
+    // is that object's, whatever their names look like (image_extractor::projectile_clip_classes)
+    foreign_clips: &std::collections::BTreeSet<String>,
+    // clips the fighter's own timeline places, at any depth: whose methods are the fighter's
+    // (sprite_parser::build_xframe_sprite_map). the display tree says so; the names do not
+    own_clips: &std::collections::BTreeSet<String>,
 ) -> Result<ExtractedCharacter> {
     let mut attacks: BTreeMap<String, AttackData> = BTreeMap::new();
     let mut projectiles: BTreeMap<String, ProjectileData> = BTreeMap::new();
@@ -749,8 +942,29 @@ pub fn extract_character_with_timeline(
     let mut frame_scripts: BTreeMap<String, Vec<FrameAction>> = BTreeMap::new();
     let mut ext_methods: BTreeMap<String, String> = BTreeMap::new();
     let mut xframe_map: XframeMap = BTreeMap::new();
+    // names a second class had to keep under `__own`; rewired where the blocks meet
+    let mut kept_own: Vec<String> = Vec::new();
+    // the names the TIMELINE had to keep under `__own` (a subset of the above): the only renames
+    // its frame scripts are rewired for
+    let mut timeline_renames: Vec<String> = Vec::new();
+    // (clip label, method name): a helper clip that kept its own under `__own`, whose frame
+    // scripts are rewired to it once every frame script is in
+    let mut own_by_label: Vec<(String, String, String)> = Vec::new();
+    // the methods each clip class ended up with, by their final names, so a class's own bodies
+    // can be pointed at the class's own copies of a shared name
+    let mut methods_by_label: Vec<(String, String)> = Vec::new();
+    // (clip label, field, default): what a helper clip's own fields start as each time its
+    // animation starts, since the source builds a fresh instance every time
+    let mut fields_by_label: Vec<(String, String, String)> = Vec::new();
+    let mut declared_defaults: Vec<(String, String, String)> = Vec::new();
+    // (clip label, field, kept as): a field a clip declares under a name the fighter also keeps
+    let mut own_fields_by_label: Vec<(String, String, String)> = Vec::new();
+    // what the source says is read by calling it
+    let mut getters: Vec<String> = Vec::new();
     let mut attack_sounds: Vec<String> = Vec::new();
     let mut voice_sounds: Vec<String> = Vec::new();
+    let mut thumbnail: Option<String> = None;
+    let mut linkage_id: Option<String> = None;
 
     // ── Stage A: stats / attacks / projectiles from Main::get<X>() ─────
     let mut derived_from: Option<DerivedFrom> = None;
@@ -762,6 +976,9 @@ pub fn extract_character_with_timeline(
 
         // SSF2 sound tables — the 1-based attackSound{N}_id / attackVoice{N}_id
         // fields that playAttackSound(N) / playVoiceSound(N) index into.
+        // the clip this character names as its damage-counter picture
+        thumbnail = extract_string_stat(body, abc, "thumbnail");
+        linkage_id = extract_string_stat(body, abc, "linkage_id");
         attack_sounds = extract_indexed_string_fields(body, abc, "attackSound", "_id");
         voice_sounds  = extract_indexed_string_fields(body, abc, "attackVoice", "_id");
         log::info!("path-2: {} attack sound(s), {} voice sound(s)",
@@ -800,9 +1017,11 @@ pub fn extract_character_with_timeline(
     // ChibiRobo → ChibiExt, GameAndWatch → gameandwatchExt, etc.
     // Strategy: try exact match, then prefix match on Ext classes, then any single Ext class.
     let char_lower = char_name.to_lowercase();
+    // a package with no name of its own is searched by whoever borrows from it, so the name can
+    // be empty here; taking the tail of an empty one is a slice past its end
     let ext_class_name = format!("{}Ext",
         char_name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()
-        + &char_name[1..]);
+        + char_name.char_indices().nth(1).map_or("", |(i, _)| &char_name[i..]));
     let ext_classes: Vec<&Class> = abc.classes.iter()
         .filter(|c| c.name.ends_with("Ext") && c.name != "SSF2CharacterExt")
         .collect();
@@ -837,14 +1056,44 @@ pub fn extract_character_with_timeline(
     // --- Process MarioExt methods specifically ---
     let mut ext_vars: Vec<String> = Vec::new();
     let mut ext_var_inits: Vec<(String, String)> = Vec::new();
+    let mut ext_var_types: Vec<(String, String)> = Vec::new();
     if let Some(ext) = char_class {
         // Collect Slot (kind=0) / Const (kind=6) instance traits — the SSF2
         // class's `public var foo:T;` declarations. We carry these over to
         // Script.hx as top-level `var foo;` so the references later in the
         // translated methods aren't undeclared.
+        // A constant the class states on ITSELF rather than on each instance is still a
+        // constant its methods read. Read off `self` it is the same name, so it is carried
+        // the same way; without it every comparison against it is a comparison with null.
+        for t in &ext.class_methods {
+            if (t.kind == 0 || t.kind == 6) && !t.name.is_empty() {
+                if !ext_vars.contains(&t.name) { ext_vars.push(t.name.clone()); }
+                note_declared_type(&mut ext_var_types, &t.name, t.type_name.as_deref());
+                if let Some(rhs) = const_rhs(t) {
+                    if !ext_var_inits.iter().any(|(n, _)| n == &t.name) {
+                        ext_var_inits.push((t.name.clone(), rhs));
+                    }
+                }
+            }
+        }
+        // debug (`PEPTIDE_DUMP_TRAITS=<class>`): every instance trait of the class, with its kind
+        if std::env::var("PEPTIDE_DUMP_TRAITS").is_ok_and(|w| ext.name.contains(&w)) {
+            for t in &ext.instance_methods { eprintln!("[trait] {} {} kind={}", ext.name, t.name, t.kind); }
+        }
         for t in &ext.instance_methods {
             if (t.kind == 0 || t.kind == 6) && !t.name.is_empty() {
                 ext_vars.push(t.name.clone());
+                note_declared_type(&mut ext_var_types, &t.name, t.type_name.as_deref());
+                // A constant the class DECLARES a value for. Without it every read of
+                // it is null, and the move that compares against it never fires: dedede
+                // charges against a CHARGE_MAX of nothing. The constructor pass below
+                // covers the ones written there; this covers the ones the declaration
+                // itself carries.
+                if let Some(rhs) = const_rhs(t) {
+                    if !ext_var_inits.iter().any(|(n, _)| n == &t.name) {
+                        ext_var_inits.push((t.name.clone(), rhs));
+                    }
+                }
             }
         }
         // Decompile the constructor (iinit) and pull out `self.<var> = expr;`
@@ -860,8 +1109,19 @@ pub fn extract_character_with_timeline(
                 let raw = decompiler::decompile_method(iinit_body, abc, "iinit", &params);
                 let translated = crate::api_mappings::translate_ssf2_to_fm(&raw);
                 let mut seen: std::collections::BTreeSet<String> = Default::default();
+                // a constructor write to a field the class never declared is that field's
+                // initial value all the same (the class is dynamic in the source)
+                let undeclared_lit = crate::re!(r#"^self\.([A-Za-z_]\w*) = (true|false|-?\d+(?:\.\d+)?|"[^"]*"|null);$"#);
+                let mut also: Vec<(String, String)> = Vec::new();
                 for line in translated.lines() {
                     let trimmed = line.trim();
+                    if let Some(c) = undeclared_lit.captures(trimmed) {
+                        let n = c[1].to_string();
+                        if !ext_vars.contains(&n) && !also.iter().any(|(k, _)| *k == n) {
+                            also.push((n, c[2].to_string()));
+                            continue;
+                        }
+                    }
                     for v in &ext_vars {
                         let prefix = format!("self.{} = ", v);
                         if let Some(rest) = trimmed.strip_prefix(&prefix) {
@@ -872,6 +1132,10 @@ pub fn extract_character_with_timeline(
                             break;
                         }
                     }
+                }
+                for (n, rhs) in also {
+                    ext_vars.push(n.clone());
+                    ext_var_inits.push((n, rhs));
                 }
             }
         }
@@ -884,7 +1148,7 @@ pub fn extract_character_with_timeline(
                 // catch-all exclusion below so they don't end up in
                 // Script.hx as helper methods.
                 "getOwnStats" | "getAttackStats" | "getProjectileStats" | "getItemStats" => {}
-                name if name.starts_with("frame") => {
+                name if is_root_xframe_method(name) => {
                     // Extract xframe animation name first (always, for animation name mapping)
                     if let Some(anim_name) = extract_xframe_name(&body.bytecode, abc) {
                         xframe_map.insert(name.to_string(), anim_name);
@@ -905,10 +1169,12 @@ pub fn extract_character_with_timeline(
                 }
                 // Decompile all other Ext methods for Script.hx
                 // Skip slot/const traits (kind 0/6) — those are variable declarations, not methods
+                // a method, a getter or a setter (kind 1..3) and nothing else: a slot's
+                // `method_idx` is not a method at all, and read as one it decompiled some other
+                // method's body under the slot's name (pacman's `dotArray`, a field, came out as
+                // a function too; the field lost its name to the collision and stayed empty)
                 name if !matches!(name, "getOwnStats" | "getAttackStats" | "getItemStats" | "getProjectileStats")
-                    // Only decompile actual method traits (kind 1/2/3), not slots (kind 0/6)
-                    // The trait.kind is stored in the Trait struct; method_idx > 0 means it's a real method
-                    && (t.kind & 0x0F != 0 || t.slot_idx == 0) => {
+                    && matches!(t.kind & 0x0F, 1..=3) => {
                         // Get param count from method signature
                         let params: Vec<String> = if let Some(method) = abc.methods.get(body.method_idx as usize) {
                             (0..method.param_count).map(|i| format!("arg{}", i)).collect()
@@ -916,6 +1182,10 @@ pub fn extract_character_with_timeline(
                             vec![]
                         };
                         let code = decompiler::decompile_method(body, abc, name, &params);
+                        // a getter is read by calling it, and the read sites have to say so
+                        if t.kind & 0x0F == 2 && !getters.contains(&name.to_string()) {
+                            getters.push(name.to_string());
+                        }
                         ext_methods.insert(name.to_string(), code);
                     }
                 _ => {}
@@ -940,8 +1210,8 @@ pub fn extract_character_with_timeline(
                     !cn.ends_with("ext") && !cn.contains("_fla") && !cn.contains("api")
                         && !cn.contains("proj") && !cn.contains("helper") && !cn.contains("_hud")
                 })
-                .max_by_key(|c| c.instance_methods.iter().filter(|t| t.name.starts_with("frame")).count())
-                .filter(|c| c.instance_methods.iter().any(|t| t.name.starts_with("frame")))
+                .max_by_key(|c| c.instance_methods.iter().filter(|t| is_root_xframe_method(&t.name)).count())
+                .filter(|c| c.instance_methods.iter().any(|t| is_root_xframe_method(&t.name)))
         });
     if let Some(mc) = main_class {
         log::info!("Main class '{}': {} frame methods", mc.name, mc.instance_methods.len());
@@ -952,8 +1222,10 @@ pub fn extract_character_with_timeline(
         // otherwise resolve to nothing (the helpers exist only on the main
         // class, not the Ext class).
         const STAT_GETTERS: &[&str] = &["getOwnStats", "getAttackStats", "getItemStats", "getProjectileStats"];
+        // names the timeline had to keep under a different one, so its own code still reaches it
+        let mut renamed_on_timeline: Vec<String> = Vec::new();
         for t in &mc.instance_methods {
-            if t.name.starts_with("frame") {
+            if is_root_xframe_method(&t.name) {
                 let Some(body) = body_by_method.get(&t.method_idx) else { continue };
                 // Extract xframe name
                 if let Some(anim_name) = extract_xframe_name(&body.bytecode, abc) {
@@ -970,16 +1242,42 @@ pub fn extract_character_with_timeline(
                 }]);
             } else if matches!(t.kind, 1..=3) && !t.name.is_empty()
                 && !STAT_GETTERS.contains(&t.name.as_str())
-                && !ext_methods.contains_key(&t.name)
             {
-                // kind 1/2/3 = Method/Getter/Setter; skip Slot/Const (0/6) and
-                // anything the Ext class already provides under the same name.
+                // kind 1/2/3 = Method/Getter/Setter; skip Slot/Const (0/6).
+                //
+                // A name belongs to the class that declares it, and two classes in one package
+                // are free to use the same one for different things. Dropping the timeline's
+                // copy because another class got there first leaves the timeline's own frames
+                // registering a handler by name and reaching somebody else's body: kirby's
+                // inhale polls for a foe it already holds, and instead runs the version that
+                // expects to be HANDED one, on nothing, every frame it inhales.
                 let Some(body) = body_by_method.get(&t.method_idx) else { continue };
                 let params: Vec<String> = if let Some(method) = abc.methods.get(body.method_idx as usize) {
                     (0..method.param_count).map(|i| format!("arg{}", i)).collect()
                 } else { vec![] };
-                let code = decompiler::decompile_method(body, abc, &t.name, &params);
-                ext_methods.insert(t.name.clone(), code);
+                let taken = ext_methods.contains_key(&t.name);
+                let name = if taken { format!("{}__own", t.name) } else { t.name.clone() };
+                let code = with_param_defaults(decompiler::decompile_method(body, abc, &name, &params), abc.methods.get(body.method_idx as usize));
+                if t.kind == 2 && !getters.contains(&name) { getters.push(name.clone()); }
+                if taken {
+                    log::info!("'{}' is declared by two classes here; the timeline keeps its own as '{}'",
+                        t.name, name);
+                    renamed_on_timeline.push(t.name.clone());
+                    timeline_renames.push(t.name.clone());
+                    kept_own.push(t.name.clone());
+                }
+                ext_methods.insert(name, code);
+            }
+        }
+        // the timeline asked for its own by the name it wrote, so point those at where it went
+        for n in &renamed_on_timeline {
+            let re = crate::dyn_re(&format!(r"\b{}\b", regex::escape(n)));
+            let to = format!("{n}__own");
+            for v in frame_scripts.values_mut() {
+                for a in v.iter_mut() { a.action = rename_outside_strings(&a.action, &re, &to); }
+            }
+            if let Some(code) = ext_methods.remove(&to) {
+                ext_methods.insert(to.clone(), rename_outside_strings(&code, &re, &to));
             }
         }
     }
@@ -996,34 +1294,159 @@ pub fn extract_character_with_timeline(
     // would flood Script.hx with generic utility methods.
     {
         const STAT_GETTERS: &[&str] = &["getOwnStats", "getAttackStats", "getItemStats", "getProjectileStats"];
+        let clip_lit = crate::re!(r#"^\s*self\.([A-Za-z_]\w*)\s*=\s*(true|false|-?[\d.]+|"[^"]*"|null)\s*;"#);
+        let clip_write = crate::re!(r"(?:^|[^\w.])self\.([A-Za-z_]\w*)\s*=[^=]");
         for class in &abc.classes {
             // Skip the Ext class and the main class (already processed).
             if Some(class.name.as_str()) == char_class.map(|c| c.name.as_str()) { continue; }
             if Some(class.name.as_str()) == main_class.map(|c| c.name.as_str()) { continue; }
-            // Limit to this character's classes: same prefix as the main
-            // class name (or the char name), so `pacman_fla.UpSpecial_37` is
-            // in but `Controls` / `Matrix3D` are out. Also drop projectile-
-            // specific sub-MCs — those have their own converter path.
-            let cn = class.name.to_lowercase();
-            let main_prefix = main_class.map(|c| c.name.to_lowercase()).unwrap_or_default();
-            let main_root = main_prefix.split(['.', '_']).next().unwrap_or(&char_lower);
-            let belongs = !main_root.is_empty()
-                && (cn.starts_with(main_root) || cn.starts_with(&char_lower));
-            if !belongs { continue; }
-            if cn.contains("proj") || cn.contains("helper") { continue; }
+            // this fighter's clips are the ones its own timeline places, at any depth. a name
+            // says nothing: in a package two fighters share, every clip class carries the
+            // package's name, and one fighter's neutral special is spelled like the other's
+            if !own_clips.contains(&class.name) { continue; }
+            // a clip the timeline places inside a projectile is the projectile's: its handlers
+            // (a keyblade's wall bounce) belong on the projectile's script, and folded in here
+            // they ran on nobody (sora's `wall` sat in the fighter, struck line by line)
+            if foreign_clips.contains(&class.name) { continue; }
+            // A CLASS THAT IS ITS OWN OBJECT IS NOT PART OF THE FIGHTER. What extends the
+            // fighter's own base, or a plain clip, is the fighter's; what extends an item or a
+            // projectile base is the thing the fighter throws, and its update belongs to that
+            // thing. Link's bomb class was folded into link himself: its update ran on him every
+            // frame, timing a bomb he was not holding against a limit he does not have, and
+            // "exploded" him out of every walk.
+            let own_base = char_class.map(|c| c.super_name.as_str()).unwrap_or("");
+            let is_clip = class.super_name.ends_with("MovieClip");
+            if !is_clip && !own_base.is_empty() && class.super_name != own_base {
+                log::info!("{} extends {}, not {}: its own object, not folded into the fighter",
+                    class.name, class.super_name, own_base);
+                continue;
+            }
             for t in &class.instance_methods {
                 if !matches!(t.kind, 1..=3) { continue; }
-                if t.name.is_empty() || t.name.starts_with("frame") { continue; }
+                // a timeline frame script is `frame<N>`; a method that merely starts with the
+                // word (kirby's copied `frameCount`) is the clip's own and folds like any other
+                if t.name.is_empty() || is_root_xframe_method(&t.name) { continue; }
                 if STAT_GETTERS.contains(&t.name.as_str()) { continue; }
-                if ext_methods.contains_key(&t.name) { continue; }
                 let Some(body) = body_by_method.get(&t.method_idx) else { continue };
                 let params: Vec<String> = if let Some(m) = abc.methods.get(body.method_idx as usize) {
                     (0..m.param_count).map(|i| format!("arg{}", i)).collect()
                 } else { vec![] };
-                let code = decompiler::decompile_method(body, abc, &t.name, &params);
-                ext_methods.insert(t.name.clone(), code);
+                // A name belongs to the class that declares it. Dropping this one because
+                // another class got there first leaves this class's own frames registering a
+                // handler by name and reaching somebody else's body.
+                let taken = ext_methods.contains_key(&t.name);
+                let class_short: String = class.name.rsplit('.').next().unwrap_or(&class.name).chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
+                // A NAME MORE THAN ONE CLASS DECLARES is kept per class, under the class's own
+                // name: goku's six specials each declare a `checkControls` of their own, and one
+                // shared suffix for "the other one" kept only the last (the neutral special's
+                // release check was the charge shot's, and the charge never ended)
+                let name = if taken { format!("{}__{}", t.name, class_short) } else { t.name.clone() };
+                let code = with_param_defaults(decompiler::decompile_method(body, abc, &name, &params), abc.methods.get(body.method_idx as usize));
+                if t.kind == 2 && !getters.contains(&name) { getters.push(name.clone()); }
+                if let Some(label) = class_anim.get(&class.name) { methods_by_label.push((label.clone(), name.clone())); }
+                if taken {
+                    log::info!("'{}' is declared by two classes here; {} keeps its own as '{}'",
+                        t.name, class.name, name);
+                    kept_own.push(t.name.clone());
+                    if let Some(label) = class_anim.get(&class.name) {
+                        own_by_label.push((label.clone(), t.name.clone(), name.clone()));
+                    }
+                }
+                ext_methods.insert(name, code);
+            }
+            // A CLIP'S FIELDS START OVER WITH THE CLIP. The source builds a fresh instance of a
+            // helper clip every time its animation plays, and the instance's fields start at
+            // the values the class declares. Flattened into one script they became one
+            // persistent set shared by every clip that spells a name the same way: fox's jab
+            // read a `pressed2` another clip had left true and chained into its second hit on
+            // a single tap. Each clip's declared fields are set back to their defaults on the
+            // first frame of its animation.
+            if let Some(label) = class_anim.get(&class.name) {
+                // a declared slot carries its default; a slot the clip's code never writes is
+                // one the timeline binds (its boxes) or a typed nothing, and is left alone,
+                // since a write here would make it a persistent field of the fighter
+                for t in &class.instance_methods {
+                    if (t.kind == TRAIT_SLOT || t.kind == TRAIT_CONST) && !t.name.is_empty() {
+                        declared_defaults.push((label.clone(), t.name.clone(),
+                            const_rhs(t).unwrap_or_else(|| "null".to_string())));
+                        note_declared_type(&mut ext_var_types, &t.name, t.type_name.as_deref());
+                    }
+                }
+                // what the clip's own code writes is its own field: a clip class is dynamic in
+                // the source, so a field it simply writes exists on the fresh instance and
+                // starts undefined, or at what its constructor writes. `pressed2` is one.
+                let mut own_writes: std::collections::BTreeMap<String, String> = Default::default();
+                let ctor_body = body_by_method.get(&class.constructor_idx).map(|b| {
+                    let params: Vec<String> = abc.methods.get(b.method_idx as usize)
+                        .map(|m| (0..m.param_count).map(|i| format!("arg{i}")).collect()).unwrap_or_default();
+                    decompiler::decompile_method(b, abc, "__ctor", &params)
+                });
+                if let Some(body) = &ctor_body {
+                    for line in body.lines() {
+                        if let Some(c) = clip_lit.captures(line) { own_writes.insert(c[1].to_string(), c[2].to_string()); }
+                    }
+                }
+                for t in &class.instance_methods {
+                    if !matches!(t.kind, 1..=3) { continue; }
+                    let Some(body) = body_by_method.get(&t.method_idx) else { continue };
+                    let params: Vec<String> = abc.methods.get(body.method_idx as usize)
+                        .map(|m| (0..m.param_count).map(|i| format!("arg{i}")).collect()).unwrap_or_default();
+                    let code = decompiler::decompile_method(body, abc, &t.name, &params);
+                    for c in clip_write.captures_iter(&code) {
+                        own_writes.entry(c[1].to_string()).or_insert_with(|| "null".to_string());
+                    }
+                }
+                let written: std::collections::BTreeSet<String> = own_writes.keys().cloned().collect();
+                // A FIELD THE CLIP DECLARES IS THE CLIP'S, whatever the fighter calls its own, and
+                // whether it is declared as a plain field or as a property with accessors (one
+                // build of a package does the one, another the other). bomberman's neutral
+                // special keeps a `bombArray` of its own, copied from the fighter's and reset to
+                // null on its first frame; sharing the fighter's slot, that reset threw away
+                // every bomb the fighter had out. Kept under the class's name, like a method two
+                // classes declare. A slot the clip only reads is left shared.
+                for t in &class.instance_methods {
+                    let declared = matches!(t.kind, TRAIT_SLOT | TRAIT_CONST | TRAIT_GETTER | TRAIT_SETTER);
+                    if !declared || t.name.is_empty() || t.name == "self" || !ext_vars.contains(&t.name) { continue }
+                    // a slot the clip only reads, with no value of its own, is one its timeline
+                    // binds (a picture placed on it: dedede's `gordo`), the same one the fighter
+                    // reaches by that name
+                    if const_rhs(t).is_none() && !written.contains(&t.name) { continue }
+                    if own_fields_by_label.iter().any(|(l, n, _)| l == label && *n == t.name) { continue }
+                    let class_short: String = class.name.rsplit('.').next().unwrap_or(&class.name)
+                        .chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
+                    let to = format!("{}__{}", t.name, class_short);
+                    own_fields_by_label.push((label.clone(), t.name.clone(), to.clone()));
+                    note_declared_type(&mut ext_var_types, &to, t.type_name.as_deref());
+                    fields_by_label.push((label.clone(), to,
+                        const_rhs(t).unwrap_or_else(|| "null".to_string())));
+                }
+                for (n, default) in own_writes {
+                    if n == "self" || ext_vars.contains(&n) { continue; }
+                    let default = if default == "null" {
+                        declared_defaults.iter().find(|(l, f, _)| l == label && *f == n)
+                            .map(|(_, _, d)| d.clone()).unwrap_or(default)
+                    } else { default };
+                    fields_by_label.push((label.clone(), n, default));
+                }
+                // a slot the clip only READS, declared with a value, is a constant of the clip:
+                // pikachu's down special parks its thunder cloud `BOLTDISTANCE` above the
+                // fighter and never writes the name. it starts at the declared value too
+                for t in &class.instance_methods {
+                    if !(t.kind == TRAIT_SLOT || t.kind == TRAIT_CONST) || t.name.is_empty() { continue; }
+                    let Some(rhs) = const_rhs(t) else { continue };
+                    if t.name == "self" || ext_vars.contains(&t.name) { continue; }
+                    if fields_by_label.iter().any(|(l, f, _)| l == label && *f == t.name) { continue; }
+                    // kept under its own name already (it shares the fighter's)
+                    if own_fields_by_label.iter().any(|(l, f, _)| l == label && *f == t.name) { continue; }
+                    fields_by_label.push((label.clone(), t.name.clone(), rhs));
+                }
             }
         }
+        // this class asked for its own by the name it wrote, so point those at where it went.
+        // ITS OWN BODIES ONLY: the timeline's frame scripts mean the timeline's method, the one
+        // that kept the plain name. Rewritten too, samus's jab called the charge shot's control
+        // check from its fourth frame and ended there.
+        let _ = &kept_own;
     }
 
     // --- Also scan script-level traits for frame* methods ---
@@ -1033,7 +1456,7 @@ pub fn extract_character_with_timeline(
     if xframe_map.is_empty() || frame_scripts.is_empty() {
         for script in &abc.scripts {
             for t in &script.traits {
-                if !t.name.starts_with("frame") { continue; }
+                if !is_root_xframe_method(&t.name) { continue; }
                 let Some(body) = body_by_method.get(&t.method_idx) else { continue };
                 if let Some(anim_name) = extract_xframe_name(&body.bytecode, abc) {
                     xframe_map.entry(t.name.clone()).or_insert(anim_name);
@@ -1072,11 +1495,7 @@ pub fn extract_character_with_timeline(
         let callpropvoid_afs: Vec<u8> = std::iter::once(0x4Fu8).chain(afs_enc.iter().copied()).collect();
         let callproperty_afs: Vec<u8> = std::iter::once(0x46u8).chain(afs_enc.iter().copied()).collect();
 
-        // Build ssf2→fm map for extract_ssf2_anim_name lookups
-        let xframe_fm_map: BTreeMap<String, String> = xframe_map.values()
-            .map(|ssf2| (ssf2.clone(), ssf2.clone())) // identity for now, haxe_gen does FM translation
-            .collect();
-
+        
         let fla_classes: Vec<&Class> = abc.classes.iter()
             .filter(|c| c.name.contains("_fla."))
             .collect();
@@ -1090,14 +1509,16 @@ pub fn extract_character_with_timeline(
             // Only process captainfalcon_fla.* style sub-MC classes
             if !class.name.contains("_fla.") { continue; }
 
-            // Map sub-MC class name → SSF2 animation name using the same mapping
-            // as sprite_parser (e.g. "JabCombo" → "a", "NAir" → "a_air")
-            // The timeline first: it says which animation placed this clip. The label heuristic
-            // is the fallback, for a clip the timeline walk did not reach.
-            let ssf2_anim = class_anim.get(&class.name).cloned()
-                .or_else(|| crate::sprite_parser::extract_ssf2_anim_name(
-                    &class.name, &char_lower, &xframe_fm_map
-                ));
+            // WHICH animation this clip belongs to is a question only the TIMELINE can answer: the
+            // root places a clip under the `stance` instance on a labelled frame, and that label is
+            // the animation. A clip the walk never reaches is not part of any animation, and that
+            // is an answer, not a gap to paper over with its symbol name.
+            //
+            // Symbol names cannot be used for this even as a fallback. They are Flash-IDE
+            // artifacts and they go stale: donkeykong's file still carries `ichigo_*` clips from
+            // another character, and reading those names attributed Ichigo's frame scripts to
+            // DonkeyKong's `special`.
+            let ssf2_anim = class_anim.get(&class.name).cloned();
             let Some(anim_name) = ssf2_anim else {
                 log::debug!("Sub-MC '{}': no animation name mapping, skipping", class.name);
                 continue;
@@ -1333,10 +1754,241 @@ pub fn extract_character_with_timeline(
     // characters come from `scan_all_costume_methods` against misc.ssf
     // (driven from main.rs); palette_gen.rs falls back to k-means on
     // sprite imagery when that isn't available.
+    // WHAT THE CHARACTER BUILDS FOR ITSELF. A class the character's own code says `new` about
+    // is part of that character's behaviour, and left behind it is a name nothing declares --
+    // the whole handler that reaches for it stops there. Ported as a factory (see
+    // reconstruct_class_as_factory), so `new X(a)` becomes `X__new(a)` and everything the
+    // caller does with what comes back reads the same.
+    //
+    // Which classes: the ones this package carries that the character's own code builds. The
+    // package states both, so nothing here has to know what any of them are.
+    {
+        let built: std::collections::BTreeSet<String> = {
+            let re = crate::re!(r"\bnew\s+([A-Za-z_]\w*)\s*\(");
+            ext_methods.values()
+                .flat_map(|code| re.captures_iter(code).map(|c| c[1].to_string()))
+                .collect()
+        };
+        for name in &built {
+            if class_named(abc, name).is_none() { continue }
+            let Some(factory) = reconstruct_class_as_factory(abc, name) else { continue };
+            log::info!("class '{name}' the character builds for itself, ported as a factory");
+            ext_methods.insert(format!("{name}__new"), factory);
+            for code in ext_methods.values_mut() {
+                *code = code.replace(&format!("new {name}("), &format!("{name}__new("));
+            }
+        }
+
+        // A class it never builds but reads names off is a place the package keeps names.
+        let named: std::collections::BTreeSet<String> = {
+            let re = crate::re!(r"\b([A-Z][A-Za-z0-9_]*)\.[A-Za-z_]");
+            ext_methods.values()
+                .flat_map(|code| re.captures_iter(code).map(|c| c[1].to_string()))
+                .collect()
+        };
+        // NOT a name either engine states itself. A package carries its own copy of names
+        // the engine also keeps -- the two are different sets of numbers for the same idea
+        // -- and writing ours out would put the source's numbers where the engine's belong.
+        // The same goes for the source engine's own namespaces, which the port answers by
+        // renaming or by striking. Which names those are is not a list to keep: the
+        // mappings already name every one they have an answer for, on both sides.
+        let targets_own: std::collections::BTreeSet<String> = {
+            let re = crate::re!(r"\b([A-Z][A-Za-z0-9_]*)\.[A-Za-z_]");
+            let cmds = crate::mappings::api_commands();
+            cmds.replacements.iter().flat_map(|r| [r.from.clone(), r.to.clone()])
+                .chain(cmds.regex_replacements.iter()
+                    .flat_map(|r| [r.pattern.clone(), r.replacement.clone()]))
+                .flat_map(|t| re.captures_iter(&t).map(|c| c[1].to_string()).collect::<Vec<_>>())
+                .collect()
+        };
+        for name in named {
+            if built.contains(&name) { continue }
+            if targets_own.contains(&name) { continue }
+            if class_named(abc, &name).is_none() { continue }
+            let Some(consts) = reconstruct_class_as_constants(abc, &name) else { continue };
+            log::info!("class '{name}' the character reads names off, ported as those names");
+            ext_methods.insert(format!("{name}__names"), consts);
+        }
+    }
+
     log::info!("Extracted {} attacks, {} frame scripts, {} ext methods, {} xframe mappings, stats={}",
         attacks.len(), frame_scripts.len(), ext_methods.len(), xframe_map.len(), stats.is_some());
 
+    // A FRAME SCRIPT OF A CLIP MEANS THAT CLIP'S METHOD. The clip's frame scripts run in the
+    // clip's own scope in the source, so a bare call there reaches the clip's method, not the
+    // timeline's of the same name: donkey kong's jab clip calls its own `checkControls`, and
+    // flattened the call reached the charge shot's, which ended the jab on its sixth frame.
+    // Done here, after the sub-MC scan has filled the frame scripts.
+    for (label, n, to) in &own_by_label {
+        let bare = crate::dyn_re(&format!(r"((?:self\.)+){}\(", regex::escape(n)));
+        let handed = crate::dyn_re(&format!(r"((?:create|add|destroy|remove)(?:Timer|EventListener)\([^()]*,\s*(?:self\.)*){}\b", regex::escape(n)));
+        let cancelled = crate::dyn_re(&format!(r"((?:destroy|remove)Timer\(\s*(?:self\.)*){}\b", regex::escape(n)));
+        for (k, v) in frame_scripts.iter_mut() {
+            if !k.starts_with(&format!("{label}__")) { continue; }
+            for a in v.iter_mut() {
+                a.action = bare.replace_all(&a.action, format!("${{1}}{to}(")).into_owned();
+                a.action = handed.replace_all(&a.action, format!("${{1}}{to}")).into_owned();
+                a.action = cancelled.replace_all(&a.action, format!("${{1}}{to}")).into_owned();
+            }
+        }
+        // ...and the class's own methods reach their own copy the same way (its release check
+        // cancels its own timer by name)
+        for (l, m) in &methods_by_label {
+            if l != label { continue; }
+            if let Some(code) = ext_methods.remove(m) {
+                let code = bare.replace_all(&code, format!("${{1}}{to}(")).into_owned();
+                let code = handed.replace_all(&code, format!("${{1}}{to}")).into_owned();
+                let code = cancelled.replace_all(&code, format!("${{1}}{to}")).into_owned();
+                ext_methods.insert(m.clone(), code);
+            }
+        }
+    }
+    // A FIELD A CLIP KEEPS UNDER THE NAME OF A FUNCTION THE PORT HAS. Everything shares one
+    // scope here, so the clip's write replaced the function: megaman's up special keeps
+    // `grounded = isOnFloor()`, and his landing handler, also `grounded`, became `true`. Asked
+    // once every class is in, since the function may come from a class read after the clip.
+    {
+        let mut renamed: Vec<(usize, String)> = Vec::new();
+        for (i, (label, f, _)) in fields_by_label.iter().enumerate() {
+            if !ext_methods.contains_key(f) { continue }
+            // its own clip's method of that name is the same object's, not a collision
+            if methods_by_label.iter().any(|(l, m)| l == label && m == f) { continue }
+            if own_fields_by_label.iter().any(|(l, n, _)| l == label && n == f) { continue }
+            let to = format!("{f}__{}", label.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect::<String>());
+            own_fields_by_label.push((label.clone(), f.clone(), to.clone()));
+            renamed.push((i, to));
+        }
+        for (i, to) in renamed { fields_by_label[i].1 = to; }
+    }
+    // ...and a clip's own FIELDS the same way: `self.<field>` in its frames and methods is the
+    // clip's copy; the fighter's is reached through whatever the clip holds the fighter in
+    for (label, n, to) in &own_fields_by_label {
+        // the field, not a call of the fighter's method of the same name
+        let own = crate::dyn_re(&format!(r"(^|[^\w.])self\.{}\b(\s*)([^\s(]|$)", regex::escape(n)));
+        let to_field = format!("${{1}}self.{to}${{2}}${{3}}");
+        for (k, v) in frame_scripts.iter_mut() {
+            if !k.starts_with(&format!("{label}__")) { continue; }
+            for a in v.iter_mut() {
+                a.action = own.replace_all(&a.action, to_field.as_str()).into_owned();
+            }
+        }
+        for (l, m) in &methods_by_label {
+            if l != label { continue; }
+            if let Some(code) = ext_methods.remove(m) {
+                let code = own.replace_all(&code, to_field.as_str()).into_owned();
+                ext_methods.insert(m.clone(), code);
+            }
+        }
+    }
+    // ...and what a clip's own FRAME SCRIPTS write, which are its fields too (fox's jab writes
+    // `pressed1` from its second frame and nowhere else); a name already listed keeps its default
+    {
+        let write = crate::re!(r"(?:^|[^\w.])self\.([A-Za-z_]\w*)\s*=[^=]");
+        let labels: std::collections::BTreeSet<String> = fields_by_label.iter().map(|(l, _, _)| l.clone())
+            .chain(own_by_label.iter().map(|(l, _, _)| l.clone()))
+            .chain(class_anim.values().cloned()).collect();
+        let mut more: Vec<(String, String, String)> = Vec::new();
+        for label in &labels {
+            for (k, v) in frame_scripts.iter() {
+                if !k.starts_with(&format!("{label}__")) { continue; }
+                for a in v.iter() {
+                    for c in write.captures_iter(&a.action) {
+                        let n = c[1].to_string();
+                        if n == "self" || ext_vars.contains(&n) { continue; }
+                        if fields_by_label.iter().chain(more.iter()).any(|(l, f, _)| l == label && *f == n) { continue; }
+                        if own_fields_by_label.iter().any(|(l, f, _)| l == label && *f == n) { continue; }
+                        let default = declared_defaults.iter().find(|(l, f, _)| l == label && *f == n)
+                            .map(|(_, _, d)| d.clone()).unwrap_or_else(|| "null".to_string());
+                        more.push((label.clone(), n, default));
+                    }
+                }
+            }
+        }
+        fields_by_label.extend(more);
+        if std::env::var("PEPTIDE_DBG_RESET").is_ok() {
+            for (l, f, d) in &fields_by_label { eprintln!("[reset] {l} {f} = {d}"); }
+            eprintln!("[reset] ext_vars has pressed1: {}", ext_vars.contains(&"pressed1".to_string()));
+        }
+    }
+    // the resets go at the top of the clip's first frame; a frame that already has a script
+    // keeps it and gets the resets ahead of it (a second function of the same name would be
+    // dropped, and the clip's own first-frame code may already read what is reset)
+    for (label, field, default) in fields_by_label.iter().rev() {
+        let key = format!("{label}__frame0");
+        let head = format!("function {key}() {{\n");
+        let reset = format!("\tself.{field} = {default};\n");
+        let entry = frame_scripts.entry(key.clone()).or_default();
+        match entry.iter_mut().find(|a| a.action.starts_with(&head)) {
+            Some(a) => a.action.insert_str(head.len(), &reset),
+            None => entry.insert(0, FrameAction { frame: 0, action: format!("{head}{reset}\treturn;\n}}"), args: vec![] }),
+        }
+    }
+
+    // WHAT THE FIGHTER INHERITS FROM A BASE ITS OWN FILE SHIPS. The fighter's class extends a
+    // helper class the package carries (sonic's up tilt pulls its victim along with a method it
+    // inherits, `setupAutolinkAngle`, and the hit handler it hangs), and only the fighter's own
+    // methods were translated, so every call into the base was struck. The base's methods the
+    // fighter's code names, and those they name in turn, are translated with it, with the fields
+    // they keep. What is not reached from the fighter's code stays out.
+    if let Some(cc) = char_class {
+        let short = |n: &str| n.rsplit(['.', ':']).next().unwrap_or(n).to_string();
+        let base_short = short(&cc.super_name);
+        if let Some(base) = abc.classes.iter().find(|k| k.name != cc.name && short(&k.name) == base_short) {
+            let mut code_seen: String = ext_methods.values().cloned().collect::<Vec<_>>().join("\n");
+            for acts in frame_scripts.values() { for a in acts { code_seen.push_str(&a.action); code_seen.push('\n'); } }
+            let names = |code: &str, n: &str| crate::dyn_re(&format!(r"\b{}\b", regex::escape(n))).is_match(code);
+            loop {
+                let mut added = false;
+                for t in &base.instance_methods {
+                    if !matches!(t.kind & 0x0F, 1..=3) || t.name.is_empty() || ext_methods.contains_key(&t.name) { continue }
+                    if matches!(t.name.as_str(), "getOwnStats" | "getAttackStats" | "getItemStats" | "getProjectileStats") || !names(&code_seen, &t.name) { continue }
+                    // a name the mapping tables already translate (or say has no counterpart) is theirs
+                    // (one translated where it is called still has the fighter's own body behind it)
+                    if crate::api_mappings::the_mappings_handle(&t.name)
+                        && !crate::mappings::api_commands().translated_in_code.contains(&t.name) { continue }
+                    let Some(body) = body_by_method.get(&t.method_idx) else { continue };
+                    let params: Vec<String> = abc.methods.get(body.method_idx as usize)
+                        .map(|m| (0..m.param_count).map(|i| format!("arg{}", i)).collect()).unwrap_or_default();
+                    // a name this engine answers itself is its own (a fighter's `flipX`)
+                    if crate::api_mappings::the_engine_answers_to(&t.name) { continue }
+                    let code = with_param_defaults(decompiler::decompile_method(body, abc, &t.name, &params), abc.methods.get(body.method_idx as usize));
+                    // the engine's surface as the package declares it hands each call on to the
+                    // engine object behind it under the same name: nothing of the content's own
+                    // (the method naming ITSELF on `self`, to hand itself to a listener, is not that)
+                    let forwards = crate::dyn_re(&format!(r"(?:^|[^\w.])(?:self\.)?(\w+)\.{}\b", regex::escape(&t.name)))
+                        .captures_iter(&code).any(|c| &c[1] != "self");
+                    if forwards { continue }
+                    if t.kind & 0x0F == 2 && !getters.contains(&t.name) { getters.push(t.name.clone()); }
+                    log::info!("'{}' is inherited from {}, translated with the fighter", t.name, base.name);
+                    code_seen.push_str(&code);
+                    ext_methods.insert(t.name.clone(), code);
+                    added = true;
+                }
+                if !added { break }
+            }
+            // and the base's own fields those methods keep
+            for t in &base.instance_methods {
+                if matches!(t.kind & 0x0F, 0 | 6) && !t.name.is_empty() && !ext_vars.contains(&t.name)
+                    && code_seen.contains(&format!("self.{}", t.name)) {
+                    ext_vars.push(t.name.clone());
+                    note_declared_type(&mut ext_var_types, &t.name, t.type_name.as_deref());
+                    // with the value the base states for it (its knockback constants)
+                    if let Some(rhs) = const_rhs(t) {
+                        if !ext_var_inits.iter().any(|(n, _)| *n == t.name) { ext_var_inits.push((t.name.clone(), rhs)); }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(ExtractedCharacter {
+        getters,
+        // ONLY THE TIMELINE'S OWN RENAMES reach the frame scripts. A helper clip class that kept
+        // its own name under `__own` had its own bodies rewired above; the timeline's scripts
+        // handing that name to a timer mean the timeline's method, which kept the plain name.
+        // Rewired too, samus's jab handed the charge shot's control check to its timer and
+        // ended on its fourth frame.
+        renamed_own: timeline_renames,
         name: char_name.to_string(),
         attacks,
         projectiles,
@@ -1345,11 +1997,40 @@ pub fn extract_character_with_timeline(
         ext_methods,
         ext_vars,
         ext_var_inits,
+        ext_var_types,
         xframe_map,
         attack_sounds,
         voice_sounds,
+        thumbnail,
+        linkage_id,
         derived_from,
     })
+}
+
+/// Every method a CLIP's class declares, decompiled.
+///
+/// A projectile's behaviour lives here, not in its stats: the clip's class wires up what happens
+/// when it hits a wall or touches the ground, and its frame scripts run when the timeline reaches
+/// them. That is the same shape a stage hazard has, so it ports the same way -- translate the
+/// class rather than recognise the thing.
+///
+/// Returns method name -> decompiled body, still in SSF2 terms; `api_mappings::translate_ssf2_to_fm`
+/// is what turns those into engine calls.
+pub fn extract_class_methods(abc: &AbcFile, class_name: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return out };
+    let body_by_method: BTreeMap<u32, &MethodBody> =
+        abc.method_bodies.iter().map(|b| (b.method_idx, b)).collect();
+    for t in &class.instance_methods {
+        // methods only: a slot or a const is a variable, not behaviour
+        if !matches!(t.kind, 1..=3) || t.name.is_empty() { continue }
+        let Some(body) = body_by_method.get(&t.method_idx) else { continue };
+        let params: Vec<String> = abc.methods.get(body.method_idx as usize)
+            .map(|m| (0..m.param_count).map(|i| format!("arg{i}")).collect())
+            .unwrap_or_default();
+        out.insert(t.name.clone(), decompiler::decompile_method(body, abc, &t.name, &params));
+    }
+    out
 }
 
 /// Find the body of `Main::get<X>()` where the lowercased method-name
@@ -1367,6 +2048,17 @@ pub fn find_bundle_method<'a>(abc: &'a AbcFile, char_name: &str)
     })?;
     let body = abc.method_bodies.iter().find(|b| b.method_idx == getter.method_idx)?;
     Some((body, getter.name.clone()))
+}
+
+/// The clip a character names as ITS OWN art: `linkage_id` in its bundle.
+///
+/// This is the file stating which of its clips is the fighter, so nothing has to work it out
+/// from symbol names or from how a timeline is shaped. A package can also carry a stale list of
+/// what it owns (one fighter's copied from another's), and this is not that list: it is the
+/// fighter's own declaration, next to the stats and the thumbnail it also names.
+pub fn declared_root_clip(abc: &AbcFile, char_name: &str) -> Option<String> {
+    let (body, _) = find_bundle_method(abc, char_name)?;
+    extract_string_stat(body, abc, "linkage_id").filter(|s| !s.is_empty())
 }
 
 /// Strip `get`, lowercase the remainder, preserve `_`. Returns None
@@ -1438,6 +2130,15 @@ pub struct MainPackageMetadata {
     /// `register("camera", { backgrounds: [ … ] })` — the stage's camera-background (parallax)
     /// layers, in the order the package declares them.
     pub camera_backgrounds: Vec<CameraBackground>,
+    /// `register("resources", { movieclips: [ … ] })` — every clip the package says it OWNS, by
+    /// linkage id, in declaration order.
+    ///
+    /// This is the file stating its own contents, so it is the authority on which clips are the
+    /// package's and what they are called. Anything found by scanning symbol names instead is a
+    /// guess about content, and a guess cannot be right for content nobody has written yet.
+    pub movieclips: Vec<String>,
+    /// `register("resources", { sounds: [ … ] })` — the sounds the package declares, same rule.
+    pub sounds: Vec<String>,
 }
 
 /// One declared camera background: a clip the engine scrolls behind the stage at its own rate.
@@ -1450,9 +2151,12 @@ pub struct MainPackageMetadata {
 pub struct CameraBackground {
     /// The clip's linkage id (`clocktown_bg`).
     pub linkage_id: String,
-    /// Per-axis pan rate: the layer moves this fraction of the camera's movement.
-    pub x_pan: f64,
-    pub y_pan: f64,
+    /// Per-axis pan rate: the layer moves this fraction of the camera's movement. `None` when the
+    /// declaration does not state one at all, which is NOT the same as stating zero -- a background
+    /// that says nothing is left to the engine to work out, and one that says zero is pinned to the
+    /// view. Battlefield's declares only its linkage, and read as a zero it stopped scrolling.
+    pub x_pan: Option<f64>,
+    pub y_pan: Option<f64>,
     /// Whether the engine derives the pan itself rather than using the declared multipliers.
     pub auto_pan: bool,
 }
@@ -1468,7 +2172,50 @@ pub fn extract_main_package_metadata(abc: &AbcFile) -> Option<MainPackageMetadat
         characters: scan_register_characters_array(body, abc),
         music:      scan_register_music_ids(body, abc),
         camera_backgrounds: scan_register_camera_backgrounds(body, abc),
+        movieclips: scan_register_resource_list(body, abc, "movieclips"),
+        sounds:     scan_register_resource_list(body, abc, "sounds"),
     })
+}
+
+/// The `resources` list a package declares under `which` (`movieclips` / `sounds`).
+///
+/// The block is a key followed by the literal strings that belong to it, and the next key (or the
+/// `register` call) closes it. Read this way it needs no knowledge of what any of the names MEAN,
+/// which is the point: the file is listing its own contents and the converter is only writing them
+/// down.
+fn scan_register_resource_list(body: &MethodBody, abc: &AbcFile, which: &str) -> Vec<String> {
+    let key_idx = |k: &str| abc.strings.iter().position(|s| &**s == k);
+    let Some(want) = key_idx(which) else { return Vec::new() };
+    // the sibling keys that END this list
+    let stops: Vec<usize> = ["movieclips", "sounds", "fonts", "bitmaps"].iter()
+        .filter(|k| **k != which).filter_map(|k| key_idx(k)).collect();
+    let bc = &body.bytecode;
+    let (mut i, mut collecting) = (0usize, false);
+    let mut out: Vec<String> = Vec::new();
+    while i < bc.len() {
+        let op = bc[i];
+        let at = i;
+        i += 1;
+        match op {
+            OP_PUSHSTRING => {
+                let Some(idx) = read_u30_at(bc, &mut i) else { break };
+                let idx = idx as usize;
+                if idx == want { collecting = true; continue; }
+                if collecting {
+                    if stops.contains(&idx) { collecting = false; continue; }
+                    if let Some(s) = abc.strings.get(idx) { out.push(s.to_string()); }
+                }
+            }
+            OP_CALLPROPVOID | OP_CALLPROPERTY => {
+                let Some(mn) = read_u30_at(bc, &mut i) else { break };
+                let _ = read_u30_at(bc, &mut i);
+                if collecting && abc.multinames.get(mn as usize).is_some_and(|m| &*m.name == "register") { break; }
+            }
+            _ => { let mut j = at + 1; skip_opcode_operands(op, bc, &mut j); i = j; }
+        }
+    }
+    out.dedup();
+    out
 }
 
 /// Read the `camera.backgrounds` entries out of Main's constructor.
@@ -1497,6 +2244,9 @@ fn scan_register_camera_backgrounds(body: &MethodBody, abc: &AbcFile) -> Vec<Cam
                 let idx = idx as usize;
                 if idx == bg_key { collecting = true; field = None; continue; }
                 if !collecting { continue; }
+                if std::env::var("PEPTIDE_CAMBG_KEYS").is_ok() {
+                    if let Some(t) = abc.strings.get(idx) { eprintln!("[cambg-key] {t:?}"); }
+                }
                 if idx == link_key { field = Some("linkage"); continue; }
                 if Some(idx) == x_key { field = Some("x"); continue; }
                 if Some(idx) == y_key { field = Some("y"); continue; }
@@ -1515,8 +2265,11 @@ fn scan_register_camera_backgrounds(body: &MethodBody, abc: &AbcFile) -> Vec<Cam
                     OP_PUSHSHORT => { let Some(x) = read_u30_at(bc, &mut i) else { break }; Some(x as i32 as f64) }
                     _ => { let v = bc.get(i).map(|b| *b as i8 as f64); i += 1; v }
                 };
+                if std::env::var("PEPTIDE_CAMBG_KEYS").is_ok() {
+                    eprintln!("[cambg-num] field={field:?} v={v:?}");
+                }
                 if let (Some(v), Some(e)) = (v, out.last_mut()) {
-                    match field { Some("x") => e.x_pan = v, Some("y") => e.y_pan = v, _ => {} }
+                    match field { Some("x") => e.x_pan = Some(v), Some("y") => e.y_pan = Some(v), _ => {} }
                 }
                 field = None;
             }
@@ -1686,7 +2439,18 @@ fn skip_opcode_operands(op: u8, bc: &[u8], i: &mut usize) {
 /// detect transformation/alternate-form bundles (their `normalStats_id`
 /// is the parent character's id, not their own derived id).
 pub fn extract_normal_stats_id(body: &MethodBody, abc: &AbcFile) -> Option<String> {
-    let needle_idx = abc.strings.iter().position(|s| &**s == "normalStats_id")? as u32;
+    extract_string_stat(body, abc, "normalStats_id")
+}
+
+/// The STRING a character's own stat object gives for `key`.
+///
+/// The stats a character declares are not all numbers: `thumbnail` names the clip the damage
+/// counter shows, `seriesIcon` names its emblem, `linkage_id` names its art. Those are the source
+/// SAYING which of its clips is which, so nothing downstream has to recognise a name.
+///
+/// The literal is built key-then-value, so the value is the next string pushed after the key.
+pub fn extract_string_stat(body: &MethodBody, abc: &AbcFile, key: &str) -> Option<String> {
+    let needle_idx = abc.strings.iter().position(|s| &**s == key)? as u32;
     let bytes = &body.bytecode;
     let mut i = 0;
     while i < bytes.len() {
@@ -1776,7 +2540,9 @@ pub fn extract_indexed_string_fields(
 pub(crate) enum StackVal {
     Str(String),
     Num(f64),
-    Bool(()),  // unused field — kept for stack value compatibility
+    /// `true` / `false` as the source wrote it. A declaration like `ghost: true` says how the
+    /// thing behaves, so which one it is has to survive the walk.
+    Bool(bool),
     Null,
     /// A parsed object literal from newobject
     Obj(BTreeMap<String, StackVal>),
@@ -1823,8 +2589,6 @@ pub(crate) enum NewObjectAction {
     /// Push some other StackVal (typically StackVal::Unknown) instead
     /// of the obj. Used by visitors that recorded the obj as a
     /// top-level extraction target and don't need its identity on the
-    /// stack any more.
-    Push(StackVal),
     /// Halt scanning entirely. Used by single-shot extractors that have
     /// already found what they came for (e.g. CharacterStats).
     Stop,
@@ -1945,7 +2709,7 @@ pub(crate) fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor
                     stack.push(StackVal::Num(abc.uints.get(idx as usize).copied().unwrap_or(0) as f64));
                 }
             }
-            OP_PUSHTRUE | OP_PUSHFALSE => stack.push(StackVal::Bool(())),
+            OP_PUSHTRUE | OP_PUSHFALSE => stack.push(StackVal::Bool(op == OP_PUSHTRUE)),
             OP_PUSHNULL | OP_PUSHNAN => stack.push(StackVal::Null),
 
             // ── newobject (the only visitor-driven push) ────────────────
@@ -1964,7 +2728,6 @@ pub(crate) fn scan_method<V: AbcVisitor>(bytecode: &[u8], abc: &AbcFile, visitor
                     }
                     match visitor.on_newobject(obj, &current_char) {
                         NewObjectAction::PushObj(o)  => stack.push(StackVal::Obj(o)),
-                        NewObjectAction::Push(v)     => stack.push(v),
                         NewObjectAction::Stop        => return,
                     }
                 }
@@ -2175,8 +2938,18 @@ impl AbcVisitor for AttackVisitor {
         for move_name in &attack_keys_found {
             if let Some(val) = obj.get(move_name) {
                 let hitboxes = extract_hitboxes_from_val(val);
-                if !hitboxes.is_empty() {
-                    self.result.insert(normalize_attack_name(move_name), AttackData { hitboxes });
+                let mut stats = BTreeMap::new();
+                if let StackVal::Obj(o) = val {
+                    for (k, v) in o {
+                        match v {
+                            StackVal::Num(n) => { stats.insert(k.clone(), *n); }
+                            StackVal::Bool(b) => { stats.insert(k.clone(), if *b { 1.0 } else { 0.0 }); }
+                            _ => {}
+                        }
+                    }
+                }
+                if !hitboxes.is_empty() || !stats.is_empty() {
+                    self.result.insert(normalize_attack_name(move_name), AttackData { hitboxes, stats });
                 }
             }
         }
@@ -2194,6 +2967,65 @@ pub(crate) fn extract_attack_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap
 /// whose getAttackStats returns the attack object DIRECTLY (`{ attackBoxes: {...} }`), not the
 /// character pattern of an object keyed by move name. (The nested `attackBoxes` map fires its own
 /// newobject too; "most hitboxes" picks the complete one and dedups the partial.)
+/// The hit a class declares, kept UNDER THE ANIMATION IT BELONGS TO.
+///
+/// A class states its boxes per animation (`{ fall: { attackBoxes: { … } } }`), which is the source
+/// saying when the thing hurts: bowser's castle's thwomp hits on its way down and at no other time.
+/// Flattened to a list of boxes the label is lost, and the port put the hit on every animation the
+/// object has -- so the thwomp hurt anyone who touched it while it sat at the top waiting.
+pub(crate) fn extract_attack_stats_by_anim(abc: &AbcFile, class_name: &str)
+    -> BTreeMap<String, Vec<BTreeMap<String, f64>>>
+{
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return BTreeMap::new() };
+    for want in ["getAttackStats", "getOwnStats"] {
+        let Some(t) = class.instance_methods.iter().find(|t| &*t.name == want) else { continue };
+        let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
+        let mut v = HazardAttackByAnimVisitor { best: BTreeMap::new(), rates: BTreeMap::new() };
+        scan_method(&body.bytecode, abc, &mut v);
+        if !v.best.is_empty() { return v.best; }
+    }
+    BTreeMap::new()
+}
+
+/// How often the class says the hit comes round again, per animation (`refreshRate`). A hazard a
+/// fighter stands in re-hits on that cadence, and reading it off the class is the difference
+/// between the source's own rhythm and a number the port chose.
+pub(crate) fn extract_attack_rates_by_anim(abc: &AbcFile, class_name: &str) -> BTreeMap<String, f64> {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return BTreeMap::new() };
+    for want in ["getAttackStats", "getOwnStats"] {
+        let Some(t) = class.instance_methods.iter().find(|t| &*t.name == want) else { continue };
+        let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
+        let mut v = HazardAttackByAnimVisitor { best: BTreeMap::new(), rates: BTreeMap::new() };
+        scan_method(&body.bytecode, abc, &mut v);
+        if !v.rates.is_empty() { return v.rates; }
+    }
+    BTreeMap::new()
+}
+
+struct HazardAttackByAnimVisitor {
+    best: BTreeMap<String, Vec<BTreeMap<String, f64>>>,
+    rates: BTreeMap<String, f64>,
+}
+impl AbcVisitor for HazardAttackByAnimVisitor {
+    fn on_newobject(&mut self, obj: BTreeMap<String, StackVal>, _c: &Option<String>) -> NewObjectAction {
+        // The object keyed by ANIMATION is the one whose entries hold an `attackBoxes` map. Asking
+        // only "does this entry contain boxes" matches the boxes' own container too, and that one
+        // has more entries, so the labels came back as the names of the boxes.
+        let mut found: BTreeMap<String, Vec<BTreeMap<String, f64>>> = BTreeMap::new();
+        let mut rates: BTreeMap<String, f64> = BTreeMap::new();
+        for (k, v) in &obj {
+            let StackVal::Obj(inner) = v else { continue };
+            if !inner.contains_key("attackBoxes") { continue }
+            let hbs = extract_hitboxes_from_val(v);
+            if hbs.is_empty() { continue }
+            if let Some(StackVal::Num(r)) = inner.get("refreshRate") { rates.insert(k.clone(), *r); }
+            found.insert(k.clone(), hbs);
+        }
+        if found.len() > self.best.len() { self.best = found; self.rates = rates; }
+        NewObjectAction::PushObj(obj)
+    }
+}
+
 struct HazardAttackVisitor {
     best: Vec<BTreeMap<String, f64>>,
 }
@@ -2277,6 +3109,10 @@ pub struct StageWeather {
     pub height: f64,
     /// How the source moves one particle per frame, when its class could be read.
     pub motion: Option<WeatherMotion>,
+    /// The stage field this weather is kept in, when it keeps one. A stage can have several
+    /// (crateria falls rain and acid) and only the field this port built is the one whose strength
+    /// means anything here.
+    pub field: String,
 }
 
 /// Find a stage's weather by stepping its own `initialize`.
@@ -2284,16 +3120,17 @@ pub struct StageWeather {
 /// The shape in the bytecode is: push the particle CLASS, construct a weather object from it, then
 /// hand that object the area and the count. Keyed on that shape rather than on any stage or class
 /// name, so a second stage doing the same thing is found the same way.
-pub fn extract_stage_weather(abc: &AbcFile, stage_class: &str) -> Option<StageWeather> {
-    let class = abc.classes.iter().find(|c| c.name == stage_class)
-        .or_else(|| abc.classes.iter().find(|c| c.name.eq_ignore_ascii_case(stage_class)))?;
+pub fn extract_stage_weather(abc: &AbcFile, stage_class: &str) -> Vec<StageWeather> {
+    let Some(class) = abc.classes.iter().find(|c| c.name == stage_class)
+        .or_else(|| abc.classes.iter().find(|c| c.name.eq_ignore_ascii_case(stage_class))) else { return Vec::new() };
     // Every method, not just `initialize`: a stage builds its weather where it likes (smashville
     // does it in `syncStage`, clocktown behind a state machine).
     for t in class.instance_methods.iter() {
         let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
-        if let Some(w) = weather_in_body(abc, &body.bytecode) { return Some(w); }
+        let w = weather_in_body(abc, &body.bytecode);
+        if !w.is_empty() { return w }
     }
-    None
+    Vec::new()
 }
 
 /// The weather construction inside one method body, keyed on the ENGINE CALL that defines it.
@@ -2311,7 +3148,8 @@ pub fn extract_stage_weather(abc: &AbcFile, stage_class: &str) -> Option<StageWe
 /// it, so "the object whose container goes into the weather layer" identifies the weather exactly,
 /// on every stage that has any, without knowing a single class name. Keying on a name containing
 /// "weather" instead finds two of the eight stages in the corpus that call it.
-fn weather_in_body(abc: &AbcFile, bc: &[u8]) -> Option<StageWeather> {
+fn weather_in_body(abc: &AbcFile, bc: &[u8]) -> Vec<StageWeather> {
+    (|| -> Option<Vec<StageWeather>> {
     // pass 1: field -> (particle art, the constructor arguments)
     // Arguments are kept POSITIONALLY: a class or string argument holds its slot as `None` so the
     // numbers still line up with the constructor's parameters. Collapsing to "the numbers seen"
@@ -2344,7 +3182,13 @@ fn weather_in_body(abc: &AbcFile, bc: &[u8]) -> Option<StageWeather> {
                 // whatever the stage chose to override.
                 let take = recent.len().min(argc);
                 let tail = &recent[recent.len() - take..];
-                let args = (tail.iter().map(|a| a.0).collect(), tail.iter().map(|a| a.1.clone()).collect());
+                // Reading the tail is only right when every argument was seen. If any push went
+                // untracked the tail is SHORT, and indexing it from zero slides every argument
+                // into the slot of the one before it, so a field's width arrives as its drift.
+                // Pad the front instead: an argument we could not read stays unknown in place.
+                let mut slots = vec![(None, None); argc - take];
+                slots.extend(tail.iter().cloned());
+                let args = (slots.iter().map(|a| a.0).collect(), slots.iter().map(|a| a.1.clone()).collect());
                 recent.clear();
                 pending = Some((cname, last_lex.clone(), args));
             }
@@ -2364,6 +3208,12 @@ fn weather_in_body(abc: &AbcFile, bc: &[u8]) -> Option<StageWeather> {
                 recent.push((Some(bc.get(i).map(|b| *b as i8 as f64)?), None));
                 i += 1;
             }
+            // an argument that is not a number or a string still HOLDS ITS SLOT
+            OP_PUSHTRUE => recent.push((Some(1.0), None)),
+            OP_PUSHFALSE => recent.push((Some(0.0), None)),
+            OP_PUSHNULL | OP_PUSHNAN | OP_PUSHUNDEFINED => recent.push((None, None)),
+            // the same value twice in a row is pushed once and duplicated
+            OP_DUP => { let t = recent.last().cloned().unwrap_or((None, None)); recent.push(t); }
             OP_SETPROPERTY | OP_INITPROPERTY => {
                 let mn = read_u30_at(bc, &mut i)?;
                 let field = abc.multinames.get(mn as usize).map(|m| m.name.to_string()).unwrap_or_default();
@@ -2376,7 +3226,7 @@ fn weather_in_body(abc: &AbcFile, bc: &[u8]) -> Option<StageWeather> {
 
     // pass 2: after the weather-layer call, the field whose container is added is the weather
     let (mut i, mut saw_layer, mut last_field) = (0usize, false, None::<String>);
-    let mut weather_field: Option<String> = None;
+    let mut weather_fields: Vec<String> = Vec::new();
     while i < bc.len() {
         let op = bc[i];
         let at = i;
@@ -2392,9 +3242,15 @@ fn weather_in_body(abc: &AbcFile, bc: &[u8]) -> Option<StageWeather> {
                 let name = abc.multinames.get(mn as usize).map(|m| m.name.to_string()).unwrap_or_default();
                 match name.as_str() {
                     "getWeatherMC" => saw_layer = true,
+                    // EVERY one handed over, in the order the stage hands them. A stage can run
+                    // more than one field at once -- crateria falls rain and acid, and holds the
+                    // acid at nothing until its event -- and keeping only the first built the one
+                    // the player sees while the other never existed.
                     "getContainer" if saw_layer => {
                         if let Some(f) = last_field.clone() {
-                            if built.iter().any(|(bf, _, _, _)| *bf == f) { weather_field = Some(f); }
+                            if built.iter().any(|(bf, _, _, _)| *bf == f) && !weather_fields.contains(&f) {
+                                weather_fields.push(f);
+                            }
                         }
                     }
                     _ => {}
@@ -2405,19 +3261,28 @@ fn weather_in_body(abc: &AbcFile, bc: &[u8]) -> Option<StageWeather> {
     }
     // A stage that builds one weather object and hands it over without going through a field still
     // reads as weather: the layer call is the evidence, the single construction is the object.
-    let (_, cname, art, args) = match weather_field {
-        Some(f) => built.into_iter().find(|(bf, _, _, _)| *bf == f)?,
-        None if saw_layer && built.len() == 1 => built.into_iter().next()?,
-        None => return None,
+    // A stage that builds one weather object and hands it over without going through a field still
+    // reads as weather: the layer call is the evidence, the single construction is the object.
+    let chosen: Vec<(String, String, Option<String>, CtorArgs)> = if !weather_fields.is_empty() {
+        weather_fields.iter()
+            .filter_map(|f| built.iter().find(|(bf, _, _, _)| bf == f).cloned())
+            .collect()
+    } else if saw_layer && built.len() == 1 {
+        built.clone()
+    } else {
+        Vec::new()
     };
-    let art = art?;
-    let (nums, strs) = args;
-    let (width, height, count) = weather_numbers(abc, &cname, &nums);
-    // a class that branches on a string it was handed (`"left"` / `"right"`) has one mover per
-    // direction; the one named for the string it was given is the one that runs.
-    let dir = strs.iter().flatten().next().cloned();
-    let motion = weather_motion(abc, &cname, &nums, dir.as_deref());
-    Some(StageWeather { art, width, height, count, motion })
+    Some(chosen.into_iter().filter_map(|(field, cname, art, args)| {
+        let art = art?;
+        let (nums, strs) = args;
+        let (width, height, count) = weather_numbers(abc, &cname, &nums);
+        // a class that branches on a string it was handed (`"left"` / `"right"`) has one mover per
+        // direction; the one named for the string it was given is the one that runs.
+        let dir = strs.iter().flatten().next().cloned();
+        let motion = weather_motion(abc, &cname, &nums, dir.as_deref());
+        Some(StageWeather { art, width, height, count, motion, field })
+    }).collect())
+    })().unwrap_or_default()
 }
 
 /// The count and area a weather object is actually built with.
@@ -2585,11 +3450,16 @@ fn read_s24_at(bc: &[u8], i: &mut usize) -> Option<i32> {
 pub(crate) fn extract_enemy_behavior(abc: &AbcFile, class_name: &str) -> EnemyBehavior {
     let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return EnemyBehavior::default() };
     let mut v = BehaviorVisitor { b: EnemyBehavior::default() };
-    for m in ["initialize", "update", "runAI", "move", "releaseEnemy"] {
-        if let Some(t) = class.instance_methods.iter().find(|t| &*t.name == m) {
-            if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
-                scan_method(&body.bytecode, abc, &mut v);
-            }
+    // EVERY method the class has, not a list of the five someone thought to name. What is being
+    // read here is what the class DECLARES about itself -- the box it makes solid, how hard it
+    // shakes the camera -- and a class is free to declare that wherever it likes: bomb factory's
+    // block makes its terrain in `actuallyMakeTheTerrain`, so a fixed list found nothing and its
+    // blocks were pictures a fighter fell straight through.
+    for t in &class.instance_methods {
+        if t.kind != TRAIT_METHOD { continue; }
+        if DECLARATION_GETTERS.contains(&&*t.name) { continue; }
+        if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
+            scan_method(&body.bytecode, abc, &mut v);
         }
     }
     v.b
@@ -2646,7 +3516,7 @@ pub(crate) fn extract_faller_cycle(abc: &AbcFile, enemy_class: &str) -> Option<F
         }
         e.parse::<f64>().ok()
     }
-    let timer_re = regex::Regex::new(r"new FrameTimer\(([^)]+)\)").unwrap();
+    let timer_re = crate::re!(r"new FrameTimer\(([^)]+)\)");
     let decompiled = |class: &Class, m: &str| -> String {
         class.instance_methods.iter().find(|t| t.name == m)
             .and_then(|t| abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx))
@@ -2670,68 +3540,11 @@ pub(crate) fn extract_faller_cycle(abc: &AbcFile, enemy_class: &str) -> Option<F
         // spawn columns: the int-array literal in the stage update near the spawnEnemy call.
         let upd = decompiled(stage, "update");
         if upd.contains("spawnEnemy") {
-            let arr_re = regex::Regex::new(r"\[(-?\d+(?:, *-?\d+){2,})\]").unwrap();
+            let arr_re = crate::re!(r"\[(-?\d+(?:, *-?\d+){2,})\]");
             if let Some(c) = arr_re.captures(&upd) {
                 out.columns = c[1].split(',').filter_map(|v| v.trim().parse::<f64>().ok()).collect();
             }
         }
-    }
-    Some(out)
-}
-
-/// A sinking-platform class's authored motion, stepped from its OWN code (decompile + read):
-/// the per-frame sink/rise speeds (class const slots referenced by `setY(getY() ± self.X)`),
-/// the post-sink hold (`new FrameTimer(expr)` in initialize), and the rest/sunk Y caps from the
-/// `getY() <op> N` comparisons in update(). All values in SSF2 30fps source units.
-#[derive(Clone, Debug, Default)]
-pub struct PlatformBehavior {
-    pub sink_speed: Option<f64>,
-    pub rise_speed: Option<f64>,
-    pub wait_frames: Option<f64>,
-    pub sink_depth: Option<f64>,
-}
-
-/// Extract [`PlatformBehavior`] from the first class extending `SSF2Platform` (the sinking
-/// platform kind). None when the stage has no such class.
-pub(crate) fn extract_platform_behavior(abc: &AbcFile) -> Option<PlatformBehavior> {
-    let class = abc.classes.iter().find(|c| c.super_name == "SSF2Platform")?;
-    let body_of = |name: &str| class.instance_methods.iter().find(|t| t.name == name)
-        .and_then(|t| abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx));
-    let code_of = |name: &str| body_of(name)
-        .map(|b| decompiler::decompile_method(b, abc, name, &[]))
-        .unwrap_or_default();
-    let init = code_of("initialize");
-    let update = code_of("update");
-    let slot_default = |name: &str| class.instance_methods.iter()
-        .find(|t| t.name == name).and_then(|t| t.default);
-    // tiny eval for the FrameTimer arg ("30 * 13" / "390")
-    fn eval_expr(e: &str) -> Option<f64> {
-        let e = e.trim();
-        if let Some((a, b)) = e.split_once('*') {
-            return Some(a.trim().parse::<f64>().ok()? * b.trim().parse::<f64>().ok()?);
-        }
-        e.parse::<f64>().ok()
-    }
-    let mut out = PlatformBehavior::default();
-    if let Some(c) = regex::Regex::new(r"new FrameTimer\(([^)]+)\)").unwrap().captures(&init) {
-        out.wait_frames = eval_expr(&c[1]);
-    }
-    // speeds: the slot referenced when moving down (+) is the sink, up (-) the rise.
-    if let Some(c) = regex::Regex::new(r"getY\(\) \+ self\.(\w+)").unwrap().captures(&update) {
-        out.sink_speed = slot_default(&c[1]);
-    }
-    if let Some(c) = regex::Regex::new(r"getY\(\) - self\.(\w+)").unwrap().captures(&update) {
-        out.rise_speed = slot_default(&c[1]);
-    }
-    // the rest/sunk caps: the two getY() comparisons; depth = max - min.
-    let caps: Vec<f64> = regex::Regex::new(r"getY\(\) *(?:<=|>=|<|>) *(-?\d+(?:\.\d+)?)").unwrap()
-        .captures_iter(&update)
-        .filter_map(|c| c[1].parse::<f64>().ok())
-        .collect();
-    if caps.len() >= 2 {
-        let lo = caps.iter().cloned().fold(f64::MAX, f64::min);
-        let hi = caps.iter().cloned().fold(f64::MIN, f64::max);
-        if hi > lo { out.sink_depth = Some(hi - lo); }
     }
     Some(out)
 }
@@ -2755,7 +3568,7 @@ pub(crate) fn dump_class(abc: &AbcFile, class_name: &str) {
 /// 30fps SSF2 units.
 pub(crate) fn extract_frame_velocities(abc: &AbcFile, class_name: &str) -> Vec<(u32, f64)> {
     let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return Vec::new() };
-    let re = regex::Regex::new(r"setYSpeed\((-?\d+(?:\.\d+)?)\)").unwrap();
+    let re = crate::re!(r"setYSpeed\((-?\d+(?:\.\d+)?)\)");
     let mut out: Vec<(u32, f64)> = Vec::new();
     for t in &class.instance_methods {
         let Some(n) = t.name.strip_prefix("frame").and_then(|s| s.parse::<u32>().ok()) else { continue };
@@ -2771,8 +3584,8 @@ pub(crate) fn extract_frame_velocities(abc: &AbcFile, class_name: &str) -> Vec<(
 
 pub(crate) fn extract_timeline_hold(abc: &AbcFile, class_name: &str) -> Option<TimelineHold> {
     let class = abc.classes.iter().find(|c| c.name == class_name)?;
-    let stop_re = regex::Regex::new(r"\bstop\(\)").unwrap();
-    let goto_re = regex::Regex::new(r#"gotoAndStop\((?:"([^"]+)"|(\d+))"#).unwrap();
+    let stop_re = crate::re!(r"\bstop\(\)");
+    let goto_re = crate::re!(r#"gotoAndStop\((?:"([^"]+)"|(\d+))"#);
     // playback freezes at the FIRST frame whose script holds (it never plays past it).
     let mut best: Option<(u32, TimelineHold)> = None;
     for t in &class.instance_methods {
@@ -2792,6 +3605,56 @@ pub(crate) fn extract_timeline_hold(abc: &AbcFile, class_name: &str) -> Option<T
     best.map(|(_, h)| h)
 }
 
+/// A clip that plays ITS OWN labelled segment, and the labels it chooses between.
+///
+/// A segment that sends playback back to the label it sits on is a LOOP, stated by the source
+/// rather than left to Flash's default -- and when the label is built from a random number
+/// (`"loop_" + randomInteger(1, 4)`), the clip is really several loops and the object picks one.
+/// Clocktown's meteor is four eight-frame tumbles chosen at spawn, which read as one thirty-three
+/// frame animation if the labels are ignored.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SelfPlayedLabels {
+    /// The frames (1-based) whose script re-plays a label.
+    pub at: Vec<u32>,
+    /// The labels chosen between, in order, when the label is picked at random. Empty when the
+    /// script names one label outright.
+    pub pick_between: Vec<String>,
+}
+
+/// Read a clip's frame scripts for it playing one of its OWN labels (`stancePlayFrame(...)`).
+pub(crate) fn extract_self_played_labels(abc: &AbcFile, class_name: &str) -> Option<SelfPlayedLabels> {
+    let class = abc.classes.iter().find(|c| c.name == class_name)?;
+    // `stancePlayFrame("prefix_" + field)` — the label is built, so the segment is chosen
+    let built = crate::re!(r#"stancePlayFrame\("([^"]*)"\s*\+\s*self\.(\w+)"#);
+    let plain = crate::re!(r#"stancePlayFrame\("([^"]+)"\s*\)"#);
+    // `self.field = safeRandomInteger(1, 4)` / `randomInteger(1, 4)` — what it is chosen from
+    let pick = crate::re!(r"self\.(\w+)\s*=\s*[\w.]*[Rr]andomInteger\((\d+),\s*(\d+)\)");
+    let (mut at, mut prefix_field, mut ranges) = (Vec::new(), None, std::collections::BTreeMap::new());
+    for t in &class.instance_methods {
+        let Some(n) = t.name.strip_prefix("frame").and_then(|s| s.parse::<u32>().ok()) else { continue };
+        let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
+        let code = decompiler::decompile_method(body, abc, &t.name, &[]);
+        for c in pick.captures_iter(&code) {
+            if let (Ok(lo), Ok(hi)) = (c[2].parse::<u32>(), c[3].parse::<u32>()) {
+                ranges.insert(c[1].to_string(), (lo, hi));
+            }
+        }
+        if let Some(c) = built.captures(&code) {
+            at.push(n);
+            prefix_field = Some((c[1].to_string(), c[2].to_string()));
+        } else if plain.is_match(&code) {
+            at.push(n);
+        }
+    }
+    if at.is_empty() { return None; }
+    at.sort_unstable();
+    let pick_between = prefix_field.and_then(|(prefix, field)| {
+        let (lo, hi) = ranges.get(&field)?;
+        Some((*lo..=*hi).map(|i| format!("{prefix}{i}")).collect::<Vec<_>>())
+    }).unwrap_or_default();
+    Some(SelfPlayedLabels { at, pick_between })
+}
+
 /// What a clip's own timeline does at the end of a labelled segment, from the Flash frame script
 /// on that frame. These are what make a multi-label clip a STATE MACHINE rather than a loop: the
 /// segments are chained (or branched between) by them, and a segment no jump ever reaches is dead
@@ -2803,21 +3666,67 @@ pub enum LabelJump {
     /// `if (safeRandom() > t) gotoAndPlay("target")`: taken `pct` percent of the time, otherwise
     /// playback runs on into whatever frame follows.
     Chance { pct: u32, target: String },
+    /// `stop()`: the playhead halts on this frame and stays until something outside the clip
+    /// moves it (the stage's code, by label). A plane that holds a section is one of these.
+    Stop,
+    /// `gotoAndStop("target")`: the playhead moves to the label and halts on its first frame.
+    Hold(String),
+    /// `gotoAndPlay(currentFrame - k)` or `gotoAndPlay(k)`: a move by FRAME (1-based), resolved to
+    /// the label whose span holds that frame once the labels are known. A clip that steps back a
+    /// frame from its second frame is holding its first segment as a two-frame loop.
+    ToFrame(u32),
 }
 
-/// Every `gotoAndPlay` a Flash timeline class performs, by 1-based frame. Universal: any SSF2 clip
-/// whose segments are chained this way, not just backdrop art.
+/// Every timeline move a Flash clip class performs on itself (`gotoAndPlay`, `gotoAndStop`,
+/// `stop`), by 1-based frame. Universal: any SSF2 clip whose segments are chained this way, not
+/// just backdrop art.
+/// Every frame script a clip class carries, as the decompiler reads it, by frame number (1-based).
+/// A plane's timeline runs these as it reaches the frame: mushroom kingdom 3's terrain flips the
+/// `fallthrough` of each section at each phase label.
+pub(crate) fn extract_frame_scripts(abc: &AbcFile, class_name: &str) -> Vec<(u32, String)> {
+    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return Vec::new() };
+    let mut out = Vec::new();
+    for t in &class.instance_methods {
+        let Some(n) = t.name.strip_prefix("frame").and_then(|s| s.parse::<u32>().ok()) else { continue };
+        let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
+        out.push((n, decompiler::decompile_method(body, abc, &t.name, &[])));
+    }
+    out.sort_by_key(|(f, _)| *f);
+    out
+}
+
 pub(crate) fn extract_label_jumps(abc: &AbcFile, class_name: &str) -> Vec<(u32, LabelJump)> {
     let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return Vec::new() };
-    let goto_re = regex::Regex::new(r#"gotoAndPlay\("([^"]+)"\)"#).unwrap();
+    let goto_re = crate::re!(r#"gotoAndPlay\("([^"]+)"\)"#);
+    let goto_stop_re = crate::re!(r#"gotoAndStop\("([^"]+)"\)"#);
+    let goto_back_re = crate::re!(r"gotoAndPlay\(\s*(?:self\.)?currentFrame\s*-\s*(\d+)\s*\)");
+    let goto_num_re = crate::re!(r"gotoAndPlay\(\s*(\d+)\s*\)");
+    // a stop a frame back (`gotoAndStop(currentFrame - 1)` on every even frame of a digit clip)
+    // is the clip holding where it is: each pair of frames is one held picture
+    let stop_back_re = crate::re!(r"gotoAndStop\(\s*(?:(?:self\.)?currentFrame\s*-\s*\d+|\d+)\s*\)");
+    let stop_re = crate::re!(r"(?m)(?:^|[^A-Za-z0-9_.])(?:self\.)?stop\(\)");
     // the SSF2 RNG is uniform [0,1), so `> t` fires with probability 1-t and `< t` with t.
-    let rand_re = regex::Regex::new(r"safeRandom\(\)\s*([<>])\s*([0-9]*\.?[0-9]+)").unwrap();
+    let rand_re = crate::re!(r"safeRandom\(\)\s*([<>])\s*([0-9]*\.?[0-9]+)");
     let mut out = Vec::new();
     for t in &class.instance_methods {
         let Some(n) = t.name.strip_prefix("frame").and_then(|s| s.parse::<u32>().ok()) else { continue };
         let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
         let code = decompiler::decompile_method(body, abc, &t.name, &[]);
-        let Some(g) = goto_re.captures(&code) else { continue };
+        let Some(g) = goto_re.captures(&code) else {
+            if let Some(h) = goto_stop_re.captures(&code) {
+                out.push((n, LabelJump::Hold(h[1].to_string())));
+            } else if stop_back_re.is_match(&code) {
+                out.push((n, LabelJump::Stop));
+            } else if let Some(b) = goto_back_re.captures(&code) {
+                let k: u32 = b[1].parse().unwrap_or(0);
+                out.push((n, LabelJump::ToFrame(n.saturating_sub(k).max(1))));
+            } else if let Some(b) = goto_num_re.captures(&code) {
+                out.push((n, LabelJump::ToFrame(b[1].parse::<u32>().unwrap_or(1).max(1))));
+            } else if stop_re.is_match(&code) {
+                out.push((n, LabelJump::Stop));
+            }
+            continue;
+        };
         let target = g[1].to_string();
         // a random test anywhere in the same frame script is taken to guard the jump: these
         // scripts are a couple of statements long, so there is nothing else for it to guard.
@@ -2837,11 +3746,14 @@ pub(crate) fn extract_label_jumps(abc: &AbcFile, class_name: &str) -> Vec<(u32, 
 pub(crate) fn extract_force_attack_labels(abc: &AbcFile, class_name: &str) -> Vec<String> {
     let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return vec![] };
     let mut v = ForceAttackVisitor::default();
-    for m in ["initialize", "update", "runAI", "move", "releaseEnemy", "setState"] {
-        if let Some(t) = class.instance_methods.iter().find(|t| &*t.name == m) {
-            if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
-                scan_method(&body.bytecode, abc, &mut v);
-            }
+    // every method, not a list of six: a class plays its clips from wherever it likes, and the
+    // ones it plays from its own helpers were invisible. Bomb factory's block names five labels
+    // that way, so two of its six states had to be GUESSED an animation by value order.
+    for t in &class.instance_methods {
+        if t.kind != TRAIT_METHOD { continue; }
+        if DECLARATION_GETTERS.contains(&&*t.name) { continue; }
+        if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
+            scan_method(&body.bytecode, abc, &mut v);
         }
     }
     v.labels
@@ -2863,22 +3775,465 @@ const DECLARATION_GETTERS: &[&str] = &["getOwnStats", "getAttackStats"];
 /// stage class keeps its clock in `updateTime` and its weather in `runRain`, bowserscastle's has
 /// `bowserLaugh`, and a list would take the `update` that CALLS them and leave the bodies behind.
 /// What a class does is all of what it defines.
+/// ABC trait kinds: a slot, a method, a constant. The method list a class carries holds all three.
+const TRAIT_SLOT: u8 = 0;
+const TRAIT_METHOD: u8 = 1;
+/// A getter is as much part of a class's interface as a method: bomb factory's stage asks each
+/// block for its `xCell`, which the class answers with one. Skipped as "not a method" they were
+/// dropped, so the stage compared a cell number against nothing and cleared no row.
+const TRAIT_GETTER: u8 = 2;
+const TRAIT_SETTER: u8 = 3;
+const TRAIT_CONST: u8 = 6;
+
 pub(crate) fn reconstruct_class_script(abc: &AbcFile, class_name: &str) -> Option<String> {
-    let class = abc.classes.iter().find(|c| c.name == class_name)?;
+    // the class with every base the package carries, base-most first: what a base declares is
+    // the class's too, and an overriding method that calls up to the base keeps the base's
+    // version under its own name and calls that
+    let chain = class_chain(abc, class_name);
+    chain.last()?;
     let mut out = String::new();
-    // trait kind 1 is Method; the same list also carries the class's SLOTS (its fields), which
-    // have no body to decompile and come out as noise if fed to the decompiler.
-    const TRAIT_METHOD: u8 = 1;
-    for t in &class.instance_methods {
-        if t.kind != TRAIT_METHOD { continue; }
-        if DECLARATION_GETTERS.contains(&&*t.name) { continue; }
-        if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) {
-            let raw = crate::decompiler::decompile_method(body, abc, &t.name, &[]);
-            out.push_str(&crate::api_mappings::translate_ssf2_to_fm(&raw));
-            out.push('\n');
+    let statics: Vec<(&str, String)> = chain.iter().flat_map(|c| c.class_methods.iter())
+        .filter(|t| t.kind == TRAIT_SLOT || t.kind == TRAIT_CONST)
+        .filter_map(|t| const_rhs(t).map(|v| (&*t.name, v)))
+        .collect();
+    let consts: Vec<(&str, String)> = chain.iter().flat_map(|c| c.instance_methods.iter())
+        .filter(|t| t.kind == TRAIT_SLOT || t.kind == TRAIT_CONST)
+        .filter_map(|t| const_rhs(t).map(|v| (&*t.name, v)))
+        .chain(statics.iter().map(|(n, v)| (*n, v.clone())))
+        .collect();
+    for (name, value) in &consts {
+        out.push_str(&format!("var {name} = {value};\n"));
+    }
+    // a static whose value is computed (a list of points, a product of frame counts) is filled in
+    // by the class's own static initializer: its assignments, base-first, become the script's
+    // own values (fairy glade's `PIRANHA_SPAWN_LOCATIONS`)
+    let mut statics_done: Vec<String> = consts.iter().map(|(n, _)| n.to_string()).collect();
+    let mut cinit_lines: Vec<String> = Vec::new();
+    for c in &chain {
+        if c.class_init_idx == 0 { continue }
+        let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == c.class_init_idx) else { continue };
+        let raw = crate::decompiler::decompile_method(body, abc, "__cinit", &[]);
+        let translated = crate::api_mappings::translate_ssf2_to_fm(&raw);
+        for l in translated.lines().skip_while(|l| !l.starts_with("function __cinit(")).skip(1).take_while(|l| !l.starts_with('}')) {
+            let l = l.trim();
+            let Some(rest) = l.strip_prefix("self.") else { continue };
+            let Some(name) = rest.split(|ch: char| !(ch.is_alphanumeric() || ch == '_')).next() else { continue };
+            if name.is_empty() || !rest[name.len()..].trim_start().starts_with('=') || statics_done.iter().any(|d| d == name) { continue }
+            statics_done.push(name.to_string());
+            cinit_lines.push(format!("var {rest}"));
         }
     }
+    for l in &cinit_lines { out.push_str(l); out.push('\n'); }
+    if !consts.is_empty() || !cinit_lines.is_empty() { out.push('\n'); }
+    // a field declared with a type starts at that type's zero (`name=0`): a phase counter
+    // declared `int` is 0 before the class writes it, and read as null it matches no phase
+    // a slot whose name is not a plain identifier (a private or namespace-qualified member whose
+    // resolved QName carries punctuation, or a garbled read) can never be a var the script names,
+    // and emitting it as `var <junk> = null` stops the whole script parsing. drop it.
+    let is_ident = |n: &str| {
+        let mut cs = n.chars();
+        cs.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    // the marker packs `name=value` pairs separated by whitespace, so only a value with NO
+    // whitespace can ride it: a numeric zero (`m_action=0`) is fine, but a string default full
+    // of spaces and newlines (kingdom1's `hudTextString` HUD template) would be shattered by the
+    // reader's split into a broken `name="firstword` plus a bogus var per remaining word. a
+    // slot whose default carries whitespace ships as the bare name (null-initialised); its
+    // default is set by the class's own code at runtime.
+    let fields: Vec<String> = chain.iter().flat_map(|c| c.instance_methods.iter())
+        .filter(|t| t.kind == TRAIT_SLOT && t.default.is_none())
+        .filter(|t| is_ident(&t.name))
+        .map(|t| match const_rhs(t) {
+            Some(v) if !v.chars().any(char::is_whitespace) => format!("{}={v}", t.name),
+            _ => t.name.to_string(),
+        })
+        .collect();
+    if !fields.is_empty() {
+        out.push_str(&format!("// [class-fields] {}\n\n", fields.join(" ")));
+    }
+    // one construction, base-first: each class's own setup in turn, as the source runs them
+    // (two functions of one name would leave only the last, and the base's setup with it)
+    let mut built: Vec<String> = Vec::new();
+    for c in &chain {
+        if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == c.constructor_idx) {
+            let raw = crate::decompiler::decompile_method(body, abc, "__built", &[]);
+            let translated = crate::api_mappings::translate_ssf2_to_fm(&raw);
+            let kept: Vec<&str> = translated.lines()
+                .filter(|l| !l.contains("super(") && !l.trim().starts_with("//"))
+                .collect();
+            if kept.iter().any(|l| l.contains("self.")) {
+                // the body between the signature line and the closing brace
+                let inner: Vec<&str> = translated.lines()
+                    .skip_while(|l| !l.starts_with("function __built("))
+                    .skip(1)
+                    .take_while(|l| !l.starts_with('}'))
+                    .filter(|l| l.trim() != "return;")
+                    .collect();
+                built.push(inner.join("\n"));
+            }
+        }
+    }
+    if !built.is_empty() {
+        out.push_str("function __built() {\n");
+        for b in &built { out.push_str(b); out.push('\n'); }
+        out.push_str("\treturn;\n}\n\n");
+    }
+    // every method by name, the most derived body winning; a base's body a derived one calls
+    // up to is kept as `<name>__base` and the call goes there
+    let mut bodies: Vec<(String, String)> = Vec::new();
+    let super_call = crate::re!(r"(?m)^(\s*)// (?:super|self)\.(\w+)\((.*)\)\s*$");
+    for c in &chain {
+        for t in &c.instance_methods {
+            if t.kind != TRAIT_METHOD && t.kind != TRAIT_GETTER { continue; }
+            if DECLARATION_GETTERS.contains(&&*t.name) { continue; }
+            let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
+            let params: Vec<String> = abc.methods.get(body.method_idx as usize)
+                .map(|m| (0..m.param_count).map(|i| format!("arg{i}")).collect())
+                .unwrap_or_default();
+            let raw = crate::decompiler::decompile_method(body, abc, &t.name, &params);
+            let mut text = String::new();
+            if t.kind == TRAIT_GETTER { text.push_str("// [getter]\n"); }
+            text.push_str(&crate::api_mappings::translate_ssf2_to_fm(&raw));
+            text.push('\n');
+            let mut renames: Vec<(usize, String)> = Vec::new();
+            let text = super_call.replace_all(&text, |cap: &regex::Captures| {
+                let name = cap[2].to_string();
+                match bodies.iter().position(|(n, _)| *n == name) {
+                    Some(i) => {
+                        let base_name = format!("{name}__base");
+                        renames.push((i, base_name.clone()));
+                        format!("{}{base_name}({});", &cap[1], &cap[3])
+                    }
+                    None => cap[0].to_string(),
+                }
+            }).into_owned();
+            for (i, base_name) in renames {
+                let (n, b) = bodies[i].clone();
+                bodies[i] = (base_name.clone(), b.replacen(&format!("function {n}("), &format!("function {base_name}("), 1));
+            }
+            match bodies.iter().position(|(n, _)| *n == *t.name) {
+                Some(i) => bodies[i] = (t.name.to_string(), text),
+                None => bodies.push((t.name.to_string(), text)),
+            }
+        }
+    }
+    for (_, text) in &bodies { out.push_str(text); }
+    for (name, _) in &consts {
+        out = out.replace(&format!("self.{name}"), name);
+    }
+    // ...and a static named THROUGH the class is the same static. `PeachsCastleBlock.RED` is how
+    // a class reads its own kinds as often as it reads them bare, and the class is not a thing
+    // here -- only the names it states are. They are written above, so the reads point at them.
+    for (name, _) in &statics {
+        out = out.replace(&format!("{class_name}.{name}"), name);
+    }
     (!out.trim().is_empty()).then_some(out)
+}
+
+/// Reconstruct a helper class the character's own code builds with `new`, as a factory
+/// that hands back one of them.
+///
+/// The target has no classes, so a class becomes a function that builds a structure: its
+/// fields are that structure's fields and its methods are functions kept on it, closing
+/// over it. The caller's `new X(a)` becomes `X__new(a)` and everything it does with the
+/// result afterwards -- `it.update()`, `it.bulletStatsName = "..."` -- reads the same.
+///
+/// Written this way rather than as a flat script because a character can build more than
+/// one, and because flat functions would put the class's own state in the same place as
+/// the character's, where two fields of the same name are one field.
+/// A class and every class it extends THAT THE PACKAGE ITSELF CARRIES, base-most first. The
+/// engine's own bases (the enemy, the platform, a clip) are not in the package and end the
+/// chain. What a class inherits is written once in its base, so a port that reads only the
+/// class's own methods loses the base's: casino night zone's bumpers set their rectangle and
+/// their attack record in the base every one of them extends.
+pub(crate) fn class_chain<'a>(abc: &'a AbcFile, class_name: &str) -> Vec<&'a Class> {
+    let mut chain: Vec<&Class> = Vec::new();
+    let mut cur = abc.classes.iter().find(|c| c.name == class_name);
+    while let Some(c) = cur {
+        if chain.iter().any(|k| k.name == c.name) { break }
+        // the package's own api layer sits under the author's classes: shims that forward
+        // every call to a handle on the engine. That layer is the engine's, not the class's,
+        // and the chain ends there (the stage class extends it; merging it in put the shims'
+        // handle fields into the stage script and the engine refused to load it)
+        if !chain.is_empty() && is_api_shim(abc, c) { break }
+        chain.push(c);
+        cur = class_named(abc, &c.super_name).filter(|b| b.name != c.name);
+    }
+    chain.reverse();
+    chain
+}
+
+/// A class of the package's api layer: it keeps a handle to the engine (`m_api` / `_api`) and
+/// its methods forward to it. Read off the class itself, since every package carries this layer
+/// under the same shape and an author's class never holds such a handle.
+fn is_api_shim(abc: &AbcFile, class: &Class) -> bool {
+    let has_handle = class.instance_methods.iter()
+        .any(|t| (t.kind == TRAIT_SLOT || t.kind == TRAIT_CONST) && matches!(&*t.name, "m_api" | "_api" | "$ext"));
+    if has_handle { return true }
+    // ...or its methods are nothing but forwards to such a handle held by its base
+    let forwards = class.instance_methods.iter().filter(|t| t.kind == TRAIT_METHOD).take(6).filter(|t| {
+        abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx).is_some_and(|body| {
+            let raw = crate::decompiler::decompile_method(body, abc, &t.name, &[]);
+            raw.contains("m_api.") || raw.contains("_api.")
+        })
+    }).count();
+    forwards >= 2
+}
+
+/// A method by name on the class or the nearest base above it that the package carries.
+pub(crate) fn method_in_chain<'a>(abc: &'a AbcFile, class_name: &str, name: &str) -> Option<&'a Trait> {
+    class_chain(abc, class_name).iter().rev()
+        .find_map(|c| c.instance_methods.iter().find(|t| &*t.name == name))
+}
+
+/// The class by that name, whether the package states it plainly or with the package
+/// path it sits under.
+pub(crate) fn class_named<'a>(abc: &'a AbcFile, name: &str) -> Option<&'a Class> {
+    abc.classes.iter().find(|c| c.name == name)
+        .or_else(|| abc.classes.iter().find(|c| {
+            c.name.rsplit([':', '.']).next().is_some_and(|tail| tail == name)
+        }))
+}
+
+/// A method's parameters as an hscript signature: every one optional (the source calls with as
+/// many arguments as it likes), and one the source declares a numeric default for carries it.
+/// Without the default a bare call reads the parameter as nothing: castle siege's action timer
+/// is ticked with `tick()` and the source's `tick(frames = 1)` added one a frame; ported without
+/// the one it added nothing, and the siege never moved.
+/// The signature, and the lines that give a missing argument its declared default: the target's
+/// script ignores a default written in the signature (measured: a bare call still read the
+/// parameter as null), so it is applied on the way in.
+fn optional_sig(m: Option<&Method>) -> (Vec<String>, Vec<String>) {
+    let Some(m) = m else { return (Vec::new(), Vec::new()) };
+    let pc = m.param_count as usize;
+    let first_optional = pc.saturating_sub(m.optionals.len());
+    let sig = (0..pc).map(|i| format!("?arg{i}")).collect();
+    let defaults = (0..pc).filter_map(|i| {
+        let lit = if i >= first_optional { m.optional_defaults.get(i - first_optional).cloned().flatten() } else { None }?;
+        Some(format!("\t\tif (arg{i} == null) {{ arg{i} = {lit}; }}\n"))
+    }).collect();
+    (sig, defaults)
+}
+
+/// A decompiled method with its declared parameter defaults applied on the way in: the target's
+/// script ignores a default written in the signature, so a bare call read the parameter as
+/// null. Inserted after the function's opening line.
+pub fn with_param_defaults(code: String, m: Option<&Method>) -> String {
+    let Some(m) = m else { return code };
+    let pc = m.param_count as usize;
+    let first_optional = pc.saturating_sub(m.optional_defaults.len());
+    let lines: Vec<String> = (0..pc).filter_map(|i| {
+        let lit = if i >= first_optional { m.optional_defaults.get(i - first_optional).cloned().flatten() } else { None }?;
+        Some(format!("\tif (arg{i} == null) {{ arg{i} = {lit}; }}\n"))
+    }).collect();
+    if lines.is_empty() { return code; }
+    match code.find("{\n") {
+        Some(at) => format!("{}{}{}", &code[..at + 2], lines.join(""), &code[at + 2..]),
+        None => code,
+    }
+}
+
+pub fn reconstruct_class_as_factory(abc: &AbcFile, class_name: &str) -> Option<String> {
+    let class = class_named(abc, class_name)?;
+    let ctor_params: Vec<String> = abc.method_bodies.iter()
+        .find(|b| b.method_idx == class.constructor_idx)
+        .and_then(|b| abc.methods.get(b.method_idx as usize))
+        .map(|m| (0..m.param_count).map(|i| format!("arg{i}")).collect())
+        .unwrap_or_default();
+
+    // optional, for the same reason a method's are: the source builds a class with as
+    // many arguments as it feels like and the target counts them
+    let (sig, defaults) = optional_sig(abc.method_bodies.iter()
+        .find(|b| b.method_idx == class.constructor_idx)
+        .and_then(|b| abc.methods.get(b.method_idx as usize)));
+    let mut out = format!("function {class_name}__new({}) {{\n{}\tvar it = {{}};\n",
+        sig.join(", "), defaults.join("").replace("\t\tif", "\tif"));
+
+    // what the class states about itself, before anything runs
+    for t in &class.instance_methods {
+        if t.kind != TRAIT_SLOT && t.kind != TRAIT_CONST { continue }
+        let rhs = const_rhs(t).unwrap_or_else(|| "null".to_string());
+        out.push_str(&format!("\tit.{} = {rhs};\n", t.name));
+    }
+
+    // AN ACCESSOR IS CODE, NOT A VALUE. A getter is read without parentheses and answers
+    // from the object's state, so it is kept as a FIELD the reader can read the way the source
+    // does -- and that field is worked out again every time anything on the object runs, since
+    // that is when the state it answers from can have changed. A getter worked out once, at
+    // construction, is a value frozen before the object has done anything: a frame timer's
+    // `completed` read true from its first frame and never otherwise, and a stage asked its
+    // arwing to arrive on every frame of the match.
+    //
+    // A setter is the same the other way round: a write to its name must run its body, so
+    // the body is kept as `__set_<name>` and every write to the name, here and wherever the
+    // object is handed to, becomes a call to it (see `factory_setters`).
+    let getters: Vec<&Trait> = class.instance_methods.iter().filter(|t| t.kind == TRAIT_GETTER).collect();
+    let setters: Vec<&Trait> = class.instance_methods.iter().filter(|t| t.kind == TRAIT_SETTER).collect();
+    let refresh: String = getters.iter().map(|t| format!("\t\tit.{0} = it.__get_{0}();\n", t.name)).collect();
+    for t in &class.instance_methods {
+        if t.kind != TRAIT_METHOD && t.kind != TRAIT_GETTER && t.kind != TRAIT_SETTER { continue }
+        let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else {
+            continue
+        };
+        let params: Vec<String> = abc.methods.get(body.method_idx as usize)
+            .map(|m| (0..m.param_count).map(|i| format!("arg{i}")).collect())
+            .unwrap_or_default();
+        let raw = crate::decompiler::decompile_method(body, abc, &t.name, &params);
+        let translated = crate::api_mappings::translate_ssf2_to_fm(&raw);
+        let lines = body_of(&translated);
+        // optional, like every other ported method: whoever calls one back decides how
+        // many arguments it gets, and the target refuses the call when they do not match
+        let (sig, defaults) = optional_sig(abc.methods.get(body.method_idx as usize));
+        let fname = match t.kind {
+            TRAIT_GETTER => format!("__get_{}", t.name),
+            TRAIT_SETTER => format!("__set_{}", t.name),
+            _ => t.name.clone(),
+        };
+        out.push_str(&format!("\tit.{fname} = function({}) {{\n{}", sig.join(", "), defaults.join("")));
+        // a method or a setter changes what the getters answer, so they are worked out again
+        // on the way out of it: before each return, and at the end
+        // a write to a setter's name inside the class runs the setter (the refresh lines
+        // added below assign the getter fields and must stay assignments, so this is done
+        // to the body first)
+        let body_lines: Vec<String> = lines.iter().map(|l| {
+            let mut l = l.trim_end().to_string();
+            for s in &setters {
+                let re = crate::dyn_re(&format!(r"^(\s*)(?:self|it)\.{}\s*=\s*([^=][^;]*);", regex::escape(&s.name)));
+                l = re.replace(&l, format!("${{1}}it.__set_{}(${{2}});", s.name)).to_string();
+            }
+            l
+        }).collect();
+        for line in &body_lines {
+            if t.kind != TRAIT_GETTER && line.trim().starts_with("return") && !refresh.is_empty() {
+                out.push_str(&refresh);
+            }
+            out.push_str(&format!("\t\t{line}\n"));
+        }
+        if t.kind != TRAIT_GETTER && !body_lines.last().is_some_and(|l| l.trim().starts_with("return")) {
+            out.push_str(&refresh);
+        }
+        out.push_str("\t};\n");
+    }
+
+    // WHAT IT BUILDS BEFORE IT STARTS, last: the constructor reaches for what the class
+    // can do -- it hands one of its own methods to a listener -- so everything it can do
+    // has to be on it before the constructor runs, even though the source states the
+    // constructor first.
+    if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == class.constructor_idx) {
+        let raw = crate::decompiler::decompile_method(body, abc, "__built", &ctor_params);
+        let translated = crate::api_mappings::translate_ssf2_to_fm(&raw);
+        for line in body_of(&translated) {
+            if line.contains("super(") { continue }
+            // the constructor's own `return` ends the factory before it hands anything back
+            if line.trim() == "return;" { continue }
+            let mut l = line.trim_end().to_string();
+            for s in &setters {
+                let re = crate::dyn_re(&format!(r"^(\s*)(?:self|it)\.{}\s*=\s*([^=][^;]*);", regex::escape(&s.name)));
+                l = re.replace(&l, format!("${{1}}it.__set_{}(${{2}});", s.name)).to_string();
+            }
+            out.push_str(&format!("\t{l}\n"));
+        }
+    }
+
+    // what the getters answer once everything is built
+    for t in &getters {
+        out.push_str(&format!("\tit.{0} = it.__get_{0}();\n", t.name));
+    }
+    out.push_str("\treturn it;\n}\n");
+    // inside the class, what it says about itself is about the one being built
+    let mut out = out.replace("self.", "it.");
+
+    // and a field it names on its own, without saying whose it is, is still its own:
+    // a class reads its fields bare as often as it says `self` first.
+    // Which names are its own, taken from what the structure being built actually gets:
+    // a class does not always DECLARE its fields where the declaration can be read, but
+    // it always sets them, and what it sets is what it has.
+    let own: std::collections::BTreeSet<String> = {
+        let re = crate::re!(r"(?m)^\s*it\.([A-Za-z_]\w*)\s*=");
+        re.captures_iter(&out).map(|c| c[1].to_string()).collect()
+    };
+    for name in &own {
+        if name.is_empty() { continue }
+        out = bind_bare_name_to_instance(&out, name);
+    }
+    // A write to one of its own fields comes back through the decompiler naming the
+    // field twice, once as the thing being written and once as what it is written on
+    // (`m_duration.m_duration = 4`). A field's own name repeated can only be that
+    // field, so it is said once.
+    for name in &own {
+        if name.is_empty() { continue }
+        out = out.replace(&format!("it.{name}.{name}"), &format!("it.{name}"));
+    }
+    // the setters, named on the first line for whoever hands the object around (after the
+    // rewrites above, which would otherwise rename them as fields of the thing being built)
+    if !setters.is_empty() {
+        let marker = format!("\tvar it = {{}};\n\t// setters: {}\n",
+            setters.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(","));
+        out = out.replacen("\tvar it = {};\n", &marker, 1);
+    }
+    Some(out)
+}
+
+/// Point a bare mention of one of the class's own fields at the one being built.
+///
+/// Not the ones already said as `it.name`, not a longer name that merely starts or ends
+/// with this one, and not where it is the name being given a value on the structure.
+fn bind_bare_name_to_instance(code: &str, name: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let mut rest = code;
+    while let Some(rel) = rest.find(name) {
+        let (before, tail) = rest.split_at(rel);
+        let after = &tail[name.len()..];
+        let prev_ok = before.chars().next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.'));
+        let next_ok = after.chars().next()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        out.push_str(before);
+        if prev_ok && next_ok { out.push_str("it."); }
+        out.push_str(name);
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Reconstruct a class the character's code only ever READS names off, as the set of
+/// names it states. A class of nothing but constants is a place to keep names, and here
+/// that is a structure with those names on it.
+pub(crate) fn reconstruct_class_as_constants(abc: &AbcFile, class_name: &str) -> Option<String> {
+    let class = class_named(abc, class_name)?;
+    let mut entries: Vec<String> = Vec::new();
+    // ordinal fallback: a class of names states them in the order it lists them, and the
+    // source only ever compares one against another, so what matters is that they differ
+    let mut next = 0i64;
+    for t in class.class_methods.iter().chain(class.instance_methods.iter()) {
+        if t.kind != TRAIT_SLOT && t.kind != TRAIT_CONST { continue }
+        if t.name.is_empty() { continue }
+        let rhs = const_rhs(t).unwrap_or_else(|| { next += 1; format!("{}", next - 1) });
+        entries.push(format!("\t{}: {rhs}", t.name));
+    }
+    if entries.is_empty() { return None }
+    Some(format!("var {class_name} = {{\n{}\n}};\n", entries.join(",\n")))
+}
+
+/// The lines inside a rendered `function name(...) { ... }`, without its wrapper./// The lines inside a rendered `function name(...) { ... }`, without its wrapper.
+fn body_of(rendered: &str) -> Vec<String> {
+    let mut lines: Vec<&str> = rendered.lines().collect();
+    while lines.first().is_some_and(|l| !l.contains('{')) { lines.remove(0); }
+    if !lines.is_empty() { lines.remove(0); }
+    while lines.last().is_some_and(|l| l.trim().is_empty()) { lines.pop(); }
+    // exactly ONE closer: the function's own. The ones before it close the blocks
+    // inside it, and taking those leaves every one of them open.
+    if lines.last().is_some_and(|l| l.trim() == "}") { lines.pop(); }
+    while lines.last().is_some_and(|l| l.trim().is_empty()) { lines.pop(); }
+    lines.iter()
+        .map(|l| l.strip_prefix('\t').unwrap_or(l).to_string())
+        // a call up to what the class extends has nothing above it here
+        .map(|l| if l.contains("super(") || l.contains("super.") {
+            format!("// [SSF2-only: super] {}", l.trim_start())
+        } else { l })
+        .collect()
 }
 
 pub(crate) fn reconstruct_enemy_script(abc: &AbcFile, class_name: &str) -> Option<String> {
@@ -2890,23 +4245,91 @@ pub(crate) fn reconstruct_enemy_script(abc: &AbcFile, class_name: &str) -> Optio
 /// has no getAttackStats or no recoverable hitbox. Pairs with [`extract_own_stats_for`].
 pub(crate) fn extract_attack_stats_for(abc: &AbcFile, class_name: &str) -> Vec<BTreeMap<String, f64>> {
     let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return vec![] };
-    let Some(t) = class.instance_methods.iter().find(|t| &*t.name == "getAttackStats") else { return vec![] };
-    let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { return vec![] };
-    let mut v = HazardAttackVisitor { best: vec![] };
-    scan_method(&body.bytecode, abc, &mut v);
-    v.best
+    // A class states its hit wherever it keeps it. Most put it in `getAttackStats`; a projectile
+    // usually carries it inside its OWN stats instead, under the attack it is doing
+    // (`attack_idle: { attackBoxes: { attackBox: { damage: 3, … } } }`). Reading only the first
+    // shipped saffroncity's leaf and charmander fire with no damage at all, because the boxes they
+    // declare are in the other place.
+    for want in ["getAttackStats", "getOwnStats"] {
+        let Some(t) = class.instance_methods.iter().find(|t| &*t.name == want) else { continue };
+        let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
+        let mut v = HazardAttackVisitor { best: vec![] };
+        scan_method(&body.bytecode, abc, &mut v);
+        if !v.best.is_empty() { return v.best; }
+    }
+    vec![]
 }
 
 /// The flat scalar fields a hazard class's `getOwnStats` declares (size, speeds, timers — e.g. the
 /// HyruleTornado's `xSpeed`/`maxTime`). Authoritative motion/own params instead of guessed defaults.
 pub(crate) fn extract_own_stats_for(abc: &AbcFile, class_name: &str) -> BTreeMap<String, f64> {
-    let Some(class) = abc.classes.iter().find(|c| c.name == class_name) else { return BTreeMap::new() };
-    let Some(t) = class.instance_methods.iter().find(|t| &*t.name == "getOwnStats") else { return BTreeMap::new() };
+    let Some(t) = method_in_chain(abc, class_name, "getOwnStats") else { return BTreeMap::new() };
     let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { return BTreeMap::new() };
     let mut v = OwnStatsVisitor { best: BTreeMap::new() };
     scan_method(&body.bytecode, abc, &mut v);
+    if std::env::var("PEPTIDE_DUMP_OWN_STATS").is_ok() {
+        for (k, val) in &v.best { eprintln!("[own-stat] {k} = {val}"); }
+    }
     v.best
 }
+/// The projectiles a class declares in `getProjectileStats`, keyed by the name its own code fires
+/// them under. The declaration carries the linkage the art is registered as, so a stage object's
+/// projectile is found the way a fighter's is: by what the class says, not by what it is called.
+pub(crate) fn extract_projectiles_for(abc: &AbcFile, class_name: &str) -> BTreeMap<String, ProjectileData> {
+    let Some(t) = method_in_chain(abc, class_name, "getProjectileStats") else { return BTreeMap::new() };
+    let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { return BTreeMap::new() };
+    extract_projectile_objects(&body.bytecode, abc)
+}
+/// The yes/no declarations a class makes about itself in `getOwnStats`.
+///
+/// A class states how it behaves as much as how big it is: whether fighters pass through it,
+/// whether a hit sends it flying. Those are the source's own words about the object and decide
+/// what the port has to arrange, so they are read alongside the numbers rather than dropped.
+pub(crate) fn extract_own_flags_for(abc: &AbcFile, class_name: &str) -> BTreeMap<String, bool> {
+    let Some(t) = method_in_chain(abc, class_name, "getOwnStats") else { return BTreeMap::new() };
+    let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { return BTreeMap::new() };
+    let mut v = OwnFlagsVisitor { best: BTreeMap::new() };
+    scan_method(&body.bytecode, abc, &mut v);
+    v.best
+}
+struct OwnFlagsVisitor {
+    best: BTreeMap<String, bool>,
+}
+impl AbcVisitor for OwnFlagsVisitor {
+    fn on_newobject(&mut self, obj: BTreeMap<String, StackVal>, _c: &Option<String>) -> NewObjectAction {
+        let flags: BTreeMap<String, bool> = obj.iter()
+            .filter_map(|(k, v)| if let StackVal::Bool(b) = v { Some((k.clone(), *b)) } else { None })
+            .collect();
+        // the outermost object is the one the method returns, and it is built last
+        if !flags.is_empty() { self.best = flags; }
+        NewObjectAction::PushObj(obj)
+    }
+}
+
+/// The library clip a hazard class names for itself in `getOwnStats` (`linkage_id`). This is the
+/// class SAYING which art it is, so a port can find its clip -- and its collision box -- without a
+/// keyword taxonomy that only knows the hazards someone thought to name.
+pub(crate) fn extract_own_linkage_for(abc: &AbcFile, class_name: &str) -> Option<String> {
+    let t = method_in_chain(abc, class_name, "getOwnStats")?;
+    let body = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx)?;
+    let mut v = OwnLinkageVisitor { found: None };
+    scan_method(&body.bytecode, abc, &mut v);
+    v.found
+}
+struct OwnLinkageVisitor {
+    found: Option<String>,
+}
+impl AbcVisitor for OwnLinkageVisitor {
+    fn on_newobject(&mut self, obj: BTreeMap<String, StackVal>, _c: &Option<String>) -> NewObjectAction {
+        if self.found.is_none() {
+            if let Some(StackVal::Str(s)) = obj.get("linkage_id") {
+                if !s.is_empty() { self.found = Some(s.clone()); }
+            }
+        }
+        NewObjectAction::PushObj(obj)
+    }
+}
+
 struct OwnStatsVisitor {
     best: BTreeMap<String, f64>,
 }
@@ -2915,7 +4338,13 @@ impl AbcVisitor for OwnStatsVisitor {
         let nums: BTreeMap<String, f64> = obj.iter()
             .filter_map(|(k, v)| if let StackVal::Num(n) = v { Some((k.clone(), *n)) } else { None })
             .collect();
-        if nums.len() > self.best.len() {
+        // The OUTERMOST object is the one the method returns, and an object's members are built
+        // before the object that holds them, so the outermost is the LAST one built. Taking
+        // whichever had the most numbers instead picked a nested hitbox whenever it happened to
+        // carry more of them than the body did: saffroncity's venusaur leaf states its own
+        // width and height and lost both to its attackBox, so the object could not be sized and
+        // did not ship at all.
+        if !nums.is_empty() {
             self.best = nums;
         }
         NewObjectAction::PushObj(obj)
@@ -2932,13 +4361,6 @@ impl AbcVisitor for OwnStatsVisitor {
 /// the per-projectile object appears in the top-level returned object).
 /// SSF2 physics-stat keys commonly found on a projectile-stats object.
 /// Any inner value-object holding at least one of these (or an
-/// `attackBoxes` key) is recognised as a projectile entry.
-const PROJECTILE_PHYSICS_KEYS: &[&str] = &[
-    "gravity", "friction", "weight", "fall_speed", "terminalVelocity",
-    "xSpeed", "ySpeed", "x_speed", "y_speed",
-    "groundSpeedCap", "aerialSpeedCap", "aerialFriction",
-    "ground_speed_cap", "aerial_speed_cap", "aerial_friction",
-];
 
 /// Visitor for `getProjectileStats()`-style bodies. The top-level
 /// newobject's KEYS are projectile names; the VALUES are physics +
@@ -2948,44 +4370,56 @@ struct ProjectileVisitor {
 }
 
 impl AbcVisitor for ProjectileVisitor {
+    /// Carry the class a `getlex` names, so a declaration's `classAPI` arrives as the class the
+    /// package wrote rather than as an unknown. That field is the package saying WHAT the thing
+    /// is, and it is the only thing here that separates a projectile from the character's own
+    /// stats block or from an attack.
+    fn on_getlex(&mut self, name: &str) -> Option<StackVal> {
+        Some(StackVal::Tag(name.to_string()))
+    }
+
     fn on_newobject(
         &mut self,
         obj: BTreeMap<String, StackVal>,
         _current_char: &Option<String>,
     ) -> NewObjectAction {
-        let mut found = false;
-        for (proj_name, val) in &obj {
-            if let StackVal::Obj(inner) = val {
-                let is_proj = inner.contains_key("attackBoxes")
-                    || PROJECTILE_PHYSICS_KEYS.iter().any(|k| inner.contains_key(*k));
-                if is_proj {
-                    let mut stats: BTreeMap<String, f64> = BTreeMap::new();
-                    for (k, v) in inner {
-                        if let StackVal::Num(n) = v {
-                            stats.insert(k.clone(), *n);
-                        }
-                    }
-                    let hitboxes = extract_hitboxes_from_val(val);
-                    self.result.insert(proj_name.clone(), ProjectileData { stats, hitboxes });
-                    found = true;
+        // A projectile declaration SAYS what it is: it carries `classAPI`, naming the api class
+        // the thing is (`SSF2Projectile`). That is the package's own statement, so nothing here
+        // needs a vocabulary of physics fields -- which is what this used to key on, and which
+        // matched every ATTACK in the file (they carry `attackBoxes` too) while missing the
+        // projectiles entirely, because the objects that declare `classAPI` are nested one level
+        // deeper than the map that names them.
+        //
+        // The NAME lives in the parent, so entries are recorded when the parent is built, and the
+        // object is always handed back to the stack so the parent can still see its children.
+        for (name, val) in &obj {
+            let StackVal::Obj(inner) = val else { continue };
+            // Every entry in getProjectileStats IS a projectile: the METHOD says so, not the name of
+            // the class it names. So the only thing to check is that this is a declaration and not a
+            // nested attackBoxes/hitbox object -- a declaration carries `classAPI` (the behaviour
+            // class it runs, `SSF2Projectile` or a custom one like `SoraStrikeRaid`), a hitbox does
+            // not. Do NOT filter on what that class is called: a custom behaviour class carries no
+            // "Projectile" in its name and is still a projectile, because it is here.
+            if !matches!(inner.get("classAPI"), Some(StackVal::Str(_) | StackVal::Tag(_))) { continue }
+            let mut stats: BTreeMap<String, f64> = BTreeMap::new();
+            let mut flags: BTreeMap<String, bool> = BTreeMap::new();
+            let mut names: BTreeMap<String, String> = BTreeMap::new();
+            for (k, v) in inner {
+                match v {
+                    StackVal::Num(n) => { stats.insert(k.clone(), *n); }
+                    StackVal::Bool(b) => { flags.insert(k.clone(), *b); }
+                    StackVal::Str(t) | StackVal::Tag(t) => { names.insert(k.clone(), t.clone()); }
+                    _ => {}
                 }
             }
+            let hitboxes = extract_hitboxes_from_val(val);
+            self.result.insert(name.clone(), ProjectileData { stats, flags, names, hitboxes });
         }
-        // Preserve the original behaviour: when the visitor recorded
-        // projectile entries from this obj, leave the obj OFF the stack
-        // (Push(Unknown) is the same observable shape as the legacy
-        // "don't push obj back" since the only thing that consumed the
-        // top-of-stack after this newobject was OP_RETURNVALUE, which
-        // pops one item either way).
-        if found {
-            NewObjectAction::Push(StackVal::Unknown)
-        } else {
-            NewObjectAction::PushObj(obj)
-        }
+        NewObjectAction::PushObj(obj)
     }
 }
 
-fn extract_projectile_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, ProjectileData> {
+pub fn extract_projectile_objects(bytecode: &[u8], abc: &AbcFile) -> BTreeMap<String, ProjectileData> {
     let mut v = ProjectileVisitor { result: BTreeMap::new() };
     scan_method(bytecode, abc, &mut v);
     v.result
@@ -3001,21 +4435,45 @@ fn extract_hitboxes_from_val(val: &StackVal) -> Vec<BTreeMap<String, f64>> {
                 return extract_hitboxes_from_val(boxes_val);
             }
             // Is this object itself a hitbox? (has damage/direction/power)
+            // These names are how a box is RECOGNISED. What is kept is everything it states: a
+            // list of names to keep is a list that has to grow before a field can be used, and the
+            // thwomp's `selfHitStun` -- how long the attacker freezes -- was dropped on the way in,
+            // so no mapping downstream could have carried it however well it was written.
             let hitbox_keys = ["damage", "direction", "power", "kbConstant", "hitStun", "hitLag", "weightKB"];
             if obj.keys().any(|k| hitbox_keys.contains(&k.as_str())) {
-                let mut hb = BTreeMap::new();
-                for k in &hitbox_keys {
-                    if let Some(StackVal::Num(v)) = obj.get(*k) {
-                        hb.insert(k.to_string(), *v);
-                    }
-                }
+                // a stated true or false is kept as 1 or 0: goku's forward tilt states its boxes
+                // `reversableAngle: false`, and dropped here they converted as reversible
+                let hb: BTreeMap<String, f64> = obj.iter()
+                    .filter_map(|(k, v)| match v {
+                        StackVal::Num(n) => Some((k.clone(), *n)),
+                        StackVal::Bool(b) => Some((k.clone(), if *b { 1.0 } else { 0.0 })),
+                        _ => None,
+                    })
+                    .collect();
                 return vec![hb];
             }
             // Might be a container of hitboxes: {attackBox: {...}, attackBox2: {...}, ...}
             let mut hitboxes = Vec::new();
             for (k, v) in obj {
-                if k.starts_with("attackBox") {
-                    hitboxes.extend(extract_hitboxes_from_val(v));
+                if let Some(suffix) = k.strip_prefix("attackBox") {
+                    // which box it is, by its name (`attackBox` the first, `attackBox2` the
+                    // second), kept so its stats land on the box the entity draws under that name
+                    let idx = if suffix.is_empty() { 0.0 } else { suffix.parse::<f64>().map(|n| n - 1.0).unwrap_or(0.0) };
+                    for mut hb in extract_hitboxes_from_val(v) {
+                        hb.entry(BOX_INDEX_KEY.to_string()).or_insert(idx);
+                        hitboxes.push(hb);
+                    }
+                }
+            }
+            hitboxes.sort_by(|a, b| a.get(BOX_INDEX_KEY).partial_cmp(&b.get(BOX_INDEX_KEY)).unwrap_or(std::cmp::Ordering::Equal));
+            // A projectile states its boxes one level deeper, under the state that arms them
+            // (`attack_idle: { attackBoxes: … }`), so an object that carries none of its own is
+            // asked about what it contains rather than answered with nothing.
+            if hitboxes.is_empty() {
+                for v in obj.values() {
+                    if matches!(v, StackVal::Obj(_)) {
+                        hitboxes.extend(extract_hitboxes_from_val(v));
+                    }
                 }
             }
             hitboxes
@@ -3054,7 +4512,10 @@ impl AbcVisitor for StatsVisitor {
             .filter(|k| STATS_FALLBACK_KEYS.contains(&k.as_str()))
             .count();
         if match_count >= 3 {
-            self.found = Some(CharStats { values: numeric_stats });
+            let names = obj.iter()
+                .filter_map(|(k, v)| if let StackVal::Str(t) = v { Some((k.clone(), t.clone())) } else { None })
+                .collect();
+            self.found = Some(CharStats { values: numeric_stats, names });
             return NewObjectAction::Stop;
         }
         NewObjectAction::PushObj(obj)
@@ -3154,7 +4615,7 @@ fn extract_ssf2_stats(bytecode: &[u8], abc: &AbcFile) -> Option<CharStats> {
     }
 
     if values.len() >= 3 {
-        Some(CharStats { values })
+        Some(CharStats { values, names: BTreeMap::new() })
     } else {
         None
     }
@@ -3193,7 +4654,7 @@ fn is_attack_name(s: &str) -> bool {
     )
 }
 
-fn normalize_attack_name(s: &str) -> String {
+pub(crate) fn normalize_attack_name(s: &str) -> String {
     let map: &[(&str, &str)] = &[
         ("a",              "jab1"),
         ("a_tilt",         "jab1"),
@@ -3352,6 +4813,18 @@ fn decode_costume_objects(code: &[u8], abc: &AbcFile) -> BTreeMap<String, Vec<Co
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_package_with_no_name_of_its_own_does_not_take_the_run_down() {
+        // a package searched by whoever borrows from it need not be named, and the tail of an
+        // empty name is a slice past its end. this is the name that gets built from it.
+        for name in ["", "a", "mario"] {
+            let built = format!("{}Ext",
+                name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()
+                + name.char_indices().nth(1).map_or("", |(i, _)| &name[i..]));
+            assert!(built.ends_with("Ext"), "name for {name:?} came out wrong: {built}");
+        }
+    }
+
     use super::*;
 
     // ── Bytecode-construction helpers ────────────────────────────────────
@@ -3443,23 +4916,43 @@ mod tests {
     // ── ProjectileVisitor ────────────────────────────────────────────────
 
     #[test]
-    fn projectile_visitor_detects_inner_obj_with_physics_key() {
-        // { mario_fireball: { gravity: 0.5, xSpeed: 10 } }
-        let abc = mk_abc(&["mario_fireball", "gravity", "xSpeed"], &[0.5], &[]);
+    fn projectile_visitor_takes_what_declares_itself_a_projectile() {
+        // { mario_fireball: { classAPI: "SSF2Projectile", gravity: 0.5, xSpeed: 10 } }
+        let abc = mk_abc(&["mario_fireball", "gravity", "xSpeed", "classAPI", "SSF2Projectile"], &[0.5], &[]);
         let mut bc = Vec::new();
         push_string(&mut bc, 1);           // outer key
+        push_string(&mut bc, 4);           // "classAPI"
+        push_string(&mut bc, 5);           // "SSF2Projectile"
         push_string(&mut bc, 2);           // "gravity"
         push_double(&mut bc, 1);            // 0.5
         push_string(&mut bc, 3);           // "xSpeed"
         push_byte  (&mut bc, 10);
-        newobject  (&mut bc, 2);            // inner physics obj
-        newobject  (&mut bc, 1);            // outer
+        newobject  (&mut bc, 3);            // the declaration
+        newobject  (&mut bc, 1);            // the map that names it
         let result = extract_projectile_objects(&bc, &abc);
         assert!(result.contains_key("mario_fireball"),
             "projectile key must be picked up; got: {:?}", result.keys().collect::<Vec<_>>());
         let proj = &result["mario_fireball"];
         assert_eq!(proj.stats.get("gravity").copied(), Some(0.5));
         assert_eq!(proj.stats.get("xSpeed").copied(), Some(10.0));
+    }
+
+    #[test]
+    fn projectile_visitor_leaves_attacks_alone() {
+        // An ATTACK carries hitboxes and physics-shaped fields too, and every character has
+        // dozens of them. Only what declares itself a projectile counts, or a character's whole
+        // moveset arrives as projectiles and the real ones (nested a level deeper) never do.
+        let abc = mk_abc(&["a_forward", "damage", "gravity"], &[8.0, 0.5], &[]);
+        let mut bc = Vec::new();
+        push_string(&mut bc, 1);
+        push_string(&mut bc, 2);
+        push_double(&mut bc, 1);
+        push_string(&mut bc, 3);
+        push_double(&mut bc, 2);
+        newobject  (&mut bc, 2);
+        newobject  (&mut bc, 1);
+        let result = extract_projectile_objects(&bc, &abc);
+        assert!(result.is_empty(), "an attack is not a projectile; got: {:?}", result.keys().collect::<Vec<_>>());
     }
 
     #[test]
@@ -3627,9 +5120,6 @@ mod tests {
     }
 }
 
-pub fn read_u30_pub(d: &[u8], i: &mut usize) -> Option<u32> { read_u30_at(d, i) }
-pub fn skip_ops_pub(op: u8, bc: &[u8], i: &mut usize) { skip_opcode_operands(op, bc, i) }
-
 // ── weather motion: what the source's particles actually DO ──────────────────
 
 /// A per-frame quantity a weather class computes, in the one shape those classes use:
@@ -3652,6 +5142,12 @@ impl Drift {
         else if self.rand == 0.0 { Some(Drift { base: o.base * self.base, rand: o.rand * self.base }) }
         else { None }
     }
+    /// Divided by a plain number, which scales what the drift spans. Only a constant divisor
+    /// makes sense: dividing BY a spread is not a drift any more.
+    fn div(self, o: Self) -> Option<Self> {
+        (o.rand == 0.0 && o.base != 0.0)
+            .then(|| Drift { base: self.base / o.base, rand: self.rand / o.base })
+    }
     pub fn is_zero(&self) -> bool { self.base == 0.0 && self.rand == 0.0 }
     /// The mean value, which is what decides which way the field drifts overall.
     pub fn mean(&self) -> f64 { self.base + self.rand / 2.0 }
@@ -3669,6 +5165,10 @@ pub struct WeatherMotion {
     pub dy: Drift,
     /// Per-frame horizontal drift, +right.
     pub dx: Drift,
+    /// The size the source gives each particle when it makes it, as a drift over `U(0,1)`. SSF2's
+    /// rain draws every drop from one clip and then scales it per drop, which is what makes a
+    /// field of them read as depth rather than as a hundred copies of one drop.
+    pub scale: Option<Drift>,
 }
 
 /// Multiname kinds whose NAME comes off the stack (`o[i]`), so a read or write through one pops
@@ -3726,19 +5226,28 @@ fn walk_drift(
                 let Some(mn) = read_u30_at(bc, &mut i) else { return };
                 let Some(argc) = read_u30_at(bc, &mut i) else { return };
                 let name = abc.multinames.get(mn as usize).map(|m| m.name.to_string()).unwrap_or_default();
-                for _ in 0..argc { st.pop(); }
+                let mut arg0 = Sym::Unknown;
+                for k in 0..argc { let v = st.pop().unwrap_or(Sym::Unknown); if k == 0 { arg0 = v; } }
                 st.pop();                                    // the receiver
                 // the engine's uniform random in [0,1): the whole reason a drift carries a spread
                 let is_rand = name.eq_ignore_ascii_case("safeRandom") || name.eq_ignore_ascii_case("random");
-                st.push(if is_rand && argc == 0 { Sym::Val(Drift { base: 0.0, rand: 1.0 }) } else { Sym::Unknown });
+                // rounding does not change what a drift SPANS, only which values inside it can come
+                // up, so it passes the value through. SSF2 quantises its rain-drop sizes that way
+                // (`round(x * 10) / 10`), and reading the call as unknown lost the size entirely.
+                let is_round = argc == 1
+                    && (name.eq_ignore_ascii_case("round") || name.eq_ignore_ascii_case("floor")
+                        || name.eq_ignore_ascii_case("ceil"));
+                st.push(if is_rand && argc == 0 { Sym::Val(Drift { base: 0.0, rand: 1.0 }) }
+                        else if is_round { arg0 } else { Sym::Unknown });
             }
-            OP_ADD | OP_SUBTRACT | OP_MULTIPLY => {
+            OP_ADD | OP_SUBTRACT | OP_MULTIPLY | OP_DIVIDE => {
                 let b = st.pop().unwrap_or(Sym::Unknown);
                 let a = st.pop().unwrap_or(Sym::Unknown);
                 let r = match (a.val(), b.val()) {
                     (Some(x), Some(y)) => match op {
                         OP_ADD => Some(x.add(y)),
                         OP_SUBTRACT => Some(x.sub(y)),
+                        OP_DIVIDE => x.div(y),
                         _ => x.mul(y),
                     },
                     _ => None,
@@ -3824,6 +5333,9 @@ pub fn weather_motion(abc: &AbcFile, class_name: &str, args: &[Option<f64>], dir
     zero_pos.insert("x".into(), Drift::cst(0.0));
     zero_pos.insert("y".into(), Drift::cst(0.0));
     let mut motion = WeatherMotion::default();
+    // the per-particle size, set once when the particle is made (constructor pass)
+    motion.scale = fields.get("scaleX").or_else(|| fields.get("scaleY")).copied()
+        .filter(|d| d.base.is_finite() && d.rand.is_finite() && (d.base != 0.0 || d.rand != 0.0));
     let mut seen = (false, false);
     let mut order: Vec<_> = class.instance_methods.iter().collect();
     if let Some(d) = dir.map(|d| d.to_ascii_lowercase()).filter(|d| !d.is_empty()) {
@@ -3850,4 +5362,135 @@ pub fn weather_motion(abc: &AbcFile, class_name: &str, args: &[Option<f64>], dir
         if seen.0 && seen.1 { break; }
     }
     (seen.0 || seen.1).then_some(motion)
+}
+
+/// What one of a stage's own clips SAYS it is, read off its frame script.
+///
+/// A stage's tree is not a picture with some collision guessed out of it: every clip in it states
+/// its own role on frame 1 (`self.type = "platform"`), and a clip whose behaviour belongs to a
+/// class says which class (`self.classAPI = CentralHighwayPlatform`). Both are facts the file
+/// carries, so reading them needs no vocabulary and cannot miss a clip whose author named it
+/// something nobody has seen.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClipRole {
+    /// The game's own word for what this clip is: `terrain`, `platform`, `l_ledge`, `p1_spawn`, …
+    pub kind: String,
+    /// The class that drives it, when the clip names one.
+    pub class_api: Option<String>,
+    /// Whether the clip hides ITSELF on its first frame. A stage keeps pieces it only shows at a
+    /// moment of its choosing -- crateria's acid warning sign -- and the clip says so in its own
+    /// frame script rather than in the placement.
+    pub starts_hidden: bool,
+    /// A platform that says nobody drops through it (`self.noDropThrough = true`): the game
+    /// honours that flag on a platform, so it lands like a platform and holds like a floor.
+    pub no_drop_through: bool,
+    /// A platform that declares a BOUNCE (`self.bounce_speed = 25; self.bounce_frame = "bounce"`):
+    /// the game's platform layer sends a fighter that lands on it up at that speed and plays that
+    /// label on the clip. The speed and the label, as declared.
+    pub bounce: Option<(String, String)>,
+    /// A terrain piece that declares a sideways push (`self.x_influence = -5.9`, a lamp's slope):
+    /// the game's terrain layer moves a fighter standing on it by that much a frame. As declared.
+    pub x_influence: Option<String>,
+    /// The key the clip moves in step with (`self.syncPlatform = "x"`): a ledge beacon and a
+    /// terrain piece that declare the same key are one moving thing to the game.
+    pub sync_platform: Option<String>,
+    /// The ground friction the piece declares for whoever stands on it (`self.decel_friction`),
+    /// and the walk acceleration (`self.accel_friction`), in the source's px a frame squared:
+    /// race to the finish's ice.
+    pub decel_friction: Option<f64>,
+    pub accel_friction: Option<f64>,
+    /// The game's own class the clip asks to be run by (`self.className = "DynamicPlatform"`): a
+    /// class no package ships, so what it does is read off the declarations beside it.
+    pub class_name: Option<String>,
+    /// The movements such a clip declares, in index order (`self.movement1 = { moveTime: 265,
+    /// waitTime: 10, xSpeed: -2.4, xAccel: 0.1, xDecel: 0.1 }`), each as the literal's text.
+    pub movements: Vec<String>,
+    /// Which movement it starts on (`self.startIndex = 0`).
+    pub start_index: u32,
+    /// Whether a fighter can drop through it (`self.fallthrough = false`), when it says.
+    pub fallthrough: Option<bool>,
+    /// The picture a collision clip names for itself in the foreground (`self.foreground = "x"`).
+    pub foreground: Option<String>,
+    /// The children the clip hides on its first frame (`self.ground.visible = false`): drawn in
+    /// the file, never shown by the game.
+    pub hidden_children: Vec<String>,
+}
+
+/// Every clip class in the package that declares a role, keyed by class name (local, no namespace).
+pub(crate) fn declared_clip_roles(abc: &AbcFile) -> std::collections::BTreeMap<String, ClipRole> {
+    let ty_re = crate::re!(r#"self\.type = "([^"]+)""#);
+    let api_re = crate::re!(r"self\.classAPI = ([A-Za-z_][A-Za-z0-9_.]*)");
+    let hide_re = crate::re!(r"self\.(?:visible = false|setVisible\(false\))");
+    let hide_child_re = crate::re!(r"self\.(\w+)\.visible = false");
+    let nodrop_re = crate::re!(r"self\.noDropThrough = true");
+    let bounce_speed_re = crate::re!(r"self\.bounce_speed = (-?\d+(?:\.\d+)?)");
+    let bounce_frame_re = crate::re!(r#"self\.bounce_frame = "([^"]+)""#);
+    let push_re = crate::re!(r"self\.x_influence = (-?\d+(?:\.\d+)?)");
+    let sync_re = crate::re!(r#"self\.syncPlatform = "([^"]+)""#);
+    let decel_fric_re = crate::re!(r"self\.decel_friction = (-?\d+(?:\.\d+)?)");
+    let accel_fric_re = crate::re!(r"self\.accel_friction = (-?\d+(?:\.\d+)?)");
+    let class_name_re = crate::re!(r#"self\.className = "([^"]+)""#);
+    let movement_re = crate::re!(r"self\.movement(\d+) = (\{[^}]*\});");
+    let start_re = crate::re!(r"self\.startIndex = (\d+)");
+    let fall_re = crate::re!(r"self\.fallthrough = (true|false)");
+    let fg_re = crate::re!(r#"self\.foreground = "([^"]+)""#);
+    let mut out = std::collections::BTreeMap::new();
+    for class in &abc.classes {
+        let mut role = ClipRole::default();
+        for t in &class.instance_methods {
+            if t.name.strip_prefix("frame").and_then(|n| n.parse::<u32>().ok()).is_none() { continue }
+            let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
+            let n = t.name.strip_prefix("frame").and_then(|x| x.parse::<u32>().ok()).unwrap_or(0);
+            let code = decompiler::decompile_method(body, abc, &t.name, &[]);
+            if let Some(c) = ty_re.captures(&code) { role.kind = c[1].to_string(); }
+            if n == 1 && hide_re.is_match(&code) { role.starts_hidden = true; }
+            if n == 1 {
+                for c in hide_child_re.captures_iter(&code) { role.hidden_children.push(c[1].to_string()); }
+            }
+            if nodrop_re.is_match(&code) { role.no_drop_through = true; }
+            if let Some(c) = push_re.captures(&code) { role.x_influence = Some(c[1].to_string()); }
+            if let Some(c) = sync_re.captures(&code) { role.sync_platform = Some(c[1].to_string()); }
+            if let Some(c) = decel_fric_re.captures(&code) { role.decel_friction = c[1].parse().ok(); }
+            if let Some(c) = accel_fric_re.captures(&code) { role.accel_friction = c[1].parse().ok(); }
+            if let Some(c) = class_name_re.captures(&code) { role.class_name = Some(c[1].to_string()); }
+            let mut moves: Vec<(u32, String)> = movement_re.captures_iter(&code).map(|c| (c[1].parse().unwrap_or(0), c[2].to_string())).collect();
+            if !moves.is_empty() { moves.sort_by_key(|(i, _)| *i); role.movements.extend(moves.into_iter().map(|(_, m)| m)); }
+            if let Some(c) = start_re.captures(&code) { role.start_index = c[1].parse().unwrap_or(0); }
+            if let Some(c) = fall_re.captures(&code) { role.fallthrough = Some(&c[1] == "true"); }
+            if let Some(c) = fg_re.captures(&code) { role.foreground = Some(c[1].to_string()); }
+            if let Some(c) = bounce_speed_re.captures(&code) {
+                let speed = c[1].to_string();
+                let label = bounce_frame_re.captures(&code).map(|l| l[1].to_string())
+                    .or_else(|| role.bounce.as_ref().map(|(_, l)| l.clone())).unwrap_or_else(|| "bounce".to_string());
+                role.bounce = Some((speed, label));
+            }
+            if let Some(c) = api_re.captures(&code) {
+                role.class_api = Some(c[1].rsplit('.').next().unwrap_or(&c[1]).to_string());
+            }
+        }
+        if role.kind.is_empty() && role.class_api.is_none() && !role.starts_hidden && !role.no_drop_through && role.bounce.is_none() && role.x_influence.is_none() && role.sync_platform.is_none() && role.decel_friction.is_none() && role.class_name.is_none() && role.foreground.is_none() && role.hidden_children.is_empty() { continue }
+        let local = class.name.rsplit('.').next().unwrap_or(&class.name).to_string();
+        out.insert(local, role);
+    }
+    out
+}
+
+#[cfg(test)]
+mod instance_binding_tests {
+    use super::*;
+
+    #[test]
+    fn a_field_named_bare_is_the_instance_own() {
+        let src = "\tit.data = m_data;\n\tit.m_data = null;\n";
+        let out = bind_bare_name_to_instance(src, "m_data");
+        assert!(out.contains("it.data = it.m_data;"), "{out}");
+        assert!(out.contains("it.m_data = null;"), "not doubled: {out}");
+    }
+
+    #[test]
+    fn a_longer_name_is_left_alone() {
+        let src = "x = m_elapsedFrames + elapsedFramesTotal;";
+        let out = bind_bare_name_to_instance(src, "elapsedFrames");
+        assert_eq!(out, src, "{out}");
+    }
 }

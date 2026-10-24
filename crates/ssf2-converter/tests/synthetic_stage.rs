@@ -60,10 +60,12 @@ fn emitted_entity_has_the_fraymakers_stage_layer_stack() {
     };
     let containers: Vec<String> = layers.iter().filter_map(container_of).collect();
 
-    // back-to-front: the order IS the depth model, so assert the sequence, not just presence
+    // back-to-front: the order IS the depth model, so assert the sequence, not just presence.
+    // This is the order the official stage ships: structures, then shadows, then effects, with
+    // the stage's own art BEFORE the shadows so a shadow lands on the ground rather than behind it.
     let expected = [
-        "BACKGROUND_BEHIND_CONTAINER", "BACKGROUND_EFFECTS_CONTAINER",
-        "BACKGROUND_SHADOWS_CONTAINER", "BACKGROUND_STRUCTURES_CONTAINER",
+        "BACKGROUND_BEHIND_CONTAINER", "BACKGROUND_STRUCTURES_CONTAINER",
+        "BACKGROUND_SHADOWS_CONTAINER", "BACKGROUND_EFFECTS_CONTAINER",
         "CHARACTERS_BACK_CONTAINER", "CHARACTERS_CONTAINER", "CHARACTERS_FRONT_CONTAINER",
         "FOREGROUND_STRUCTURES_CONTAINER", "FOREGROUND_SHADOWS_CONTAINER",
         "FOREGROUND_EFFECTS_CONTAINER", "FOREGROUND_FRONT_CONTAINER",

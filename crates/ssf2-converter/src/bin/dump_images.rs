@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
             }
             swf::Tag::DefineBitsJpeg3(jpeg) => {
                 image_count += 1;
-                let fmt = format!("JPEG3");
+                let fmt = "JPEG3".to_string();
                 image_ids.push((jpeg.id, fmt, jpeg.data.len()));
             }
             _ => {}

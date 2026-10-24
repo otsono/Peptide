@@ -35,6 +35,10 @@ pub struct SplitAnim {
     /// reverse to exit, so an exit slot filled from the entry has to be reversed or the character
     /// stands up by crouching again.
     pub reversed: bool,
+    /// the animation the source's clip plays on into once this one's frames are done, where the
+    /// engine's own state machine has no way on of its own (a charge special's base, which runs
+    /// into its attack when the charge is let go)
+    pub plays_on: Option<String>,
 }
 
 // Fraymakers template intro/outro slice lengths, in SOURCE (pre-doubling, 30fps) frames =
@@ -92,6 +96,10 @@ pub fn split_animations(
     scripts: &[crate::extractor::ScriptInfo],
 ) -> Vec<SplitAnim> {
     let mut out: Vec<SplitAnim> = Vec::new();
+    // the emotes taken from a side taunt's section, which give way to one taken from the neutral
+    // taunt's own (lucario's neutral section is in one clip and his side one in another, and the
+    // side one, reached first, played for the taunt button: 46 frames where the source plays 39)
+    let mut side_emotes: Vec<(String, u16)> = Vec::new();
 
     for anim_name in source_anims.keys() {
         let sb = sprite_boxes.get(anim_name);
@@ -213,10 +221,13 @@ pub fn split_animations(
             // stays as jump_back.
             "jump" => {
                 let fwd_end = label_map.get("backflip").copied().unwrap_or(total);
-                let js = jump_startup.min(fwd_end);
-                // jump_squat: grounded startup frames. The slice is `jumpStartup` SOURCE
-                // (30fps) frames; the global 30->60fps doubling later makes the final
-                // jump_squat 2 x jumpStartup engine frames.
+                // jump_squat: grounded startup frames, a source frame fewer than `jumpStartup`:
+                // this engine lifts the fighter a source frame after its squat ends, where the
+                // source has it off the floor on the first frame after its startup (measured with
+                // hop_trace.py: mario's short hop left the floor a frame late, and every aerial
+                // played from it a frame late with it). the global 30->60fps doubling later makes
+                // the final jump_squat 2 x that engine frames.
+                let js = jump_startup.min(fwd_end).saturating_sub(1).max(jump_startup.min(fwd_end).min(1));
                 eprintln!("anim: jump_squat = {} source frames (SSF2 jumpStartup={}) -> {} engine frames (2x)",
                     js, jump_startup, js * 2);
                 if js > 0 { push_split(&mut out, "jump_squat", anim_name, 0, js, &labels, false, None); }
@@ -240,6 +251,12 @@ pub fn split_animations(
 
             // ── Jump midair (double jump): forward / back ─────────────────────
             "jump_midair" => {
+                // the backflip is the same double jump drawn differently: the source jumps to
+                // its `backflip` label inside the one clip. this engine plays `jump_midair_back`
+                // of its own accord on a double jump made holding back (measured: without an
+                // animation of that name the fighter fell in JUMP_MIDAIR with no animation and no
+                // control until it died), so the segment goes out under that name; the stats
+                // give it the jump's drift (generate_animation_stats)
                 if let Some(&bf) = label_map.get("backflip") {
                     push_split(&mut out, "jump_midair",      anim_name, 0,  bf,    &labels, false, None);
                     push_split(&mut out, "jump_midair_back", anim_name, bf, total, &labels, false, None);
@@ -305,12 +322,60 @@ pub fn split_animations(
                 let fall_f = label_map.get("fallLoop").copied();
                 if let Some(ff) = fall_f {
                     push_split(&mut out, anim_name, anim_name, 0,   ff,    &labels, false, None);
-                    // helpless: only emit once (special_up and special_up_air both reference it)
-                    if !out.iter().any(|s| s.fm_name == "helpless") {
-                        push_split(&mut out, "helpless", anim_name, ff, total, &labels, true, Some(0));
-                    }
+                    // the fall it loops once the move is spent is the move's own: the source's
+                    // helpless state shows the root's `helpless`, else its fall (the slot below)
+                    push_split(&mut out, &format!("{anim_name}_fall"), anim_name, ff, total, &labels, true, Some(0));
                 } else {
                     push_full(&mut out, anim_name, total, &labels);
+                }
+            }
+
+            // ── Neutral / side special with an in-clip charge: loop the charge ─
+            // some charge specials keep the charge inside the ONE special clip (entry, a loop the
+            // clip cycles while held, then attack frames). FM plays a clip once, so left whole the
+            // play head runs past the loop and the move ends before the charge holds. split so the
+            // base keeps its engine name but LOOPS from the loop label, and the attack frames become
+            // <name>_attack, reached when the move fires. only with both a loop point and an attack.
+            // the boxes were cut first, on the clip's own labels (sprite_parser's
+            // split_charge_special), and what is here is the cut base: its length is where the
+            // attack begins, and the attack's boxes sit under `<name>_attack` on their own clock.
+            // the entity follows that cut, so the name the label table sends the move to when it
+            // fires is an animation it has
+            "special_neutral" | "special_neutral_air" | "special_side" | "special_side_air" => {
+                match sprite_boxes.get(&format!("{anim_name}_attack")) {
+                    Some(atk) => {
+                        let af = total;
+                        let lf = label_map.get("charging").or_else(|| label_map.get("loop")).copied();
+                        push_split(&mut out, anim_name, anim_name, 0, af, &labels, true, lf);
+                        if let Some(base) = out.last_mut() { base.plays_on = Some(format!("{anim_name}_attack")); }
+                        let atk_labels: Vec<(String, u16)> = atk.frame_labels.iter()
+                            .map(|(l, f)| (l.clone(), f + af)).collect();
+                        push_split(&mut out, &format!("{anim_name}_attack"), anim_name, af, af + atk.total_frames, &atk_labels, false, None);
+                    }
+                    None => push_full(&mut out, anim_name, total, &labels),
+                }
+            }
+
+            // ── Down special with an in-clip charge: loop the charge, gated on "charging" ──
+            // a down special that CHARGES holds its charge inside the one clip the same way a
+            // neutral/side charge does. gate on the "charging" label alone: on special_down the
+            // generic "loop" label is worn by reflectors, counters and holds (fox's shine, ness's
+            // psi magnet, yoshi's egg) that are NOT charges, so keying on "loop" would mis-split
+            // them. the fire frame is the source's own "attack" if named, else the first label after
+            // the charge (sonic's spin dash charges at "charging" and fires at "dash").
+            "special_down" | "special_down_air" => {
+                let loop_f = label_map.get("charging").copied();
+                let attack_f = loop_f.and_then(|lf| {
+                    label_map.get("attack").copied().filter(|&af| af > lf)
+                        .or_else(|| labels.iter().map(|(_, f)| *f).filter(|&f| f > lf).min())
+                });
+                match (loop_f, attack_f) {
+                    (Some(lf), Some(af)) if lf < af && af < total => {
+                        push_split(&mut out, anim_name, anim_name, 0, af, &labels, true, Some(lf));
+                        if let Some(base) = out.last_mut() { base.plays_on = Some(format!("{anim_name}_attack")); }
+                        push_split(&mut out, &format!("{anim_name}_attack"), anim_name, af, total, &labels, false, None);
+                    }
+                    _ => push_full(&mut out, anim_name, total, &labels),
                 }
             }
 
@@ -347,9 +412,7 @@ pub fn split_animations(
             "item_screw" => {
                 if let Some(&ff) = label_map.get("fallLoop") {
                     push_split(&mut out, "item_screw", anim_name, 0,  ff,    &labels, false, None);
-                    if !out.iter().any(|s| s.fm_name == "helpless") {
-                        push_split(&mut out, "helpless", anim_name, ff, total, &labels, true, Some(0));
-                    }
+                    push_split(&mut out, "item_screw_fall", anim_name, ff, total, &labels, true, Some(0));
                 } else {
                     push_full(&mut out, anim_name, total, &labels);
                 }
@@ -560,10 +623,27 @@ pub fn split_animations(
                 push_split(&mut out, anim_name, anim_name, 0, first_tail, &labels, false, None);
             }
 
-            // ── Taunt sprite bleedthrough: ignore tail ────────────────────────
+            // ── Taunts share one timeline, one label per taunt ────────────────
+            // Cutting at the next taunt's label is what keeps its frames out of this one. The
+            // section cut off is a TAUNT in its own right, though, and dropping it drops whatever
+            // it does: sandbag's side taunt hits, and its hitbox was going nowhere. It fills the
+            // third taunt slot, which otherwise gets a second copy of this one.
             "taunt_up" | "taunt_down" => {
-                let end_f = label_map.get("taunt_side").copied().unwrap_or(total);
-                push_split(&mut out, anim_name, anim_name, 0, end_f, &labels, false, None);
+                let side = label_map.get("taunt_side").copied();
+                // a side label on the clip's FIRST frame cuts nothing off: the whole clip is the
+                // taunt (sonic's up taunt starts on it, and was cut to no frames at all)
+                let end = side.filter(|f| *f > 0).unwrap_or(total);
+                push_split(&mut out, anim_name, anim_name, 0, end, &labels, false, None);
+                // the taunt button with no direction: the source's engine plays the neutral
+                // taunt's own section (its label, to the next one), else what follows the side one
+                let neutral = label_map.get("taunt_neutral").copied();
+                if let Some(n) = neutral.filter(|f| *f < total) {
+                    let next = labels.iter().map(|(_, f)| *f).filter(|f| *f > n).min().unwrap_or(total);
+                    push_split(&mut out, "emote", anim_name, n, next, &labels, false, None);
+                } else if let Some(f) = side.filter(|f| *f > 0 && *f < total) {
+                    push_split(&mut out, "emote", anim_name, f, total, &labels, false, None);
+                    side_emotes.push((anim_name.to_string(), f));
+                }
             }
 
             // ── Tech: ignore 'done' tail (1f exit marker) ────────────────────
@@ -588,9 +668,14 @@ pub fn split_animations(
         }
     }
 
+    if out.iter().any(|s| s.fm_name == "emote" && !side_emotes.iter().any(|(a, f)| *a == s.source_anim && *f == s.start_frame)) {
+        out.retain(|s| s.fm_name != "emote" || !side_emotes.iter().any(|(a, f)| *a == s.source_anim && *f == s.start_frame));
+    }
+
     // Deduplicate by fm_name — keep the first occurrence of each
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     out.retain(|s| seen.insert(s.fm_name.clone()));
+
 
     // ── Base-before-variant guarantee ────────────────────────────────────────
     // A variant animation (special_down_loop, item_throw_back, …) is only valid if
@@ -632,6 +717,15 @@ pub fn split_animations(
         }
         if to_add.is_empty() { break; }
         out.extend(to_add);
+    }
+
+    // ── Run turn: the source turns a run round in its skid (it has no turn of its own for a
+    // run), so the skid is the turn wherever the fighter draws one; the art faces the way the run
+    // came from, and the entity mirrors it for the engine's turn (entity_gen)
+    if let Some(mut sk) = out.iter().find(|s| s.fm_name == "skid").cloned() {
+        out.retain(|s| s.fm_name != "run_turn");
+        sk.fm_name = "run_turn".to_string();
+        out.push(sk);
     }
 
     // ── Slot aliases: reuse one emitted animation for additional template slots ──
@@ -676,8 +770,13 @@ pub fn split_animations(
         ("parry_fail",    "shield_in"),
         // Shield-hurt reuses the held-shield pose.
         ("shield_hurt",  "shield_loop"),
-        // Emote (taunt) reuses an existing taunt.
+        // Shield drop, where the source draws none of its own: the raise run backwards
+        ("shield_out",   "shield_in"),
+        // Emote (taunt) reuses an existing taunt: whichever of the fighter's taunts it has, in
+        // this order (sonic has no up taunt, and his taunt button played a one-frame stub)
         ("emote",        "taunt_up"),
+        ("emote",        "taunt"),
+        ("emote",        "taunt_down"),
         // Ledge wall/edge poses: reuse the ledge-lean (SSF2 'edgelean') for the
         // hang in/loop slots when no dedicated split exists.
         ("ledge_in",     "ledge_lean"),
@@ -696,23 +795,37 @@ pub fn split_animations(
         // tech_ground also receives the getup motion (the get-up portion of the crash
         // sprite). Only fills if a char has no dedicated tech-ground animation already.
         ("tech_ground",  "crash_get_up"),
-        // Special-fall (helpless) state animation.
+        // Special-fall (helpless): the source shows the root's `helpless` when it has one, else
+        // its fall
         ("fall_special", "helpless"),
+        ("fall_special", "fall_loop"),
         // Assist call (Fraymakers-specific) — placeholder reuse of a neutral pose.
         ("assist_call",     "stand"),
         ("assist_call_air", "jump_in"),
     ];
     // Slots whose donor must run BACKWARDS (see SplitAnim::reversed).
-    const REVERSED_ALIASES: &[&str] = &["crouch_out"];
+    const REVERSED_ALIASES: &[&str] = &["crouch_out", "shield_out"];
 
-    for (target, src) in SLOT_ALIASES {
-        if out.iter().any(|s| s.fm_name == *target) { continue; }
-        if let Some(mut a) = out.iter().find(|s| s.fm_name == *src).cloned() {
+    // the donor for a slot: of the ones listed for it, in order, the first that moves (more than a
+    // frame -- fox's up taunt is one empty frame and his taunt is 138), else the first that has
+    // anything at all; an empty one lends nothing
+    let length = |s: &SplitAnim| if s.end_frame == u16::MAX { u16::MAX } else { s.end_frame.saturating_sub(s.start_frame) };
+    let mut chosen: Vec<(&str, &str)> = Vec::new();
+    for (target, _) in SLOT_ALIASES {
+        if chosen.iter().any(|(t, _)| t == target) { continue }
+        let donors: Vec<&str> = SLOT_ALIASES.iter().filter(|(t, _)| t == target).map(|(_, d)| *d).collect();
+        let pick = donors.iter().find(|d| out.iter().any(|s| s.fm_name == **d && length(s) > 1))
+            .or_else(|| donors.iter().find(|d| out.iter().any(|s| s.fm_name == **d && length(s) > 0)));
+        if let Some(d) = pick { chosen.push((target, d)); }
+    }
+    for (target, src) in chosen.iter().copied() {
+        if out.iter().any(|s| s.fm_name == target) { continue; }
+        if let Some(mut a) = out.iter().find(|s| s.fm_name == src && length(s) > 0).cloned() {
             a.fm_name = target.to_string();
             // stand_turn is the idle POSE mirrored horizontally in place (the flip is
             // applied in entity_gen), held for the FM-template turn length — not the
             // whole idle loop. Clip to STAND_TURN_FRAMES from the idle's first frame.
-            if *target == "stand_turn" {
+            if target == "stand_turn" {
                 a.start_frame = 0;
                 a.end_frame = STAND_TURN_FRAMES;
                 a.loop_tail = false;
@@ -720,7 +833,7 @@ pub fn split_animations(
                 a.append_head_frames = 0;
                 a.labels.retain(|(_, f)| *f < STAND_TURN_FRAMES);
             }
-            a.reversed = REVERSED_ALIASES.contains(target);
+            a.reversed = REVERSED_ALIASES.contains(&target);
             log::debug!("anim alias: '{}' <- reuse of '{}'{}", target, src,
                 if a.reversed { " (reversed)" } else { "" });
             out.push(a);
@@ -756,6 +869,7 @@ fn push_full(out: &mut Vec<SplitAnim>, name: &str, total: u16, labels: &[(String
         loop_tail:   false,
         loop_frame:  None,
         append_head_frames: 0,
+        plays_on: None,
     });
 }
 
@@ -785,5 +899,6 @@ fn push_split(
         loop_tail,
         loop_frame,
         append_head_frames: 0,
+        plays_on: None,
     });
 }

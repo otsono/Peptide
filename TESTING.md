@@ -23,7 +23,7 @@ installs over standard protocols. everything they touch (engine artifacts, patch
 
 | Harness | Dir | Drives | Transport | Answers |
 |---|---|---|---|---|
-| **FrayTools** (`peptide`) | `src/fraytools.rs` | the user's FrayTools editor | Chrome DevTools Protocol | "does it render / lay out right? publish me a `.fra`" |
+| **FrayTools** (`peptide`) | `src/fraytools.rs` | the user's FrayTools editor | the editor, run locally | "does it render / lay out right? publish me a `.fra`" |
 | **Fraymakers** (`peptide`) | `src/` + `tools/` | the user's Fraymakers engine | patched engine copy + loopback TCP | "does it behave at runtime? load / spawn / move / read state" |
 
 both surfaces are subcommands of the one `peptide` binary; the detailed command surface lives in:
@@ -33,6 +33,140 @@ this doc is the **cross-tool workflow + the current validation status**. the eng
 integration map isn't in the tracked repo (removed for compliance, see the boundary note).
 
 ---
+
+## the verify gates (run these before calling anything ported)
+
+`tools/verify.py` is the one answer to "is this port right, and is it running": a fixed set of
+gates per subject, each needing POSITIVE evidence, a failed gate blocking the ones after it.
+it exists because every earlier check answered one question and each new way a port could be
+wrong was invisible to the check before it: a script the engine drops whole reads as "no
+errors", a stage pinning the engine reads as "no errors", an element in a container the walk
+never opens reads as "not there", a publish that timed out leaves the previous package
+installed and the next check measures that. finding those one at a time, after the port had
+been called done, is the cycle the gates end.
+
+```bash
+tools/verify.py stage bowserscastle      # one stage, all gates
+tools/verify.py char mario               # one fighter
+tools/verify.py sample                   # the ten stages + ten fighters chosen for coverage
+tools/verify.py corpus --stages          # everything (hours; the package goes after each)
+tools/verify.py stage fourside --ssf2    # add the cross-engine gate
+just verify-roster                       # every fighter, runtime path, cross-engine; hours
+just hits-roster                         # every fighter's hits on both engines, aerials included
+```
+
+reports land in `build/verify/<kind>/<id>.json` (every gate's evidence) and
+`build/verify/summary.md` (one row per subject). exit 1 if anything failed.
+
+a subject is converted from the installed game's own data file when the game is present
+(`/Applications/SSF2.app/Contents/Resources/data`, or `SSF2_DATA_DIR`; the id-to-file table comes
+from `peptide ssf2 identify` and is cached under `build/verify/`), and from the corpus copy
+otherwise or with `PEPTIDE_VERIFY_SOURCE=corpus`. the corpus is a sample that can be another
+build of the same content (mario's fireball clip is 18 frames in one and 23 in the other), and
+a port compared against a build it was not read from reports every difference between the two
+builds as a port bug.
+
+for a stage, the cross-engine gate pairs every Fraymakers element to its source clip by name:
+the converter's plan beside the package names the clip behind each vfx it made and where it put
+it, and the live tree reports each vfx at that position. an element the plan marks as keeping the
+stage's whole timeline under a schedule (a clip the stage puts down over and over) is read for
+what it is, an element driven across frame labels is reproduced when its game object was seen
+playing them, and a clip the source places at no opacity is a placeholder nobody sees and is not
+looked for. the whole report lands beside the gate's own in `build/verify/stage/<id>.s6.txt`.
+
+the cross-engine gate drives both engines with the same inputs, each on an engine that has
+played nothing yet (what a move stores survives it: a charge kept between uses fires on the next
+tap), and reads each engine's own per-frame record; a direction is held before a side special (pressed on the same frame it reads
+as a flick on the source), the fighter is put back where it started between inputs on both
+engines, and the walk is compared too, the source's read off its record and scaled by the
+converter's own velocity scale. a move whose frame scripts jump back to an earlier label of
+their own is held until an input ends it: the move gate reports those and this gate decides.
+
+the engine-bound gates pace on the engine's own frame count, never the wall clock, so
+`--speed=4` (four engine frames per tick, `peptide tell "speed 4"` by hand) makes them arrive
+sooner and read the same. two stay at the engine's own rate whatever the flag: the held walk
+(a few seconds; sped up, each round trip walks the fighter to the ledge) and the move gate
+(parking, launching and reading a move are a dozen round trips each, and sped up those are
+frames of falling no park height covers). the stage side is dominated by converting and
+publishing, which no frame rate touches.
+
+the evidence comes from two sources that cannot lie by leaving something out:
+
+- **the plan**: the converter writes `verify.json` beside every package: what the script
+  makes, where, on what clock; which scripts the package must carry; how much art it ships.
+  one statement of what the port is meant to be, written from the values that were emitted.
+  a vfx row names every clip over it (`names`), the object it rides (`rides`) and whether the
+  stage's own code drives it (`driven`: a frame the code picks, or a ride); an object row and
+  a `spawned` row list the source clips the object draws with (`clips`); the `stage` row lists
+  the stills painted into the stage art by clip (`painted`); `symbols` lists every clip class
+  the package declares, so a source row of a class outside it (an item the match dropped in)
+  is the game's own and not paired.
+- **the self-report**: the emitted script counts its own frames and keeps a registry of
+  everything it made, and the live gates ask it (`e __verifyDump()` inside its own scope; a
+  fighter through what its script hands out). a script that was dropped, hung, or never
+  reached its spawn block cannot give the right answer, which is the point.
+
+| gate | proves | fails when |
+|---|---|---|
+| S1 convert | exit 0, plan written, scripts parse, art resolves, within the publish budget | any of those; over 250MB of art will not publish |
+| S2 publish | export succeeded AND the installed package carries every planned script and entity, and is newer than the conversion | a stale package would otherwise be measured as this one |
+| S3 boot | STAND reached, engine not pinned, the script's frame counter advances, the spawn block completed, no script errors | a hang, a dropped script, an error on the first frame |
+| S4 built | every planned object exists, at its planned position (unless the code moves it or it rides an object), on its planned clock | a struck spawn, a wrong container, a wrong animation length |
+| S5 motion | every loop advanced by exactly the frames the stage ran (read atomically with the frame count); a picture the plan marks `driven` keeps the frame the code picks and is counted, not timed | a stalled clock; no wall clock and no aliasing can fake it |
+| S6 stand | each fighter is lifted 40 px over its entrance in both engines and let fall (`--ssf2`), twice a stretch of frames apart so a passing object cannot decide it, and the height it lands at (read the first frame it is on a floor, before a slope can slide it) is within 16 px of where the source rests it, through the port's own coordinate model (`verify.json` carries the scale, the fighter-space origin, which is the terrain's registration, and the entrances). a second drop from 240 px up clears an entrance that sits inside a plate, and each entrance is judged from the lift that cleared it. an entrance the source itself does not hold (its fighter falls and respawns, read over a stretch longer than the revival platform's hold) skips the gate: a stage whose ground waits for its game mode; so does a source fighter that never left where it was put (its engine is not running the match). both fighters are also read at one frame of the match on both engines, each walked there on its own clock, since a rest on something that moves is only the same rest at the same moment. the source's own landing is read too, beside the port's, and a landing that matches is a match; a source that lands at one height and is at another a moment later was moved by the stage on its own clock (rainbow route's mirrors, a scrolling ground), so that entrance is left out, and the gate skips when every entrance is | a floor the port has and the source has not, or the other way round: a fighter standing in the air or through the ground |
+| S7 ssf2 | the same stage in SSF2, object for object (`--ssf2`), compared in-process on the run's live engines by `tools/tests/stage_cross_engine.py` (it boots its own only when run by hand); each element's frame advance is read against an exact tick gap between two walks; a plane or root clip whose own frames place only stills (the plan's `painted`, or a stage painted once with nothing cut from the root), or whose own timeline moves nothing drawn (the `stage` row's `plane_art_moves`), is compared by its children; a piece the plan marks `driven` is held, not timed | the two engines animate differently |
+| S8 quiet | no script error in the whole match once every gate above has driven it: S3 counts only the boot's, and a stage's code can throw once a minigame or a phase starts | a stage that throws after boot |
+| C1 convert | exit 0, plan, every animation 2.00x its source range, hitbox stats at parity, art resolves | any of those |
+| C2 publish | as S2 (`peptide pack`) | |
+| C3 boot | STAND, the fighter's script frame counter advances, no script errors | |
+| C4 physics | held-direction ground speed equals a gait the fighter declares: a stat (walk cap, dash, run) or a speed its own walk frame scripts set | off by more than 8% of every declared figure |
+| C5 moves | every move driven from the middle of the floor; its own run read off the engine's per-frame trace against the emitted length; back to STAND. aerials launched airborne at a height from the declared gravity. the engine's SCRIPTERR channel read over the whole run | a move that never plays, or never returns; any script error while the moves ran (one line per distinct complaint in the evidence); the engine dying, reported at once rather than after every later move's timeout. a move whose own code ends it early or keeps it past the animation's end is reported and left to C6 |
+| C6 ssf2 | the same inputs on both engines (`--ssf2`): jab, the four specials, jump, each read off the engine's own per-frame trace and each started at the same source frame of its match on both (paced on `clock`, so whatever a fighter charges over time is charged the same); the move's identity through the fighter's own name map, its length as source frames x2 wherever the source ended the move itself and the port's run was neither a loop nor cut by the floor | a different move, or a different length. the smashes and tilts (a direction pressed with attack, or held first) are in the `--deep` set with the aerials |
+
+the input gate runs on a fresh engine on each side with the same two-fighter roster, the
+fighter put back in the middle of the floor before every input and the other fighter parked
+the same distance away in each engine's own units (the port's world is scaled), out of a
+jab's reach and within a homing attack's, so a move that seeks the nearest fighter meets one
+at the same moment on both engines and a jab's hit stop lengthens neither. an input is judged only once the engine has acknowledged every step of it,
+and the move is over the moment the engine announces a pose a move comes back to. a wait
+that has to be "a few frames from now" is `tick N`: both engines push one line per frame for
+the driven fighter, the session counts them, and `tick` answers the moment the Nth arrives,
+so the driver never sleeps and never sizes a wait for the slowest case. `clock` answers how
+many of those frames the session has seen (`CLOCK:N frames`), the same way on both engines:
+the source engine has no match counter to ask, so its frame since the spawn is this clock less
+its reading when the match came up, and two engines are brought to one moment of the match
+by walking each to that frame on its own clock (the stand gate reads both fighters there,
+which is the only way a rest on something that moves is the same rest). `--speed N` runs
+both engines at N times their rate (on SSF2 that is its frame rate raised by N), and every
+gate paces on frames, so the numbers are the same and arrive sooner: a fighter's six gates
+take under a minute for two fighters at `--speed 4` once the games are open: the driver
+keeps one engine of each kind up and starts each subject's match in it with `spawn` (a
+fighter or stage published after the boot is loaded by that launch). the engines stay up after
+the run, in `build/verify/sessions/<engine>/`, and the next run drives them instead of
+booting (`--shutdown` ends them at the end of a run). the SSF2 engine boots in the background
+from the start of a run, and the next subject converts and publishes while the current one
+is being driven, from the same installed data the gates use. what a subject reads of the log
+(errors, waits, traces) starts at its own match, and the floor the move and input gates put
+the fighter back on is where it stood when its match began. an engine that cannot start the
+match asked of it is replaced by a fresh one. two SSF2 gotchas the driver works around: `reset` puts the
+fighter back at its spawn, in the air, and a reflection read of its height answers the
+spawn's, so the floor height comes off the fighter's own per-frame record and the fighter is
+set down on it before every input; and the source's announcements trail its frames, so a
+window is opened only once the record itself shows the fighter standing.
+
+what a gate cannot know it says so: C5 reports a move whose own code chose its length (ended
+early into another state, or kept past the animation's end while a slide finishes) because
+whether the source does the same at the same frame is a cross-engine question, and a launch
+condition that is the gate's own fault (parked into the blast zone, cut by landing) is
+reported as that rather than as a port failure.
+
+the sample: stages `bowserscastle castlesiege sectorz mushroomkingdom3 finalvalley fourside
+racetothefinish galaxytours battlefield clocktown` (hazards with their own classes, a phased
+backdrop, a nested-clip backdrop, moving plane elements, a ported class with weather,
+cross-script objects, two hundred elements, a thousand assets, the plainest stage, a day
+cycle); fighters `sandbag mario zelda link samus kirby pikachu sonic donkeykong fox` (the two
+references, a two-character package, projectiles, a charge special, a multi-jump, a fast
+faller, a heavy, unusual specials).
 
 ## 0. two test tiers: the fast gate, and the corpus tests
 
@@ -70,6 +204,56 @@ reach for the corpus only when the thing under test IS what lives in AS3 -- char
 detection, `ssf2_source` provenance, stat extraction, transformation forms -- then mark it
 `#[ignore]` with a reason.
 
+two roster-wide checks sit between the gate and the live harness. both convert every fighter in
+`build/verify/ssf2-data.json` in parallel (about 40s) and need no engine:
+
+| check | what it catches |
+| --- | --- |
+| `just converter-audit` (`tools/tests/strike_tally.py`) | a strike kind that is new or grew against `tools/tests/strike_tally.json`, an emitted script the engine would refuse to parse, a call nothing answers (`tools/tests/unanswerable-calls.py`: `self.`, `match.` and bare calls, frames read in their script's scope). `-- --update` keeps a lower floor |
+| `tools/tests/output_snapshot.py --save NAME` then `--against NAME --show N` | every emitted file a refactor changed, with diffs. a change meant to be output-neutral should report `0 changed` |
+
+a live run that outlasts an edit holds one build with `tools/freeze.sh DIR` and
+`PEPTIDE_BIN=DIR/peptide`: the converter reads its mappings and the engine scripts from disk, so
+a copied binary alone still picks up the working tree's.
+
+two live checks re-measure what the converter rests on, one fighter at a time:
+
+| check | what it catches |
+| --- | --- |
+| `tools/tests/calibrate.py [fighter ...]` | the size scale, full-jump and short-hop arcs drifting from `stats.jsonc` on either engine |
+| `tools/tests/hit_parity.py fighter [move ...] [--spread=N] [--alone=0]` | a converted hit that lands for something other than the source's (a hit count that differs is played again N times on the source, 3 by default, and one the source itself lands that way too is listed apart as its own spread; a move still apart after that is played once more alone, on a fresh session of each engine where the source landed it, and one the two agree on there is listed apart (`~`, under `alone`) with what each showed, since what the sweep's moves before it left behind parted them; `--alone=0` skips it): the damage it deals as a share of the source's (the same share on every move), and the launch the engine gives, against the scale a speed converts by. the source is told the move by name, this engine is given the buttons (`HP_PRESS=1` presses a grounded move on the source too, for a move whose code reads the buttons as it plays, like pac-man's side special). an aerial starts from rest 80 source pixels above the floor on both engines (a back aerial turned away from the victim), the victim put at the distance in the same batch and the buttons pressed frame for frame on both, and falls back to a short hop, then a full one, when that lands nothing (the hop and its aerial go to both engines as one sequence, frame for frame; `HP_AIR_SEQ=0` names the move on the source after a round trip instead); the hop each move landed from is in the report. the four throws are pressed from a hold on both engines (shield and attack is the source's grab). the angle a hit sends at is compared too, and how many times the move hits; a difference in the hits, the angle, the launch or the damage carries the boxes that landed each hit on each engine, in order, by the source's names (`[boxes: source b b2; here b b b2 b]`, read off the attacker's `gvar p0 __peptideHits`). before each move the victim stands still on the floor and is set to 0% on both engines, so no hit lands on a victim still coming down or carrying another engine's damage. `--reps=N` plays a move that landed N times more where it landed, on each engine, and compares the outcome most plays show (the source lands some moves differently run to run). a fighter the source has only as another's final form (giga bowser, wario man) is played there as that fighter, given its final smash and made to use it before each move, against the base fighter on both engines (this engine's side needs two different fighters in one match). a move only one engine lands is listed under `unlanded` in `build/verify/hits-<fighter>.json`, not among the differences; one the source lands and this engine missed is played again in a fresh session first, since what the moves before it leave behind can stop it. a launch or angle apart on a move whose declared box points down at the standing fighter (the accepted downward-hit gap) or is an autolink is listed under `accepted` (`~` in the report), not among the differences. a move each engine landed first at another distance is played on the source where this engine landed it: when the source lands it there too, the reach is listed under `edges` (`?`), at the edge of this engine's reach rather than out of it. both engines run on between the harness's words and push two standing fighters apart while they do, so the distance a move was played at is read on the frame it begins, off each engine's own record (`gap`/`gap_here`, source pixels), and the port's victim is put at the source's distance on that frame; a move begun 3 or more apart is listed under `spacing` (`=`), and `HP_GAPS=1` lists every move's. before each move the watch also waits out what an earlier move left hurting the victim (a poison outlives the reset on both engines). what still moves a result run to run: a move whose own code rolls at random (luigi's misfire, game & watch's judge and the angle his chef throws at, waluigi's dice), one that keeps a charge between uses (black mage's down special, played again at each distance tried), and an aerial from a hop, which each engine reaches at its own point of the jump |
+| `tools/tests/runtime_cost.py fighter [Name.path ...] [--frames=N]` | what each part of the runtime costs a converted fighter a frame on Fraymakers: the engine runs as fast as it can, and each runtime function named (default: the per-frame entry points) is stubbed on both fighters in turn and put back, so the time a frame saves without it is its cost, with a baseline between every two. 4000 frames a run keeps the baseline within about 0.2 ms; shorter runs drift by a millisecond. a guide to where the time goes, not an exact split (a stubbed part changes what the rest does) |
+| `tools/tests/bounce_trace.py fighter move [--frames=N] [--at=X] [--dmg=0,40,80]` | one move's hit on a victim standing at 0% (or at each damage named, in one boot), per source frame from the frame its damage rises, side by side: the victim's place and how far it moved that frame on each engine, both ways. the place to look once hit_parity says a spike's launch differs: a bounce off the floor that turns a frame later, or leaves at another speed, shows as a column that drifts |
+| `tools/tests/box_entity.py fighter ... [--all]` | a box the converter extracted that the entity it writes lacks, has more of, or places differently, frame by frame (offline: converts with `PEPTIDE_DUMP_BOXES` and reads the entity; an animation cut from later in its clip is read from where the conversion's own table starts it, and item, hold-point and camera boxes are left out). every installed fighter comes out clean |
+| `tools/tests/box_runtime.py fighter [input ...]` | a hurt, hit or item box the converter extracted that the source places differently at run time: missing on a frame, a different size, or out of place after the best fit (`PEPTIDE_DUMP_BOXES=path` dumps the extraction) |
+| `tools/tests/move_frames.py fighter [input ...]` | what a move LOOKS like on each engine, frame for frame, side by side (cropped to what the fighter touched). no gate reads colour or pose; this is where the invented default costumes showed up |
+| `tools/tests/state_sweep.py fighter [scenario ...]` | everything that is not an attack on the port: walk, dash, shield, rolls, dodges, double jump, air dodge, taunt, grab and all four throws, pummel, getting hit, ledge, KO and respawn. reports what played, a missing animation, a stuck state, and every script error, each scenario in a match of its own |
+| `tools/tests/state_parity.py fighter [scenario ...]` | how long rolls, dodges, grabs, throws and the taunt last on each engine, in source frames |
+| `tools/tests/roster_report.py [--save=NAME] [--against=NAME] [--list]` | what a `hit_parity.py --all` sweep left, offline: the moves that differ and by what (reach, hits, damage, launch, angle), the accepted lines, the reaches at an edge, and the moves only the source lands; `--save` keeps the sweep's files under a name and `--against` lists each line new or gone since one saved |
+| `tools/tests/rehit_trace.py fighter move [distance] [hop] [--victim] [--proj]` | why a move hits a different number of times: plays it as `hit_parity.py` does (same distance, same hop) and prints each engine's own per-frame record of the attacker (animation, frame, place, speed), so where it went after the first hit (fell on and landed, or hung in the air for a second) reads side by side. `--proj` prints the attacker's projectile's path through the hits on both engines (a multi-hit projectile that drifts off its target shows where); a tool's watcher goes on through `hit_parity`'s `before_record` hook, after its reset |
+| `tools/tests/push_parity.py fighter ... [--at=10,20,30,40,50]` | how far apart two standing fighters settle when set down at each distance, on both engines, in source pixels: the distance a move is really played at |
+| `tools/tests/hop_trace.py fighter ... [--frames=N] [--full] [--then=down+attack:3]` | a short (or full) hop's height and animation each source frame from the tap, on both engines; `--then` presses an input so many frames after the tap in the same sequence, to see on which frame of the hop each engine starts it |
+| `tools/tests/move_trace.py fighter "input" [--frames=N] [--at=X] [--from=X] [--floor] [--all]` | any input frame by frame on both engines side by side: the animation, its frame and the fighter's position each source frame from the first one out of the stand, pressed from the stage middle like `input_parity.py` (`--at` puts the other fighter that far in front, facing back; `--from` starts the fighter that far right of the middle, where C6's second spot is a platform; `--floor` writes the source fighter's height too, as the gates do; `--all` prints every frame, where a still stretch is otherwise one line: a throw, a freeze). use it when a gate says a move ran a different length: it shows the frame each engine took a branch the move's own code makes on a landing, a hit or a wall |
+| `tools/tests/input_parity.py fighter [fighter ...] [--inputs="seq|seq"] [--show]` | what a press turns into: the same input sequences (`a:N b`, source frames) pressed on both engines, frame for frame from standing at the stage's middle, and the moves each played, by this engine's names (the source's mapped through `conversion_stats.json`); a sequence the two play differently is marked `<<` (`--show` prints both records under it). each input starts with the source's fighter written back to the floor's height as well as the middle, so one the last input left on a platform starts on the floor. the default set covers the attacks and specials from standing, the grab, an attack on each frame of a jump's squat and after it, a walk and a crouch into an attack, and how long a direction held before attack still reads as a smash. it found the source's up smash out of a jump's squat, its smash window (a direction held 3 source frames or less, 2 for up and down, counted over any control held) and its turnaround smash (the way behind pressed fresh). a crouch and a dash off a double tap are left out: this engine takes them off the stick's travel, which the harness's pressed buttons do not move, so its fighter only stands or walks there |
+| `tools/tests/hitstun_parity.py fighter [move ...] [--all] [--flight]` | a hit that holds the fighter it lands on for a different time than the source, or flies it a different way: plays each move where the last `hit_parity.py` sweep landed it (one that sweep did not land is found the same way: the source tries its distances in order, this engine plays where the source landed it and then the others, and a line says where each landed when they differ) and reads, off each engine's record, the source frames from the last hit until the fighter leaves its hurt or flying state (a fall or tumble after it is free again), its launch speed, and how far it has gone across and up 10 source frames into its flight (from its first real move, since this engine slides a frozen fighter a little). `--flight` adds the whole flight: across and up at 5, 10, 20 and 30 source frames, the peak, and how far the port's fighter got against the source's. `--all` plays every move. `HP_DMG=80` sets the damage the fighter takes the hit at: a launch's shape only shows at damage. a fighter knocked out and put back inside the watch (a jump of over 100 source pixels in a frame) has its flight cut there and is marked `KO` |
+| `tools/tests/freeze_parity.py fighter [move ...]` | how long a landed hit freezes the attacker on each engine (a whiff against a hit); `--source-only a b c` sweeps the source's ground moves, `--victim` compares how long each move holds the fighter it hits (the source's off where the victim stands, this engine's off the freeze it hands the victim) |
+| `tools/refresh.py fighter ... \| --all` | converts from the installed game's data and packs, in parallel (the roster in about three minutes); run it before any live check, since the engine plays the packed build |
+| `tools/tests/proj_parity.py fighter ... [--moves=...] [--fresh] [--check] [--save] [--left]` | fires each special on both engines (thrown left with `--left`, the layout mirrored so it faces the other fighter, kept apart in the baseline) and compares what the thrower's own projectiles do, per frame on each engine's clock: when the first appears, how long they are out, how many at once, whether the first comes back, and how often the fighter plays the move (a catch plays it again). with several out at once it follows the newest, as the source's record does. the SSF2 side reads the count and first projectile's position off the injected per-frame record. `--fresh` converts and packs each fighter from the data the source engine runs first (the installed game's, which can be another build than the corpus copy); without it the installed package is measured. `--check` fails on a move `tools/tests/proj_parity_baseline.json` lists as matching that differs now; `--save` records the run's matching moves there |
+| `tools/tests/proj_trace.py fighter move [--frames=N] [--every=K] [--fresh] [--thrower]` | one move's first projectile, per source frame from its first, side by side: where it is from its thrower and how far it moved that frame on each engine, and the animation it is in here. the place to look once proj_parity says a life or reach differs: a later start, another slowdown or another turn shows as a column that drifts. `--thrower` prints the thrower's own path from the move's start instead, with the projectile's height over it: a projectile that sits still while its thrower moves drifts on whichever of the two is off |
+| `tools/tests/ssf2_probe.py fighter move "path;path..." [distance] [frames] [--victim="path;..."] [--hop=N] [--dmg=N]` | any public value of the source's fighter, read on every frame while a move plays: the paths (dotted, from the fighter) are handed to the injected per-frame record, which reads them each frame and appends them to its line. `--victim` puts the other fighter's record of the same frame on the row (its label, place, damage and its own paths), so the victim's freeze and launch read beside the attacker's refresh (`trace raw all`); `--hop=N` taps jump first and names the move N frames later, for an aerial; `--dmg=N` puts the victim at N% first; a throw is played by its grab inputs, as `hit_parity.py` plays it. for a rule that turns on a single frame and a value the record does not carry; a `e` read lands only every dozen frames or so |
+| `tools/tests/ssf2_watch.py fighter move pattern [--samples=N] [--every=K] [--speed=S]` | what the source's display holds while a move plays: every display object whose class or name matches `pattern`, its frame, label and place, each walk stamped with the engine's own frame count (the source runs slowed, a quarter by default). for what the source's per-frame record does not carry: an enemy a fighter makes, an effect, a clip inside a projectile |
+| `tools/tests/stage_watch.py stage pattern [--from=F] [--samples=N] [--every=K]` | a source stage's clips frame by frame from frame F of the match: the frame and label of every clip whose class or name matches, printed when it changes. for what its clips do between the gates' reads: a plane that plays on after its code sends it to a label, a frame script that sends it back |
+| `tools/tests/unknown_scan.py [stage\|character] [--jobs=N] [--only=a,b]` | every installed package converted on the runtime path, one at a time to scratch and deleted after: each name the converted code asks for that nothing answers, how many packages ask and which, plus their problems and any conversion that fails. offline, so it runs beside a live sweep; the whole tally goes to `build/verify/unknown_scan-<kind>.json` |
+| `tools/tests/soak.py fighter ...` / `--changed` / `--all` | a few thousand frames of seeded random play beside the other fighter (hits both ways, grabs, KOs), every distinct script error with its origin, load errors included. several fighters share one engine session; `--changed` plays only those whose scripts changed since their last soak or that reported something then |
+| `tools/tests/rollback_parity.py fighter [--baseline]` | a fighter that plays differently when the match rolls back: the same seeded inputs in an ordinary match and in a local one that rolls back as an online one does (`netcode = 3`), both fighters read every few frames; `--baseline` plays the ordinary one twice to show the harness's own noise |
+| `tools/tests/frame_hold.py fighter [input ...]` / `--all` | an object the source holds on one frame (its own timeline stopped) that runs here instead, or the reverse, per object the fighter's own moves put on the stage plus the fighter's own clip |
+
+`crates/ssf2-converter/tests/renamed_real_character.rs` (`cargo test --ignored the_converter_handles_a_character_it_has_never_seen`) is a different kind of check: a corpus
+character's own compiled AS3, byte for byte, with every name the mod author chose fabricated
+through the lossless ABC codec so nothing in it exists anywhere in the corpus. It proves a
+mechanism reads structure rather than a specific character's vocabulary -- run it after any change
+to how the converter reads a name off the source, not as a substitute for the roster gates above.
+
 ## 1. the end-to-end iteration loop
 
 ```
@@ -81,8 +265,8 @@ cargo build --release
 ./build/release/peptide convert ../ssf2-ssfs/<id>.ssf
 #    → ./characters/<id>/   (⚠ verify it is FRESH — see §6 stale-output trap)
 
-# 3. Publish to .fra → lands in Fraymakers' custom/<id>/
-./build/release/peptide export \
+# 3. Publish to .fra → lands in Fraymakers' custom/<id>/ (built in-process, no FrayTools)
+./build/release/peptide pack \
   --project "$PWD/characters/<id>/<id>.fraytools"
 
 # 4. Boot ONE persistent engine session, then drive + observe it iteratively
@@ -104,6 +288,25 @@ all against the *same* live match. full command surface in §3. (the old one-sho
 `tools/run.sh "<cmd>" <secs>` / `tools/runseq.sh` paths still work for scripted runs, but they
 reboot per invocation, so use a session for interactive iteration.)
 
+**one session, one game.** a session and the engine it drives are a pair, recorded in the
+session dir. starting another session REPLACES that pair (it asks the old daemon to exit, which
+shuts its game down the clean way, then takes its place), so you never end up with two engines
+reading the same control file and stealing each other's commands. `peptide session --attach`
+drives the pair already running and launches nothing, which is what you want when a session is
+up and you only need to send it commands. `peptide ssf2 session` behaves the same way.
+
+**is it actually animating?** ask per OBJECT, never per pixel. a whole-frame diff cannot answer
+it: parallax, the fighters and the hud move whatever the backdrop does, so a frozen element hides
+inside a frame that "changed". take a few `tree` dumps and run `tools/anim-advanced.py`, which
+compares each object's own animation frame across samples. take at least THREE: two can land on
+the same frame of a short loop by chance and report a moving object as frozen.
+
+**comparing against ssf2.** `peptide ssf2 session --char <c> --stage <s>` boots the patched app
+into a match and `peptide ssf2 tell "shot <path>"` captures it, which is how a converted stage is
+judged against the source rather than against memory. two things to know: the stage must be baked
+at boot (re-spawning over a live match reports the new stage and keeps the old one), and a stale
+ssf2 already running makes the bridge come up mute, so close it first.
+
 **validating a boot (notes for agents):**
 - a quick boot is **fast** -- you'll see `READY` → `LAUNCHED` → `ANIM:STAND` in **under ~20s**.
   don't budget 40s; snapshot `peptide log -n 40` once the boot's had ~15-20s and you'll have
@@ -113,9 +316,12 @@ reboot per invocation, so use a session for interactive iteration.)
   rather than `timeout … peptide log --follow`.
 
 **which harness when:**
+- **`peptide pack`** -- the publishable `.fra`, built from the project's library in-process in
+  well under a second. this is what the gates publish with.
 - **FrayTools-side** (`peptide harness` / `peptide export`) -- visual/layout ground truth (box
-  geometry, pivots, rendering) and producing the publishable `.fra`. pair with `compare_boxes`
-  for a numeric verdict.
+  geometry, pivots, rendering), and FrayTools' own publish as a cross-check of `pack`
+  (`PEPTIDE_PUBLISH=fraytools` makes the gates use it). pair with `compare_boxes` for a
+  numeric verdict.
 - **Fraymakers-side** (`peptide session`) -- runtime behaviour (loads, spawns, animates,
   transitions state, responds to a move dispatch). where freeze / crash / physics bugs surface.
 
@@ -126,27 +332,31 @@ reboot per invocation, so use a session for interactive iteration.)
 
 ## 2. FrayTools harness -- publish + box geometry
 
-code: `src/fraytools.rs` (pure Rust; speaks CDP over HTTP + WebSocket directly, no Node). it
-drives the user's local FrayTools (Electron + CDP) through FrayTools' own runtime objects, no
-pixel coordinates.
+code: `src/fraytools.rs`. it drives the user's local FrayTools, launching it when it isn't
+running.
 
-- **`peptide export`** runs FrayTools' own **Publish** (the Fraymakers Content Exporter) on a
-  converted project and prints the published `.fra` path. "Publish All" writes both
-  `<projectDir>/build/` and the Fraymakers `custom/<id>/` dir the converter wired up. this is
-  what the GUI's "Export in FrayTools" button shells out to.
-- **`peptide harness`** opens an entity, navigates to an animation + frame via Redux
-  `store.dispatch`, reads box geometry from the entity JSON, captures the stage as a PNG, and
-  emits a JSON report whose `rendered_anchor` field is *FrayTools' own* placement of each box's
-  pivot.
+- **`peptide pack`** builds the `.fra` from a project's library without FrayTools and writes it
+  to every publish folder the project names (`--out <dir>` to choose). its header matches
+  FrayTools' field for field on the sample and its sheets hold the same pictures, their colours
+  rounded through premultiplied alpha the way FrayTools stores them (a see-through stage's sheets
+  shrink by a third or more); the sheets' compression is its own. the builder is `crates/fra-pack`: pictures decode, sheets compress in
+  bands of rows and a fighter's animations compile on every core, and the output is the same
+  bytes on any machine and any number of threads.
+- **the Lazy Town Exporter** (its own repository) is the same builder as a FrayTools publish
+  plugin, on a pool of WebAssembly threads: publishing kirby or sky pillars through it takes about
+  1 s of the plugin's own time where FrayTools' exporter takes about 25 s and 8 s; the rest of a
+  publish (24 to 43 s) is FrayTools gathering the project before any exporter runs.
+- **`peptide export`** has FrayTools publish a converted project and prints the published `.fra`
+  path. "Publish All" writes both `<projectDir>/build/` and the Fraymakers `custom/<id>/` dir the
+  converter wired up. this is what the GUI's "Publish via FrayTools" button runs; its "Publish"
+  button (and the home screen's "Publish a Project") runs `peptide pack` in-process instead, the
+  same packer the verify gates publish with.
+- **`peptide harness`** opens an entity at an animation and frame, reads its box geometry,
+  captures it as a PNG, and emits a JSON report whose `rendered_anchor` field is *FrayTools' own*
+  placement of each box's pivot.
 
-**cold-launch handling.** on a cold launch FrayTools' `/json/version` answers 200 before the
-renderer registers an inspectable page target, so the scripts `waitForTarget()` (poll
-`/json/list` for a real `page`/`webview` target) before connecting.
-
-tested against **FrayTools 0.4.0**; role detection is by method/prop presence (not class name),
-so it's somewhat version-tolerant. the script leaves FrayTools running on success (attach
-model); if CDP attach starts failing mid-session, kill FrayTools and let the script cold-launch
-a fresh instance.
+tested against **FrayTools 0.4.0**. FrayTools is left running on success; if a run can't reach it,
+quit FrayTools and run again so it starts fresh.
 
 ### `compare_boxes` -- numeric verdict
 
@@ -177,6 +387,14 @@ is intentionally **not documented in this repo**, see the compliance boundary no
 any such notes belong only in the gitignored `docs/` scratch space.
 
 ### boot model -- `peptide session` (canonical) + `tell` / `log`
+
+a game already open is driven, not replaced: `peptide session --char <x>` (and `peptide ssf2
+session`) with a live session in the same directory hands it a `spawn` for the roster and
+stage asked for and exits, so the match changes without the app relaunching. `--fresh` forces
+a new game. on SSF2 a `spawn` during a match runs the engine's own end-of-game first, so the
+old fighters stop polling and their scripts stop; on Fraymakers the launch tears the old match
+down itself. with both games open, each session's overlay follows its own game's window
+(the session that spawns the overlay names the window owners it follows).
 
 `peptide session` is the primary surface for interactive, agent-driven testing: one command
 boots a throwaway-patched engine, holds the loopback TCP link open, and runs a command loop you
@@ -268,81 +486,103 @@ emitted length is one cycle the engine repeats, not a duration.
 This is the cheap, total-coverage half of frame parity. The live half (below) is what
 confirms the emitted lengths actually PLAY that way.
 
-### script-error scan (does the translated code actually RUN?)
+### one move, frame by frame, on both engines
 
-`tools/tests/script_error_scan.sh <id> …` converts, exports, then drives the character through
-every `CState` and collects each trapped hscript error into a per-character signature:
-
-```
-SCAN_OUT=/tmp/before tools/tests/script_error_scan.sh sandbag falco   # baseline
-…converter change…
-SCAN_OUT=/tmp/after  tools/tests/script_error_scan.sh sandbag falco
-diff -r /tmp/before /tmp/after
-```
-
-this is a different question from the spawn sweep. `batch_spawn_test.sh` asks "does it launch
-and move"; Fraymakers TRAPS a script error, logs it, and carries on with that frame script dead
-from the failing line onward, so a broken handler passes a spawn test and looks fine from the
-outside. the signature is error text only (no counts, no positions), so two runs of the same
-build match exactly and a diff is all real change.
-
-two things the driving has to get right, both of which produce convincing garbage if you skip
-them: **park between states** (driving FALL or an aerial leaves the fighter airborne, it drifts
-out of the blast zone and dies, and every later action then errors on frame 1) and **spawn two
-characters** (the `scenario` park addresses p0 AND p1, so a solo roster half-fails on a null p1
-and floods the signature). `SCAN_EXPORT=0` reuses the published `.fra` when you only changed the
-driving.
-
-### frame recording (how long did that move actually take?)
-
-Both engines PUSH per-frame telemetry over their harness socket and the host buffers it;
-`record` opens a window and `trace` closes it, printing `<animation> xN` runs:
-
-```
-record                      # clear the buffer
-seq attack:2                # drive an input
-trace                       # TRACE:37 frames, 2 animations / stand x25 / jab1 x12
-```
-
-Fraymakers emits `FRAME:<animation>|<state>` from a `Character.updateGameInput` hook; SSF2
-emits `FRAME:<label>|<frame>|<x>|<y>` from an injected ENTER_FRAME handler. The
-run-length encoding is shared (`debug_target::rle_frames`) so neither side can format it
-differently and make a formatting difference look like a timing difference.
-
-**Compare animations, not states.** SSF2's frame LABEL and Fraymakers' ANIMATION are the
-same unit; a Fraymakers STATE is coarser and spans a whole split chain, so keying on it
-collapses jab1/jab2/jab3 into one run that can never line up with SSF2's per-label counts.
-
-**Don't poll for this.** Polling races the move: a 7-frame attack is ~233ms, the same order
-as the round trip between sending the input and starting to watch, so the watcher can
-arrive after it's over. measured: the SSF2 recorder captured `a x7` in a window where a
-concurrent poll saw only `stand`. The engine is present at every frame; the host isn't.
-
-### timing parity (is the 30->60fps doubling right?)
-
-`tools/tests/timing_parity.py <char>…` (or `--all`) checks the converter's core timing rule
-for EVERY animation, statically, with no engine running:
+`tools/trajectory.py <character> "<input>" [source frames] [--park] [--at=X] [--recovery]`
+plays one input from a stand on SSF2 and then on Fraymakers and prints the two engines' own
+per-frame records side by side, aligned by source frame (the port's two engine frames a source
+frame are paired, its speed shown over the velocity scale so the columns read in the source's
+units; x and y are each engine's own pixels). the source's `fr` is its pose clip's frame, which
+is what plays a move. `--park` puts the fighters where the verify harness puts them (the
+fighter at x 0, the other one `OTHER_AT` away in the source's pixels, `OTHER_AT * SIZE_SCALE`
+in the port's: a dash that meets it on one engine must meet it on the other); `--at=X` parks at
+X instead (the harness parks every other input off centre); `--recovery` parks high and lets
+the fighter fall a few frames first, as C6 does an up special. C6 itself writes every input's
+per-frame record on both engines to `build/verify/c6-paths-<id>.json`, so a C6 difference can
+be read off the run that produced it. the harness's home
+spot is the middle of the floor (`floor_spot`: the spawn is a side platform on battlefield, and
+the middle of the stage at that height is the gap), reached through a short fall so the engine
+lands the fighter: one set down on the floor's height directly is not attached and takes no
+input. the stand gate lifts each fighter above its entrance the same way, in a fall, since one
+set down at a height in its stand state sinks through a drop-through platform on the port
+(lunar core's entrance platform caught the source and not the port on that account). the C6 match is spawned on the baked stage by name, since an unnamed spawn comes up on
+the engine's default stage. a source session whose app never dials in reads the parked
+process's descriptor for the runtime's startup semaphore, unlinks it and starts the app once
+more (an instance killed outright leaves that lock held in the kernel, and every launch after
+it waits on it); after stopping a sweep by hand, kill the leftover engine processes by
+executable name before the next run. both tools boot the
+same stage on both engines (`CHAR_STAGE_SSF2` / `CHAR_STAGE_FM` in verify.py: the source's
+battlefield and its port), since a move that comes down onto a platform on one stage and the
+floor on the other reads as two different moves:
 
 ```
-tools/tests/timing_parity.py mario          # 164 animations checked, 0 off 2.00x
-tools/tests/timing_parity.py --all          # the whole roster
+python3 tools/trajectory.py gameandwatch "up+special" 60
+ sf  source          fr        y      ys   |  port                fr        y vy/scale
+  4  b_up            24    20.05  -23.70   |  special_up           9    41.73   -31.85
+ 22  b_up            24  -153.30    3.50   |  special_up          45   -97.86     8.38
 ```
 
-SSF2 runs at 30fps and Fraymakers at 60, so a converted animation should be exactly twice
-its source. Expected length comes from the splitter itself (`PEPTIDE_DUMP_ANIM_SPLITS`),
-which reports for each emitted FM animation the SSF2 animation it came from and the
-`[start..end)` range it was sliced from; actual length is the emitted `.entity`'s IMAGE
-layer.
+what it answers, and nothing else does: which frame a move's own y-speed writes land on,
+what a declared stat does to a rise or a fall (game and watch's up special: the source rises
+at 1.46x the written speed under its declared `air_ease` 3.5, falls under a gravity of 1.0
+against its declared 1.3, and holds 3.5 as its fall cap; the port applies the write and the
+gravity as declared), and where a landing happens. paced on the engines' frames, never on a
+clock.
 
-**Pair from the splitter, never from names.** One SSF2 timeline becomes several FM
-animations (a Jab sprite -> jab1/jab2/jab3/jab4, see AGENT_CONTEXT "animations" and
-`src/anim_splitter.rs`), so name-matching either misses a split or sums pieces that
-shouldn't be summed. a first version that guessed from name suffixes reported 17 failures
-on mario that were all its own grouping. A looping split is reported but not counted: its
-emitted length is one cycle the engine repeats, not a duration.
+### finding a sound a character names but does not carry
 
-This is the cheap, total-coverage half of frame parity. The live half (below) is what
-confirms the emitted lengths actually PLAY that way.
+```bash
+PEPTIDE_SSF2_APP=/path/to/SSF2.app peptide ssf2 findsound jump_common mario_lift
+```
+
+Walks every package beside the game and says which one holds each id, so a sound that comes out
+silent is a fact rather than a guess. The conversion does this itself (manifest packages first,
+then every package, then the game's own movie); this is for when you want to know WHERE, or to
+confirm that an id exists nowhere.
+
+### api check (does the engine HAVE the method we emit?)
+
+```bash
+peptide "<Fraymakers>/hlboot.dat" _ apicheck
+```
+
+Every method name the mapping tables emit, resolved against the engine that will run it. A call
+the engine has no method for dies where it runs and takes the rest of its handler with it, so the
+symptom is a combo that stops at its first hit or a poll that never fires, with nothing said about
+why. It reads both places a method name is authored: the mapping tables and the script templates.
+Cheap, needs no match running, and catches the whole class before any live test. The names come
+from the converter's own files and the engine is read at runtime, so this writes nothing down
+about the engine.
+
+### content-mistake guards (a mod bug should not end the match)
+
+Some content mistakes don't raise a script error, they take the whole match down: asking for an
+animation the entity doesn't have leaves the object with NO animation, and the engine dies on the
+next frame the camera bounds it, deep in `GameCamera`, saying nothing about which script asked for
+what.
+
+That's the worst kind of bug to be handed, and it's the kind mod development produces all day: a
+renamed animation, a label that became its own animation, a typo. So the engine Peptide patches
+checks first and reports instead:
+
+```
+SCRIPTERR: playAnimation: this entity has no animation named uncrouch
+```
+
+The entity stays on the animation it was already playing. The move looks wrong, which is a bug you can
+see and fix, rather than the game vanishing. The line arrives on the same channel as every other
+script error, so `peptide log` and the in-game console both show it.
+
+This is a growing set. When you find a content mistake that CRASHES rather than reports, add a
+guard for it beside `inject_animation_guard` in `src/main.rs` and register its symbols in
+`manifest.rs` under `guards` (non-critical: if a future build moves them, the guard is skipped and
+the engine behaves as it always did). Guards belong on the one door every script goes through, and
+should ask the engine's own question (`hasAnimation` for `playAnimation`) so the check and the call
+can't disagree.
+
+Guards live in the patched engine, so they cover YOUR test sessions. A published `.fra` runs on an
+unpatched engine, so the converter must still not emit the mistake: the guard is the safety net,
+not the fix.
 
 ### script-error scan (does the translated code actually RUN?)
 
@@ -399,6 +639,36 @@ re-deriving the engine integration on a new build. their existence is noted in
 [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md) "engine-side knowledge is not in this repo"; the
 specifics and any findings stay in local-only notes, not here.
 
+### hit measurement (what did that move actually do?)
+
+`speed N` runs the engine N frames a tick; on SSF2 it raises the frame rate to 30N, which
+runs the same frames sooner (everything the gates measure is counted in frames).
+
+`tick <frames>` waits that many engine frames on the engine's own clock (the pushed per-frame
+line counted host-side, the same on both engines) and answers `TICK:N frames`. the pacing
+primitive for anything driven from outside: no sleep sized for the slowest engine, no poll.
+
+`hits [pN] [frames] [raw] [ctrl:frames ...]` watches one character and reports every hit it
+takes: damage dealt, the launch it was sent with (distance per sample, angle with 0 = right,
+counter-clockwise, the way SSF2 states a hit's direction), and the knockback the engine itself
+calculated on the frame the damage lands. same command on both engines:
+
+```
+scenario 10,73 60,73                   # place the pair, both neutral
+dmg p1 0
+hits p1 40 down:8 down+attack:3        # p0's input timeline plays INSIDE the watch
+```
+
+- the `engine knockback` line is the number to compare. the launch line is position, which is
+  the hit plus hitstop drift, friction and gravity.
+- SSF2 reports its knockback in its own px per frame; x0.65 is Fraymakers units (the
+  `velocity_scale` a speed converts by). side by side unconverted, every move looks a third light.
+- `hits` holds the command queue while it watches, so a `move` sent after it lands after the
+  window. drive the attack through its input timeline, or send the `move` first when the move's
+  startup is longer than the round trip.
+- `hits raw` dumps every sample (damage, position, velocity, state), which is how you read the
+  hitstop and the launch apart.
+
 ### the debugger overlay (a HUD that floats over the game)
 
 `peptide overlay` is a standalone, semi-transparent, click-through HUD that floats on top of
@@ -429,6 +699,14 @@ example: `PEPTIDE_GUI_TRACE=1 PEPTIDE_GUI_AUTOBOOT=quick:mario peptide gui` boot
 boots mario, and traces the whole boot flow to stderr. note the freeze class some converted
 chars hit on match frame 1 is NOT visible to `peptide tell`/eval (the frame loop is hung), so
 confirm those visually (a screenshot), not over the socket.
+
+### no storefront needed
+
+the patched engine boots without Steam running: the client init's "restart through Steam" exit
+and its "failed to connect" throw are disarmed, and the match comes up with the online
+features inactive. that is what a test harness wants; a Steam that has logged itself out (it
+shows a sign-in dialog and quits the moment a game attaches) took the whole live pipeline down
+for an afternoon before this. `PEPTIDE_NEED_STEAM=1` leaves the engine as shipped.
 
 ### 3.0 surviving Fraymakers updates (the version-compatibility gate)
 
@@ -494,12 +772,11 @@ live.** every state produces the expected `ANIM:<STATE>` transition + `M:OK` and
 `STAND`, no crash. the generic load+drive pipeline is validated broadly across the roster too;
 per-character coverage lives in [`docs/STATUS.md`](docs/STATUS.md).
 
-**open / deferred converter bugs surfaced during validation:**
-- **add-timer callback resolution (charge states).** charge frame scripts emit an add-timer
-  call whose third argument should be the timer *callback* but is instead the effects array.
-  `abc_parser` mis-resolves the SSF2 callback to the effects variable; the fix is in the
-  AS3→hscript callback resolution. the emitted call is neutralized to an empty closure with a
-  TODO, so it no longer null-derefs on a charged smash, but the timer does nothing.
+**a callback the source hands to a timer or an event is the function it names.** a charge
+smash's `effects` is both the clip's effects array and the clip's `effects()` method; the
+handed name goes to the method (its own clip's copy, `effects__DSmash_223`), and a callback
+held in an instance var goes through `__cb`, which hands over the closure it holds or a
+function that does nothing while the slot is empty. nothing is neutralized with a TODO.
 
 ---
 

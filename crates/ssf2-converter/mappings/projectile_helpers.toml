@@ -5,45 +5,140 @@
 
 # {{entity_id}}
 single_state = '''
-// Projectile script for {{entity_id}} -- converted from SSF2
-// X_SPEED / Y_SPEED are synthesized from SSF2 getProjectileStats() (speed caps),
-// scaled by the same velocity_scale the character physics uses (30->60fps + size).
-// {{speed_note}}
+// Projectile script for {{entity_id}} -- converted from SSF2.
+// Launch: {{speed_note}}
+// Physics {{physics_note}}
+// Everything below initialize() is this projectile's OWN code, translated from the clip class
+// its package ships. Falling is the ENGINE's: the numbers its package declares go to
+// ProjectileStats, and what is left here is what the engine cannot do for it (its bounce, its
+// lifetime, whatever its own class says).
 
-var X_SPEED = {{x_speed}};
-var Y_SPEED = {{y_speed}};
-
+{{constants}}
 function initialize() {
-    self.addEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit, { persistent: true });
-    self.addEventListener(GameObjectEvent.HIT_DEALT,  onHit,       { persistent: true });
-
     self.setCostumeIndex(self.getOwner().getCostumeIndex());
-    Common.enableReflectionListener({ mode: "X", replaceOwner: true });
-
+{{reflection_listener}}
     self.setState(PState.ACTIVE);
-    self.setXSpeed(X_SPEED);
-    self.setYSpeed(Y_SPEED);
+{{death_watch}}{{bounce_listener}}{{source_init}}
+}
+{{death_watch_handler}}{{bounce_handler}}{{source_methods}}
+// a toss asked here (of this item, or of its holder) is the holder's to do: signalled to it
+function __toToss(o) { var h = (o == null || o == self) ? self.exports.__holder : o; if (h != null && h.exports != null) { h.exports.__askToss = true; } }
+var __ghostDeclared = null;
+// held by a fighter (an item it generated): it rides the holder's item box until let go, and
+// touches nothing while held (the holder's hand is over a floor its body would meet)
+function __itemUpdate() {
+    var st = self.exports.__askState;
+    if (st == "hold") { self.exports.__askState = null; if (__ghostDeclared == null) { __ghostDeclared = (self.exports.__ghostDeclared != null) ? self.exports.__ghostDeclared : self.getProjectileStat("ghost"); } self.updateProjectileStats({ ghost: true }); }
+    else if (st == "toss") { self.exports.__askState = null; self.updateProjectileStats({ ghost: __ghostDeclared == true }); }
+    var h = self.exports.__holder;
+    if (h == null) { return; }
+    if (h.isDisposed()) { self.exports.__holder = null; return; }
+    var bx = h.exports.__ibx; var by = h.exports.__iby;
+    if (bx == null) { bx = 0; } if (by == null) { by = 0; }
+    self.setX(h.getX() + h.flipX(__sp(bx))); self.setY(h.getY() + __sp(by));
+    self.setXSpeed(0); self.setYSpeed(0);
+    if (h.isFacingRight()) { self.faceRight(); } else { self.faceLeft(); }
+}
+function update() {
+    // a label something else asked it for (its summoner, off its own timeline): taken up here,
+    // in its own scope. a projectile's labels are its animations
+    // ...on its next SOURCE frame: on the second engine frame of its current pair the next frame
+    // drawn begins one, on the first it does not yet (megaman's water wave spawned its next segment
+    // every five engine frames against the source's six with the ask taken at once)
+    // (and at once on a fresh spawn: the source's playhead reaches a label asked at the spawn
+    // before the clip's first frame plays)
+    var __asked = self.exports.__askLabel != null;
+    if (self.exports.__askLabel != null && (__srcSpawning || self.getCurrentFrame() % 2 == 0)) { var __l = self.exports.__askLabel; self.exports.__askLabel = null; self.playAnimation(__l); }
+    // the clip's first frame's script, at the first update, unless a label was asked at the spawn
+    // (this engine ran it the moment the object was made, before its maker could ask)
+    if (__srcSpawning && !__asked) { __frame1(); }
+    __drainSrcTimers();
+    __hbCarryUpdate();
+    __labelFlow();
+    __takeAttackCompleteAsks();
+    __takeProjDestroyedAsks();
+    __outOfBounds();
+    __takeWatchedDestroyed();
+    __takeFrameHold();
+    __applyRotate();
+    __partsUpdate();
+    __itemUpdate();
+{{class_update}}{{physics_update}}}
+'''
+
+# Nothing in this engine ends a projectile that has gone to DESTROYING: update() does not run
+# there, no animation-end event exists, and a state change does not reach the projectile's own
+# script. So it watches itself on a timer, which the engine drives regardless of state, and
+# ends itself once the animation it dies to has played its last frame. Without this the engine
+# says so out loud after twenty seconds, and the projectile stays on the stage for the match.
+death_watch = '''    self.addTimer(1, -1, _endsItselfWhenDone, { persistent: true });
+'''
+
+# The animation it dies to is the clip's own word when a frame of it ends the object, and a guess
+# (its last label) when none does; a guessed one can repeat or play on into another label and
+# never reach a last frame. So dying is also bounded: once through the animation it is in, and a
+# second of grace for a hit that holds it still, and it is gone.
+death_watch_handler = '''
+// the death bounds, kept here rather than by the engine: the engine takes a projectile off at them
+// with nothing of its own run first, and what it asked to be told of its end never heard (megaman's
+// crash bomb flew off the stage and he could not throw another). as the engine would, less
+// whatever this states it survives
+var __survivesBounds = /*SURVIVES_BOUNDS*/false;
+function __outOfBounds() {
+    if (self.isDisposed() || self.getState() == PState.DESTROYING) { return; }
+    // another script ending this one (an absorb, its maker putting it away): asked on its exports,
+    // done here in its own scope, so its own end runs the way the source's does
+    if (self.exports.__askEnd == true) { self.exports.__askEnd = null; __takeProjDestroyedAsks(true); __unlistenOthers(); self.toState(PState.DESTROYING); return; }
+    if (__survivesBounds) { return; }
+    var a = stage == null ? null : stage.getDeathBounds();
+    var r = a == null ? null : a.getRectangle();
+    if (r == null) { return; }
+    // the rectangle is the area's own, placed at the area's origin
+    var left = a.getX() + r.x; var top = a.getY() + r.y;
+    var x = self.getX(); var y = self.getY();
+    if (x < left || x > left + r.width || y < top || y > top + r.height) {
+        __takeProjDestroyedAsks(true); __unlistenOthers(); self.toState(PState.DESTROYING);
+    }
+}
+var __dyingFor = 0;
+function _endsItselfWhenDone() {
+    if (self.isDisposed()) { __unlistenOthers(); __partsDispose(); return; }
+    if (self.getState() != PState.DESTROYING) { __dyingFor = 0; return; }
+    __takeProjDestroyedAsks(true);
+    __unlistenOthers();
+    __dyingFor = __dyingFor + 1;
+    // done when its death has played out: its last frame, or as many frames as the death has (a
+    // held last frame never reports itself played, and the still frame a projectile with no death
+    // of its own dies in held it on for a second more than the source keeps it)
+    if (self.finalFramePlayed() || __dyingFor >= self.getTotalFrames()) {
+        __partsDispose();
+        __endSrcTimers();
+        self.kill();
+    }
 }
 
+'''
+
+# Used only when a projectile's package ships no code for it: without its own handlers it
+# would fly on forever, so it dies where SSF2's engine would have destroyed it.
+default_handlers = '''
 function onGroundHit(event) {
-    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);
-    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);
     self.toState(PState.DESTROYING);
 }
 
 function onHit(event) {
-    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);
-    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);
     self.toState(PState.DESTROYING);
-}
-
-function update() {
-    // Projectile moves via setXSpeed/setYSpeed set in initialize().
-    // Add custom movement logic here if needed.
 }
 '''
 
-# {{entity_id}}, {{lstate_prep}}, {{update_branches}}
+default_listeners = '''    self.addEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit, { persistent: true });
+    self.addEventListener(GameObjectEvent.HIT_DEALT,  onHit,       { persistent: true });
+'''
+
+# {{entity_id}}, {{lstate_prep}}, {{death_watch}}, {{death_watch_handler}}, {{source_init}},
+# {{source_methods}}, {{class_update}}, {{physics_update}}
+# What each state DOES is on that state's own frames, carried by the entity: nothing here
+# stands in for a state's code.
 multi_state = '''
 // Projectile script for {{entity_id}} -- converted from SSF2 (multi-state)
 // Uses the local state machine to switch between animations since PState
@@ -53,6 +148,9 @@ multi_state = '''
 var X_SPEED = {{x_speed}};
 var Y_SPEED = {{y_speed}};
 
+// What the clip keeps for itself. Its own frames read and write these by name, so they
+// are declared here, where the script's scope is made.
+{{constants}}
 // ---- Local state machine setup ----
 function _prepLocalState(animation:String, ?index:Int=Math.NaN):Int {
     if (!__hasInitLocalStateMachine) {
@@ -72,53 +170,67 @@ var LState = {
 {{lstate_prep}}}
 
 function initialize() {
-    self.addEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit, { persistent: true });
-    self.addEventListener(GameObjectEvent.HIT_DEALT,  onHit,       { persistent: true });
-
-    self.setCostumeIndex(self.getOwner().getCostumeIndex());
+{{contact_death_listeners}}    self.setCostumeIndex(self.getOwner().getCostumeIndex());
     Common.enableReflectionListener({ mode: "X", replaceOwner: true });
 
     self.setState(PState.ACTIVE);
-    Common.toLocalState(LState.IDLE);
+{{death_watch}}    Common.toLocalState(LState.IDLE);
     self.setXSpeed(X_SPEED);
     self.setYSpeed(Y_SPEED);
+{{source_init}}
 }
 
-function onGroundHit(event) {
-    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);
-    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);
-    self.toState(PState.DESTROYING);
-}
+{{death_watch_handler}}{{contact_death_handlers}}{{source_methods}}
 
-function onHit(event) {
-    self.removeEventListener(EntityEvent.COLLIDE_FLOOR, onGroundHit);
-    self.removeEventListener(GameObjectEvent.HIT_DEALT,  onHit);
-    self.toState(PState.DESTROYING);
+// a toss asked here (of this item, or of its holder) is the holder's to do: signalled to it
+function __toToss(o) { var h = (o == null || o == self) ? self.exports.__holder : o; if (h != null && h.exports != null) { h.exports.__askToss = true; } }
+var __ghostDeclared = null;
+// held by a fighter (an item it generated): the hold and the throw are asked of it on its
+// exports and taken up here in its own scope; held, it rides the holder's item box
+function __itemUpdate() {
+    // an attack the holder began, put to this item's interrupt here, where its own helpers are
+    var q = self.exports.__askInterrupt;
+    if (q != null) { self.exports.__askInterrupt = null; if (self.exports.__frameInterrupt != null) { self.exports.__frameInterrupt(q); } }
+    var st = self.exports.__askState;
+    // held, it touches nothing (the holder's hand is over a floor its body would meet); thrown,
+    // it is what its declaration says again
+    if (st == "hold") { self.exports.__askState = null; if (__ghostDeclared == null) { __ghostDeclared = (self.exports.__ghostDeclared != null) ? self.exports.__ghostDeclared : self.getProjectileStat("ghost"); } self.updateProjectileStats({ ghost: true }); Common.toLocalState(LState.ATTACK_HOLD); }
+    else if (st == "toss") { self.exports.__askState = null; self.updateProjectileStats({ ghost: __ghostDeclared == true }); Common.toLocalState(LState.ATTACK_TOSS); }
+    var h = self.exports.__holder;
+    if (h == null) { return; }
+    if (h.isDisposed()) { self.exports.__holder = null; return; }
+    var bx = h.exports.__ibx; var by = h.exports.__iby;
+    if (bx == null) { bx = 0; } if (by == null) { by = 0; }
+    self.setX(h.getX() + h.flipX(__sp(bx))); self.setY(h.getY() + __sp(by));
+    self.setXSpeed(0); self.setYSpeed(0);
+    if (h.isFacingRight()) { self.faceRight(); } else { self.faceLeft(); }
 }
 
 function update() {
-    if (Common.inLocalState(LState.IDLE)) {
-        // TODO: implement IDLE state logic (projectileIdle animation)
-{{update_branches}}    }
-}
+    // a label something else asked it for (its summoner, off its own timeline): taken up here,
+    // in its own scope. a projectile's labels are its animations
+    if (self.exports.__askLabel != null) { var __l = self.exports.__askLabel; self.exports.__askLabel = null; self.playAnimation(__l); }
+    __labelFlow();
+    __takeAttackCompleteAsks();
+    __takeProjDestroyedAsks();
+    __outOfBounds();
+    __takeWatchedDestroyed();
+    __takeFrameHold();
+    __applyRotate();
+    __partsUpdate();
+    __itemUpdate();
+{{class_update}}{{physics_update}}}
 '''
 
+# {{fm_anim}} -- the animation this projectile actually has for standing by, which is
+# not always the one the template would have guessed.
 lstate_idle_prep = '''
-    IDLE:    _prepLocalState("projectileIdle"),
+    IDLE:    _prepLocalState("{{fm_anim}}"),
 '''
 
 # {{fm_anim}}, {{lstate_name}}
 lstate_prep_line = '''
     {{lstate_name}}: _prepLocalState("{{fm_anim}}"),
-'''
-
-# {{frame_count}}, {{lstate_name}}
-update_branch = '''
-    } else if (Common.inLocalState(LState.{{lstate_name}})) {
-        // TODO: implement {{lstate_name}} state logic ({{frame_count}} frames)
-        if (self.finalFramePlayed()) {
-            Common.toLocalState(LState.IDLE);
-        }
 '''
 
 # Projectile *Stats.hx generators — populated in a later migration block.
@@ -134,7 +246,13 @@ proj_anim_wrapper = '''
 '''
 
 # {{name}}
-proj_anim_entry_destroy = '    {{name}}: { xSpeedConservation: 0, ySpeedConservation: 0, resetId: false }'
+# Stops on its last frame like the others. Without saying so it takes the engine's default
+# and repeats, and a projectile that repeats the animation it dies to never finishes dying:
+# the engine says so out loud after twenty seconds of it sitting in DESTROYING. its speed is
+# not taken off here: the label it dies in can be one it lives in too (simon's holy water ends
+# itself at the last frame of the flame that runs along the floor, which stood still once its
+# entry dropped the speed); the runtime holds a dying projectile still instead.
+proj_anim_entry_destroy = '    {{name}}: { endType: AnimationEndType.NONE, resetId: false }'
 
 # {{name}}
 proj_anim_entry_normal = '    {{name}}: { endType: AnimationEndType.NONE }'
@@ -151,16 +269,6 @@ proj_stats_body = '''
     shadows: true,
 {{physics}}
 {{todos}}
-    floorHeadPosition: 15,
-    floorHipWidth: 16,
-    floorHipXOffset: 0,
-    floorHipYOffset: 0,
-    floorFootPosition: 0,
-    aerialHeadPosition: 15,
-    aerialHipWidth: 16,
-    aerialHipXOffset: 0,
-    aerialHipYOffset: 0,
-    aerialFootPosition: 0
 }
 '''
 
@@ -191,9 +299,6 @@ proj_hitbox_active_block = '''
     {{name}}: {
         {{idle_body}}
     }'''
-
-# {{name}}
-proj_hitbox_empty_block = '    {{name}}: {}'
 
 # {{parts}}
 proj_hitbox_idle_matched = 'hitbox0: { {{parts}} }'

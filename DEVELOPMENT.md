@@ -15,7 +15,7 @@
 >   validation status.
 > - [`CONTRIBUTING.md`](CONTRIBUTING.md) -- hot-file → doc-section map + the
 >   per-change checklist.
-> - known issues, the code-quality backlog, and prioritized next steps live in
+> - known issues and prioritized next steps live in
 >   [`docs/STATUS.md`](docs/STATUS.md) -- the single home for converter status and
 >   TODOs ("what should I fix next" work).
 
@@ -33,7 +33,7 @@
 8. [input format: SSF2 `.ssf`](#8-input-format-ssf2-ssf)
 9. [output format: Fraymakers character package](#9-output-format-fraymakers-character-package)
 10. [current status -- what works](#10-current-status--what-works)
-11. [known issues, next steps & backlog → STATUS.md](#11-known-issues-next-steps-and-the-code-quality-backlog)
+11. [known issues & next steps → STATUS.md](#11-known-issues-and-next-steps)
 12. [tips for the next agent](#12-tips-for-the-next-agent)
 
 ---
@@ -47,8 +47,8 @@
 - **test live** -- boot Fraymakers and drive a real match (spawn, run moves, read state, eval
   hscript) to validate a conversion in the engine. see [`TESTING.md`](TESTING.md) and
   [`docs/PEPTIDE_GUIDE.md`](docs/PEPTIDE_GUIDE.md).
-- **drive FrayTools** -- publish a project to `.fra`, render an entity, or pull box geometry
-  over the DevTools protocol.
+- **publish and drive FrayTools** -- build a project's `.fra` itself, or have your local
+  FrayTools publish it, render an entity, or report box geometry.
 
 this doc is the developer guide for the **converter** side. both SSF2 and Fraymakers are indie
 platform-fighting games: SSF2 ships its characters as Flash content; Fraymakers characters are
@@ -63,8 +63,7 @@ it converts, per character:
 | Bitmap sprites (one per animation frame) | → | `library/sprites/*.png` + `.meta` sidecars |
 | Per-frame collision boxes (hitboxes, hurtboxes, grab/ledge/reflect/absorb/touch boxes…) | → | `COLLISION_BOX` / `COLLISION_BODY` / `POINT` layers in the character entity (`<Pascal>.entity`) |
 | Animation timelines | → | `animations` / `layers` / `keyframes` in the character entity |
-| AS3 frame scripts (ABC bytecode) | → | `FRAME_SCRIPT` keyframe code in the entity |
-| AS3 character logic (`XxxExt` class methods) | → | decompiled into `Script.hx` |
+| AS3 character logic and frame scripts (ABC bytecode) | → | `Script.hx`, compiled onto the runtime (`emit::runtime_fighter`, §5.3); a frame's code goes on its `FRAME_SCRIPT` keyframe |
 | Character stats (weight, gravity, speeds…) | → | `CharacterStats.hx` (data-driven via `mappings/character/stats.jsonc`) |
 | Attack / hitbox data | → | `HitboxStats.hx` (data-driven via `mappings/character/hitbox_stats.jsonc`) |
 | Animation flags | → | `AnimationStats.hx` |
@@ -111,7 +110,7 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 │   ├── peptide_ui.html        the UI (home / setup / converter / frayhook / console)
 │   ├── ui.rs / bridge.rs      ratatui TUI + headless TCP runtime + the launcher
 │   ├── manifest.rs            engine-symbol dependency table (doctor preflight)
-│   ├── fraytools.rs           FrayTools CDP driver (export / render / harness)
+│   ├── fraytools.rs           FrayTools driver (export / render / harness)
 │   └── asm.rs / interpreter.rs  opcode helpers + the friendly-command vocabulary
 │
 ├── crates/ssf2-converter/     The SSF2 → Fraymakers converter, as a library crate
@@ -124,7 +123,10 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 │   │   ├── swf_timeline.rs    display list frame by frame — the ONE reader, shared by the
 │   │   │                      character and stage paths (matrix, ratio, blend, alpha, visibility)
 │   │   ├── abc_parser.rs      AVM2/ABC bytecode parser + semantic extractors (~2650 LOC)
-│   │   ├── decompiler.rs      ABC bytecode → Haxe-ish source (~2050 LOC)
+│   │   ├── decompiler.rs      ABC bytecode → Haxe-ish source (~2050 LOC), the current path
+│   │   ├── model/             the source model and its decompiler (see §5.3)
+│   │   ├── compile/           the model's trees to Haxe (see §5.3)
+│   │   ├── emit/              each object's script on the runtime's path (see §5.3)
 │   │   ├── extractor.rs       Bridges abc_parser output into CharacterData
 │   │   ├── anim_splitter.rs   Splits multi-move SSF2 sprites into FM animations
 │   │   ├── sprite_parser.rs   Per-frame collision-box geometry from SWF timelines
@@ -148,6 +150,9 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 │   │   └── character/          animations.jsonc / stats.jsonc / hitbox_stats.jsonc
 │   └── tests/                 integration + golden tests
 │
+├── crates/fra-pack/           package `fra_pack`: the .fra builder, from a library in memory
+│                              (the Lazy Town Exporter plugin builds the same crate for FrayTools)
+│
 ├── tools/                     Build + engine-harness orchestration (shell + Node)
 │   ├── make-app.sh             macOS: build peptide + wrap it in build/Peptide.app
 │   ├── make-win.sh             Cross-compile the Windows peptide.exe into build/windows/
@@ -160,7 +165,9 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 │   │   ├── parity_check.py      Static SSF2-source-vs-output hitbox-parity diff
 │   │   ├── translation_completeness.sh  Per-character untranslated-marker dashboard
 │   │   └── recipes/             .recipe scripts + .golden behavior signatures
-│   └── (FrayTools drive)       ported into the peptide binary: `peptide export|render|harness`
+│   └── (FrayTools drive)       ported into the peptide binary: `peptide export|render|harness`;
+│                              `peptide pack` builds the .fra itself (src/pack.rs reads the
+│                              library, crates/fra-pack builds it), no FrayTools
 ├── characters/                Converter OUTPUT (`*.hx`, `*.json`, `*.entity` tracked; media ignored)
 └── build/                     Cargo build output (git-ignored; target-dir → build/release/peptide)
 ```
@@ -280,8 +287,8 @@ character; after that a **Home** screen offers three buttons:
 - **Launch Peptide** -- boot the engine and drive a live match (the console).
 - **SSF2 → Fraymakers Converter** -- run a conversion in-process (a worker thread
   calling `run_conversion`), with a progress bar and a result panel.
-- **FrayTools Hook** -- publish to `.fra` / render an entity / extract box
-  geometry, driving FrayTools over CDP.
+- **Publish** -- build a project's `.fra` in-process (or have FrayTools publish it).
+- **FrayTools Hook** -- render an entity / extract box geometry with your local FrayTools.
 
 the webview glue lives in `src/gui.rs` (see [`docs/PEPTIDE_DESIGN.md`](docs/PEPTIDE_DESIGN.md)
 for the harness internals); there's no separate GUI crate anymore.
@@ -348,7 +355,8 @@ process_character():
     │                              SSF2 physics + hitboxes from getProjectileStats()) }
     │                            (delegates to abc_parser + decompiler)
     ▼
-[5] sprite_parser::extract_xframe_scale     root MovieClip → base scaleX/scaleY
+[5] sprite_parser::extract_xframe_scale     root placement scale (logged; it is already in the
+    │                                       art and boxes, so baseScale is size_multiplier)
     │
 [6] sprite_parser::parse_sprite_boxes       SWF timelines → per-animation,
     │                                       per-frame collision-box geometry
@@ -363,19 +371,19 @@ process_character():
     │                                       find projectile sprites, effect sprites,
     │                                       and menu head sprite
     ▼
-[10] haxe_gen::generate          Writes the ENTIRE output package:
+[10] haxe_gen::generate          Writes everything but the fighter's script:
        │
        ├─ EffectAnimGuard::install(effect→primary-animation map)
        │   so all translate_ssf2_to_fm calls in this scope can resolve
        │   attachEffect("name") → match.createVfx(…) with the right animation.
        │
-       ├─ HitboxStats.hx / CharacterStats.hx / AnimationStats.hx / Script.hx
-       │   (+ .hx.meta sidecars)
+       ├─ HitboxStats.hx / CharacterStats.hx / AnimationStats.hx
+       │   (+ .hx.meta sidecars, Script.hx.meta included)
        ├─ anim_splitter::split_animations  (jab→jab1/2/3/4, taunt→3 slots,
        │                                    aerial → active + land, strong → in/charge/attack,
        │                                    grab → grab/dash_grab/grab_hold/grab_pummel, …)
        ├─ entity_gen::generate_entity      → library/entities/<Pascal>.entity
-       │   (drops empty animations; jab-count-driven jab keep-list)
+       │   (every frame, no code; drops empty animations; jab-count-driven jab keep-list)
        ├─ <project>.fraytools  (fraytools_project)   + library/manifest.json (+ .meta)
        ├─ entity_gen::get_image_meta_guids → a .meta sidecar per sprite PNG
        ├─ palette_gen::generate_palettes_and_remap
@@ -393,10 +401,16 @@ process_character():
        ├─ generate_sound_entries  (per-WAV .meta sidecar)
        └─ conversion_stats.json
     │
+[10b] emit::runtime_fighter      the fighter's Script.hx and one for each projectile and item
+    │                            it declares (§5.3), code onto the entity's keyframes,
+    │                            runtime_report.json
+    │
 [11] write_conversion_log        Snapshot api_mappings::snapshot_conversion_log()
                                  → <char>/conversion_log.json with:
                                    - character (the derived id),
-                                   - unknown + ssf2_only counts,
+                                   - unknown + ssf2_only counts (from the text passes
+                                     that still run; the runtime's own gaps are in
+                                     runtime_report.json),
                                    - ssf2_source: { package_id, package_guid,
                                      source_method } (always present when
                                      `Main` exists); adds parent_normal_stats_id
@@ -423,13 +437,13 @@ three sub-systems are worth calling out:
   modules walk those timelines frame-by-frame and produce per-animation,
   per-frame, per-layer data structures.
 
-- **rewriter pipeline** (`api_mappings::translate_ssf2_to_fm`): every block of
-  decompiled Haxe (Script.hx ext methods, ext-class iinit, frame scripts) passes
-  through a fixed pipeline of structural and text transforms -- see
-  [§5.5](#55-the-translation-pipeline-api_mappingsrs) for the exact order.
+- **rewriter pipeline** (`api_mappings::translate_ssf2_to_fm`): the old text path. a
+  fighter no longer goes through it; a projectile or item made from another package and every
+  stage script still do -- see [§5.5](#55-the-translation-pipeline-api_mappingsrs) for the
+  exact order.
 
-`haxe_gen::generate` is the real orchestrator of *output* -- `main.rs` just
-prepares the inputs and hands everything to it.
+`haxe_gen::generate` and then `emit::runtime_fighter` write the *output* -- `main.rs` just
+prepares the inputs and hands everything to them.
 
 ---
 
@@ -469,7 +483,7 @@ garbage_header_size` + zlib payload.
 `parse(data) -> SwfFile`: thin wrapper over the **`swf` crate** (Ruffle), returning `SwfFile {
 version, frame_count, frame_rate, symbols, abc_blocks }`. **Note**: several downstream modules
 re-run `swf::decompress_swf` + `swf::parse_swf` on the raw buffer instead of reusing this
-(code-quality backlog in [`docs/STATUS.md`](docs/STATUS.md)).
+(see [`docs/STATUS.md`](docs/STATUS.md)).
 
 #### `mappings.rs`
 JSONC loader for `mappings/*.jsonc`: `strip_jsonc` removes comments + trailing commas, then
@@ -506,13 +520,81 @@ code shape:
 turns ABC method bytecode into readable Haxe-ish source, rebuilding real control flow (well
 past a disassembler). `build_blocks` splits into basic blocks; `BlockDecoder` / `StructuredDecoder`
 reconstruct a CFG and recover structured control flow (`if`/`else`/`while`, short-circuit
-`&&`/`||`, branch inversion); `Expr` / `Stmt` ASTs render via `render_stmts` / `render_closure`;
-`infer_activation_slots` / `rename_loop_counters` / `rename_locals_in_*` name locals.
+`&&`/`||`, branch inversion); a short-circuit is a chain of `dup` + branch links whose grouping
+is read off the jump targets (`combine_chain`: an `&&` link jumping to a later test closes an
+and-group, an `||` link an or-group, a jump onto the very next test merges the two terms), so any
+nesting reads; a chain whose
+join block negates the kept value (`!(a && b) || !(c && d)`) or works on it (`now - (last ||
+-999)`) is read as a VALUE, not the join's condition; a value-position `||`/`&&` renders as
+`__or`/`__and` (the host's operators answer a bool, the source answers the operand it settled
+on), defined beside the speed helpers in every preamble; a short-circuit `if` whose then-side
+jumps forward over its else decodes the then-body up to the MERGE, not up to the else's start.
+`Expr` / `Stmt` ASTs render via
+`render_stmts` / `render_closure`;
+`infer_activation_slots` / `rename_loop_counters` / `rename_locals_in_*` name locals. a
+parameter's declared default (an AS3 `start = true`) is applied on the way in
+(`with_param_defaults`: `if (argN == null) { argN = <literal>; }`), since the target's script
+ignores a default written in the signature and a bare call read it as nothing (game and
+watch's release timer was stopped where the source started it). a clip's own `currentLabel`
+is the label the clip is on (`_currentLabel(self)`, off the script's label tables), while the
+fighter's stance clip's is the animation.
 `guard_loop_termination` appends `i = i + 1` to any `while (i < ….length)` counter loop whose
 body doesn't advance the counter (SSF2 mutates arrays mid-iteration via `splice`); it only
 touches loops missing the advance. `decompile_method` / `decompile_closure` are the entry
 points; `lookup_api` is a small inline SSF2 → FM table used during decompilation, distinct from
 the JSONC rewriter in `api_mappings`.
+
+#### `model/` (the source model)
+reads a package once, in the source's own shape, for the compiler to translate (see
+[`docs/CONVERTER_DESIGN.md`](docs/CONVERTER_DESIGN.md)). `SourceModel::read` gives every class
+(superclass, fields, methods as trees, the frame scripts its constructor registers), every
+symbol binding, and every sprite's frames and labels. `peptide ssf2 model <file.ssf> [class]
+[method]` prints it.
+
+its decompiler knows AS3 and nothing about either engine:
+
+| file | job |
+|---|---|
+| `ast.rs` | the tree (`Expr`, `Stmt`, `Function`) and an AS3-like printer |
+| `decode.rs` | bytecode (read with the swf crate's decoder) to basic blocks on a symbolic stack; a value left on the stack at a block's end reaches its successors through a join slot |
+| `structure.rs` | blocks to `if`/loops/`switch`/`try`: loops from back edges to dominating blocks, rejoins from post-dominators (or the first block every continuing way reaches), `a && b` tests merged back into one condition |
+| `tidy.rs` | folds join slots and temps back into `c ? a : b`, `a && b`, `a \|\| b`, gives loops their `while`/`do` form and switches their source values; each rewrite keeps evaluation order |
+
+`tests/source_model.rs` holds the bar: every class of every corpus package reads with nothing
+unreadable and no join slot left. the old `decompiler.rs` still feeds the current emitters
+until they are replaced.
+
+#### `compile/` (the compiler) and `runtime/`
+the model's trees to Haxe (`compile_package`), in the source's shape: each class a section with
+`build` (fields and methods), `init` (its constructor) and `create`. it knows AS3 and nothing
+about the game; where AS3 and the engine's interpreter disagree it calls the runtime's `AS3` layer
+(`runtime/core/as3.hx`). `compile/runtime.rs` reads the runtime's files for the classes and globals
+they define, the one list of what exists. `peptide ssf2 compile <file.ssf> [class]` prints the
+output; `--lang-suite` prints the language suite.
+
+checks: `tests/compile_corpus.rs` compiles the corpus and parses the output with
+`tools/hxcheck` when `haxe` is installed, `tests/runtime_parses.rs` parses `runtime/` itself (it is
+inlined into every script, so one stray brace drops them all), and `verify.py`'s S1/C1 parse every
+script a conversion wrote; `tools/tests/lang_suite.py` runs the language suite in the engine.
+
+`runtime/engine.names` lists the engine's own script globals; a content class by one of those
+names is written with a `_` after it.
+
+`runtime/api_names.jsonc` lists SSF2's API and SDK names against the runtime's own. a package is
+read through it (`Runtime::read_package` renames the model before anything compiles it), so output
+calls `PeptideCharacter`, `playFrame`, `PeptideEvent.GROUND_TOUCH` and never SSF2's names (a verb takes Fraymakers' name where Fraymakers has one); the SDK classes every
+package bundles are answered by the runtime and never emitted. add a row here when content uses an
+SSF2 name the runtime answers under its own; the rename reports a table entry that would merge two
+of content's names.
+
+#### `emit/` (the runtime's path)
+every fighter converts this way: `haxe_gen::generate` writes the art, entities (every frame, no
+code in them), stats and sounds, then `emit::runtime_fighter` writes
+the fighter's script and one for each projectile and item it declares. each is the runtime's files,
+the classes the object reaches, its data (timelines, pieces, its declaration, the package's
+tables) and `runtime/entry/<kind>.hx`. `runtime_report.json` beside the project lists what did not
+place: a member nothing provides (`unknown`), an animation no source frame shows or a source frame
+no animation shows (`unplaced`). the verify gates run on it unchanged.
 
 ### 5.4 extraction layer
 
@@ -559,12 +641,14 @@ rewrites them as plain translations. `discover_projectiles_and_head` finds proje
 ADPCM uses a generic FLV wrapper.
 
 > the hand-rolled SWF tag walker (`parse_sounds`) could be replaced with the `swf` crate's
-> `DefineSound` support (code-quality backlog in [`docs/STATUS.md`](docs/STATUS.md)).
+> `DefineSound` support (see [`docs/STATUS.md`](docs/STATUS.md)).
 
 ### 5.5 the translation pipeline (`api_mappings.rs`)
 
-`translate_ssf2_to_fm(code)` is the single entry every block of decompiled Haxe passes through
-(Script.hx ext methods, ext-class iinit, embedded frame scripts). the fixed order:
+the old text path. a fighter's script and the projectiles and items it declares come from the
+runtime (§5.3); what still goes through here is a projectile or item made from another package,
+and stage scripts. `translate_ssf2_to_fm(code)` is the single entry every block of decompiled
+Haxe passes through. the fixed order:
 
 1. **`remove_readiness_guards`** -- strip `if (SSF2API.isReady())` wrappers, inline the body.
 2. **`double_frame_counts`** -- 30 → 60 fps scaling via `commands.jsonc :: frame_params`; runs
@@ -574,8 +658,11 @@ ADPCM uses a generic FLV wrapper.
    `// TODO:`, `skip_if_value` matches drop silently.
 4. **literal `replacements`** -- ordered find/replace from `commands.jsonc :: replacements`
    (order matters).
-5. **`regex_replacements`** -- precompiled `commands.jsonc :: regex_replacements` (arg-dropping,
-   arg-aware dispatch).
+5. **`call_rewrites`**, then **`regex_replacements`** -- `commands.jsonc :: call_rewrites`
+   rewrites a call from its parsed arguments (brackets and strings balanced, nested calls
+   rewritten too); `regex_replacements` covers what is not a call (arg-dropping, dispatch on a
+   literal). a rule that reads a call's arguments belongs in `call_rewrites`: a regex over nested
+   arguments stops at some depth and misses an indexed receiver.
 6. **`rewrite_attach_effect_calls`** -- `attachEffect(...)` → `match.createVfx(new
    VfxStats({…}), self)`. `build_vfx_head` emits a `global_vfx_map` constant route or a
    per-character `getResource().getContent(...)` route; per-prop translation via `commands.jsonc
@@ -586,37 +673,33 @@ ADPCM uses a generic FLV wrapper.
    `ConversionLog::ssf2_only`. also records any `.NAME(` absent from every `commands.jsonc`
    section into `ConversionLog::unknown` (drives the GUI "Unhandled Calls" popup).
 
-two whole-script passes also run (in `haxe_gen`): `fix_intangibility_pairs` collapses a
-`setIntangibility(true)` / `(false)` pair into one `applyGlobalBodyStatus(BodyStatus.INTANGIBLE,
-N)`; `wrap_persistent_state` rewrites SSF2 ext-class instance vars into FM persistent-state
-wrappers (`self.foo++` → `foo.inc()`, etc.), with factory choice from `infer_ext_var_types`.
-
 ### 5.6 generation layer
 
-#### `haxe_gen.rs` (~1750 LOC)
-the **output orchestrator**: `generate(...)` writes the whole character package (pipeline step
-[10]). it installs the `EffectAnimGuard` (effect → primary-animation map), decides the jab chain
-via `count_populated_jabs` (`populated_jabs == 2` keeps `jab3` as an allowlisted empty
+#### `haxe_gen.rs` (~3500 LOC)
+writes everything of the character package but the fighter's script (pipeline step [10]). it
+installs the `EffectAnimGuard` (effect → primary-animation map), counts the populated jabs
+(`count_populated_jabs`: `populated_jabs == 2` keeps `jab3` as an allowlisted empty
 placeholder), and runs the stat-scaling wrappers (`ssf2_gravity_to_fm`, …) that route every
-value through `stats.jsonc :: multipliers`. it emits the four character `.hx` files via
-`generate_hitbox_stats` / `generate_character_stats` / `generate_animation_stats` /
-`generate_script` (`generate_script` merges SSF2 ext methods matching template fns like
-`initialize` / `update` into the template, keeping the names). `generate_manifest` writes
-`library/manifest.json`; `generate_projectile_script` uses a local-state-machine
-(`Common.initLocalStateMachine()` + one `LState` per SSF2 frame label); the
-`generate_projectile_*` fns pull real values from `getProjectileStats()` data via
-`best_match_projectile_data`. `generate_jab_scripts` runs only when `populated_jabs >= 2`,
-`generate_sound_entries` writes per-WAV `.meta` sidecars, and `script_meta` emits the `.hx.meta`
-sidecar variants.
+value through `stats.jsonc :: multipliers`. it emits the three character stats files via
+`generate_hitbox_stats` / `generate_character_stats` / `generate_animation_stats`; `Script.hx`
+is `emit::runtime_fighter`'s. `generate_manifest` writes `library/manifest.json`;
+`generate_projectile_script` (the text path, for a projectile or item made from another
+package) uses a local-state-machine (`Common.initLocalStateMachine()` + one `LState` per SSF2
+frame label); the `generate_projectile_*` fns pull real values from `getProjectileStats()` data
+via `best_match_projectile_data`. `generate_sound_entries` writes per-WAV `.meta` sidecars, and
+`script_meta` emits the `.hx.meta` sidecar variants.
 
-#### `entity_gen.rs` (~2300 LOC)
+#### `entity_gen.rs` (~2700 LOC)
 builds the Fraymakers `.entity` JSON. `generate_entity` / `generate_entity_with_palette` write
 `library/entities/<Pascal>.entity`; `double_keyframe_lengths` doubles every keyframe `length`
 for 30 → 60 fps ([§7](#7-30--60-fps-doubling)); an empty-animation drop pass removes IMAGE-empty
-anims except a `populated_jabs`-driven `keep_empty` allowlist. `generate_menu_entity` builds the
-head entity (`full` / `css` / `icon` / `stock` / ten `hud*` variants);
-`generate_projectile_entity` handles multi-state projectiles (anim names from inner FrameLabels,
-else the FM template trio); `generate_effect_entity` emits one image-only `.entity` per effect.
+anims except a `populated_jabs`-driven `keep_empty` allowlist. the fighter entity keeps every
+frame and carries no code (`emit::clock_entity` writes each frame's code onto its keyframe).
+`generate_menu_entity` builds the head entity (`full` / `css` / `icon` / `stock` / ten `hud*`
+variants); `generate_projectile_entity` handles multi-state projectiles (anim names from inner
+FrameLabels, else the FM template trio), with the clip's frame scripts on its keyframes for a
+stage and none for a fighter's projectile (`runtime_runs_frames`: the runtime runs them);
+`generate_effect_entity` emits one image-only `.entity` per effect.
 `box_type_to_fm` & friends do the SSF2-box → FM-layer mapping (table in `AGENT_CONTEXT.md`).
 COLLISION_BOX and IMAGE rotation both use the CW-positive, 0-360-normalized convention (no
 negation, matching SWF's `atan2(b, a)`).
@@ -674,15 +757,12 @@ in `build/release/`. useful when a conversion looks wrong. the everyday SWF-insp
 | `dump_proj_states` | Projectile state discovery |
 | `dump_stage` | Stage / root timeline inspection |
 | `dump_costumes` | Costume tables from `misc.ssf` |
-| `dump_aerial_down_frames` | Targeted debug for the aerial-down animation |
 | `dump_trail_matrices` | Trail-effect matrix inspection |
 | `check_shape_bitmap` | Inspect a shape's bitmap fill + fill matrix |
 | `what_is_id` | Identify what a numeric SWF character id refers to |
 
-plus a set of corpus-audit / detection bins for constructor-walk and sub-character work:
-`audit_main_iinit`, `audit_main_gets`, `find_transformations`, `find_get_callers`,
-`decompile_main_iinit`, `dump_main_class`, `find_char_sources`, `diff_inline_vs_bundle`,
-`dump_misc`, `find_char_mcs`, `grep_classes` / `scan_all_classes` / `scan_ext`.
+plus a few corpus-audit bins for constructor-walk and sub-character work:
+`audit_main_iinit`, `decompile_main_iinit`, `dump_main_class`, `diff_inline_vs_bundle`.
 
 typical use: `./build/release/dump_image_placement ../ssf2-ssfs/mario.ssf "FAir_42"`.
 
@@ -704,10 +784,15 @@ sections, in the order they're applied by `translate_ssf2_to_fm`:
   `.endAttack()` → `.endAnimation()`, `.setXSpeed(` → `.setXVelocity(`,
   `SSF2API.print(` → `Engine.log(`, hitbox field renames like `direction:` →
   `angle:`, etc.).
+- **`call_rewrites`** -- `{ call, receiver?, args?, template, note? }`. `receiver` is `any`
+  (default), `self` or `none` (a bare call); `args` the count it applies to. the template takes
+  `{recv}`, `{1}`.., `{args}` and `{1.name}` (a field of an object-literal argument; the rewrite
+  skips a call where the field is missing).
 - **`regex_replacements`** -- `{ pattern, replacement, note? }`. compiled
   once into a `OnceLock` cache; bad patterns log a warning and are skipped.
   used for cases the literal table can't express (arg-dropping, arg-aware
-  dispatch).
+  dispatch). a pattern built at run time elsewhere in the converter goes through
+  `crate::dyn_re`, which compiles each distinct pattern once per process.
 - **`call_splits`** -- map of `<source_method>` → `{ fields: { <ssf2_field>
   → <"target_method.fm_field"> | { target?, value_map?, skip_if_value?,
   todo? } } }`. drives the fan-out of SSF2 umbrella calls into multiple FM
@@ -737,22 +822,25 @@ sections, in the order they're applied by `translate_ssf2_to_fm`:
   `// [SSF2-only: <name>] <original>` and counted in `conversion_log.json
   :: ssf2_only`.
 
+### 6.1b `mappings/character/animation_template.jsonc`
+
+the Fraymakers animation set with its props (`AnimationStats.hx`). every attack's animation
+plays on through a landing (`landType:LandType.NONE`, `attacks_keep_on_landing` in
+`generate_animation_stats`): the source's engine never ends an attack because the fighter
+touched the ground, the move's own code lands it. the attack's declared stats are its
+animation's own, as `runtime/attack_stats.jsonc` maps them.
+
 ### 6.2 `mappings/character/animations.jsonc`
 
 ```jsonc
 {
-  "ssf2_to_fm":     { "stand": "idle", "a_air_forward": "aerial_forward", ... },
-  "label_to_ssf2":  { "nair": "a_air", "fair": "a_air_forward", ... }
+  "ssf2_to_fm":     { "stand": "stand", "a_air_forward": "aerial_forward", ... }
 }
 ```
 
 - `ssf2_to_fm` is the primary table; used everywhere SSF2 anim names need
   to become FM anim names (extractor, sprite_parser, image_extractor,
   haxe_gen).
-- `label_to_ssf2` is consulted by `sprite_parser::extract_ssf2_anim_name`
-  when a sub-sprite symbol's local label (lowercased, suffix-stripped, e.g.
-  `NAir` → `nair`) doesn't appear directly in `ssf2_to_fm` -- it bridges the
-  sprite-label-shorthand to the SSF2 xframe name.
 
 ### 6.3 `mappings/character/stats.jsonc`
 
@@ -825,11 +913,48 @@ unified places**:
 
    runs **first** in the translation pipeline so SSF2 field names still
    match the `frame_params` entries (the literal `replacements` pass below
-   it renames `hitStun:` → `hitstop:`, etc.). same pass covers Script.hx
-   ext methods, decompiled ext-class iinit, and embedded frame scripts in
-   the entity -- they all go through `translate_ssf2_to_fm`.
+   it renames `hitStun:` → `hitstop:`, etc.). it covers every script that
+   still goes through `translate_ssf2_to_fm` (§5.5).
 
-3. **HitboxStats.hx and projectile-hitbox values** -- `entity_gen` and
+3. **Speeds a script states or reads** -- a stat is scaled once, in its table, but a
+   script's own `setXSpeed(26)` is source pixels per source frame, and copied verbatim it
+   runs about 1.5x too fast against everything the stats drive (a bolt reaches its target
+   frames early). `api_mappings::speeds_cross_the_boundary` runs first in
+   `translate_ssf2_to_fm`: a write goes through `__sv(v)`, a read comes back through
+   `__isv(..)`, zero is left alone, and the script's own arithmetic and comparisons stay in
+   the units its author wrote. the helpers sit in every text-path projectile preamble, the
+   stage script and every stage object's preamble: one rule for every script,
+   a speed kept in a variable included. the helpers carry the whole conversion
+   (`api_mappings::SpeedUnits`): a write crosses by `velocity_scale`, a read by its inverse,
+   and the decompiler leaves every number as the source wrote it, so a speed read back, kept
+   in a local and written again comes out as it went in (measured with `tools/trajectory.py`:
+   ganondorf writes -23 and both engines record -21.4, one step of gravity taken off).
+   a y write goes through `__svy`, which adds one source frame of gravity (1.5 of this engine's
+   steps): the source adds its gravity to a speed a script sets before it moves on it, this
+   engine moves on the value as set, and without the step every scripted rise ran a source
+   frame's worth higher (simon's swing bottomed 15 px short of the floor it lands on). an x
+   write goes through `__svx`: a nonzero one on the floor under a held direction carries one
+   source frame of the walk's acceleration (the x side of the same step: bowser's scripted 2
+   reads 2.5, its cap, on the very next source frame), and a zero written on the floor holds
+   (`__xHold`: the source's walk does not accelerate from a scripted zero; this engine walks
+   the fighter after the update whatever the speed, so the hold pins the position until the
+   next write or animation).
+   `air_ease` is a cap on the downward speed, in the source's units: an animation starts with
+   the value its attack declares, a frame script's write replaces it, 0 and -1 are none, and
+   `__applyAirEase` in `update` clamps the y velocity to it every frame.
+   a position a script states is in the source's pixels and crosses through `__sp` (the size
+   scale; `__isp` for a read): a `setX/setY` write and a `getX/getY` read of any object go
+   through the pair in the same pass, so a nudge of 3 source pixels moves 3.9 here and the
+   script's own arithmetic and comparisons stay in the source's units; a projectile offset
+   the `fireProjectile` call states goes through it too (a declared one is scaled when read),
+   so pikachu's cloud sits where the source puts it and its bolt lands on the source's frame. a label names a split only when one clip
+   carries that label (`_jumpLabel`'s fallback); a name several clips use resolves within the
+   playing clip as the script runs.
+   a stage object's call on the floor it stands on (`getCurrentFloor()` kept in a variable,
+   then `.sink()` on it) goes through the ask channel to the object whose published deck that
+   face is (`__floorOwner`, stage_emit), the way a call on an object it spawned does.
+
+4. **HitboxStats.hx and projectile-hitbox values** -- `entity_gen` and
    `haxe_gen::generate_projectile_hitbox_stats` both consult
    `hitbox_stats.jsonc :: isframe` to decide which extracted hitbox values
    to double (hitstop / hitstun / selfHitstop, with sentinel handling for
@@ -904,7 +1029,7 @@ characters/mario/
     │   │   ├── CharacterStats.hx           movement physics
     │   │   ├── HitboxStats.hx              per-attack hitbox data
     │   │   ├── AnimationStats.hx           animation flags
-    │   │   ├── Script.hx                   decompiled character logic
+    │   │   ├── Script.hx                   the fighter, compiled onto the runtime
     │   │   └── *.hx.meta
     │   └── Projectile/
     │       └── <Pascal>{Script,Stats,HitboxStats,AnimationStats}.hx (+ .meta)
@@ -970,8 +1095,8 @@ each prefixed by the projectile name in PascalCase
 effects (VFX) are emitted as plain entities under
 `library/entities/<effect>.entity` -- one IMAGE layer per inner FrameLabel
 segment (or a single `active` animation if there are no labels). no scripts,
-no stats. the character's `Script.hx` triggers them via the
-`attachEffect` → `match.createVfx(...)` rewrite.
+no stats. scripts play them with
+`match.createVfx(...)` (`attachEffect` in the source).
 
 ---
 
@@ -1029,11 +1154,6 @@ what is solid:
   `match.createVfx(new VfxStats({…}), self)` rewrite for both 1-arg and
   2-arg `attachEffect` calls; `global_vfx_map` constant routing for FM
   built-in VFX.
-- persistent-state wrappers for SSF2 ext-class vars (`var foo =
-  self.makeInt(0)`; `foo.get()` / `foo.set(v)` / `foo.inc()` /
-  `foo.dec()`); ext-class iinit assignments emitted in
-  `initialize()` (skip-dup against the merged SSF2 init body).
-- jab-chain emission gated by populated-jab count.
 - empty-animation dropping (with a jab-aware keep-list).
 - `Menu.entity` with broadened head-sprite detection (`_head`, `_icon`;
   excludes `_hud`).
@@ -1042,11 +1162,11 @@ what is solid:
 
 ---
 
-## 11. known issues, next steps, and the code-quality backlog
+## 11. known issues and next steps
 
-these now live in **[`docs/STATUS.md`](docs/STATUS.md)** -- the single home for
-converter status and TODOs. see its "Known issues & gaps", "Code-quality backlog",
-and "Prioritized next steps" sections. when you fix something, strike it there.
+these live in **[`docs/STATUS.md`](docs/STATUS.md)**, the single home for converter status
+and TODOs: "known issues & gaps", "prioritized next steps" and "peptide / harness todos".
+when you fix something, take it out there.
 
 ---
 

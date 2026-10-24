@@ -40,6 +40,11 @@ pub struct Config {
     /// launch is chosen per-launch by picking a `.fraytools` project. Kept for
     /// back-compat (config round-trips) and the `FRAY_CHAR`/CLI fallback path.
     pub current_char: String,
+
+    /// The SSF2-side character id, kept apart from `current_char` because the rosters do not
+    /// overlap. Empty = fall back to the ssf2 default.
+    #[serde(default)]
+    pub current_ssf2_char: String,
     /// Fast-boot roster: comma-separated character ids (up to 4) the quick boot
     /// launches as players 1..N. Empty = mirror the active `current_char`. The
     /// `FRAY_ROSTER` env wins over this. See [`Config::roster`].
@@ -47,7 +52,7 @@ pub struct Config {
     /// Output directory for converted characters (per-char output = `<output>/<char>`).
     pub output_dir: String,
 
-    // ── Converter knobs (carried from the old egui prefs) ────────────────
+    // ── Converter knobs ────────────────
     /// Optional explicit `misc.ssf` path (empty = auto-detect next to input).
     pub misc_ssf: String,
     /// Auto-add the Fraymakers `custom/<Char>` folder to publish settings.
@@ -63,8 +68,8 @@ pub struct Config {
     /// default (`Fraymakers.exe` on Windows, `hl` elsewhere). Steam renames the
     /// HashLink runtime to the game name on Windows, so it's not `hl.exe` there.
     pub engine_name: String,
-    /// FrayTools Chrome DevTools (CDP) debug port. 0 = default (9222). Override when
-    /// 9222 is already taken by another Electron/Chrome instance on this machine.
+    /// The local port Peptide reaches FrayTools on. 0 = default (9222). Override when
+    /// 9222 is already taken by another program on this machine.
     pub fraytools_debug_port: u16,
 }
 
@@ -93,12 +98,6 @@ impl Config {
                 let _ = std::fs::write(&p, text);
             }
         }
-    }
-
-    /// Absolute path to the persisted config file (for diagnostics / the UI).
-    #[allow(dead_code)] // surfaced in the Setup screen (Phase 5)
-    pub fn path() -> Option<PathBuf> {
-        config_path()
     }
 
     /// Delete the persisted config so the next `load()` returns defaults — used by
@@ -133,6 +132,16 @@ impl Config {
         platform::default_fraytools_exe()
     }
 
+    /// Public Fraymakers API type definitions. `PEPTIDE_FM_API_TYPES` env →
+    /// per-OS default. `None` when FrayTools isn't installed here, in which case
+    /// the checks that use it skip rather than fail.
+    pub fn fraymakers_api_types(&self) -> Option<PathBuf> {
+        if let Some(d) = std::env::var_os("PEPTIDE_FM_API_TYPES") {
+            return Some(PathBuf::from(d));
+        }
+        platform::default_fraymakers_api_types()
+    }
+
     /// SSF2 application path. `PEPTIDE_SSF2_APP` env → config → autodetect.
     /// Returns the bundle/executable path the SSF2 patcher operates on; `None`
     /// when nothing is configured and autodetect finds no install.
@@ -155,14 +164,29 @@ impl Config {
         "battlefield".to_string()
     }
 
-    /// Active character. `FRAY_CHAR` env → config → "commandervideo" (base-game default).
-    /// (was "impostor", but impostor crashes the game on match load — see the open TODO.)
+    /// Active FRAYMAKERS character. `FRAY_CHAR` env → config → "commandervideo" (base-game
+    /// default). (was "impostor", but impostor crashes the game on match load — see the open TODO.)
+    ///
+    /// SSF2 has an entirely different cast, so it takes its own default: see [`Config::ssf2_char`].
     pub fn char_name(&self) -> String {
         if let Ok(c) = std::env::var("FRAY_CHAR") {
             if !c.is_empty() { return c; }
         }
         if !self.current_char.is_empty() { return self.current_char.clone(); }
         "commandervideo".to_string()
+    }
+
+    /// Active SSF2 character. `SSF2_CHAR` env → config → "sandbag".
+    ///
+    /// A separate default from [`Config::char_name`] on purpose: the two engines share no roster,
+    /// so a fraymakers id names nobody in ssf2 and the launch fails on a character that cannot
+    /// exist. sandbag is the id this repo tests against on both sides.
+    pub fn ssf2_char(&self) -> String {
+        if let Ok(c) = std::env::var("SSF2_CHAR") {
+            if !c.is_empty() { return c; }
+        }
+        if !self.current_ssf2_char.is_empty() { return self.current_ssf2_char.clone(); }
+        "sandbag".to_string()
     }
 
     /// Fast-boot roster: the comma-separated character ids a quick boot launches
@@ -219,9 +243,8 @@ impl Config {
         if cfg!(target_os = "windows") { "Fraymakers.exe".to_string() } else { "hl".to_string() }
     }
 
-    /// FrayTools CDP debug port. `PEPTIDE_FT_DEBUG_PORT` env → config → 9222
-    /// (the Chrome/Electron default). Lets a user move it off 9222 when another
-    /// Electron/Chrome instance already holds that port.
+    /// The FrayTools port. `PEPTIDE_FT_DEBUG_PORT` env → config → 9222. Lets a user
+    /// move it off 9222 when another program already holds that port.
     pub fn fraytools_debug_port(&self) -> u16 {
         if let Ok(p) = std::env::var("PEPTIDE_FT_DEBUG_PORT") {
             if let Ok(n) = p.trim().parse::<u16>() {
@@ -264,6 +287,7 @@ mod tests {
             ssf2_app: "/Applications/SSF2.app".into(),
             ssf2_stage: "finaldestination".into(),
             current_char: "mario".into(),
+            current_ssf2_char: "sandbag".into(),
             roster: "mario,sandbag".into(),
             output_dir: "/work/out".into(),
             misc_ssf: "/ssfs/misc.ssf".into(),

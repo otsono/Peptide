@@ -39,6 +39,7 @@
 //! takes seconds.
 
 use crate::config::Config;
+use crate::arg_val;
 
 /// Which engine a boot is targeting. The transport/streaming differences live in the
 /// session layers; here we only need it to pick the right launch command shape.
@@ -88,8 +89,14 @@ pub fn command(engine: Engine, opts: &BootOptions) -> Option<String> {
     }
     let cfg = Config::load();
     // CLI `--char` may itself be a comma roster; else fall back to the configured roster
-    // (`FRAY_ROSTER`/config `roster`, single `current_char` when unset).
-    let ch = opts.char_name.clone().unwrap_or_else(|| cfg.roster());
+    // (`FRAY_ROSTER`/config `roster`, single `current_char` when unset). SSF2 has a cast of
+    // its own, so it falls back to its own default: a fighter the game does not have makes a
+    // match that never starts (the stage draws, its class never runs), and every stage-only
+    // SSF2 session used to open on the other engine's fighter.
+    let ch = opts.char_name.clone().unwrap_or_else(|| match engine {
+        Engine::Fraymakers => cfg.roster(),
+        Engine::Ssf2 => cfg.ssf2_char(),
+    });
     let ch = ch.trim();
     if ch.is_empty() {
         return None;
@@ -114,11 +121,6 @@ pub fn command(engine: Engine, opts: &BootOptions) -> Option<String> {
             None => format!("spawn {ch}"),
         },
     })
-}
-
-/// `--key value` lookup (shared shape with the session arg parsers).
-fn arg_val(args: &[String], key: &str) -> Option<String> {
-    args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned()
 }
 
 #[cfg(test)]

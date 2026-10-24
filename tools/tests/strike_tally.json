@@ -1,0 +1,1219 @@
+{
+ "kinds": {
+  "SSF2-dead": {
+   "count": 1898,
+   "fighters": [
+    "bandanadee",
+    "blackmage",
+    "bomberman",
+    "bowser",
+    "captainfalcon",
+    "chibirobo",
+    "dedede",
+    "donkeykong",
+    "falco",
+    "fox",
+    "gameandwatch",
+    "ganondorf",
+    "goku",
+    "ichigo",
+    "isaac",
+    "jigglypuff",
+    "kirby",
+    "krystal",
+    "link",
+    "lloyd",
+    "lucario",
+    "luffy",
+    "luigi",
+    "mario",
+    "marth",
+    "megaman",
+    "metaknight",
+    "naruto",
+    "ness",
+    "pacman",
+    "peach",
+    "pichu",
+    "pikachu",
+    "pit",
+    "rayman",
+    "ryu",
+    "sandbag",
+    "sheik",
+    "simon",
+    "sonic",
+    "sora",
+    "tails",
+    "waluigi",
+    "wario",
+    "wario_man",
+    "yoshi",
+    "zamus",
+    "zelda"
+   ]
+  },
+  "SSF2-only: ATTACK_CLANK": {
+   "count": 9,
+   "fighters": [
+    "peach"
+   ]
+  },
+  "SSF2-only: ATTACK_ENABLED": {
+   "count": 1,
+   "fighters": [
+    "naruto"
+   ]
+  },
+  "SSF2-only: CHAR_ATTACK_CANCELLED": {
+   "count": 2,
+   "fighters": [
+    "ness"
+   ]
+  },
+  "SSF2-only: CHAR_ATTACK_CHANGED": {
+   "count": 11,
+   "fighters": [
+    "megaman"
+   ]
+  },
+  "SSF2-only: CHAR_ATTACK_COMPLETE": {
+   "count": 3,
+   "fighters": [
+    "sheik",
+    "zelda"
+   ]
+  },
+  "SSF2-only: CHAR_DESTROYED": {
+   "count": 2,
+   "fighters": [
+    "pichu"
+   ]
+  },
+  "SSF2-only: CHAR_KO_POINT": {
+   "count": 4,
+   "fighters": [
+    "chibirobo"
+   ]
+  },
+  "SSF2-only: CHAR_METAL_CHANGE": {
+   "count": 3,
+   "fighters": [
+    "bowser",
+    "gigabowser",
+    "goku"
+   ]
+  },
+  "SSF2-only: CHAR_POWER_SHIELD_HIT": {
+   "count": 2,
+   "fighters": [
+    "krystal",
+    "yoshi"
+   ]
+  },
+  "SSF2-only: CHAR_SELF_DESTRUCT": {
+   "count": 8,
+   "fighters": [
+    "fox",
+    "megaman",
+    "wario",
+    "wario_man"
+   ]
+  },
+  "SSF2-only: CHAR_SIZE_CHANGE": {
+   "count": 1,
+   "fighters": [
+    "kirby"
+   ]
+  },
+  "SSF2-only: CHAR_TRANSFORM": {
+   "count": 4,
+   "fighters": [
+    "bowser",
+    "goku",
+    "wario"
+   ]
+  },
+  "SSF2-only: DAMAGE_CHANGED": {
+   "count": 2,
+   "fighters": [
+    "ryu"
+   ]
+  },
+  "SSF2-only: ENEMY_DESTROYED": {
+   "count": 2,
+   "fighters": [
+    "rayman",
+    "waluigi"
+   ]
+  },
+  "SSF2-only: GAME_ENDED": {
+   "count": 4,
+   "fighters": [
+    "ryu"
+   ]
+  },
+  "SSF2-only: GAME_ITEM_CREATED": {
+   "count": 2,
+   "fighters": [
+    "rayman"
+   ]
+  },
+  "SSF2-only: GAME_PAUSED": {
+   "count": 4,
+   "fighters": [
+    "ryu"
+   ]
+  },
+  "SSF2-only: GAME_UNPAUSED": {
+   "count": 4,
+   "fighters": [
+    "ryu"
+   ]
+  },
+  "SSF2-only: HOMING_TARGET": {
+   "count": 8,
+   "fighters": [
+    "kirby",
+    "sonic"
+   ]
+  },
+  "SSF2-only: ITEM_DESTROYED": {
+   "count": 4,
+   "fighters": [
+    "pacman",
+    "rayman"
+   ]
+  },
+  "SSF2-only: ITEM_HURT": {
+   "count": 35,
+   "fighters": [
+    "link",
+    "pacman",
+    "peach"
+   ]
+  },
+  "SSF2-only: ITEM_TOSSED": {
+   "count": 10,
+   "fighters": [
+    "lloyd",
+    "pacman"
+   ]
+  },
+  "SSF2-only: PROJ_HURT": {
+   "count": 5,
+   "fighters": [
+    "dedede"
+   ]
+  },
+  "SSF2-only: addChild": {
+   "count": 29,
+   "fighters": [
+    "bomberman",
+    "falco",
+    "fox",
+    "gameandwatch",
+    "lloyd",
+    "pacman",
+    "peach",
+    "rayman",
+    "ryu",
+    "simon",
+    "sonic",
+    "sora",
+    "tails",
+    "yoshi"
+   ]
+  },
+  "SSF2-only: addToDamageMeter": {
+   "count": 9,
+   "fighters": [
+    "bomberman",
+    "falco",
+    "fox",
+    "gameandwatch",
+    "pacman",
+    "rayman",
+    "sonic",
+    "sora",
+    "yoshi"
+   ]
+  },
+  "SSF2-only: attachEffect": {
+   "count": 4,
+   "fighters": [
+    "blackmage",
+    "pichu",
+    "waluigi"
+   ]
+  },
+  "SSF2-only: beacon": {
+   "count": 1,
+   "fighters": [
+    "krystal"
+   ]
+  },
+  "SSF2-only: endControl": {
+   "count": 9,
+   "fighters": [
+    "blackmage",
+    "isaac",
+    "sheik",
+    "zelda"
+   ]
+  },
+  "SSF2-only: exportStats": {
+   "count": 8,
+   "fighters": [
+    "chibirobo",
+    "dedede",
+    "kirby"
+   ]
+  },
+  "SSF2-only: fireProjectile": {
+   "count": 9,
+   "fighters": [
+    "blackmage",
+    "isaac"
+   ]
+  },
+  "SSF2-only: forceAttack": {
+   "count": 5,
+   "fighters": [
+    "goku",
+    "pichu",
+    "simon",
+    "sora"
+   ]
+  },
+  "SSF2-only: getAllGrabbedFoes": {
+   "count": 1,
+   "fighters": [
+    "sora"
+   ]
+  },
+  "SSF2-only: getCPUForcedAction": {
+   "count": 4,
+   "fighters": [
+    "jigglypuff",
+    "tails"
+   ]
+  },
+  "SSF2-only: getCPULevel": {
+   "count": 99,
+   "fighters": [
+    "bandanadee",
+    "blackmage",
+    "bomberman",
+    "bowser",
+    "captainfalcon",
+    "dedede",
+    "donkeykong",
+    "falco",
+    "fox",
+    "gameandwatch",
+    "ganondorf",
+    "goku",
+    "ichigo",
+    "isaac",
+    "jigglypuff",
+    "kirby",
+    "krystal",
+    "link",
+    "lloyd",
+    "lucario",
+    "luffy",
+    "luigi",
+    "mario",
+    "marth",
+    "megaman",
+    "metaknight",
+    "naruto",
+    "ness",
+    "pacman",
+    "peach",
+    "pichu",
+    "pikachu",
+    "pit",
+    "rayman",
+    "ryu",
+    "sandbag",
+    "sheik",
+    "simon",
+    "sonic",
+    "sora",
+    "tails",
+    "waluigi",
+    "wario",
+    "wario_man",
+    "yoshi",
+    "zelda"
+   ]
+  },
+  "SSF2-only: getCPUTarget": {
+   "count": 12,
+   "fighters": [
+    "bomberman",
+    "jigglypuff"
+   ]
+  },
+  "SSF2-only: getCamBounds": {
+   "count": 3,
+   "fighters": [
+    "jigglypuff",
+    "kirby"
+   ]
+  },
+  "SSF2-only: getCharacter": {
+   "count": 1,
+   "fighters": [
+    "isaac"
+   ]
+  },
+  "SSF2-only: getChildAt": {
+   "count": 2,
+   "fighters": [
+    "gameandwatch"
+   ]
+  },
+  "SSF2-only: getChildByName": {
+   "count": 8,
+   "fighters": [
+    "goku",
+    "simon"
+   ]
+  },
+  "SSF2-only: getChildIndex": {
+   "count": 2,
+   "fighters": [
+    "sora"
+   ]
+  },
+  "SSF2-only: getCurrentKirbyPower": {
+   "count": 11,
+   "fighters": [
+    "bandanadee",
+    "jigglypuff",
+    "kirby"
+   ]
+  },
+  "SSF2-only: getCurrentMusicInfo": {
+   "count": 2,
+   "fighters": [
+    "ichigo",
+    "peach"
+   ]
+  },
+  "SSF2-only: getExecTime": {
+   "count": 5,
+   "fighters": [
+    "captainfalcon",
+    "jigglypuff",
+    "kirby",
+    "krystal",
+    "ryu"
+   ]
+  },
+  "SSF2-only: getHUDBackgroundMC": {
+   "count": 3,
+   "fighters": [
+    "falco",
+    "lloyd",
+    "peach"
+   ]
+  },
+  "SSF2-only: getHealthBox": {
+   "count": 1,
+   "fighters": [
+    "sora"
+   ]
+  },
+  "SSF2-only: getHitBox": {
+   "count": 4,
+   "fighters": [
+    "chibirobo",
+    "link"
+   ]
+  },
+  "SSF2-only: getItem": {
+   "count": 29,
+   "fighters": [
+    "link",
+    "pacman",
+    "peach"
+   ]
+  },
+  "SSF2-only: getItemStat": {
+   "count": 26,
+   "fighters": [
+    "chibirobo",
+    "dedede",
+    "donkeykong",
+    "kirby",
+    "pacman",
+    "peach",
+    "rayman",
+    "sandbag"
+   ]
+  },
+  "SSF2-only: getItems": {
+   "count": 2,
+   "fighters": [
+    "kirby",
+    "rayman"
+   ]
+  },
+  "SSF2-only: getLedges": {
+   "count": 1,
+   "fighters": [
+    "pikachu"
+   ]
+  },
+  "SSF2-only: getLinkageID": {
+   "count": 4,
+   "fighters": [
+    "bomberman"
+   ]
+  },
+  "SSF2-only: getMCByLinkageName": {
+   "count": 5,
+   "fighters": [
+    "ryu",
+    "simon",
+    "sora"
+   ]
+  },
+  "SSF2-only: getMetalStatus": {
+   "count": 10,
+   "fighters": [
+    "bandanadee",
+    "metaknight",
+    "ness",
+    "peach",
+    "sora"
+   ]
+  },
+  "SSF2-only: getMidground": {
+   "count": 6,
+   "fighters": [
+    "dedede",
+    "falco",
+    "kirby",
+    "simon"
+   ]
+  },
+  "SSF2-only: getNearest": {
+   "count": 5,
+   "fighters": [
+    "falco",
+    "pit"
+   ]
+  },
+  "SSF2-only: getNearestLedge": {
+   "count": 2,
+   "fighters": [
+    "captainfalcon",
+    "sonic"
+   ]
+  },
+  "SSF2-only: getNearestPath": {
+   "count": 3,
+   "fighters": [
+    "rayman",
+    "sonic",
+    "yoshi"
+   ]
+  },
+  "SSF2-only: getProjectile": {
+   "count": 3,
+   "fighters": [
+    "blackmage",
+    "pichu"
+   ]
+  },
+  "SSF2-only: getVelocityVector": {
+   "count": 2,
+   "fighters": [
+    "peach"
+   ]
+  },
+  "SSF2-only: gotoAndPlay": {
+   "count": 2,
+   "fighters": [
+    "gameandwatch",
+    "kirby"
+   ]
+  },
+  "SSF2-only: hammer1": {
+   "count": 1,
+   "fighters": [
+    "dedede"
+   ]
+  },
+  "SSF2-only: homeTowardsTarget": {
+   "count": 7,
+   "fighters": [
+    "kirby",
+    "pit",
+    "sonic"
+   ]
+  },
+  "SSF2-only: ichigodspec": {
+   "count": 2,
+   "fighters": [
+    "ichigo"
+   ]
+  },
+  "SSF2-only: importCPUControls": {
+   "count": 35,
+   "fighters": [
+    "falco",
+    "fox",
+    "pikachu",
+    "pit",
+    "rayman",
+    "sonic",
+    "tails",
+    "yoshi"
+   ]
+  },
+  "SSF2-only: isCPU": {
+   "count": 52,
+   "fighters": [
+    "blackmage",
+    "captainfalcon",
+    "falco",
+    "fox",
+    "jigglypuff",
+    "kirby",
+    "krystal",
+    "luffy",
+    "naruto",
+    "ness",
+    "pichu",
+    "pikachu",
+    "sonic",
+    "tails",
+    "wario",
+    "wario_man",
+    "yoshi",
+    "zamus"
+   ]
+  },
+  "SSF2-only: killDarkener": {
+   "count": 12,
+   "fighters": [
+    "bandanadee",
+    "bomberman",
+    "dedede",
+    "ganondorf",
+    "kirby",
+    "krystal",
+    "luigi",
+    "rayman",
+    "ryu",
+    "sonic",
+    "yoshi"
+   ]
+  },
+  "SSF2-only: pickupItem": {
+   "count": 48,
+   "fighters": [
+    "bandanadee",
+    "blackmage",
+    "bomberman",
+    "bowser",
+    "captainfalcon",
+    "chibirobo",
+    "dedede",
+    "donkeykong",
+    "falco",
+    "fox",
+    "gameandwatch",
+    "ganondorf",
+    "goku",
+    "ichigo",
+    "isaac",
+    "jigglypuff",
+    "kirby",
+    "krystal",
+    "link",
+    "lloyd",
+    "lucario",
+    "luffy",
+    "luigi",
+    "mario",
+    "marth",
+    "megaman",
+    "metaknight",
+    "naruto",
+    "ness",
+    "pacman",
+    "peach",
+    "pichu",
+    "pikachu",
+    "pit",
+    "rayman",
+    "ryu",
+    "samus",
+    "sandbag",
+    "sheik",
+    "simon",
+    "sonic",
+    "sora",
+    "tails",
+    "waluigi",
+    "wario",
+    "yoshi",
+    "zamus",
+    "zelda"
+   ]
+  },
+  "SSF2-only: removeFrameScripts": {
+   "count": 2,
+   "fighters": [
+    "simon"
+   ]
+  },
+  "SSF2-only: removeFromDamageMeter": {
+   "count": 9,
+   "fighters": [
+    "bomberman",
+    "falco",
+    "fox",
+    "gameandwatch",
+    "pacman",
+    "rayman",
+    "sonic",
+    "sora",
+    "yoshi"
+   ]
+  },
+  "SSF2-only: replacePalette": {
+   "count": 13,
+   "fighters": [
+    "bowser",
+    "ganondorf",
+    "gigabowser",
+    "kirby",
+    "lloyd",
+    "naruto",
+    "peach",
+    "pit",
+    "simon",
+    "yoshi"
+   ]
+  },
+  "SSF2-only: resetCPUControls": {
+   "count": 10,
+   "fighters": [
+    "falco",
+    "fox",
+    "pikachu",
+    "rayman",
+    "sonic",
+    "tails",
+    "yoshi"
+   ]
+  },
+  "SSF2-only: setBrightness": {
+   "count": 2,
+   "fighters": [
+    "bandanadee",
+    "bowser"
+   ]
+  },
+  "SSF2-only: setChildIndex": {
+   "count": 2,
+   "fighters": [
+    "ryu",
+    "sora"
+   ]
+  },
+  "SSF2-only: setColorFilters": {
+   "count": 29,
+   "fighters": [
+    "chibirobo",
+    "dedede",
+    "goku",
+    "ichigo",
+    "kirby",
+    "pit",
+    "rayman",
+    "ryu",
+    "simon"
+   ]
+  },
+  "SSF2-only: setFinalSmashMeterCharge": {
+   "count": 8,
+   "fighters": [
+    "bomberman",
+    "falco",
+    "fox",
+    "gameandwatch",
+    "pacman",
+    "rayman",
+    "sonic",
+    "yoshi"
+   ]
+  },
+  "SSF2-only: setHurtInterrupt": {
+   "count": 24,
+   "fighters": [
+    "chibirobo",
+    "dedede",
+    "kirby"
+   ]
+  },
+  "SSF2-only: setLastUsed": {
+   "count": 15,
+   "fighters": [
+    "bowser",
+    "goku",
+    "luigi",
+    "peach",
+    "waluigi",
+    "wario",
+    "wario_man"
+   ]
+  },
+  "SSF2-only: setStageFocus": {
+   "count": 1,
+   "fighters": [
+    "donkeykong"
+   ]
+  },
+  "SSF2-only: shootOutOpponent": {
+   "count": 2,
+   "fighters": [
+    "kirby"
+   ]
+  },
+  "SSF2-only: stop": {
+   "count": 2,
+   "fighters": [
+    "pikachu"
+   ]
+  },
+  "SSF2-only: throbDamageCounter": {
+   "count": 9,
+   "fighters": [
+    "captainfalcon",
+    "dedede",
+    "gameandwatch",
+    "kirby",
+    "metaknight",
+    "naruto",
+    "pichu",
+    "waluigi"
+   ]
+  },
+  "SSF2-only: tint": {
+   "count": 3,
+   "fighters": [
+    "ganondorf"
+   ]
+  },
+  "SSF2-only: updateCameraParameters": {
+   "count": 7,
+   "fighters": [
+    "ness",
+    "peach",
+    "ryu",
+    "simon"
+   ]
+  },
+  "SSF2-only: updateItemStats": {
+   "count": 50,
+   "fighters": [
+    "link",
+    "pacman"
+   ]
+  },
+  "always false here": {
+   "count": 1827,
+   "fighters": [
+    "bandanadee",
+    "blackmage",
+    "bomberman",
+    "bowser",
+    "captainfalcon",
+    "chibirobo",
+    "dedede",
+    "donkeykong",
+    "falco",
+    "fox",
+    "gameandwatch",
+    "ganondorf",
+    "gigabowser",
+    "goku",
+    "ichigo",
+    "isaac",
+    "jigglypuff",
+    "kirby",
+    "krystal",
+    "link",
+    "lloyd",
+    "lucario",
+    "luffy",
+    "luigi",
+    "mario",
+    "marth",
+    "megaman",
+    "metaknight",
+    "naruto",
+    "ness",
+    "pacman",
+    "peach",
+    "pichu",
+    "pikachu",
+    "pit",
+    "rayman",
+    "ryu",
+    "samus",
+    "sandbag",
+    "sheik",
+    "simon",
+    "sonic",
+    "sora",
+    "tails",
+    "waluigi",
+    "wario",
+    "wario_man",
+    "yoshi",
+    "zamus",
+    "zelda"
+   ]
+  },
+  "always true here": {
+   "count": 460,
+   "fighters": [
+    "bandanadee",
+    "blackmage",
+    "bowser",
+    "captainfalcon",
+    "chibirobo",
+    "dedede",
+    "donkeykong",
+    "falco",
+    "fox",
+    "gameandwatch",
+    "ganondorf",
+    "gigabowser",
+    "goku",
+    "ichigo",
+    "isaac",
+    "jigglypuff",
+    "kirby",
+    "krystal",
+    "link",
+    "lloyd",
+    "lucario",
+    "luffy",
+    "luigi",
+    "mario",
+    "marth",
+    "metaknight",
+    "naruto",
+    "ness",
+    "peach",
+    "pichu",
+    "pikachu",
+    "pit",
+    "rayman",
+    "ryu",
+    "samus",
+    "sheik",
+    "simon",
+    "sonic",
+    "sora",
+    "tails",
+    "waluigi",
+    "wario",
+    "wario_man",
+    "yoshi",
+    "zamus",
+    "zelda"
+   ]
+  },
+  "it has no animation of this name": {
+   "count": 190,
+   "fighters": [
+    "bowser",
+    "gigabowser",
+    "link",
+    "pacman",
+    "peach",
+    "rayman"
+   ]
+  },
+  "no counterpart: EFFECTS": {
+   "count": 5,
+   "fighters": [
+    "pit"
+   ]
+  },
+  "no counterpart: activateFinalForm": {
+   "count": 2,
+   "fighters": [
+    "bowser",
+    "wario"
+   ]
+  },
+  "no counterpart: beam_rotations": {
+   "count": 1,
+   "fighters": [
+    "sora"
+   ]
+  },
+  "no counterpart: beam_xscales": {
+   "count": 1,
+   "fighters": [
+    "sora"
+   ]
+  },
+  "no counterpart: calculateKnockbackVelocity": {
+   "count": 2,
+   "fighters": [
+    "pacman",
+    "peach"
+   ]
+  },
+  "no counterpart: frames carry their own scripts here": {
+   "count": 10,
+   "fighters": [
+    "falco",
+    "goku",
+    "lloyd",
+    "peach",
+    "ryu",
+    "sora"
+   ]
+  },
+  "no counterpart: getBackground": {
+   "count": 2,
+   "fighters": [
+    "ryu"
+   ]
+  },
+  "no counterpart: getCostumeData": {
+   "count": 2,
+   "fighters": [
+    "simon"
+   ]
+  },
+  "no counterpart: getEnemy": {
+   "count": 1,
+   "fighters": [
+    "waluigi"
+   ]
+  },
+  "no counterpart: getFinalSmashCutscene": {
+   "count": 3,
+   "fighters": [
+    "isaac",
+    "megaman",
+    "simon"
+   ]
+  },
+  "no counterpart: getForeground": {
+   "count": 5,
+   "fighters": [
+    "ryu"
+   ]
+  },
+  "no counterpart: getLosers": {
+   "count": 1,
+   "fighters": [
+    "ryu"
+   ]
+  },
+  "no counterpart: getOwnStats": {
+   "count": 3,
+   "fighters": [
+    "fox",
+    "goku"
+   ]
+  },
+  "no counterpart: getShieldPower": {
+   "count": 2,
+   "fighters": [
+    "krystal",
+    "yoshi"
+   ]
+  },
+  "no counterpart: getSmashTimer": {
+   "count": 2,
+   "fighters": [
+    "samus"
+   ]
+  },
+  "no counterpart: getTetherCount": {
+   "count": 1,
+   "fighters": [
+    "samus"
+   ]
+  },
+  "no counterpart: getViewRootContainer on the camera": {
+   "count": 2,
+   "fighters": [
+    "ryu"
+   ]
+  },
+  "no counterpart: getWinners": {
+   "count": 1,
+   "fighters": [
+    "ryu"
+   ]
+  },
+  "no counterpart: gotoGrabbedCharacter": {
+   "count": 3,
+   "fighters": [
+    "blackmage",
+    "captainfalcon"
+   ]
+  },
+  "no counterpart: hasFeature": {
+   "count": 2,
+   "fighters": [
+    "bowser",
+    "gigabowser"
+   ]
+  },
+  "no counterpart: hitboxTest": {
+   "count": 2,
+   "fighters": [
+    "dedede",
+    "kirby"
+   ]
+  },
+  "no counterpart: killFSCutscene": {
+   "count": 1,
+   "fighters": [
+    "isaac"
+   ]
+  },
+  "no counterpart: netXSpeed": {
+   "count": 1,
+   "fighters": [
+    "rayman"
+   ]
+  },
+  "no counterpart: netYSpeed": {
+   "count": 1,
+   "fighters": [
+    "rayman"
+   ]
+  },
+  "no counterpart: orb_scales": {
+   "count": 1,
+   "fighters": [
+    "sora"
+   ]
+  },
+  "no counterpart: playMusic": {
+   "count": 2,
+   "fighters": [
+    "peach"
+   ]
+  },
+  "no counterpart: release": {
+   "count": 4,
+   "fighters": [
+    "waluigi"
+   ]
+  },
+  "no counterpart: removeEvents": {
+   "count": 2,
+   "fighters": [
+    "waluigi"
+   ]
+  },
+  "no counterpart: replaceCharacter": {
+   "count": 4,
+   "fighters": [
+    "sheik",
+    "zelda"
+   ]
+  },
+  "no counterpart: setCamBoxSize": {
+   "count": 1,
+   "fighters": [
+    "gameandwatch"
+   ]
+  },
+  "no counterpart: setCostume": {
+   "count": 1,
+   "fighters": [
+    "goku"
+   ]
+  },
+  "no counterpart: setMetalStatus": {
+   "count": 2,
+   "fighters": [
+    "gameandwatch",
+    "sonic"
+   ]
+  },
+  "no counterpart: setTeamID": {
+   "count": 1,
+   "fighters": [
+    "dedede"
+   ]
+  },
+  "no counterpart: this engine does not tint while running": {
+   "count": 162,
+   "fighters": [
+    "blackmage",
+    "ichigo",
+    "kirby",
+    "lucario",
+    "megaman",
+    "pacman",
+    "samus",
+    "wario",
+    "wario_man"
+   ]
+  },
+  "no counterpart: toBounce": {
+   "count": 2,
+   "fighters": [
+    "ness"
+   ]
+  },
+  "no counterpart: toGrabbing": {
+   "count": 10,
+   "fighters": [
+    "kirby",
+    "lucario",
+    "luffy"
+   ]
+  },
+  "no counterpart: triggerFSCutscene": {
+   "count": 8,
+   "fighters": [
+    "captainfalcon",
+    "goku",
+    "ichigo",
+    "isaac",
+    "megaman",
+    "metaknight",
+    "sandbag"
+   ]
+  },
+  "no counterpart: updateBar": {
+   "count": 9,
+   "fighters": [
+    "bomberman",
+    "falco",
+    "fox",
+    "gameandwatch",
+    "pacman",
+    "rayman",
+    "sonic",
+    "yoshi"
+   ]
+  }
+ },
+ "total": 5447
+}

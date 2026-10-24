@@ -69,6 +69,16 @@ TRAVEL_RATIO = VELOCITY_SCALE * DURATION_RATIO      # == size_multiplier
 SSF2_TO_FM = _jsonc("character/animations.jsonc")["ssf2_to_fm"]
 
 
+# Where the two engines spell the same move differently enough that the converter's own
+# name mapping cannot join them. A directed air dodge is the case: the source dodges, and
+# fraymakers answers with an airdash -- same move, different word, and the sweep has to
+# know that to compare them at all. This is the harness's business, not the converter's:
+# what the converter emits for the animation is unaffected.
+ALSO_THE_SAME_MOVE = {
+    "airdodge": ("airdash_forward", "airdash_back", "airdash_freefall"),
+}
+
+
 def expected_fm_name(ssf2_anim):
     """What the converter's mapping says this SSF2 animation should become."""
     return SSF2_TO_FM.get((ssf2_anim or "").lower())
@@ -76,6 +86,9 @@ def expected_fm_name(ssf2_anim):
 
 def names_agree(ssf2_anim, fm_anim):
     """True when the pair matches the converter's own mapping."""
+    same = ALSO_THE_SAME_MOVE.get((ssf2_anim or "").lower())
+    if same and (fm_anim or "").lower().startswith(tuple(same)):
+        return True
     want = expected_fm_name(ssf2_anim)
     if not want or not fm_anim:
         return None                      # nothing claimed, so nothing to contradict
@@ -91,11 +104,17 @@ FLOOR_TOP_SRC = 400.0       # fixture FLOOR_Y; only a fallback now -- see measur
 # The engine KOs and respawns the character, and the two frames of REVIVAL that follow land at the
 # head of the next move -- which is what "a frame of the revival pose in tilt_up" turned out to be.
 AIR_ABOVE_FLOOR_SRC = 850.0
+# ...and not the same height in both. SSF2's upper blast boundary sits lower over this floor
+# than Fraymakers', so the height that gives a Fraymakers aerial room to finish KILLS an SSF2
+# one before it starts -- every SSF2 air sample came back REVIVAL or FALLING, which is a dead
+# character on the way back in, not the move. Each engine parks as high as it can and no
+# higher: enough air to finish in, still inside the stage.
+AIR_ABOVE_FLOOR_SSF2 = 400.0
 
 ENGINES = {
     # name:      (tell prefix,             floor top (fallback),      clearance)
     "fm":   (["session"], FLOOR_TOP_SRC * SCALE, AIR_ABOVE_FLOOR_SRC * SCALE),
-    "ssf2": (["ssf2"],    FLOOR_TOP_SRC,         AIR_ABOVE_FLOOR_SRC),
+    "ssf2": (["ssf2"],    FLOOR_TOP_SRC,         AIR_ABOVE_FLOOR_SSF2),
 }
 
 # ── the moves ────────────────────────────────────────────────────────────────
@@ -104,27 +123,39 @@ ENGINES = {
 MOVES = [
     # grounded attacks
     ("jab",              "ground", "attack:2"),
-    # A tilt is the direction ALREADY held when attack arrives; a smash is the two together. SSF2
-    # reads it that way and the conversion does not, so each is asked in its own idiom.
-    ("tilt_forward",     "ground", {"fm": "right+attack:2", "ssf2": "right:6 right+attack:2"}),
-    ("tilt_up",          "ground", {"fm": "up+attack:2",    "ssf2": "up:6 up+attack:2"}),
-    ("tilt_down",        "ground", {"fm": "down+attack:2",  "ssf2": "down:6 down+attack:2"}),
+    # A tilt is the direction ALREADY held when attack arrives; a smash is the two together. both
+    # engines read it that way (the runtime reads the source's window, Fighters.smashInput)
+    ("tilt_forward",     "ground", "right:6 right+attack:2"),
+    ("tilt_up",          "ground", "up:6 up+attack:2"),
+    ("tilt_down",        "ground", "down:6 down+attack:2"),
     ("dash_attack",      "ground", {"fm":   "dash+right:8 right+attack:2",
                                     "ssf2": "right:2 none:1 right:6 right+attack:2"}),
-    # SSF2 smashes on side+attack pressed together; Fraymakers reads that as a tilt because the
-    # distinction is stick magnitude, so it is entered by state instead.
-    ("strong_forward",   "ground", {"fm": "state:STRONG_FORWARD_IN", "ssf2": "right+attack:2"}),
-    ("strong_up",        "ground", {"fm": "state:STRONG_UP_IN",      "ssf2": "up+attack:2"}),
-    ("strong_down",      "ground", {"fm": "state:STRONG_DOWN_IN",    "ssf2": "down+attack:2"}),
+    ("strong_forward",   "ground", "right+attack:2"),
+    ("strong_up",        "ground", "up+attack:2"),
+    ("strong_down",      "ground", "down+attack:2"),
     ("getup_attack",     "ground", "down:2 attack:2"),
-    # aerials -- parked high so the whole move plays before the floor arrives
+    # aerials -- parked high so the whole move plays before the floor arrives.
+    #
+    # The direction is HELD for the whole move, not tapped with the attack. Tapped, what gets
+    # measured is two frames of acceleration decaying away, which is the air-mobility and
+    # air-friction stats and almost nothing of the character -- mario and sandbag came back
+    # with the same travel to the decimal, which no two characters do. Held, the move drifts
+    # the way it drifts when someone plays it.
+    # PURE DRIFT, no attack: the character falls and holds a direction. Nothing here is the
+    # character's own code, so what it measures is the air mobility the port carried across
+    # and nothing else -- which is the control for every aerial below it.
+    ("air_drift",        "air",    "right:40"),
     ("aerial_neutral",   "air",    "attack:2"),
-    ("aerial_forward",   "air",    "right+attack:2"),
-    ("aerial_back",      "air",    "left+attack:2"),
-    ("aerial_up",        "air",    "up+attack:2"),
-    ("aerial_down",      "air",    "down+attack:2"),
+    ("aerial_forward",   "air",    "right+attack:2 right:40"),
+    ("aerial_back",      "air",    "left+attack:2 left:40"),
+    ("aerial_up",        "air",    "up+attack:2 up:40"),
+    ("aerial_down",      "air",    "down+attack:2 down:40"),
     ("airdodge",         "air",    "shield:2"),
-    ("airdash_forward",  "air",    "dash+right:2"),
+    # A DIRECTED air dodge. The source dodges with shield and a direction and travels the
+    # distance its own dodge speed and decel come to; fraymakers calls the same thing an
+    # airdash. Asked with fraymakers' idiom on both, ssf2 simply fell and the pair was
+    # never comparable.
+    ("airdash_forward",  "air",    "shield+right:2"),
     # specials, both grounded and airborne: an air special has its own animation and its own
     # trajectory, and the two are worth measuring separately
     ("special_neutral",  "ground", "special:2"),
@@ -585,6 +616,42 @@ def boot(engine, timeout=300):
     return False
 
 
+def build_is_current():
+    """Refuse to measure a character the engine did not load from what is on disk.
+
+    A .fra is built by FrayTools from the converted source, and nothing warns when the two
+    drift apart -- the engine happily runs the last one that was published. Every number a
+    sweep produces then describes a build nobody is looking at, which reads exactly like a
+    conversion defect: a roll measured 5.91x here and the fix for it was already on disk,
+    just never exported. One stat is enough to tell, so one stat is what this checks.
+    """
+    src = os.path.join(ROOT, "characters", CHAR, "library", "scripts")
+    stat = None
+    for root, _dirs, files in os.walk(src):
+        if "CharacterStats.hx" in files:
+            text = open(os.path.join(root, "CharacterStats.hx")).read()
+            m = re.search(r"dodgeRollSpeed:\s*([0-9.]+)", text)
+            if m:
+                stat = float(m.group(1))
+            break
+    if stat is None:
+        return True  # nothing to check against; not this function's business to guess
+    at = drain("fm")
+    tell("fm", 'e p0.getCharacterStat("dodgeRollSpeed")')
+    drain("fm")
+    reply = read_log("fm")[at:]
+    try:
+        live_v = float(re.findall(r"E:([0-9.]+)", reply)[-1])
+    except (IndexError, ValueError):
+        return True  # could not ask; leave the sweep alone
+    if abs(live_v - stat) > 0.01:
+        print(f"\n{CHAR}: the engine is running an older build of this character "
+              f"(dodgeRollSpeed {live_v}, the source says {stat}).")
+        print("re-export it before measuring, or every number below describes the wrong build:")
+        print(f"  peptide export --project {os.path.join(ROOT, 'characters', CHAR, CHAR + '.fraytools')}")
+        return False
+    return True
+
 def sweep_both(only=None):
     """Boot each engine in turn, sweep it, and compare -- the whole thing in one command."""
     for engine in ("fm", "ssf2"):
@@ -592,6 +659,8 @@ def sweep_both(only=None):
         print(f"\n=== booting {engine} ===")
         if not boot(engine):
             print(f"{engine} did not come up; see {log_path(engine)}")
+            return 2
+        if engine == "fm" and not build_is_current():
             return 2
         print(f"sweeping {engine} on the fixture\n")
         sweep(engine, only)

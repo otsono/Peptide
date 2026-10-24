@@ -91,7 +91,7 @@ fn model_with(platforms: Vec<ssf2_converter::Platform>) -> ssf2_converter::Stage
 fn flat(left: f64, top: f64, w: f64, h: f64, drop_through: bool) -> ssf2_converter::Platform {
     ssf2_converter::Platform {
         rect: ssf2_converter::Rect { x: left, y: top, w, h },
-        drop_through, profile: None, moving: false, visible: true, hazard_floor: false,
+        drop_through, profile: None, visible: true, name: None, x_influence: None, outline: Vec::new(), placements: Vec::new(), ledges: (false, false), friction: None, is_platform: false,
     }
 }
 
@@ -130,4 +130,85 @@ fn placeholder_with_no_collision_is_placed_somewhere_real() {
     let art = ssf2_converter::render_placeholder_for_test(&m);
     assert!(art.x.is_finite() && art.y.is_finite(), "placed at ({}, {})", art.x, art.y);
     assert!(art.w >= 1 && art.h >= 1);
+}
+
+/// A turning piece must come out TURNING: its own angle on every frame, at one steady size.
+///
+/// The compositor never rotates pixels -- it fits a shape to the box it is handed -- so a turn left
+/// in the art means stretching one upright picture into a box that swells as the piece comes off
+/// axis. That renders a rotation as a zoom, and it cannot be corrected downstream by any sizing
+/// rule, because every baked cel is the same upright picture. The turn therefore has to reach
+/// Fraymakers as a rotation, which is what this pins.
+#[test]
+fn a_turning_piece_carries_its_angle_and_holds_its_size() {
+    use ssf2_converter::test_fixture::TURNER_ANGLES;
+    let model = parse_fixture();
+    let turner = model.art.background.iter()
+        .find(|l| l.clip.contains("turner") || l.name.contains("turner"))
+        .expect("the fixture's turning piece must survive as its own layer");
+
+    let shown: Vec<&ssf2_converter::StageArt> =
+        turner.frames.iter().filter(|f| f.alpha > 0.0).collect();
+    assert!(shown.len() >= TURNER_ANGLES.len(),
+        "expected at least one frame per authored angle, got {}", shown.len());
+
+    // every authored angle appears, and nothing else does: the emitted turn IS the source turn
+    let mut seen: Vec<f64> = shown.iter().map(|f| f.rotation).collect();
+    seen.dedup();
+    for a in TURNER_ANGLES {
+        assert!(seen.iter().any(|r| (r - a).abs() < 0.5 || (r - a).abs() > 359.5),
+            "authored angle {a} never reached the output; got {seen:?}");
+    }
+
+    // and the piece never changes size while it turns -- the failure this guards is a rotation
+    // that arrives as a swelling box instead of an angle
+    let (lo, hi) = shown.iter().fold((f64::MAX, f64::MIN), |(lo, hi), f| {
+        let drawn = f.w as f64 * f.scale_x;
+        (lo.min(drawn), hi.max(drawn))
+    });
+    assert!(hi - lo < 1.0, "the piece changed drawn size while turning: {lo} .. {hi}");
+}
+
+/// A turning piece must turn IN PLACE: the middle of the drawn art stays put.
+///
+/// The fixture authors its turner centred on its own registration point, so the source draws its
+/// middle at the same spot at every angle. Fraymakers turns an image about `(x + pivotX, y +
+/// pivotY)`, so where the middle actually ends up is that point plus half the drawn picture,
+/// rotated. If the angle emitted and the spot emitted disagree -- opposite senses, or a spot
+/// derived from something the angle does not apply to -- the middle sweeps a circle instead of
+/// holding, and a big piece leaves the stage as it turns.
+#[test]
+fn a_turning_piece_turns_in_place() {
+    let model = parse_fixture();
+    let turner = model.art.background.iter()
+        .find(|l| l.clip.contains("turner") || l.name.contains("turner"))
+        .expect("the fixture's turning piece must survive as its own layer");
+
+    let centres: Vec<(f64, f64)> = turner.frames.iter().filter(|f| f.alpha > 0.0).map(|f| {
+        // an element's picture is drawn at the stage scale on top of its own (stage_emit's
+        // element path emits `scale * scale_x`), so that is the size it actually covers
+        let (hw, hh) = (f.w as f64 * f.scale_x * SCALE / 2.0, f.h as f64 * f.scale_y * SCALE / 2.0);
+        let (ct, st) = (f.rotation.to_radians().cos(), f.rotation.to_radians().sin());
+        // the pivot is where the turn happens; the middle rides out from it
+        // the engine turns a stage IMAGE about its own (x, y)
+        let (px, py) = (f.x, f.y);
+        (px + ct * hw - st * hh, py + st * hw + ct * hh)
+    }).collect();
+    assert!(centres.len() >= 2, "need several angles to compare");
+
+    let (x0, y0) = centres[0];
+    for (n, (x, y)) in centres.iter().enumerate() {
+        let drift = ((x - x0).powi(2) + (y - y0).powi(2)).sqrt();
+        assert!(drift < 1.0,
+            "frame {n} moved the middle {drift:.1}px while only turning (centres = {centres:?})");
+    }
+}
+
+/// Write the fixture package out for driving the live engine (`--ignored`, not part of a run).
+#[test]
+#[ignore]
+fn dump_fixture_ssf() {
+    let out = std::path::Path::new("/tmp/peptide-fixture.ssf");
+    std::fs::write(out, build_fixture_swf()).expect("write fixture");
+    eprintln!("wrote {}", out.display());
 }

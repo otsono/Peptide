@@ -56,6 +56,8 @@ pub const COMMANDS: &[Cmd] = &[
           args: "<char[,…]> [stage] [assist] [--versus]", help: "start a 1-4 player match (loads custom content if needed); comma-separate up to 4 characters (3-4 auto-engage versus mode; --versus forces versus for 1-2); stage/assist default to thespire/commandervideoassist" },
     Cmd { name: "eval",    aliases: &["e"],                  wire: 'e',
           args: "<hscript>",                     help: "run an hscript expression in the engine and print E:<result>. This is also the default for any unrecognized line." },
+    Cmd { name: "eval@",   aliases: &["e@"],                 wire: 'j',
+          args: "e@<p0|p1|p2|p3|stage> <hscript>", help: "run hscript INSIDE one entity's own script interpreter: its locals, its `self`, its `match`, exactly as that script could have written it (`e@p0 self.getX()`, `e@stage m_action`). the console's own helpers are not loaded there. on SSF2, `self` is bound to that entity" },
     Cmd { name: "load",    aliases: &["l"],                 wire: 'l',
           args: "",                              help: "synchronous custom-.fra load probe (diagnostic; spawn does this itself)" },
     Cmd { name: "console", aliases: &["c"],                 wire: 'c',
@@ -69,16 +71,28 @@ pub const COMMANDS: &[Cmd] = &[
           args: "[depth]",                       help: "dump the live object tree (name/class/position/size/frame per node) — the stage-triage ground truth. SSF2 walks the display list; depth defaults to 6" },
     Cmd { name: "await",   aliases: &["settle", "playout"],  wire: '\0',
           args: "[pN] [budgetFrames]",           help: "let the current animation PLAY OUT, watching the engine's own frame counter (never a wall-clock delay): returns when it completes / loops / changes / stalls. reports the outcome, frames actually seen, and end position. budget is a ceiling (a looping animation never finishes), default 240" },
+    Cmd { name: "catch",   aliases: &["until"],              wire: '\0',
+          args: "<label> [budgetFrames]",        help: "run the engine forward up to budgetFrames and report the FIRST frame the driven fighter reaches animation <label>, in ONE round trip: the per-frame recorder is armed, the budget played out on the engine's own clock, and the window scanned host-side. a label that never comes is reported at the end of the budget instead of waited on. the frame-precise counterpart to `await` (which plays a move OUT); same on both engines. default budget 240" },
+    Cmd { name: "hits",    aliases: &["hitwatch"],           wire: '\0',
+          args: "[pN] [frames] [raw] [ctrl:frames…]", help: "MEASURE what hits a character: poll damage and velocity every frame and report each hit as damage dealt plus the knockback speed and angle it was sent at. host-side on both engines, so a move's outcome is a number instead of a judgement call. `hits raw` dumps every sample instead, which is how you see what a hit did frame by frame." },
+    Cmd { name: "move",    aliases: &["play"],                  wire: '\0',
+          args: "<name> [pN]",                   help: "PLAY A NAMED MOVE, whatever input would reach it. the same word on both engines: an input does not mean the same thing on each (a held direction plus attack is a smash on one and a tilt on the other, and some moves no input reaches at all), so comparing what a move DOES has to start by naming the move rather than the button. named as Fraymakers names it; the SSF2 side is told the label its own file calls it, out of what the conversion recorded" },
+    Cmd { name: "tick",    aliases: &["after"],                 wire: '\0',
+          args: "<frames>",                      help: "WAIT N ENGINE FRAMES, on the engine's own clock: both engines push a line per frame for the driven fighter, and this returns the moment the Nth one arrives (`TICK:N frames`). the pacing primitive: a driver that needs \"a few frames from now\" says so in frames and never sleeps. host-side, same on both engines" },
+    Cmd { name: "clock",   aliases: &["frame"],                 wire: '\0',
+          args: "",                              help: "HOW MANY ENGINE FRAMES the session has seen so far (`CLOCK:N frames`), off the same pushed frame clock `tick` waits on: the match's own moment, read the same way on both engines, so two engines can be brought to the same frame rather than to a wall-clock guess. host-side" },
     Cmd { name: "record",  aliases: &["rec"],                   wire: '\0',
           args: "[off]",                         help: "arm the engine's OWN per-frame recorder and clear its buffer (`record off` disarms). on SSF2 this is an injected ENTER_FRAME handler — the only way to observe it accurately, since polling samples slower than the animations run" },
     Cmd { name: "trace",   aliases: &["frames"],                wire: '\0',
-          args: "[raw]",                         help: "read back the recorded frame history (`trace raw` dumps one line per frame with position, for measuring per-frame displacement/speed) (`<label>|<frame>|<x>|<y>;` per frame) in ONE round trip and stop recording" },
+          args: "[raw [all]]",                   help: "read back the recorded frame history (`trace raw` dumps one line per frame with position, for measuring per-frame displacement/speed; `trace raw all` every fighter's, each line naming its fighter) (`<label>|<frame>|<x>|<y>;` per frame) in ONE round trip and stop recording" },
     Cmd { name: "awaitmatch", aliases: &["ready", "awaitspawn"], wire: '\0',
           args: "[pN] [tries]",                  help: "block until a character is actually READABLE (the match is up, not just spawn-acknowledged) — the deterministic replacement for sleeping after spawn. default 60 tries" },
     Cmd { name: "addCharacter", aliases: &["addchar", "add"], wire: 'n',
           args: "",                              help: "drop one more fighter into the LIVE match on demand (re-spawns the last roster char via the deferred-spawn path) — no relaunch (peptide todo #3)" },
     Cmd { name: "exit",    aliases: &["quit", "stop", "x"], wire: 'x',
           args: "",                              help: "cleanly shut the engine down (hxd.System.exit — no kill-9 orphan)" },
+    Cmd { name: "speed",   aliases: &["turbo", "rate"], wire: 'u',
+          args: "<frames-per-tick>",             help: "run N engine frames per tick (1 = the engine's own rate, up to 8). every measurement paces on the frame count, so a test arrives sooner and reads the same" },
     Cmd { name: "hold",    aliases: &["press", "keys", "input"], wire: 'i',
           args: "<control[+control…]>",          help: "hold control inputs (e.g. hold down+special) — feeds the engine's input→action mapping, not a synthetic keypress" },
     Cmd { name: "release", aliases: &["unpress"], wire: 'i',
@@ -94,6 +108,9 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd { name: "dmg",     aliases: &["damage", "percent"], wire: 'e',
           args: "<player> <value>",
           help: "set a player's damage percent (e.g. dmg p1 80) — handy for knockback / KO-threshold testing" },
+    Cmd { name: "gvar",    aliases: &["globalvar"], wire: 'e',
+          args: "<player> <name> [value]",
+          help: "read or set a value a fighter keeps by name between moves (a stored charge: gvar p0 NarutoNSpecCharge 30) — the content's own global variable on either engine" },
     Cmd { name: "info",    aliases: &["status", "players"], wire: 'e',
           args: "",
           help: "one-shot readout of both players: [p0 x, state, dmg, team, p1 x, state, dmg, team]" },
@@ -116,6 +133,11 @@ pub const CONTROLS: &[(&str, u32)] = &[
     ("shield", 0x100), ("shield1", 0x100), ("shield2", 0x200),
     ("grab", 0x400), ("emote", 0x800), ("taunt", 0x800), ("pause", 0x1000),
     ("dash", 0x20000),
+    // a short hop. Fraymakers decides the height of a jump from input a host mask cannot release
+    // early (a tap and a hold of `jump` rise alike when injected), so a tap that means a short hop
+    // names it. SSF2 has no such bit and short-hops a tapped `jump` on its own; the SSF2 remap
+    // drops it.
+    ("shorthop", 0x80000),
 ];
 
 /// Expand a `seq` token list into the per-frame control masks (engine-agnostic).
@@ -185,8 +207,8 @@ pub fn controls_mask(tokens: &[&str]) -> Result<u32, String> {
 
 /// Move name → CState field NAME, in the order the engine's generated jump table
 /// expects. The client sends the table INDEX (the ordinal) as the `m` argument;
-/// the engine resolves each CState field by NAME at patch time (robust to findex
-/// drift) and emits one comparison arm per entry, in this exact order. Keep the
+/// the engine resolves each CState field by NAME at patch time (robust to function
+/// indexes moving between builds) and emits one comparison arm per entry, in this exact order. Keep the
 /// two in lockstep by sharing this one table.
 ///
 /// Friendly names mirror the Fraymakers animation vocabulary so a modder can
@@ -279,6 +301,7 @@ pub struct MatchSettings {
     pub size_ratio: f64,     // character size multiplier
     pub item_frequency: i32, // item spawn frequency (0 = items off)
     pub hazards: bool,       // stage hazards on/off (both engines ask; stages decide what it means)
+    pub netcode: i32,        // 0 offline; 3 a local match that rolls back as an online one does (Fraymakers)
 }
 
 impl Default for MatchSettings {
@@ -297,6 +320,7 @@ impl Default for MatchSettings {
             // quiet when it's off, so defaulting it off would hide every ported hazard from the
             // harness that exists to check them.
             hazards: true,
+            netcode: 0,
         }
     }
 }
@@ -329,6 +353,7 @@ pub fn parse_match_settings(text: &str) -> MatchSettings {
                 "size_ratio" => if let Ok(n) = v.parse() { s.size_ratio = n; },
                 "item_frequency" => if let Ok(n) = v.parse() { s.item_frequency = n; },
                 "hazards" => if let Some(x) = b(v) { s.hazards = x; },
+                "netcode" => if let Ok(n) = v.parse() { s.netcode = n; },
                 _ => {}
             }
         }
@@ -353,8 +378,15 @@ pub enum Command {
     Spawn(SpawnArgs),
     /// Evaluate an expression (hscript on Fraymakers; reflection on SSF2).
     Eval(String),
+    /// Read (`value` None) or set a value a fighter keeps by name between its moves.
+    Var { idx: usize, name: String, value: Option<f64> },
+    /// `e@<target> <hscript>`: the script run INSIDE one entity's own script interpreter (its
+    /// locals, its `self`) -- `s` the stage, or a character by slot digit.
+    EvalIn { target: String, expr: String },
     /// Hold the given control bitmask (release = `Hold(0)`).
     Hold(u32),
+    /// engine frames per tick (1 = the engine's own rate)
+    Speed(u32),
     /// Play a frame-accurate input timeline — one mask per engine frame
     /// (already auto-released with a trailing `0`).
     Seq(Vec<u32>),
@@ -362,6 +394,14 @@ pub enum Command {
     /// state for both players) plus an optional input timeline on p0. Host-side macro
     /// that composes eval + seq — see peptide todo #4.
     Scenario { setup: String, masks: Vec<u32> },
+    /// Watch a character for HITS and report each one's outcome: how much damage it took and
+    /// the knockback it was sent with. The engines keep no record of a hit after the fact, so
+    /// this samples every frame and reports the frames where damage went up -- which is the
+    /// measurement a scenario needs before it can say two engines agree about a move.
+    Hits { idx: usize, frames: u32, raw: bool, masks: Vec<u32> },
+    /// Play a named move on a character, in the vocabulary Fraymakers names animations by.
+    /// The engine that spells it differently is handed its own spelling.
+    Move { idx: usize, name: String },
     /// Run the engine's debug console.
     Console,
     /// Dump the live object tree to the given depth — the stage-triage ground truth
@@ -386,6 +426,8 @@ pub enum Command {
     /// `budget` bounds the watch (a looping animation never finishes) — a ceiling,
     /// not a pace.
     Await { idx: usize, budget: u32 },
+    /// catch the FIRST frame the driven fighter reaches animation `label`, in one round trip
+    Catch { label: String, budget: u32 },
     /// Block until a character is readable — the match is genuinely up, not just
     /// `spawn`-acknowledged. Replaces "sleep a few seconds after spawn", which loses
     /// the first observation when the engine is slow and wastes the wait when it isn't.
@@ -397,6 +439,10 @@ pub enum Command {
     /// member became an error, failed outright. Enumerating instead means the readout is
     /// correct for 1-4 players on both engines.
     Info,
+    /// Wait this many engine frames on the pushed frame clock (host-side, both engines).
+    Tick { n: u32 },
+    /// How many engine frames the session has seen so far (host-side, both engines).
+    Clock,
     /// Arm (or disarm) the engine's own per-frame recorder, clearing its buffer.
     Record { on: bool },
     /// Read back the recorded frame history and stop recording.
@@ -407,7 +453,7 @@ pub enum Command {
     /// this reads the lot in ONE round trip. Fraymakers already PUSHES per-frame `ANIM:`
     /// telemetry over its socket and its eval is fast enough to poll, so it says so
     /// rather than pretending to have a buffer.
-    Trace { raw: bool },
+    Trace { raw: bool, all: bool },
     /// Drop one more fighter into the live match (peptide todo #3).
     AddCharacter,
     /// Cleanly shut the engine down.
@@ -429,6 +475,15 @@ pub fn parse(line: &str) -> Command {
     let mut parts = line.split_whitespace();
     let head = parts.next().unwrap_or("");
     let rest: Vec<&str> = parts.collect();
+
+    // `e@<target> <script>` / `eval@<target>`: the head carries the entity, so it is read
+    // before the table lookup (the table knows the verb, not the verb-with-a-target)
+    if let Some((verb, target)) = head.split_once('@') {
+        if verb == "e" || verb == "eval" {
+            let target = match target.trim() { "stage" | "s" => "s".to_string(), t => t.trim_start_matches('p').to_string() };
+            return Command::EvalIn { target, expr: rest.join(" ") };
+        }
+    }
 
     if let Some(cmd) = lookup(head) {
         match cmd.name {
@@ -466,6 +521,12 @@ pub fn parse(line: &str) -> Command {
                 };
             }
             "release" => return Command::Hold(0),
+            "speed" | "turbo" | "rate" => {
+                return match rest.first().and_then(|s| s.parse::<u32>().ok()) {
+                    Some(n) if (1..=8).contains(&n) => Command::Speed(n),
+                    _ => Command::Client("usage: speed <1..8>  (engine frames per tick; 1 = the engine's own rate)\n".into()),
+                };
+            }
             "seq" => {
                 if rest.is_empty() {
                     return Command::Client(
@@ -491,6 +552,24 @@ pub fn parse(line: &str) -> Command {
                 }
                 return Command::Eval(format!("{player}.damage._damage = {val}"));
             }
+            "gvar" => {
+                let usage = "usage: gvar <player> <name> [value]  (e.g. gvar p0 NarutoNSpecCharge 30)\n";
+                if rest.len() != 2 && rest.len() != 3 { return Command::Client(usage.into()); }
+                let Some(idx) = rest[0].trim_start_matches('p').parse::<usize>().ok().filter(|i| *i < 4) else {
+                    return Command::Client(format!("gvar: {:?} is not a player (p0..p3)\n", rest[0]));
+                };
+                if !rest[1].chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    return Command::Client(format!("gvar: {:?} is not a variable name\n", rest[1]));
+                }
+                let value = match rest.get(2) {
+                    None => None,
+                    Some(v) => match v.parse::<f64>() {
+                        Ok(n) => Some(n),
+                        Err(_) => return Command::Client(format!("gvar: value must be numeric (got {v:?})\n")),
+                    },
+                };
+                return Command::Var { idx, name: rest[1].to_string(), value };
+            }
             "info" => return Command::Info,
             "reset" => {
                 return Command::Eval(
@@ -504,6 +583,40 @@ pub fn parse(line: &str) -> Command {
                     None => return Command::Client("usage: kill <player>  (e.g. kill p1)\n".into()),
                 };
                 return Command::Eval(format!("{player}.setY({player}.getY() + 3000)"));
+            }
+            "hits" | "hitwatch" => {
+                // `hits [pN] [frames] [raw] [<ctrl:frames> …]`, any order, all optional.
+                // An input timeline is PLAYED while the watch runs: a hit has to happen inside
+                // the window to be seen, and sending the input as a separate command means it
+                // lands before the watch starts or waits until after it ends.
+                let (mut idx, mut frames, mut raw) = (1usize, 240u32, false);
+                let mut steps: Vec<&str> = Vec::new();
+                for a in &rest {
+                    if a.eq_ignore_ascii_case("raw") { raw = true; }
+                    else if let Some(n) = a.strip_prefix('p').and_then(|n| n.parse::<usize>().ok()) { idx = n; }
+                    else if let Ok(n) = a.parse::<u32>() { frames = n; }
+                    else { steps.push(a); }
+                }
+                let masks = if steps.is_empty() { Vec::new() } else {
+                    match expand_sequence_masks(&steps) {
+                        Ok(m) => m,
+                        Err(e) => return Command::Client(format!("hits: {e}\n")),
+                    }
+                };
+                return Command::Hits { idx, frames, raw, masks };
+            }
+            "move" | "play" => {
+                let (mut idx, mut name) = (0usize, String::new());
+                for a in &rest {
+                    match a.strip_prefix('p').and_then(|n| n.parse::<usize>().ok()) {
+                        Some(n) => idx = n,
+                        None => if name.is_empty() { name = a.to_string() },
+                    }
+                }
+                if name.is_empty() {
+                    return Command::Client("usage: move <name> [pN]  (e.g. move tilt_forward p0)\n".into());
+                }
+                return Command::Move { idx, name };
             }
             "console" => return Command::Console,
             "cam" | "camera" => {
@@ -539,14 +652,45 @@ pub fn parse(line: &str) -> Command {
                 }
                 return Command::Await { idx, budget };
             }
+            "catch" | "until" => {
+                // catch <label> [budgetFrames] — run the recorder forward up to budget frames
+                // and report the first frame the driven fighter reaches `label`. the frame-
+                // precise counterpart to await, which plays a move OUT.
+                let mut label = String::new();
+                let mut budget = 240u32;
+                for a in &rest {
+                    if let Ok(n) = a.parse::<u32>() {
+                        budget = n;
+                    } else {
+                        label = a.to_string();
+                    }
+                }
+                if label.is_empty() {
+                    return Command::Client(
+                        "catch: which animation label?\nusage: catch <label> [budgetFrames]\n".into());
+                }
+                return Command::Catch { label, budget };
+            }
             // Frame trace: `record` opens a window (clears the engine's buffer and arms
             // it), `trace` closes it and reads the whole thing back in one round trip.
             // This is how SSF2 is observed accurately — see Command::Trace.
+            "tick" | "after" => {
+                let n = rest.first().and_then(|a| a.parse::<u32>().ok());
+                return match n {
+                    Some(n) => Command::Tick { n },
+                    None => Command::Client("tick: how many frames?\nusage: tick <frames>\n".into()),
+                };
+            }
+            "clock" | "frame" => return Command::Clock,
             "record" | "rec" => {
                 let on = !matches!(rest.first().map(|s| s.to_ascii_lowercase()).as_deref(), Some("off"));
                 return Command::Record { on };
             }
-            "trace" | "frames" => return Command::Trace { raw: rest.first().is_some_and(|a| a.eq_ignore_ascii_case("raw")) },
+            "trace" | "frames" => return Command::Trace {
+                raw: rest.first().is_some_and(|a| a.eq_ignore_ascii_case("raw")),
+                // `trace raw all`: every fighter's frames, each line naming its fighter
+                all: rest.get(1).is_some_and(|a| a.eq_ignore_ascii_case("all")),
+            },
             "awaitmatch" | "ready" | "awaitspawn" => {
                 let mut idx = 0usize;
                 let mut tries = 60u32;
@@ -710,15 +854,21 @@ pub fn command_to_wire(cmd: &Command) -> Translated {
             Translated::Wire(wire)
         }
         Command::Eval(e) => Translated::Wire(if e.is_empty() { "e".into() } else { format!("e {e}") }),
+        // one letter of target, then the script: the handler reads the letter and drains the rest
+        Command::EvalIn { target, expr } => Translated::Wire(format!("j{}{expr}", target.chars().next().unwrap_or('s'))),
         // `await` is a HOST-side polling loop over the engine's frame counter, not a wire
         // verb — there is nothing to send. It's executed by `run_command`, which owns the
         // loop; reaching here means a caller translated it to wire by mistake.
         Command::Info => Translated::Client(
             "info is executed host-side (run_command), not sent to the engine\n".into()),
+        Command::Var { .. } => Translated::Client(
+            "gvar is executed host-side (run_command), not sent to the engine\n".into()),
         Command::Await { .. } | Command::AwaitMatch { .. }
-        | Command::Record { .. } | Command::Trace { .. } => Translated::Client(
-            "await/awaitmatch/record/trace are executed host-side (run_command), not sent to the engine\n".into()),
+        | Command::Record { .. } | Command::Trace { .. } | Command::Hits { .. } | Command::Catch { .. }
+        | Command::Move { .. } | Command::Tick { .. } | Command::Clock => Translated::Client(
+            "await/catch/awaitmatch/record/trace/hits/move/tick/clock are executed host-side (run_command), not sent to the engine\n".into()),
         Command::Hold(m) => Translated::Wire(format!("i {m}")),
+        Command::Speed(n) => Translated::Wire(format!("u {n}")),
         Command::Seq(masks) => Translated::Wire(masks.iter().map(|m| format!("i {m}")).collect::<Vec<_>>().join("\n")),
         Command::Scenario { setup, masks } => {
             let mut w = format!("e {setup}");
@@ -726,8 +876,8 @@ pub fn command_to_wire(cmd: &Command) -> Translated {
             Translated::Wire(w)
         }
         Command::Console => Translated::Wire("c".into()),
-        // FM tree walk: the 'w' wire handler walks currentMatch.gameObjects in bytecode (hl ArrayObj
-        // doesn't reflect length/index in hscript, so the walk can't be eval-side).
+        // FM tree walk: the 'w' wire handler walks the match's game objects in the engine (the
+        // array they sit in can't be indexed from hscript, so the walk can't be eval-side).
         Command::Tree(_) => Translated::Wire("w".into()),
         // the camera is scriptable on Fraymakers, so it lowers to eval rather than a wire byte
         Command::Camera { mode, pos, zoom } => Translated::Wire(format!("e {}", fm_camera_expr(mode.as_deref(), *pos, *zoom))),
@@ -998,6 +1148,7 @@ pub fn help_text() -> String {
     out.push_str("  (no args) | gui               open the Peptide window (default)\n");
     out.push_str("  tui                           terminal console\n");
     out.push_str("  convert <file.ssf> [opts]     SSF2 → Fraymakers conversion (peptide convert --help)\n");
+    out.push_str("  pack    --project <.fraytools>   build the .fra from the library in-process (no FrayTools)\n");
     out.push_str("  export  --project <.fraytools>   drive FrayTools Publish → build the .fra\n");
     out.push_str("  render  --entity <rel> [...]     render an entity to PNG via FrayTools\n");
     out.push_str("  harness --entity <rel> [...]     extract box geometry + PNG + JSON report\n");
@@ -1164,6 +1315,36 @@ iconDiag = function(c) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn hits_reads_player_frames_and_raw_in_any_order() {
+        match parse("hits raw p2 30") {
+            Command::Hits { idx, frames, raw, .. } => assert_eq!((idx, frames, raw), (2, 30, true)),
+            other => panic!("{other:?}"),
+        }
+        // bare defaults: the opponent, a generous window, summary not raw
+        match parse("hitwatch") {
+            Command::Hits { idx, frames, raw, .. } => assert_eq!((idx, frames, raw), (1, 240, false)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn move_names_a_move_and_a_player() {
+        match parse("move tilt_forward p0") {
+            Command::Move { idx, ref name } => assert_eq!((idx, name.as_str()), (0, "tilt_forward")),
+            other => panic!("{other:?}"),
+        }
+        // the player is optional and the order does not matter
+        match parse("play p2 special_side") {
+            Command::Move { idx, ref name } => assert_eq!((idx, name.as_str()), (2, "special_side")),
+            other => panic!("{other:?}"),
+        }
+        match parse("move") {
+            Command::Client(t) => assert!(t.contains("usage"), "{t}"),
+            other => panic!("{other:?}"),
+        }
+    }
     use super::*;
 
     #[test]
@@ -1326,6 +1507,16 @@ mod tests {
         assert_eq!(wire("CState.JAB"), "e CState.JAB");
         assert_eq!(wire("1 + 2"), "e 1 + 2");
         assert_eq!(wire("eval CState.JAB"), "e CState.JAB");   // explicit eval == default
+    }
+
+    #[test]
+    fn gvar_reads_and_sets_a_named_value() {
+        assert!(matches!(parse("gvar p0 Charge"), Command::Var { idx: 0, ref name, value: None } if name == "Charge"));
+        assert!(matches!(parse("gvar p1 Charge 30"), Command::Var { idx: 1, value: Some(v), .. } if v == 30.0));
+        assert!(matches!(parse("gvar p9 Charge"), Command::Client(_)));
+        assert!(matches!(parse("gvar p0 Charge x"), Command::Client(_)));
+        // a raw hscript `var` line is still the script, not the command
+        assert!(matches!(parse("var c = 1;"), Command::Eval(_)));
     }
 
     #[test]

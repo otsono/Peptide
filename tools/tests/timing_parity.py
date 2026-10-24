@@ -51,6 +51,14 @@ def splits(char, outdir):
                         "-o", outdir, "-y"],
                        capture_output=True, text=True, env=env)
     text = r.stderr + r.stdout
+    return parse_splits(text), text
+
+
+def parse_splits(text):
+    """The split records out of a conversion's log text (see `splits` for what they mean).
+
+    Kept apart from the conversion so a caller that already converted -- the verify gates run
+    one conversion and read everything off it -- does not convert again to read them."""
     totals = {m.group(1): int(m.group(2))
               for m in re.finditer(r"\[anim-labels\] (\S+) total=(\d+)", text)}
     out = {}
@@ -59,15 +67,41 @@ def splits(char, outdir):
         start = int(start)
         end = totals.get(src, start) if end == "end" else int(end)
         head = int(re.search(r"\+head(\d+)", flags).group(1)) if "+head" in flags else 0
-        out[fm] = {"src": src, "frames": max(0, end - start) + head, "loop": " loop" in flags}
-    return out, text
+        out[fm] = {"src": src, "start": start, "frames": max(0, end - start) + head,
+                   "loop": " loop" in flags}
+    # A move whose last frame's code ENDS it is emitted one source frame short on purpose: SSF2
+    # runs a frame's code before drawing it, so that frame never appears (see entity_gen). The
+    # converter reports each trim, because a checker that doesn't know reads every trimmed move
+    # as two frames short and buries the real failures.
+    # counted once per animation, by how many frames the emit says it took off (a move can end
+    # on its last frame and on the one before it too); the emit reports on every pass it makes
+    trims = {}
+    for m in re.finditer(r"\[anim-trim\] (\S+)(?: (\d+))?", text):
+        trims[m.group(1)] = max(trims.get(m.group(1), 0), int(m.group(2) or 1))
+    for name, n in trims.items():
+        if name in out:
+            out[name]["frames"] = max(0, out[name]["frames"] - n)
+            out[name]["trimmed"] = True
+    return out
 
 
 def source_active(char, outdir_unused, text):
-    """SSF2 source ACTIVE hitbox frames per animation, from PEPTIDE_DUMP_BOX_FRAMES."""
+    """SSF2 source ACTIVE hitbox box-frames per animation, from PEPTIDE_DUMP_BOX_FRAMES.
+
+    `at` is the per-frame breakdown, which is what lets the check be exact: one source
+    timeline becomes several emitted animations, so only the boxes on frames inside a
+    slice belong to that slice, and a move trimmed at its terminator loses that frame's
+    boxes along with the frame.
+    """
     out = {}
-    for m in re.finditer(r"\[box-frames\] (\S+) total=(\d+) active=(\d+) first=(\d+) last=(\d+)", text):
-        out[m.group(1)] = {"active": int(m.group(3)), "first": int(m.group(4)), "last": int(m.group(5))}
+    for m in re.finditer(r"\[box-frames\] (\S+) total=(\d+) active=(\d+) first=(\d+) last=(\d+) at=\[([^\]]*)\]", text):
+        at = {}
+        for pair in m.group(6).split(","):
+            if pair:
+                f, n = pair.split(":")
+                at[int(f)] = int(n)
+        out[m.group(1)] = {"active": int(m.group(3)), "first": int(m.group(4)),
+                           "last": int(m.group(5)), "at": at}
     return out
 
 
@@ -154,25 +188,37 @@ def check(char, verbose=False):
     print(f"\n=== {char}: {checked} animations checked, {off} off the 2.00x doubling ===")
     for name, info, got, want in rows:
         tag = " (loop, not counted)" if info["loop"] else ""
+        tag += " (ends the move, trimmed)" if info.get("trimmed") else ""
         ratio = got / info["frames"] if info["frames"] else 0
         print(f"  {name:26} src={info['src']}[{info['frames']}]  fm={got:4}  expected={want:4}  {ratio:.2f}x{tag}")
 
     # ── active hitbox frames (startup / active / recovery) ────────────────────
     src_act, fm_act = source_active(char, outdir, text), entity_active(char, outdir)
+    # Per emitted animation, against the source frames THAT ANIMATION covers: its slice
+    # [start, start+frames), plus the head frames appended after it. `frames` already has the
+    # terminator trim taken off, so a frame the port deliberately never shows takes its hitbox
+    # with it -- which is right, since SSF2 runs that frame's code before drawing it and the
+    # hitbox never comes up there either.
     b_checked = b_off = 0
     b_rows = []
-    for name in sorted(src_act):
-        if name not in fm_act:
+    for name in sorted(fm_act):
+        info = sp.get(name)
+        src = src_act.get(info["src"]) if info else None
+        if not info or not src or info["frames"] == 0:
             continue
-        want_a, got_a = src_act[name]["active"] * 2, fm_act[name]
+        start, n = info["start"], info["frames"]
+        want_a = 2 * sum(c for f, c in src["at"].items() if start <= f < start + n)
+        got_a = fm_act[name]
+        if want_a == 0 and got_a == 0:
+            continue
         b_checked += 1
         if abs(got_a - want_a) > 1:
             b_off += 1
-            b_rows.append((name, src_act[name]["active"], got_a, want_a))
+            b_rows.append((name, info, got_a, want_a))
     print(f"    hitbox active frames: {b_checked} animations, {b_off} off 2.00x")
-    for name, s_a, got_a, want_a in b_rows[:12]:
-        r = got_a / s_a if s_a else 0
-        print(f"      {name:24} ssf2_active={s_a:3}  fm_active={got_a:3}  expected={want_a:3}  {r:.2f}x")
+    for name, info, got_a, want_a in b_rows[:12]:
+        print(f"      {name:24} src={info['src']}[{info['start']}..{info['start']+info['frames']})"
+              f"  fm_active={got_a:3}  expected={want_a:3}")
     return checked, off + b_off
 
 

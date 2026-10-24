@@ -1,0 +1,33 @@
+// what the source's engine does in its own states, as this engine's animations: stats an
+// animation states, code its first frame runs, and points it carries. keyed by this engine's
+// animation names (the ones the conversion writes); an animation the fighter has none of is
+// skipped. `self` is the fighter, as in any keyframe of its entity.
+{
+  "stats": {
+    // the source steers an air dodge (its engine lets the dodge drift under the held direction)
+    "airdodge": "allowMovement: true",
+    // the source holds a revived fighter where it appears (the code below lets it go)
+    "revival": "gravityMultiplier: 0"
+  },
+  "code": {
+    // the source plays a jump's `backflip` section when the jump starts under the direction the
+    // fighter faces away from, and shows its fall once any jump starts coming down (the jump's
+    // own frames stop at the top): one watch a jump, through the engine's jump states, gone once
+    // the fighter is out of them
+    "jump_in": "if ((self.isFacingRight() && self.getHeldControls().LEFT) || (!self.isFacingRight() && self.getHeldControls().RIGHT)) self.playAnimation(\"jump_back\"); (function() { var id = -1; id = self.addTimer(1, -1, function(?t) { var a = self.getAnimation(); if (a != \"jump_in\" && a != \"jump_loop\" && a != \"jump_out\" && a != \"jump_back\") { self.removeTimer(id); return; } if (self.getYVelocity() >= 0) { self.removeTimer(id); self.toState(CState.FALL); } }, { persistent: true }); })();",
+    "jump_midair": "(function() { var id = -1; id = self.addTimer(1, -1, function(?t) { var a = self.getAnimation(); if (a != \"jump_midair\" && a != \"jump_midair_back\") { self.removeTimer(id); return; } if (self.getYVelocity() >= 0) { self.removeTimer(id); self.toState(CState.FALL); } }, { persistent: true }); })();",
+    // a revived fighter appears 30 of the source's pixels above where it is revived and settles
+    // there over its first second, then waits: from then, any held control lets it go, and it goes
+    // by itself after five seconds (the source's 150 frames)
+    "revival": "(function() { var n = 0; var s = PeptideRuntime.data.units.size; var y0 = self.getY(); self.setY(y0 - 30 * s); self.setXVelocity(0); self.setYVelocity(0); self.addTimer(1, -1, function(?t) { if (!self.inState(CState.REVIVAL)) return; n++; self.setYVelocity(0); if (n <= 60) self.setY(y0 - 30 * s + n * 0.5 * s); var c = self.getHeldControls(); if (n >= 300 || (n > 60 && (c.LEFT || c.RIGHT || c.UP || c.DOWN || c.ATTACK || c.SPECIAL || c.JUMP || c.SHIELD || c.GRAB))) self.toState(CState.FALL); }); })();"
+  },
+  // points an animation carries for the whole of its length, by layer name
+  "points": {
+    // the source hangs a fighter with the ledge at its origin, through every ledge action
+    "ledgeholdpoint0": {
+      "x": 0, "y": 0,
+      "animations": ["ledge_in", "ledge_loop", "ledge_climb_in", "ledge_climb", "ledge_roll_in", "ledge_roll",
+                     "ledge_attack_in", "ledge_attack", "ledge_jump_in", "ledge_jump"]
+    }
+  }
+}

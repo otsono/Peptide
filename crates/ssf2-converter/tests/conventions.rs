@@ -344,3 +344,94 @@ fn visit_rs(dir: &Path, f: &mut impl FnMut(String, String)) {
         }
     }
 }
+
+
+/// No content-name taxonomy comes back.
+///
+/// `hazard_kind` used to decide WHAT a stage object is by matching its symbol against words like
+/// `thwomp` and `lava`, and then hand back stats invented for that word. It is gone: an object is
+/// what its class declares and does what its own translated code does. This fails if anything of
+/// the shape returns.
+#[test]
+fn content_name_keywords_only_shrink() {
+    // every `l.contains("…")` inside the taxonomy, plus its cosmetic-word list
+    const CEILING: usize = 0;
+    let src = std::fs::read_to_string(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/src/stage_parser.rs")
+    ).expect("stage_parser.rs");
+    let Some(start) = src.find("fn hazard_kind(") else {
+        return; // gone entirely: the debt is paid, nothing to pin
+    };
+    let end = src[start..].find("\n}\n").map(|e| start + e).unwrap_or(src.len());
+    let body = &src[start..end];
+    let count = body.match_indices('"').count() / 2;
+    assert!(
+        count == CEILING,
+        "hazard_kind now matches {count} content-name literals, and the ceiling is {CEILING}.\n\
+         a keyword is never the fix: what an object IS comes from what its class extends and what \n\
+         its own code does. read the source, do not add a word. see CLAUDE.md, first rule."
+    );
+}
+
+/// A mapping's replacement text often carries a note, and that note is dropped into
+/// the middle of emitted code. Later passes read that code by looking for the marks that
+/// separate one piece of it from the next -- a `;` between statements, a `,` between the
+/// fields of an object. A note carrying either ends a piece that has not ended: megaman's
+/// sword effect lost every field after the one whose note held a comma. Notes say the
+/// same thing without them.
+#[test]
+fn a_mapping_note_never_carries_a_separator() {
+    let src = std::fs::read_to_string(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/mappings/commands.jsonc")
+    ).expect("commands.jsonc");
+    let mut bad = Vec::new();
+    for (n, line) in src.lines().enumerate() {
+        // only the emitted text matters: `to` / `replacement` values, not the
+        // jsonc `//` commentary around them
+        let Some(v) = line.split_once("\"to\":").or_else(|| line.split_once("\"replacement\":"))
+        else { continue };
+        let mut rest = v.1;
+        while let Some(open) = rest.find("/*") {
+            let after = &rest[open + 2..];
+            let Some(close) = after.find("*/") else { break };
+            if after[..close].contains(';') || after[..close].contains(',') {
+                bad.push(format!("  commands.jsonc:{}: {}", n + 1, line.trim()));
+            }
+            rest = &after[close + 2..];
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "a note inside emitted code carries a `;` or a `,`, which ends a piece of code \
+         that has not ended:\n{}\n\nsay it without them.",
+        bad.join("\n")
+    );
+}
+
+
+/// The compiler writes the source's own code; the runtime's code lives in `runtime/**/*.hx`. So no
+/// string in the new converter's Rust defines a named Haxe function: behaviour a person would edit
+/// never hides in a Rust string (see docs/CONVERTER_DESIGN.md).
+#[test]
+fn no_runtime_code_in_the_compilers_strings() {
+    let root = repo_root().join("crates/ssf2-converter/src");
+    let mut bad = Vec::new();
+    for dir in ["model", "compile", "emit"] {
+        for entry in std::fs::read_dir(root.join(dir)).unwrap().flatten() {
+            let p = entry.path();
+            if p.extension().is_none_or(|x| x != "rs") { continue }
+            let text = std::fs::read_to_string(&p).unwrap();
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim_start();
+                if t.starts_with("//") { continue }
+                if let Some(pos) = line.find("\"function ") {
+                    let after = &line[pos + 10..];
+                    if after.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+                        bad.push(format!("{}:{}: {}", p.display(), i + 1, t));
+                    }
+                }
+            }
+        }
+    }
+    assert!(bad.is_empty(), "named Haxe functions in the compiler's strings:\n{}", bad.join("\n"));
+}

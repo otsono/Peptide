@@ -52,9 +52,11 @@ cp "build/$TARGET/release/$BIN.exe" "$OUT/" 2>/dev/null || true
 # ---- runtime asset files (NOT embedded — peptide.exe reads them from disk). Both
 # the app and the converter check a `data/` subfolder next to the .exe first, so
 # stage everything into $OUT/data/.
-mkdir -p "$OUT/data/mappings"
-cp commands.hsx match_settings.conf src/peptide_ui.html "$OUT/data/" 2>/dev/null || true
-cp -R crates/ssf2-converter/mappings/. "$OUT/data/mappings/" 2>/dev/null || true
+mkdir -p "$OUT/data/mappings" "$OUT/data/runtime"
+cp commands.hsx match_settings.conf src/peptide_ui.html src/peptide_overlay.html "$OUT/data/"
+cp -R crates/ssf2-converter/mappings/. "$OUT/data/mappings/"
+# the converter's runtime, which every converted script carries a part of
+cp -R crates/ssf2-converter/runtime/. "$OUT/data/runtime/"
 
 cat <<DONE
 

@@ -6,10 +6,8 @@
 //! publish-folder paths with forward slashes (it's an Electron/Node app), so
 //! the relative path we emit always uses `/` regardless of host.
 //!
-//! Ported from the old egui converter GUI's `platform.rs`. The sidecar-binary
-//! and Node-harness helpers are gone: conversion is in-process now and the
-//! FrayTools driver is pure-Rust CDP (`fraytools.rs`), so there is no
-//! `ssf2_converter` binary and no `node` to locate.
+//! Conversion is in-process and the FrayTools driver is `fraytools.rs`, so there is
+//! no converter binary and no `node` to locate.
 
 // Some helpers (publish-folder editing, relative_path, find_project_file) are
 // wired into the UI's convert/frayhook screens in Phase 5; allow them to sit
@@ -22,6 +20,16 @@ use std::path::{Path, PathBuf};
 
 /// A sensible default path to the FrayTools executable for this OS, if present.
 /// The user can always override via the picker.
+/// The public Fraymakers API type definitions FrayTools ships as a plugin. This
+/// is the list of calls a script is actually allowed to make, which is narrower
+/// than "a function of that name exists in the engine somewhere".
+pub fn default_fraymakers_api_types() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    let p = Path::new(&home)
+        .join("FrayToolsData/plugins/FraymakersApiTypes/main.bundle.js");
+    p.is_file().then_some(p)
+}
+
 pub fn default_fraytools_exe() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -322,6 +330,60 @@ pub fn attach_parent_console() {
         }
     }
 }
+
+
+
+// ─── Launching a game behind what the user is doing ─────────────────────────────────
+
+/// A game the command line started (a session, a test run) opens its window without taking the
+/// user's foreground: when the game's process comes to the front on its own, the app that was in
+/// front before it is put back there. The game keeps running and drawing behind it (hiding it
+/// would let the OS throttle it). Only the launch that asked for it is watched, and only while the
+/// game starts up, so a window the user brings forward later is theirs. A launch from Peptide's own
+/// window stays in front and does not call this.
+///
+/// Uses LaunchServices (`lsappinfo`, `open`) and nothing that needs an automation permission: a
+/// pending permission prompt freezes a booting engine.
+#[cfg(target_os = "macos")]
+pub fn keep_behind(pid: u32) {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+    fn front() -> Option<(u32, String)> {
+        let asn = Command::new("lsappinfo").arg("front").output().ok()?;
+        let asn = String::from_utf8_lossy(&asn.stdout).trim().to_string();
+        if asn.is_empty() { return None }
+        let info = Command::new("lsappinfo").args(["info", "-only", "pid", "-only", "bundlepath", &asn]).output().ok()?;
+        let text = String::from_utf8_lossy(&info.stdout).to_string();
+        let pid = text.split("\"pid\"=").nth(1)?.split_whitespace().next()?.trim().parse().ok()?;
+        let path = text.split("\"LSBundlePath\"=\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_string();
+        Some((pid, path))
+    }
+    let Some((was_pid, was_path)) = front() else { return };
+    // only an app bundle is put back: `open` on a bare executable (this binary, when one of its own
+    // windows was in front) runs it in a new terminal window instead
+    let own = std::env::current_exe().ok().map(|p| p.display().to_string()).unwrap_or_default();
+    if was_pid == pid || !was_path.ends_with(".app") || was_path == own { return }
+    std::thread::spawn(move || {
+        let start = Instant::now();
+        let mut put_back: Option<Instant> = None;
+        // the start-up: a game can come forward more than once as its windows open (its loader,
+        // then its match), so it is watched a little past the first time it is put back
+        while start.elapsed() < Duration::from_secs(90) {
+            if put_back.is_some_and(|t| t.elapsed() > Duration::from_secs(8)) { break }
+            if let Some((now, _)) = front() {
+                if now == pid {
+                    let _ = Command::new("open").arg(&was_path).status();
+                    put_back.get_or_insert(Instant::now());
+                }
+            }
+            // no event says a window came forward: a short poll is the only way to see it
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn keep_behind(_pid: u32) {}
 
 #[cfg(test)]
 mod tests {

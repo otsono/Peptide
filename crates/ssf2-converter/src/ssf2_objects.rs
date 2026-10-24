@@ -33,8 +33,12 @@
 use crate::abc_parser::Class;
 use std::collections::BTreeMap;
 
-/// The api root every game object descends from.
-const GAME_OBJECT_ROOT: &str = "SSF2GameObject";
+/// The api roots a stage's own objects descend from. The declared hierarchy has two halves and a
+/// port needs both: things that live in the match (`SSF2GameObject`: enemies, items, projectiles)
+/// and things a fighter collides with (`SSF2CollisionBoundary`: platforms). A stage places a
+/// platform and hands it a class exactly as it spawns an enemy with one, so leaving the collision
+/// half out drops every object a stage declares by placement rather than by spawn.
+const OBJECT_ROOTS: [&str; 2] = ["SSF2GameObject", "SSF2CollisionBoundary"];
 
 /// The api base for pickups.
 ///
@@ -59,13 +63,7 @@ pub struct GameObjectClass {
 }
 
 impl GameObjectClass {
-    /// Whether porting this object is blocked on a subsystem Fraymakers does not have.
-    ///
-    /// See [`ITEM_BASE`]. This is a statement about the TARGET engine, not about the object: the
-    /// class is read as completely as any other, and only the emission has nowhere to go.
-    pub fn needs_unbuilt_subsystem(&self) -> bool {
-        self.base == ITEM_BASE
-    }
+
 }
 
 /// Strip any namespace so `foo.Thwomp` and `Thwomp` compare equal.
@@ -83,21 +81,21 @@ pub fn game_object_classes(classes: &[Class]) -> Vec<GameObjectClass> {
         .map(|c| (local(&c.name), local(&c.super_name)))
         .collect();
 
-    // the api bases: whatever sits directly under the root
+    // the api bases: whatever sits directly under a root
     let bases: std::collections::BTreeSet<&str> = super_of.iter()
-        .filter(|(_, sup)| **sup == GAME_OBJECT_ROOT)
+        .filter(|(_, sup)| OBJECT_ROOTS.contains(sup))
         .map(|(name, _)| *name)
         .collect();
 
     let mut out: Vec<GameObjectClass> = Vec::new();
     for class in classes {
         let name = local(&class.name);
-        if name == GAME_OBJECT_ROOT || bases.contains(name) { continue; }
+        if OBJECT_ROOTS.contains(&name) || bases.contains(name) { continue; }
         // walk up until the root, remembering the last step before it -- that step is the kind
         let (mut cur, mut base) = (name, None);
         for _ in 0..MAX_DEPTH {
             let Some(sup) = super_of.get(cur) else { break };
-            if *sup == GAME_OBJECT_ROOT { base = Some(cur.to_string()); break; }
+            if OBJECT_ROOTS.contains(sup) { base = Some(cur.to_string()); break; }
             cur = sup;
         }
         if let Some(base) = base {
@@ -115,7 +113,7 @@ mod tests {
 
     fn cls(name: &str, sup: &str) -> Class {
         Class { name: name.to_string(), super_name: sup.to_string(),
-                instance_methods: vec![], class_methods: vec![], constructor_idx: 0 }
+                instance_methods: vec![], class_methods: vec![], constructor_idx: 0, class_init_idx: 0 }
     }
 
     /// The api layer as every package carries it, plus a stage's own objects on top.

@@ -30,20 +30,16 @@ fn main() {
     for (&sid, sprite) in &all_sprites {
         let sym = match symbols.get(&sid) { Some(s) => s.clone(), None => continue };
         // collect frame→(label, inner_id)
-        let mut frame: u16 = 0;
         let mut states: Vec<(String, u16, String)> = Vec::new(); // (label, inner_id, inner_sym)
         let mut cur_label = String::new();
-        let mut found_stance = false;
         for stag in &sprite.tags {
             match stag {
-                swf::Tag::ShowFrame => frame += 1,
                 swf::Tag::FrameLabel(fl) => {
                     cur_label = fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
                 }
                 swf::Tag::PlaceObject(po) => {
                     let name = po.name.as_ref().map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
                     if name.as_deref() == Some("stance") {
-                        found_stance = true;
                         if let swf::PlaceObjectAction::Place(cid) = &po.action {
                             let inner_sym = symbols.get(cid).cloned().unwrap_or_default();
                             if !cur_label.is_empty() {

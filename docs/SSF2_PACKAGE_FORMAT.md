@@ -118,6 +118,23 @@ stageMC                     the whole stage, linked stage_<id>
 smaller y because they are above it, and a fall is y increasing. authored the other way round you
 get a stage that looks right in a diagram and puts its ground above everyone's head.
 
+## ground zero: what exists, and what each thing IS
+
+before anything is parsed out of a package, the game already knows every id it can load and what
+TYPE each one is. that inventory is the right starting point for a conversion, because it needs no
+vocabulary and no guessing from names: 53 characters and 113 stages, each with the file it ships as
+and its display name.
+
+`peptide ssf2 manifest` reads it (`--json` for the lot, or name an id to look it up):
+
+```
+peptide ssf2 manifest bowserscastle
+  -> bowserscastle is a stage: ships_as=DAT266.ssf name="Bowser's Castle"
+```
+
+how it is found and decoded is deliberately not written down here. see the untracked local notes
+(`docs/SSF2_MANIFEST_INTERNALS.local.md`), same rule as the engine-internals notes.
+
 ## being found at all
 
 the id to file map is an obfuscated manifest carried inside the game, so a package outside it is

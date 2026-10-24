@@ -83,6 +83,39 @@ fn band_pixels(w: u16, h: u16, body: [u8; 3], edge: [u8; 3]) -> Vec<u8> {
     out
 }
 
+/// The authored angles of the fixture's turning piece, in degrees, one per frame.
+///
+/// A background piece that TURNS is the case that separates a real placement from a baked one: the
+/// compositor never rotates pixels, so a converter that leaves the turn in the art has to stretch
+/// the picture into a box that swells as the piece comes off-axis, and the piece grows and shrinks
+/// instead of turning. Deliberately off the right angles, where a squeezed bake would still look
+/// square and pass.
+pub const TURNER_ANGLES: [f64; 6] = [0.0, 17.0, 41.0, 73.0, 128.0, 214.0];
+/// Half-width/height of the turning piece, in pixels.
+pub const TURNER_HALF: f64 = 220.0;
+
+/// One frame of the turning piece: the same shape re-placed at the next angle.
+fn turn_frame(depth: u16, degrees: f64, first: bool) -> Tag<'static> {
+    let r = degrees.to_radians();
+    let matrix = swf::Matrix {
+        a: swf::Fixed16::from_f64(r.cos()), b: swf::Fixed16::from_f64(r.sin()),
+        c: swf::Fixed16::from_f64(-r.sin()), d: swf::Fixed16::from_f64(r.cos()),
+        tx: px(0.0), ty: px(TURNER_Y),
+    };
+    Tag::PlaceObject(Box::new(swf::PlaceObject {
+        version: 3,
+        action: if first { swf::PlaceObjectAction::Place(65) } else { swf::PlaceObjectAction::Modify },
+        depth,
+        matrix: Some(matrix),
+        color_transform: None, ratio: None, name: None, clip_depth: None, class_name: None,
+        filters: None, background_color: None, blend_mode: None, clip_actions: None,
+        has_image: false, is_bitmap_cached: None, is_visible: None, amf_data: None,
+    }))
+}
+
+/// Where the turning piece sits, clear of the floor so it is its own object.
+const TURNER_Y: f64 = -260.0;
+
 /// A rectangle filled with a BITMAP rather than a flat colour, which is how SSF2 stages carry
 /// their art. The matrix maps bitmap PIXELS onto shape twips, so a bitmap authored at the
 /// rectangle's own pixel size lands 1:1 at 20 twips per pixel.
@@ -295,13 +328,25 @@ pub fn build_fixture_swf() -> Vec<u8> {
     tags.push(bitmap_tag(61, PLATFORM_W as u16, PLATFORM_H as u16, &plat_px));
     tags.push(bitmap_rect(62, 60, -FLOOR_HALF_W, FLOOR_Y, FLOOR_HALF_W, FLOOR_Y + FLOOR_H));
     tags.push(bitmap_rect(63, 61, -PLATFORM_HALF_W, PLATFORM_Y, PLATFORM_HALF_W, PLATFORM_Y + PLATFORM_H));
+    // a piece that TURNS: one shape re-placed at a new angle each frame
+    let turn_px = band_pixels((TURNER_HALF * 2.0) as u16, (TURNER_HALF * 2.0) as u16, [180, 60, 60], [230, 190, 90]);
+    tags.push(bitmap_tag(64, (TURNER_HALF * 2.0) as u16, (TURNER_HALF * 2.0) as u16, &turn_px));
+    tags.push(bitmap_rect(65, 64, -TURNER_HALF, -TURNER_HALF, TURNER_HALF, TURNER_HALF));
+    tags.push(Tag::DefineSprite(swf::Sprite {
+        id: 19,
+        num_frames: TURNER_ANGLES.len() as u16,
+        tags: TURNER_ANGLES.iter().enumerate()
+            .flat_map(|(n, a)| [turn_frame(1, *a, n == 0), Tag::ShowFrame])
+            .collect(),
+    }));
     tags.push(Tag::DefineSprite(swf::Sprite {
         id: 12,
         num_frames: 1,
         // Named clear of the collision vocabulary. "platform", "terrain" and "ground" all CLASSIFY
         // a clip, so calling a piece of art `art_platform` hands it to the collision walk and it
         // never reaches the art path at all.
-        tags: vec![place(62, Some("art_lower"), 1), place(63, Some("art_upper"), 2), Tag::ShowFrame],
+        tags: vec![place(62, Some("art_lower"), 1), place(63, Some("art_upper"), 2),
+                   place(19, Some("art_turner"), 3), Tag::ShowFrame],
     }));
     tags.push(Tag::DefineSprite(swf::Sprite { id: 13, num_frames: 1, tags: vec![Tag::ShowFrame] }));
     tags.push(Tag::DefineSprite(swf::Sprite {

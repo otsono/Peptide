@@ -29,10 +29,15 @@
 
 // Engine.log(x) writes to the in-game console (the same sink the eval hook reports
 // errors to). `log(x)` is a global shorthand.
-Engine = {
+// `e` runs in the live content's own interpreter, where the engine's own `Engine` is what that
+// content logs through: the facade only fills in where there is none, since replacing it takes the
+// engine down the next time the content logs from its own update.
+var __haveEngine = false;
+try { __haveEngine = Engine != null; } catch (err:Dynamic) {}
+if (!__haveEngine) Engine = {
   log: function(msg) { __td.log("" + msg, null, null); return null; }
 };
-log = function(msg) { __td.log("" + msg, null, null); return "logged: " + msg; };
+log = function(msg) { Engine.log("" + msg); return "logged: " + msg; };
 
 // The live character list, as a NATIVE hscript array. (The raw pxf.core.Match.characters
 // ArrayObj has no usable RTTI — .length/Std.string on it return garbage — so we build a
@@ -84,27 +89,36 @@ animFeed = function(i) {
   return an + "|" + fr + "|" + tt + "|" + x + "|" + y + "|" + st;
 };
 
-// animFeed(i) — one character's live ANIMATION CLOCK, the thing anything frame-accurate has
-// to be driven off. Returns "<anim>|<frame>|<total>|<x>|<y>|<state>", or "" when that
-// character doesn't exist. `frame`/`total` are what make waiting real: the host can tell a
-// playing animation from a finished one from a looping one, instead of sleeping some number
-// of milliseconds and hoping. SSF2 answers the same shape from its own display list
-// (ssf2_target::char_anim), so a frame-driven test reads identically on both engines.
-animFeed = function(i) {
+
+// hitFeed(i) — one character's live HIT STATE: what it has taken, where it is, and how fast the
+// engine says it is going.
+// Returns "<damage>|<x>|<y>|<state>|<vx>|<vy>", or "" when that character doesn't exist. A hit is
+// not something you can ask about after the fact -- the engines keep no record of one -- but it
+// is visible while it happens: damage steps up on the frame it lands.
+// The VELOCITY is the knockback the engine calculated, stated rather than inferred from where the
+// victim ended up. It reads zero for as long as the hitstop freeze lasts, so the host takes it
+// from the first frame after the hit where it is not zero. Position stays in the feed as the
+// cross-check: it is what the launch did once friction and gravity got at it.
+// Same null-guarding as animFeed, and for the same reason: no try/catch, or the whole file dies.
+hitFeed = function(i) {
   var c = getCharacters()[i];
   if (c == null) return "";
-  var a  = (c.animation != null) ? c.animation : null;
-  var an = (a != null && a.currentAnimation != null) ? a.currentAnimation : "?";
-  var fr = (a != null && a.currentFrame != null) ? a.currentFrame : -1;
-  var tt = (a != null && a.totalFrames != null) ? a.totalFrames : -1;
-  var b  = (c.body != null) ? c.body : null;
-  var x  = (b != null && b.x != null) ? b.x : 0;
-  var y  = (b != null && b.y != null) ? b.y : 0;
-  // NO try/catch here: the engine's hscript rejects it, and a parse error in this file
-  // takes out EVERY helper (matchStatus, getCharacters, the lot) with no error of its
-  // own — the symptom is `e` silently returning nothing. Null-guard instead.
+  var dm = (c.damage != null) ? c.damage : null;
+  var d = (dm != null && dm._damage != null) ? dm._damage : -1;
   var st = c.getStateName();
-  return an + "|" + fr + "|" + tt + "|" + x + "|" + y + "|" + st;
+  // The NET velocity: a launch does not live in the character's own speed, it is carried in a
+  // knockback of its own that decays separately, and the character travels at the sum. The other
+  // engine states the same sum, so this is the quantity both report.
+  var vx = c.getXSpeed();
+  var vy = c.getYSpeed();
+  if (vx == null) vx = 0;
+  if (vy == null) vy = 0;
+  var ph = (c.physics != null) ? c.physics : null;
+  if (ph != null) {
+    if (ph.x_knockback != null) vx += ph.x_knockback;
+    if (ph.y_knockback != null) vy += ph.y_knockback;
+  }
+  return d + "|" + c.getX() + "|" + c.getY() + "|" + st + "|" + vx + "|" + vy;
 };
 
 // matchStatus() — the data behind Peptide's "matchStatus" TCP channel (a host-polled feed,

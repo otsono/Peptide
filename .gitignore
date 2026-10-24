@@ -26,6 +26,7 @@ docs/*
 !docs/PORTING_STAGES.md
 !docs/PORTING_CHARACTERS.md
 !docs/SSF2_PACKAGE_FORMAT.md
+!docs/CONVERTER_DESIGN.md
 
 # macOS .app bundle output from make-app.sh
 

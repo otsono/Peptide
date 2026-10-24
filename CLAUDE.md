@@ -33,21 +33,64 @@ FrayTools to publish. see [`README.md`](README.md) for the pitch.
   data, not the code. (DEVELOPMENT §6.)
 - **engine-side code: minimum bytecode, maximum hscript.** put engine behavior in
   `commands.hsx`, not hand-emitted bytecode. (AGENT_CONTEXT.)
-- **no per-content fixes.** a converter change must be a universal mechanism, never keyed to
-  one stage/character/hazard by name: detect the pattern structurally (or from data stepped
-  out of the source content), transform, fall back to exact semantics when detection fails,
-  and log a conversion warning. template names like the "thwomp" faller are PATTERN names
-  selected by detected data (motion, declared engine calls), not by content id. prove a fix
-  didn't regress other content before merging: `cargo test` (the character goldens) +
-  `just sweep-stages` (converts a fixed ten-stage sample chosen for coverage; `just
-  sweep-stages-all` is the whole corpus, which takes hours and writes tens of gigabytes).
+- **THE converter must work on content that does not exist yet.** this is the first rule and
+  everything else bends to it. the SSF2 corpus we have is a sample, not the target: there are
+  infinite mods and content still to be made, and a conversion that only works because someone
+  wrote the name down is a conversion that works for nothing new. so a converter change reads
+  the SOURCE -- its script files, its classes, its manifest, the boxes and calls the format
+  itself declares -- and never a list of names that ship in the game today.
+  concretely, these are bugs, not shortcuts:
+    - matching a content id or symbol name against a keyword list to decide WHAT something is
+    - hardcoding stats for a named thing instead of reading the values the source declares
+    - any table that has to gain a row before new content converts
+  the sharpest form of the rule: **the converter never needs to know WHAT a thing is, only what
+  its code says to do.** if you are writing code to decide which KIND of object you are looking
+  at, stop, because that question has no answer for content nobody has written yet. SSF2 content
+  carries its own classes; porting means TRANSLATING those classes, not recognising the things
+  they describe.
+  a converter-side TEMPLATE that only one piece of content fits is the same bug as a keyword
+  list, just one step removed, and it is harder to see because the values inside it were read
+  from the source. the test is not "did I read the numbers honestly", it is "would content
+  nobody has written yet flow through this path". a template that answers no is SCAFFOLDING: it
+  exists because that content could not yet run its own code, and the way out is to make its own
+  code run, never to build a better selector to feed the template.
+  so the order matters, and getting it backwards is how this goes wrong: make the general path
+  (the object runs its own translated code) work FIRST, and the scaffolding then has no callers
+  and deletes itself. deleting the selector first only forces you to invent a new one.
+  if you find yourself about to add a keyword, a kind, or a category, that is the signal the
+  detection is reading the wrong thing: go find where the source states it.
+- **NEVER SLEEP. NEVER WAIT ON A WALL CLOCK. PACE EVERYTHING ON THE ENGINE'S FRAMES, AT SPEED.**
+  a `sleep`, a fixed delay, a "give it a few seconds" is dead time the user sits through, and it
+  under-measures too (animations get cut short). every wait in a probe, a gate, a tool or a
+  script is `tick N` / `Engine.tick(n)` on the engine's own frame counter, after `speed 8`
+  (both engines run 8 frames a tick), and a condition is waited for on the feed (`wait`,
+  `reply`, `await`, `awaitmatch`), never polled with a delay. "take a shot after x frames" is
+  `speed 8` + `tick x`, and takes a fraction of a second. the only sleeps allowed are a
+  sub-second poll inside a feed reader that has no event to wake on. this rule is enforced by
+  review: a diff that adds `sleep` is wrong until it says why that wait has no frame to count.
+- **never convert the whole corpus, and never live-verify the whole stage corpus.** both take
+  hours (the live one holds both engines the whole time) and stall every other iteration. prove
+  a fix didn't regress other content with `cargo test` (the character goldens) + `just
+  sweep-stages` (a fixed ten-stage sample chosen for coverage), and live-verify the stages the
+  change was made for plus that sample. SCANNING the corpus is fine (`--info` parses
+  without emitting, minutes not hours) when you need to know how widespread something is.
 - **ONE command vocabulary, TWO engines.** a host-facing feature must behave the same on
   Fraymakers and SSF2 via the `DebugTarget` seam, never an `if engine == ...` branch in feature
   logic. (enforced by `crates/ssf2-converter/tests/conventions.rs`.)
-- **compliance: no engine-RE in the docs.** never put the methodology for decompiling/patching
-  the Fraymakers engine or FrayTools, or specific non-hscript engine
-  class/function/field names, in any tracked file. (AGENT_CONTEXT "engine-side knowledge is not
-  in this repo"; enforced by `tests/doc_freshness.rs`.)
+- **compliance: no engine-RE in the repo, and that means BOTH engines.** never put the
+  methodology for decompiling/patching an engine, its keys, or specific engine
+  class/function/field names in any tracked file. this covers Fraymakers and FrayTools AND
+  SSF2: the converter reads SSF2, but how SSF2 is built inside is not ours to publish.
+  it applies to CODE COMMENTS as much as to docs, and to commit messages.
+  where does the detail go: `docs/` is gitignored except for an explicit negation list, so a
+  `*.local.md` there is the home for it (`docs/ENGINE_INTERNALS.local.md`,
+  `docs/SSF2_ARCHIVE.local.md`, `docs/SSF2_MANIFEST_INTERNALS.local.md`). a tracked file may
+  say WHAT a thing does and point at the local notes; it may not say how the engine does it.
+  and prefer not to carry the game's own secrets at all: keys and the like can be recovered
+  from the installed game at runtime, which is both compliant and survives them changing.
+  (AGENT_CONTEXT "engine-side knowledge is not in this repo"; partly enforced by
+  `tests/doc_freshness.rs` + `tests/conventions.rs`, whose needle lists are Fraymakers-side
+  only, so the SSF2 half is on you.)
 - **docs describe current state only, in lowercase casual voice, no em-dashes.** no "(fixed)"
   archaeology, no commit refs, no "previously/formerly". (em-dashes enforced by
   `crates/ssf2-converter/tests/conventions.rs`.)

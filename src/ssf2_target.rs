@@ -57,6 +57,7 @@ impl Ssf2Target {
             // image top-left can actually be compared against.
             abs: (!absent(&g(11)) && !absent(&g(12)))
                 .then(|| (num(&g(11)), num(&g(12)))),
+            alpha: (!absent(&g(13))).then(|| num(&g(13))),
         };
         crate::debug_target::fmt_stage_node(&node)
     }
@@ -246,6 +247,44 @@ fn tune_accessor(fm: &str) -> Option<&'static str> {
     })
 }
 
+/// The SSF2 label a Fraymakers animation name came from, out of what the conversion recorded.
+///
+/// The conversion writes the whole mapping beside the character it converted
+/// (`conversion_stats.json`), so the host can hand each engine its own spelling of one name
+/// rather than making the caller keep two vocabularies. `None` when nothing converted here has
+/// that name, and the caller passes the name through.
+pub fn ssf2_label_for(fm_name: &str) -> Option<String> {
+    // the name as it is, then the clip it was cut from: this engine's `jab1` is a piece of the
+    // source's `jab`, and `strong_forward_attack` a piece of its `a_forwardsmash`
+    let mut want = fm_name.to_string();
+    loop {
+        if let Some(found) = ssf2_label_exactly(&want) { return Some(found) }
+        let trimmed = want.trim_end_matches(|c: char| c.is_ascii_digit());
+        let next = if trimmed.len() < want.len() { trimmed.to_string() }
+            else { match want.rfind('_') { Some(i) => want[..i].to_string(), None => return None } };
+        if next.is_empty() || next == want { return None }
+        want = next;
+    }
+}
+
+fn ssf2_label_exactly(fm_name: &str) -> Option<String> {
+    use std::io::Read;
+    let dir = std::path::Path::new("characters");
+    let entries = std::fs::read_dir(dir).ok()?;
+    for e in entries.flatten() {
+        let p = e.path().join("conversion_stats.json");
+        let Ok(mut f) = std::fs::File::open(&p) else { continue };
+        let mut text = String::new();
+        if f.read_to_string(&mut text).is_err() { continue }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let Some(map) = v.get("ssf2_to_fm_anim").and_then(|m| m.as_object()) else { continue };
+        for (ssf2, fm) in map {
+            if fm.as_str() == Some(fm_name) { return Some(ssf2.clone()) }
+        }
+    }
+    None
+}
+
 // ─────────────────────────── reflection mapping ───────────────────────────
 
 impl Ssf2Target {
@@ -278,17 +317,29 @@ impl Ssf2Target {
                 }
             });
         }
-        // generic: 0-arg or 1-(numeric)-arg method call by name
+        // generic: a method call by name with no argument, one number, one string, or a string
+        // and a number (a value the content keeps by name: `setGlobalVariable("k", 3)`)
+        let quoted = |a: &str| {
+            let a = a.trim();
+            (a.len() >= 2 && ((a.starts_with('"') && a.ends_with('"')) || (a.starts_with('\'') && a.ends_with('\''))))
+                .then(|| a[1..a.len() - 1].to_string())
+        };
         Ok(match args.len() {
             0 => vec![format!("CALL\t{name}")],
-            1 => vec![format!("CALL1\t{name}\t{}", args[0])], // numeric coerced engine-side
-            _ => return Err(anyhow!("{name}(): only 0/1-arg method calls are supported via reflection")),
+            1 => match quoted(&args[0]) {
+                Some(s) => vec![format!("CALLS\t{name}\t{s}")],
+                None => vec![format!("CALL1\t{name}\t{}", args[0])], // numeric coerced engine-side
+            },
+            2 => match quoted(&args[0]) {
+                Some(s) if quoted(&args[1]).is_none() => vec![format!("CALLSN\t{name}\t{s}|{}", args[1].trim())],
+                _ => return Err(anyhow!("{name}(): a two-argument call takes a string and then a number")),
+            },
+            _ => return Err(anyhow!("{name}(): at most two arguments are supported via reflection")),
         })
     }
 }
 
 impl DebugTarget for Ssf2Target {
-    fn engine(&self) -> &'static str { "ssf2" }
 
     /// Evaluate an expression by walking the object graph via reflection.
     fn eval(&mut self, expr: &str) -> Result<String> {
@@ -300,7 +351,7 @@ impl DebugTarget for Ssf2Target {
         // HOLD passes the engine a RAW SSF2 control mask, bypassing the host->SSF2 translation.
         // That is how the translation table itself gets established: drive one bit, see which
         // animation the character plays, write the pair down.
-        if matches!(head, "GC"|"RM"|"STATS"|"MC"|"ROOT"|"GET"|"IDX"|"CALL"|"CALL1"|"CALLS"|"SETP"|"READ"|"PING"|"SPAWN"|"GO"|"QUEUE"|"LOADED"|"LOADNEXT"|"HOLD") {
+        if matches!(head, "GC"|"RM"|"STATS"|"MC"|"ROOT"|"GET"|"IDX"|"CALL"|"CALL1"|"CALLS"|"CALLSN"|"SETP"|"READ"|"PING"|"SPAWN"|"GO"|"QUEUE"|"LOADED"|"LOADNEXT"|"HOLD") {
             return self.op(&expr.split_whitespace().collect::<Vec<_>>().join("\t"));
         }
 
@@ -378,7 +429,11 @@ impl DebugTarget for Ssf2Target {
                     // an assignment targets the LAST member → SETP, handled after the loop
                     if assign.is_some() && i + 1 == accesses.len() {
                         let val = assign.as_ref().unwrap();
-                        ops.push(format!("SETP\t{mapped}\t{val}"));
+                        // a quoted value is a string (SETS); anything else is a number (SETP)
+                        match val.trim().strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+                            Some(text) => ops.push(format!("SETS\t{mapped}\t{text}")),
+                            None => ops.push(format!("SETP\t{mapped}\t{val}")),
+                        }
                         return self.run_ops(&ops, false);
                     }
                     ops.push(format!("GET\t{mapped}"));
@@ -417,6 +472,7 @@ impl DebugTarget for Ssf2Target {
         // Fraymakers is already the only mode on SSF2. Same engine-subset parity as assists
         // being Fraymakers-only and stamina being SSF2-only. We accept it and ignore it.
         let _ = args.force_versus;
+        crate::ssf2_bridge::anim_reset();
         // Stage: caller-supplied, else the configured SSF2 stage (parity with how
         // Fraymakers resolves its stage from config — names differ per engine).
         let stage = args.stage.clone()
@@ -436,6 +492,20 @@ impl DebugTarget for Ssf2Target {
         // exist=false + null character below, so startGame skips it (no ghost fighter).
         let slots = (n + 1).min(4);
 
+        // a match already running is ended first: the engine's own start ignores a new game
+        // while one is in progress, so the spawn would answer as if it had happened and leave
+        // the old match playing. its own end-of-match path is used, then its stage data freed
+        if self.match_live() {
+            // the engine's own end of a game first: it stops the match's per-frame loop and
+            // its fighters' events. skipped, the old fighters kept polling the controller the
+            // new ones were handed (a one-frame tap was eaten) and their scripts kept throwing
+            let _ = self.eval("GC.stageData.endGame(true)");
+            crate::session::frame_wait(6, Duration::from_millis(1500));
+            let _ = self.eval("MC.disposeAllMenus()");
+            let _ = self.eval("GC.endMatch()");
+            let _ = self.eval("GC.destroyStageData()");
+            crate::session::frame_wait(2, Duration::from_millis(400));
+        }
         // SPAWN: build a VERSUS Game with `slots` player slots, set player 0's character,
         // queue stage+char0, load. (3rd arg = slot count → Game(slots, VERSUS).)
         self.op(&format!("SPAWN\t{}\t{}\t{}", chars[0], stage, slots))?;
@@ -508,6 +578,15 @@ impl DebugTarget for Ssf2Target {
                    chars.join(","), stage, n, ms.lives, ms.time, ms.damage_ratio))
     }
 
+    fn speed(&mut self, n: u32) -> Result<String> {
+        // the player's stage frame rate is the engine's clock: everything the gates measure
+        // is counted in frames, so raising it runs the same frames sooner, the way the
+        // other engine's `speed` does. 30 is its own rate
+        let rate = 30 * n.max(1);
+        // an assignment goes through the full eval (the quiet path only reads)
+        self.eval(&format!("p0.MC.stage.frameRate = {rate}"))?;
+        Ok(format!("speed {n}: SSF2 frame rate set to {rate} (30 is its own)"))
+    }
     fn hold(&mut self, mask: u32) -> Result<String> {
         // Translate the host control mask to SSF2's ControlsObject bit layout and set
         // it as the persistent held mask for the controlled player (p0 → Characters[0]).
@@ -633,6 +712,19 @@ impl DebugTarget for Ssf2Target {
     /// composed `<id>|<dmg>|<anim>` feed read live from the engine.
     /// SSF2 has no script interpreter, so `animFeed(i)` can't be evaluated as hscript;
     /// the same fields are read by reflection instead and returned in the same shape.
+    /// Play a named move by telling the character to force the attack its own file calls that.
+    ///
+    /// The name comes in as Fraymakers spells it, because that is the one vocabulary; this side
+    /// is handed the SSF2 label the conversion recorded for it. Without the mapping the name is
+    /// passed through, which is right for a file whose label already reads the same.
+    fn play_move(&mut self, idx: usize, name: &str) -> Result<String> {
+        let label = crate::ssf2_target::ssf2_label_for(name).unwrap_or_else(|| name.to_string());
+        let mut ops = self.emit_root(&format!("p{idx}"))?;
+        ops.push(format!("CALLS\tforceAttack\t{label}"));
+        let r = self.run_ops(&ops, false)?;
+        Ok(format!("MOVE:p{idx} {name} -> forceAttack({label}) {}", r.trim()))
+    }
+
     fn char_anim(&mut self, idx: usize) -> Result<Option<crate::debug_target::AnimState>> {
         if !self.match_live() { return Ok(None); }
         Ok(crate::debug_target::AnimState::parse(&self.compose_anim_feed(idx)?))
@@ -642,6 +734,50 @@ impl DebugTarget for Ssf2Target {
     /// appends to (`abc_inject::inject_frame_recorder`). The recorder always runs; the
     /// host decides what counts as a window, which means no engine-side gate and no
     /// engine round trip at all. `on: false` is a no-op — there's nothing to disarm.
+    fn char_hit(&mut self, idx: usize) -> Result<Option<crate::debug_target::HitState>> {
+        if !self.match_live() { return Ok(None); }
+        Ok(crate::debug_target::HitState::parse(&self.compose_hit_feed(idx)?))
+    }
+
+    /// The whole hit window at SSF2's own frame rate, taken from the recorder rather than polled.
+    ///
+    /// Every read here is a separate reflection round trip, so polling lands a sample about once
+    /// every 14 engine frames -- a hitstop can start and finish inside one gap, and the launch
+    /// with it. The injected recorder writes a line per frame carrying position, speed and
+    /// damage, so the window is opened, the input played, and the frames read back whole.
+    fn hit_trace(&mut self, idx: usize, frames: u32, masks: &[u32])
+        -> Result<Option<Vec<crate::debug_target::HitState>>> {
+        crate::ssf2_bridge::frames_clear();
+        if !masks.is_empty() { let _ = self.seq(masks); }
+        // wait on the engine's own clock: the stream itself says how far it has got
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let _ = self.eval_quiet("match.characterCount()"); // pump the socket
+            let n = crate::ssf2_bridge::frames_take().len();
+            if n as u32 > frames || std::time::Instant::now() > deadline { break; }
+            std::thread::sleep(std::time::Duration::from_millis(60));
+        }
+        let pushed = crate::ssf2_bridge::frames_take();
+        if pushed.is_empty() { return Ok(None); } // no recorder in this build: fall back to polling
+        // every line names the character it describes, so the window is that character's frames
+        Ok(Some(pushed.iter().filter_map(|l| {
+            // <label>|<frame>|<x>|<y>|<xspeed>|<yspeed>|<netx>|<nety>|<damage>|<player>
+            let f: Vec<&str> = l.split('|').collect();
+            if f.len() < 10 { return None; }
+            if f[9].trim().parse::<usize>().ok()? != idx { return None; }
+            let n = |t: &str| t.trim().parse::<f64>().ok();
+            Some(crate::debug_target::HitState {
+                damage: n(f[8])?,
+                x: n(f[2]).unwrap_or(0.0),
+                y: n(f[3]).unwrap_or(0.0),
+                state: f[0].trim().to_string(),
+                // the NET pair: this engine keeps knockback in its own fields and a launch never
+                // reaches the plain speed ones
+                vel: Some((n(f[6]).unwrap_or(0.0), n(f[7]).unwrap_or(0.0))),
+            })
+        }).collect()))
+    }
+
     fn record(&mut self, on: bool) -> Result<String> {
         if on { crate::ssf2_bridge::frames_clear(); }
         Ok(crate::debug_target::fmt_record(on))
@@ -653,12 +789,16 @@ impl DebugTarget for Ssf2Target {
     /// per frame, so a 14-frame attack yields 14 lines no matter how slow the host is —
     /// where polling for the same thing sampled about once per 14 frames and reported
     /// `frames_seen=0`. Reading is a file read, not an engine round trip.
-    fn frame_trace(&mut self, raw: bool) -> Result<String> {
+    fn frame_trace(&mut self, raw: bool, all: bool) -> Result<String> {
         // A no-op round trip first: the engine's pushes only reach the host when the
         // response reader is draining the socket, so ask it something to flush whatever
         // has queued up since the last command.
         let _ = self.eval_quiet("match.characterCount()");
-        let pushed = crate::ssf2_bridge::frames_take();
+        // the driven fighter's frames only: every fighter's recorder pushes on the same
+        // socket, and two streams read together alternate a run for each of them every frame
+        let pushed: Vec<String> = crate::ssf2_bridge::frames_take().into_iter()
+            .filter(|l| all || l.split('|').nth(9).is_none_or(|t| t.trim() == "0"))
+            .collect();
         if raw { return Ok(crate::debug_target::fmt_trace_raw(&pushed)); }
         let runs = crate::debug_target::rle_frames(&pushed);
         // end position of each run; both engines' streams carry position per frame now
@@ -900,6 +1040,31 @@ impl Ssf2Target {
         let x = num(&format!("{base}.X")).unwrap_or(0.0);
         let y = num(&format!("{base}.Y")).unwrap_or(0.0);
         Ok(format!("{anim}|{frame}|-1|{x}|{y}|?"))
+    }
+
+    /// The hit record, composed from SSF2's own fields.
+    ///
+    /// Composed from this engine's own accessors, the same way `compose_anim_feed` and
+    /// `match_status` are, so the RECORD is the shared one (damage taken, and where the character
+    /// is) while the reads are whatever SSF2 calls them.
+    ///
+    /// What differs is the RATE. Every field is a separate reflection round trip, so a sample
+    /// lands roughly every ~14 SSF2 frames. Damage totals still come out right because damage
+    /// persists, but the distance moved between two samples covers those frames, not one, so it
+    /// is not per-frame speed the way the Fraymakers side is. State is left unread for the same
+    /// reason `compose_anim_feed` drops it: pure latency, and nothing decides on it.
+    fn compose_hit_feed(&self, idx: usize) -> Result<String> {
+        let base = format!("match.getCharacter({idx})");
+        let sane = |s: String| {
+            let t = s.trim().to_string();
+            if t == "null" || t == "undefined" || t.is_empty() { None } else { Some(t) }
+        };
+        let num = |e: &str| self.eval_quiet(e).ok().and_then(sane)
+            .and_then(|s| s.parse::<f64>().ok());
+        let Some(d) = num(&format!("{base}.getDamage()")) else { return Ok(String::new()) };
+        let x = num(&format!("{base}.X")).unwrap_or(0.0);
+        let y = num(&format!("{base}.Y")).unwrap_or(0.0);
+        Ok(format!("{d}|{x}|{y}|?"))
     }
 
     /// Like `eval`, but never recurses into the commands.hsx interceptor and is

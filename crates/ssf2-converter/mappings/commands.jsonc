@@ -19,6 +19,15 @@
   // removal, last-frame endAnimation stripping, unknown-call commenting)
   // stay in code; only this literal table lives here.
   "replacements": [
+    // a hit caught by a counter box: the event this engine sends for one
+    { "from": "SSF2Event.CHAR_COUNTER", "to": "GameObjectEvent.COUNTER" },
+    // ...and a projectile caught by an absorb box, on the fighter whose box it is
+    { "from": "SSF2Event.CHAR_ABSORB", "to": "GameObjectEvent.ABSORBBOX_CONNECTED" },
+    // a projectile turned back by a reflector: the source tells the projectile (REVERSE) and the
+    // reflector (REVERSE_HIT), and so does this engine, under its own names. REVERSE_HIT first:
+    // the shorter name is a prefix of it
+    { "from": "SSF2Event.REVERSE_HIT", "to": "GameObjectEvent.REFLECTBOX_CONNECTED" },
+    { "from": "SSF2Event.REVERSE", "to": "GameObjectEvent.REFLECTED" },
     { "from": "self.self = /* ? */;", "to": "// self reference (implicit in FM)" },
     { "from": "self.self = /* ? */", "to": "self" },
     { "from": "self.self.", "to": "self." },
@@ -38,7 +47,16 @@
     { "from": "|| self.self", "to": "" },
 
     // SSF2API static calls
+    // The api object READ on its own, not called: the source keeps it in a temp and the temp is
+    // then unused, but the read itself throws here because nothing of that name exists -- and one
+    // throw takes the rest of the handler with it. It stands for nothing here, so it reads as
+    // nothing. This has to sit ABOVE the calls below: a rule that matched the bare name first
+    // would eat their receiver.
+    { "from": "= SSF2API;", "to": "= null;" },
     { "from": "SSF2API.print(", "to": "Engine.log(" },
+    // the source works a launch out through its api; the same arithmetic is carried in the
+    // script (api_mappings::runtime_type_helpers), in this engine's knockback units
+    { "from": "SSF2API.calculateKnockback(", "to": "__calculateKnockback(" },
     { "from": "SSF2API.isReady()", "to": "true" },
     { "from": "SSF2API.random()", "to": "Random.getFloat(0, 1)" },
     { "from": "SSF2API.randomInteger(", "to": "Random.getInt(" },
@@ -55,18 +73,23 @@
     { "from": "SSF2API.getPlayers()", "to": "match.getPlayers()" },
     { "from": "SSF2API.getProjectiles()", "to": "match.getProjectiles()" },
     { "from": "SSF2API.spawnProjectile(", "to": "match.createProjectile(" },
-    { "from": "SSF2API.getCamBounds()", "to": "match.getStage().getCameraBounds()" },   // returns RectCollisionArea, not a MovieClip
-    { "from": "SSF2API.getDeathBounds()", "to": "match.getStage().getDeathBounds()" },
     { "from": "SSF2API.getGameSettings()", "to": "match.getMatchSettingsConfig()" },    // field shape differs — manual touch-up
     // the hazards switch, same question on both engines: a stage asks whether the match wants its
     // hazards. Fraymakers' own stages read the field this lowers to, so this is an exact route, not
     // an approximation. WHAT a stage skips when it's off is the stage's own decision and is ported
     // separately (abc_parser::extract_hazard_gate).
-    { "from": "SSF2API.isHazardsOn()", "to": "match.getMatchSettingsConfig().hazards" },
+    // The stage's OWN hazard switch, not the config field: fraymakers' match settings carry no
+    // `hazards` key, so reading it gives null, and null reads as "hazards are off". Bomb factory
+    // asks before every block it builds and so built nothing but scenery -- a grid of background
+    // tiles that never break, piling up until the stage read a full grid and turned every real
+    // block into a bomb. `m_hazardsOn` is the port's one answer to the question, and it already
+    // means "on" when the config cannot say.
+    { "from": "SSF2API.isHazardsOn()", "to": "m_hazardsOn" },
     //   Engine / AudioClip statics:
-    { "from": "SSF2API.generateUID()", "to": "Engine.makeUid()" },
-    { "from": "SSF2API.getUID()", "to": "Engine.makeUid()" },
-    { "from": "SSF2API.playSound(", "to": "AudioClip.play(" },                    // SSF2 linkage string vs FM resource content — verify id
+    // NOT a plain rename: a sound is named by a linkage string in the source and by a RESOURCE in
+    // fraymakers, so the id has to be looked up (`rewrite_play_sound_calls` does that, and knows
+    // which ids the engine ships globally and which this character carries). Renamed here instead,
+    // the call went out holding a bare string and mario's fireball died on the first bounce.
     // SSF2Enemy/SSF2GameObject self-methods (stage hazards decompiled as CGOs). updateEnemyStats's
     // object fields (gravity, …) carry over to updateGameObjectStats; SSF2-only flags like
     // bypassCollisionTesting/surviveDeathBounds have no FM field and are dropped on touch-up.
@@ -74,14 +97,32 @@
     { "from": ".setYSpeed(", "to": ".setYVelocity(" },                            // y velocity is world-space (not facing-relative like setXSpeed)
     //   No FM equivalent but read in an expression → resolve to a usable literal
     //   (a bare comment would break the assignment) and tag inline for manual review.
-    { "from": "SSF2API.getAverageFPS()", "to": "60 /* [SSF2-only: getAverageFPS] FM runs at 60fps; no FPS query */" },
+    { "from": "SSF2API.getAverageFPS()", "to": "60 /* [SSF2-only: getAverageFPS] FM runs at 60fps - no FPS query */" },
     { "from": "SSF2API.getAPIVersion()", "to": "\"0.0.0\" /* [SSF2-only: getAPIVersion] */" },
     { "from": "SSF2API.isDebug()", "to": "false /* [SSF2-only: isDebug] */" },
     { "from": "SSF2API.getSnapshot()", "to": "null /* [SSF2-only: getSnapshot] no FM screen capture */" },
     { "from": "SSF2API.isGameStarted()", "to": "(match.getElapsedFrames() > 0) /* [SSF2-only: approx — prefer MatchEvent.MATCH_STARTED] */" },
 
     // Method renames
+    // the air-ease holder is a function of the script, not a member of the entity: the routed
+    // write spells it through the receiver, which cannot answer it (ganondorf's down special
+    // threw on every frame it set)
+    { "from": "self.__airEase(", "to": "__airEase(" },
+    { "from": "self.__attackStatus(", "to": "__attackStatus(" },
+    { "from": "self.__attackControl(", "to": "__attackControl(" },
+    { "from": "self.__hitEase(", "to": "__hitEase(" },
+    { "from": "self.__rotate(", "to": "__rotate(" },
+    // a bare endAttack on the fighter itself ends into the state the source's engine picks (stand
+    // on the floor, the air state otherwise): the __endAttack helper of the fighter preamble
+    { "from": "self.endAttack()", "to": "__endAttack()" },
     { "from": ".endAttack()", "to": ".endAnimation()" },
+    // endAttack("<state>") ends the move INTO a state, the way the toX calls below go there:
+    // jigglypuff's roll ends into a landing, and struck for its argument it never ended at all
+    { "from": ".endAttack(\"land\")", "to": ".toState(CState.LAND)" },
+    { "from": ".endAttack(\"heavyLand\")", "to": ".toState(CState.LAND) /*TODO: create a land_heavy anim and name it in the toState*/" },
+    { "from": ".endAttack(\"jump\")", "to": ".toState(CState.JUMP_SQUAT)" },
+    { "from": ".endAttack(\"crouch\")", "to": ".toState(CState.CROUCH)" },
+    { "from": ".endAttack(\"hang\")", "to": ".toState(CState.LEDGE_GRAB)" },
     { "from": ".refreshAttackID()", "to": ".reactivateHitboxes()" },
     { "from": ".updateAttackBoxStats(", "to": ".updateHitboxStats(" },
     { "from": ".getControls()", "to": ".getHeldControls()" },
@@ -102,6 +143,8 @@
     { "from": "SSF2Event.CHAR_LEDGE_GRAB", "to": "CharacterEvent.LEDGE_GRAB" },
     { "from": "SSF2Event.CHAR_GRAB",       "to": "GameObjectEvent.GRAB_DEALT" },
     { "from": "SSF2Event.GAME_TICK_END",   "to": "match.TICK_END" },
+    // an attack striking terrain: this engine reads it as the entity colliding with a wall
+    { "from": "SSF2Event.HIT_WALL",        "to": "EntityEvent.COLLIDE_WALL" },
     // SSF2API.* event registration lives on `match` in Fraymakers.
     { "from": "SSF2API.",                  "to": "match." },
 
@@ -118,6 +161,11 @@
     { "from": ".getID(",                 "to": ".getUid(" },
     { "from": ".getTeamID(",             "to": ".getTeam(" },
     { "from": ".getCostume(",            "to": ".getCostumeIndex(" },
+    // The source asks one call for both, and says which by the argument it passes:
+    // nothing for what is held down now, true for what was pressed this frame. The
+    // engine asks for each by its own name.
+    { "from": ".getControls(true)", "to": ".getPressedControls()" },
+    { "from": ".getControls()",     "to": ".getHeldControls()" },
     { "from": ".getCurrentAnimation(",   "to": ".getAnimation(" },
     { "from": ".bringBehind(",           "to": ".sendBehind(" },
     { "from": ".pushEffectBehind(",      "to": ".sendBehind(" },
@@ -126,6 +174,9 @@
     // has no arg (release everything). releaseCharacter(target) is the
     // single-target form — verify each callsite if behaviour seems off.
     { "from": ".releaseOpponent(",       "to": ".releaseAllCharacters(" },
+    // the grabber letting go, under its other two names
+    { "from": ".grabReleaseOpponent(",   "to": ".releaseAllCharacters(" },
+    { "from": ".grabRelease(",           "to": ".releaseAllCharacters(" },
     // Palette swap: return/arg type wraps PaletteSwapShader; mechanical
     // rename only — call sites may still need manual touch-up.
     { "from": ".setPaletteSwapData(",    "to": ".setCostumeShader(" },
@@ -142,11 +193,66 @@
     //   - SSF2API.getCamera()    → match.getCamera()
     //   - SSF2API.shakeCamera(x) → match.getCamera().shake(x)
     //   - self.addTarget / self.deleteTarget → match.getCamera().*
-    // After SSF2API.getStage() rewires, chained .getCameraBounds() and
-    // .getDeathBounds() (the FM names) already work — same names on Stage.
-    { "from": "SSF2API.getStage()",      "to": "match.getStage()" },
+    // getStage is NOT among them: the match has no such method, and the call died where it ran.
+    // The stage is the global `stage`, which a fighter's or a projectile's script has too
+    // (measured live), so that is where `SSF2API.getStage()` goes (`the_stage_from_outside`).
     { "from": "SSF2API.getCamera()",     "to": "match.getCamera()" },
+    // The class this one is built on. The port has no hierarchy to defer up into -- what the
+    // parent did is what the engine does -- so the call is the engine's, and one the engine has
+    // no name for is struck like any other.
+    { "from": "super.", "to": "self." },
+
+    // WHAT AN EVENT CARRIES. Both engines hand a script an event and let it read who was
+    // involved, under different names -- and a name this one does not carry reads as nothing, so
+    // the test built on it asks a question of null. `foe` is what this engine calls the one on
+    // the other end of a hit, whichever word the source used for it, and the boxes it carries
+    // are its hitbox stats.
+    { "from": ".data.receiver", "to": ".data.foe" },
+    { "from": ".data.opponent", "to": ".data.foe" },
+    { "from": ".data.grabbed",  "to": ".data.foe" },
+    { "from": ".data.grabber",  "to": ".data.foe" },
+    // the projectile an absorb box took: this engine hands it over as the event's foe (measured
+    // on ness's magnet, where `projectile` read null and the handler died ending it)
+    { "from": ".data.projectile", "to": ".data.foe" },
+    // the object that raised the event: this engine hands it over as the event's self (pac-man's
+    // trampoline took its knock-out listener off `caller` and read null)
+    { "from": ".data.caller", "to": ".data.self" },
+    { "from": ".data.attackBoxData", "to": ".data.hitboxStats" },
+
+    // and the same check on the api object itself: it is always there to be asked here.
+    { "from": "SSF2API != null", "to": "true" },
+    { "from": "SSF2API == null", "to": "false" },
+
+    // The source checks it is attached to something before it acts. There is no display list
+    // to be attached to here and the object plainly exists, so the check is settled the same
+    // way the readiness guards are: it passed.
+    { "from": "root != null", "to": "true" },
+    { "from": "root == null", "to": "false" },
+
+    // NAMES THIS ENGINE DOES NOT DECLARE. A constant it does not have reads as null, and null
+    // is not refused where a value is: a listener registered on one is registered on nothing,
+    // and a state changed to one is changed to nothing. Each of these is the engine's own name
+    // for what the source is asking for.
+    { "from": "GameObjectEvent.HIT_DEALT_SHIELD", "to": "GameObjectEvent.SHIELD_HIT_DEALT" },
+    // the projectile path already reads a wall hit as the entity colliding with one
+    { "from": "GameObjectEvent.HIT_DEALT_WALL",   "to": "EntityEvent.COLLIDE_WALL" },
+    // dying is the state this engine keeps for a thing on its way out
+    { "from": "PState.DEAD",  "to": "PState.DESTROYING" },
+    { "from": "IState.DEAD",  "to": "IState.DESTROYING" },
+    // an item in hand, being tossed, or sitting there is an item that is ACTIVE here
+    { "from": "IState.TOSS",  "to": "IState.ACTIVE" },
+    { "from": "IState.HOLD",  "to": "IState.ACTIVE" },
+    { "from": "IState.IDLE",  "to": "IState.ACTIVE" },
+    // ATTACKING is a MACRO-state in the source (one name spanning every attack) and this engine
+    // keeps that as a state GROUP, not a single state. `inState(CState.ATTACKING)` therefore has
+    // to ask the group, or it asks for a state name the engine reads as null and the check is
+    // meaningless (inState(null)). a projectile that ends itself while its owner is no longer
+    // attacking (pit's arrow) never despawns without this. method and constant move together.
+    { "from": ".inState(CState.ATTACKING)", "to": ".inStateGroup(CStateGroup.ATTACK)" },
+
     { "from": "SSF2API.shakeCamera(",    "to": "match.getCamera().shake(" },
+    // whatever the source shook, the shaking is the camera's to do
+    { "from": "match.shakeCamera(",      "to": "match.getCamera().shake(" },
     { "from": "self.addTarget(",         "to": "match.getCamera().addTarget(" },
     { "from": "self.deleteTarget(",      "to": "match.getCamera().deleteTarget(" },
 
@@ -169,13 +275,20 @@
     { "from": ".setMidairJumpCount(",  "to": ".setDoubleJumpCount(" },
     // Scale getters → FM scaled accessors.
     { "from": ".getXScale(",           "to": ".getScaleX(" },
+    // SSF2 keeps ONE scale (`getScale` reads `CurrentScale`) and Fraymakers splits the axes, so
+    // the x reader carries the same number the source meant. Safe to rewrite in place: what it
+    // produces (`.getScaleX(`) does not contain what it matches (`.getScale(`), so it cannot
+    // match its own output.
+    { "from": ".getScale(",            "to": ".getScaleX(" },
     { "from": ".getYScale(",           "to": ".getScaleY(" },
     // SSF2Utils.* math helpers → FM Math.* statics (identical signatures unless noted).
     // calculateXSpeed/calculateYSpeed swap arg order → see regex_replacements.
     { "from": "SSF2Utils.calculateSpeed(",                  "to": "Math.calculateSpeed(" },
     { "from": "SSF2Utils.calculateDifferenceBetweenAngles(", "to": "Math.angleDifference(" },
     { "from": "SSF2Utils.forceBase360(",                    "to": "Math.forceBase360(" },
-    { "from": "SSF2Utils.getAngleBetween(",                 "to": "Math.getAngleBetween(" },  // SSF2 accounts for flipped Y — verify orientation
+    // the angle between two points as the source answers it (`__angleBetween`): the port's points
+    // are plain objects, which this engine's own helper refuses (jigglypuff's side special)
+    { "from": "SSF2Utils.getAngleBetween(",                 "to": "__angleBetween(" },
     { "from": "SSF2Utils.getDistance(",                     "to": "Math.getDistance(" },
     { "from": "SSF2Utils.toDegrees(",                       "to": "Math.toDegrees(" },
     { "from": "SSF2Utils.toRadians(",                       "to": "Math.toRadians(" },
@@ -183,10 +296,36 @@
     // State transitions
     { "from": ".toLand()", "to": ".toState(CState.LAND)" },
     { "from": ".toHelpless()", "to": ".toState(CState.FALL_SPECIAL)" },
-    { "from": ".toHeavyLand()", "to": ".toState(CState.LAND) /*TODO: create land_heavy anim & change to toState(CState.LAND, \"land_heavy\")*/" },
+    { "from": ".toHeavyLand()", "to": ".toState(CState.LAND) /*TODO: create a land_heavy anim and name it in the toState*/" },
     { "from": ".toCrashLand()", "to": ".toState(CState.CRASH_BOUNCE)" },
     { "from": ".toIdle()", "to": ".toState(CState.STAND)" },
     { "from": ".toFlying()", "to": ".toState(CState.HURT_HEAVY)" },
+    // A jump STARTS with its wind-up here, the same slot the ledge/wall jumps reuse.
+    { "from": ".toJump()", "to": ".toState(CState.JUMP_SQUAT)" },
+    { "from": ".toDodgeRoll()", "to": ".toState(CState.ROLL)" },
+    // snapping onto the ground under it, and the size the match scales it by, under this engine's names
+    { "from": ".attachToGround()", "to": ".attachToFloor()" },
+    { "from": ".getSizeRatio()", "to": ".getSizeMultiplier()" },
+    // ── THE BUTTONS, BY THE NAME EACH ENGINE GIVES THEM ─────────────────────
+    // A controls object is read by field, and the source's field names are its own. Left alone
+    // they resolve to NOTHING here -- not an error, just null, so every test on them quietly
+    // takes the "not pressed" branch and the behaviour behind it never happens. mario's tornado
+    // reads BUTTON1 to see you mashing and rise; it never rose, however hard you mashed. 371
+    // reads of BUTTON1 and 153 of BUTTON2 across the converted characters were doing nothing.
+    //
+    // The source's two attack buttons read backwards against fraymakers' names (measured live,
+    // both engines: BUTTON1 is SPECIAL and BUTTON2 is ATTACK), and its C-stick is the right one.
+    { "from": ".BUTTON1", "to": ".SPECIAL" },
+    { "from": ".BUTTON2", "to": ".ATTACK" },
+    { "from": ".C_UP",    "to": ".RIGHT_STICK_UP" },
+    { "from": ".C_DOWN",  "to": ".RIGHT_STICK_DOWN" },
+    { "from": ".C_LEFT",  "to": ".RIGHT_STICK_LEFT" },
+    { "from": ".C_RIGHT", "to": ".RIGHT_STICK_RIGHT" },
+    { "from": ".TAUNT",   "to": ".EMOTE" },
+
+    // Ground attachment, spelled the way each engine spells it (the source doubles the n).
+    { "from": ".unnattachFromGround()", "to": ".unattachFromFloor()" },
+    { "from": ".unattachFromGround()",  "to": ".unattachFromFloor()" },
 
     // AS3 global type-casts the decompiler wrongly emitted as `self.X(...)` (X is a
     // global, not a method, so `self.int`/`self.Number` resolve to null → "Invalid
@@ -199,9 +338,11 @@
 
     // Flash MovieClip accessors → Fraymakers view objects.
     { "from": ".getMC()", "to": ".getViewRootContainer()" },
-    // getStanceMC was the current-animation MovieClip; getSprite() is the FM sprite,
-    // but the members read off it (currentLabel/playFrameLabel/…) differ — verify.
-    { "from": ".getStanceMC()", "to": ".getSprite() /*TODO: getStanceMC->getSprite; verify the member access that follows*/" },
+    // getStanceMC was the clip the source reaches through to work the timeline. Here the
+    // ENTITY is what plays a label, reports its animation and carries its position, and every
+    // member the corpus reads off this one is an entity's. A sprite in between is a hop to
+    // something that cannot answer, so the reach goes away and the entity answers directly.
+    { "from": ".getStanceMC()", "to": "" },
 
     // SSF2 resetJumps() regains midair jumps by zeroing the used-jump counter.
     // FM's faithful equivalent is Character.setDoubleJumpCount(0) (FM "double jump"
@@ -209,7 +350,7 @@
     // landing cleanup and its signature requires a bool arg.
     { "from": ".resetJumps()", "to": ".setDoubleJumpCount(0)" },
 
-    { "from": ".resetMovement()", "to": ".setXVelocity(0); self.setYVelocity(0)" },
+    { "from": ".resetMovement()", "to": ".resetMomentum()" },  // on its own receiver: a pair of writes put the second on self, and split an unbraced `if`
     { "from": ".safeMove(", "to": ".move(" },
 
     { "from": ".isOnGround()", "to": ".isOnFloor()" },
@@ -242,7 +383,9 @@
     // NOTE: list longer prefixes BEFORE their shorter forms — the literal pass
     // is ordered + global, so SSF2Event.ATTACK_HIT must come after the
     // ATTACK_HIT_* variants or it would corrupt them into HIT_DEALT_*.
-    { "from": "SSF2Event.STATE_CHANGE", "to": "GameObjectEvent.LINK_FRAMES" },
+    // the source's state change is this engine's state change (its link frames are only the
+    // switch between an attack's ground and air versions)
+    { "from": "SSF2Event.STATE_CHANGE", "to": "EntityEvent.STATE_CHANGE" },
     { "from": "SSF2Event.ATTACK_HIT_POWER_SHIELD", "to": "GameObjectEvent.SHIELD_HIT_DEALT" },
     { "from": "SSF2Event.ATTACK_HIT_SHIELD", "to": "GameObjectEvent.SHIELD_HIT_DEALT" },
     { "from": "SSF2Event.ATTACK_HIT", "to": "GameObjectEvent.HIT_DEALT" },
@@ -266,8 +409,8 @@
     // Timer / effect patterns
     { "from": ".createTimer(", "to": ".addTimer(" },
     { "from": ".destroyTimer(", "to": ".removeTimer(" },
-    { "from": ".stancePlayFrame(", "to": ".playLabel(" },
-    { "from": ".removeAllEffects()", "to": "/* TODO: removeAllEffects */" },
+    { "from": ".stancePlayFrame(", "to": ".playAnimation(" },
+
     // .addEffectToList(...) is unwrapped by rewrite_add_effect_to_list (a balanced
     // string strip orphans its closing paren, breaking the script).
 
@@ -305,14 +448,16 @@
     { "from": "canDI:",                "to": "directionalInfluence:" },//  25
     { "from": "atk_id:",               "to": "attackId:" },            //  17
     { "from": "shieldStunMultiplier:", "to": "shieldstunMultiplier:" },//   2 (camelCase fix)
-    // SSF2 boolean element flags → FM HitboxStats `element` (ElementType enum).
+    // SSF2 boolean element flags → FM HitboxStats `element`. The engine calls that enum
+    // AttackElement: asked for ElementType it says it has never heard of it, and the hitbox
+    // carrying the name is refused whole, so the move lands with none of its tuning.
     // Only the `: true` form maps (the `: false` / non-element forms are dropped
     // in regex_replacements). `element` is a confirmed HitboxStats field; FIRE /
-    // ELECTRIC are confirmed ElementType members (live-verified). Matching the
+    // ELECTRIC are members of it. Matching the
     // explicit `: true` keeps the non-hitbox `burn: { … }` use (an anim-stats bag)
     // untouched.
-    { "from": "burn: true",  "to": "element: ElementType.FIRE" },
-    { "from": "shock: true", "to": "element: ElementType.ELECTRIC" },
+    { "from": "burn: true",  "to": "element: AttackElement.FIRE" },
+    { "from": "shock: true", "to": "element: AttackElement.ELECTRIC" },
     // SSF2 hitbox `hasEffect` is FM `flinch`.
     { "from": "hasEffect:", "to": "flinch:" },
     // SSF2 fields with no clear FM mapping (left alone — surface as
@@ -330,6 +475,288 @@
   // `$1`, `${name}`, `$$` for a literal `$`. Bad patterns warn once and are
   // skipped.
   "regex_replacements": [
+    // a thing other than the fighter turned to face the other way: a projectile here has no
+    // `flip` of its own (the engine refuses the name), so it is turned by the way it faces
+    { "pattern": "((?:[A-Za-z_]\\w*(?:\\([^()]*\\))?\\.)*[A-Za-z_]\\w*(?:\\([^()]*\\))?)\\.flip\\(\\s*\\)",
+      "replacement": "__flip($1)" },
+    // trading places in the draw order between the fighter and a thing beside it: the thing goes
+    // to the other side of the fighter (an effect pushed behind it)
+    { "pattern": "(?:[A-Za-z_]\\w*(?:\\([^()]*\\))?\\.)*swapChildren\\(\\s*self\\.getViewRootContainer\\(\\)\\s*,\\s*([A-Za-z_][\\w.]*(?:\\(\\))?)\\s*\\)",
+      "replacement": "__swapWithSelf($1)" },
+    // the one it holds shows one of its own hurt poses, by label, when its clip has one
+    { "pattern": "(?:[A-Za-z_]\\w*(?:\\([^()]*\\))?\\.)*forceGrabbedHurtFrame\\(([^()]*)\\)",
+      "replacement": "__grabbedHurtFrame($1)" },
+    // the fighter in front of the one it holds (true) or behind it (false)
+    { "pattern": "(?:[A-Za-z_]\\w*(?:\\([^()]*\\))?\\.)*swapDepthsWithGrabbedOpponent\\(([^()]*)\\)",
+      "replacement": "__swapWithGrabbed($1)" },
+    // a listener on a state change lasts until the code takes it off, as the source's do: this
+    // engine drops one that does not ask to persist AT the state change, before it can hear it
+    { "pattern": "addEventListener\\(\\s*EntityEvent\\.STATE_CHANGE\\s*,\\s*([A-Za-z_][\\w.]*(?:\\(\\))?)\\s*\\)",
+      "replacement": "addEventListener(EntityEvent.STATE_CHANGE, $1, { persistent: true })" },
+    // whether a thing takes hits and knockback: stats of the source's objects, on by default for a
+    // fighter and off for its projectiles; this engine keeps no such stat, so they are the answer
+    // for what the thing is (an autolink pull checks them before it moves its victim)
+    { "pattern": "((?:[A-Za-z_]\\w*(?:\\([^()]*\\))?\\.)*[A-Za-z_]\\w*(?:\\([^()]*\\))?)\\.getGameObjectStat\\(\\s*\"canReceive(?:Knockback|Hits)\"\\s*\\)",
+      "replacement": "__isCharacter($1)" },
+    // A thing spawned by its CLASS. The source hands the engine a class (`spawnEnemy(PacManHydrant)`)
+    // and steers what comes back; the class declares its own stats and clip (`getOwnStats`), and
+    // its methods run as the object's own, so it is the projectile path that carries it here, under
+    // the class's name (convert.rs reads the declaration; api_mappings::projectile_names_fired_in
+    // lists the name). A stage's spawns are rewritten before this runs (stage_emit).
+    { "pattern": "(?:[A-Za-z_]\\w*(?:\\([^()]*\\))?\\.)*spawnEnemy\\(\\s*([A-Za-z_]\\w*)\\s*\\)", "replacement": "self.fireProjectile(\"$1\")" },
+    // ...and an ITEM spawned by its class (`spawnItem(PeachPeaches)`) the same way
+    { "pattern": "(?:[A-Za-z_]\\w*(?:\\([^()]*\\))?\\.)*spawnItem\\(\\s*([A-Za-z_]\\w*)\\s*\\)", "replacement": "self.fireProjectile(\"$1\")" },
+    // The source can hold several grabbed foes and asks for the LIST; fraymakers tracks the one.
+    // Wrapped in an array so whatever the source does with the list -- index it, take its length --
+    // still reads. mario's throws pick `[0]` off it, and struck out they had no one to throw.
+    {
+      "pattern": "([A-Za-z_][A-Za-z0-9_]*(?:\\[[^\\]]*\\])?(?:\\.[A-Za-z_][A-Za-z0-9_]*(?:\\[[^\\]]*\\])?)*)\\.getAllGrabbedFoes\\(\\)",
+      "replacement": "[$1.getGrabbedFoe()]",
+      "note": "one grabbed foe, as the list the source asks for"
+    },
+    // A frame script's first act in SSF2 is to bind itself to the character that owns it. In
+    // Fraymakers a frame script already RUNS on its entity, so the same line assigns self to
+    // self: nothing to carry across, and the statement goes rather than standing struck out at
+    // the head of 98 of mario's frame scripts, counted as something still to do.
+    {
+      "pattern": "(?m)^[ \\t]*self\\s*=\\s*(?:match|SSF2API)\\.get(?:Character|Projectile)\\(\\s*self\\s*\\)\\s*;[ \\t]*\\r?\\n?",
+      "replacement": "",
+      "note": "the script already runs on its own object; binding self to self is a no-op"
+    },
+    // Snapping onto the floor: the source states how far it will reach, fraymakers just attaches.
+    {
+      "pattern": "\\.forceOnGround\\([^()]*\\)",
+      "replacement": ".attachToFloor()",
+      "note": "attach to the floor; the source's reach has no counterpart"
+    },
+    // An event the engine does not define hands addEventListener a null, which it rejects outright
+    // ("Null event type was passed"). SSF2 fires one when an attack strikes terrain; fraymakers has
+    // no such moment to listen for, so the subscription goes rather than the listener breaking.
+    {
+      "pattern": "(?m)^([ \\t]*)(?:self\\.)?(add|remove)EventListener\\(\\s*\\w+\\.HIT_DEALT_WALL[^;]*;",
+      "replacement": "$1// [no counterpart: SSF2 fires this when an attack strikes terrain] $2EventListener(HIT_DEALT_WALL)",
+      "note": "drop subscribing to, and unsubscribing from, an event FM does not define"
+    },
+    // An SSF2 object subscribes to its own "I got hit" event; Fraymakers names the same moment
+    // GameObjectEvent.HIT_RECEIVED. The handler is the script's own function, so it goes by bare
+    // name -- `self` is the api and has never heard of it. Without this a bomb factory brick can
+    // be hit all day and never break.
+    {
+      "pattern": "addEventListener\\(\\s*SSF2Event\\.ENEMY_HURT\\s*,\\s*self\\.(\\w+)",
+      "replacement": "addEventListener(GameObjectEvent.HIT_RECEIVED, $1",
+      "note": "SSF2 ENEMY_HURT -> FM HIT_RECEIVED"
+    },
+    // The source announces the moment a fighter's attack is over, and a move hangs its ending on
+    // it. Nothing here announces it, so the ask is kept with the animation it was made during and
+    // answered when the fighter is in another one (__takeAttackCompleteAsks, run each frame).
+    {
+      "pattern": "(?m)(^|[^.\\w])(?:self\\.)?addEventListener\\(\\s*SSF2Event\\.CHAR_ATTACK_COMPLETE\\s*,\\s*",
+      "replacement": "${1}__onAttackComplete(",
+      "note": "the end of an attack is kept as an ask and answered when the fighter leaves it"
+    },
+    {
+      "pattern": "(?m)(^|[^.\\w])(?:self\\.)?removeEventListener\\(\\s*SSF2Event\\.CHAR_ATTACK_COMPLETE\\s*,\\s*",
+      "replacement": "${1}__offAttackComplete(",
+      "note": "an end-of-attack ask taken back"
+    },
+    // The source announces an object's destruction and the object's own code hangs its ending on
+    // it. The ask is kept and run when the object enters the state it dies in
+    // (__takeProjDestroyedAsks, run each frame).
+    {
+      "pattern": "(?m)(^|[^.\\w])(?:self\\.)?addEventListener\\(\\s*SSF2Event\\.PROJ_DESTROYED\\s*,\\s*",
+      "replacement": "${1}__onProjDestroyed(",
+      "note": "being destroyed is kept as an ask and run when the object enters the state it dies in"
+    },
+    {
+      "pattern": "(?m)(^|[^.\\w])(?:self\\.)?removeEventListener\\(\\s*SSF2Event\\.PROJ_DESTROYED\\s*,\\s*",
+      "replacement": "${1}__offProjDestroyed(",
+      "note": "a destruction ask taken back"
+    },
+    // ...and when it is something ELSE whose end is asked about, the thing is watched from here:
+    // the handler belongs to this script, and a function handed to another script loses its own
+    // helpers (__takeWatchedDestroyed, run each frame).
+    {
+      "pattern": "(?m)(^|[^.\\w])((?:self\\.)?[A-Za-z_]\\w*(?:\\.get\\(\\))?)\\.addEventListener\\(\\s*SSF2Event\\.PROJ_DESTROYED\\s*,\\s*",
+      "replacement": "${1}__onProjDestroyedOf(${2}, ",
+      "note": "the end of a thing this made, watched from here"
+    },
+    {
+      "pattern": "(?m)(^|[^.\\w])((?:self\\.)?[A-Za-z_]\\w*(?:\\.get\\(\\))?)\\.removeEventListener\\(\\s*SSF2Event\\.PROJ_DESTROYED\\s*,\\s*",
+      "replacement": "${1}__offProjDestroyedOf(${2}, ",
+      "note": "that watch taken back"
+    },
+    // WHO AN OBJECT IS, asked directly. The source asks an object for the id it was declared
+    // under (ness's magnet checks whether what it absorbed is his own bolt); every script of this
+    // package knows its own id and publishes it, so the question is answered from there.
+    {
+      "pattern": "\\b((?:[A-Za-z_]\\w*\\.)*[A-Za-z_]\\w*(?:\\.get\\(\\))?)\\.getLinkageID\\(\\s*\\)",
+      "replacement": "__linkageOf($1)",
+      "note": "the id an object was declared under, read off what its script publishes"
+    },
+    // A sound the source starts can be stopped by the name it started it under. The engine stops
+    // one by the handle it gave back, which is kept under that name (__sound), so a stop by name
+    // reaches it. A stop that names none is handled in the passes, where a line that DECLARES a
+    // function of that name can be told from a line that calls one.
+    // What an SSF2 object asks its own clip -- which label is playing, which frame it is on, how
+    // long it runs -- Fraymakers answers about the animation itself. Mapped HERE, ahead of the
+    // pass that strikes out a call with no equivalent: struck out, the whole statement goes, and
+    // with it the condition that decides when a block breaks or an explosion is over.
+    // WHICH COSTUME IS THIS: the source answers by reading a colour out of the swap it
+    // applied, at a position in the list. The engine keeps a costume's swap as a map from
+    // one colour to another, which has no position to read, and names a costume by its
+    // index instead. So a costume asked about by its colours cannot be answered here, and
+    // the branch that runs is the one for "not that costume".
+    { "pattern": "[A-Za-z_][\\w.()]*\\.paletteSwap\\w*\\.replacements\\[\\d+\\]\\s*==\\s*\\d+",
+      "replacement": "false",
+      "note": "SSF2 identifies a costume by a swapped colour; FM names one by index" },
+    { "pattern": "[A-Za-z_][\\w.()]*\\.paletteSwap\\w*\\.replacements\\[\\d+\\]\\s*!=\\s*\\d+",
+      "replacement": "true",
+      "note": "SSF2 identifies a costume by a swapped colour; FM names one by index" },
+    // The class asks its OWN clip the same three things, without going through a getter
+    // first. Same questions, same answers.
+    // the LABEL the clip is on, not the animation: a fighter's animation is one clip whose
+    // labels are frames of it (chibirobo's blaster ends "unless in `fire`", and `fire` is a
+    // label inside its neutral special, so against the animation's name it ended at once)
+    { "pattern": "\\bself\\.currentLabel\\b",
+      "replacement": "_currentLabel(self)",
+      "note": "SSF2 own-clip currentLabel -> the label the clip is on (the label-read pass answers first; this row is the fallback)" },
+    { "pattern": "\\bself\\.currentFrame\\b",
+      "replacement": "self.getCurrentFrame()",
+      "note": "SSF2 own-clip currentFrame -> FM current frame" },
+    { "pattern": "\\bself\\.totalFrames\\b",
+      "replacement": "__srcTotalFrames()",
+      "note": "SSF2 own-clip totalFrames, counted the way its currentFrame is (the source's frames, over the whole clip)" },
+    {
+      "pattern": "(?:[A-Za-z_]\\w*\\.)*get(?:Sprite|StanceMC)\\(\\)\\s*(?:/\\*[^*]*\\*/)?\\s*\\.currentLabel",
+      "replacement": "self.getAnimation()",
+      "note": "SSF2 stance-clip currentLabel -> FM current animation (the root label is the animation)"
+    },
+    {
+      "pattern": "(?:[A-Za-z_]\\w*\\.)*get(?:Sprite|StanceMC)\\(\\)\\s*(?:/\\*[^*]*\\*/)?\\s*\\.currentFrame",
+      "replacement": "self.getCurrentFrame()",
+      "note": "SSF2 clip currentFrame -> FM current frame"
+    },
+    // ANY OTHER CLIP'S CLOCK (a named child, a plane, an object): read through a helper that
+    // answers for whatever the clip became here (a group of pieces, an object, the stage's own
+    // timeline). Frames come back on the source's own count.
+    { "pattern": "((?:[A-Za-z_]\\w*(?:\\([^()]*\\))?(?:\\[[^\\]]*\\])?\\.)*[A-Za-z_]\\w*(?:\\([^()]*\\))?(?:\\[[^\\]]*\\])?)\\.currentFrame\\b",
+      "replacement": "__currentFrame($1)",
+      "note": "SSF2 clip currentFrame -> the clock the clip publishes here" },
+    { "pattern": "((?:[A-Za-z_]\\w*(?:\\([^()]*\\))?(?:\\[[^\\]]*\\])?\\.)*[A-Za-z_]\\w*(?:\\([^()]*\\))?(?:\\[[^\\]]*\\])?)\\.currentLabel\\b",
+      "replacement": "__currentLabel($1)",
+      "note": "SSF2 clip currentLabel -> the label the clip publishes here" },
+    { "pattern": "((?:[A-Za-z_]\\w*(?:\\([^()]*\\))?(?:\\[[^\\]]*\\])?\\.)*[A-Za-z_]\\w*(?:\\([^()]*\\))?(?:\\[[^\\]]*\\])?)\\.totalFrames\\b",
+      "replacement": "__totalFrames($1)",
+      "note": "SSF2 clip totalFrames -> the length the clip publishes here" },
+    // this engine has no final smash cutscene and no final smash to be using: those asks are no
+    { "pattern": "\\bmatch\\.isFSCutscenePlaying\\(\\)", "replacement": "false",
+      "note": "SSF2 final-smash cutscene check -> never playing here (wario ware's mini games ran only outside one)" },
+    { "pattern": "\\b((?:[A-Za-z_]\\w*(?:\\[[^\\]]*\\])?(?:\\([^()]*\\))?\\.)*[A-Za-z_]\\w*(?:\\[[^\\]]*\\])?(?:\\([^()]*\\))?)\\.isUsingFinalSmash\\(\\)",
+      "replacement": "false",
+      "note": "SSF2 final-smash state check -> never here" },
+    // a sound is stopped through the handle its play returned (playSound lowers onto
+    // AudioClip.play, which hands one back); a handle that never came is nothing to stop
+    { "pattern": "(?m)(^|[^.\\w])(?:self\\.|match\\.)?stopSound\\(((?:[^()]|\\([^()]*\\))+)\\);",
+      "replacement": "${1}{ var __clip = $2; if (__clip != null && __clip.stop != null) { __clip.stop(); } }",
+      "note": "SSF2 stopSound(id) -> stop the AudioClip the play handed back" },
+    // the clip's playing xframe is the animation it is on
+    // A CAMERA TARGET is an object here, not its clip: the source hands its camera a fighter's
+    // movie clip, and this engine's camera takes the entity. Handed the view container it throws
+    // (a cast error) and the rest of the frame never runs: kirby's up throw stopped four frames
+    // in and left him falling.
+    { "pattern": "(\\.(?:add|delete)(?:Forced|Timed)?Target\\(\\s*)([A-Za-z_][\\w.()]*?)\\.getViewRootContainer\\(\\)",
+      "replacement": "${1}${2}",
+      "note": "a camera target is the object itself, not its view container" },
+    { "pattern": "\\.getViewRootContainer\\(\\)\\.xframe\\b",
+      "replacement": ".getAnimation()",
+      "note": "SSF2 clip xframe -> FM current animation" },
+    // a point is a pair, whatever its coordinates are worked out from (one call deep)
+    { "pattern": "\\bnew Point\\(\\s*((?:[^(),]|\\((?:[^()]|\\([^()]*\\))*\\))+?)\\s*,\\s*((?:[^(),]|\\((?:[^()]|\\([^()]*\\))*\\))+?)\\s*\\)",
+      "replacement": "{ x: $1, y: $2 }",
+      "note": "SSF2 new Point(x, y) -> a plain pair" },
+    { "pattern": "\\bnew Point\\(\\s*\\)", "replacement": "{ x: 0, y: 0 }",
+      "note": "SSF2 new Point() -> the origin pair" },
+    // this port plays a versus match: the mode is none of the source's special modes, and a
+    // global the engine would have set for one is unset. a global the stage sets for itself is
+    // kept in the stage script's own store
+    { "pattern": "\\bmatch\\.getGameMode\\(\\)", "replacement": "(-1)",
+      "note": "SSF2 game mode -> no special mode here (a versus match)" },
+    { "pattern": "\\bmatch\\.getGlobalVar\\(((?:[^()]|\\([^()]*\\))+)\\)", "replacement": "__globalVar($1)",
+      "note": "SSF2 match global -> the stage's own store (unset unless the stage set it)" },
+    { "pattern": "\\bmatch\\.setGlobalVar\\(((?:[^(),]|\\([^()]*\\))+),\\s*((?:[^()]|\\([^()]*\\))+)\\)", "replacement": "__setGlobalVar($1, $2)",
+      "note": "SSF2 match global write -> the stage's own store" },
+    // this engine draws no off-screen warning bubble and has no bounds for one: a fighter is never
+    // in them, so the source's ordinary branch is the one that runs
+    { "pattern": "\\bself\\.in(?:Upper|Lower)(?:Left|Right)WarningBounds\\(\\)", "replacement": "false",
+      "note": "SSF2 warning-bounds test -> never, here" },
+    // the camera's tightest view height is the stage's own camera box, in the source's units
+    { "pattern": "\\bmatch\\.getCamera\\(\\)\\.getCameraParameter\\(\\s*\"minZoomHeight\"\\s*\\)",
+      "replacement": "__srcLen(__objectBoundary(\"camBoundary\").h)",
+      "note": "SSF2 minZoomHeight -> the stage's camera box height, source units" },
+    // a fighter's name is a string here even when this engine has none to give: the source
+    // goes on to lower-case and compare it, which a number cannot survive
+    { "pattern": "\\.getCharacterStat\\(\\s*\"(?:displayName|statsName)\"\\s*\\)", "replacement": "\"\"",
+      "note": "SSF2 displayName/statsName -> no name here (an empty string, never a number)" },
+    // a string grows by +; its length is not a thing one writes to (kingdom1 pads a name)
+    { "pattern": "\\.concat\\((\"[^\"]*\")\\)", "replacement": " + $1",
+      "note": "AS3 String.concat(literal) -> +" },
+    { "pattern": "(?m)^(\\s*)([A-Za-z_][\\w.]*)\\.length\\s*=\\s*[^;]+;", "replacement": "$1// [a length is read, never written] $2.length = ...;",
+      "note": "AS3 writes a string's length; nothing here does" },
+    // a slice that drops the last N characters is a substr to length - N (kingdom1's timer text)
+    { "pattern": "\\b([A-Za-z_]\\w*)\\.slice\\(\\s*0\\s*,\\s*-(\\d+)\\s*\\)", "replacement": "$1.substr(0, $1.length - $2)",
+      "note": "AS3 slice(0, -n) -> substr to length - n" },
+    // a player by number (1 is the first) is that entry of the match's list
+    { "pattern": "\\bmatch\\.getPlayer\\(([^()]+)\\)", "replacement": "match.getPlayers()[($1) - 1]",
+      "note": "SSF2 getPlayer(n), 1-based -> the n-th player of the match" },
+    // two points are equal when they are the same values; a timed match is one with time on it
+    { "pattern": "\\b((?:[A-Za-z_]\\w*(?:\\[[^\\]]*\\])?\\.)*[A-Za-z_]\\w*(?:\\[[^\\]]*\\])?)\\.isEqual\\(((?:[^()]|\\([^()]*\\))+)\\)",
+      "replacement": "($1 == $2)",
+      "note": "SSF2 Point.isEqual -> value equality (fairy glade's platform pick)" },
+    { "pattern": "match\\.getMatchSettingsConfig\\(\\)\\.levelData\\.usingTime",
+      "replacement": "(match.getMatchSettingsConfig().time > 0)",
+      "note": "SSF2 match settings usingTime -> a match with time on its clock" },
+    // a match option this engine does not have is OFF: the source's special-mode flags
+    // (levelData.specialModes, a bit field) read as 0 here, so a script that decides its gravity
+    // or its mode from them takes the branch a plain match takes (metaknight's down special
+    // restored its gravity through that read and, struck, restored nothing: it floated for good)
+    { "pattern": "match\\.getMatchSettingsConfig\\(\\)\\.levelData\\.(\\w+)",
+      "replacement": "__optionOff(\"$1\")",
+      "note": "SSF2 match options this engine lacks read as off (an object answering toString(radix) with \"0\", so a bit-field read runs)" },
+    // the midground's clock is the stage's own timeline (the plane's labels are the stage's)
+    { "pattern": "__(currentFrame|currentLabel|totalFrames)\\((?:self|match\\.getStage\\(\\))\\.getMidground\\(\\)\\)",
+      "replacement": "__$1(self)",
+      "note": "SSF2 midground clock -> the stage's own timeline" },
+    {
+      "pattern": "(?:[A-Za-z_]\\w*\\.)*get(?:Sprite|StanceMC)\\(\\)\\s*(?:/\\*[^*]*\\*/)?\\s*\\.totalFrames",
+      "replacement": "self.getTotalFrames()",
+      "note": "SSF2 clip totalFrames -> FM animation length"
+    },
+    // AS3's int/uint carry their bounds as class fields; haxe has neither the class nor the
+    // fields, so the read is an unknown variable and the line it sits in dies.
+    {
+      "pattern": "\\bu?int\\.MAX_VALUE\\b",
+      "replacement": "2147483647",
+      "note": "AS3 int.MAX_VALUE -> the number"
+    },
+    {
+      "pattern": "\\bu?int\\.MIN_VALUE\\b",
+      "replacement": "-2147483648",
+      "note": "AS3 int.MIN_VALUE -> the number"
+    },
+    // AS3 gives everything a toString(); hscript gives it to almost nothing, so the call lands
+    // on null and throws every frame it runs. Std.string says the same thing about anything.
+    {
+      "pattern": "\\b([A-Za-z_]\\w*(?:\\.\\w+)*)\\.toString\\(\\)",
+      "replacement": "Std.string($1)",
+      "note": "AS3 toString() -> Std.string"
+    },
+    // the fighter's name: SSF2 keeps it under statsName, Fraymakers under name, and asking for
+    // a key the engine doesn't have throws and takes the rest of the stage's setup with it.
+    {
+      "pattern": "getCharacterStat\\(\\s*\"statsName\"\\s*\\)",
+      "replacement": "getCharacterStat(\"name\")",
+      "note": "SSF2 statsName -> FM name"
+    },
     // SSF2 hitbox `priority:` has NO Fraymakers equivalent (confirmed unnecessary
     // for porting) — drop the key from updateHitboxStats / new HitboxStats({…})
     // object literals so the engine doesn't reject it ("Invalid hitbox stat:
@@ -343,6 +770,19 @@
       "pattern": "priority\\s*:\\s*[^,}]+\\s*,\\s*",
       "replacement": "",
       "note": "drop SSF2 hitbox priority (no FM equivalent) — first key"
+    },
+    // SSF2 hitbox `dizzy:` (the foe is left dizzy that many frames) has no hitbox stat here; the
+    // engine refuses the whole hitbox for it (wario's fart), so the key goes and the rest of the
+    // hitbox applies. the stun itself is unported (docs/STATUS.md)
+    {
+      "pattern": ",\\s*dizzy\\s*:\\s*[^,}]+",
+      "replacement": "",
+      "note": "drop SSF2 hitbox dizzy (no hitbox stat here) — comma-prefixed"
+    },
+    {
+      "pattern": "\\bdizzy\\s*:\\s*[^,}]+\\s*,\\s*",
+      "replacement": "",
+      "note": "drop SSF2 hitbox dizzy (no hitbox stat here) — first key"
     },
     // SSF2 element flags in their "no element" form carry no FM data — drop them
     // (the `: true` forms are already mapped to `element: …` by the literal pass).
@@ -389,20 +829,59 @@
     // The `self.` prefix (if present) is dropped; the wrapper var is declared by
     // the extractor's global-var pass. set: the trailing `, ` becomes `(` of .set(,
     // reusing the call's existing close paren. get: → name.get().
+    // the stage's OWN persistent flag first (the prefix has to be there or absent, never another
+    // object's), then a flag a stage keeps ON ANOTHER OBJECT (`fighter.setGlobalVariable(
+    // "hitWoodenPanel", false)`), which is that object's, and an entity here carries such
+    // things in its exports
     {
-      "pattern": "(?:self\\.)?setGlobalVariable\\(\\s*\"(\\w+)\"\\s*,\\s*",
+      "pattern": "\\bself\\.setGlobalVariable\\(\\s*\"(\\w+)\"\\s*,\\s*",
       "replacement": "$1.set(",
       "note": "SSF2 persistent global → makeX wrapper .set()"
     },
     {
-      "pattern": "(?:self\\.)?getGlobalVariable\\(\\s*\"(\\w+)\"\\s*\\)",
+      "pattern": "\\bself\\.getGlobalVariable\\(\\s*\"(\\w+)\"\\s*\\)",
       "replacement": "$1.get()",
       "note": "SSF2 persistent global → makeX wrapper .get()"
     },
+    {
+      "pattern": "\\b([A-Za-z_]\\w*(?:\\[[^\\]]+\\])?)\\.setGlobalVariable\\(\\s*\"(\\w+)\"\\s*,\\s*",
+      "replacement": "$1.exports.$2 = (",
+      "note": "a flag kept on another object lives in that object's exports; the call's own close paren closes the value"
+    },
+    {
+      "pattern": "\\b([A-Za-z_]\\w*(?:\\[[^\\]]+\\])?)\\.getGlobalVariable\\(\\s*\"(\\w+)\"\\s*\\)",
+      "replacement": "$1.exports.$2",
+      "note": "a flag kept on another object is read off its exports"
+    },
+    {
+      "pattern": "\\bsetGlobalVariable\\(\\s*\"(\\w+)\"\\s*,\\s*",
+      "replacement": "$1.set(",
+      "note": "the bare spelling of the stage's own persistent global"
+    },
+    {
+      "pattern": "\\bgetGlobalVariable\\(\\s*\"(\\w+)\"\\s*\\)",
+      "replacement": "$1.get()",
+      "note": "the bare spelling, read"
+    },
+    // any other end-into-state the corpus has not shown: the move ends, the engine picks the state
+    { "pattern": "\\.endAttack\\(\\s*[^()]+\\)", "replacement": ".endAnimation()",
+      "note": "endAttack(<other>) -> the move ends; the state is the engine's pick" },
     // safeRandomInteger(min, max) → Random.getValue() * 100. The (min, max)
     // args are dropped (user-specified placeholder mapping). `[^()]*` keeps
     // it safe against the rare nested call: matches only flat arg lists, so
     // safeRandomInteger(foo(x), y) won't be touched.
+    // the same two, reached through whatever the porting pass left in front of them: a receiver
+    // this table doesn't spell is still the same call, and left alone it is a null function.
+    {
+      "pattern": "\\b[A-Za-z_]\\w*\\.safeRandomInteger\\(\\s*([^(),]+)\\s*,\\s*([^()]+)\\)",
+      "replacement": "Random.getInt($1, $2)",
+      "note": "SSF2 safeRandomInteger(min,max) -> Random.getInt, any receiver"
+    },
+    {
+      "pattern": "\\b[A-Za-z_]\\w*\\.safeRandom\\(\\)",
+      "replacement": "Random.getValue()",
+      "note": "SSF2 safeRandom() -> Random.getValue, any receiver"
+    },
     {
       "pattern": "SSF2API\\.safeRandomInteger\\([^()]*\\)",
       "replacement": "Random.getValue() * 100",
@@ -428,24 +907,203 @@
     //
     // Deliberately NOT included: `.x` / `.y`. Point carries real `.x`/`.y` fields and is
     // all over the decompiled code, so rewriting those would break more than it fixes.
-    { "pattern": "(?m)^(\\s*)([^\\n=;]+?)\\.scaleX\\s*=\\s*([^;]+);",
+    { "pattern": "(?m)^(\\s*)([^\\n=;]+?)\\.scaleX\\s*=\\s*([^=;][^;]*);",
       "replacement": "${1}${2}.setScaleX(${3});",
       "note": "Flash scaleX write → Entity.setScaleX" },
-    { "pattern": "(?m)^(\\s*)([^\\n=;]+?)\\.scaleY\\s*=\\s*([^;]+);",
+    { "pattern": "(?m)^(\\s*)([^\\n=;]+?)\\.scaleY\\s*=\\s*([^=;][^;]*);",
       "replacement": "${1}${2}.setScaleY(${3});",
       "note": "Flash scaleY write → Entity.setScaleY" },
-    { "pattern": "(?m)^(\\s*)([^\\n=;]+?)\\.rotation\\s*=\\s*([^;]+);",
+    { "pattern": "(?m)^(\\s*)([^\\n=;]+?)\\.rotation\\s*=\\s*([^=;][^;]*);",
       "replacement": "${1}${2}.setRotation(${3});",
       "note": "Flash rotation write → Entity.setRotation" },
-    { "pattern": "(?m)^(\\s*)([^\\n=;]+?)\\.alpha\\s*=\\s*([^;]+);",
+    // A WRITE, not a comparison: the value cannot start with another `=`, or `x.alpha == 1`
+    // reads as a write of `= 1` and the statement stops parsing.
+    { "pattern": "(?m)^(\\s*)([^\\n=;]+?)\\.alpha\\s*=\\s*([^=;][^;]*);",
       "replacement": "${1}${2}.setAlpha(${3});",
-      "note": "Flash alpha write → Entity.setAlpha" },
-    { "pattern": "(?m)^(\\s*)([^\\n=;]+?)\\.visible\\s*=\\s*([^;]+);",
+      "note": "Flash alpha write -> Entity.setAlpha" },
+    { "pattern": "(?m)^(\\s*)([^\\n=;]+?)\\.visible\\s*=\\s*([^=;][^;]*);",
       "replacement": "${1}${2}.setVisible(${3});",
-      "note": "Flash visible write → Entity.setVisible" },
+      "note": "Flash visible write -> Entity.setVisible" },
+    // What an SSF2 object calls its parent is the display list it hangs off, and it asks
+    // about it to find out whether it is still in play. A script only runs while its object
+    // is, so here that question already has its answer.
+    // The source says a hit goes THROUGH a shield; the engine says whether it can be
+    // shielded at all. Same fact, stated the other way round.
+    { "pattern": "bypassShield:\\s*true",
+      "replacement": "shieldable: false",
+      "note": "SSF2 bypassShield -> FM shieldable (stated the other way round)" },
+    { "pattern": "bypassShield:\\s*false",
+      "replacement": "shieldable: true",
+      "note": "SSF2 bypassShield -> FM shieldable (stated the other way round)" },
+    // The source turns knockback stacking off by telling the hit to ignore the timer that
+    // does it; the engine states the same thing the other way round, as stacking itself.
+    { "pattern": "ignoreKnockbackStackingTimer:\\s*true",
+      "replacement": "stackKnockback: false",
+      "note": "SSF2 ignore-stacking-timer -> FM stackKnockback (stated the other way round)" },
+    { "pattern": "ignoreKnockbackStackingTimer:\\s*false",
+      "replacement": "stackKnockback: true",
+      "note": "SSF2 ignore-stacking-timer -> FM stackKnockback (stated the other way round)" },
+    { "pattern": "__truthy\\(parent\\)",
+      "replacement": "true",
+      "note": "SSF2 display-list check -> an object whose script is running is in play" },
+    { "pattern": "([A-Za-z_][\\w.\\[\\]()]*)\\.parent\\s*==\\s*null",
+      "replacement": "${1} == null",
+      "note": "SSF2 'is it off the display list' about another object -> is it gone" },
+    { "pattern": "__truthy\\(([A-Za-z_][\\w.\\[\\]()]*)\\.parent\\)",
+      "replacement": "__truthy(${1})",
+      "note": "SSF2 'is it still on the display list' about another object -> is it still there" },
+    // Asked ABOUT ANOTHER object, the same question means something else: an object that
+    // has been taken off the display list is one that is gone, which is what a null handle
+    // says here. This rule goes first, so the bare form below only sees the bare form.
+    // TINTING AT RUNTIME: the source recolours a thing by handing its display object a
+    // colour transform. This engine has no colour transform at all and no way to tint a
+    // thing while the match runs -- what it offers is scale, alpha and visible -- so the
+    // colours a converted fighter wears are the ones baked in at convert time. Each of
+    // these is struck so the handler around it lives.
+    { "pattern": "(?m)^([ \\t]*)([^\\n;]*\\.transform\\b[^\\n;]*;)",
+      "replacement": "$1// [no counterpart: this engine does not tint while running] $2",
+      "note": "Flash display transform; FM offers scale/alpha/visible only" },
+    { "pattern": "(?m)^([ \\t]*)([^\\n;]*\\bColorTransform\\b[^\\n;]*;)",
+      "replacement": "$1// [no counterpart: this engine does not tint while running] $2",
+      "note": "Flash ColorTransform; FM has none" },
+    { "pattern": "(?m)^([ \\t]*)([^\\n;]*\\.color\\s*=[^\\n;]*;)",
+      "replacement": "$1// [no counterpart: this engine does not tint while running] $2",
+      "note": "the colour on a Flash ColorTransform; FM has none to set" },
+    // and the parts a colour transform is made of. These are the flash type's own field
+    // names, so nothing here has to know what any character is doing with them.
+    { "pattern": "(?m)^([ \\t]*)([^\\n;]*\\.(?:red|green|blue|alpha)(?:Offset|Multiplier)\\s*=[^\\n;]*;)",
+      "replacement": "$1// [no counterpart: this engine does not tint while running] $2",
+      "note": "the parts of a Flash ColorTransform; FM has none" },
+    // Taking a thing off the display list is how the source ends it; here the thing is ended
+    // (an effect killed, a converted object asked to end itself).
+    { "pattern": "(?m)^([ \\t]*)[A-Za-z_][\\w.\\[\\]()]*\\.parent\\.removeChild\\(([^;]*)\\)\\s*;",
+      "replacement": "$1__endOther($2);",
+      "note": "SSF2 takes a thing off the display list to end it; an effect here is ended" },
+    { "pattern": "([A-Za-z_][\\w.\\[\\]()]*)\\.parent\\s*!=\\s*null",
+      "replacement": "${1} != null",
+      "note": "SSF2 'is it still on the display list' about another object -> is it still there" },
+    { "pattern": "(^|[^\\w.])parent\\s*!=\\s*null",
+      "replacement": "${1}true",
+      "note": "SSF2 display-list check -> an object whose script is running is in play" },
+    { "pattern": "(^|[^\\w.])parent\\.x\\b",
+      "replacement": "${1}self.getX()",
+      "note": "SSF2 reads a thing's own world position through the positioned container it hangs in (parent.x); here that position is self.getX()" },
+    { "pattern": "(^|[^\\w.])parent\\.y\\b",
+      "replacement": "${1}self.getY()",
+      "note": "SSF2 reads a thing's own world position through the positioned container it hangs in (parent.y); here that position is self.getY()" },
+    { "pattern": "\\.getX\\(\\)\\s*=\\s*([^=;][^;]*);",
+      "replacement": ".setX(${1});",
+      "note": "a WRITE of the object's own x (`x = other.x`, black mage warping to its projectile) was lowered like a read, leaving a getter on the left of = which does not parse; a getter assigned to is the setter" },
+    { "pattern": "\\.getY\\(\\)\\s*=\\s*([^=;][^;]*);",
+      "replacement": ".setY(${1});",
+      "note": "same for y" },
+    { "pattern": "var (_sc\\d+) = \\(parent\\);",
+      "replacement": "var ${1} = (true);",
+      "note": "SSF2 `parent && ...` as a value: the left operand is the display-list check (is this object still in play), which an object whose script is running always passes. The value-position short-circuit reads its left operand into a local first, so the check is answered there, the same way the test-position and != null forms of it are answered above." },
+    { "pattern": "=\\s*parent\\s*;",
+      "replacement": "= { x: self.getX(), y: self.getY() };",
+      "note": "SSF2 hands a thing's parent around as a stand-in for its world position, read later off the alias as .x/.y (samus's proximity bomb: `bomb = parent; ... bomb.x`); snapshot that position into a plain object so the read has a value here, where there is no display parent to hand over" },
+    { "pattern": "(?m)^([ \\t]*)([\\w.]+)\\.rocketCharacter\\([^;]*\\)\\s*;",
+      "replacement": "$1{ var _ro = $2; if (_ro != null && !_ro.isOnFloor()) { var _ra = _ro.getAnimation(); if (_ra == null) { _ra = \"\"; } var _rheld = (_ra.indexOf(\"ledge_\") == 0 || _ra.indexOf(\"grab\") == 0 || _ra.indexOf(\"hurt\") == 0 || _ra.indexOf(\"tumble\") == 0 || _ra.indexOf(\"crash\") == 0); var _ratk = (_ra.indexOf(\"jab\") == 0 || _ra.indexOf(\"tilt_\") == 0 || _ra.indexOf(\"strong_\") == 0 || _ra.indexOf(\"aerial_\") == 0 || _ra.indexOf(\"special_\") == 0 || _ra.indexOf(\"dash_attack\") == 0 || _ra.indexOf(\"throw_\") == 0); if (!_rheld && (!_ratk || _ra.indexOf(\"special_down\") == 0)) { if (_ra.indexOf(\"shield\") == 0 || _ra.indexOf(\"roll\") == 0 || _ra.indexOf(\"spot_dodge\") == 0) { _ro.toState(CState.STAND); } _ro.toState(CState.SPECIAL_DOWN); _ro.playAnimation(\"special_down_air\"); } } }",
+      "note": "SSF2 rockets the summoner from its projectile (samus's bomb jump). The engine sets no velocity: it forces the down special AIR attack, whose own motion is the hop, and that forceAttack FAILS ON THE GROUND (you cannot start an aerial attack while grounded) -- which is why a grounded down-B just drops the bomb and does not hop. So gate the port on the owner being airborne (!isOnFloor()), under the same state guards (nothing on a ledge, grabbing, hurt, tumbling, crashing; only when not attacking or already in the down special; shield/dodge dropped to idle). The launch numbers the call carries are a different fighter's variant, unused here." },
+    { "pattern": "match\\.(?:getUid|generateUID|generateUid)\\(\\)",
+      "replacement": "__nextUid()",
+      "note": "SSF2 stamps each attack with a fresh id so a fighter is hit once per swing; the stage keeps the same count here, and the hit is applied once per id (see __hitOnce)." },
+    { "pattern": "\\.getMidground\\(\\)\\.setChildIndex\\(([^,]+),\\s*([^)]+)\\)",
+      "replacement": ".getCharactersContainer().addChildAt(${1}, ${2})",
+      "note": "SSF2 orders the plane its stage objects sit in by moving one to a place in it; the same plane here is the game-objects container, and a child put at a place in it is the same move." },
+    { "pattern": "\\.setFallthrough\\(([^;]+)\\);",
+      "replacement": ".updateStructureStats({ disabled: ${1} });",
+      "note": "SSF2 lets a fighter pass through a platform by turning its fallthrough on; the same platform here is a structure, and one turned off is one nobody stands on." },
+    { "pattern": "\\S*\\.getWeatherMC\\(\\)\\.addChild\\([^;]*\\);",
+      "replacement": "// the weather is put in its layer as the port makes it",
+      "note": "the weather itself is ported: the port builds it and places it in its layer as it does, so the source putting it there has already happened." },
+    // A TRACE IS A DEBUG STATEMENT, and the shipped game does nothing with one. Carried across as
+    // a live log it runs every frame the stage updates: bomb factory printed one number 437 times
+    // and the channel it printed down went with it, taking the stage with it. Kept as a note, so
+    // what the source wanted to say is still readable and nothing says it every frame.
+    { "pattern": "(?m)^([ \\t]*)Engine\\.log\\(([^;]*)\\);",
+      "replacement": "$1// [a trace: the shipped game does nothing with one] Engine.log($2);",
+      "note": "the source's own trace, kept as a note rather than run" },
+    { "pattern": "(?:[\\w.\\[\\]]+(?:\\(\\))?)+\\.getStandby\\(\\)",
+      "replacement": "false",
+      "note": "the other spelling of the same question: whether a fighter is waiting off-stage to come in. Fraymakers has no such waiting state, and everyone the match hands back is in play." },
+    { "pattern": "((?:[\\w.\\[\\]]+(?:\\(\\))?)+)\\.getCurrentPlatform\\(\\)\\.isEqual\\(self\\)",
+      "replacement": "__standsOnMe(${1})",
+      "note": "an object asking whether a fighter stands on IT: Fraymakers names the structure under a fighter, and the object knows the faces of its own body" },
+    { "pattern": "((?:\"(?:[^\"\\\\]|\\\\.)*\"(?:\\s*/\\*[^*]*\\*/)?|[\\w.\\[\\]]+))\\.replace\\(RegExp\\.new\\((\"(?:[^\"\\\\]|\\\\.)*\"),\\s*\"g\"\\),\\s*([^;]+?)\\)\\s*;",
+      "replacement": "__replaceAll(${1}, ${2}, ${3});",
+      "note": "a global replace of one literal spelling by another (pokemon colosseum unescapes %20 in a name): this engine's script has no RegExp, and a literal pattern with the g flag is a replace-all" },
+    { "pattern": "Std\\.int\\(((?:[^()]|\\([^()]*\\))*?\\.(?:charAt|substr|substring|slice)\\((?:[^()]|\\([^()]*\\))*\\))\\)",
+      "replacement": "Std.parseInt(${1})",
+      "note": "an int cast of a piece of a string is a parse (jungle island reads its banana count a digit at a time): this engine's cast refuses a string" },
+    { "pattern": "((?:[\\w.\\[\\]]+(?:\\(\\))?)+)\\.getCurrent(?:Platform|Floor)\\(\\) (==|!=) ((?:self\\.)?[A-Za-z_]\\w*)([^\\w.(]|$)",
+      "replacement": "(${1}.getCurrentFloor() ${2} ((${3} == null || ${3}.exports == null) ? null : ${3}.exports.__deck))${4}",
+      "note": "a fighter's floor compared with an OBJECT the stage keeps (kingdom1 weighs its see-saw by who stands on each side): the object publishes its deck, the face the engine names as the floor" },
+    { "pattern": "\\.getCurrentPlatform\\(\\)",
+      "replacement": ".getCurrentFloor()",
+      "note": "the structure a fighter stands on, by the engine's name for it" },
+    { "pattern": "(^|[^\\w.])self == ((?:[\\w.\\[\\]]+(?:\\(\\))?)+)\\.getCurrentFloor\\(\\)",
+      "replacement": "${1}__standsOnMe(${2})",
+      "note": "the same question spelled as a comparison (peach's castle: `self == fighter.getCurrentFloor()`): the object is never the engine's floor handle, its faces are. `self` stands alone here: `self.platformObj_R` is a field of the stage, not the stage" },
+    { "pattern": "((?:[\\w.\\[\\]]+(?:\\(\\))?)+)\\.getCurrentFloor\\(\\) == self([^\\w.]|$)",
+      "replacement": "__standsOnMe(${1})${2}",
+      "note": "and the other way round" },
+    { "pattern": "(?:[\\w.\\[\\]]+(?:\\(\\))?)+\\.isStandby\\(\\)",
+      "replacement": "false",
+      "note": "SSF2 asks whether a fighter is waiting off-stage to come in, so a stage can spare them; Fraymakers has no such waiting state, and everyone the match hands back is in play." },
+    { "pattern": "\\.takeDamage\\(\\s*((?:self\\.)?[A-Za-z_]\\w*)\\s*,(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)",
+      "replacement": ".addDamage(${1}.damage)",
+      "note": "SSF2 hands a whole attack to a fighter (damage, knockback, effect); Fraymakers adds damage to one. A stage's burn is damage on a cadence, which is what survives the difference." },
     { "pattern": "\\.scaleX\\b",   "replacement": ".getScaleX()",   "note": "Flash scaleX read → Entity.getScaleX" },
     { "pattern": "\\.scaleY\\b",   "replacement": ".getScaleY()",   "note": "Flash scaleY read → Entity.getScaleY" },
     { "pattern": "\\.rotation\\b", "replacement": ".getRotation()", "note": "Flash rotation read → Entity.getRotation" },
+    // A CLIP REGISTERING ITS OWN FRAME SCRIPTS. Flash lets a clip say which of its methods
+    // runs on which of its frames. Here a timeline's scripts are laid out on the entity at
+    // convert time, so there is nothing to register and nothing to register it on.
+    { "pattern": "(?m)^([ \\t]*)[^\\n;]*\\.addFrameScript\\([^;]*\\);",
+      "replacement": "$1// [no counterpart: frames carry their own scripts here] addFrameScript()",
+      "note": "Flash addFrameScript; a timeline's scripts are laid out at convert time" },
+    // THE SCALE, ONCE. A scale getter answers a number, and a number has no axis to ask
+    // for -- the axis named after it is the one the source was reading.
+    { "pattern": "\\.getScale[XY]\\(\\)\\.x\\b",
+      "replacement": ".getScaleX()",
+      "note": "a scale is a number, and the axis after it says which one was meant" },
+    { "pattern": "\\.getScale[XY]\\(\\)\\.y\\b",
+      "replacement": ".getScaleY()",
+      "note": "a scale is a number, and the axis after it says which one was meant" },
+    // WHAT A CONTAINER ANSWERS TO. The view root is a display object, and a display object
+    // states its scale, its place and how solid it is as properties rather than answering
+    // getters for them -- asking one for getScaleX() is asking for a method it does not
+    // have. Written the way the container states them, the same way setVisible already is
+    // just below.
+    { "pattern": "=\\s*([A-Za-z_][\\w.()]*)\\.getViewRootContainer\\(\\)\\s*;",
+      "replacement": "= { x: ${1}.getX(), y: ${1}.getY() };",
+      "note": "SSF2 grabs a fighter's movie clip and reads its WORLD position off the alias later (`samus = character.getViewRootContainer(); ... samus.x`); the FM view container's x/y is a local transform, not the world position, so snapshot the world position (getX/getY) into a plain object when the clip is assigned. scale/alpha reads go direct through getViewRootContainer() below, never through this alias, so they are unaffected." },
+    { "pattern": "([A-Za-z_][\\w.()]*)\\.getViewRootContainer\\(\\)\\.x\\b",
+      "replacement": "${1}.getX()",
+      "note": "SSF2 reads a fighter's WORLD position through its movie clip (getMC().x, mapped to getViewRootContainer().x); here that container's x is a local transform, not the world position, so a proximity or aim test against it is wrong (samus's bomb thought she was next to it from 56px away; black mage warped to the container origin). the entity's world x is getX()." },
+    { "pattern": "([A-Za-z_][\\w.()]*)\\.getViewRootContainer\\(\\)\\.y\\b",
+      "replacement": "${1}.getY()",
+      "note": "same for y: the fighter's world y is getY(), not the view container's local y." },
+    { "pattern": "\\.getViewRootContainer\\(\\)\\.getScale([XY])\\(\\)",
+      "replacement": ".getViewRootContainer().scale${1}",
+      "note": "a container states its scale, it does not answer for it" },
+    { "pattern": "\\.getViewRootContainer\\(\\)\\.setScale([XY])\\(([^;]+)\\);",
+      "replacement": ".getViewRootContainer().scale${1} = ${2};",
+      "note": "a container states its scale, it does not answer for it" },
+    { "pattern": "\\.getViewRootContainer\\(\\)\\.getAlpha\\(\\)",
+      "replacement": ".getViewRootContainer().alpha",
+      "note": "a container states how solid it is, it does not answer for it" },
+    { "pattern": "\\.getViewRootContainer\\(\\)\\.setAlpha\\(([^;]+)\\);",
+      "replacement": ".getViewRootContainer().alpha = ${1};",
+      "note": "a container states how solid it is, it does not answer for it" },
+    { "pattern": "\\.getViewRootContainer\\(\\)\\.setVisible\\(([^;]+)\\);",
+      "replacement": ".getViewRootContainer().visible = ${1};",
+      "note": "a container shows and hides by its own flag; only an entity is asked" },
+    { "pattern": "\\.getViewRootContainer\\(\\)\\.setAlpha\\(([^;]+)\\);",
+      "replacement": ".getViewRootContainer().alpha = ${1};",
+      "note": "a container's opacity is its own field; only an entity is asked" },
 
     // gotoAndPlay("LABEL") → playFrameLabel("LABEL"). Numeric form
     // gotoAndPlay(N) → playFrame(N) — included for completeness even though
@@ -460,6 +1118,14 @@
       "replacement": ".playFrame($1)",
       "note": "numeric-frame form"
     },
+    // gotoAndStop(N) reaches here already renamed to playFrameLabel(N), and a frame NUMBER is
+    // not a label: the engine refuses the int where it wants a string, on every frame the
+    // object runs (sector z's laser, 256 times a match, with the engine pinned underneath).
+    {
+      "pattern": "\\.playFrameLabel\\(\\s*(\\d+)\\s*\\)",
+      "replacement": ".playFrame($1)",
+      "note": "a frame number, not a label"
+    },
 
     // SSF2Utils.calculateXSpeed/YSpeed(speed, angle) → FM Math.calculateX/YVelocity(degrees, speed):
     // ARG ORDER IS SWAPPED between the two APIs.
@@ -473,12 +1139,56 @@
       "replacement": "Math.calculateYVelocity($2, $1)",
       "note": "swap args; SSF2's flipped-Y helper may need a sign review"
     },
-    // setScale(x, y): FM has no two-arg setScale — split. Anchored to `self.` (the
-    // receiver the decompiler emits) to avoid mis-targeting a chained receiver.
+    // AN ITEM. What the source generates as an item is a projectile of this character's, pulled
+    // from wherever the game keeps it, that rides its holder's item box until it is thrown:
+    // generateItem makes and holds it, getItem is the held one, tossItem throws it at an angle,
+    // toToss throws it the way the holder is holding, activate/deactivate switch its boxes.
     {
-      "pattern": "self\\.setScale\\(\\s*([^,()]+),\\s*([^()]+)\\)",
-      "replacement": "self.setScaleX($1); self.setScaleY($2)",
-      "note": "SSF2 setScale(x,y) → FM setScaleX + setScaleY"
+      "pattern": "self\\.getItem\\(\\)\\.activateItem\\(\\)",
+      "replacement": "__itemActive(true)",
+      "note": "SSF2 held item's boxes on"
+    },
+    {
+      "pattern": "self\\.getItem\\(\\)\\.deactivateItem\\(\\)",
+      "replacement": "__itemActive(false)",
+      "note": "SSF2 held item's boxes off"
+    },
+    {
+      "pattern": "self\\.generate(?:Character)?Item\\(\\s*((?:[^,()]|\\([^()]*\\))+?)\\s*(?:,(?:[^()]|\\([^()]*\\))*)?\\)",
+      "replacement": "__generateItem($1)",
+      "note": "SSF2 generateItem / generateCharacterItem(name, ...) → the item made and held"
+    },
+    {
+      "pattern": "self\\.getItem\\(\\)",
+      "replacement": "__getItem()",
+      "note": "SSF2 getItem() → the held item"
+    },
+    {
+      "pattern": "self\\.tossItem\\(",
+      "replacement": "__tossItem(",
+      "note": "SSF2 tossItem(angle) → the held item thrown at the angle"
+    },
+    {
+      "pattern": "((?:\\w+(?:\\(\\))?\\.)*\\w+(?:\\(\\))?)\\.toToss\\(\\)",
+      "replacement": "__toToss($1)",
+      "note": "SSF2 toToss(): the item thrown (asked of the item, or of its holder) the way the holder is holding"
+    },
+    {
+      "pattern": "self\\.removeItem\\(\\)",
+      "replacement": "__removeItem()",
+      "note": "SSF2 removeItem() → the held item gone"
+    },
+    // an item's frame interrupt (the holder's attacks it turns into throws) and its holder:
+    // published on the item, asked of it by the holder in the item's own scope
+    {
+      "pattern": "self\\.setFrameInterrupt\\(\\s*(\\w+)\\s*\\)",
+      "replacement": "self.exports.__frameInterrupt = $1",
+      "note": "SSF2 setFrameInterrupt(f) → the item publishes its interrupt"
+    },
+    {
+      "pattern": "self\\.getHolder\\(\\)",
+      "replacement": "self.exports.__holder",
+      "note": "SSF2 getHolder() → the fighter holding this item"
     },
     // setPosition(x, y) absolute reposition → Entity.moveAbsolute(x, y) (same arg shape).
     {
@@ -492,14 +1202,17 @@
       "replacement": "$1.addDamage(-($2))",
       "note": "heal = negative addDamage"
     },
-    // inHitStun():Bool → (getHitstun() > 0). FM exposes a numeric hitstun count, not a bool.
+    // inHitStun():Bool -> (getHitstun() > 0). FM exposes a numeric hitstun count, not a bool.
+    // The WHOLE receiver, not its last word: wrapping in parentheses puts the open paren
+    // between the front of the chain and the rest of it (self.(planeProj.getHitstun() > 0)).
     {
-      "pattern": "(\\w+)\\.inHitStun\\(\\s*\\)",
+      "pattern": "([A-Za-z_][\\w.]*)\\.inHitStun\\(\\s*\\)",
       "replacement": "($1.getHitstun() > 0)",
       "note": "bool derived from hitstun count"
     },
     // Net-velocity queries — only the no-toggle form maps (FM lacks ignoreNormal/ignoreKnockback).
-    { "pattern": "(\\w+)\\.netSpeed\\(\\s*\\)",  "replacement": "$1.getNetSpeed()" },
+    { "pattern": "((?:[\\w.\\[\\]]+(?:\\(\\))?)+)\\.netSpeed\\([^)]*\\)",  "replacement": "$1.getNetSpeed()",
+      "note": "the source's net speed takes an argument some stages pass (fairy glade asks it of every fighter); this engine's takes none" },
     { "pattern": "(\\w+)\\.netXSpeed\\(\\s*\\)", "replacement": "$1.getNetXVelocity()" },
     { "pattern": "(\\w+)\\.netYSpeed\\(\\s*\\)", "replacement": "$1.getNetYVelocity()" },
     // Body-status queries → hasBodyStatus(BodyStatus.*).
@@ -607,6 +1320,74 @@
   // `global_bubbles`) fall through to the per-character `getContent`
   // path and use the `active` animation fallback — porters can either
   // add a mapping here or supply a local `<name>.entity`.
+  // What the source's api answers when an object is asked its type (`getType()`), by the kind
+  // of entity it is here. A script compares that answer against these strings ("SSF2Character")
+  // or builds a method name out of it ("get" + "Character" + "Stat"), so the same strings are
+  // answered here (api_mappings::rewrite_get_type + runtime_type_helpers).
+  "entity_type_names": {
+    "CHARACTER":  "SSF2Character",
+    "PROJECTILE": "SSF2Projectile",
+    "ITEM":       "SSF2Item"
+  },
+
+  // Accessors the source's api answers from a stat the object declares, by the stat's name,
+  // whatever kind of object is asked (a projectile reading its owner's height). This engine has
+  // no such method, so the read goes to the object's declared stat instead
+  // (api_mappings::rewrite_stat_accessors + __declaredStat).
+  "stat_accessors": {
+    "getWidth":  "width",
+    "getHeight": "height"
+  },
+
+  // The source's character states, by the names its api declares for them (the file carries
+  // the numbers: convert.rs reads them off its CState class), and the states of this engine
+  // each one covers. A script that compares a state number is asking "is it in this state",
+  // and that is what is answered here (api_mappings::rewrite_numeric_state_compares). A source
+  // state with no counterpart here is never matched.
+  "source_state_names": {
+    "IDLE":            ["STAND"],
+    "ENTRANCE":        ["INTRO"],
+    "REVIVAL":         ["REVIVAL"],
+    "WALK":            ["WALK_IN", "WALK_LOOP", "WALK_OUT"],
+    "RUN":             ["RUN"],
+    "DASH":            ["DASH"],
+    "DASH_INIT":       ["DASH"],
+    "SKID":            ["SKID"],
+    "TURN":            ["STAND_TURN", "RUN_TURN"],
+    "JUMP_CHAMBER":    ["JUMP_SQUAT"],
+    "JUMP_RISING":     ["JUMP_IN", "JUMP_LOOP"],
+    "JUMP_FALLING":    ["JUMP_OUT", "FALL"],
+    "JUMP_MIDAIR_RISING": ["JUMP_MIDAIR"],
+    "LAND":            ["LAND"],
+    "HEAVY_LAND":      ["LAND"],
+    "ATTACKING":       ["JAB", "DASH_ATTACK", "TILT_UP", "TILT_DOWN", "TILT_FORWARD", "STRONG_UP_IN", "STRONG_UP_CHARGE", "STRONG_UP_ATTACK", "STRONG_DOWN_IN", "STRONG_DOWN_CHARGE", "STRONG_DOWN_ATTACK", "STRONG_FORWARD_IN", "STRONG_FORWARD_CHARGE", "STRONG_FORWARD_ATTACK", "AERIAL_NEUTRAL", "AERIAL_UP", "AERIAL_DOWN", "AERIAL_FORWARD", "AERIAL_BACK", "SPECIAL_NEUTRAL", "SPECIAL_SIDE", "SPECIAL_UP", "SPECIAL_DOWN", "THROW_UP", "THROW_DOWN", "THROW_FORWARD", "THROW_BACK", "LEDGE_ATTACK", "CRASH_ATTACK"],
+    "LEDGE_ROLL":      ["LEDGE_ROLL"],
+    "CROUCH":          ["CROUCH_IN", "CROUCH_LOOP", "CROUCH_OUT"],
+    "GRABBING":        ["GRAB", "GRAB_HOLD", "GRAB_PUMMEL"],
+    "INJURED":         ["HURT_LIGHT", "HURT_MEDIUM", "HURT_HEAVY"],
+    "FLYING":          ["TUMBLE"],
+    "TUMBLE_FALL":     ["TUMBLE"],
+    "DODGE_ROLL":      ["ROLL"],
+    "ROLL":            ["ROLL"],
+    "SIDESTEP_DODGE":  ["SPOT_DODGE"],
+    "LEDGE_HANG":      ["LEDGE_IN", "LEDGE_LOOP"],
+    "LEDGE_CLIMB":     ["LEDGE_CLIMB"],
+    "SHIELDING":       ["SHIELD_IN", "SHIELD_LOOP", "SHIELD_OUT", "SHIELD_HURT"],
+    "SHIELD_DROP":     ["SHIELD_OUT"],
+    "CRASH_LAND":      ["CRASH_BOUNCE", "CRASH_LOOP"],
+    "CRASH_GETUP":     ["CRASH_GET_UP", "CRASH_ROLL", "CRASH_ATTACK"],
+    "CAUGHT":          ["GRABBED_HOLD"],
+    "FROZEN":          ["FROZEN"],
+    "PITFALL":         ["BURIED"],
+    "TAUNT":           ["EMOTE"],
+    "TECH_GROUND":     ["TECH"],
+    "TECH_ROLL":       ["TECH_ROLL"],
+    "WALL_CLING":      ["WALL_JUMP"],
+    "DEAD":            ["KO"],
+    "STAR_KO":         ["KO"],
+    "SCREEN_KO":       ["KO"]
+  },
+
   "global_vfx_map": {
     // Landing / impact / strong-move dust.
     "global_dust_heavy":    "LAND_DUST",
@@ -634,7 +1415,13 @@
     // to convert. Fraymakers has its own equivalents, so they map here rather than dangling.
     // Anything left unmapped is not spawned at all: see api_mappings::effect_is_spawnable.
     "effect_land":          "LAND_DUST",
-    "ground_bounce":        "LAND_DUST"
+    "ground_bounce":        "LAND_DUST",
+    "gbdust":               "LAND_DUST",
+    "land":                 "LAND_DUST",
+    "dust":                 "DUST_POOF",
+    "dust_effect_swirl":    "DUST_SPIN",
+    "effect_dust_light":    "DUST_START_LIGHT",
+    "global_dustboom":      "DUST_START_HEAVY"
   },
 
   // global_sound_map: SSF2 *shared* sound ids (not extracted into a
@@ -671,6 +1458,49 @@
   // updateAnimationStats call with all matched fields, etc.). Source
   // fields not listed below pass through as `// TODO: …` comments —
   // they're surfaced for manual review without dropping data.
+  // CALLS REWRITTEN BY THEIR ARGUMENTS (api_mappings::apply_call_rewrites): the arguments are
+  // parsed with brackets and strings balanced, so a nested call or a string holding a bracket is
+  // one argument. Placeholders: {recv} the receiver, {1}.. an argument, {args} all of them,
+  // {1.name} a field of an object-literal argument.
+  "call_rewrites": [
+    { "call": "setAttackEnabled", "receiver": "self", "args": 2, "template": "__setAttackEnabled({1}, {2})",
+      "note": "SSF2 turns one attack off or back on by its name; this engine turns an ACTION off with a status effect" },
+    { "call": "setAttackEnabled", "receiver": "self", "args": 3, "template": "__setAttackEnabled({1}, {2}, {3})",
+      "note": "the same, turned back on by itself after the given frames" },
+    { "call": "setAttackEnabled", "receiver": "other", "args": 2, "template": "__askAttackEnabled({recv}, {1}, {2})",
+      "note": "the same, asked of another fighter (a summoned object turning its owner's attack back on)" },
+    { "call": "setAttackEnabled", "receiver": "other", "args": 3, "template": "__askAttackEnabled({recv}, {1}, {2}, {3})",
+      "note": "the same, with the frames" },
+    { "call": "setScale", "args": 2, "template": "{recv}.setScaleX({1}); {recv}.setScaleY({2})",
+      "note": "SSF2 setScale(x, y) on anything: this engine scales each axis on its own" },
+    { "call": "recover", "args": 1, "template": "{recv}.addDamage(-({1}))",
+      "note": "SSF2 heals by x; this engine's damage counter takes a negative add" },
+    { "call": "getTeammates", "args": 0,
+      "template": "match.getCharacters().filter(function(__c) { return __c != {recv} && __c.getTeam() == {recv}.getTeam(); })",
+      "note": "the fighters on the asker's team, read off the match, less the asker" },
+    { "call": "addToCamera", "args": 0, "template": "match.getCamera().addTarget({recv})",
+      "note": "a thing the camera is told to keep in frame is its target" },
+    { "call": "removeFromCamera", "args": 0, "template": "match.getCamera().deleteTarget({recv})",
+      "note": "...and one it is told to let go of is not" },
+    { "call": "getPlatformBetweenPoints", "template": "__platformBetween({args})",
+      "note": "the surface a segment crosses between two points (source units): a terrain body's, or a drop-through floor's, as the options allow; null when none" },
+    { "call": "hitTestGroundBetweenPoints", "template": "__groundBetween({args})",
+      "note": "whether a segment between two points crosses any ground" },
+    { "call": "takeDamage", "template": "{recv}.addDamage({1.damage})",
+      "note": "damage dealt to a foe by hand goes on its counter; nothing else in the record has a counterpart here" }
+  ],
+
+  // what a call means asked of a PROJECTILE (the rest of this file reads a fighter's meaning)
+  "projectile_self": {
+    // the fighter's control flag: a projectile's own attack data keeps it in the source and nothing
+    // reads it there; this engine refuses the stat on a projectile (samus's bomb)
+    "call_split_drops": ["__attackControl.on", "__attackControl.ground"]
+  },
+
+  // calls a converter pass translates by name rather than a row here; a fighter's base class that
+  // ships a method of the same name keeps it out of the fighter (see abc_parser, the inherited pass)
+  "translated_in_code": ["addEffectToList"],
+
   "call_splits": {
     "updateAttackStats": {
       "fields": {
@@ -683,20 +1513,21 @@
         //
         // Boolean flags
         "cancelWhenAirborne": "updateAnimationStats.leaveGroundCancel",
-        "allowControl":       "updateAnimationStats.allowMovement",
+        // steering during an attack, held by the fighter's script (`__attackControl`): in the
+        // air when allowed, and on the ground only when allowControlGround also allows it
+        "allowControl":       { "target": "__attackControl.on" },
+        "allowControlGround": { "target": "__attackControl.ground" },
         // Charge timing (chargetime_max is in frame_params → doubled
         // before this stage; the rendered FM value is the 60fps count).
         "chargetime_max":     "updateAnimationStats.chargeFramesMax",
-        // Per-anim physics overrides (FM AnimationStatsProps supports
-        // friction / *SpeedAcceleration / *SpeedCap as per-animation
-        // overrides). SSF2's xSpeedDecay is a NEGATIVE multiplier; FM
-        // friction is a POSITIVE decay value — name maps cleanly but
-        // the user may need to flip signs per site. Flagged inline.
-        "xSpeedAccel":        "updateAnimationStats.groundSpeedAcceleration",
-        "xSpeedAccelAir":     "updateAnimationStats.aerialSpeedAcceleration",
-        "xSpeedCap":          "updateAnimationStats.groundSpeedCap",
-        "xSpeedDecay":        "updateAnimationStats.friction",
-        "xSpeedDecayAir":     "updateAnimationStats.aerialFriction",
+        // Per-anim physics overrides, in this engine's units. The source states a slowdown as a
+        // NEGATIVE amount a frame (peach's side special slows by exactly 3.8 a frame for -3.8),
+        // which this engine takes as positive friction.
+        "xSpeedAccel":        { "target": "updateAnimationStats.groundSpeedAcceleration", "unit": "accel" },
+        "xSpeedAccelAir":     { "target": "updateAnimationStats.aerialSpeedAcceleration", "unit": "accel" },
+        "xSpeedCap":          { "target": "updateAnimationStats.groundSpeedCap", "unit": "speed" },
+        "xSpeedDecay":        { "target": "updateAnimationStats.friction", "unit": "decay" },
+        "xSpeedDecayAir":     { "target": "updateAnimationStats.aerialFriction", "unit": "decay" },
         // CharacterAnimationStats / AnimationStats boolean flags — confirmed against the
         // Fraymakers API docs (CharacterAnimationStats: allowFastFall/allowJump/allowTurn/
         // doubleJumpCancel; AnimationStats: interruptible/autoRotate). Set via the same
@@ -707,7 +1538,10 @@
         "allowTurn":             "updateAnimationStats.allowTurn",
         "allowFullInterrupt":    "updateAnimationStats.interruptible",
         "doubleJumpCancelAttack":"updateAnimationStats.doubleJumpCancel",
-        "rotate":                "updateAnimationStats.autoRotate",
+        // rotate, measured on sora's side special: the art turns to face the way the fighter
+        // moves, measured from the way it faces. this engine's auto-rotation reads its art as
+        // pointing up (a quarter turn off), so it is the script's own (`__rotate({ on: v })`)
+        "rotate":                { "target": "__rotate.on" },
         // disableJump is the inverse of allowJump.
         "disableJump": {
           "target": "updateAnimationStats.allowJump",
@@ -725,17 +1559,26 @@
           "value_map": { "true": "LandType.NORMAL" },
           "todo": "verify per call site (SSF2 canFallOff is bool; FM landType is an enum with more options)"
         },
-        // air_ease → AnimationStats.terminalVelocity. The SSF2 sentinel `-1`
-        // means "no override" and is dropped; any other value sets terminalVelocity.
-        "air_ease": { "target": "updateAnimationStats.terminalVelocity", "skip_if_value": "-1" }
+        // air_ease, MEASURED on simon's up special: while it is in force the fighter's vertical
+        // speed IS the value, every frame (the record shows the per-frame ease values, not the
+        // speeds set beside them), gravity off; -1 hands physics back. a held speed, not a cap:
+        // mapped onto terminalVelocity a 0 left ported fighters hanging in the air for good.
+        // routed to the script's own holder (`__airEase({ hold: v })`), applied in update()
+        "air_ease": { "target": "__airEase.hold" },
+        // hit_ease: the cap on vertical speed for a few frames after the attack connects, held
+        // by the fighter's script (`__hitEase`)
+        "hit_ease": { "target": "__hitEase.v" },
+        // invincibility and super armor, as the source applies them: for the whole attack, until
+        // the attack's own write switches them (held by the fighter's script, `__attackStatus`)
+        "invincible": { "target": "__attackStatus.invincible" },
+        "superArmor": { "target": "__attackStatus.superArmor" }
         // Still-unmapped SSF2 fields (surface as `// TODO:` per call site):
-        // hit_ease (no direct FM speed-stat equivalent), airCancel,
+        // airCancel,
         // airCancelSpecial (cancel-into-aerial windows — no clean FM flag), allowDoubleJump,
-        // allowRun, allowControlGround, atk_id, cancelSoundOnEnd, cancelVoiceOnEnd,
+        // allowRun, atk_id, cancelSoundOnEnd, cancelVoiceOnEnd,
         // facedLedgesOnly, IASA, ledgeFrame, linkFrames, refreshRate, rocket, secondaryAttack.
-        // bodyStatus group (superArmor/heavyArmor/invincible) needs a bool→BodyStatus-enum
-        // conversion (e.g. superArmor→BodyStatus.ARMOR); left for a value-map pass once the
-        // exact BodyStatus enum member names are confirmed.
+        // heavyArmor: the source takes a hit under its threshold without flinching and still
+        // takes the damage; this engine's damage armor takes none, so it has no counterpart.
       }
     }
   },
@@ -747,13 +1590,29 @@
   // Optional 'sentinel': a value at/above which the parameter is left alone.
   "frame_params": [
     // createTimer(delay, repeatCount, callback) — only the delay (arg 0).
-    // keep_one: a per-frame timer (delay 1) keeps firing every engine frame
+    // a per-frame timer (delay 1) fires once a SOURCE frame, which is every other engine frame:
+    // the checks it runs (a second press, a release, a charge) were written for thirty a second,
+    // and run sixty times a second a one-frame tap reads as held across two checks, which samus's
+    // charge shot takes for a second press and stows itself
     // rather than doubling to every-other-frame, preserving poll responsiveness.
-    { "kind": "call",  "name": "createTimer",     "arg": 0, "isframe": true, "keep_one": true },
+    { "kind": "call",  "name": "createTimer",     "arg": 0, "isframe": true, "keep_one": false },
+    // the same timer under the other name the source uses for it
+    { "kind": "call",  "name": "addTimer",        "arg": 0, "isframe": true, "keep_one": false },
+    // a hitstun a script forces on a victim, in source frames
+    // the frames after which an attack turned off turns itself back on
+    { "kind": "call",  "name": "setAttackEnabled", "arg": 2, "isframe": true, "keep_one": false },
+    { "kind": "call",  "name": "__setAttackEnabled", "arg": 2, "isframe": true, "keep_one": false },
+    { "kind": "call",  "name": "__askAttackEnabled", "arg": 3, "isframe": true, "keep_one": false },
+    { "kind": "call",  "name": "forceHitStun",    "arg": 0, "isframe": true, "keep_one": false },
     // hit-freeze / hitstun durations; 255 = "no override" sentinel, kept.
-    { "kind": "field", "name": "hitStun",        "isframe": true, "sentinel": 255 },
-    { "kind": "field", "name": "selfHitStun",    "isframe": true, "sentinel": 255 },
-    { "kind": "field", "name": "hitLag",         "isframe": true, "sentinel": 255 },
+    // the freeze fields gain the hit's own frame before the doubling: SSF2 counts the frames it
+    // holds a victim AFTER the one the hit lands on, Fraymakers counts the whole freeze
+    { "kind": "field", "name": "hitStun",        "isframe": true, "sentinel": 255, "plus": 1 },
+    { "kind": "field", "name": "selfHitStun",    "isframe": true, "sentinel": 255, "plus": 1 },
+    // hitLag is a MULTIPLIER in SSF2 (-1.0, -1.1, -1.23, 0.9), not a count of frames, so there is
+    // nothing here to double -- see scale_knockback_writes' sibling pass, which turns a write of
+    // one into Fraymakers' "no override" so the engine works the hitstun out from the knockback.
+    { "kind": "field", "name": "hitLag",         "isframe": false, "sentinel": 255 },
     // hitbox re-hit cooldown, in frames.
     { "kind": "field", "name": "refreshRate",    "isframe": true },
     // maximum charge duration, in frames.
@@ -771,7 +1630,8 @@
     { "name": "removeEventListener", "note": "generic event API; same shape in Fraymakers" },
     { "name": "hasEventListener", "note": "generic event API; same shape in Fraymakers" },
     { "name": "isFacingRight", "note": "Fraymakers character method, same name" },
-    { "name": "setIntangibility", "note": "kept SSF2 name; pairs are rewritten to applyGlobalBodyStatus by fix_intangibility_pairs in haxe_gen" },
+    { "name": "setIntangibility", "note": "kept SSF2 name so it is not flagged unknown" },
+    { "name": "setInvincibility", "note": "kept SSF2 name so it is not flagged unknown" },
     { "name": "getCamera", "note": "Fraymakers Camera accessor" },
     { "name": "shake", "note": "Camera.shake — same name in Fraymakers" },
     // updateAttackStats is NOT a valid FM API — moved to `call_splits`
@@ -906,6 +1766,21 @@
     // resolve to null at runtime ("Invalid function null"). Comment them out so the call
     // can't crash; the original line stays visible in the marker. removeChild/contains
     // ARE in FM, so they're intentionally NOT here. ──
+    // The GRABBER posing whoever it is holding: it walks the characters it has grabbed and, if the
+    // victim's stance carries the label it names, makes that one play it. Fraymakers' grab system
+    // poses the grabbed character itself from the grab move, and a character has no way to drive
+    // another character's frame, so there is nothing to map this onto and nothing missing when it
+    // is dropped. The biggest entry in the ssf2_only tally that is not the item system: 130 calls
+    // across 32 characters, all of them this.
+    // THE DAMAGE METER: a HUD widget the character package builds and draws itself (sora's
+    // `FinalSmashBar`). Fraymakers owns its own HUD and a character does not draw into it, so the
+    // widget has nowhere to be and its calls have no object to reach.
+    { "category": "no_equivalent", "name": "addToDamageMeter", "note": "SSF2 character draws its own HUD meter; FM owns the HUD. ssf2_only." },
+    { "category": "no_equivalent", "name": "removeFromDamageMeter", "note": "SSF2 character draws its own HUD meter; FM owns the HUD. ssf2_only." },
+    { "category": "no_equivalent", "name": "throbDamageCounter", "note": "SSF2 HUD meter flourish; FM owns the HUD. ssf2_only." },
+    { "category": "no_equivalent", "name": "setStarKOEnabled", "note": "SSF2 lets a stage turn the star KO off; FM has no switch for it. ssf2_only." },
+    { "category": "no_equivalent", "name": "setScreenKOEnabled", "note": "SSF2 lets a stage turn the screen KO off; FM has no switch for it. ssf2_only." },
+    { "category": "no_equivalent", "name": "setCamStageFocus", "note": "SSF2 hands the camera a stage-focus weight; FM's camera follows fighters and the stage's own camera box, with no weight to hand it. ssf2_only." },
     { "category": "no_equivalent", "name": "swapChildren", "note": "Flash z-order; FM uses layering. No FM displaylist." },
     { "category": "no_equivalent", "name": "addChild", "note": "Flash displaylist add; no FM analog (createVfx/createSpriteStructure instead)." },
     { "category": "no_equivalent", "name": "getChildByName", "note": "Flash displaylist lookup; no FM analog." },
@@ -917,6 +1792,14 @@
     { "category": "no_equivalent", "name": "nextFrame", "note": "Flash timeline nav; no FM analog." },
     { "category": "no_equivalent", "name": "prevFrame", "note": "Flash timeline nav; no FM analog." },
     { "category": "no_equivalent", "name": "getBounds", "note": "Flash bounds query; FM uses ECB/hitbox APIs." },
+    // A timeline stop holds the pose it is on. `pause` reads like the counterpart -- it sits among
+    // getAnimation/playFrame/getCurrentFrame -- but pausing a CHARACTER takes it out of whatever
+    // the camera reads to bound its targets, and the engine dies on the next frame it draws
+    // (GameCamera, null access). Mario's own jump does this on its 38th frame, so every jump ended
+    // the match. There is no way to hold a frame from a script, so a stop has no counterpart.
+    { "category": "no_equivalent", "name": "stop", "note": "timeline hold; pausing an entity crashes the camera, and nothing else holds a frame" },
+    // (the stage itself is the global `stage` from any script here; see `the_stage_from_outside`)
+    { "category": "no_equivalent", "name": "getCamBounds", "note": "Camera bounds live on the stage, which a character cannot reach." },
 
     // ── handled_elsewhere: real case handled by a later pass; this only catches leftover residue ──
     { "category": "handled_elsewhere", "name": "attachEffect", "note": "regex_replacements rewrites literal-string forms; this catches non-literal/nested cases for manual port" },
@@ -925,16 +1808,16 @@
     // ── manual_port: a Fraymakers API/mechanism does the same job, but wiring it up needs a human ──
     { "category": "manual_port", "name": "forceAttack", "note": "SSF2 buffers a raw attack input (e.g. forceAttack(\"b\",1)); FM has no script input-buffer analog — comment out (was emitted as an undefined self.forceAttack call). Manual port: drive the intended move via self.toState(CState.X)" },
     { "category": "manual_port", "name": "fireProjectile", "note": "FM uses match.createProjectile(projectileContent, owner) — manual port" },
-    { "category": "manual_port", "name": "getCurrentProjectile", "note": "FM tracks projectiles in script-level vars; use match.getProjectiles() — manual port" },
-    { "category": "manual_port", "name": "swapDepthsWithGrabbedOpponent", "note": "rewrite as self.swapDepths(self.getGrabbedFoe()) — small structural change" },
+    // getCurrentProjectile is answered by resolve_current_projectile: the spawn rewrite keeps
+    // what it made in a local, and the ask right after it is that local. Left here would strike
+    // the line that REMEMBERS the projectile, which is also the line that stops another being
+    // fired the next frame.
     { "category": "manual_port", "name": "unnattachFromGround", "note": "FM uses unattachFromFloor() — close but not identical, manual port" },
-    { "category": "manual_port", "name": "getExecTime", "note": "FM has match.getElapsedFrames() but scope differs (match-wide, not entity)" },
     { "category": "manual_port", "name": "getNearestLedge", "note": "FM ledge API is action-oriented (attemptLedgeGrab), not query-oriented" },
     { "category": "manual_port", "name": "getMetalStatus", "note": "SSF2 'Metal Box' powerup — FM uses StatusEffect/BodyStatus instead" },
     { "category": "manual_port", "name": "inUpperLeftWarningBounds", "note": "SSF2 offscreen-warning bounds; FM exposes OffscreenIndicator but no in/out bounds queries" },
     { "category": "manual_port", "name": "angleControl", "note": "SSF2Projectile.angleControl(speed, angle) sets X/Y speeds for angular velocity. No single FM call; emulate via Math.calculateXVelocity/YVelocity + setXSpeed/se…" },
     { "category": "manual_port", "name": "createSelfPlatform", "note": "creates a position-locked platform from x/y/w/h; FM uses match.createSpriteStructure/createStructure (no self-locked helper). Manual port. confidence: high" },
-    { "category": "manual_port", "name": "getAttackBoxStat", "note": "reads a single attack-box stat by id+name; FM getHitboxStats(id) returns the whole HitboxStats object — caller indexes the field. No single-stat getter; manual…" },
     { "category": "manual_port", "name": "getAttackStat", "note": "reads a single per-attack (non-box) stat; FM getAnimationStat(name) is the closest (per-animation stat) but keys differ. Manual port / map to getAnimationStat.…" },
     { "category": "manual_port", "name": "getCharacter", "note": "SSF2API.getCharacter(uid) — FM exposes only match.getCharacters() (no single lookup)" },
     { "category": "manual_port", "name": "getCurrentAttackFrame", "note": "current attack name as string — closest is getAnimation() but semantics differ (attack-frame vs anim); manual" },
@@ -942,18 +1825,28 @@
     { "category": "manual_port", "name": "getLinkageID", "note": "returns Flash linkage id string; FM is not Flash — closest is getResource() identity. Manual port. confidence: high" },
     { "category": "manual_port", "name": "getMidground", "note": "SSF2Stage midground MovieClip (entities layer); FM uses getCharactersContainer()." },
     { "category": "manual_port", "name": "getNearest", "note": "finds nearest object by type string; FM has no built-in nearest-search — iterate match.getCharacters()/getProjectiles() + Math.getDistance. Manual port. confid…" },
-    { "category": "manual_port", "name": "getPlatformBetweenPoints", "note": "SSF2 platform raycast; FM uses hitTestStructuresWithLineSegment (Entity-level), different shape." },
+    { "category": "no_equivalent", "name": "triggerRewind", "note": "SSF2 rewinds a hazard's own timeline to replay it; an FM object has no timeline to wind back -- a converted hazard is a game object playing an animation, so a stage that recycles its hazards this way just leaves them running. ssf2_only." },
+    { "category": "no_equivalent", "name": "setForeground", "note": "SSF2 moves an object's clip into a named layer of the stage's display tree so it draws in front; a converted object carries its own art and the stage has no tree to move it into, so only its DRAW ORDER is lost. ssf2_only." },
+    { "category": "no_equivalent", "name": "updateCameraParameters", "note": "SSF2 retunes the camera mid-match (zoom floor, follow rates); the Fraymakers camera takes its parameters from the stage's stats and has no such ask. ssf2_only." },
+    { "category": "no_equivalent", "name": "setStageFocus", "note": "SSF2 tells the camera to hold on the stage for N frames; the Fraymakers camera has no such hold. ssf2_only." },
+    { "category": "no_equivalent", "name": "updatePlayerSettings", "note": "SSF2 retunes one player mid-match (respawn height and the like); Fraymakers takes those from the match config and has no per-player ask. ssf2_only." },
+    { "category": "no_equivalent", "name": "throbDamageCounter", "note": "SSF2 flashes the damage number when a stage burns a fighter; a flourish on the HUD, with no counterpart here. ssf2_only." },
+    { "category": "no_equivalent", "name": "getAllGrabbedFoes", "note": "SSF2 asks who a final-smash grab is holding; Fraymakers has no final smash. ssf2_only." },
+    { "category": "no_equivalent", "name": "currentActiveFinalSmash", "note": "SSF2 asks the match which final smash is running; Fraymakers has no final smash, so there is nothing to answer with. ssf2_only." },
+    { "category": "no_equivalent", "name": "isFSCutscenePlaying", "note": "SSF2 asks whether a final-smash cutscene is playing; Fraymakers has neither. ssf2_only." },
+    { "category": "no_equivalent", "name": "getSmashBallBounds", "note": "SSF2 hands back the region its smash ball may appear in, which a scrolling stage moves with the rest; Fraymakers has no smash ball and no such region. ssf2_only." },
+    { "category": "no_equivalent", "name": "getItemSpawnBoundsList", "note": "SSF2 hands back the regions items spawn in; Fraymakers has no item system to bound. ssf2_only." },
+    { "category": "no_equivalent", "name": "getSpawnPositionMCs", "note": "SSF2 hands back the spawn beacons as clips so a scrolling stage can move them; a converted stage's spawn points are stats, not objects. ssf2_only." },
+    { "category": "no_equivalent", "name": "getCollisionBoundary", "note": "SSF2 hands back one of the stage's named collision walls so the stage can move it (central highway walks its blast edges inward as a pillar falls); FM's stage bounds are stats on the stage, not addressable objects, so there is nothing to hand back. ssf2_only." },
+    { "category": "no_equivalent", "name": "getPlatform", "note": "SSF2 Match.getPlatform(name) hands back a named platform clip from the stage's tree; FM has no tree to name one in -- a converted stage's platforms are collision structures, not addressable objects. ssf2_only." },
     { "category": "manual_port", "name": "getProjectile", "note": "SSF2API.getProjectile(uid) — FM exposes only match.getProjectiles() (no single lookup)" },
-    { "category": "manual_port", "name": "hitTestGroundBetweenPoints", "note": "SSF2 platform raycast; FM uses hitTestStructuresWithLineSegment." },
     { "category": "manual_port", "name": "homeTowardsTarget", "note": "moves obj toward a target at given speed; FM has no homing helper — implement with Math.getAngleBetween + setKnockback/velocity. Manual port. confidence: high" },
     { "category": "manual_port", "name": "isEqual", "note": "SSF2BaseAPIObject.isEqual(obj) reference equality (use instead of ==). FM Entity has getUid(); identity is compared directly with == on entity refs in Haxe. No…" },
     { "category": "manual_port", "name": "setColorFilters", "note": "applies costume-style color settings ignoring team; FM uses setCostumeShader(PaletteSwapShader). Mechanical rename is unsafe (arg is a settings object vs shade…" },
     { "category": "manual_port", "name": "setHurtInterrupt", "note": "registers a pre-hurt veto callback — no FM hurt-interrupt hook (FM uses validateHit/event listeners); manual port" },
 
     // ── no_equivalent: no Fraymakers construct we've found does this (subsystem absent, or Flash/timeline-only) ──
-    { "category": "no_equivalent", "name": "clearEffectsOnStateChange", "note": "VFX lifecycle is owned by the Vfx instance / event listeners in FM — no global clear" },
     { "category": "no_equivalent", "name": "jumpToContinue", "note": "SSF2 jump-to-continue loop; no FM equivalent" },
-    { "category": "no_equivalent", "name": "stop", "note": "timeline navigation; no timeline in FM (AudioClip.stop() exists but requires a clip handle)" },
     { "category": "no_equivalent", "name": "killAttackboxes", "note": "no FM equivalent" },
     { "category": "no_equivalent", "name": "checkAtkilled", "note": "no FM equivalent" },
     // Fraymakers has no item system, so the whole SSF2 item surface is commented out
@@ -968,14 +1861,9 @@
     { "category": "no_equivalent", "name": "pickupItem", "note": "no FM item system (FM has Assists)" },
     { "category": "no_equivalent", "name": "tossItem", "note": "no FM item system" },
     { "category": "no_equivalent", "name": "getItem", "note": "no FM item system" },
-    { "category": "no_equivalent", "name": "getCPULevel", "note": "no public 'getCPULevel' in FM — AI is in CharacterAiScript" },
-    { "category": "no_equivalent", "name": "isCPU", "note": "no public isCPU getter in FM (port-colour internally branches on it)" },
-    { "category": "no_equivalent", "name": "stopSound", "note": "FM AudioClip.stop() needs the AudioClip handle returned by AudioClip.play() — manual port required" },
-    { "category": "no_equivalent", "name": "stopSFX", "note": "same as stopSound — needs an AudioClip handle from the matching play() call" },
-    { "category": "no_equivalent", "name": "stopHoldSound", "note": "same as stopSound — needs an AudioClip handle from the matching play() call" },
+    { "category": "no_equivalent", "name": "getCPULevel", "note": "the source's computer players take their own branch and steer by injected controls; this engine's computer players press the same controls a person does, so the person's branch is the one that runs for them (the player config's `level` is there, and 0 for a person)" },
+    { "category": "no_equivalent", "name": "isCPU", "note": "answered no on purpose: this engine's computer players press the controls a person does, so the person's branch is theirs too; the source's computer branch steers by injected controls, which have no counterpart (the player config's `cpu` says it, if ever needed)" },
     { "category": "no_equivalent", "name": "stopListening", "note": "TODO: maps to removeEventListener(type, listener) in FM but signature differs — verify per-callsite" },
-    { "category": "no_equivalent", "name": "addIgnoreObject", "note": "SSF2Platform.addIgnoreObject(obj) disables collision vs a specific object. FM Structure collision model differs (no per-object ignore list call in index). ssf2…" },
-    { "category": "no_equivalent", "name": "calculateKnockback", "note": "SSF2 knockback formula; no FM public formula API." },
     { "category": "no_equivalent", "name": "endControl", "note": "SSF2Projectile.endControl() removes player directional control stats. FM has no controlDirection/influence sta…" },
     { "category": "no_equivalent", "name": "exportStats", "note": "SSF2Projectile.exportStats() returns spawn-time stat snapshot Object; no FM equivalent (FM getProjectileStat is live). ssf2_only." },
     { "category": "no_equivalent", "name": "generateItem", "note": "spawn engine/custom item — no FM item system" },
@@ -1007,7 +1895,6 @@
     { "category": "no_equivalent", "name": "removeSelfPlatform", "note": "frees the createSelfPlatform structure; in FM kill() the created Structure. Manual port (no direct API). confidence: high" },
     { "category": "no_equivalent", "name": "replacePalette", "note": "SSF2Utils helper (color/MovieClip/timeline) with no FM equivalent — manual port" },
     { "category": "no_equivalent", "name": "resetCPUControls", "note": "clears imported CPU controls — no FM analog" },
-    { "category": "no_equivalent", "name": "setAttackEnabled", "note": "per-attack enable + reenable timer — no FM per-attack-enable API" },
     { "category": "no_equivalent", "name": "setCPUAttackQueue", "note": "CPU attack-queue string — no FM analog" },
     { "category": "no_equivalent", "name": "setFinalSmashMeterCharge", "note": "Final Smash meter setter — no FM Final Smash" },
     { "category": "no_equivalent", "name": "setLastUsed", "note": "set frames-since-attack-used — no FM analog" },
@@ -1019,6 +1906,5 @@
 
   // Script.hx Haxe templates now live in the per-entity TOML files:
   //   global_helpers.toml · character_helpers.toml · projectile_helpers.toml
-  //   (stage_helpers.toml / item_helpers.toml are TODO placeholders).
   // See crate::mappings::script_templates().
 }

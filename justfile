@@ -44,8 +44,9 @@ smoke:
 # update, weather, moving platforms, backdrop elements, and boundary/parallax handling. Every one
 # is small, so the whole sweep is quick enough to run before every PR.
 #
-# Use `sweep-stages-all` for the full corpus when a change touches shared art or geometry
-# rendering and you want the exhaustive answer.
+# There is deliberately NO full-corpus convert recipe: it takes hours and writes tens of
+# gigabytes. The sample is the regression gate. To find out how widespread something is,
+# SCAN with `peptide ssf2 stage <f> --info`, which parses without emitting.
 sample_stages := "battlefield battlefield2 bombfactory butterbuilding bowserscastle crateria crystalsmash flatzoneplus fourside huecomundo"
 
 sweep-stages:
@@ -59,24 +60,43 @@ sweep-stages:
         fi
     done
     echo "$((total-fails))/$total sample stages converted clean"
+    # CONVERTING IS NOT THE WHOLE BAR. The engine drops a script it cannot parse WHOLE, so a
+    # stage that converts clean can still lose every object it makes over one stray bracket --
+    # silently, with the first symptom a frame reporting an unknown variable for a name that is
+    # right there in the file. This reads what was emitted and refuses the shapes that do that.
+    python3 tools/check-emitted.py build/sweep || fails=$((fails+1))
     exit $fails
 
-# the exhaustive version: every corpus stage. slow, and writes a LOT — see sweep-stages.
-sweep-stages-all:
-    #!/usr/bin/env bash
-    set -u
-    fails=0; total=0
-    for f in {{ssfs}}/stages/*.ssf; do
-        total=$((total+1))
-        if ! ./build/release/peptide ssf2 stage "$f" --out build/sweep >/dev/null 2>&1; then
-            echo "FAIL: $(basename "$f")"; fails=$((fails+1))
-        fi
-    done
-    echo "$((total-fails))/$total stages converted clean"
-    exit $fails
+# the converter's floor for the whole roster, offline: every fighter converted in parallel, its
+# emitted scripts checked for parse problems and calls nothing answers, and what it leaves unported
+# counted per kind against tools/tests/strike_tally.json. minutes; `-- --update` keeps a new floor
+converter-audit *args:
+    python3 tools/tests/strike_tally.py {{args}}
 
-# run a dev-tools diagnostic bin, e.g.
-#   just dump dump_collision_box {{ssfs}}/mario.ssf a_air_forward
+# the same ten, but RUN: a stage that converts can still throw the moment its scripts tick
+sweep-stages-live:
+    python3 tools/verify.py stage {{sample_stages}}
+
+# THE BAR FOR "PORTED": ten stages and ten fighters converted, published, booted and driven,
+# each held to the plan the converter wrote by what its own running script reports. hours.
+verify:
+    python3 tools/verify.py sample
+
+# every fighter's six gates on the runtime's path, from a frozen build: `just verify-roster`, or
+# name some (`just verify-roster mario sonic`). hours for the whole roster; results in
+# build/verify/roster.txt
+verify-roster *FIGHTERS:
+    ./tools/verify-roster.sh {{FIGHTERS}}
+
+# each fighter's hits landed on both engines, damage and launch side by side (aerials included):
+# `just hits-roster`, or one fighter (`just hits-roster mario`). results in build/verify/hits-<id>.json
+hits-roster *FIGHTERS:
+    PEPTIDE_RUNTIME=1 python3 tools/tests/hit_parity.py --all {{FIGHTERS}}
+
+# one subject through every gate: `just verify-one stage fourside` / `just verify-one char mario`
+verify-one KIND ID *ARGS:
+    python3 tools/verify.py {{KIND}} {{ID}} {{ARGS}}
+
 dump BIN *ARGS:
     cargo run -p ssf2_converter --features dev-tools --bin {{BIN}} -- {{ARGS}}
 

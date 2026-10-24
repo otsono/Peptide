@@ -1,18 +1,14 @@
-//! fraytools — drive the user's LOCAL FrayTools install (Electron) over the Chrome
-//! DevTools Protocol. Three subcommands, ported from the Node tools/fraytools-harness/*.js
-//! to pure Rust (no Node, no chrome-remote-interface):
+//! fraytools — drive the user's LOCAL FrayTools install. Three subcommands:
 //!   * `peptide export`  — run FrayTools' own Publish to build the game-ready .fra.
 //!   * `peptide render`  — open an entity on the stage and clip-capture the canvas PNG.
 //!   * `peptide harness` — open + navigate to an animation/frame, extract box geometry
 //!                         from the entity JSON, capture a PNG, and emit a JSON report.
 //!
-//! The in-page JavaScript (React-16 fiber walking, FrayTools controller calls, Redux
-//! dispatch) is preserved VERBATIM from the original scripts — it's the fragile,
-//! load-bearing part. Rust only owns the transport (HTTP + WebSocket CDP), the process
-//! orchestration, and the pure filesystem logic (publish-folder edit, box extraction).
+//! Rust owns the transport, the process orchestration, and the pure filesystem logic
+//! (publish-folder edit, box extraction).
 //!
 //! IP boundary (load-bearing): contains NO FrayTools source, assets, or strings. It only
-//! (a) launches the user's existing FrayTools binary and (b) speaks standard CDP to it.
+//! launches the user's existing FrayTools binary and talks to it.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -37,7 +33,11 @@ pub fn export(args: &[String]) -> Result<()> {
     let ft_bin = arg(args, "fraytools").map(String::from).unwrap_or_else(default_fraytools);
     let project = arg(args, "project").ok_or_else(|| anyhow!("--project <abs path to .fraytools> is required"))?;
     let settle = arg_u64(args, "settle", 6000);
-    let timeout_ms = arg_u64(args, "timeout", 120_000);
+    // LONG ENOUGH FOR A BIG STAGE. Publishing writes every picture in the package, and a stage
+    // with a few hundred backdrop frames takes minutes -- at two, the wait ended first and the
+    // engine kept whatever was installed before, which reads as a stage that does nothing rather
+    // than one that was never published. Waiting costs time; giving up early costs the answer.
+    let timeout_ms = arg_u64(args, "timeout", 600_000);
 
     let project = PathBuf::from(project);
     let project_dir = project.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -66,36 +66,54 @@ pub fn export(args: &[String]) -> Result<()> {
             if !cdp_up(port) { break; }
             thread::sleep(Duration::from_millis(500));
         }
-        thread::sleep(Duration::from_secs(3)); // let it fully exit + release the port
+        // gone when the port is released, not a fixed three seconds later
+        let gone_dl = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < gone_dl && cdp_up(port) { thread::sleep(Duration::from_millis(100)); }
     }
-    eprintln!("launching FrayTools ({ft_bin}) with --remote-debugging-port={port}");
+    eprintln!("launching FrayTools ({ft_bin})");
     launch_fraytools(&ft_bin, port)?;
-    if !wait_for_cdp(port, Duration::from_secs(45)) { bail!("CDP never came up"); }
+    if !wait_for_cdp(port, Duration::from_secs(45)) { bail!("FrayTools started but never became reachable"); }
 
     let ws = wait_for_target(port, Duration::from_secs(30))
         .ok_or_else(|| anyhow!("no inspectable FrayTools page target appeared"))?;
     let mut cdp = Cdp::connect(&ws)?;
-    thread::sleep(Duration::from_millis(1500));
 
-    // 2. Locate the controller (getLibraryDirectory + openProject + publish).
-    if cdp.eval_str(STASH_CTRL_JS)? != "ok" {
-        bail!("could not locate FrayTools controller");
+    // 2. Locate the controller (getLibraryDirectory + openProject + publish): asked for until
+    // the page has mounted it rather than after a fixed pause
+    let ctrl_dl = Instant::now() + Duration::from_secs(20);
+    let mut found = String::new();
+    while Instant::now() < ctrl_dl {
+        found = cdp.eval_str(STASH_CTRL_JS).unwrap_or_else(|e| format!("err:{e}"));
+        if found == "ok" { break; }
+        thread::sleep(Duration::from_millis(100));
+    }
+    if found != "ok" {
+        bail!("could not locate FrayTools controller: {found}");
     }
 
     // 3. ALWAYS (re)open the project so FrayTools reloads fresh on-disk source + the
     // publishFolders we just edited. Publishing from a stale in-memory copy was silently
     // shipping the OLD converted scripts.
     eprintln!("opening project: {}", project.display());
+    let _ = cdp.eval("window.__ctrl_before = window.__ctrl");
     cdp.eval(&format!("window.__ctrl.openProject({})", js_string(&project.to_string_lossy())))?;
-    thread::sleep(Duration::from_millis(settle));
     // A project load REMOUNTS the controller (and can briefly tear down the React root).
-    // Poll until it reappears instead of checking once.
+    // The load is over when a different controller instance is there; `settle` bounds how
+    // long that is waited for before the old one is accepted (a load that keeps its instance)
+    let remount_dl = Instant::now() + Duration::from_millis(settle);
+    while Instant::now() < remount_dl {
+        let r = cdp.eval_str(STASH_CTRL_JS).unwrap_or_default();
+        let changed = cdp.eval_str("(()=>window.__ctrl && window.__ctrl !== window.__ctrl_before ? 'yes' : 'no')()").unwrap_or_default();
+        if r == "ok" && changed == "yes" { break; }
+        thread::sleep(Duration::from_millis(100));
+    }
+    // and there, whichever way the load went: polled until it reappears instead of checked once
     let restash_dl = Instant::now() + Duration::from_secs(60);
     let mut stash = String::from("no controller");
     while Instant::now() < restash_dl {
         stash = cdp.eval_str(STASH_CTRL_JS).unwrap_or_else(|e| format!("err:{e}"));
         if stash == "ok" { break; }
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(200));
     }
     if stash != "ok" { bail!("controller lost after openProject: {stash}"); }
 
@@ -105,38 +123,37 @@ pub fn export(args: &[String]) -> Result<()> {
     if close == "closed:yes" { thread::sleep(Duration::from_millis(800)); }
     let open = cdp.eval_str("(()=>{ try { window.__ctrl.showPublishDialog(false); return 'ok'; } catch(e){ return 'ERR '+e.message; } })()")?;
     if open.starts_with("ERR") { bail!("showPublishDialog failed: {open}"); }
-    thread::sleep(Duration::from_millis(2500)); // let the dialog + its buttons render
+    // the dialog's button is clicked when it has rendered, asked for rather than waited on
+    let btn_dl = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < btn_dl {
+        let there = cdp.eval_str(PUBLISH_BUTTON_JS).unwrap_or_default();
+        if there == "yes" { break; }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let pressed = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
     let pub_res = cdp.eval_str(PUBLISH_ALL_JS)?;
     if pub_res.starts_with("ERR") { bail!("publish failed: {pub_res}"); }
     eprintln!("publish invoked ({pub_res}) — waiting for the .fra to be written…");
 
-    // 5. Poll for a freshly written .fra under build/, then wait for its size to settle.
+    // 5. A freshly written .fra under build/, taken the moment it is whole: its header says where
+    // its last blob ends, so a complete package is exactly that long
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut out: Option<PathBuf> = None;
     while Instant::now() < deadline {
         if let Some((file, m)) = newest_fra(&build_dir) {
-            if m > baseline {
-                let mut last_size = -1i64;
-                let mut stable = 0;
-                while Instant::now() < deadline {
-                    let size = std::fs::metadata(&file).map(|md| md.len() as i64).unwrap_or(0);
-                    if size > 0 && size == last_size {
-                        stable += 1;
-                        if stable >= 3 { break; }
-                    } else {
-                        stable = 0;
-                    }
-                    last_size = size;
-                    thread::sleep(Duration::from_millis(500));
-                }
+            if m > baseline && fra_is_whole(&file) {
                 out = Some(file);
                 break;
             }
         }
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_millis(100));
     }
     let out = out.ok_or_else(|| anyhow!("timed out after {timeout_ms}ms waiting for a .fra under {}", build_dir.display()))?;
-    eprintln!("published: {}", out.display());
+    // how long the publish itself took: from the button to the package's last write, which
+    // leaves out FrayTools' start and the project's load
+    let written = std::fs::metadata(&out).and_then(|m| m.modified()).ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(pressed);
+    eprintln!("published: {} ({:.2} s from Publish All to the package written)", out.display(), written - pressed);
     println!("{}", out.display()); // machine-readable result on stdout
     Ok(())
 }
@@ -286,9 +303,9 @@ pub fn harness(args: &[String]) -> Result<()> {
 /// page target.
 fn attach_or_launch(port: u16, ft_bin: &str) -> Result<Cdp> {
     if !cdp_up(port) {
-        eprintln!("launching FrayTools ({ft_bin}) with --remote-debugging-port={port}");
+        eprintln!("launching FrayTools ({ft_bin})");
         launch_fraytools(ft_bin, port)?;
-        if !wait_for_cdp(port, Duration::from_secs(20)) { bail!("CDP never came up"); }
+        if !wait_for_cdp(port, Duration::from_secs(20)) { bail!("FrayTools started but never became reachable"); }
     } else {
         eprintln!("attaching to existing FrayTools on port {port}");
     }
@@ -421,7 +438,7 @@ struct Cdp {
 impl Cdp {
     fn connect(ws_url: &str) -> Result<Cdp> {
         let (ws, _resp) = tungstenite::connect(ws_url)
-            .map_err(|e| anyhow!("CDP websocket connect failed ({ws_url}): {e}"))?;
+            .map_err(|e| anyhow!("couldn't connect to FrayTools: {e}"))?;
         Ok(Cdp { ws, next_id: 1 })
     }
 
@@ -435,13 +452,13 @@ impl Cdp {
         loop {
             let txt = match self.ws.read()? {
                 Message::Text(t) => t,
-                Message::Close(_) => bail!("CDP socket closed"),
+                Message::Close(_) => bail!("lost the connection to FrayTools"),
                 _ => continue,
             };
             let v: Value = serde_json::from_str(&txt)?;
             if v.get("id").and_then(|x| x.as_i64()) == Some(id) {
                 if let Some(err) = v.get("error") {
-                    bail!("CDP error from {method}: {err}");
+                    bail!("FrayTools reported an error ({method}): {err}");
                 }
                 return Ok(v.get("result").cloned().unwrap_or(Value::Null));
             }
@@ -549,6 +566,10 @@ fn wait_for_target(port: u16, timeout: Duration) -> Option<String> {
 fn launch_fraytools(bin: &str, port: u16) -> Result<()> {
     Command::new(bin)
         .arg(format!("--remote-debugging-port={port}"))
+        // it is launched behind the user's windows; without these a covered window is drawn
+        // and timed at a fraction of its rate, which slows a publish and starves any capture
+        .args(["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
+               "--disable-background-timer-throttling"])
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .spawn()
         .map(|_child| ()) // detached: we never wait/kill it — FrayTools stays running
@@ -608,7 +629,7 @@ fn default_fraytools() -> String {
 /// Fallback Fraymakers install when no `--fraymakers-root` is given. Routes through
 /// the shared Config resolver (`FRAY_DIR` env → saved config → per-OS Steam default
 /// in platform.rs) so there is one source of truth for the install path.
-fn default_fraymakers_root() -> PathBuf {
+pub(crate) fn default_fraymakers_root() -> PathBuf {
     crate::config::Config::load()
         .fraymakers_root()
         .or_else(crate::platform::default_fraymakers_root)
@@ -622,7 +643,7 @@ fn default_fraymakers_root() -> PathBuf {
 /// publishFolders[].path relative to the project dir, so an absolute path would re-resolve
 /// into a bogus nested location. The converter rewrites publishFolders to just ./build, so
 /// this runs on every export.
-fn ensure_publish_folder(project_file: &Path, project_dir: &Path, folder: &Path) {
+pub(crate) fn ensure_publish_folder(project_file: &Path, project_dir: &Path, folder: &Path) {
     let mut proj: Value = match std::fs::read_to_string(project_file).ok()
         .and_then(|s| serde_json::from_str(&s).ok())
     {
@@ -672,6 +693,26 @@ fn pathdiff_relative(from: &Path, to: &Path) -> String {
     for c in &tc[i..] { rel.push(c.as_os_str()); }
     let s = rel.to_string_lossy().to_string();
     if s.is_empty() { ".".into() } else { s }
+}
+
+/// Whether a package on disk is all there: its length is the header's plus the end of the last
+/// blob the header points at. The header is JSON, or JSON in base64.
+fn fra_is_whole(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else { return false };
+    if bytes.len() < 4 { return false; }
+    let head_len = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let Some(head) = bytes.get(4..4 + head_len) else { return false };
+    let parsed = serde_json::from_slice::<serde_json::Value>(head).ok().or_else(|| {
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::STANDARD.decode(head).ok()?;
+        serde_json::from_slice(&raw).ok()
+    });
+    let Some(h) = parsed else { return false };
+    let end = ["spritesheets", "audio", "binary", "images"].iter()
+        .flat_map(|k| h[*k].as_array().into_iter().flatten())
+        .map(|b| b["bytesOffset"].as_u64().unwrap_or(0) + b["bytesLength"].as_u64().unwrap_or(0))
+        .max().unwrap_or(0) as usize;
+    bytes.len() == 4 + head_len + end
 }
 
 /// Newest .fra under `dir` (recursive), as (path, mtime-seconds-f64). None if none found.
@@ -946,6 +987,12 @@ const CLOSE_DIALOG_JS: &str = r#"(()=>{ try {
 } catch(e){ return 'ERR '+e.message; } })()"#;
 
 /// export: click "Publish All" (every output folder), falling back to force publish().
+/// is the "Publish All" button on the page yet?
+const PUBLISH_BUTTON_JS: &str = r#"(()=>{ try {
+  const b = Array.from(document.querySelectorAll('button')).find(x => /publish all/i.test((x.textContent||'').trim()));
+  return b ? 'yes' : 'no';
+} catch(e){ return 'ERR '+e.message; } })()"#;
+
 const PUBLISH_ALL_JS: &str = r#"(()=>{ try {
   const b = Array.from(document.querySelectorAll('button')).find(x => /publish all/i.test((x.textContent||'').trim()));
   if (b) {

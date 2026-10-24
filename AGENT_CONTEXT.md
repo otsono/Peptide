@@ -316,13 +316,19 @@ the SSF2 instance name on the PlaceObject determines the FM box type. see
 | `hitBox`, `hitBox2`… | `HURT_BOX` | Hurtbox (SSF2 "hit" = FM "hurt") |
 | `hurtBox` | `HURT_BOX` | Hurtbox (alternate name) |
 | `grabBox` | `GRAB_BOX` | Grab range |
-| `itemBox` | `HURT_BOX` | Item pickup -- no native FM equivalent; emitted as hurtbox |
+| `itemBox` | `NONE` | Item hold point; collides with nothing |
 | `touchBox` | `GRAB_HOLD_POINT` | **POINT layer** (not COLLISION_BOX) |
-| `shieldBox` | `REFLECT_BOX` | |
-| `reflectBox` | `REFLECT_BOX` | |
-| `absorbBox` | `COUNTER_BOX` | |
-| `ledgeBox` / `ledgegrabbox` | `LEDGE_GRAB_BOX` | |
+| `reflectBox` / `reverseBox` | `REFLECT_BOX` | |
+| `absorbBox`, `shieldProjectileBox` | `ABSORB_BOX` | a projectile that meets it ends there |
+| `counterBox` | `COUNTER_BOX` | |
+| `shieldBox`, `shieldAttackBox` | `NONE` | shield damage in the source; this engine's shield is a state, not a box |
+| `camBox`, `catchBox`, `range` | `NONE` | the source's own framing and range tests |
+| `ledgeBox` / `ledgegrabbox` / `hand` | `LEDGE_GRAB_BOX` | |
 | anything else `*box` | `HURT_BOX` | Fallback |
+
+a box that collides as something is named for its type the way FrayTools names it (`HIT_BOX` →
+`hitbox<N>`, `REFLECT_BOX` → `reflectbox<N>`): the engine keys on the layer name too, and a reflect
+box named `reversebox0` reflected nothing. only a `NONE` box keeps its source name.
 
 **`touchBox` → grabholdpoint (verified):**
 - layer type is `POINT`, not `COLLISION_BOX`.
@@ -375,6 +381,30 @@ each of these cost real debugging time, so trust them before re-deriving:
   pushed back), the SSF2 enemy contract.
 - `self.makeFrameTimer(frames)` with `tick()`/`completed`/`reset()` is the real
   FrameTimer and lowers 1:1 from SSF2's (both count UP to a length).
+
+### the cross-script contract: ask, never call
+
+a function reached through another script's `exports` runs without that script's own helpers
+(its `__sp`, its label table, `Common`), and a state change made from outside the object's own
+scope is lost or throws. so one script never CALLS into another to make it do something; it
+writes an ask onto the other's `exports`, and the other takes it up on its next frame in its own
+`update`. every cross-object action the converter emits uses one of these, and a new one reuses
+this shape rather than inventing a call:
+
+| ask (on the target's exports) | written by | taken up by | meaning |
+| --- | --- | --- | --- |
+| `__askLabel = "label"` | `_jumpLabel` on anything not `self` | the fighter's and every projectile's `update` | jump to a label (a projectile's labels are its animations) |
+| `__askAttack.push({on, n, frames})` | `setAttackEnabled` on anything not `self` | the fighter's `update` | turn an attack on or off by its source name |
+| `__askState = "hold"` / `"toss"` | the holder's `__generateItem` / `__tossHeld` | the held object's `__itemUpdate` | enter the held or thrown state |
+| `__askToss = true` | an item's `__toToss` | the holder's `__itemUpdateHolder` | throw what it holds, the way it holds the stick |
+| `__askInterrupt = { targetFrame, character }` | the holder, when an attack begins while holding | the item's `__itemUpdate` | run the item's frame interrupt in its own scope |
+| `__askActive = true/false` | the holder's `__itemActive` | the item | switch its boxes on or off |
+
+what crosses as DATA rather than an ask: values a script publishes for others to read
+(`__linkageId`, `__holder`, `__ibx`/`__iby`, `__parts`, `__frameInterrupt`, `__tossSpeed`,
+`_atkAnim`/`_atkKey`/`_atkVal`) and setters it publishes (`set_<field>`) for a summoner writing
+one of its fields. reading a published value is safe from any scope; calling a published function
+is only safe when that function touches nothing but its arguments and its own variables.
 
 ### Fraymakers canonical character animation names
 
@@ -586,10 +616,12 @@ wrapper). blank frames use `"code": ""`:
 #### COLLISION_BODY layer (ECB / body diamond)
 
 the ECB is a 4-vertex diamond: foot (bottom), head (top), and two hip vertices at the
-sides at the foot/head midpoint. `entity_gen.rs` computes the per-frame diamond as the
+sides at the foot/head midpoint. `entity_gen.rs` fits the head and hips per frame to the
 axis-aligned bounding box of that frame's HURTBOX-typed collision boxes, so the body
-auto-fits the pose. consecutive frames with identical bodies are run-length encoded
-into a single keyframe.
+auto-fits the pose; the foot stays at the fighter's own point (0), where SSF2 tests the floor
+in every state (a foot at a curled-up hurt pose's lowest box landed fighters on platforms their
+feet never reached). consecutive frames with identical bodies are run-length encoded into a
+single keyframe.
 
 ```json
 { "$id": "...", "name": "Body", "type": "COLLISION_BODY", "keyframes": [...],
@@ -645,8 +677,9 @@ COLLISION_BOX keyframe -- blank frame uses `"symbol": null`:
 | `HURT_BOX` | Hurtbox |
 | `GRAB_BOX` | Grab range |
 | `LEDGE_GRAB_BOX` | Ledge grab |
-| `REFLECT_BOX` | Reflect / shield (from SSF2 `shieldBox` and `reflectBox`) |
-| `COUNTER_BOX` | Counter / absorb (from SSF2 `absorbBox`) |
+| `REFLECT_BOX` | Reflect (from SSF2 `reflectBox` / `reverseBox`) |
+| `ABSORB_BOX` | Absorb (from SSF2 `absorbBox`, `shieldProjectileBox`) |
+| `COUNTER_BOX` | Counter (from SSF2 `counterBox`) |
 
 #### POINT layer
 
@@ -785,9 +818,7 @@ the SSF2 → FM animation-name table is **data-driven** via
 `mappings/character/animations.jsonc`. keys:
 
 - `ssf2_to_fm` -- SSF2 xframe / animation name (e.g. `stand`, `a_air_forward`) → FM
-  animation name (e.g. `idle`, `aerial_forward`).
-- `label_to_ssf2` -- sprite-symbol AnimLabel (lowercased, suffix stripped, e.g.
-  `nair`) → SSF2 animation name.
+  animation name (e.g. `stand`, `aerial_forward`).
 
 loaded by `crate::mappings::character_animations()` in `src/mappings.rs`. used by
 `extractor::build_ssf2_to_fm_anim`, `sprite_parser::static_ssf2_to_fm`, and the
@@ -799,7 +830,17 @@ FrameLabel tags (e.g. a "Jab" sprite contains jab1 / jab2 / jab3 / jab4; a "Stro
 sprite contains in/charge/attack). the splitter lives in `src/anim_splitter.rs` (and
 `sprite_parser::sub_anim_splits` for the sprite-level equivalent). the label patterns
 driving which splits are **hardcoded match arms** in `anim_splitter.rs` -- no external
-rules file.
+rules file. a jab clip's unlabelled head (frames before its first label) is played by the
+source, and what it is comes from its scripts: a head that ends the move itself (yoshi's first
+kick, `kick2` at 8 and nothing at 0) is jab1; a head that ends nothing (a set-up frame before
+`begin` at 1) is cut with the first labelled hit. the converter installs the frames whose
+scripts end a move (`sprite_parser::install_ending_frames`) before the boxes and the images are
+cut, so both cuts agree. a jump to a label of another piece cut from the SAME clip (a frame
+script's `stancePlayFrame`/`gotoAndPlay`/`gotoAndStop`, a method's `_jumpLabel`) resolves to that
+piece, from that label's frame: a label name is shared across clips (`loop` starts the stand's
+loop and the walk's), so nothing resolves a label by name alone; the frame scripts read the
+clip's sibling pieces at convert time (`entity_gen`), and the runtime tables carry each label's
+source clip (`_lblSrc`) for the same test.
 
 ---
 
@@ -829,7 +870,6 @@ dump_inner_sprite      — inspect a nested (effect) sprite
 dump_proj_states       — projectile state discovery
 dump_stage             — root timeline inspection
 dump_costumes          — costume tables from misc.ssf
-dump_aerial_down_frames— targeted debug for the aerial-down animation
 dump_trail_matrices    — trail-effect matrix inspection
 check_shape_bitmap     — inspect a shape's bitmap fill + fill matrix
 what_is_id             — identify what a numeric SWF character id refers to

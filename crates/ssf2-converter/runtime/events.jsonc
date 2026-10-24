@@ -1,0 +1,34 @@
+// the source's events this engine raises itself, settled at conversion: a listener the source's
+// code adds for one is this engine's own listener for the event here, on the object's engine
+// handle. an event with no row is raised by the runtime where the source's engine would (the end
+// of an attack, a projectile's end), or by nothing.
+{
+  "engine": {
+    "groundTouch":          "EntityEvent.COLLIDE_FLOOR",
+    "charLand":             "EntityEvent.COLLIDE_FLOOR",
+    "hitWall":              "EntityEvent.COLLIDE_WALL",
+    "groundLeave":          "GameObjectEvent.LEFT_GROUND",
+    "attackHit":            "GameObjectEvent.HIT_DEALT",
+    "attackConnect":        "GameObjectEvent.HIT_DEALT",
+    "attackHitShield":      "GameObjectEvent.SHIELD_HIT_DEALT",
+    "attackHitPowerShield": "GameObjectEvent.SHIELD_HIT_DEALT",
+    "attackConnectShield":  "GameObjectEvent.SHIELD_HIT_DEALT",
+    "charHurt":             "GameObjectEvent.HIT_RECEIVED",
+    "projHurt":             "GameObjectEvent.HIT_RECEIVED",
+    "itemHurt":             "GameObjectEvent.HIT_RECEIVED",
+    "enemyHurt":            "GameObjectEvent.HIT_RECEIVED",
+    "charShieldHit":        "GameObjectEvent.SHIELD_HIT_RECEIVED",
+    "charPowerShieldHit":   "GameObjectEvent.SHIELD_HIT_RECEIVED",
+    "charGrab":             "GameObjectEvent.GRAB_DEALT",
+    "charGrabbed":          "GameObjectEvent.GRAB_RECEIVED",
+    "charLedgeGrab":        "CharacterEvent.LEDGE_GRAB",
+    "charKODeath":          "CharacterEvent.KNOCK_OUT",
+    "charCounter":          "GameObjectEvent.COUNTER",
+    "charAbsorb":           "GameObjectEvent.ABSORBBOX_CONNECTED",
+    "reverseHit":           "GameObjectEvent.REFLECTBOX_CONNECTED",
+    "reverse":              "GameObjectEvent.REFLECTED"
+  },
+  // a change of state: the engine's event, told to the source's listeners with the source's own
+  // states either side (the runtime keeps them)
+  "state": { "stateChange": "EntityEvent.STATE_CHANGE" }
+}

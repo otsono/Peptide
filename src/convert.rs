@@ -107,6 +107,15 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
 
     init_logger(verbose);
 
+    // what a fighter borrows from the game (shared sounds, shared classes) is looked for in the
+    // game, so the converter is told where it is, the same way the stage command does
+    if std::env::var_os("PEPTIDE_SSF2_APP").is_none() && std::env::var_os("PEPTIDE_SSF2_DATA").is_none() {
+        if let Some(app) = crate::config::Config::load().ssf2_app() {
+            // SAFETY: single-threaded CLI setup, before any conversion work starts.
+            unsafe { std::env::set_var("PEPTIDE_SSF2_APP", app) };
+        }
+    }
+
     let mut opts = ConvertOptions::new(input);
     if let Some(o) = output { opts.output = o; }
     opts.name = name;

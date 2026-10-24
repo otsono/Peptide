@@ -3,7 +3,7 @@
 #
 # Peptide is now the whole product — a single binary that bundles the engine
 # harness (webview UI + bytecode patcher), the in-process SSF2 → Fraymakers
-# converter, and the FrayTools CDP driver. No sidecar binaries.
+# converter, and the FrayTools driver. No sidecar binaries.
 #
 # Usage:
 #   ./make-app.sh            build + assemble build/Peptide.app + launch it
@@ -69,9 +69,11 @@ chmod +x "$APP/Contents/MacOS/$BIN"
 # both check a `data/` subfolder next to the binary first. Stage everything into
 # Contents/MacOS/data/ so a packaged app finds it.
 DATA="$APP/Contents/MacOS/data"
-mkdir -p "$DATA/mappings"
+mkdir -p "$DATA/mappings" "$DATA/runtime"
 cp commands.hsx match_settings.conf src/peptide_ui.html src/peptide_overlay.html "$DATA/"
 cp -R crates/ssf2-converter/mappings/. "$DATA/mappings/"
+# the converter's runtime, which every converted script carries a part of
+cp -R crates/ssf2-converter/runtime/. "$DATA/runtime/"
 
 # ---- ad-hoc codesign so Gatekeeper lets a local build run (WKWebView needs it) ----
 echo "==> Ad-hoc codesigning…"

@@ -219,6 +219,74 @@ pub fn extract_images_from_swf(
     ssf2_to_fm: &BTreeMap<String, String>,
     xform_map: &BTreeMap<String, crate::sprite_parser::XframeTransform>,
 ) -> Result<ImageExtractionResult> {
+    extract_images_from_swf_only(swf, output_dir, char_name, ssf2_to_fm, xform_map, None, &[])
+}
+
+/// As above, leaving the children placed under the names in `skip` out of every animation's
+/// art: a child the fighter's code addresses is drawn as a part of its own.
+pub fn extract_images_from_swf_skipping(
+    swf: &swf::Swf<'_>,
+    output_dir: &Path,
+    char_name: &str,
+    ssf2_to_fm: &BTreeMap<String, String>,
+    xform_map: &BTreeMap<String, crate::sprite_parser::XframeTransform>,
+    skip: &[String],
+) -> Result<ImageExtractionResult> {
+    extract_images_from_swf_only(swf, output_dir, char_name, ssf2_to_fm, xform_map, None, skip)
+}
+
+/// Every character id a clip reaches: itself, the clips and shapes it places, and the pictures
+/// those shapes paint with. What a stage's projectile needs extracted, and nothing else in the
+/// package (its backdrop plates are not that projectile's pictures).
+pub fn ids_under_sprites(swf: &swf::Swf<'_>, roots: &[u16]) -> BTreeSet<u16> {
+    let mut sprites: BTreeMap<u16, &swf::Sprite> = BTreeMap::new();
+    let mut shape_fills: BTreeMap<u16, Vec<u16>> = BTreeMap::new();
+    for tag in &swf.tags {
+        match tag {
+            swf::Tag::DefineSprite(s) => { sprites.insert(s.id, s); }
+            swf::Tag::DefineShape(sh) => {
+                let mut ids = Vec::new();
+                let mut note = |fs: &[swf::FillStyle]| for f in fs {
+                    if let swf::FillStyle::Bitmap { id, .. } = f { if *id != 65535 { ids.push(*id); } }
+                };
+                note(&sh.styles.fill_styles);
+                for r in &sh.shape {
+                    if let swf::ShapeRecord::StyleChange(sc) = r {
+                        if let Some(ns) = &sc.new_styles { note(&ns.fill_styles); }
+                    }
+                }
+                shape_fills.insert(sh.id, ids);
+            }
+            _ => {}
+        }
+    }
+    let mut seen: BTreeSet<u16> = BTreeSet::new();
+    let mut todo: Vec<u16> = roots.to_vec();
+    while let Some(id) = todo.pop() {
+        if !seen.insert(id) { continue }
+        if let Some(fills) = shape_fills.get(&id) { todo.extend(fills.iter().copied()); }
+        if let Some(sp) = sprites.get(&id) {
+            for t in &sp.tags {
+                if let swf::Tag::PlaceObject(po) = t {
+                    if let swf::PlaceObjectAction::Place(c) | swf::PlaceObjectAction::Replace(c) = po.action { todo.push(c); }
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// `extract_images_from_swf`, extracting only the character ids in `only` when one is given.
+pub fn extract_images_from_swf_only(
+    swf: &swf::Swf<'_>,
+    output_dir: &Path,
+    char_name: &str,
+    ssf2_to_fm: &BTreeMap<String, String>,
+    xform_map: &BTreeMap<String, crate::sprite_parser::XframeTransform>,
+    only: Option<&BTreeSet<u16>>,
+    skip: &[String],
+) -> Result<ImageExtractionResult> {
+    let wanted = |id: u16| only.is_none_or(|o| o.contains(&id));
     // Sprite PNGs are queued and encoded across all cores at the end (see PngBatch) rather
     // than one at a time inline, which is where a third of a conversion's CPU used to go.
     let mut pngs = PngBatch::default();
@@ -290,6 +358,7 @@ pub fn extract_images_from_swf(
         match tag {
             swf::Tag::DefineBitsLossless(bmp) => {
                 let id = bmp.id;
+                if !wanted(id) { continue; }
                 let w = bmp.width as u32;
                 let h = bmp.height as u32;
 
@@ -320,6 +389,7 @@ pub fn extract_images_from_swf(
             }
             swf::Tag::DefineBitsJpeg3(jpeg) => {
                 let id = jpeg.id;
+                if !wanted(id) { continue; }
                 let sym = find_symbol_for_bitmap(id, &symbols, &shape_to_bitmap)
                     .unwrap_or_else(|| symbols.get(&id).cloned()
                         .unwrap_or_else(|| format!("jpeg_{}", id)));
@@ -385,13 +455,53 @@ pub fn extract_images_from_swf(
         }
     }
 
+    // A shape's bitmap fills are not all in its top-level fill table: a `StyleChange` can carry a
+    // whole new one, and the scan above only reads the first. A shape filled that way reached the
+    // VECTOR rasteriser, which has no bitmap fill and drew it as a flat silhouette -- which is what
+    // donkeykong's, fox's and marth's menu portraits were. The stage art path already paints every
+    // fill in every table through its own matrix, so that is what paints these.
+    let fill_bitmaps: BTreeMap<u16, (u32, u32, Vec<u8>)> = {
+        let mut m = BTreeMap::new();
+        for tag in &swf.tags {
+            match tag {
+                swf::Tag::DefineBitsLossless(b) => {
+                    if let Ok(rgba) = decode_lossless(b) { m.insert(b.id, (b.width as u32, b.height as u32, rgba)); }
+                }
+                swf::Tag::DefineBitsJpeg3(j) => {
+                    if let Ok((w, h, rgba)) = decode_jpeg3(j) { m.insert(j.id, (w, h, rgba)); }
+                }
+                _ => {}
+            }
+        }
+        m
+    };
+    let has_bitmap_fill = |shape: &swf::Shape| -> bool {
+        let any = |fs: &[swf::FillStyle]| fs.iter().any(|f|
+            matches!(f, swf::FillStyle::Bitmap { id, .. } if *id != 65535 && fill_bitmaps.contains_key(id)));
+        any(&shape.styles.fill_styles) || shape.shape.iter().any(|r| match r {
+            swf::ShapeRecord::StyleChange(sc) => sc.new_styles.as_ref().is_some_and(|ns| any(&ns.fill_styles)),
+            _ => false,
+        })
+    };
     let mut vec_count = 0usize;
     for tag in &swf.tags {
         match tag {
-            swf::Tag::DefineShape(shape) if !shape_to_bitmap.contains_key(&shape.id) => {
-                if let Some(r) = crate::vector_raster::rasterize_shape(
+            swf::Tag::DefineShape(shape) if !shape_to_bitmap.contains_key(&shape.id) && wanted(shape.id) => {
+                let painted = has_bitmap_fill(shape).then(|| {
+                    let b = &shape.shape_bounds;
+                    let (w, h) = (((b.x_max.to_pixels() - b.x_min.to_pixels()).ceil()).max(1.0),
+                                  ((b.y_max.to_pixels() - b.y_min.to_pixels()).ceil()).max(1.0));
+                    (w <= 4096.0 && h <= 4096.0)
+                        .then(|| crate::stage_parser::bitmap_fill_layers(shape, &fill_bitmaps, w as u32, h as u32))
+                        .flatten()
+                        .map(|img| crate::vector_raster::Raster {
+                            width: img.width(), height: img.height(), rgba: img.into_raw(),
+                            origin_px: (b.x_min.to_pixels(), b.y_min.to_pixels()),
+                        })
+                }).flatten();
+                if let Some(r) = painted.or_else(|| crate::vector_raster::rasterize_shape(
                     &shape.shape_bounds, &shape.styles.fill_styles, &shape.styles.line_styles, &shape.shape,
-                ) {
+                )) {
                     let sym = format!("{}_vec_{}", char_name, shape.id);
                     let filename = format!("{}.png", sanitize_name(&sym));
                     pngs.push(sprites_dir.join(&filename), r.width, r.height, r.rgba.clone())?;
@@ -405,7 +515,7 @@ pub fn extract_images_from_swf(
                     vec_count += 1;
                 }
             }
-            swf::Tag::DefineMorphShape(m) if !shape_to_bitmap.contains_key(&m.id) => {
+            swf::Tag::DefineMorphShape(m) if !shape_to_bitmap.contains_key(&m.id) && wanted(m.id) => {
                 let ratio = *morph_ratio.get(&m.id).unwrap_or(&0) as f64 / 65535.0;
                 if let Some(r) = crate::vector_raster::rasterize_morph(m, ratio) {
                     let sym = format!("{}_vec_{}", char_name, m.id);
@@ -433,7 +543,7 @@ pub fn extract_images_from_swf(
     //    parse_sprite_boxes — three SWF parses across the two call sites).
     //
     // 4. Build per-animation per-frame image references from DefineSprite tags
-    let mut anim_images = build_anim_frame_images(swf, char_name, ssf2_to_fm, &symbols, &shape_to_bitmap, xform_map, &images);
+    let mut anim_images = build_anim_frame_images(swf, char_name, ssf2_to_fm, &symbols, &shape_to_bitmap, xform_map, &images, skip);
     // Apply same fallbacks as sprite_parser for animations with no image data
     apply_image_fallbacks(&mut anim_images);
     log::info!("Animation image mappings: {} animations (after fallbacks)", anim_images.len());
@@ -823,6 +933,7 @@ fn build_anim_frame_images(
     shape_to_bitmap: &ShapeToBitmapMap,
     xform_map: &BTreeMap<String, crate::sprite_parser::XframeTransform>,
     images: &BTreeMap<u16, ExtractedImage>,
+    skip: &[String],
 ) -> BTreeMap<String, AnimFrameImages> {
     let char_lower = char_name.to_lowercase();
     // Animation identity comes from the TIMELINE (xframe FrameLabel + `stance`
@@ -985,6 +1096,8 @@ fn build_anim_frame_images(
             // the ONE frame the ratio selects — Flash's "Single Frame" — never self-animating).
             let mut sub_sprite_placements: BTreeMap<u16, (u16, u16, ImageLocalMatrix, Option<u16>)> = BTreeMap::new();
             let mut frames: BTreeMap<u16, Vec<FrameImageEntry>> = BTreeMap::new();
+            // the depths holding a child left out by name: nothing placed or restated there is drawn
+            let mut skipped_depths: BTreeSet<u16> = BTreeSet::new();
             // Per-frame placement state from the shared timeline reader: this loop tracks the ids
             // and matrices it needs for its own sub-sprite expansion, but the fields BEYOND the
             // matrix come from the one reader that knows them, rather than being tracked a second
@@ -1009,14 +1122,9 @@ fn build_anim_frame_images(
 
                         // Regular display list entries
                         for (&depth, (id, sym, mat)) in &display_list {
-                            let (world_tx, world_ty) = root_xf.apply(mat.tx, mat.ty);
-                            let world_sx = mat.sx * root_xf.scale_x();
-                            let world_sy = mat.sy * root_xf.scale_y();
-                            // World matrix = root_xf * local_matrix (2x2 part)
-                            let wa = root_xf.a * mat.a + root_xf.b * mat.c;
-                            let wb = root_xf.a * mat.b + root_xf.b * mat.d;
-                            let wc = root_xf.c * mat.a + root_xf.d * mat.c;
-                            let wd = root_xf.c * mat.b + root_xf.d * mat.d;
+                            let w = placed_by(&root_xf, mat);
+                            let (world_tx, world_ty, world_sx, world_sy) = (w.tx, w.ty, w.sx, w.sy);
+                            let (wa, wb, wc, wd) = (w.a, w.b, w.c, w.d);
                             entries.push(FrameImageEntry {
                                 depth,
                                 shape_id: *id,
@@ -1027,7 +1135,7 @@ fn build_anim_frame_images(
                                 world_ty,
                                 world_sx,
                                 world_sy,
-                                world_rotation: mat.rotation,
+                                world_rotation: w.rotation,
                                 world_a: wa,
                                 world_b: wb,
                                 world_c: wc,
@@ -1057,13 +1165,9 @@ fn build_anim_frame_images(
                                 let (effect_origin_x, effect_origin_y) = root_xf.apply(parent_mat.tx, parent_mat.ty);
                                 for (inner_id, inner_sym, inner_mat) in &effect_frames[eff_frame] {
                                     let composed = parent_mat.compose(inner_mat);
-                                    let (world_tx, world_ty) = root_xf.apply(composed.tx, composed.ty);
-                                    let world_sx = composed.sx * root_xf.scale_x();
-                                    let world_sy = composed.sy * root_xf.scale_y();
-                                    let wa = root_xf.a * composed.a + root_xf.b * composed.c;
-                                    let wb = root_xf.a * composed.b + root_xf.b * composed.d;
-                                    let wc = root_xf.c * composed.a + root_xf.d * composed.c;
-                                    let wd = root_xf.c * composed.b + root_xf.d * composed.d;
+                                    let w = placed_by(&root_xf, &composed);
+                                    let (world_tx, world_ty, world_sx, world_sy) = (w.tx, w.ty, w.sx, w.sy);
+                                    let (wa, wb, wc, wd) = (w.a, w.b, w.c, w.d);
                                     let effect_depth = depth + 1000;
                                     entries.push(FrameImageEntry {
                                         depth: effect_depth,
@@ -1076,7 +1180,7 @@ fn build_anim_frame_images(
                                         world_ty,
                                         world_sx,
                                         world_sy,
-                                        world_rotation: composed.rotation,
+                                        world_rotation: w.rotation,
                                         world_a: wa,
                                         world_b: wb,
                                         world_c: wc,
@@ -1105,6 +1209,19 @@ fn build_anim_frame_images(
                         // Skip collision box instances
                         if crate::sprite_parser::BoxType::from_instance_name(&inst_name).is_some() {
                             continue;
+                        }
+                        if !skip.is_empty() {
+                            if matches!(po.action, swf::PlaceObjectAction::Place(_) | swf::PlaceObjectAction::Replace(_)) {
+                                if skip.contains(&inst_name) {
+                                    skipped_depths.insert(po.depth);
+                                    display_list.remove(&po.depth);
+                                    sub_sprite_placements.remove(&po.depth);
+                                    continue;
+                                }
+                                skipped_depths.remove(&po.depth);
+                            } else if skipped_depths.contains(&po.depth) {
+                                continue;
+                            }
                         }
 
                         let depth = po.depth;
@@ -1351,6 +1468,31 @@ pub(crate) fn decode_lossless(bmp: &swf::DefineBitsLossless) -> Result<Vec<u8>> 
 }
 
 /// Decode DefineBitsJpeg3 → (width, height, RGBA pixels)
+/// Decode a plain JPEG payload (the tags that carry no alpha channel of their own).
+/// A picture stored as JPEG WITHOUT its tables, which the file keeps once and shares.
+///
+/// The tables sit in their own tag and the picture's own data starts straight at the image, so
+/// neither half decodes alone: they are joined, dropping the end marker off the tables and the
+/// start marker off the picture. Battlefield (Melee)'s whole backdrop is 26 of these, and read as
+/// standalone JPEGs every one of them failed, so the stage came out black.
+pub(crate) fn decode_jpeg_with_tables(tables: &[u8], data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    // a picture that carries its own tables needs no joining
+    if tables.len() < 4 { return decode_jpeg_bytes(data) }
+    let mut joined = Vec::with_capacity(tables.len() + data.len());
+    joined.extend_from_slice(&tables[..tables.len() - 2]);   // without the end marker
+    let body = if data.starts_with(&[0xFF, 0xD8]) { &data[2..] } else { data };
+    joined.extend_from_slice(body);
+    decode_jpeg_bytes(&joined).or_else(|_| decode_jpeg_bytes(data))
+}
+
+pub(crate) fn decode_jpeg_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    use image::ImageReader;
+    use std::io::Cursor;
+    let img = ImageReader::new(Cursor::new(data)).with_guessed_format()?.decode()?;
+    let rgba = img.to_rgba8();
+    Ok((rgba.width(), rgba.height(), rgba.into_raw()))
+}
+
 pub(crate) fn decode_jpeg3(jpeg: &swf::DefineBitsJpeg3) -> Result<(u32, u32, Vec<u8>)> {
     use image::ImageReader;
     use std::io::Cursor;
@@ -1467,35 +1609,122 @@ pub struct ProjectileFrameImages {
     pub matrices: Vec<Option<ImageLocalMatrix>>,
     /// symbol_name → meta GUID
     pub image_guids: BTreeMap<String, String>,
-}
-
-/// Extract per-frame image data for a projectile's inner sprite.
-///
-/// Uses the same two-pass effect-sprite flattening as `extract_images`.
-/// Given the inner sprite ID (e.g. 194 for mario_fireball_mc), returns
-/// the image symbol name placed on each frame.
-pub fn extract_projectile_frame_images(
-    swf_data: &[u8],
-    char_id: &str,
-    inner_sprite_id: u16,
-    img_result: &ImageExtractionResult,
-) -> Result<ProjectileFrameImages> {
-    use std::io::Cursor;
-    let swf_buf = swf::decompress_swf(Cursor::new(swf_data)).context("decompress")?;
-    let swf = swf::parse_swf(&swf_buf).context("parse")?;
-    extract_projectile_frame_images_from_swf(&swf, char_id, inner_sprite_id, img_result)
+    /// frame index → EVERY image placed on that frame, in depth order, with its transform.
+    /// A clip draws with more than one part at once (sora's fire is a ring of six fireballs;
+    /// `frames` keeps only the first), and an entity that shows one of them shows a sixth of
+    /// the effect.
+    pub parts: Vec<Vec<(String, ImageLocalMatrix)>>,
 }
 
 /// `extract_projectile_frame_images` against an already-parsed SWF. Used
 /// per projectile / per effect by main.rs / haxe_gen.rs to amortise the
 /// SWF parse across all calls within one character's conversion.
+/// A child a clip places under a name its code can address (`self.gordospin`): the clip it is,
+/// and where the timeline puts it in the parent's space (its first placement).
+#[derive(Debug, Clone)]
+pub struct NamedChild {
+    pub name: String,
+    pub sprite_id: u16,
+    pub matrix: ImageLocalMatrix,
+}
+
+/// The tags of one sprite of the package.
+pub fn sprite_tags<'a>(swf: &'a swf::Swf<'a>, sprite_id: u16) -> Option<&'a [swf::Tag<'a>]> {
+    swf.tags.iter().find_map(|t| match t {
+        swf::Tag::DefineSprite(s) if s.id == sprite_id => Some(s.tags.as_slice()),
+        _ => None,
+    })
+}
+
+/// The named clip children a sprite places on its timeline, each once, under its first
+/// placement. A clip placed without a name is looked through (a wrapper holds the clip that
+/// holds the named child), with the placements composed; a named one is not, since its own
+/// children are its own (`notes.n1` is asked of `notes`).
+pub fn named_children_of_sprite(swf: &swf::Swf<'_>, sprite_id: u16) -> Vec<NamedChild> {
+    let sprites: std::collections::BTreeSet<u16> = swf.tags.iter().filter_map(|t| match t {
+        swf::Tag::DefineSprite(s) => Some(s.id), _ => None }).collect();
+    let mut out: Vec<NamedChild> = Vec::new();
+    fn walk(swf: &swf::Swf<'_>, sprites: &std::collections::BTreeSet<u16>, sprite_id: u16,
+            at: &ImageLocalMatrix, depth: u32, out: &mut Vec<NamedChild>) {
+        if depth > 4 { return }
+        let Some(tags) = sprite_tags(swf, sprite_id) else { return };
+        let mut seen_depths: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
+        for tag in tags {
+            let swf::Tag::PlaceObject(po) = tag else { continue };
+            let cid = match &po.action {
+                swf::PlaceObjectAction::Place(cid) | swf::PlaceObjectAction::Replace(cid) => *cid,
+                _ => continue,
+            };
+            let name = po.name.as_ref().map(|n| String::from_utf8_lossy(n.as_bytes()).to_string()).unwrap_or_default();
+            if std::env::var("PEPTIDE_DUMP_PARTS").is_ok() {
+                eprintln!("[parts-walk] sprite {sprite_id} depth {} places {cid} (sprite: {}) name '{name}'", po.depth, sprites.contains(&cid));
+            }
+            if !sprites.contains(&cid) || !seen_depths.insert(po.depth) { continue }
+            let here = at.compose(&po_to_mat(po));
+            if name.is_empty() {
+                walk(swf, sprites, cid, &here, depth + 1, out);
+            } else if !out.iter().any(|c| c.name == name) {
+                out.push(NamedChild { name, sprite_id: cid, matrix: here });
+            }
+        }
+    }
+    walk(swf, &sprites, sprite_id, &ImageLocalMatrix::default(), 0, &mut out);
+    out
+}
+
+/// Every named clip placed anywhere under a sprite, through named and unnamed clips alike,
+/// each name once (its first placement), with the placements composed down to it. A fighter's
+/// code reaches a child of its animation's clip by its own name however deep the clip nests it
+/// (`self.waftloc`, placed inside the stance a wrapper holds).
+pub fn named_descendants_of_sprite(swf: &swf::Swf<'_>, sprite_id: u16) -> Vec<NamedChild> {
+    let sprites: std::collections::BTreeSet<u16> = swf.tags.iter().filter_map(|t| match t {
+        swf::Tag::DefineSprite(s) => Some(s.id), _ => None }).collect();
+    let mut out: Vec<NamedChild> = Vec::new();
+    fn walk(swf: &swf::Swf<'_>, sprites: &std::collections::BTreeSet<u16>, sprite_id: u16,
+            at: &ImageLocalMatrix, depth: u32, out: &mut Vec<NamedChild>) {
+        if depth > 6 { return }
+        let Some(tags) = sprite_tags(swf, sprite_id) else { return };
+        // one visit per placement, not per depth: a later frame puts another child at a depth an
+        // earlier one held (meta knight's attacks swap one colour of trail for another there)
+        let mut seen: std::collections::BTreeSet<(u16, u16, String)> = std::collections::BTreeSet::new();
+        for tag in tags {
+            let swf::Tag::PlaceObject(po) = tag else { continue };
+            let cid = match &po.action {
+                swf::PlaceObjectAction::Place(cid) | swf::PlaceObjectAction::Replace(cid) => *cid,
+                _ => continue,
+            };
+            let name = po.name.as_ref().map(|n| String::from_utf8_lossy(n.as_bytes()).to_string()).unwrap_or_default();
+            if !sprites.contains(&cid) || !seen.insert((po.depth, cid, name.clone())) { continue }
+            let here = at.compose(&po_to_mat(po));
+            if !name.is_empty() && !out.iter().any(|c| c.name == name) {
+                out.push(NamedChild { name, sprite_id: cid, matrix: here });
+            }
+            walk(swf, sprites, cid, &here, depth + 1, out);
+        }
+    }
+    walk(swf, &sprites, sprite_id, &ImageLocalMatrix::default(), 0, &mut out);
+    out
+}
+
 pub fn extract_projectile_frame_images_from_swf(
+    swf: &swf::Swf<'_>,
+    char_id: &str,
+    inner_sprite_id: u16,
+    img_result: &ImageExtractionResult,
+) -> Result<ProjectileFrameImages> {
+    extract_projectile_frame_images_from_swf_skipping(swf, char_id, inner_sprite_id, img_result, &[])
+}
+
+/// As above, leaving out the children placed under the names in `skip`: a child the clip's code
+/// addresses is drawn as a part of its own, not baked into the parent's frames as well.
+pub fn extract_projectile_frame_images_from_swf_skipping(
     swf: &swf::Swf<'_>,
     // Image GUIDs are now symbol-only (see image_meta_guid), so the owner id is
     // no longer part of the seed. Kept in the signature for caller compatibility.
     _char_id: &str,
     inner_sprite_id: u16,
     img_result: &ImageExtractionResult,
+    skip: &[String],
 ) -> Result<ProjectileFrameImages> {
     // Build symbol map
     let mut symbols: BTreeMap<u16, String> = BTreeMap::new();
@@ -1521,13 +1750,46 @@ pub fn extract_projectile_frame_images_from_swf(
     for (&sid, sprite) in &all_sprites {
         let mut disp: BTreeMap<u16, (u16, String, ImageLocalMatrix)> = BTreeMap::new();
         let mut frames: Vec<Vec<(u16, String, ImageLocalMatrix)>> = Vec::new();
+        // a child left out by name is left out of the wrapper that holds it as well
+        let mut skipped_depths: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
         for stag in &sprite.tags {
+            if let swf::Tag::PlaceObject(po) = stag {
+                if !skip.is_empty() {
+                    let placed_name = po.name.as_ref().map(|n| String::from_utf8_lossy(n.as_bytes()).to_string()).unwrap_or_default();
+                    if matches!(po.action, swf::PlaceObjectAction::Place(_) | swf::PlaceObjectAction::Replace(_)) {
+                        if skip.contains(&placed_name) { skipped_depths.insert(po.depth); disp.remove(&po.depth); continue; }
+                        skipped_depths.remove(&po.depth);
+                    } else if skipped_depths.contains(&po.depth) { continue; }
+                }
+            }
+            if let swf::Tag::RemoveObject(ro) = stag { skipped_depths.remove(&ro.depth); }
+            if std::env::var("PEPTIDE_DUMP_EFFECTS").is_ok() {
+                if let swf::Tag::PlaceObject(po) = stag {
+                    if let swf::PlaceObjectAction::Place(cid) | swf::PlaceObjectAction::Replace(cid) = &po.action {
+                        eprintln!("[place-kind1] sprite {sid} places {cid}: named={:?} sprite={} shape_to_bitmap={:?}", symbols.get(cid), all_sprites.contains_key(cid), img_result.shape_to_bitmap.get(cid));
+                    }
+                }
+            }
+            if std::env::var("PEPTIDE_DUMP_BLENDS").is_ok() {
+                if let swf::Tag::PlaceObject(po) = stag {
+                    if po.blend_mode.is_some() || po.color_transform.as_ref().is_some_and(|c| c.a_multiply.to_f32() < 0.99) || po.filters.is_some() {
+                        eprintln!("[blend] sprite {} depth {} action {:?} blend {:?} alpha {:?} filters {}", sid, po.depth, po.action, po.blend_mode,
+                            po.color_transform.as_ref().map(|c| c.a_multiply.to_f32()), po.filters.as_ref().map(|f| f.len()).unwrap_or(0));
+                    }
+                }
+            }
             match stag {
                 swf::Tag::ShowFrame => {
                     frames.push(disp.values().map(|(id, sym, mat)| (*id, sym.clone(), *mat)).collect());
                 }
                 swf::Tag::PlaceObject(po) => {
-                    let mat = po_to_mat(po);
+                    // a placement that states no matrix keeps the one its depth already has
+                    // (a Replace swaps the picture and nothing else): read as identity, sora's
+                    // keyblade glow lost its 0.18 scale on its second frame and drew 250 px wide
+                    let mat = match po.matrix {
+                        Some(_) => po_to_mat(po),
+                        None => disp.get(&po.depth).map(|e| e.2).unwrap_or_default(),
+                    };
                     match &po.action {
                         swf::PlaceObjectAction::Place(cid) | swf::PlaceObjectAction::Replace(cid) => {
                             if let Some(sname) = symbols.get(cid) {
@@ -1536,8 +1798,12 @@ pub fn extract_projectile_frame_images_from_swf(
                             } else if let Some(&bitmap_id) = img_result.shape_to_bitmap.get(cid) {
                                 // Unnamed shape with a bitmap fill — resolve to symbol name
                                 if let Some(img) = img_result.images.get(&bitmap_id) {
-                                    disp.insert(po.depth, (*cid, img.symbol_name.clone(), mat));
+                                    disp.insert(po.depth, (*cid, img.symbol_name.clone(), with_pivot(mat, img_result.shape_pivot.get(cid))));
                                 }
+                            } else if all_sprites.contains_key(cid) {
+                                // a clip inside a clip: noted with the frame it was placed on, and
+                                // flattened into the pictures it draws once every table is built
+                                disp.insert(po.depth, (*cid, format!("__nested@{}", frames.len()), mat));
                             }
                         }
                         swf::PlaceObjectAction::Modify => {
@@ -1555,11 +1821,41 @@ pub fn extract_projectile_frame_images_from_swf(
         }
         if !frames.is_empty() { unnamed_frames.insert(sid, frames); }
     }
+    // A CLIP INSIDE A CLIP. A wrapper's own table so far names the clip it holds, not the
+    // pictures that clip draws; those come from the held clip's own table, at the frame it has
+    // reached (placed on frame p, on the wrapper's frame f it shows its frame f - p, looping).
+    // Read one level only, krystal's shield frame (a wrapper holding a wrapper holding the
+    // picture) drew nothing.
+    fn flatten_nested(
+        id: u16, frame: usize, at: &ImageLocalMatrix, tables: &SpriteFrameTable, depth: u32,
+        out: &mut Vec<(u16, String, ImageLocalMatrix)>,
+    ) {
+        if depth > 6 { return }
+        let Some(frames) = tables.get(&id) else { return };
+        if frames.is_empty() { return }
+        let entries = &frames[frame % frames.len()];
+        for (cid, sym, mat) in entries {
+            if let Some(placed) = sym.strip_prefix("__nested@").and_then(|p| p.parse::<usize>().ok()) {
+                flatten_nested(*cid, frame.saturating_sub(placed), &at.compose(mat), tables, depth + 1, out);
+            } else {
+                out.push((*cid, sym.clone(), at.compose(mat)));
+            }
+        }
+    }
+    let raw_tables = unnamed_frames.clone();
+    for (sid, frames) in unnamed_frames.iter_mut() {
+        if !frames.iter().flatten().any(|(_, sym, _)| sym.starts_with("__nested@")) { continue }
+        for (f, frame) in frames.iter_mut().enumerate() {
+            let mut flat: Vec<(u16, String, ImageLocalMatrix)> = Vec::new();
+            flatten_nested(*sid, f, &ImageLocalMatrix::default(), &raw_tables, 0, &mut flat);
+            *frame = flat;
+        }
+    }
 
     // Pass 2: flatten target sprite
     let sprite = match all_sprites.get(&inner_sprite_id) {
         Some(s) => s,
-        None => return Ok(ProjectileFrameImages { frames: vec![], matrices: vec![], image_guids: BTreeMap::new() }),
+        None => return Ok(ProjectileFrameImages { frames: vec![], matrices: vec![], image_guids: BTreeMap::new(), parts: vec![] }),
     };
 
     let mut disp: BTreeMap<u16, (u16, String, ImageLocalMatrix)> = BTreeMap::new();
@@ -1568,6 +1864,8 @@ pub fn extract_projectile_frame_images_from_swf(
     let mut unnamed_placements: BTreeMap<u16, (u16, ImageLocalMatrix, u16, Option<u16>)> = BTreeMap::new();
     let mut cur_frame: u16 = 0;
     let mut effect_frames: Vec<Vec<(u16, String, ImageLocalMatrix)>> = Vec::new();
+    // the depths holding a child left out by name: nothing placed or restated there is drawn
+    let mut skipped_depths: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
 
     for stag in &sprite.tags {
         match stag {
@@ -1591,7 +1889,39 @@ pub fn extract_projectile_frame_images_from_swf(
                 cur_frame += 1;
             }
             swf::Tag::PlaceObject(po) => {
-                let mat = po_to_mat(po);
+                // as above: no matrix stated means the depth's own is kept
+                let mat = match po.matrix {
+                    Some(_) => po_to_mat(po),
+                    None => disp.get(&po.depth).map(|e| e.2)
+                        .or_else(|| unnamed_placements.get(&po.depth).map(|e| e.1))
+                        .unwrap_or_default(),
+                };
+                if std::env::var("PEPTIDE_DUMP_EFFECTS").is_ok() {
+                    eprintln!("[place] sprite {} frame {} depth {} action {:?} matrix {:?} ratio {:?} cxform {:?} blend {:?} visible {:?}",
+                        inner_sprite_id, cur_frame, po.depth, po.action, po.matrix.map(|m| (m.a.to_f32(), m.d.to_f32(), m.tx.get() as f32 / 20.0, m.ty.get() as f32 / 20.0)), po.ratio,
+                        po.color_transform.as_ref().map(|c| (c.a_multiply.to_f32(), c.a_add, c.r_multiply.to_f32())), po.blend_mode, po.is_visible);
+                }
+                if !skip.is_empty() {
+                    let placed_name = po.name.as_ref().map(|n| String::from_utf8_lossy(n.as_bytes()).to_string()).unwrap_or_default();
+                    if matches!(po.action, swf::PlaceObjectAction::Place(_) | swf::PlaceObjectAction::Replace(_)) {
+                        if skip.contains(&placed_name) {
+                            skipped_depths.insert(po.depth);
+                            disp.remove(&po.depth);
+                            unnamed_placements.remove(&po.depth);
+                            continue;
+                        }
+                        skipped_depths.remove(&po.depth);
+                    } else if skipped_depths.contains(&po.depth) {
+                        continue;
+                    }
+                }
+                if std::env::var("PEPTIDE_DUMP_EFFECTS").is_ok() {
+                    if let swf::PlaceObjectAction::Place(cid) | swf::PlaceObjectAction::Replace(cid) = &po.action {
+                        eprintln!("[place-kind] sprite {} places {cid}: named={:?} sub={} shape_to_bitmap={:?} image={}", inner_sprite_id,
+                            symbols.get(cid), unnamed_frames.contains_key(cid), img_result.shape_to_bitmap.get(cid),
+                            img_result.shape_to_bitmap.get(cid).and_then(|b| img_result.images.get(b)).map(|i| i.symbol_name.clone()).unwrap_or_default());
+                    }
+                }
                 match &po.action {
                     swf::PlaceObjectAction::Place(cid) | swf::PlaceObjectAction::Replace(cid) => {
                         let named = symbols.get(cid);
@@ -1615,7 +1945,7 @@ pub fn extract_projectile_frame_images_from_swf(
                         } else if let Some(&bitmap_id) = img_result.shape_to_bitmap.get(cid) {
                             // Direct shape placement with bitmap fill
                             if let Some(img) = img_result.images.get(&bitmap_id) {
-                                disp.insert(po.depth, (*cid, img.symbol_name.clone(), mat));
+                                disp.insert(po.depth, (*cid, img.symbol_name.clone(), with_pivot(mat, img_result.shape_pivot.get(cid))));
                             }
                         }
                     }
@@ -1632,6 +1962,7 @@ pub fn extract_projectile_frame_images_from_swf(
             swf::Tag::RemoveObject(ro) => {
                 disp.remove(&ro.depth);
                 unnamed_placements.remove(&ro.depth);
+                skipped_depths.remove(&ro.depth);
             }
             _ => {}
         }
@@ -1641,8 +1972,17 @@ pub fn extract_projectile_frame_images_from_swf(
     let mut frames: Vec<Option<String>> = Vec::new();
     let mut matrices: Vec<Option<ImageLocalMatrix>> = Vec::new();
     let mut image_guids: BTreeMap<String, String> = BTreeMap::new();
+    let mut parts: Vec<Vec<(String, ImageLocalMatrix)>> = Vec::new();
+    let image_symbols: std::collections::BTreeSet<&str> = img_result.images.values().map(|i| i.symbol_name.as_str()).collect();
 
     for frame_entries in &effect_frames {
+        // a part is a picture the package ships; a named clip that is not one (a nested
+        // animation the walk did not flatten) is no image to point an entity at
+        let all: Vec<(String, ImageLocalMatrix)> = frame_entries.iter()
+            .filter(|(_, sym, _)| !sym.is_empty() && image_symbols.contains(sym.as_str()))
+            .map(|(_, sym, mat)| (sym.clone(), *mat)).collect();
+        for (sym, _) in &all { image_guids.entry(sym.clone()).or_insert_with(|| crate::uuid_gen::image_meta_guid(sym)); }
+        parts.push(all);
         // Each entry now has the resolved symbol_name already (from Pass 1 & 2 fixes).
         // Take the first non-empty symbol name in the frame, WITH its local matrix.
         let entry = frame_entries.iter().find(|(_id, sym, _mat)| !sym.is_empty());
@@ -1660,7 +2000,29 @@ pub fn extract_projectile_frame_images_from_swf(
         matrices.push(mat);
     }
 
-    Ok(ProjectileFrameImages { frames, matrices, image_guids })
+    Ok(ProjectileFrameImages { frames, matrices, image_guids, parts })
+}
+
+/// A shape's raster starts at the shape's own bounds, not at its origin: the placement puts
+/// the shape's (0,0) where the matrix says, and the picture's top-left is the bounds' minimum
+/// carried through the same matrix. Without this a rasterized vector effect hung off the
+/// spawn point by its whole bounds (sora's blizzard drew below the feet where the source draws
+/// it over the chest). The character path does the same (`raster`'s `origin_px`).
+fn with_pivot(mat: ImageLocalMatrix, pivot: Option<&(f64, f64)>) -> ImageLocalMatrix {
+    let Some(&(ox, oy)) = pivot else { return mat };
+    if ox == 0.0 && oy == 0.0 { return mat }
+    ImageLocalMatrix::from_abcd(mat.a, mat.b, mat.c, mat.d,
+        mat.tx + ox * mat.a + oy * mat.c, mat.ty + ox * mat.b + oy * mat.d)
+}
+
+/// A part placed inside an animation's clip, where the root places that clip: the two matrices
+/// composed in the SWF's own layout, so a clip the root places mirrored (marth's back air) draws
+/// its parts mirrored, where the scale alone kept them facing forward on the wrong side
+fn placed_by(root: &crate::sprite_parser::XframeTransform, l: &ImageLocalMatrix) -> ImageLocalMatrix {
+    let (ra, rb, rc, rd) = (root.a, root.b, root.c, root.d);
+    let (tx, ty) = root.apply(l.tx, l.ty);
+    ImageLocalMatrix::from_abcd(ra * l.a + rc * l.b, rb * l.a + rd * l.b,
+                                ra * l.c + rc * l.d, rb * l.c + rd * l.d, tx, ty)
 }
 
 fn po_to_mat(po: &swf::PlaceObject) -> ImageLocalMatrix {
@@ -1686,6 +2048,9 @@ pub struct ProjectileState {
     pub inner_sprite_name: String,
     /// Frame count of the inner sprite
     pub inner_frame_count: u16,
+    /// where the projectile's clip places this stance: its art and boxes are in the stance's
+    /// own space, and the projectile's origin is the outer clip's
+    pub stance: ImageLocalMatrix,
 }
 
 /// A projectile sprite discovered in the SWF.
@@ -1695,12 +2060,18 @@ pub struct DiscoveredProjectile {
     pub sprite_id: u16,
     /// Root projectile name (e.g. "mario_fireball")
     pub name: String,
+    /// The class the root sprite is bound to (its symbol name), which stays put when the
+    /// projectile is renamed to what the fighter's table calls it: the clip's own code is this
+    /// class's and its stance's, never a class that happens to share the table's name.
+    pub class_name: String,
     /// Inner animation sprite ID (the 'stance' child), if any (single-state projectiles)
     pub inner_sprite_id: Option<u16>,
     /// Inner animation sprite name (e.g. "mario_fla.mario_fireball_mc_210")
     pub inner_sprite_name: Option<String>,
     /// Frame count of the inner animation sprite
     pub inner_frame_count: u16,
+    /// where the projectile's clip places the stance (see `ProjectileState::stance`)
+    pub inner_stance: ImageLocalMatrix,
     /// For multi-state projectiles (outer wrapper has multiple frame labels),
     /// each entry is one SSF2 state with its own inner sprite.
     /// Empty for single-state projectiles.
@@ -1712,6 +2083,9 @@ pub struct DiscoveredProjectile {
     /// no FrameLabel tags (in which case the generators fall back to
     /// the FM template's `projectileSpawn`/`projectileIdle`/`projectileDestroy`).
     pub inner_labels: Vec<(u16, String)>,
+    /// How many frames the projectile's OWN timeline has, as against the clip placed inside it.
+    /// A clip with one frame has no timeline to hold: what moves inside it is the inner clip's.
+    pub own_frame_count: u16,
 }
 
 /// A visual effect sprite discovered in the SWF root. Effects are like
@@ -1749,6 +2123,164 @@ pub struct DiscoveredHead {
     pub image_shape_id: Option<u16>,
 }
 
+/// One projectile, read off its root sprite: the `stance` child under each label is the clip it
+/// draws with, `attack_idle` the one it flies with, and the labels inside that clip its own
+/// animations. Shared by the character walk (every sprite carrying `attack_idle`) and a stage's
+/// (the sprites its classes declare by linkage).
+fn projectile_of_sprite(swf: &swf::Swf<'_>, symbols: &BTreeMap<u16, String>, sprite: &swf::Sprite, sprite_name: String) -> DiscoveredProjectile {
+
+    // Walk the outer sprite timeline to collect all frame-label → stance placements.
+    // Single-state: one label ('attack_idle') + one PlaceObject(stance).
+    // Multi-state: multiple labels each followed by a new PlaceObject(stance).
+    let mut states: Vec<ProjectileState> = Vec::new();
+    let mut cur_label: Option<String> = None;
+    for stag in &sprite.tags {
+        match stag {
+            swf::Tag::FrameLabel(fl) => {
+                cur_label = Some(fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
+            }
+            swf::Tag::PlaceObject(po) => {
+                let po_name = po.name.as_ref()
+                    .map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
+                if po_name.as_deref() == Some("stance") {
+                    let stance = po.matrix.map(|m| ImageLocalMatrix::from_abcd(m.a.to_f64(), m.b.to_f64(), m.c.to_f64(), m.d.to_f64(),
+                        m.tx.get() as f64 / 20.0, m.ty.get() as f64 / 20.0)).unwrap_or_default();
+                    if let swf::PlaceObjectAction::Place(id) = &po.action {
+                        let inner_sym = symbols.get(id).cloned().unwrap_or_default();
+                        let inner_frames = swf.tags.iter().find_map(|t| {
+                            if let swf::Tag::DefineSprite(s) = t {
+                                if s.id == *id { return Some(s.num_frames); }
+                            }
+                            None
+                        }).unwrap_or(1);
+                        if let Some(label) = cur_label.take() {
+                            states.push(ProjectileState {
+                                label,
+                                inner_sprite_id: *id,
+                                inner_sprite_name: inner_sym,
+                                inner_frame_count: inner_frames,
+                                stance,
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Single-state shortcut: find the attack_idle entry
+    let idle_state = states.iter().find(|s| s.label == "attack_idle");
+    let inner_sprite_id = idle_state.map(|s| s.inner_sprite_id);
+    let inner_sprite_name = idle_state.map(|s| s.inner_sprite_name.clone());
+    let inner_frame_count = idle_state.map(|s| s.inner_frame_count)
+        .unwrap_or_else(|| sprite.num_frames.max(1));
+    let inner_stance = idle_state.map(|s| s.stance).unwrap_or_default();
+
+    // Only keep states vec if it has more than just attack_idle
+    let states = if states.len() > 1 { states } else { Vec::new() };
+
+    // Walk the inner sprite's tags for its own FrameLabel pings —
+    // these are the projectile's per-frame SSF2 animation labels
+    // (parallel to character xframe labels). Order by frame.
+    let mut inner_labels: Vec<(u16, String)> = Vec::new();
+    if let Some(inner_id) = inner_sprite_id {
+        if let Some(inner_sprite) = swf.tags.iter().find_map(|t| {
+            if let swf::Tag::DefineSprite(s) = t {
+                if s.id == inner_id { return Some(s); }
+            }
+            None
+        }) {
+            let mut frame: u16 = 1;
+            for tag in &inner_sprite.tags {
+                match tag {
+                    swf::Tag::FrameLabel(fl) => {
+                        let label = fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
+                        if !label.is_empty() {
+                            inner_labels.push((frame, label));
+                        }
+                    }
+                    swf::Tag::ShowFrame => { frame += 1; }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if std::env::var("PEPTIDE_TRACE_LABELS").is_ok() {
+        eprintln!("[trace-proj] {sprite_name} states={:?} labels={inner_labels:?}",
+                  states.iter().map(|s| (s.label.clone(), s.inner_frame_count)).collect::<Vec<_>>());
+    }
+    DiscoveredProjectile {
+        sprite_id: sprite.id,
+        class_name: sprite_name.clone(),
+        name: sprite_name,
+        inner_sprite_id,
+        inner_sprite_name,
+        inner_frame_count,
+        inner_stance,
+        states,
+        inner_labels,
+        own_frame_count: sprite.num_frames,
+    }
+}
+
+/// Every clip class the timeline places inside a projectile: the projectile sprites themselves
+/// (the ones carrying `attack_idle`) and the `stance` clip under each of their labels. What
+/// these clips do is the projectile's, not the fighter's that fires it.
+pub fn projectile_clip_classes(swf: &swf::Swf<'_>) -> BTreeSet<String> {
+    let mut symbols: BTreeMap<u16, String> = BTreeMap::new();
+    for tag in &swf.tags {
+        if let swf::Tag::SymbolClass(links) = tag {
+            for link in links {
+                let name = link.class_name.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
+                if !name.is_empty() { symbols.insert(link.id, name); }
+            }
+        }
+    }
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    for tag in &swf.tags {
+        let swf::Tag::DefineSprite(sprite) = tag else { continue };
+        let Some(name) = symbols.get(&sprite.id).cloned() else { continue };
+        let has_idle = sprite.tags.iter().any(|t| matches!(t, swf::Tag::FrameLabel(fl)
+            if fl.label.to_str_lossy(encoding_rs::WINDOWS_1252) == "attack_idle"));
+        if !has_idle { continue }
+        let p = projectile_of_sprite(swf, &symbols, sprite, name.clone());
+        out.insert(name);
+        if let Some(inner) = p.inner_sprite_name { out.insert(inner); }
+        for st in p.states { if !st.inner_sprite_name.is_empty() { out.insert(st.inner_sprite_name); } }
+    }
+    out
+}
+
+/// The projectiles a stage's classes declare, found by the linkage each declaration names.
+/// A projectile that carries no `attack_idle` of its own is one clip, drawn as it is.
+pub fn discover_projectiles_by_linkage(swf: &swf::Swf<'_>, linkages: &[String]) -> Vec<DiscoveredProjectile> {
+    let mut symbols: BTreeMap<u16, String> = BTreeMap::new();
+    for tag in &swf.tags {
+        if let swf::Tag::SymbolClass(links) = tag {
+            for link in links {
+                let name = link.class_name.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
+                if !name.is_empty() { symbols.insert(link.id, name); }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for tag in &swf.tags {
+        let swf::Tag::DefineSprite(sprite) = tag else { continue };
+        let Some(name) = symbols.get(&sprite.id).cloned() else { continue };
+        if !linkages.iter().any(|l| l.eq_ignore_ascii_case(&name)) { continue }
+        let mut p = projectile_of_sprite(swf, &symbols, sprite, name);
+        if p.inner_sprite_id.is_none() {
+            p.inner_sprite_id = Some(sprite.id);
+            p.inner_sprite_name = Some(p.name.clone());
+            p.inner_frame_count = sprite.num_frames.max(1);
+        }
+        out.push(p);
+    }
+    out
+}
+
 /// Scan the SWF for projectile, effect, and head/portrait sprites.
 ///
 ///   - Projectiles → have an `attack_idle` FrameLabel + a `stance`
@@ -1764,17 +2296,19 @@ pub struct DiscoveredHead {
 pub fn discover_projectiles_and_head(
     swf_data: &[u8],
     char_name: &str,
+    declared_thumbnail: Option<&str>,
 ) -> Result<(Vec<DiscoveredProjectile>, Vec<DiscoveredEffect>, Option<DiscoveredHead>)> {
     use std::io::Cursor;
     let swf_buf = swf::decompress_swf(Cursor::new(swf_data)).context("decompress SWF")?;
     let swf = swf::parse_swf(&swf_buf).context("parse SWF")?;
-    discover_projectiles_and_head_from_swf(&swf, char_name)
+    discover_projectiles_and_head_from_swf(&swf, char_name, declared_thumbnail)
 }
 
 /// `discover_projectiles_and_head` against an already-parsed SWF.
 pub fn discover_projectiles_and_head_from_swf(
     swf: &swf::Swf<'_>,
     char_name: &str,
+    declared_thumbnail: Option<&str>,
 ) -> Result<(Vec<DiscoveredProjectile>, Vec<DiscoveredEffect>, Option<DiscoveredHead>)> {
     // Build SymbolClass map: id → name
     let mut symbols: BTreeMap<u16, String> = BTreeMap::new();
@@ -1815,6 +2349,10 @@ pub fn discover_projectiles_and_head_from_swf(
     // menu portrait — explicitly excluded. Head sprites named without an
     // underscore (dkhead, dkicon) only contain shapes — they need shape
     // rasterization which is a separate code path.
+    // The character's own root MovieClip names it too, and often differently from the id
+    // (`dkong` for `donkeykong`), which is the half of its identity `dkhead` is built from.
+    let root_name = crate::sprite_parser::find_root_sprite_id(swf, &symbols, &char_lower)
+        .and_then(|id| symbols.get(&id).map(|n| n.to_lowercase()));
     let mut candidates: Vec<&swf::Sprite> = Vec::new();
     for tag in &swf.tags {
         if let swf::Tag::DefineSprite(sprite) = tag {
@@ -1828,19 +2366,45 @@ pub fn discover_projectiles_and_head_from_swf(
             {
                 continue;
             }
-            let head_like = nl.ends_with("_head")
-                || nl == format!("{}_icon", char_lower);
-            if head_like {
+            // THE portrait is the clip the character's own stats name as its `thumbnail` --
+            // what SSF2's damage counter shows for it. Nothing is recognised here; the source
+            // said which clip it is.
+            let declared = declared_thumbnail.is_some_and(|t| t.eq_ignore_ascii_case(&sprite_name));
+            // Only when a package declares none: the naming convention, as a last resort. An
+            // EMPTY clip never counts (several characters ship a `_head` symbol with nothing in
+            // it), and neither does an auto-generated `_fla.` timeline that happens to carry the
+            // word: a headbutt animation is a move, not a picture.
+            let by_convention = declared_thumbnail.is_none()
+                && (nl.contains("head") || nl == format!("{char_lower}_icon"))
+                && sprite.num_frames <= 1
+                && !nl.contains("_fla.");
+            let has_content = sprite.tags.iter().any(|t| matches!(t, swf::Tag::PlaceObject(_)));
+            if (declared || by_convention) && has_content {
                 candidates.push(sprite);
             }
         }
     }
     // Stable preference: _head > _icon. _head is the standard convention;
     // _icon is the CSS thumbnail (sandbag uses this since it has no _head).
-    candidates.sort_by_key(|s| {
-        let n = symbols.get(&s.id).map(|s| s.to_lowercase()).unwrap_or_default();
-        if n.ends_with("_head") { 0 } else { 1 }
-    });
+    // Only reachable when nothing was declared. A file can carry someone else's head clip (an
+    // example, a cameo), so the fallback pick is tied to THIS character's identity: how much of
+    // the name it shares with the id the package registers or with its own root MovieClip.
+    // `dkhead` shares "dk" with `dkong`; an unrelated `ichigo_head_example` shares nothing.
+    let shared = |n: &str| -> usize {
+        let pre = |a: &str, b: &str| a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+        pre(n, &char_lower).max(root_name.as_deref().map(|r| pre(n, r)).unwrap_or(0))
+    };
+    if declared_thumbnail.is_none() {
+        candidates.sort_by_key(|s| {
+            let n = symbols.get(&s.id).map(|s| s.to_lowercase()).unwrap_or_default();
+            let kind = if n.ends_with("_head") { 0 } else if n.contains("head") { 1 } else { 2 };
+            (kind, std::cmp::Reverse(shared(&n)))
+        });
+        candidates.retain(|s| {
+            let n = symbols.get(&s.id).map(|s| s.to_lowercase()).unwrap_or_default();
+            shared(&n) >= 2
+        });
+    }
 
     for sprite in candidates {
         let sprite_name = symbols.get(&sprite.id).cloned().unwrap_or_default();
@@ -1873,7 +2437,9 @@ pub fn discover_projectiles_and_head_from_swf(
             _ => (None, None),
         };
 
-        if image_symbol.is_some() {
+        // a portrait built out of bare SHAPES has no symbol on any placement; it is still the
+        // portrait, and the compositing path is what turns it into one image.
+        if image_symbol.is_some() || image_shape_id.is_some() {
             log::debug!("Head sprite '{}': resolved image symbol '{}' (id={:?})",
                 sprite_name, image_symbol.as_deref().unwrap_or(""), image_shape_id);
             head = Some(DiscoveredHead {
@@ -1906,89 +2472,7 @@ pub fn discover_projectiles_and_head_from_swf(
             // Skip the root character sprite
             if sprite_name.to_lowercase() == char_lower { continue; }
 
-            // Walk the outer sprite timeline to collect all frame-label → stance placements.
-            // Single-state: one label ('attack_idle') + one PlaceObject(stance).
-            // Multi-state: multiple labels each followed by a new PlaceObject(stance).
-            let mut states: Vec<ProjectileState> = Vec::new();
-            let mut cur_label: Option<String> = None;
-            for stag in &sprite.tags {
-                match stag {
-                    swf::Tag::FrameLabel(fl) => {
-                        cur_label = Some(fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
-                    }
-                    swf::Tag::PlaceObject(po) => {
-                        let po_name = po.name.as_ref()
-                            .map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
-                        if po_name.as_deref() == Some("stance") {
-                            if let swf::PlaceObjectAction::Place(id) = &po.action {
-                                let inner_sym = symbols.get(id).cloned().unwrap_or_default();
-                                let inner_frames = swf.tags.iter().find_map(|t| {
-                                    if let swf::Tag::DefineSprite(s) = t {
-                                        if s.id == *id { return Some(s.num_frames); }
-                                    }
-                                    None
-                                }).unwrap_or(1);
-                                if let Some(label) = cur_label.take() {
-                                    states.push(ProjectileState {
-                                        label,
-                                        inner_sprite_id: *id,
-                                        inner_sprite_name: inner_sym,
-                                        inner_frame_count: inner_frames,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            // Single-state shortcut: find the attack_idle entry
-            let idle_state = states.iter().find(|s| s.label == "attack_idle");
-            let inner_sprite_id = idle_state.map(|s| s.inner_sprite_id);
-            let inner_sprite_name = idle_state.map(|s| s.inner_sprite_name.clone());
-            let inner_frame_count = idle_state.map(|s| s.inner_frame_count)
-                .unwrap_or_else(|| sprite.num_frames.max(1));
-
-            // Only keep states vec if it has more than just attack_idle
-            let states = if states.len() > 1 { states } else { Vec::new() };
-
-            // Walk the inner sprite's tags for its own FrameLabel pings —
-            // these are the projectile's per-frame SSF2 animation labels
-            // (parallel to character xframe labels). Order by frame.
-            let mut inner_labels: Vec<(u16, String)> = Vec::new();
-            if let Some(inner_id) = inner_sprite_id {
-                if let Some(inner_sprite) = swf.tags.iter().find_map(|t| {
-                    if let swf::Tag::DefineSprite(s) = t {
-                        if s.id == inner_id { return Some(s); }
-                    }
-                    None
-                }) {
-                    let mut frame: u16 = 1;
-                    for tag in &inner_sprite.tags {
-                        match tag {
-                            swf::Tag::FrameLabel(fl) => {
-                                let label = fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
-                                if !label.is_empty() {
-                                    inner_labels.push((frame, label));
-                                }
-                            }
-                            swf::Tag::ShowFrame => { frame += 1; }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-
-            projectiles.push(DiscoveredProjectile {
-                sprite_id: sprite.id,
-                name: sprite_name,
-                inner_sprite_id,
-                inner_sprite_name,
-                inner_frame_count,
-                states,
-                inner_labels,
-            });
+            projectiles.push(projectile_of_sprite(swf, &symbols, sprite, sprite_name));
         }
     }
 
@@ -2077,4 +2561,543 @@ pub fn discover_projectiles_and_head_from_swf(
     }
 
     Ok((projectiles, effects, head))
+}
+
+/// Composite a character's portrait clip into one image.
+///
+/// A portrait clip is a little scene, not a picture: it stacks pieces at different depths, scales
+/// the character art down inside itself, nests other clips, and MASKS ranges of depths to windows
+/// so only the head shows. Everything here comes from the clip -- the depth order, each piece's
+/// own matrix, and the masks. A placement carrying a `clip_depth` masks the depths it covers,
+/// which is how SWF states masking, so this needs no idea what it is looking at and a portrait
+/// nobody has drawn yet composites the same way.
+///
+/// NOTHING RESAMPLES THE PIXELS. A costume recolors by matching colors EXACTLY, so a resampled
+/// pixel is either an invented color the palette says nothing about or a neighbour's color in the
+/// wrong place, and either way it survives the swap wearing the base art's color. The composite is
+/// built at the resolution of its largest piece and the engine scales it into its frame at draw
+/// time, after the swap, which is where a scale belongs.
+///
+/// With `apply_masks` the result is cropped to what the clip's windows frame -- the head the
+/// damage counter shows. Without, it is the whole picture, which is what the character-select
+/// screen shows.
+pub fn composite_head(
+    swf: &swf::Swf<'_>,
+    head_sprite_id: u16,
+    output_dir: &Path,
+    char_name: &str,
+    apply_masks: bool,
+) -> Result<Option<ExtractedImage>> {
+    let ctx = ClipContext::new(swf);
+    let Some(r) = ctx.render(head_sprite_id, 0) else { return Ok(None) };
+    if std::env::var("PEPTIDE_HEAD_DEBUG").is_ok() {
+        eprintln!("[head] canvas {}x{} origin ({:.1},{:.1}) scale {:.2} window {:?}",
+            r.w, r.h, r.x, r.y, r.scale, r.window);
+    }
+
+    // Keep only what the clip's windows frame. Everything outside them is the rest of the picture.
+    let window = r.window;
+    let (canvas, cw, ch) = match (apply_masks, window) {
+        (true, Some((x0, y0, x1, y1))) => {
+            let cx0 = ((x0 - r.x).floor().max(0.0)) as u32;
+            let cy0 = ((y0 - r.y).floor().max(0.0)) as u32;
+            let cx1 = (((x1 - r.x).ceil()) as u32).min(r.w).max(cx0 + 1);
+            let cy1 = (((y1 - r.y).ceil()) as u32).min(r.h).max(cy0 + 1);
+            crop(&r.rgba, r.w, cx0, cy0, cx1 - cx0, cy1 - cy0)
+        }
+        _ => (r.rgba, r.w, r.h),
+    };
+
+    // Keep the window's own margins. What sits where inside the frame is the source's framing,
+    // and every character's window is about the same size (52x38 in nearly all of them), so
+    // keeping it is what makes one character's head the same size as the next one's, the way
+    // SSF2's counter shows them. Trimming to the art would scale each picture by how much of its
+    // own window it happens to fill. With no window there is nothing to frame, so the whole
+    // picture is trimmed to what was painted; an empty result means the clip drew nothing.
+    let (canvas, cw, ch) = match window {
+        Some(_) if apply_masks => (canvas, cw, ch),
+        _ => {
+            let Some(t) = trim_transparent(canvas, cw, ch) else { return Ok(None) };
+            t
+        }
+    };
+
+    let sym = if apply_masks {
+        format!("{char_name}_head_composite")
+    } else {
+        format!("{char_name}_head_full")
+    };
+    let filename = format!("{}.png", sanitize_name(&sym));
+    let sprites_dir = output_dir.join("library/sprites");
+    std::fs::create_dir_all(&sprites_dir)?;
+    let mut batch = PngBatch::default();
+    batch.push(sprites_dir.join(&filename), cw, ch, canvas)?;
+    batch.flush()?;
+    Ok(Some(ExtractedImage {
+        bitmap_id: head_sprite_id,
+        symbol_name: sym,
+        width: cw,
+        height: ch,
+        png_path: format!("library/sprites/{filename}"),
+        is_vector: true,
+    }))
+}
+
+/// A rendered clip: its pixels, and where its top-left sits in the coordinates of whatever placed
+/// it. `window` is the rectangle its masks frame, in those same coordinates.
+struct Rendered {
+    rgba: Vec<u8>,
+    w: u32,
+    h: u32,
+    x: f64,
+    y: f64,
+    /// Pixels per unit of the clip's own coordinates. A clip is rendered at the resolution of its
+    /// largest piece, so whoever places it has to divide by this to know how BIG it is.
+    scale: f64,
+    window: Option<(f64, f64, f64, f64)>,
+}
+
+/// One rasterised placement, already sized and positioned by its own matrix.
+struct Piece { x: f64, y: f64, w: u32, h: u32, r: crate::vector_raster::Raster }
+
+/// The definitions a clip draws from: shapes, bitmaps, and the other clips it nests.
+struct ClipContext<'a> {
+    shapes: BTreeMap<u16, &'a swf::Shape>,
+    sprites: BTreeMap<u16, &'a swf::Sprite<'a>>,
+    bitmaps: BTreeMap<u16, (u32, u32, Vec<u8>)>,
+}
+
+/// How deep a clip may nest before this gives up. Portraits nest a level or two; the limit is
+/// there so a clip that places itself can't spin.
+const MAX_CLIP_DEPTH: u32 = 4;
+
+impl<'a> ClipContext<'a> {
+    fn new(swf: &'a swf::Swf<'a>) -> Self {
+        let mut ctx = ClipContext {
+            shapes: BTreeMap::new(), sprites: BTreeMap::new(), bitmaps: BTreeMap::new(),
+        };
+        for tag in &swf.tags {
+            match tag {
+                swf::Tag::DefineShape(s) => { ctx.shapes.insert(s.id, s); }
+                swf::Tag::DefineSprite(s) => { ctx.sprites.insert(s.id, s); }
+                swf::Tag::DefineBitsLossless(b) => {
+                    if let Ok(rgba) = decode_lossless(b) {
+                        ctx.bitmaps.insert(b.id, (b.width as u32, b.height as u32, rgba));
+                    }
+                }
+                swf::Tag::DefineBitsJpeg3(j) => {
+                    if let Ok((w, h, rgba)) = decode_jpeg3(j) { ctx.bitmaps.insert(j.id, (w, h, rgba)); }
+                }
+                // A picture can be stored any of the ways the format allows, and a clip that
+                // places one we cannot read loses that piece silently -- which is how a portrait
+                // ended up as its background plus whatever else was in the clip.
+                swf::Tag::DefineBitsJpeg2 { id, jpeg_data } => {
+                    if let Ok((w, h, rgba)) = decode_jpeg_bytes(jpeg_data) { ctx.bitmaps.insert(*id, (w, h, rgba)); }
+                }
+                swf::Tag::DefineBits { id, jpeg_data } => {
+                    if let Ok((w, h, rgba)) = decode_jpeg_bytes(jpeg_data) { ctx.bitmaps.insert(*id, (w, h, rgba)); }
+                }
+                _ => {}
+            }
+        }
+        ctx
+    }
+
+    /// One placed piece, at its own resolution: a bitmap, a shape, or a nested clip rendered the
+    /// same way this one is.
+    fn raster(&self, id: u16, depth: u32) -> Option<(crate::vector_raster::Raster, f64)> {
+        if let Some((bw, bh, rgba)) = self.bitmaps.get(&id) {
+            return Some((crate::vector_raster::Raster {
+                width: *bw, height: *bh, rgba: rgba.clone(), origin_px: (0.0, 0.0),
+            }, 1.0));
+        }
+        if let Some(shape) = self.shapes.get(&id) {
+            let b = &shape.shape_bounds;
+            let (bw, bh) = ((b.x_max.to_pixels() - b.x_min.to_pixels()).ceil().max(1.0),
+                            (b.y_max.to_pixels() - b.y_min.to_pixels()).ceil().max(1.0));
+            let painted = (bw <= 4096.0 && bh <= 4096.0)
+                .then(|| crate::stage_parser::bitmap_fill_layers(shape, &self.bitmaps, bw as u32, bh as u32))
+                .flatten()
+                .map(|img| crate::vector_raster::Raster {
+                    width: img.width(), height: img.height(), rgba: img.into_raw(),
+                    origin_px: (b.x_min.to_pixels(), b.y_min.to_pixels()),
+                });
+            return painted.or_else(|| crate::vector_raster::rasterize_shape(
+                &shape.shape_bounds, &shape.styles.fill_styles, &shape.styles.line_styles, &shape.shape))
+                .map(|r| (r, 1.0));
+        }
+        if depth < MAX_CLIP_DEPTH && self.sprites.contains_key(&id) {
+            // a nested clip is a picture too: render it, masks and all, and place the result
+            let r = self.render(id, depth + 1)?;
+            // its origin is stated in ITS pixels; the caller works in clip units
+            return Some((crate::vector_raster::Raster {
+                width: r.w, height: r.h, rgba: r.rgba,
+                origin_px: (r.x / r.scale, r.y / r.scale),
+            }, r.scale));
+        }
+        None
+    }
+
+    /// Render one clip's first frame: every piece it places, in depth order, through its masks.
+    fn render(&self, sprite_id: u16, depth: u32) -> Option<Rendered> {
+        let sprite = self.sprites.get(&sprite_id)?;
+
+        // The picture is the clip's FIRST frame: everything placed before it shows at once.
+        struct Placed { depth: u16, clip: Option<u16>, id: u16, mat: ImageLocalMatrix }
+        let mut placed: Vec<Placed> = Vec::new();
+        for stag in &sprite.tags {
+            match stag {
+                swf::Tag::PlaceObject(po) => {
+                    if let swf::PlaceObjectAction::Place(id) = &po.action {
+                        placed.push(Placed { depth: po.depth, clip: po.clip_depth, id: *id, mat: po_to_mat(po.as_ref()) });
+                    }
+                }
+                swf::Tag::ShowFrame => break,
+                _ => {}
+            }
+        }
+        if placed.is_empty() { return None }
+        placed.sort_by_key(|p| p.depth);
+
+        // RESOLUTION. A clip usually places its art scaled DOWN inside itself (mario's picture
+        // sits at 0.55), and baking that shrink in would be a resample. So the composite is built
+        // at the resolution of its largest piece and every piece is drawn at its own pixels.
+        // Capped so a huge picture can't blow the canvas up.
+        let smallest = placed.iter()
+            .filter(|p| p.clip.is_none())
+            .map(|p| p.mat.a.abs().min(p.mat.d.abs()))
+            .filter(|s| *s > 0.01)
+            .fold(1.0f64, f64::min);
+        let factor = (1.0 / smallest).clamp(1.0, 4.0);
+
+        let piece = |id: u16, mat: &ImageLocalMatrix| -> Option<Piece> {
+            let (r, own) = self.raster(id, depth)?;
+            // `own` is the piece's own pixels per unit (1 for a shape or a bitmap, more for a
+            // nested clip rendered at its art's resolution), so the placement's scale is applied
+            // in UNITS and the result converted back to this clip's pixels.
+            let (sx, sy) = (mat.a.abs().max(1e-6) * factor / own, mat.d.abs().max(1e-6) * factor / own);
+            let (w, h) = (((r.width as f64) * sx).round().max(1.0) as u32,
+                          ((r.height as f64) * sy).round().max(1.0) as u32);
+            Some(Piece {
+                x: (mat.tx + r.origin_px.0 * mat.a.abs()) * factor,
+                y: (mat.ty + r.origin_px.1 * mat.d.abs()) * factor,
+                w, h, r,
+            })
+        };
+
+        // A placement carrying a clip_depth paints nothing of its own: it is a window over the
+        // depths it covers, and only what falls inside it survives.
+        let mut masks: Vec<(u16, u16, Piece)> = Vec::new();
+        let mut drawn: Vec<(u16, Piece)> = Vec::new();
+        for p in &placed {
+            let Some(pc) = piece(p.id, &p.mat) else { continue };
+            match p.clip {
+                Some(to) => masks.push((p.depth, to, pc)),
+                None => drawn.push((p.depth, pc)),
+            }
+        }
+        if drawn.is_empty() { return None }
+        if std::env::var("PEPTIDE_HEAD_DEBUG").is_ok() {
+            for (d, p) in &drawn {
+                eprintln!("[piece] depth={d} at ({:.1},{:.1}) size {}x{} (raster {}x{})",
+                    p.x, p.y, p.w, p.h, p.r.width, p.r.height);
+            }
+            for (f, t, m) in &masks {
+                eprintln!("[mask ] depths {f}..{t} at ({:.1},{:.1}) size {}x{}", m.x, m.y, m.w, m.h);
+            }
+        }
+
+        let min_x = drawn.iter().map(|(_, p)| p.x).fold(f64::INFINITY, f64::min).floor();
+        let min_y = drawn.iter().map(|(_, p)| p.y).fold(f64::INFINITY, f64::min).floor();
+        let max_x = drawn.iter().map(|(_, p)| p.x + p.w as f64).fold(f64::NEG_INFINITY, f64::max).ceil();
+        let max_y = drawn.iter().map(|(_, p)| p.y + p.h as f64).fold(f64::NEG_INFINITY, f64::max).ceil();
+        let (cw, ch) = ((max_x - min_x) as u32, (max_y - min_y) as u32);
+        if cw == 0 || ch == 0 || cw > 4096 || ch > 4096 { return None }
+
+        let mut canvas = vec![0u8; (cw as usize) * (ch as usize) * 4];
+        for (d, p) in &drawn {
+            // every window covering this depth has to let the pixel through
+            let covering: Vec<(&Piece, f64)> = masks.iter()
+                .filter(|(from, to, _)| d > from && d <= to)
+                .map(|(_, _, m)| (m, peak_alpha(&m.r)))
+                .collect();
+            for dy in 0..p.h {
+                for dx in 0..p.w {
+                    let (tx, ty) = ((p.x - min_x).round() as i64 + dx as i64,
+                                    (p.y - min_y).round() as i64 + dy as i64);
+                    if tx < 0 || ty < 0 || tx >= cw as i64 || ty >= ch as i64 { continue }
+                    let si = sample_index(&p.r, dx, dy, p.w, p.h);
+                    let mut sa = p.r.rgba[si + 3] as f64 / 255.0;
+                    for (m, peak) in &covering {
+                        sa *= mask_alpha_at(m, *peak, tx as f64 + min_x, ty as f64 + min_y);
+                        if sa <= 0.0 { break }
+                    }
+                    if sa <= 0.0 { continue }
+                    let di = ((ty as u32 * cw + tx as u32) * 4) as usize;
+                    // straight-alpha source-over: dividing by the result alpha is what keeps a
+                    // half-covered pixel its own COLOR instead of a darkened blend toward nothing
+                    let da = canvas[di + 3] as f64 / 255.0;
+                    let oa = sa + da * (1.0 - sa);
+                    if oa > 0.0 {
+                        for k in 0..3 {
+                            let sc = p.r.rgba[si + k] as f64;
+                            let dc = canvas[di + k] as f64;
+                            canvas[di + k] = ((sc * sa + dc * da * (1.0 - sa)) / oa)
+                                .round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                    canvas[di + 3] = (oa * 255.0).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+
+        // What the windows frame, in this clip's own coordinates.
+        let window = masks.iter().fold(None, |acc: Option<(f64, f64, f64, f64)>, (_, _, m)| {
+            let r = (m.x, m.y, m.x + m.w as f64, m.y + m.h as f64);
+            Some(match acc {
+                Some(w) => (w.0.min(r.0), w.1.min(r.1), w.2.max(r.2), w.3.max(r.3)),
+                None => r,
+            })
+        });
+
+        Some(Rendered { rgba: canvas, w: cw, h: ch, x: min_x, y: min_y, scale: factor, window })
+    }
+}
+
+/// Nearest source pixel for a destination pixel of a scaled piece: a placement scaled by its
+/// matrix lands at the size it is placed at, with its colors untouched (which keeps a costume's
+/// exact-color matching working).
+fn sample_index(r: &crate::vector_raster::Raster, dx: u32, dy: u32, w: u32, h: u32) -> usize {
+    let sx = (((dx as f64 + 0.5) * r.width as f64 / w as f64) as u32).min(r.width - 1);
+    let sy = (((dy as f64 + 0.5) * r.height as f64 / h as f64) as u32).min(r.height - 1);
+    ((sy * r.width + sx) * 4) as usize
+}
+
+/// How much of a pixel a window lets through, at a point in the clip's own coordinates.
+///
+/// A mask masks by its SHAPE, not by how opaque it was drawn: a window painted at 62% alpha still
+/// shows what is under it at full strength. So coverage is measured against the mask's own peak
+/// alpha, and read smoothly, which keeps a curved window's edge from stair-stepping. Interpolating
+/// alpha is safe where interpolating color would not be: a costume matches colors exactly, and
+/// these pixels keep the color the art gave them.
+fn mask_alpha_at(m: &Piece, peak: f64, x: f64, y: f64) -> f64 {
+    let (lx, ly) = (x - m.x, y - m.y);
+    if lx < 0.0 || ly < 0.0 || lx >= m.w as f64 || ly >= m.h as f64 || peak <= 0.0 { return 0.0 }
+    let (fx, fy) = (lx * m.r.width as f64 / m.w as f64 - 0.5,
+                    ly * m.r.height as f64 / m.h as f64 - 0.5);
+    let (x0, y0) = (fx.floor(), fy.floor());
+    let (tx, ty) = (fx - x0, fy - y0);
+    let a_at = |px: f64, py: f64| -> f64 {
+        let cx = (px.max(0.0) as u32).min(m.r.width - 1);
+        let cy = (py.max(0.0) as u32).min(m.r.height - 1);
+        m.r.rgba[((cy * m.r.width + cx) * 4 + 3) as usize] as f64
+    };
+    let top = a_at(x0, y0) * (1.0 - tx) + a_at(x0 + 1.0, y0) * tx;
+    let bot = a_at(x0, y0 + 1.0) * (1.0 - tx) + a_at(x0 + 1.0, y0 + 1.0) * tx;
+    ((top * (1.0 - ty) + bot * ty) / peak).min(1.0)
+}
+
+/// The most opaque pixel in a raster, as a 0-255 value.
+fn peak_alpha(r: &crate::vector_raster::Raster) -> f64 {
+    r.rgba.chunks_exact(4).map(|px| px[3]).max().unwrap_or(0) as f64
+}
+
+/// A rectangle of an RGBA image.
+fn crop(rgba: &[u8], w: u32, x: u32, y: u32, cw: u32, ch: u32) -> (Vec<u8>, u32, u32) {
+    let mut out = vec![0u8; (cw as usize) * (ch as usize) * 4];
+    for row in 0..ch {
+        let src = (((y + row) * w + x) * 4) as usize;
+        let dst = ((row * cw) * 4) as usize;
+        out[dst..dst + (cw as usize) * 4].copy_from_slice(&rgba[src..src + (cw as usize) * 4]);
+    }
+    (out, cw, ch)
+}
+
+/// Drop fully transparent rows and columns from the edges. `None` when nothing was painted.
+fn trim_transparent(rgba: Vec<u8>, w: u32, h: u32) -> Option<(Vec<u8>, u32, u32)> {
+    let at = |x: u32, y: u32| rgba[((y * w + x) * 4 + 3) as usize];
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0u32, 0u32);
+    for y in 0..h {
+        for x in 0..w {
+            if at(x, y) != 0 {
+                x0 = x0.min(x); y0 = y0.min(y); x1 = x1.max(x); y1 = y1.max(y);
+            }
+        }
+    }
+    if x1 < x0 || y1 < y0 { return None }
+    let (nw, nh) = (x1 - x0 + 1, y1 - y0 + 1);
+    if (nw, nh) == (w, h) { return Some((rgba, w, h)) }
+    let mut out = vec![0u8; (nw as usize) * (nh as usize) * 4];
+    for y in 0..nh {
+        let src = (((y + y0) * w + x0) * 4) as usize;
+        let dst = ((y * nw) * 4) as usize;
+        out[dst..dst + (nw as usize) * 4].copy_from_slice(&rgba[src..src + (nw as usize) * 4]);
+    }
+    Some((out, nw, nh))
+}
+
+/// A PROJECTILE A CHARACTER SPAWNS THAT ITS OWN FILE DOES NOT CARRY. The game keeps shared
+/// packages loaded and a clip resolves out of them exactly as a class does, which is how a
+/// fighter can spawn something it never ships: chibirobo fires a blaster and carries no such
+/// clip at all, so the shot came out of a reference to nothing.
+///
+/// Same walk the shared sounds take: the packages the game keeps loaded, then every package
+/// beside it, then the game's own movie last, stopping as soon as nothing is still wanted.
+pub fn pull_shared_projectiles(
+    want: &mut BTreeSet<String>,
+    beside: Option<&std::path::Path>,
+) -> Vec<DiscoveredProjectile> {
+    let mut got: Vec<DiscoveredProjectile> = Vec::new();
+    if want.is_empty() { return got }
+
+    // Discovery is scoped to the character whose file it is walking, and a shared package has
+    // no such root, so it cannot be asked "find chibirobo's clips" here. What it CAN be asked is
+    // "find this clip", so the package's own symbol names are matched against what is wanted,
+    // folded the same way a spawn is, and the clip that answers is scoped to itself.
+    // Discovery is scoped to whoever owns the clips it is walking, so a package is asked under
+    // every scope it could answer to: its own name, which is how a CHARACTER package finds the
+    // clips it ships, and the names of any symbols that answer to what is wanted, which is how
+    // a shared asset package finds a loose one. kirby's copy abilities need the first: falco's
+    // laser is falco's clip, in falco's file, and only falco's scope finds it there.
+    fn take(
+        bytes: &[u8], from: &str, package_id: &str,
+        want: &mut BTreeSet<String>, got: &mut Vec<DiscoveredProjectile>,
+    ) {
+        let Ok(buf) = swf::decompress_swf(bytes) else { return };
+        let Ok(parsed) = swf::parse_swf(&buf) else { return };
+        let abcs = crate::projectile_gen::parse_abcs(&parsed);
+        // WHAT THE PACKAGE CALLS ITSELF, said by the package. Searching one means searching it
+        // under the name whoever owns its clips answers to, and the file is not obliged to be
+        // called that: the game keeps its fighters in numbered archives, so a package holding
+        // one is searched under a number and finds nothing of it. The package states the name
+        // itself, in the class that holds the fighter's own stats.
+        let mut scopes: Vec<String> = Vec::new();
+        for abc in &abcs {
+            for c in &abc.classes {
+                let Some(stem) = c.name.strip_suffix("Ext") else { continue };
+                if stem.is_empty() || c.name == "SSF2CharacterExt" { continue }
+                let n = stem.to_string();
+                if !scopes.contains(&n) { scopes.push(n) }
+            }
+        }
+        let from_file = package_id.trim_end_matches(".ssf").to_string();
+        if !from_file.is_empty() && !scopes.contains(&from_file) { scopes.push(from_file); }
+        for tag in &parsed.tags {
+            if let swf::Tag::SymbolClass(links) = tag {
+                for link in links {
+                    let n = link.class_name.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
+                    if !n.is_empty()
+                        && want.contains(&crate::projectile_gen::projectile_content_id(&n))
+                        && !scopes.contains(&n)
+                    {
+                        scopes.push(n);
+                    }
+                }
+            }
+        }
+        // everything this package draws with, kept whether it was asked for or not: a name is
+        // often fired through a DIFFERENT clip, and which one is stated by the package's own
+        // table further down.
+        let mut seen: Vec<DiscoveredProjectile> = Vec::new();
+        for scope in &scopes {
+            let Ok((found, _, _)) =
+                discover_projectiles_and_head_from_swf(&parsed, scope, None) else { continue };
+            let mut mine: Vec<DiscoveredProjectile> = Vec::new();
+            for p in found {
+                let id = crate::projectile_gen::projectile_content_id(&p.name);
+                if want.remove(&id) { mine.push(p.clone()); }
+                if !seen.iter().any(|q| q.name == p.name) { seen.push(p); }
+            }
+            if !mine.is_empty() {
+                log::info!("{} projectile(s) came across from {from}", mine.len());
+                got.extend(mine);
+            }
+        }
+        // nothing left to answer, or nothing here that could answer it: reading a package's
+        // table means walking its whole class graph, which is not worth doing for a package that
+        // draws none of the clips in question
+        if want.is_empty() || seen.is_empty() { return }
+        // WHAT A FIRED NAME DRAWS WITH, said by the package that owns the clip. A fighter's own
+        // file is already read this way: its table gives every name it fires a `linkage_id`, and
+        // a name that is not a clip is resolved through it. Borrowing from another package needs
+        // the same reading of THAT package -- luigi fires `luigi_fireball` and ships
+        // `luigi_fireball_wrapper`, and only luigi's table says so, so whoever borrows the
+        // fireball without reading it finds a clip of the wrong name and moves on. That is
+        // every copy ability a fighter has of another's move.
+        let mut table: std::collections::BTreeMap<String, crate::abc_parser::ProjectileData> =
+            Default::default();
+        // read under every name the package answers to: the one it gave for itself, and the one
+        // its file is called, which for a folder of source files are usually the same
+        for abc in &abcs {
+            for scope in &scopes {
+                if let Ok(ex) = crate::abc_parser::extract_character_with_timeline(
+                    abc, scope, &Default::default(), &Default::default(), &Default::default()) {
+                    for (k, v) in ex.projectiles { table.entry(k).or_insert(v); }
+                }
+            }
+        }
+        if table.is_empty() { return }
+        let folded = |s: &str| crate::projectile_gen::projectile_content_id(s);
+        let mut through_table: Vec<DiscoveredProjectile> = Vec::new();
+        for id in want.iter().cloned().collect::<Vec<_>>() {
+            let Some(link) = table.iter().find(|(k, _)| folded(k) == id)
+                .and_then(|(_, d)| d.names.get("linkage_id"))
+            else { continue };
+            let link_id = folded(link);
+            let Some(src) = seen.iter().find(|p| folded(&p.name) == link_id).cloned() else { continue };
+            // named as the borrower fires it, drawn with the clip the owner says it draws with
+            let mut copy = src;
+            copy.name = id.trim_end_matches("Projectile").to_string();
+            log::info!("'{link}' is what {from} draws '{id}' with, its own table says so");
+            want.remove(&id);
+            through_table.push(copy);
+        }
+        if !through_table.is_empty() {
+            log::info!("{} projectile(s) came across from {from} through its own table",
+                through_table.len());
+            got.extend(through_table);
+        }
+    }
+
+    // THE FILES BESIDE THE ONE BEING CONVERTED, first because they are the ones the user chose.
+    // The game keeps its fighters in numbered archives and splits a fighter's clips from the
+    // code that names them, so a package there can hold a clip and say nothing about which name
+    // fires it. A folder of source files is one file per fighter, clips and table together, and
+    // that is what answers a copy ability. The two are not the same set either -- a fighter the
+    // game has and the folder does not is still reachable below.
+    if let Some(dir) = beside {
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir).into_iter().flatten()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|e| e == "ssf" || e == "swf"))
+            .collect();
+        files.sort();
+        for f in files {
+            if want.is_empty() { break }
+            let Ok(raw) = std::fs::read(&f) else { continue };
+            let Some(name) = f.file_name().and_then(|n| n.to_str()) else { continue };
+            let swf = crate::ssf::decompress(&raw).unwrap_or(raw);
+            take(&swf, &format!("the '{name}' package beside it"), name, want, &mut got);
+        }
+    }
+    // a fighter converted from the installed game sits IN the data directory, so the walk
+    // above has already asked every package below, each with all it could answer still wanted
+    let walked_data = beside.is_some_and(crate::shared_packages::is_data_dir);
+    if !walked_data {
+        for (id, swf) in crate::shared_packages::every_package() {
+            if want.is_empty() { break }
+            take(&swf, &format!("the shared '{id}' package"), &id, want, &mut got);
+        }
+        if !want.is_empty() {
+            for (id, swf) in crate::shared_packages::all_data_packages() {
+                if want.is_empty() { break }
+                take(&swf, &format!("the '{id}' package"), &id, want, &mut got);
+            }
+        }
+    }
+    if !want.is_empty() {
+        if let Some(movie) = crate::shared_packages::game_movie() {
+            take(movie, "the game's own movie", "", want, &mut got);
+        }
+    }
+    got
 }

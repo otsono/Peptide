@@ -72,7 +72,8 @@ fn walk(root: &Path) -> Vec<PathBuf> {
 }
 
 /// The emitted project must have the layout FrayTools expects: a `.fraytools` at the root,
-/// a PascalCase entity, and the four per-character script files under `scripts/<Pascal>/`.
+/// a PascalCase entity, and the per-character script files under `scripts/<Pascal>/`.
+/// `Script.hx` itself is compiled from the fighter's AS3, which a synthetic SWF has none of.
 #[test]
 fn emits_the_fraytools_project_layout() {
     let (_src, _out, project) = convert_synthetic("synthchar");
@@ -83,7 +84,7 @@ fn emits_the_fraytools_project_layout() {
         "entity is PascalCase-named");
 
     let scripts = project.join("library/scripts/Synthchar");
-    for f in ["CharacterStats.hx", "AnimationStats.hx", "HitboxStats.hx", "Script.hx"] {
+    for f in ["CharacterStats.hx", "AnimationStats.hx", "HitboxStats.hx"] {
         assert!(scripts.join(f).exists(), "scripts/Synthchar/{f} must exist");
     }
     // every emitted script needs its FrayTools sidecar or the import silently drops it
@@ -127,6 +128,10 @@ fn writes_a_conversion_log_for_the_character() {
     for channel in ["ssf2_only", "unknown", "validation_warnings"] {
         assert!(log[channel].is_array(), "log must carry a `{channel}` array");
     }
+    // a package that declares no fighter gets no script, and the log says so
+    let warned = log["validation_warnings"].as_array().unwrap().iter()
+        .any(|w| w.as_str().is_some_and(|s| s.starts_with("no fighter script")));
+    assert!(warned, "the missing fighter script is reported: {}", log["validation_warnings"]);
 }
 
 /// Every `"guid"` in the emitted package must be unique — duplicates make FrayTools drop
@@ -212,6 +217,6 @@ fn lowercase_id_is_pascal_cased_consistently() {
     let (_src, _out, project) = convert_synthetic("mrgameandwatch");
     assert!(project.join("library/entities/Mrgameandwatch.entity").exists(),
         "entity name is derived from the id");
-    assert!(project.join("library/scripts/Mrgameandwatch/Script.hx").exists(),
+    assert!(project.join("library/scripts/Mrgameandwatch/Script.hx.meta").exists(),
         "script dir uses the same derived name as the entity");
 }

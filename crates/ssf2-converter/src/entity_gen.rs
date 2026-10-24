@@ -39,9 +39,14 @@ fn box_type_to_fm(bt: BoxType) -> &'static str {
         BoxType::ItemBox    => "NONE",  // no item-box concept in FM; a stray HURT_BOX here (esp. at
                                         // index 0, colliding with the real hitbox index) breaks the
                                         // entity's collision processing. NONE = a non-colliding box.
-        BoxType::ShieldBox  => "REFLECT_BOX",
+        // the source takes a hit here as shield damage, turning it back only off a perfect
+        // shield; this engine's shield is its own state with no box to stand in for it, and as a
+        // reflect box every hit on it came back
+        BoxType::ShieldBox  => "NONE",
         BoxType::ReflectBox => "REFLECT_BOX",
-        BoxType::AbsorbBox  => "COUNTER_BOX",
+        BoxType::AbsorbBox  => "ABSORB_BOX",
+        BoxType::CounterBox => "COUNTER_BOX",
+        BoxType::InertBox   => "NONE",
         BoxType::LedgeBox    => "LEDGE_GRAB_BOX",
         // GrabHoldBox uses a POINT layer, not COLLISION_BOX — handled separately.
         BoxType::GrabHoldBox  => "GRAB_HOLD_POINT",
@@ -97,6 +102,53 @@ fn ssf2_box_name_to_fm(inst_name: &str) -> String {
     }
 }
 
+/// The layer every box instance of one animation gets, as (prefix, index).
+///
+/// The engine knows a box by its layer's NAME as well as its type: a reflect box named after its
+/// source instance (`reversebox0`) was typed REFLECT_BOX and still reflected nothing, while the
+/// same box named `reflectbox0` turned the shot around. So a box that collides as something is
+/// named for what it collides as, the way FrayTools names it (`HIT_BOX` -> `hitbox`), and only a
+/// box that collides as nothing keeps a name taken from its source. Several source names can
+/// land on one kind (a `hitBox` and a `hurtBox` are both hurt boxes); a name that already is its
+/// kind's keeps its slot, and the others, and every repeat of a name, take the next free one.
+fn box_layer_names(
+    instances: &std::collections::BTreeSet<(String, usize)>,
+) -> std::collections::BTreeMap<(String, usize), (String, usize)> {
+    let wanted = |inst: &str| -> (String, usize) {
+        let named = ssf2_box_name_to_fm(inst);
+        let idx = fm_box_index(&named);
+        let source_prefix = named[..named.len() - idx.to_string().len()].to_string();
+        let bt = BoxType::from_instance_name(inst).unwrap_or(BoxType::Hurtbox);
+        let prefix = match box_type_to_fm(bt) {
+            t if t.ends_with("_BOX") => t.to_lowercase().replace('_', ""),
+            _ => source_prefix,
+        };
+        (prefix, idx)
+    };
+    let mut out = std::collections::BTreeMap::new();
+    let mut taken: std::collections::BTreeSet<(String, usize)> = Default::default();
+    let firsts: Vec<&(String, usize)> = instances.iter().filter(|(_, occ)| *occ == 0).collect();
+    // a name that already is its kind's first, so what the source named keeps its layer
+    let (own, others): (Vec<_>, Vec<_>) = firsts.into_iter().partition(|(n, _)| {
+        let (prefix, idx) = wanted(n);
+        ssf2_box_name_to_fm(n) == format!("{prefix}{idx}")
+    });
+    for key in own.into_iter().chain(others) {
+        let (prefix, mut idx) = wanted(&key.0);
+        while taken.contains(&(prefix.clone(), idx)) { idx += 1; }
+        taken.insert((prefix.clone(), idx));
+        out.insert(key.clone(), (prefix, idx));
+    }
+    for key in instances.iter().filter(|(_, occ)| *occ > 0) {
+        let (prefix, named_idx) = wanted(&key.0);
+        let mut idx = named_idx + 1;
+        while taken.contains(&(prefix.clone(), idx)) { idx += 1; }
+        taken.insert((prefix.clone(), idx));
+        out.insert(key.clone(), (prefix, idx));
+    }
+    out
+}
+
 /// Extract the numeric index from a Fraymakers box layer name.
 /// "hitbox0" → 0, "hurtbox1" → 1, "grabbox0" → 0
 fn fm_box_index(fm_name: &str) -> usize {
@@ -118,6 +170,8 @@ fn box_color(bt: BoxType) -> &'static str {
         BoxType::ShieldBox  => "0x48f748",
         BoxType::ReflectBox => "0x48f748",
         BoxType::AbsorbBox  => "0x42ecff",
+        BoxType::CounterBox => "0x42ecff",
+        BoxType::InertBox   => "0x888888",
         BoxType::LedgeBox    => "0xbababa",
         BoxType::GrabHoldBox => "0x9999ff",  // light blue
     }
@@ -282,92 +336,13 @@ pub(crate) fn double_keyframe_lengths(keyframes: &mut [Value]) {
     }
 }
 
-/// Remove a redundant trailing `return;` (the SSF2 returnvoid) from a frame-script body.
-/// Only strips when `return` is a standalone final token, never an early `return` mid-script.
-fn strip_trailing_return(body: &str) -> String {
-    let t = body.trim_end();
-    if let Some(pre) = t.strip_suffix("return;") {
-        if pre.is_empty() || !pre.chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_') {
-            return pre.trim_end().to_string();
-        }
-    }
-    body.to_string()
-}
-
-/// Remove a top-level (brace-depth 0) bare `return;` that is followed by more
-/// statements in a frame script. hscript compiles a frame script as a statement
-/// sequence, where code AFTER a `return` is unreachable and rejected at parse
-/// time ("Unexpected token return"). The decompiler occasionally emits a spurious
-/// unconditional `return;` mid-body (control-flow it couldn't structure), leaving
-/// the real logic dead after it. Dropping the bare return keeps that logic — a
-/// conditional early-exit (`if (c) { return; }`) is inside a block (depth > 0) and
-/// is left untouched. Comment-only / blank tails don't count as "more statements".
-/// Remove the source's loop-back call from the last frame of an animation that Fraymakers loops
-/// on its own. SSF2 loops a stance by playing a label again from the final frame; the converted
-/// animation expresses the same thing as `endType: LOOP`, so the ported call is redundant -- and
-/// worse than redundant, because the label it names belongs to the un-sliced clip.
-fn strip_loop_back_calls(body: &str) -> String {
-    body.lines()
-        .filter(|line| {
-            let t = line.trim();
-            !(t.starts_with("self.playLabel(") && t.ends_with(");"))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn strip_unreachable_returns(body: &str) -> String {
-    if !body.contains("return;") {
-        return body.to_string();
-    }
-    fn strip_comments(line: &str) -> String {
-        let b = line.as_bytes();
-        let mut s = String::new();
-        let mut i = 0;
-        while i < b.len() {
-            if i + 1 < b.len() && b[i] == b'/' && b[i + 1] == b'*' {
-                i += 2;
-                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') { i += 1; }
-                i += 2;
-                continue;
-            }
-            if i + 1 < b.len() && b[i] == b'/' && b[i + 1] == b'/' { break; }
-            s.push(b[i] as char);
-            i += 1;
-        }
-        s.trim().to_string()
-    }
-    let lines: Vec<&str> = body.lines().collect();
-    let last_code = lines.iter().rposition(|l| !strip_comments(l).is_empty());
-    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
-    let mut depth = 0i32;
-    for (idx, line) in lines.iter().enumerate() {
-        let code = strip_comments(line);
-        let is_bare_return_depth0 = depth == 0 && code == "return;";
-        depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
-        if is_bare_return_depth0 && last_code.is_some_and(|lc| idx < lc) {
-            continue;
-        }
-        out.push(line);
-    }
-    out.join("\n")
-}
-
-/// Frame-doubling holds every keyframe for two frames, which also stretches each 1-frame
-/// SCRIPT keyframe to two — making the script's frame span ambiguous. A frame script must
-/// fire on exactly ONE frame, so after doubling we split every non-blank FRAME_SCRIPT
-/// keyframe into a 1-frame script followed by a blank keyframe holding the remainder (so
-/// total timing is preserved and the script is always followed by a blank or the anim end).
-/// Calls that hand control away from the running animation. SSF2 executes a frame's code before
-/// drawing it, so a frame carrying one of these is never displayed.
-
 /// The SSF2 animation a Fraymakers animation was converted from.
 ///
 /// A SPLIT piece has to ask for its parent: the mapping files say `a` becomes `jab`, never
 /// `jab1`, so looking one up by the piece name finds nothing -- and "nothing" is indistinguishable
 /// from "no scripts", which is how sandbag's jab ended up with no frame scripts at all and no idea
 /// where SSF2 leaves it.
-fn ssf2_source_name(data: &CharacterData, source_anim: &str, anim_name: &str) -> Option<String> {
+pub(crate) fn ssf2_source_name(data: &CharacterData, source_anim: &str, anim_name: &str) -> Option<String> {
     let mut names: Vec<&str> = vec![source_anim, anim_name];
     for n in [source_anim, anim_name] {
         if let Some(parent) = crate::extractor::split_parent(n) { names.push(parent); }
@@ -378,50 +353,6 @@ fn ssf2_source_name(data: &CharacterData, source_anim: &str, anim_name: &str) ->
         }
     }
     None
-}
-
-/// Calls that END the move. SSF2 executes a frame's code before drawing it, so a frame carrying
-/// one of these is never displayed.
-///
-/// Only an explicit end counts. A `gotoAndStop` is just as likely to be a LOOP inside the move --
-/// a smash's charge holds itself with one -- and treating that as an ending trims a frame the
-/// original does draw, which showed up as a smash coming out SHORTER than its source.
-const ANIM_TERMINATORS: &[&str] = &["endAttack"];
-
-fn enforce_one_frame_scripts(layers: &mut [Value], keyframes: &mut Vec<Value>, char_id: &str) {
-    let mut new_blanks: Vec<Value> = Vec::new();
-    let mut counter = 0usize;
-    for layer in layers.iter_mut() {
-        if layer.get("type").and_then(Value::as_str) != Some("FRAME_SCRIPT") { continue; }
-        let layer_id = layer.get("$id").and_then(Value::as_str).unwrap_or("").to_string();
-        let ids: Vec<String> = match layer.get("keyframes").and_then(Value::as_array) {
-            Some(a) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
-            None => continue,
-        };
-        let mut new_ids: Vec<String> = Vec::with_capacity(ids.len());
-        for id in ids {
-            new_ids.push(id.clone());
-            if let Some(kf) = keyframes.iter_mut().find(|k| k.get("$id").and_then(Value::as_str) == Some(&id)) {
-                let has_code = !kf.get("code").and_then(Value::as_str).unwrap_or("").is_empty();
-                let len = kf.get("length").and_then(Value::as_u64).unwrap_or(1);
-                if has_code && len > 1 {
-                    kf["length"] = json!(1);
-                    let blank_id = uuid(char_id, &format!("kf_script_pad_{}_{}", layer_id, counter));
-                    counter += 1;
-                    new_blanks.push(json!({
-                        "$id": blank_id,
-                        "type": "FRAME_SCRIPT",
-                        "length": len - 1,
-                        "code": "",
-                        "pluginMetadata": {}
-                    }));
-                    new_ids.push(blank_id);
-                }
-            }
-        }
-        layer["keyframes"] = json!(new_ids);
-    }
-    keyframes.extend(new_blanks);
 }
 
 /// Serialize a finished entity, with its redundancy removed first.
@@ -435,6 +366,27 @@ fn finish_entity(mut entity: Value) -> String {
             st.symbols_before, st.symbols_after, st.keyframes_before, st.keyframes_after, st.blanked);
     }
     serde_json::to_string_pretty(&entity).unwrap_or_else(|_| "{}".to_string())
+}
+
+thread_local! {
+    static PROJECTILE_PIECES: std::cell::RefCell<BTreeMap<String, Vec<crate::emit::Piece>>> = Default::default();
+}
+/// For the runtime's path: which source frames each projectile entity's animations show, by the
+/// entity's id, as the entity was written.
+pub fn take_projectile_pieces() -> BTreeMap<String, Vec<crate::emit::Piece>> {
+    PROJECTILE_PIECES.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+thread_local! {
+    static EFFECT_PIECES: std::cell::RefCell<BTreeMap<String, Vec<crate::emit::Piece>>> = Default::default();
+    static BORROWING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// Effects built while this is on come from another package: their symbols are that package's
+/// numbers, which name nothing (or something else) here, so their pieces carry no symbol.
+pub fn set_borrowing(on: bool) { BORROWING.with(|c| c.set(on)); }
+/// The same for the effects the conversion wrote, by the effect's linkage name.
+pub fn take_effect_pieces() -> BTreeMap<String, Vec<crate::emit::Piece>> {
+    EFFECT_PIECES.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
 pub fn generate_entity(
@@ -464,17 +416,12 @@ pub fn generate_entity(
     // We collect them during the animation loop below.
     // (The old per-bitmap shared symbol approach is replaced.)
 
-    // ── Build frame script lookup ─────────────────────────────────────────────
-    let _frame_script_map: BTreeMap<String, String> = data.scripts.iter()
-        .filter(|s| !s.is_ext_method)
-        .map(|s| (s.name.clone(), s.code.clone()))
-        .collect();
-
     // ── Apply animation splits ────────────────────────────────────────────────
     // The splitter expands multi-label SSF2 animations into separate FM animations.
     // Each SplitAnim carries (fm_name, source_anim, start_frame, end_frame, loop info).
     let split_anims = crate::anim_splitter::split_animations(&data.animations, sprite_boxes, data.stats.jump_startup.round().max(0.0) as u16, &data.scripts);
 
+    crate::api_mappings::set_current_labels(&[]);
     for split in &split_anims {
         let anim_name = &split.fm_name;
         let source_anim = &split.source_anim;
@@ -492,41 +439,30 @@ pub fn generate_entity(
         };
         let base_len = split_len.max(1);
         let head = split.append_head_frames as u32;     // extra frames taken from source [0, head)
-        let mut frame_count = base_len + head;           // total emitted frames (see the terminator
-                                                         // trim in the frame-script pass below)
+        // every frame is kept: the runtime runs the source's frame scripts itself, and a frame
+        // whose script ends the move is never shown because that script runs before the frame is
+        let frame_count = base_len + head;               // total emitted frames
         let split_start_u = split.start_frame as u32;
         // Map a logical (emitted) frame index to its SOURCE frame: the slice maps to
         // [start, end); any appended frames wrap back to the source head [0, head).
         let src_frame = move |f: u32| -> u16 {
             if f < base_len { (split_start_u + f) as u16 } else { (f - base_len) as u16 }
         };
-        // A frame whose code ENDS the move is never SEEN in SSF2, so it must not be emitted.
-        //
-        // The two engines run a frame's code on opposite sides of drawing it. SSF2 runs the code
-        // FIRST, so a frame carrying `endAttack` (or a goto) hands control away before anything is
-        // drawn: the move is already over and that frame never appears. Fraymakers runs a frame's
-        // code AFTER drawing it, so emitting the same frame puts a pose on screen the original
-        // never showed and the converted move lasts one source frame longer than its source.
-        //
-        // This has to happen before ANY layer is built. Every layer is laid out against
-        // `frame_count`, and the engine takes an animation's length from its longest layer, so
-        // trimming only some of them leaves the animation exactly as long as it was and merely
-        // inconsistent.
-        if frame_count >= 2 {
-            let ssf2_name = ssf2_source_name(data, source_anim, anim_name);
-            let frame_offset = sprite_boxes.get(source_anim.as_str())
-                .map(|sb| sb.sprite_frame_offset as u32).unwrap_or(0) + split.start_frame as u32;
-            if let Some(ssf2) = ssf2_name {
-                let want = frame_offset + frame_count - 1;
-                let prefix = format!("{}__frame", ssf2);
-                let ends = data.scripts.iter().any(|sc| {
-                    !sc.is_ext_method
-                        && sc.name.strip_prefix(&prefix).and_then(|r| r.parse::<u32>().ok()) == Some(want)
-                        && ANIM_TERMINATORS.iter().any(|t| sc.code.contains(t))
-                });
-                if ends { frame_count -= 1; }
+        // the boxes of a frame. the sprite parser may have split this slice off already and kept
+        // its boxes under the slice's own name, counted from its first frame (pikachu's skull
+        // bash flies on `special_side_attack`, frames 13.. of `b_forward`): read there first, or
+        // the slice looks for them past the end of the part left under the source's name and
+        // has no boxes at all
+        let own_boxes = anim_name != source_anim && split_start_u > 0
+            && sprite_boxes.contains_key(anim_name.as_str());
+        let boxes_at = |f: u32| -> Option<&Vec<crate::sprite_parser::FrameBox>> {
+            if own_boxes && f < base_len {
+                sprite_boxes.get(anim_name.as_str()).and_then(|bd| bd.frames.get(&(f as u16)))
+            } else {
+                sprite_boxes.get(source_anim.as_str()).and_then(|bd| bd.frames.get(&src_frame(f)))
             }
-        }
+        };
+        let has_boxes = own_boxes || sprite_boxes.contains_key(source_anim.as_str());
 
         let anim_id = uuid(char_id, &format!("anim_{}", anim_name));
         let mut anim_layer_ids: Vec<String> = Vec::new();
@@ -545,10 +481,18 @@ pub fn generate_entity(
 
             // Use pre-sliced labels from the splitter (already rebased to this split's frame 0)
             // Frame 0 always gets the FM animation name; splitter labels augment from there.
-            let mut all_labels: Vec<(u16, String)> = vec![(0, anim_name.to_string())];
+            // a source label later in the animation that shares its name is the one a jump by that
+            // name means (the engine goes to the first label it finds): the first frame then goes
+            // unnamed (waluigi's dice jumps to its `loop` label, inside its `loop` animation)
+            let shadowed = split.labels.iter().any(|(l, f)| *f > 0 && l == anim_name);
+            let mut all_labels: Vec<(u16, String)> = vec![(0, if shadowed { String::new() } else { anim_name.to_string() })];
             for (lbl, frame) in &split.labels {
                 if *frame == 0 { continue; } // don't overwrite the fm_name at frame 0
-                all_labels.push((*frame, lbl.clone()));
+                // a label on a frame the terminator trim removed names the end of the move: it
+                // lands on the last frame, which plays and ends, rather than stretching the
+                // animation back out to a frame the source never shows
+                let frame = (*frame as u32).min(frame_count.saturating_sub(1)) as u16;
+                all_labels.push((frame, lbl.clone()));
             }
             all_labels.sort_by_key(|(f, _)| *f);
             all_labels.dedup_by_key(|(f, _)| *f);
@@ -597,188 +541,19 @@ pub fn generate_entity(
         }
 
         // ── 2. FRAME_SCRIPT layer ─────────────────────────────────────────────
-        // Each script gets a 1-frame keyframe. Frames without code get blank
-        // keyframes (symbol: null). This matches FrayTools' expectation that
-        // script keyframes fire once on their start frame only.
+        // one blank keyframe spanning the animation: the runtime runs the source's frame scripts
+        // itself, and the fighter's script puts its own code on keyframes (`emit::clock_entity`)
         {
             let layer_id = uuid(char_id, &format!("layer_script_{}", anim_name));
-
-            // Find the SSF2 name (a split piece resolves through its parent).
-            let ssf2_name = ssf2_source_name(data, source_anim, anim_name);
-
-            // Frame offset = sprite base offset + split start frame
-            let sprite_frame_offset = sprite_boxes.get(source_anim.as_str())
-                .map(|sb| sb.sprite_frame_offset as u32)
-                .unwrap_or(0);
-            let split_start = split.start_frame as u32;
-            let frame_offset = sprite_frame_offset + split_start;
-
-            // Collect per-frame scripts within the split's frame range
-            let mut frame_code: BTreeMap<u32, String> = BTreeMap::new();
-            if let Some(ref ssf2) = ssf2_name {
-                let prefix = format!("{}__frame", ssf2);
-                for script in &data.scripts {
-                    if script.is_ext_method { continue; }
-                    if let Some(rest) = script.name.strip_prefix(&prefix) {
-                        if let Ok(global_frame) = rest.parse::<u32>() {
-                            if global_frame >= frame_offset {
-                                let local_frame = global_frame - frame_offset;
-                                if local_frame < frame_count {
-                                    // Frame-script bodies run through the same
-                                    // SSF2 → Fraymakers conversion as Script.hx:
-                                    // (1) double frame-count args flagged in
-                                    //     commands.jsonc `frame_params` —
-                                    //     SSF2 names like `hitStun:` are still
-                                    //     matchable here, so this must run
-                                    //     BEFORE the translation;
-                                    // (2) `translate_ssf2_to_fm` applies the
-                                    //     commands.jsonc literal replacements
-                                    //     (API renames, self.self fixups,
-                                    //     hitbox field renames, …) so frame
-                                    //     scripts speak the same FM dialect as
-                                    //     Script.hx.
-                                    let body = extract_function_body(&script.code);
-                                    // `double_frame_counts` is now the first
-                                    // step inside translate_ssf2_to_fm so
-                                    // Script.hx + ext-methods + entity frame
-                                    // scripts all get the same 30→60fps
-                                    // treatment from a single source of truth.
-                                    let body = crate::api_mappings::translate_ssf2_to_fm(&body);
-                                    let mut var_types = crate::api_mappings::infer_ext_var_types(
-                                        &data.ext_vars, &data.ext_var_inits);
-                                    // Reserved names (self/match) are NOT wrapped — they
-                                    // resolve to the engine globals (mirrors haxe_gen).
-                                    for r in crate::api_mappings::RESERVED_EXT_VARS { var_types.remove(*r); }
-                                    // (1) own script-function refs `self.<fn>` -> bare `<fn>`
-                                    // (frame scripts share Script.hx's scope), then
-                                    // (2) instance-var refs -> persistent .get()/.set().
-                                    let ext_methods: Vec<String> = data.scripts.iter()
-                                        .filter(|s| s.is_ext_method).map(|s| s.name.clone())
-                                        .filter(|n| !data.ext_vars.contains(n)).collect();
-                                    let body = crate::api_mappings::rewrite_own_method_refs(&body, &ext_methods);
-                                    let body = crate::api_mappings::wrap_persistent_state(
-                                        &body, &var_types);
-                                    // Drop a redundant trailing `return;` — a frame script
-                                    // is a statement block, not a function, so the final
-                                    // `return;` (from the SSF2 returnvoid) is noise.
-                                    let body = strip_trailing_return(&body);
-                                    // Also drop a spurious mid-body `return;` that
-                                    // leaves real code unreachable (a frame script is
-                                    // a statement sequence; code after `return` is a
-                                    // parse error). See strip_unreachable_returns.
-                                    let body = strip_unreachable_returns(&body);
-                                    // An animation that LOOPS carries the source's own loop-back
-                                    // (`stancePlayFrame("again")` -> `playLabel("again")`) on its
-                                    // last frame. Fraymakers loops it natively via endType LOOP,
-                                    // and the label the call names was sliced off with the entry,
-                                    // so leaving it in is a call to a label that no longer exists:
-                                    // it threw once per cycle and never looped anything.
-                                    let body = if split.loop_tail && local_frame + 1 == frame_count {
-                                        strip_loop_back_calls(&body)
-                                    } else {
-                                        body
-                                    };
-                                    if body.trim().is_empty() { continue; }
-                                    frame_code.insert(local_frame, body);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ── Frame-script post-processing (per-animation) ─────────────────────
-            // (4) Freefall / special-fall states carry no frame scripts.
-            if matches!(split.fm_name.as_str(),
-                "airdash_freefall" | "airdash_freefall_whiff" | "fall_special") {
-                frame_code.clear();
-            }
-            if frame_count >= 1 {
-                let last = frame_count - 1;
-                // (5) Strip self.endAnimation() from the last two frames — the animation
-                //     already ends there; an explicit endAnimation just cuts it short.
-                for f in [last, last.saturating_sub(1)] {
-                    if let Some(code) = frame_code.get_mut(&f) {
-                        *code = code.replace("self.endAnimation();", "").replace("self.endAnimation()", "");
-                    }
-                }
-                // (6) Move any code on the second-to-last frame onto the final frame.
-                if frame_count >= 2 {
-                    let second_last = frame_count - 2;
-                    if let Some(moved) = frame_code.remove(&second_last) {
-                        let moved = moved.trim().to_string();
-                        if !moved.is_empty() {
-                            let e = frame_code.entry(last).or_default();
-                            *e = if e.trim().is_empty() { moved }
-                                 else { format!("{}\n{}", moved, e.trim_start()) };
-                            // The merge can append code after a `return;` that was
-                            // trailing in `moved` — re-strip so the joined script parses.
-                            *e = strip_unreachable_returns(e);
-                        }
-                    }
-                }
-                // Drop entries emptied by the endAnimation strip so they become blank frames.
-                frame_code.retain(|_, c| !c.trim().is_empty());
-            }
-
-            // Build keyframe sequence: for each frame with code, emit a 1-frame
-            // script keyframe. Fill gaps with blank keyframes. After the last
-            // script frame, fill remaining frames with a blank keyframe.
-            let mut script_kf_ids: Vec<String> = Vec::new();
-            let mut cursor: u32 = 0;
-
-            let script_frames: Vec<u32> = frame_code.keys().copied().collect();
-            for &sf in &script_frames {
-                // Gap before this script frame
-                if sf > cursor {
-                    let gap_kf_id = uuid(char_id, &format!("kf_script_gap_{}_{}", anim_name, cursor));
-                    keyframes.push(json!({
-                        "$id": gap_kf_id,
-                        "type": "FRAME_SCRIPT",
-                        "length": sf - cursor,
-                        "code": "",
-                        "pluginMetadata": {}
-                    }));
-                    script_kf_ids.push(gap_kf_id);
-                }
-                // Script keyframe (1 frame)
-                let kf_id = uuid(char_id, &format!("kf_script_{}_f{}", anim_name, sf));
-                keyframes.push(json!({
-                    "$id": kf_id,
-                    "type": "FRAME_SCRIPT",
-                    "length": 1,
-                    "code": frame_code[&sf],
-                    "pluginMetadata": {}
-                }));
-                script_kf_ids.push(kf_id);
-                cursor = sf + 1;
-            }
-            // Trailing blank to fill remaining frames
-            if cursor < frame_count {
-                let tail_kf_id = uuid(char_id, &format!("kf_script_tail_{}", anim_name));
-                keyframes.push(json!({
-                    "$id": tail_kf_id,
-                    "type": "FRAME_SCRIPT",
-                    "length": frame_count - cursor,
-                    "code": "",
-                    "pluginMetadata": {}
-                }));
-                script_kf_ids.push(tail_kf_id);
-            }
-
-            // If no scripts at all, still need one blank keyframe spanning the animation
-            if script_kf_ids.is_empty() {
-                let kf_id = uuid(char_id, &format!("kf_script_empty_{}", anim_name));
-                keyframes.push(json!({
-                    "$id": kf_id,
-                    "type": "FRAME_SCRIPT",
-                    "length": frame_count,
-                    "code": "",
-                    "pluginMetadata": {}
-                }));
-                script_kf_ids.push(kf_id);
-            }
-
+            let tail_kf_id = uuid(char_id, &format!("kf_script_tail_{}", anim_name));
+            keyframes.push(json!({
+                "$id": tail_kf_id,
+                "type": "FRAME_SCRIPT",
+                "length": frame_count,
+                "code": "",
+                "pluginMetadata": {}
+            }));
+            let script_kf_ids = vec![tail_kf_id];
             layers.push(json!({
                 "$id": layer_id,
                 "name": "Scripts",
@@ -805,9 +580,9 @@ pub fn generate_entity(
         // Every other animation keeps its placement and boxes verbatim.
         let box_shift: (f64, f64) = if anim_name == "tumble" || anim_name == "hurt_heavy" {
             let mut aabb: Option<(f64, f64, f64, f64)> = None; // left,right,top,bottom
-            if let Some(bd) = sprite_boxes.get(source_anim.as_str()) {
+            {
                 for lf in 0..frame_count {
-                    if let Some(boxes) = bd.frames.get(&src_frame(lf)) {
+                    if let Some(boxes) = boxes_at(lf) {
                         for b in boxes {
                             if b.box_type != crate::sprite_parser::BoxType::Hurtbox { continue; }
                             let (l, r, t, btm) = (b.x, b.x + b.width, b.y, b.y + b.height);
@@ -836,21 +611,18 @@ pub fn generate_entity(
             // The foot and head vertices are pinned to x = 0.
             //
             // Per frame we fit the diamond to the union AABB of that frame's
-            // HURTBOX-typed boxes so its four vertices touch the box's four
-            // edges: foot at the bottom, head at the top, hips at the sides at
-            // mid-height. hipXOffset re-centres the hip on the box; hipYOffset
-            // stays 0 (hip at the vertical midpoint).
+            // HURTBOX-typed boxes: head at its top, hips at its sides at mid-height,
+            // and the foot at the fighter's own point (the floor is tested there).
+            // hipXOffset re-centres the hip on the box; hipYOffset stays 0.
             let default_body = (0.0_f64, 86.0_f64, 40.0_f64, 0.0_f64); // foot,head,hipWidth,hipXOffset
 
             let mut per_frame: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(frame_count as usize);
             {
-                let box_data = sprite_boxes.get(source_anim.as_str());
                 // Per-frame body from the frame's HURTBOX union, or None when the
                 // frame has NO hurtboxes at all.
                 let raw: Vec<Option<(f64, f64, f64, f64)>> = (0..frame_count).map(|f| {
-                    let src_f = src_frame(f);
                     let mut aabb: Option<(f64, f64, f64, f64)> = None; // left,right,top,bottom
-                    if let Some(boxes) = box_data.and_then(|bd| bd.frames.get(&src_f)) {
+                    if let Some(boxes) = boxes_at(f) {
                         for b in boxes {
                             if b.box_type != crate::sprite_parser::BoxType::Hurtbox { continue; }
                             let (l, r) = (b.x + box_shift.0, b.x + b.width + box_shift.0);
@@ -861,9 +633,13 @@ pub fn generate_entity(
                             });
                         }
                     }
-                    aabb.map(|(l, r, t, btm)| (
-                        round2(-btm),          // foot  = up-height of the bottom edge
-                        round2(-t),            // head  = up-height of the top edge
+                    // the foot is the fighter's own point: the source tests the floor there in
+                    // every state, where a foot at the hurtboxes' bottom edge sat 14 above it in a
+                    // curled-up hurt frame and landed pikachu's fighter on a platform its feet
+                    // never reached (its head stays at least a pixel above it)
+                    aabb.map(|(l, r, t, _btm)| (
+                        0.0,                   // foot  = the fighter's own point
+                        round2((-t).max(1.0)), // head  = up-height of the top edge
                         round2(r - l),         // hipWidth = box width
                         round2((l + r) / 2.0), // hipXOffset = box centre x
                     ))
@@ -952,26 +728,40 @@ pub fn generate_entity(
         }
 
         // ── 4. COLLISION_BOX layers ───────────────────────────────────────────
-        if let Some(anim_box_data) = sprite_boxes.get(source_anim.as_str()) {
+        if has_boxes {
             // Walk logical frames 0..frame_count and resolve each to its source frame (handles
             // both the [start,end) slice and any appended head frames for a wrapped loop).
-            let mut instances_in_anim: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            // A name is not unique on a frame. SSF2 numbers a second box by its name
+            // (`attackBox`, `attackBox2`), but nothing makes it: kirby's drill puts TWO plain
+            // `attackBox` boxes on each active frame. Keyed on the name alone, both wanted the
+            // same layer and the second was dropped -- the drill hit with one box where the
+            // source hits with two. So a layer is a name AND which occurrence of it this is,
+            // and the occurrence takes the next free slot for its kind.
+            let mut instances_in_anim: std::collections::BTreeSet<(String, usize)> = Default::default();
             for lf in 0..frame_count {
-                if let Some(boxes) = anim_box_data.frames.get(&src_frame(lf)) {
+                if let Some(boxes) = boxes_at(lf) {
+                    let mut seen: std::collections::BTreeMap<&str, usize> = Default::default();
                     for b in boxes {
-                        instances_in_anim.insert(b.instance_name.clone());
+                        let n = seen.entry(b.instance_name.as_str()).or_insert(0);
+                        instances_in_anim.insert((b.instance_name.clone(), *n));
+                        *n += 1;
                     }
                 }
             }
+            // slots the source NAMED are reserved first, so a repeat never lands on one
+            let layer_names = box_layer_names(&instances_in_anim);
 
-            for inst_name in instances_in_anim.iter() {
+            for (inst_name, occurrence) in instances_in_anim.iter() {
+                let occurrence = *occurrence;
                 let box_type = BoxType::from_instance_name(inst_name).unwrap_or(BoxType::Hurtbox);
                 let fm_box_type = box_type_to_fm(box_type);
                 let color = box_color(box_type);
-                // Convert SSF2 instance name to FM layer name (hitBox→hurtbox0, attackBox→hitbox0)
-                let fm_layer_name = ssf2_box_name_to_fm(inst_name);
-                let box_idx = fm_box_index(&fm_layer_name);
-                let layer_id = uuid(char_id, &format!("layer_box_{}_{}", anim_name, inst_name));
+                let (prefix, box_idx) = layer_names[&(inst_name.clone(), occurrence)].clone();
+                let fm_layer_name = format!("{prefix}{box_idx}");
+                // the first box of a name keeps the key it always had, so only a character that
+                // actually repeats one sees its ids move
+                let occ_key = if occurrence == 0 { String::new() } else { format!("_{occurrence}") };
+                let layer_id = uuid(char_id, &format!("layer_box_{}_{}{}", anim_name, inst_name, occ_key));
 
                 let mut box_kf_ids: Vec<String> = Vec::new();
                 let total = frame_count; // use split length, not source total
@@ -980,8 +770,10 @@ pub fn generate_entity(
                 // Collect this instance's boxes per logical frame (rebased to 0..frame_count).
                 let mut active_frames: Vec<(u16, &crate::sprite_parser::FrameBox)> = Vec::new();
                 for lf in 0..frame_count {
-                    if let Some(boxes) = anim_box_data.frames.get(&src_frame(lf)) {
-                        if let Some(b) = boxes.iter().find(|b| b.instance_name == *inst_name) {
+                    if let Some(boxes) = boxes_at(lf) {
+                        if let Some(b) = boxes.iter().filter(|b| b.instance_name == *inst_name)
+                            .nth(occurrence)
+                        {
                             active_frames.push((lf as u16, b));
                         }
                     }
@@ -1023,7 +815,7 @@ pub fn generate_entity(
 
                     // Gap keyframe (blank) before this run
                     if start_frame as u32 > frame_idx {
-                        let gap_kf_id = uuid(char_id, &format!("kf_box_gap_{}_{}_{}", anim_name, inst_name, frame_idx));
+                        let gap_kf_id = uuid(char_id, &format!("kf_box_gap_{}_{}{}_{}", anim_name, inst_name, occ_key, frame_idx));
                         keyframes.push(json!({
                             "$id": gap_kf_id,
                             "type": kf_type,
@@ -1037,7 +829,7 @@ pub fn generate_entity(
                         // frame_idx updated at end of loop body
                     }
 
-                    let sym_id = uuid(char_id, &format!("sym_box_{}_{}_{}", anim_name, inst_name, start_frame));
+                    let sym_id = uuid(char_id, &format!("sym_box_{}_{}{}_{}", anim_name, inst_name, occ_key, start_frame));
 
                     if is_point {
                         // POINT symbol: bottom-center of the touchBox.
@@ -1112,7 +904,7 @@ pub fn generate_entity(
                         }));
                     }
 
-                    let kf_id = uuid(char_id, &format!("kf_box_{}_{}_{}", anim_name, inst_name, start_frame));
+                    let kf_id = uuid(char_id, &format!("kf_box_{}_{}{}_{}", anim_name, inst_name, occ_key, start_frame));
                     keyframes.push(json!({
                         "$id": kf_id,
                         "type": kf_type,
@@ -1129,7 +921,7 @@ pub fn generate_entity(
 
                 // Tail gap
                 if frame_idx < total {
-                    let tail_kf_id = uuid(char_id, &format!("kf_box_tail_{}_{}_{}", anim_name, inst_name, frame_idx));
+                    let tail_kf_id = uuid(char_id, &format!("kf_box_tail_{}_{}{}_{}", anim_name, inst_name, occ_key, frame_idx));
                     keyframes.push(json!({
                         "$id": tail_kf_id,
                         "type": kf_type,
@@ -1187,7 +979,15 @@ pub fn generate_entity(
             // The ones it uses carry its images; the rest are blanked below.
             let entity_image_slots = img_result.anim_images.values()
                 .map(|a| a.max_depth_slots.max(1)).max().unwrap_or(1);
-            let num_slots = img_result.anim_images.get(source_anim.as_str())
+            // the pictures of a slice the image pass split off itself are kept under the slice's
+            // own name, counted from its first frame, as its boxes are (luigi's side special:
+            // under the source's name only the charge's 15 frames are left, and the attack drew
+            // the charge again and again where it stretches out)
+            let own_images = anim_name != source_anim && split_start_u > 0
+                && img_result.anim_images.contains_key(anim_name.as_str());
+            let image_key = if own_images { anim_name.as_str() } else { source_anim.as_str() };
+            let image_frame = |f: u32| -> u16 { if own_images && f < base_len { f as u16 } else { src_frame(f) } };
+            let num_slots = img_result.anim_images.get(image_key)
                 .map(|a| a.max_depth_slots.max(1))
                 .unwrap_or(1);
 
@@ -1195,7 +995,7 @@ pub fn generate_entity(
                 let img_layer_id = uuid(char_id, &format!("layer_image_{}_{}", anim_name, slot));
                 let mut img_kf_ids: Vec<String> = Vec::new();
 
-                if let Some(anim_imgs) = img_result.anim_images.get(source_anim.as_str()) {
+                if let Some(anim_imgs) = img_result.anim_images.get(image_key) {
                     let total = frame_count;
 
                     // LOOP the visual timeline like Flash does for a nested MovieClip
@@ -1209,7 +1009,7 @@ pub fn generate_entity(
                         .map(|m| *m as u32 + 1).unwrap_or(1).max(1);
                     let mut held: Vec<Option<crate::image_extractor::FrameImageEntry>> = (0..total)
                         .map(|f| {
-                            let looped = (src_frame(f) as u32 % img_len) as u16;
+                            let looped = (image_frame(f) as u32 % img_len) as u16;
                             anim_imgs.frames.get(&looped).and_then(|v| v.get(slot)).cloned()
                         })
                         .collect();
@@ -1467,11 +1267,14 @@ pub fn generate_entity(
         }));
     }
 
+    // the named children of its clips that its code addresses, each a part riding it
+    push_part_animations(&mut keyframes, &mut layers, &mut symbols, char_id, "part", &data.parts, &mut animations);
+    // the platforms it gives itself, each a line a structure content rides on
+    let plats: Vec<(f64, f64)> = data.platforms.iter().map(|(_, _, w, h)| (*w, *h)).collect();
+    push_platform_animations(&mut keyframes, &mut layers, &mut symbols, &mut animations, char_id, "self", &plats);
+
     // 30fps → 60fps: hold every keyframe for two frames (see fn docs).
     double_keyframe_lengths(&mut keyframes);
-    // Re-collapse each script keyframe to a single frame (+ trailing blank) so frame
-    // scripts fire exactly once, not across the doubled 2-frame span.
-    enforce_one_frame_scripts(&mut layers, &mut keyframes, char_id);
 
     // Drop animations whose image timeline is entirely blank (no IMAGE
     // keyframe carries a symbol). Empty stubs clutter the FrayTools editor
@@ -1512,6 +1315,8 @@ pub fn generate_entity(
         animations.retain(|a| {
             let name = match a["name"].as_str() { Some(n) => n, None => return true };
             if keep_empty.contains(&name) { return true; }
+            // a platform line carries no picture and is whole as it is
+            if name.starts_with("platformSprite") { return true; }
             let lids = match a["layers"].as_array() { Some(v) => v, None => return true };
             let has_image = lids.iter().filter_map(|v| v.as_str()).any(|lid| {
                 if layer_type.get(lid).map(String::as_str) != Some("IMAGE") { return false; }
@@ -1535,6 +1340,7 @@ pub fn generate_entity(
         keyframes.retain(|k| k["$id"].as_str().map(|id| !drop_kfs.contains(id)).unwrap_or(true));
         if !dropped_names.is_empty() {
             log::info!("Dropped {} empty animation(s): {}", dropped_names.len(), dropped_names.join(", "));
+            note_dropped_animations(dropped_names.iter().map(|n| n.to_string()).collect());
         }
     }
 
@@ -1571,17 +1377,93 @@ pub fn generate_entity(
     finish_entity(entity)
 }
 
-/// Generate entity with paletteMap filled in
-pub fn generate_entity_with_palette(
-    data: &CharacterData,
-    char_id: &str,
-    sprite_boxes: &BTreeMap<String, AnimationBoxData>,
-    img_result: &ImageExtractionResult,
-    populated_jabs: usize,
-    palette_collection_guid: &str,
-    palette_map_id: &str,
-) -> String {
-    let json_str = generate_entity(data, char_id, sprite_boxes, img_result, populated_jabs);
+/// The throws whose attack says it turns its fighter around (`flip`). The source turns the
+/// thrower as the throw begins and states the throw for the way it then faces (its clip drawn
+/// mirrored, its launch forward); this engine turns no one in a throw, so these throws are drawn
+/// and launched already turned, and the runtime turns the thrower once the throw is over. The
+/// throws are the engine's throw animations (`mappings/character/stats_tables.jsonc`).
+pub fn turned_throws(data: &CharacterData) -> std::collections::BTreeSet<String> {
+    let tables = crate::mappings::character_stats_tables();
+    let throws: std::collections::BTreeSet<&str> = tables.hitbox_sections.iter()
+        .filter(|s| s.section == "THROWS").flat_map(|s| s.moves.iter().map(String::as_str)).collect();
+    data.attacks.iter()
+        .filter(|a| throws.contains(a.name.as_str()) && a.stats.get("flip").is_some_and(|v| *v != 0.0))
+        .map(|a| a.name.clone()).collect()
+}
+
+/// Every frame of the named animations mirrored about the fighter's origin: pictures, boxes,
+/// the body and points. A symbol another animation also shows is copied first.
+pub fn draw_turned(json_str: &str, anims: &std::collections::BTreeSet<String>) -> String {
+    if anims.is_empty() { return json_str.to_string(); }
+    let Ok(mut entity) = serde_json::from_str::<serde_json::Value>(json_str) else { return json_str.to_string() };
+    let layer_ids = |e: &serde_json::Value, pick: &dyn Fn(&str) -> bool| -> std::collections::BTreeSet<String> {
+        e["animations"].as_array().into_iter().flatten()
+            .filter(|a| a["name"].as_str().is_some_and(pick))
+            .flat_map(|a| a["layers"].as_array().into_iter().flatten().filter_map(|l| l.as_str().map(str::to_string)))
+            .collect()
+    };
+    let mine = layer_ids(&entity, &|n| anims.contains(n));
+    let others = layer_ids(&entity, &|n| !anims.contains(n));
+    let kf_ids = |e: &serde_json::Value, ls: &std::collections::BTreeSet<String>| -> std::collections::BTreeSet<String> {
+        e["layers"].as_array().into_iter().flatten()
+            .filter(|l| l["$id"].as_str().is_some_and(|i| ls.contains(i)))
+            .flat_map(|l| l["keyframes"].as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_string)))
+            .collect()
+    };
+    let my_kfs = kf_ids(&entity, &mine);
+    let other_kfs = kf_ids(&entity, &others);
+    let syms_of = |e: &serde_json::Value, ks: &std::collections::BTreeSet<String>| -> std::collections::BTreeSet<String> {
+        e["keyframes"].as_array().into_iter().flatten()
+            .filter(|k| k["$id"].as_str().is_some_and(|i| ks.contains(i)))
+            .filter_map(|k| k["symbol"].as_str().map(str::to_string)).collect()
+    };
+    let shared = syms_of(&entity, &other_kfs);
+    let my_syms = syms_of(&entity, &my_kfs);
+    let mut copies: Vec<serde_json::Value> = Vec::new();
+    let mut renamed: BTreeMap<String, String> = BTreeMap::new();
+    let mirror = |s: &mut serde_json::Value| {
+        let num = |s: &serde_json::Value, k: &str| s[k].as_f64().unwrap_or(0.0);
+        match s["type"].as_str() {
+            Some("IMAGE") => {
+                s["x"] = json!(round2(-num(s, "x")));
+                s["scaleX"] = json!(-num(s, "scaleX"));
+                s["rotation"] = json!(crate::fm_placement::normalise_degrees(-num(s, "rotation")));
+            }
+            Some("COLLISION_BOX") => s["x"] = json!(round2(-(num(s, "x") + num(s, "scaleX")))),
+            Some("COLLISION_BODY") => s["hipXOffset"] = json!(-num(s, "hipXOffset")),
+            Some("POINT") => s["x"] = json!(round2(-num(s, "x"))),
+            _ => {}
+        }
+    };
+    if let Some(syms) = entity["symbols"].as_array_mut() {
+        for sym in syms.iter_mut() {
+            let Some(id) = sym["$id"].as_str().map(str::to_string) else { continue };
+            if !my_syms.contains(&id) { continue; }
+            if shared.contains(&id) {
+                let mut c = sym.clone();
+                let nid = format!("{id}-turned");
+                c["$id"] = json!(nid.clone());
+                mirror(&mut c);
+                renamed.insert(id, nid);
+                copies.push(c);
+            } else {
+                mirror(sym);
+            }
+        }
+        syms.extend(copies);
+    }
+    if let Some(kfs) = entity["keyframes"].as_array_mut() {
+        for k in kfs.iter_mut() {
+            if !k["$id"].as_str().is_some_and(|i| my_kfs.contains(i)) { continue; }
+            if let Some(n) = k["symbol"].as_str().and_then(|s| renamed.get(s)).cloned() { k["symbol"] = json!(n); }
+        }
+    }
+    serde_json::to_string_pretty(&entity).unwrap_or_else(|_| json_str.to_string())
+}
+
+/// An entity already built, pointed at its costume palette.
+pub fn attach_palette(json_str: &str, palette_collection_guid: &str, palette_map_id: &str) -> String {
+    let json_str = json_str.to_string();
     let mut entity: serde_json::Value = serde_json::from_str(&json_str).unwrap_or(serde_json::json!({}));
     entity["paletteMap"] = serde_json::json!({
         "paletteCollection": palette_collection_guid,
@@ -1606,86 +1488,6 @@ fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-/// Strip the `function name() {` wrapper from a script and return just the body,
-/// with one level of leading tab removed from each line.
-/// De-indent (strip one leading tab) and trim leading/trailing blank lines.
-fn dedent_body(inner: &str) -> Vec<String> {
-    let mut lines: Vec<String> = inner.lines()
-        .map(|l| l.strip_prefix('\t').unwrap_or(l).to_string())
-        .collect();
-    while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) { lines.remove(0); }
-    while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) { lines.pop(); }
-    lines
-}
-
-/// Extract the statement body from `script.code`.
-///
-/// A single `script.code` usually wraps one `function name() { … }`, but it can hold
-/// MORE than one when two SSF2 frame scripts land on the same frame (e.g. a slot-aliased
-/// animation like `tech_ground` reusing `crash_*` plus its own script). Naively dropping
-/// only the first `function …{` line and the last `}` then leaks the inner function and a
-/// stray brace, producing unparseable keyframe code. Instead, brace-match every top-level
-/// `function …{ }` (skipping braces inside `//` comments and strings) and concatenate their
-/// bodies — all the scripts run on that frame. Falls back to the old line-based strip if no
-/// function wrapper is present.
-fn extract_function_body(code: &str) -> String {
-    let b = code.as_bytes();
-    let mut bodies: Vec<String> = Vec::new();
-    let mut i = 0;
-    while let Some(rel) = code[i..].find("function ") {
-        let fpos = i + rel;
-        // Opening brace of this function's block.
-        let Some(boff) = code[fpos..].find('{') else { break };
-        let open = fpos + boff;
-        // Brace-match forward, ignoring `//` comments and string contents.
-        let mut depth = 0i32;
-        let mut j = open;
-        let mut in_str: Option<u8> = None;
-        let mut close: Option<usize> = None;
-        while j < b.len() {
-            let c = b[j];
-            match in_str {
-                Some(q) => {
-                    if c == b'\\' { j += 2; continue; }
-                    if c == q { in_str = None; }
-                }
-                None => match c {
-                    b'/' if j + 1 < b.len() && b[j + 1] == b'/' => {
-                        while j < b.len() && b[j] != b'\n' { j += 1; }
-                        continue;
-                    }
-                    b'"' | b'\'' => in_str = Some(c),
-                    b'{' => depth += 1,
-                    b'}' => {
-                        depth -= 1;
-                        if depth == 0 { close = Some(j); break; }
-                    }
-                    _ => {}
-                },
-            }
-            j += 1;
-        }
-        let Some(close) = close else { break }; // unbalanced; bail to fallback
-        bodies.push(dedent_body(&code[open + 1..close]).join("\n"));
-        i = close + 1;
-    }
-
-    if !bodies.is_empty() {
-        return bodies.join("\n");
-    }
-
-    // Fallback: no `function` wrapper found (or unbalanced) — old line-based strip.
-    let mut lines: Vec<&str> = code.lines().collect();
-    while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) { lines.remove(0); }
-    while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) { lines.pop(); }
-    if lines.is_empty() { return String::new(); }
-    if lines.first().map(|l| l.trim_start().starts_with("function ")).unwrap_or(false) {
-        lines.remove(0);
-    }
-    if lines.last().map(|l| l.trim() == "}").unwrap_or(false) { lines.pop(); }
-    lines.iter().map(|l| l.strip_prefix('\t').unwrap_or(l)).collect::<Vec<_>>().join("\n")
-}
-
 // ─── Menu entity generation ───────────────────────────────────────────────────
 
 /// Information about a menu image extracted from the SWF.
@@ -1699,6 +1501,25 @@ pub struct MenuImageInfo {
     pub head_height: u32,
     /// Meta GUID for the head image
     pub head_meta_guid: String,
+}
+
+/// The frames the engine shows a character's picture in: the damage counter's head window, the
+/// stock icon, and the small roster icon. Same numbers the entity's own visual-aid boxes carry,
+/// which is what a character is authored against in FrayTools.
+pub const HUD_BOX: f64 = 36.0;
+const STOCK_BOX: f64 = 24.0;
+const ICON_BOX: f64 = 21.0;
+
+/// Scale that FILLS `bw`x`bh` with `w`x`h`, keeping the picture's shape. The frame is squarer than
+/// a portrait's window, so filling it means the sides run past the frame and the engine's own mask
+/// crops them, which is how a base-game character's picture sits in the counter: head to the
+/// edges, not floating in the middle with margins.
+///
+/// Never enlarges. A picture smaller than its frame is left at its own size rather than blown up,
+/// since the engine point-samples and blowing it up only makes bigger pixels.
+fn fit_scale(w: f64, h: f64, bw: f64, bh: f64) -> f64 {
+    if w <= 0.0 || h <= 0.0 { return 1.0 }
+    (bw / w).max(bh / h).min(1.0)
 }
 
 /// Generate a menu.entity file for the character's UI images.
@@ -1731,17 +1552,24 @@ pub fn generate_menu_entity(
     let img_h = menu_info.head_height as f64;
     let pivot_x = round2(img_w / 2.0);
     let pivot_y = round2(img_h / 2.0);
+    // ONE portrait, used by every slot. A second image in the menu sheet is one the packer can
+    // silently drop, and an entity pointing at a frame that is not there is a character that
+    // does not draw.
+    let hud_guid = menu_info.head_meta_guid.clone();
+    let (hud_w, hud_h) = (img_w, img_h);
+    let hud_pivot_x = round2(hud_w / 2.0);
+    let hud_pivot_y = round2(hud_h / 2.0);
 
     // Helper functions return (sym, kf, layer) tuples; caller pushes them.
     fn make_image_items(char_id: &str, head_guid: &str, pivot_x: f64, pivot_y: f64,
-                        anim_name: &str, suffix: &str, x: f64, y: f64)
+                        anim_name: &str, suffix: &str, x: f64, y: f64, scale: f64)
         -> (Value, Value, Value, String) {
         let sym_id = uuid(char_id, &format!("menu_sym_{}{}", anim_name, suffix));
         let kf_id = uuid(char_id, &format!("menu_kf_{}{}", anim_name, suffix));
         let layer_id = uuid(char_id, &format!("menu_layer_{}{}", anim_name, suffix));
         let sym = json!({ "$id": sym_id, "alpha": 1, "imageAsset": head_guid,
             "pivotX": pivot_x, "pivotY": pivot_y, "pluginMetadata": {},
-            "rotation": 0, "scaleX": 1, "scaleY": 1, "type": "IMAGE",
+            "rotation": 0, "scaleX": round2(scale), "scaleY": round2(scale), "type": "IMAGE",
             "x": round2(x), "y": round2(y) });
         let kf = json!({ "$id": kf_id, "length": 1, "pluginMetadata": {},
             "symbol": sym_id, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE" });
@@ -1803,7 +1631,18 @@ pub fn generate_menu_entity(
     // Macro to push items returned by helpers
     macro_rules! push_img {
         ($anim:expr, $suf:expr, $x:expr, $y:expr) => {{
-            let (s, k, l, lid) = make_image_items(char_id, head_guid, pivot_x, pivot_y, $anim, $suf, $x, $y);
+            let (s, k, l, lid) = make_image_items(char_id, head_guid, pivot_x, pivot_y, $anim, $suf, $x, $y, 1.0);
+            symbols.push(s); keyframes.push(k); layers.push(l); lid
+        }}
+    }
+    macro_rules! push_hud_img {
+        ($anim:expr, $suf:expr, $box:expr) => {{
+            // Fill the frame the engine draws this slot in: the portrait is the head already,
+            // so filling means the head reaches the edges the way a base-game character's does,
+            // with the engine's own mask cropping the overhang.
+            let sc = fit_scale(hud_w, hud_h, $box, $box);
+            let (s, k, l, lid) = make_image_items(char_id, &hud_guid, hud_pivot_x, hud_pivot_y,
+                $anim, $suf, -hud_pivot_x * sc, -hud_pivot_y * sc, sc);
             symbols.push(s); keyframes.push(k); layers.push(l); lid
         }}
     }
@@ -1850,7 +1689,7 @@ pub fn generate_menu_entity(
 
     // ── icon ─────────────────────────────────────────────────────────────
     {
-        let img = push_img!("icon", "", 0.0, 0.0);
+        let img = push_hud_img!("icon", "", ICON_BOX);
         let aid = push_icon_aid!("icon");
         let script = push_script!("icon");
         animations.push(json!({ "$id": uuid(char_id, "menu_anim_icon"),
@@ -1859,7 +1698,7 @@ pub fn generate_menu_entity(
 
     // ── icon_no_palette ──────────────────────────────────────────────────
     {
-        let img = push_img!("icon_no_palette", "", 0.0, 0.0);
+        let img = push_hud_img!("icon_no_palette", "", ICON_BOX);
         let script = push_script!("icon_no_palette");
         let aid = push_icon_aid!("icon_no_palette");
         animations.push(json!({ "$id": uuid(char_id, "menu_anim_icon_no_palette"),
@@ -1869,19 +1708,26 @@ pub fn generate_menu_entity(
     // ── stock ────────────────────────────────────────────────────────────
     {
         let aid = push_hud_aid!("stock", 24.0);
-        let img = push_img!("stock", "", -pivot_x, -pivot_y);
+        let img = push_hud_img!("stock", "", STOCK_BOX);
         animations.push(json!({ "$id": uuid(char_id, "menu_anim_stock"),
             "name": "stock", "layers": [aid, img], "pluginMetadata": {} }));
     }
 
     // ── hud variants ────────────────────────────────────────────────────
-    for hud_name in &["hud", "hud_front", "hud_angry", "hud_angry_front",
-                      "hud_happy", "hud_happy_front", "hud_hurt", "hud_hurt_front",
-                      "hud_sad", "hud_sad_front"] {
-        let img = push_img!(hud_name, "", -pivot_x, -pivot_y);
+    // SSF2 has one portrait, so every expression is the same head. The `_front` layer is drawn in
+    // front of the counter's frame and draws the head too: a front animation that draws NOTHING
+    // stops the character being drawn at all. Each front sits with its own hud animation.
+    for hud_name in &["hud", "hud_angry", "hud_happy", "hud_hurt", "hud_sad"] {
+        let img = push_hud_img!(hud_name, "", HUD_BOX);
         let aid = push_hud_aid!(hud_name, 36.0);
         animations.push(json!({ "$id": uuid(char_id, &format!("menu_anim_{}", hud_name)),
             "name": *hud_name, "layers": [img, aid], "pluginMetadata": {} }));
+
+        let front = format!("{hud_name}_front");
+        let fimg = push_hud_img!(&front, "", HUD_BOX);
+        let faid = push_hud_aid!(&front, 36.0);
+        animations.push(json!({ "$id": uuid(char_id, &format!("menu_anim_{}", front)),
+            "name": front, "layers": [fimg, faid], "pluginMetadata": {} }));
     }
 
     // 30fps → 60fps: hold every keyframe for two frames (see fn docs).
@@ -1919,6 +1765,9 @@ pub fn generate_menu_entity(
 pub struct ProjectileInfo {
     /// The projectile's symbol name (e.g. "mario_fireball")
     pub name: String,
+    /// its own clip, and the clip its frames are drawn from when it places one as `stance`
+    pub sprite_id: u16,
+    pub inner_sprite_id: Option<u16>,
     /// The inner animation sprite name (e.g. "mario_fla.mario_fireball_mc_210")
     pub inner_sprite_name: Option<String>,
     /// Frame count of the inner animation sprite
@@ -1930,11 +1779,26 @@ pub struct ProjectileInfo {
     /// Per-frame SSF2 local transform (parallel to image_frames). Applied to the
     /// IMAGE symbol so the sprite renders at its SSF2 display size, not full native.
     pub image_matrices: Vec<Option<crate::image_extractor::ImageLocalMatrix>>,
+    /// Every part the clip draws on each frame, in depth order, with its transform. A clip is
+    /// several drawings at once (sora's keyblade is the key AND a glow arc swinging round it,
+    /// and the one-image path kept the arc and dropped the key), so each part gets a layer.
+    pub image_parts: Vec<Vec<(String, crate::image_extractor::ImageLocalMatrix)>>,
     /// Meta GUIDs for each unique image used
     pub image_guids: BTreeMap<String, String>,
     /// Extra per-state data for multi-state projectiles (e.g. link_bomb).
     /// Each entry is (ssf2_label, image_frames, image_guids, boxes, frame_count).
     pub extra_states: Vec<ProjectileStateData>,
+    /// The named children of its clip that its code addresses, each a part riding it.
+    pub parts: Vec<ProjectilePartData>,
+    /// The platforms the clip gives itself (`createSelfPlatform`), one `(width, height)` per
+    /// call site in source pixels: each becomes a `platformSprite{i}` animation a structure
+    /// content stands on, riding the projectile.
+    pub platforms: Vec<(f64, f64)>,
+    /// The class's OWN timeline scripts, by 1-based source frame: `frame10` and friends, already
+    /// translated. A projectile's clip carries code on its frames exactly as a character's does,
+    /// and it is that code -- not anything this converter thinks a projectile should do -- that
+    /// says what this one does.
+    pub frame_scripts: BTreeMap<u16, String>,
     /// SSF2 frame labels found INSIDE the inner animation sprite, in
     /// timeline order. `(1-based frame, label)`. Empty for projectiles
     /// without timeline labels — those fall back to the FM template
@@ -1942,15 +1806,135 @@ pub struct ProjectileInfo {
     pub inner_labels: Vec<(u16, String)>,
 }
 
+impl ProjectileInfo {
+    /// Every frame script the entity carries, the flight's and each state's: one pass over
+    /// the code runs over all of them.
+    pub fn frame_codes(&self) -> Vec<&String> {
+        self.frame_scripts.values()
+            .chain(self.extra_states.iter().flat_map(|s| s.frame_scripts.values()))
+            .collect()
+    }
+    pub fn frame_codes_mut(&mut self) -> Vec<&mut String> {
+        self.frame_scripts.values_mut()
+            .chain(self.extra_states.iter_mut().flat_map(|s| s.frame_scripts.values_mut()))
+            .collect()
+    }
+}
+
+/// A named child of a projectile's clip that its code addresses, drawn as a part of its own
+/// riding the projectile: its frames become the animation `anim` on the projectile's entity,
+/// and each of its labels a `{anim}_{label}` cut from them.
+#[derive(Debug, Clone)]
+pub struct ProjectilePartData {
+    /// how the code names it: `gordospin`, or `notes.n1` for a child of a child
+    pub path: String,
+    pub anim: String,
+    /// where the timeline puts it, in the projectile's space (a child of a child composed)
+    pub matrix: crate::image_extractor::ImageLocalMatrix,
+    pub image_frames: Vec<Option<String>>,
+    pub image_matrices: Vec<Option<crate::image_extractor::ImageLocalMatrix>>,
+    pub image_parts: Vec<Vec<(String, crate::image_extractor::ImageLocalMatrix)>>,
+    pub image_guids: BTreeMap<String, String>,
+    pub frame_count: u16,
+    /// (label, 1-based frame)
+    pub labels: Vec<(String, u16)>,
+}
+
+/// Where one of a fighter's animations places a part: the part, the animation, the art the
+/// part shows there (its `part_*` animation) and the placement in the fighter's space.
+#[derive(Debug, Clone)]
+pub struct PartPlacement {
+    pub name: String,
+    pub fm_anim: String,
+    pub art: String,
+    pub matrix: crate::image_extractor::ImageLocalMatrix,
+}
+
+/// The animations a set of parts gives an entity: one per part (its whole timeline) and one
+/// per label of it, cut from the same frames.
+fn push_part_animations(
+    keyframes: &mut Vec<Value>, layers: &mut Vec<Value>, symbols: &mut Vec<Value>,
+    char_id: &str, id_prefix: &str, parts: &[ProjectilePartData], animations: &mut Vec<Value>,
+) {
+    for part in parts {
+        let total = part.frame_count as usize;
+        let mut cuts: Vec<(String, usize, usize)> = vec![(part.anim.clone(), 0, total.max(1))];
+        for (i, (label, at)) in part.labels.iter().enumerate() {
+            let start = (*at as usize).saturating_sub(1);
+            let end = part.labels.get(i + 1).map(|(_, f)| (*f as usize).saturating_sub(1)).unwrap_or(total).max(start + 1);
+            cuts.push((format!("{}_{}", part.anim, crate::haxe_gen::label_ident(label)), start, end));
+        }
+        for (name, start, end) in cuts {
+            let key = format!("{id_prefix}_{name}");
+            let img_layer_ids = push_part_layers(keyframes, layers, symbols, char_id,
+                &key, start..end, &part.image_parts,
+                (&part.image_frames, &part.image_matrices), &part.image_guids);
+            animations.push(json!({
+                "$id": uuid(char_id, &format!("{key}_anim")),
+                "name": name,
+                "layers": img_layer_ids.iter().cloned().map(Value::from).collect::<Vec<Value>>(),
+                "pluginMetadata": {}
+            }));
+        }
+    }
+}
+
+thread_local! {
+    static DROPPED_ANIMATIONS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+/// The animations the character entity left out as empty, for the script's tables to leave out
+/// too: a name only a table has is asked of the engine and refused.
+fn note_dropped_animations(names: Vec<String>) { DROPPED_ANIMATIONS.with(|c| *c.borrow_mut() = names); }
+pub fn take_dropped_animations() -> Vec<String> { DROPPED_ANIMATIONS.with(|c| std::mem::take(&mut *c.borrow_mut())) }
+
+/// A platform an object gives itself: the source builds a box at an offset from the object
+/// and fighters stand on it (rayman's plum, fox's landmaster). Here a structure rides the
+/// object (its own `__selfPlatform` and the follower script beside its stats), and this is
+/// the line it carries: as wide as the box, centred on the structure's origin, ledges at both
+/// ends.
+fn push_platform_animations(
+    keyframes: &mut Vec<Value>, layers: &mut Vec<Value>, symbols: &mut Vec<Value>, animations: &mut Vec<Value>,
+    char_id: &str, id_prefix: &str, platforms: &[(f64, f64)],
+) {
+    for (i, (w, _h)) in platforms.iter().enumerate() {
+        let w = (*w * crate::mappings::character_stats().scaling.size_multiplier).max(8.0);
+        let sym = det_uuid(&format!("{char_id}::{id_prefix}::platform{i}::sym"));
+        symbols.push(json!({
+            "$id": sym, "type": "LINE_SEGMENT", "alpha": 0.5, "color": "0xeeeeee",
+            "points": [-w / 2.0, 0.0, w / 2.0, 0.0],
+            "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "structureType": "FLOOR", "leftLedge": true, "rightLedge": true, "dropThrough": false } }
+        }));
+        let kf = det_uuid(&format!("{char_id}::{id_prefix}::platform{i}::kf"));
+        keyframes.push(json!({ "$id": kf, "length": 1, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "LINE_SEGMENT" }));
+        let line = det_uuid(&format!("{char_id}::{id_prefix}::platform{i}::layer"));
+        layers.push(json!({
+            "$id": line, "hidden": false, "locked": false, "name": "Line Segment Layer", "type": "LINE_SEGMENT",
+            "keyframes": [kf], "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "lineSegmentType": "LINE_SEGMENT_STRUCTURE" } }
+        }));
+        animations.push(json!({
+            "$id": det_uuid(&format!("{char_id}::{id_prefix}::platform{i}::anim")),
+            "name": format!("platformSprite{i}"), "pluginMetadata": {}, "layers": [line]
+        }));
+    }
+}
+
 /// Image + box data for one state of a multi-state projectile.
 #[derive(Debug, Clone)]
 pub struct ProjectileStateData {
     pub label: String,
+    /// the clip the state places as `stance`, whose frames it draws
+    pub sprite_id: u16,
     pub image_frames: Vec<Option<String>>,
     pub image_matrices: Vec<Option<crate::image_extractor::ImageLocalMatrix>>,
+    pub image_parts: Vec<Vec<(String, crate::image_extractor::ImageLocalMatrix)>>,
     pub image_guids: BTreeMap<String, String>,
     pub boxes: Option<AnimationBoxData>,
     pub frame_count: u16,
+    /// This state's OWN timeline scripts, by 1-based source frame (frame 1 included: it runs
+    /// the moment the state's clip appears, which is the moment the state starts). A state's
+    /// clip carries its own code, and a script that belonged to another state's frame 7 was
+    /// ending the flight of sora's keyblade on frame 7 of its throw.
+    pub frame_scripts: BTreeMap<u16, String>,
 }
 
 /// Generate a projectile.entity file for a single SSF2 projectile.
@@ -1996,10 +1980,117 @@ fn proj_image_xform(mat: Option<&crate::image_extractor::ImageLocalMatrix>) -> (
     }
 }
 
+/// The parts a clip draws, as IMAGE layers: layer k shows the k-th placement (depth order) of
+/// every frame in `frames`, blank where a frame has fewer. When the clip's parts are not known
+/// (`parts` empty) the one-image-per-frame view stands in. The layer ids, deepest first.
+#[allow(clippy::too_many_arguments)]
+fn push_part_layers(
+    keyframes: &mut Vec<Value>,
+    layers: &mut Vec<Value>,
+    symbols: &mut Vec<Value>,
+    char_id: &str,
+    key: &str,
+    frames: std::ops::Range<usize>,
+    parts: &[Vec<(String, crate::image_extractor::ImageLocalMatrix)>],
+    single: (&[Option<String>], &[Option<crate::image_extractor::ImageLocalMatrix>]),
+    guids: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let part_at = |f: usize, k: usize| -> Option<(String, crate::image_extractor::ImageLocalMatrix)> {
+        if parts.is_empty() {
+            if k > 0 { return None }
+            let sym = single.0.get(f).and_then(|s| s.clone())?;
+            Some((sym, single.1.get(f).and_then(|m| *m).unwrap_or_default()))
+        } else {
+            parts.get(f).and_then(|p| p.get(k)).cloned()
+        }
+    };
+    let count = if parts.is_empty() { 1 } else {
+        frames.clone().map(|f| parts.get(f).map(|p| p.len()).unwrap_or(0)).max().unwrap_or(0).max(1)
+    };
+    let mut ids: Vec<String> = Vec::new();
+    for k in 0..count {
+        let mut kf_ids: Vec<String> = Vec::new();
+        for f in frames.clone() {
+            let suffix = if k == 0 { format!("{f}") } else { format!("p{k}_{f}") };
+            let kf_id = uuid(char_id, &format!("{key}_img_kf_{suffix}"));
+            let placed = part_at(f, k).and_then(|(sym, mat)| guids.get(sym.as_str()).cloned().map(|g| (g, mat)));
+            match placed {
+                Some((guid, mat)) => {
+                    let sym_id = uuid(char_id, &format!("{key}_img_sym_{suffix}"));
+                    let (sx, sy, rot, x, y) = proj_image_xform(Some(&mat));
+                    symbols.push(json!({
+                        "$id": sym_id, "alpha": 1, "imageAsset": guid, "pivotX": 0, "pivotY": 0,
+                        "pluginMetadata": {}, "rotation": rot, "scaleX": sx, "scaleY": sy,
+                        "type": "IMAGE", "x": x, "y": y
+                    }));
+                    keyframes.push(json!({ "$id": kf_id, "length": 1, "pluginMetadata": {},
+                        "symbol": sym_id, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE" }));
+                }
+                None => keyframes.push(json!({ "$id": kf_id, "length": 1, "pluginMetadata": {},
+                    "symbol": Value::Null, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE" })),
+            }
+            kf_ids.push(kf_id);
+        }
+        let layer_id = if k == 0 { uuid(char_id, &format!("{key}_img_layer")) } else { uuid(char_id, &format!("{key}_img_layer_p{k}")) };
+        layers.push(json!({
+            "$id": layer_id, "name": if k == 0 { "Image Layer".to_string() } else { format!("Image Layer {}", k + 1) },
+            "type": "IMAGE", "keyframes": kf_ids, "hidden": false, "locked": false, "pluginMetadata": {}
+        }));
+        // the deepest part first, so a later one draws over it as the clip does
+        ids.insert(0, layer_id);
+    }
+    ids
+}
+
+/// One FRAME_SCRIPT layer for a projectile timeline: each script at its own 1-based source
+/// frame, blank keyframes between. The id of the layer it pushed.
+fn push_script_layer(
+    keyframes: &mut Vec<Value>,
+    layers: &mut Vec<Value>,
+    char_id: &str,
+    key: &str,
+    total_frames: u32,
+    scripts: &BTreeMap<u16, String>,
+) -> String {
+    let mut kf_ids: Vec<String> = Vec::new();
+    let mut cursor: u32 = 0;
+    for (src_frame, code) in scripts {
+        let at = (*src_frame as u32).saturating_sub(1);
+        if at >= total_frames { continue }
+        if at > cursor {
+            let gap = uuid(char_id, &format!("{key}_gap_{cursor}"));
+            keyframes.push(json!({ "$id": gap, "type": "FRAME_SCRIPT",
+                "length": at - cursor, "code": "", "pluginMetadata": {} }));
+            kf_ids.push(gap);
+        }
+        let kf = uuid(char_id, &format!("{key}_kf_{at}"));
+        keyframes.push(json!({ "$id": kf, "type": "FRAME_SCRIPT",
+            "length": 1, "code": code, "pluginMetadata": {} }));
+        kf_ids.push(kf);
+        cursor = at + 1;
+    }
+    if cursor < total_frames {
+        let tail = uuid(char_id, &format!("{key}_tail_{cursor}"));
+        keyframes.push(json!({ "$id": tail, "type": "FRAME_SCRIPT",
+            "length": total_frames - cursor, "code": "", "pluginMetadata": {} }));
+        kf_ids.push(tail);
+    }
+    let layer_id = uuid(char_id, &format!("{key}_layer"));
+    layers.push(json!({
+        "$id": layer_id, "name": "Scripts", "type": "FRAME_SCRIPT",
+        "keyframes": kf_ids, "hidden": false, "locked": false, "pluginMetadata": {}
+    }));
+    layer_id
+}
+
+/// `runtime_runs_frames`: the runtime runs the clip's own frame scripts (a fighter's projectile),
+/// so its script layers stay blank.
 pub fn generate_projectile_entity(
     char_id: &str,
     proj: &ProjectileInfo,
+    runtime_runs_frames: bool,
 ) -> String {
+    let none: BTreeMap<u16, String> = BTreeMap::new();
     let mut keyframes: Vec<Value> = Vec::new();
     let mut layers: Vec<Value> = Vec::new();
     let mut symbols: Vec<Value> = Vec::new();
@@ -2007,93 +2098,64 @@ pub fn generate_projectile_entity(
 
     let proj_id = &proj.name;
     let total_frames = proj.inner_frame_count.max(1) as u32;
+    // what each animation shows of the source's clips (for the runtime's path): the clip placed
+    // as `stance` under the idle state's label, else the projectile's own clip
+    let (idle_sym, idle_label) = match proj.inner_sprite_id {
+        Some(id) => (id, "attack_idle".to_string()),
+        None => (proj.sprite_id, String::new()),
+    };
+    let piece = |anim: &str, label: &str, sym: u16, from: u32, frames: u32, borrowed: bool| crate::emit::Piece {
+        fm_name: anim.to_string(), label: label.to_string(), sym, from, frames: frames.max(1),
+        head: 0, reversed: false, borrowed, item_box: Vec::new(), on: None,
+    };
+    let mut pieces: Vec<crate::emit::Piece> = Vec::new();
+    // The same names the stats files use. When these two disagree the state map points at an
+    // animation the entity does not have, and the projectile spawns and then sits there: the
+    // engine has nothing to play for the state it was put in.
+    let anim_names = crate::haxe_gen::projectile_anim_names(proj);
 
-    // ── Build image keyframes for idle animation ─────────────────────────
-    let mut idle_image_kf_ids: Vec<String> = Vec::new();
-    for frame in 0..total_frames {
-        let sym_name = proj.image_frames.get(frame as usize).and_then(|s| s.as_ref());
-        let kf_id = uuid(char_id, &format!("proj_{}_idle_img_kf_{}", proj_id, frame));
-        if let Some(sym_name) = sym_name {
-            if let Some(guid) = proj.image_guids.get(sym_name.as_str()) {
-                let sym_id = uuid(char_id, &format!("proj_{}_idle_img_sym_{}", proj_id, frame));
-                let (sx, sy, rot, x, y) = proj_image_xform(
-                    proj.image_matrices.get(frame as usize).and_then(|m| m.as_ref()));
-                symbols.push(json!({
-                    "$id": sym_id,
-                    "alpha": 1,
-                    "imageAsset": guid,
-                    "pivotX": 0,
-                    "pivotY": 0,
-                    "pluginMetadata": {},
-                    "rotation": rot,
-                    "scaleX": sx,
-                    "scaleY": sy,
-                    "type": "IMAGE",
-                    "x": x,
-                    "y": y
-                }));
-                keyframes.push(json!({
-                    "$id": kf_id,
-                    "length": 1,
-                    "pluginMetadata": {},
-                    "symbol": sym_id,
-                    "tweenType": "LINEAR",
-                    "tweened": false,
-                    "type": "IMAGE"
-                }));
-            } else {
-                keyframes.push(json!({
-                    "$id": kf_id,
-                    "length": 1,
-                    "pluginMetadata": {},
-                    "symbol": Value::Null,
-                    "tweenType": "LINEAR",
-                    "tweened": false,
-                    "type": "IMAGE"
-                }));
-            }
-        } else {
-            keyframes.push(json!({
-                "$id": kf_id,
-                "length": 1,
-                "pluginMetadata": {},
-                "symbol": Value::Null,
-                "tweenType": "LINEAR",
-                "tweened": false,
-                "type": "IMAGE"
-            }));
-        }
-        idle_image_kf_ids.push(kf_id);
-    }
+    // ── Image layers for the idle animation: every part the clip draws ───
+    let idle_image_layer_ids: Vec<String> = push_part_layers(&mut keyframes, &mut layers, &mut symbols, char_id,
+        &format!("proj_{}_idle", proj_id), 0..total_frames as usize, &proj.image_parts,
+        (&proj.image_frames, &proj.image_matrices), &proj.image_guids);
+    let _idle_image_layer_id = idle_image_layer_ids.last().cloned().expect("an image layer");
 
-    let idle_image_layer_id = uuid(char_id, &format!("proj_{}_idle_img_layer", proj_id));
-    layers.push(json!({
-        "$id": idle_image_layer_id,
-        "name": "Image Layer",
-        "type": "IMAGE",
-        "keyframes": idle_image_kf_ids,
-        "hidden": false,
-        "locked": false,
-        "pluginMetadata": {}
-    }));
+    // ── The clip's OWN timeline scripts ──────────────────────────────────
+    // A projectile's clip carries code on its frames exactly as a character's does, and it is
+    // that code -- not anything this converter decides a projectile ought to do -- which says
+    // what this one does. Dropped, a projectile did only what the converter wrote for it.
+    // Laid out in SOURCE frames: `double_keyframe_lengths` at the end of this function puts the
+    // whole entity on this engine's clock in one place, so doubling here as well would put a
+    // script on frame 10 at frame 40.
+    let idle_script_layer: Option<String> = (!proj.frame_scripts.is_empty()).then(|| {
+        push_script_layer(&mut keyframes, &mut layers, char_id, &format!("proj_{}_scr", proj_id), total_frames,
+            if runtime_runs_frames { &none } else { &proj.frame_scripts })
+    });
 
     // ── Build collision box layers for idle (from inner sprite boxes) ────
     let mut idle_box_layer_ids: Vec<String> = Vec::new();
     if let Some(boxes) = &proj.boxes {
         // Collect all unique instance names across frames
-        let mut instances_in_proj: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        // a name is not unique on a frame; see the character path above
+        let mut instances_in_proj: std::collections::BTreeSet<(String, usize)> = Default::default();
         for frame_boxes in boxes.frames.values() {
+            let mut seen: std::collections::BTreeMap<&str, usize> = Default::default();
             for b in frame_boxes {
-                instances_in_proj.insert(b.instance_name.clone());
+                let n = seen.entry(b.instance_name.as_str()).or_insert(0);
+                instances_in_proj.insert((b.instance_name.clone(), *n));
+                *n += 1;
             }
         }
+        let layer_names = box_layer_names(&instances_in_proj);
 
-        for inst_name in instances_in_proj.iter() {
+        for (inst_name, occurrence) in instances_in_proj.iter() {
+            let occurrence = *occurrence;
+            let occ_key = if occurrence == 0 { String::new() } else { format!("_{occurrence}") };
             let box_type = BoxType::from_instance_name(inst_name).unwrap_or(BoxType::Hurtbox);
-            let fm_layer_name = ssf2_box_name_to_fm(inst_name);
             let fm_box_type = box_type_to_fm(box_type);
             let color = box_color(box_type);
-            let box_idx = fm_box_index(&fm_layer_name);
+            let (prefix, box_idx) = layer_names[&(inst_name.clone(), occurrence)].clone();
+            let fm_layer_name = format!("{prefix}{box_idx}");
 
             let mut box_kf_ids: Vec<String> = Vec::new();
             let mut frame_idx: u32 = 0;
@@ -2102,7 +2164,9 @@ pub fn generate_projectile_entity(
             let mut active_frames: Vec<(usize, &crate::sprite_parser::FrameBox)> = Vec::new();
             for f in 0..total_frames {
                 if let Some(frame_boxes) = boxes.frames.get(&(f as u16)) {
-                    if let Some(fb) = frame_boxes.iter().find(|b| &b.instance_name == inst_name) {
+                    if let Some(fb) = frame_boxes.iter()
+                        .filter(|b| &b.instance_name == inst_name).nth(occurrence)
+                    {
                         active_frames.push((f as usize, fb));
                     }
                 }
@@ -2131,7 +2195,7 @@ pub fn generate_projectile_entity(
 
                 // Gap keyframe
                 if start_frame as u32 > frame_idx {
-                    let gap_kf_id = uuid(char_id, &format!("proj_{}_box_gap_{}_{}", proj_id, inst_name, frame_idx));
+                    let gap_kf_id = uuid(char_id, &format!("proj_{}_box_gap_{}{}_{}", proj_id, inst_name, occ_key, frame_idx));
                     keyframes.push(json!({
                         "$id": gap_kf_id,
                         "type": kf_type,
@@ -2145,7 +2209,7 @@ pub fn generate_projectile_entity(
                 }
 
                 // Box symbol
-                let sym_id = uuid(char_id, &format!("proj_{}_box_sym_{}_{}", proj_id, inst_name, start_frame));
+                let sym_id = uuid(char_id, &format!("proj_{}_box_sym_{}{}_{}", proj_id, inst_name, occ_key, start_frame));
                 if is_point {
                     let cx = round2(fb.x + fb.width / 2.0);
                     let cy = round2(fb.y + fb.height);
@@ -2199,7 +2263,7 @@ pub fn generate_projectile_entity(
                     }));
                 }
 
-                let kf_id = uuid(char_id, &format!("proj_{}_box_kf_{}_{}", proj_id, inst_name, start_frame));
+                let kf_id = uuid(char_id, &format!("proj_{}_box_kf_{}{}_{}", proj_id, inst_name, occ_key, start_frame));
                 keyframes.push(json!({
                     "$id": kf_id,
                     "type": kf_type,
@@ -2216,7 +2280,7 @@ pub fn generate_projectile_entity(
 
             // Tail gap
             if frame_idx < total_frames {
-                let tail_kf_id = uuid(char_id, &format!("proj_{}_box_tail_{}_{}", proj_id, inst_name, frame_idx));
+                let tail_kf_id = uuid(char_id, &format!("proj_{}_box_tail_{}{}_{}", proj_id, inst_name, occ_key, frame_idx));
                 keyframes.push(json!({
                     "$id": tail_kf_id,
                     "type": kf_type,
@@ -2231,7 +2295,7 @@ pub fn generate_projectile_entity(
 
             if box_kf_ids.is_empty() { continue; }
 
-            let layer_id = uuid(char_id, &format!("proj_{}_box_layer_{}", proj_id, inst_name));
+            let layer_id = uuid(char_id, &format!("proj_{}_box_layer_{}{}", proj_id, inst_name, occ_key));
             if is_point {
                 layers.push(json!({
                     "$id": layer_id,
@@ -2268,87 +2332,29 @@ pub fn generate_projectile_entity(
         }
     }
 
-    // ── projectileSpawn animation (1 frame, first image) ─────────────────
+    // ── projectileSpawn animation (1 frame, first image, every part) ─────
     {
-        let (_, _, spawn_img) = if !proj.image_frames.is_empty() && proj.image_frames[0].is_some() {
-            let sym_name = proj.image_frames[0].as_ref().unwrap();
-            let guid = proj.image_guids.get(sym_name.as_str()).cloned().unwrap_or_default();
-            let sym_id = uuid(char_id, &format!("proj_{}_spawn_sym", proj_id));
-            let (sx, sy, rot, x, y) = proj_image_xform(proj.image_matrices.first().and_then(|m| m.as_ref()));
-            symbols.push(json!({
-                "$id": sym_id,
-                "alpha": 1,
-                "imageAsset": guid,
-                "pivotX": 0,
-                "pivotY": 0,
-                "pluginMetadata": {},
-                "rotation": rot,
-                "scaleX": sx,
-                "scaleY": sy,
-                "type": "IMAGE",
-                "x": x,
-                "y": y
-            }));
-            let kf_id = uuid(char_id, &format!("proj_{}_spawn_kf", proj_id));
-            keyframes.push(json!({
-                "$id": kf_id,
-                "length": 1,
-                "pluginMetadata": {},
-                "symbol": sym_id,
-                "tweenType": "LINEAR",
-                "tweened": false,
-                "type": "IMAGE"
-            }));
-            let layer_id = uuid(char_id, &format!("proj_{}_spawn_layer", proj_id));
-            layers.push(json!({
-                "$id": layer_id,
-                "name": "Image Layer",
-                "type": "IMAGE",
-                "keyframes": [kf_id],
-                "hidden": false,
-                "locked": false,
-                "pluginMetadata": {}
-            }));
-            (sym_id, kf_id, layer_id)
-        } else {
-            // Blank spawn frame
-            let kf_id = uuid(char_id, &format!("proj_{}_spawn_kf", proj_id));
-            keyframes.push(json!({
-                "$id": kf_id,
-                "length": 1,
-                "pluginMetadata": {},
-                "symbol": Value::Null,
-                "tweenType": "LINEAR",
-                "tweened": false,
-                "type": "IMAGE"
-            }));
-            let layer_id = uuid(char_id, &format!("proj_{}_spawn_layer", proj_id));
-            layers.push(json!({
-                "$id": layer_id,
-                "name": "Image Layer",
-                "type": "IMAGE",
-                "keyframes": [kf_id],
-                "hidden": false,
-                "locked": false,
-                "pluginMetadata": {}
-            }));
-            (String::new(), kf_id, layer_id)
-        };
+        let spawn_layers = push_part_layers(&mut keyframes, &mut layers, &mut symbols, char_id,
+            &format!("proj_{}_spawn", proj_id), 0..1usize, &proj.image_parts,
+            (&proj.image_frames, &proj.image_matrices), &proj.image_guids);
+        pieces.push(piece(&anim_names.spawn, &idle_label, idle_sym, 1, 1, true));
         animations.push(json!({
             "$id": uuid(char_id, &format!("proj_{}_anim_spawn", proj_id)),
-            "name": "projectileSpawn",
-            "layers": [spawn_img],
+            "name": anim_names.spawn,
+            "layers": spawn_layers,
             "pluginMetadata": {}
         }));
     }
 
     // ── projectileIdle animation (all frames + boxes) ────────────────────
     {
-        let mut idle_layers = vec![idle_image_layer_id.clone()];
-        idle_layers.extend(idle_box_layer_ids);
+        let mut idle_layers = idle_image_layer_ids.clone();
+        if let Some(l) = &idle_script_layer { idle_layers.push(l.clone()); }
+        idle_layers.extend(idle_box_layer_ids.iter().cloned());
+        pieces.push(piece(&anim_names.active, &idle_label, idle_sym, 1, total_frames, false));
         animations.push(json!({
             "$id": uuid(char_id, &format!("proj_{}_anim_idle", proj_id)),
-            "name": "projectileIdle",
+            "name": anim_names.active,
             "layers": idle_layers,
             "pluginMetadata": {}
         }));
@@ -2357,69 +2363,9 @@ pub fn generate_projectile_entity(
     // ── projectileDestroy animation (last frame + blank script) ──────────
     {
         let last_frame = total_frames.saturating_sub(1) as usize;
-        let sym_name = proj.image_frames.get(last_frame).and_then(|s| s.as_ref());
-        let destroy_kf_id = uuid(char_id, &format!("proj_{}_destroy_kf", proj_id));
-        if let Some(sym_name) = sym_name {
-            if let Some(guid) = proj.image_guids.get(sym_name.as_str()) {
-                let sym_id = uuid(char_id, &format!("proj_{}_destroy_sym", proj_id));
-                let (sx, sy, rot, x, y) = proj_image_xform(
-                    proj.image_matrices.get(last_frame).and_then(|m| m.as_ref()));
-                symbols.push(json!({
-                    "$id": sym_id,
-                    "alpha": 1,
-                    "imageAsset": guid,
-                    "pivotX": 0,
-                    "pivotY": 0,
-                    "pluginMetadata": {},
-                    "rotation": rot,
-                    "scaleX": sx,
-                    "scaleY": sy,
-                    "type": "IMAGE",
-                    "x": x,
-                    "y": y
-                }));
-                keyframes.push(json!({
-                    "$id": destroy_kf_id,
-                    "length": 1,
-                    "pluginMetadata": {},
-                    "symbol": sym_id,
-                    "tweenType": "LINEAR",
-                    "tweened": false,
-                    "type": "IMAGE"
-                }));
-            } else {
-                keyframes.push(json!({
-                    "$id": destroy_kf_id,
-                    "length": 1,
-                    "pluginMetadata": {},
-                    "symbol": Value::Null,
-                    "tweenType": "LINEAR",
-                    "tweened": false,
-                    "type": "IMAGE"
-                }));
-            }
-        } else {
-            keyframes.push(json!({
-                "$id": destroy_kf_id,
-                "length": 1,
-                "pluginMetadata": {},
-                "symbol": Value::Null,
-                "tweenType": "LINEAR",
-                "tweened": false,
-                "type": "IMAGE"
-            }));
-        }
-        let destroy_img_layer = uuid(char_id, &format!("proj_{}_destroy_img_layer", proj_id));
-        layers.push(json!({
-            "$id": destroy_img_layer,
-            "name": "Image Layer",
-            "type": "IMAGE",
-            "keyframes": [destroy_kf_id],
-            "hidden": false,
-            "locked": false,
-            "pluginMetadata": {}
-        }));
-
+        let destroy_layers = push_part_layers(&mut keyframes, &mut layers, &mut symbols, char_id,
+            &format!("proj_{}_destroy", proj_id), last_frame..last_frame + 1, &proj.image_parts,
+            (&proj.image_frames, &proj.image_matrices), &proj.image_guids);
         let destroy_script_kf = uuid(char_id, &format!("proj_{}_destroy_script_kf", proj_id));
         keyframes.push(json!({
             "$id": destroy_script_kf,
@@ -2441,12 +2387,101 @@ pub fn generate_projectile_entity(
             "pluginMetadata": {}
         }));
 
+        pieces.push(piece(&anim_names.destroy, &idle_label, idle_sym, total_frames, 1, true));
         animations.push(json!({
             "$id": uuid(char_id, &format!("proj_{}_anim_destroy", proj_id)),
-            "name": "projectileDestroy",
-            "layers": [destroy_img_layer, destroy_script_layer],
+            "name": anim_names.destroy,
+            "layers": destroy_layers.iter().cloned().map(Value::from).chain(std::iter::once(Value::from(destroy_script_layer))).collect::<Vec<Value>>(),
             "pluginMetadata": {}
         }));
+    }
+
+    // ── THE CLIP'S OWN SECTIONS ──────────────────────────────────────────────
+    // A projectile clip with labels is several animations on one timeline, and the class jumps
+    // between them by name: birdo's egg flies in `idle` (a two-frame loop its own frame script
+    // restarts), dies in `die` (a bounce, then the frame that ends it) and carries `suspend` and
+    // `chibi` for what another fighter may do to it. Laid out as ONE animation, the first loop
+    // played forever and a play of `die` landed on a one-frame stub. So each label is cut out of
+    // the full layers into an animation of its own; whole-clip stubs that took a label's name go.
+    {
+        let ident = crate::haxe_gen::label_ident;
+        let mut labels: Vec<(u32, String)> = proj.inner_labels.iter()
+            .map(|(f, l)| ((*f as u32).saturating_sub(1).min(total_frames.saturating_sub(1)), ident(l)))
+            .collect();
+        labels.sort_by_key(|(f, _)| *f);
+        labels.dedup_by(|a, b| a.0 == b.0);
+        if labels.len() >= 2 {
+            // frames before the first label belong to it: the clip starts there and runs in
+            let mut windows: Vec<(String, u32, u32)> = Vec::new();
+            for (i, (f, name)) in labels.iter().enumerate() {
+                let start = if i == 0 { 0 } else { *f };
+                let end = labels.get(i + 1).map(|(nf, _)| *nf).unwrap_or(total_frames);
+                if end > start { windows.push((name.clone(), start, end)); }
+            }
+            // one layer's keyframes, cut to a window: the part of each that overlaps
+            let kf_index: std::collections::BTreeMap<String, usize> = keyframes.iter().enumerate()
+                .filter_map(|(i, k)| k["$id"].as_str().map(|id| (id.to_string(), i))).collect();
+            let full_layers: Vec<Value> = {
+                let mut v: Vec<Value> = idle_image_layer_ids.iter()
+                    .map(|id| layers.iter().find(|l| l["$id"] == json!(id)).cloned().expect("image layer")).collect();
+                if let Some(sl) = &idle_script_layer { v.push(layers.iter().find(|l| l["$id"] == json!(sl)).cloned().expect("script layer")); }
+                for b in &idle_box_layer_ids { v.push(layers.iter().find(|l| l["$id"] == json!(b)).cloned().expect("box layer")); }
+                v
+            };
+            let mut new_kfs: Vec<Value> = Vec::new();
+            let mut new_layers: Vec<Value> = Vec::new();
+            let mut seg_anims: Vec<Value> = Vec::new();
+            for (name, start, end) in &windows {
+                let mut layer_ids: Vec<String> = Vec::new();
+                for layer in &full_layers {
+                    let lid = layer["$id"].as_str().unwrap_or_default().to_string();
+                    let mut ids: Vec<String> = Vec::new();
+                    let mut at: u32 = 0;
+                    for (k, kid) in layer["keyframes"].as_array().cloned().unwrap_or_default().iter().enumerate() {
+                        let Some(&ki) = kid.as_str().and_then(|id| kf_index.get(id)) else { continue };
+                        let len = keyframes[ki]["length"].as_u64().unwrap_or(1) as u32;
+                        let (a, b) = (at.max(*start), (at + len).min(*end));
+                        at += len;
+                        if b <= a { continue }
+                        let mut kf = keyframes[ki].clone();
+                        let nid = uuid(char_id, &format!("proj_{}_seg_{}_{}_{}", proj_id, name, lid, k));
+                        kf["$id"] = json!(nid);
+                        kf["length"] = json!(b - a);
+                        new_kfs.push(kf);
+                        ids.push(nid);
+                    }
+                    if ids.is_empty() { continue }
+                    let mut nl = layer.clone();
+                    let nlid = uuid(char_id, &format!("proj_{}_seg_{}_layer_{}", proj_id, name, lid));
+                    nl["$id"] = json!(nlid);
+                    nl["keyframes"] = json!(ids);
+                    new_layers.push(nl);
+                    layer_ids.push(nlid);
+                }
+                pieces.push(piece(name, &idle_label, idle_sym, start + 1, end - start, false));
+                seg_anims.push(json!({
+                    "$id": uuid(char_id, &format!("proj_{}_anim_seg_{}", proj_id, name)),
+                    "name": name, "layers": layer_ids, "pluginMetadata": {}
+                }));
+            }
+            let taken: std::collections::BTreeSet<String> = windows.iter().map(|(n, _, _)| n.clone()).collect();
+            animations.retain(|a| !a["name"].as_str().is_some_and(|n| taken.contains(n)));
+            animations.extend(seg_anims);
+            keyframes.extend(new_kfs);
+            layers.extend(new_layers);
+            // what no animation names any more goes with it
+            let used_layers: std::collections::BTreeSet<String> = animations.iter()
+                .flat_map(|a| a["layers"].as_array().cloned().unwrap_or_default())
+                .filter_map(|v| v.as_str().map(str::to_string)).collect();
+            layers.retain(|l| l["$id"].as_str().is_some_and(|id| used_layers.contains(id)));
+            let used_kfs: std::collections::BTreeSet<String> = layers.iter()
+                .flat_map(|l| l["keyframes"].as_array().cloned().unwrap_or_default())
+                .filter_map(|v| v.as_str().map(str::to_string)).collect();
+            keyframes.retain(|k| k["$id"].as_str().is_some_and(|id| used_kfs.contains(id)));
+            let used_syms: std::collections::BTreeSet<String> = keyframes.iter()
+                .filter_map(|k| k["symbol"].as_str().map(str::to_string)).collect();
+            symbols.retain(|sy| sy["$id"].as_str().is_some_and(|id| used_syms.contains(id)));
+        }
     }
 
     // ── Extra animations for multi-state projectiles (e.g. link_bomb) ────────
@@ -2454,71 +2489,74 @@ pub fn generate_projectile_entity(
         let state_slug = state_data.label.replace(|c: char| !c.is_alphanumeric(), "_");
         let anim_name = ssf2_proj_label_to_fm_anim(&state_data.label);
 
-        // Image layer
-        let img_layer_id = uuid(char_id, &format!("proj_{}_extra_{}_img_layer", proj_id, state_slug));
-        let mut img_kf_ids: Vec<Value> = Vec::new();
+        // Image layers: every part the state's clip draws
         let total = state_data.frame_count as usize;
-        for (fi, sym_opt) in state_data.image_frames.iter().enumerate().take(total) {
-            let kf_id = uuid(char_id, &format!("proj_{}_extra_{}_img_kf_{}", proj_id, state_slug, fi));
-            if let Some(sym_name) = sym_opt {
-                if let Some(guid) = state_data.image_guids.get(sym_name.as_str()) {
-                    let sym_id = uuid(char_id, &format!("proj_{}_extra_{}_sym_{}", proj_id, state_slug, fi));
-                    symbols.push(json!({
-                        "$id": sym_id, "alpha": 1, "imageAsset": guid,
-                        "pivotX": 0, "pivotY": 0, "pluginMetadata": {},
-                        "rotation": 0, "scaleX": 1, "scaleY": 1, "type": "IMAGE", "x": 0, "y": 0
-                    }));
-                    keyframes.push(json!({
-                        "$id": kf_id, "length": 1, "pluginMetadata": {},
-                        "symbol": sym_id, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE"
-                    }));
-                    img_kf_ids.push(kf_id.into());
-                    continue;
-                }
-            }
-            keyframes.push(json!({
-                "$id": kf_id, "length": 1, "pluginMetadata": {},
-                "symbol": Value::Null, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE"
-            }));
-            img_kf_ids.push(kf_id.into());
-        }
-        if img_kf_ids.is_empty() {
-            let kf_id = uuid(char_id, &format!("proj_{}_extra_{}_img_empty", proj_id, state_slug));
-            keyframes.push(json!({
-                "$id": kf_id, "length": total.max(1) as u32,
-                "pluginMetadata": {}, "symbol": Value::Null,
-                "tweenType": "LINEAR", "tweened": false, "type": "IMAGE"
-            }));
-            img_kf_ids.push(kf_id.into());
-        }
-        layers.push(json!({
-            "$id": img_layer_id, "name": "Image Layer", "type": "IMAGE",
-            "keyframes": img_kf_ids, "hidden": false, "locked": false, "pluginMetadata": {}
-        }));
+        let img_layer_ids = push_part_layers(&mut keyframes, &mut layers, &mut symbols, char_id,
+            &format!("proj_{}_extra_{}", proj_id, state_slug), 0..total.max(1), &state_data.image_parts,
+            (&state_data.image_frames, &state_data.image_matrices), &state_data.image_guids);
 
-        // Script layer (blank)
-        let script_kf_id = uuid(char_id, &format!("proj_{}_extra_{}_script_kf", proj_id, state_slug));
-        let script_layer_id = uuid(char_id, &format!("proj_{}_extra_{}_script_layer", proj_id, state_slug));
-        keyframes.push(json!({
-            "$id": script_kf_id, "length": total.max(1) as u32,
-            "code": "", "pluginMetadata": {}, "symbol": Value::Null,
-            "tweenType": "LINEAR", "tweened": false, "type": "FRAME_SCRIPT"
-        }));
-        layers.push(json!({
-            "$id": script_layer_id, "name": "Frame Script Layer", "type": "FRAME_SCRIPT",
-            "keyframes": [script_kf_id], "hidden": false, "locked": false, "pluginMetadata": {}
-        }));
+        // the state's own timeline scripts, on the state's own timeline
+        let script_layer_id = push_script_layer(&mut keyframes, &mut layers, char_id,
+            &format!("proj_{}_extra_{}_script", proj_id, state_slug), total.max(1) as u32,
+            if runtime_runs_frames { &none } else { &state_data.frame_scripts });
 
+        pieces.push(piece(&anim_name, &state_data.label, state_data.sprite_id, 1, state_data.frame_count as u32, false));
         animations.push(json!({
             "$id": uuid(char_id, &format!("proj_{}_extra_{}_anim", proj_id, state_slug)),
             "name": anim_name,
-            "layers": [img_layer_id, script_layer_id],
+            "layers": img_layer_ids.iter().cloned().map(Value::from).chain(std::iter::once(Value::from(script_layer_id))).collect::<Vec<Value>>(),
             "pluginMetadata": {}
         }));
     }
 
+    // the named children its code addresses: one animation each, and one per label
+    push_part_animations(&mut keyframes, &mut layers, &mut symbols, char_id, &format!("proj_{proj_id}"), &proj.parts, &mut animations);
+
     // 30fps → 60fps: hold every keyframe for two frames (see fn docs).
     double_keyframe_lengths(&mut keyframes);
+
+    // A projectile whose clip carries ONE label spawns, lives and dies under that one name, so
+    // the three animations collapse into it. Two animations of the same name is not a thing an
+    // entity can have, and the one that matters is the one with the frames and the boxes.
+    {
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut keep: Vec<Value> = Vec::new();
+        let mut by_name: BTreeMap<String, usize> = BTreeMap::new();
+        for a in &animations {
+            let name = a["name"].as_str().unwrap_or_default().to_string();
+            let layers = a["layers"].as_array().map(|l| l.len()).unwrap_or(0);
+            match by_name.get(&name) {
+                Some(&i) if keep[i]["layers"].as_array().map(|l| l.len()).unwrap_or(0) >= layers => {}
+                Some(&i) => keep[i] = a.clone(),
+                None => {
+                    by_name.insert(name.clone(), keep.len());
+                    seen.insert(name);
+                    keep.push(a.clone());
+                }
+            }
+        }
+        animations = keep;
+    }
+
+    // a platform the clip gives itself: a floor line a structure content stands on
+    push_platform_animations(&mut keyframes, &mut layers, &mut symbols, &mut animations, char_id, &proj_id.to_string(), &proj.platforms);
+    // the pieces the runtime plays: one per animation the entity kept (a name two of them shared
+    // is the one that shows the clip's own frames, not a borrowed one)
+    {
+        let kept: std::collections::BTreeSet<&str> = animations.iter().filter_map(|a| a["name"].as_str()).collect();
+        let mut out: Vec<crate::emit::Piece> = Vec::new();
+        for p in pieces {
+            if !kept.contains(p.fm_name.as_str()) { continue }
+            // a later cut of the same name is the one the entity kept (a label's own window
+            // replaces the whole-clip stub that took its name); a borrowed one never replaces its own
+            match out.iter().position(|o| o.fm_name == p.fm_name) {
+                Some(i) if !p.borrowed || out[i].borrowed => out[i] = p,
+                Some(_) => {}
+                None => out.push(p),
+            }
+        }
+        PROJECTILE_PIECES.with(|c| { c.borrow_mut().insert(proj.name.clone(), out); });
+    }
 
     let entity_id = crate::projectile_gen::projectile_content_id(&proj.name);
     let entity = json!({
@@ -2625,8 +2663,14 @@ pub fn generate_effect_entity(
         frames: vec![],
         matrices: vec![],
         image_guids: std::collections::BTreeMap::new(),
+        parts: vec![],
     });
 
+    if std::env::var("PEPTIDE_DUMP_EFFECTS").is_ok() {
+        for (i, (f, m)) in frame_images.frames.iter().zip(frame_images.matrices.iter()).enumerate() {
+            eprintln!("[effect] {} frame {} img={:?} matrix={:?}", effect_id, i, f, m.as_ref().map(|m| (m.tx, m.ty, m.sx, m.sy)));
+        }
+    }
     // Determine animation segments: (name, start_0based, end_exclusive).
     // Mirror `effect_animation_names`: same ordering and same fallbacks.
     // No labels → single "active" animation covering the whole sprite.
@@ -2661,72 +2705,63 @@ pub fn generate_effect_entity(
         segs
     };
 
+    EFFECT_PIECES.with(|c| {
+        c.borrow_mut().insert(effect.name.clone(), segments.iter().map(|(anim, start, end)| crate::emit::Piece {
+            fm_name: anim.clone(), label: String::new(), sym: if BORROWING.with(|b| b.get()) { 0 } else { effect.sprite_id },
+            from: *start as u32 + 1, frames: end.saturating_sub(*start).max(1) as u32,
+            head: 0, reversed: false, borrowed: false, item_box: Vec::new(), on: None,
+        }).collect());
+    });
     for (seg_idx, (anim_name, start, end)) in segments.iter().enumerate() {
-        let mut img_kf_ids: Vec<Value> = Vec::new();
         let seg_len = end.saturating_sub(*start).max(1);
-        for offset in 0..seg_len {
-            let frame_idx = start + offset;
-            let kf_id = uuid(char_id, &format!("eff_{}_seg{}_img_kf_{}", effect_id, seg_idx, frame_idx));
-            let sym_name = frame_images.frames.get(frame_idx).and_then(|s| s.as_ref());
-            if let Some(sym_name) = sym_name {
-                if let Some(guid) = frame_images.image_guids.get(sym_name.as_str()) {
-                    let sym_id = uuid(char_id, &format!("eff_{}_seg{}_img_sym_{}", effect_id, seg_idx, frame_idx));
-                    let (sx, sy, rot, x, y) = proj_image_xform(
-                        frame_images.matrices.get(frame_idx).and_then(|m| m.as_ref()));
-                    symbols.push(json!({
-                        "$id": sym_id,
-                        "alpha": 1,
-                        "imageAsset": guid,
-                        "pivotX": 0,
-                        "pivotY": 0,
-                        "pluginMetadata": {},
-                        "rotation": rot,
-                        "scaleX": sx,
-                        "scaleY": sy,
-                        "type": "IMAGE",
-                        "x": x,
-                        "y": y
-                    }));
-                    keyframes.push(json!({
-                        "$id": kf_id,
-                        "length": 1,
-                        "pluginMetadata": {},
-                        "symbol": sym_id,
-                        "tweenType": "LINEAR",
-                        "tweened": false,
-                        "type": "IMAGE"
-                    }));
-                    img_kf_ids.push(kf_id.into());
-                    continue;
+        // every part the clip draws at once gets a layer of its own: layer k shows the k-th
+        // placement (depth order) of each frame, and a frame with fewer parts leaves it blank
+        let part_count = (*start..*start + seg_len)
+            .map(|f| frame_images.parts.get(f).map(|p| p.len()).unwrap_or(0))
+            .max().unwrap_or(0).max(1);
+        let mut layer_ids: Vec<Value> = Vec::new();
+        for part in 0..part_count {
+            let mut img_kf_ids: Vec<Value> = Vec::new();
+            for offset in 0..seg_len {
+                let frame_idx = *start + offset;
+                let kf_id = uuid(char_id, &format!("eff_{}_seg{}_p{}_img_kf_{}", effect_id, seg_idx, part, frame_idx));
+                let placed = frame_images.parts.get(frame_idx).and_then(|p| p.get(part));
+                if let Some((sym_name, mat)) = placed {
+                    if let Some(guid) = frame_images.image_guids.get(sym_name.as_str()) {
+                        let sym_id = uuid(char_id, &format!("eff_{}_seg{}_p{}_img_sym_{}", effect_id, seg_idx, part, frame_idx));
+                        let (sx, sy, rot, x, y) = proj_image_xform(Some(mat));
+                        symbols.push(json!({
+                            "$id": sym_id, "alpha": 1, "imageAsset": guid,
+                            "pivotX": 0, "pivotY": 0, "pluginMetadata": {},
+                            "rotation": rot, "scaleX": sx, "scaleY": sy, "type": "IMAGE", "x": x, "y": y
+                        }));
+                        keyframes.push(json!({
+                            "$id": kf_id, "length": 1, "pluginMetadata": {},
+                            "symbol": sym_id, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE"
+                        }));
+                        img_kf_ids.push(kf_id.into());
+                        continue;
+                    }
                 }
+                keyframes.push(json!({
+                    "$id": kf_id, "length": 1, "pluginMetadata": {},
+                    "symbol": Value::Null, "tweenType": "LINEAR", "tweened": false, "type": "IMAGE"
+                }));
+                img_kf_ids.push(kf_id.into());
             }
-            keyframes.push(json!({
-                "$id": kf_id,
-                "length": 1,
-                "pluginMetadata": {},
-                "symbol": Value::Null,
-                "tweenType": "LINEAR",
-                "tweened": false,
-                "type": "IMAGE"
+            let img_layer_id = uuid(char_id, &format!("eff_{}_seg{}_p{}_img_layer", effect_id, seg_idx, part));
+            layers.push(json!({
+                "$id": img_layer_id, "name": format!("Image Layer {}", part + 1), "type": "IMAGE",
+                "keyframes": img_kf_ids, "hidden": false, "locked": false, "pluginMetadata": {}
             }));
-            img_kf_ids.push(kf_id.into());
+            // the deepest part first, so the later one draws over it as the clip does
+            layer_ids.insert(0, img_layer_id.into());
         }
-
-        let img_layer_id = uuid(char_id, &format!("eff_{}_seg{}_img_layer", effect_id, seg_idx));
-        layers.push(json!({
-            "$id": img_layer_id,
-            "name": "Image Layer",
-            "type": "IMAGE",
-            "keyframes": img_kf_ids,
-            "hidden": false,
-            "locked": false,
-            "pluginMetadata": {}
-        }));
 
         animations.push(json!({
             "$id": uuid(char_id, &format!("eff_{}_seg{}_anim", effect_id, seg_idx)),
             "name": anim_name,
-            "layers": [img_layer_id],
+            "layers": layer_ids,
             "pluginMetadata": {}
         }));
     }
@@ -2767,74 +2802,74 @@ pub fn generate_effect_entity(
 }
 
 #[cfg(test)]
-mod extract_body_tests {
-    use super::{extract_function_body, strip_unreachable_returns};
+mod box_layer_name_tests {
+    use super::box_layer_names;
 
-    #[test]
-    fn spurious_mid_return_dropped_keeps_following_code() {
-        // special_up frame 79 shape: a depth-0 `return;` before the real logic.
-        let body = "AudioClip.play(\"a\");\nreturn;\nif (x) {\n\tplayVoiceSound(1);\n}\nplayAttackSound(1);";
-        let out = strip_unreachable_returns(body);
-        assert!(!out.lines().any(|l| l.trim() == "return;"), "mid return not dropped: {out}");
-        assert!(out.contains("playAttackSound(1);"), "following code lost: {out}");
+    fn names(list: &[(&str, usize)]) -> Vec<String> {
+        let set = list.iter().map(|(n, o)| (n.to_string(), *o)).collect();
+        let out = box_layer_names(&set);
+        list.iter().map(|(n, o)| { let (p, i) = &out[&(n.to_string(), *o)]; format!("{p}{i}") }).collect()
     }
 
     #[test]
-    fn conditional_return_in_block_is_kept() {
-        // A real early-exit inside an if (depth > 0) must NOT be stripped.
-        let body = "if (x) {\n\treturn;\n}\ndoThing();";
-        let out = strip_unreachable_returns(body);
-        assert!(out.contains("return;"), "conditional return wrongly stripped: {out}");
+    fn a_box_is_named_for_what_it_collides_as() {
+        // the engine keys a reflect box on its layer name; the source calls it `reverseBox`
+        assert_eq!(names(&[("reverseBox", 0), ("attackBox", 0), ("hand", 0)]),
+                   ["reflectbox0", "hitbox0", "ledgegrabbox0"]);
     }
 
     #[test]
-    fn trailing_only_return_left_for_trailing_pass() {
-        // Last-statement return has no code after — not our job (strip_trailing_return handles it).
-        let body = "doThing();\nreturn;";
-        assert_eq!(strip_unreachable_returns(body), body);
-    }
-
-    // helper: depth never goes negative and ends at zero (comment/string-naive is fine here)
-    fn structurally_valid(s: &str) -> bool {
-        let mut depth = 0i32;
-        let mut min = 0i32;
-        for c in s.chars() {
-            if c == '{' { depth += 1; }
-            if c == '}' { depth -= 1; min = min.min(depth); }
-        }
-        depth == 0 && min >= 0
+    fn names_sharing_a_kind_take_free_slots() {
+        // `hitBox` and `hurtBox` are both hurt boxes, and both used to be named `hurtbox0`
+        let got = names(&[("hurtBox", 0), ("hitBox", 0), ("hitBox", 1)]);
+        let mut all = got.clone(); all.sort(); all.dedup();
+        assert_eq!(all.len(), 3, "every layer needs its own name: {got:?}");
     }
 
     #[test]
-    fn single_function_body_is_unwrapped() {
-        let code = "function foo__frame0() {\n\tA;\n\tB;\n}";
-        assert_eq!(extract_function_body(code), "A;\nB;");
+    fn a_box_that_collides_as_nothing_keeps_its_source_name() {
+        assert_eq!(names(&[("camBox", 0), ("itemBox", 0)]), ["cambox0", "itembox0"]);
     }
+}
+
+#[cfg(test)]
+mod turned_tests {
+    use super::*;
 
     #[test]
-    fn nested_braces_preserved_and_dedented() {
-        let code = "function foo() {\n\tif (x) {\n\t\tB;\n\t}\n}";
-        assert_eq!(extract_function_body(code), "if (x) {\n\tB;\n}");
-    }
-
-    #[test]
-    fn two_functions_on_one_frame_merge_bodies() {
-        // Two SSF2 frame scripts landing on the same frame (slot-aliased anim).
-        // Both bodies must run, and the result must be structurally valid (no
-        // leaked inner `function` wrapper, no stray brace).
-        let code = "function tech__frame0() {\n\tA;\n}\n\nfunction tech__frame0() {\n\tB;\n}";
-        let body = extract_function_body(code);
-        assert!(body.contains("A;") && body.contains("B;"), "both bodies kept: {body}");
-        assert!(!body.contains("function "), "inner wrapper leaked: {body}");
-        assert!(structurally_valid(&body), "unbalanced output: {body}");
-    }
-
-    #[test]
-    fn commented_braces_do_not_confuse_matcher() {
-        // A fully commented-out SSF2-only if-block must not throw off brace matching.
-        let code = "function f() {\n\tA;\n\t// [SSF2-only: x] if (g()) {\n\t// [SSF2-dead] }\n}";
-        let body = extract_function_body(code);
-        assert!(structurally_valid(&body), "unbalanced: {body}");
-        assert!(!body.contains("function "), "wrapper leaked: {body}");
+    fn a_turned_animation_is_mirrored_about_the_origin_and_a_shared_symbol_is_copied() {
+        let entity = json!({
+            "animations": [
+                { "name": "throw_back", "layers": ["l_img", "l_box", "l_pt"] },
+                { "name": "stand", "layers": ["l_stand"] }
+            ],
+            "layers": [
+                { "$id": "l_img", "keyframes": ["k1"] }, { "$id": "l_box", "keyframes": ["k2"] },
+                { "$id": "l_pt", "keyframes": ["k3"] }, { "$id": "l_stand", "keyframes": ["k4"] }
+            ],
+            "keyframes": [
+                { "$id": "k1", "symbol": "s_img" }, { "$id": "k2", "symbol": "s_box" },
+                { "$id": "k3", "symbol": "s_pt" }, { "$id": "k4", "symbol": "s_pt" }
+            ],
+            "symbols": [
+                { "$id": "s_img", "type": "IMAGE", "x": 40.0, "scaleX": 1.15, "scaleY": -1.15, "rotation": 180.0 },
+                { "$id": "s_box", "type": "COLLISION_BOX", "x": 10.0, "scaleX": 20.0 },
+                { "$id": "s_pt", "type": "POINT", "x": -23.0 }
+            ]
+        });
+        let anims: std::collections::BTreeSet<String> = ["throw_back".to_string()].into();
+        let out: serde_json::Value = serde_json::from_str(&draw_turned(&entity.to_string(), &anims)).unwrap();
+        let sym = |id: &str| out["symbols"].as_array().unwrap().iter().find(|s| s["$id"] == id).unwrap().clone();
+        // the picture is drawn the other way round: x and its x scale negated, its turn reversed
+        assert_eq!(sym("s_img")["x"], json!(-40.0));
+        assert_eq!(sym("s_img")["scaleX"], json!(-1.15));
+        assert_eq!(sym("s_img")["rotation"], json!(180.0));
+        // a box keeps its width and covers the mirrored span
+        assert_eq!(sym("s_box")["x"], json!(-30.0));
+        // the point the standing animation also shows is left as it was, and the throw gets a copy
+        assert_eq!(sym("s_pt")["x"], json!(-23.0));
+        assert_eq!(sym("s_pt-turned")["x"], json!(23.0));
+        let k3 = out["keyframes"].as_array().unwrap().iter().find(|k| k["$id"] == "k3").unwrap().clone();
+        assert_eq!(k3["symbol"], json!("s_pt-turned"));
     }
 }

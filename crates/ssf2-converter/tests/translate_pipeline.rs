@@ -76,9 +76,10 @@ fn double_frame_counts_hitstun_field() {
     let input = "{ damage: 5, hitStun: 10, angle: 45 }";
     let out = double_frame_counts(input);
     // damage and angle aren't frame counts; they stay 5/45.
-    // hitStun should be doubled to 20.
-    assert!(out.contains("hitStun: 20"),
-        "hitStun should double 10→20; got: {}", out);
+    // hitStun is the FREEZE: it gains the hit's own frame (SSF2 counts the frames after it,
+    // Fraymakers counts the whole freeze) and is then doubled for 30→60fps, so 10 → 22.
+    assert!(out.contains("hitStun: 22"),
+        "hitStun should convert 10→22; got: {}", out);
     assert!(out.contains("damage: 5"), "damage should be untouched");
     assert!(out.contains("angle: 45"), "angle should be untouched");
 }
@@ -121,16 +122,18 @@ fn double_frame_counts_non_literal_arg_untouched() {
 #[test]
 fn call_split_splits_into_grouped_calls() {
     // A multi-field call should be split, with fields grouped by target.
-    // Both `cancelWhenAirborne` and `allowControl` route to
-    // updateAnimationStats per commands.jsonc :: call_splits.
-    let input = "self.updateAttackStats({ cancelWhenAirborne: false, allowControl: true });";
+    // `cancelWhenAirborne` and `chargetime_max` both route to updateAnimationStats per
+    // commands.jsonc :: call_splits; `allowControl` goes to the fighter's own control holder.
+    let input = "self.updateAttackStats({ cancelWhenAirborne: false, chargetime_max: 10, allowControl: true });";
     let out = apply_call_splits(input);
     assert!(out.contains("self.updateAnimationStats("),
         "should emit a updateAnimationStats call; got: {}", out);
     assert!(out.contains("leaveGroundCancel: false"),
         "cancelWhenAirborne → leaveGroundCancel rename should land; got: {}", out);
-    assert!(out.contains("allowMovement: true"),
-        "allowControl → allowMovement rename should land; got: {}", out);
+    assert!(out.contains("chargeFramesMax: 10"),
+        "chargetime_max → chargeFramesMax rename should land; got: {}", out);
+    assert!(out.contains("__attackControl({ on: true })"),
+        "allowControl → the control holder; got: {}", out);
     // Only one call (not two), because both fields route to the same target.
     let call_count = out.matches("updateAnimationStats(").count();
     assert_eq!(call_count, 1,
@@ -222,8 +225,8 @@ fn call_split_skip_if_value_drops_field() {
 fn play_sound_global_maps_to_globalsfx() {
     // brawl_swing_s is in commands.jsonc :: global_sound_map → WHOOSH_1
     let out = rewrite_play_sound_calls("self.playSound(\"brawl_swing_s\");");
-    assert_eq!(out.trim(), "AudioClip.play(GlobalSfx.WHOOSH_1);",
-        "global sound should map to an unquoted GlobalSfx constant; got: {}", out);
+    assert_eq!(out.trim(), "__sound(\"brawl_swing_s\", AudioClip.play(GlobalSfx.WHOOSH_1));",
+        "global sound should map to an unquoted GlobalSfx constant, kept under its name; got: {}", out);
 }
 
 #[test]
@@ -234,8 +237,8 @@ fn play_sound_extracted_asset_uses_getcontent() {
     let _g = AvailableSoundsGuard::install(ids);
     let out = rewrite_play_sound_calls("self.playSound(\"mario_fireballLand\");");
     assert_eq!(out.trim(),
-        "AudioClip.play(self.getResource().getContent(\"mario_fireballLand\"));",
-        "extracted asset should use getContent; got: {}", out);
+        "__sound(\"mario_fireballLand\", AudioClip.play(self.getResource().getContent(\"mario_fireballLand\")));",
+        "extracted asset should use getContent, kept under its name; got: {}", out);
 }
 
 #[test]
@@ -254,103 +257,11 @@ fn play_sound_drops_extra_args_and_keeps_handle_assignment() {
     // Extra SSF2 args are dropped; an assignment target is preserved.
     let _g = AvailableSoundsGuard::install(std::collections::BTreeSet::new());
     let out = rewrite_play_sound_calls("self.fire = self.playSound(\"brawl_swing_m\", true, 0.5);");
-    assert_eq!(out.trim(), "self.fire = AudioClip.play(GlobalSfx.WHOOSH_2);",
+    assert_eq!(out.trim(), "self.fire = __sound(\"brawl_swing_m\", AudioClip.play(GlobalSfx.WHOOSH_2));",
         "extra args dropped, assignment kept; got: {}", out);
 }
 
 // ─── generate_sound_helpers (playAttackSound / playVoiceSound) ───────────
-
-#[test]
-fn sound_helpers_empty_when_no_tables_and_no_calls() {
-    // No tables and no calls → emit nothing (no dead-code helpers).
-    let _g = AvailableSoundsGuard::install(std::collections::BTreeSet::new());
-    assert_eq!(generate_sound_helpers(&[], &[], false, false), "");
-}
-
-#[test]
-fn sound_helpers_call_without_table_emits_safe_noop() {
-    // A character can call playAttackSound(N) without declaring a table
-    // (sandbag): the helper must still be defined, with an empty array whose
-    // bounds guard makes every call a no-op.
-    let _g = AvailableSoundsGuard::install(std::collections::BTreeSet::new());
-    let out = generate_sound_helpers(&[], &[], true, true);
-    assert!(out.contains("var _attackSounds = [];"), "empty attack array; got:\n{}", out);
-    assert!(out.contains("var _voiceSounds = [];"), "empty voice array; got:\n{}", out);
-    assert!(out.contains("function playAttackSound(n)") && out.contains("function playVoiceSound(n)"),
-        "helpers still defined so bare calls resolve; got:\n{}", out);
-    assert!(out.contains("if (n < 1 || n > _attackSounds.length) return;"),
-        "bounds guard no-ops on empty table; got:\n{}", out);
-}
-
-#[test]
-fn sound_helpers_split_attack_only() {
-    // Attack table present, no voice table/calls → no voice section.
-    let _g = AvailableSoundsGuard::install(std::collections::BTreeSet::new());
-    let out = generate_sound_helpers(&["brawl_swing_l".to_string()], &[], false, false);
-    assert!(out.contains("function playAttackSound(n)"), "attack helper present; got:\n{}", out);
-    assert!(!out.contains("var _voiceSounds") && !out.contains("function playVoiceSound") && !out.contains("var _activeVoiceClip"),
-        "no voice section when there are no voice sounds or calls; got:\n{}", out);
-}
-
-#[test]
-fn sound_helpers_split_voice_only() {
-    let mut ids = std::collections::BTreeSet::new();
-    ids.insert("mario_grunt1".to_string());
-    let _g = AvailableSoundsGuard::install(ids);
-    let out = generate_sound_helpers(&[], &["mario_grunt1".to_string()], false, false);
-    assert!(out.contains("function playVoiceSound(n)") && out.contains("var _activeVoiceClip = null;"),
-        "voice helper present; got:\n{}", out);
-    assert!(!out.contains("var _attackSounds") && !out.contains("function playAttackSound"),
-        "no attack section when there are no attack sounds or calls; got:\n{}", out);
-}
-
-#[test]
-fn sound_helpers_arrays_resolver_and_voice_tracking() {
-    // mario-like: 3 attack globals (brawl_swing_l → WHOOSH_3) + 1 voice asset.
-    let mut ids = std::collections::BTreeSet::new();
-    ids.insert("mario_grunt1".to_string());
-    let _g = AvailableSoundsGuard::install(ids);
-    let attack = vec!["brawl_swing_l".to_string(), "brawl_swing_l".to_string()];
-    let voice = vec!["mario_grunt1".to_string()];
-    let out = generate_sound_helpers(&attack, &voice, false, false);
-
-    assert!(out.contains("var _attackSounds = [\"brawl_swing_l\", \"brawl_swing_l\"];"),
-        "attack array literal; got:\n{}", out);
-    assert!(out.contains("var _voiceSounds = [\"mario_grunt1\"];"),
-        "voice array literal; got:\n{}", out);
-    assert!(out.contains("var _activeVoiceClip = null;"), "voice tracker var; got:\n{}", out);
-    // Resolver switches on the string id; honors the global mapping.
-    assert!(out.contains("switch (id) {"), "resolver switches on id; got:\n{}", out);
-    assert!(out.contains("case \"brawl_swing_l\": return AudioClip.play(GlobalSfx.WHOOSH_3);"),
-        "global resolver case honors the mapping; got:\n{}", out);
-    assert!(out.contains("default: return AudioClip.play(self.getResource().getContent(id));"),
-        "default getContent case; got:\n{}", out);
-    // Resolver mirrors the FULL global_sound_map — cases exist even for globals
-    // this character doesn't use (single source of truth).
-    assert!(out.contains("case \"metal_land_l\": return AudioClip.play(GlobalSfx.LAND);"),
-        "resolver has a case for every global_sound_map entry; got:\n{}", out);
-    // Per-character asset id is NOT a case (handled by default).
-    assert!(!out.contains("case \"mario_grunt1\""),
-        "asset id should fall through to default, not a case; got:\n{}", out);
-    // Bounds-guard + no-overlap stop + clip tracking.
-    assert!(out.contains("if (n < 1 || n > _attackSounds.length) return;"),
-        "attack bounds guard; got:\n{}", out);
-    assert!(out.contains("if (_activeVoiceClip != null) { _activeVoiceClip.stop(); _activeVoiceClip = null; }"),
-        "voice no-overlap stop; got:\n{}", out);
-    assert!(out.contains("_activeVoiceClip = _playResolvedSound(_voiceSounds[n - 1]);"),
-        "voice play stores the clip handle; got:\n{}", out);
-}
-
-#[test]
-fn sound_helpers_placeholder_for_unmapped_id() {
-    // screw1 is neither in global_sound_map nor an extracted asset → placeholder.
-    let _g = AvailableSoundsGuard::install(std::collections::BTreeSet::new());
-    let out = generate_sound_helpers(&["screw1".to_string()], &[], false, false);
-    assert!(out.contains("\"_ssf2_placeholder\" /* TODO: SSF2 sound \"screw1\" has no FM equivalent */"),
-        "unmapped id → placeholder + visible TODO in the array; got:\n{}", out);
-    assert!(!out.contains("case \"screw1\""),
-        "unmapped id gets no resolver case (plays the placeholder via default); got:\n{}", out);
-}
 
 #[test]
 fn require_template_passes_through_non_empty() {
@@ -364,19 +275,6 @@ fn require_template_panics_on_empty() {
     // TOML file — panic with the qualified path (incl. the file) rather than
     // emit broken Haxe.
     ssf2_converter::mappings::require_template("character.audio.play_attack_sound_fn", "");
-}
-
-#[test]
-fn voice_teardown_cleanup_gated_on_voice_helper() {
-    // Voice helper present → onTeardown stops + nulls the active clip.
-    let on = voice_teardown_cleanup(true);
-    assert!(on.contains("if (_activeVoiceClip != null)")
-        && on.contains("_activeVoiceClip.stop();")
-        && on.contains("_activeVoiceClip = null;"),
-        "voice helper present → teardown stops+nulls the clip; got: {}", on);
-    // No voice helper → no cleanup statements (no dead hook body).
-    assert_eq!(voice_teardown_cleanup(false), "",
-        "voice-less character → no teardown cleanup");
 }
 
 #[test]
@@ -572,136 +470,9 @@ fn comment_out_unknown_idempotent_on_already_commented() {
 
 // ─── infer_ext_var_types ─────────────────────────────────────────────────
 
-#[test]
-fn infer_ext_var_types_bool() {
-    let vars = vec!["a".to_string()];
-    let inits = vec![("a".to_string(), "true".to_string())];
-    let m = infer_ext_var_types(&vars, &inits);
-    assert_eq!(m.get("a"), Some(&ExtVarType::Bool));
-}
-
-#[test]
-fn infer_ext_var_types_int() {
-    let vars = vec!["count".to_string()];
-    let inits = vec![("count".to_string(), "5".to_string())];
-    let m = infer_ext_var_types(&vars, &inits);
-    assert_eq!(m.get("count"), Some(&ExtVarType::Int));
-}
-
-#[test]
-fn infer_ext_var_types_object_default() {
-    // No init expression → Object.
-    let vars = vec!["foo".to_string()];
-    let m = infer_ext_var_types(&vars, &[]);
-    assert_eq!(m.get("foo"), Some(&ExtVarType::Object));
-}
-
-#[test]
-fn infer_ext_var_types_object_for_complex_init() {
-    let vars = vec!["bar".to_string()];
-    let inits = vec![("bar".to_string(), "self.getX()".to_string())];
-    let m = infer_ext_var_types(&vars, &inits);
-    assert_eq!(m.get("bar"), Some(&ExtVarType::Object));
-}
-
-/// Bug §3.7 from docs/codebase_analysis.md: a non-integer numeric init must
-/// not classify as Int. After the Phase 2 fix, floats fall through to Object.
-#[test]
-fn infer_ext_var_types_float_not_int() {
-    let vars = vec!["scale".to_string()];
-    let inits = vec![("scale".to_string(), "0.5".to_string())];
-    let m = infer_ext_var_types(&vars, &inits);
-    assert_eq!(m.get("scale"), Some(&ExtVarType::Object),
-        "float init like 0.5 must classify as Object, not Int; got: {:?}",
-        m.get("scale"));
-}
-
 // ─── wrap_persistent_state ───────────────────────────────────────────────
 
-#[test]
-fn wrap_persistent_state_int_inc_dec_set_get() {
-    let mut var_types = BTreeMap::new();
-    var_types.insert("counter".to_string(), ExtVarType::Int);
-    let input = "self.counter = 5;\n\
-        self.counter++;\n\
-        self.counter--;\n\
-        var n = self.counter;\n";
-    let out = wrap_persistent_state(input, &var_types);
-    assert!(out.contains("counter.set(5);"), "= → .set(); got: {}", out);
-    assert!(out.contains("counter.inc()"), "++ → .inc(); got: {}", out);
-    assert!(out.contains("counter.dec()"), "-- → .dec(); got: {}", out);
-    assert!(out.contains("counter.get()"), "read → .get(); got: {}", out);
-}
-
-/// Bug §3.19: multi-line RHS (e.g. an inline closure literal that the
-/// decompiler produces) must still be wrapped into `<name>.set(...);`.
-/// The single-line `[^;\n]*?` regex misses these; a brace-balanced scan
-/// must handle them.
-#[test]
-fn wrap_persistent_state_multiline_closure_rhs() {
-    let mut var_types = BTreeMap::new();
-    var_types.insert("onHit".to_string(), ExtVarType::Object);
-    let input = "self.onHit = function() {\n\
-        \treturn 1;\n\
-        };\n";
-    let out = wrap_persistent_state(input, &var_types);
-    assert!(out.contains("onHit.set("),
-        "multi-line closure RHS must still be wrapped in .set(...); got:\n{}", out);
-    // The inner `;` of the closure body must not be the terminator.
-    // After the wrap, we should still see `return 1;` intact.
-    assert!(out.contains("return 1;"),
-        "closure body must round-trip; got:\n{}", out);
-}
-
-#[test]
-fn wrap_persistent_state_object_no_inc_dec() {
-    // ExtVarType::Object doesn't get .inc / .dec rewrites.
-    let mut var_types = BTreeMap::new();
-    var_types.insert("foo".to_string(), ExtVarType::Object);
-    let input = "self.foo++;\n";
-    let out = wrap_persistent_state(input, &var_types);
-    // Without the int rewrite, `self.foo++` falls through to the read pass
-    // (and stays mostly intact, possibly `foo.get()++`). Either way, no
-    // `.inc()` should appear.
-    assert!(!out.contains(".inc()"),
-        "Object vars don't get .inc(); got: {}", out);
-}
-
 // ─── fix_intangibility_pairs ─────────────────────────────────────────────
-
-#[test]
-fn intangibility_pair_rewritten_to_apply_global_body_status() {
-    // The header parser only matches the canonical `function <name>__frame<N>() {`
-    // shape used by entity frame scripts; not the truncated test fixture I had
-    // before. Use a realistic form.
-    let input = "function a__frame3() {\n\
-        \tself.setIntangibility(true);\n\
-        }\n\
-        function a__frame15() {\n\
-        \tself.setIntangibility(false);\n\
-        }\n";
-    let out = fix_intangibility_pairs(input);
-    // The true → false pair should collapse to applyGlobalBodyStatus.
-    assert!(out.contains("applyGlobalBodyStatus(BodyStatus.INTANGIBLE,"),
-        "paired setIntangibility should collapse to applyGlobalBodyStatus; got:\n{}", out);
-    // Duration = 15 - 3 = 12.
-    assert!(out.contains("BodyStatus.INTANGIBLE, 12"),
-        "duration should be (false_frame - true_frame) = 12; got:\n{}", out);
-    // The false-side call should be gone (replaced with a comment marker).
-    assert!(!out.lines().any(|l| l.trim() == "self.setIntangibility(false);"),
-        "matching false() call should be removed; got:\n{}", out);
-}
-
-#[test]
-fn intangibility_unpaired_false_surfaces_marker() {
-    // A bare setIntangibility(false) with no preceding true → surface as ssf2-only.
-    let input = "function a__frame0() {\n\
-        \tself.setIntangibility(false);\n\
-        }\n";
-    let out = fix_intangibility_pairs(input);
-    assert!(out.contains("[SSF2-only: setIntangibility]"),
-        "unpaired false should be flagged; got:\n{}", out);
-}
 
 // ─── translate_ssf2_to_fm — end-to-end ordering checks ───────────────────
 
@@ -720,10 +491,10 @@ fn translate_full_pipeline_order_isready_then_doubling_then_rename() {
     let out = translate_ssf2_to_fm(input);
     assert!(!out.contains("SSF2API.isReady()"),
         "guard should be stripped; got:\n{}", out);
-    // hitStun is in commands.jsonc :: frame_params (isframe: true) AND in
+    // hitStun is in commands.jsonc :: frame_params (isframe: true, plus: 1) AND in
     // replacements as `hitStun:` → `hitstop:`. Both must run.
-    assert!(out.contains("hitstop: 20"),
-        "hitStun: 10 should be doubled then renamed to hitstop: 20; got:\n{}", out);
+    assert!(out.contains("hitstop: 22"),
+        "hitStun: 10 should gain the hit frame, double, and rename to hitstop: 22; got:\n{}", out);
 }
 
 #[test]
@@ -732,8 +503,9 @@ fn translate_full_pipeline_self_self_collapse() {
     // replacement table collapses them to `self.`.
     let input = "self.self.endAttack();\n";
     let out = translate_ssf2_to_fm(input);
-    assert!(out.contains("self.endAnimation()"),
-        "self.self.endAttack → self.endAnimation; got: {}", out);
+    // a bare endAttack on the fighter ends where it is, through the preamble's helper
+    assert!(out.contains("__endAttack()"),
+        "self.self.endAttack → __endAttack(); got: {}", out);
     assert!(!out.contains("self.self"),
         "self.self should be gone; got: {}", out);
 }

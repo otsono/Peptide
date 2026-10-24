@@ -59,6 +59,9 @@ const OP_IFNE: u8 = 0x14;
 const OP_THROW: u8 = 0x03;
 const OP_ISTYPELATE: u8 = 0xB3;
 const OP_IFGE: u8 = 0x18;
+const OP_IFLE: u8 = 0x16;
+const OP_IFEQ: u8 = 0x13;
+const OP_LABEL: u8 = 0x09;
 
 // AVM2 namespace kinds
 const NS_PACKAGE: u8 = 0x16; // CONSTANT_PackageNamespace
@@ -602,6 +605,7 @@ pub fn inject_command_channel(abc: &mut Abc, doc_class_local: &str, cmd_path: &s
 ///   IDX   <n>       -> cur = cur[Number(n)]       (array/index access); "ok"
 ///   CALL  <name>    -> cur = cur.name()           (0-arg method, e.g. getX); "ok"
 ///   CALL1 <name> <n>-> cur = cur.name(Number(n))  (1-arg, e.g. setYSpeed); "ok"
+///   CALLSN <name> <s>|<n> -> cur = cur.name(s, Number(n)) (a string key and a number); "ok"
 ///   READ            -> String(cur)
 /// Event-driven IO is the whole point: the handler runs ONLY when the host sends a
 /// command, so it never does per-frame blocking IO and therefore never starves
@@ -686,6 +690,7 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     let s_v_go = abc.intern_string("GO");
     let s_queued = abc.intern_string("queued");
     let s_v_calls = abc.intern_string("CALLS");
+    let s_v_callsn = abc.intern_string("CALLSN");
     let s_multimode = abc.intern_string("multimode");
     // RM/STATS root verbs (cur = the static class) for probing the resource pool / stats
     let engine_ns = { let s = abc.intern_string(SSF2_NS_ENGINE); abc.intern_namespace(NS_PACKAGE, s) };
@@ -698,6 +703,7 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     let mn_menuctrl = q(abc, ctrl_ns, "MenuController");
     let mn_disposemenus = q(abc, pub_ns, "disposeAllMenus");
     let s_v_mc = abc.intern_string("MC");
+    let s_v_api = abc.intern_string("API");
     // CAM root verb (cur = the live camera): the camera is behind a static accessor, not on the
     // display list, so no amount of GET/IDX navigation from the root reaches it. With the cursor
     // on it, the camera's own methods (mode, targets, focus) are callable like any other object's,
@@ -782,6 +788,7 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     let mn_n_w = q(abc, pub_ns, "width");
     let mn_n_h = q(abc, pub_ns, "height");
     let mn_n_vis = q(abc, pub_ns, "visible");
+    let mn_n_alpha = q(abc, pub_ns, "alpha");
     let mn_n_nch = q(abc, pub_ns, "numChildren");
     let mn_n_cf = q(abc, pub_ns, "currentFrame");
     let mn_n_tf = q(abc, pub_ns, "totalFrames");
@@ -929,6 +936,18 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur); c.op_u30(OP_GETLOCAL, l_a1); c.op_u30(OP_GETLOCAL, l_a2); c.op_u30_u30(OP_CALLPROPERTY, mnl, 1);
     c.op_u30(OP_SETPROPERTY, mn_cur);
     c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // CALLSN <name> <str>|<n>: cur = cur.name(<str>, Number(<n>))  (a string key and a number,
+    // e.g. the content api's setter for a value it keeps by name)
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_callsn); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_cur); c.op_u30(OP_GETLOCAL, l_a1);
+    c.op_u30(OP_GETLOCAL, l_a2); c.op_u30(OP_PUSHSTRING, s_bar); c.op_u30_u30(OP_CALLPROPERTY, mn_split, 1); // parts
+    c.op(OP_DUP); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_GETPROPERTY, mnl);                            // parts parts[0]
+    c.op(OP_SWAP); c.op(OP_PUSHBYTE); c.op(1); c.op_u30(OP_GETPROPERTY, mnl); c.op(OP_CONVERT_D);       // parts[0] Number(parts[1])
+    c.op_u30_u30(OP_CALLPROPERTY, mnl, 2);
+    c.op_u30(OP_SETPROPERTY, mn_cur);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
     // GC: cur = getlex GameController (the static match singleton)
     c.place(next); next = c.new_label();
     c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_gc); c.branch(OP_IFSTRICTNE, next);
@@ -948,6 +967,11 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
     c.place(next); next = c.new_label();
     c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_mc); c.branch(OP_IFSTRICTNE, next);
     c.op(OP_GETLOCAL0); c.op_u30(OP_GETLEX, mn_menuctrl); c.op_u30(OP_SETPROPERTY, mn_cur);
+    c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
+    // API: cur = getlex SSF2API (the content-facing api statics, e.g. its deinit between matches)
+    c.place(next); next = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_verb); c.op_u30(OP_PUSHSTRING, s_v_api); c.branch(OP_IFSTRICTNE, next);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_GETLEX, mn_ssf2api); c.op_u30(OP_SETPROPERTY, mn_cur);
     c.op_u30(OP_PUSHSTRING, s_ok); c.op_u30(OP_SETLOCAL, l_res); c.branch(OP_JUMP, l_done);
     // CAM: cur = SSF2API.getCamera()
     c.place(next); next = c.new_label();
@@ -1743,6 +1767,8 @@ pub fn inject_socket_bridge(abc: &mut Abc, doc_class_local: &str, host: &str, po
             w.op_u30(OP_GETPROPERTY, mn);
             w.op(OP_CONVERT_S); w.op(OP_ADD);
         }
+        // and its opacity: a clip placed at none is a placeholder, not a thing to look for
+        bar(&mut w); node(&mut w); w.op_u30(OP_GETPROPERTY, mn_n_alpha); w.op(OP_CONVERT_S); w.op(OP_ADD);
         w.op_u30(OP_PUSHSTRING, s_nl2); w.op(OP_ADD);
         w.op_u30(OP_SETLOCAL, l_res);
 
@@ -2240,6 +2266,7 @@ pub fn inject_frame_recorder(abc: &mut Abc, doc_class_local: &str, char_index: u
     let mn_gc = q(abc, ctrl_ns, "GameController");
     let mn_stagedata = q(abc, pub_ns, "stageData");
     let mn_characters = q(abc, pub_ns, "Characters");
+    let mn_len = q(abc, pub_ns, "length");
     let mn_mc = q(abc, pub_ns, "MC");
     let mn_curlabel = q(abc, pub_ns, "currentLabel");
     let mn_curframe = q(abc, pub_ns, "currentFrame");
@@ -2252,16 +2279,34 @@ pub fn inject_frame_recorder(abc: &mut Abc, doc_class_local: &str, char_index: u
     let mn_writeutf = q(abc, pub_ns, "writeUTFBytes");
     let mn_flush = q(abc, pub_ns, "flush");
     let mn_loadlog = q(abc, pub_ns, PEPTIDE_LOAD_LOG);
-    let mn_rec = q(abc, pub_ns, "peptideFrameRec");
-    let n_rec = abc.intern_string("peptideFrameRec");
+    // speed and damage per frame, so a launch reads as the number the engine calculated rather
+    // than as the distance the victim had covered by the next sample
+    let mn_xspeed = q(abc, pub_ns, "XSpeed");
+    let mn_yspeed = q(abc, pub_ns, "YSpeed");
+    // a launch is NOT in the plain speed fields: this engine carries knockback separately and
+    // adds the two, so the net pair is the velocity the character actually travels at
+    let mn_netx = q(abc, pub_ns, "netXSpeed");
+    let mn_nety = q(abc, pub_ns, "netYSpeed");
+    let mn_getdamage = q(abc, pub_ns, "getDamage");
+    // one recorder per character, so each needs its own name on the class
+    let rec_name = format!("peptideFrameRec{char_index}");
+    let mn_rec = q(abc, pub_ns, &rec_name);
+    let n_rec = abc.intern_string(&rec_name);
     let pub_nsset = abc.intern_ns_set(vec![pub_ns]);
     let mnl = abc.intern_multinamel(pub_nsset);
     let s_tag = abc.intern_string("FRAME:");
     let s_bar = abc.intern_string("|");
     let s_nl = abc.intern_string("\n");
 
-    // locals: this=0 event=1 sd=2 c0=3 mc=4
-    let (l_sd, l_c0, l_mc) = (2u32, 3, 4);
+    // locals: this=0 event=1 sd=2 c0=3 mc=4 stance=5 projectiles=6 first projectile=7
+    let (l_sd, l_c0, l_mc, l_st, l_pj, l_p0) = (2u32, 3, 4, 5, 6, 7);
+    let mn_projectiles = q(abc, pub_ns, "Projectiles");
+    let mn_stance = q(abc, pub_ns, "stance");
+    let s_dash = abc.intern_string("-");
+    let mn_probe = q(abc, pub_ns, "peptideProbe");
+    let mn_split = q(abc, pub_ns, "split");
+    let s_semi = abc.intern_string(";");
+    let s_dot = abc.intern_string(".");
     let mut c = Code::default();
     let l_skip = c.new_label();
     c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
@@ -2284,6 +2329,12 @@ pub fn inject_frame_recorder(abc: &mut Abc, doc_class_local: &str, char_index: u
     // sd = GameController.stageData; if (sd == null) return;
     c.op_u30(OP_GETLEX, mn_gc); c.op_u30(OP_GETPROPERTY, mn_stagedata); c.op_u30(OP_SETLOCAL, l_sd);
     c.op_u30(OP_GETLOCAL, l_sd); c.op(OP_PUSHNULL); c.branch(OP_IFSTRICTEQ, l_skip);
+    // if (char_index >= sd.Characters.length) return; -- a vector refuses an index past its end
+    // (RangeError #1125) rather than answering null, and the second recorder asks for a second
+    // fighter on every frame of a one-fighter match
+    c.op(OP_PUSHBYTE); c.op(char_index);
+    c.op_u30(OP_GETLOCAL, l_sd); c.op_u30(OP_GETPROPERTY, mn_characters); c.op_u30(OP_GETPROPERTY, mn_len);
+    c.branch(OP_IFGE, l_skip);
     // c0 = sd.Characters[char_index]; if (c0 == null) return;
     c.op_u30(OP_GETLOCAL, l_sd); c.op_u30(OP_GETPROPERTY, mn_characters);
     c.op(OP_PUSHBYTE); c.op(char_index); c.op_u30(OP_GETPROPERTY, mnl); c.op_u30(OP_SETLOCAL, l_c0);
@@ -2301,6 +2352,91 @@ pub fn inject_frame_recorder(abc: &mut Abc, doc_class_local: &str, char_index: u
     c.op_u30(OP_GETLOCAL, l_c0); c.op_u30(OP_GETPROPERTY, mn_x); c.op(OP_CONVERT_S); c.op(OP_ADD);
     c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
     c.op_u30(OP_GETLOCAL, l_c0); c.op_u30(OP_GETPROPERTY, mn_y); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
+    c.op_u30(OP_GETLOCAL, l_c0); c.op_u30(OP_GETPROPERTY, mn_xspeed); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
+    c.op_u30(OP_GETLOCAL, l_c0); c.op_u30(OP_GETPROPERTY, mn_yspeed); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
+    c.op_u30(OP_GETLOCAL, l_c0); c.op_u30_u30(OP_CALLPROPERTY, mn_netx, 0); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
+    c.op_u30(OP_GETLOCAL, l_c0); c.op_u30_u30(OP_CALLPROPERTY, mn_nety, 0); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
+    c.op_u30(OP_GETLOCAL, l_c0); c.op_u30_u30(OP_CALLPROPERTY, mn_getdamage, 0); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
+    c.op(OP_PUSHBYTE); c.op(char_index); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    // and the frame the pose clip itself is on, so a move's length is read off the clip that
+    // plays it and not only off the label the fighter shows; "-" when there is no such clip
+    c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
+    let l_nost = c.new_label();
+    let l_stdone = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_mc); c.op_u30(OP_GETPROPERTY, mn_stance); c.op_u30(OP_SETLOCAL, l_st);
+    c.op_u30(OP_GETLOCAL, l_st); c.op(OP_PUSHNULL); c.branch(OP_IFSTRICTEQ, l_nost);
+    c.op_u30(OP_GETLOCAL, l_st); c.op_u30(OP_GETPROPERTY, mn_curframe); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.branch(OP_JUMP, l_stdone);
+    c.place(l_nost);
+    c.op_u30(OP_PUSHSTRING, s_dash); c.op(OP_ADD);
+    c.place(l_stdone);
+    // ...and the projectiles in the match: how many, and where the first one is ("-" for none), so
+    // what a move fires is on the same per-frame record as the fighter that fired it
+    c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
+    c.op_u30(OP_GETLOCAL, l_sd); c.op_u30(OP_GETPROPERTY, mn_projectiles); c.op_u30(OP_SETLOCAL, l_pj);
+    let l_nopj = c.new_label();
+    let l_pjdone = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_pj); c.op(OP_PUSHNULL); c.branch(OP_IFSTRICTEQ, l_nopj);
+    c.op_u30(OP_GETLOCAL, l_pj); c.op_u30(OP_GETPROPERTY, mn_len); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
+    let l_empty = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_pj); c.op_u30(OP_GETPROPERTY, mn_len); c.op(OP_PUSHBYTE); c.op(0); c.branch(OP_IFLE, l_empty);
+    c.op_u30(OP_GETLOCAL, l_pj); c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_GETPROPERTY, mnl); c.op_u30(OP_SETLOCAL, l_p0);
+    c.op_u30(OP_GETLOCAL, l_p0); c.op_u30(OP_GETPROPERTY, mn_x); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
+    c.op_u30(OP_GETLOCAL, l_p0); c.op_u30(OP_GETPROPERTY, mn_y); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.branch(OP_JUMP, l_pjdone);
+    c.place(l_empty);
+    c.op_u30(OP_PUSHSTRING, s_dash); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_dash); c.op(OP_ADD);
+    c.branch(OP_JUMP, l_pjdone);
+    c.place(l_nopj);
+    c.op_u30(OP_PUSHSTRING, s_dash); c.op(OP_ADD);
+    c.place(l_pjdone);
+    // ...and whatever the host asked to watch: `peptideProbe` on the fighter's clip (a dynamic
+    // object, so a plain string the host writes there), dotted paths from the fighter with ';'
+    // between them. each path's value is read every frame, so a value the fixed fields leave out
+    // is on the same frame-exact record ("" when nothing is asked)
+    c.op_u30(OP_PUSHSTRING, s_bar); c.op(OP_ADD);
+    let (l_pr, l_paths, l_i, l_obj, l_segs, l_j) = (8u32, 9, 10, 11, 12, 13);
+    let l_noprobe = c.new_label();
+    let l_outer = c.new_label();
+    let l_outer_end = c.new_label();
+    let l_inner = c.new_label();
+    let l_inner_end = c.new_label();
+    c.op_u30(OP_GETLOCAL, l_mc); c.op_u30(OP_GETPROPERTY, mn_probe); c.op_u30(OP_SETLOCAL, l_pr);
+    c.op_u30(OP_GETLOCAL, l_pr); c.branch(OP_IFFALSE, l_noprobe);
+    c.op_u30(OP_GETLOCAL, l_pr); c.op(OP_CONVERT_S); c.op_u30(OP_PUSHSTRING, s_semi); c.op_u30_u30(OP_CALLPROPERTY, mn_split, 1);
+    c.op_u30(OP_SETLOCAL, l_paths);
+    c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETLOCAL, l_i);
+    c.place(l_outer); c.op(OP_LABEL);
+    c.op_u30(OP_GETLOCAL, l_i); c.op_u30(OP_GETLOCAL, l_paths); c.op_u30(OP_GETPROPERTY, mn_len); c.branch(OP_IFGE, l_outer_end);
+    c.op_u30(OP_GETLOCAL, l_c0); c.op_u30(OP_SETLOCAL, l_obj);
+    c.op_u30(OP_GETLOCAL, l_paths); c.op_u30(OP_GETLOCAL, l_i); c.op_u30(OP_GETPROPERTY, mnl);
+    c.op(OP_CONVERT_S); c.op_u30(OP_PUSHSTRING, s_dot); c.op_u30_u30(OP_CALLPROPERTY, mn_split, 1); c.op_u30(OP_SETLOCAL, l_segs);
+    c.op(OP_PUSHBYTE); c.op(0); c.op_u30(OP_SETLOCAL, l_j);
+    c.place(l_inner); c.op(OP_LABEL);
+    c.op_u30(OP_GETLOCAL, l_j); c.op_u30(OP_GETLOCAL, l_segs); c.op_u30(OP_GETPROPERTY, mn_len); c.branch(OP_IFGE, l_inner_end);
+    // a step into nothing stops the walk there (null or undefined), rather than throwing every frame
+    c.op_u30(OP_GETLOCAL, l_obj); c.op(OP_PUSHNULL); c.branch(OP_IFEQ, l_inner_end);
+    c.op_u30(OP_GETLOCAL, l_obj); c.op_u30(OP_GETLOCAL, l_segs); c.op_u30(OP_GETLOCAL, l_j); c.op_u30(OP_GETPROPERTY, mnl);
+    c.op(OP_CONVERT_S); c.op_u30(OP_GETPROPERTY, mnl); c.op_u30(OP_SETLOCAL, l_obj);
+    c.op_u30(OP_GETLOCAL, l_j); c.op(OP_PUSHBYTE); c.op(1); c.op(OP_ADD); c.op(OP_CONVERT_I); c.op_u30(OP_SETLOCAL, l_j);
+    c.branch(OP_JUMP, l_inner);
+    c.place(l_inner_end);
+    c.op_u30(OP_GETLOCAL, l_obj); c.op(OP_CONVERT_S); c.op(OP_ADD);
+    c.op_u30(OP_PUSHSTRING, s_semi); c.op(OP_ADD);
+    c.op_u30(OP_GETLOCAL, l_i); c.op(OP_PUSHBYTE); c.op(1); c.op(OP_ADD); c.op(OP_CONVERT_I); c.op_u30(OP_SETLOCAL, l_i);
+    c.branch(OP_JUMP, l_outer);
+    c.place(l_outer_end);
+    c.place(l_noprobe);
     c.op_u30(OP_PUSHSTRING, s_nl); c.op(OP_ADD);
     c.op_u30_u30(OP_CALLPROPVOID, mn_writeutf, 1);
     c.op(OP_GETLOCAL0); c.op_u30(OP_GETPROPERTY, mn_sock); c.op_u30_u30(OP_CALLPROPVOID, mn_flush, 0);
@@ -2312,7 +2448,7 @@ pub fn inject_frame_recorder(abc: &mut Abc, doc_class_local: &str, char_index: u
         param_types: vec![0], return_type: 0, name: n_rec, flags: 0, options: vec![], param_names: vec![],
     });
     abc.add_body(MethodBody {
-        method: rec, max_stack: 8, local_count: 6, init_scope_depth: 0, max_scope_depth: 2,
+        method: rec, max_stack: 10, local_count: 14, init_scope_depth: 0, max_scope_depth: 2,
         code: c.finish(), exceptions: vec![], traits: vec![],
     });
     abc.add_instance_method_trait(ci, mn_rec, rec);
@@ -3271,6 +3407,61 @@ pub fn inject_method_probe(abc: &mut Abc, doc_class: &str, class_local: &str, me
     body.exceptions.push(Exception {
         from: 0, to: handler_at as u32, target: handler_at as u32, exc_type: 0, var_name: 0,
     });
+    body.max_stack = body.max_stack.max(6);
+    body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
+    Ok(())
+}
+
+/// The name of the box that landed each hit, kept on the fighter that landed it: the content's
+/// own named value `__peptideHits` gains `<box>,` per hit, read back with `gvar pN __peptideHits`
+/// (cleared by setting it). Two boxes of one move that state the same numbers can only be told
+/// apart by name, and nothing a hit reports afterwards carries it.
+pub const HIT_LOG_VAR: &str = "__peptideHits";
+
+pub fn inject_hit_recorder(abc: &mut Abc) -> anyhow::Result<()> {
+    let ci = abc.find_class_by_name("Character")
+        .ok_or_else(|| anyhow::anyhow!("hit recorder: the fighter class was not found"))?;
+    let method = abc.instances[ci].traits.iter().find_map(|t| match t.data {
+        TraitKindData::Method { method, .. } if abc.multiname_local(t.name).as_deref() == Some("handleHit") => Some(method),
+        _ => None,
+    }).ok_or_else(|| anyhow::anyhow!("hit recorder: the hit handler was not found"))?;
+    let body_idx = abc.bodies.iter().position(|b| b.method == method)
+        .ok_or_else(|| anyhow::anyhow!("hit recorder: the hit handler has no body"))?;
+    let pub_ns = { let s = abc.intern_string(""); abc.intern_namespace(NS_PACKAGE, s) };
+    let q = |abc: &mut Abc, ns: u32, nm: &str| { let s = abc.intern_string(nm); abc.intern_qname(ns, s) };
+    let mn_get = q(abc, pub_ns, "getGlobalVariable");
+    let mn_set = q(abc, pub_ns, "setGlobalVariable");
+    let mn_first = q(abc, pub_ns, "FirstHitBox");
+    let mn_name = q(abc, pub_ns, "Name");
+    let s_key = abc.intern_string(HIT_LOG_VAR);
+    let s_comma = abc.intern_string(",");
+    let s_blank = abc.intern_string("");
+
+    let mut c = Code::default();
+    let l_have = c.new_label();
+    let l_joined = c.new_label();
+    c.op(OP_GETLOCAL0); c.op(OP_PUSHSCOPE);
+    c.op(OP_GETLOCAL0); c.op_u30(OP_PUSHSTRING, s_key);                       // this, key
+    c.op(OP_GETLOCAL0); c.op_u30(OP_PUSHSTRING, s_key); c.op_u30_u30(OP_CALLPROPERTY, mn_get, 1); // ..., log
+    c.op(OP_DUP); c.branch(OP_IFTRUE, l_have);
+    c.op(OP_POP); c.op_u30(OP_PUSHSTRING, s_blank); c.branch(OP_JUMP, l_joined);
+    c.place(l_have); c.op(OP_CONVERT_S);
+    c.place(l_joined);
+    c.op_u30(OP_GETLOCAL, 3); c.op_u30(OP_GETPROPERTY, mn_first); c.op_u30(OP_GETPROPERTY, mn_name); c.op(OP_CONVERT_S);
+    c.op(OP_ADD); c.op_u30(OP_PUSHSTRING, s_comma); c.op(OP_ADD);
+    c.op_u30_u30(OP_CALLPROPVOID, mn_set, 2);
+    c.op(OP_POPSCOPE);
+    // never the reason a hit fails: anything thrown here is dropped
+    let l_end = c.new_label();
+    c.branch(OP_JUMP, l_end);
+    let handler_at = c.len();
+    c.op(OP_POP);
+    c.place(l_end);
+
+    let payload = c.finish();
+    let body = &mut abc.bodies[body_idx];
+    prepend_code(body, &payload);
+    body.exceptions.push(Exception { from: 0, to: handler_at as u32, target: handler_at as u32, exc_type: 0, var_name: 0 });
     body.max_stack = body.max_stack.max(6);
     body.max_scope_depth = body.max_scope_depth.max(body.init_scope_depth + 1).max(2);
     Ok(())

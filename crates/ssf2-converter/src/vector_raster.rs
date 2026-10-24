@@ -68,20 +68,33 @@ pub fn rasterize_shape(
     lines: &[LineStyle],
     records: &[ShapeRecord],
 ) -> Option<Raster> {
+    rasterize_shape_scaled(bounds, fills, lines, records, 1.0)
+}
+
+/// The shape at `k` times its size. A collision mask of a terrain wider than the raster cap is
+/// read at a reduced scale and its columns mapped back; the gradients are left at unit scale,
+/// which a mask never looks at.
+pub fn rasterize_shape_scaled(
+    bounds: &Rectangle<Twips>,
+    fills: &[FillStyle],
+    lines: &[LineStyle],
+    records: &[ShapeRecord],
+    k: f64,
+) -> Option<Raster> {
     let min_x = bounds.x_min.to_pixels();
     let min_y = bounds.y_min.to_pixels();
     let max_x = bounds.x_max.to_pixels();
     let max_y = bounds.y_max.to_pixels();
-    let w = (max_x - min_x).ceil();
-    let h = (max_y - min_y).ceil();
+    let w = ((max_x - min_x) * k).ceil();
+    let h = ((max_y - min_y) * k).ceil();
     if !(w >= 1.0 && h >= 1.0) || w > 4096.0 || h > 4096.0 {
         return None;
     }
     let (wpx, hpx) = (w as u32, h as u32);
 
     // twip → pixel, shifted so bounds.min maps to (0,0).
-    let tx = |t: Twips| t.to_pixels() - min_x;
-    let ty = |t: Twips| t.to_pixels() - min_y;
+    let tx = |t: Twips| (t.to_pixels() - min_x) * k;
+    let ty = |t: Twips| (t.to_pixels() - min_y) * k;
 
     // ── Walk records into style groups + directed edges. ───────────────────────
     let mut groups: Vec<Group> = Vec::new();

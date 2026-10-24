@@ -82,7 +82,18 @@ fn collect_scripts(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 }
 
 /// The ids inside `getContent("…")`, ignoring any inside a comment.
+///
+/// A frame script lives inside an `.entity` as a JSON string, so it reaches here with its quotes
+/// escaped and its newlines written out as two characters rather than being newlines. Read as it
+/// stands, the whole file is one line whose first `//` hides everything after it, and not one of
+/// the asks inside it is a `getContent("` at all. So the text is put back the way the script was
+/// written before anything is looked for in it.
 pub fn content_ids(text: &str) -> Vec<String> {
+    let unescaped;
+    let text = if text.contains("\\\"") || text.contains("\\n") {
+        unescaped = text.replace("\\n", "\n").replace("\\\"", "\"");
+        unescaped.as_str()
+    } else { text };
     let mut out = Vec::new();
     for line in text.lines() {
         let code = match line.find("//") { Some(i) => &line[..i], None => line };
@@ -107,4 +118,30 @@ pub fn audit_and_log(lib: &Path, what: &str) -> usize {
                     instead", d.asked_by, d.id);
     }
     dangling.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_ask_inside_a_frame_script_is_still_an_ask() {
+        // how a frame script reaches here: one JSON line, quotes escaped, newlines written out
+        let entity = r#"{"code": "// a note\nvar p = match.createProjectile(self.getResource().getContent(\"bulletProjectile\"), self);\n"}"#;
+        assert_eq!(content_ids(entity), vec!["bulletProjectile".to_string()],
+            "an ask written into an entity was not seen");
+    }
+
+    #[test]
+    fn a_note_still_hides_what_follows_it_on_its_own_line() {
+        let src = "// self.getResource().getContent(\"gone\")\nvar a = self.getResource().getContent(\"here\");";
+        assert_eq!(content_ids(src), vec!["here".to_string()],
+            "a note was read as an ask, or the real ask was missed");
+    }
+
+    #[test]
+    fn a_plain_script_reads_the_same_as_it_always_did() {
+        let src = "var a = self.getResource().getContent(\"one\");\nvar b = self.getResource().getContent(\"two\");";
+        assert_eq!(content_ids(src), vec!["one".to_string(), "two".to_string()]);
+    }
 }

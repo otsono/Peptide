@@ -13,13 +13,23 @@ knockback growth / hit-freeze, per hitbox.
 SSF2 -> Fraymakers mapping (from mappings/character/hitbox_stats.jsonc):
     damage          <- damage
     angle           <- direction (or angle)
-    baseKnockback   <- power
-    knockbackGrowth <- kbConstant
+    baseKnockback   <- power     (x the measured engine factor, see below)
+    knockbackGrowth <- kbConstant (x the measured engine factor, see below)
     hitstop         <- hitStun     (frame field: x2 for 30->60fps; <=0 -> -1 sentinel)
     selfHitstop     <- selfHitStun (x2; <=0 -> -1)
     hitstun         <- hitLag      (x2; int(hitLag) in {255,-1} or <=... -> -1)
-NOTE: SSF2 weightKB (weight-scaled knockback) currently has NO FM mapping — flagged
-as INFO so a human can decide whether baseKnockback should fold it in.
+NOTE: SSF2 weightKB is weight-scaled FIXED knockback and Fraymakers has no equivalent. The launch
+it states is not the field's own number (the source works it out; measured live on both engines,
+see hitbox_stats.jsonc `fixed_knockback`), and it folds into baseKnockback with the growth dropped,
+the residual magnitude difference is not a parity failure and is reported as INFO only.
+
+The knockback fields are NOT copied across: the two engines launch a victim at different
+speeds for the same numbers, so each field carries a measured factor. Those factors are read
+from hitbox_stats.jsonc here rather than written down again, so this gate moves with them.
+
+A box the conversion made the engine's autolink states what runtime/autolink.jsonc says an
+autolinked box does in place of the source's angle and launch (the engine's pull decides them);
+those fields are not compared.
 
 Usage:
     DUMP_PARITY=1 ./build/release/ssf2_converter ../ssf2-ssfs/<char>.ssf
@@ -31,14 +41,47 @@ import json, re, sys, os, tempfile
 # this file lives at <repo>/tools/tests/parity_check.py — three dirs up is the repo root
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-def base_move(m):
-    """Mirror src/haxe_gen.rs base_attack_name: split sub-anims inherit a base."""
+def kb_scales():
+    """The per-field knockback factors, read from the mapping the converter emits with."""
+    path = os.path.join(REPO, "crates/ssf2-converter/mappings/character/hitbox_stats.jsonc")
+    try:
+        text = open(path).read()
+    except OSError:
+        return {}
+    out = {}
+    for m in re.finditer(r'"fm_field"\s*:\s*"(\w+)"[^}]*?"scale"\s*:\s*([0-9.]+)', text):
+        out[m.group(1)] = float(m.group(2))
+    return out
+
+SCALES = kb_scales()
+
+
+def fixed_kb_rule():
+    """What the source works a FIXED launch (`weightKB`) out to be, from the same mapping the
+    converter emits with: the field is not the launch (see hitbox_stats.jsonc)."""
+    path = os.path.join(REPO, "crates/ssf2-converter/mappings/character/hitbox_stats.jsonc")
+    try:
+        text = open(path).read()
+    except OSError:
+        return None
+    m = re.search(r'"fm_field"\s*:\s*"fixed_knockback"[^}]*?"per_unit"\s*:\s*([0-9.]+)[^}]*?"constant"\s*:\s*([0-9.]+)', text)
+    return (float(m.group(1)), float(m.group(2))) if m else None
+
+FIXED_KB = fixed_kb_rule()
+
+def base_move(m, splits=None):
+    """the move an animation was cut from, off the conversion's own record of its cuts
+    (conversion_stats.json `splits`); a jab after the first is the first's, as the conversion
+    states its stats"""
     mm = re.match(r"^jab(\d+)$", m)
     if mm and int(mm.group(1)) >= 2:
         return "jab1"
     for suf in ("_in", "_charge"):
         if m.endswith(suf) and m.startswith("strong_"):
             return m[: -len(suf)] + "_attack"
+    src = (splits or {}).get(m)
+    if src and src != m:
+        return src
     return None
 
 def pascal(cid):
@@ -63,6 +106,8 @@ def parse_hitbox_stats(path):
             fields = {}
             for f in re.finditer(r"(\w+)\s*:\s*(-?\d+(?:\.\d+)?)", hb.group(2)):
                 fields[f.group(1)] = float(f.group(2))
+            # every field as written, numbers or not (an engine constant, like an autolink angle)
+            fields["__raw"] = {k.strip(): v.strip() for k, v in (p.split(":", 1) for p in hb.group(2).split(",") if ":" in p)}
             boxes.append(fields)
         out[name] = boxes
     return out, extras
@@ -77,11 +122,24 @@ def expected_fm(hb):
         return -1 if iv <= 0 else iv * 2
     hitlag = hb.get("hitLag", -1)
     ilag = int(hitlag)
+    a = g("direction", "angle")
     return {
-        "damage": int(g("damage")),
-        "angle": int(g("direction", "angle")),
-        "baseKnockback": int(g("power", "weightKB")),  # max(power, weightKB) — see hitbox_stats.jsonc
-        "knockbackGrowth": int(g("kbConstant")),
+        # SSF2 damage can be fractional (zelda's down-smash deals 14.5) and the converter carries
+        # it 1:1; truncating here reported four hits half a point off that were exact
+        "damage": float(g("damage")),
+        # the angle as the source writes it: both engines mirror a reversible one only for a
+        # victim behind (haxe_gen::fm_angle)
+        "angle": int(a),
+        # max(power, weightKB) — see hitbox_stats.jsonc. Any factor the mapping states is applied
+        # here too rather than written down twice; today there is none, the values convert 1:1.
+        "baseKnockback": (
+            ((hb["weightKB"] * FIXED_KB[0] + FIXED_KB[1]) * (hb.get("kbConstant", 100.0) / 100.0) + hb.get("power", 0.0))
+            if (FIXED_KB and hb.get("weightKB", 0) > 0)
+            else g("power", "weightKB")) * SCALES.get("baseKnockback", 1.0),
+        # a weightKB hit is FIXED knockback: it does not grow with the victim's damage, measured
+        # on both engines, so the growth field is dropped for those
+        "knockbackGrowth": 0 if hb.get("weightKB", 0) > 0
+                           else g("kbConstant") * SCALES.get("knockbackGrowth", 1.0),
         "hitstop": frame(hb.get("hitStun", -1)),
         "selfHitstop": frame(hb.get("selfHitStun", -1)),
         "hitstun": (-1 if (ilag == 255 or ilag <= 0) else ilag * 2),
@@ -116,6 +174,25 @@ def hitbox_active_frames(cid):
         out[a["name"]] = total
     return out
 
+def autolink_fields():
+    """what an autolinked box states in place of the source's launch (runtime/autolink.jsonc)"""
+    try:
+        text = open(os.path.join(REPO, "crates/ssf2-converter/runtime/autolink.jsonc")).read()
+    except OSError:
+        return {}
+    text = re.sub(r"//[^\n]*", "", text)
+    return {k: str(v) for k, v in json.loads(text).get("box", {}).items()}
+
+
+def autolinked(box):
+    """the fields of an emitted box that are the autolink's, when it is autolinked"""
+    want = autolink_fields()
+    raw = box.get("__raw", {})
+    if not want or any(raw.get(k) != v for k, v in want.items()):
+        return set()
+    return set(want)
+
+
 def check_char(cid):
     # The converter writes the dump to the platform temp dir (Rust std::env::temp_dir,
     # = $TMPDIR on macOS, not always /tmp). Resolve the same way, and fall back to /tmp.
@@ -131,9 +208,27 @@ def check_char(cid):
         print(f"[{cid}] SKIP — no {hx}")
         return None
     out, extras = parse_hitbox_stats(hx)
+    # what an animation's clip writes of its boxes as it starts is that animation's own (the
+    # conversion records each write, by the source's box number and field names)
+    try:
+        box_writes = json.load(open(os.path.join(REPO, f"characters/{cid}/runtime_report.json"))).get("box_writes", {})
+    except (OSError, ValueError):
+        box_writes = {}
+    try:
+        conv = json.load(open(os.path.join(REPO, f"characters/{cid}/conversion_stats.json")))
+    except (OSError, ValueError):
+        conv = {}
+    splits = conv.get("splits", {})
+    # a throw the source turns its thrower for (`flip`) is drawn and launched already turned
+    # here: its launch is the mirrored one (entity_gen::turned_throws)
+    turned = set(conv.get("turned", []))
     issues = []
     info = []
     for move, src_boxes in sorted(src.items()):
+        # a source move that places no hitbox at all has nothing for the port to carry: its
+        # absence from the stats is the port being right (pit's aerial neutral special)
+        if not src_boxes:
+            continue
         if move not in out:
             if move in extras:
                 info.append(f"{move}: SSF2 source present but emitted in the commented extras section (not mapped to a standard FM move — review)")
@@ -142,17 +237,29 @@ def check_char(cid):
             continue
         out_boxes = out[move]
         for i, shb in enumerate(src_boxes):
+            written = box_writes.get(move, {}).get(str(i + 1))
+            if written:
+                shb = {**shb, **written}
             exp = expected_fm(shb)
+            if move in turned:
+                exp["angle"] = int((180 - exp["angle"]) % 360)
             if i >= len(out_boxes):
                 issues.append(f"{move}.hitbox{i}: SSF2 has it (dmg={exp['damage']} ang={exp['angle']}) but HitboxStats omits it")
                 continue
             got = out_boxes[i]
+            # a box the conversion made the engine's autolink states what an autolinked box does
+            # (runtime/autolink.jsonc) in place of the source's launch: the pull decides it there
+            linked = autolinked(got)
             for fld in CORE:
+                if fld in linked:
+                    continue
                 e = exp[fld]
                 if fld not in got:
                     issues.append(f"{move}.hitbox{i}.{fld}: expected {e}, missing in output")
-                elif int(got[fld]) != e:
-                    issues.append(f"{move}.hitbox{i}.{fld}: SSF2->expected {e}, output {int(got[fld])}")
+                # a scaled knockback is emitted fractional, so compare as numbers with a small
+                # tolerance rather than as integers
+                elif abs(float(got[fld]) - float(e)) > 0.011:
+                    issues.append(f"{move}.hitbox{i}.{fld}: SSF2->expected {e}, output {got[fld]}")
             # weightKB now folds into baseKnockback (max(power, weightKB)); note the
             # cases where weightKB is the dominant source so a human can sanity-check.
             if shb.get("weightKB", 0) > shb.get("power", 0):
@@ -177,7 +284,7 @@ def check_char(cid):
     for move in sorted(out):
         if move in src:
             continue
-        b = base_move(move)
+        b = base_move(move, splits)
         if b and b in src:
             continue  # inherited from base — expected
         # could be a template move with no SSF2 attack (idle/grab placeholder) — only

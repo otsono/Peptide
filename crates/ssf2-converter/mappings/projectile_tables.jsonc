@@ -2,27 +2,139 @@
 // haxe_gen's ProjectileStats.hx generator. The Haxe scaffolding lives in
 // projectile_helpers.toml.
 {
-  // SSF2 getProjectileStats() physics key → FM ProjectileStats field. Order
-  // matters: the first SSF2 key present wins per FM field (xSpeed/ySpeed are
-  // proxies for the speed caps).
-  "physics_map": [
-    { "ssf2": "gravity",          "fm": "gravity" },
-    { "ssf2": "friction",         "fm": "friction" },
-    { "ssf2": "terminalVelocity", "fm": "terminalVelocity" },
-    { "ssf2": "groundSpeedCap",   "fm": "groundSpeedCap" },
-    { "ssf2": "aerialSpeedCap",   "fm": "aerialSpeedCap" },
-    { "ssf2": "aerialFriction",   "fm": "aerialFriction" },
-    { "ssf2": "xSpeed",           "fm": "groundSpeedCap" },
-    { "ssf2": "ySpeed",           "fm": "aerialSpeedCap" }
+  // The keys are the SOURCE's own, taken from getProjectileStats(): a projectile states its
+  // gravity, how fast it may fall, and how big it is. `scale` converts the number into this
+  // engine's units the same way a character's stats are converted -- a speed by velocity_scale,
+  // an acceleration by accel_scale, a size by the entity's own (so it is stated the way the
+  // entity's boxes are, and the engine scales the body with the object).
+  //
+  // Order matters: the first source key present wins per engine field.
+  // Every stat this engine will take on a projectile. A write that carries one it does not
+  // have is refused WHOLE, so the rest of that write goes with it -- which is how a projectile
+  // ends up ignoring the half of its own tuning that did map. Names not here are dropped from
+  // the write and said out loud at convert time.
+  // What a projectile has in the source when its declaration states nothing. A lifetime of 60
+  // source frames is the one that matters: a projectile that states none (pichu's thunder, stopped
+  // on the ground and looping there) is gone after it in the source, and stayed out for the whole
+  // match here. A lifetime of 0 or less, stated, still means it never runs out.
+  "source_defaults": { "time_max": 60 },
+  // the same for what a projectile says about itself: unstated, the source can turn it back and
+  // can absorb it. this engine's hitbox fields default the other way, so an unstated one is
+  // written out (fox's laser passed straight through a held reflector).
+  "source_flag_defaults": { "canBeReversed": true, "canBeAbsorbed": true },
+
+  "fm_stats": [
+    "aerialFootPosition",
+    "aerialFriction",
+    "aerialHeadPosition",
+    "aerialHipWidth",
+    "aerialHipXOffset",
+    "aerialHipYOffset",
+    "aerialSpeedAcceleration",
+    "aerialSpeedCap",
+    "animation",
+    "assist",
+    "attackRatio",
+    "baseScaleX",
+    "baseScaleY",
+    "boxType",
+    "cameraBoxHeight",
+    "cameraBoxOffsetX",
+    "cameraBoxOffsetY",
+    "cameraBoxWidth",
+    "color",
+    "damageRatio",
+    "deathBoundsDestroy",
+    "duration",
+    "fadeIn",
+    "fadeOut",
+    "floorFootPosition",
+    "floorHeadPosition",
+    "floorHipWidth",
+    "floorHipXOffset",
+    "floorHipYOffset",
+    "friction",
+    "ghost",
+    "gravity",
+    "groundSpeedAcceleration",
+    "groundSpeedCap",
+    "immovable",
+    "inheritPalette",
+    "initialState",
+    "maxGravity",
+    "metadata",
+    "outgoingCollisionBoxDetection",
+    "resizable",
+    "solid",
+    "sparkleEffect",
+    "sparkleInterval",
+    "sparkleRandomRotation",
+    "sprite",
+    "spriteContent",
+    "stateTransitionMapOverrides",
+    "terminalVelocity",
+    "terminalVelocityRising",
+    "weight",
+    "x",
+    "y"
   ],
 
-  // Default values emitted for any FM field SSF2 didn't supply.
+  "physics_map": [
+    { "ssf2": "gravity",     "fm": "gravity",             "scale": "accel" },
+    { "ssf2": "friction",    "fm": "friction",            "scale": "accel" },
+    { "ssf2": "maxgravity",  "fm": "terminalVelocity",    "scale": "velocity" },
+    { "ssf2": "max_gravity", "fm": "terminalVelocity",    "scale": "velocity" },
+    { "ssf2": "height",      "fm": "floorHeadPosition",   "scale": "size" },
+    { "ssf2": "height",      "fm": "aerialHeadPosition",  "scale": "size" },
+    { "ssf2": "width",       "fm": "floorHipWidth",       "scale": "size" },
+    { "ssf2": "width",       "fm": "aerialHipWidth",      "scale": "size" }
+  ],
+
+  // The yes/no things a projectile says about itself, under this engine's names. `ghost` and
+  // "does it survive the blast zone" were read and written into a COMMENT; they are stats here.
+  // `invert` because the source says survive and the engine asks whether to destroy.
+  "flag_map": [
+    { "ssf2": "ghost",              "fm": "ghost" },
+    { "ssf2": "surviveDeathBounds", "fm": "deathBoundsDestroy", "invert": true }
+  ],
+
+  // Only what the source's engine itself does for every projectile, measured: a value here that
+  // the source never does would override the engine's answer with an invented one. A projectile
+  // keeps its speed along the floor and through the air but for the decay it states (`xdecay`):
+  // this engine's game-object defaults slow one 0.66 a frame on the floor and 0.15 in the air,
+  // and simon's holy water, whose flame runs along the floor at 3, stood still in two frames. Not
+  // given to an item a fighter generates (how the source slows one is not measured).
   "scaffolding": [
-    { "field": "gravity",          "value": "0.7" },
-    { "field": "friction",         "value": "0" },
-    { "field": "terminalVelocity", "value": "20" },
-    { "field": "groundSpeedCap",   "value": "11" },
-    { "field": "aerialSpeedCap",   "value": "11" },
-    { "field": "aerialFriction",   "value": "0" }
+    { "field": "friction",       "value": "0" },
+    { "field": "aerialFriction", "value": "0" }
+  ],
+
+  // Keys the SOURCE states that this engine has no ProjectileStats FIELD for, but that the port
+  // still applies -- in the projectile's own script (haxe_gen::projectile_physics) or handed over
+  // at the spawn. Listing them here keeps ProjectileStats.hx from crying "no mapping" for a value
+  // that IS ported, just not as an engine stat. `where` is the one-line note the stats file prints.
+  // A key that is neither in physics_map/flag_map NOR here is a genuine gap and still TODO'd.
+  "handled_in_script": [
+    { "ssf2": "time_max",     "where": "lifetime, as a frame counter in the projectile's script" },
+    { "ssf2": "xspeed",       "where": "launch x, handed over at the spawn" },
+    { "ssf2": "yspeed",       "where": "launch y, handed over at the spawn" },
+    { "ssf2": "xoffset",      "where": "spawn x offset, handed over at the spawn" },
+    { "ssf2": "yoffset",      "where": "spawn y offset, handed over at the spawn" },
+    { "ssf2": "xdecay",       "where": "per-frame x speed decay in the projectile's script" },
+    { "ssf2": "bounce",       "where": "floor bounce in the projectile's script" },
+    { "ssf2": "bounce_decay", "where": "bounce falloff in the projectile's script" },
+    { "ssf2": "limit",          "where": "max live instances, capped in the projectile's initialize via the owner's exports" },
+    { "ssf2": "limitOverwrite", "where": "whether the cap ends the oldest or the newest" },
+    { "ssf2": "homingSpeed",    "where": "homing chase of the nearest opponent in the projectile's update" },
+    { "ssf2": "homingEase",     "where": "homing turn accuracy in the projectile's update" },
+    { "ssf2": "influenceXMovement", "where": "owner-influence x cap, nudged by the held stick in the projectile's update" },
+    { "ssf2": "influenceYMovement", "where": "owner-influence y cap, nudged by the held stick in the projectile's update" },
+    { "ssf2": "influenceXFactor",   "where": "owner-influence x step per frame in the projectile's update" },
+    { "ssf2": "influenceYFactor",   "where": "owner-influence y step per frame in the projectile's update" },
+    { "ssf2": "trailEffect",         "where": "the decoration dropped behind it, spawned in the projectile's update (null ends the trail)" },
+    { "ssf2": "trailEffectInterval", "where": "how often the trail is dropped, in the projectile's update" },
+    { "ssf2": "trailEffectRotate",   "where": "whether the trail is aimed along the heading, in the projectile's update" },
+    { "ssf2": "controlDirection",   "where": "owner aims the projectile with the stick in its update" },
+    { "ssf2": "calcAngle",          "where": "whether owner-aim eases toward the stick or snaps, in the projectile's update" }
   ]
 }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ssf2-converter"]
+members = ["crates/ssf2-converter", "crates/fra-pack"]
 resolver = "2"
 
 [package]
@@ -13,7 +13,7 @@ name = "peptide"
 path = "src/main.rs"
 
 [dependencies]
-# ── Engine harness (bytecode patcher + webview UI + CDP FrayTools driver) ──
+# ── Engine harness (bytecode patcher + webview UI + FrayTools driver) ──
 hlbc = "=0.7.0"
 anyhow = "1.0"
 ratatui = "0.30.0"
@@ -25,11 +25,15 @@ serde_json = "1.0"
 tungstenite = "0.21"
 image = "0.25.10"  # PNG decode/encode for recoloring the ripped stock icon (palette swap)
 libc = "0.2"       # parent-pid liveness check so the overlay self-exits when its session dies
-# ── Config persistence + native file dialogs (ported from the old egui GUI) ──
+# ── Config persistence + native file dialogs ──
 dirs = "5"
 rfd = "0.15"
 # ── In-process SSF2 → Fraymakers conversion (folded in; no more sidecar bin) ──
 ssf2_converter = { path = "crates/ssf2-converter" }
+# ── The package builder `peptide pack` and the FrayTools publish plugin share ──
+fra_pack = { path = "crates/fra-pack" }
+rayon = "1.10"
+base64 = "0.22.1"  # a FrayTools package header can be base64
 log = "0.4"
 env_logger = "0.11"
 

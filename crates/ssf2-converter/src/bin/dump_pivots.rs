@@ -52,8 +52,8 @@ fn main() {
             for stag in &sprite.tags {
                 match stag {
                     swf::Tag::ShowFrame => frame += 1,
-                    swf::Tag::PlaceObject(po) => {
-                        if frame <= 2 {
+                    swf::Tag::PlaceObject(po)
+                        if frame <= 2 => {
                             match &po.action {
                                 swf::PlaceObjectAction::Place(cid) => {
                                     let sym = symbols.get(cid).cloned().unwrap_or_default();
@@ -70,7 +70,6 @@ fn main() {
                                 }
                             }
                         }
-                    }
                     _ => {}
                 }
             }

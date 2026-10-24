@@ -17,19 +17,31 @@ use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
 use wry::WebViewBuilder;
+use crate::arg_val;
 
 enum Ev {
     Line(String),
     /// Pin the overlay to (x, y) screen points AND restack it directly above the game window
     /// (the CG window number) so it rides the game's z-order instead of floating over every app.
-    /// The follow thread keeps it glued to the game window's top-left corner. Only sent on macOS.
+    /// The follow thread keeps it glued to the game window's top-left corner, and sizes it to
+    /// the game as well: `(x, y, w, h, win_num)`. Only sent on macOS.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    Follow(f64, f64, i64),
+    Follow(f64, f64, f64, f64, i64),
 }
 
-fn arg_val(args: &[String], flag: &str) -> Option<String> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
-}
+/// How far in from the game window's top-left the overlay is parked, and how big it is allowed to
+/// get. The overlay is bounded by the game window first (see the follow thread); these stop it from
+/// taking over a large one.
+///
+/// WIDTH is what an engine error wants: it is a sentence, and the room to say it on one or two
+/// lines is width, not height. HEIGHT stays where it was -- the overlay sits on top of the game
+/// being watched, and a tall panel hides the thing you are trying to look at.
+#[cfg(target_os = "macos")]
+const INSET: f64 = 16.0;
+#[cfg(target_os = "macos")]
+const MAX_W: f64 = 620.0;
+#[cfg(target_os = "macos")]
+const MAX_H: f64 = 240.0;
 
 /// Kills the spawned overlay process when the owning session drops.
 pub(crate) struct OverlayGuard(std::process::Child);
@@ -46,7 +58,9 @@ impl Drop for OverlayGuard {
 /// None when disabled (`--no-overlay` / `PEPTIDE_OVERLAY=0`) or if spawn fails — the overlay
 /// is cosmetic and must never take a session down. The child also watchdogs `--parent`, so
 /// it self-exits on a session SIGKILL where Drop can't run.
-pub(crate) fn spawn_for_session(logp: &std::path::Path, args: &[String]) -> Option<OverlayGuard> {
+/// `owners`: the window owner names of the game this session drives, comma separated (a
+/// session knows its own game; the overlay is told, and follows only those windows)
+pub(crate) fn spawn_for_session(logp: &std::path::Path, args: &[String], owners: &str) -> Option<OverlayGuard> {
     let off = args.iter().any(|a| a == "--no-overlay")
         || std::env::var("PEPTIDE_OVERLAY").map(|v| v == "0").unwrap_or(false);
     if off {
@@ -59,6 +73,8 @@ pub(crate) fn spawn_for_session(logp: &std::path::Path, args: &[String]) -> Opti
         .arg(logp)
         .arg("--parent")
         .arg(std::process::id().to_string())
+        .arg("--owners")
+        .arg(owners)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -85,12 +101,28 @@ fn json_str(s: &str) -> String {
     out
 }
 
+/// the window owner names this overlay follows (`--owners a,b`, from its session)
+static OWNERS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 pub fn run(args: &[String]) -> std::io::Result<()> {
     let log_path = arg_val(args, "--log")
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::bridge::default_session_dir().join("out.log"));
+    // which game window this overlay belongs over: the owner names its session named, so two
+    // sessions with both games open each follow their own
+    let owners = arg_val(args, "--owners").unwrap_or_else(|| "fraymakers,hl".to_string());
+    *OWNERS.lock().unwrap_or_else(|e| e.into_inner()) = owners.split(',').map(|o| o.trim().to_lowercase()).filter(|o| !o.is_empty()).collect();
 
-    let event_loop = EventLoopBuilder::<Ev>::with_user_event().build();
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut event_loop = EventLoopBuilder::<Ev>::with_user_event().build();
+    // a display-only HUD: an accessory app that never comes to the front on its own (no Dock icon,
+    // no activation when its window opens), so a session's overlay never takes the user's focus
+    #[cfg(target_os = "macos")]
+    {
+        use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+        event_loop.set_activation_policy(ActivationPolicy::Prohibited);
+        event_loop.set_activate_ignoring_other_apps(false);
+    }
     let proxy = event_loop.create_proxy();
 
     let window = WindowBuilder::new()
@@ -101,6 +133,9 @@ pub fn run(args: &[String]) -> std::io::Result<()> {
         // window each poll, so it tracks the game's z-order and drops behind whatever app the
         // user switches to (instead of floating over everything — the old disruptive behavior).
         .with_resizable(false)
+        .with_focused(false)
+        // A starting size only: the follow thread resizes it against the game window as soon as
+        // it finds one, and keeps it bounded by it from then on.
         .with_inner_size(LogicalSize::new(396.0, 240.0))
         .build(&event_loop)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -120,6 +155,8 @@ pub fn run(args: &[String]) -> std::io::Result<()> {
     #[cfg(not(target_os = "linux"))]
     let _webview = WebViewBuilder::new()
         .with_transparent(true)
+        // a new webview takes focus by default, which makes its window key and its app active
+        .with_focused(false)
         .with_html(&html)
         .build(&window)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -152,14 +189,22 @@ pub fn run(args: &[String]) -> std::io::Result<()> {
             loop {
                 std::thread::sleep(Duration::from_millis(500));
                 match find_game_window() {
-                    Some((gx, gy, _w, _h, win_num)) => {
+                    Some((gx, gy, gw, gh, win_num)) => {
                         ever_seen = true;
                         gone_polls = 0;
                         // Send every poll (not just on move): the restack must be re-applied as
                         // the user focuses other apps, so the overlay keeps riding just above the
                         // game. set_outer_position is idempotent when unchanged.
-                        let (px, py) = ((gx + 16.0) as i64, (gy + 16.0) as i64);
-                        if proxy.send_event(Ev::Follow(px as f64, py as f64, win_num)).is_err() {
+                        let (px, py) = ((gx + INSET) as i64, (gy + INSET) as i64);
+                        // Sized against the game underneath: an engine error is a sentence and
+                        // wants room, but the overlay must never be larger than the window it
+                        // sits on. Bounded by the game (minus the inset it is parked at), capped
+                        // so it does not take over a big one.
+                        let (ow, oh) = (
+                            (gw - INSET * 2.0).clamp(1.0, MAX_W),
+                            (gh - INSET * 2.0).clamp(1.0, MAX_H),
+                        );
+                        if proxy.send_event(Ev::Follow(px as f64, py as f64, ow, oh, win_num)).is_err() {
                             return;
                         }
                     }
@@ -197,8 +242,9 @@ pub fn run(args: &[String]) -> std::io::Result<()> {
             Event::UserEvent(Ev::Line(line)) => {
                 let _ = _webview.evaluate_script(&format!("window.push && push({})", json_str(&line)));
             }
-            Event::UserEvent(Ev::Follow(x, y, _win_num)) => {
+            Event::UserEvent(Ev::Follow(x, y, w, h, _win_num)) => {
                 window.set_outer_position(LogicalPosition::new(x, y));
+                window.set_inner_size(LogicalSize::new(w, h));
                 #[cfg(target_os = "macos")]
                 order_above_game(&window, _win_num);
             }
@@ -324,7 +370,9 @@ fn find_game_window() -> Option<(f64, f64, f64, f64, i64)> {
             // Match either engine's game window: Fraymakers runs as the HashLink binary `hl`
             // (or a "Fraymakers" bundle); SSF2 as its own app. NOT "peptide" — that's our own
             // overlay window, which would self-attach and drift.
-            if !(owner.contains("fraymakers") || owner == "hl" || owner.contains("ssf2")) {
+            let want = OWNERS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            // an exact process name (`hl`) or a bundle name containing the word (`Fraymakers`, `SSF2-patched`)
+            if !want.iter().any(|w| owner == *w || (w.len() > 2 && owner.contains(w.as_str()))) {
                 continue;
             }
             let Some(bounds) = dict_get(dict, kCGWindowBounds as *const c_void) else { continue };

@@ -45,8 +45,6 @@ fn moving_platforms_detected_and_flagged() {
     let tos = dir.join("towerofsalvation.ssf");
     if common::present(&tos) {
         let m = common::parsed_stage("towerofsalvation").unwrap();
-        let moving = m.platforms.iter().filter(|p| p.moving).count();
-        assert!(moving > 0, "towerofsalvation has moving platforms");
         assert!(m.warnings.iter().any(|w| w.contains("moving platform")),
             "a moving-platform warning surfaces, got {:?}", m.warnings);
     }
@@ -55,7 +53,6 @@ fn moving_platforms_detected_and_flagged() {
     let bf = dir.join("battlefield.ssf");
     if common::present(&bf) {
         let m = common::parsed_stage("battlefield").unwrap();
-        assert!(m.platforms.iter().all(|p| !p.moving), "battlefield has no moving platforms");
         assert!(!m.warnings.iter().any(|w| w.contains("moving platform")), "no moving-platform warning");
         assert_eq!(m.platforms.len(), 4, "battlefield's 4 distinct platforms survive the dedup pass");
     }
@@ -345,7 +342,7 @@ fn hazard_stages_emit_hazards() {
     let bc = common::parsed_stage("bowserscastle").unwrap();
     let thwomp = bc.hazards.iter().find(|h| h.label == "Thwomp");
     assert!(thwomp.is_some(), "bowserscastle should carry the AS3-spawned thwomp, got {:?}",
-        bc.hazards.iter().map(|h| (&h.label, &h.motion)).collect::<Vec<_>>());
+        bc.hazards.iter().map(|h| (&h.label, h.reconstructed_script.is_some())).collect::<Vec<_>>());
     assert!(bc.hazards.iter().any(|h| h.label == "Lava"), "and the AS3-spawned lava glow");
     assert!(thwomp.unwrap().art.is_some(), "the thwomp borrows the real SSF2 sprite");
     assert!(bc.platforms.iter().filter(|p| p.visible).count() == 2,

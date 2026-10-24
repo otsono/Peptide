@@ -23,12 +23,9 @@ fn main() {
 
             println!("=== Root MC frame labels ===");
             for stag in &sprite.tags {
-                match stag {
-                    swf::Tag::FrameLabel(fl) => {
-                        let label = fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
-                        println!("  {}", label);
-                    }
-                    _ => {}
+                if let swf::Tag::FrameLabel(fl) = stag {
+                    let label = fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
+                    println!("  {}", label);
                 }
             }
             break;

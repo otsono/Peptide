@@ -16,8 +16,22 @@
   //     accel_scale    = size_multiplier * (ssf2_fps / fm_fps)^2      (≈0.325)
   // Walk/dash/jump/fall speeds use velocity_scale; gravity/friction/accel use
   // accel_scale. Tweak this one value and the whole physics profile rescales
-  // consistently — no other magic numbers.
+  // consistently — no other magic numbers. Re-measured on both engines by
+  // tools/tests/calibrate.py (the held-walk speed ratio, and jump and short-hop apex and landing,
+  // which also check the integration step a launch speed loses: haxe_gen::generate_character_stats).
   "size_multiplier": 1.3,
+  // item_toss_speed: the speed the source's engine throws a held item with (source px per
+  // frame, before the velocity scale), measured live off sandbag's bomb: it rises ~63 px over
+  // the first eight frames of its throw against its gravity.
+  "item_toss_speed": 13.0,
+  // item_gravity: what the source's engine pulls a thrown item down with (source px per frame
+  // per frame), measured off the same throw: its rise turns to a fall of ~30 px over the next
+  // eight frames. an item pulled from the items package declares no physics of its own.
+  "item_gravity": 1.45,
+  // item_max_fall: the fall cap of a thrown item (source px per frame). the bomb's fall in the
+  // source never reached a cap within its flight, so this is the cap the game's items declare
+  // for themselves (`max_gravity` on link's bomb); an item that declares its own uses that.
+  "item_max_fall": 15.0,
 
   // Frame rates (fixed engine physics, exposed for completeness). SSF2 Beta
   // runs at 30fps; Fraymakers at 60fps. The 0.5 ratio is why a per-frame
@@ -45,10 +59,110 @@
   //   decel_rate         -> friction              (GameObjectStats)
   //   accel_start        -> walkSpeedInitial      (CharacterStats)
   //   accel_start_dash   -> runSpeedInitial       (CharacterStats)
-  //   dodgeSpeed         -> dodgeRollSpeed        (CharacterStats)
+  //   dodgeSpeed, dodgeDecel -> dodgeRollSpeed    (CharacterStats, the distance they roll)
   //   jumpStartup        -> (internal only — jump-squat frame count, not an FM stat)
   // No clean FM equivalent (left unmapped): max_jumpSpeed, groundToAirMultiplier,
-  //   dodgeDecel, roll_speed, roll_decay, max_projectile, width, height.
+  //   max_projectile, width, height (roll_speed and roll_decay feed the other rolls).
+  // The stats the engine actually has, from the api definitions FrayTools publishes, for
+  // a write made while the match is RUNNING. The engine refuses the whole write for one
+  // name it does not know, so a source-only name takes every stat beside it with it and
+  // the handler stops there. Stated as what the engine HAS: content nobody has written
+  // yet states stats nobody has listed, and those have to fall out on their own.
+  //
+  // A dropped name is reported at convert time. Some of them ARE askable here under
+  // another name (the source's max_xSpeed is this engine's dashSpeed) -- translating a
+  // RUNNING write means carrying its units across too, which is measured work, and until
+  // it is done dropping the one name beats losing the whole write.
+  // What a stat READ while the match runs is called here. A read has to answer with
+  // something, so unlike a write it cannot be dropped, and the code around it goes on to
+  // do engine-side arithmetic with the answer -- so the engine's own stat is the one that
+  // belongs there. Only names that mean the same thing on both sides: the source's cap on
+  // how fast it falls is this engine's terminal velocity, and its normal ground speed is
+  // this engine's walking cap. Each is checked against the list below at load, so a name
+  // that stops being one the engine has stops being used rather than going out wrong.
+  //
+  // NOT here, because they do not line up: the source states one midair jump speed where
+  // the engine states a list of them, and the engine has no stamina and no tilt-toss.
+  // Those answer zero, which is what "this engine does not have that" comes to.
+  // what a stat read while the match runs answers when this engine has no such stat: the
+  // source's own default for it. a stat every source character has and none states (whether
+  // a foe can be launched at all) reads true, the way the source reads it
+  "runtime_read_defaults": {
+    "canReceiveKnockback": true
+  },
+
+  // what a stat read while the match runs is measured in: a script does its own arithmetic on
+  // the value in the source's units (a hold that scales a distance by the foe's gravity), and
+  // this engine holds it scaled (accelerations by accel_scale, speeds by velocity_scale), so a
+  // read scales it back. anything not listed is a number without a unit (weight)
+  "runtime_read_units": {
+    // a body stated in world units crosses the size scale; a character's is stated in its own
+    // (its baseScale does the scaling, see the ecb block), so its read comes back as stated
+    "size": ["aerialHeadPosition", "floorHeadPosition", "aerialHipWidth", "floorHipWidth"],
+    "accel": ["gravity", "aerialFriction", "friction", "aerialSpeedAcceleration", "groundSpeedAcceleration",
+              "walkSpeedAcceleration", "runSpeedAcceleration"],
+    // a launch speed (a jump, a short hop) was converted with a step of gravity taken off, and a
+    // read puts it back before it unscales (see haxe_gen::generate_character_stats)
+    "launch": ["jumpSpeed", "shortHopSpeed"],
+    "speed": ["terminalVelocity", "terminalVelocityRising", "fastFallSpeed", "walkSpeedCap", "walkSpeedInitial",
+              "runSpeedCap", "runSpeedInitial", "dashSpeed", "aerialSpeedCap",
+              "groundSpeedCap", "ledgeJumpXSpeed", "ledgeJumpYSpeed", "wallJumpXSpeed", "wallJumpYSpeed",
+              "jumpSpeedForwardInitialXSpeed", "jumpSpeedBackwardInitialXSpeed", "initialGlideSpeed"]
+  },
+
+  // a stat this engine keeps under another shape, read while the match runs: the source keeps
+  // one double-jump speed and a comma-joined list of jump speeds, this engine a list of
+  // double-jump speeds. `{recv}` is the object asked
+  "runtime_read_exprs": {
+    "jumpSpeedMidair": "({recv}.getCharacterStat(\"doubleJumpSpeeds\")[0] + 1.5 * {recv}.getCharacterStat(\"gravity\")) / {velocity_scale}",
+    "jumpSpeedList": "{recv}.getCharacterStat(\"doubleJumpSpeeds\").map(function(__v) { return (__v + 1.5 * {recv}.getCharacterStat(\"gravity\")) / {velocity_scale}; }).join(\",\")"
+  },
+
+  "fm_runtime_read_names": {
+    "max_ySpeed": "terminalVelocity",
+    "norm_xSpeed": "walkSpeedCap",
+    // the declared body, read back by the accessors the source answers from it
+    "height": "aerialHeadPosition",
+    "width": "aerialHipWidth"
+  },
+
+  "fm_runtime_stats": [
+    "aerialFootPosition", "aerialFriction", "aerialHeadPosition", "aerialHipWidth",
+    "aerialHipXOffset", "aerialHipYOffset", "aerialSpeedAcceleration", "aerialSpeedCap",
+    "airdashAccelMultiplier", "airdashCameraShakeIntensity",
+    "airdashCancelSpeedConservation", "airdashDirections", "airdashEffectOffsetX",
+    "airdashEffectOffsetY", "airdashEffectRadius", "airdashEndlagLength",
+    "airdashEndlagSpeed", "airdashFullspeedLength", "airdashInitialSpeed", "airdashLimit",
+    "airdashSpeedCap", "airdashStartupLength", "airdashTrailEffect", "attackRatio",
+    "attackVoiceIds", "attackVoiceSilenceRate", "baseScaleX", "baseScaleY",
+    "buryAnimation", "buryFrame", "buryOffsetY", "cameraBoxHeight", "cameraBoxOffsetX",
+    "cameraBoxOffsetY", "cameraBoxWidth", "crawlSpeed", "damageRatio", "dashSpeed",
+    "deathBoundsDestroy", "dodgeRollSpeed", "dodgeRollSpeedLength",
+    "dodgeRollSpeedStartFrame", "doubleJumpSpeeds", "fastFallSpeed", "floatDuration",
+    "floorFootPosition", "floorHeadPosition", "floorHipWidth", "floorHipXOffset",
+    "floorHipYOffset", "friction", "getupRollSpeed", "getupRollSpeedLength",
+    "getupRollSpeedStartFrame", "ghost", "grabAirType", "grabbableAreaType",
+    "grabbableHeight", "grabbableWidth", "grabbableXOffset", "grabbableYOffset", "gravity",
+    "groundSpeedAcceleration", "groundSpeedCap", "holdToJump", "hurtHeavySilenceRate",
+    "hurtHeavyVoiceIds", "hurtLightSilenceRate", "hurtLightVoiceIds",
+    "hurtMediumSilenceRate", "hurtMediumVoiceIds", "immovable", "initialGlideSpeed",
+    "initialState", "jumpSpeed", "jumpSpeedBackwardInitialXSpeed",
+    "jumpSpeedForwardInitialXSpeed", "koVoiceIds", "koVoiceSilenceRate",
+    "ledgeActionOccupancyTime", "ledgeJumpXSpeed", "ledgeJumpYSpeed", "ledgeRollSpeed",
+    "ledgeRollSpeedLength", "ledgeRollSpeedStartFrame", "maxGravity", "menuInfo",
+    "metadata", "outgoingCollisionBoxDetection", "runSpeedAcceleration", "runSpeedCap",
+    "runSpeedInitial", "shieldAirType", "shieldAnimation", "shieldBackHeight",
+    "shieldBackNineSliceContent", "shieldBackWidth", "shieldBackXOffset",
+    "shieldBackYOffset", "shieldCrossupThreshold", "shieldFrontHeight",
+    "shieldFrontNineSliceContent", "shieldFrontWidth", "shieldFrontXOffset",
+    "shieldFrontYOffset", "shieldHeight", "shieldScale", "shieldWidth", "shieldXOffset",
+    "shieldYOffset", "shortHopSpeed", "solid", "spriteContent",
+    "stateTransitionMapOverrides", "techRollSpeed", "techRollSpeedLength",
+    "techRollSpeedStartFrame", "terminalVelocity", "terminalVelocityRising",
+    "walkSpeedAcceleration", "walkSpeedCap", "walkSpeedInitial", "wallClingLimit",
+    "wallJumpLimit", "wallJumpXSpeed", "wallJumpYSpeed", "weight"
+  ],
+
   "field_keys": {
     "weight": ["weight1", "weight"],
     "gravity": ["gravity"],
@@ -57,10 +171,31 @@
     "walk_speed": ["norm_xSpeed", "walkSpeed"],
     "dash_speed": ["max_xSpeed", "dashSpeed"],
     "air_mobility": ["accel_rate_air", "airMobility"],
+    // named for a jump, but it is how fast the character may travel HORIZONTALLY in the
+    // air -- measured frame by frame against three characters, each of which drifts at
+    // exactly the number it states here and holds there
+    "air_speed_cap": ["max_jumpSpeed"],
     "max_jumps": ["max_jump", "maxJumps"],
     "jump_height": ["jumpSpeed", "jumpHeight"],
     "double_jump_height": ["jumpSpeedMidair", "doubleJumpHeight"],
     "air_friction": ["decel_rate_air", "airFriction"],
+
+    // The COLLISION BODY the character states for itself. Every SSF2 character declares its own
+    // (kirby 40x30, mario 45x26, bowser 71x60); without these every converted fighter shared one
+    // ECB out of the template below, so kirby and bowser stood in the same box.
+    "body_height": ["height"],
+    "body_width": ["width"],
+
+    // How fast the character rolls and air-dodges. The source states one roll speed and
+    // fraymakers names four rolls, so the one it states answers for all of them -- the same way
+    // its single hurt animation fills fraymakers' several hurt slots.
+    "roll_speed": ["roll_speed", "rollSpeed"],
+    // what a roll's speed is multiplied by each frame; with the speed, how far it goes
+    "roll_decay": ["roll_decay"],
+    // the speed a dodge roll starts at and what it loses each frame: the roll travels by these
+    // (measured: goku's 18 and 1.5 roll him 117, fox's 16 and 1.3 roll him 106)
+    "dodge_speed": ["dodgeSpeed", "dodge_speed"],
+    "dodge_decel": ["dodgeDecel", "dodge_decel"],
   },
 
   // multipliers: scale a raw SSF2 value into Fraymakers units via
@@ -143,7 +278,7 @@
     "techRollSpeedStartFrame": 14,
     "techRollSpeedLength": 2,
     "dodgeRollSpeed": 13,
-    "dodgeRollSpeedStartFrame": 6,
+    "dodgeRollSpeedStartFrame": 1,
     "dodgeRollSpeedLength": 2,
     "getupRollSpeed": 15.5,
     "getupRollSpeedStartFrame": 4,
@@ -154,7 +289,8 @@
     "ledgeJumpXSpeed": 2.5,
     "ledgeJumpYSpeed": -10,
 
-    // Airdash
+    // Airdash: none (see stats_tables "airdash")
+    "airdashLimit": 0,
     "airdashInitialSpeed": 11,
     "airdashSpeedCap": 12.5,
     "airdashAccelMultiplier": 0.4,

@@ -19,7 +19,7 @@
 /// canonical spelling; the rest are accepted aliases (matched case-insensitively).
 pub struct Root {
     pub names: &'static [&'static str],
-    /// SSF2 verb sequence (tab-encoded, e.g. `"GET\tstageData"`).
+    /// SSF2 verb sequence (tab-encoded, e.g. `"GET\t<field>"`).
     pub ssf2: &'static [&'static str],
 }
 
@@ -36,6 +36,7 @@ pub const ROOTS: &[Root] = &[
     Root { names: &["gamecontroller", "gc"],   ssf2: &["GC"] },
     Root { names: &["resourcemanager", "rm"],  ssf2: &["RM"] },
     Root { names: &["menucontroller", "mc"],   ssf2: &["MC"] },
+    Root { names: &["api", "ssf2api"],          ssf2: &["API"] },
     Root { names: &["stats"],                  ssf2: &["STATS"] },
     Root { names: &["root", "main", "this"],   ssf2: &["ROOT"] },
 ];

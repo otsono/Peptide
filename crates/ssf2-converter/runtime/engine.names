@@ -1,0 +1,56 @@
+# names the engine's script scope already has, one per line. a content class with one of these
+# names is written under another (the compiler adds `_`), so it never hides the engine's own.
+# measured from inside a running fighter: a name here answered non-null there. add a name when
+# the engine gains one.
+self
+match
+stage
+camera
+AnimationEndType
+Announcer
+Assist
+AttackElement
+AttackLimb
+AudioClip
+BodyStatus
+Bool
+CState
+CStateGroup
+CameraMode
+Character
+CharacterEvent
+CollisionBox
+Common
+Engine
+Entity
+EntityEvent
+EntityType
+Float
+GameObject
+GameObjectEvent
+GlobalSfx
+GlobalVfx
+HitboxStats
+IState
+Int
+Item
+LandType
+LeaveGroundType
+MatchEvent
+MatchModifier
+Math
+Menu
+PState
+PaletteSwapShader
+Point
+Projectile
+Random
+Sprite
+StatusEffectType
+Std
+String
+Structure
+StructureType
+VfxLayer
+VfxStats
+CharacterActions

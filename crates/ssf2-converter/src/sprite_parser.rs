@@ -47,6 +47,11 @@ pub enum BoxType {
     ReflectBox,
     /// Absorb hitbox
     AbsorbBox,
+    /// Counter window: a hit landing on it is caught, not taken
+    CounterBox,
+    /// A box the source keeps for its own bookkeeping (camera framing, a catch or range test):
+    /// it collides with nothing
+    InertBox,
     /// Ledge grab box
     LedgeBox,
     /// Grab hold point (where grabbed opponent is held)
@@ -67,13 +72,30 @@ impl BoxType {
             Some(BoxType::GrabBox)
         } else if lower.starts_with("itembox") || lower == "itembox" {
             Some(BoxType::ItemBox)
-        } else if lower.starts_with("shieldbox") {
+        } else if lower.starts_with("shieldprojectilebox") {
+            // a projectile that meets it ends there, turned back by nothing: this engine's absorb
+            Some(BoxType::AbsorbBox)
+        } else if lower.starts_with("shieldbox") || lower.starts_with("shieldattackbox") {
             Some(BoxType::ShieldBox)
-        } else if lower.starts_with("reflectbox") {
+        } else if lower.starts_with("reflectbox") || lower.starts_with("reversebox") {
+            // the source calls its reflector `reverseBox`
             Some(BoxType::ReflectBox)
         } else if lower.starts_with("absorbbox") {
             Some(BoxType::AbsorbBox)
-        } else if lower.starts_with("ledgebox") || lower.starts_with("ledgegrab") {
+        } else if lower.starts_with("counterbox") {
+            // read as a hurtbox by the fallback below, a counter was a place to be hit
+            Some(BoxType::CounterBox)
+        } else if lower.starts_with("cambox") || lower.starts_with("catchbox") || lower == "range" {
+            // the source's own framing and range tests, which collide with nothing; read as
+            // hurtboxes by the fallback below they were places to be hit
+            Some(BoxType::InertBox)
+        } else if lower.starts_with("ledgebox") || lower.starts_with("ledgegrab")
+            // SSF2 calls it `hand`: the box a fighter REACHES with, drawn on the aerials that can
+            // catch a ledge. It is the ledge-grab box under another name, and because the name does
+            // not end in "box" it matched nothing and was dropped -- so a converted fighter reached
+            // for ledges with nothing and fell past every one of them.
+            || lower == "hand" || lower.starts_with("hand")
+        {
             Some(BoxType::LedgeBox)
         } else if lower.starts_with("touchbox") {
             Some(BoxType::GrabHoldBox)
@@ -105,6 +127,8 @@ impl BoxType {
             BoxType::ShieldBox => "SHIELD_BOX",
             BoxType::ReflectBox => "REFLECT_BOX",
             BoxType::AbsorbBox => "ABSORB_BOX",
+            BoxType::CounterBox => "COUNTER_BOX",
+            BoxType::InertBox => "INERT_BOX",
             BoxType::LedgeBox  => "LEDGE_BOX",
             BoxType::GrabHoldBox => "GRAB_HOLD_BOX",
         }
@@ -144,6 +168,9 @@ pub struct AnimationBoxData {
     pub frames: BTreeMap<u16, Vec<FrameBox>>,
     /// Frame offset into the original SSF2 sprite where this sub-anim starts
     pub sprite_frame_offset: u16,
+    /// the whole clip's length: a slice knows where the clip it was cut from ends
+    #[serde(default)]
+    pub clip_frames: u16,
     /// Frame labels within this animation: (label_name, frame_index relative to sub-anim start)
     pub frame_labels: Vec<(String, u16)>,
     /// Frames where the displayed CONTENT changes (a Place/Replace/Remove altered the display
@@ -181,10 +208,20 @@ impl Default for XframeTransform {
 }
 
 impl XframeTransform {
-    /// Apply this root transform to a local point (lx, ly), returning world coords.
+    /// Apply this root transform to a local point (lx, ly), returning world coords. The fields
+    /// are the SWF's own: `(a, b)` is where the x axis goes and `(c, d)` the y axis.
     pub fn apply(&self, lx: f64, ly: f64) -> (f64, f64) {
-        (self.a * lx + self.b * ly + self.tx,
-         self.c * lx + self.d * ly + self.ty)
+        (self.a * lx + self.c * ly + self.tx,
+         self.b * lx + self.d * ly + self.ty)
+    }
+
+    /// The box a local rectangle covers once this transform places it: a clip placed mirrored
+    /// (marth's back air, `a` = -1.09) puts its boxes on the other side of its origin
+    pub fn apply_rect(&self, x: f64, y: f64, w: f64, h: f64) -> (f64, f64, f64, f64) {
+        let pts = [self.apply(x, y), self.apply(x + w, y), self.apply(x, y + h), self.apply(x + w, y + h)];
+        let (x0, x1) = pts.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
+        let (y0, y1) = pts.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
+        (x0, y0, x1 - x0, y1 - y0)
     }
 
     /// Scale magnitude for a local scale value (ignores rotation/skew components).
@@ -255,11 +292,45 @@ const MIN_ROOT_STANCES: usize = 15;
 ///   2 = one name is a prefix of the other (ness→nessbase, sonic→sonicremastered)
 ///   1 = no name relation (dkong, falcon) — wins only as the lone root in its SWF
 /// Ties at equal score are broken by stance count.
-fn find_root_sprite_id(
+/// The sprite the character DECLARES as its own art, by the linkage name its bundle states.
+///
+/// The file says which clip is the fighter, so this needs no vocabulary and cannot be fooled by a
+/// symbol name that went stale or by a package that lists another fighter's clips.
+fn declared_root_sprite_id(
     swf: &swf::Swf<'_>,
     sym_names: &BTreeMap<u16, String>,
     char_lower: &str,
 ) -> Option<u16> {
+    let mut linkage: Option<String> = None;
+    for tag in &swf.tags {
+        let blk: &[u8] = match tag {
+            swf::Tag::DoAbc(d) => d,
+            swf::Tag::DoAbc2(a) => a.data,
+            _ => continue,
+        };
+        let Ok(abc) = crate::abc_parser::parse(blk) else { continue };
+        if let Some(l) = crate::abc_parser::declared_root_clip(&abc, char_lower) {
+            linkage = Some(l.to_ascii_lowercase());
+            break;
+        }
+    }
+    let linkage = linkage?;
+    sym_names.iter()
+        .find(|(_, name)| name.to_ascii_lowercase() == linkage)
+        .map(|(id, _)| *id)
+}
+
+pub(crate) fn find_root_sprite_id(
+    swf: &swf::Swf<'_>,
+    sym_names: &BTreeMap<u16, String>,
+    char_lower: &str,
+) -> Option<u16> {
+    // ASK THE FILE FIRST. A character's bundle names the clip it wears, so there is nothing to
+    // work out. Everything below is for a file that does not say, and every part of it is a
+    // guess about content: it stands only until such a file turns up that reads its own way.
+    if let Some(id) = declared_root_sprite_id(swf, sym_names, char_lower) {
+        return Some(id);
+    }
     // (score, stance_count, id), maximised lexicographically.
     let mut best: Option<(u8, usize, u16)> = None;
     for tag in &swf.tags {
@@ -415,10 +486,42 @@ pub fn class_to_ssf2_anim(
     sym_names: &BTreeMap<u16, String>,
     char_lower: &str,
 ) -> BTreeMap<String, String> {
-    build_xframe_sprite_map(swf, sym_names, char_lower)
+    // NO descent here: a frame script belongs to the clip it is written on. The clip the root
+    // places under `stance` IS the animation, so its script is the animation's. A clip nested
+    // inside that one is a PART, it runs on its own clock, and its `self` is the part rather than
+    // the fighter. Handing a part's script to the animation makes the fighter do what one of its
+    // parts was told to do, which is how `visible = false` on a spare part became a fighter that
+    // hides itself on frame 1 of `stand` and never comes back.
+    build_xframe_sprite_map_with(swf, sym_names, char_lower, false)
         .into_iter()
         .filter_map(|(id, ssf2)| sym_names.get(&id).map(|name| (name.clone(), ssf2)))
         .collect()
+}
+
+/// Every sprite placed INSIDE `id`, however deep, attributed to `label`. An animation is not one
+/// clip: the xframe places a clip under `stance`, and that clip places the parts that actually
+/// move. Those children are the animation too, and the timeline is the only thing that says so --
+/// their symbol names are Flash-IDE artifacts and say nothing reliable.
+/// First label wins, matching the top-level rule, so a part shared by several animations keeps the
+/// first xframe that used it instead of flip-flopping.
+fn attribute_children(
+    id: u16, label: &str, sprites: &BTreeMap<u16, &swf::Sprite>,
+    map: &mut BTreeMap<u16, String>, depth: u8,
+) {
+    if depth > 8 { return; } // a clip tree this deep is a cycle, not a character
+    let Some(sp) = sprites.get(&id) else { return };
+    for t in &sp.tags {
+        if let swf::Tag::PlaceObject(po) = t {
+            let cid = match &po.action {
+                swf::PlaceObjectAction::Place(c) | swf::PlaceObjectAction::Replace(c) => *c,
+                swf::PlaceObjectAction::Modify => continue,
+            };
+            if !sprites.contains_key(&cid) { continue; } // a shape, not a clip
+            if map.contains_key(&cid) { continue; }      // already claimed by an earlier xframe
+            map.insert(cid, label.to_string());
+            attribute_children(cid, label, sprites, map, depth + 1);
+        }
+    }
 }
 
 pub(crate) fn build_xframe_sprite_map(
@@ -426,15 +529,37 @@ pub(crate) fn build_xframe_sprite_map(
     sym_names: &BTreeMap<u16, String>,
     char_lower: &str,
 ) -> BTreeMap<u16, String> {
+    build_xframe_sprite_map_with(swf, sym_names, char_lower, true)
+}
+
+/// `descend` says whether the parts INSIDE the animation's clip count as the animation too.
+/// They do for ART: what a part draws is what the animation looks like. They do not for
+/// BEHAVIOUR: a part's script is the part's, addressed to the part.
+pub(crate) fn build_xframe_sprite_map_with(
+    swf: &swf::Swf<'_>,
+    sym_names: &BTreeMap<u16, String>,
+    char_lower: &str,
+    descend: bool,
+) -> BTreeMap<u16, String> {
     let mut map: BTreeMap<u16, String> = BTreeMap::new();
+    let sprites: BTreeMap<u16, &swf::Sprite> = swf.tags.iter()
+        .filter_map(|t| match t { swf::Tag::DefineSprite(s) => Some((s.id, s)), _ => None })
+        .collect();
     let root_id = find_root_sprite_id(swf, sym_names, char_lower);
     for tag in &swf.tags {
         if let swf::Tag::DefineSprite(sprite) = tag {
             if Some(sprite.id) != root_id { continue; }
             let mut cur_label = String::new();
+            let trace_spans = std::env::var("PEPTIDE_TRACE_LABELS").is_ok();
+            let (mut root_frame, mut span_start) = (0u32, 0u32);
             for stag in &sprite.tags {
                 match stag {
+                    swf::Tag::ShowFrame => { root_frame += 1; }
                     swf::Tag::FrameLabel(fl) => {
+                        if trace_spans && !cur_label.is_empty() {
+                            eprintln!("[trace-root-span] {cur_label} root frames {span_start}..{root_frame} ({} frames)", root_frame - span_start);
+                        }
+                        span_start = root_frame;
                         cur_label = fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
                     }
                     swf::Tag::PlaceObject(po) => {
@@ -442,9 +567,18 @@ pub(crate) fn build_xframe_sprite_map(
                             .map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
                         if inst.as_deref() == Some("stance") {
                             if let swf::PlaceObjectAction::Place(cid) = &po.action {
+                                if trace_spans {
+                                    eprintln!("[trace-stance] {cur_label} root frame {root_frame} places {cid} {} matrix {:?}",
+                                        sym_names.get(cid).map(String::as_str).unwrap_or("?"),
+                                        po.matrix.map(|m| (m.a.to_f32(), m.b.to_f32(), m.c.to_f32(), m.d.to_f32(), m.tx.get() as f32 / 20.0, m.ty.get() as f32 / 20.0)));
+                                }
                                 if !cur_label.is_empty() {
                                     // First label that places a given inner sprite wins.
                                     map.entry(*cid).or_insert_with(|| cur_label.clone());
+                                    // and everything that clip DRAWS is part of the same xframe
+                                    if descend {
+                                        attribute_children(*cid, &cur_label, &sprites, &mut map, 0);
+                                    }
                                 }
                             }
                         }
@@ -528,7 +662,7 @@ pub fn parse_sprite_boxes_from_swf(
 
     // Find the base size of the collision box shape
     let box_base_size = find_collision_box_base_size(swf, &sym_names);
-    log::info!("CollisonBox base size: {:.1}px", box_base_size);
+
     log::info!("Root MC transforms: {} animations", xform_map.len());
 
     // Find all character animation sprites
@@ -556,28 +690,35 @@ pub fn parse_sprite_boxes_from_swf(
             // Collect internal frame labels (for sub-animation splitting)
             let frame_labels = extract_frame_labels_from_tags(&sprite.tags);
 
-            let frames = extract_frame_boxes(sprite, &sym_names, box_base_size, xform);
+            let frames = extract_frame_boxes(sprite, &sym_names, &box_base_size, xform);
             let content_switches = extract_content_switch_frames(sprite);
 
             if std::env::var("PEPTIDE_TRACE_LABELS").is_ok() {
-                eprintln!("[trace-labels] {sym} ssf2='{ssf2_name}' fm='{fm_name}' frames={} labels={frame_labels:?}",
-                          sprite.num_frames);
+                eprintln!("[trace-labels] {sym} ssf2='{ssf2_name}' fm='{fm_name}' frames={} shown={} labels={frame_labels:?}",
+                          sprite.num_frames, sprite.tags.iter().filter(|x| matches!(x, swf::Tag::ShowFrame)).count());
             }
         log::debug!("Sprite '{}' → ssf2='{}' fm='{}': {} frames with boxes, {} labels",
                 sym, ssf2_name, fm_name, frames.len(), frame_labels.len());
 
+            if fm_name == "jab" && std::env::var("PEPTIDE_TRACE_JAB").is_ok() {
+                let hits: Vec<u16> = frames.iter().filter(|(_, b)| b.iter().any(|x| x.box_type == BoxType::Hitbox)).map(|(f, _)| *f).collect();
+                eprintln!("[trace-jab] {sym} frames={} labels={frame_labels:?} hit_frames={hits:?}", sprite.num_frames);
+            }
             // Check if this animation should be split into sub-animations
             let sub_splits = sub_anim_splits(&fm_name, &frame_labels, sprite.num_frames);
+            if fm_name == "jab" && std::env::var("PEPTIDE_TRACE_JAB").is_ok() {
+                eprintln!("[trace-jab] {sym} cut={sub_splits:?}");
+            }
 
             if sub_splits.is_empty() {
-                // Single animation — insert as-is
-                if frames.is_empty() { continue; }
+                // Single animation, as-is: a clip is its animation whether or not it carries boxes
                 result.insert(fm_name.clone(), AnimationBoxData {
                     ssf2_name,
                     fm_name,
                     total_frames: sprite.num_frames,
                     frames,
                     sprite_frame_offset: 0,
+                    clip_frames: sprite.num_frames,
                     frame_labels: frame_labels.clone(),
                     content_switches,
                 });
@@ -605,6 +746,7 @@ pub fn parse_sprite_boxes_from_swf(
                         total_frames: slice_len,
                         frames: sliced_frames,
                         sprite_frame_offset: start_frame,
+                        clip_frames: sprite.num_frames,
                         frame_labels: sliced_labels,
                         content_switches: content_switches.iter()
                             .filter(|&&f| f >= start_frame && f < end_frame)
@@ -647,8 +789,13 @@ pub fn parse_sprite_boxes_from_swf(
                 .collect();
             if per_frame.is_empty() { continue; }
             let box_frames: usize = per_frame.iter().map(|(_, n)| *n).sum();
-            eprintln!("[box-frames] {fm_name} total={} active={} first={} last={}",
-                d.total_frames, box_frames, per_frame[0].0, per_frame[per_frame.len() - 1].0);
+            // the per-frame list as well as the total: one source timeline becomes several
+            // emitted animations, so only the frames inside a slice belong to that slice, and
+            // a move trimmed at its terminator loses that frame's boxes with it
+            let at: Vec<String> = per_frame.iter().map(|(f, n)| format!("{f}:{n}")).collect();
+            eprintln!("[box-frames] {fm_name} total={} active={} first={} last={} at=[{}]",
+                d.total_frames, box_frames, per_frame[0].0, per_frame[per_frame.len() - 1].0,
+                at.join(","));
         }
     }
 
@@ -679,6 +826,20 @@ pub fn extract_frame_labels_from_tags(tags: &[swf::Tag]) -> Vec<(String, u16)> {
     labels
 }
 
+thread_local! {
+    /// Per Fraymakers animation name, the source frames whose script ENDS the move: what the
+    /// jab splitter reads to know whether a clip's unlabelled head is a hit of its own.
+    /// Installed by the converter once the scripts are read, before the boxes and the images
+    /// are cut, so both cuts agree.
+    static ENDING_FRAMES: std::cell::RefCell<BTreeMap<String, std::collections::BTreeSet<u16>>>
+        = const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+/// Install the frames whose scripts end the move, per Fraymakers animation name.
+pub fn install_ending_frames(map: BTreeMap<String, std::collections::BTreeSet<u16>>) {
+    ENDING_FRAMES.with(|c| *c.borrow_mut() = map);
+}
+
 /// Public alias for sub_anim_splits — used by image_extractor to apply the same split.
 pub fn sub_anim_image_splits(
     fm_name: &str,
@@ -687,20 +848,6 @@ pub fn sub_anim_image_splits(
 ) -> Vec<(String, u16, u16)> {
     sub_anim_splits(fm_name, frame_labels, total_frames)
 }
-
-/// SSF2 frame labels that are control-flow markers, not real sub-animation boundaries.
-/// These appear in SSF2 ActionScript as `gotoAndPlay("again")` / `gotoAndPlay("finish")`
-/// to implement looping/chaining; they don't correspond to distinct Fraymakers animations.
-const CONTROL_FLOW_LABELS: &[&str] = &[
-    "goback",   // loop back to start of current hit
-    "again",    // restart the combo chain if button pressed
-    "finish",   // tail-end recovery animation
-    "loop",     // generic loop point
-    "afterHit", // post-hit recovery
-    "endlag",   // end-lag frames
-    "continue", // generic continue marker
-    "done",     // end of sub-sequence (used in Jump, not jab)
-];
 
 /// Taunt sprite label names that map to the three Fraymakers taunt slots.
 const TAUNT_LABEL_NAMES: &[&str] = &[
@@ -729,22 +876,76 @@ fn sub_anim_splits(
     match fm_name {
         "jab" => split_jab(frame_labels, total_frames),
         "taunt" => split_taunt(frame_labels, total_frames),
+        "special_neutral" | "special_neutral_air" | "special_side" | "special_side_air" =>
+            split_charge_special(fm_name, frame_labels, total_frames),
         _ => vec![],
     }
 }
 
-/// Split a jab sprite into jab1/jab2/jab3/... by filtering control-flow labels
-/// and mapping remaining labels positionally.
+/// A neutral/side special that charges inside its one clip (samus's beam): an entry, a "loop"/
+/// "charging" section it cycles while held, then "attack"/"attack2" frames that fire. FM plays a
+/// clip once, so it must be cut so the base holds the charge and the attack frames are their own
+/// animation the move jumps to. Cut at the "attack" label when a charge point ("charging" or
+/// "loop") precedes it; a "loop" after the attack is the attack's own (a needle volley cycling)
+/// and does not make the move uncuttable. anim_splitter follows this cut for the entity's
+/// animations, so the label table and the entity agree: base 0..attack (keeps charging/loop),
+/// `<name>_attack` attack..end.
+fn split_charge_special(fm_name: &str, frame_labels: &[(String, u16)], total_frames: u16) -> Vec<(String, u16, u16)> {
+    let attack_f = frame_labels.iter().find(|(l, _)| l == "attack").map(|(_, f)| *f)
+        .filter(|&af| af > 0 && af < total_frames);
+    let charged_before = |af: u16| frame_labels.iter()
+        .any(|(l, f)| (l == "charging" || l == "loop") && *f < af);
+    match attack_f {
+        Some(af) if charged_before(af) => vec![
+            (fm_name.to_string(), 0, af),
+            (format!("{fm_name}_attack"), af, total_frames),
+        ],
+        _ => vec![],
+    }
+}
+
+/// Split a jab sprite into jab1/jab2/jab3/...: a label starts a piece when the move ENDS
+/// before it (a frame between the previous piece's start and the label carries the script's
+/// `endAttack`), which is what the source says a hit's boundary is. A label the move runs
+/// through (kirby's `again`, the rapid jab's loop point; `finish`, its ending) is a mark
+/// inside the piece, kept as a frame label the class jumps to. A clip whose scripts state no
+/// end at all is cut at every label, since nothing says otherwise.
 fn split_jab(frame_labels: &[(String, u16)], total_frames: u16) -> Vec<(String, u16, u16)> {
-    // Filter to only real sub-animation boundary labels
-    let real_labels: Vec<(u16, &str)> = frame_labels.iter()
-        .filter(|(label, _)| !CONTROL_FLOW_LABELS.contains(&label.as_str()))
-        .map(|(label, frame)| (*frame, label.as_str()))
-        .collect();
+    let ends: Option<std::collections::BTreeSet<u16>> = ENDING_FRAMES.with(|c| c.borrow().get("jab").cloned());
+    let mut sorted: Vec<(u16, &str)> = frame_labels.iter().map(|(l, f)| (*f, l.as_str())).collect();
+    sorted.sort_by_key(|(f, _)| *f);
+    let mut real_labels: Vec<(u16, &str)> = Vec::new();
+    let mut piece_start = 0u16;
+    for (f, l) in sorted {
+        let starts = f == 0 || match &ends {
+            Some(ends) => ends.iter().any(|&e| e >= piece_start && e < f),
+            None => true,
+        };
+        if starts || real_labels.is_empty() {
+            real_labels.push((f, l));
+            piece_start = f;
+        }
+    }
 
     if real_labels.is_empty() {
         // No labels at all — single jab1 covering the whole sprite
         return vec![("jab1".to_string(), 0, total_frames)];
+    }
+    // A clip's unlabelled head, before its first label, is played by the source (the clip
+    // starts at its frame 0 whatever is labelled). What it IS is written in its scripts: a head
+    // that ends the move by itself (yoshi's first kick, `kick2` labelled at frame 8 and nothing
+    // at 0) is the first hit, and the tap's own hit was dropped when the cut began at the label;
+    // a head that ends nothing (mario's set-up frame before `begin` at 1) flows into the first
+    // labelled hit and is cut with it.
+    if let Some(&(f0, _)) = real_labels.first().filter(|&&(f, _)| f > 0) {
+        let head_ends = ENDING_FRAMES.with(|c| {
+            c.borrow().get("jab").is_some_and(|ends| ends.iter().any(|&n| n < f0))
+        });
+        if head_ends {
+            real_labels.insert(0, (0, ""));
+        } else {
+            real_labels[0].0 = 0;
+        }
     }
 
     // Build ranges: each real label starts a sub-animation that ends at the next one
@@ -860,15 +1061,17 @@ fn apply_fallbacks(result: &mut BTreeMap<String, AnimationBoxData>) {
 /// The box character is usually a DefineSprite wrapping a square DefineShape;
 /// descend through sprites, folding in each placement matrix's scale so a
 /// non-identity inner transform is accounted for.
-fn measure_box_char(swf: &swf::Swf, char_id: u16, depth: u8) -> Option<f64> {
+fn measure_box_char(swf: &swf::Swf, char_id: u16, depth: u8) -> Option<BoxBase> {
     if depth > 4 { return None; }
     for tag in &swf.tags {
         match tag {
             swf::Tag::DefineShape(shape) if shape.id == char_id => {
                 let b = &shape.shape_bounds;
-                let w = (b.x_max.get() - b.x_min.get()) as f64 / 20.0;
-                let h = (b.y_max.get() - b.y_min.get()) as f64 / 20.0;
-                return Some((w + h) / 2.0);
+                let (x0, x1) = (b.x_min.get() as f64 / 20.0, b.x_max.get() as f64 / 20.0);
+                let (y0, y1) = (b.y_min.get() as f64 / 20.0, b.y_max.get() as f64 / 20.0);
+                // the shape is not always drawn about its origin: where its middle sits is where
+                // a placed box's middle is, off the placement's own point
+                return Some(BoxBase { w: x1 - x0, h: y1 - y0, ox: (x0 + x1) / 2.0, oy: (y0 + y1) / 2.0 });
             }
             swf::Tag::DefineSprite(sprite) if sprite.id == char_id => {
                 for stag in &sprite.tags {
@@ -878,10 +1081,15 @@ fn measure_box_char(swf: &swf::Swf, char_id: u16, depth: u8) -> Option<f64> {
                             | swf::PlaceObjectAction::Replace(id) => *id,
                             _ => continue,
                         };
-                        let scale = po.matrix
-                            .map(|m| (m.a.to_f64().abs() + m.d.to_f64().abs()) / 2.0)
-                            .unwrap_or(1.0);
-                        return measure_box_char(swf, child, depth + 1).map(|s| s * scale);
+                        let inner = measure_box_char(swf, child, depth + 1)?;
+                        let Some(m) = po.matrix else { return Some(inner) };
+                        let (a, b, c, d) = (m.a.to_f64(), m.b.to_f64(), m.c.to_f64(), m.d.to_f64());
+                        return Some(BoxBase {
+                            w: inner.w * (a * a + b * b).sqrt(),
+                            h: inner.h * (c * c + d * d).sqrt(),
+                            ox: a * inner.ox + c * inner.oy + m.tx.get() as f64 / 20.0,
+                            oy: b * inner.ox + d * inner.oy + m.ty.get() as f64 / 20.0,
+                        });
                     }
                 }
                 return None;
@@ -890,6 +1098,24 @@ fn measure_box_char(swf: &swf::Swf, char_id: u16, depth: u8) -> Option<f64> {
         }
     }
     None
+}
+
+/// A collision box's own shape: its width and height in pixels, and where its middle sits off
+/// the box's registration point (zero for a shape drawn about its origin).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BoxBase { pub w: f64, pub h: f64, pub ox: f64, pub oy: f64 }
+
+/// Every box character a fighter places, each measured on its own: one fighter can place boxes
+/// drawn two ways (sonic's are a 50 px square about the origin and a 41 x 43 shape off it), and a
+/// box read through the other's shape lands in the wrong place at the wrong size.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BoxBases { pub by_char: BTreeMap<u16, BoxBase>, pub default: Option<BoxBase> }
+
+impl BoxBases {
+    fn of(&self, char_id: u16) -> BoxBase {
+        self.by_char.get(&char_id).copied().or(self.default)
+            .unwrap_or(BoxBase { w: DEFAULT_BASE_SIZE, h: DEFAULT_BASE_SIZE, ox: 0.0, oy: 0.0 })
+    }
 }
 
 /// Determine the base (unscaled, pre-PlaceObject-matrix) size of the
@@ -901,7 +1127,7 @@ fn measure_box_char(swf: &swf::Swf, char_id: u16, depth: u8) -> Option<f64> {
 /// (attackBox / hitBox / grabBox / …) actually place, then measure its
 /// shape. The symbol is not reliably named "CollisonBox" (sandbag's isn't),
 /// so name-based lookup is only a last-resort fallback.
-fn find_collision_box_base_size(swf: &swf::Swf, sym_names: &BTreeMap<u16, String>) -> f64 {
+fn find_collision_box_base_size(swf: &swf::Swf, sym_names: &BTreeMap<u16, String>) -> BoxBases {
     // Tally char ids placed under box-typed instance names (excluding
     // itemBox, which is a separate character with its own geometry).
     let mut tally: BTreeMap<u16, u32> = BTreeMap::new();
@@ -926,11 +1152,20 @@ fn find_collision_box_base_size(swf: &swf::Swf, sym_names: &BTreeMap<u16, String
             }
         }
     }
-    if let Some((&char_id, _)) = tally.iter().max_by_key(|(_, &count)| count) {
-        if let Some(size) = measure_box_char(swf, char_id, 0) {
-            log::info!("CollisonBox char id={}: measured base size {:.1}px", char_id, size);
-            return size;
+    let mut bases = BoxBases::default();
+    for &char_id in tally.keys() {
+        if let Some(base) = measure_box_char(swf, char_id, 0) {
+            bases.by_char.insert(char_id, base);
         }
+    }
+    // a box placed as something not measured (a placement that carries no char) reads as the
+    // character most boxes are
+    if let Some((&char_id, _)) = tally.iter().filter(|(id, _)| bases.by_char.contains_key(id)).max_by_key(|(_, &count)| count) {
+        let base = bases.by_char[&char_id];
+        log::info!("CollisonBox char id={}: measured base {:.1}x{:.1}px, middle off ({:.2}, {:.2}); {} box character(s)",
+            char_id, base.w, base.h, base.ox, base.oy, bases.by_char.len());
+        bases.default = Some(base);
+        return bases;
     }
 
     // Fallback: locate the box character by symbol name.
@@ -941,76 +1176,15 @@ fn find_collision_box_base_size(swf: &swf::Swf, sym_names: &BTreeMap<u16, String
         })
         .map(|(id, _)| *id);
     if let Some(sprite_id) = collison_sprite_id {
-        if let Some(size) = measure_box_char(swf, sprite_id, 0) {
-            log::info!("CollisonBox (by name) id={}: base size {:.1}px", sprite_id, size);
-            return size;
+        if let Some(base) = measure_box_char(swf, sprite_id, 0) {
+            log::info!("CollisonBox (by name) id={}: base {:.1}x{:.1}px", sprite_id, base.w, base.h);
+            bases.default = Some(base);
+            return bases;
         }
     }
 
     log::warn!("CollisonBox shape not found; using default base size {:.0}px", DEFAULT_BASE_SIZE);
-    DEFAULT_BASE_SIZE
-}
-
-/// Extract SSF2 animation name from a symbol name like "mario_fla.NAir_40".
-/// Uses the ssf2_to_fm map to validate/match against known animation names.
-pub fn extract_ssf2_anim_name(
-    sym: &str,
-    char_lower: &str,
-    ssf2_to_fm: &BTreeMap<String, String>,
-) -> Option<String> {
-    // Symbol format: "{char}_fla.{AnimLabel}_{index}"
-    // e.g. "mario_fla.NAir_40" → local = "NAir_40" → strip suffix → "NAir" → normalize → "a_air"
-    let local = if sym.contains('.') {
-        sym.split('.').next_back()?
-    } else {
-        sym
-    };
-
-    // Strip trailing _NNN
-    let stripped = strip_numeric_suffix(local);
-
-    // Some characters name their move sprites with a REDUNDANT char prefix inside the
-    // label instead of "{char}_fla.{Move}" (mario's "mario_fla.NAir"):
-    //   fox:        "fox_fla.fox_airN"   → strip "fox_"  → "airN"
-    //   donkeykong: "donkeykong_fla.dkbair" → strip "dk" → "bair" (in-game short code)
-    // Strip the longest matching prefix so the label resolves. Case-insensitive; only
-    // strips when actually present, so mario-style labels are unaffected.
-    let stripped = {
-        let lc = stripped.to_ascii_lowercase();
-        // Candidate prefixes, longest first: "{char}_", then the char's short code.
-        let cl = char_lower.to_ascii_lowercase();
-        let mut prefixes = vec![format!("{cl}_")];
-        // In-game short codes for characters whose sprite labels use them (the label
-        // has no underscore separator, e.g. "dkbair"). Extend as more are found.
-        if let Some(sc) = match cl.as_str() {
-            "donkeykong" => Some("dk"),
-            _ => None,
-        } { prefixes.push(sc.to_string()); }
-        let mut s = stripped;
-        for pfx in &prefixes {
-            if lc.starts_with(pfx.as_str()) && stripped.len() > pfx.len() {
-                s = &stripped[pfx.len()..];
-                break;
-            }
-        }
-        s
-    };
-
-    // Try direct match against SSF2 anim names (case-insensitive)
-    // Build a normalized version: "NAir" → "nair", then match against known patterns
-    let normalized = normalize_anim_label(stripped);
-
-    // First try exact match
-    if ssf2_to_fm.contains_key(&normalized) {
-        return Some(normalized);
-    }
-
-    // Try the label → SSF2 name table (loaded from
-    // mappings/character/animations.json — see crate::mappings).
-    crate::mappings::character_animations()
-        .label_to_ssf2
-        .get(&normalized)
-        .cloned()
+    bases
 }
 
 /// Static SSF2 xframe name → Fraymakers animation name lookup.
@@ -1026,48 +1200,12 @@ pub fn static_ssf2_to_fm(ssf2_name: &str) -> Option<String> {
         .cloned()
 }
 
-fn strip_numeric_suffix(s: &str) -> &str {
-    let bytes = s.as_bytes();
-    let mut end = bytes.len();
-    // Strip trailing _NNN
-    if let Some(pos) = s.rfind('_') {
-        let suffix = &s[pos + 1..];
-        if suffix.chars().all(|c| c.is_ascii_digit()) {
-            end = pos;
-        }
-    }
-    &s[..end]
-}
-
-fn normalize_anim_label(s: &str) -> String {
-    // CamelCase → lowercase, remove underscores for matching
-    s.to_lowercase().replace('_', "")
-}
-
-/// Extract per-frame collision box data from a single DefineSprite.
-/// Returns a map of frame_index → list of boxes.
-///
-/// Strategy: simulate the Flash display list.
-/// PlaceObject::Place(id) with name = new object at depth
-/// PlaceObject::Modify = move/transform existing object at depth (no character change)
-/// PlaceObject::Replace(id) = replace object at depth
-/// Extract collision boxes for a specific DefineSprite by ID.
-/// Used for projectile inner sprites (e.g. mario_fireball_mc).
-/// Returns AnimationBoxData with frames keyed 0-based.
-pub fn extract_boxes_for_sprite_id(
-    swf_data: &[u8],
-    sprite_id: u16,
-) -> anyhow::Result<Option<AnimationBoxData>> {
-    let swf_buf = swf::decompress_swf(Cursor::new(swf_data))?;
-    let swf = swf::parse_swf(&swf_buf)?;
-    extract_boxes_for_sprite_id_from_swf(&swf, sprite_id)
-}
-
-/// `extract_boxes_for_sprite_id` against an already-parsed SWF. Used per
-/// projectile / per effect in main.rs to avoid the per-call SWF parse.
-pub fn extract_boxes_for_sprite_id_from_swf(
+/// The boxes of a sprite as the clip that holds it places it (a projectile's stance sits off its
+/// clip's origin: isaac's down tilt thorns were read 61 px below where the source has them).
+pub fn extract_boxes_for_sprite_id_placed(
     swf: &swf::Swf<'_>,
     sprite_id: u16,
+    placed: XframeTransform,
 ) -> anyhow::Result<Option<AnimationBoxData>> {
     let mut sym_names: BTreeMap<u16, String> = BTreeMap::new();
     for tag in &swf.tags {
@@ -1080,12 +1218,11 @@ pub fn extract_boxes_for_sprite_id_from_swf(
     }
 
     let box_base_size = find_collision_box_base_size(swf, &sym_names);
-    let identity = XframeTransform::default();
 
     for tag in &swf.tags {
         if let swf::Tag::DefineSprite(sprite) = tag {
             if sprite.id != sprite_id { continue; }
-            let frames = extract_frame_boxes(sprite, &sym_names, box_base_size, identity);
+            let frames = extract_frame_boxes(sprite, &sym_names, &box_base_size, placed);
             if frames.is_empty() { return Ok(None); }
             return Ok(Some(AnimationBoxData {
                 ssf2_name: String::new(),
@@ -1093,6 +1230,7 @@ pub fn extract_boxes_for_sprite_id_from_swf(
                 total_frames: sprite.num_frames,
                 frames,
                 sprite_frame_offset: 0,
+                clip_frames: sprite.num_frames,
                 frame_labels: vec![],
                 content_switches: extract_content_switch_frames(sprite),
             }));
@@ -1107,7 +1245,7 @@ pub fn extract_boxes_for_sprite_id_from_swf(
 fn extract_frame_boxes(
     sprite: &swf::Sprite,
     sym_names: &BTreeMap<u16, String>,
-    base_size: f64,
+    bases: &BoxBases,
     root_xform: XframeTransform,
 ) -> BTreeMap<u16, Vec<FrameBox>> {
     // Display list: depth → (char_id, instance_name, matrix)
@@ -1147,8 +1285,7 @@ fn extract_frame_boxes(
                             // The shape hangs upward from this point.
                             let (lcx, lcy, lw, lh, rot) = matrix_to_itembox(&item.matrix);
                             // Hand position in world space
-                            let whx = root_xform.tx + lcx * sx;
-                            let why = root_xform.ty + lcy * sy;
+                            let (whx, why) = root_xform.apply(lcx, lcy);
                             let ww = lw * sx.abs();
                             let wh = lh * sy.abs();
                             // Top-left: hand is at bottom-center, so top = hand_y - height
@@ -1168,7 +1305,7 @@ fn extract_frame_boxes(
                         // the full matrix decomposition (√(a²+b²), √(c²+d²),
                         // atan2(b,a)) — correct even for ~90° boxes whose
                         // scale lives in the off-diagonal b/c terms.
-                        let (local_x, local_y, local_w, local_h, rot) = matrix_to_box(&item.matrix, base_size);
+                        let (local_x, local_y, local_w, local_h, rot) = matrix_to_box(&item.matrix, bases.of(item.char_id));
 
                         // Per-BoxType rotation decision (see
                         // finalize_box_geometry). FM honors rotation only on
@@ -1191,10 +1328,7 @@ fn extract_frame_boxes(
                         let box_x = cx - fin_w / 2.0;
                         let box_y = cy - fin_h / 2.0;
 
-                        let world_x = root_xform.tx + box_x * sx;
-                        let world_y = root_xform.ty + box_y * sy;
-                        let world_w = (fin_w * sx).abs();
-                        let world_h = (fin_h * sy).abs();
+                        let (world_x, world_y, world_w, world_h) = root_xform.apply_rect(box_x, box_y, fin_w, fin_h);
                         Some(FrameBox {
                             box_type,
                             instance_name: item.instance_name.clone(),
@@ -1208,21 +1342,16 @@ fn extract_frame_boxes(
                     .collect();
 
                 if !boxes.is_empty() {
-                    // Invariant: a frame's box instance names are unique. The display
-                    // list is depth-keyed and Flash authoring keeps instance names
-                    // unique per timeline, so each name maps to exactly one box here.
-                    // entity_gen relies on this — it keys one FM layer (and one
-                    // sym_box_{anim}_{inst}_{frame} symbol) per instance name and
-                    // takes the first box per name. If the invariant is ever violated
-                    // the extra box would be silently dropped and the symbol seeds
-                    // would alias, so warn loudly instead of failing quietly.
+                    // A frame CAN carry the same instance name twice: the source numbers a
+                    // second box by its name (attackBox, attackBox2) but nothing makes it, and
+                    // kirby's drill puts two plain attackBox boxes on every active frame.
+                    // entity_gen keys a layer on the name AND which occurrence it is, so both
+                    // survive; this only says how often the source does it.
                     let mut seen = std::collections::HashSet::new();
                     for b in &boxes {
                         if !seen.insert(b.instance_name.as_str()) {
-                            log::warn!(
-                                "frame {} has duplicate box instance name '{}'; only the first is kept",
-                                current_frame, b.instance_name
-                            );
+                            log::debug!("frame {} places '{}' more than once",
+                                current_frame, b.instance_name);
                         }
                     }
                     result.insert(current_frame, boxes);
@@ -1290,8 +1419,8 @@ struct DisplayItem {
 }
 
 /// Convert a SWF matrix to (top_left_x, top_left_y, width, height, rotation_deg)
-/// in pixels / degrees. The CollisonBox shape is base_size × base_size pixels,
-/// **centered at (0,0)**; tx/ty give the **center** position.
+/// in pixels / degrees. The box shape is `base.w` x `base.h` pixels, its middle at
+/// `(base.ox, base.oy)` off the registration point, which tx/ty place.
 ///
 /// Scale must come from the full column-vector magnitudes, NOT just `a`/`d`.
 /// A box rotated by θ stores its scale in the off-diagonal `b`/`c` terms:
@@ -1342,15 +1471,15 @@ fn finalize_box_geometry(box_type: BoxType, w: f64, h: f64, rotation_deg: f64) -
     }
 }
 
-fn matrix_to_box(m: &swf::Matrix, base_size: f64) -> (f64, f64, f64, f64, f64) {
-    // tx/ty are in twips (1/20 pixel) → convert to pixels
-    let cx = m.tx.get() as f64 / 20.0;  // center x
-    let cy = m.ty.get() as f64 / 20.0;  // center y
-
+fn matrix_to_box(m: &swf::Matrix, base: BoxBase) -> (f64, f64, f64, f64, f64) {
     let a = m.a.to_f64();
     let b = m.b.to_f64();
     let c = m.c.to_f64();
     let d = m.d.to_f64();
+    // the placed shape's middle: the placement's point (tx/ty, twips) plus the shape's own
+    // middle carried through the placement's matrix
+    let cx = m.tx.get() as f64 / 20.0 + a * base.ox + c * base.oy;
+    let cy = m.ty.get() as f64 / 20.0 + b * base.ox + d * base.oy;
 
     let scale_x = (a * a + b * b).sqrt();
     let scale_y = (c * c + d * d).sqrt();
@@ -1369,8 +1498,8 @@ fn matrix_to_box(m: &swf::Matrix, base_size: f64) -> (f64, f64, f64, f64, f64) {
         b.atan2(a).to_degrees()
     };
 
-    let w = scale_x * base_size;
-    let h = scale_y * base_size;
+    let w = scale_x * base.w;
+    let h = scale_y * base.h;
 
     // The CollisonBox shape is centered at the origin, so tx/ty is the
     // CENTER. Rotation in entity_gen pivots about the box center, so the
@@ -1525,7 +1654,7 @@ fn median_f64(sorted: &[f64]) -> f64 {
 
 #[cfg(test)]
 mod matrix_to_box_tests {
-    use super::{matrix_to_box, aabb_of_rotated_box, finalize_box_geometry, BoxType};
+    use super::{matrix_to_box, BoxBase, aabb_of_rotated_box, finalize_box_geometry, BoxType};
     use swf::{Matrix, Fixed16, Twips};
 
     fn mat(a: f32, b: f32, c: f32, d: f32, tx: f32, ty: f32) -> Matrix {
@@ -1544,7 +1673,7 @@ mod matrix_to_box_tests {
     #[test]
     fn axis_aligned_box_unchanged() {
         // a/d on the diagonal, b=c=0: width=|a|*bs, height=|d|*bs, rotation=0.
-        let (x, y, w, h, rot) = matrix_to_box(&mat(0.8, 0.0, 0.0, 0.5, 10.0, 20.0), 100.0);
+        let (x, y, w, h, rot) = matrix_to_box(&mat(0.8, 0.0, 0.0, 0.5, 10.0, 20.0), BoxBase { w: 100.0, h: 100.0, ox: 0.0, oy: 0.0 });
         assert!(approx(w, 80.0),  "w={}", w);
         assert!(approx(h, 50.0),  "h={}", h);
         assert!(approx(rot, 0.0), "rot={}", rot);
@@ -1559,7 +1688,7 @@ mod matrix_to_box_tests {
         // in b/c. The old a/d-only read returned 0×0; the fix recovers
         // width=√(a²+b²)·bs, height=√(c²+d²)·bs.
         // f7 hitBox: a=0, b=0.316, c=-0.745, d=0 → w=31.6 h=74.5 rot=90°.
-        let (_x, _y, w, h, rot) = matrix_to_box(&mat(0.0, 0.316, -0.745, 0.0, 0.0, 0.0), 100.0);
+        let (_x, _y, w, h, rot) = matrix_to_box(&mat(0.0, 0.316, -0.745, 0.0, 0.0, 0.0), BoxBase { w: 100.0, h: 100.0, ox: 0.0, oy: 0.0 });
         assert!(approx(w, 31.6), "w={}", w);
         assert!(approx(h, 74.5), "h={}", h);
         assert!(approx(rot, 90.0), "rot={}", rot);
@@ -1571,17 +1700,26 @@ mod matrix_to_box_tests {
         // Negative a with b=c=0 is a horizontal flip, not a rotation.
         // The epsilon guard keeps rotation 0 (a rectangle is symmetric
         // under reflection) so flipped boxes don't churn to rotation 180.
-        let (_x, _y, w, h, rot) = matrix_to_box(&mat(-0.8, 0.0, 0.0, 0.5, 0.0, 0.0), 100.0);
+        let (_x, _y, w, h, rot) = matrix_to_box(&mat(-0.8, 0.0, 0.0, 0.5, 0.0, 0.0), BoxBase { w: 100.0, h: 100.0, ox: 0.0, oy: 0.0 });
         assert!(approx(w, 80.0), "w={}", w);
         assert!(approx(h, 50.0), "h={}", h);
         assert!(approx(rot, 0.0), "flip must stay rotation 0, got {}", rot);
     }
 
     #[test]
+    fn a_box_shape_off_its_origin_moves_the_box() {
+        // the shape's middle 10 px right of the registration point, the box scaled 2x: its middle
+        // lands 20 px right of where it is placed
+        let (x, y, w, h, _) = matrix_to_box(&mat(2.0, 0.0, 0.0, 1.0, 100.0, 40.0), BoxBase { w: 10.0, h: 10.0, ox: 10.0, oy: -4.0 });
+        assert!((x - (100.0 + 20.0 - 10.0)).abs() < 1e-6 && (y - (40.0 - 4.0 - 5.0)).abs() < 1e-6, "{x} {y}");
+        assert!((w - 20.0).abs() < 1e-6 && (h - 10.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn partial_rotation_decomposes() {
         // 45°-ish rotation: a=d=cos, b=sin, c=-sin, uniform scale 1.0.
         let s = std::f32::consts::FRAC_1_SQRT_2; // cos45 = sin45 ≈ 0.707
-        let (_x, _y, w, h, rot) = matrix_to_box(&mat(s, s, -s, s, 0.0, 0.0), 100.0);
+        let (_x, _y, w, h, rot) = matrix_to_box(&mat(s, s, -s, s, 0.0, 0.0), BoxBase { w: 100.0, h: 100.0, ox: 0.0, oy: 0.0 });
         assert!(approx(w, 100.0), "w={}", w);
         assert!(approx(h, 100.0), "h={}", h);
         assert!(approx(rot, 45.0), "rot={}", rot);
@@ -1687,5 +1825,46 @@ mod matrix_to_box_tests {
             let (_w, _h, rot) = finalize_box_geometry(bt, 31.6, 74.5, 90.0);
             assert!(approx(rot, 0.0), "{:?} must collapse rotation to 0, got {}", bt, rot);
         }
+    }
+}
+
+#[cfg(test)]
+mod jab_split_tests {
+    use super::split_jab;
+
+    #[test]
+    fn an_unlabelled_head_is_the_first_jab() {
+        // yoshi: one inner label at frame 8, the first hit before it carries none, and its
+        // frame 7 ends the move
+        let mut ends = std::collections::BTreeMap::new();
+        ends.insert("jab".to_string(), [7u16].into_iter().collect());
+        super::install_ending_frames(ends);
+        let labels = vec![("kick2".to_string(), 8u16)];
+        assert_eq!(split_jab(&labels, 23), vec![("jab1".to_string(), 0, 8), ("jab2".to_string(), 8, 23)]);
+        // mario: a set-up frame before `begin` at 1 ends nothing, so it is cut with the first hit
+        let mut ends = std::collections::BTreeMap::new();
+        ends.insert("jab".to_string(), [7u16, 17].into_iter().collect());
+        super::install_ending_frames(ends);
+        let labels = vec![("begin".to_string(), 1u16), ("hit2".to_string(), 8), ("hit3".to_string(), 18)];
+        assert_eq!(split_jab(&labels, 34), vec![("jab1".to_string(), 0, 8), ("jab2".to_string(), 8, 18), ("jab3".to_string(), 18, 34)]);
+        super::install_ending_frames(Default::default());
+        // a clip that labels its first hit too keeps its pieces as they are
+        let labels = vec![("kick1".to_string(), 0u16), ("kick2".to_string(), 8)];
+        assert_eq!(split_jab(&labels, 23), vec![("jab1".to_string(), 0, 8), ("jab2".to_string(), 8, 23)]);
+    }
+
+    #[test]
+    fn a_label_the_move_runs_through_is_a_mark_inside_the_piece() {
+        // kirby: the move ends at 9, 18 and 55; `again` (the rapid jab's loop point) and
+        // `finish` (its ending) sit inside the third hit, and nothing ends before them
+        let mut ends = std::collections::BTreeMap::new();
+        ends.insert("jab".to_string(), [9u16, 18, 55].into_iter().collect());
+        super::install_ending_frames(ends);
+        let labels = vec![("hit2".to_string(), 10u16), ("hit3".to_string(), 19), ("again".to_string(), 21), ("finish".to_string(), 34)];
+        assert_eq!(split_jab(&labels, 56), vec![("jab1".to_string(), 0, 10), ("jab2".to_string(), 10, 19), ("jab3".to_string(), 19, 56)]);
+        // ...and a clip whose scripts state no end is cut at every label
+        super::install_ending_frames(Default::default());
+        let labels = vec![("one".to_string(), 0u16), ("two".to_string(), 8), ("three".to_string(), 16)];
+        assert_eq!(split_jab(&labels, 23), vec![("jab1".to_string(), 0, 8), ("jab2".to_string(), 8, 16), ("jab3".to_string(), 16, 23)]);
     }
 }

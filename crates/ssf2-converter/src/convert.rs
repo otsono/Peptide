@@ -80,9 +80,16 @@ pub struct ConversionSummary {
 /// multi-character project). In-process; see the module docs for the concurrency
 /// contract. The caller initialises logging.
 pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
+    // a fighter's and its projectiles' positions cross the size scale, in every script this
+    // conversion translates (class methods, frame scripts, the projectiles' own); a stage's
+    // conversion never comes through here
+    let _positions_guard = crate::api_mappings::PositionsCrossGuard::install();
     log::info!("SSF2 → Fraymakers Converter");
     log::info!("Input: {}", opts.input.display());
 
+    // what it borrows (shared sounds, shared classes) is looked for beside it, when beside it is
+    // the game's own data
+    if let Some(dir) = opts.input.parent() { crate::shared_packages::note_input_dir(dir); }
     // Read + decompress SSF
     let ssf_data = fs::read(&opts.input).with_context(|| format!("read {}", opts.input.display()))?;
     log::info!("Loaded {} bytes", ssf_data.len());
@@ -112,12 +119,16 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
             }
         }
     }).or_else(|| {
-        let misc_ssf = opts.input.parent()?.join("misc.ssf");
-        if !misc_ssf.exists() {
-            log::info!("misc.ssf not found next to input — skipping palette extraction");
+        // THE COSTUMES ARE IN THE GAME'S DATA, wherever it keeps them. A loose copy names the
+        // file misc.ssf; the installed game keeps the same table in one of its numbered DAT
+        // archives. Without it every costume here is invented, and the default one shows the
+        // art's BASE colours, which the source always recolours (mario's cap is green in the
+        // raw art and red only through his default costume).
+        let Some(misc_ssf) = costume_source_near(opts.input.parent()?) else {
+            log::warn!("no costume table found beside the input -- costumes will be invented, and the default one will show the art's base colours");
             return None;
-        }
-        log::info!("Found misc.ssf — extracting costume palettes...");
+        };
+        log::info!("Found the costume table in {} -- extracting costume palettes...", misc_ssf.display());
         match extract_costumes_to_temp(&misc_ssf) {
             Ok(path) => {
                 log::info!("Costume palettes cached to {}", path.display());
@@ -157,6 +168,10 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
     };
 
     log::info!("Characters to process: {:?}", char_names);
+    // one fighter asked for by name out of a package that holds others is its own project, beside
+    // the others' projects: its identities are scoped to it so the two never collide in a match
+    let _project_ns = (opts.name.is_some() && detect_char_names(&swf, &opts.input).len() > 1)
+        .then(|| crate::uuid_gen::ProjectNsGuard::install(&char_names[0]));
 
     // Per-SSF emission shape (docs/multi_character_projects_plan.md §2):
     //   * single-character SSF (or --per-character-projects): each char in its own
@@ -256,6 +271,10 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
             log::error!("{problem}");
             all_warnings.push(problem);
         }
+        for problem in lint_duplicate_guids(dir) {
+            log::error!("{problem}");
+            all_warnings.push(problem);
+        }
     }
 
     // Collect the .fraytools files produced (for the UI's "open / publish" step).
@@ -296,6 +315,45 @@ fn collect_fraytools_files(
         }
     }
     out
+}
+
+/// Two assets carrying one guid is a conflict FrayTools reports and the engine
+/// resolves arbitrarily: whichever the project loads second wins, and the other's
+/// references draw the wrong picture. Nothing downstream can tell them apart, so
+/// catch it here where the two files are still visible side by side.
+fn lint_duplicate_guids(dir: &Path) -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        if let Ok(rd) = fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().and_then(|x| x.to_str()) == Some("meta") {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(dir, &mut files);
+
+    let mut seen: std::collections::BTreeMap<String, PathBuf> = Default::default();
+    let mut problems = Vec::new();
+    for f in files {
+        let Ok(text) = fs::read_to_string(&f) else { continue };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let Some(guid) = json.get("guid").and_then(|g| g.as_str()) else { continue };
+        match seen.get(guid) {
+            Some(first) => problems.push(format!(
+                "two assets claim the same identity {guid}: {} and {} — \
+                 FrayTools reports a guid conflict and one of them draws the other's picture",
+                first.display(),
+                f.display()
+            )),
+            None => { seen.insert(guid.to_string(), f); }
+        }
+    }
+    problems
 }
 
 /// #13: walk every emitted `.hx` under `dir` and structurally lint it, returning
@@ -456,6 +514,42 @@ fn hscript_structural_problem(src: &str) -> Option<String> {
 
 /// Extract all costume palettes from misc.ssf in-process and write to a temp JSON
 /// file. Returns the path to the temp file on success.
+/// The archive beside `dir`'s inputs that carries the game's costume table: `misc.ssf` when a
+/// loose copy is laid out that way, otherwise whichever `.ssf` in the directory holds costume
+/// methods (the installed game keeps it in a numbered DAT archive). Found by what the archive
+/// holds, never by its number, and remembered per directory so a roster of conversions scans
+/// once.
+fn costume_source_near(dir: &Path) -> Option<PathBuf> {
+    let named = dir.join("misc.ssf");
+    if named.exists() { return Some(named) }
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        dir.hash(&mut h);
+        h.finish()
+    };
+    let memo = std::env::temp_dir().join(format!("peptide-costume-source-{key:016x}.txt"));
+    if let Ok(p) = fs::read_to_string(&memo) {
+        let p = PathBuf::from(p.trim());
+        if p.exists() { return Some(p) }
+    }
+    let mut files: Vec<PathBuf> = fs::read_dir(dir).ok()?.flatten().map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("ssf")))
+        .collect();
+    files.sort();
+    let found = files.into_iter().find(|p| {
+        let Ok(raw) = fs::read(p) else { return false };
+        let Ok(swf_data) = ssf::decompress(&raw) else { return false };
+        let Ok(swf) = swf_parser::parse(&swf_data) else { return false };
+        swf.abc_blocks.iter().filter_map(|b| abc_parser::parse(b).ok()).any(|abc| {
+            abc_parser::scan_all_costume_methods(&abc).iter()
+                .any(|(k, v)| k != "unknown" && v.len() >= 10)
+        })
+    })?;
+    let _ = fs::write(&memo, found.display().to_string());
+    Some(found)
+}
+
 fn extract_costumes_to_temp(misc_ssf: &Path) -> Result<PathBuf> {
     let raw = fs::read(misc_ssf).context("read misc.ssf")?;
     let swf_data = ssf::decompress(&raw).context("decompress misc.ssf")?;
@@ -484,12 +578,14 @@ fn extract_costumes_to_temp(misc_ssf: &Path) -> Result<PathBuf> {
         (char_name.clone(), arr)
     }).collect::<serde_json::Map<_, _>>().into();
 
-    let temp_path = misc_ssf.parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(".ssf2_costumes_cache.json");
+    // a private file of its own: the game's data directory is not necessarily writable, and two
+    // conversions running at once must not share one
+    let temp_path = std::env::temp_dir().join(format!("peptide-costumes-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
     fs::write(&temp_path, serde_json::to_string(&json_val)?).context("write costumes cache")?;
 
-    log::info!("Extracted {} characters' costume data from misc.ssf", all_costumes.len());
+    log::info!("Extracted {} characters' costume data from {}", all_costumes.len(), misc_ssf.display());
     Ok(temp_path)
 }
 
@@ -561,7 +657,30 @@ fn process_character(
     // What the main timeline says each sub-MC is, so a clip whose label is not in the mapping
     // file still gets named -- and keeps its frame scripts.
     let class_anim = sprite_parser::class_to_ssf2_anim(parsed_swf, &swf.symbols, &char_name.to_lowercase());
-    let mut char_data = extractor::extract(swf, char_name, &class_anim)?;
+    if std::env::var("PEPTIDE_DUMP_CLASS_ANIM").is_ok() {
+        for (c, a) in &class_anim { eprintln!("[class-anim] {c} -> {a}"); }
+    }
+    // the clips a projectile carries are the projectile's, whatever the fighter's script sweep
+    // would make of their names
+    let foreign_clips = image_extractor::projectile_clip_classes(parsed_swf);
+    // the clips this fighter's own timeline places, at any depth: the ones whose methods are the
+    // fighter's. read off the display tree, since in a package two fighters share every clip
+    // class carries the package's name and not either fighter's
+    let own_clips: std::collections::BTreeSet<String> =
+        sprite_parser::build_xframe_sprite_map(parsed_swf, &swf.symbols, &char_name.to_lowercase())
+            .keys().filter_map(|id| swf.symbols.get(id).cloned()).collect();
+    // the numbers the source's api gives its character states, for the scripts that compare
+    // against them: read off the state class the file itself ships
+    {
+        let mut states: std::collections::BTreeMap<i64, String> = Default::default();
+        for abc in crate::projectile_gen::parse_abcs(parsed_swf) {
+            for (name, v) in abc_parser::class_const_values(&abc, "CState") {
+                if let Ok(n) = v.parse::<i64>() { states.entry(n).or_insert(name); }
+            }
+        }
+        crate::api_mappings::set_source_state_names(states);
+    }
+    let mut char_data = extractor::extract(swf, char_name, &class_anim, &foreign_clips, &own_clips)?;
     log::info!("Extracted: {} attacks, {} animations, {} ssf2→fm mappings",
         char_data.attacks.len(), char_data.animations.len(), char_data.ssf2_to_fm_anim.len());
 
@@ -578,23 +697,47 @@ fn process_character(
         .map(|(_, method)| abc_parser::pascal_form(method))
         .unwrap_or_else(|| abc_parser::pascal_form(char_name));
 
-    // Median xframe scale from the root character MovieClip.
-    let (base_scale_x, base_scale_y) = sprite_parser::extract_xframe_scale_from_swf(parsed_swf, char_name)
-        .unwrap_or_else(|e| {
-            log::warn!("extract_xframe_scale failed: {}, defaulting to 1.0", e);
-            (1.0, 1.0)
-        });
+    // The engine's base scale is the size multiplier alone. The scale the root clip places each
+    // animation at is already in the art and the boxes (both are read in the root's space, its
+    // transform applied), so taking it again here drew and hit-tested a fighter placed at 1.4
+    // (bandana dee) 1.4 times too large: its kick reached 119 source px where the source's reaches 85.
+    let (xframe_x, xframe_y) = sprite_parser::extract_xframe_scale_from_swf(parsed_swf, char_name)
+        .unwrap_or((1.0, 1.0));
     let size_mult = mappings::character_stats().scaling.size_multiplier;
-    char_data.stats.base_scale_x = base_scale_x * size_mult;
-    char_data.stats.base_scale_y = base_scale_y * size_mult;
-    log::info!("Character base scale: scaleX={:.4}, scaleY={:.4} (raw {:.4}/{:.4} × {} size multiplier)",
-        char_data.stats.base_scale_x, char_data.stats.base_scale_y, base_scale_x, base_scale_y, size_mult);
+    char_data.stats.base_scale_x = size_mult;
+    char_data.stats.base_scale_y = size_mult;
+    log::info!("Character base scale: {:.4} (root placement {:.4}/{:.4}, already in the art)",
+        size_mult, xframe_x, xframe_y);
 
     // Root MC transforms — computed once and shared.
     let xform_map = sprite_parser::extract_xframe_transforms_from_swf(
         parsed_swf, char_name, &char_data.ssf2_to_fm_anim,
     ).unwrap_or_default();
+    if std::env::var("PEPTIDE_DUMP_XFORM").is_ok() {
+        for (a, t) in &xform_map { eprintln!("[xform] {a} tx={:.2} ty={:.2} sx={:.3} sy={:.3}", t.tx, t.ty, t.sx, t.sy); }
+    }
 
+    // the frames whose scripts end a move, per animation: what the jab splitter reads to tell a
+    // clip's unlabelled first hit from a set-up frame (installed before the boxes and the images
+    // are cut, so both cuts agree)
+    {
+        let mut ends: std::collections::BTreeMap<String, std::collections::BTreeSet<u16>> = Default::default();
+        for sc in &char_data.scripts {
+            if sc.is_ext_method || !sc.code.contains("endAttack") { continue; }
+            let Some((ssf2, n)) = sc.name.rsplit_once("__frame") else { continue };
+            let (Some(fm), Ok(n)) = (char_data.ssf2_to_fm_anim.get(ssf2), n.parse::<u16>()) else { continue };
+            ends.entry(fm.clone()).or_default().insert(n);
+        }
+        sprite_parser::install_ending_frames(ends);
+        // what the jab clip's frame scripts say, frame by frame: the cut is read off them
+        if std::env::var("PEPTIDE_TRACE_JAB").is_ok() {
+            for sc in &char_data.scripts {
+                let Some((ssf2, n)) = sc.name.rsplit_once("__frame") else { continue };
+                if char_data.ssf2_to_fm_anim.get(ssf2).map(String::as_str) != Some("jab") { continue; }
+                eprintln!("[trace-jab-script] frame {n}: ends={} code={}", sc.code.contains("endAttack"), sc.code.replace('\n', " ").chars().take(160).collect::<String>());
+            }
+        }
+    }
     // Per-frame collision box geometry.
     let sprite_boxes = sprite_parser::parse_sprite_boxes_from_swf(
         parsed_swf, char_name, &char_data.ssf2_to_fm_anim, &xform_map,
@@ -603,6 +746,22 @@ fn process_character(
         Default::default()
     });
     log::info!("Sprite boxes: {} animations with geometry", sprite_boxes.len());
+    // the boxes as extracted, for tools/tests/box_runtime.py to hold against what the source's
+    // engine places at run time: per animation its source label, where it starts in its clip,
+    // each frame's boxes by instance name, and the class of the clip each label plays
+    if let Ok(path) = std::env::var("PEPTIDE_DUMP_BOXES") {
+        let labels = sprite_parser::build_xframe_sprite_map_with(parsed_swf, &swf.symbols, &char_name.to_lowercase(), false);
+        let classes: std::collections::BTreeMap<String, String> = labels.iter()
+            .filter_map(|(id, label)| swf.symbols.get(id).map(|c| (c.rsplit('.').next().unwrap_or(c).to_string(), label.clone())))
+            .collect();
+        let anims: Vec<serde_json::Value> = sprite_boxes.iter().map(|(fm, b)| serde_json::json!({
+            "fm": fm, "label": b.ssf2_name, "offset": b.sprite_frame_offset, "total": b.total_frames,
+            "frames": b.frames.iter().map(|(f, boxes)| (f.to_string(), boxes.iter()
+                .map(|x| serde_json::json!([x.instance_name, x.x, x.y, x.width, x.height])).collect::<Vec<_>>()))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+        })).collect();
+        let _ = std::fs::write(&path, serde_json::to_string(&serde_json::json!({ "classes": classes, "animations": anims })).unwrap_or_default());
+    }
 
     let char_output_dir = match multi_char_slot {
         Some(s) => s.project_dir.clone(),
@@ -622,8 +781,62 @@ fn process_character(
             }
         }
     }
-    let img_result = image_extractor::extract_images_from_swf(
-        parsed_swf, &char_output_dir, char_name, &char_data.ssf2_to_fm_anim, &xform_map,
+    // THE NAMED CHILDREN THE FIGHTER'S CODE ADDRESSES. Each animation's clip places children
+    // under names, and the fighter's code reaches them as fields (`self.shieldframe.alpha`,
+    // `self.waftloc.x`). Each such child is a part riding the fighter: its frames an animation
+    // on the character entity, drawn by a vfx that follows the fighter, and a record the code
+    // talks to; the placement is per animation, since each animation's clip places it where it
+    // does, and where an animation places none the part is not shown.
+    let fighter_part_children: Vec<(String, String, image_extractor::NamedChild)> = {
+        let code: String = char_data.scripts.iter().map(|sc| sc.code.as_str()).collect::<Vec<_>>().join("\n");
+        let roots = sprite_parser::build_xframe_sprite_map_with(parsed_swf, &swf.symbols, &char_name.to_lowercase(), false);
+        if std::env::var("PEPTIDE_DUMP_PARTS").is_ok() {
+            let deep = sprite_parser::build_xframe_sprite_map_with(parsed_swf, &swf.symbols, &char_name.to_lowercase(), true);
+            eprintln!("[fparts] roots {} (deep {}): {:?}", roots.len(), deep.len(), roots.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>());
+            for (sid, label) in &roots {
+                let kids = image_extractor::named_descendants_of_sprite(parsed_swf, *sid);
+                if !kids.is_empty() { eprintln!("[fparts] {sid} ({label}, fm={:?}) names {:?}", char_data.ssf2_to_fm_anim.get(label), kids.iter().map(|c| c.name.clone()).collect::<Vec<_>>()); }
+            }
+        }
+        let mut out: Vec<(String, String, image_extractor::NamedChild)> = Vec::new();
+        // a name the script already owns (a slot of its class, a method) is that, not a child:
+        // dedede's clip places a `gordo` where the held gordo sits, and `gordo` is the slot the
+        // fired one lives in
+        let taken: std::collections::BTreeSet<String> = char_data.ext_vars.iter().cloned()
+            .chain(char_data.scripts.iter().map(|sc| sc.name.clone()))
+            .chain(char_data.getters.iter().cloned())
+            .collect();
+        // ...unless nothing ever PUTS anything in it. a slot the source's own code fills is that
+        // slot (dedede's `gordo` holds the one it fired), and one it only ever reads is the child
+        // the clip places under that name, which the source's engine binds for it (ryu's
+        // `purpletrail` is the trail on his kick, shown for one costume and hidden for the other)
+        let filled = |name: &str| {
+            // the decompile writes the fighter itself as `self.self.`, so any run of them counts.
+            // set to nothing is not filled (a clip's declared field is set back to its default
+            // where its animation starts, and nulling a slot puts nothing in it)
+            let re = crate::dyn_re(&format!(r"(?m)(^|[^.\w])(?:self\.)*{}\s*=([^=][^;\n]*)", regex::escape(name)));
+            char_data.scripts.iter().any(|sc| re.captures_iter(&sc.code)
+                .any(|c| !matches!(c[2].trim(), "null" | "undefined")))
+        };
+        for (sid, label) in &roots {
+            let Some(fm) = char_data.ssf2_to_fm_anim.get(label).cloned() else { continue };
+            for child in image_extractor::named_descendants_of_sprite(parsed_swf, *sid) {
+                if taken.contains(&child.name) && filled(&child.name) { continue }
+                // reached as the fighter's own field, or as the stance clip's (`getStanceMC().waftloc`)
+                let re = crate::dyn_re(&format!(r"(self\.|getStanceMC\(\)\.){}\b", regex::escape(&child.name)));
+                if !re.is_match(&code) { continue }
+                if out.iter().any(|(n, a, _)| *n == child.name && *a == fm) { continue }
+                out.push((child.name.clone(), fm.clone(), child));
+            }
+        }
+        out
+    };
+    let fighter_part_names: Vec<String> = {
+        let mut v: Vec<String> = fighter_part_children.iter().map(|(n, _, _)| n.clone()).collect();
+        v.sort(); v.dedup(); v
+    };
+    let mut img_result = image_extractor::extract_images_from_swf_skipping(
+        parsed_swf, &char_output_dir, char_name, &char_data.ssf2_to_fm_anim, &xform_map, &fighter_part_names,
     ).unwrap_or_else(|e| {
         log::warn!("image_extractor failed: {}", e);
         image_extractor::ImageExtractionResult {
@@ -642,18 +855,208 @@ fn process_character(
         Some(_) => char_output_dir.join(format!("library/audio/{}", char_name)),
         None    => char_output_dir.join("library/audio"),
     };
-    let sounds = match sound_extractor::extract_all_sounds(parsed_swf, &sounds_dir, char_name) {
+    let mut sounds = match sound_extractor::extract_all_sounds(parsed_swf, &sounds_dir, char_name) {
         Ok(s) => s,
         Err(e) => { log::warn!("sound_extractor failed: {}", e); vec![] }
     };
+    // A SOUND THE CHARACTER ASKS FOR THAT ITS OWN FILE DOES NOT CARRY. The game keeps shared
+    // packages loaded and a sound resolves out of them exactly as a class does, which is how a
+    // fighter can name a clip it never ships: mario asks for `jump_common`, his two landing
+    // sounds and the six his screw attack plays, and carried none of them, so each of those
+    // plays came out silent.
+    {
+        let have: std::collections::BTreeSet<&str> = sounds.iter().map(|s| s.name.as_str()).collect();
+        let mut want: std::collections::BTreeSet<String> = char_data.scripts.iter()
+            .flat_map(|sc| sound_extractor::sound_ids_named_in(&sc.code))
+            .filter(|id| !have.contains(id.as_str()))
+            .collect();
+        if !want.is_empty() {
+            let asked = want.len();
+            let extra = sound_extractor::pull_shared_sounds(&mut want, &sounds_dir, char_name);
+            log::info!("{} of {asked} sounds the character names came from a shared package",
+                extra.len());
+            if !want.is_empty() {
+                log::warn!("sounds {char_name} asks for that no package carries: {}",
+                    want.iter().cloned().collect::<Vec<_>>().join(", "));
+            }
+            sounds.extend(extra);
+        }
+    }
+    let sounds = sounds;
 
     // Discover projectiles, effects, head sprite.
     let (mut projectiles, effects, head_sprite) = image_extractor::discover_projectiles_and_head_from_swf(
-        parsed_swf, char_name,
+        parsed_swf, char_name, char_data.thumbnail.as_deref(),
     ).unwrap_or_else(|e| {
         log::warn!("discover_projectiles_and_head failed: {}", e);
         (vec![], vec![], None)
     });
+    // A THING SPAWNED BY ITS CLASS (`spawnEnemy(PacManHydrant)`). The class declares what it
+    // is: its clip (`linkage_id`), its numbers and its flags in `getOwnStats`, and its methods
+    // are the object's own. Entered in the projectile table under the class's name, it is
+    // spawned, drawn and run the way every other projectile of this character is.
+    let mut class_fired: Vec<String> = Vec::new();
+    {
+        let abcs = crate::projectile_gen::parse_abcs(parsed_swf);
+        let by_class: Vec<String> = char_data.scripts.iter()
+            .flat_map(|sc| crate::api_mappings::projectile_names_fired_in(&sc.code))
+            .filter(|n| !char_data.projectile_data.contains_key(n))
+            .filter(|n| abcs.iter().any(|abc| abc_parser::class_named(abc, n).is_some()))
+            .collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        for class in by_class {
+            let Some(abc) = abcs.iter().find(|abc| abc_parser::class_named(abc, &class).is_some()) else { continue };
+            // ...and what the class's own code fires (the hydrant's water shots), so the name is
+            // resolved to its clip the way one the fighter fires is
+            for (_, code) in abc_parser::extract_class_methods(abc, &class) {
+                class_fired.extend(crate::api_mappings::projectile_names_fired_in(&code));
+            }
+            let Some(link) = abc_parser::extract_own_linkage_for(abc, &class) else {
+                log::info!("'{class}' is spawned by class but declares no clip of its own; not carried");
+                continue;
+            };
+            let mut names: std::collections::BTreeMap<String, String> = Default::default();
+            names.insert("linkage_id".into(), link.clone());
+            names.insert("classAPI".into(), class.clone());
+            let data = abc_parser::ProjectileData {
+                stats: abc_parser::extract_own_stats_for(abc, &class),
+                flags: abc_parser::extract_own_flags_for(abc, &class),
+                names,
+                hitboxes: Vec::new(),
+            };
+            log::info!("'{class}' is spawned by class: its declaration says it draws with '{link}'");
+            char_data.projectile_data.insert(class.clone(), data);
+            // and what the class declares it fires (its own `getProjectileStats`): those are in
+            // the table too, so the shots it makes are found the way the character's own are
+            for (name, decl) in abc_parser::extract_projectiles_for(abc, &class) {
+                char_data.projectile_data.entry(name).or_insert(decl);
+            }
+            for mut p in image_extractor::discover_projectiles_by_linkage(parsed_swf, std::slice::from_ref(&link)) {
+                if projectiles.iter().any(|q| crate::projectile_gen::projectile_content_id(&q.name) == crate::projectile_gen::projectile_content_id(&class)) { continue }
+                p.name = class.clone();
+                projectiles.push(p);
+            }
+        }
+    }
+
+    // WHICH CLIP A FIRED NAME DRAWS WITH, said by the source rather than guessed from it. A
+    // package's projectile table gives every name it fires a `linkage_id`, which is the clip.
+    // fox fires `laser` and ships `lazor`; its table says so. and three of its throws fire
+    // different names that all draw with `UThrowLaser`, so one clip answers to several names
+    // with its own stats behind each -- which a rule about how names LOOK could never reach.
+    {
+        let fired: Vec<String> = char_data.scripts.iter()
+            .flat_map(|sc| crate::api_mappings::projectile_names_fired_in(&sc.code))
+            .chain(class_fired.iter().cloned())
+            .collect();
+        let folded = |s: &str| crate::projectile_gen::projectile_content_id(s);
+        for name in fired {
+            let want = folded(&name);
+            if projectiles.iter().any(|p| folded(&p.name) == want) { continue }
+            // the table is keyed as the source spells it, and a spawn need not spell it the same
+            let Some(link) = char_data.projectile_data.iter()
+                .find(|(k, _)| folded(k) == want)
+                .and_then(|(_, d)| d.names.get("linkage_id"))
+            else { continue };
+            let link_id = folded(link);
+            let Some(src) = projectiles.iter().find(|p| folded(&p.name) == link_id).cloned()
+            else { continue };
+            log::info!("'{}' is what this character fires as '{}', its own table says so", link, name);
+            let mut copy = src;
+            copy.name = name;
+            projectiles.push(copy);
+        }
+    }
+
+    // A PROJECTILE THE CHARACTER SPAWNS THAT ITS OWN FILE DOES NOT CARRY, the same way the
+    // sounds above work. what its code names is what the source says exists; where the clip
+    // lives is the game's business, not the fighter's.
+    {
+        let have: std::collections::BTreeSet<String> = projectiles.iter()
+            .map(|p| crate::projectile_gen::projectile_content_id(&p.name)).collect();
+        // read from the SOURCE's own spawn calls: at this point the scripts are still SSF2's,
+        // so the name is the one it fires by, and the id is derived the same way a discovered
+        // clip's is.
+        let mut want: std::collections::BTreeSet<String> = char_data.scripts.iter()
+            .flat_map(|sc| crate::api_mappings::projectile_names_fired_in(&sc.code))
+            .map(|n| crate::projectile_gen::projectile_content_id(&n))
+            .filter(|id| !have.contains(id))
+            .collect();
+        if !want.is_empty() {
+            let asked = want.len();
+            let extra = image_extractor::pull_shared_projectiles(&mut want, input_path.parent());
+            log::info!("{} of {asked} projectile(s) the character spawns came from a shared package",
+                extra.len());
+            if !want.is_empty() {
+                log::warn!("projectiles {char_name} spawns that no package carries: {}",
+                    want.iter().cloned().collect::<Vec<_>>().join(", "));
+            }
+            projectiles.extend(extra);
+        }
+    }
+
+    // A PROJECTILE THAT SPAWNS ANOTHER: a spring places a during-clip that hands off to the
+    // persistent spring and then kills itself, so the spring the player sees is named only by a
+    // projectile, never by the character. Discovery above reads the CHARACTER's spawn calls, so
+    // that second clip is missed and never emitted (the handoff spawns nothing and the spring
+    // vanishes). Follow the projectiles' OWN spawn calls too, to a fixpoint: discover each by the
+    // linkage the source names, and pull it from a shared package when this file does not carry it.
+    {
+        let abcs = crate::projectile_gen::parse_abcs(parsed_swf);
+        let cid = crate::projectile_gen::projectile_content_id;
+        loop {
+            let have: std::collections::BTreeSet<String> =
+                projectiles.iter().map(|p| cid(&p.name)).collect();
+            let nested: std::collections::BTreeSet<String> = projectiles.iter()
+                .flat_map(|p| crate::projectile_gen::all_behaviour(&abcs, p).into_values().collect::<Vec<_>>())
+                .flat_map(|code| crate::api_mappings::projectile_names_fired_in(&code))
+                .filter(|n| !have.contains(&cid(n)))
+                .collect();
+            if nested.is_empty() { break }
+            let names: Vec<String> = nested.iter().cloned().collect();
+            let mut added = false;
+            // what a projectile fires is named in the same table the character's own spawns are:
+            // the file's `linkage_id` says which clip draws it (sonic's spring hands off to
+            // `sonic_spring_ground`, which the table draws with `sonic_spring1`), and that clip
+            // is found by that linkage, in this file, before any package beside it is asked
+            for name in &names {
+                let want = cid(name);
+                if projectiles.iter().any(|p| cid(&p.name) == want) { continue }
+                let Some(link) = char_data.projectile_data.iter()
+                    .find(|(k, _)| cid(k) == want)
+                    .and_then(|(_, d)| d.names.get("linkage_id")).cloned()
+                else { continue };
+                let src = projectiles.iter().find(|p| cid(&p.name) == cid(&link)).cloned()
+                    .or_else(|| image_extractor::discover_projectiles_by_linkage(parsed_swf, std::slice::from_ref(&link)).into_iter().next());
+                let Some(src) = src else { continue };
+                log::info!("'{}' is what a projectile fires as '{}', the file's own table says so", link, name);
+                let mut copy = src;
+                copy.name = name.clone();
+                projectiles.push(copy);
+                added = true;
+            }
+            for p in image_extractor::discover_projectiles_by_linkage(parsed_swf, &names) {
+                if !projectiles.iter().any(|q| cid(&q.name) == cid(&p.name)) {
+                    log::info!("projectile '{}' is spawned by another projectile, emitting it too", p.name);
+                    projectiles.push(p);
+                    added = true;
+                }
+            }
+            // whatever the SWF did not carry, try the shared packages the same way character spawns do
+            let mut want: std::collections::BTreeSet<String> = names.iter().map(|n| cid(n))
+                .filter(|id| !projectiles.iter().any(|q| cid(&q.name) == *id))
+                .collect();
+            if !want.is_empty() {
+                let extra = image_extractor::pull_shared_projectiles(&mut want, input_path.parent());
+                if !extra.is_empty() { added = true; projectiles.extend(extra); }
+                if !want.is_empty() {
+                    log::warn!("projectile(s) a projectile spawns that no package carries: {}",
+                        want.iter().cloned().collect::<Vec<_>>().join(", "));
+                }
+            }
+            if !added { break }  // nothing new could be found; stop rather than spin
+        }
+    }
+
     // In a multi-char .ssf the SWF prefixes a sub-character's projectiles with its id
     // (e.g. sheik's "sheik_uspecDamage"), but the fireProjectile spawn call uses the
     // LOGICAL name ("uspecDamage"). Strip a leading "<subchar>_" so the projectile's
@@ -672,14 +1075,116 @@ fn process_character(
             }
         }
     }
+    // A head clip is a little scene: pieces stacked at depths, the character art scaled down
+    // inside it, and a mask cropping the result to a window. Composite it into the ONE portrait
+    // the menu entity uses everywhere -- a second image in that sheet is one the packer can
+    // silently drop.
+    let mut head_sprite = head_sprite;
+    {
+        if let Some(head) = head_sprite.as_mut() {
+            match image_extractor::composite_head(parsed_swf, head.sprite_id, &char_output_dir, char_name, true) {
+                Ok(Some(img)) => {
+                    log::info!("Composited head '{}' from its own placements ({}x{})",
+                        head.name, img.width, img.height);
+                    head.image_symbol = Some(img.symbol_name.clone());
+                    head.image_shape_id = Some(img.bitmap_id);
+                    img_result.images.insert(img.bitmap_id, img);
+                }
+                Ok(None) => {}
+                Err(e) => log::warn!("compositing head '{}' failed: {}", head.name, e),
+            }
+        }
+    }
+
     log::info!("Discovered {} projectiles, {} effects, head={}",
         projectiles.len(), effects.len(),
         head_sprite.as_ref().map(|h| h.name.as_str()).unwrap_or("none"));
 
-    // Generate Fraymakers files.
+    // the fighter's parts: one animation per distinct child clip, the placements per animation
+    if !fighter_part_children.is_empty() {
+        let mut parts: Vec<crate::entity_gen::ProjectilePartData> = Vec::new();
+        let mut placements: Vec<crate::entity_gen::PartPlacement> = Vec::new();
+        for (name, fm, child) in &fighter_part_children {
+            let art = match parts.iter().find(|p| p.path == *name && p.frame_count > 0 && p.image_guids.keys().next().is_some() && p.anim.ends_with(&format!("_{}", child.sprite_id))) {
+                Some(p) => p.anim.clone(),
+                None => {
+                    let anim = format!("part_{}_{}", name, child.sprite_id);
+                    match image_extractor::extract_projectile_frame_images_from_swf(parsed_swf, char_name, child.sprite_id, &img_result) {
+                        Ok(pfi) => {
+                            let labels: Vec<(String, u16)> = image_extractor::sprite_tags(parsed_swf, child.sprite_id)
+                                .map(sprite_parser::extract_frame_labels_from_tags).unwrap_or_default();
+                            parts.push(crate::entity_gen::ProjectilePartData {
+                                path: name.clone(), anim: anim.clone(), matrix: child.matrix,
+                                frame_count: pfi.frames.len() as u16,
+                                image_frames: pfi.frames, image_matrices: pfi.matrices, image_parts: pfi.parts, image_guids: pfi.image_guids,
+                                labels,
+                            });
+                            anim
+                        }
+                        Err(e) => { log::warn!("part '{name}': image extraction failed: {e}"); continue }
+                    }
+                }
+            };
+            // a child with no picture of its own has no art to show; its record still runs
+            let art = if parts.iter().any(|p| p.anim == art && p.image_guids.is_empty()) { String::new() } else { art };
+            placements.push(crate::entity_gen::PartPlacement { name: name.clone(), fm_anim: fm.clone(), art, matrix: child.matrix });
+        }
+        // one record per name: the first clip found carries the record, the rest are art it can switch to
+        let mut seen: std::collections::BTreeSet<String> = Default::default();
+        let records: Vec<crate::entity_gen::ProjectilePartData> = parts.iter().filter(|p| seen.insert(p.path.clone())).cloned().collect();
+        for sc in char_data.scripts.iter_mut() {
+            // the stance clip's child is the fighter's part
+            for r in &records {
+                sc.code = sc.code.replace(&format!("self.getStanceMC().{}", r.path), &format!("self.{}", r.path))
+                    .replace(&format!("getStanceMC().{}", r.path), &format!("self.{}", r.path));
+            }
+            crate::projectile_gen::rewrite_part_refs(&records, &mut sc.code);
+        }
+        char_data.parts = parts;
+        char_data.part_placements = placements;
+        log::info!("fighter parts: {} ({} placements)", fighter_part_names.join(", "), char_data.part_placements.len());
+    }
+
+    // the platforms the fighter gives itself (fox's landmaster carries two): the same port a
+    // projectile's get, a structure content riding the fighter
+    {
+        let prefix = char_name.to_lowercase().replace(' ', "");
+        let mut plats: Vec<(f64, f64, f64, f64)> = Vec::new();
+        for sc in char_data.scripts.iter_mut() {
+            crate::projectile_gen::rewrite_self_platform_calls(&mut sc.code, &prefix, &mut plats);
+        }
+        if !plats.is_empty() { log::info!("fighter platforms: {}", plats.len()); }
+        char_data.platforms = plats;
+    }
+
+    // the items the fighter's code generates: pulled with no physics of their own, they fall
+    // as the source's engine drops a thrown item
+    {
+        // by the names the code writes, or the ones it lists when it picks at run time
+        let ids: Vec<String> = char_data.scripts.iter()
+            .filter(|sc| sc.code.contains("generateItem(") || sc.code.contains("generateCharacterItem("))
+            .flat_map(|sc| crate::api_mappings::projectile_names_fired_in(&sc.code))
+            .map(|n| crate::projectile_gen::projectile_content_id(&n))
+            .collect();
+        crate::api_mappings::set_generated_items(ids);
+    }
+
+    // Generate Fraymakers files: art, boxes, stats and the entity, then the fighter's script from
+    // the runtime (see docs/CONVERTER_DESIGN.md)
     haxe_gen::generate(output, char_name, &char_pascal, &char_data, &sprite_boxes, &img_result,
         costumes, &sounds, &projectiles, &effects, head_sprite.as_ref(), parsed_swf,
-        multi_char_slot)?;
+        multi_char_slot, input_path)?;
+    // a package whose fighter the runtime cannot read (one that declares none) has no script to
+    // write: the rest of the project is still written, and its log says why the script is missing
+    let mut validation = validation;
+    match crate::emit::runtime_fighter(&char_output_dir, char_name, &char_pascal, &char_data, &sprite_boxes, input_path) {
+        Ok(out) => log::info!("runtime path: {} problems, {} names nothing defines", out.problems.len(), out.unknown.len()),
+        Err(e) => {
+            log::error!("{char_name}: no fighter script: {e}");
+            validation.push(format!("no fighter script: {e}"));
+            warnings_out.push(format!("{char_name}: no fighter script: {e}"));
+        }
+    }
     log::info!("Generated Fraymakers files for {}", char_name);
 
     let projectile_names: Vec<String> = projectiles.iter().map(|p| p.name.clone()).collect();
@@ -687,6 +1192,11 @@ fn process_character(
         Some(_) => format!("{}_menu", char_name),
         None    => "menu".to_string(),
     };
+
+    // Ask what the engine would ask: does every content id these scripts name actually exist?
+    // Asked LAST, with everything written: asked any earlier it reads a half-built package next
+    // to whatever the run before left behind, and answers about neither.
+    crate::content_audit::audit_and_log(&char_output_dir.join("library"), char_name);
 
     if multi_char_slot.is_none() {
         // Single-char path: inline conversion-log write.
@@ -984,5 +1494,37 @@ mod tests {
     fn hscript_lint_ignores_delims_in_strings_and_comments() {
         assert_eq!(hscript_structural_problem("var s = \"){]}[(\";"), None);
         assert_eq!(hscript_structural_problem("// )]}\nvar x = 1;"), None);
+    }
+}
+
+#[cfg(test)]
+mod duplicate_guid_lint_tests {
+    use super::*;
+
+    fn meta(dir: &Path, name: &str, guid: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join(name), format!("{{\"guid\":\"{guid}\"}}")).unwrap();
+    }
+
+    #[test]
+    fn two_assets_claiming_one_identity_are_reported() {
+        let root = std::env::temp_dir().join("peptide-dupguid-test-report");
+        let _ = fs::remove_dir_all(&root);
+        meta(&root, "a.png.meta", "11111111-1111-5111-8111-111111111111");
+        meta(&root.join("Shared/DAT59"), "a.png.meta", "11111111-1111-5111-8111-111111111111");
+        let problems = lint_duplicate_guids(&root);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("same identity"), "{problems:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn distinct_identities_are_quiet() {
+        let root = std::env::temp_dir().join("peptide-dupguid-test-quiet");
+        let _ = fs::remove_dir_all(&root);
+        meta(&root, "a.png.meta", "11111111-1111-5111-8111-111111111111");
+        meta(&root.join("Shared/DAT59"), "a.png.meta", "22222222-2222-5222-8222-222222222222");
+        assert!(lint_duplicate_guids(&root).is_empty());
+        let _ = fs::remove_dir_all(&root);
     }
 }

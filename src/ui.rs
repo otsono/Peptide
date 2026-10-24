@@ -120,8 +120,30 @@ impl Cleanup {
     /// A Cleanup that owns just a spawned engine process — no throwaway conn/appid
     /// files. Used by the SSF2 GUI boot, whose teardown is simply killing the app,
     /// so it reuses the same window-close disposal path as the Fraymakers engine.
+    /// The game this guard owns, so a session can record which process it is paired with
+    /// (and the next session knows what to stand down).
+    pub fn engine_pid(&self) -> Option<u32> { self.engine.as_ref().map(|c| c.id()) }
+
     pub fn for_engine(engine: Child) -> Cleanup {
         Cleanup { conn: PathBuf::new(), appid: PathBuf::new(), engine: Some(engine) }
+    }
+
+    /// How the game ended, once it has: its exit code, or the signal that took it. `None` while
+    /// it still runs or when no game is owned. A game that leaves no crash dump still says
+    /// this much, and it is the one fact that tells a kill from a crash from a clean quit.
+    pub fn exit_status(&mut self) -> Option<String> {
+        let c = self.engine.as_mut()?;
+        match c.try_wait() {
+            Ok(Some(st)) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    if let Some(sig) = st.signal() { return Some(format!("killed by signal {sig}")); }
+                }
+                Some(match st.code() { Some(c) => format!("exit code {c}"), None => "ended without a code".to_string() })
+            }
+            _ => None,
+        }
     }
 
     /// Kill the engine + remove the throwaway files. Idempotent. The GUI calls this on
@@ -286,8 +308,24 @@ pub fn patch_and_launch_with_progress(
     let engine_bin = cfg.engine_name();
     let lib_var = engine_lib_var();
     let engine_path = fray_dir.join(&engine_bin);
-    let mut cmd = Command::new(&engine_path);
-    cmd.arg("_conn.dat").current_dir(&fray_dir).stdout(Stdio::null()).stderr(Stdio::null());
+    // PEPTIDE_ENGINE_DEBUGGER=1 boots the engine under lldb: a native crash then leaves a
+    // backtrace in peptide-engine.log instead of nothing (macOS writes no report for it). the
+    // session's pid is the debugger's while this is on.
+    let mut cmd = if std::env::var_os("PEPTIDE_ENGINE_DEBUGGER").is_some() {
+        let mut c = Command::new("lldb");
+        c.args(["--batch", "-o", "run", "-k", "bt all", "-k", "quit", "--"]).arg(&engine_path);
+        c
+    } else {
+        Command::new(&engine_path)
+    };
+    // what the engine itself prints (a native abort names its reason there, and a crash without
+    // a dump leaves nothing else) goes to a file beside the game, fresh for each boot
+    let engine_log = std::fs::File::create(fray_dir.join("peptide-engine.log")).ok();
+    let (out, err) = match engine_log {
+        Some(f) => (f.try_clone().map(Stdio::from).unwrap_or_else(|_| Stdio::null()), Stdio::from(f)),
+        None => (Stdio::null(), Stdio::null()),
+    };
+    cmd.arg("_conn.dat").current_dir(&fray_dir).stdout(out).stderr(err);
     if let Some(var) = lib_var {
         cmd.env(var, ".");
     }
@@ -304,8 +342,11 @@ pub fn patch_and_launch_with_progress(
 
 /// Boot the engine + console UI (terminal). The GUI uses `boot()` directly.
 pub fn launch() -> std::io::Result<()> {
-    let (reader, writer, port, _token, _guard) = boot()?;
-    run_with(reader, writer, port) // owns the terminal until the user quits; _guard cleans up
+    let (reader, writer, port, _token, guard) = boot()?;
+    if let Some(pid) = guard.engine_pid() { crate::platform::keep_behind(pid); }
+    let r = run_with(reader, writer, port); // owns the terminal until the user quits
+    drop(guard);
+    r
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -813,3 +854,4 @@ mod demo {
         println!("\n===== F1: HELP =====\n{}", dump(term.backend().buffer()));
     }
 }
+

@@ -1,0 +1,15 @@
+[package]
+name = "fra_pack"
+version = "0.7.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "builds the package the engine loads from a project's library, held in memory"
+
+[dependencies]
+anyhow = "1.0"
+serde_json = "1.0"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+rayon = "1.10"
+libm = "0.2"
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+crc32fast = "1.5"

@@ -25,11 +25,26 @@ use crate::interpreter::{self, Command, SpawnArgs};
 /// An engine that genuinely can't do a feature overrides the method to say so
 /// (e.g. SSF2 has no stock-icon pipeline → `char_icon` returns `None`).
 pub trait DebugTarget {
-    #[allow(dead_code)] // part of the trait surface; not all callers wired yet
-    fn engine(&self) -> &'static str;
     fn eval(&mut self, expr: &str) -> Result<String>;
+    /// the script run inside one entity's own scope (`s` the stage, a digit a character slot).
+    /// the default sends the console eval with `self` bound to that entity, which is what an
+    /// engine without per-entity interpreters can offer; an engine with them overrides this.
+    fn eval_in(&mut self, target: &str, expr: &str) -> Result<String> {
+        self.eval(&bind_self(target, expr))
+    }
+    /// A value a fighter keeps by name between its moves (a stored charge), read or set. The
+    /// default asks the content's own api on the console's character binding; an engine that
+    /// keeps the value somewhere else overrides this.
+    fn var(&mut self, idx: usize, name: &str, value: Option<f64>) -> Result<String> {
+        match value {
+            Some(v) => { self.eval(&format!("p{idx}.setGlobalVariable(\"{name}\", {v})"))?; self.eval(&format!("p{idx}.getGlobalVariable(\"{name}\")")) }
+            None => self.eval(&format!("p{idx}.getGlobalVariable(\"{name}\")")),
+        }
+    }
     fn spawn(&mut self, args: &SpawnArgs) -> Result<String>;
     fn hold(&mut self, mask: u32) -> Result<String>;
+    /// engine frames per tick. an engine that runs at its own rate only says so.
+    fn speed(&mut self, n: u32) -> Result<String>;
     fn seq(&mut self, masks: &[u32]) -> Result<String>;
     fn console(&mut self) -> Result<String>;
     fn add_character(&mut self) -> Result<String>;
@@ -102,6 +117,40 @@ pub trait DebugTarget {
             .and_then(|s| AnimState::parse(&s)))
     }
 
+    /// Play a NAMED move, named as Fraymakers names its animations.
+    ///
+    /// The point of this being a trait method rather than two dialects of eval: an input does
+    /// not mean the same thing on both engines. A held direction plus attack is a forward SMASH
+    /// on one and a forward TILT on the other, because one of them tells them apart by how far
+    /// the stick is pushed and an injected bitmask can only say "held" -- and some moves no
+    /// input reaches at all. So comparing what a move DOES has to start by naming the move.
+    fn play_move(&mut self, idx: usize, name: &str) -> Result<String> {
+        // the engine's own state machine, named as it names its states: playing the animation
+        // alone would draw the move without the state that makes it one
+        let r = self.eval(&format!("p{idx}.toState(CState.{})", name.to_ascii_uppercase()))?;
+        Ok(format!("MOVE:p{idx} {name} {}", strip_eval(r).trim()))
+    }
+
+    /// A whole hit WINDOW at the engine's own frame rate, when the engine can record one.
+    ///
+    /// Default: none, and the caller samples with one round trip per frame instead. An engine
+    /// that pushes per-frame telemetry overrides this, because polling cannot see a launch it
+    /// only holds for a frame or two: SSF2 answers a read every ~14 of its frames, so the
+    /// hitstop can begin and end between two samples and the knockback is simply never in the
+    /// data. The recorded stream has every frame in it.
+    fn hit_trace(&mut self, _idx: usize, _frames: u32, _masks: &[u32])
+        -> Result<Option<Vec<HitState>>> { Ok(None) }
+
+    /// One character's live HIT STATE (damage taken, velocity, state name).
+    ///
+    /// Default: the engine's own `hitFeed` helper, one round trip per sample. SSF2 has no
+    /// interpreter to hold a helper, so it overrides this and composes the same record from
+    /// reflection reads.
+    fn char_hit(&mut self, idx: usize) -> Result<Option<HitState>> {
+        Ok(non_empty(strip_eval(self.eval(&format!("hitFeed({idx})"))?))
+            .and_then(|s| HitState::parse(&s)))
+    }
+
     /// Arm/disarm the engine's own per-frame recorder, clearing its buffer.
     ///
     /// Default: declare the gap. Fraymakers doesn't need one — it PUSHES per-frame `ANIM:`
@@ -117,7 +166,7 @@ pub trait DebugTarget {
     /// `raw` dumps one line per frame (with position) instead of the run-length summary. The
     /// summary answers how long a move lasted; the raw stream answers how far it moved each
     /// frame, which is the only way to derive a speed multiplier from observation.
-    fn frame_trace(&mut self, _raw: bool) -> Result<String> {
+    fn frame_trace(&mut self, _raw: bool, _all: bool) -> Result<String> {
         Ok("trace: this engine has no host-side frame buffer — its per-frame ANIM \
             telemetry is already in the session log, and `await` reports frame counts"
             .into())
@@ -191,6 +240,212 @@ impl AnimState {
     pub fn at_end(&self) -> bool { self.total > 0 && self.frame >= self.total - 1 }
 }
 
+/// One frame's worth of a character's HIT STATE: what it has taken, where it is, and how fast the
+/// engine says it is going.
+///
+/// The engines keep no record of a hit once it is over, so a hit is measured while it happens.
+/// Two readings of the same launch:
+///
+/// * the VELOCITY the engine itself calculated. This is the knockback, stated rather than
+///   inferred: whatever the engine worked out from the hitbox's base and growth is the number
+///   sitting in the victim's velocity. It reads zero for as long as the hitstop freeze lasts, so
+///   it is taken from the first frame it is non-zero after the hit.
+/// * how far the victim MOVED, sampled from position. This is what the launch did after
+///   friction, gravity and DI got at it, which is a different question and worth keeping as a
+///   cross-check, and it is the only reading available if an engine will not state its velocity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HitState {
+    pub damage: f64,
+    pub x: f64,
+    pub y: f64,
+    pub state: String,
+    /// The engine's own velocity, when it states one. Absent for a feed that carries no
+    /// velocity fields, in which case only the position reading is reported.
+    pub vel: Option<(f64, f64)>,
+}
+
+impl HitState {
+    /// Parse the shared `<damage>|<x>|<y>|<state>` wire shape, optionally followed by
+    /// `|<vx>|<vy>`, the same way `AnimState` does: the last line carrying the field count, so a
+    /// tagged or noisy reply still reads. The velocity is optional so an engine that does not
+    /// state one still reports its hits.
+    pub fn parse(s: &str) -> Option<Self> {
+        let line = s.trim().lines().rev().find(|l| l.matches('|').count() >= 3)?;
+        let num = |t: &str| t.trim().trim_start_matches("E:").trim().parse::<f64>().ok();
+        let f: Vec<&str> = line.split('|').collect();
+        let (damage, x, y) = (f[0], f.get(1).copied().unwrap_or(""), f.get(2).copied().unwrap_or(""));
+        let state = f.get(3).copied().unwrap_or("");
+        let vel = match (f.get(4).and_then(|t| num(t)), f.get(5).and_then(|t| num(t))) {
+            (Some(vx), Some(vy)) => Some((vx, vy)),
+            _ => None,
+        };
+        Some(HitState {
+            damage: num(damage)?,
+            x: num(x).unwrap_or(0.0),
+            y: num(y).unwrap_or(0.0),
+            state: state.trim().to_string(),
+            vel,
+        })
+    }
+
+    /// The IMPULSE between two frames: how much the engine changed this character's velocity.
+    ///
+    /// A launch is a jump in velocity, not a velocity, and that distinction is the whole
+    /// measurement. Reading the velocity itself catches whatever else is acting -- a victim
+    /// falling at terminal speed reads far faster than the hit that struck it, and one standing
+    /// still reads zero for the whole hitstop. The CHANGE isolates the hit: gravity adds its
+    /// small constant every frame, and the frame knockback lands on dwarfs it.
+    ///
+    /// Returned as magnitude and degrees, the way `moved_from` returns a move, so the two read
+    /// the same (0 = right, counter-clockwise, matching how SSF2 states a hit's `direction`).
+    /// SSF2 counts Y downward and Fraymakers does too, so neither needs flipping here.
+    pub fn impulse_from(&self, prev: &HitState) -> Option<(f64, f64, f64, f64)> {
+        let ((vx, vy), (px, py)) = (self.vel?, prev.vel?);
+        let (dx, dy) = (vx - px, vy - py);
+        let mag = (dx * dx + dy * dy).sqrt();
+        let deg = (-dy).atan2(dx).to_degrees();
+        Some((mag, if deg < 0.0 { deg + 360.0 } else { deg + 0.0 }, dx, dy))
+    }
+    /// How far this moved from `prev`, and which way: magnitude, then degrees with 0 = right and
+    /// angles counter-clockwise, which is how SSF2 states a hit's `direction` so the two read the
+    /// same way. One sample apart, so on Fraymakers this is per-frame; see the sampling note on
+    /// SSF2's own `char_hit`.
+    pub fn moved_from(&self, prev: &HitState) -> (f64, f64) {
+        let (dx, dy) = (self.x - prev.x, self.y - prev.y);
+        let mag = (dx * dx + dy * dy).sqrt();
+        let deg = (-dy).atan2(dx).to_degrees();
+        // + 0.0 so a straight-right launch reads 0, not the "-0" a negative zero prints as
+        (mag, if deg < 0.0 { deg + 360.0 } else { deg + 0.0 })
+    }
+}
+
+/// Watch one character for HITS and report each outcome.
+///
+/// A hit leaves no record behind, so it is caught as it happens: sample every frame and watch
+/// the damage. Where damage went UP, a hit landed, and the launch it gave is the FIRST movement
+/// in the samples that follow. It is read there rather than off the hit's own frame because both
+/// engines freeze the victim for the hitstop: on the frame the damage registers the velocity is
+/// still zero, and the launch appears once the freeze ends. Taking the first movement rather
+/// than the fastest keeps it the hit's own impulse -- wait any longer and gravity has added more
+/// speed than the hit did.
+///
+/// The sampling goes through the shared vocabulary (`damage._damage`,
+/// `physics.currentVelocityX`), which SSF2 answers from its own fields, so this measures the
+/// same quantity on either engine. The sampler is passed in because the session daemon owns its
+/// own reply channel; [`watch_hits`] is the plain target wrapper.
+/// How many samples after a hit the launch is looked for. Long enough to outlast the hitstop,
+/// short enough that a fall can't accumulate more speed than the hit gave.
+const LAUNCH_WINDOW: usize = 20;
+// the least a launch is: a hit frame stating less states none (a throw's let-go clears it)
+const LAUNCH_FLOOR: f64 = 0.05;
+
+pub fn watch_hits_with(
+    idx: usize,
+    frames: u32,
+    raw: bool,
+    mut sample: impl FnMut(Option<u32>) -> Option<HitState>,
+    masks: &[u32],
+) -> String {
+    let Some(first) = sample(None) else {
+        return format!("HITS:p{idx} nothing to watch (no live character)");
+    };
+    let mut samples: Vec<HitState> = vec![first];
+    for i in 0..frames {
+        // one input frame per sample, so the move happens INSIDE the window being watched
+        let Some(s) = sample(masks.get(i as usize).copied()) else { break };
+        samples.push(s);
+    }
+    // damage only ever goes UP on a hit; a drop is a reset or a fresh stock, which is not one
+    if raw {
+        // every sample, so a hit can be read frame by frame instead of through the summary
+        let mut out = format!(
+            "HITS:p{idx} {} samples (sample: damage x y moved vx vy state)\n", samples.len());
+        for (i, s) in samples.iter().enumerate() {
+            let moved = if i == 0 { 0.0 } else { s.moved_from(&samples[i - 1]).0 };
+            let (vx, vy) = s.vel.unwrap_or((f64::NAN, f64::NAN));
+            out.push_str(&format!(
+                "  {i:>3} {:>6.1} {:>9.2} {:>9.2} {moved:>7.2} {vx:>7.2} {vy:>7.2} {}\n",
+                s.damage, s.x, s.y, s.state));
+        }
+        return out.trim_end().to_string();
+    }
+    let landed: Vec<usize> = (1..samples.len())
+        .filter(|&i| samples[i].damage > samples[i - 1].damage + 1e-6)
+        .collect();
+    let last = samples.last().map(|s| s.damage).unwrap_or(0.0);
+    if landed.is_empty() {
+        return format!("HITS:p{idx} none in {} samples (damage held at {last})", samples.len());
+    }
+    // how many samples the watch took: the two engines do not always take every one asked for, and
+    // a hit after the shorter watch ended is not one the other engine was watched for
+    let mut out = format!("HITS:p{idx} {} hit(s) in {} samples\n", landed.len(), samples.len());
+    let mut total = 0.0;
+    for (n, &i) in landed.iter().enumerate() {
+        let dmg = samples[i].damage - samples[i - 1].damage;
+        total += dmg;
+        // The launch is the BIGGEST single-sample move shortly after the hit. It cannot be read
+        // off the hit's own frame (hitstop freezes the victim there) nor off the first movement
+        // (during hitstop the victim still drifts, and that drift is not the hit). Once the
+        // launch does land it decays every frame after, so the largest move in a short window IS
+        // its first frame. The window is short so a long fall can't out-grow a real launch, and
+        // it stops at the next hit so one hit's launch is never read off another's.
+        // (and a sample short of the next hit: an engine can set that hit's launch a sample before
+        // its damage shows, and a hit that launches nothing then read the next one's)
+        let stop = landed.get(n + 1).map(|&j| j.saturating_sub(1).max(i + 1))
+            .unwrap_or(samples.len()).min(i + LAUNCH_WINDOW);
+        let (at, (mag, deg)) = (i.max(1)..stop)
+            .map(|k| (k, samples[k].moved_from(&samples[k - 1])))
+            .max_by(|a, b| a.1 .0.total_cmp(&b.1 .0))
+            .unwrap_or((i, (0.0, 0.0)));
+        // THE KNOCKBACK, as the engine calculated it: the first velocity it states once the
+        // hitstop freeze lets go. Nothing has acted on it yet at that point, so it is the hit's
+        // own impulse rather than what survived friction and gravity.
+        // The hit's impulse is read ON THE FRAME THE DAMAGE LANDS. Both engines set the launch
+        // there and then hold it through the hitstop freeze, so that one frame is the knockback
+        // the hit calculated, before any decay, gravity or DI has touched it.
+        //
+        // Nothing later will do: a victim landing a few frames on stops dead, and stopping dead
+        // is a bigger velocity change than a light hit ever is. If an engine turns up that
+        // applies its launch after the freeze instead, the first frame that moves is taken.
+        // (a throw's let-go clears the launch on that frame and the runtime puts it back on the
+        // next: a hit frame that states next to nothing is passed over for the next few, else
+        // zelda's forward throw read a launch of 0)
+        let at_hit = samples[i].impulse_from(&samples[i - 1]).map(|v| (i, v))
+            .filter(|(_, (m, ..))| *m > LAUNCH_FLOOR);
+        // (a few samples on at most: further on, a later hit's launch is what moves it)
+        let engine = at_hit.or_else(|| (i + 1..stop.min(i + 3))
+            .filter_map(|k| samples[k].impulse_from(&samples[k - 1]).map(|v| (k, v)))
+            .find(|(_, (m, ..))| *m > LAUNCH_FLOOR));
+        out.push_str(&format!(
+            "  +{dmg:.1} damage at sample {i} -> launch {mag:.2}/sample at {deg:.0} deg \
+             (sample {at}), state {}\n",
+            samples[i].state));
+        if let Some((k, (vmag, vdeg, dx, dy))) = engine {
+            out.push_str(&format!(
+                "     engine knockback {vmag:.3}/frame at {vdeg:.0} deg  (dvx {dx:.3}, dvy {dy:.3}, \
+                 sample {k})\n"));
+        }
+    }
+    out.push_str(&format!("  total {total:.1} damage, ending at {last:.1}"));
+    out
+}
+
+/// [`watch_hits_with`] over a target's own sampler, so it reads the same on either engine.
+pub fn watch_hits(
+    target: &mut dyn DebugTarget, idx: usize, frames: u32, raw: bool, masks: &[u32],
+) -> Result<String> {
+    // An engine that can record the window gives every frame of it; polling gives whatever the
+    // round trips happened to land on. Same report either way.
+    if let Some(trace) = target.hit_trace(idx, frames, masks)? {
+        let mut it = trace.into_iter();
+        return Ok(watch_hits_with(idx, frames, raw, |_| it.next(), &[]));
+    }
+    Ok(watch_hits_with(idx, frames, raw, |m| {
+        if let Some(mask) = m { let _ = target.hold(mask); }
+        target.char_hit(idx).ok().flatten()
+    }, masks))
+}
+
 /// Why [`await_animation`] stopped watching.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AnimOutcome {
@@ -233,6 +488,28 @@ pub fn await_animation(
     stall_polls: u32,
 ) -> Result<AnimWatch> {
     watch_animation(|| target.char_anim(idx), budget_frames, stall_polls)
+}
+
+/// Catch the FIRST frame the driven fighter reaches animation `label`, in one round trip: arm
+/// the per-frame recorder, let the engine run `budget` frames on its own clock, then scan the
+/// window host-side. A label that never comes is reported at the end of the budget rather than
+/// waited on -- the frame-precise counterpart to `await_animation`, which plays a move OUT. It
+/// reads the same `record`/`frame_trace` telemetry the DebugTarget seam gives both engines, so
+/// it behaves the same on Fraymakers and SSF2.
+pub fn catch_frame(target: &mut dyn DebugTarget, label: &str, budget: u32) -> Result<String> {
+    target.record(true)?;                        // clear the window and arm it
+    crate::session::frame_wait(budget as u64, Duration::from_millis(500 + 200 * budget as u64));
+    let raw = target.frame_trace(true, false)?;         // one line per frame, read back in one round trip
+    for line in raw.lines() {
+        // each record line is `  <i>\t<label>|<LABEL>|<x>|<y>|<frame>`; the header has no tab-index
+        let Some((idx, rec)) = line.split_once('\t') else { continue };
+        if idx.trim().parse::<u32>().is_err() { continue; }
+        let lab = rec.split('|').next().unwrap_or("").trim();
+        if lab.eq_ignore_ascii_case(label) {
+            return Ok(format!("CATCH:{label} at frame {} ({})", idx.trim(), rec.trim()));
+        }
+    }
+    Ok(format!("CATCH:{label} not seen in {budget} frames"))
 }
 
 /// Poll until a character is actually readable, or `tries` samples have come back empty.
@@ -356,6 +633,8 @@ pub struct StageNode {
     /// Pixel size, when the engine exposes it (SSF2 does; Fraymakers doesn't per-object).
     pub size: Option<(f64, f64)>,
     pub visible: bool,
+    /// Opacity, when the engine states one: a clip placed at none is a placeholder.
+    pub alpha: Option<f64>,
     /// Animation clock: current frame and length. This is the "does it animate / does it
     /// loop" axis, and it's the field most worth having on both sides.
     pub frame: Option<(i64, i64)>,
@@ -388,6 +667,9 @@ pub fn fmt_stage_node(n: &StageNode) -> String {
     }
     if !n.visible {
         out.push_str(" HIDDEN");
+    }
+    if let Some(a) = n.alpha.filter(|a| *a < 0.999) {
+        out.push_str(&format!(" alpha={a:.2}"));
     }
     if let Some((f, t)) = n.frame {
         out.push_str(&format!(" frame={f}/{t}"));
@@ -478,7 +760,10 @@ pub fn run_command(target: &mut dyn DebugTarget, line: &str) -> Result<Option<St
         Command::Client(s) => if s.trim().is_empty() { None } else { Some(s) },
         Command::Spawn(a) => Some(target.spawn(&a)?),
         Command::Eval(e) => Some(target.eval(&e)?),
+        Command::EvalIn { target: t, expr } => Some(target.eval_in(&t, &expr)?),
+        Command::Var { idx, name, value } => Some(format!("GVAR:p{idx} {name} = {}", strip_eval(target.var(idx, &name, value)?).trim())),
         Command::Hold(m) => Some(target.hold(m)?),
+        Command::Speed(n) => Some(target.speed(n)?),
         Command::Seq(s) => Some(target.seq(&s)?),
         // Scenario = set up the scene (eval), then play p0's input timeline (seq).
         // Same DebugTarget seam, so it works identically on Fraymakers and SSF2.
@@ -497,10 +782,13 @@ pub fn run_command(target: &mut dyn DebugTarget, line: &str) -> Result<Option<St
             let w = await_animation(target, idx, budget, 3)?;
             Some(fmt_await(&w, idx))
         }
+        Command::Catch { label, budget } => Some(catch_frame(target, &label, budget)?),
+        Command::Hits { idx, frames, raw, masks } => Some(watch_hits(target, idx, frames, raw, &masks)?),
         Command::AwaitMatch { idx, tries } => {
             let live = await_live(|| target.char_anim(idx), tries)?;
             Some(fmt_ready(live.as_ref(), idx, tries))
         }
+        Command::Move { idx, name } => Some(target.play_move(idx, &name)?),
         Command::Info => {
             // Enumerate the players that exist rather than assuming two. `char_anim`
             // already reports animation/position/state and answers None for an absent
@@ -526,8 +814,10 @@ pub fn run_command(target: &mut dyn DebugTarget, line: &str) -> Result<Option<St
             }
             Some(if out.is_empty() { "info: no live characters".into() } else { out })
         }
+        Command::Tick { n } => Some(crate::session::frame_wait_reply(n)),
+        Command::Clock => Some(format!("CLOCK:{} frames", crate::session::frames_seen())),
         Command::Record { on } => Some(target.record(on)?),
-        Command::Trace { raw } => Some(target.frame_trace(raw)?),
+        Command::Trace { raw, all } => Some(target.frame_trace(raw, all)?),
         Command::Console => Some(target.console()?),
         Command::Tree(depth) => Some(target.tree(depth)?),
         Command::Camera { ref mode, pos, zoom } => Some(target.camera(mode.as_deref(), pos, zoom)?),
@@ -553,13 +843,6 @@ impl FraymakersTarget {
         // Short read timeout so draining replies returns once the engine goes quiet.
         let _ = reader.get_ref().set_read_timeout(Some(Duration::from_millis(120)));
         FraymakersTarget { reader, writer }
-    }
-
-    /// Connect by awaiting the engine's dial-in (it must already be launched).
-    #[allow(dead_code)] // alternate constructor for the attach-to-running-engine path
-    pub fn connect(port: u16, token: Option<&str>) -> Self {
-        let (r, w) = crate::ui::await_engine(port, token);
-        Self::new(r, w)
     }
 
     /// Send a wire line (which may itself be multi-line for `seq`) and drain the
@@ -639,6 +922,7 @@ pub fn fmt_fm_tree(raw: &str) -> String {
             layer: (!get(10).is_empty() && get(10) != "null").then(|| get(10).to_string()),
             abs: (!get(11).is_empty() && get(11) != "null")
                 .then(|| (num(get(11)), num(get(12)))),
+            alpha: None,
         };
         out.push_str(&fmt_stage_node(&node));
         out.push('\n');
@@ -646,7 +930,39 @@ pub fn fmt_fm_tree(raw: &str) -> String {
     out
 }
 
+/// the console name an entity target answers to: `match` for the stage, `p<slot>` for a fighter
+pub fn self_root(target: &str) -> String {
+    if target == "s" { "match".to_string() } else { format!("p{target}") }
+}
+
+/// the script with every whole-word `self` replaced by the entity's console root
+pub fn bind_self(target: &str, expr: &str) -> String {
+    let root = self_root(target);
+    let mut bound = String::with_capacity(expr.len() + 8);
+    let bytes = expr.as_bytes();
+    let mut i = 0;
+    while i < expr.len() {
+        let word_start = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        let word_end = i + 4 >= expr.len() || !(bytes[i + 4].is_ascii_alphanumeric() || bytes[i + 4] == b'_');
+        if word_start && expr[i..].starts_with("self") && word_end {
+            bound.push_str(&root);
+            i += 4;
+        } else {
+            let ch = expr[i..].chars().next().unwrap_or(' ');
+            bound.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    bound
+}
+
 impl DebugTarget for FraymakersTarget {
+
+    /// The port keeps a fighter's named values on its runtime object, reached inside the
+    /// fighter's own script.
+    fn var(&mut self, idx: usize, name: &str, value: Option<f64>) -> Result<String> {
+        self.eval_in(&idx.to_string(), &fm_var_expr(name, value))
+    }
 
     /// Open a recording window: drop whatever the engine has pushed so far.
     /// Symmetric with `Ssf2Target::record` — both engines push per-frame telemetry and the
@@ -659,17 +975,31 @@ impl DebugTarget for FraymakersTarget {
     /// Close the window: run-length-encode every frame the engine pushed since `record`.
     /// Identical output shape to the SSF2 side, via the shared `rle_frames`, so a timing
     /// comparison is reading the same measurement from both engines.
-    fn frame_trace(&mut self, raw: bool) -> Result<String> {
+    fn frame_trace(&mut self, raw: bool, _all: bool) -> Result<String> {
         let frames = fm_frames_take();
         if raw { return Ok(fmt_trace_raw(&frames)); }
         let runs = rle_frames(&frames);
         Ok(fmt_trace(frames.len(), &runs, &[]))
     }
 
-    fn engine(&self) -> &'static str { "fraymakers" }
     fn eval(&mut self, expr: &str) -> Result<String> { self.run(&Command::Eval(expr.to_string())) }
+    /// this engine keeps an interpreter per hscript script, so the script really runs in the
+    /// entity's own. a built-in fighter's script is compiled into the engine and has no
+    /// interpreter to enter (and no script locals to reach), so it gets what the other engine
+    /// gets: the console's eval with `self` bound to that entity, every api call landing on the
+    /// real fighter. the reply says which it was.
+    fn eval_in(&mut self, target: &str, expr: &str) -> Result<String> {
+        let reply = self.run(&Command::EvalIn { target: target.to_string(), expr: expr.to_string() })?;
+        if !reply.contains("script is compiled") {
+            return Ok(reply);
+        }
+        let bound = bind_self(target, expr);
+        let via = self.eval(&bound)?;
+        Ok(format!("{via}  (compiled script: run on the console with self = {})", self_root(target)))
+    }
     fn spawn(&mut self, a: &SpawnArgs) -> Result<String> { self.run(&Command::Spawn(a.clone())) }
     fn hold(&mut self, mask: u32) -> Result<String> { self.run(&Command::Hold(mask)) }
+    fn speed(&mut self, n: u32) -> Result<String> { self.run(&Command::Speed(n)) }
     fn seq(&mut self, masks: &[u32]) -> Result<String> { self.run(&Command::Seq(masks.to_vec())) }
     fn console(&mut self) -> Result<String> { self.run(&Command::Console) }
     fn add_character(&mut self) -> Result<String> { self.run(&Command::AddCharacter) }
@@ -702,5 +1032,56 @@ impl DebugTarget for FraymakersTarget {
             .ok_or_else(|| anyhow::anyhow!("engine returned no frame: {}", raw.trim()))?;
         set_shot_path(path);
         Ok(write_shot(&hex))
+    }
+}
+
+/// The script that reads or sets a fighter's named value on Fraymakers, run inside the
+/// fighter's own script (`e@pN`): the runtime keeps them on the object its code works with.
+pub fn fm_var_expr(name: &str, value: Option<f64>) -> String {
+    match value {
+        Some(v) => format!("(function(){{var o=Objects.view(self);o.__vars.set(\"{name}\",{v});return o.__vars.get(\"{name}\");}})()"),
+        None => format!("Objects.view(self).__vars.get(\"{name}\")"),
+    }
+}
+
+#[cfg(test)]
+mod hit_tests {
+    use super::*;
+
+    fn s(damage: f64, x: f64, y: f64) -> HitState {
+        HitState { damage, x, y, state: "HURT".into(), vel: None }
+    }
+
+    #[test]
+    fn parses_the_shared_wire_shape() {
+        let h = HitState::parse("E:9|-83.5|73|HURT_MEDIUM").expect("parses");
+        assert_eq!((h.damage, h.x, h.y), (9.0, -83.5, 73.0));
+        assert_eq!(h.state, "HURT_MEDIUM");
+        assert!(HitState::parse("").is_none());
+    }
+
+    #[test]
+    fn reads_the_launch_past_the_hitstop() {
+        // the shape a real hit has: drift, damage steps up, the victim is FROZEN for the
+        // hitstop, then the launch lands and decays. the launch is the 14.0, not the drift and
+        // not the zero on the hit's own frame.
+        let mut frames = vec![s(0.0, 0.0, 0.0), s(0.0, 0.5, 0.0)];
+        frames.push(s(9.0, 1.0, 0.0)); // the hit
+        for i in 0..4 { frames.push(s(9.0, 1.0 + f64::from(i) * 0.0, 0.0)); } // hitstop
+        frames.push(s(9.0, 15.0, 0.0)); // launch
+        frames.push(s(9.0, 28.0, 0.0));
+        let mut it = frames.into_iter();
+        let out = watch_hits_with(1, 20, false, |_| it.next(), &[]);
+        assert!(out.contains("1 hit(s)"), "{out}");
+        assert!(out.contains("+9.0 damage"), "{out}");
+        assert!(out.contains("launch 14.00/sample at 0 deg"), "{out}");
+    }
+
+    #[test]
+    fn a_damage_drop_is_not_a_hit() {
+        // a reset or a fresh stock takes damage DOWN, which is not a hit landing
+        let mut it = vec![s(40.0, 0.0, 0.0), s(0.0, 0.0, 0.0), s(0.0, 0.0, 0.0)].into_iter();
+        let out = watch_hits_with(0, 10, false, |_| it.next(), &[]);
+        assert!(out.contains("none in 3 samples"), "{out}");
     }
 }

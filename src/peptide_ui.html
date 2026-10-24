@@ -362,6 +362,7 @@
               title="Connection — click to switch engine or disconnect"><span class="dot"></span><span id="pilltext">Disconnected</span><span class="pill-caret">▾</span></button>
       <div class="connmenu" id="connmenu" style="display:none">
         <button onclick="connMenuLaunch()">Connect / switch engine…</button>
+        <button onclick="closeConnMenu(); publishPick()">Publish a project…</button>
         <button id="connmenu-disconnect" onclick="connMenuDisconnect()">Disconnect</button>
       </div>
     </div>
@@ -384,7 +385,13 @@
           </button>
           <button class="bigbtn" onclick="showScreen('frayhook')">
             <span class="bt">FrayTools Hook</span>
-            <span class="bd">Publish to <code>.fra</code>, render an entity, or extract box geometry.</span>
+            <span class="bd">Render an entity or extract box geometry through your local FrayTools.</span>
+          </button>
+        </div>
+        <div class="home-row">
+          <button class="bigbtn" onclick="showScreen('publish')">
+            <span class="bt">Publish a Project</span>
+            <span class="bd">Build a <code>.fraytools</code> project into the <code>.fra</code> the game loads, in a fraction of a second. FrayTools isn't needed.</span>
           </button>
         </div>
         <div class="home-row">
@@ -448,7 +455,7 @@
 
       <div class="wiz-step" data-step="fraytools">
         <h2>FrayTools <span class="badge" id="b-fraytools">—</span></h2>
-        <p>The FrayTools app or executable — used to publish/render and to open a project.</p>
+        <p>The FrayTools app or executable — used to open a project, render an entity and extract box geometry. Publishing doesn't need it.</p>
         <div class="inrow">
           <input id="s-fraytools" placeholder="/Applications/FrayTools.app (or the executable)" />
           <button class="btn-sm" onclick="pickFile('s-fraytools')">Browse…</button>
@@ -514,28 +521,39 @@
     </div>
   </section>
 
+  <!-- ── PUBLISH ────────────────────────────────────────── -->
+  <section class="screen" id="screen-publish">
+    <div class="wrap">
+      <div class="crumb"><button onclick="showScreen('home')">← Home</button></div>
+      <h1>Publish</h1>
+      <p class="lede">Build a <code>.fraytools</code> project into the <code>.fra</code> the game loads and write it to every publish folder the project names, the game's custom folder among them. Peptide builds it itself in a fraction of a second; FrayTools isn't needed.</p>
+      <div class="field">
+        <label>Project (.fraytools)</label>
+        <div class="inrow">
+          <input id="f-export-project" placeholder="…/mario/mario.fraytools" />
+          <button class="btn-sm" onclick="pickFile('f-export-project','fraytools')">Browse…</button>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn-primary" onclick="runPack()">Publish</button>
+        <button class="btn-ghost" onclick="runFray('export')" title="Have FrayTools publish it instead: the same package, much slower, and FrayTools has to be set up.">Publish via FrayTools</button>
+      </div>
+      <div class="convbar" id="p-bar"><i></i></div>
+      <div class="result" id="p-result"></div>
+    </div>
+  </section>
+
   <!-- ── FRAYTOOLS HOOK ─────────────────────────────────── -->
   <section class="screen" id="screen-frayhook">
     <div class="wrap">
       <div class="crumb"><button onclick="showScreen('home')">← Home</button></div>
       <h1>FrayTools Hook</h1>
-      <p class="lede">Drive your local FrayTools over the DevTools protocol.</p>
+      <p class="lede">Render an entity or extract box geometry with your local FrayTools.</p>
       <div class="tabs">
-        <button class="tab active" data-tab="export" onclick="frayTab('export')">Publish → .fra</button>
-        <button class="tab" data-tab="render" onclick="frayTab('render')">Render entity</button>
+        <button class="tab active" data-tab="render" onclick="frayTab('render')">Render entity</button>
         <button class="tab" data-tab="harness" onclick="frayTab('harness')">Box geometry</button>
       </div>
-      <div class="panel active" id="fp-export">
-        <div class="field">
-          <label>Project (.fraytools)</label>
-          <div class="inrow">
-            <input id="f-export-project" placeholder="…/mario/mario.fraytools" />
-            <button class="btn-sm" onclick="pickFile('f-export-project','fraytools')">Browse…</button>
-          </div>
-        </div>
-        <div class="form-actions"><button class="btn-primary" onclick="runFray('export')">Publish All</button></div>
-      </div>
-      <div class="panel" id="fp-render">
+      <div class="panel active" id="fp-render">
         <div class="field"><label>Project (.fraytools)</label>
           <div class="inrow"><input id="f-render-project" placeholder="…/mario/mario.fraytools" />
           <button class="btn-sm" onclick="pickFile('f-render-project','fraytools')">Browse…</button></div></div>
@@ -620,7 +638,8 @@
           <span>Surface script errors in-game <span class="hint">(shows trapped hscript errors via the engine console)</span></span>
         </label>
         <div class="m-actions-row">
-          <button class="btn-primary" onclick="launchBrowse()">Browse…</button>
+          <button class="btn-primary" onclick="launchFrayDefault()" title="Boot straight into a match with the engine's default fighter on the default stage — nothing to pick or publish">Quick match (default fighter)</button>
+          <button class="btn-ghost" onclick="launchBrowse()">Browse…</button>
           <button class="btn-ghost" onclick="launchFrayNoChar()">Boot without a character</button>
           <button class="btn-ghost" onclick="closeLaunchModal()">Cancel</button>
         </div>
@@ -635,6 +654,7 @@
         </div>
         <p class="hint" id="ssf2-hint"></p>
         <div class="m-actions-row">
+          <button class="btn-primary" onclick="launchSsf2Default()" title="Boot straight into a match with SSF2's default fighter">Quick match (default fighter)</button>
           <button class="btn-ghost" onclick="closeLaunchModal()">Cancel</button>
         </div>
       </div>
@@ -662,11 +682,11 @@
     <div class="modal char-modal" id="char-modal">
       <button class="modal-close" onclick="closeCharModal()">×</button>
       <h2 id="char-modal-title">character</h2>
-      <p class="char-modal-sub">Commands run on <code id="char-modal-prefix">match.getCharacters()[0]</code> — type the rest (e.g. <code>toState(CState.JAB)</code> or <code>body.x</code>).</p>
+      <p class="char-modal-sub">Runs inside this entity's own script, as <code id="char-modal-prefix">e@p0</code>: its locals, its <code>self</code>, its <code>match</code> (e.g. <code>self.toState(CState.JAB)</code>, <code>self.getX()</code>, or a variable the script declares).</p>
       <div class="char-msgs" id="char-msgs"></div>
       <div class="char-inputrow">
         <input id="char-input" autocomplete="off" spellcheck="false"
-               placeholder="toState(CState.JAB)  ·  damage._damage  ·  body.x" />
+               placeholder="self.toState(CState.JAB)  ·  self.getX()  ·  a variable of the script" />
         <button class="btn-primary" id="char-send" onclick="charSend()">Run</button>
       </div>
     </div>
@@ -685,7 +705,7 @@
   // Setup is no longer a screen — it's the wizard MODAL (openSetupModal).
   const SUBTITLES = {
     home:"Fraymakers toolkit", convert:"SSF2 → Fraymakers",
-    frayhook:"FrayTools Hook", console:"Fraymakers console",
+    publish:"Publish", frayhook:"FrayTools Hook", console:"Fraymakers console",
   };
   let consoleBooted = false; // the engine is launched lazily on first console visit
   function showScreen(name){
@@ -872,7 +892,7 @@
   function goConsole(){
     showScreen("console");
     flowState = "idle";
-    setStatus(false);
+    if(!connected){ openLaunchModal(); return; }
     setTimeout(()=>{ const i=$("input"); if(i) i.focus(); }, 50);
   }
   // Character id from a picked `.fraytools` path: the file stem (the conversion
@@ -940,6 +960,32 @@
     setStatus(false);
     setTimeout(()=>{ const i=$("input"); if(i) i.focus(); }, 50);
   }
+  // A match with nothing picked: the engine's own default fighter on the default stage, the
+  // same launch the command line makes. No character is baked (the engine already has its
+  // own), and the match is spawned host-side on READY.
+  function launchFrayDefault(){
+    closeLaunchModal();
+    charName = "";
+    showScreen("console");
+    consoleBooted = true;
+    flowState = "booting";
+    modalWorking("Connecting to Fraymakers…","Booting a default match…");
+    syncEngineLogging();
+    ipcSend("@@boot:quick");
+    setStatus(false);
+    setTimeout(()=>{ const i=$("input"); if(i) i.focus(); }, 50);
+  }
+  function launchSsf2Default(){
+    closeLaunchModal();
+    charName = "";
+    showScreen("console");
+    consoleBooted = true;
+    flowState = "booting";
+    modalWorking("Connecting to SSF2…","Booting a default match…");
+    ipcSend("@@boot:ssf2quick");
+    setStatus(false);
+    setTimeout(()=>{ const i=$("input"); if(i) i.focus(); }, 50);
+  }
   function closeLaunchModal(){ launchOverlay.classList.remove("show"); }
   launchOverlay.addEventListener("click",(e)=>{ if(e.target===launchOverlay) closeLaunchModal(); });
   window.onProjects = function(list){
@@ -1003,6 +1049,7 @@
   // icon). iconReq tracks which ids we've already asked for, so the 200ms status tick doesn't
   // re-ask every frame. Both are reset in refreshUi() when the connection drops.
   let iconById = {}, slotIds = [], iconReq = {};
+  let stageName = "";   // the stage of the live match, from the LAUNCHED line
   window.onMatchStatus = function(payload){
     if(payload === lastStatus) return;       // skip needless re-renders
     lastStatus = payload;
@@ -1042,6 +1089,16 @@
       // Kick an immediate request the first time we see this id (fast first paint).
       if(known && !icon && !iconReq[id]){ iconReq[id]=true; ipcSend("@@icon:"+i); }
     }
+    // the stage, beside the fighters: its script has an interpreter of its own too
+    if(recs.length && stageName){
+      const b = document.createElement("button");
+      b.className = "mstat"; b.title = "Run hscript inside the stage's own script";
+      b.innerHTML = '<span class="mstat-pic">🏰</span>'
+        + '<span class="mstat-body"><span class="mstat-id">'+escapeHtml(stageName)+'</span>'
+        + '<span class="mstat-meta">stage</span></span>';
+      b.onclick=()=>openCharModal("stage", stageName);
+      host.appendChild(b);
+    }
   }
   // Retry sweep: the very first request can land before the HUD texture is uploaded
   // (iconRaw -> ERR:notex -> empty), so re-ask every few seconds for any visible character
@@ -1058,8 +1115,8 @@
   let charSlot = null;
   function openCharModal(slot, id){
     charSlot = slot;
-    $("char-modal-title").textContent = id + "  ·  slot " + slot;
-    $("char-modal-prefix").textContent = "match.getCharacters()["+slot+"]";
+    $("char-modal-title").textContent = (slot==="stage") ? (id + "  ·  stage") : (id + "  ·  slot " + slot);
+    $("char-modal-prefix").textContent = (slot==="stage") ? "e@stage" : ("e@p"+slot);
     $("char-input").value = "";
     $("char-overlay").classList.add("show");
     setTimeout(()=>{ const i=$("char-input"); if(i) i.focus(); }, 30);
@@ -1069,8 +1126,10 @@
     if(charSlot===null) return;
     let v = $("char-input").value.trim(); if(!v) return;
     $("char-input").value="";
-    const expr = (v.charAt(0)==="." || v.charAt(0)==="[") ? v : ("."+v);  // auto-prefix the dot
-    send("match.getCharacters()["+charSlot+"]"+expr);  // echoes to chat + mirrors into the modal
+    // the script runs in the entity's OWN interpreter (`e@<target>`): the old dotted form
+    // (`.getX()`) is still taken, read as a call on self
+    const expr = (v.charAt(0)==="." || v.charAt(0)==="[") ? ("self"+v) : v;
+    send("e@"+(charSlot==="stage" ? "stage" : ("p"+charSlot))+" "+expr);  // echoes to chat + mirrors into the modal
   }
   function charAdd(role, text){
     const m=$("char-msgs"); if(!m) return;
@@ -1180,9 +1239,12 @@
       return;
     }
     if(line.startsWith("LAUNCHED")){
-      const tok=(line.slice(8).trim().split(/\s+/)[0]||"");
+      const toks=line.slice(8).trim().split(/\s+/);
+      const tok=(toks[0]||"");
       const id=(tok.split("::").pop()||tok).split(".")[0];
       if(id){ charName=id; setStatus(true); }
+      // the second token is the stage (`private::castlesiegessf2.castlesiegessf2`)
+      const st=(toks[1]||""); stageName=(st.split("::").pop()||st).split(".")[0]||"";
       add("engine","Match launched · "+charName);
       return;
     }
@@ -1387,37 +1449,67 @@
     document.querySelectorAll("#screen-frayhook .panel").forEach(p=>p.classList.remove("active"));
     $("fp-"+name).classList.add("active");
   }
+  // the built-in packer: the package from the project's library, written to its publish folders
+  function runPack(){
+    const e=$("f-export-project"); const project = e ? e.value.trim() : "";
+    if(!project){ showResult("p-result","Pick a .fraytools project first.","warn"); return; }
+    $("p-bar").classList.add("show"); $("p-result").innerHTML="";
+    ipcSend("@@pack:"+JSON.stringify({project}));
+  }
+  // publish from anywhere (home, the connection menu): pick the project, then pack it
+  function publishPick(){
+    pickFileCb("fraytools",(path)=>{
+      if(!path) return;
+      showScreen("publish");
+      const e=$("f-export-project"); if(e) e.value=path;
+      runPack();
+    });
+  }
+  // which screen a FrayTools job reports to: its publish on the Publish screen, the rest on the Hook
+  let frayOut="f";
   function runFray(action){
     const g=(id)=>{ const e=$("f-"+action+"-"+id); return e?e.value.trim():""; };
     const payload = {project:g("project")};
     if(action!=="export"){ payload.entity=g("entity"); payload.out=g("out"); }
     if(action==="harness"){ payload.animation=g("animation"); payload.frame=g("frame"); }
-    if(!payload.project){ showResult("f-result","Pick a .fraytools project first.","warn"); return; }
-    $("f-bar").classList.add("show"); $("f-result").innerHTML="";
+    frayOut = action==="export" ? "p" : "f";
+    if(!payload.project){ showResult(frayOut+"-result","Pick a .fraytools project first.","warn"); return; }
+    $(frayOut+"-bar").classList.add("show"); $(frayOut+"-result").innerHTML="";
     ipcSend("@@fray:"+action+":"+JSON.stringify(payload));
   }
   window.onFrayProgress = function(msg){
     // An inline publish from the "isn't built yet" modal narrates into the spinner,
     // not the (hidden) Hook screen result line.
     if(pendingBuildBoot){ if(msg) mMsg.textContent=msg; return; }
-    showResult("f-result", msg||"Running…");
+    showResult(frayOut+"-result", msg||"Running…");
   };
-  window.onFrayResult = function(ok, msg){
-    if(pendingBuildBoot){
-      pendingBuildBoot=false;
-      if(ok){
-        // The `.fra` now exists — pick the boot back up; READY auto-spawns into the chat.
-        add("system","Published “"+_buildChar+"” — launching…");
-        charName=_buildChar;
-        startBoot(true);
-      } else {
-        // Publish failed — back to the build prompt so they can retry or cancel.
-        modalNotBuilt(_buildChar, _buildProject, "Publish failed: "+(msg||"unknown error"));
-      }
-      return;
+  // the not-built prompt's publish finished: on success the boot picks back up (READY spawns
+  // into the chat); on failure the prompt comes back so they can retry or cancel
+  function buildBootDone(ok, msg){
+    pendingBuildBoot=false;
+    if(ok){
+      add("system","Published “"+_buildChar+"” — launching…");
+      charName=_buildChar;
+      startBoot(true);
+    } else {
+      modalNotBuilt(_buildChar, _buildProject, "Publish failed: "+(msg||"unknown error"));
     }
-    $("f-bar").classList.remove("show");
-    showResult("f-result", msg, ok?"ok":"warn");
+  }
+  window.onFrayResult = function(ok, msg){
+    if(pendingBuildBoot){ buildBootDone(ok, msg); return; }
+    $(frayOut+"-bar").classList.remove("show");
+    showResult(frayOut+"-result", msg, ok?"ok":"warn");
+  };
+  // the built-in packer's progress and result: on the Publish screen, or, when the not-built
+  // prompt asked for it, straight on into the boot
+  window.onPackProgress = function(msg){
+    if(pendingBuildBoot){ if(msg) mMsg.textContent=msg; return; }
+    showResult("p-result", msg||"Publishing…");
+  };
+  window.onPackResult = function(ok, msg){
+    if(pendingBuildBoot){ buildBootDone(ok, msg); return; }
+    $("p-bar").classList.remove("show");
+    showResult("p-result", msg, ok?"ok":"warn");
   };
 
   function showResult(id, text, kind){
@@ -1470,8 +1562,8 @@
   }
   // The picked character has never been published to a `.fra`. Instead of the
   // misleading "Fraymakers isn't open" prompt, offer to publish it right here:
-  // [Export Now] drives the FrayTools publish inline, then auto-continues the boot
-  // into the chat once the `.fra` exists. [Cancel] backs out to the disconnected bar.
+  // [Publish Now] builds the package in-process, then continues the boot into the chat
+  // once the `.fra` exists. [Cancel] backs out to the disconnected bar.
   let _buildChar="", _buildProject="", pendingBuildBoot=false;
   function modalNotBuilt(ch, project, err){
     flowState="notbuilt";
@@ -1480,50 +1572,25 @@
     resetPatchbar();
     mIcon.textContent="📦";
     mTitle.textContent="“"+_buildChar+"” isn’t built yet";
-    mMsg.textContent="It needs to be published from FrayTools before it can launch. "
-                    +"Export it now and Peptide will continue into the chat automatically.";
+    mMsg.textContent="It needs to be published to a .fra before it can launch. "
+                    +"Publish it now and Peptide will continue into the chat automatically.";
     mErr.textContent=err||"";
     actions.innerHTML="";
     const exportBtn=document.createElement("button");
-    exportBtn.className="btn-primary"; exportBtn.textContent="Export Now";
+    exportBtn.className="btn-primary"; exportBtn.textContent="Publish Now";
     exportBtn.onclick=()=>exportThenBoot();
     const cancel=document.createElement("button");
     cancel.className="btn-ghost"; cancel.textContent="Cancel"; cancel.onclick=()=>dismissModal();
     actions.appendChild(exportBtn); actions.appendChild(cancel);
     overlay.classList.add("show"); blockUi(true);
   }
-  // Publish _buildProject through the FrayTools hook (the same @@fray:export the Hook
-  // screen uses), showing the working spinner. onFrayResult routes back here while
-  // pendingBuildBoot is set: success → boot into the chat; failure → re-offer Export.
+  // Publish _buildProject with the built-in packer (the same @@pack the Publish screen uses),
+  // showing the working spinner; onPackResult routes back here while pendingBuildBoot is set.
   function exportThenBoot(){
-    if(!_buildProject){ modalNotBuilt(_buildChar, "", "No FrayTools project found to publish."); return; }
-    // An inline publish needs FrayTools. If it isn't installed/configured, don't
-    // fire an export that will just fail with a raw spawn error — send the user to
-    // Setup instead.
-    if(!CFG.fraytoolsReady){ modalNeedsFrayTools(); return; }
+    if(!_buildProject){ modalNotBuilt(_buildChar, "", "No .fraytools project found to publish."); return; }
     flowState="building"; pendingBuildBoot=true;
-    modalWorking("Publishing “"+_buildChar+"”…","Exporting in FrayTools — this can take a moment.");
-    ipcSend("@@fray:export:"+JSON.stringify({project:_buildProject}));
-  }
-  // FrayTools is required to publish a character's `.fra` but isn't set up. Explain
-  // and route to Setup rather than offering an Export that can't run.
-  function modalNeedsFrayTools(){
-    flowState="prompt";
-    modal.classList.remove("working"); modal.classList.add("prompt");
-    resetPatchbar();
-    mIcon.textContent="🛠️";
-    mTitle.textContent="FrayTools isn’t set up";
-    mMsg.textContent="“"+_buildChar+"” needs to be published from FrayTools first, but Peptide "
-                    +"can’t find your FrayTools install. Point Peptide at it in Setup, then try again.";
-    mErr.textContent="";
-    actions.innerHTML="";
-    const setupBtn=document.createElement("button");
-    setupBtn.className="btn-primary"; setupBtn.textContent="Open Setup";
-    setupBtn.onclick=()=>{ dismissModal(); showScreen("home"); openSetupModal(); };
-    const cancel=document.createElement("button");
-    cancel.className="btn-ghost"; cancel.textContent="Cancel"; cancel.onclick=()=>dismissModal();
-    actions.appendChild(setupBtn); actions.appendChild(cancel);
-    overlay.classList.add("show"); blockUi(true);
+    modalWorking("Publishing “"+_buildChar+"”…","Building its package.");
+    ipcSend("@@pack:"+JSON.stringify({project:_buildProject}));
   }
   function hideModal(){ overlay.classList.remove("show"); blockUi(false); resetPatchbar(); }
   // boot hit a never-published character → the dedicated "isn't built yet" modal.
@@ -1531,9 +1598,6 @@
     if(!$("screen-console").classList.contains("active")) return;
     setStatus(false);
     _buildChar=ch||charName; _buildProject=project||"";
-    // No FrayTools → publishing is impossible; show the Setup prompt up front rather
-    // than an Export Now that would fail.
-    if(!CFG.fraytoolsReady){ modalNeedsFrayTools(); return; }
     modalNotBuilt(ch, project, "");
   };
   // The engine crashed — show its log (Enhanced = the patched-engine RESDIAG diagnostics,

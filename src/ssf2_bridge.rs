@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use crate::arg_val;
 
 /// Path for the per-frame jump-probe trajectory CSV. Computed at call time so it
 /// resolves to the platform temp dir on both macOS (`/tmp/`) and Windows (`%TEMP%`).
@@ -27,7 +28,8 @@ use std::time::{Duration, Instant};
 ///
 /// Mirrors the Fraymakers side, where the engine pushes `ANIM:` telemetry over the harness
 /// socket and the host's stream pump routes it by prefix. SSF2's injected recorder
-/// (`abc_inject::inject_frame_recorder`) pushes `FRAME:<label>|<frame>|<x>|<y>` on the same
+/// (`abc_inject::inject_frame_recorder`) pushes
+/// `FRAME:<label>|<frame>|<x>|<y>|<xspeed>|<yspeed>|<netx>|<nety>|<damage>|<player>` on the same
 /// socket the command protocol uses; the response reader is seq-matched, so these arrive as
 /// non-matching lines and are routed here instead of dropped.
 static FRAMES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -45,6 +47,32 @@ pub fn errors_take() -> Vec<String> {
     std::mem::take(&mut *ERRORS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 static LAST_LABEL: Mutex<String> = Mutex::new(String::new());
+/// where the reader thread writes an announcement the moment it sees it. set by the session:
+/// queued for the session loop instead, an announcement could trail a reply the loop was
+/// writing when the frame arrived, and a driver reading the two in order was misled
+static PUSH_LOG: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// announce animation changes and engine errors straight into this log as they arrive.
+pub fn set_push_log(path: std::path::PathBuf) {
+    *PUSH_LOG.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+}
+
+fn push_log(line: &str) -> bool {
+    let guard = PUSH_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(p) = guard.as_ref() else { return false };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+        let _ = writeln!(f, "{line}");
+    }
+    println!("{line}");
+    true
+}
+
+/// A new match: the last announced label is forgotten, so the new fighter's first label is
+/// announced even when it is the same word the old fighter ended on.
+pub fn anim_reset() {
+    LAST_LABEL.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    FRAMES.lock().unwrap().clear();
+}
 
 /// Drain the animation transitions seen since the last call.
 pub fn anim_changes_take() -> Vec<String> {
@@ -58,17 +86,24 @@ fn route_pushed(line: &str) -> bool {
     // mistaken for a command reply, and they belong in the log where the script-error scan
     // reads them.
     if line.starts_with("SCRIPTERR:") {
-        ERRORS.lock().unwrap_or_else(|e| e.into_inner()).push(line.to_string());
+        if !push_log(line) { ERRORS.lock().unwrap_or_else(|e| e.into_inner()).push(line.to_string()); }
         return true;
     }
     if let Some(rest) = line.strip_prefix("FRAME:") {
-        // label is the first field; a change is an animation transition
-        let label = rest.split('|').next().unwrap_or("").trim().to_string();
-        if !label.is_empty() {
+        // label is the first field; a change is an animation transition. Only the FIRST
+        // character's stream drives that: both are recorded now, and two interleaved streams
+        // would report a transition every time the lines alternate.
+        let f: Vec<&str> = rest.split('|').collect();
+        let player: usize = f.get(9).and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+        let label = f.first().copied().unwrap_or("").trim().to_string();
+        if player == 0 { crate::session::frame_tick(); }
+        if !label.is_empty() && player == 0 {
             let mut last = LAST_LABEL.lock().unwrap_or_else(|e| e.into_inner());
             if *last != label {
                 *last = label.clone();
-                ANIM_CHANGES.lock().unwrap_or_else(|e| e.into_inner()).push(label);
+                if !push_log(&format!("ANIM:{}", label.to_uppercase())) {
+                    ANIM_CHANGES.lock().unwrap_or_else(|e| e.into_inner()).push(label);
+                }
             }
         }
         let mut f = FRAMES.lock().unwrap();
@@ -184,10 +219,6 @@ fn session_dir(args: &[String]) -> PathBuf {
     arg_val(args, "--dir")
         .map(PathBuf::from)
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".peptide/ssf2-session"))
-}
-
-fn arg_val(args: &[String], key: &str) -> Option<String> {
-    args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned()
 }
 
 /// Send one command and read its reply over the socket. `command` is TAB-joined
@@ -352,11 +383,30 @@ pub fn session(args: &[String]) -> Result<()> {
     let control = dir.join("control");
     let logp = dir.join("out.log");
     let metap = dir.join("meta");
+    // One pairing at a time, the same rule the Fraymakers session follows: `--attach` drives
+    // the session already running, anything else stands it down and takes its place. Two
+    // daemons on one session dir read the same control file and steal each other's commands.
+    match crate::session::live_pairing(&dir) {
+        Some(p) if args.iter().any(|a| a == "--attach") => {
+            println!("peptide ssf2 session: attaching to the {} session already running \
+                      (pid {}, port {}) — nothing new launched.\n  drive it with: peptide ssf2 tell \"<cmd>\"\n  watch it with: peptide ssf2 log",
+                     p.engine, p.pid, p.port);
+            return Ok(());
+        }
+        Some(p) => {
+            let opts = crate::fastboot::BootOptions::from_cli(args);
+            let cmd = crate::fastboot::command(crate::fastboot::Engine::Ssf2, &opts);
+            if crate::session::adopt_pairing(&p, cmd.as_deref(), args, "peptide ssf2 tell") { return Ok(()); }
+            eprintln!("peptide ssf2 session: replacing the {} session already running (pid {})", p.engine, p.pid);
+            crate::session::end_pairing(&p);
+        }
+        None => {}
+    }
     std::fs::write(&control, b"")?;
     std::fs::write(&logp, b"")?;
 
     // Same host-side overlay the Fraymakers session uses — one shared spawn, engine-agnostic.
-    let _overlay = crate::overlay::spawn_for_session(&logp, args);
+    let _overlay = crate::overlay::spawn_for_session(&logp, args, "ssf2");
 
     // bind the loopback server FIRST (the engine dials in from its ctor), patch the
     // app to connect to that port, launch, then accept the connection.
@@ -371,7 +421,7 @@ pub fn session(args: &[String]) -> Result<()> {
     let fastboot: Option<(String, String)> = if opts.full {
         None
     } else {
-        let ch = opts.char_name.clone().unwrap_or_else(|| cfg.char_name());
+        let ch = opts.char_name.clone().unwrap_or_else(|| cfg.ssf2_char());
         // `--stage` overrides the configured stage for the bake as well as the launch, which is
         // what BootOptions promises. Ignoring it here baked one stage and launched another, so a
         // stage named on the command line was never queued and never loaded.
@@ -384,7 +434,9 @@ pub fn session(args: &[String]) -> Result<()> {
     let mut child = std::process::Command::new(&exe)
         .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
         .spawn()?;
-    std::fs::write(&metap, format!("pid={}\napp={}\nport={}\n", child.id(), app.display(), port))?;
+    crate::platform::keep_behind(child.id());
+    let _ = &metap;
+    crate::session::write_pairing(&dir, "ssf2", port, "", Some(child.id()));
 
     let slog = |msg: &str| {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&logp) {
@@ -392,9 +444,30 @@ pub fn session(args: &[String]) -> Result<()> {
         }
         println!("{msg}");
     };
+    set_push_log(logp.clone());
     slog(&format!("[ssf2-session] booted {} (pid {}) on :{port}; waiting for connection…", app.display(), child.id()));
     if let Err(e) = accept_engine(&listener, 30) {
         slog(&format!("[ssf2-session] {e}"));
+        // A LAUNCH THAT NEVER DIALS IN is usually parked on the runtime's own startup lock: a
+        // named semaphore an earlier instance took and, killed outright, never gave back. The
+        // kernel keeps it, and every launch after that waits on it before opening a single file.
+        // The parked process names it (through its descriptor), so it is unlinked, the parked
+        // instance let go, and the app started once more.
+        if let Some(name) = stale_runtime_semaphore(child.id() as i32) {
+            slog(&format!("[ssf2-session] the engine is parked on a stale runtime semaphore ({name}): clearing it and starting again"));
+            let _ = child.kill();
+            let _ = child.wait();
+            unlink_named_semaphore(&name);
+            child = std::process::Command::new(&exe)
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                .spawn()?;
+            crate::platform::keep_behind(child.id());
+            crate::session::write_pairing(&dir, "ssf2", port, "", Some(child.id()));
+            slog(&format!("[ssf2-session] booted {} again (pid {}); waiting for connection…", app.display(), child.id()));
+            if let Err(e) = accept_engine(&listener, 30) {
+                slog(&format!("[ssf2-session] {e}"));
+            }
+        }
     }
 
     // Readiness. Quick boot SKIPS the disclaimer, so there's no event-driven READY — use the
@@ -473,7 +546,7 @@ pub fn jumpcapture(args: &[String]) -> Result<()> {
     let ch = args.iter().rev().find(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| "mario".into());
     let t = Duration::from_secs(5);
     let nav = |path: &[&str]| -> Result<String> {
-        // path like ["GC","GET stageData","GET Characters","IDX 0"]
+        // a path of reflection steps, root first, then each field read, then an index
         let mut last = String::new();
         for step in path { last = request(&step.replace(' ', "\t"), t)?; }
         Ok(last)
@@ -490,7 +563,7 @@ pub fn jumpcapture(args: &[String]) -> Result<()> {
     println!("resources fully loaded: {loaded}");
     // 3. GO: start the match — spawns the stage next frame.
     println!("GO → {}", request("GO", Duration::from_secs(8))?);
-    // wait for the match to come up (stageData non-null)
+    // wait for the match to come up (its stage data is there)
     let mut up = false;
     for _ in 0..40 {
         let _ = request("GC", t);
@@ -549,3 +622,46 @@ pub fn log(args: &[String]) -> Result<()> {
     let _ = Path::new(&logp);
     Ok(())
 }
+
+/// The name of the POSIX named semaphore a process holds on its first descriptors, if any:
+/// the runtime opens its startup lock before anything else, so a launch parked on it shows
+/// nothing but that descriptor. Read through the process-info call `lsof` uses (which lists the
+/// semaphore but not its name).
+#[cfg(target_os = "macos")]
+fn stale_runtime_semaphore(pid: i32) -> Option<String> {
+    extern "C" {
+        fn proc_pidfdinfo(pid: i32, fd: i32, flavor: i32, buffer: *mut std::ffi::c_void, buffersize: i32) -> i32;
+    }
+    const PROC_PIDFDPSEMINFO: i32 = 4;
+    let mut buf = vec![0u8; 8192];
+    for fd in 0..8 {
+        let n = unsafe { proc_pidfdinfo(pid, fd, PROC_PIDFDPSEMINFO, buf.as_mut_ptr() as *mut _, buf.len() as i32) };
+        if n <= 0 { continue }
+        // the name is the one printable run in the record
+        let mut best: Option<String> = None;
+        let mut cur = String::new();
+        for &b in &buf[..n as usize] {
+            if (0x20..0x7f).contains(&b) { cur.push(b as char); }
+            else { if cur.len() >= 4 && best.as_ref().is_none_or(|x| cur.len() > x.len()) { best = Some(cur.clone()); } cur.clear(); }
+        }
+        if best.is_some() { return best }
+    }
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn stale_runtime_semaphore(_pid: i32) -> Option<String> { None }
+
+/// Unlink a POSIX named semaphore by name (both spellings the runtime might have used).
+#[cfg(unix)]
+fn unlink_named_semaphore(name: &str) {
+    for n in [name.to_string(), format!("/{name}")] {
+        if let Ok(c) = std::ffi::CString::new(n) {
+            let _ = unsafe { libc::sem_unlink(c.as_ptr()) };
+        }
+    }
+}
+
+/// Windows has no POSIX named semaphores, so there is none to clear.
+#[cfg(not(unix))]
+fn unlink_named_semaphore(_name: &str) {}

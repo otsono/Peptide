@@ -14,13 +14,125 @@
   // field whose value is doubled for the 30fps → 60fps timing change (the
   // same isframe flag commands.jsonc uses). The -1 "no override" sentinel
   // handling stays in code — it is emit formatting, not conversion.
+  // Asked of the engine by name and refused ("Invalid hitbox stat"), so there is nothing to
+  // translate them to. A runtime write carrying one is rejected WHOLE -- mario's forward aerial
+  // states a camera shake and lost its damage and knockback with it -- so they are dropped.
+  // Asked of the engine BY NAME and refused. The engine rejects the WHOLE object for
+  // one name it does not know, so a field with nothing to map to takes the damage,
+  // angle and knockback next to it overboard. These are dropped rather than guessed
+  // at: the engine states a shield damage MULTIPLIER where the source states an
+  // amount, and a camera shake TYPE where the source states its own shake setting,
+  // so passing one as the other would be reading a number in the wrong units.
+  // The stats the engine actually has, from the api definitions FrayTools publishes.
+  // A hitbox write is rejected WHOLE for one name the engine does not know, taking the
+  // damage, angle and knockback beside it overboard, so anything not named here is
+  // dropped from a runtime write. Stated as what the engine HAS rather than as a list
+  // of what the source might send: content nobody has written yet carries stats nobody
+  // has listed, and those have to fall out on their own rather than wait for a row.
+  "fm_stats": [
+    "absorbable", "angle", "attackId", "attackRatio", "attackStrength", "baseKnockback",
+    "bodyX", "bodyY", "buryTimeBase", "buryTimeScaling", "buryType", "cameraShakeType",
+    "canParrySteal", "damage", "directionalInfluence", "disabled", "element",
+    "entityHitConditions", "flinch", "forceTumbleFall", "hitEffectOverride",
+    "hitSoundOverride", "hitSoundOverrideArray", "hitstop", "hitstopMultiplier",
+    "hitstopNudgeMultiplier", "hitstopOffset", "hitstun", "index", "jabResetType",
+    "knockbackCap", "knockbackCapDelay", "knockbackGrowth", "limb",
+    "maxChargeDamageMultiplier", "metadata", "owner", "physicsHitConditions", "rawAngle",
+    "rawDamage", "reflectable", "reverse", "reversibleAngle", "selfHitstop",
+    "selfHitstopOffset", "shieldDamageMultiplier", "shieldable", "shieldstunMultiplier",
+    "stackKnockback", "tumbleType", "weightDependentKnockback"
+  ],
+
+  // A source box's true-or-false field that this engine states under its own field: when the
+  // box states `ssf2_key` as `when`, the engine field `fm_field` is given `value` (written into the
+  // stats as it stands, so an engine constant is named as the engine's api names it). Fields from
+  // the engine's published HitboxStats (github.com/Fraymakers/fraymakers-api-docs).
+  "flags": [
+    { "ssf2_key": "stackKnockback",    "when": false, "fm_field": "stackKnockback",       "value": "false" },
+    // (the engine's own forceTumbleFall is deprecated there, and stating it is an error)
+    { "ssf2_key": "forceTumbleFall",   "when": true,  "fm_field": "tumbleType",           "value": "TumbleType.ALWAYS" },
+    { "ssf2_key": "canDI",             "when": false, "fm_field": "directionalInfluence", "value": "false" },
+    { "ssf2_key": "bypassShield",      "when": true,  "fm_field": "shieldable",           "value": "false" },
+    { "ssf2_key": "onlyAffectsGround", "when": true,  "fm_field": "physicsHitConditions", "value": "PhysicsHitCondition.GROUNDED" },
+    { "ssf2_key": "onlyAffectsAir",    "when": true,  "fm_field": "physicsHitConditions", "value": "PhysicsHitCondition.AIRBORNE" },
+    // a box that freezes the one it hits (`freeze`, a count of frames: sora's blizzard, black mage's
+    // down tilt) freezes it here as well; this engine keeps the length its freeze lasts
+    { "ssf2_key": "freeze",            "when": true,  "fm_field": "freezeType",           "value": "FreezeType.FREEZE" },
+    // a box with no effect deals its damage without making the one it hits flinch (measured: fox's
+    // laser leaves a standing fighter standing, and his back throw's laser leaves a flying one's
+    // flight as it was, where both were held in their hurt state here)
+    { "ssf2_key": "hasEffect",         "when": false, "fm_field": "flinch",               "value": "false" }
+  ],
+
+  "no_counterpart": [
+    "camShake", "priority", "hurtSelf", "hurtSelfShield",
+    "paralysis", "sdiDistance", "shieldDamage",
+    // the engine has no armor of its own for a hit to state it goes through
+    "bypassHeavyArmor", "bypassSuperArmor"
+  ],
+
   "fields": [
     { "fm_field": "damage",          "ssf2_keys": ["damage"] },
     { "fm_field": "angle",           "ssf2_keys": ["direction", "angle"] },
-    { "fm_field": "baseKnockback",   "ssf2_keys": ["power", "weightKB"] },
-    { "fm_field": "knockbackGrowth", "ssf2_keys": ["kbConstant"] },
-    { "fm_field": "hitstop",         "ssf2_keys": ["hitStun"],     "isframe": true },
-    { "fm_field": "selfHitstop",     "ssf2_keys": ["selfHitStun"], "isframe": true },
+    // KNOCKBACK, measured live on both engines by reading each engine's own launch vector on
+    // the frame the hit lands (`hits` reports it), per field.
+    //
+    // Each field is isolated by the move used to measure it. `special_side` carries no growth
+    // (kbConstant 0), so its launch is the BASE response alone: 8.549 px/frame in SSF2 against
+    // 7.170 in Fraymakers for the same 40, and SSF2's converts at velocity_scale like every
+    // other speed (x0.65), which puts Fraymakers 1.29x hot. `tilt_down` (30 base, 80 growth)
+    // then gives the GROWTH response once its base part is subtracted, at two victim damages so
+    // the answer has to hold at both: 0.7665 at 0% and 0.7615 at 60%.
+    //
+    // Both fields landing near the same number was the two engines agreeing on the SHAPE of a
+    // launch and differing by a scale -- and they agree exactly, so it is ONE number rather than
+    // two that happen to be close. Both engines work a launch out the same way, and that way is
+    // LINEAR in base and in growth alike, so scaling both by one factor scales the whole curve:
+    // the two launches then agree at every victim damage rather than at the one the factor was
+    // fitted at. Two nearly-equal factors instead left the base-heavy moves out by a few percent
+    // -- twelve throws across the roster, the worst 4.9% -- because the error rides on whichever
+    // field the move leans on. 0.7629 is the factor: the ratio of what a unit of launch is worth
+    // in each engine, times what a source-world speed is worth here.
+    // `tools/tests/knockback_parity.py` checks every hitbox of every character against this with
+    // no engine running, and Fraymakers' own launches were confirmed live to reproduce from the
+    // emitted numbers to within 0.01%.
+    //
+    // A `weightKB` hit is FIXED knockback: no growth (dropped in extractor.rs::convert_hitboxes,
+    // measured). Its launch is NOT the field's own number: the source works it out as
+    // `(weightKB * per_unit + constant) * kbConstant/100 + power`, and scales part of it by the
+    // victim's weight. this engine scales a fixed launch by nothing (measured: mario's up special
+    // launches the same against a victim of weight 60 or 140, `weightDependentKnockback` on or
+    // off), so it converts for a victim of 95, the roster's median weight. mario's jab (20) and
+    // chibirobo's smashes (60) land within 1% of the source's against fighters near that weight.
+    //
+    { "fm_field": "baseKnockback",   "ssf2_keys": ["power", "weightKB"], "scale": 0.7629 },
+    // the launch a FIXED hit gives, before the scale above, for a victim of weight 95
+    { "fm_field": "fixed_knockback", "ssf2_keys": [], "per_unit": 0.71795, "constant": 19.4359 },
+    { "fm_field": "knockbackGrowth", "ssf2_keys": ["kbConstant"],        "scale": 0.7629 },
+    // FREEZE: the frames the victim is held still after the frame the hit lands on, read off the
+    // victim's own record on both engines (`tools/tests/rehit_trace.py --victim`): a stated
+    // `hitStun` of N holds it N source frames (fox's jab 1, mario's 3, lloyd's side special 1,
+    // every hit of it), and a Fraymakers `hitstop` of 30 holds it exactly 30.
+    // a box that states none (or states it at or below zero: ryu's -1.8 holds what an unstated
+    // one does) holds the victim floor(damage / 6 + 2.5) frames (kirby's forward tilt 4, fox's up
+    // tilt and mario's down tilt 4), where this engine's own default held it half a frame to two
+    // frames longer, and by no one rule (3.5 to 6.5 for twelve damage)
+    { "fm_field": "hitstop",         "ssf2_keys": ["hitStun"],     "isframe": true, "plus_frames": 0,
+      "unstated_per_damage": 0.16666666666666666, "unstated_constant": 2.5 },
+    // the ATTACKER'S freeze is not counted that way: measured on six fighters, a stated
+    // `selfHitStun` of N holds the attacker N frames (1 -> 1, 5 -> 5). A move that states none is
+    // held for floor(damage / 6 + 1.5) frames (2 -> 1, 3..8 -> 2, 9..14 -> 3, 15..18 -> 4, every
+    // clean single hit across six fighters), where this engine's own default held it longer.
+    { "fm_field": "selfHitstop",     "ssf2_keys": ["selfHitStun"], "isframe": true, "plus_frames": 0,
+      "unstated_per_damage": 0.16666666666666666, "unstated_constant": 1.5 },
+    // HITSTUN: `hitLag` is a MULTIPLIER, not a frame count -- the corpus states it as -1.0, -1.1,
+    // -1.2, -1.23, -1.3, 0.9, values around one rather than durations. Fraymakers has no hitstun
+    // multiplier and works its hitstun out from the knockback, which is what SSF2 does too, so
+    // anything that is not a positive whole number of frames emits the "no override" sentinel
+    // and the engine's own answer stands.
     { "fm_field": "hitstun",         "ssf2_keys": ["hitLag"],      "isframe": true },
+    // Both engines state how much longer a shield holds the defender for this hit; fraymakers
+    // spells the middle of the name lower-case, which is the whole of the difference.
+    { "fm_field": "shieldstunMultiplier", "ssf2_keys": ["shieldStunMultiplier"] },
   ],
 }

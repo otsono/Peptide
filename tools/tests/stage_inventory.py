@@ -51,7 +51,10 @@ BIN = os.path.join(ROOT, "build", "release", "peptide")
 # Linkage families that are deliberately NOT art (AGENT_CONTEXT "SSF2 stage linkage
 # vocabulary"): collision geometry the engine renders invisibly, and scaffolding.
 NON_ART = re.compile(
-    r"terrain|platform|collison|collision|ledge_mc|_start_|_spawn_|boundary|"
+    # `stance` is an object's OWN ART, which the converter classifies out for that reason -- and
+    # counting it here as an object of its own made it compete for an element with the object it
+    # belongs to, so a target test's tenth target was reported lost to its neighbour's stance.
+    r"^stance$|terrain|platform|collison|collision|ledge_mc|_start_|_spawn_|boundary|"
     r"warningbounds|warning|itemgen|mask|light_source|smashball|"
     # wrappers and hazard collision, not art: `stageMC`/`stance` are container clips and
     # `attackBox*` becomes the hazard's HITBOX, not a drawn object.
@@ -175,9 +178,16 @@ def actor_classes(stage):
     doesn't appear at all). PORTING_STAGES phase 2 calls for exactly this inventory.
     """
     src = os.path.join(SSFS, "stages", f"{stage}.ssf")
-    r = subprocess.run(["cargo", "run", "-q", "-p", "ssf2_converter", "--features", "dev-tools",
-                        "--bin", "ssf2_objgraph", "--", src, "scripts"],
-                       capture_output=True, text=True, cwd=ROOT)
+    # RUN THE TOOL, DO NOT ASK CARGO TO. `cargo run` re-resolves the workspace on every call, and
+    # at one call per stage that was 29 of the 31 seconds this check took -- an hour for the
+    # corpus, nearly all of it cargo deciding there was nothing to rebuild. Built once, invoked
+    # directly, the same sweep is a couple of minutes.
+    exe = next((c for c in (os.path.join(ROOT, "build", p, "ssf2_objgraph")
+                            for p in ("release", "debug")) if os.path.exists(c)), None)
+    cmd = ([exe, src, "scripts"] if exe else
+           ["cargo", "run", "-q", "-p", "ssf2_converter", "--features", "dev-tools",
+            "--bin", "ssf2_objgraph", "--", src, "scripts"])
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
     out = []
     for m in re.finditer(r"^  class  (\S+)", r.stdout + r.stderr, re.M):
         c = m.group(1)
@@ -196,6 +206,85 @@ def actor_classes(stage):
     return sorted(set(out))
 
 
+def provenance(stage, outdir):
+    """What the converter says each emitted element came from.
+
+    Pairing the two sides by NAME cannot work on its own: an element is named for the symbol it
+    came out of, and a symbol id is not the name the tree shows. The converter knows the pairing
+    exactly, so it writes it down, and this reads it. `frames` is what was EMITTED after
+    run-length encoding, so an element that came out as one picture says so -- and a source clip
+    of a thousand frames whose art never changes is correctly one picture, not a loss.
+    """
+    p = os.path.join(outdir, f"{stage}ssf2", f"{stage}ssf2.sources.json")
+    if not os.path.exists(p):
+        return {}
+    try:
+        d = json.load(open(p))
+    except Exception:
+        return {}
+    return d.get("elements", [])
+
+
+def drawn_by_object(stage, outdir, name):
+    """The object that draws this clip, if one does.
+
+    A hazard is emitted as an entity named for its CLASS, while the source knows it by the clip
+    it draws with. Emerald cave's wooden panel is ten labelled frames -- states, not a loop --
+    ported as an object with ten states and reported as a lost animation, because `ecave_wood`
+    and `EmeraldCaveWoodenPanel` share no letters to pair on. The converter writes the link.
+    """
+    p = os.path.join(outdir, f"{stage}ssf2", f"{stage}ssf2.sources.json")
+    if not os.path.exists(p):
+        return None
+    try:
+        d = json.load(open(p))
+    except Exception:
+        return None
+    for o in d.get("objects", []):
+        if o.get("draws") and o["draws"] == name:
+            return o
+    return None
+
+
+def pair_elements(prov, rows):
+    """Pair each animated source object with the emitted element that carries it.
+
+    Done for ALL of them at once rather than one at a time, because one at a time is decided by
+    the order the objects happen to be listed in: an early object takes an element an exact match
+    later on needed, and the report then blames the later one. Three passes, surest first --
+    the emitter's own note of what it came from, then equal length, then anything still moving.
+
+    A track is sampled over the timeline it is PLACED on, so a 49-frame loop on a 94-frame parent
+    comes out 94 long with the loop shown twice: the same thing to look at, a different number to
+    match on. What decides whether movement survived is that an object that moves has an element
+    that moves, and that each element answers for one object only.
+    """
+    # what is never an object of its own does not get to hold an element: a stance is the art of
+    # the object it hangs under, and letting it compete meant a target test's tenth target was
+    # reported lost to its neighbour's stance.
+    rows = [o for o in rows if not NON_ART.search(o["name"])]
+    out, used = {}, set()
+    def take(o, e):
+        out[o["name"]] = e
+        used.add(id(e))
+    for o in rows:
+        for e in prov:
+            if id(e) not in used and e.get("from") == o["name"]:
+                take(o, e); break
+    for o in rows:
+        if o["name"] in out: continue
+        for e in prov:
+            if id(e) in used or e.get("frames", 0) <= 1: continue
+            if e["frames"] == o["frames"]:
+                take(o, e); break
+    for o in rows:
+        if o["name"] in out or o.get("frames", 0) <= 1: continue
+        for e in prov:
+            if id(e) in used or e.get("frames", 0) <= 1: continue
+            take(o, e); break
+    return out
+
+
 def norm(s):
     """Loose key for pairing: the emitted names carry the stage id and separators vary."""
     return re.sub(r"[^a-z0-9]", "", s.lower())
@@ -209,7 +298,11 @@ if __name__ == "__main__":
     stage = args[0]
     include_unnamed = "--all" in sys.argv
 
-    outdir = os.path.join(ROOT, "build", "stage_inventory")
+    # One directory per run when asked, so a whole-corpus sweep can put the stages across the
+    # machine's cores without ten converters writing over each other's output.
+    outdir = os.environ.get("PEPTIDE_STAGE_OUT") or os.path.join(ROOT, "build", "stage_inventory")
+    if not os.path.isabs(outdir):
+        outdir = os.path.join(ROOT, outdir)
     text = convert_once(stage, outdir)
     ssf2 = ssf2_objects(text, include_unnamed)
     fm = fm_objects(stage, outdir)
@@ -242,6 +335,8 @@ if __name__ == "__main__":
     print("-" * 112)
     ported = gaps = skipped = 0
     missing = []
+    prov = provenance(stage, outdir)
+    paired = pair_elements(prov, rows)
     for o in rows:
         key = norm(o["name"]).replace(sid, "").replace(norm(stage), "")
         # match both directions: SSF2 `thwomp_mc` emits as `…Thwomp`, so neither name
@@ -257,9 +352,30 @@ if __name__ == "__main__":
             # flag a background-plane object that landed in a foreground container, or the
             # reverse: that's a depth error the counts alone can't show
             sp, fl = (o['plane'] or '').lower(), fm_layer.lower()
-            mismatch = (("fore" in sp) != ("foreground" in fl)) and fl.startswith(("back", "fore", "char"))
+            # A STRUCTURES container is where structures live, not a statement about depth. A
+            # platform goes in one whatever plane the source drew it on, so reading
+            # `FOREGROUND_STRUCTURES` as "this landed in the foreground" called every ported
+            # platform a depth error -- all eleven of them, across seven stages, every one a
+            # platform and none of them wrong.
+            mismatch = (("fore" in sp) != ("foreground" in fl)) \
+                and fl.startswith(("back", "fore", "char")) \
+                and "structures" not in fl
             flag = "  <-- PLANE/LAYER MISMATCH" if mismatch else ""
             print(f"{o['name'][:29]:30}{o['plane'][:10]:11}{pos:>13}  ->  {tag:34}{h['frames']:>7}  {fm_layer:<22}{flag}")
+        elif (obj := drawn_by_object(stage, outdir, o["name"])):
+            ported += 1
+            print(f"{o['name'][:29]:30}{o['plane'][:10]:11}{pos:>13}  ->  "
+                  f"{'object:' + obj['entity'][:27]:34}{'states':>7}  (its own object)")
+        elif o["name"] in paired:
+            # THE CONVERTER SAYS WHERE THIS WENT, so no guess is needed. An element it emitted as
+            # ONE picture is one of two things and the difference matters: a clip whose art never
+            # changes over a long timeline is correctly one picture, and a clip whose art does
+            # change is a loss. Only the emitter can tell them apart, because only it rendered
+            # them -- it run-length encodes what it drew, so one frame out means one image drawn.
+            e = paired[o["name"]]
+            ported += 1
+            print(f"{o['name'][:29]:30}{o['plane'][:10]:11}{pos:>13}  ->  "
+                  f"{'element:' + e['element'][:26]:34}{e['frames']:>7}  (own loop)")
         elif NON_ART.search(o["name"]):
             skipped += 1   # collision geometry / scaffolding: never art, correctly absent
         elif o["frames"] > 1:

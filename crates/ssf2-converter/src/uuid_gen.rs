@@ -28,9 +28,69 @@ const NAMESPACE: [u8; 16] = [
 /// entity, projectile/effect entities, the menu icon — and in a multi-character
 /// project those places run with different per-char ids. Seeding by symbol only
 /// guarantees every reference and the .meta agree, so nothing dangles into a
-/// placeholder. Symbol names are unique within a project (one PNG per name).
+/// placeholder.
+///
+/// That holds while symbol names are unique within a project, which is true of
+/// one package: the names come from the package's own ids. Pictures BORROWED
+/// from another package break it, because the two packages number their ids
+/// independently and `bitmap_294` names a different picture in each. A borrow
+/// therefore runs under [`ImageNsGuard`], which keeps those images in their own
+/// namespace so two different pictures never claim one identity.
 pub fn image_meta_guid(symbol: &str) -> String {
-    det_uuid(&format!("image::{}", symbol))
+    IMAGE_NS.with(|ns| {
+        let ns = ns.borrow();
+        if ns.is_empty() {
+            det_uuid(&format!("image::{}", symbol))
+        } else {
+            det_uuid(&format!("image::{}::{}", ns, symbol))
+        }
+    })
+}
+
+thread_local! {
+    static IMAGE_NS: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Scopes image identities to the package they were read from. Restores the
+/// previous namespace on drop, so the host character's own pictures keep the
+/// plain symbol-only identity they have always had.
+pub struct ImageNsGuard(String);
+
+impl ImageNsGuard {
+    pub fn install(ns: &str) -> Self {
+        let prev = IMAGE_NS.with(|c| std::mem::replace(&mut *c.borrow_mut(), ns.to_string()));
+        ImageNsGuard(prev)
+    }
+}
+
+impl Drop for ImageNsGuard {
+    fn drop(&mut self) {
+        IMAGE_NS.with(|c| *c.borrow_mut() = std::mem::take(&mut self.0));
+    }
+}
+
+/// The project every identity this conversion makes belongs to. Two projects converted from one
+/// package (a fighter and the form it turns into, each asked for by name) are loaded into one
+/// match, and identities made from the package alone would be the same in both: the engine
+/// collides them and goes down. Set for the conversion's run, empty when the package is
+/// converted whole (one project already).
+static PROJECT_NS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Scopes every identity made while it is held to one project; the previous scope comes back on drop.
+pub struct ProjectNsGuard(String);
+
+impl ProjectNsGuard {
+    pub fn install(ns: &str) -> Self {
+        let mut g = PROJECT_NS.lock().unwrap_or_else(|e| e.into_inner());
+        ProjectNsGuard(std::mem::replace(&mut *g, ns.to_string()))
+    }
+}
+
+impl Drop for ProjectNsGuard {
+    fn drop(&mut self) {
+        let mut g = PROJECT_NS.lock().unwrap_or_else(|e| e.into_inner());
+        *g = std::mem::take(&mut self.0);
+    }
 }
 
 /// Generate a deterministic UUID v5 from a seed string.
@@ -40,6 +100,10 @@ pub fn det_uuid(seed: &str) -> String {
     // SHA-1 hash of namespace bytes + seed bytes
     let mut hasher = Sha1::new();
     hasher.update(NAMESPACE);
+    {
+        let ns = PROJECT_NS.lock().unwrap_or_else(|e| e.into_inner());
+        if !ns.is_empty() { hasher.update(ns.as_bytes()); hasher.update(b"::"); }
+    }
     hasher.update(seed.as_bytes());
     let hash = hasher.finalize();
 
@@ -97,5 +161,32 @@ mod tests {
         // Variant RFC4122 (8, 9, a, or b)
         let variant_char = parts[3].chars().next().unwrap();
         assert!("89ab".contains(variant_char), "variant should be 8/9/a/b, got: {}", variant_char);
+    }
+}
+
+#[cfg(test)]
+mod image_ns_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_images_do_not_claim_the_hosts_identity() {
+        // Same generated name, two packages: the pictures are different, so the
+        // identities must be too.
+        let host = image_meta_guid("bitmap_294");
+        let borrowed = {
+            let _g = ImageNsGuard::install("DAT59");
+            image_meta_guid("bitmap_294")
+        };
+        assert_ne!(host, borrowed);
+        // And the host's own identity is exactly what it was before the borrow.
+        assert_eq!(host, image_meta_guid("bitmap_294"));
+        assert_eq!(host, det_uuid("image::bitmap_294"));
+    }
+
+    #[test]
+    fn a_borrow_from_one_package_is_stable() {
+        let a = { let _g = ImageNsGuard::install("DAT59"); image_meta_guid("bitmap_1") };
+        let b = { let _g = ImageNsGuard::install("DAT59"); image_meta_guid("bitmap_1") };
+        assert_eq!(a, b);
     }
 }

@@ -1,7 +1,7 @@
-/// Dump ABC costume/palette data from an SSF2 file.
-///
-/// Finds the method body for getCostumeData and decodes its opcodes
-/// to extract the actual costume color data.
+//! Dump ABC costume/palette data from an SSF2 file.
+//!
+//! Finds the method body for the costume data and decodes its opcodes
+//! to extract the actual costume color data.
 
 fn read_u30(data: &[u8], pos: &mut usize) -> u32 {
     let mut result = 0u32;
@@ -85,7 +85,8 @@ fn parse_pool(abc: &[u8]) -> (AbcPool, usize) {
     (AbcPool { strings, ints, uints, doubles, multinames }, pos)
 }
 
-struct MethodInfo { // unused, fields reference external indices
+#[allow(dead_code)] // read past, never looked at
+struct MethodInfo {
     param_count: u32, // number of parameters (ignored)
     name_idx: u32     // multiname index (ignored)
 }
@@ -129,7 +130,7 @@ fn skip_traits(abc: &[u8], pos: &mut usize) -> Vec<(u32, u32)> { // (name_idx, m
         let kind = kind_flags & 0x0F;
         match kind {
             0 | 6 => { read_u30(abc, pos); read_u30(abc, pos); read_u30(abc, pos); } // slot/const
-            1 | 2 | 3 => { read_u30(abc, pos); let mi = read_u30(abc, pos); result.push((name_mn, mi)); } // method/getter/setter
+            1..=3 => { read_u30(abc, pos); let mi = read_u30(abc, pos); result.push((name_mn, mi)); } // method/getter/setter
             4 => { read_u30(abc, pos); read_u30(abc, pos); } // class
             5 => { read_u30(abc, pos); read_u30(abc, pos); } // function
             _ => {}
@@ -258,7 +259,7 @@ fn main() -> anyhow::Result<()> {
     for (bi, tag) in swf_movie.tags.iter().enumerate() {
         let abc_bytes: &[u8] = match tag {
             swf::Tag::DoAbc(data) => data,
-            swf::Tag::DoAbc2(abc) => &abc.data,
+            swf::Tag::DoAbc2(abc) => abc.data,
             _ => continue,
         };
 

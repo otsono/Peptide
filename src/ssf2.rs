@@ -51,6 +51,37 @@ fn ssf2_app() -> PathBuf {
 
 /// Path to SSF2.swf inside the install. macOS: inside the .app bundle.
 /// Windows/Linux: at the root of the install directory.
+/// `peptide ssf2 manifest` -- the game's OWN content inventory: every id it can load and what
+/// each one IS, followed from `SSF2.swf` to the mappings package it names. This is ground zero
+/// for a conversion: what exists, and its type, stated by the game rather than guessed from a name.
+fn cmd_manifest(args: &[String]) -> Result<()> {
+    let app = ssf2_app();
+    let swf = ssf2_swf_path(&app);
+    let data = swf.parent().map(|p| p.join("data")).unwrap_or_default();
+    let inv = ssf2_converter::ssf2_manifest::read(&swf, &data)?;
+    if args.iter().any(|a| a == "--json") {
+        println!("{}", serde_json::to_string_pretty(&inv)?);
+        return Ok(());
+    }
+    println!("SSF2 content inventory (from {})", swf.display());
+    for (kind, m) in [
+        ("character", &inv.character), ("stage", &inv.stage), ("misc", &inv.misc),
+        ("extra", &inv.extra), ("modes", &inv.modes), ("menu", &inv.menu),
+    ] {
+        println!("  {kind:10} {:>4}", m.len());
+    }
+    let want = args.iter().find(|a| !a.starts_with("--"));
+    if let Some(w) = want {
+        for (kind, m) in [("character", &inv.character), ("stage", &inv.stage)] {
+            if let Some(e) = m.get(w.as_str()) {
+                println!("\n{w} is a {kind}: file={} ships_as={} guid={} name={:?}",
+                         e.file, e.file_pub, e.guid, e.name);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn ssf2_swf_path(app: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
     return app.join("Contents/Resources/SSF2.swf");
@@ -326,7 +357,14 @@ pub fn install_patched(port: u16, fastboot: Option<(&str, &str)>) -> Result<Path
         // socket, exactly as Fraymakers pushes ANIM: telemetry. Polling can't do this job —
         // it races the move (a 7-frame attack is ~233ms, the same order as the round trip
         // between sending input and starting to watch). See inject_frame_recorder.
+        // both fighters get one: a hit is two characters, and the launch belongs to whichever
+        // one took it. Each line names the character it describes.
         ssf2_converter::abc_inject::inject_frame_recorder(abc, SSF2_DOC_CLASS, 0)?;
+        ssf2_converter::abc_inject::inject_frame_recorder(abc, SSF2_DOC_CLASS, 1)?;
+        // which box landed each hit, kept on the fighter as a named value (`gvar pN __peptideHits`)
+        if let Err(e) = ssf2_converter::abc_inject::inject_hit_recorder(abc) {
+            eprintln!("[ssf2] hit recorder not installed: {e}");
+        }
         // engine-error telemetry, the SSF2 half of Fraymakers' SCRIPTERR channel
         ssf2_converter::abc_inject::inject_error_reporter(abc, SSF2_DOC_CLASS)?;
         // and the load-time half: a package the engine refuses names itself instead of
@@ -406,6 +444,7 @@ fn cmd_selftest(args: &[String]) -> Result<()> {
     let mut child = std::process::Command::new(&exe)
         .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
         .spawn()?;
+    crate::platform::keep_behind(child.id());
 
     if echo {
         let resp_s = temp_str("peptide_ssf2_resp.txt");
@@ -470,6 +509,7 @@ fn cmd_loadtest(args: &[String]) -> Result<()> {
     let exe = ssf2_exe_path(&dst_app);
     println!("booting timer-driven load test (char={ch}, no per-frame bridge)…");
     let mut child = std::process::Command::new(&exe).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()?;
+    crate::platform::keep_behind(child.id());
     let mp = Path::new(&marker);
     for i in 0..30 {
         std::thread::sleep(std::time::Duration::from_millis(1000));
@@ -508,6 +548,7 @@ fn cmd_autojump(args: &[String]) -> Result<()> {
     let exe = ssf2_exe_path(&dst_app);
     println!("booting timer-driven autospawn ({ch} on battlefield) — load→startMatch→jump, capturing…");
     let mut child = std::process::Command::new(&exe).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()?;
+    crate::platform::keep_behind(child.id());
     let mut last_lines = 0;
     for i in 0..30 {
         std::thread::sleep(std::time::Duration::from_millis(1000));
@@ -545,7 +586,8 @@ fn cmd_launch(_args: &[String]) -> Result<()> {
     println!("launching {}", app.display());
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open").arg(&app).spawn()
+        // `-g`: opened behind whatever the user is doing (the command line is not the game's window)
+        std::process::Command::new("open").arg("-g").arg(&app).spawn()
             .map_err(|e| anyhow!("open {}: {e}", app.display()))?;
         Ok(())
     }
@@ -703,6 +745,13 @@ fn cmd_stage(args: &[String]) -> Result<()> {
         .ok_or_else(|| anyhow!("usage: peptide ssf2 stage <file.ssf> [--out <dir>] [--id <id>] [--info]"))?;
     let target = PathBuf::from(target);
 
+    // A stage can name a class it does not carry: the game keeps shared packages loaded alongside
+    // and resolves it from there. The converter looks in the same place, so it is told where the
+    // game is through the one config source of truth.
+    if std::env::var_os("PEPTIDE_SSF2_APP").is_none() && std::env::var_os("PEPTIDE_SSF2_DATA").is_none() {
+        // SAFETY: single-threaded CLI setup, before any conversion work starts.
+        unsafe { std::env::set_var("PEPTIDE_SSF2_APP", ssf2_app()) };
+    }
     let mut model = ssf2_converter::parse_stage(&target)?;
     // suffix the content id (`<id>ssf2`) so a converted stage can't shadow a built-in FM
     // stage; the display name stays the clean SSF2 name. `--id` overrides outright.
@@ -744,11 +793,13 @@ fn cmd_stage(args: &[String]) -> Result<()> {
     // frames, and a foreground (in front of fighters). A structure-foreground folds into the
     // background, so `fg` here means a DISTINCT in-front prop survived.
     let a = &model.art;
-    println!("  art: background={} foreground={} parallax={} stage_frames={}",
-        a.background.len(), !a.foreground.is_empty(), a.parallax.len(), a.stage_frames.len());
+    println!("  art: background={} foreground={} parallax={} stage_frames={} stage_elements={}",
+        a.background.len(), !a.foreground.is_empty(), a.parallax.len(), a.stage_frames.len(),
+        a.stage_elements.len());
     for hz in &model.hazards {
-        println!("  hazard: {:<12} ({:.0},{:.0}) {:.0}x{:.0} dmg={} kb={} motion={}",
-            hz.label, hz.x, hz.y, hz.w, hz.h, hz.damage, hz.knockback, hz.motion);
+        println!("  hazard: {:<12} ({:.0},{:.0}) {:.0}x{:.0} dmg={} kb={} code={}",
+            hz.label, hz.x, hz.y, hz.w, hz.h, hz.damage, hz.knockback,
+            if hz.reconstructed_script.is_some() { "own" } else { "none" });
     }
     for w in &model.warnings {
         eprintln!("  warning: {w}");
@@ -786,6 +837,10 @@ USAGE:
         Convert an SSF2 stage .ssf into a Fraymakers stage package (geometry-only:
         floor + soft platforms, death/camera boxes, entrance/respawn points). Prints
         the parsed model; --info skips emitting; --id overrides the output id.
+  peptide ssf2 tags <file.ssf|swf>
+        What a package holds, tag by tag: every picture (size, storage, bound class),
+        morph shapes and text, shapes painting with a picture, and pictures placed
+        directly (a Bitmap child with no shape between).
   peptide ssf2 doctor
         Resolve, by name, every SSF2.swf engine symbol the stage/parallax path
         depends on (view dims, VcamBGSettings schema + mode consts) against the
@@ -819,6 +874,340 @@ docs/ssf2-scaling-validation.md.
 /// runtime-bridge injections depend on against the installed SSF2.swf and print a grouped
 /// checklist (the stage/parallax half is `cmd_doctor`). Exits non-zero if a critical
 /// symbol is missing.
+/// Decompile one class out of the installed SSF2 (or any swf given as `--swf <path>`).
+/// What a package holds, tag by tag: every picture (id, size, how it is stored, the class bound
+/// to it) and every shape that paints with one. The question it answers is "which piece of art
+/// did the walk lose, and how was it stored", asked whenever a converted stage draws less than
+/// the game does.
+fn cmd_tags(args: &[String]) -> Result<()> {
+    let path = args.first().map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("usage: peptide ssf2 tags <file.ssf|swf>"))?;
+    let raw = std::fs::read(&path)?;
+    let bytes = ssf2_converter::ssf::decompress(&raw).unwrap_or(raw);
+    let swf_buf = ssf2_converter::swf::decompress_swf(&bytes[..])?;
+    let swf = ssf2_converter::swf::parse_swf(&swf_buf)?;
+    let mut names: std::collections::BTreeMap<u16, String> = Default::default();
+    let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
+    for tag in &swf.tags {
+        let name = format!("{tag:?}");
+        let kind = name.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("?").to_string();
+        *kinds.entry(kind).or_default() += 1;
+        if let ssf2_converter::swf::Tag::SymbolClass(links) = tag {
+            for l in links { names.insert(l.id, String::from_utf8_lossy(l.class_name.as_bytes()).to_string()); }
+        }
+    }
+    println!("tags by kind:");
+    for (k, n) in &kinds { println!("  {n:5}  {k}"); }
+    println!("pictures:");
+    for tag in &swf.tags {
+        let (id, how, size) = match tag {
+            ssf2_converter::swf::Tag::DefineBitsLossless(b) => (b.id, format!("lossless v{} {:?}", b.version, b.format), format!("{}x{}", b.width, b.height)),
+            ssf2_converter::swf::Tag::DefineBitsJpeg3(j) => (j.id, format!("jpeg3 (alpha {} bytes)", j.alpha_data.len()), format!("{} bytes", j.data.len())),
+            ssf2_converter::swf::Tag::DefineBitsJpeg2 { id, jpeg_data } => (*id, "jpeg2".into(), format!("{} bytes", jpeg_data.len())),
+            ssf2_converter::swf::Tag::DefineBits { id, jpeg_data } => (*id, "jpeg".into(), format!("{} bytes", jpeg_data.len())),
+            _ => continue,
+        };
+        println!("  #{id:<6} {size:>14}  {how:<28} {}", names.get(&id).map(String::as_str).unwrap_or(""));
+    }
+    println!("morph shapes and text (placed as themselves, no shape):");
+    for tag in &swf.tags {
+        match tag {
+            ssf2_converter::swf::Tag::DefineMorphShape(m) => {
+                let b = &m.start.shape_bounds;
+                println!("  morph#{:<5} start bounds {}x{}  fills {}", m.id, (b.x_max - b.x_min).to_pixels(), (b.y_max - b.y_min).to_pixels(), m.start.fill_styles.len());
+            }
+            ssf2_converter::swf::Tag::DefineText(t) => {
+                let b = &t.bounds;
+                println!("  text#{:<6} bounds {}x{}  records {}", t.id, (b.x_max - b.x_min).to_pixels(), (b.y_max - b.y_min).to_pixels(), t.records.len());
+            }
+            _ => {}
+        }
+    }
+    println!("shapes painting with a picture:");
+    for tag in &swf.tags {
+        let ssf2_converter::swf::Tag::DefineShape(s) = tag else { continue };
+        let fills: Vec<String> = s.styles.fill_styles.iter().map(|f| match f {
+            ssf2_converter::swf::FillStyle::Bitmap { id, is_smoothed, is_repeating, .. } => format!("bitmap#{id}{}{}", if *is_smoothed { "" } else { " unsmoothed" }, if *is_repeating { " repeat" } else { "" }),
+            ssf2_converter::swf::FillStyle::Color(c) => format!("rgba({},{},{},{})", c.r, c.g, c.b, c.a),
+            ssf2_converter::swf::FillStyle::LinearGradient(_) => "linear".into(),
+            ssf2_converter::swf::FillStyle::RadialGradient(_) => "radial".into(),
+            ssf2_converter::swf::FillStyle::FocalGradient { .. } => "focal".into(),
+        }).collect();
+        if fills.iter().any(|f| f.starts_with("bitmap")) || s.styles.fill_styles.is_empty() {
+            let b = &s.shape_bounds;
+            println!("  shape#{:<5} bounds {}x{}  fills [{}] {}", s.id, (b.x_max - b.x_min).to_pixels(), (b.y_max - b.y_min).to_pixels(), fills.join(", "), names.get(&s.id).map(String::as_str).unwrap_or(""));
+        }
+    }
+    // a placement can name a picture directly (no shape in between): the player then makes a
+    // Bitmap child, which is what a script finds by class and paints into
+    let mut pics: std::collections::BTreeSet<u16> = Default::default();
+    for tag in &swf.tags {
+        match tag {
+            ssf2_converter::swf::Tag::DefineBitsLossless(b) => { pics.insert(b.id); }
+            ssf2_converter::swf::Tag::DefineBitsJpeg3(j) => { pics.insert(j.id); }
+            ssf2_converter::swf::Tag::DefineBitsJpeg2 { id, .. } | ssf2_converter::swf::Tag::DefineBits { id, .. } => { pics.insert(*id); }
+            _ => {}
+        }
+    }
+    println!("pictures placed directly (a Bitmap child, no shape):");
+    let report = |owner: String, tags: &[ssf2_converter::swf::Tag]| {
+        for t in tags {
+            if let ssf2_converter::swf::Tag::PlaceObject(p) = t {
+                if let ssf2_converter::swf::PlaceObjectAction::Place(id) = p.action {
+                    if pics.contains(&id) {
+                        let m = p.matrix.unwrap_or_default();
+                        println!("  {owner} depth {} -> picture#{id} at ({}, {}) scale ({:.3}, {:.3}) name {:?}", p.depth, m.tx.to_pixels(), m.ty.to_pixels(), m.a.to_f32(), m.d.to_f32(), p.name.map(|n| String::from_utf8_lossy(n.as_bytes()).to_string()));
+                    }
+                }
+            }
+        }
+    };
+    report("root".into(), &swf.tags);
+    for tag in &swf.tags {
+        if let ssf2_converter::swf::Tag::DefineSprite(s) = tag {
+            report(format!("sprite#{}{}", s.id, names.get(&s.id).map(|n| format!(" ({n})")).unwrap_or_default()), &s.tags);
+        }
+    }
+    // one clip, child by child: what it places at which depth, with the shape's own edges, so a
+    // collision clip can be read without converting the stage
+    if let Some(want) = flag_str(args, "--sprite").and_then(|s| s.parse::<u16>().ok()) {
+        let shapes: std::collections::BTreeMap<u16, &ssf2_converter::swf::Shape> = swf.tags.iter()
+            .filter_map(|t| if let ssf2_converter::swf::Tag::DefineShape(s) = t { Some((s.id, s)) } else { None }).collect();
+        let Some(sprite) = swf.tags.iter().find_map(|t| match t {
+            ssf2_converter::swf::Tag::DefineSprite(s) if s.id == want => Some(s), _ => None }) else { bail!("no sprite #{want}") };
+        println!("sprite#{want}{}: {} frames", names.get(&want).map(|n| format!(" ({n})")).unwrap_or_default(), sprite.num_frames);
+        let mut frame = 0;
+        for t in &sprite.tags {
+            match t {
+                ssf2_converter::swf::Tag::ShowFrame => frame += 1,
+                ssf2_converter::swf::Tag::PlaceObject(p) => {
+                    let m = p.matrix.unwrap_or_default();
+                    let what = match p.action {
+                        ssf2_converter::swf::PlaceObjectAction::Place(id) | ssf2_converter::swf::PlaceObjectAction::Replace(id) => {
+                            if let Some(s) = shapes.get(&id) {
+                                let b = &s.shape_bounds;
+                                format!("shape#{id} {}x{} at ({}, {}) fills {}", (b.x_max - b.x_min).to_pixels(), (b.y_max - b.y_min).to_pixels(), b.x_min.to_pixels(), b.y_min.to_pixels(), s.styles.fill_styles.len())
+                            } else { format!("#{id}{}", names.get(&id).map(|n| format!(" ({n})")).unwrap_or_default()) }
+                        }
+                        ssf2_converter::swf::PlaceObjectAction::Modify => "modify".to_string(),
+                    };
+                    println!("  frame {frame} depth {:<3} {what} matrix ({:.3}, {:.3}, {:.3}, {:.3}) tx ({}, {}) name {:?}",
+                        p.depth, m.a.to_f32(), m.b.to_f32(), m.c.to_f32(), m.d.to_f32(), m.tx.to_pixels(), m.ty.to_pixels(),
+                        p.name.map(|n| String::from_utf8_lossy(n.as_bytes()).to_string()));
+                    if let ssf2_converter::swf::PlaceObjectAction::Place(id) = p.action {
+                        if let Some(s) = shapes.get(&id) {
+                            // the shape's edges, as moves and lines (a curve by its anchor), with the fill on each side
+                            let (mut cx, mut cy) = (0.0f64, 0.0f64);
+                            let mut line = String::new();
+                            for r in &s.shape {
+                                match r {
+                                    ssf2_converter::swf::ShapeRecord::StyleChange(sc) => {
+                                        if let Some(mv) = &sc.move_to { cx = mv.x.to_pixels(); cy = mv.y.to_pixels(); line.push_str(&format!(" M({cx:.0},{cy:.0})")); }
+                                        if sc.fill_style_0.is_some() || sc.fill_style_1.is_some() { line.push_str(&format!(" fill[{:?}|{:?}]", sc.fill_style_0, sc.fill_style_1)); }
+                                    }
+                                    ssf2_converter::swf::ShapeRecord::StraightEdge { delta } => { cx += delta.dx.to_pixels(); cy += delta.dy.to_pixels(); line.push_str(&format!(" L({cx:.0},{cy:.0})")); }
+                                    ssf2_converter::swf::ShapeRecord::CurvedEdge { control_delta, anchor_delta } => {
+                                        cx += control_delta.dx.to_pixels() + anchor_delta.dx.to_pixels(); cy += control_delta.dy.to_pixels() + anchor_delta.dy.to_pixels();
+                                        line.push_str(&format!(" C({cx:.0},{cy:.0})"));
+                                    }
+                                }
+                            }
+                            println!("      edges:{line}");
+                        }
+                    }
+                }
+                ssf2_converter::swf::Tag::RemoveObject(r) => println!("  frame {frame} depth {} removed", r.depth),
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_compile(args: &[String]) -> Result<()> {
+    use ssf2_converter::compile;
+    if args.first().map(|s| s.as_str()) == Some("--lang-suite") {
+        let rt = compile::Runtime::locate().map(|d| compile::Runtime::load(&d)).unwrap_or_default();
+        print!("{}", compile::suite::language_suite(&rt));
+        return Ok(());
+    }
+    let path = args.first().map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("usage: peptide ssf2 compile <file.ssf> [class | --fighters]"))?;
+    let want = args.get(1).cloned();
+    let rt = compile::Runtime::locate().map(|d| compile::Runtime::load(&d)).unwrap_or_default();
+    let (m, renamed) = rt.read_package(&std::fs::read(&path)?)?;
+    for p in &renamed { eprintln!("api names: {p}"); }
+    // each fighter's script and its projectiles', as the runtime's path writes them: what they
+    // call that nothing provides, one line each
+    if want.as_deref() == Some("--fighters") {
+        use ssf2_converter::emit;
+        let sc = &ssf2_converter::mappings::character_stats().scaling;
+        let units = emit::Units { size: sc.size_multiplier, speed: sc.velocity_scale(), item_toss: sc.item_toss_speed, accel: sc.accel_scale() };
+        for f in m.fighters() {
+            let mut unknown: std::collections::BTreeSet<String> = Default::default();
+            let mut problems: Vec<String> = Vec::new();
+            let none = Default::default();
+            let no_entities = Default::default();
+            let out = emit::fighter_script(&m, &rt, &f, &[], units, &f.getter, &[], &none, &no_entities, Default::default());
+            unknown.extend(out.unknown);
+            problems.extend(out.problems);
+            for (name, decl) in f.projectiles.entries().iter().chain(f.items.entries()) {
+                let spec = emit::ObjectSpec {
+                    kind: "projectile", others: &[], effects: &none, entities: &no_entities,
+                    class: decl.get("classAPI").and_then(|v| v.class()).unwrap_or("PeptideProjectile").to_string(),
+                    clip: decl.get("linkage_id").and_then(|v| v.str()).unwrap_or(name).to_string(),
+                    clip_sym: None,
+                    stats: decl.clone(),
+                    autolink: Default::default(),
+                    data: String::new(),
+                };
+                let o = emit::object_script(&m, &rt, &spec, &emit::Decls::of(&f), &[], units, name);
+                unknown.extend(o.unknown);
+                problems.extend(o.problems);
+            }
+            for u in &unknown { println!("{}\t{}\tunknown\t{u}", path.display(), f.getter); }
+            for p in &problems { println!("{}\t{}\tproblem\t{p}", path.display(), f.getter); }
+        }
+        return Ok(());
+    }
+    let out = compile::compile_package(&m, &rt);
+    for (name, text) in out.classes.iter().filter(|(n, _)| want.as_deref().is_none_or(|w| n.contains(w))) {
+        let _ = name;
+        println!("{text}");
+    }
+    for p in &out.problems { eprintln!("problem: {p}"); }
+    eprintln!("{} classes, {} problems, {} names nothing defines", out.classes.len(), out.problems.len(), out.unknown.len());
+    Ok(())
+}
+
+fn cmd_model(args: &[String]) -> Result<()> {
+    use ssf2_converter::model::{ast, SourceModel};
+    let path = args.first().map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("usage: peptide ssf2 model <file.ssf> [class] [method]"))?;
+    let want = args.get(1).cloned();
+    let method = args.get(2).cloned();
+    let m = SourceModel::read(&std::fs::read(&path)?)?;
+    if want.as_deref() == Some("--fighters") {
+        for f in m.fighters() {
+            println!("fighter {} | class {} | clip {}", f.getter, f.class().unwrap_or("?"), f.clip().unwrap_or("?"));
+            for a in m.animations(f.clip().unwrap_or("")) {
+                println!("  {:24} frame {:4}  stance {}", a.label, a.frame, a.stance_class.as_deref().unwrap_or("-"));
+            }
+            let projectiles: Vec<String> = f.projectiles.entries().iter().map(|(k, v)| format!("{k} ({} / {})",
+                v.get("classAPI").and_then(|c| c.class()).unwrap_or("?"), v.get("linkage_id").and_then(|c| c.str()).unwrap_or("?"))).collect();
+            println!("  projectiles: {}", projectiles.join(", "));
+        }
+        return Ok(());
+    }
+    if want.is_none() {
+        println!("{} classes, {} bound to symbols, {} sprites, root {} frames",
+            m.classes.len(), m.symbols.len(), m.sprites.len(), m.root.frame_count);
+    }
+    let show = |name: &str, f: &ast::Function| {
+        let ps: Vec<String> = f.params.iter().map(|p| format!("{}: {}{}", p.name, p.type_name.as_deref().unwrap_or("*"),
+            p.default.as_ref().map(|d| format!(" = {d}")).unwrap_or_default())).collect();
+        let mut body = String::new();
+        ast::print_stmts(&mut body, &f.body, 1);
+        println!("function {name}({}): {} {{\n{body}}}", ps.join(", "), f.return_type.as_deref().unwrap_or("*"));
+    };
+    for c in m.classes.values().filter(|c| want.as_deref().is_none_or(|w| c.name.contains(w))) {
+        println!("// class {} : {}{} | block {} | fields {} methods {} frame scripts {} unreadable {}",
+            c.name, c.super_name, c.symbol.map(|s| format!(" [symbol {s}]")).unwrap_or_default(),
+            c.block, c.fields.len(), c.methods.len(), c.frame_scripts.len(), c.unreadable.len());
+        if want.is_none() { continue }
+        if method.is_none() {
+            for f in &c.fields {
+                println!("//  {}{}var {}: {}{}", if f.is_static { "static " } else { "" }, if f.is_const { "const " } else { "" },
+                    f.name, f.type_name.as_deref().unwrap_or("*"), f.default.as_ref().map(|d| format!(" = {d}")).unwrap_or_default());
+            }
+            for fs in &c.frame_scripts { println!("//  frame {} -> {}", fs.frame, fs.method); }
+            if let Some(sp) = c.symbol.and_then(|s| m.sprites.get(&s)) {
+                println!("//  timeline: {} frames, labels {:?}", sp.frame_count, sp.labels);
+            }
+            for u in &c.unreadable { println!("//  unreadable: {u}"); }
+        }
+        if method.as_deref().is_none_or(|x| x == "new") { show("new", &c.constructor); }
+        for x in c.methods.iter().filter(|x| method.as_deref().is_none_or(|w| x.name == w)) {
+            show(&format!("{}{:?} {}", if x.is_static { "static " } else { "" }, x.kind, x.name), &x.function);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_decompile(args: &[String]) -> Result<()> {
+    let want = args.first().cloned()
+        .ok_or_else(|| anyhow::anyhow!("usage: peptide ssf2 decompile <ClassName> [method] [--swf <file>] [--asm]"))?;
+    let method = args.get(1).filter(|a| !a.starts_with("--")).cloned();
+    let swf_path = args.iter().position(|a| a == "--swf").and_then(|i| args.get(i + 1))
+        .map(PathBuf::from).unwrap_or_else(|| ssf2_swf_path(&ssf2_app()));
+    if !swf_path.exists() { bail!("swf not found: {}", swf_path.display()); }
+    let raw = std::fs::read(&swf_path)?;
+    // .ssf content is a wrapped/compressed SWF; the engine's own SWF is a plain one. Try it as
+    // shipped content first so the same command reads a stage, a character or the engine.
+    let bytes = ssf2_converter::ssf::decompress(&raw).unwrap_or(raw);
+    let shown = swf_path.display().to_string();
+    // `--asm`: the methods as instruction listings, for code the decompiler leaves out
+    let asm = args.iter().any(|a| a == "--asm");
+    cmd_decompile_in(&bytes, &want, method.as_deref(), &shown, asm)
+}
+
+fn cmd_decompile_in(bytes: &[u8], want: &str, method: Option<&str>, shown: &str, asm: bool) -> Result<()> {
+    let bytes = bytes.to_vec();
+    let method = method.map(|m| m.to_string());
+    let swf = ssf2_converter::swf_parser::parse(&bytes)?;
+    let mut found = false;
+    for block in &swf.abc_blocks {
+        let Ok(abc) = ssf2_converter::abc_parser::parse(block) else { continue };
+        for class in abc.classes.iter().filter(|c| c.name.contains(want)) {
+            found = true;
+            println!("// class {} extends {}", class.name, class.super_name);
+            // what the class states a value for: its constants and typed fields, as written
+            let slots: Vec<&ssf2_converter::abc_parser::Trait> = class.class_methods.iter()
+                .chain(class.instance_methods.iter()).filter(|t| t.kind == 0 || t.kind == 6).collect();
+            for (n, v) in ssf2_converter::abc_parser::class_const_values(&abc, &class.name) {
+                match slots.iter().find(|t| t.name == n).and_then(|t| t.type_name.as_deref()) {
+                    Some(ty) => println!("// const {n}: {ty} = {v}"),
+                    None => println!("// const {n} = {v}"),
+                }
+            }
+            // the static initializer, asked for as `cinit`: where a static const with a computed
+            // value is filled in
+            if method.as_deref() == Some("cinit") {
+                if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == class.class_init_idx) {
+                    println!("{}", ssf2_converter::decompiler::decompile_method(body, &abc, "cinit", &[]));
+                }
+            }
+            // the constructor, asked for as `new`: it is where a class builds what it holds
+            if method.as_deref().is_none_or(|m| m == "new") {
+                if let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == class.constructor_idx) {
+                    let params: Vec<String> = abc.methods.get(body.method_idx as usize)
+                        .map(|m| (0..m.param_count).map(|i| format!("arg{i}")).collect())
+                        .unwrap_or_default();
+                    println!("{}", ssf2_converter::decompiler::decompile_method(body, &abc, "new", &params));
+                }
+            }
+            for t in class.class_methods.iter().chain(class.instance_methods.iter()) {
+                if method.as_deref().is_some_and(|m| m != t.name) { continue; }
+                let Some(body) = abc.method_bodies.iter().find(|b| b.method_idx == t.method_idx) else { continue };
+                if asm {
+                    println!("// {} ({} bytes)\n{}", t.name, body.bytecode.len(), ssf2_converter::disasm::listing(&body.bytecode, &abc));
+                    continue;
+                }
+                let params: Vec<String> = abc.methods.get(t.method_idx as usize)
+                    .map(|m| (0..m.param_count).map(|i| format!("arg{i}")).collect())
+                    .unwrap_or_default();
+                // a parameter's declared default shows as the line that gives a missing one it
+                // (a bare call takes it: the source's push and timer ticks read it)
+                println!("{}", ssf2_converter::abc_parser::with_param_defaults(
+                    ssf2_converter::decompiler::decompile_method(body, &abc, &t.name, &params),
+                    abc.methods.get(t.method_idx as usize)));
+            }
+        }
+    }
+    if !found { bail!("no class matching {want:?} in {shown}"); }
+    Ok(())
+}
+
 fn cmd_doctor_injections(_args: &[String]) -> Result<()> {
     let app = ssf2_app();
     let swf = ssf2_swf_path(&app);
@@ -848,16 +1237,28 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("help");
     let rest = if args.len() > 1 { &args[1..] } else { &[] };
     match sub {
+        "manifest" => cmd_manifest(rest),
         "doctor" => cmd_doctor(rest).and_then(|()| cmd_doctor_injections(rest)),
         "stats" => cmd_stats(rest),
         "scale" => cmd_scale(rest),
         "identify" => cmd_identify(rest),
+        "findsound" => cmd_findsound(rest),
         "stage" => cmd_stage(rest),
         "patch" => cmd_patch(rest),
         "install" => cmd_install(rest).map(|_| ()),
         "selftest" => cmd_selftest(rest),
         "loadtest" => cmd_loadtest(rest),
         "autojump" => cmd_autojump(rest),
+        // Read a class out of SSF2's own code. The stage class is decompiled as part of a
+        // conversion, but the ENGINE classes it hands its clips to are what decide what those
+        // clips do at runtime (a stage hands its lighting sheets to one), and without reading them a port can only guess at behaviour the timeline
+        // does not carry.
+        "decompile" | "class" => cmd_decompile(rest),
+        // what a package is made of, as the converter's source model reads it
+        "model" => cmd_model(rest),
+        // a package's classes, compiled by the new converter's compiler
+        "compile" => cmd_compile(rest),
+        "tags" => cmd_tags(rest),
         "session" => crate::ssf2_bridge::session(rest),
         "tell" => crate::ssf2_bridge::tell(rest),
         "log" => crate::ssf2_bridge::log(rest),
@@ -871,4 +1272,47 @@ pub fn run_cli(args: &[String]) -> Result<()> {
             std::process::exit(2);
         }
     }
+}
+
+
+/// Where a sound named by id actually lives.
+///
+/// A fighter can name a clip its own file does not carry, and the manifest's packages do not
+/// account for all of them. This walks every `.ssf` beside the game and says which one holds it,
+/// so a missing sound is a fact rather than a guess.
+fn cmd_findsound(args: &[String]) -> Result<()> {
+    let want: std::collections::BTreeSet<String> = args.iter().cloned().collect();
+    if want.is_empty() { anyhow::bail!("usage: peptide ssf2 findsound <sound-id> [<sound-id>…]") }
+    let dir = std::env::var("PEPTIDE_SSF2_DATA").map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| std::env::var("PEPTIDE_SSF2_APP").ok()
+            .map(|a| std::path::PathBuf::from(a).join("Contents/Resources/data")))
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| anyhow::anyhow!("set $PEPTIDE_SSF2_DATA or $PEPTIDE_SSF2_APP"))?;
+    let mut files: Vec<_> = std::fs::read_dir(&dir)?.filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "ssf")).collect();
+    files.sort();
+    // the game's own movie counts as a place to look
+    if let Some(up) = dir.parent() { let m = up.join("SSF2.swf"); if m.is_file() { files.push(m); } }
+    eprintln!("looking through {} files for {}", files.len(),
+        want.iter().cloned().collect::<Vec<_>>().join(", "));
+    let mut found: std::collections::BTreeSet<String> = Default::default();
+    for f in &files {
+        let Ok(raw) = std::fs::read(f) else { continue };
+        let data = if f.extension().is_some_and(|e| e == "swf") { raw }
+                   else { match ssf2_converter::ssf::decompress(&raw) { Ok(d) => d, Err(_) => continue } };
+        let mut names: Vec<String> = ssf2_converter::sound_extractor::sound_names_in_movie(&data)
+            .into_iter().filter(|n| want.contains(n)).collect();
+        // a clip is asked for across packages by its exported name, same as a sound is
+        names.extend(ssf2_converter::sound_extractor::symbol_names_in_movie(&data)
+            .into_iter().filter(|n| want.contains(n)));
+        names.sort();
+        names.dedup();
+        if names.is_empty() { continue }
+        println!("{}: {}", f.file_name().unwrap_or_default().to_string_lossy(), names.join(", "));
+        found.extend(names);
+    }
+    let missing: Vec<_> = want.difference(&found).cloned().collect();
+    if !missing.is_empty() { println!("nowhere: {}", missing.join(", ")); }
+    Ok(())
 }

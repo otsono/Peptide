@@ -58,8 +58,12 @@ unsafe impl GlobalAlloc for LimitAlloc {
 static GLOBAL: LimitAlloc = LimitAlloc;
 
 mod asm;
-#[allow(unused_imports)]
 use asm::Asm;
+
+/// The value after `flag` in a command's args (`--project P` -> `P`).
+pub(crate) fn arg_val(args: &[String], flag: &str) -> Option<String> {
+    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
+}
 
 // Shared friendly-command vocabulary. The patcher uses MOVES to generate the
 // move-dispatch jump table; the bridge uses it to translate move names. One table.
@@ -68,14 +72,15 @@ mod vocab; // shared commands.hsx vocabulary + FM↔SSF2 reconciliation (interpr
 mod manifest; // engine-symbol dependency table + doctor/preflight progress UI
 mod convert; // `peptide convert` — in-process SSF2 → Fraymakers conversion (folded-in converter)
 mod config; // persisted config (Fraymakers/FrayTools paths, current char) + env-override resolvers
-mod platform; // cross-platform path discovery + FrayTools publish-folder editing (ported from the egui GUI)
+mod platform; // cross-platform path discovery + FrayTools publish-folder editing
 mod bridge; // headless TCP runtime (serve / send_once)
 mod fastboot; // single definition of the quick-boot autostart, shared by CLI + GUI
 mod session; // shared control-file tail loop for the CLI session loops (FM + SSF2)
 mod ui; // terminal console (ratatui) + cross-platform launcher
-mod gui; // graphical chat window (egui/eframe) — the default
+mod gui; // the webview app window, the default
 mod overlay; // standalone transparent debugger HUD that floats over the game (CLI + GUI)
-mod fraytools; // drive FrayTools over CDP: export .fra / render / harness (ported from Node)
+mod fraytools; // drive FrayTools: export .fra / render / harness
+mod pack; // `peptide pack` — build the engine package from a project's library, no FrayTools
 mod ssf2; // `peptide ssf2` — SSF2 engine model: physics ground-truth + scaling + quickboot
 mod ssf2_bridge; // host side of the SSF2 runtime bridge (session/tell/log/send over file-IPC)
 mod debug_target; // OOP seam: one Command vocabulary, per-engine DebugTarget backends
@@ -179,6 +184,10 @@ fn main() -> anyhow::Result<()> {
             convert::run_cli(&args[2..])?;
             return Ok(());
         }
+        Some("pack") => {
+            pack::pack(&args)?;
+            return Ok(());
+        }
         Some("export") => {
             // Drive FrayTools' Publish to build the game-ready .fra (was: node export-in-fraytools.js).
             fraytools::export(&args)?;
@@ -241,7 +250,123 @@ fn main() -> anyhow::Result<()> {
             // Fraymakers build to see exactly what (if anything) the patcher must
             // be re-pointed at. Output arg is ignored (pass `_` or any path).
             run_preflight(&code)?;
+            check_installed_content();
             eprintln!("doctor: all critical engine symbols resolved — patcher is compatible with this build");
+            return Ok(());
+        }
+        // Every method name the converter EMITS, resolved against the engine that will run it.
+        // Twice now a mapping has produced a call nothing answers to, and the failure is silent
+        // until the exact frame that runs it: the call dies mid-script and takes the rest of the
+        // handler with it, so a combo stops at its first hit and nothing says why. The names come
+        // from the converter's own mapping tables; the engine is read at runtime, so nothing about
+        // it is written down here.
+        // Every field of a type, by name. The stats a piece of content declares have to land on
+        // fields this engine actually has, and the honest way to check that is to ask it.
+        // Every op of a function, with fields and calls named: how the engine builds a thing is
+        // read off the engine, not guessed at from a field table.
+        "disasm" => {
+            let name = args.get(4).cloned().unwrap_or_default();
+            let parent = args.get(5).cloned();
+            for (fi, f) in code.functions.iter().enumerate() {
+                let fname = s(&code, f.name).to_string();
+                let pname = f.parent.and_then(|p| type_name_of(&code, p).map(str::to_string)).unwrap_or_default();
+                if (name != "*" && fname != name) || parent.as_deref().is_some_and(|p| !pname.contains(p)) { continue }
+                eprintln!("== {pname}.{fname} findex={} regs={}", f.findex.0, f.regs.len());
+                if name == "*" { continue }   // a listing only
+                for (ri, r) in f.regs.iter().enumerate() {
+                    eprintln!("   r{ri}: {} {}", r.0, type_name_of(&code, *r).unwrap_or("-"));
+                }
+                for (oi, op) in f.ops.iter().enumerate() {
+                    let mut line = format!("{op:?}");
+                    if let hlbc::opcodes::Opcode::Field { obj, field, .. } | hlbc::opcodes::Opcode::SetField { obj, field, .. } = op {
+                        let ty = f.regs[obj.0 as usize];
+                        let fname = code.types[ty.0].get_type_obj().and_then(|o| o.fields.get(field.0)).map(|x| s(&code, x.name)).unwrap_or("?");
+                        line.push_str(&format!("   ; .{fname}"));
+                    }
+                    if let hlbc::opcodes::Opcode::Call0 { fun, .. } | hlbc::opcodes::Opcode::Call1 { fun, .. } | hlbc::opcodes::Opcode::Call2 { fun, .. }
+                        | hlbc::opcodes::Opcode::Call3 { fun, .. } | hlbc::opcodes::Opcode::Call4 { fun, .. } = op {
+                        let callee = code.functions.iter().find(|g| g.findex.0 == fun.0)
+                            .map(|g| format!("{}.{}", g.parent.and_then(|p| type_name_of(&code, p)).unwrap_or(""), s(&code, g.name)))
+                            .or_else(|| code.natives.iter().find(|n| n.findex.0 == fun.0).map(|n| format!("native {}", s(&code, n.name))))
+                            .unwrap_or_default();
+                        line.push_str(&format!("   ; {callee}"));
+                    }
+                    eprintln!("  {oi:4}: {line}");
+                }
+                let _ = fi;
+            }
+            return Ok(());
+        }
+        "fields" => {
+            let needle = args.get(4).cloned().unwrap_or_default();
+            for (i, t) in code.types.iter().enumerate() {
+                let Some(name) = type_name_of(&code, hlbc::types::RefType(i)) else { continue };
+                if !name.contains(&needle) { continue }
+                let Some(obj) = t.get_type_obj() else { continue };
+                if obj.fields.is_empty() { continue }
+                let names: Vec<&str> = obj.fields.iter().map(|f| s(&code, f.name)).collect();
+                eprintln!("{name} ({}):\n  {}", names.len(), names.join(" "));
+            }
+            return Ok(());
+        }
+        "apicheck" => {
+            let mut names: std::collections::BTreeSet<String> = Default::default();
+            let cmds = ssf2_converter::mappings::api_commands();
+            // `.name(` without pulling in a regex crate: a dot, an identifier, an open paren
+            let mut note = |t: &str| {
+                let b = t.as_bytes();
+                for (i, _) in t.match_indices('.') {
+                    let mut j = i + 1;
+                    while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') { j += 1; }
+                    if j > i + 1 && j < b.len() && b[j] == b'(' && !b[i + 1].is_ascii_digit() {
+                        names.insert(t[i + 1..j].to_string());
+                    }
+                }
+            };
+            for r in &cmds.replacements { note(&r.to); }
+            for r in &cmds.regex_replacements { note(&r.replacement); }
+            // the script TEMPLATES are the other place a method name is authored, and the same
+            // mistake there reads as working code until the frame that runs it
+            for f in ["character_helpers", "global_helpers", "projectile_helpers"] {
+                if let Some(t) = ssf2_converter::mappings::mapping_file_text(
+                    &format!("mappings/{f}.toml")) { note(&t); }
+            }
+            let mut missing: Vec<&String> = names.iter()
+                .filter(|n| find_fn(&code, n, None).is_none())
+                .collect();
+            missing.sort();
+            eprintln!("apicheck: {} method names emitted by the mappings, {} not in this engine",
+                names.len(), missing.len());
+            for m in &missing { eprintln!("  MISSING  {m}"); }
+            if !missing.is_empty() {
+                eprintln!("a call the engine has no method for dies where it runs and takes the \
+                    rest of its handler with it");
+            }
+
+            // The engine holding a function of that name somewhere is a weaker
+            // question than the one that matters: is it on the api a script is
+            // handed? FrayTools ships the public api definitions, so ask those.
+            // Skips when FrayTools isn't installed here.
+            let cfg = config::Config::load();
+            match cfg.fraymakers_api_types() {
+                Some(path) => match std::fs::read_to_string(&path) {
+                    Ok(defs) => {
+                        let mut absent: Vec<&String> = names.iter()
+                            .filter(|n| !defs.contains(n.as_str()))
+                            .collect();
+                        absent.sort();
+                        eprintln!("apicheck: {} of them are not in the public api", absent.len());
+                        for m in &absent { eprintln!("  NOT-IN-API  {m}"); }
+                        if !absent.is_empty() {
+                            eprintln!("a script may only call the api it is handed; a name the \
+                                engine has elsewhere still reads as null where the script runs");
+                        }
+                    }
+                    Err(e) => eprintln!("apicheck: could not read {}: {e}", path.display()),
+                },
+                None => eprintln!("apicheck: no FrayTools api definitions here, \
+                    skipping the public-api check (set PEPTIDE_FM_API_TYPES)"),
+            }
             return Ok(());
         }
         "probe" => {
@@ -252,6 +377,12 @@ fn main() -> anyhow::Result<()> {
         "inspect" => {
             inspect(&code);
             return Ok(()); // nothing to write
+        }
+        // print one string constant by index, for reading an embedded script the engine carries
+        "str" => {
+            let i: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
+            eprintln!("{}", code.strings.get(i).map(|s| s.as_str()).unwrap_or(""));
+            return Ok(());
         }
         "whoref" => {
             let needle = args.get(4).cloned().unwrap();
@@ -314,6 +445,18 @@ fn main() -> anyhow::Result<()> {
         "dis" => {
             let fx: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap();
             disasm(&code, fx);
+            return Ok(());
+        }
+        "floats" => {
+            // print one or more entries of the float constant pool by index
+            for a in &args[4..] {
+                if let Ok(i) = a.parse::<usize>() {
+                    match code.floats.get(i) {
+                        Some(f) => eprintln!("  [{i}] = {f}"),
+                        None => eprintln!("  [{i}] = <out of range>"),
+                    }
+                }
+            }
             return Ok(());
         }
         "strs" => {
@@ -856,6 +999,14 @@ fn require_field(code: &Bytecode, tname: &str, fname: &str) -> anyhow::Result<us
     let ti = require_type(code, tname)?;
     find_field(code, ti, fname).ok_or_else(|| anyhow::anyhow!("field not found: {tname}.{fname}"))
 }
+/// a field's index and the type it holds, so a register can be made to receive it
+fn require_field_typed(code: &Bytecode, tname: &str, fname: &str) -> anyhow::Result<(usize, usize)> {
+    let ti = require_type(code, tname)?;
+    let fi = find_field(code, ti, fname).ok_or_else(|| anyhow::anyhow!("field not found: {tname}.{fname}"))?;
+    let ty = code.types[ti].get_type_obj().map(|o| o.fields[fi].t.0)
+        .ok_or_else(|| anyhow::anyhow!("no object type: {tname}"))?;
+    Ok((fi, ty))
+}
 
 /// Resolve every entry in `manifest::MANIFEST` against a loaded bytecode, using the
 /// SAME read-only resolvers the real patch uses (so the doctor can never disagree
@@ -905,6 +1056,41 @@ fn doctor(code: &Bytecode) -> Vec<manifest::SymStatus> {
 /// engine symbol is missing — so a layout change in a new Fraymakers build fails
 /// loudly here, BEFORE any opcode is mutated, instead of silently corrupting the
 /// patched binary. Called at the top of `connect_edit` and by the `doctor` mode.
+/// Custom content that will take the ENGINE down, not just itself. The engine reads every mod in
+/// `custom/` while it preloads a match, so one folder that announces itself with a `meta.json` and
+/// then has no `.fra` beside it is a resource with nothing in it: the preload walks into it and the
+/// whole boot dies, on every stage and every character, including ones with no connection to it.
+/// Cheap to check and miserable to diagnose from the crash, which names only the engine's own
+/// resource code.
+fn check_installed_content() {
+    // a real name, then step back up: joining an empty one leaves a trailing separator, and
+    // `parent()` on that walks past custom/ entirely
+    let Some(custom) = crate::platform::fraymakers_custom_dir("_peptide_probe")
+        .and_then(|p| p.parent().map(|q| q.to_path_buf())) else { return };
+    let Ok(rd) = std::fs::read_dir(&custom) else { return };
+    let mut bad = Vec::new();
+    for e in rd.flatten() {
+        let d = e.path();
+        if !d.is_dir() { continue; }
+        let Some(name) = d.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+        if !d.join("meta.json").exists() { continue; }
+        // the build lands either inside the folder or as its sibling, and either is fine
+        let inside = std::fs::read_dir(&d).map(|r| r.flatten()
+            .any(|f| f.path().extension().is_some_and(|x| x == "fra"))).unwrap_or(false);
+        if inside || custom.join(format!("{name}.fra")).exists() { continue; }
+        bad.push(name);
+    }
+    if bad.is_empty() {
+        eprintln!("doctor: installed custom content looks loadable");
+        return;
+    }
+    eprintln!("doctor: {} custom mod(s) declare themselves with no build to load, which crashes \
+        EVERY match this engine starts (the crash names the engine's resource code, not the mod):",
+        bad.len());
+    for b in &bad { eprintln!("    {}  ({})", b, custom.join(b).display()); }
+    eprintln!("  move them out of custom/ (or publish a .fra into them) and the engine boots again");
+}
+
 fn run_preflight(code: &Bytecode) -> anyhow::Result<()> {
     let statuses = doctor(code);
     manifest::render_report(
@@ -1037,8 +1223,14 @@ fn connect_edit(
     let aname = assist_name.as_deref().unwrap_or("commandervideoassist");
     let char_path = format!("{install_dir}/custom/{cname}/{cname}.fra");
     let char_pkgid = format!("{cname}.{cname}");
-    let char_ns_key = format!("private::{cname}.{cname}");
-    let char_resid = format!("private::{cname}");
+    // A BUILT-IN character lives in the public namespace, a custom build in the private one. Asking
+    // for a built-in under private:: resolves to nothing and the engine dies preloading it, which
+    // is why a base-roster fighter could not be booted at all -- and why a converted character
+    // could never be compared against one.
+    let char_is_custom = std::path::Path::new(&char_path).exists();
+    let char_ns = if char_is_custom { "private" } else { "public" };
+    let char_ns_key = format!("{char_ns}::{cname}.{cname}");
+    let char_resid = format!("{char_ns}::{cname}");
     let stage_fqid = format!("public::{sname}.{sname}");
     let assist_fqid = format!("public::{aname}.{aname}");
     eprintln!("peptide: char={cname} stage={sname} assist={aname} headless={headless} path={char_path}");
@@ -1165,6 +1357,7 @@ fn connect_edit(
     let teams_str = add_string(code, "teams");
     let itemfreq_str = add_string(code, "itemFrequency");
     let hazards_str = add_string(code, "hazards");
+    let netcode_str = add_string(code, "netcodeType");
     let create_mode = require_fn(code, "createMode", Some("fraymakers.util.$FraymakersClassFactory"))?;
     let mode_start_match = require_fn(code, "startMatch", Some("fraymakers.core.FraymakersMode"))?;
     // FM's native pre-match loading screen factory. The menus set
@@ -1193,6 +1386,7 @@ fn connect_edit(
     let lives_idx = add_int(code, cfg.lives);
     let time_idx = add_int(code, cfg.time);
     let itemfreq_idx = add_int(code, cfg.item_frequency);
+    let netcode_idx = add_int(code, cfg.netcode);
     let cfg_team_damage = cfg.team_damage;
     let cfg_hazards = cfg.hazards;
     let nl_idx = add_int(code, '\n' as i32);
@@ -1278,6 +1472,9 @@ fn connect_edit(
     eprintln!("pool: pool_field={pool_field} getfqid={getfqid_fn} get_loaded={get_loaded_fn} absres_t={absres_t}");
     let sm_keys = require_fn(code, "keys", Some("haxe.ds.StringMap"))?;
     let sm_exists = require_fn(code, "exists", Some("haxe.ds.StringMap"))?;
+    // a package published after the boot is loaded by the launch that first names it, if the
+    // file is there to load; without the file check the launch is left as baked
+    let fs_exists = find_fn(code, "exists", Some("sys.$FileSystem")).or_else(|| find_fn(code, "exists", Some("sys.FileSystem")));
     let keysiter_t = {
         let ki = function_index_by_findex(code, sm_keys).unwrap();
         code.types[code.functions[ki].t.0].get_type_fun().map(|tf| tf.ret.0).unwrap()
@@ -1406,6 +1603,14 @@ fn connect_edit(
     // without it the tree is blind to exactly the objects stage porting gets wrong.
     let gameobjects_field = find_field(code, match_t, "gameObjects")
         .ok_or_else(|| anyhow::anyhow!("Match.gameObjects field not found"))?;
+    // The two collections a shadow needs. A fighter's shadow is generated per LIGHT per LAYER, so
+    // either being empty means no shadow is ever built -- and both are populated from stage data
+    // (a light from a point layer, a layer from the stage stats), which is exactly the half of the
+    // pipeline a converted stage can get wrong. Reading their true lengths tells the two apart.
+    let lights_field = find_field(code, match_t, "shadowLightSources")
+        .ok_or_else(|| anyhow::anyhow!("Match.shadowLightSources field not found"))?;
+    let shadowlayers_field = find_field(code, match_t, "shadowLayers")
+        .ok_or_else(|| anyhow::anyhow!("Match.shadowLayers field not found"))?;
     // ---- the stage's display layers ----
     // Vfx are NOT GameObjects (Vfx extends Entity), so they can never appear in any Match
     // collection. Converted animated backdrop elements ARE vfx, reparented into one of the
@@ -1544,12 +1749,21 @@ fn connect_edit(
     // ItemSpawnPoints, so a short walk sees nothing but items (which aren't ported anyway)
     // and truncates before the interesting entities. The header carries the true length, so
     // a list longer than this still reads as truncated rather than silently short.
-    const TICK_HOPS: usize = 320;
-    // In VfxLayer order (back to front) — the same eleven the layer constants name.
-    const STAGE_LAYERS: [&str; 11] = [
+    // The node under the walk lives in a global: a register counter in a bytecode loop whose
+    // body calls out gets corrupted, and a stage with a few hundred structures runs the tick
+    // stack past any fixed unroll.
+    let g_tick_node = code.globals.len();
+    code.globals.push(hlbc::types::RefType(dlnode_t));
+    // In VfxLayer order (back to front) — the same eleven the layer constants name — and then the
+    // three broad containers, which are NOT among them. A stage can put an element straight into
+    // the background rather than one of its four subdivisions, and a walk that knows only the
+    // eleven never visits it: the element is live, drawing and animating, and reads as absent.
+    // Appended rather than ordered so the fixed indices used elsewhere keep meaning what they did.
+    const STAGE_LAYERS: [&str; 14] = [
         "BACKGROUND_BEHIND", "BACKGROUND_STRUCTURES", "BACKGROUND_SHADOWS", "BACKGROUND_EFFECTS",
         "CHARACTERS_BACK", "CHARACTERS", "CHARACTERS_FRONT",
         "FOREGROUND_STRUCTURES", "FOREGROUND_SHADOWS", "FOREGROUND_EFFECTS", "FOREGROUND_FRONT",
+        "BACKGROUND", "FOREGROUND", "GAME_OBJECTS",
     ];
     let layer_getters: Vec<usize> = [
         "getBackgroundBehindContainer", "getBackgroundStructuresContainer",
@@ -1557,6 +1771,7 @@ fn connect_edit(
         "getCharactersBackContainer", "getCharactersContainer", "getCharactersFrontContainer",
         "getForegroundStructuresContainer", "getForegroundShadowsContainer",
         "getForegroundEffectsContainer", "getForegroundFrontContainer",
+        "getBackgroundContainer", "getForegroundContainer", "getGameObjectsContainer",
     ].iter().map(|n| require_fn(code, n, Some("pxf.api.StageApi"))).collect::<anyhow::Result<_>>()?;
     // The live stage, bound into the interpreter scope as `stage` rather than walked (it's a
     // single object, not a collection). The Fraymakers script API gives every entity script an
@@ -1582,6 +1797,26 @@ fn connect_edit(
     // is compiled and has none, but a converted character on that stage does.
     let entity_base_t = require_type(code, "pxf.entity.Entity")?;
     let runner_interp_field = require_field(code, "pxf.api.runners.hscript.HscriptRunner", "interpreter")?;
+    // a COMPILED script's runner holds the script object, and the script object holds what the
+    // script was written against: its api object (`self`), `match`, `stage`, `camera`,
+    // `character`, `Common`, `exports`. an interpreter bound to those is the script's own
+    // world, and the script object itself, bound as `script`, carries its state as named fields.
+    let haxe_runner_t = require_type(code, "pxf.api.runners.haxescript.HaxeScriptRunner")?;
+    let (haxe_runner_script_field, haxe_script_t) = require_field_typed(code, "pxf.api.runners.haxescript.HaxeScriptRunner", "haxeScript")?;
+    let script_bindings: Vec<(&str, usize, usize)> = ["exports"]
+        .iter().map(|f| require_field_typed(code, "pxf.api.HaxeScript", f).map(|(i, t)| (*f, i, t)))
+        .collect::<anyhow::Result<_>>()?;
+    // a compiled script's own api objects are the engine's plain ones, which a script interpreter
+    // cannot reach into (no names to look methods up by); the engine's factory makes the ones a
+    // scripted fighter gets, from the same entity and match, and those are what get bound
+    let factory_char_api = require_fn(code, "createCharacterApi", Some("fraymakers.util.$FraymakersClassFactory"))?;
+    let factory_match_api = require_fn(code, "createMatchApi", Some("fraymakers.util.$FraymakersClassFactory"))?;
+    let fm_char_api_t = require_type(code, "fraymakers.api.FraymakersCharacterApi")?;
+    let fm_match_api_t = require_type(code, "fraymakers.api.FraymakersMatchApi")?;
+    // the engine's runner readies a script's interpreter through this one, not the console's
+    let apiscript_apply_globals = require_fn(code, "applyInterpreterGlobals", Some("pxf.api.$ApiScript"))?;
+    let (common_fi, _) = require_field_typed(code, "pxf.api.HaxeScript", "Common")?;
+
     // The script-api sandbox IS reachable from `e`, by borrowing rather than rebuilding (see the
     // interp acquisition further down). An interpreted script's ambient variables are written into
     // its interpreter's variable map by its runner's constructor -- `self`/`exports` from the base
@@ -1656,7 +1891,8 @@ fn connect_edit(
     // longer than its slot budget reads as truncated instead of silently short — and they make
     // the gameObjects duplicates interpretable (a character appears in both its own collection
     // and the union).
-    let tree_grp_g: Vec<usize> = ["characters", "customGameObjects", "projectiles", "structures", "gameObjects"]
+    let tree_grp_g: Vec<usize> = ["characters", "customGameObjects", "projectiles", "structures", "gameObjects",
+                                  "shadowLightSources", "shadowLayers"]
         .iter().map(|n| add_string_const(code, &format!("  [{n}] n="))).collect();
     let tree_nl_g = add_string_const(code, "\n");
     let tree_layer_g: Vec<usize> = STAGE_LAYERS.iter()
@@ -1973,6 +2209,12 @@ fn connect_edit(
     // single engine-linked interp into which all commands eventually move as one hscript file.
     let g_interp = code.globals.len();
     code.globals.push(hlbc::types::RefType(506)); // hscript.Interp
+    // the interpreters made for compiled scripts, one slot per entity target (four fighters and
+    // the stage), each beside the entity it was made for: the next call on the same entity
+    // reuses it, so what a line declares is still there on the next, and a new match (new
+    // entity objects) gets fresh ones
+    let g_made_interp: Vec<usize> = (0..5).map(|_| { let g = code.globals.len(); code.globals.push(hlbc::types::RefType(506)); g }).collect();
+    let g_made_entity: Vec<usize> = (0..5).map(|_| { let g = code.globals.len(); code.globals.push(hlbc::types::RefType(9)); g }).collect();
     // Whether the cached interp is a borrowed CONTENT one. Without this, an `e` sent before the
     // match starts would build the fallback interp and pin it forever, so the sandbox surface
     // would never appear no matter what was running later.
@@ -1986,6 +2228,26 @@ fn connect_edit(
     // (NOT a synthetic keypress). 0 = no injection; an Int global defaults to 0.
     let g_inject_held = code.globals.len();
     code.globals.push(hlbc::types::RefType(3)); // Int
+    // HOW MANY FRAMES PER TICK. The 'u' command sets this; the block at the head of the original
+    // update runs the engine's own per-frame update that many times before the tick's own run,
+    // so a test that paces on the engine's frame count arrives sooner and measures the same.
+    // 0/1 = the engine's own rate.
+    let g_turbo = code.globals.len();
+    code.globals.push(hlbc::types::RefType(3)); // Int
+    let u_idx = add_int(code, 'u' as i32);
+    let u_ok_g = add_string_const(code, "U:OK\n");
+    // 'j': an eval INSIDE one entity's own script interpreter (its locals, its `self`), chosen by
+    // a letter after the verb: 's' the stage, '0'..'3' a character by slot
+    let j_idx = add_int(code, 'j' as i32);
+    let j_noint_g = add_string_const(code, "ERR: that entity has no script interpreter (its script is compiled into the engine)");
+    let j_noent_g = add_string_const(code, "ERR: no such entity (no match, or no fighter in that slot)");
+    let j_bind_names: Vec<usize> = ["exports"].iter().map(|n| add_string_const(code, n)).collect();
+    let j_self_g = add_string_const(code, "self");
+    let j_match_g = add_string_const(code, "match");
+
+    let j_script_g = add_string_const(code, "script");
+    let core_update_fx = require_fn(code, "update", Some("pxf.core.CoreApp"))?;
+    let turbo_k_idx: Vec<usize> = (1..8).map(|k| add_int(code, k)).collect();
     // 'i' (input) command byte + the ASCII/scale constants its decimal-mask parser needs.
     let i_idx = add_int(code, 'i' as i32);
     let i_zero_char = add_int(code, '0' as i32);
@@ -2170,7 +2432,6 @@ fn connect_edit(
     // players (parts[4..]) get their char loaded FRESH in this `s` dispatch — the per-frame spawn
     // then finds it cached (a char loaded in a prior, since-cleaned-up match has a dead sprite
     // cache and crashes when re-spawned).
-    #[allow(unused)]
     let emit_load_char = |ops: &mut Vec<Opcode>, name: u32| {
         let r = |i: u32| Reg(base + i);
         ops.push(Opcode::SetGlobal { global: RefGlobal(g_name), src: r(name) });
@@ -2707,6 +2968,13 @@ fn connect_edit(
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(cleanupmatch_fn), arg0: rr(44) });        // cleanupMatch(currentMatch)
     let idx_after_cleanup = ops.len();
     if let Opcode::JNull { offset, .. } = &mut ops[idx_jnocm] { *offset = idx_after_cleanup as i32 - idx_jnocm as i32 - 1; }
+    // the eval interpreter is borrowed from the live match's content and cached; a new match
+    // has new content, so the cache is marked stale here and the next eval borrows again (kept,
+    // it answered every eval against the match that was just torn down). the cached one itself
+    // is left in place: clearing it crashed the start of a match with a second, different
+    // converted fighter
+    ops.push(Opcode::Bool { dst: rr(9), value: ValBool(false) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_interp_is_content), src: rr(9) });
     // ---- create the match mode: createMode({ resource: <mode ref> }) ----
     // Pick trainingmode vs vsmode by roster size at runtime: parts = [s,char0,stage,assist,extras…]
     // so player count N = max(1, parts.length - 3); N >= 3 (parts.length >= 6) -> vsmode (free-for-all,
@@ -2763,19 +3031,28 @@ fn connect_edit(
     // CUSTOM STAGE self-bootstrap (only emitted when the baked stage has a custom .fra).
     // rr(55) holds the stage name (parts[2]/baked); we DON'T touch it — the load uses the
     // baked private:: resid + path + bare name, so emit_resolve below still sees rr(55).
-    if custom_stage {
-        // idempotent: skip if already in the pool. NB: requiredMediaIds=["*"] is left as
-        // the char self-bootstrap (which runs first for a custom p1) set it, so this block
-        // never touches rr(32) = parts.array (the downstream stage/assist resolves need it).
-        ops.push(Opcode::GetGlobal { dst: rr(58), global: RefGlobal(stage_resid_g) });
+    if let Some(fs_exists) = fs_exists {
+        // RUNTIME: whatever stage the launch names (rr(55)), if <install>/custom/<name>/<name>.fra
+        // is on disk and not in the pool yet, it is loaded here, so a stage published after the
+        // boot launches too. idempotent, and never touches rr(32) = parts.array
+        ops.push(Opcode::GetGlobal { dst: rr(56), global: RefGlobal(ns_prefixes[0]) });
+        ops.push(Opcode::Call2 { dst: rr(58), fun: RefFun(str_add), arg0: rr(56), arg1: rr(55) }); // private::<name>
         ops.push(Opcode::Call1 { dst: rr(60), fun: RefFun(getpxf_fn), arg0: rr(58) });
         let idx_st_jskip = ops.len();
         ops.push(Opcode::JNotNull { reg: rr(60), offset: 0 });                 // already loaded -> skip
+        ops.push(Opcode::GetGlobal { dst: rr(56), global: RefGlobal(customdir_g) });
+        ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(56), arg1: rr(55) });
+        ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(slash_g) });
+        ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(56), arg1: rr(53) });
+        ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(56), arg1: rr(55) });
+        ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(frasuffix_g) });
+        ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(56), arg1: rr(53) }); // the path
+        ops.push(Opcode::Call1 { dst: rr(64), fun: RefFun(fs_exists), arg0: rr(56) });
+        let idx_st_jnofile = ops.len();
+        ops.push(Opcode::JFalse { cond: rr(64), offset: 0 });                   // no such package -> skip
         ops.push(Opcode::New { dst: rr(71) });
-        ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(stage_bare_g) }); // Resource id = bare name
-        ops.push(Opcode::GetGlobal { dst: rr(56), global: RefGlobal(stage_path_g) });
         ops.push(Opcode::Null { dst: rr(73) });
-        ops.push(Opcode::Call4 { dst: r_ret, fun: RefFun(resource_ctor), arg0: rr(71), arg1: rr(53), arg2: rr(56), arg3: rr(73) });
+        ops.push(Opcode::Call4 { dst: r_ret, fun: RefFun(resource_ctor), arg0: rr(71), arg1: rr(55), arg2: rr(56), arg3: rr(73) });
         ops.push(Opcode::Bool { dst: rr(64), value: ValBool(true) });
         ops.push(Opcode::SetField { obj: rr(71), field: RefField(res_isabs_field), src: rr(64) });
         ops.push(Opcode::GetGlobal { dst: rr(72), global: RefGlobal(rt_global) });
@@ -2786,7 +3063,11 @@ fn connect_edit(
         ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(add_resource), arg0: rr(71) });
         let idx_st_skip = ops.len();
         if let Opcode::JNotNull { offset, .. } = &mut ops[idx_st_jskip] { *offset = idx_st_skip as i32 - idx_st_jskip as i32 - 1; }
-        eprintln!("custom-stage self-bootstrap: emitted (private::{sname} <- {stage_custom_path})");
+        if let Opcode::JFalse { offset, .. } = &mut ops[idx_st_jnofile] { *offset = idx_st_skip as i32 - idx_st_jnofile as i32 - 1; }
+        eprintln!("custom-stage self-bootstrap: emitted for any stage the launch names (baked {sname}: {})", if custom_stage { "custom" } else { "built in" });
+        let _ = (stage_resid_g, stage_path_g, stage_bare_g);
+    } else {
+        eprintln!("custom-stage self-bootstrap: no file check available; only the baked stage loads ({})", custom_stage);
     }
     emit_resolve(&mut ops, 55, 25, stage_cmap_field); // stage ref (loads on demand)
     // ASSIST: parts.length >= 4 ? parts[3] : baked assist default.
@@ -2873,7 +3154,13 @@ fn connect_edit(
         ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(pk_parts[j]) });
         ops.push(Opcode::GetArray { dst: rr(55), array: rr(31), index: rr(39) }); // parts[k+2] -> rr55
         // synchronously load this char (idempotent). scratches rr31/32/33/39/55/...
-        emit_load_char(&mut ops, 55);
+        // Skipped when the session's character is BASE content: the load builds a
+        // custom/<name>/<name>.fra path, which does not exist for a base-roster fighter, and the
+        // resource it hands back is null by the time finishLoading preloads it. base content is
+        // already loaded by the ordinary boot this session does anyway.
+        if char_is_custom {
+            emit_load_char(&mut ops, 55);
+        }
         // re-fetch the name (emit_load_char scratched rr55/rr31/rr39), then resolve it -> rr26
         ops.push(Opcode::Field { dst: rr(31), obj: rr(52), field: RefField(1) });
         ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(pk_parts[j]) });
@@ -2937,6 +3224,14 @@ fn connect_edit(
     ops.push(Opcode::Bool { dst: rr(64), value: ValBool(false) });
     ops.push(Opcode::ToDyn { dst: rr(28), src: rr(64) });
     ops.push(Opcode::DynSet { obj: rr(34), field: RS(teams_str), src: rr(28) });
+    // the netcode a match runs under: set only when asked for, so an ordinary launch is untouched.
+    // a match that rolls back as an online one does, with no network, is how a port is checked
+    // against rollback
+    if cfg.netcode != 0 {
+        ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(netcode_idx) });
+        ops.push(Opcode::ToDyn { dst: rr(28), src: rr(39) });
+        ops.push(Opcode::DynSet { obj: rr(34), field: RS(netcode_str), src: rr(28) });
+    }
     ops.push(Opcode::ToVirtual { dst: rr(35), src: rr(34) });          // -> matchSettings virtual@675
     // config = { characters, matchSettings, pauseMenu: null } (virtual@4482)
     ops.push(Opcode::New { dst: rr(27) });                             // dynobj (4366)
@@ -3170,6 +3465,7 @@ fn connect_edit(
         let r_lbl = a.reg(str_t);
         let r_ret2 = a.reg(9);
         let r_void = a.reg(0);
+        let r_blk = a.reg(7); // bool, as the socket flag above
         a.op(Opcode::Field { dst: r_out2, obj: r_sock2, field: RefField(out_field) });
         a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(mc_g) });
         a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
@@ -3210,7 +3506,16 @@ fn connect_edit(
         a.op(Opcode::GetGlobal { dst: r_lbl, global: RefGlobal(tree_nl_g) });
         a.op(Opcode::Call2 { dst: r_acc, fun: RefFun(str_add), arg0: r_acc, arg1: r_lbl });
         a.op(Opcode::Null { dst: r_lbl });
+        // the picture is one write of a few megabytes on a socket kept non-blocking for the
+        // per-frame poll, and a write the buffer cannot take at once throws (a stage whose
+        // backdrop covers the whole scene fills more than the buffer holds). blocking for the
+        // one write; the host reads without pause, so it completes.
+        a.op(Opcode::Bool { dst: r_blk, value: ValBool(true) });
+        a.op(Opcode::Call2 { dst: r_void, fun: RefFun(set_blocking), arg0: r_sock2, arg1: r_blk });
         a.op(Opcode::Call3 { dst: r_ret2, fun: RefFun(write_str), arg0: r_out2, arg1: r_acc, arg2: r_lbl });
+        a.op(Opcode::Call1 { dst: r_ret2, fun: RefFun(flush), arg0: r_out2 });
+        a.op(Opcode::Bool { dst: r_blk, value: ValBool(false) });
+        a.op(Opcode::Call2 { dst: r_void, fun: RefFun(set_blocking), arg0: r_sock2, arg1: r_blk });
         a.jalways(end);
         a.place(fail);
         a.op(Opcode::GetGlobal { dst: r_acc, global: RefGlobal(shot_fail_g) });
@@ -3249,8 +3554,16 @@ fn connect_edit(
         let r_acc  = a.reg(str_t);
         let r_lbl  = a.reg(str_t);
         let r_ret2 = a.reg(9);               // call-result throwaway
+        let r_blkw = a.reg(7);               // socket blocking flag, for the walk's writes
+        let r_voidw = a.reg(0);
         // out = socket.output
         a.op(Opcode::Field { dst: r_out2, obj: r_sock2, field: RefField(out_field) });
+        // the walk is thousands of rows written in chunks on a socket kept non-blocking for the
+        // per-frame poll; a chunk the buffer cannot take is lost, and a stage with a few hundred
+        // structures lost every row after them. blocking for the walk; the host reads without
+        // pause, so it completes.
+        a.op(Opcode::Bool { dst: r_blkw, value: ValBool(true) });
+        a.op(Opcode::Call2 { dst: r_voidw, fun: RefFun(set_blocking), arg0: r_sock2, arg1: r_blkw });
         a.op(Opcode::GetGlobal { dst: r_mc, global: RefGlobal(mc_g) });
         a.op(Opcode::Field { dst: r_cm, obj: r_mc, field: RefField(cm_field) });
         a.jnull(r_cm, nomatch);
@@ -3268,6 +3581,9 @@ fn connect_edit(
         for (grp, (fld, slots)) in [
             (characters_field, 8usize), (cgo_field, 8), (proj_field, 8),
             (structures_field, 16), (gameobjects_field, 24),
+            // headers only: what matters is whether these are non-empty, and their elements are
+            // not Entities, so the per-row reader would not know how to print them.
+            (lights_field, 0), (shadowlayers_field, 0),
         ].into_iter().enumerate() {
             // group header: "  [<name>] n=<true length>\n"
             {
@@ -3510,11 +3826,15 @@ fn connect_edit(
             a.op(Opcode::Null { dst: r_lbl });
             a.op(Opcode::Call3 { dst: r_ret2, fun: RefFun(write_str), arg0: r_out2, arg1: r_acc, arg2: r_lbl });
 
-            // UNROLLED hops. A bytecode loop whose body makes resolve/alloc calls corrupts its
-            // own counter here (same failure the collection sweep and the multiplayer builds
-            // hit), so this walks fixed hops with forward jumps only.
+            // one loop over the list, the node kept in a global across the body's calls (a
+            // register counter in such a loop was corrupted, which is what the collection sweep
+            // and the multiplayer builds hit)
             a.op(Opcode::Field { dst: r_node, obj: r_list, field: RefField(dl_first_field) });
-            for _ in 0..TICK_HOPS {
+            a.op(Opcode::SetGlobal { global: RefGlobal(g_tick_node), src: r_node });
+            let top = a.label();
+            a.place(top);
+            {
+                a.op(Opcode::GetGlobal { dst: r_node, global: RefGlobal(g_tick_node) });
                 a.jnull(r_node, done);
                 a.op(Opcode::Field { dst: r_el, obj: r_node, field: RefField(dl_value_field) });
                 let step = a.label();
@@ -3578,7 +3898,10 @@ fn connect_edit(
                 a.op(Opcode::Null { dst: r_lbl });
                 a.op(Opcode::Call3 { dst: r_ret2, fun: RefFun(write_str), arg0: r_out2, arg1: r_acc, arg2: r_lbl });
                 a.place(step);
+                a.op(Opcode::GetGlobal { dst: r_node, global: RefGlobal(g_tick_node) });
                 a.op(Opcode::Field { dst: r_node, obj: r_node, field: RefField(dl_next_field) });
+                a.op(Opcode::SetGlobal { global: RefGlobal(g_tick_node), src: r_node });
+                a.jalways(top);
             }
             a.place(done);
         }
@@ -3593,6 +3916,8 @@ fn connect_edit(
         a.op(Opcode::Call3 { dst: r_ret2, fun: RefFun(write_str), arg0: r_out2, arg1: r_acc, arg2: r_lbl });
         a.op(Opcode::Call1 { dst: r_ret2, fun: RefFun(flush), arg0: r_out2 });
         a.place(end);
+        a.op(Opcode::Bool { dst: r_blkw, value: ValBool(false) });
+        a.op(Opcode::Call2 { dst: r_voidw, fun: RefFun(set_blocking), arg0: r_sock2, arg1: r_blkw });
         let (a_ops, a_regs) = a.finish();
         add_regs(f, &a_regs);
         ops.extend(a_ops);
@@ -4610,8 +4935,386 @@ fn connect_edit(
     ops.push(Opcode::Null { dst: rr(15) });
     ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
     ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
-    let idx_i_after = ops.len(); // = L_ORIG (n): the next op after this last handler
+    let idx_i_after = ops.len(); // 'i' done: falls through to the 'u' check below
     if let Opcode::JNotEq  { offset, .. } = &mut ops[idx_jne_i]  { *offset = idx_i_after as i32 - idx_jne_i as i32 - 1; }
+    // ---- 'u' (speed) command: a decimal frames-per-tick into g_turbo. Same parser as 'i',
+    // appended after it for the same reason it was appended after 'e'. ----
+    let idx_u_check = ops.len();
+    let u_b = add_regs(f, &[3, 3, 3]);
+    let (u_acc, u_dig, u_tmp) = (Reg(u_b), Reg(u_b + 1), Reg(u_b + 2));
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(u_idx) });
+    let idx_jne_u = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });          // not 'u' -> L_ORIG
+    ops.push(Opcode::Int { dst: u_acc, ptr: RefInt(zero_idx) });
+    let idx_u_loop = ops.len();
+    ops.push(Opcode::Call1 { dst: r_c, fun: RefFun(recv_char), arg0: r_handle });
+    ops.push(Opcode::Int { dst: u_tmp, ptr: RefInt(zero_idx) });
+    let idx_u_jneg = ops.len();
+    ops.push(Opcode::JSLt { a: r_c, b: u_tmp, offset: 0 });
+    ops.push(Opcode::Int { dst: u_tmp, ptr: RefInt(nl_idx) });
+    let idx_u_jnl = ops.len();
+    ops.push(Opcode::JEq { a: r_c, b: u_tmp, offset: 0 });
+    ops.push(Opcode::Int { dst: u_tmp, ptr: RefInt(i_zero_char) });
+    let idx_u_jlt0 = ops.len();
+    ops.push(Opcode::JSLt { a: r_c, b: u_tmp, offset: 0 });
+    ops.push(Opcode::Int { dst: u_tmp, ptr: RefInt(i_nine_char) });
+    let idx_u_jgt9 = ops.len();
+    ops.push(Opcode::JSGt { a: r_c, b: u_tmp, offset: 0 });
+    ops.push(Opcode::Int { dst: u_tmp, ptr: RefInt(i_zero_char) });
+    ops.push(Opcode::Sub { dst: u_dig, a: r_c, b: u_tmp });
+    ops.push(Opcode::Int { dst: u_tmp, ptr: RefInt(i_ten) });
+    ops.push(Opcode::Mul { dst: u_acc, a: u_acc, b: u_tmp });
+    ops.push(Opcode::Add { dst: u_acc, a: u_acc, b: u_dig });
+    let idx_u_jback = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_u_done = ops.len();
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_turbo), src: u_acc });
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(u_ok_g) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(14), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_u_after = ops.len(); // 'u' handled / not 'u' -> the 'j' check
+    // ---- 'j' (eval in an entity): `j<t><hscript>` runs the script in the interpreter that
+    // entity's OWN script runs on -- its locals, its `self`, its `match` -- rather than the
+    // console's. 't' is 's' for the stage or a slot digit for a character. Nothing is cached
+    // and nothing is loaded into that interpreter (the console's helpers would shadow the
+    // script's own names), so what runs is exactly what the script could have written. ----
+    let j_regs = add_regs(f, &[3, 3, 9, 3, 506]);
+    let (j_tgt, j_n, j_entdyn, j_slot, j_cached) = (Reg(j_regs), Reg(j_regs + 1), Reg(j_regs + 2), Reg(j_regs + 3), Reg(j_regs + 4));
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(j_idx) });
+    let idx_jne_j = ops.len();
+    ops.push(Opcode::JNotEq { a: r_c, b: rr(16), offset: 0 });          // not 'j' -> L_ORIG
+    ops.push(Opcode::Call1 { dst: r_c, fun: RefFun(recv_char), arg0: r_handle });
+    ops.push(Opcode::Mov { dst: j_tgt, src: r_c });
+    // the rest of the line -> rr55 (the same drain the 'e' handler proves)
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_blen), src: rr(39) });
+    let idx_j_drain = ops.len();
+    ops.push(Opcode::Call1 { dst: r_c, fun: RefFun(recv_char), arg0: r_handle });
+    ops.push(Opcode::Int { dst: r_zero, ptr: RefInt(zero_idx) });
+    let idx_j_jslt = ops.len();
+    ops.push(Opcode::JSLt { a: r_c, b: r_zero, offset: 0 });
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(nl_idx) });
+    let idx_j_jeq = ops.len();
+    ops.push(Opcode::JEq { a: r_c, b: rr(16), offset: 0 });
+    ops.push(Opcode::GetGlobal { dst: rr(51), global: RefGlobal(g_buf) });
+    ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_blen) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(bytes_set), arg0: rr(51), arg1: rr(39), arg2: r_c });
+    ops.push(Opcode::GetGlobal { dst: rr(39), global: RefGlobal(g_blen) });
+    ops.push(Opcode::Incr { dst: rr(39) });
+    ops.push(Opcode::SetGlobal { global: RefGlobal(g_blen), src: rr(39) });
+    let idx_j_jback = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_j_getstr = ops.len();
+    ops.push(Opcode::GetGlobal { dst: rr(51), global: RefGlobal(g_buf) });
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::GetGlobal { dst: rr(16), global: RefGlobal(g_blen) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call4 { dst: rr(14), fun: RefFun(bytes_getstring), arg0: rr(51), arg1: rr(39), arg2: rr(16), arg3: rr(15) });
+    if let Opcode::JSLt { offset, .. } = &mut ops[idx_j_jslt] { *offset = idx_j_getstr as i32 - idx_j_jslt as i32 - 1; }
+    if let Opcode::JEq  { offset, .. } = &mut ops[idx_j_jeq]  { *offset = idx_j_getstr as i32 - idx_j_jeq as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_j_jback] { *offset = idx_j_drain as i32 - idx_j_jback as i32 - 1; }
+    ops.push(Opcode::Mov { dst: rr(55), src: rr(14) });
+    // ---- the entity's interpreter -> e_interp, or null ----
+    ops.push(Opcode::Null { dst: e_interp });
+    ops.push(Opcode::GetGlobal { dst: rr(43), global: RefGlobal(mc_g) });
+    ops.push(Opcode::Field { dst: rr(44), obj: rr(43), field: RefField(cm_field) });
+    let idx_j_nomatch = ops.len();
+    ops.push(Opcode::JNull { reg: rr(44), offset: 0 });
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(s_idx) });
+    let idx_j_notstage = ops.len();
+    ops.push(Opcode::JNotEq { a: j_tgt, b: rr(16), offset: 0 });      // not 's' -> a character slot
+    ops.push(Opcode::Field { dst: borrow_entity_reg, obj: rr(44), field: RefField(stage_field) });
+    ops.push(Opcode::Mov { dst: j_entdyn, src: borrow_entity_reg });
+    ops.push(Opcode::Int { dst: j_slot, ptr: RefInt(four_idx) });
+    let idx_j_tochain = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                            // -> the script chain
+    let idx_j_slot = ops.len();
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(i_zero_char) });
+    ops.push(Opcode::Sub { dst: j_n, a: j_tgt, b: rr(16) });           // slot = t - '0'
+    ops.push(Opcode::Int { dst: r_zero, ptr: RefInt(zero_idx) });
+    let idx_j_neg = ops.len();
+    ops.push(Opcode::JSLt { a: j_n, b: r_zero, offset: 0 });            // below '0' -> none
+    ops.push(Opcode::Field { dst: rr(33), obj: rr(44), field: RefField(characters_field) });
+    let idx_j_noarr = ops.len();
+    ops.push(Opcode::JNull { reg: rr(33), offset: 0 });
+    ops.push(Opcode::Field { dst: rr(16), obj: rr(33), field: RefField(0) });   // length
+    let idx_j_past = ops.len();
+    ops.push(Opcode::JSGte { a: j_n, b: rr(16), offset: 0 });           // slot >= length -> none
+    ops.push(Opcode::Field { dst: rr(32), obj: rr(33), field: RefField(1) });   // native array
+    ops.push(Opcode::GetArray { dst: rr(28), array: rr(32), index: j_n });
+    ops.push(Opcode::Mov { dst: j_entdyn, src: rr(28) });
+    ops.push(Opcode::Mov { dst: j_slot, src: j_n });
+    ops.push(Opcode::Null { dst: borrow_entity_reg });
+    let idx_j_trap = ops.len();
+    ops.push(Opcode::Trap { exc: rr(29), offset: 0 });
+    ops.push(Opcode::SafeCast { dst: borrow_entity_reg, src: rr(28) });
+    ops.push(Opcode::EndTrap { exc: rr(29) });
+    let idx_j_castok = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_j_castfail = ops.len();
+    ops.push(Opcode::EndTrap { exc: rr(29) });
+    ops.push(Opcode::Null { dst: borrow_entity_reg });
+    let idx_j_castjoin = ops.len();
+    if let Opcode::Trap { offset, .. } = &mut ops[idx_j_trap] { *offset = idx_j_castfail as i32 - idx_j_trap as i32; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_j_castok] { *offset = idx_j_castjoin as i32 - idx_j_castok as i32 - 1; }
+    // the script chain, from whichever entity: its ApiScript -> runner -> (an hscript runner) -> interpreter
+    let idx_j_chain = ops.len();
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_j_tochain] { *offset = idx_j_chain as i32 - idx_j_tochain as i32 - 1; }
+    let idx_j_noent = ops.len();
+    ops.push(Opcode::JNull { reg: borrow_entity_reg, offset: 0 });
+    ops.push(Opcode::Field { dst: apiscript_reg, obj: borrow_entity_reg, field: RefField(stage_apiscript_field) });
+    let idx_j_noscript = ops.len();
+    ops.push(Opcode::JNull { reg: apiscript_reg, offset: 0 });
+    ops.push(Opcode::Field { dst: runner_iface_reg, obj: apiscript_reg, field: RefField(apiscript_runner_field) });
+    let idx_j_norunner = ops.len();
+    ops.push(Opcode::JNull { reg: runner_iface_reg, offset: 0 });
+    ops.push(Opcode::Null { dst: hscript_runner_reg });
+    let idx_j_trap2 = ops.len();
+    ops.push(Opcode::Trap { exc: rr(29), offset: 0 });
+    ops.push(Opcode::SafeCast { dst: hscript_runner_reg, src: runner_iface_reg });
+    ops.push(Opcode::EndTrap { exc: rr(29) });
+    let idx_j_cast2ok = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_j_cast2fail = ops.len();
+    ops.push(Opcode::EndTrap { exc: rr(29) });
+    ops.push(Opcode::Null { dst: hscript_runner_reg });
+    let idx_j_cast2join = ops.len();
+    if let Opcode::Trap { offset, .. } = &mut ops[idx_j_trap2] { *offset = idx_j_cast2fail as i32 - idx_j_trap2 as i32; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_j_cast2ok] { *offset = idx_j_cast2join as i32 - idx_j_cast2ok as i32 - 1; }
+    let idx_j_nocast = ops.len();
+    ops.push(Opcode::JNull { reg: hscript_runner_reg, offset: 0 });
+    ops.push(Opcode::Field { dst: e_interp, obj: hscript_runner_reg, field: RefField(runner_interp_field) });
+    let idx_j_have = ops.len();
+    for jj in [idx_j_nomatch, idx_j_noarr, idx_j_noent, idx_j_noscript, idx_j_norunner, idx_j_nocast] {
+        if let Opcode::JNull { offset, .. } = &mut ops[jj] { *offset = idx_j_have as i32 - jj as i32 - 1; }
+    }
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_j_notstage] { *offset = idx_j_slot as i32 - idx_j_notstage as i32 - 1; }
+    if let Opcode::JSLt { offset, .. } = &mut ops[idx_j_neg] { *offset = idx_j_have as i32 - idx_j_neg as i32 - 1; }
+    if let Opcode::JSGte { offset, .. } = &mut ops[idx_j_past] { *offset = idx_j_have as i32 - idx_j_past as i32 - 1; }
+    // ---- run it there, or say why not ----
+    let idx_j_jrun = ops.len();
+    ops.push(Opcode::JNotNull { reg: e_interp, offset: 0 });
+    // which of the two it is: no entity at all, or one whose script is compiled
+    let idx_j_jent = ops.len();
+    ops.push(Opcode::JNotNull { reg: borrow_entity_reg, offset: 0 });
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(j_noent_g) });
+    let idx_j_jwrite1 = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                            // -> write
+    let idx_j_compiled = ops.len();
+    if let Opcode::JNotNull { offset, .. } = &mut ops[idx_j_jent] { *offset = idx_j_compiled as i32 - idx_j_jent as i32 - 1; }
+    // A COMPILED SCRIPT GETS AN INTERPRETER MADE FOR IT: a fresh one, given the engine's globals
+    // (an object goes into the interpreter by a plain move: boxing a typed register carries the
+    // register's static type, and a value boxed that way prints as its base class, is not equal
+    // to itself, and calls through the wrong layout)
+    // and then bound to the objects the compiled script was written against, read off the
+    // script object its runner holds. `self` is the script's own api object, so the script-side
+    // surface is all there; `script` is the compiled object itself, whose state is named fields.
+    // Made per call: nothing of the console's is loaded, and nothing is cached.
+    let j_hr = Reg(add_regs(f, &[haxe_runner_t]));
+    let j_hs = Reg(add_regs(f, &[haxe_script_t]));
+    let j_fregs: Vec<Reg> = script_bindings.iter().map(|(_, _, t)| Reg(add_regs(f, &[*t]))).collect();
+    ops.push(Opcode::Null { dst: j_hr });
+    let idx_j_trap3 = ops.len();
+    ops.push(Opcode::Trap { exc: rr(29), offset: 0 });
+    ops.push(Opcode::SafeCast { dst: j_hr, src: runner_iface_reg });
+    ops.push(Opcode::EndTrap { exc: rr(29) });
+    let idx_j_cast3ok = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_j_cast3fail = ops.len();
+    ops.push(Opcode::EndTrap { exc: rr(29) });
+    ops.push(Opcode::Null { dst: j_hr });
+    let idx_j_cast3join = ops.len();
+    if let Opcode::Trap { offset, .. } = &mut ops[idx_j_trap3] { *offset = idx_j_cast3fail as i32 - idx_j_trap3 as i32; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_j_cast3ok] { *offset = idx_j_cast3join as i32 - idx_j_cast3ok as i32 - 1; }
+    let idx_j_nohr = ops.len();
+    ops.push(Opcode::JNull { reg: j_hr, offset: 0 });                   // not a compiled runner -> the message
+    ops.push(Opcode::Field { dst: j_hs, obj: j_hr, field: RefField(haxe_runner_script_field) });
+    let idx_j_nohs = ops.len();
+    ops.push(Opcode::JNull { reg: j_hs, offset: 0 });
+    // one already made for this entity (the same object, in the same slot) is the one to use
+    let mut idx_j_reuse_jumps: Vec<usize> = Vec::new();
+    for k in 0..5usize {
+        ops.push(Opcode::Int { dst: rr(16), ptr: RefInt([zero_idx, one_idx, two_idx, three_idx, four_idx][k]) });
+        let not_k = ops.len();
+        ops.push(Opcode::JNotEq { a: j_slot, b: rr(16), offset: 0 });
+        ops.push(Opcode::GetGlobal { dst: j_cached, global: RefGlobal(g_made_interp[k]) });
+        let no_cache = ops.len();
+        ops.push(Opcode::JNull { reg: j_cached, offset: 0 });
+        ops.push(Opcode::GetGlobal { dst: rr(28), global: RefGlobal(g_made_entity[k]) });
+        let other_entity = ops.len();
+        ops.push(Opcode::JNotEq { a: rr(28), b: j_entdyn, offset: 0 });
+        ops.push(Opcode::Mov { dst: e_interp, src: j_cached });
+        let reuse = ops.len();
+        ops.push(Opcode::JAlways { offset: 0 });                        // -> run, on the kept interpreter
+        idx_j_reuse_jumps.push(reuse);
+        let after_k = ops.len();
+        for jj in [not_k, other_entity] {
+            if let Opcode::JNotEq { offset, .. } = &mut ops[jj] { *offset = after_k as i32 - jj as i32 - 1; }
+        }
+        if let Opcode::JNull { offset, .. } = &mut ops[no_cache] { *offset = after_k as i32 - no_cache as i32 - 1; }
+    }
+    ops.push(Opcode::New { dst: e_interp });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_interp_ctor), arg0: e_interp });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(apiscript_apply_globals), arg0: e_interp });
+    // `self`: the api a scripted fighter would have, made by the engine's factory from this
+    // entity; the stage gets its api the same way the console builds one for the screenshot
+    let j_char = Reg(add_regs(f, &[char_entity_t]));
+    let j_capi = Reg(add_regs(f, &[fm_char_api_t]));
+    let j_sapi_stage = Reg(add_regs(f, &[stage_api_t]));
+    let j_mapi = Reg(add_regs(f, &[fm_match_api_t]));
+    ops.push(Opcode::Null { dst: rr(28) });
+    ops.push(Opcode::Int { dst: rr(16), ptr: RefInt(s_idx) });
+    let idx_j_self_notstage = ops.len();
+    ops.push(Opcode::JNotEq { a: j_tgt, b: rr(16), offset: 0 });
+    ops.push(Opcode::Field { dst: stage_reg, obj: rr(44), field: RefField(stage_field) });
+    ops.push(Opcode::New { dst: j_sapi_stage });
+    ops.push(Opcode::Call2 { dst: r_ret, fun: RefFun(stage_api_ctor), arg0: j_sapi_stage, arg1: stage_reg });
+    ops.push(Opcode::Mov { dst: rr(28), src: j_sapi_stage });
+    let idx_j_self_done = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_j_self_char = ops.len();
+    if let Opcode::JNotEq { offset, .. } = &mut ops[idx_j_self_notstage] { *offset = idx_j_self_char as i32 - idx_j_self_notstage as i32 - 1; }
+    ops.push(Opcode::Null { dst: j_char });
+    let tr_c = ops.len();
+    ops.push(Opcode::Trap { exc: rr(29), offset: 0 });
+    ops.push(Opcode::SafeCast { dst: j_char, src: borrow_entity_reg });
+    ops.push(Opcode::EndTrap { exc: rr(29) });
+    let ok_c = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let fail_c = ops.len();
+    ops.push(Opcode::EndTrap { exc: rr(29) });
+    ops.push(Opcode::Null { dst: j_char });
+    let join_c = ops.len();
+    if let Opcode::Trap { offset, .. } = &mut ops[tr_c] { *offset = fail_c as i32 - tr_c as i32; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[ok_c] { *offset = join_c as i32 - ok_c as i32 - 1; }
+    let idx_j_nochar = ops.len();
+    ops.push(Opcode::JNull { reg: j_char, offset: 0 });
+    ops.push(Opcode::Call1 { dst: j_capi, fun: RefFun(factory_char_api), arg0: j_char });
+    ops.push(Opcode::Mov { dst: rr(28), src: j_capi });
+    let idx_j_bindself = ops.len();
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_j_self_done] { *offset = idx_j_bindself as i32 - idx_j_self_done as i32 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[idx_j_nochar] { *offset = idx_j_bindself as i32 - idx_j_nochar as i32 - 1; }
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(j_self_g) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
+    // `match`: the same, from the current match
+    ops.push(Opcode::Call1 { dst: j_mapi, fun: RefFun(factory_match_api), arg0: rr(44) });
+    ops.push(Opcode::Mov { dst: rr(28), src: j_mapi });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(j_match_g) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
+    // `script`: the compiled script object itself (its state is named fields), which the
+    // runner's script slot holds one level down, in the wrapper's Common slot
+    let j_inner = Reg(add_regs(f, &[haxe_script_t]));
+    ops.push(Opcode::Field { dst: rr(28), obj: j_hs, field: RefField(common_fi) });
+    ops.push(Opcode::Null { dst: j_inner });
+    let tr_in = ops.len();
+    ops.push(Opcode::Trap { exc: rr(29), offset: 0 });
+    ops.push(Opcode::SafeCast { dst: j_inner, src: rr(28) });
+    ops.push(Opcode::EndTrap { exc: rr(29) });
+    let ok_in = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let fail_in = ops.len();
+    ops.push(Opcode::EndTrap { exc: rr(29) });
+    ops.push(Opcode::Null { dst: j_inner });
+    let join_in = ops.len();
+    if let Opcode::Trap { offset, .. } = &mut ops[tr_in] { *offset = fail_in as i32 - tr_in as i32; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[ok_in] { *offset = join_in as i32 - ok_in as i32 - 1; }
+    let idx_j_noinner = ops.len();
+    ops.push(Opcode::JNotNull { reg: j_inner, offset: 0 });
+    ops.push(Opcode::Mov { dst: j_inner, src: j_hs });               // no inner object: the wrapper itself
+    let idx_j_haveinner = ops.len();
+    if let Opcode::JNotNull { offset, .. } = &mut ops[idx_j_noinner] { *offset = idx_j_haveinner as i32 - idx_j_noinner as i32 - 1; }
+    ops.push(Opcode::Mov { dst: rr(28), src: j_inner });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(j_script_g) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
+    for (k, (_, fi, ty)) in script_bindings.iter().enumerate() {
+        ops.push(Opcode::Field { dst: j_fregs[k], obj: j_hs, field: RefField(*fi) });
+        let _ = ty;
+        ops.push(Opcode::Mov { dst: rr(28), src: j_fregs[k] });
+        ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(j_bind_names[k]) });
+        ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(hs_setvar), arg0: e_interp, arg1: rr(14), arg2: rr(28) });
+    }
+    for k in 0..5usize {
+        ops.push(Opcode::Int { dst: rr(16), ptr: RefInt([zero_idx, one_idx, two_idx, three_idx, four_idx][k]) });
+        let not_k = ops.len();
+        ops.push(Opcode::JNotEq { a: j_slot, b: rr(16), offset: 0 });
+        ops.push(Opcode::SetGlobal { global: RefGlobal(g_made_interp[k]), src: e_interp });
+        ops.push(Opcode::SetGlobal { global: RefGlobal(g_made_entity[k]), src: j_entdyn });
+        let after_k = ops.len();
+        if let Opcode::JNotEq { offset, .. } = &mut ops[not_k] { *offset = after_k as i32 - not_k as i32 - 1; }
+    }
+    let idx_j_built = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                            // -> run
+    let idx_j_nointerp = ops.len();
+    for jj in [idx_j_nohr, idx_j_nohs] {
+        if let Opcode::JNull { offset, .. } = &mut ops[jj] { *offset = idx_j_nointerp as i32 - jj as i32 - 1; }
+    }
+    ops.push(Opcode::GetGlobal { dst: rr(53), global: RefGlobal(j_noint_g) });
+    let idx_j_jwrite0 = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });                            // -> write
+    let idx_j_run = ops.len();
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_j_built] { *offset = idx_j_run as i32 - idx_j_built as i32 - 1; }
+    for jmp in &idx_j_reuse_jumps {
+        if let Opcode::JAlways { offset, .. } = &mut ops[*jmp] { *offset = idx_j_run as i32 - *jmp as i32 - 1; }
+    }
+    if let Opcode::JNotNull { offset, .. } = &mut ops[idx_j_jrun] { *offset = idx_j_run as i32 - idx_j_jrun as i32 - 1; }
+    let idx_j_evtrap = ops.len();
+    ops.push(Opcode::Trap { exc: e_result, offset: 0 });
+    ops.push(Opcode::New { dst: e_parser });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_parser_ctor), arg0: e_parser });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: e_expr, fun: RefFun(hs_parse), arg0: e_parser, arg1: rr(55), arg2: rr(15) });
+    let idx_j_evnn = ops.len();
+    ops.push(Opcode::JNotNull { reg: e_expr, offset: 0 });
+    ops.push(Opcode::Null { dst: e_result });
+    let idx_j_evskip = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_j_evrun = ops.len();
+    ops.push(Opcode::Int { dst: rr(39), ptr: RefInt(zero_idx) });
+    ops.push(Opcode::SetField { obj: e_interp, field: RefField(3), src: rr(39) });   // .depth = 0
+    ops.push(Opcode::New { dst: rr(33) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(hs_arr_ctor), arg0: rr(33) });
+    ops.push(Opcode::SetField { obj: e_interp, field: RefField(5), src: rr(33) });   // .declared = new
+    ops.push(Opcode::Call2 { dst: e_result, fun: RefFun(hs_expr_return), arg0: e_interp, arg1: e_expr });
+    let idx_j_evafter = ops.len();
+    ops.push(Opcode::Call1 { dst: rr(53), fun: RefFun(std_string), arg0: e_result });
+    ops.push(Opcode::EndTrap { exc: e_result });
+    let idx_j_evdone = ops.len();
+    ops.push(Opcode::JAlways { offset: 0 });
+    let idx_j_evcatch = ops.len();
+    ops.push(Opcode::EndTrap { exc: e_result });
+    ops.push(Opcode::Call1 { dst: rr(53), fun: RefFun(std_string), arg0: e_result });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(err_prefix_g) });
+    ops.push(Opcode::Call2 { dst: rr(53), fun: RefFun(str_add), arg0: rr(14), arg1: rr(53) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(err_log_prefix_g) });
+    ops.push(Opcode::Call2 { dst: rr(56), fun: RefFun(str_add), arg0: rr(14), arg1: rr(53) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(tilde_log), arg0: rr(56), arg1: rr(15), arg2: rr(15) });
+    let idx_j_write = ops.len();
+    if let Opcode::JNotNull { offset, .. } = &mut ops[idx_j_evnn] { *offset = idx_j_evrun as i32 - idx_j_evnn as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_j_evskip] { *offset = idx_j_evafter as i32 - idx_j_evskip as i32 - 1; }
+    if let Opcode::Trap { offset, .. } = &mut ops[idx_j_evtrap] { *offset = idx_j_evcatch as i32 - idx_j_evtrap as i32; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_j_evdone] { *offset = idx_j_write as i32 - idx_j_evdone as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_j_jwrite0] { *offset = idx_j_write as i32 - idx_j_jwrite0 as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_j_jwrite1] { *offset = idx_j_write as i32 - idx_j_jwrite1 as i32 - 1; }
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_prefix_g) });
+    ops.push(Opcode::Call2 { dst: rr(53), fun: RefFun(str_add), arg0: rr(14), arg1: rr(53) });
+    ops.push(Opcode::GetGlobal { dst: rr(14), global: RefGlobal(eval_nl_g) });
+    ops.push(Opcode::Call2 { dst: rr(53), fun: RefFun(str_add), arg0: rr(53), arg1: rr(14) });
+    ops.push(Opcode::Field { dst: r_out, obj: r_sock2, field: RefField(out_field) });
+    ops.push(Opcode::Null { dst: rr(15) });
+    ops.push(Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: rr(53), arg2: rr(15) });
+    ops.push(Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out });
+    let idx_j_after = ops.len(); // = L_ORIG (n)
+    if let Opcode::JNotEq  { offset, .. } = &mut ops[idx_jne_u]  { *offset = idx_u_after as i32 - idx_jne_u as i32 - 1; }
+    if let Opcode::JNotEq  { offset, .. } = &mut ops[idx_jne_j]  { *offset = idx_j_after as i32 - idx_jne_j as i32 - 1; }
+    if let Opcode::JSLt    { offset, .. } = &mut ops[idx_u_jneg] { *offset = idx_u_done as i32 - idx_u_jneg as i32 - 1; }
+    if let Opcode::JEq     { offset, .. } = &mut ops[idx_u_jnl]  { *offset = idx_u_done as i32 - idx_u_jnl as i32 - 1; }
+    if let Opcode::JSLt    { offset, .. } = &mut ops[idx_u_jlt0] { *offset = idx_u_loop as i32 - idx_u_jlt0 as i32 - 1; }
+    if let Opcode::JSGt    { offset, .. } = &mut ops[idx_u_jgt9] { *offset = idx_u_loop as i32 - idx_u_jgt9 as i32 - 1; }
+    if let Opcode::JAlways { offset, .. } = &mut ops[idx_u_jback]{ *offset = idx_u_loop as i32 - idx_u_jback as i32 - 1; }
+    let _ = idx_u_check;
     if let Opcode::JSLt    { offset, .. } = &mut ops[idx_i_jneg] { *offset = idx_i_done as i32 - idx_i_jneg as i32 - 1; }
     if let Opcode::JEq     { offset, .. } = &mut ops[idx_i_jnl]  { *offset = idx_i_done as i32 - idx_i_jnl as i32 - 1; }
     if let Opcode::JSLt    { offset, .. } = &mut ops[idx_i_jlt0] { *offset = idx_i_loop as i32 - idx_i_jlt0 as i32 - 1; }
@@ -4687,6 +5390,22 @@ fn connect_edit(
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnull_elem] { *offset = idx_t_nomatch as i32 - idx_t_jnull_elem as i32 - 1; }
     if let Opcode::JNull { offset, .. } = &mut ops[idx_t_jnull_name] { *offset = idx_t_nomatch as i32 - idx_t_jnull_name as i32 - 1; }
     if let Opcode::JAlways { offset, .. } = &mut ops[idx_t_jdone] { *offset = n - idx_t_jdone as i32 - 1; }
+    // ---- the step multiplier, AT L_ORIG so every path through the dispatch reaches it: up to
+    // seven extra runs of the engine's own per-frame update, each behind its own forward test of
+    // g_turbo (unrolled: an injected counted loop is the shape that has corrupted its counter
+    // here before). The tick's own run follows as the original body. ----
+    let tb = add_regs(f, &[3, 3, 0]);
+    let (t_cur, t_k, t_void) = (Reg(tb), Reg(tb + 1), Reg(tb + 2));
+    let mut turbo_jumps: Vec<usize> = Vec::new();
+    for k_idx in turbo_k_idx {
+        ops.push(Opcode::GetGlobal { dst: t_cur, global: RefGlobal(g_turbo) });
+        ops.push(Opcode::Int { dst: t_k, ptr: RefInt(k_idx) });
+        turbo_jumps.push(ops.len());
+        ops.push(Opcode::JSLte { a: t_cur, b: t_k, offset: 0 });            // turbo <= k -> skip
+        ops.push(Opcode::Call2 { dst: t_void, fun: RefFun(core_update_fx), arg0: Reg(0), arg1: Reg(1) });
+        let after = ops.len();
+        if let Opcode::JSLte { offset, .. } = &mut ops[*turbo_jumps.last().unwrap()] { *offset = after as i32 - *turbo_jumps.last().unwrap() as i32 - 1; }
+    }
     insert_ops_front(f, ops);
     eprintln!("connect_edit: injected {n} ops into update@{update_fx} (console+startMatch dispatch); port={port}");
 
@@ -4757,6 +5476,10 @@ fn connect_edit(
         }
     }
     eprintln!("boot fns (by name): launchScreen={launchscreen_fx} onLoaded={onloaded_fx}");
+    // The fast boot stays fast for EVERY character. Only the part that cannot survive a base-roster
+    // fighter stands down: the required-load filter, which drops public::/custom:: content, and a
+    // base fighter IS that content. Skipping the title and hooking READY early cost nothing either
+    // way, so they stay on.
     if headless {
         let lfi = function_index_by_findex(code, launchscreen_fx)
             .ok_or_else(|| anyhow::anyhow!("launchScreen fn not found"))?;
@@ -4783,8 +5506,20 @@ fn connect_edit(
     // stage/assist (also public::) are loaded on demand by the `s` handler from its args
     // (getResourceByID + fetchThreaded), so this is generic — no hardcoded resource names.
     // Headless-only: a normal boot needs the full content set for the menus/picker.
+    // ...but NOT when the launch character is itself base content. the filter drops every
+    // public:: resource, and a built-in fighter IS one, so it was being skipped at boot and then
+    // asked for at match start: null, and the engine dies preloading. a custom character is
+    // unaffected -- it lives in private:: and is loaded by its own path.
+    // the ONE shortcut a base fighter cannot survive: it drops the very content the character is
     if headless {
-        inject_required_filter(code)?;
+        // A base-roster fighter no longer costs the whole filter: its own resource is spared by
+        // name and every other public:: one is still skipped, so a built-in character boots at
+        // the same speed a custom one does.
+        let keep = (!char_is_custom).then(|| format!("public::{}", char_name.as_deref().unwrap_or_default()));
+        inject_required_filter(code, keep.as_deref())?;
+        if let Some(k) = &keep {
+            eprintln!("connect_edit: base-roster character, sparing {k} from the required-resource filter");
+        }
     }
     // Animation/state telemetry: hook Character.toState's exit so each completed state
     // transition emits "ANIM:<state>" over the harness socket (event-driven — fires exactly
@@ -4799,7 +5534,7 @@ fn connect_edit(
     // same quantity by the same mechanism and the host run-length-encodes either one.
     inject_frame_telemetry(code, g_sock, out_field, write_str, flush,
         get_state_name, str_add, frame_prefix_g, nl_g, sock_t, out_t, str_t, enc_t,
-        char_anim_f, anim_name_f, anim_t, bar_g, entity_getx, entity_gety, std_string)?;
+        char_anim_f, anim_name_f, anim_t, bar_g, entity_getx, entity_gety, anim_cur_f, std_string)?;
     // Engine-side script-error surfacing. The engine runs every character/assist/mode/stage
     // script through ApiScript.interpretScript, which builds a rich error (Std.string + line
     // via posInfos + origin) and calls Tildebugger.error — but ONLY when ApiUtilities.
@@ -4808,6 +5543,9 @@ fn connect_edit(
     // engine's own error path fires in the in-game console. ON by default; the GUI checkbox
     // (or PEPTIDE_ENGINE_LOGGING=0) opts out. Non-fatal: a symbol drift just skips the feature.
     if std::env::var("PEPTIDE_ENGINE_LOGGING").map(|v| v != "0").unwrap_or(true) {
+        if let Err(e) = inject_offline_client(code) {
+            eprintln!("inject_offline_client: skipped ({e}); the engine will need its storefront");
+        }
         if let Err(e) = inject_logging_override(code) {
             eprintln!("inject_logging_override: skipped ({e})");
         }
@@ -4822,6 +5560,20 @@ fn connect_edit(
             code, g_sock, out_field, write_str, flush, str_add, nl_g, sock_t, out_t, str_t, enc_t,
         ) {
             eprintln!("inject_error_socket_mirror: skipped ({e})");
+        }
+        // The same leg for what a script SAYS, not just what goes wrong with it: a converted
+        // script's own logging was reaching the in-game console and nothing else.
+        if let Err(e) = inject_log_socket_mirror(
+            code, g_sock, out_field, write_str, flush, str_add, nl_g, sock_t, out_t, str_t, enc_t,
+        ) {
+            eprintln!("inject_log_socket_mirror: skipped ({e})");
+        }
+        // A content mistake that ENDS THE MATCH is the worst kind to debug, so the guard turns
+        // one into a reported, survivable one. See `inject_animation_guard`.
+        if let Err(e) = inject_animation_guard(
+            code, g_sock, out_field, write_str, flush, str_add, nl_g, sock_t, out_t, str_t, enc_t,
+        ) {
+            eprintln!("inject_animation_guard: skipped ({e})");
         }
     }
     // Crash diagnostics, split per the "keep logic OUT of bytecode" convention
@@ -5017,7 +5769,7 @@ fn inject_frame_telemetry(
     flush: usize, get_state_name: usize, str_add: usize, frame_prefix_g: usize, nl_g: usize,
     sock_t: usize, out_t: usize, str_t: usize, enc_t: usize,
     char_anim_f: usize, anim_name_f: usize, anim_t: usize, bar_g: usize,
-    entity_getx: usize, entity_gety: usize, std_string: usize,
+    entity_getx: usize, entity_gety: usize, anim_cur_f: usize, std_string: usize,
 ) -> anyhow::Result<()> {
     use hlbc::types::{RefField, RefFun, RefGlobal, RefInt};
     let upd = require_fn(code, "updateGameInput", Some("pxf.entity.Character"))?;
@@ -5032,11 +5784,11 @@ fn inject_frame_telemetry(
     // already reports `<label>|<frame>|<x>|<y>`; without the same here, per-frame displacement
     // can only be measured on one engine, and the speed/scale multipliers can't be derived from
     // observation at all -- which is what pushed measurement back onto wall-clock polling.
-    let base = add_regs(f, &[3, 3, sock_t, out_t, str_t, str_t, enc_t, 0, anim_t, str_t, 6, 9, str_t]);
+    let base = add_regs(f, &[3, 3, sock_t, out_t, str_t, str_t, enc_t, 0, anim_t, str_t, 6, 9, str_t, 3]);
     let (r_team, r_zero, r_sock, r_out, r_name, r_msg, r_null, r_ret, r_anim, r_aname) =
         (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4),
          Reg(base + 5), Reg(base + 6), Reg(base + 7), Reg(base + 8), Reg(base + 9));
-    let (r_f, r_dyn, r_num) = (Reg(base + 10), Reg(base + 11), Reg(base + 12));
+    let (r_f, r_dyn, r_num, r_i) = (Reg(base + 10), Reg(base + 11), Reg(base + 12), Reg(base + 13));
     let mut ops = vec![
         Opcode::Call1 { dst: r_team, fun: RefFun(getteam), arg0: Reg(0) },      // 0
         Opcode::Int { dst: r_zero, ptr: RefInt(team_c) },                       // 1
@@ -5074,6 +5826,14 @@ fn inject_frame_telemetry(
         Opcode::ToDyn { dst: r_dyn, src: r_f },
         Opcode::Call1 { dst: r_num, fun: RefFun(std_string), arg0: r_dyn },
         Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: r_num },
+        // |<frame>: the animation frame the fighter is on, the SSF2 record's second column,
+        // so a move's label jumps line up across engines and not only its run lengths
+        Opcode::GetGlobal { dst: r_name, global: RefGlobal(bar_g) },
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: r_name },
+        Opcode::Field { dst: r_i, obj: r_anim, field: RefField(anim_cur_f) },
+        Opcode::ToDyn { dst: r_dyn, src: r_i },
+        Opcode::Call1 { dst: r_num, fun: RefFun(std_string), arg0: r_dyn },
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: r_num },
         Opcode::GetGlobal { dst: r_name, global: RefGlobal(nl_g) },             // 18
         Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: r_name }, // 19
         Opcode::Null { dst: r_null },                                           // 20
@@ -5099,7 +5859,7 @@ fn inject_frame_telemetry(
 /// not-required, op121 loop-back); we adjust exactly those by ±N. All build-specific op
 /// indices are asserted before patching so a layout change fails loudly instead of
 /// silently corrupting control flow.
-fn inject_required_filter(code: &mut Bytecode) -> anyhow::Result<()> {
+fn inject_required_filter(code: &mut Bytecode, keep: Option<&str>) -> anyhow::Result<()> {
     use hlbc::types::{RefFun, RefGlobal, RefInt};
     let getfqid = require_fn(code, "getFullyQualifiedResourceId", Some("pxf.io.AbstractResource"))?;
     let indexof = require_fn(code, "indexOf", Some("String"))?;
@@ -5123,15 +5883,31 @@ fn inject_required_filter(code: &mut Bytecode) -> anyhow::Result<()> {
     // are ALSO public:: but the `s` handler loads them on demand (getResourceByID +
     // fetchThreaded), so we can skip the entire public:: namespace generically here — no
     // hardcoded resource names. The char is private:: (loaded by the self-bootstrap).
-    let filt = vec![
+    // ONE public:: resource may be spared: the base-roster fighter the launch actually names.
+    // Without this a base fighter has to give up the whole filter -- the boot then loads every
+    // built-in character's renders to get the one it wants, which is the slow boot back again.
+    let keep_g = keep.map(|k| add_string_const(code, k));
+    let mut filt = vec![
         Opcode::Call1 { dst: Reg(13), fun: RefFun(getfqid), arg0: Reg(9) },                          // 22: fqid (reg9 = loop resource)
+    ];
+    if let Some(kg) = keep_g {
+        // starts with the kept id -> jump PAST the public:: skip, so it is queued as normal
+        filt.extend([
+            Opcode::GetGlobal { dst: r_str, global: RefGlobal(kg) },
+            Opcode::Null { dst: r_null },
+            Opcode::Call3 { dst: r_idx, fun: RefFun(indexof), arg0: Reg(13), arg1: r_str, arg2: r_null },
+            Opcode::Int { dst: r_zero, ptr: RefInt(zero_c) },
+            Opcode::JEq { a: r_idx, b: r_zero, offset: 5 },   // past the four public:: ops + its JEq
+        ]);
+    }
+    filt.extend([
         Opcode::GetGlobal { dst: r_str, global: RefGlobal(pub_g) },                                   // 23
         Opcode::Null { dst: r_null },                                                                 // 24
         Opcode::Call3 { dst: r_idx, fun: RefFun(indexof), arg0: Reg(13), arg1: r_str, arg2: r_null }, // 25
         Opcode::Int { dst: r_zero, ptr: RefInt(zero_c) },                                             // 26
         Opcode::JEq { a: r_idx, b: r_zero, offset: 99 },                                              // 27: indexOf==0 (starts public::) -> loop-tail(127)
-    ];
-    let n = filt.len() as i32; // 6
+    ]);
+    let n = filt.len() as i32;
     let f = &mut code.functions[qfi];
     // Assert + adjust the three jumps that span the insertion point (op22).
     match &mut f.ops[6]   { Opcode::JSGte  { offset, .. } => *offset += n, o => anyhow::bail!("qrr op6 not JSGte: {o:?}") }
@@ -5284,6 +6060,37 @@ fn inject_input_override(code: &mut Bytecode, g_inject_held: usize) -> anyhow::R
 /// path) so its catch reaches the log branch. Only this one-shot path is gated; the
 /// per-frame character paths (`interpretScriptFunction`, `HaxeScript.runFrameScripts`) call
 /// `Tildebugger.error` unconditionally. See `inject_error_socket_mirror` for the socket leg.
+/// Let the engine come up without its storefront. The client init asks the storefront to
+/// restart the game if it was not launched through it, and exits if so; then asks it to
+/// connect, and throws if it cannot. A test harness has no use for either: the exit becomes
+/// nothing and the throw becomes a plain return, so a boot with the storefront closed (or
+/// asking its user to sign in again, which is the same thing to the engine) reaches the match
+/// with the online features simply inactive. `PEPTIDE_NEED_STEAM=1` leaves the engine as it was.
+fn inject_offline_client(code: &mut Bytecode) -> anyhow::Result<()> {
+    if std::env::var("PEPTIDE_NEED_STEAM").is_ok() { return Ok(()); }
+    let init = require_fn(code, "init", Some("pxf.client.$ClientApi"))?;
+    let sys_exit = find_native(code, "sys_exit")
+        .ok_or_else(|| anyhow::anyhow!("the exit native was not found"))?;
+    let fidx = function_index_by_findex(code, init)
+        .ok_or_else(|| anyhow::anyhow!("client init@{init} not found"))?;
+    let f = &mut code.functions[fidx];
+    let mut exits = 0;
+    let mut throws = 0;
+    let last_throw = f.ops.iter().rposition(|op| matches!(op, Opcode::Throw { .. }));
+    for (i, op) in f.ops.iter_mut().enumerate() {
+        match op {
+            Opcode::Call1 { fun, .. } if fun.0 == sys_exit => { *op = Opcode::Nop; exits += 1; }
+            Opcode::Throw { .. } if Some(i) == last_throw => { *op = Opcode::Ret { ret: Reg(0) }; throws += 1; }
+            _ => {}
+        }
+    }
+    if exits == 0 || throws == 0 {
+        anyhow::bail!("client init@{init}: expected an exit and a throw to disarm, found {exits}/{throws}");
+    }
+    eprintln!("inject_offline_client: the engine boots without its storefront (exit and throw disarmed in init@{init})");
+    Ok(())
+}
+
 fn inject_logging_override(code: &mut Bytecode) -> anyhow::Result<()> {
     let interp_script = require_fn(code, "interpretScript", Some("pxf.api.$ApiScript"))?;
     let apiutil_t = find_type(code, "pxf.api.$ApiUtilities")
@@ -5365,6 +6172,112 @@ fn inject_console_display_override(code: &mut Bytecode) -> anyhow::Result<()> {
 /// the same errors keep going to the in-game Tildebugger console as before. `reg0` is the
 /// message String. Guarded by a g_sock null-check (no-op before the harness connects).
 #[allow(clippy::too_many_arguments)]
+/// Refuse to play an animation the entity does not have, and SAY SO, instead of crashing.
+///
+/// Asked for an animation it does not carry, the engine leaves the object with NO animation and
+/// dies on the next frame the camera bounds it -- a null access deep in GameCamera, with nothing
+/// said about which script asked for what. The match just ends.
+///
+/// That is a content mistake, and content mistakes are what a mod developer spends the day
+/// making: a renamed animation, a label that became its own animation, a typo. Peptide exists to
+/// make them findable, so the patched engine checks the name first, reports it down the same
+/// channel every other script error uses, and leaves the object on the animation it was already
+/// playing. The move looks wrong, which is a bug you can see and fix, rather than a crash.
+///
+/// Prepended to `EntityApi::playAnimation`, which is the one door every script goes through.
+/// `hasAnimation` is the engine's own answer to the question, so the check agrees with the play by
+/// construction. Reg 5 is the function's own Bool scratch, written before the body first uses it.
+fn inject_animation_guard(
+    code: &mut Bytecode, g_sock: usize, out_field: usize, write_str: usize, flush: usize,
+    str_add: usize, nl_g: usize, sock_t: usize, out_t: usize, str_t: usize, enc_t: usize,
+) -> anyhow::Result<()> {
+    use hlbc::types::{RefField, RefFun, RefGlobal};
+    let play = require_fn(code, "playAnimation", Some("pxf.api.EntityApi"))?;
+    let has = require_fn(code, "hasAnimation", Some("pxf.api.EntityApi"))?;
+    let fidx = function_index_by_findex(code, play)
+        .ok_or_else(|| anyhow::anyhow!("EntityApi.playAnimation@{play} not found"))?;
+    let prefix_g = add_string_const(code,
+        "SCRIPTERR: playAnimation: this entity has no animation named ");
+    let f = &mut code.functions[fidx];
+    let (this, name, r_ok) = (Reg(0), Reg(1), Reg(5)); // reg5: the function's own Bool scratch
+    let base = add_regs(f, &[sock_t, out_t, str_t, str_t, enc_t, 0]);
+    let (r_sock, r_out, r_nl, r_msg, r_null, r_ret) =
+        (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4), Reg(base + 5));
+    let mut ops = vec![
+        Opcode::Call2 { dst: r_ok, fun: RefFun(has), arg0: this, arg1: name },  // 0
+        Opcode::JTrue { cond: r_ok, offset: 0 },                                // 1 -> play it
+        Opcode::GetGlobal { dst: r_sock, global: RefGlobal(g_sock) },           // 2
+        Opcode::JNull { reg: r_sock, offset: 0 },                               // 3 -> nobody listening
+        Opcode::Field { dst: r_out, obj: r_sock, field: RefField(out_field) },  // 4
+        Opcode::GetGlobal { dst: r_msg, global: RefGlobal(prefix_g) },          // 5
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: name }, // 6
+        Opcode::GetGlobal { dst: r_nl, global: RefGlobal(nl_g) },               // 7
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: r_nl }, // 8
+        Opcode::Null { dst: r_null },                                           // 9
+        Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: r_msg, arg2: r_null }, // 10
+        Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out },          // 11
+        // leave the entity on whatever it was already playing
+        Opcode::Ret { ret: Reg(2) },                                            // 12
+    ];
+    let ret_at = 12i32;
+    let after = ops.len() as i32; // first original op
+    if let Opcode::JTrue { offset, .. } = &mut ops[1] { *offset = after - 1 - 1; }
+    if let Opcode::JNull { offset, .. } = &mut ops[3] { *offset = ret_at - 3 - 1; }
+    insert_ops_front(f, ops);
+    eprintln!(
+        "inject_animation_guard: playAnimation@{play} now checks hasAnimation@{has} first — an \
+         animation the entity does not have is reported and skipped instead of crashing the match"
+    );
+    Ok(())
+}
+
+/// Mirror what a script SAYS onto the harness socket as a `SCRIPTLOG:` line.
+///
+/// A converted script logs to say what it is doing -- "Telly Vision initialized" -- and that
+/// went to the in-game console and nowhere else. From outside the game there was no way to
+/// see it, which is the difference between debugging a projectile and guessing at one: a
+/// probe put inside one to find out whether its update runs came back silent, and silence
+/// there means nothing at all, because the log was never going to arrive either way.
+///
+/// Same shape as the error mirror above and the same chokepoint discipline: one front
+/// insertion on the single function every log goes through, guarded on the socket being
+/// connected, and the in-game console still gets its copy.
+fn inject_log_socket_mirror(
+    code: &mut Bytecode, g_sock: usize, out_field: usize, write_str: usize, flush: usize,
+    str_add: usize, nl_g: usize, sock_t: usize, out_t: usize, str_t: usize, enc_t: usize,
+) -> anyhow::Result<()> {
+    use hlbc::types::{RefField, RefFun, RefGlobal};
+    let tilde_log = require_fn(code, "log", Some("pxf.core.$Tildebugger"))?;
+    let fidx = function_index_by_findex(code, tilde_log)
+        .ok_or_else(|| anyhow::anyhow!("log@{tilde_log} not found"))?;
+    let scriptlog_g = add_string_const(code, "SCRIPTLOG: ");
+    let f = &mut code.functions[fidx];
+    let msg_reg = Reg(0);
+    let base = add_regs(f, &[sock_t, out_t, str_t, str_t, enc_t, 0]);
+    let (r_sock, r_out, r_name, r_msg, r_null, r_ret) =
+        (Reg(base), Reg(base + 1), Reg(base + 2), Reg(base + 3), Reg(base + 4), Reg(base + 5));
+    let mut ops = vec![
+        Opcode::GetGlobal { dst: r_sock, global: RefGlobal(g_sock) },
+        Opcode::JNull { reg: r_sock, offset: 0 },
+        Opcode::Field { dst: r_out, obj: r_sock, field: RefField(out_field) },
+        Opcode::GetGlobal { dst: r_msg, global: RefGlobal(scriptlog_g) },
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: msg_reg },
+        Opcode::GetGlobal { dst: r_name, global: RefGlobal(nl_g) },
+        Opcode::Call2 { dst: r_msg, fun: RefFun(str_add), arg0: r_msg, arg1: r_name },
+        Opcode::Null { dst: r_null },
+        Opcode::Call3 { dst: r_ret, fun: RefFun(write_str), arg0: r_out, arg1: r_msg, arg2: r_null },
+        Opcode::Call1 { dst: r_ret, fun: RefFun(flush), arg0: r_out },
+    ];
+    let skip = ops.len() as i32;
+    if let Opcode::JNull { offset, .. } = &mut ops[1] { *offset = skip - 1 - 1; }
+    insert_ops_front(f, ops);
+    eprintln!(
+        "inject_log_socket_mirror: SCRIPTLOG socket mirror prepended; what a script says now \
+         reaches the harness as well as the in-game console"
+    );
+    Ok(())
+}
+
 fn inject_error_socket_mirror(
     code: &mut Bytecode, g_sock: usize, out_field: usize, write_str: usize, flush: usize,
     str_add: usize, nl_g: usize, sock_t: usize, out_t: usize, str_t: usize, enc_t: usize,

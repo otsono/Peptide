@@ -71,7 +71,20 @@ pub struct SpawnedActor {
     /// params, not a generic per-kind default) and the `getOwnStats` scalars (width/height/speeds).
     /// Empty when the class has neither getter.
     pub attack_hitboxes: Vec<std::collections::BTreeMap<String, f64>>,
+    /// The same boxes, under the animation the class declares them for. Empty when the class states
+    /// its hit without naming an animation.
+    pub attack_by_anim: std::collections::BTreeMap<String, Vec<std::collections::BTreeMap<String, f64>>>,
+    /// How often the class says each of those hits comes round again (`refreshRate`).
+    pub attack_rates: std::collections::BTreeMap<String, f64>,
     pub own_stats: std::collections::BTreeMap<String, f64>,
+    /// The yes/no declarations from the same place: whether fighters pass through it, whether a
+    /// hit sends it flying. The source saying how the object behaves.
+    pub own_flags: std::collections::BTreeMap<String, bool>,
+    /// The projectiles the class declares (`getProjectileStats`), by the name it fires them under.
+    pub projectiles: std::collections::BTreeMap<String, crate::abc_parser::ProjectileData>,
+    /// The library clip the class names for itself (`getOwnStats().linkage_id`) -- the class saying
+    /// which art it is, so its clip and collision box are found from what it declares.
+    pub linkage_id: Option<String>,
     /// Animation labels the class plays via `forceAttack("<label>")` (Thwomp: entrance/idle/fall;
     /// HyruleTornado: stand) — the code-referenced handle to its art clip (the clip carrying those
     /// frame labels), so the art is found by what the script animates, not a library keyword match.
@@ -86,6 +99,9 @@ pub struct SpawnedActor {
     pub reconstructed_script: Option<String>,
     /// The engine-spawned faller cycle (delays/period/columns) stepped from the enemy + stage code.
     pub faller: Option<crate::abc_parser::FallerCycle>,
+    /// Which shared package this class was found in, when the stage package does not define it.
+    /// The art it names lives there too, so the index is carried until the clip is read.
+    pub external_pkg: Option<usize>,
 }
 
 /// What the AS3 says about a stage: the authoritative plane map + the spawned actors.
@@ -105,6 +121,12 @@ pub struct StageAbcModel {
     /// converter re-implementing each stage's cadence from constants it stepped out, which is a
     /// guess dressed as data.
     pub reconstructed_script: Option<String>,
+    /// Classes the stage's own code makes objects of that this package does not define.
+    ///
+    /// The game keeps shared packages loaded alongside, so a stage can name a class it does not
+    /// carry and have it resolve. Read from the stage's own spawn calls, so it says nothing about
+    /// WHAT the class is -- only that the stage asked for one and the package cannot answer.
+    pub external_classes: Vec<String>,
 }
 
 /// the document class is the one extending `SSF2Stage`. (mirror of the character path's
@@ -142,8 +164,8 @@ pub fn extract_stage(abc: &AbcFile) -> Option<StageAbcModel> {
             Some(found) => found.base = go.base.clone(),
             None => v.actors.push(SpawnedActor {
                 class_name: go.class_name.clone(), base: go.base.clone(), x: None, y: None,
-                attack_hitboxes: Vec::new(), own_stats: Default::default(), anim_labels: Vec::new(),
-                behavior: Default::default(), reconstructed_script: None, faller: None }),
+                attack_hitboxes: Vec::new(), attack_by_anim: Default::default(), attack_rates: Default::default(), own_stats: Default::default(), own_flags: Default::default(), projectiles: Default::default(), linkage_id: None, anim_labels: Vec::new(),
+                behavior: Default::default(), reconstructed_script: None, faller: None, external_pkg: None }),
         }
     }
 
@@ -152,14 +174,130 @@ pub fn extract_stage(abc: &AbcFile) -> Option<StageAbcModel> {
     let mut actors = v.actors;
     for a in &mut actors {
         a.attack_hitboxes = crate::abc_parser::extract_attack_stats_for(abc, &a.class_name);
+        a.attack_by_anim = crate::abc_parser::extract_attack_stats_by_anim(abc, &a.class_name);
+        a.attack_rates = crate::abc_parser::extract_attack_rates_by_anim(abc, &a.class_name);
         a.own_stats = crate::abc_parser::extract_own_stats_for(abc, &a.class_name);
+        a.own_flags = crate::abc_parser::extract_own_flags_for(abc, &a.class_name);
+        a.projectiles = crate::abc_parser::extract_projectiles_for(abc, &a.class_name);
+        a.linkage_id = crate::abc_parser::extract_own_linkage_for(abc, &a.class_name);
         a.anim_labels = crate::abc_parser::extract_force_attack_labels(abc, &a.class_name);
         a.behavior = crate::abc_parser::extract_enemy_behavior(abc, &a.class_name);
-        a.reconstructed_script = crate::abc_parser::reconstruct_enemy_script(abc, &a.class_name);
+        // its projectiles' declared launch and offsets, live while its own spawns are rewritten;
+        // the launch is scaled at the spawn (the boundary pass runs before the spawn is built)
+        let _launch = crate::api_mappings::ProjectileLaunchGuard::from_declarations(&a.projectiles, false);
+        a.reconstructed_script = {
+            let _stage = crate::api_mappings::StageContentGuard::install();
+            crate::abc_parser::reconstruct_enemy_script(abc, &a.class_name)
+        };
+        if std::env::var("PEPTIDE_DUMP_RECON").is_ok() {
+            if let Some(src) = a.reconstructed_script.as_deref() {
+                eprintln!("[recon {}]\n{src}", a.class_name);
+            }
+        }
         a.faller = crate::abc_parser::extract_faller_cycle(abc, &a.class_name);
     }
-    let reconstructed_script = crate::abc_parser::reconstruct_class_script(abc, &class.name);
-    Some(StageAbcModel { planes: v.planes, actors, doc_class: class.name.clone(), reconstructed_script })
+    // this class runs AS the stage, so a request for the stage is a request for itself
+    let mut reconstructed_script = {
+        let _stage = crate::api_mappings::SelfIsStageGuard::install();
+        let _content = crate::api_mappings::StageContentGuard::install();
+        crate::abc_parser::reconstruct_class_script(abc, &class.name)
+    };
+    // A PLAIN CLASS THE STAGE BUILDS FOR ITSELF. Not a game object, not a hazard -- a helper it
+    // makes with `new X()` and then talks to. Nothing ported it, so the make came back with
+    // nothing and every call on it was refused: a target test builds its whole target set that
+    // way and asked it, once a frame, whether it was ready. The character port already turns
+    // such a class into a factory; the same reconstruction serves a stage. Which classes is not
+    // a question anyone has to answer -- the stage's own code says which ones it builds.
+    if let Some(src) = reconstructed_script.as_mut() {
+        let built: std::collections::BTreeSet<String> = regex::Regex::new(r"\bnew\s+([A-Za-z_]\w*)\s*\(")
+            .expect("new regex")
+            .captures_iter(src).map(|c| c[1].to_string()).collect();
+        let mut factories = String::new();
+        for name in &built {
+            if !abc.classes.iter().any(|k| k.name == *name) { continue }
+            // a helper runs inside the stage's script, so its reaches for "the stage" and through
+            // its planes are the stage's own (pokemon colosseum's stadium keeps the midground)
+            let factory = {
+                let _stage = crate::api_mappings::SelfIsStageGuard::install();
+                crate::abc_parser::reconstruct_class_as_factory(abc, name)
+            };
+            let Some(factory) = factory else { continue };
+            log::info!("class '{name}' the stage builds for itself, ported as a factory");
+            if std::env::var("PEPTIDE_DUMP_FACTORY").is_ok() { eprintln!("[factory {name}]\n{factory}"); }
+            factories.push_str(&factory);
+            factories.push('\n');
+            *src = src.replace(&format!("new {name}("), &format!("{name}__new("));
+        }
+        if !factories.is_empty() { *src = format!("{factories}\n{src}"); }
+    }
+    // A PROJECTILE ANY OF THE PACKAGE'S CODE FIRES BY ITS CLASS (`spawnProjectile(CharmanderFire,
+    // owner)` in a stance's frame script) ships like one a class declares: its own declarations are
+    // what it is, and it goes under its class's name, the name the code fires it by.
+    {
+        #[derive(Default)]
+        struct Fired { classes: std::collections::BTreeSet<String> }
+        impl crate::abc_parser::AbcVisitor for Fired {
+            fn on_getlex(&mut self, name: &str) -> Option<crate::abc_parser::StackVal> {
+                Some(crate::abc_parser::StackVal::Tag(format!("lex:{name}")))
+            }
+            fn on_callproperty(&mut self, method: &str, args: &[crate::abc_parser::StackVal], _r: &crate::abc_parser::StackVal) -> Option<crate::abc_parser::StackVal> {
+                if method == "spawnProjectile" {
+                    if let Some(crate::abc_parser::StackVal::Tag(t)) = args.first() {
+                        if let Some(c) = t.strip_prefix("lex:") { self.classes.insert(c.to_string()); }
+                    }
+                }
+                None
+            }
+        }
+        let mut fired = Fired::default();
+        for body in &abc.method_bodies { crate::abc_parser::scan_method(&body.bytecode, abc, &mut fired); }
+        for class in fired.classes.iter().filter(|c| abc.classes.iter().any(|k| k.name == **c)) {
+            if actors.iter().any(|a| a.projectiles.contains_key(class)) { continue }
+            let mut names = std::collections::BTreeMap::new();
+            if let Some(l) = crate::abc_parser::extract_own_linkage_for(abc, class) { names.insert("linkage_id".to_string(), l); }
+            if names.is_empty() { continue }
+            let pd = crate::abc_parser::ProjectileData {
+                stats: crate::abc_parser::extract_own_stats_for(abc, class),
+                flags: crate::abc_parser::extract_own_flags_for(abc, class),
+                names,
+                hitboxes: crate::abc_parser::extract_attack_stats_for(abc, class),
+            };
+            if let Some(a) = actors.first_mut() { a.projectiles.insert(class.clone(), pd); }
+        }
+    }
+    // What the stage asks for and this package cannot answer. The spawn call names the class, so
+    // the ask is read straight off the stage's own code.
+    let mut external_classes: Vec<String> = Vec::new();
+    if let Some(src) = reconstructed_script.as_deref() {
+        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let re = RE.get_or_init(|| regex::Regex::new(
+            r#"(?:spawnEnemy|spawnItem)\(\s*"?([A-Za-z_]\w*)"?\s*\)"#).expect("spawn regex"));
+        for c in re.captures_iter(src) {
+            let name = c[1].to_string();
+            if actors.iter().any(|a| a.class_name == name) { continue }
+            if abc.classes.iter().any(|k| k.name == name) { continue }
+            if external_classes.contains(&name) { continue }
+            external_classes.push(name);
+        }
+    }
+    // WHAT THIS STAGE IS MADE OF, said once per stage so the same question can be asked of all of
+    // them at once rather than read out of a tree by eye: how many objects it declares, how many
+    // of them carry their own code across, and whether the stage's own class did.
+    //
+    // The last count is what the stage NAMES and this file does not define. That is not a gap by
+    // itself -- a stage can ask for a class the game keeps loaded elsewhere, and those are looked
+    // for in the other packages further on -- so it is counted here as a question, not a loss.
+    {
+        let with_code = actors.iter().filter(|a| a.reconstructed_script.is_some()).count();
+        let borrowed = actors.iter().filter(|a| a.external_pkg.is_some()).count();
+        log::info!(
+            "stage audit: objects={} with-own-code={} borrowed-from-another-package={} \
+             stage-class-ported={} named-but-not-in-this-file={}",
+            actors.len(), with_code, borrowed,
+            reconstructed_script.is_some(), external_classes.len());
+    }
+    Some(StageAbcModel { planes: v.planes, actors, doc_class: class.name.clone(), reconstructed_script,
+        external_classes })
 }
 
 /// stack-sim visitor: tags plane-accessor results + getlex class names so the chained
@@ -184,13 +322,14 @@ impl AbcVisitor for StageVisitor {
             return Some(StackVal::Tag(format!("plane:{}", plane.code())));
         }
         // SSF2API.spawnEnemy(<Class>) -> a new actor; tag the result for the following setX/setY.
-        if method == "spawnEnemy" || method == "spawnProjectile" {
+        // (an item it spawns by class is one too: it runs its own class as an object)
+        if method == "spawnEnemy" || method == "spawnProjectile" || method == "spawnItem" {
             if let Some(StackVal::Tag(t)) = args.first() {
                 if let Some(class) = t.strip_prefix("lex:") {
                     let idx = self.actors.len();
                     self.actors.push(SpawnedActor { class_name: class.to_string(), base: String::new(), x: None, y: None,
-                        attack_hitboxes: Vec::new(), own_stats: std::collections::BTreeMap::new(), anim_labels: Vec::new(),
-                        behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, faller: None });
+                        attack_hitboxes: Vec::new(), attack_by_anim: Default::default(), attack_rates: Default::default(), own_stats: std::collections::BTreeMap::new(), own_flags: Default::default(), projectiles: Default::default(), linkage_id: None, anim_labels: Vec::new(),
+                        behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, faller: None, external_pkg: None });
                     return Some(StackVal::Tag(format!("actor:{idx}")));
                 }
             }

@@ -27,7 +27,7 @@ fn mn(abc: &Abc, idx: u32) -> String {
     abc.multiname_local(idx).unwrap_or_else(|| format!("mn#{idx}"))
 }
 
-fn body_for<'a>(abc: &'a Abc, method: u32) -> Option<&'a abc_codec::MethodBody> {
+fn body_for(abc: &Abc, method: u32) -> Option<&abc_codec::MethodBody> {
     abc.bodies.iter().find(|b| b.method == method)
 }
 
