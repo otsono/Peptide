@@ -1,6 +1,6 @@
 [package]
 name = "fra_pack"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "builds the package the engine loads from a project's library, held in memory"

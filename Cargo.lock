@@ -1506,7 +1506,7 @@ dependencies = [
 
 [[package]]
 name = "fra_pack"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "crc32fast",
@@ -3086,7 +3086,7 @@ checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 
 [[package]]
 name = "peptide"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -4135,7 +4135,7 @@ dependencies = [
 
 [[package]]
 name = "ssf2_converter"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "byteorder",
