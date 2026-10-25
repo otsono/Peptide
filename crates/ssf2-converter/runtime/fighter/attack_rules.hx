@@ -190,54 +190,49 @@ AttackRules.control = function(me) {
 };
 
 // the attack hits again every `refreshRate` of the source's frames while it lasts (the source's
-// engine refreshes it; this engine hits each fighter once an attack otherwise): bowser's up
-// throw hits seven times there. its code can change the rate as it plays. the source counts the
-// attack's frames only while the attacker is not frozen, refreshes once the attack has landed a
-// hit, on its Nth frame and every N after, before that frame's hits, and refreshes again only
-// after a frame the attacker is free and has not just refreshed: meta knight's drill and
-// jigglypuff's down air, refreshed every frame, land a hit, another the next frame, then one every
-// three as the freezes go (here, counting every frame, they landed one every two and held the
-// fighter inside them). counted here a source frame at a time, on its first engine frame
+// engine refreshes it; this engine hits each fighter once an attack otherwise): bowser's up throw
+// hits seven times there. the source counts from the attack's first landed hit, only on frames
+// the attacker is free, and refreshes at the rate's every multiple: n-1 free frames after that hit,
+// then every n. here an engine timer counts it, waiting out the attacker's freezes
+// (`pauseCondition`). at a rate of 1 the source also refreshes in the frame after its first hit,
+// inside the freeze (meta knight's drill and jigglypuff's down air land a second hit the frame after their
+// first): here that refresh comes as the hit lands. its code can change the rate as it plays.
 // a rate the source never refreshes on: none stated, -1, or 999 and up (an attack that hits each
-// fighter once): none of the refresh counting runs for it
+// fighter once)
 AttackRules.refreshes = function(r) { var n = Std.int(AS3.num(r)); return n > 0 && n < 999; };
+// every engine frame: a new attack starts with no refresh running; a rate its code changes restarts it
 AttackRules.refresh = function(me) {
-	var r = AS3.num(AttackRules.stat(me, "refreshRate"));
-	if (me.__refreshOf != me.__rulesBase) {
-		me.__refreshOf = me.__rulesBase;
-		me.__refreshAt = me.__fm.getCurrentFrame() - 1;
-		// the source's count takes a value only once the attack has landed a hit: an attack begins it
-		// at 1 when the one before had landed, and leaves it where that one stopped when it had not;
-		// it counts on from the hit (read frame by frame on the source: bandana dee's neutral special
-		// sits at 1 through its first four frames, lands, and refreshes on its fourth free frame after)
-		if (me.__refreshReady == true || me.__refreshCount == null) me.__refreshCount = 1;
-		me.__refreshReady = false;
-		me.__refreshDone = false;
-	}
-	me.__refreshAt++;
-	if (!AttackRules.refreshes(r)) return;
-	if (PeptideRuntime.frame % 2 != 1) return;
-	var frozen = Fighters.frozen(me) || (me.__frozenUntil != null && PeptideRuntime.frame <= me.__frozenUntil);
-	if (!frozen && me.__refreshReady == true) me.__refreshCount++;
-	var n = Std.int(r);
-	if (n > 0 && me.__refreshDone != true && me.__refreshReady == true && me.__refreshCount % n == 0) {
-		me.__refreshDone = true;
-		PeptideGameObject.reactivate(me);
-	} else if (!frozen) me.__refreshDone = false;
+	if (me.__refreshOf != me.__rulesBase) { me.__refreshOf = me.__rulesBase; AttackRules.stopRefresh(me); return; }
+	if (me.__refreshTimer == null) return;
+	var r = Std.int(AS3.num(AttackRules.stat(me, "refreshRate")));
+	if (r != me.__refreshRate) { AttackRules.stopRefresh(me); if (AttackRules.refreshes(r)) AttackRules.startRefresh(me, r, r); }
 };
-
-// a hit that freezes the attacker: the source still counts toward a refresh on the frame after, while
-// it is frozen, with the count where the hit left it, and the attacker's boxes still hit then. this
-// engine runs nothing of the fighter while it is frozen, so the refresh that frame comes as the hit
-// lands (meta knight's drill and jigglypuff's down air land a second hit the frame after their
-// first); the source frame the hit landed in is not hit again (Fighters, `__hitAt`)
-AttackRules.hitFrozen = function(me) {
-	if (me.__rulesBase == null || !AttackRules.refreshes(AttackRules.stat(me, "refreshRate"))) return;
-	var n = Std.int(AS3.num(AttackRules.stat(me, "refreshRate")));
-	if (n > 0 && me.__refreshDone != true && me.__refreshCount % n == 0) {
-		me.__refreshDone = true;
-		PeptideGameObject.reactivate(me);
-	}
+// a hit the attack landed (on a fighter, a shield, or one it holds)
+AttackRules.landed = function(me) {
+	if (me.__rulesBase == null) return;
+	var r = AS3.num(AttackRules.stat(me, "refreshRate"));
+	if (!AttackRules.refreshes(r)) return;
+	if (me.__refreshTimer != null) return;
+	var n = Std.int(r);
+	if (n == 1) PeptideGameObject.reactivate(me);
+	AttackRules.startRefresh(me, n, n > 1 ? n - 1 : 1);
+};
+AttackRules.startRefresh = function(me, n, firstIn) {
+	var fm = me.__fm;
+	// frozen: the engine's own freeze, the runtime's hold, or the source's freeze for the hit (its
+	// box's stated self-hitstop, where the engine's is shorter or none)
+	var paused = function() { return fm.getHitstop() > 0 || (me.__holdUntil != null && PeptideRuntime.frame <= me.__holdUntil) || (me.__frozenUntil != null && PeptideRuntime.frame <= me.__frozenUntil); };
+	var go = function(?t) { if (!fm.isDisposed() && me.__refreshTimer != null) PeptideGameObject.reactivate(me); };
+	me.__refreshRate = n;
+	me.__refreshTimer = fm.addTimer(2 * firstIn, 1, function(?t) {
+		go();
+		if (me.__refreshTimer != null && !fm.isDisposed()) me.__refreshTimer = fm.addTimer(2 * n, -1, go, { pauseCondition: paused });
+	}, { pauseCondition: paused });
+};
+AttackRules.stopRefresh = function(me) {
+	if (me.__refreshTimer != null && !me.__fm.isDisposed()) me.__fm.removeTimer(me.__refreshTimer);
+	me.__refreshTimer = null;
+	me.__refreshRate = null;
 };
 
 AttackRules.throwing = function(fm) {

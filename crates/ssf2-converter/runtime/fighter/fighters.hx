@@ -329,8 +329,8 @@ Fighters.begin = function(me) {
 	me.__fm.addEventListener(GameObjectEvent.HIT_DEALT, function(?e) {
 		var hs = e == null || e.data == null ? null : e.data.hitboxStats;
 		if (hs == null || hs.index == null) return;
-		// a hit lets the attack refresh (AttackRules.refresh)
-		me.__refreshReady = true;
+		// a hit lets the attack refresh
+		AttackRules.landed(me);
 		Attacks.freshDealt(me, e.data.foe);
 		// (before a throw lets go and keeps the launch the let-go clears)
 		Fighters.fixedForWeight(me, hs.index, e.data.foe);
@@ -361,16 +361,14 @@ Fighters.begin = function(me) {
 		// the attacker freezes the engine's own way (a frame later than the source's: accepted)
 		if (hs.selfHitstop != null && hs.selfHitstop >= 0 && me.__freezes == true) {
 			me.__freezes = false;
-			// the source frames the hit holds the attacker for (its engine frames, two to one): a
-			// refresh's count stands still through them (AttackRules.refresh), as the source's does
+			// the source frames the hit holds the attacker for (its engine frames, two to one)
 			me.__frozenUntil = PeptideRuntime.frame + hs.selfHitstop;
-			AttackRules.hitFrozen(me);
 		}
 		var was = me.__vars.get("__peptideHits");
 		var log = AS3.truthy(was) ? AS3.str(was) : "";
 		me.__vars.set("__peptideHits", log + (hs.index == 0 ? "attackBox" : "attackBox" + (hs.index + 1)) + ",");
 	}, { persistent: true });
-	me.__fm.addEventListener(GameObjectEvent.SHIELD_HIT_DEALT, function(?e) { me.__refreshReady = true; me.__freshAdd = null; }, { persistent: true });
+	me.__fm.addEventListener(GameObjectEvent.SHIELD_HIT_DEALT, function(?e) { AttackRules.landed(me); me.__freshAdd = null; }, { persistent: true });
 	me.__fm.addEventListener(GameObjectEvent.HITBOX_CONNECTED, function(?e) {
 		var hs = e.data.hitboxStats;
 		if (hs == null || hs.index == null || hs.index < 0) return;
@@ -448,7 +446,7 @@ Fighters.begin = function(me) {
 			// freezes the attacker for its own count as any hit does. the engine, told the hit is
 			// not one, freezes nothing, so the runtime holds it (pikachu's forward throw shocks the
 			// one it holds twice before it throws, each holding pikachu a frame in the source)
-			me.__refreshReady = true;
+			AttackRules.landed(me);
 			if (hs.selfHitstop != null && hs.selfHitstop > 0) {
 				me.__freezes = false;
 				// the frames it holds count from the one after the hit, and it is let go the frame
@@ -459,7 +457,6 @@ Fighters.begin = function(me) {
 				me.__fm.setXSpeed(0);
 				me.__fm.setYSpeed(0);
 				me.__frozenUntil = PeptideRuntime.frame + hs.selfHitstop;
-				AttackRules.hitFrozen(me);
 			}
 		}
 		// a box that says it reverses the one it hits turns that fighter around, and its launch

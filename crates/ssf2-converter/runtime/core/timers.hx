@@ -37,36 +37,21 @@ Timers.create = function(owner, frames, repeat, fn, ?opts, ?fromFrame) {
 		if (cond == null || AS3.truthy(PeptideRuntime.run(cond))) PeptideRuntime.run(fn);
 		PeptideRuntime.inTimer = was;
 	};
-	// the frames its object stood frozen by a hit do not count toward it: the source runs none of
+	// the frames its object stands frozen by a hit do not count toward it: the source runs none of
 	// that object while it is held still, its timers included (pac-man's side special refreshes on a
-	// two-frame timer and hit every three frames there, a frame of freeze after each hit; every two
-	// here). counted by the object's own runtime (PeptideRuntime.clockedUpdate); a timer that comes
-	// due owing frames waits them out first
-	// (kept on the record: a script's local function cannot call itself by its own name)
-	var frozenOf = function() { return key.__frozenFrames == null ? 0 : key.__frozenFrames; };
-	rec.armed = frozenOf();
-	rec.due = function(then) {
-		var owed = frozenOf() - rec.armed;
-		rec.armed = frozenOf();
-		if (owed > 0) {
-			rec.id = fm.addTimer(owed, 1, function(?t) { if (!fm.isDisposed() && rec.dead != true) rec.due(then); }, { persistent: keep });
-			return;
-		}
-		then();
+	// two-frame timer and hits every three frames there, a frame of freeze after each hit). the
+	// engine's timer waits them out itself (`pauseCondition`), its own freeze or the runtime's hold
+	var paused = function() {
+		return (fm.getHitstop != null && fm.getHitstop() > 0) || (key.__holdUntil != null && PeptideRuntime.frame <= key.__holdUntil);
 	};
-	// the timer that fires `left` more times (-1 forever) every whole period, each period armed as
-	// the last one fires (so the frames it owes push the rest back too); a timer that has fired its
-	// last is gone from the engine, and its record goes too
-	rec.repeat = function(delay, left) {
-		rec.id = fm.addTimer(delay, 1, function(?t) {
-			if (fm.isDisposed()) return;
-			rec.due(function() {
-				if (left == 1) Timers.drop(key, rec); else { rec.armed = frozenOf(); rec.repeat(2 * n, left < 0 ? -1 : left - 1); }
-				fire();
-			});
-		}, { persistent: keep });
+	// each time it fires: `left` more to go (-1 forever); the one that fires its last takes its record
+	var left = r;
+	var tick = function(?t) {
+		if (fm.isDisposed() || rec.dead == true) return;
+		if (left > 0) { left--; if (left == 0) Timers.drop(key, rec); }
+		fire();
 	};
-	var repeat = rec.repeat;
+	var every = function(times) { rec.id = fm.addTimer(2 * n, times, tick, { persistent: keep, pauseCondition: paused }); };
 	if (key.__timers == null) key.__timers = [];
 	// a fighter's timer the engine let go with the state it was made in is gone: its record goes
 	// too, or the list grows with every attack the fighter makes (mario's grew by eighteen in
@@ -82,19 +67,16 @@ Timers.create = function(owner, frames, repeat, fn, ?opts, ?fromFrame) {
 	// sooner, it reads what the script sets after making it (samus's moves); later, every tick
 	// after moves with it (captain falcon's kick ran three source frames short)
 	if (first == 0) {
-		if (r != 1) repeat(2 * n, r < 0 ? -1 : r - 1); else Timers.drop(key, rec);
-		PeptideRuntime.afterFrame.push(function() { if (!fm.isDisposed() && rec.dead != true) fire(); });
-	} else if (first == 2 * n || r == 1) {
-		repeat(first, r);
+		PeptideRuntime.afterFrame.push(tick);
+		if (r != 1) every(r < 0 ? -1 : r - 1);
+	} else if (first == 2 * n) {
+		every(r);
 	} else {
+		// a first wait of its own, then the whole period
 		rec.id = fm.addTimer(first, 1, function(?t) {
-			if (fm.isDisposed()) return;
-			rec.due(function() {
-				rec.armed = frozenOf();
-				rec.repeat(2 * n, r < 0 ? -1 : r - 1);
-				fire();
-			});
-		}, { persistent: keep });
+			tick();
+			if (left != 0 && rec.dead != true && !fm.isDisposed()) every(left);
+		}, { persistent: keep, pauseCondition: paused });
 	}
 };
 Timers.drop = function(owner, rec) {
