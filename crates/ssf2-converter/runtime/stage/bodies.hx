@@ -333,7 +333,7 @@ Bodies.begin = function(me) {
 	fm.addEventListener(GameObjectEvent.HIT_RECEIVED, function(?e) {
 		if (life.on != true || fm.isDisposed() || me.onHurt == null) return;
 		// one its class already listens with hears it there
-		if (Events.handled(me, PeptideEvent.ENEMY_HURT, me.onHurt).length > 0) return;
+		if (Events.handled(me, "enemyHurt", me.onHurt).length > 0) return;
 		// the source's event, its record under `data` as a listener gets it
 		PeptideRuntime.run(me.onHurt, { type: "enemyHurt", target: me, data: Events.record(me, e) });
 	}, { persistent: true });

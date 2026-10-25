@@ -160,4 +160,3 @@ Effects.animationOf = function(id) {
 	var p = PeptideRuntime.data.effects.get(AS3.str(id));
 	return p == null || p.length == 0 ? "active" : p[0].anim;
 };
-Effects.shake = function(n) { match.getCamera().shake(AS3.num(n)); };

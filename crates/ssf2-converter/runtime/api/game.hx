@@ -71,7 +71,7 @@ PeptideAPI.randomBetween = function(a, b) { return PeptideAPI.randomInteger(a, b
 PeptideAPI.getElapsedFrames = function() { return Std.int(PeptideRuntime.frame / 2); };
 // the match's clock, as the source asks it for the frames it has run
 PeptideAPI.getGameTimer = function() { return { getCurrentTime: function() { return Std.int(match.getElapsedFrames() / 2); } }; };
-PeptideAPI.shakeCamera = function(n) { Effects.shake(n); };
+PeptideAPI.shakeCamera = function(n) { match.getCamera().shake(AS3.num(n)); };
 PeptideAPI.camera = null;
 PeptideAPI.getCamera = function() {
 	if (PeptideAPI.camera == null) { var c = {}; PeptideCamera.build(c); c.__fm = match.getCamera(); PeptideAPI.camera = c; }

@@ -47,6 +47,9 @@ pub struct Runtime {
     /// (`inert.jsonc`)
     pub inert_calls: BTreeMap<String, BTreeSet<String>>,
     pub inert_values: BTreeSet<String>,
+    /// a runtime class's constants (`Class.NAME = literal;`, names in capitals), by `Class.NAME`:
+    /// content that reads one gets the value written in place, and the table stays out of its script
+    pub constants: BTreeMap<String, String>,
 }
 
 impl Runtime {
@@ -111,8 +114,15 @@ impl Runtime {
             let Ok(text) = std::fs::read_to_string(&p) else { continue };
             let rel = p.strip_prefix(dir).unwrap_or(&p).to_string_lossy().replace('\\', "/");
             rt.read_file(&text);
+            // a name written twice is not a constant
+            let re = crate::dyn_re(r#"(?m)^([A-Za-z_][A-Za-z0-9_]*\.[A-Z][A-Z0-9_]*) = ("[^"\\]*"|-?[0-9]+(?:\.[0-9]+)?|true|false);\s*$"#);
+            for c in re.captures_iter(&text) {
+                let k = c[1].to_string();
+                if rt.constants.insert(k.clone(), c[2].to_string()).is_some() { rt.constants.insert(k, String::new()); }
+            }
             rt.files.insert(rel, text);
         }
+        rt.constants.retain(|_, v| !v.is_empty());
         rt
     }
 

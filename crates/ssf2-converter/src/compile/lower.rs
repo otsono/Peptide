@@ -952,6 +952,10 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             if matches!(cls.as_str(), "Number" | "int" | "uint") && self.local_name(cls).is_none() && !self.content_member(cls) {
                 if let Some(v) = number_constant(cls, n) { return v }
             }
+            // a runtime class's constant (an event's name, a state's number): its value, in place
+            if self.local_name(cls).is_none() && !self.content_member(cls) {
+                if let Some(v) = self.pkg.runtime.constants.get(&format!("{cls}.{n}")) { return v.clone() }
+            }
         }
         let obj = self.expr_atom(o);
         // a listed call handed around as a value (a listener) when nothing in the runtime answers

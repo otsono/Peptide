@@ -362,7 +362,6 @@ PeptideCharacter.toGrabbing = function(me, ?e) {
 	if (!me.__fm.isOnFloor()) me.__fm.releaseAllCharacters(); else me.__fm.toState(CState.GRAB_HOLD);
 };
 // let go of by whoever holds it
-PeptideCharacter.release = function(me) { PeptideCharacter.grabRelease(me); };
 // ---- the match around it ----
 PeptideCharacter.getTeammates = function(me) {
 	var out = [];
@@ -508,7 +507,7 @@ PeptideTarget.build = function(me) {
 	me.__type = "SSF2Target";
 	// the game's own target: it stands until it is struck, then plays its stance's `break` and is
 	// gone once that has played (its state is what a stage's code asks of it)
-	me.__tstate = PeptideTState.IDLE;
+	me.__tstate = 0; // idle
 	// it hangs where it is put: no fall, no launch, and no end at the bounds
 	me.ownStats = function() { return AS3.object(["gravity", 0, "surviveDeathBounds", true, "canReceiveKnockback", false]); };
 	me.onHurt = function(?e) { PeptideTarget.strike(me); };
@@ -520,18 +519,18 @@ PeptideTarget.state = function(me, s) {
 	if (me.__fm != null && me.__fm.exports != null) me.__fm.exports.__tstate = s;
 };
 PeptideTarget.strike = function(me) {
-	if (me.__tstate != PeptideTState.IDLE) return;
-	PeptideTarget.state(me, PeptideTState.BROKEN);
+	if (me.__tstate != 0) return; // not idle
+	PeptideTarget.state(me, 1); // broken
 	var st = Bodies.stance(me);
 	if (st != null) st.gotoAndPlay("break");
 	Events.dispatch(me, "targetBroken");
 	Events.dispatch(PeptideAPI, "targetBroken", { target: me });
 };
 PeptideTarget.frame = function(me) {
-	if (me.__tstate != PeptideTState.BROKEN) return;
+	if (me.__tstate != 1) return; // not broken
 	var st = Bodies.stance(me);
 	if (st == null || st.currentLabel == "break") return;
-	PeptideTarget.state(me, PeptideTState.DEAD);
+	PeptideTarget.state(me, 2); // dead
 	Objects.destroy(me);
 };
 // the match's clock and its modes and menus are this engine's
