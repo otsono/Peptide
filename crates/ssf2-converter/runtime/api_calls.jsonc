@@ -8,7 +8,7 @@
 {
   // where it is and how it moves
   "getX": "{eng}.getX() / {size}",
-  "getSmashTimer": "Objects.smashTimer({eng})",
+  "getSmashTimer": "({eng}.pressedStrongAttack != null && {eng}.pressedStrongAttack() != -1 ? 0 : 99)",
   "getY": "{eng}.getY() / {size}",
   "setX": "{eng}.setX(AS3.num({0}) * {size})",
   "setY": "{eng}.setY(AS3.num({0}) * {size})",
@@ -99,8 +99,8 @@
   "getProjectileStat": "Projectiles.stat({recv}, {0})",
   "getEnemyStat": "{recv}.__stats == null ? null : Projectiles.stat({recv}, {0})",
   "createProjectile": "Projectiles.fire({recv}, {0}, {1}, {2}, {3}, {4})",
-  "createVfx": "Effects.attach({recv}, {0}, {1})",
-  "createVfxOverlay": "Effects.attach({recv}, {0}, {1})",
+  "createVfx": "Effects.attach({recv}, {0}, {1}, {used})",
+  "createVfxOverlay": "Effects.attach({recv}, {0}, {1}, {used})",
   "playSound": "Sounds.play({recv}, {0})",
   "stopSound": "Sounds.stop({0})",
   "shake": "match.getCamera().shake(AS3.num({0}))",

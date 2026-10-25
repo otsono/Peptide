@@ -331,7 +331,6 @@ Fighters.begin = function(me) {
 		if (hs == null || hs.index == null) return;
 		// a hit lets the attack refresh
 		AttackRules.landed(me);
-		Attacks.freshDealt(me, e.data.foe);
 		// (before a throw lets go and keeps the launch the let-go clears)
 		Fighters.fixedForWeight(me, hs.index, e.data.foe);
 		// the hit that throws lets go of the one it throws as it lands, launch and all: this engine
@@ -368,7 +367,7 @@ Fighters.begin = function(me) {
 		var log = AS3.truthy(was) ? AS3.str(was) : "";
 		me.__vars.set("__peptideHits", log + (hs.index == 0 ? "attackBox" : "attackBox" + (hs.index + 1)) + ",");
 	}, { persistent: true });
-	me.__fm.addEventListener(GameObjectEvent.SHIELD_HIT_DEALT, function(?e) { AttackRules.landed(me); me.__freshAdd = null; }, { persistent: true });
+	me.__fm.addEventListener(GameObjectEvent.SHIELD_HIT_DEALT, function(?e) { AttackRules.landed(me); }, { persistent: true });
 	me.__fm.addEventListener(GameObjectEvent.HITBOX_CONNECTED, function(?e) {
 		var hs = e.data.hitboxStats;
 		if (hs == null || hs.index == null || hs.index < 0) return;
@@ -425,10 +424,9 @@ Fighters.begin = function(me) {
 		// what this use of the move deals, by how fresh it is (Attacks.freshness), worked out at its
 		// first hit and kept for every hit it lands after
 		Attacks.useFresh(me);
-		// dealt on top once the hit has landed (HIT_DEALT): the source works the launch out from the
-		// move's own damage and deals the freshness on it after (mario's up tilt at 80% launched
-		// 2.7% too hard with the freshness in the damage the engine launches from)
-		me.__freshAdd = { foe: e.data.foe, add: hs.damage * (me.__fresh - 1) };
+		// in the hit's damage, so the launch is worked out from it too (the source launches from the
+		// move's own damage: a few percent harder here, accepted)
+		hs.damage = hs.damage * me.__fresh;
 		// a hit that freezes the attacker (HIT_DEALT counts its freeze toward a refresh)
 		if (hs.selfHitstop != null && hs.selfHitstop > 0 && hs.disabled != true) me.__freezes = true;
 		Hitboxes.poison(me, hs.index, e.data.foe);
@@ -440,8 +438,7 @@ Fighters.begin = function(me) {
 		if (isHeld && (effect == null || AS3.truthy(effect))) me.__releasedFoe = e.data.foe;
 		if (isHeld && effect != null && !AS3.truthy(effect)) {
 			hs.disabled = true;
-			e.data.foe.addDamage(hs.damage * me.__fresh);
-			me.__freshAdd = null;
+			e.data.foe.addDamage(hs.damage);
 			// still a hit the attack landed: it refreshes after it (AttackRules.refresh), and it
 			// freezes the attacker for its own count as any hit does. the engine, told the hit is
 			// not one, freezes nothing, so the runtime holds it (pikachu's forward throw shocks the
@@ -494,10 +491,6 @@ Fighters.begin = function(me) {
 	}, { persistent: true });
 	me.__fm.addEventListener(GameObjectEvent.HIT_RECEIVED, function(?e) {
 		var f = me.__fm;
-		// the freshness the hit's thrower deals on top (Attacks.freshDealt), taken here too: a
-		// projectile gone as it hits tells its thrower nothing (ness's pk flash paid 0.947)
-		var by = e == null || e.data == null || e.data.foe == null || e.data.foe.exports == null ? null : e.data.foe.exports.__source;
-		if (by != null && by.__freshAdd != null) Attacks.freshDealt(by, f);
 		// a hit aimed down at a standing fighter too weak for this engine to bounce keeps pointing
 		// into the floor here and slides the fighter along it; the source sends it up at the
 		// mirrored angle, its whole launch (lucario's jab, stated at 291 degrees, pops it up at 69)
@@ -596,89 +589,11 @@ Fighters.frame = function(me) {
 	Fighters.noteUsed(me);
 	// a throw its item asked for, from the item's own script
 	if (me.__fm.exports.__askToss == true) { me.__fm.exports.__askToss = null; Items.throwAsked(me); }
-	Fighters.squatFrame(me);
-	Fighters.smashInput(me);
 	AttackRules.frame(me);
 	Actions.frame(me);
 	Items.frame(me);
-	Fighters.smashFrame(me);
 };
 
-// attack pressed with a direction pressed just before it is a smash, as the source reads it: the
-// controls held no more than 3 of the source's frames before the press (forward) or 2 (up, down)
-// play the smash, longer the tilt. the count is of any control held, back to 0 only on a frame
-// none is: a way let go and pressed again is fresh, and up after a crouch's down is still a tilt
-// (measured on mario, bowser and kirby, from standing, walking and crouching). counted here in this
-// engine's frames, two a source frame
-Fighters.smashInput = function(me) {
-	var fm = me.__fm;
-	var h = fm.getHeldControls();
-	var p = fm.getPressedControls();
-	if (h == null || p == null) return;
-	// (rounded up: a state change can take the first engine frame of a hold before it is counted,
-	// kirby's up and mario's down read a frame short)
-	var before = me.__heldFor == null ? 0 : Std.int((me.__heldFor + 1) / 2);
-	var any = h.UP == true || h.DOWN == true || h.LEFT == true || h.RIGHT == true || h.ATTACK == true || h.SPECIAL == true;
-	me.__heldFor = any ? (me.__heldFor == null ? 0 : me.__heldFor) + 1 : 0;
-	if (p.ATTACK != true || h.SPECIAL == true || !fm.isOnFloor()) return;
-	var neutral = fm.inState(CState.STAND) || fm.inState(CState.STAND_TURN) || fm.inState(CState.WALK_IN) || fm.inState(CState.WALK_LOOP)
-		|| fm.inState(CState.WALK_OUT) || fm.inState(CState.CROUCH_IN) || fm.inState(CState.CROUCH_LOOP) || fm.inState(CState.CROUCH_OUT);
-	// (or the tilt the engine itself just started off this same press)
-	var tilt = fm.getCurrentFrame() <= 1 && (fm.inState(CState.TILT_FORWARD) || fm.inState(CState.TILT_UP) || fm.inState(CState.TILT_DOWN));
-	if (!neutral && !tilt) return;
-	var smash = null;
-	var right = fm.isFacingRight();
-	if (h.UP == true && before <= 2) smash = CState.STRONG_UP_IN;
-	else if (h.DOWN == true && before <= 2) smash = CState.STRONG_DOWN_IN;
-	else if ((right ? h.RIGHT == true : h.LEFT == true) && before <= 3) smash = CState.STRONG_FORWARD_IN;
-	// the way behind, as fresh, turns the fighter and smashes forward (measured: fox, marth and
-	// sheik turned into their forward smash for left and attack pressed together, facing right)
-	else if ((right ? h.LEFT == true : h.RIGHT == true) && before <= 3) {
-		if (right) fm.faceLeft(); else fm.faceRight();
-		smash = CState.STRONG_FORWARD_IN;
-	}
-	if (smash != null) fm.toState(smash);
-};
-
-// up and attack pressed while the fighter crouches to jump is its up smash, as the source plays it
-// (measured: mario and bowser play their up smash for up and attack pressed before the jump's last
-// grounded frame, which is where this engine's squat ends, and their up air from that frame on; any
-// other attack there still plays its aerial)
-Fighters.squatFrame = function(me) {
-	var fm = me.__fm;
-	if (!fm.inState(CState.JUMP_SQUAT) || !fm.isOnFloor()) return;
-	var p = fm.getPressedControls();
-	var h = fm.getHeldControls();
-	if (p == null || h == null || p.ATTACK != true || h.UP != true || h.SPECIAL == true) return;
-	fm.toState(CState.STRONG_UP_IN);
-};
-
-// how many frames the fighter's controls have been held, as the source counts it for telling a
-// flick from a hold (samus's side special fires its power missile off a fresh press, under 4):
-// back to 0 on a frame nothing is held but while landing or skidding, one more on any other, and
-// out of reach (99) once an attack ends or the fighter lands. kept on its exports, so code of
-// any object can read it (Objects.smashTimer)
-Fighters.smashFrame = function(me) {
-	var fm = me.__fm;
-	// run every source frame on every fighter: the engine's own held controls are read as they are
-	// (the source's BUTTON1 is special, BUTTON2 attack), and whether the animation is a landing is
-	// asked again only when the animation changes
-	var c = fm.getHeldControls();
-	var anim = fm.getAnimation();
-	if (anim != me.__smashAnim) {
-		me.__smashAnim = anim;
-		me.__smashLanding = PeptideRuntime.data.isLanding != null && PeptideRuntime.data.isLanding(anim) == true;
-	}
-	var landing = me.__smashLanding == true;
-	var atk = me.__rulesBase != null;
-	var t = fm.exports.__smashT == null ? 0 : fm.exports.__smashT;
-	if (me.__smashAtk == true && !atk) t = 99;
-	me.__smashAtk = atk;
-	var held = c != null && (c.UP == true || c.DOWN == true || c.LEFT == true || c.RIGHT == true || c.SPECIAL == true || c.ATTACK == true);
-	t = (!held && !landing && anim != "skid") ? 0 : t + 1;
-	if (landing) t = 99;
-	fm.exports.__smashT = t;
-};
 
 // the fighter's code changes one of its stats: kept for it to read back, and put on the engine.
 // the engine's stats were worked out from the source's by the conversion, so a new value moves

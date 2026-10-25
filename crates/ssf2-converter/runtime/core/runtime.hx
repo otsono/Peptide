@@ -489,13 +489,14 @@ PeptideRuntime.teardown = function(?fm) {
 // only finishes making the object (its held frame scripts ran as the update began); after that the
 // playheads move on
 PeptideRuntime.sourceFrame = function() {
-	if (PeptideAPI.camera != null) PeptideCamera.refresh(PeptideAPI.camera);
 	var me = PeptideRuntime.object;
 	// the kind's own rules count the engine's frames (a press shows for one of them): every one
 	PeptideRuntime.kind.frame(me);
 	// the source's code runs once a source frame, whole, on every other engine frame (the first
 	// update is one of them)
 	if (PeptideRuntime.frame % 2 == 0) return;
+	// the camera as the code reads it, once a source frame, before its code
+	if (PeptideAPI.camera != null) PeptideCamera.refresh(PeptideAPI.camera);
 	if (me.update != null) PeptideRuntime.run(me.update);
 	Events.dispatch(me, "gameTickEnd");
 	Events.dispatch(PeptideAPI, "gameTickEnd");

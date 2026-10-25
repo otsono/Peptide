@@ -35,6 +35,11 @@ pub struct ClassWriter<'p, 'a> {
     /// the code being written is a frame script's own (not a function it hands out): an API row's
     /// `{frame}` is `true` there
     in_frame: bool,
+    /// a statement's own call, whose result nothing takes (an API row's `{used}` is `false` there):
+    /// set by the statement, taken by its outermost call, and handed to the row it writes
+    top_unused: bool,
+    call_unused: bool,
+    used_override: Option<bool>,
     /// the landings the engine makes for this class's code
     pub landings: Vec<super::Landing>,
 }
@@ -67,7 +72,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         }
         let int_fields = whole_number_fields(pkg, class);
         ClassWriter { pkg, class, int_fields, problems: Vec::new(), unknown: BTreeSet::new(), scopes: Vec::new(), uniq: 0, supers_used, shapes: None,
-            detached: BTreeSet::new(), detached_text: BTreeMap::new(), jumps: None, landings: Vec::new(), in_frame: false }
+            detached: BTreeSet::new(), detached_text: BTreeMap::new(), jumps: None, landings: Vec::new(), in_frame: false, top_unused: false, call_unused: false, used_override: None }
     }
 
     fn problem(&mut self, p: impl Into<String>) { self.problems.push(p.into()) }
@@ -305,7 +310,12 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
                 if let Expr::Member(_, m) = &**callee { self.unknown.insert(format!("BitmapData.{m} (draws nothing here)")); }
                 String::new()
             }
-            Stmt::Expr(e) => format!("{t}{};\n", statement_text(self.expr(e))),
+            Stmt::Expr(e) => {
+                self.top_unused = matches!(e, Expr::Call(..));
+                let x = self.expr(e);
+                self.top_unused = false;
+                format!("{t}{};\n", statement_text(x))
+            }
             Stmt::Assign(p, v) => format!("{t}{};\n", self.assign(p, v)),
             Stmt::If(c, a, b) => {
                 let cond = self.cond(c);
@@ -1000,6 +1010,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
     /// an API call written as the Fraymakers call it is (`api_calls.jsonc`), when the member is
     /// listed and content has none by that name
     fn api_call(&mut self, recv: &str, m: &str, args: &[Expr]) -> Option<String> {
+        let used = !std::mem::replace(&mut self.call_unused, false);
         if !self.pkg.runtime.calls.contains_key(m) { return None }
         if let Some(t) = self.native_attack_stats(recv, m, args) { return Some(t) }
         // the source's autolink, where the conversion made it the engine's own: turning it on or
@@ -1095,6 +1106,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             return Some(format!("({{ var {r} = {recv}; {r}.{id} != null ? {r}.{id}({args}) : {t}; }})",
                 id = ident(m), args = a.join(", ")));
         }
+        self.used_override = Some(used);
         self.api_text(recv, m, &a)
     }
 
@@ -1229,7 +1241,8 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         let mut out = t.replace("{eng}", &format!("{r}.__fm")).replace("{recv}", &r)
             .replace("{size}", &scaling.size_multiplier.to_string())
             .replace("{speed}", &scaling.velocity_scale().to_string())
-            .replace("{frame}", if self.in_frame { "true" } else { "false" });
+            .replace("{frame}", if self.in_frame { "true" } else { "false" })
+            .replace("{used}", if self.used_override.take().unwrap_or(true) { "true" } else { "false" });
         // an argument used more than once is worked out once, like the receiver
         let mut binds: Vec<(String, String)> = Vec::new();
         if bind { binds.push((r.clone(), recv.to_string())); }
@@ -1263,6 +1276,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
 
     /// a call
     fn call(&mut self, callee: &Expr, args: &[Expr]) -> String {
+        self.call_unused = std::mem::replace(&mut self.top_unused, false);
         // the clip's own jump by label, while the engine shows this clip: the engine's own jump
         if let (Expr::Member(recv, m), [Expr::Str(label)]) = (callee, args) {
             if matches!(m.as_str(), "gotoAndPlay" | "gotoAndStop") && self.is_me(recv) {

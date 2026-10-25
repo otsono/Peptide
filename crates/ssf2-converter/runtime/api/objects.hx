@@ -386,11 +386,6 @@ Objects.face = function(fm, right) {
 	if (fm.getType() != EntityType.CHARACTER && fm.exports != null) fm.exports.__facing = right;
 	if (right) fm.faceRight(); else fm.faceLeft();
 };
-// the frames a fighter's controls have been held (Fighters.smashFrame); one never counted reads as
-// out of reach, as the source's does before anything is pressed
-Objects.smashTimer = function(fm) {
-	return fm == null || fm.exports == null || fm.exports.__smashT == null ? 99 : fm.exports.__smashT;
-};
 // a fighter's slowdown a source frame, in this engine's units: the animation's own where it states
 // one, the fighter's otherwise (the rules that slow a fighter in its attack pay it)
 Objects.slideStep = function(fm, ?air) {

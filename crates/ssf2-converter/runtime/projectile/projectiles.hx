@@ -191,7 +191,6 @@ Projectiles.begin = function(me) {
 	// its lasers, stated with none, into the one it holds, and only the throw's own box hits it in
 	// the source; falco's, with one, hit it before the throw does), and one already hit by the
 	// attack that fired it is not hit again
-	fm.addEventListener(GameObjectEvent.HIT_DEALT, function(?e) { if (e != null && e.data != null && !fm.isDisposed()) Attacks.freshDealt(me, e.data.foe); }, { persistent: true });
 	fm.addEventListener(GameObjectEvent.HITBOX_CONNECTED, function(?e) {
 		var o = fm.getOwner();
 		var hs = e.data.hitboxStats;
@@ -217,9 +216,9 @@ Projectiles.begin = function(me) {
 			if ((e.data.foe.getX() - before) * (fm.isFacingRight() ? 1 : -1) > 0) hs.reversibleAngle = false;
 		}
 		me.__hitFoes.push(e.data.foe);
-		// always fresh, and a place among its owner's last attacks once (Attacks.freshness), dealt
-		// on top once the hit has landed, as a fighter's is
-		me.__freshAdd = { foe: e.data.foe, add: hs.damage * 0.05 };
+		// always fresh (x1.05, in its damage), and a place among its owner's last attacks once
+		// (Attacks.freshness)
+		hs.damage = hs.damage * 1.05;
 		if (me.__usedOnce != true) { me.__usedOnce = true; Attacks.used(o, null); }
 		if (hs.index != null && hs.index >= 0) Hitboxes.poison(me, hs.index, e.data.foe);
 		// a hit in the frame that made it lands before its first frame's script has run, which is
@@ -369,11 +368,11 @@ Projectiles.lateHit = function(me) {
 // the attack it is in hits again every `refreshRate` of the source's frames its declaration states
 // for it (ness's fire pillar burns a fighter standing in it every eight), as a fighter's does
 Projectiles.refresh = function(me) {
+	var fm = me.__fm;
 	var label = me.__mc == null ? null : me.__mc.currentLabel;
 	var name = label != null && me.__stats != null && me.__stats.get(label) != null ? label : "attack_idle";
 	if (name != me.__refreshOf) {
 		me.__refreshOf = name;
-		me.__refreshAt = 0;
 		var a = me.__stats == null ? null : me.__stats.get(name);
 		var r = a == null ? null : AS3.at(a, "refreshRate");
 		me.__refreshEvery = r != null && AS3.num(r) > 0 ? Std.int(AS3.num(r) * 2) : 0;
@@ -383,12 +382,20 @@ Projectiles.refresh = function(me) {
 	var o = Attacks.overrides(me);
 	var every = o.exists("refreshRate") ? (AS3.num(o.get("refreshRate")) > 0 ? Std.int(AS3.num(o.get("refreshRate")) * 2) : 0) : me.__refreshEvery;
 	// none stated, -1, or 999 and up: a rate the source never refreshes on
-	if (every <= 0 || every >= 999 * 2) return;
-	// on its Nth source frame, before that frame's hits, and every N after, as a fighter's attack
-	// (AttackRules.refresh): here the first engine frame of that source frame (naruto's
-	// rasenshuriken ground the fighter a frame behind the source's, every hit after its first)
-	me.__refreshAt++;
-	if (me.__refreshAt >= every - 1) { me.__refreshAt = -1; PeptideGameObject.reactivate(me); }
+	if (every <= 0 || every >= 999 * 2) every = 0;
+	var key = name + ":" + every;
+	if (key == me.__refreshKey) return;
+	me.__refreshKey = key;
+	if (me.__refreshTimer != null) { fm.removeTimer(me.__refreshTimer); me.__refreshTimer = null; }
+	if (every == 0) return;
+	// on its Nth source frame (the first engine frame of it, before that frame's hits) and every N
+	// after, an engine timer that stands still while it is frozen
+	var paused = function() { return fm.getHitstop() > 0; };
+	var go = function(?t) { if (!fm.isDisposed()) PeptideGameObject.reactivate(me); };
+	me.__refreshTimer = fm.addTimer(every - 1, 1, function(?t) {
+		go();
+		if (me.__refreshKey == key && !fm.isDisposed()) me.__refreshTimer = fm.addTimer(every, -1, go, { pauseCondition: paused });
+	}, { pauseCondition: paused });
 };
 
 // homing: the heading turns toward the middle of the nearest opponent that can be hit, a share of the turn

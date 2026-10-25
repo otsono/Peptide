@@ -59,14 +59,6 @@ Attacks.freshness = function(fm, key) {
 	while (i < q.length) { if (key != null && q[i] == key) { cut += 0.10 - 0.01 * i; any = true; } i++; }
 	return any ? 1 - cut : 1.05;
 };
-// the freshness a hit deals on top of its own damage (worked out as it connects, `__freshAdd`),
-// put on the one it hit once it has landed: the launch is the move's own damage's
-Attacks.freshDealt = function(me, foe) {
-	var f = me.__freshAdd;
-	me.__freshAdd = null;
-	if (f == null || foe == null || f.foe != foe || !(f.add != 0)) return;
-	foe.addDamage(f.add);
-};
 // what this use of a fighter's move deals by how fresh it is, worked out the first time it deals
 // anything and kept for the rest of that use
 Attacks.useFresh = function(me) {

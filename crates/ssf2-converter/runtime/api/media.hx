@@ -32,7 +32,7 @@ Sounds.attack = function(me, prefix, n) {
 var Effects = {};
 Effects.live = [];
 
-Effects.attach = function(me, id, ?opts) {
+Effects.attach = function(me, id, ?opts, ?used) {
 	var fm = me == null ? null : me.__fm;
 	if (fm == null || id == null) return null;
 	var name = AS3.str(id);
@@ -73,6 +73,19 @@ Effects.attach = function(me, id, ?opts) {
 	}
 	var vfx = ofStage ? match.createVfx(new VfxStats(stats)) : match.createVfx(new VfxStats(stats), fm);
 	if (vfx == null) return null;
+	// one the code makes and lets go (the compiler says nothing takes it), drawn from one piece of a
+	// clip with no code of its own, played once: the engine's effect alone, which ends itself as its
+	// animation does. no clip is made for it and nothing follows it
+	if (used == false && pieces != null && pieces.length == 1 && PeptideRuntime.data.classes.get(pieces[0].sym) == null && o.loop == null) {
+		if (!locked) {
+			var px = ofStage || AS3.truthy(o.absolute) ? ox : fm.getX() / s + ox;
+			var py = ofStage || AS3.truthy(o.absolute) ? oy : fm.getY() / s + oy;
+			vfx.setX(px * s);
+			vfx.setY(py * s);
+		}
+		if (o.rotation != null) vfx.setRotation(AS3.num(o.rotation));
+		return null;
+	}
 	var clip = pieces != null && pieces.length > 0 ? PeptideRuntime.makeClip(pieces[0].sym, Stage.layer) : MovieClip.create();
 	// a clip with no timeline of its own here (an effect drawn from another package): a playhead
 	// as long as the animations that show it
