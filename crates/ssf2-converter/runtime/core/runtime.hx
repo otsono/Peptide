@@ -102,9 +102,7 @@ PeptideRuntime.start = function(fm, data, kind) {
 PeptideRuntime.updating = false;
 // whether the code running is a timer's (a timer made there counts its whole frames)
 PeptideRuntime.inTimer = false;
-// whether the code running is a frame's script from its keyframe, ahead of the update
-PeptideRuntime.inFrame = false;
-// what comes due once the frame's script is done (a one-frame timer it started)
+// what comes due as the frame's script is done (a one-frame timer it started, Timers.create)
 PeptideRuntime.afterFrame = [];
 PeptideRuntime.frameDone = function() {
 	while (PeptideRuntime.afterFrame.length > 0) {
@@ -194,8 +192,8 @@ PeptideRuntime.at = function(sym, f) {
 
 // a frame's script from its keyframe, on the clip `at` handed back (none: not this clip's frame):
 // what it throws is reported, and a jump it makes is settled
-// a frame the engine entered while the runtime holds the object still (the frame after a hit
-// that freezes it, Fighters.frozen): its script waits for the hold to end, as the source's clip
+// a frame the engine entered while the runtime holds the object still (a hit the engine freezes
+// nothing for, Fighters.frozen): its script waits for the hold to end, as the source's clip
 // does not move on while it is frozen
 PeptideRuntime.heldBack = function(f) {
 	var me = PeptideRuntime.object;
@@ -207,11 +205,8 @@ PeptideRuntime.heldBack = function(f) {
 PeptideRuntime.runAt = function(clip, script) {
 	if (clip == null) return;
 	if (PeptideRuntime.heldBack(function() { PeptideRuntime.runAt(clip, script); })) return;
-	var was = PeptideRuntime.inFrame;
-	PeptideRuntime.inFrame = !PeptideRuntime.updating;
 	PeptideRuntime.run(script, clip);
-	PeptideRuntime.inFrame = was;
-	if (was != true) PeptideRuntime.frameDone();
+	PeptideRuntime.frameDone();
 	PeptideRuntime.settle();
 };
 
@@ -244,11 +239,8 @@ PeptideRuntime.kf = function(sym, f) {
 	var st = PeptideRuntime.shownClip();
 	// a frame the clip is already on ran when the clip got there (a jump landing on it)
 	if (st == null || st.__sym != sym || st.currentFrame == f) return;
-	var was = PeptideRuntime.inFrame;
-	PeptideRuntime.inFrame = !PeptideRuntime.updating;
 	MovieClip.enter(st, f);
-	PeptideRuntime.inFrame = was;
-	if (was != true) PeptideRuntime.frameDone();
+	PeptideRuntime.frameDone();
 	PeptideRuntime.settle();
 };
 

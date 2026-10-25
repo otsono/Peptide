@@ -7,7 +7,7 @@
 
 var Timers = {};
 
-Timers.create = function(owner, frames, repeat, fn, ?opts) {
+Timers.create = function(owner, frames, repeat, fn, ?opts, ?fromFrame) {
 	if (fn == null) return;
 	var fm = owner == null || owner.__fm == null ? PeptideRuntime.fm : owner.__fm;
 	if (fm == null || fm.isDisposed()) return;
@@ -22,12 +22,11 @@ Timers.create = function(owner, frames, repeat, fn, ?opts) {
 	var keep = !PeptideRuntime.isFighter(fm) || (opts != null && AS3.truthy(opts.persistent));
 	var fighterKey = !keep && key.__fm != null && !key.__fm.isDisposed();
 	var rec = { fn: fn, fm: fm, id: -1, keep: keep, entry: fighterKey ? Events.entry(key) : -1 };
-	// one made in a frame's script comes due two engine frames sooner, and a one-frame one runs as
-	// that script is done: the source ticks the frame it is made in too, ahead of that frame's
-	// movement (captain falcon's kick makes a one-frame timer on frame 7 and moves on its speed for
-	// the whole of that frame; on the plain delay the kick ran three source frames short)
-	// (not one run as its object is made, before its clips are placed: waluigi's dice spinner)
-	var first = PeptideRuntime.inFrame == true && PeptideRuntime.inTimer != true && PeptideRuntime.making != true ? 2 * n - 2 : 2 * n;
+	// one made in a frame's script (the compiler says so) comes due two engine frames sooner: the
+	// source ticks the frame it is made in too, ahead of that frame's movement (captain falcon's
+	// kick makes a one-frame timer on frame 7 and moves on its speed for the whole of that frame).
+	// not one run as its object is made, before its clips are placed (waluigi's dice spinner)
+	var first = fromFrame == true && PeptideRuntime.making != true ? 2 * n - 2 : 2 * n;
 	// a timer made with a condition (`condition`, a function) runs its code only while that holds:
 	// chibi-robo's timer fires his telly whenever he has none, and fired a new one every frame here
 	// (the last ended, the next made at the spawn, never moving off it)
@@ -79,6 +78,9 @@ Timers.create = function(owner, frames, repeat, fn, ?opts) {
 		key.__timers = kept;
 	}
 	key.__timers.push(rec);
+	// a one-frame one made in a frame's script ticks in that frame, once the script is done:
+	// sooner, it reads what the script sets after making it (samus's moves); later, every tick
+	// after moves with it (captain falcon's kick ran three source frames short)
 	if (first == 0) {
 		if (r != 1) repeat(2 * n, r < 0 ? -1 : r - 1); else Timers.drop(key, rec);
 		PeptideRuntime.afterFrame.push(function() { if (!fm.isDisposed() && rec.dead != true) fire(); });

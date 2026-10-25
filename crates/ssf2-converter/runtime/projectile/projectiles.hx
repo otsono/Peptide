@@ -133,25 +133,6 @@ Projectiles.launch = function(p, l) {
 	if (l.xs != null) {
 		p.setXSpeed(p.flipX(l.xs));
 		p.setYSpeed(l.ys);
-		// the source moves one its fighter makes in the frame it is made (fighters update before
-		// projectiles), and this engine from the next: it starts a source frame (two of these) on
-		// along its launch. one made later in the frame (by another projectile) waits instead
-		// (where that frame's move crosses no floor: a placed position skips the engine's collision,
-		// and pikachu's jolt, launched down at his feet, would go through the stage)
-		if (l.late != true) {
-			// the source gives a falling one its frame's gravity before it moves it (waluigi's dice,
-			// thrown up at 5, rises 4, 3, 2, 1): its first move is at the launch less a frame's pull.
-			// from then on this engine adds the pull after each move, where the source adds it
-			// before, so the speed it goes on with carries a step and a half more
-			var g = l.g == null ? 0 : l.g;
-			var ys = l.ys + 2 * g;
-			// never past the fall speed it declares
-			if (l.max != null && l.max > 0 && ys > l.max) ys = l.max;
-			var to = EnginePoint.create(l.x + l.xs * 2, l.y + ys * 2);
-			var hits = p.hitTestStructuresWithLineSegment(EnginePoint.create(l.x, l.y), to, to, { structureType: StructureType.FLOOR });
-			if (hits == null || hits.length == 0) { p.setX(to.x); p.setY(to.y); if (g != 0) p.setYSpeed(l.max != null && l.max > 0 ? Math.min(ys + 1.5 * g, l.max) : ys + 1.5 * g); }
-			else if (p.exports != null) p.exports.__catchUp = true;
-		}
 	}
 };
 
@@ -303,14 +284,6 @@ Projectiles.frame = function(me) {
 		var on = fm.isOnFloor() || (me.__floorChecks == 1 && Projectiles.floorAt(fm));
 		if (on && Events.touchedFloor(me)) {
 			me.__floorChecks = 2;
-			// its first frame's move was stopped by the floor it was launched into: the source turns
-			// that move at the floor within the frame, so it goes a source frame along what the
-			// touch left it with (pikachu's jolt is 13 px up its first hop as its first frame ends)
-			if (fm.exports.__catchUp == true) {
-				fm.exports.__catchUp = null;
-				fm.setX(fm.getX() + Projectiles.xSpeed(fm) * 2);
-				fm.setY(fm.getY() + fm.getYSpeed() * 2);
-			}
 		}
 	}
 	// a landing it is given, once: the engine's own when it comes down, or here when it is

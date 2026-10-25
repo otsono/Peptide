@@ -190,8 +190,6 @@ Fighters.launchFade = function(me) {
 		if (k != ky) { fm.setYKnockback(k); ky = k; }
 	}
 	if (Fighters.newLaunch(me.__launchX, kx) || Fighters.newLaunch(me.__launchY, ky)) Fighters.fadeOf(me, kx, ky);
-	// a launch's first frame of gravity (Fighters.gravityOut), on its first frame out
-	if (me.__gravNext == true && fm.getHitstop() <= 0) Fighters.gravityOut(me);
 	me.__launchX = kx;
 	me.__launchY = ky;
 };
@@ -228,11 +226,10 @@ Fighters.rocketFrame = function(me) {
 		r.vx = r.vx > 0 ? Math.max(0, r.vx - r.dx) : Math.min(0, r.vx + r.dx);
 		r.vy = r.vy > 0 ? Math.max(0, r.vy - r.dy) : Math.min(0, r.vy + r.dy);
 	}
-	var lift = r.n < 2 ? r.lift : 0;
 	r.n++;
 	var u = PeptideRuntime.data.units.speed;
 	fm.setXSpeed(r.vx * u);
-	fm.setYSpeed((r.vy - lift) * u);
+	fm.setYSpeed(r.vy * u);
 };
 
 // an animation that runs out is the engine's to act on (its state machine ends it)
@@ -255,7 +252,7 @@ Fighters.beforeTick = function(me) {
 
 // held still by a hit
 Fighters.frozen = function(me) {
-	// the frame after a hit that freezes it: held here (Fighters.begin, HIT_DEALT), then let go
+	// a hit the engine freezes nothing for (a held throw's own shock): held here (HIT_DEALT), then let go
 	if (me.__holdUntil != null) {
 		if (PeptideRuntime.frame <= me.__holdUntil) {
 			if (me.__heldOn != PeptideRuntime.frame) { me.__heldOn = PeptideRuntime.frame; me.__heldCount = (me.__heldCount == null ? 0 : me.__heldCount) + 1; }
@@ -267,22 +264,6 @@ Fighters.frozen = function(me) {
 		if (me.__heldFrames != null) { var fs = me.__heldFrames; me.__heldFrames = null; for (f in fs) f(); }
 	}
 	return me.__fm.getHitstop() > 0;
-};
-
-// a launch's first frame of flight: the source pulls the fighter down by a frame of gravity before
-// it moves it (its fall speed reads one frame of gravity on its first frame out), this engine a
-// frame later, so the fighter rose a pixel a frame higher all through the flight (mario's up tilt at
-// 80% topped out 9 high). over its two frames to the source's one, this engine's fall then trails
-// the source's by three quarters of a source frame's gravity each source frame, which one and a
-// half of its own frames' gravity given at the start makes up (two left mario's up tilt and bowser's
-// down tilt rising a third of a frame's gravity short, and the down tilt's late box struck again). given on its first frame out of the freeze (the engine clears a fall speed
-// given as the freeze ends). not for a hit bounced off the floor: that launch is the runtime's own
-// (HIT_RECEIVED)
-Fighters.gravityOut = function(me) {
-	me.__gravNext = false;
-	var frames = me.__gravLate == true ? 2.5 : 1.5;
-	me.__gravLate = false;
-	me.__fm.setYSpeed(me.__fm.getYSpeed() + frames * me.__fm.getGameObjectStat("gravity"));
 };
 
 // a FIXED hit (`weightKB`) launches by the weight of the fighter it hits on the source, its launch
@@ -321,12 +302,7 @@ Fighters.relaunch = function(me) {
 	me.__fm.setXKnockback(rl[0]);
 	me.__fm.setYKnockback(rl[1]);
 	me.__fm.setXSpeed(0);
-	// a launch's first frame of gravity (Fighters.gravityOut), given with the launch: the let-go
-	// moves the fighter before its next frame of its own (fox's back throw rose 1.4 a frame high
-	// with it a frame later)
 	me.__fm.setYSpeed(0);
-	me.__gravNext = false;
-	Fighters.gravityOut(me);
 	me.__launchX = rl[0];
 	me.__launchY = rl[1];
 	Fighters.fadeOf(me, rl[0], rl[1]);
@@ -334,6 +310,13 @@ Fighters.relaunch = function(me) {
 
 // as the fighter is made
 Fighters.begin = function(me) {
+	// a rocket another object's script sets off on it (its bomb's lift): into the attack it rides,
+	// at once (called through the exports, it runs here, in the fighter's own script)
+	me.__fm.exports.__startRocket = function(r) {
+		Fighters.startAsked(me, r.attack, "rocket");
+		r.anim = me.__fm.getAnimation();
+		me.__rocket = r;
+	};
 	me.__fm.addEventListener(GameObjectEvent.ENTER_HITSTOP, function(?e) { Fighters.relaunch(me); }, { persistent: true });
 	me.__used = new haxe.ds.StringMap();
 	me.__usedAt = new haxe.ds.StringMap();
@@ -375,21 +358,9 @@ Fighters.begin = function(me) {
 			foe.__stunLag = Attacks.boxStat(me, hs.index + 1, "hitLag");
 			if (foe.__stunWant != null && foe.__stunLaunch != null) foe.__stunWant = Fighters.stunWant(foe);
 		}
-		if (hs.selfHitstop != null && hs.selfHitstop >= 0 && me.__holdNext == true) {
-			// the source freezes the attacker from the frame after its hit; this engine runs it one
-			// more frame first (its clip went on into the next frame's script: mario's down air
-			// refreshed there and hit twice). that frame is held here: the animation stopped and the
-			// fighter kept in place. the engine's own freeze takes in that frame, so it keeps its whole
-			// length (shortened by one, every hit froze its attacker half a source frame less than
-			// the source's: mario's and pac-man's jabs and tilts, freeze_parity.py)
-			me.__holdNext = false;
-			me.__holdUntil = PeptideRuntime.frame + 1;
-			me.__heldSpeed = [me.__fm.getXSpeed(), me.__fm.getYSpeed()];
-			me.__fm.pause();
-			me.__fm.setXSpeed(0);
-			me.__fm.setYSpeed(0);
-		}
-		if (hs.selfHitstop != null && hs.selfHitstop >= 0 && me.__holdUntil != null) {
+		// the attacker freezes the engine's own way (a frame later than the source's: accepted)
+		if (hs.selfHitstop != null && hs.selfHitstop >= 0 && me.__freezes == true) {
+			me.__freezes = false;
 			// the source frames the hit holds the attacker for (its engine frames, two to one): a
 			// refresh's count stands still through them (AttackRules.refresh), as the source's does
 			me.__frozenUntil = PeptideRuntime.frame + hs.selfHitstop;
@@ -460,8 +431,8 @@ Fighters.begin = function(me) {
 		// move's own damage and deals the freshness on it after (mario's up tilt at 80% launched
 		// 2.7% too hard with the freshness in the damage the engine launches from)
 		me.__freshAdd = { foe: e.data.foe, add: hs.damage * (me.__fresh - 1) };
-		// a hit that freezes the attacker: the frame after it is held by the runtime too (HIT_DEALT)
-		if (hs.selfHitstop != null && hs.selfHitstop > 0 && hs.disabled != true) me.__holdNext = true;
+		// a hit that freezes the attacker (HIT_DEALT counts its freeze toward a refresh)
+		if (hs.selfHitstop != null && hs.selfHitstop > 0 && hs.disabled != true) me.__freezes = true;
 		Hitboxes.poison(me, hs.index, e.data.foe);
 		// a box with no effect deals its damage to the one held and keeps hold of it: a throw's
 		// small hits (bowser's up throw hits six times, then its code gives the box its effect
@@ -479,7 +450,7 @@ Fighters.begin = function(me) {
 			// one it holds twice before it throws, each holding pikachu a frame in the source)
 			me.__refreshReady = true;
 			if (hs.selfHitstop != null && hs.selfHitstop > 0) {
-				me.__holdNext = false;
+				me.__freezes = false;
 				// the frames it holds count from the one after the hit, and it is let go the frame
 				// after the last of them (Fighters.frozen): one less is the box's whole count
 				me.__holdUntil = PeptideRuntime.frame + hs.selfHitstop - 1;
@@ -533,16 +504,7 @@ Fighters.begin = function(me) {
 		// a hit aimed down at a standing fighter too weak for this engine to bounce keeps pointing
 		// into the floor here and slides the fighter along it; the source sends it up at the
 		// mirrored angle, its whole launch (lucario's jab, stated at 291 degrees, pops it up at 69)
-		if (me.__stood == true && f.isOnFloor() && f.getYKnockback() > 0) {
-			me.__bounced = true;
-			f.setYKnockback(-f.getYKnockback());
-		}
-		// an upward launch takes a first frame of gravity as its freeze ends (Fighters.gravityOut)
-		me.__gravNext = me.__bounced != true && f.getYKnockback() < 0;
-		// a hit with no freeze moves the fighter once before its next frame of its own, a frame of
-		// its gravity owed on top (the engine clears a fall speed given here as the launch starts)
-		me.__gravLate = me.__gravNext && f.getHitstop() <= 0;
-		me.__bounced = false;
+		if (me.__stood == true && f.isOnFloor() && f.getYKnockback() > 0) f.setYKnockback(-f.getYKnockback());
 	}, { persistent: true });
 };
 // a launch here against the source's, a frame each (hit_parity.py's expected ratio), and the
@@ -637,18 +599,6 @@ Fighters.frame = function(me) {
 	Fighters.noteUsed(me);
 	// a throw its item asked for, from the item's own script
 	if (me.__fm.exports.__askToss == true) { me.__fm.exports.__askToss = null; Items.throwAsked(me); }
-	// a rocket another object's script set off on it (its bomb's lift): into the attack it rides
-	var r = me.__fm.exports.__askRocket;
-	if (r != null) {
-		me.__fm.exports.__askRocket = null;
-		var stood = me.__fm.isOnFloor();
-		Fighters.startAsked(me, r.attack, "rocket");
-		r.anim = me.__fm.getAnimation();
-		me.__rocket = r;
-		// lifted a pixel off the floor it stands on as it goes: the source moves it the frame the
-		// rocket starts, which here is the fighter's next update, so it goes with the first step
-		r.lift = r.vy < 0 && stood ? 1 : 0;
-	}
 	Fighters.squatFrame(me);
 	Fighters.smashInput(me);
 	AttackRules.frame(me);

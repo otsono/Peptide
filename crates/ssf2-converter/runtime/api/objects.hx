@@ -330,8 +330,8 @@ PeptideCharacter.rocket = function(me, speed, angle, decay, rotate) {
 	var a = AS3.num(angle) * Math.PI / 180;
 	var sp = AS3.num(speed);
 	var d = Math.abs(AS3.num(decay));
-	// started by the fighter's own update: its bomb's script cannot run the fighter's clip
-	fm.exports.__askRocket = { attack: attack, vx: sp * Math.cos(a), vy: -sp * Math.sin(a), dx: d * Math.abs(Math.cos(a)), dy: d * Math.abs(Math.sin(a)), n: 0, anim: null };
+	// started in the fighter's own script, which runs its clip
+	if (fm.exports.__startRocket != null) fm.exports.__startRocket({ attack: attack, vx: sp * Math.cos(a), vy: -sp * Math.sin(a), dx: d * Math.abs(Math.cos(a)), dy: d * Math.abs(Math.sin(a)), n: 0, anim: null });
 };
 PeptideCharacter.ejectOpponent = function(me) { me.__fm.releaseAllCharacters(); PeptideRuntime.gap("ejectOpponent: the launch of the one spat out"); };
 // ---- grabs ----

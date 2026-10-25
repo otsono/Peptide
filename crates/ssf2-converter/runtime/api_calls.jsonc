@@ -90,7 +90,7 @@
   "addEventListener": "Events.add({recv}, {0}, {1}, {2})",
   "removeEventListener": "Events.remove({recv}, {0}, {1})",
   "hasEventListener": "Events.has({recv}, {0}, {1})",
-  "addTimer": "Timers.create({recv}, {0}, {1}, {2}, {3})",
+  "addTimer": "Timers.create({recv}, {0}, {1}, {2}, {3}, {frame})",
   "removeTimer": "Timers.destroy({recv}, {0})",
   "getAnimationStat": "Attacks.stat({recv}, {0})",
   "updateAnimationStats": "Attacks.update({recv}, {0})",

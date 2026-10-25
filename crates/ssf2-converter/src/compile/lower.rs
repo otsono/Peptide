@@ -32,6 +32,9 @@ pub struct ClassWriter<'p, 'a> {
     int_fields: BTreeSet<String>,
     /// this clip's frames as the engine's animations, for its own jumps by label
     pub jumps: Option<super::ClipJumps>,
+    /// the code being written is a frame script's own (not a function it hands out): an API row's
+    /// `{frame}` is `true` there
+    in_frame: bool,
     /// the landings the engine makes for this class's code
     pub landings: Vec<super::Landing>,
 }
@@ -64,7 +67,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         }
         let int_fields = whole_number_fields(pkg, class);
         ClassWriter { pkg, class, int_fields, problems: Vec::new(), unknown: BTreeSet::new(), scopes: Vec::new(), uniq: 0, supers_used, shapes: None,
-            detached: BTreeSet::new(), detached_text: BTreeMap::new(), jumps: None, landings: Vec::new() }
+            detached: BTreeSet::new(), detached_text: BTreeMap::new(), jumps: None, landings: Vec::new(), in_frame: false }
     }
 
     fn problem(&mut self, p: impl Into<String>) { self.problems.push(p.into()) }
@@ -135,7 +138,9 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         }
         for m in c.methods.iter().filter(|m| !m.is_static) {
             let name = match m.kind { MethodKind::Getter => format!("get_{}", m.name), MethodKind::Setter => format!("set_{}", m.name), _ => m.name.clone() };
+            self.in_frame = m.kind == MethodKind::Method && c.frame_scripts.iter().any(|s| s.method == m.name);
             let f = self.function(&m.function, 1, Some(false));
+            self.in_frame = false;
             if m.kind == MethodKind::Method && self.detached.contains(&m.name) {
                 self.detached_text.insert(m.name.clone(), f);
                 continue;
@@ -703,7 +708,11 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             }
             Expr::Function(f) => {
                 let depth = self.scopes.len();
-                self.function(f, depth, None)
+                // a function handed out runs later, not as the frame's script
+                let was = std::mem::replace(&mut self.in_frame, false);
+                let out = self.function(f, depth, None);
+                self.in_frame = was;
+                out
             }
             Expr::Assign(p, v) => format!("({})", self.assign(p, v)),
             Expr::Delete(p) => match &**p {
@@ -1219,7 +1228,8 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         let r = if bind { self.fresh("__r") } else { recv.to_string() };
         let mut out = t.replace("{eng}", &format!("{r}.__fm")).replace("{recv}", &r)
             .replace("{size}", &scaling.size_multiplier.to_string())
-            .replace("{speed}", &scaling.velocity_scale().to_string());
+            .replace("{speed}", &scaling.velocity_scale().to_string())
+            .replace("{frame}", if self.in_frame { "true" } else { "false" });
         // an argument used more than once is worked out once, like the receiver
         let mut binds: Vec<(String, String)> = Vec::new();
         if bind { binds.push((r.clone(), recv.to_string())); }
