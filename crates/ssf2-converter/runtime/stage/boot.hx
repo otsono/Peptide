@@ -125,6 +125,21 @@ StageBoot.container = function(at) {
 StageBoot.element = function(e, owner) {
 	var b = DATA.stage.boot;
 	var v = null;
+	// a piece that carries a named surface is that surface's structures, its art on the first
+	if (e.carry != null) {
+		var parts = [];
+		for (cid in e.carry.ids) {
+			var st = match.createStructure(self.getResource().getContent(cid));
+			if (st == null) continue;
+			st.setX(e.x);
+			st.setY(e.y);
+			parts.push(st);
+			__made.push({ id: cid, k: "s", o: st });
+		}
+		Planes.carried.set(e.carry.n, parts);
+		StageBoot.bg[e.i] = StageBoot.carrier(parts, e.sections);
+		return;
+	}
 	// a picture placed inside an object's own clip that never changes is drawn in the object's own
 	// view, where the engine carries it with the object (nothing in a named clip, which the code
 	// reaches as a group)
@@ -173,6 +188,41 @@ StageBoot.element = function(e, owner) {
 	}
 	// a surface its plane moves by label rides this picture
 	if (e.follow != null && v != null) __platFollow.push({ v: v, n: e.follow.n, at: e.follow.at, bx: [], by: [] });
+};
+
+// the structures a piece carries, as the one piece the stage moves, shows and plays: each holds
+// every section in one animation, a label at each section's start, so a section is played by its
+// label and the one showing is the one the frame is in
+StageBoot.carrier = function(parts, sec) {
+	var h = { exports: {}, at: 0 };
+	var each = function(f) { for (p in parts) if (!p.isDisposed()) f(p); };
+	var start = function(k) { var s = 1; for (i in 0...k) s += sec.lens[i]; return s; };
+	h.getX = function() { return parts.length > 0 ? parts[0].getX() : 0.0; };
+	h.getY = function() { return parts.length > 0 ? parts[0].getY() : 0.0; };
+	h.setX = function(x) { each(function(p) { p.setX(x); }); };
+	h.setY = function(y) { each(function(p) { p.setY(y); }); };
+	h.setVisible = function(v) { if (parts.length > 0) parts[0].setVisible(v); };
+	h.setAlpha = function(a) { if (parts.length > 0) parts[0].setAlpha(a); };
+	h.playAnimation = function(a) {
+		var k = sec.anims.indexOf(a);
+		if (k < 0) return;
+		h.at = k;
+		each(function(p) { p.playFrameLabel(a); p.resume(); });
+	};
+	h.playFrame = function(f) { var s = start(h.at); each(function(p) { p.playFrame(s + f - 1); }); };
+	h.pause = function() { each(function(p) { p.pause(); }); };
+	h.resume = function() { each(function(p) { p.resume(); }); };
+	h.getAnimation = function() {
+		if (parts.length == 0) return null;
+		var f = parts[0].getCurrentFrame();
+		var s = 1;
+		for (i in 0...sec.lens.length) { if (f < s + sec.lens[i]) return sec.anims[i]; s += sec.lens[i]; }
+		return sec.anims[sec.anims.length - 1];
+	};
+	h.getCurrentFrame = function() { return parts.length > 0 ? parts[0].getCurrentFrame() : 0; };
+	h.getTotalFrames = function() { return parts.length > 0 ? parts[0].getTotalFrames() : 0; };
+	h.isDisposed = function() { return parts.length == 0 || parts[0].isDisposed(); };
+	return h;
 };
 
 // whether an element is a part of a named clip

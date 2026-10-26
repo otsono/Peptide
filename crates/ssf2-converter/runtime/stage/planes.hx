@@ -333,6 +333,8 @@ Planes.camBgs = function() {
 // a surface the stage entity carries under a name: its structures, moved and switched together,
 // standing where the tree placed its clip
 Planes.surfaces = new haxe.ds.StringMap();
+// the surfaces a backdrop piece carries, by name: the structures that piece is
+Planes.carried = new haxe.ds.StringMap();
 Planes.surface = function(n) {
 	var have = Planes.surfaces.get(n);
 	if (have != null) return have;
@@ -342,6 +344,7 @@ Planes.surface = function(n) {
 	// its structures, found once the stage has them
 	var sts = [];
 	var find = function() {
+		if (sts.length == 0 && Planes.carried.exists(n)) for (st in Planes.carried.get(n)) sts.push(st);
 		if (sts.length == 0) for (k in row.s) { var st = match.getStructureByName(k); if (st != null) sts.push(st); }
 		return sts;
 	};

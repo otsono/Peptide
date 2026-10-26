@@ -19,6 +19,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::stage_parser::{ParallaxMode, Rect, StageArt, StageModel};
@@ -581,7 +582,11 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         platform_sprites,
     };
 
-    let (entity, plat_segs) = build_entity(model, &art);
+    // a named surface a sectioned piece carries on its own frames (a phase's terrain sliding in) is
+    // that piece's: it leaves the stage entity and goes into the piece's animations
+    let carriers = surface_carriers(model, &promoted_bg);
+    let carried_names: BTreeSet<String> = carriers.keys().cloned().collect();
+    let (entity, plat_segs, carried) = build_entity(model, &art, &carried_names);
     // FM-side validation: the built entity must carry the layers a Fraymakers stage needs
     // (these are invariants of build_entity; the check guards against regressions).
     let mut missing = validate_fm_entity(&entity);
@@ -634,7 +639,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     // THE BOOT, as data: everything the stage puts down as the match starts, in the order it puts
     // it down (`DATA.stage.boot`, made by `runtime/stage/boot.hx`)
     let mut boot = StageTables { objects_declared: model.hazards.len(), ..Default::default() };
-    let (group_fields, bg_entries, clip_parts) = emit_bg_elements(model, &promoted_bg, &lib, &mut plan, &mut boot)?;
+    let (group_fields, bg_entries, clip_parts) = emit_bg_elements(model, &promoted_bg, &lib, &mut plan, &mut boot, &carriers, &carried)?;
     let clip_handles: Vec<String> = clip_parts.iter().map(|(c, _)| c.clone()).collect();
 
     write_json(&lib.join("manifest.json"), &build_manifest(model, &[hazard_entries.clone(), bg_entries.clone(), lib_entries.clone()].concat(), &structure_contents))?;
@@ -1516,6 +1521,28 @@ impl<'a> EntityBuilder<'a> {
         }
     }
 
+    /// The line segments laid down since layer `from`, taken back out of the entity: each one's
+    /// name, points and metadata.
+    fn take_layers(&mut self, from: usize) -> SurfaceSegs {
+        let taken: Vec<Value> = self.layers.drain(from..).collect();
+        let mut out = Vec::new();
+        for l in &taken {
+            let lid = l["$id"].as_str().unwrap_or_default().to_string();
+            self.anim_layers.retain(|x| *x != lid);
+            for k in l["keyframes"].as_array().into_iter().flatten() {
+                let Some(kf) = self.keyframes.iter().position(|x| x["$id"] == *k) else { continue };
+                let kf = self.keyframes.remove(kf);
+                let Some(si) = self.symbols.iter().position(|x| x["$id"] == kf["symbol"]) else { continue };
+                let sym = self.symbols.remove(si);
+                let flat: Vec<f64> = sym["points"].as_array().into_iter().flatten().filter_map(|v| v.as_f64()).collect();
+                let pts = flat.chunks(2).filter(|c| c.len() == 2).map(|c| (c[0], c[1])).collect();
+                out.push((l["name"].as_str().unwrap_or_default().to_string(), pts,
+                    sym["pluginMetadata"]["com.fraymakers.FraymakersMetadata"].clone()));
+            }
+        }
+        out
+    }
+
     fn add_line_segment(&mut self, name: &str, points: &[(f64, f64)], pm: Value) {
         let flat: Vec<f64> = points.iter().flat_map(|&(x, y)| [x, y]).collect();
         let sym = self.uid(&format!("sym:{name}"));
@@ -2140,7 +2167,12 @@ fn shadow_mask_rects(model: &StageModel) -> Vec<(f64, f64, f64, f64)> {
     }).collect()
 }
 
-fn build_entity(model: &StageModel, art: &ArtRefs) -> (Value, Vec<(String, Vec<String>)>) {
+/// A surface's segments as the stage entity would carry them: (layer name, points, metadata).
+type SurfaceSegs = Vec<(String, Vec<(f64, f64)>, Value)>;
+
+fn build_entity(model: &StageModel, art: &ArtRefs, carried_names: &BTreeSet<String>)
+    -> (Value, Vec<(String, Vec<String>)>, BTreeMap<String, SurfaceSegs>) {
+    let mut carried: BTreeMap<String, SurfaceSegs> = BTreeMap::new();
     // the layers each NAMED surface came out as, so the stage's own code can reach it by name
     let mut plat_segs: Vec<(String, Vec<String>)> = Vec::new();
     let id = &model.id;
@@ -2380,6 +2412,18 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> (Value, Vec<(String, Vec<S
             plat_n += 1;
             b.add_solid_body(&format!("Solid {plat_n}"), &surface(vec![(r.left(), r.top()), (r.right(), r.top())]), r.bottom(), p.ledges);
         }
+        // a surface a piece carries leaves with what it was made of
+        if let Some(n) = p.name.as_ref().filter(|n| carried_names.contains(*n)) {
+            let segs = b.take_layers(__layers_before);
+            // still a surface the stage's code reaches by name: the boot hands it the structures
+            let names: Vec<String> = segs.iter().map(|(l, ..)| l.clone()).collect();
+            match plat_segs.iter_mut().find(|(k, _)| k == n) {
+                Some((_, v)) => v.extend(names),
+                None => plat_segs.push((n.clone(), names)),
+            }
+            carried.entry(n.clone()).or_default().extend(segs);
+            continue;
+        }
         if let Some(n) = &p.name {
             let made: Vec<String> = b.layers[__layers_before..].iter()
                 .filter_map(|l| l["name"].as_str().map(str::to_string)).collect();
@@ -2480,7 +2524,7 @@ fn build_entity(model: &StageModel, art: &ArtRefs) -> (Value, Vec<(String, Vec<S
         "terrains": [],
         "tilesets": [],
         "paletteMap": { "paletteCollection": null, "paletteMap": null }
-    }), plat_segs)
+    }), plat_segs, carried)
 }
 
 /// The Fraymakers stage layers a playable `.entity` must carry. Returns the names of any
@@ -9443,7 +9487,8 @@ fn clip_handle(clip: &str) -> Option<String> {
 /// tables and the clip groups). Returns the lines that give a group its children by the source's
 /// names (a field set by name is the script's own to write), the manifest entries, and each
 /// clip handle's pieces.
-fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path, plan: &mut Vec<Value>, tables: &mut StageTables)
+fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path, plan: &mut Vec<Value>, tables: &mut StageTables,
+    carriers: &BTreeMap<String, usize>, carried: &BTreeMap<String, SurfaceSegs>)
     -> Result<(String, Vec<Value>, Vec<(String, Vec<String>)>)> {
     write_blank_sprite(lib)?;
     let mut entries: Vec<Value> = Vec::new();
@@ -9475,7 +9520,11 @@ fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path, pla
         // an element whose clip branches between labels can't be a VFX: a VFX holds one animation
         // and carries no script, so there is nothing to switch and nothing to switch it.
         if layer.segments.len() > 1 {
-            emit_bg_segmented(model, layer, &eid, i, lib, tables, &mut entries, plan, &mut followed)?;
+            // the piece that carries a surface is that surface's structures, its art on the first
+            match layer.named_path.last().filter(|n| carriers.get(*n) == Some(&i)).and_then(|n| carried.get(n).map(|g| (n, g))) {
+                Some((n, segs)) => emit_bg_carrier(model, layer, &eid, i, lib, tables, &mut entries, plan, n, segs)?,
+                None => emit_bg_segmented(model, layer, &eid, i, lib, tables, &mut entries, plan, &mut followed)?,
+            }
             // it belongs to its clip's group like any other piece: the group is how the ported
             // class reaches it, and this is the piece that actually carries the clip's labels
             if let Some(h) = &handle {
@@ -9634,7 +9683,7 @@ fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path, pla
             },
             shown: layer.presence.clone(), tint, alpha, hidden, ride,
             follow: plat_follow(model, layer, &mut followed),
-            path: layer.named_path.clone(), labels: vec!["active".to_string()], sections: None,
+            path: layer.named_path.clone(), labels: vec!["active".to_string()], sections: None, carry: None,
         });
     }
     // The named clip, bound to everything that came out of it. One clip is one thing to the stage
@@ -9736,6 +9785,143 @@ fn plat_follow(model: &StageModel, layer: &BgLayerRef, done: &mut std::collectio
     Some(BootFollow { name: name.clone(), labels })
 }
 
+/// The named surfaces sectioned pieces carry: each by the first sectioned piece placed under its
+/// name whose sections chain the same way every time (its index among the promoted pieces).
+fn surface_carriers(model: &StageModel, promoted: &[BgLayerRef]) -> BTreeMap<String, usize> {
+    let mut out = BTreeMap::new();
+    for (i, l) in promoted.iter().enumerate() {
+        if l.segments.len() <= 1 || segment_chain(l).is_none() { continue }
+        let Some(n) = l.named_path.last() else { continue };
+        if out.contains_key(n) { continue }
+        if !model.platforms.iter().any(|p| p.name.as_deref() == Some(n.as_str()) && !p.placements.is_empty()) { continue }
+        out.insert(n.clone(), i);
+    }
+    out
+}
+
+/// A sectioned piece that carries a named surface on its own frames, as the surface's structures:
+/// one per segment (an engine structure holds one). An engine structure collides by the animation
+/// it was made with, so each has ONE animation holding every section in turn, a label at each
+/// section's start: the stage plays a section by its label, and the structure's own script holds
+/// it or moves on at the section's end. Each segment is keyed to the piece's frames where it stands
+/// in the piece, moved as far as the piece's picture has moved from its first frame; the first
+/// structure carries the piece's art.
+#[allow(clippy::too_many_arguments)]
+fn emit_bg_carrier(
+    model: &StageModel, layer: &BgLayerRef, eid: &str, i: usize, lib: &Path,
+    tables: &mut StageTables, entries: &mut Vec<Value>, plan: &mut Vec<Value>,
+    surface: &str, segs: &SurfaceSegs,
+) -> Result<()> {
+    let scripts = lib.join("scripts").join("entities");
+    std::fs::create_dir_all(&scripts)?;
+    let scale = if matches!(layer.plane, BgPlane::CameraEntry(_)) { 1.0 } else { model.scale };
+    let alpha = layer.plane.alpha();
+    let (ox, oy) = bg_element_origin(layer);
+    let spans = bg_segment_spans(layer);
+    let chain = segment_chain(layer).unwrap_or_default();
+    let g = |s: &str| det_uuid(&format!("bgcarry::{eid}::{s}"));
+    let (mut symbols, mut keyframes, mut layers, mut animations) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let frames = &layer.frames[..spans.last().map(|(_, _, e, _)| *e).unwrap_or(0)];
+    let f0 = &layer.frames[0];
+    // a layer of one keyframe per source frame, its length the frame's hold on the engine's clock
+    let keyed = |tag: &str, ty: &str, sym: &dyn Fn(&ArtRef) -> Value, keyframes: &mut Vec<Value>, symbols: &mut Vec<Value>| -> Vec<Value> {
+        let mut kfs: Vec<Value> = frames.iter().enumerate().map(|(j, f)| {
+            let sid = g(&format!("sym_{tag}_{j}"));
+            let mut sv = sym(f);
+            sv["$id"] = json!(sid);
+            symbols.push(sv);
+            json!({ "$id": g(&format!("kf_{tag}_{j}")), "symbol": sid, "length": f.hold.max(1),
+                "tweened": false, "tweenType": "LINEAR", "type": ty, "pluginMetadata": {} })
+        }).collect();
+        crate::entity_gen::double_keyframe_lengths(&mut kfs);
+        let ids = kfs.iter().map(|k| k["$id"].clone()).collect();
+        keyframes.extend(kfs);
+        ids
+    };
+    // the sections' labels, where each starts
+    let label_ids: Vec<Value> = spans.iter().map(|(n, _, _, len)| {
+        let id = g(&format!("label_{n}"));
+        keyframes.push(json!({ "$id": id, "type": "LABEL", "length": len, "name": anim_key(n), "pluginMetadata": {} }));
+        json!(id)
+    }).collect();
+    let art = keyed("art", "IMAGE", &|f: &ArtRef| json!({ "type": "IMAGE",
+        "imageAsset": if f.blank { blank_sprite_guid() } else { f.guid.clone() },
+        "x": f.x - ox, "y": f.y - oy, "pivotX": 0.0, "pivotY": 0.0,
+        "scaleX": scale, "scaleY": scale, "rotation": 0.0, "alpha": alpha, "pluginMetadata": {} }), &mut keyframes, &mut symbols);
+    let mut ids = Vec::new();
+    for (k, (name, pts, pm)) in segs.iter().enumerate() {
+        let seg = keyed(&format!("seg{k}"), "LINE_SEGMENT", &|f: &ArtRef| {
+            let (dx, dy) = (f.x - f0.x, f.y - f0.y);
+            json!({ "type": "LINE_SEGMENT", "alpha": 0.5, "color": "0xeeeeee",
+                "points": pts.iter().flat_map(|&(x, y)| [x - ox + dx, y - oy + dy]).collect::<Vec<f64>>(),
+                "pluginMetadata": { "com.fraymakers.FraymakersMetadata": pm } })
+        }, &mut keyframes, &mut symbols);
+        let mut own = Vec::new();
+        if k == 0 {
+            let lid = g("layer_art");
+            layers.push(json!({ "$id": lid, "name": "art", "type": "IMAGE", "hidden": false, "locked": false, "keyframes": art.clone(), "pluginMetadata": {} }));
+            own.push(lid);
+        }
+        let sl = g(&format!("layer_seg{k}"));
+        layers.push(json!({ "$id": sl, "name": name, "type": "LINE_SEGMENT", "hidden": false, "locked": false, "keyframes": seg,
+            "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "lineSegmentType": "LINE_SEGMENT_STRUCTURE" } } }));
+        own.push(sl);
+        let ll = g(&format!("layer_labels{k}"));
+        layers.push(json!({ "$id": ll, "name": "Labels", "type": "LABEL", "hidden": false, "locked": false, "keyframes": label_ids.clone(), "pluginMetadata": {} }));
+        own.push(ll);
+        let anim = format!("carry{k}");
+        animations.push(json!({ "$id": g(&format!("anim{k}")), "name": anim, "layers": own, "pluginMetadata": {} }));
+        let cid = if k == 0 { eid.to_string() } else { format!("{eid}_s{k}") };
+        // where each section starts and ends on the engine's frames, and which follows it
+        let (mut starts, mut ends, mut at) = (Vec::new(), Vec::new(), 1usize);
+        for (.., len) in &spans { starts.push(at); ends.push(at + len - 1); at += len; }
+        let next: Vec<String> = (0..spans.len()).map(|a| match chain.get(a).copied().flatten() {
+            Some(j) => j.to_string(), None => "-1".into() }).collect();
+        let list = |v: &[usize]| v.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ");
+        let hide = if k == 0 && layer.starts_hidden { "\t// hidden by its own first frame until the stage plays a label on it\n\tself.setVisible(false);\n" } else { "" };
+        let files = [
+            ("Stats", format!("// {cid}: a structure the backdrop piece {eid} carries.\n{{\n\tspriteContent: self.getResource().getContent(\"{eid}\"),\n\tanimationId: \"{anim}\",\n\tstartX: {ox},\n\tstartY: {oy}\n}}\n"), None),
+            ("Script", format!("// {cid}: a structure the backdrop piece {eid} carries (the surface `{surface}`). Its one\n\
+                // animation holds every section in turn; the stage plays a section by its label, and at a\n\
+                // section's end this holds it or moves on, as the source's clip does.\n\n\
+                var STARTS = [{}];\nvar ENDS = [{}];\nvar NEXT = [{}];\n\n\
+                function initialize() {{\n{hide}}}\n\n\
+                function update() {{\n\tvar f = self.getCurrentFrame();\n\
+                \tfor (i in 0...ENDS.length) if (f == ENDS[i]) {{\n\
+                \t\tif (NEXT[i] < 0) self.pause();\n\
+                \t\telse if (NEXT[i] != i + 1) self.playFrame(STARTS[NEXT[i]]);\n\
+                \t\treturn;\n\t}}\n}}\n\n\
+                function onTeardown() {{}}\n", list(&starts), list(&ends), next.join(", ")), Some("LINE_SEGMENT_STRUCTURE")),
+        ];
+        for (kind, body, ot) in files {
+            let fname = format!("{cid}{kind}");
+            write_script(&scripts.join(format!("{fname}.hx")), &body)?;
+            write_meta(&scripts.join(format!("{fname}.hx.meta")), eid, &fname, "hscript", ot, None)?;
+        }
+        entries.push(json!({ "id": cid, "type": "structure", "objectStatsId": format!("{cid}Stats"), "scriptId": format!("{cid}Script") }));
+        plan.push(json!({ "kind": "structure", "id": cid, "x": ox, "y": oy, "clip": layer.clip, "names": layer.named_path }));
+        ids.push(cid);
+    }
+    let entity = json!({
+        "export": true, "guid": g("entity"), "id": eid, "version": 5,
+        "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "objectType": "CUSTOM_GAME_OBJECT", "version": "0.4.0" } },
+        "plugins": ["com.fraymakers.FraymakersTypes", "com.fraymakers.FraymakersMetadata"],
+        "tags": [], "paletteMap": {}, "tilesets": [], "terrains": [],
+        "symbols": symbols, "keyframes": keyframes, "layers": layers, "animations": animations
+    });
+    write_json(&lib.join("entities").join(format!("{eid}.entity")), &entity)?;
+    write_meta(&lib.join("entities").join(format!("{eid}.entity.meta")), eid, eid, "", Some("CUSTOM_GAME_OBJECT"), None)?;
+    tables.elements.push(BootElement {
+        index: i, id: eid.to_string(), segmented: true, x: ox, y: oy,
+        at: match layer.pan { Some((px, py)) => BootAt::Pan(px, py), None => layer.plane.boot_at() },
+        shown: Vec::new(), tint: None, alpha: None, hidden: false, ride: None, follow: None,
+        path: layer.named_path.clone(), labels: spans.iter().map(|(n, ..)| n.clone()).collect(),
+        sections: Some((spans.iter().map(|(n, ..)| anim_key(n)).collect(), spans.iter().map(|(.., l)| *l).collect())),
+        carry: Some((surface.to_string(), ids)),
+    });
+    Ok(())
+}
+
 fn emit_bg_segmented(
     model: &StageModel, layer: &BgLayerRef, eid: &str, i: usize, lib: &Path,
     tables: &mut StageTables, entries: &mut Vec<Value>, plan: &mut Vec<Value>,
@@ -9827,6 +10013,7 @@ fn emit_bg_segmented(
         path: layer.named_path.clone(), labels: spans.iter().map(|(n, ..)| n.clone()).collect(),
         sections: chain.as_ref().map(|_| (spans.iter().map(|(n, ..)| anim_key(n)).collect(),
             spans.iter().map(|(.., l)| *l).collect())),
+        carry: None,
     });
     Ok(())
 }
@@ -11890,7 +12077,7 @@ mod hazard_tests {
             name: None, gated: true, placed: false, deck: None });
         t.elements.push(BootElement { index: 0, id: "demo_el".into(), segmented: false, x: 728.0, y: -60.19000000000002,
             at: BootAt::Pan(0.25, 1.0), shown: vec![(0, 10)], tint: None, alpha: Some(0.5), hidden: true, ride: None, follow: None,
-            path: Vec::new(), labels: Vec::new(), sections: None });
+            path: Vec::new(), labels: Vec::new(), sections: None, carry: None });
         let lit = t.literal();
         assert!(lit.starts_with("var DATA = { stage: { boot: {"), "{lit}");
         assert!(lit.contains("x: 12.3, y: -3.0"), "object places at one decimal: {lit}");
