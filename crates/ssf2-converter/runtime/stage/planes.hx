@@ -92,7 +92,7 @@ Planes.bind = function() {
 		if (v == null) continue;
 		var path = e.path.copy();
 		while (path.length > 0 && top.indexOf(path[0]) < 0) path.shift();
-		var row = { v: v, seg: DATA.stage.boot.elements[e.i].seg == true, path: path, labels: e.labels, over: [],
+		var row = { v: v, i: e.i, seg: DATA.stage.boot.elements[e.i].seg == true, path: path, labels: e.labels, over: [],
 		            bx: v.getX(), by: v.getY(), dx: 0.0, dy: 0.0, shown: true, alpha: 1.0 };
 		for (b in Planes.bound) if (Planes.under(b.path, path)) {
 			row.over.push(b);
@@ -180,9 +180,7 @@ Planes.jumped = function(b, f, stop) {
 	if (!Planes.ready) { b.waiting.push({ jump: true, f: f, stop: stop }); return; }
 	if (!Planes.isNum(f)) {
 		var l = Planes.phase(f);
-		for (e in b.els) if (e.labels.indexOf(l) >= 0) {
-			if (e.seg && e.v.exports != null) e.v.exports.__go = l;
-		}
+		for (e in b.els) if (e.seg && e.labels.indexOf(l) >= 0) Planes.go(e, l);
 		for (p in PeptideRuntime.data.stage.placedAt) if (p.l == Std.string(f)) {
 			var o = __objectNamed(p.n);
 			if (o != null && o.setX != null) { o.setX(p.x); o.setY(p.y); }
@@ -192,13 +190,44 @@ Planes.jumped = function(b, f, stop) {
 	var n = Std.int(f);
 	if (n < 1) n = 1;
 	for (e in b.els) if (Planes.drives(b, e)) {
-		if (e.seg) { if (e.v.exports != null) e.v.exports.__go = n; }
+		if (e.seg) Planes.go(e, n);
 		else {
 			e.v.playFrame(n * 2 - 1);
 			if (stop) e.v.pause(); else e.v.resume();
 			e.held = stop;
 		}
 	}
+};
+
+// a sectioned element sent to a label or a source frame: one whose sections chain in its own
+// animation stats plays it here (shown, as the label the stage plays on it shows a clip hidden by
+// its first frame); one whose sections roll for where they go takes the ask in its own script
+Planes.go = function(e, go) {
+	var sec = DATA.stage.boot.elements[e.i].sections;
+	if (sec == null) { if (e.v.exports != null) e.v.exports.__go = go; return; }
+	var k = -1;
+	var at = 0;
+	if (Planes.isNum(go)) {
+		var f = (Std.int(go) - 1) * 2;
+		var start = 0;
+		for (i in 0...sec.lens.length) {
+			if (f >= start && f < start + sec.lens[i]) { k = i; at = f - start; }
+			start += sec.lens[i];
+		}
+	} else {
+		k = e.labels.indexOf(go);
+	}
+	if (k < 0) return;
+	e.v.setVisible(true);
+	e.v.playAnimation(sec.anims[k]);
+	if (at > 0) e.v.playFrame(at + 1);
+};
+// whether a sectioned element is already in the section a label names
+Planes.playing = function(e, l) {
+	var sec = DATA.stage.boot.elements[e.i].sections;
+	if (sec == null) return e.v.exports != null && e.v.exports.__go == l;
+	var k = e.labels.indexOf(l);
+	return k >= 0 && e.v.getAnimation() == sec.anims[k];
 };
 
 // whether the code holds this element on a frame of its choosing (the verify gates read it)
@@ -247,7 +276,7 @@ Planes.frame = function() {
 			b.lab = lab;
 			if (was != null && lab != null && Planes.ready) {
 				var l = Planes.phase(lab);
-				for (e in b.els) if (e.seg && e.labels.indexOf(l) >= 0 && e.v.exports != null && e.v.exports.__go != l) e.v.exports.__go = l;
+				for (e in b.els) if (e.seg && e.labels.indexOf(l) >= 0 && !Planes.playing(e, l)) Planes.go(e, l);
 			}
 		}
 		if (c.x != b.lx || c.y != b.ly || c.visible != b.lv || c.alpha != b.la) {

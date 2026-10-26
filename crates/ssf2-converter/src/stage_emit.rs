@@ -8806,6 +8806,37 @@ fn bg_segment_entity(eid: &str, layer: &BgLayerRef, scale: f64) -> Value {
 /// staying in the same segment is doing nothing, and a branch is one `toLocalState`. That keeps the
 /// common case seamless (no restart hitch on the segment that just repeats) and means the frame
 /// counter is the only state that has to survive between frames.
+/// Which section follows each of a sectioned element's sections: `Some(j)` plays section j next
+/// (itself when it loops), `None` holds its last frame until the stage moves it on. None for an
+/// element one of whose sections rolls for where it goes.
+fn segment_chain(layer: &BgLayerRef) -> Option<Vec<Option<usize>>> {
+    use crate::abc_parser::LabelJump;
+    let spans = bg_segment_spans(layer);
+    let idx_of = |lbl: &str| spans.iter().position(|(n, ..)| *n == sanitize_anim(lbl));
+    (0..spans.len()).map(|i| {
+        let fall = if i + 1 < spans.len() { i + 1 } else { 0 };
+        match layer.segments.get(i).and_then(|(_, _, j)| j.clone()) {
+            Some(LabelJump::Always(t)) | Some(LabelJump::Hold(t)) => Some(Some(idx_of(&t).unwrap_or(fall))),
+            Some(LabelJump::Chance { .. }) => None,
+            Some(LabelJump::Stop) => Some(None),
+            Some(LabelJump::ToFrame(_)) | None => Some(Some(fall)),
+        }
+    }).collect()
+}
+
+/// The script of a sectioned element whose sections chain in its animation stats: it only sets
+/// the element up, and the stage plays its sections on it.
+fn bg_segment_native_script_hx(eid: &str, layer: &BgLayerRef) -> String {
+    format!(
+        "// {eid}: a backdrop element whose SSF2 clip branches between frame labels. One animation\n\
+         // per label; the animation stats chain them, and the stage plays a label on it.\n\n\
+         function initialize() {{\n\tself.setState(PState.ACTIVE);\n\
+         \t// scenery can sit past the blast zone (a bird crossing the sky, a far hill); it stays\n\
+         \tself.updateGameObjectStats({{ deathBoundsDestroy: false }});\n{}}}\n\n\
+         function update() {{}}\n",
+        if layer.starts_hidden { "\t// hidden by its own first frame until the stage plays a label on it\n\tself.setVisible(false);\n" } else { "" })
+}
+
 fn bg_segment_script_hx(eid: &str, layer: &BgLayerRef) -> String {
     use crate::abc_parser::LabelJump;
     let spans = bg_segment_spans(layer);
@@ -9603,7 +9634,7 @@ fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path, pla
             },
             shown: layer.presence.clone(), tint, alpha, hidden, ride,
             follow: plat_follow(model, layer, &mut followed),
-            path: layer.named_path.clone(), labels: vec!["active".to_string()],
+            path: layer.named_path.clone(), labels: vec!["active".to_string()], sections: None,
         });
     }
     // The named clip, bound to everything that came out of it. One clip is one thing to the stage
@@ -9731,14 +9762,23 @@ fn emit_bg_segmented(
     }
     // a segment that loops plays over until the script moves on; one the source stops on holds
     // its last frame, which is the frame the source shows while it waits
+    // sections that follow one another the same way every time chain in the animation stats, and
+    // the engine plays them with nothing of ours running; a section that rolls for where it goes
+    // keeps the script that rolls
+    let chain = segment_chain(layer);
     let anim_stats = spans.iter().enumerate()
-        .map(|(i, (n, ..))| {
-            let held = matches!(layer.segments.get(i).map(|(_, _, j)| j), Some(Some(crate::abc_parser::LabelJump::Stop)));
-            format!("\t{}: {{ endType: AnimationEndType.{} }}", anim_key(n), if held { "NONE" } else { "LOOP" })
+        .map(|(i, (n, ..))| match chain.as_ref().map(|c| c[i]) {
+            Some(None) => format!("\t{}: {{ endType: AnimationEndType.NONE }}", anim_key(n)),
+            Some(Some(j)) if j != i => format!("\t{}: {{ endType: AnimationEndType.AUTO, nextAnimation: \"{}\" }}", anim_key(n), anim_key(&spans[j].0)),
+            Some(Some(_)) => format!("\t{}: {{ endType: AnimationEndType.LOOP }}", anim_key(n)),
+            None => {
+                let held = matches!(layer.segments.get(i).map(|(_, _, j)| j), Some(Some(crate::abc_parser::LabelJump::Stop)));
+                format!("\t{}: {{ endType: AnimationEndType.{} }}", anim_key(n), if held { "NONE" } else { "LOOP" })
+            }
         })
         .collect::<Vec<_>>().join(",\n");
     let files = [
-        ("Script", bg_segment_script_hx(eid, layer)),
+        ("Script", if chain.is_some() { bg_segment_native_script_hx(eid, layer) } else { bg_segment_script_hx(eid, layer) }),
         ("GameObjectStats", format!(
             "// GameObjectStats for the segmented backdrop element {eid}.\n{{\n\
              \tspriteContent: self.getResource().getContent(\"{eid}\"),\n\tinitialState: PState.ACTIVE,\n\
@@ -9785,6 +9825,8 @@ fn emit_bg_segmented(
         shown: Vec::new(), tint: None, alpha: None, hidden: false, ride,
         follow: plat_follow(model, layer, followed),
         path: layer.named_path.clone(), labels: spans.iter().map(|(n, ..)| n.clone()).collect(),
+        sections: chain.as_ref().map(|_| (spans.iter().map(|(n, ..)| anim_key(n)).collect(),
+            spans.iter().map(|(.., l)| *l).collect())),
     });
     Ok(())
 }
@@ -11848,7 +11890,7 @@ mod hazard_tests {
             name: None, gated: true, placed: false, deck: None });
         t.elements.push(BootElement { index: 0, id: "demo_el".into(), segmented: false, x: 728.0, y: -60.19000000000002,
             at: BootAt::Pan(0.25, 1.0), shown: vec![(0, 10)], tint: None, alpha: Some(0.5), hidden: true, ride: None, follow: None,
-            path: Vec::new(), labels: Vec::new() });
+            path: Vec::new(), labels: Vec::new(), sections: None });
         let lit = t.literal();
         assert!(lit.starts_with("var DATA = { stage: { boot: {"), "{lit}");
         assert!(lit.contains("x: 12.3, y: -3.0"), "object places at one decimal: {lit}");

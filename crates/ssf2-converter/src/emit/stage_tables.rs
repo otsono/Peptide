@@ -79,6 +79,9 @@ pub struct BootElement {
     pub path: Vec<String>,
     /// the labels it plays as animations of its own
     pub labels: Vec<String>,
+    /// a sectioned element the engine plays by itself (its sections chain in its animation
+    /// stats): the animation each label is, and each section's length on the engine's clock
+    pub sections: Option<(Vec<String>, Vec<usize>)>,
 }
 
 /// A named clip, bound to the elements that came out of it.
@@ -211,7 +214,13 @@ impl StageTables {
                     .collect::<Vec<_>>().join(", ")),
                 None => "null".into(),
             };
-            format!("{{ i: {}, id: {}, seg: {}, x: {}, y: {}, at: {}, shown: {shown}, tint: {tint}, tlen: {tlen}, alpha: {alpha}, hidden: {}, ride: {ride}, follow: {follow} }}",
+            let sections = match &e.sections {
+                Some((anims, lens)) => format!("{{ anims: [{}], lens: [{}] }}",
+                    anims.iter().map(|a| q(a)).collect::<Vec<_>>().join(", "),
+                    lens.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ")),
+                None => "null".into(),
+            };
+            format!("{{ i: {}, id: {}, seg: {}, x: {}, y: {}, at: {}, shown: {shown}, tint: {tint}, tlen: {tlen}, alpha: {alpha}, hidden: {}, ride: {ride}, follow: {follow}, sections: {sections} }}",
                 e.index, q(&e.id), e.segmented, e.x, e.y, at_literal(&e.at), e.hidden)
         }).collect();
         let tints = self.tints.iter().map(|t| format!("[{}]", t.iter()
