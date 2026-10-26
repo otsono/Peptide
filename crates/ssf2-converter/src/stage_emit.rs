@@ -9523,6 +9523,9 @@ fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path, pla
             // the piece that carries a surface is that surface's structures, its art on the first
             match layer.named_path.last().filter(|n| carriers.get(*n) == Some(&i)).and_then(|n| carried.get(n).map(|g| (n, g))) {
                 Some((n, segs)) => emit_bg_carrier(model, layer, &eid, i, lib, tables, &mut entries, plan, n, segs)?,
+                // a piece in a camera background is effects in that background's container
+                None if matches!(layer.plane, BgPlane::CameraEntry(_)) && segment_chain(layer).is_some() =>
+                    emit_bg_sectioned_vfx(layer, &eid, i, lib, tables, plan)?,
                 None => emit_bg_segmented(model, layer, &eid, i, lib, tables, &mut entries, plan, &mut followed)?,
             }
             // it belongs to its clip's group like any other piece: the group is how the ported
@@ -9683,7 +9686,7 @@ fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path, pla
             },
             shown: layer.presence.clone(), tint, alpha, hidden, ride,
             follow: plat_follow(model, layer, &mut followed),
-            path: layer.named_path.clone(), labels: vec!["active".to_string()], sections: None, carry: None,
+            path: layer.named_path.clone(), labels: vec!["active".to_string()], sections: None, carry: None, chain: None,
         });
     }
     // The named clip, bound to everything that came out of it. One clip is one thing to the stage
@@ -9783,6 +9786,42 @@ fn plat_follow(model: &StageModel, layer: &BgLayerRef, done: &mut std::collectio
         }
     }
     Some(BootFollow { name: name.clone(), labels })
+}
+
+/// A sectioned piece in a camera background, as effects in that background's container (the
+/// engine places and pans it with the background): one animation per section, and a one-frame
+/// `_hold` of its last frame for a section the source stops on. The stage plays a section as an
+/// effect and moves on to the next on an engine timer at the section's end.
+fn emit_bg_sectioned_vfx(layer: &BgLayerRef, eid: &str, i: usize, lib: &Path,
+    tables: &mut StageTables, plan: &mut Vec<Value>) -> Result<()> {
+    let spans = bg_segment_spans(layer);
+    let chain = segment_chain(layer).unwrap_or_default();
+    let origin = bg_element_origin(layer);
+    let mut phases: Vec<(String, Vec<ArtRef>)> = Vec::new();
+    for (a, (n, start, end, _)) in spans.iter().enumerate() {
+        phases.push((anim_key(n), layer.frames[*start..*end].to_vec()));
+        if chain.get(a).copied().flatten().is_none() && end > start {
+            let mut last = layer.frames[end - 1].clone();
+            last.hold = 1;
+            phases.push((format!("{}_hold", anim_key(n)), vec![last]));
+        }
+    }
+    write_json(&lib.join("entities").join(format!("{eid}.entity")), &bg_element_entity_phased(eid, &phases, 1.0, origin))?;
+    write_meta(&lib.join("entities").join(format!("{eid}.entity.meta")), eid, eid, "", Some("VFX"), None)?;
+    let (ox, oy) = origin;
+    plan.push(json!({ "kind": "object", "id": eid, "var": format!("_bg{i}"), "x": ox, "y": oy,
+                      "clip": layer.clip, "names": layer.named_path,
+                      "phases": spans.iter().map(|(n, ..)| n.clone()).collect::<Vec<_>>() }));
+    tables.elements.push(BootElement {
+        index: i, id: eid.to_string(), segmented: true, x: ox, y: oy,
+        at: match layer.pan { Some((px, py)) => BootAt::Pan(px, py), None => layer.plane.boot_at() },
+        shown: Vec::new(), tint: None, alpha: None, hidden: layer.starts_hidden, ride: None, follow: None,
+        path: layer.named_path.clone(), labels: spans.iter().map(|(n, ..)| n.clone()).collect(),
+        sections: Some((spans.iter().map(|(n, ..)| anim_key(n)).collect(), spans.iter().map(|(.., l)| *l).collect())),
+        carry: None,
+        chain: Some(chain.iter().map(|n| n.map(|j| j as i64).unwrap_or(-1)).collect()),
+    });
+    Ok(())
 }
 
 /// The named surfaces sectioned pieces carry: each by the first sectioned piece placed under its
@@ -9917,7 +9956,7 @@ fn emit_bg_carrier(
         shown: Vec::new(), tint: None, alpha: None, hidden: false, ride: None, follow: None,
         path: layer.named_path.clone(), labels: spans.iter().map(|(n, ..)| n.clone()).collect(),
         sections: Some((spans.iter().map(|(n, ..)| anim_key(n)).collect(), spans.iter().map(|(.., l)| *l).collect())),
-        carry: Some((surface.to_string(), ids)),
+        carry: Some((surface.to_string(), ids)), chain: None,
     });
     Ok(())
 }
@@ -10013,7 +10052,7 @@ fn emit_bg_segmented(
         path: layer.named_path.clone(), labels: spans.iter().map(|(n, ..)| n.clone()).collect(),
         sections: chain.as_ref().map(|_| (spans.iter().map(|(n, ..)| anim_key(n)).collect(),
             spans.iter().map(|(.., l)| *l).collect())),
-        carry: None,
+        carry: None, chain: None,
     });
     Ok(())
 }
@@ -12077,7 +12116,7 @@ mod hazard_tests {
             name: None, gated: true, placed: false, deck: None });
         t.elements.push(BootElement { index: 0, id: "demo_el".into(), segmented: false, x: 728.0, y: -60.19000000000002,
             at: BootAt::Pan(0.25, 1.0), shown: vec![(0, 10)], tint: None, alpha: Some(0.5), hidden: true, ride: None, follow: None,
-            path: Vec::new(), labels: Vec::new(), sections: None, carry: None });
+            path: Vec::new(), labels: Vec::new(), sections: None, carry: None, chain: None });
         let lit = t.literal();
         assert!(lit.starts_with("var DATA = { stage: { boot: {"), "{lit}");
         assert!(lit.contains("x: 12.3, y: -3.0"), "object places at one decimal: {lit}");

@@ -85,6 +85,9 @@ pub struct BootElement {
     /// a piece that carries a named surface: the surface, and the structures it is (its art on
     /// the first)
     pub carry: Option<(String, Vec<String>)>,
+    /// a sectioned piece drawn as effects the stage swaps (one in a camera background): which
+    /// section follows each, -1 where it holds its last frame
+    pub chain: Option<Vec<i64>>,
 }
 
 /// A named clip, bound to the elements that came out of it.
@@ -227,7 +230,11 @@ impl StageTables {
                 Some((n, ids)) => format!("{{ n: {}, ids: [{}] }}", q(n), ids.iter().map(|c| q(c)).collect::<Vec<_>>().join(", ")),
                 None => "null".into(),
             };
-            format!("{{ i: {}, id: {}, seg: {}, x: {}, y: {}, at: {}, shown: {shown}, tint: {tint}, tlen: {tlen}, alpha: {alpha}, hidden: {}, ride: {ride}, follow: {follow}, sections: {sections}, carry: {carry} }}",
+            let chain = match &e.chain {
+                Some(c) => format!("[{}]", c.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ")),
+                None => "null".into(),
+            };
+            format!("{{ i: {}, id: {}, seg: {}, x: {}, y: {}, at: {}, shown: {shown}, tint: {tint}, tlen: {tlen}, alpha: {alpha}, hidden: {}, ride: {ride}, follow: {follow}, sections: {sections}, carry: {carry}, chain: {chain} }}",
                 e.index, q(&e.id), e.segmented, e.x, e.y, at_literal(&e.at), e.hidden)
         }).collect();
         let tints = self.tints.iter().map(|t| format!("[{}]", t.iter()

@@ -125,6 +125,17 @@ StageBoot.container = function(at) {
 StageBoot.element = function(e, owner) {
 	var b = DATA.stage.boot;
 	var v = null;
+	// a sectioned piece in a camera background is effects in that background's container
+	if (e.chain != null) {
+		var c = Container.create();
+		var at = StageBoot.container(e.at);
+		if (at == null) return;
+		at.addChild(c);
+		var h = StageBoot.sectioned(e, c);
+		__made.push({ id: e.id, k: "o", o: h });
+		StageBoot.bg[e.i] = h;
+		return;
+	}
 	// a piece that carries a named surface is that surface's structures, its art on the first
 	if (e.carry != null) {
 		var parts = [];
@@ -222,6 +233,53 @@ StageBoot.carrier = function(parts, sec) {
 	h.getCurrentFrame = function() { return parts.length > 0 ? parts[0].getCurrentFrame() : 0; };
 	h.getTotalFrames = function() { return parts.length > 0 ? parts[0].getTotalFrames() : 0; };
 	h.isDisposed = function() { return parts.length == 0 || parts[0].isDisposed(); };
+	return h;
+};
+
+// a sectioned piece drawn as effects: the section playing is one effect, and at its end an engine
+// timer plays the section that follows (or the section's last frame, held, where the source
+// stops); the stage plays a section on it by name
+StageBoot.sectioned = function(e, c) {
+	var sec = e.sections;
+	var h = { exports: {}, v: null, k: -1, t: -1, dx: 0.0, dy: 0.0 };
+	var drop = function(v) { if (v != null && !v.isDisposed()) v.kill(); };
+	var show = function(anim, loop) {
+		var v = match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(e.id), animation: anim, x: e.x, y: e.y, loop: loop, timeout: -1, relativeWith: false, resizeWith: false }));
+		if (v != null) c.addChild(v.getViewRootContainer());
+		return v;
+	};
+	h.play = function(k) {
+		if (h.t >= 0) { self.removeTimer(h.t); h.t = -1; }
+		drop(h.v);
+		h.k = k;
+		var n = e.chain[k];
+		h.v = show(sec.anims[k], n == k);
+		if (n == k) return;
+		h.t = self.addTimer(sec.lens[k], 1, function() {
+			h.t = -1;
+			if (n >= 0) { h.play(n); return; }
+			var was = h.v;
+			h.v = show(sec.anims[k] + "_hold", true);
+			drop(was);
+		}, { persistent: true });
+	};
+	h.getX = function() { return e.x + h.dx; };
+	h.getY = function() { return e.y + h.dy; };
+	h.setX = function(x) { h.dx = x - e.x; c.x = h.dx; };
+	h.setY = function(y) { h.dy = y - e.y; c.y = h.dy; };
+	h.setVisible = function(v) { c.visible = v; };
+	h.getVisible = function() { return c.visible; };
+	h.setAlpha = function(a) { c.alpha = a; };
+	h.playAnimation = function(a) { var k = sec.anims.indexOf(a); if (k >= 0) h.play(k); };
+	h.playFrame = function(f) {};
+	h.pause = function() { if (h.v != null && !h.v.isDisposed()) h.v.pause(); };
+	h.resume = function() { if (h.v != null && !h.v.isDisposed()) h.v.resume(); };
+	h.getAnimation = function() { return h.k < 0 ? null : sec.anims[h.k]; };
+	h.getCurrentFrame = function() { return h.v == null || h.v.isDisposed() ? 0 : h.v.getCurrentFrame(); };
+	h.getTotalFrames = function() { return h.v == null || h.v.isDisposed() ? 0 : h.v.getTotalFrames(); };
+	h.isDisposed = function() { return false; };
+	if (e.hidden == true) c.visible = false;
+	h.play(0);
 	return h;
 };
 
