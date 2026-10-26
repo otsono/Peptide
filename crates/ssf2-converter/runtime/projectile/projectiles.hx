@@ -333,13 +333,18 @@ Projectiles.floorRecord = function(me) {
 	if (fm.exports.__floorSet != null) { var b = fm.exports.__floorSet; fm.exports.__floorSet = null; fm.setXSpeed(b.xs); fm.setYSpeed(b.ys); }
 	if (!fm.isOnFloor()) fm.exports.__airSpeed = { xs: fm.getXSpeed(), ys: fm.getYSpeed() };
 };
-// its x slowdown (`xdecay`), or its homing (`homingSpeed`), which takes the slowdown off its speed
+// its x slowdown (`xdecay`), and its homing (`homingSpeed`)
 Projectiles.steer = function(me) {
 	var u = PeptideRuntime.data.units;
 	var fm = me.__fm;
 	var xdecay = Projectiles.num(me, "xdecay", 0) * u.speed;
 	var homing = Projectiles.num(me, "homingSpeed", -1);
-	if (homing >= 0 && me.__age != null && me.__age >= 1) Projectiles.home(me, homing * u.speed - xdecay);
+	// homing turns it and keeps its own speed, which the slowdown still takes from (measured: samus's
+	// missile, launched at 10 with 0.15, slows by 0.15 a source frame while it turns)
+	if (homing >= 0 && me.__age != null && me.__age >= 1) {
+		var v = Math.sqrt(fm.getXSpeed() * fm.getXSpeed() + fm.getYSpeed() * fm.getYSpeed()) - xdecay * 0.5;
+		Projectiles.home(me, v < 0 ? 0 : v);
+	}
 	else if (xdecay != 0) {
 		var v = fm.getXSpeed();
 		var w = v - xdecay * 0.5;
@@ -404,7 +409,7 @@ Projectiles.refresh = function(me) {
 };
 
 // homing: the heading turns toward the middle of the nearest opponent that can be hit, a share of the turn
-// each frame (homingEase, per source frame: half as much a frame here), at homingSpeed
+// each frame (homingEase, per source frame: half as much a frame here), at `speed`
 Projectiles.home = function(me, speed) {
 	var fm = me.__fm;
 	var target = null;

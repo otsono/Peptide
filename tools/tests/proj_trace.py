@@ -97,13 +97,11 @@ def ssf2_path(cid, move, frames):
         f = m.group(1).split("|")
         if len(f) < 14:
             continue
+        # the projectile count and the first one's place sit at 11-13 (a probe's values may follow)
         try:
-            n = int(f[-3])
-        except ValueError:
-            continue
-        try:
+            n = int(f[11])
             thrower = (float(f[2]), float(f[3]), f[0])
-            out.append((None if n == 0 or f[-2] == "-" else (float(f[-2]), float(f[-1]), ""), thrower))
+            out.append((None if n == 0 or f[12] == "-" else (float(f[12]), float(f[13]), ""), thrower))
         except ValueError:
             continue
     s.close(final=True)
