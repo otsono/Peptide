@@ -72,8 +72,8 @@ pub struct BootElement {
     pub alpha: Option<f64>,
     /// starts hidden
     pub hidden: bool,
-    /// the object it rides: (object index, dx, dy)
-    pub ride: Option<(usize, f64, f64)>,
+    /// the object it rides: (object index, dx, dy, whether its picture never changes)
+    pub ride: Option<(usize, f64, f64, bool)>,
     pub follow: Option<BootFollow>,
     /// every instance name over it, outermost first (what the stage's code reaches it through)
     pub path: Vec<String>,
@@ -201,7 +201,7 @@ impl StageTables {
             let (tint, tlen) = match e.tint { Some((k, len)) => (k.to_string(), len.to_string()), None => ("null".into(), "0".into()) };
             let alpha = e.alpha.map(|a| format!("{a:.3}")).unwrap_or_else(|| "null".into());
             let ride = match e.ride {
-                Some((i, dx, dy)) => format!("{{ o: {i}, dx: {dx:.4}, dy: {dy:.4} }}"),
+                Some((i, dx, dy, still)) => format!("{{ o: {i}, dx: {dx:.4}, dy: {dy:.4}, still: {still} }}"),
                 None => "null".into(),
             };
             let follow = match &e.follow {

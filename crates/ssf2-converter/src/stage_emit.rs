@@ -9575,7 +9575,7 @@ fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path, pla
             .is_some_and(|n| rides_under(&layer.named_path, n)));
         // the object by its own handle: two placements can share a name (flat zone's platforms
         // are both placed as `ground`), the handle is one each
-        let ride = rider.map(|hz| (model.hazards.iter().position(|h| std::ptr::eq(h, hz)).unwrap_or(0), ox - hz.x, oy - hz.y));
+        let ride = rider.map(|hz| (model.hazards.iter().position(|h| std::ptr::eq(h, hz)).unwrap_or(0), ox - hz.x, oy - hz.y, still_picture(layer)));
         // and which source clip it is, and whether it keeps the stage's whole timeline under a
         // schedule (a clip the stage puts down over and over) rather than looping on its own:
         // what a checker pairs it to its source by, and how it reads the length it finds
@@ -9671,6 +9671,15 @@ fn piece_index(var: &str) -> usize {
 /// timeline has moved its picture from that placement (mushroom kingdom 3's castle floor rises 500 px
 /// into play at its label). The offsets are the picture's own per-source-frame placements, so they
 /// follow the tween the source drew, not just its ends.
+/// Whether a piece draws one picture, in one place, the same way on every frame: art that never
+/// changes, which needs nothing to play it.
+fn still_picture(layer: &BgLayerRef) -> bool {
+    let Some(f0) = layer.frames.first() else { return false };
+    layer.frames.iter().all(|f| !f.blank && f.guid == f0.guid && f.x == f0.x && f.y == f0.y && f.w == f0.w && f.h == f0.h
+        && f.rotation == f0.rotation && f.scale_x == f0.scale_x && f.scale_y == f0.scale_y
+        && f.alpha == f0.alpha && f.tint == f0.tint)
+}
+
 fn plat_follow(model: &StageModel, layer: &BgLayerRef, done: &mut std::collections::BTreeSet<String>) -> Option<BootFollow> {
     let name = layer.named_path.last()?;
     if done.contains(name) { return None }
@@ -9761,7 +9770,7 @@ fn emit_bg_segmented(
     // parented into the world it sits on the patch of world it was placed on -- which for a
     // screen-sized backdrop is a picture the view mostly misses, and crystal smash's whole
     // backdrop went black behind it.
-    let ride = rider.map(|hz| (model.hazards.iter().position(|h| std::ptr::eq(h, hz)).unwrap_or(0), ox - hz.x, oy - hz.y));
+    let ride = rider.map(|hz| (model.hazards.iter().position(|h| std::ptr::eq(h, hz)).unwrap_or(0), ox - hz.x, oy - hz.y, still_picture(layer)));
     // the container a camera-background piece draws in is the engine's container for its entry,
     // and the engine hands back only as many as the stage declares -- an index past the end is
     // null, and addChild on it threw and unloaded the whole stage script (kingdom1 places into

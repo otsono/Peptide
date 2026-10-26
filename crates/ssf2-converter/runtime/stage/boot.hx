@@ -125,6 +125,19 @@ StageBoot.container = function(at) {
 StageBoot.element = function(e, owner) {
 	var b = DATA.stage.boot;
 	var v = null;
+	// a picture placed inside an object's own clip that never changes is drawn in the object's own
+	// view, where the engine carries it with the object (nothing in a named clip, which the code
+	// reaches as a group)
+	if (e.ride != null && e.ride.still == true && !StageBoot.grouped(e.i)) {
+		var ro = StageBoot.hz[e.ride.o];
+		var s = ro == null || ro.getViewRootContainer == null ? null : Sprite.create(self.getResource().getContent(e.id));
+		if (s != null) {
+			s.x = e.ride.dx;
+			s.y = e.ride.dy;
+			ro.getViewRootContainer().addChildAt(s, 0);
+			return;
+		}
+	}
 	if (e.seg == true) {
 		v = match.createCustomGameObject(self.getResource().getContent(e.id), owner);
 		if (v != null) {
@@ -156,16 +169,21 @@ StageBoot.element = function(e, owner) {
 	// a piece placed inside an object's own clip is that object's picture: it rides the object
 	if (e.ride != null && v != null) {
 		var ao = StageBoot.hz[e.ride.o];
-		if (ao != null && ao.getX != null) {
-			__follow.push({ v: v, o: ao, dx: e.ride.dx, dy: e.ride.dy });
-			if (ao.exports != null) {
-				if (ao.exports.__art == null) ao.exports.__art = [];
-				ao.exports.__art.push(v);
-			}
-		}
+		if (ao != null && ao.getX != null) __follow.push({ v: v, o: ao, dx: e.ride.dx, dy: e.ride.dy });
 	}
 	// a surface its plane moves by label rides this picture
 	if (e.follow != null && v != null) __platFollow.push({ v: v, n: e.follow.n, at: e.follow.at, bx: [], by: [] });
+};
+
+// whether an element is a part of a named clip
+StageBoot.grouped = function(i) {
+	var gs = DATA.stage.boot.groups;
+	var k = 0;
+	while (k < gs.length) {
+		if (gs[k].parts.indexOf(i) >= 0) return true;
+		k = k + 1;
+	}
+	return false;
 };
 
 // a named clip: the object the tree placed under that name when there is one, else a group of
