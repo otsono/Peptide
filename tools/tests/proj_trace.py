@@ -101,8 +101,11 @@ def ssf2_path(cid, move, frames):
             n = int(f[-3])
         except ValueError:
             continue
-        thrower = (float(f[2]), float(f[3]), f[0])
-        out.append((None if n == 0 or f[-2] == "-" else (float(f[-2]), float(f[-1]), ""), thrower))
+        try:
+            thrower = (float(f[2]), float(f[3]), f[0])
+            out.append((None if n == 0 or f[-2] == "-" else (float(f[-2]), float(f[-1]), ""), thrower))
+        except ValueError:
+            continue
     s.close(final=True)
     return out
 

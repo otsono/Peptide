@@ -1175,17 +1175,15 @@ fn own_kind_asked(code: &str, name: &str) -> String {
     crate::re!(r"\b(?:self\.)+exportStats\(\s*\)").replace_all(code, format!("{name:?}").as_str()).into_owned()
 }
 
-/// The death bounds are the projectile's script's to keep (see `__outOfBounds`): the engine's own
-/// is turned off, and whether this survives them is handed to the script.
+/// The death bounds are the engine's (`deathBoundsDestroy`, as declared); whether this one survives
+/// them is handed to the script too.
 fn bounds_are_the_scripts(stats: &str) -> (String, bool) {
     let re = crate::re!(r"deathBoundsDestroy\s*:\s*(true|false)");
     let survives = re.captures(stats).is_some_and(|c| &c[1] == "false");
-    if re.is_match(stats) {
-        return (re.replace(stats, "deathBoundsDestroy: false").into_owned(), survives);
-    }
-    // no word on it: the engine's own default, which ends it at the bounds
+    if re.is_match(stats) { return (stats.to_string(), survives) }
+    // no word on it: the source's default, which ends it at the bounds
     let out = match stats.find("spriteContent") {
-        Some(i) => { let mut o = stats.to_string(); o.insert_str(i, "deathBoundsDestroy: false,\n    "); o }
+        Some(i) => { let mut o = stats.to_string(); o.insert_str(i, "deathBoundsDestroy: true,\n    "); o }
         None => stats.to_string(),
     };
     (out, false)

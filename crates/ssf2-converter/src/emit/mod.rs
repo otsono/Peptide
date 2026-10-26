@@ -597,6 +597,30 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     // a stage's object can have no clip by design (a zone its code sizes): it runs on an empty one
     if clip_sym.is_none() && spec.kind != "object" { problems.push(format!("the {} clip {clip} is no symbol", spec.kind)); }
 
+    // a projectile's own frame work: only the pieces its declaration or its code names
+    if spec.kind == "projectile" {
+        // what it says itself: its declared stats, its own class and the ones it extends, and the
+        // code on its own frames (not the package's other classes, which every script carries)
+        let mut text = format!("{:?}", spec.stats);
+        // (its code is the classes bound to its clip and to the clips placed inside it, where the
+        // declaration names a base: pikachu's jolt hops from a clip it places)
+        let tree = clip_tree(model, clip_sym);
+        let own: Vec<String> = std::iter::once(class.clone())
+            .chain(tree.iter().filter_map(|s| model.class_of(*s)).map(|c| c.name.clone()))
+            .flat_map(|n| { let mut v = vec![n.clone()]; v.extend(model.supers(&n)); v }).collect();
+        // (the API classes it extends are the runtime's, which names everything)
+        for name in own {
+            if runtime.provides(&name) { continue }
+            let Some(c) = model.classes.get(&name) else { continue };
+            for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor, &c.static_init]) {
+                ast::walk_exprs(&f.body, &mut |e| if let Expr::Member(_, n) | Expr::Name(n) | Expr::Str(n) = e { text.push(' '); text.push_str(n); });
+            }
+        }
+        for ((s, _), (_, t)) in &frames { if tree.contains(s) { text.push_str(t) } }
+        let item = decls.items.entries().iter().any(|(n, d)| n == title
+            || d.get("linkage_id").and_then(|v| v.str()) == Some(clip.as_str()));
+        out.push_str(&projectile_frames(&text, item));
+    }
     // the entry: what the engine calls
     let entry = format!("entry/{}.hx", spec.kind);
     match runtime.files.get(&entry) {
@@ -1507,3 +1531,43 @@ const CLIP_OPTIONAL: [(&str, &str); 10] = [
     ("swapChildren", "swapChildren"), ("getChildAt", "getChildAt"), ("globalToLocal", "globalToLocal"),
     ("get_graphics", "graphics"),
 ];
+
+/// A projectile's `Projectiles.frame` and `Projectiles.engineFrame`: the runtime's pieces its own
+/// script names (its declared stats, the code that writes them, the events it listens for), in the
+/// order the source's engine runs them. A projectile that names none of a piece's words goes
+/// without that piece.
+/// A clip and every clip placed inside it, as deep as they go.
+fn clip_tree(model: &SourceModel, root: Option<u16>) -> BTreeSet<u16> {
+    let mut seen = BTreeSet::new();
+    let mut work: Vec<u16> = root.into_iter().collect();
+    while let Some(s) = work.pop() {
+        if !seen.insert(s) { continue }
+        if let Some(sp) = model.sprites.get(&s) {
+            work.extend(sp.frames.iter().flatten().map(|p| p.char_id).filter(|c| model.sprites.contains_key(c)));
+        }
+    }
+    seen
+}
+
+fn projectile_frames(text: &str, item: bool) -> String {
+    let says = |words: &[&str]| words.iter().any(|w| crate::dyn_re(&format!(r"\b{w}\b")).is_match(text));
+    let ground = says(&["groundTouch", "GROUND_TOUCH"]);
+    let mut frame = vec!["if (Projectiles.gone(me)) return;", "if (Projectiles.lifetime(me)) return;"];
+    if ground { frame.push("Projectiles.floorStart(me);") }
+    if ground || says(&["__landsTo"]) { frame.push("Projectiles.landing(me);") }
+    if says(&["trailEffect"]) { frame.push("Projectiles.trail(me);") }
+    frame.extend(["Projectiles.hasOwnCode(me);"]);
+    let mut engine = vec!["if (Projectiles.gone(me)) return;"];
+    if says(&["createSelfPlatform", "__selfPlatforms"]) { engine.push("Projectiles.platforms(me);") }
+    if says(&["refreshRate"]) { engine.push("Projectiles.refresh(me);") }
+    engine.extend(["Attacks.carry(me);", "Projectiles.lateHit(me);"]);
+    if item { engine.extend(["Projectiles.held(me);", "if (me.__fm.exports.__holder != null) return;"]) }
+    if ground { engine.push("Projectiles.floorRecord(me);") }
+    if says(&["xdecay", "homingSpeed"]) { engine.push("Projectiles.steer(me);") }
+    if says(&["projCollide", "projCollideOwner", "PROJ_COLLIDE", "PROJ_COLLIDE_OWNER"]) { engine.push("Projectiles.touchOwner(me);") }
+    if says(&["influenceXMovement", "influenceYMovement"]) { engine.push("Projectiles.influence(me);") }
+    if says(&["controlDirection"]) { engine.push("Projectiles.control(me);") }
+    if says(&["rotate"]) { engine.push("Projectiles.rotate(me);") }
+    format!("Projectiles.frame = function(me) {{\n\t{}\n}};\nProjectiles.engineFrame = function(me) {{\n\t{}\n}};\n",
+        frame.join("\n\t"), engine.join("\n\t"))
+}

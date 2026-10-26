@@ -181,6 +181,10 @@ Projectiles.begin = function(me) {
 	// one that states no gravity flies flat (a 0 in this engine's stats reads as unset)
 	if (Projectiles.num(me, "gravity", 0) == 0) fm.updateProjectileStats({ gravity: 0 });
 	Projectiles.limit(me);
+	fm.exports.__ask = function(kind, ?v) { if (!fm.isDisposed()) Projectiles.asked(me, kind, v); };
+	// the death bounds are the engine's own (`deathBoundsDestroy`, from its declared
+	// surviveDeathBounds): one its owner steers lives on wherever it is steered
+	if (Projectiles.num(me, "controlDirection", -1) != -1) fm.updateGameObjectStats({ deathBoundsDestroy: false });
 	me.__age = 0;
 	me.__trailT = 0;
 	me.__bounces = 0;
@@ -260,50 +264,89 @@ Projectiles.limit = function(me) {
 	}
 };
 
-// every source frame, before its own code
-Projectiles.frame = function(me) {
+// ---- what a projectile does every engine frame, by what it declares ------------------------------
+// the conversion writes each projectile's own `Projectiles.frame` and `Projectiles.engineFrame` from
+// the pieces below, with only the ones its declaration or its code names (emit::projectile_frames)
+
+// gone: ended, or playing its end
+Projectiles.gone = function(me) { var fm = me.__fm; return fm.isDisposed() || fm.getState() == PState.DESTROYING; };
+// its lifetime (a held item is not flying, so its life does not run): true once it has ended
+// (an enemy riding a projectile lives as long as its own code keeps it: the default lifetime is a
+// projectile's, and pac-man's hydrant went a hundred frames early on it)
+Projectiles.lifetime = function(me) {
 	var fm = me.__fm;
-	if (fm.isDisposed() || fm.getState() == PState.DESTROYING) return;
-	// its lifetime (a held item is not flying, so its life does not run)
-	// (an enemy riding a projectile lives as long as its own code keeps it: the default lifetime
-	// is a projectile's, and pac-man's hydrant went a hundred frames early on it)
 	var enemy = fm.exports.__isEnemy == true;
 	var life = enemy && (me.__stats == null || !me.__stats.exists("time_max")) ? 0 : Projectiles.num(me, "time_max", 0);
 	if (fm.exports.__holder == null) me.__age += 0.5;
-	if (life > 0 && me.__age >= life) { Objects.remove(me); return; }
-	// the source tells a projectile's floor listeners the first frame it finds it on the floor,
-	// one made there too; this engine only tells one that comes down onto it, and only lands one
-	// that comes down (pikachu's jolt is made at his feet and starts its hops from that touch;
-	// mega man's water wave lands where it is made and makes the next one from its landing)
-	if (me.__floorChecks == null) me.__floorChecks = 0;
-	if (me.__floorChecks < 2) {
-		me.__floorChecks++;
-		// made this frame, the engine has not yet put it on anything: a floor through its feet is
-		// the floor the source finds it on (pikachu's jolt hops off it the frame it is made)
-		var on = fm.isOnFloor() || (me.__floorChecks == 1 && Projectiles.floorAt(fm));
-		if (on && Events.touchedFloor(me)) {
-			me.__floorChecks = 2;
-		}
-	}
-	// a landing it is given, once: the engine's own when it comes down, or here when it is
-	// already on the floor
-	if (me.__landsTo != null && me.__landed != true) {
-		if (fm.getAnimation() == me.__landsTo) me.__landed = true;
-		else if (fm.isOnFloor()) { me.__landed = true; fm.playAnimation(me.__landsTo); }
-	}
-	Projectiles.trail(me);
-	Projectiles.outOfBounds(me);
-	// an attack of its own another script asked it to start
-	var a = fm.exports.__askAttack;
-	if (a != null) { fm.exports.__askAttack = null; PeptideGameObject.startAttack(me, a); }
-	// an attack its holder began, put to its frame interrupt (an item's own say in the move)
-	var q = fm.exports.__askInterrupt;
-	if (q != null) {
-		fm.exports.__askInterrupt = null;
-		if (me.__frameInterrupt != null) { q.character = Objects.view(q.character); PeptideRuntime.run(me.__frameInterrupt, q); }
-	}
-	if (!Projectiles.hasOwnCode(me)) Projectiles.defaultEnds(me);
+	if (life > 0 && me.__age >= life) { Objects.remove(me); return true; }
+	return false;
 };
+// the source tells a projectile's floor listeners the first frame it finds it on the floor, one made
+// there too; this engine only tells one that comes down onto it (pikachu's jolt is made at his feet
+// and starts its hops from that touch; mega man's water wave lands where it is made)
+Projectiles.floorStart = function(me) {
+	var fm = me.__fm;
+	if (me.__floorChecks == null) me.__floorChecks = 0;
+	if (me.__floorChecks >= 2) return;
+	me.__floorChecks++;
+	// made this frame, the engine has not yet put it on anything: a floor through its feet is the
+	// floor the source finds it on
+	var on = fm.isOnFloor() || (me.__floorChecks == 1 && Projectiles.floorAt(fm));
+	if (on && Events.touchedFloor(me)) me.__floorChecks = 2;
+};
+// a landing its code gives it, once: the engine's own when it comes down, or here when it is
+// already on the floor
+Projectiles.landing = function(me) {
+	var fm = me.__fm;
+	if (me.__landsTo == null || me.__landed == true) return;
+	if (fm.getAnimation() == me.__landsTo) me.__landed = true;
+	else if (fm.isOnFloor()) { me.__landed = true; fm.playAnimation(me.__landsTo); }
+};
+// what another script asks of it, called from there (`fm.exports.__ask`): an attack of its own,
+// its holder's attack put to its frame interrupt (an item's own say in the move), held or let go
+Projectiles.asked = function(me, kind, v) {
+	var fm = me.__fm;
+	if (kind == "attack") PeptideGameObject.startAttack(me, v);
+	else if (kind == "interrupt") {
+		if (me.__frameInterrupt != null) { v.character = Objects.view(v.character); PeptideRuntime.run(me.__frameInterrupt, v); }
+	} else if (kind == "hold") {
+		// it rides the holder's item box, touching nothing, and the holder's bounds are the ones
+		// that count
+		if (me.__ghost == null) me.__ghost = fm.exports.__ghostDeclared == true;
+		fm.updateProjectileStats({ ghost: true });
+		fm.updateGameObjectStats({ deathBoundsDestroy: false });
+	} else if (kind == "toss") {
+		fm.updateProjectileStats({ ghost: me.__ghost == true });
+		fm.updateGameObjectStats({ deathBoundsDestroy: !AS3.truthy(Projectiles.stat(me, "surviveDeathBounds")) });
+	}
+};
+// the floors it carries go where it is
+Projectiles.platforms = function(me) {
+	var fm = me.__fm;
+	for (st in me.__selfPlatforms) { st.setX(fm.getX()); st.setY(fm.getY()); }
+};
+// what the floor-touch event reads: the launch until it has flown a frame, a bounce speed it was
+// handed, the speed it had in the air
+Projectiles.floorRecord = function(me) {
+	var fm = me.__fm;
+	if (me.__age != null && me.__age >= 1) fm.exports.__launched = null;
+	if (fm.exports.__floorSet != null) { var b = fm.exports.__floorSet; fm.exports.__floorSet = null; fm.setXSpeed(b.xs); fm.setYSpeed(b.ys); }
+	if (!fm.isOnFloor()) fm.exports.__airSpeed = { xs: fm.getXSpeed(), ys: fm.getYSpeed() };
+};
+// its x slowdown (`xdecay`), or its homing (`homingSpeed`), which takes the slowdown off its speed
+Projectiles.steer = function(me) {
+	var u = PeptideRuntime.data.units;
+	var fm = me.__fm;
+	var xdecay = Projectiles.num(me, "xdecay", 0) * u.speed;
+	var homing = Projectiles.num(me, "homingSpeed", -1);
+	if (homing >= 0 && me.__age != null && me.__age >= 1) Projectiles.home(me, homing * u.speed - xdecay);
+	else if (xdecay != 0) {
+		var v = fm.getXSpeed();
+		var w = v - xdecay * 0.5;
+		fm.setXSpeed(xdecay > 0 && v >= 0 && w < 0 ? 0 : w);
+	}
+};
+
 
 // a floor under its feet, by a short line through them
 Projectiles.floorAt = function(fm) {
@@ -314,44 +357,6 @@ Projectiles.floorAt = function(fm) {
 	return hits != null && hits.length > 0;
 };
 
-// every engine frame
-Projectiles.engineFrame = function(me) {
-	var fm = me.__fm;
-	if (fm.isDisposed() || fm.getState() == PState.DESTROYING) return;
-	for (st in me.__selfPlatforms) { st.setX(fm.getX()); st.setY(fm.getY()); }
-	Projectiles.refresh(me);
-	Attacks.carry(me);
-	Projectiles.lateHit(me);
-	Projectiles.held(me);
-	if (fm.exports.__holder != null) return;
-	// what it was made with only answers a touch as it is made (Events.handler): one later is a landing
-	if (me.__age != null && me.__age >= 1) fm.exports.__launched = null;
-	if (fm.exports.__floorSet != null) { var b = fm.exports.__floorSet; fm.exports.__floorSet = null; fm.setXSpeed(b.xs); fm.setYSpeed(b.ys); }
-	// the speed it falls at, for the code it tells of its touchdown (Events.handler): the engine
-	// has stopped it by then, and the source tells it with the speed it came down at
-	if (!fm.isOnFloor()) fm.exports.__airSpeed = { xs: fm.getXSpeed(), ys: fm.getYSpeed() };
-	var u = PeptideRuntime.data.units;
-	var xdecay = Projectiles.num(me, "xdecay", 0) * u.speed;
-	var homing = Projectiles.num(me, "homingSpeed", -1);
-	// a homing one flies at its homing speed less a frame's decay, set anew each frame (its own
-	// code can feed the speed it is left with back in, and slows a whole decay a source frame);
-	// any other loses the decay as it goes, half a step an engine frame
-	// its first source frame flies at its launch (samus's missile leaves at its launch speed and
-	// its own code feeds that speed back in as its homing speed by the next)
-	if (homing >= 0 && me.__age != null && me.__age >= 1) Projectiles.home(me, homing * u.speed - xdecay);
-	else if (xdecay != 0) {
-		// a decay slows it to a stop and holds it there, as the source's does (sora's strike raid
-		// stops and hangs where it slowed to, its fighter caught under it); one stated below zero
-		// speeds it up (din's fire)
-		var v = fm.getXSpeed();
-		var w = v - xdecay * 0.5;
-		fm.setXSpeed(xdecay > 0 && v >= 0 && w < 0 ? 0 : w);
-	}
-	Projectiles.touchOwner(me);
-	Projectiles.influence(me);
-	Projectiles.control(me);
-	Projectiles.rotate(me);
-};
 
 // a hit it landed before its code had started, told to what its code listens with once it has
 Projectiles.lateHit = function(me) {
@@ -537,27 +542,6 @@ Projectiles.bounce = function(me) {
 	me.__fm.setYSpeed(-b);
 };
 
-// the death bounds, kept here: the engine takes one off at them with nothing of its own run first
-Projectiles.outOfBounds = function(me) {
-	if (AS3.truthy(Projectiles.stat(me, "surviveDeathBounds"))) return;
-	var fm = me.__fm;
-	// a held item goes where its holder goes: the holder's bounds are the ones that count
-	if (fm.exports.__holder != null) return;
-	// one its owner steers lives on wherever it is steered
-	if (Projectiles.num(me, "controlDirection", -1) != -1) return;
-	// (the bounds read once for the projectile: they do not move while it flies)
-	if (me.__bounds == null) {
-		var a = stage == null ? null : stage.getDeathBounds();
-		var r = a == null ? null : a.getRectangle();
-		if (r == null) return;
-		me.__bounds = [a.getX() + r.x, a.getY() + r.y, a.getX() + r.x + r.width, a.getY() + r.y + r.height];
-	}
-	var b = me.__bounds;
-	var x = fm.getX();
-	var y = fm.getY();
-	if (x < b[0] || x > b[2] || y < b[1] || y > b[3]) Objects.remove(me);
-};
-
 // one whose package ships no code for it dies where the source's engine ends it: on the floor,
 // or on landing a hit
 Projectiles.hasOwnCode = function(me) {
@@ -575,20 +559,10 @@ Projectiles.hasOwnCode = function(me) {
 	}
 	return me.__ownCode;
 };
-Projectiles.defaultEnds = function(me) {};
 
-// held by a fighter (an item it generated): it rides the holder's item box, touching nothing
+// held by a fighter (an item it generated): it goes where the holder's item box is
 Projectiles.held = function(me) {
 	var fm = me.__fm;
-	var st = fm.exports.__askState;
-	if (st == "hold") {
-		fm.exports.__askState = null;
-		if (me.__ghost == null) me.__ghost = fm.exports.__ghostDeclared == true;
-		fm.updateProjectileStats({ ghost: true });
-	} else if (st == "toss") {
-		fm.exports.__askState = null;
-		fm.updateProjectileStats({ ghost: me.__ghost == true });
-	}
 	var h = fm.exports.__holder;
 	if (h == null) return;
 	if (h.isDisposed()) { fm.exports.__holder = null; return; }
@@ -603,12 +577,17 @@ Projectiles.held = function(me) {
 };
 
 // its end: told once to whoever listens for it, then it is gone
-// a speed its code set is its own
-
 Projectiles.end = function(me) {
 	var fm = me.__fm;
 	if (me.__ended != true) { me.__ended = true; Events.dispatch(me, "projDestroyed"); Events.dispatch(me, "itemDestroyed"); Events.dispatch(me, "enemyDestroyed"); }
-	if (!fm.isDisposed()) fm.kill();
+	if (!fm.isDisposed() && me.__killed != true) fm.kill();
+};
+// killed by the engine (its death bounds): the source's own end runs, as it would have taken the
+// projectile off itself; one the runtime ended has told its end already
+Projectiles.killed = function(me) {
+	if (me.__ended == true) return;
+	me.__killed = true;
+	Objects.remove(me);
 };
 
 // in DESTROYING: gone once its death has played (its last frame, or as many frames as it has)
@@ -661,6 +640,7 @@ PeptideProjectile.updateProjectileStats = function(me, o) {
 			var keep = AS3.truthy(v) && AS3.truthy(Projectiles.stat(me, "rideGround")) && me.__fm.isOnFloor();
 			me.__fm.updateProjectileStats({ ghost: AS3.truthy(v) && !keep });
 		}
+		if (k == "surviveDeathBounds") me.__fm.updateGameObjectStats({ deathBoundsDestroy: !AS3.truthy(v) });
 		if (k == "gravity") me.__fm.updateProjectileStats({ gravity: AS3.num(v) * PeptideRuntime.data.units.accel });
 		// the fall it is held to: 0 holds it where it is (ness's pk flash bursts and hangs there, and
 		// fell on here, its code's cap never reaching the engine)

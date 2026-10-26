@@ -46,7 +46,7 @@ Items.generate = function(me, name) {
 	if (it.exports != null) it.exports.__ghostDeclared = it.getProjectileStat("ghost") == true;
 	it.updateProjectileStats({ ghost: true });
 	Items.place(me, it);
-	if (it.exports != null) { it.exports.__holder = fm; it.exports.__askState = "hold"; it.exports.__isItem = true; it.exports.__np = true; }
+	if (it.exports != null) { it.exports.__holder = fm; it.exports.__isItem = true; it.exports.__np = true; Items.ask(it.exports, "hold"); }
 	// the item's own object when its script already runs (its class's methods are the source's to
 	// call: a bob-omb's explode), else a plain one
 	var item = it.exports == null ? null : it.exports.__source;
@@ -78,7 +78,7 @@ Items.toss = function(me, angle) {
 	var speed = (it.exports != null && it.exports.__tossSpeed != null) ? it.exports.__tossSpeed : PeptideRuntime.data.units.itemToss;
 	var sp = speed * PeptideRuntime.data.units.speed;
 	Items.place(me, it);
-	if (it.exports != null) { it.exports.__holder = null; it.exports.__askState = "toss"; }
+	if (it.exports != null) { it.exports.__holder = null; Items.ask(it.exports, "toss"); }
 	it.setXSpeed(fm.flipX(Math.cos(a) * sp));
 	it.setYSpeed(-Math.sin(a) * sp);
 	me.__item = null;
@@ -105,7 +105,7 @@ Items.drop = function(me, ?z) {
 	var p = item.__fm;
 	Items.place(me, p);
 	p.exports.__holder = null;
-	p.exports.__askState = "toss";
+	Items.ask(p.exports, "toss");
 	p.exports.__zDropped = AS3.truthy(z);
 	p.setXSpeed(0);
 	p.setYSpeed(0);
@@ -118,6 +118,14 @@ Items.remove = function(me) {
 	me.__item = null;
 };
 
+// asked of an item, in its own script: the ask it publishes (`__ask`), else a field its own frame
+// reads (one made without the runtime)
+Items.ask = function(ex, kind, ?v) {
+	if (ex == null) return;
+	if (ex.__ask != null) { ex.__ask(kind, v); return; }
+	if (kind == "attack") ex.__askAttack = v; else if (kind == "interrupt") ex.__askInterrupt = v; else ex.__askState = kind;
+};
+
 // every frame the fighter holds one, the item rides the box
 Items.frame = function(me) {
 	var item = Items.held(me);
@@ -128,7 +136,7 @@ Items.frame = function(me) {
 	if (label != me.__itemLabel) {
 		me.__itemLabel = label;
 		if (label != null && AS3.at(PeptideRuntime.data.pkg.attacks, label) != null) {
-			item.__fm.exports.__askInterrupt = { targetFrame: label, character: me.__fm, cStick: false, zair: false };
+			Items.ask(item.__fm.exports, "interrupt", { targetFrame: label, character: me.__fm, cStick: false, zair: false });
 		}
 	}
 };
@@ -146,13 +154,13 @@ PeptideItem.getItemStat = function(me, k) {
 	return AS3.at(AS3.at(PeptideRuntime.data.pkg.items, me.__name), k);
 };
 // the item's own attacks (its toss, its idle), when its stats let it: started in its own script,
-// directly when this is that script's item, else asked of it for its next frame. the holder
+// directly when this is that script's item, else asked of it. the holder
 // keeps it and plays nothing
 PeptideItem.attack = function(me, n) {
 	if (me == PeptideRuntime.object) { PeptideGameObject.startAttack(me, n); return; }
-	if (me.__fm.exports != null) me.__fm.exports.__askAttack = n;
+	Items.ask(me.__fm.exports, "attack", n);
 };
-PeptideItem.toHeld = function(me) { var h = me.__holder; if (h == null) return; me.__fm.exports.__holder = h.__fm; me.__fm.exports.__askState = "hold"; h.__item = me; };
+PeptideItem.toHeld = function(me) { var h = me.__holder; if (h == null) return; me.__fm.exports.__holder = h.__fm; Items.ask(me.__fm.exports, "hold"); h.__item = me; };
 // what its own code changes of its stats; the ones this engine keeps are handed on
 PeptideItem.updateItemStats = function(me, o) {
 	var u = PeptideRuntime.data.units;
