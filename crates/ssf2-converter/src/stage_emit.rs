@@ -453,6 +453,25 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     // background's animation on its own and takes no jump; a piece that holds a section and
     // plays a transition when the stage says (castle siege's sky) needs its own script, so it is
     // an object in a panned container, moved against the camera by the rate the source declared.
+    // A SECTIONED PIECE NOTHING CAN SEND ANYWHERE (no name over it for the code to reach) plays
+    // from its first section on its own: where that section holds one picture, or loops on itself,
+    // the piece is the background's own art, drawn by its entry. only a piece with an animation
+    // of its own nested in the background is an effect
+    // (one whose first section draws nothing and holds there draws nothing all match, and is left out)
+    let mut never_drawn = Vec::new();
+    for (k, l) in promoted_bg.iter_mut().enumerate().filter(|(_, l)| l.pan.is_some() && l.segments.len() > 1 && l.named_path.is_empty() && !l.starts_hidden) {
+        let Some(chain) = segment_chain(l) else { continue };
+        let Some((_, start, end, _)) = bg_segment_spans(l).into_iter().next() else { continue };
+        if end <= start { continue }
+        match chain.first().copied() {
+            Some(None) if l.frames[start..end].iter().all(|f| f.blank) => never_drawn.push(k),
+            Some(None) if still_frames(&l.frames[start..end]) => { l.frames = vec![l.frames[end - 1].clone()]; l.segments.clear(); }
+            Some(Some(0)) => { l.frames = l.frames[start..end].to_vec(); l.segments.clear(); }
+            _ => {}
+        }
+    }
+    let promoted_bg: Vec<BgLayerRef> = promoted_bg.into_iter().enumerate()
+        .filter(|(k, _)| !never_drawn.contains(k)).map(|(_, l)| l).collect();
     let (cam_bg_elems, mut promoted_bg): (Vec<BgLayerRef>, Vec<BgLayerRef>) =
         promoted_bg.into_iter().partition(|l| l.pan.is_some() && !separate_cam_bg && l.segments.len() <= 1);
     // the segmented pieces of the camera background: an object each, in the container of a
@@ -9756,9 +9775,11 @@ fn piece_index(var: &str) -> usize {
 /// follow the tween the source drew, not just its ends.
 /// Whether a piece draws one picture, in one place, the same way on every frame: art that never
 /// changes, which needs nothing to play it.
-fn still_picture(layer: &BgLayerRef) -> bool {
-    let Some(f0) = layer.frames.first() else { return false };
-    layer.frames.iter().all(|f| !f.blank && f.guid == f0.guid && f.x == f0.x && f.y == f0.y && f.w == f0.w && f.h == f0.h
+fn still_picture(layer: &BgLayerRef) -> bool { still_frames(&layer.frames) }
+
+fn still_frames(frames: &[ArtRef]) -> bool {
+    let Some(f0) = frames.first() else { return false };
+    frames.iter().all(|f| !f.blank && f.guid == f0.guid && f.x == f0.x && f.y == f0.y && f.w == f0.w && f.h == f0.h
         && f.rotation == f0.rotation && f.scale_x == f0.scale_x && f.scale_y == f0.scale_y
         && f.alpha == f0.alpha && f.tint == f0.tint)
 }
