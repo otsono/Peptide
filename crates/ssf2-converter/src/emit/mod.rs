@@ -415,7 +415,16 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     // which of a clip's rarely asked methods the package's code names anywhere (DATA.clipUses):
     // a clip makes only those, each being an interpreted closure made for every clip the timelines
     // place (seven a fighter's attack). code that names none makes none
+    // (any of the package's code: a clip made in one script is reached from another, as a stage's
+    // code moves the clip of an object it spawned, so each script makes what any of them names)
     let mut clip_uses: BTreeSet<&str> = BTreeSet::new();
+    for cm in model.classes.values().filter(|cm| !runtime.provides(&cm.name)) {
+        for f in cm.methods.iter().map(|m| &m.function).chain([&cm.constructor, &cm.static_init]) {
+            ast::walk_exprs(&f.body, &mut |e| if let Expr::Member(_, n) = e {
+                if let Some((m, _)) = CLIP_OPTIONAL.iter().find(|(_, needle)| needle == n) { clip_uses.insert(m); }
+            });
+        }
+    }
     for c in &order {
         let Some((text, p, u, d, l)) = compile::compile_class_detached(model, runtime, c, plan.detach.get(c).unwrap_or(&none), jumps.get(c).cloned()) else { continue };
         cinits.extend(cinit_at.captures_iter(&text).map(|m| format!("{}.cinit", &m[1])));
