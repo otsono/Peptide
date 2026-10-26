@@ -105,10 +105,15 @@
     // off), so it converts for a victim of 95, the roster's median weight. mario's jab (20) and
     // chibirobo's smashes (60) land within 1% of the source's against fighters near that weight.
     //
-    { "fm_field": "baseKnockback",   "ssf2_keys": ["power", "weightKB"], "scale": 0.7629 },
+    // the launch fades the engine's own way (0.304 an engine frame along its line in the air, where
+    // the source's fades 0.232), so it starts harder to go as far: 0.84 where the start alone matched
+    // at 0.7629, fitted on flight distance (tools/tests/hitstun_parity.py --flight: mario's up tilt
+    // 1.05 of the source's at 30 frames, his down tilt 0.98, hitstun 14 on both). it peaks higher
+    // than the source's (41 against 31 on the up tilt)
+    { "fm_field": "baseKnockback",   "ssf2_keys": ["power", "weightKB"], "scale": 0.84 },
     // the launch a FIXED hit gives, before the scale above, for a victim of weight 95
     { "fm_field": "fixed_knockback", "ssf2_keys": [], "per_unit": 0.71795, "constant": 19.4359 },
-    { "fm_field": "knockbackGrowth", "ssf2_keys": ["kbConstant"],        "scale": 0.7629 },
+    { "fm_field": "knockbackGrowth", "ssf2_keys": ["kbConstant"],        "scale": 0.84 },
     // FREEZE: the frames the victim is held still after the frame the hit lands on, read off the
     // victim's own record on both engines (`tools/tests/rehit_trace.py --victim`): a stated
     // `hitStun` of N holds it N source frames (fox's jab 1, mario's 3, lloyd's side special 1,

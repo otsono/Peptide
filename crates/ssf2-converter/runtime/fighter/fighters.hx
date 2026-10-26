@@ -163,7 +163,6 @@ Fighters.engineFrame = function(me) {
 	AttackRules.engineFrame(me);
 	for (st in me.__selfPlatforms) { st.setX(me.__fm.getX()); st.setY(me.__fm.getY()); }
 	Fighters.rocketFrame(me);
-	Fighters.launchFade(me);
 	if (me.__xHold != null) {
 		var fm = me.__fm;
 		if (fm.getAnimation() != me.__xHold) me.__xHold = null;
@@ -178,41 +177,6 @@ Fighters.engineFrame = function(me) {
 // out under the platform the source's landed on) and across at its whole rate on the floor (fox's
 // forward tilt slid to a stop 15 short). each engine frame the fade is put back to the source's;
 // a launch that is new, grew (a new hit) or turned takes its own line's split
-Fighters.launchFadeRate = 0.232;
-Fighters.launchFade = function(me) {
-	var fm = me.__fm;
-	var kx = fm.getXKnockback();
-	var ky = fm.getYKnockback();
-	if (me.__launchX != null && me.__fadeX != null) {
-		var k = Fighters.faded(me.__launchX, kx, me.__fadeX);
-		if (k != kx) { fm.setXKnockback(k); kx = k; }
-		k = Fighters.faded(me.__launchY, ky, me.__fadeY);
-		if (k != ky) { fm.setYKnockback(k); ky = k; }
-	}
-	if (Fighters.newLaunch(me.__launchX, kx) || Fighters.newLaunch(me.__launchY, ky)) Fighters.fadeOf(me, kx, ky);
-	me.__launchX = kx;
-	me.__launchY = ky;
-};
-// a launch component `was` last frame and `now` after this engine's own fade, faded by `step` from
-// `was` instead; one that is new, grew or turned, or that the engine did not touch, is left as it is
-Fighters.faded = function(was, now, step) {
-	// the engine's own fade past nothing ends it a frame or two before the source's would
-	if (now == 0 && was != null && was != 0 && Math.abs(was) < 0.35) now = was > 0 ? 0.0001 : -0.0001;
-	if (was == null || was == 0 || now == 0 || now == was || (was > 0) != (now > 0) || Math.abs(now) > Math.abs(was)) return now;
-	var left = Math.abs(was) - step;
-	if (left <= 0) return 0;
-	return was > 0 ? left : -left;
-};
-// the fade a launch of (kx, ky) takes each engine frame, split along its line
-Fighters.fadeOf = function(me, kx, ky) {
-	var m = Math.sqrt(kx * kx + ky * ky);
-	me.__fadeX = m > 0 ? Fighters.launchFadeRate * Math.abs(kx) / m : 0;
-	me.__fadeY = m > 0 ? Fighters.launchFadeRate * Math.abs(ky) / m : 0;
-};
-Fighters.newLaunch = function(was, now) {
-	if (now == 0) return false;
-	return was == null || was == 0 || (was > 0) != (now > 0) || Math.abs(now) > Math.abs(was);
-};
 
 // a fighter riding a rocket moves by it alone while the attack it rides lasts: the speed it was
 // given, then `decay` less each frame down to nothing (measured on samus's bomb lift: a pixel up,
@@ -303,9 +267,6 @@ Fighters.relaunch = function(me) {
 	me.__fm.setYKnockback(rl[1]);
 	me.__fm.setXSpeed(0);
 	me.__fm.setYSpeed(0);
-	me.__launchX = rl[0];
-	me.__launchY = rl[1];
-	Fighters.fadeOf(me, rl[0], rl[1]);
 };
 
 // as the fighter is made
@@ -499,7 +460,7 @@ Fighters.begin = function(me) {
 };
 // a launch here against the source's, a frame each (hit_parity.py's expected ratio), and the
 // source's hitstun for a launch, in its frames
-Fighters.launchScale = 0.65;
+Fighters.launchScale = 0.7157;
 // the source's hold for a launch of `launch` source pixels a source frame, in its frames
 Fighters.stunOf = function(launch, lag) {
 	// a box states its hold as `hitLag`: a whole number of frames when it is not negative, else
