@@ -226,7 +226,7 @@ fn runtime_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &Object
     };
     let out = object_script(src, runtime, &spec, &decls, &pieces, units, &row.id);
     std::fs::write(&script, &out.script)?;
-    clock_entity(&entity, &row.id, src, &pieces, &out.frames, &BTreeMap::new(), None)?;
+    super::native_entity(&entity, &row.id, src, &pieces, &out)?;
     Ok(Some(ObjectOut { problems: out.problems, unknown: out.unknown, unplaced }))
 }
 
@@ -312,7 +312,7 @@ fn runtime_projectiles(src: &SourceModel, runtime: &Runtime, dir: &Path, decls: 
             let emitted = object_script(src, runtime, &spec, decls, &pieces, units, name);
             std::fs::write(&script, &emitted.script)?;
             without_frame_code(&entity)?;
-            super::native_entity(&entity, &key, src, &pieces, &emitted, super::sends_new_objects_on(src, runtime))?;
+            super::native_entity(&entity, &key, src, &pieces, &emitted)?;
             Ok(ObjectOut { problems: emitted.problems, unknown: emitted.unknown,
                 unplaced: missing.iter().map(|p| format!("{} has no such animation", p.fm_name)).collect() })
         })();

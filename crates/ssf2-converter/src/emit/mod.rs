@@ -410,8 +410,9 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     let plan = frame_plan(model, pieces, &effect_syms);
     let none = BTreeSet::new();
     let mut jumps = label_jumps(model, pieces);
-    // a projectile's playhead is the engine's: its code reads where its clip is off the engine
-    if spec.kind != "projectile" { for j in jumps.values_mut() { j.playhead = None; } }
+    // a projectile's or a stage object's playhead is the engine's: its code reads where its clip is
+    // off the engine
+    if !matches!(spec.kind, "projectile" | "object") { for j in jumps.values_mut() { j.playhead = None; } }
     for (c, code) in &spec.autolink { jumps.entry(c.clone()).or_default().autolink = Some(code.clone()); }
     let mut detached: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut found: Vec<crate::compile::Landing> = Vec::new();
@@ -679,7 +680,7 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
             || d.get("linkage_id").and_then(|v| v.str()) == Some(clip.as_str()));
         out.push_str(&projectile_frames(&text, item));
     }
-    let native = if spec.kind == "projectile" { native_clip(model, pieces, &placing) } else { None };
+    let native = if matches!(spec.kind, "projectile" | "object") { native_clip(model, pieces, &placing) } else { None };
     if let Some(sym) = native {
         // and each animation's next: the one that shows the clip's next frame once it is played
         // out (the clip plays on into its next section; a projectile's animation that ends on its
@@ -883,12 +884,11 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
 /// keyframe enters it, and the first engine frame of every source frame with a script runs that
 /// frame (`PeptideRuntime.kf`). The engine plays the animation; the runtime follows it.
 ///
-/// An object whose clip the engine plays as its own (`native`: the clip, and whether its first
-/// frame waits for the engine's second frame) has each frame's code on its keyframe instead: the
-/// code itself, or the clip's own method for that frame, run on the clip.
+/// An object whose clip the engine plays as its own (`native`) has each frame's code on its
+/// keyframe instead: the code itself, or the clip's own method for that frame, run on the clip.
 pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceModel, pieces: &[Piece],
                 frames: &BTreeMap<(u16, u32), (String, String)>, extra: &BTreeMap<String, String>,
-                native: Option<(u16, bool)>) -> anyhow::Result<()> {
+                native: Option<u16>) -> anyhow::Result<()> {
     let Ok(bytes) = std::fs::read(path) else { return Ok(()) };
     let mut json: serde_json::Value = serde_json::from_slice(&bytes)?;
     let scripted = |sym: u16, f: u32| model.class_of(sym)
@@ -938,14 +938,15 @@ pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceMode
             // (engine frame, source frame) for each keyframe: the entry, then the scripted frames
             let mut at: Vec<(u32, u32)> = vec![(0, if p.reversed { p.from + p.frames - 1 } else { p.from })];
             // the engine's own clip: only frames with code, and the clip's first frame on the
-            // engine's second when it must wait for its maker
-            let mine = native.filter(|(s, _)| *s == p.sym);
-            if let Some((_, wait)) = mine {
+            // engine's second as well, for the object's birth
+            let mine = native.filter(|s| *s == p.sym);
+            if mine.is_some() {
                 at.clear();
                 for k in 0..p.frames {
                     let f = p.from + k;
                     if native_code(p.sym, f).is_none() { continue }
-                    at.push((if f == 1 && wait { 1 } else { 2 * k }, f));
+                    at.push((2 * k, f));
+                    if f == 1 { at.push((1, f)); }
                 }
             }
             for k in (1..p.frames).filter(|_| mine.is_none()) {
@@ -966,10 +967,16 @@ pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceMode
                 }
                 let id = crate::uuid_gen::det_uuid(&format!("{tag}::{i}"));
                 let text = if mine.is_some() {
-                    let mut own = native_code(p.sym, f).unwrap_or_default();
-                    // an animation's first frame, passed through by a jump into its middle, does not run
-                    if i == 0 { own = format!("if (PeptideRuntime.passing != true) {{\n{own}\n}}"); }
-                    if i == 1 { format!("// this is frame 1 of the clip in SSF2, moved to the animation's second engine frame for\n// compatibility: this package's code sends an object it has just made to another frame before\n// that object's first frame runs, and SSF2 then never runs it (it runs a new clip's first frame\n// at the end of the frame, after its maker's code), where Fraymakers runs a new object's first\n// keyframe while making it. here it runs only if the object is still on this animation\n{own}") } else { own }
+                    let own = native_code(p.sym, f).unwrap_or_default();
+                    match (i, f) {
+                        // the clip's first frame as the object is made: on the second engine frame
+                        (1, _) => format!("// this is frame 1 of the clip in SSF2, run here for compatibility as the object is made: SSF2\n// runs a new clip's first frame at the end of the frame it was made in, after its maker's code\n// (which can place it, set it up or send it to another frame first, and then this never runs),\n// where Fraymakers runs a new object's first keyframe while making it. entered any other way,\n// the frame runs on the first engine frame as usual\nif (PeptideRuntime.born == true) {{\n{own}\n}}"),
+                        // entered later (a jump back, a loop); and an animation's first frame passed
+                        // through by a jump into its middle does not run
+                        (0, 1) => format!("if (PeptideRuntime.passing != true && PeptideRuntime.born != true) {{\n{own}\n}}"),
+                        (0, _) => format!("if (PeptideRuntime.passing != true) {{\n{own}\n}}"),
+                        _ => own,
+                    }
                 } else {
                     match (i == 0, extra.get(&p.fm_name)) {
                         (true, Some(x)) => format!("{}\n{x}", code(p.sym, f, true)),
@@ -1043,8 +1050,8 @@ pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceMode
 /// A projectile's entity: its keyframes, each frame's code on its own where the engine plays the
 /// clip as its own (`native_clip`)
 pub(crate) fn native_entity(entity: &std::path::Path, key: &str, model: &SourceModel,
-                            pieces: &[Piece], emitted: &Emitted, wait: bool) -> anyhow::Result<()> {
-    clock_entity(entity, key, model, pieces, &emitted.frames, &BTreeMap::new(), emitted.native.map(|s| (s, wait)))
+                            pieces: &[Piece], emitted: &Emitted) -> anyhow::Result<()> {
+    clock_entity(entity, key, model, pieces, &emitted.frames, &BTreeMap::new(), emitted.native)
 }
 
 /// An attack that declares `cancel` can be cut short: while it plays, holding the button it was
@@ -1177,7 +1184,6 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
                        unplaced: &mut Vec<String>) -> anyhow::Result<Vec<(String, Emitted)>> {
     let mut out = Vec::new();
     let decls: Vec<&(String, Value)> = fighter.projectiles.entries().iter().chain(fighter.items.entries()).collect();
-    let wait = sends_new_objects_on(model, runtime);
     // one script per entity, from the first declaration written as it (a projectile fired by
     // another declaration sharing its clip takes that one's stats as it starts)
     for (entity_key, pieces) in std::mem::take(pieces_of) {
@@ -1207,7 +1213,7 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
                     clip: entity_key.clone(), clip_sym: Some(sym), stats, autolink: BTreeMap::new(), data: String::new() };
                 let emitted = object_script(model, runtime, &spec, &Decls::of(fighter), &pieces, units, &entity_key);
                 std::fs::write(&script, &emitted.script)?;
-                native_entity(&entity, &entity_key, model, &pieces, &emitted, wait)?;
+                native_entity(&entity, &entity_key, model, &pieces, &emitted)?;
                 unplaced.retain(|u| !u.starts_with(&format!("{entity_key}: made from another package")));
                 out.push((entity_key, emitted));
                 continue;
@@ -1236,7 +1242,7 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
         let script = char_dir.join(format!("library/scripts/Projectile/{}Script.hx", crate::haxe_gen::snake_to_pascal(&entity_key)));
         if script.exists() {
             std::fs::write(&script, &emitted.script)?;
-            native_entity(&entity, &entity_key, model, &pieces, &emitted, wait)?;
+            native_entity(&entity, &entity_key, model, &pieces, &emitted)?;
         }
         else { unplaced.push(format!("{entity_key}: no projectile script at {}", script.display())); }
         out.push((entity_key, emitted));
@@ -1654,58 +1660,6 @@ pub fn native_clip(model: &SourceModel, pieces: &[Piece], placing: &BTreeSet<u16
         if c.frame_scripts.iter().any(|fs| !shown(fs.frame + 1)) { return None }
     }
     Some(sym)
-}
-
-/// whether any of the package's code sends an object it has just made to a frame before its first
-/// frame runs (`p = fireProjectile(..); p.gotoAndPlay("x")`, or the jump straight on the call that
-/// made it): the calls are `runtime/new_objects.jsonc`'s
-pub fn sends_new_objects_on(model: &SourceModel, runtime: &Runtime) -> bool {
-    use crate::model::ast::{Place, Stmt};
-    fn name_of(e: &Expr) -> Option<String> {
-        match e {
-            Expr::Local(r) => Some(format!("#{r}")),
-            Expr::Name(n) => Some(n.clone()),
-            Expr::Member(o, n) if matches!(**o, Expr::This) => Some(n.clone()),
-            Expr::Coerce(_, x) | Expr::Convert(_, x) => name_of(x),
-            _ => None,
-        }
-    }
-    fn place_name(p: &Place) -> Option<String> {
-        match p {
-            Place::Local(r) => Some(format!("#{r}")),
-            Place::Name(n) => Some(n.clone()),
-            Place::Member(Expr::This, n) => Some(n.clone()),
-            _ => None,
-        }
-    }
-    let makes = |e: &Expr| -> bool {
-        let mut hit = false;
-        e.walk(&mut |x| if let Expr::Call(c, _) = x {
-            if let Expr::Member(_, m) | Expr::Name(m) = &**c { if runtime.makes.contains(m) { hit = true } }
-        });
-        hit
-    };
-    fn walk(body: &[Stmt], made: &mut BTreeSet<String>, makes: &dyn Fn(&Expr) -> bool, jumps: &BTreeSet<String>) -> bool {
-        for s in body {
-            if let Stmt::Assign(p, v) = s {
-                if let Some(n) = place_name(p) { if makes(v) { made.insert(n); } else { made.remove(&n); } }
-            }
-            let mut hit = false;
-            for e in s.exprs() {
-                e.walk(&mut |x| if let Expr::Call(c, _) = x {
-                    if let Expr::Member(recv, j) = &**c {
-                        if jumps.contains(j) && (makes(recv) || name_of(recv).is_some_and(|n| made.contains(&n))) { hit = true }
-                    }
-                });
-            }
-            if hit { return true }
-            for b in s.blocks() { if walk(b, made, makes, jumps) { return true } }
-        }
-        false
-    }
-    model.classes.values().filter(|c| !runtime.provides(&c.name)).any(|c| {
-        c.methods.iter().map(|m| &m.function).chain([&c.constructor]).any(|f| walk(&f.body, &mut BTreeSet::new(), &makes, &runtime.jumps))
-    })
 }
 
 /// whether a placed clip does nothing anyone can see once nobody's code reaches it: its class (and

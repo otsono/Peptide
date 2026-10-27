@@ -47,10 +47,6 @@ pub struct Runtime {
     /// (`inert.jsonc`)
     pub inert_calls: BTreeMap<String, BTreeSet<String>>,
     pub inert_values: BTreeSet<String>,
-    /// calls that hand back an object the code has just made, and calls that send a clip to a
-    /// frame (`new_objects.jsonc`)
-    pub makes: BTreeSet<String>,
-    pub jumps: BTreeSet<String>,
     /// a runtime class's constants (`Class.NAME = literal;`, names in capitals), by `Class.NAME`:
     /// content that reads one gets the value written in place, and the table stays out of its script
     pub constants: BTreeMap<String, String>,
@@ -109,13 +105,6 @@ impl Runtime {
                     .filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default())).collect();
             }
             rt.inert_values = json["values"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-        }
-        if let Ok(text) = std::fs::read_to_string(dir.join("new_objects.jsonc")) {
-            let json: serde_json::Value = serde_json::from_str(&crate::mappings::strip_jsonc(&text))
-                .unwrap_or_else(|e| panic!("runtime/new_objects.jsonc is malformed: {e}"));
-            let list = |k: &str| json[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-            rt.makes = list("makes");
-            rt.jumps = list("jumps");
         }
         if let Ok(text) = std::fs::read_to_string(dir.join("engine.names")) {
             rt.engine_names = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(String::from).collect();

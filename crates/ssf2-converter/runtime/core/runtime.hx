@@ -39,6 +39,9 @@ PeptideRuntime.reported = new haxe.ds.StringMap();
 // clip's first frame does in the source (a projectile's maker can send it to a label first)
 PeptideRuntime.making = false;
 PeptideRuntime.native = false;
+// the object was made and has had no update yet: its first frame runs on the engine's second
+// (emit's `clock_entity`)
+PeptideRuntime.born = false;
 PeptideRuntime.held = [];
 PeptideRuntime.fresh = false;
 
@@ -59,6 +62,7 @@ PeptideRuntime.start = function(fm, data, kind) {
 	// the engine plays the object's clip as its own: its frames' code is on the keyframes, and the
 	// runtime keeps no playhead of its own for it (emit's `native_clip`)
 	PeptideRuntime.native = data.native == true;
+	PeptideRuntime.born = true;
 	PeptideRuntime.pieceIndex = null;
 	PeptideRuntime.firstFrames = null;
 	var o = data.object;
@@ -466,6 +470,9 @@ PeptideRuntime.clockedUpdate = function() {
 	PeptideRuntime.follow();
 	PeptideRuntime.kind.engineFrame(PeptideRuntime.object);
 	Effects.show();
+	// no longer just made once the engine is past the frame it was made on (an update can come in
+	// the same frame the object was made in, when its maker's update runs before its own)
+	if (fm.getCurrentFrame() >= 2 || fm.getAnimation() != PeptideRuntime.madeOn) PeptideRuntime.born = false;
 };
 
 // the code sends the engine's own clip to a frame the compiler could not name: the engine goes to
