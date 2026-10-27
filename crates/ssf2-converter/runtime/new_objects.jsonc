@@ -1,0 +1,9 @@
+// calls that hand back an object the code has just made, and the calls that send a clip to a
+// frame. a package whose code sends an object it has just made to a frame (`p = fireProjectile(..);
+// p.gotoAndPlay("x")`) needs that object's first frame to wait until the code is done with it:
+// the source runs a new clip's first frame script at the end of the frame, after its maker's code,
+// and does not run it at all once the clip has been sent on.
+{
+  "makes": ["fireProjectile", "createProjectile", "getCurrentProjectile", "spawnProjectile", "makeEnemy", "createCustomGameObject"],
+  "jumps": ["gotoAndPlay", "gotoAndStop", "playFrame", "stancePlayFrame", "playAnimation", "playFrameLabel"]
+}

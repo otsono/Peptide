@@ -38,6 +38,7 @@ PeptideRuntime.reported = new haxe.ds.StringMap();
 // frame scripts entered while the object is being made: they run at its first update, as a new
 // clip's first frame does in the source (a projectile's maker can send it to a label first)
 PeptideRuntime.making = false;
+PeptideRuntime.native = false;
 PeptideRuntime.held = [];
 PeptideRuntime.fresh = false;
 
@@ -55,6 +56,9 @@ PeptideRuntime.start = function(fm, data, kind) {
 	PeptideRuntime.ended = false;
 	PeptideRuntime.fm = fm;
 	PeptideRuntime.data = data;
+	// the engine plays the object's clip as its own: its frames' code is on the keyframes, and the
+	// runtime keeps no playhead of its own for it (emit's `native_clip`)
+	PeptideRuntime.native = data.native == true;
 	PeptideRuntime.pieceIndex = null;
 	PeptideRuntime.firstFrames = null;
 	var o = data.object;
@@ -401,6 +405,16 @@ PeptideRuntime.sync = function() {
 	var f = p.from + Std.int((PeptideRuntime.fm.getCurrentFrame() - 1) / 2);
 	if (f >= p.from + p.frames) f = p.from + p.frames - 1;
 	if (f != st.currentFrame) MovieClip.arrive(st, f);
+	// the engine's own clip: the animation played out goes on to the section after it
+	// (`DATA.sections`)
+	if (PeptideRuntime.native) {
+		var fm1 = PeptideRuntime.fm;
+		if (fm1.getCurrentFrame() >= fm1.getTotalFrames() && PeptideRuntime.data.sections != null) {
+			var after = PeptideRuntime.data.sections.get(fm1.getAnimation());
+			if (after != null) { PeptideRuntime.shown = after; PeptideRuntime.shownBy = after; PeptideRuntime.showAnimation(after); PeptideRuntime.switched(); }
+		}
+		return;
+	}
 	// an object whose engine has no ways on from an animation (a projectile) goes on to the one that
 	// shows its clip's next frame once this one is played out; so does a fighter's animation whose
 	// clip plays on into one its engine has no way to (a charge special let go runs into its attack)
@@ -425,7 +439,7 @@ PeptideRuntime.clockedUpdate = function() {
 		// fired): its clips go there first, and a held frame they have left does not run, as a new
 		// clip's first frame does not in the source once it is sent on before it plays
 		if (PeptideRuntime.fm.getAnimation() != PeptideRuntime.madeOn) PeptideRuntime.follow();
-		for (h in held) if (h.clip.__held == h && h.clip.currentFrame == h.frame) MovieClip.runFrame(h.clip, h.frame);
+		for (h in held) if (h.clip.__held == h && h.clip.currentFrame == h.frame && !(PeptideRuntime.native && h.clip == PeptideRuntime.shownClip())) MovieClip.runFrame(h.clip, h.frame);
 	}
 	// the engine's own change of animation first: a jump still waiting from the clip it has left
 	// is that clip's, and moot
@@ -454,10 +468,39 @@ PeptideRuntime.clockedUpdate = function() {
 	Effects.show();
 };
 
+// the code sends the engine's own clip to a frame the compiler could not name: the engine goes to
+// the animation that shows it, on its engine frame, whose keyframe runs the frame (a jump into the
+// middle of another animation passes through its first frame without running it), and the clip's
+// record says where it is for code that reads it
+PeptideRuntime.passing = false;
+PeptideRuntime.engineJump = function(clip, n) {
+	var fm = PeptideRuntime.fm;
+	var cur = fm.getAnimation();
+	var hit = null;
+	for (p in PeptideRuntime.data.pieces) if (p.sym == clip.__sym && n >= p.from && n < p.from + p.frames) {
+		if (p.anim == cur) { hit = p; break; }
+		if (hit == null || (hit.borrowed && !p.borrowed)) hit = p;
+	}
+	if (hit == null) return false;
+	MovieClip.arrive(clip, n);
+	var k = 2 * (n - hit.from) + 1;
+	if (k <= 1) { fm.playAnimation(hit.anim); return true; }
+	if (hit.anim != cur) {
+		PeptideRuntime.passing = true;
+		fm.playAnimation(hit.anim);
+		PeptideRuntime.passing = false;
+	}
+	var total = fm.getTotalFrames();
+	fm.playFrame(k > total - 1 ? total - 1 : k);
+	return true;
+};
+
 // the engine is playing an animation the runtime did not ask for: the source's clip goes there
 PeptideRuntime.follow = function() {
 	var anim = PeptideRuntime.fm.getAnimation();
 	if (anim == PeptideRuntime.shown) return;
+	// the engine's own clip: its keyframes run its frames, wherever the engine goes
+	if (PeptideRuntime.native) { PeptideRuntime.shown = anim; PeptideRuntime.dirty = false; return; }
 	// a clip still in its lead-in plays that out first: its frames set the object up, and the engine's
 	// animation is taken up once the clip reaches a section it shows
 	if (PeptideRuntime.leadIn(PeptideRuntime.shownClip())) return;

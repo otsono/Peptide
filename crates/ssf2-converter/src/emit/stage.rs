@@ -126,7 +126,7 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     // the entity's keyframes run the stage clip's frame scripts, where its frames have any (a clip
     // with none follows the engine's frame at each update)
     if pieces.iter().any(|p| src.class_of(p.sym).is_some_and(|c| !c.frame_scripts.is_empty())) {
-        clock_entity(&entity, id, &src, &pieces, &out.frames, &BTreeMap::new())?;
+        clock_entity(&entity, id, &src, &pieces, &out.frames, &BTreeMap::new(), None)?;
     }
     // each object, run by its own class
     let object_runtime = Runtime::load(&located).for_kind("object");
@@ -226,7 +226,7 @@ fn runtime_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &Object
     };
     let out = object_script(src, runtime, &spec, &decls, &pieces, units, &row.id);
     std::fs::write(&script, &out.script)?;
-    clock_entity(&entity, &row.id, src, &pieces, &out.frames, &BTreeMap::new())?;
+    clock_entity(&entity, &row.id, src, &pieces, &out.frames, &BTreeMap::new(), None)?;
     Ok(Some(ObjectOut { problems: out.problems, unknown: out.unknown, unplaced }))
 }
 
@@ -312,7 +312,7 @@ fn runtime_projectiles(src: &SourceModel, runtime: &Runtime, dir: &Path, decls: 
             let emitted = object_script(src, runtime, &spec, decls, &pieces, units, name);
             std::fs::write(&script, &emitted.script)?;
             without_frame_code(&entity)?;
-            clock_entity(&entity, &key, src, &pieces, &emitted.frames, &BTreeMap::new())?;
+            super::native_entity(&entity, &key, src, &pieces, &emitted, super::sends_new_objects_on(src, runtime))?;
             Ok(ObjectOut { problems: emitted.problems, unknown: emitted.unknown,
                 unplaced: missing.iter().map(|p| format!("{} has no such animation", p.fm_name)).collect() })
         })();
