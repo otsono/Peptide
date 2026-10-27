@@ -1961,6 +1961,11 @@ before treating one as a gap.
 
 ## known issues & gaps
 
+**the release sample's two failures.** `verify.py sample --ssf2` passes 18 of 20. fox's side
+special runs 47 engine frames where the source's 32 frames want 64 (C6), and galaxy tours'
+background has a 45-frame child that loops in 59 engine frames against the source's 90 (S7, the
+nested-loop backdrop family below). both fail the same way with fighters off the native playhead.
+
 **the SSF2 test fixture's platforms draw with the floor's art.** a platform draws with the clip
 named by its `linkage_id`, and the fixture answers with its terrain clip for everything
 ([`SSF2_PACKAGE_FORMAT.md`](SSF2_PACKAGE_FORMAT.md)). collision is unaffected.
