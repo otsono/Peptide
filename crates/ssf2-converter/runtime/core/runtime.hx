@@ -443,7 +443,7 @@ PeptideRuntime.clockedUpdate = function() {
 		// fired): its clips go there first, and a held frame they have left does not run, as a new
 		// clip's first frame does not in the source once it is sent on before it plays
 		if (PeptideRuntime.fm.getAnimation() != PeptideRuntime.madeOn) PeptideRuntime.follow();
-		for (h in held) if (h.clip.__held == h && h.clip.currentFrame == h.frame && !(PeptideRuntime.native && h.clip == PeptideRuntime.shownClip())) MovieClip.runFrame(h.clip, h.frame);
+		for (h in held) if (h.clip.__held == h && h.clip.currentFrame == h.frame) MovieClip.runFrame(h.clip, h.frame);
 	}
 	// the engine's own change of animation first: a jump still waiting from the clip it has left
 	// is that clip's, and moot
@@ -470,9 +470,29 @@ PeptideRuntime.clockedUpdate = function() {
 	PeptideRuntime.follow();
 	PeptideRuntime.kind.engineFrame(PeptideRuntime.object);
 	Effects.show();
-	// no longer just made once the engine is past the frame it was made on (an update can come in
-	// the same frame the object was made in, when its maker's update runs before its own)
-	if (fm.getCurrentFrame() >= 2 || fm.getAnimation() != PeptideRuntime.madeOn) PeptideRuntime.born = false;
+	// no longer just made once the engine is past the first frame of the animation it is on (an
+	// update can come in the same frame the object was made in, when its maker's update runs
+	// before its own, and a maker can send it to another animation first, whose entry then runs
+	// on that animation's second frame)
+	if (fm.getCurrentFrame() >= 2) PeptideRuntime.born = false;
+};
+
+// the engine's own clip on a frame its keyframe runs: its record goes there first (where it is,
+// the children that frame places), for the frame's code to read
+PeptideRuntime.clipAt = function(f) {
+	var st = PeptideRuntime.shownClip();
+	if (st != null && st.currentFrame != f) MovieClip.arrive(st, f);
+	return st;
+};
+
+// an animation of the engine's own clips is entered: the object's clip goes to the label that
+// places that state's clip (made anew, as the source's timeline makes it)
+PeptideRuntime.enterLabel = function(label) {
+	var root = PeptideRuntime.root;
+	if (root == null) return;
+	PeptideRuntime.switching = true;
+	root.gotoAndStop(label);
+	PeptideRuntime.switching = false;
 };
 
 // the code sends the engine's own clip to a frame the compiler could not name: the engine goes to

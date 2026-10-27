@@ -90,8 +90,17 @@ pub struct Emitted {
     pub frames: BTreeMap<(u16, u32), (String, String)>,
     /// the landings the engine makes, each by the animations it lands in
     pub landings: Vec<(crate::compile::Landing, Vec<String>)>,
-    /// the clip whose frames the engine plays as the object's own (`native_clip`), when it is
-    pub native: Option<u16>,
+    /// the clips whose frames the engine plays as the object's own (`native_clip`), when they are
+    pub native: Option<Native>,
+}
+
+/// the clips an object's animations show, played by the engine as its own
+#[derive(Clone, Debug)]
+pub struct Native {
+    pub syms: BTreeSet<u16>,
+    /// each animation's clip is the one its object's clip places under the animation's label
+    /// (one state each): entering an animation puts the object's clip on that label first
+    pub labelled: bool,
 }
 
 /// Which frames' scripts move onto their animation's keyframes, for one object: a frame of a clip
@@ -495,8 +504,6 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     out.push_str("DATA.timelines = new haxe.ds.IntMap();\nDATA.classes = new haxe.ds.IntMap();\n");
     // the library bitmaps the timelines place, each a picture whose data is its class
     let mut bitmaps: BTreeSet<u16> = BTreeSet::new();
-    // the clips whose frames place any children here
-    let mut placing: BTreeSet<u16> = BTreeSet::new();
     for s in &symbols {
         let Some(sp) = model.sprites.get(s) else { continue };
         // a frame's children as logic sees them: the clips it places that have a class or a name,
@@ -540,7 +547,6 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
             }).collect();
             format!("[{}]", kids.join(", "))
         }).collect();
-        if frames.iter().any(|f| f != "[]") { placing.insert(*s); }
         let labels: Vec<String> = sp.labels.iter().map(|(f, l)| format!("[{}, {}]", f + 1, compile::quote(l))).collect();
         // the named children go to the fields of the same name
         let bind = if names.is_empty() { "null".to_string() } else {
@@ -680,16 +686,17 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
             || d.get("linkage_id").and_then(|v| v.str()) == Some(clip.as_str()));
         out.push_str(&projectile_frames(&text, item));
     }
-    let native = if matches!(spec.kind, "projectile" | "object") { native_clip(model, pieces, &placing) } else { None };
-    if let Some(sym) = native {
+    let native = if matches!(spec.kind, "projectile" | "object") { native_clip(model, pieces, clip_sym) } else { None };
+    if let Some(n) = &native {
         // and each animation's next: the one that shows the clip's next frame once it is played
         // out (the clip plays on into its next section; a projectile's animation that ends on its
         // own ends the projectile, so the update moves it on)
-        out.push_str("DATA.native = true;\nDATA.sections = new haxe.ds.StringMap();\n");
-        let total = model.sprites.get(&sym).map(|s| s.frames.len() as u32).unwrap_or(0);
+        out.push_str("DATA.native = true;\nDATA.nativeSyms = new haxe.ds.IntMap();\nDATA.sections = new haxe.ds.StringMap();\n");
+        for s in &n.syms { out.push_str(&format!("DATA.nativeSyms.set({s}, true);\n")); }
         for p in pieces.iter().filter(|p| !p.borrowed) {
+            let total = model.sprites.get(&p.sym).map(|s| s.frames.len() as u32).unwrap_or(0);
             let next = if p.from + p.frames > total { 1 } else { p.from + p.frames };
-            let Some(q) = pieces.iter().find(|q| !q.borrowed && next >= q.from && next < q.from + q.frames) else { continue };
+            let Some(q) = pieces.iter().find(|q| !q.borrowed && q.sym == p.sym && next >= q.from && next < q.from + q.frames) else { continue };
             if q.fm_name != p.fm_name {
                 out.push_str(&format!("DATA.sections.set({}, {});\n", compile::quote(&p.fm_name), compile::quote(&q.fm_name)));
             }
@@ -710,7 +717,7 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     for (_, text) in frames.values() { seed.push_str(text); }
     // what the entity's keyframes call: the engine's own clip's frames call nothing of the runtime's
     // clock (`clock_entity`)
-    seed.push_str(if native.is_some() { " PeptideRuntime.shownClip PeptideRuntime.frameDone PeptideRuntime.passing " }
+    seed.push_str(if native.is_some() { " PeptideRuntime.clipAt PeptideRuntime.frameDone PeptideRuntime.passing PeptideRuntime.born PeptideRuntime.enterLabel " }
         else { " PeptideRuntime.kf PeptideRuntime.at PeptideRuntime.runAt " });
     let kept = shake::shake(&files, &seed);
     let kept = format!("{kept}{}", rollback_fields(&kept));
@@ -888,7 +895,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
 /// keyframe instead: the code itself, or the clip's own method for that frame, run on the clip.
 pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceModel, pieces: &[Piece],
                 frames: &BTreeMap<(u16, u32), (String, String)>, extra: &BTreeMap<String, String>,
-                native: Option<u16>) -> anyhow::Result<()> {
+                native: Option<&Native>) -> anyhow::Result<()> {
     let Ok(bytes) = std::fs::read(path) else { return Ok(()) };
     let mut json: serde_json::Value = serde_json::from_slice(&bytes)?;
     let scripted = |sym: u16, f: u32| model.class_of(sym)
@@ -915,10 +922,10 @@ pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceMode
     let native_code = |sym: u16, f: u32| -> Option<String> {
         if let Some((class, text)) = frames.get(&(sym, f)) {
             let text = text.replacen("function()", "function(me)", 1);
-            return Some(format!("// frame {f} of {class}\n({text})(PeptideRuntime.shownClip());\nPeptideRuntime.frameDone();"));
+            return Some(format!("// frame {f} of {class}\n({text})(PeptideRuntime.clipAt({f}));\nPeptideRuntime.frameDone();"));
         }
         let (c, m) = model.class_of(sym).and_then(|c| c.frame_scripts.iter().find(|fs| fs.frame + 1 == f).map(|fs| (c.name.clone(), fs.method.clone())))?;
-        Some(format!("// frame {f} of {c}: its `{m}`\nPeptideRuntime.shownClip().{}();\nPeptideRuntime.frameDone();", compile::ident(&m)))
+        Some(format!("// frame {f} of {c}: its `{m}`\nPeptideRuntime.clipAt({f}).{}();\nPeptideRuntime.frameDone();", compile::ident(&m)))
     };
     let mut new_keyframes: Vec<serde_json::Value> = Vec::new();
     let mut new_layers: Vec<serde_json::Value> = Vec::new();
@@ -938,13 +945,16 @@ pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceMode
             // (engine frame, source frame) for each keyframe: the entry, then the scripted frames
             let mut at: Vec<(u32, u32)> = vec![(0, if p.reversed { p.from + p.frames - 1 } else { p.from })];
             // the engine's own clip: only frames with code, and the clip's first frame on the
-            // engine's second as well, for the object's birth
-            let mine = native.filter(|s| *s == p.sym);
+            // engine's second as well, for the object's birth (and, where each animation is a
+            // state's own clip, the entry that puts the object's clip on its label)
+            let mine = native.filter(|n| n.syms.contains(&p.sym));
+            let enter = match mine { Some(n) if n.labelled => format!("PeptideRuntime.enterLabel({});\n", compile::quote(&p.label)), _ => String::new() };
             if mine.is_some() {
                 at.clear();
                 for k in 0..p.frames {
                     let f = p.from + k;
-                    if native_code(p.sym, f).is_none() { continue }
+                    let entry = k == 0 && !enter.is_empty();
+                    if native_code(p.sym, f).is_none() && !entry { continue }
                     at.push((2 * k, f));
                     if f == 1 { at.push((1, f)); }
                 }
@@ -970,11 +980,11 @@ pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceMode
                     let own = native_code(p.sym, f).unwrap_or_default();
                     match (i, f) {
                         // the clip's first frame as the object is made: on the second engine frame
-                        (1, _) => format!("// this is frame 1 of the clip in SSF2, run here for compatibility as the object is made: SSF2\n// runs a new clip's first frame at the end of the frame it was made in, after its maker's code\n// (which can place it, set it up or send it to another frame first, and then this never runs),\n// where Fraymakers runs a new object's first keyframe while making it. entered any other way,\n// the frame runs on the first engine frame as usual\nif (PeptideRuntime.born == true) {{\n{own}\n}}"),
-                        // entered later (a jump back, a loop); and an animation's first frame passed
-                        // through by a jump into its middle does not run
-                        (0, 1) => format!("if (PeptideRuntime.passing != true && PeptideRuntime.born != true) {{\n{own}\n}}"),
-                        (0, _) => format!("if (PeptideRuntime.passing != true) {{\n{own}\n}}"),
+                        (1, _) => format!("// this is frame 1 of the clip in SSF2, run here for compatibility as the object is made:\n// SSF2 runs a new clip's first frame at the end of the frame it was made in, after its maker's\n// code (which can place it, set it up or send it to another frame first, and then this never\n// runs), where Fraymakers runs a new object's first keyframe while making it. entered any other\n// way, the frame runs on the first engine frame as usual\nif (PeptideRuntime.born == true) {{\n{enter}{own}\n}}"),
+                        // entered later (a jump, a loop, the engine's own state); and an animation's
+                        // first frame passed through by a jump into its middle does not run
+                        (0, 1) => format!("if (PeptideRuntime.born != true) {{\n{enter}if (PeptideRuntime.passing != true) {{\n{own}\n}}\n}}"),
+                        (0, _) => format!("{enter}if (PeptideRuntime.passing != true) {{\n{own}\n}}"),
                         _ => own,
                     }
                 } else {
@@ -1051,7 +1061,7 @@ pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceMode
 /// clip as its own (`native_clip`)
 pub(crate) fn native_entity(entity: &std::path::Path, key: &str, model: &SourceModel,
                             pieces: &[Piece], emitted: &Emitted) -> anyhow::Result<()> {
-    clock_entity(entity, key, model, pieces, &emitted.frames, &BTreeMap::new(), emitted.native)
+    clock_entity(entity, key, model, pieces, &emitted.frames, &BTreeMap::new(), emitted.native.as_ref())
 }
 
 /// An attack that declares `cancel` can be cut short: while it plays, holding the button it was
@@ -1648,18 +1658,26 @@ fn entry_box_writes(model: &SourceModel, pieces: &[Piece]) -> Vec<(crate::compil
 /// the clip an object's frames are the engine's own on: one clip every animation shows forwards
 /// from its own frames (none reversed or led into; an engine state's animation that borrows one of
 /// them runs that frame as it is entered), each of whose frame scripts is on a frame an
-/// animation shows, and that places no children here (nothing of it to keep up as it plays). its
-/// frames' code is on the entity's keyframes, the engine plays it, and the runtime keeps no
-/// playhead of its own for it
-pub fn native_clip(model: &SourceModel, pieces: &[Piece], placing: &BTreeSet<u16>) -> Option<u16> {
-    let sym = pieces.first()?.sym;
-    if pieces.iter().any(|p| p.sym != sym || p.reversed || p.head > 0) { return None }
-    if placing.contains(&sym) { return None }
-    let shown = |f: u32| pieces.iter().any(|p| f >= p.from && f < p.from + p.frames);
-    if let Some(c) = model.class_of(sym) {
-        if c.frame_scripts.iter().any(|fs| !shown(fs.frame + 1)) { return None }
+/// animation shows. its frames' code is on the entity's keyframes and the engine plays it: the
+/// runtime only keeps its record (where it is, the children its frames place) for code that
+/// reads it
+pub fn native_clip(model: &SourceModel, pieces: &[Piece], root: Option<u16>) -> Option<Native> {
+    if pieces.is_empty() || pieces.iter().any(|p| p.reversed || p.head > 0) { return None }
+    let syms: BTreeSet<u16> = pieces.iter().map(|p| p.sym).collect();
+    for &sym in &syms {
+        let shown = |f: u32| pieces.iter().any(|p| p.sym == sym && f >= p.from && f < p.from + p.frames);
+        if let Some(c) = model.class_of(sym) {
+            if c.frame_scripts.iter().any(|fs| !shown(fs.frame + 1)) { return None }
+        }
     }
-    Some(sym)
+    if syms.len() == 1 { return Some(Native { syms, labelled: false }) }
+    // several clips: each the one the object's clip places on the frame of the animation's label
+    let sprite = model.sprites.get(&root?)?;
+    for p in pieces {
+        let (f0, _) = sprite.labels.iter().find(|(_, l)| *l == p.label)?;
+        if !sprite.frames.get(*f0)?.iter().any(|k| k.char_id == p.sym && k.name.is_some()) { return None }
+    }
+    Some(Native { syms, labelled: true })
 }
 
 /// whether a placed clip does nothing anyone can see once nobody's code reaches it: its class (and
