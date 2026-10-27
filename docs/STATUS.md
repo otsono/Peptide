@@ -2891,13 +2891,14 @@ are catalogued in the two new sections above; the items here are the main conver
   patch time (the engine has no module loader), remapping every function, type and string index
   across the two; `hlbc` can read and write those tables, but the remapping is a cross-module
   linker and needs a feasibility spike before any feature leans on it.
-- **a converted fighter costs the engine about 1 ms a frame standing still and 2 fighting.**
-  two converted marios run 6.4 ms a frame idle and about 8.2 fighting where two built-in fighters
-  run 4 (the engine at full speed, `runtime_cost.py`, `--fight`). what is left is spread thin; a
-  call in the engine's script costs about 5 us, so the runtime's cost is its count of calls. the
-  sharpest part is an attack's first frame, which makes the clip its label places and every clip
-  that places: mario's forward smash takes about 5 ms there, each placed clip about 0.35 ms, most
-  of it the clip's own methods being made.
+- **a converted fighter costs the engine about 1 ms a frame standing still and 1.3 fighting.**
+  two converted marios run about 6.6 ms a frame fighting where two built-in fighters run 4 (the
+  engine at full speed, `runtime_cost.py`, `--fight`). a call in the engine's script costs about
+  5 us, so the runtime's cost is its count of calls. the sharpest part left is an attack's first
+  frame, which makes the clip its label places and every clip that places (`follow`, about 2.4 ms
+  of a fighting frame). a named child no code can reach is not made (nothing reads its name or a
+  text it starts with, nothing walks the children, and its class only sets its own properties):
+  a fighter's frames place boxes under names its code never asks for, and those were most of it.
 - **a match with a built-in fighter in a later slot does not start from the harness.** the first
   fighter is booted as built-in or custom by whether its package is installed, and two different
   converted fighters start together; a later slot is always loaded as a custom package, so a
