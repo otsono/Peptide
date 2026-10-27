@@ -497,7 +497,11 @@ fn compile_entity(e: &Value, group: &str, placed: &HashMap<(String, String), Pla
             let l = layers.get(lid.as_str().unwrap_or("")).ok_or_else(|| anyhow!("{eid}: animation {} names a layer it does not have", a["name"]))?;
             let ltype = l["type"].as_str().unwrap_or("");
             let mut out_kfs: Vec<Value> = Vec::new();
-            for kid in l["keyframes"].as_array().into_iter().flatten() {
+            let kids: Vec<&Value> = l["keyframes"].as_array().into_iter().flatten().collect();
+            // the symbol a keyframe shows, by the keyframe's place in the layer
+            let symbol_at = |i: usize| kids.get(i).and_then(|kid| keyframes.get(kid.as_str().unwrap_or("")))
+                .and_then(|k| k.get("symbol").and_then(Value::as_str)).and_then(|s| symbols.get(s).copied());
+            for (ki, kid) in kids.iter().enumerate() {
                 let k = keyframes.get(kid.as_str().unwrap_or("")).ok_or_else(|| anyhow!("{eid}: layer {} names a keyframe it does not have", l["name"]))?;
                 let mut kf = Map::new();
                 kf.insert("length".into(), k.get("length").cloned().unwrap_or_else(|| json!(1)));
@@ -515,6 +519,26 @@ fn compile_entity(e: &Value, group: &str, placed: &HashMap<(String, String), Pla
                         };
                         kf.insert("symbol".into(), sym);
                     }
+                }
+                // a tweened keyframe plays one frame per frame of its length, each eased from its
+                // own symbol toward the next keyframe's (the layer's first, after its last)
+                let tweened = k.get("tweened").and_then(Value::as_bool) == Some(true)
+                    && matches!(ltype, "IMAGE" | "COLLISION_BOX" | "COLLISION_BODY" | "POINT" | "LINE_SEGMENT");
+                let len = k.get("length").and_then(Value::as_u64).unwrap_or(1);
+                let from = k.get("symbol").and_then(Value::as_str).and_then(|s| symbols.get(s).copied());
+                let to = symbol_at(ki + 1).or_else(|| symbol_at(0));
+                if let (true, true, Some(from), Some(to)) = (tweened, len > 1, from, to) {
+                    let ease = Ease::of(k.get("tweenType").and_then(Value::as_str).unwrap_or("LINEAR"));
+                    kf.insert("length".into(), json!(1));
+                    out_kfs.push(Value::Object(kf.clone()));
+                    for i in 1..len {
+                        let between = tween_symbol(from, to, ltype, i as f64 / len as f64, ease);
+                        let sym = compile_symbol(&between, ltype, group, placed).with_context(|| format!("{eid} {} layer {}", a["name"], l["name"]))?;
+                        let mut f = kf.clone();
+                        f.insert("symbol".into(), sym);
+                        out_kfs.push(Value::Object(f));
+                    }
+                    continue;
                 }
                 out_kfs.push(Value::Object(kf));
             }
@@ -538,6 +562,105 @@ fn compile_entity(e: &Value, group: &str, placed: &HashMap<(String, String), Pla
         "animations": anims, "guid": e["guid"], "id": e["id"], "metadata": fm_meta(e),
         "tags": e.get("tags").cloned().unwrap_or_else(|| json!([])), "version": e.get("version").cloned().unwrap_or_else(|| json!(1)),
     }))
+}
+
+/// a tween's easing, by the keyframe's `tweenType` (anything else is linear)
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Ease { Linear, InQuad, OutQuad, InOutQuad, InCubic, OutCubic, InOutCubic, InQuart, OutQuart, InOutQuart, InQuint, OutQuint, InOutQuint }
+
+impl Ease {
+    fn of(name: &str) -> Ease {
+        match name {
+            "EASE_IN_QUAD" => Ease::InQuad, "EASE_OUT_QUAD" => Ease::OutQuad, "EASE_IN_OUT_QUAD" => Ease::InOutQuad,
+            "EASE_IN_CUBIC" => Ease::InCubic, "EASE_OUT_CUBIC" => Ease::OutCubic, "EASE_IN_OUT_CUBIC" => Ease::InOutCubic,
+            "EASE_IN_QUART" => Ease::InQuart, "EASE_OUT_QUART" => Ease::OutQuart, "EASE_IN_OUT_QUART" => Ease::InOutQuart,
+            "EASE_IN_QUINT" => Ease::InQuint, "EASE_OUT_QUINT" => Ease::OutQuint, "EASE_IN_OUT_QUINT" => Ease::InOutQuint,
+            _ => Ease::Linear,
+        }
+    }
+
+    /// the share of the way from `from` to `to` at `t` (0 to 1)
+    fn at(self, from: f64, to: f64, t: f64) -> f64 {
+        let t = t.clamp(0.0, 1.0);
+        let u = t - 1.0;
+        let k = match self {
+            Ease::Linear => t,
+            Ease::InQuad => t * t,
+            Ease::OutQuad => t * (2.0 - t),
+            Ease::InOutQuad => if t < 0.5 { 2.0 * t * t } else { -1.0 + (4.0 - 2.0 * t) * t },
+            Ease::InCubic => t * t * t,
+            Ease::OutCubic => u * u * u + 1.0,
+            Ease::InOutCubic => if t < 0.5 { 4.0 * t * t * t } else { u * (2.0 * t - 2.0) * (2.0 * t - 2.0) + 1.0 },
+            Ease::InQuart => t * t * t * t,
+            Ease::OutQuart => 1.0 - u * u * u * u,
+            Ease::InOutQuart => if t < 0.5 { 8.0 * t * t * t * t } else { 1.0 - 8.0 * u * u * u * u },
+            Ease::InQuint => t * t * t * t * t,
+            Ease::OutQuint => 1.0 + u * u * u * u * u,
+            Ease::InOutQuint => if t < 0.5 { 16.0 * t * t * t * t * t } else { 1.0 + 16.0 * u * u * u * u * u },
+        };
+        from + (to - from) * k
+    }
+}
+
+/// where a point at `pivot` from `origin` is once the origin turns by `degrees` (counter-clockwise,
+/// y up)
+fn pivot_at(origin: (f64, f64), pivot: (f64, f64), degrees: f64) -> (f64, f64) {
+    if degrees % 360.0 == 0.0 { return (origin.0 + pivot.0, origin.1 + pivot.1) }
+    let len = (pivot.0 * pivot.0 + pivot.1 * pivot.1).sqrt();
+    let a = libm::atan2(pivot.1, pivot.0) + degrees.to_radians();
+    (origin.0 + len * libm::cos(a), origin.1 + len * libm::sin(a))
+}
+
+/// where a symbol's origin is part of the way through a tween: it turns about its pivot by the
+/// eased rotation, and the pivot itself moves from where it is on one keyframe to where it is on
+/// the next (a collision box's pivot is its size, not scaled with it)
+fn tweened_position(a: &Value, b: &Value, t: f64, ease: Ease, unscaled_pivot: bool) -> (f64, f64) {
+    let (ax, ay, arot) = (num(a, "x", 0.0), num(a, "y", 0.0), num(a, "rotation", 0.0));
+    let (bx, by, brot) = (num(b, "x", 0.0), num(b, "y", 0.0), num(b, "rotation", 0.0));
+    let (asx, asy, bsx, bsy) = (num(a, "scaleX", 1.0), num(a, "scaleY", 1.0), num(b, "scaleX", 1.0), num(b, "scaleY", 1.0));
+    let (apx, apy, bpx, bpy) = (num(a, "pivotX", 0.0), num(a, "pivotY", 0.0), num(b, "pivotX", 0.0), num(b, "pivotY", 0.0));
+    let sx = ease.at(asx, bsx, t);
+    let sy = ease.at(asy, bsy, t);
+    let rot = ease.at(arot, brot, t);
+    // (worked in y-up space, angles counter-clockwise)
+    let pivot = if unscaled_pivot { (ease.at(apx, bpx, t), -ease.at(apy, bpy, t)) }
+        else { (ease.at(apx * sx, bpx * sx, t), -ease.at(apy * sy, bpy * sy, t)) };
+    let origin = (ax, -ay);
+    // turned about the pivot from its own rotation to the eased one
+    let moved = if arot == rot { origin } else {
+        let abs = pivot_at(origin, pivot, -arot);
+        let len = (pivot.0 * pivot.0 + pivot.1 * pivot.1).sqrt();
+        let back = libm::atan2(pivot.1, pivot.0) - std::f64::consts::PI - rot.to_radians();
+        (abs.0 + len * libm::cos(back), abs.1 + len * libm::sin(back))
+    };
+    // and carried with its pivot, which moves between the two keyframes
+    let own = |x: f64, y: f64, px: f64, py: f64, sx: f64, sy: f64, r: f64| {
+        let p = if unscaled_pivot { (px, -py) } else { (px * sx, -py * sy) };
+        let q = pivot_at((x, -y), p, -r);
+        (q.0, -q.1)
+    };
+    let p1 = own(ax, ay, apx, apy, asx, asy, arot);
+    let p2 = own(bx, by, bpx, bpy, bsx, bsy, brot);
+    (moved.0 + ease.at(p1.0, p2.0, t) - p1.0, -moved.1 + ease.at(p1.1, p2.1, t) - p1.1)
+}
+
+/// a symbol part of the way (`t`) from one keyframe's to the next's
+fn tween_symbol(a: &Value, b: &Value, ltype: &str, t: f64, ease: Ease) -> Value {
+    let mut s = a.clone();
+    let mut set = |k: &str, v: f64| { if let Some(o) = s.as_object_mut() { o.insert(k.into(), json!(v)); } };
+    let lerp = |k: &str, d: f64| ease.at(num(a, k, d), num(b, k, d), t);
+    match ltype {
+        "IMAGE" | "COLLISION_BOX" => {
+            let (x, y) = tweened_position(a, b, t, ease, ltype == "COLLISION_BOX");
+            set("x", x); set("y", y);
+            for (k, d) in [("alpha", 1.0), ("pivotX", 0.0), ("pivotY", 0.0), ("rotation", 0.0), ("scaleX", 1.0), ("scaleY", 1.0)] { set(k, lerp(k, d)); }
+        }
+        "POINT" => for (k, d) in [("x", 0.0), ("y", 0.0), ("alpha", 1.0), ("rotation", 0.0)] { set(k, lerp(k, d)); },
+        "LINE_SEGMENT" => set("alpha", lerp("alpha", 1.0)),
+        "COLLISION_BODY" => for k in ["head", "hipWidth", "hipXOffset", "hipYOffset", "foot"] { set(k, lerp(k, 0.0)); },
+        _ => {}
+    }
+    s
 }
 
 fn compile_symbol(s: &Value, ltype: &str, group: &str, placed: &HashMap<(String, String), Placed>) -> Result<Value> {
@@ -588,6 +711,55 @@ mod tests {
             let a = match (x + y) % 5 { 0 => 0, 1 => 255, _ => (v >> 24) as u8 };
             image::Rgba([(v >> 8) as u8, (v >> 16) as u8, v as u8, a])
         })
+    }
+
+    #[test]
+    fn a_tweened_keyframe_plays_one_eased_frame_per_frame() {
+        let e = json!({
+            "id": "t", "guid": "g", "animations": [{ "name": "a", "layers": ["L"] }],
+            "layers": [{ "$id": "L", "name": "p", "type": "POINT", "keyframes": ["k1", "k2"] }],
+            "keyframes": [
+                { "$id": "k1", "length": 4, "symbol": "s1", "tweened": true, "tweenType": "LINEAR" },
+                { "$id": "k2", "length": 1, "symbol": "s2" },
+            ],
+            "symbols": [
+                { "$id": "s1", "x": 0, "y": 0, "alpha": 1, "rotation": 0 },
+                { "$id": "s2", "x": 8, "y": -4, "alpha": 0, "rotation": 90 },
+            ],
+        });
+        let out = compile_entity(&e, "x", &HashMap::new(), false).expect("compiles");
+        let kfs = out["animations"][0]["layers"][0]["keyframes"].as_array().unwrap();
+        assert_eq!(kfs.len(), 5, "four frames of the tween and the keyframe it reaches");
+        assert!(kfs.iter().take(4).all(|k| k["length"] == 1));
+        let x: Vec<f64> = kfs.iter().map(|k| k["symbol"]["data"][0].as_f64().unwrap()).collect();
+        assert_eq!(x, vec![0.0, 2.0, 4.0, 6.0, 8.0]);
+        assert_eq!(kfs[2]["symbol"]["data"][3].as_f64().unwrap(), 45.0);
+    }
+
+    #[test]
+    fn eases_reach_their_ends_and_bend_the_middle() {
+        for name in ["LINEAR", "EASE_IN_QUAD", "EASE_OUT_CUBIC", "EASE_IN_OUT_QUART", "EASE_IN_OUT_QUINT"] {
+            let e = Ease::of(name);
+            assert_eq!(e.at(2.0, 6.0, 0.0), 2.0, "{name}");
+            assert!((e.at(2.0, 6.0, 1.0) - 6.0).abs() < 1e-9, "{name}");
+        }
+        assert_eq!(Ease::of("EASE_IN_QUAD").at(0.0, 1.0, 0.5), 0.25);
+        assert_eq!(Ease::of("EASE_OUT_QUAD").at(0.0, 1.0, 0.5), 0.75);
+        assert_eq!(Ease::of("whatever").at(0.0, 1.0, 0.5), 0.5);
+    }
+
+    #[test]
+    fn a_turning_image_keeps_its_pivot_where_it_is() {
+        // a picture turning a quarter about a pivot 10 to its right: the pivot stays put, so the
+        // origin swings round it
+        let a = json!({ "x": 0, "y": 0, "pivotX": 10, "pivotY": 0, "rotation": 0, "scaleX": 1, "scaleY": 1 });
+        let b = json!({ "x": 10, "y": -10, "pivotX": 10, "pivotY": 0, "rotation": 90, "scaleX": 1, "scaleY": 1 });
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let (x, y) = tweened_position(&a, &b, t, Ease::Linear, false);
+            let r = ((x - 10.0).powi(2) + y.powi(2)).sqrt();
+            assert!((r - 10.0).abs() < 1e-9, "at {t} the origin stays 10 from the pivot ({x}, {y})");
+        }
+        assert_eq!(tweened_position(&a, &b, 1.0, Ease::Linear, false), (10.0, -10.0));
     }
 
     #[test]
