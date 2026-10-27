@@ -1965,14 +1965,12 @@ before treating one as a gap.
 special runs 47 engine frames where the source's 32 frames want 64 (C6): its dash stops at the
 stage's edge on both engines, and the port, 14.6 pixels further on, slides off the edge
 (`slideOff` from the move's frame 20) and grabs the ledge. `move_trace.py fox "right:8
-right+special" --at=250` and a live read of speed and hitstop pin it: the move declares
-`resetMovement`, and the source stops dead on its first frame, where the port is 8 pixels on
-(43.1 to 51.1). `AttackRules.began` keeps `__entryX` to put the fighter back, but reads it on the
-animation's first keyframe, after the engine has already moved it that frame, so the put-back
-lands on 51.1. the freeze slowdown is paid (5.2 to 1.95 on the first frame out) and the move's
-friction is the source's; the extra pixels alone carry fox past the edge, where the air friction
-(0.1625) lets him slide on to the ledge. the fix is reading the position from before that frame's
-move, in the attack-start rule every fighter goes through. galaxy tours'
+right+special" --at=250` and a live read of speed and hitstop pin it: the walk ends 5.6 pixels
+further on here (51.1 against 45.5, the accepted walk spacing), and the move itself matches from
+there: `resetMovement`'s put-back holds the fighter where the attack began, the freeze slowdown is
+paid (5.2 to 1.95 on the first frame out), and the move's friction is the source's. those pixels
+carry fox past the edge, where the air friction (0.1625) lets him slide on to the ledge.
+galaxy tours'
 background has a 45-frame child that loops in 59 engine frames against the source's 90 (S7, the
 nested-loop backdrop family below). both fail the same way with fighters off the native playhead.
 
