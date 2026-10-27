@@ -1962,7 +1962,10 @@ before treating one as a gap.
 ## known issues & gaps
 
 **the release sample's two failures.** `verify.py sample --ssf2` passes 18 of 20. fox's side
-special runs 47 engine frames where the source's 32 frames want 64 (C6), and galaxy tours'
+special runs 47 engine frames where the source's 32 frames want 64 (C6): its dash stops at the
+stage's edge on both engines, and the port, a few pixels further on after the same walk (the
+accepted walk spacing), slides off the edge (`slideOff` from the move's frame 20) and grabs the
+ledge. galaxy tours'
 background has a 45-frame child that loops in 59 engine frames against the source's 90 (S7, the
 nested-loop backdrop family below). both fail the same way with fighters off the native playhead.
 
