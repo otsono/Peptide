@@ -428,16 +428,28 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     // every name the package's code reads (a member, a bare name) and every text it holds: a named
     // child none of them can reach is not made (below)
     let mut read_names: BTreeSet<String> = BTreeSet::new();
-    let mut texts: BTreeSet<String> = BTreeSet::new();
+    // (a text that is only ever an object's key is data, as an attack's stats name its boxes)
+    let mut said: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut starts: BTreeSet<String> = BTreeSet::new();
     for cm in model.classes.values().filter(|cm| !runtime.provides(&cm.name)) {
         for f in cm.methods.iter().map(|m| &m.function).chain([&cm.constructor, &cm.static_init]) {
             ast::walk_exprs(&f.body, &mut |e| match e {
                 Expr::Member(_, n) | Expr::Name(n) => { read_names.insert(n.clone()); }
-                Expr::Str(s) if !s.is_empty() => { texts.insert(s.clone()); }
+                Expr::Str(s) if !s.is_empty() => { said.entry(s.clone()).or_default().0 += 1; }
+                Expr::Object(pairs) => for (k, _) in pairs {
+                    if let Expr::Str(s) = k { said.entry(s.clone()).or_default().1 += 1; }
+                },
+                // a name built as the code runs starts with the text on the left of its `+`
+                Expr::Binary(ast::BinOp::Add, l, _) => {
+                    let mut l = &**l;
+                    while let Expr::Binary(ast::BinOp::Add, x, _) = l { l = &**x; }
+                    if let Expr::Str(s) = l { if !s.is_empty() { starts.insert(s.clone()); } }
+                }
                 _ => {}
             });
         }
     }
+    let texts: BTreeSet<String> = said.into_iter().filter(|(_, (all, keys))| all > keys).map(|(s, _)| s).collect();
     for c in &order {
         let Some((text, p, u, d, l)) = compile::compile_class_detached(model, runtime, c, plan.detach.get(c).unwrap_or(&none), jumps.get(c).cloned()) else { continue };
         cinits.extend(cinit_at.captures_iter(&text).map(|m| format!("{}.cinit", &m[1])));
@@ -482,15 +494,16 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
         // placed picture its class): with none, a fighter's art frames are not made and dropped
         // as its clips play
         let mut names: BTreeSet<String> = BTreeSet::new();
-        // a named child no code can reach (nothing reads its name, nor a text it starts with, and
-        // nothing walks the children), whose clip keeps to itself, is not made: a fighter's
-        // frames each place its boxes under names its code never asks for, and making them was
-        // most of the cost of a change of state. a stage's planes are found by name, so a stage
+        // a named child no code can reach (nothing reads its name, holds it as a text, builds it
+        // from a text it starts with or walks the children), whose clip keeps to itself, is not
+        // made: a fighter's frames each place its boxes under names its code never asks for (an
+        // attack's stats name them as keys, which is data), and making them was most of the cost
+        // of a change of state. a stage's planes are found by name, so a stage
         // makes every one; the runtime asks for a clip's `stance` and `xframe` itself
         let unreached = |p: &&crate::swf_timeline::Placed| -> bool {
             let Some(n) = &p.name else { return false };
             spec.kind != "stage" && !walks_children && n != "stance" && n != "xframe"
-                && !read_names.contains(n) && !texts.iter().any(|t| n.starts_with(t.as_str()))
+                && !read_names.contains(n) && !texts.contains(n) && !starts.iter().any(|t| n.starts_with(t.as_str()))
                 && keeps_to_itself(model, &pkg, p.char_id, &mut BTreeSet::new())
         };
         let frames: Vec<String> = sp.frames.iter().map(|placed| {
