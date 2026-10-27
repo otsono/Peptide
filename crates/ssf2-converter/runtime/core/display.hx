@@ -265,7 +265,12 @@ MovieClip.goto = function(me, f) {
 	// one that stops on an error (saffron city's charmander reads a flame it never fired) left
 	// the engine where it was, the clip was put back there, and the code jumped it again every frame
 	if (PeptideRuntime.native && me == PeptideRuntime.shownClip() && PeptideRuntime.engineJump(me, n)) return;
-	if (PeptideRuntime.native && me.__sym != null && PeptideRuntime.data.nativeSyms != null && PeptideRuntime.data.nativeSyms.exists(me.__sym)) { MovieClip.arrive(me, n); return; }
+	// the root sent to a label its code names: the engine plays the animation that label's clip
+	// shows, whose first keyframe puts the root there and runs the clip's first frame
+	if (PeptideRuntime.native && me == PeptideRuntime.root && !PeptideRuntime.switching && Std.isOfType(f, String)
+		&& PeptideRuntime.engineLabel(AS3.str(f))) return;
+	if (PeptideRuntime.native && me.__sym != null && PeptideRuntime.data.nativeSyms != null && PeptideRuntime.data.nativeSyms.exists(me.__sym)
+		&& PeptideRuntime.shows(me.__sym, n)) { MovieClip.arrive(me, n); return; }
 	PeptideRuntime.moved(me);
 	MovieClip.enter(me, n);
 };
@@ -351,8 +356,10 @@ MovieClip.samePlacing = function(a, b) {
 };
 
 MovieClip.runFrame = function(me, n) {
-	// a clip the engine plays as the object's own runs its frames from the entity's keyframes
-	if (PeptideRuntime.native && PeptideRuntime.data.nativeSyms != null && PeptideRuntime.data.nativeSyms.exists(me.__sym)) return;
+	// a clip the engine plays as the object's own runs the frames its animations show from the
+	// entity's keyframes (a frame none shows runs here, when code sends the clip to it)
+	if (PeptideRuntime.native && PeptideRuntime.data.nativeSyms != null && PeptideRuntime.data.nativeSyms.exists(me.__sym)
+		&& PeptideRuntime.shows(me.__sym, n)) return;
 	var s = me.__scripts.get(n - 1);
 	if (s != null) PeptideRuntime.run(s);
 };

@@ -101,6 +101,8 @@ pub struct Native {
     /// each animation's clip is the one its object's clip places under the animation's label
     /// (one state each): entering an animation puts the object's clip on that label first
     pub labelled: bool,
+    /// a fighter's: the engine starts its animations itself (its states), and its rules hear of it
+    pub fighter: bool,
 }
 
 /// Which frames' scripts move onto their animation's keyframes, for one object: a frame of a clip
@@ -686,14 +688,21 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
             || d.get("linkage_id").and_then(|v| v.str()) == Some(clip.as_str()));
         out.push_str(&projectile_frames(&text, item));
     }
-    let native = if matches!(spec.kind, "projectile" | "object") { native_clip(model, pieces, clip_sym) } else { None };
+    let native = if matches!(spec.kind, "projectile" | "object" | "fighter") {
+        native_clip(model, pieces, clip_sym).map(|n| Native { fighter: spec.kind == "fighter", ..n })
+    } else { None };
     if let Some(n) = &native {
         // and each animation's next: the one that shows the clip's next frame once it is played
         // out (the clip plays on into its next section; a projectile's animation that ends on its
         // own ends the projectile, so the update moves it on)
         out.push_str("DATA.native = true;\nDATA.nativeSyms = new haxe.ds.IntMap();\nDATA.sections = new haxe.ds.StringMap();\n");
         for s in &n.syms { out.push_str(&format!("DATA.nativeSyms.set({s}, true);\n")); }
-        for p in pieces.iter().filter(|p| !p.borrowed) {
+        // (a fighter's engine ends its own animations: only one whose clip plays on into another
+        // its engine has no way to, a charge let go into its attack, goes on)
+        for p in pieces.iter().filter(|p| n.fighter && !p.borrowed) {
+            if let Some(on) = &p.on { out.push_str(&format!("DATA.sections.set({}, {});\n", compile::quote(&p.fm_name), compile::quote(on))); }
+        }
+        for p in pieces.iter().filter(|p| !n.fighter && !p.borrowed && !p.reversed && p.head == 0) {
             let total = model.sprites.get(&p.sym).map(|s| s.frames.len() as u32).unwrap_or(0);
             let next = if p.from + p.frames > total { 1 } else { p.from + p.frames };
             let Some(q) = pieces.iter().find(|q| !q.borrowed && q.sym == p.sym && next >= q.from && next < q.from + q.frames) else { continue };
@@ -717,7 +726,7 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     for (_, text) in frames.values() { seed.push_str(text); }
     // what the entity's keyframes call: the engine's own clip's frames call nothing of the runtime's
     // clock (`clock_entity`)
-    seed.push_str(if native.is_some() { " PeptideRuntime.clipAt PeptideRuntime.frameDone PeptideRuntime.passing PeptideRuntime.born PeptideRuntime.enterLabel " }
+    seed.push_str(if native.is_some() { " PeptideRuntime.clipAt PeptideRuntime.frameDone PeptideRuntime.passing PeptideRuntime.born PeptideRuntime.enterLabel PeptideRuntime.entered " }
         else { " PeptideRuntime.kf PeptideRuntime.at PeptideRuntime.runAt " });
     let kept = shake::shake(&files, &seed);
     let kept = format!("{kept}{}", rollback_fields(&kept));
@@ -856,7 +865,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         if !c.is_empty() { c.push('\n'); }
         c.push_str(code);
     }
-    clock_entity(&char_dir.join(format!("library/entities/{char_pascal}.entity")), char_name, &model, &pieces, &out.frames, &cancels, None)?;
+    clock_entity(&char_dir.join(format!("library/entities/{char_pascal}.entity")), char_name, &model, &pieces, &out.frames, &cancels, out.native.as_ref())?;
     landing_stats(&dir, &out.landings, &label_jumps(&model, &pieces))?;
     // what a clip's frame writes of its boxes as it starts an animation is that animation's own
     let box_writes = entry_box_writes(&model, &pieces);
@@ -951,12 +960,15 @@ pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceMode
             let enter = match mine { Some(n) if n.labelled => format!("PeptideRuntime.enterLabel({});\n", compile::quote(&p.label)), _ => String::new() };
             if mine.is_some() {
                 at.clear();
-                for k in 0..p.frames {
-                    let f = p.from + k;
-                    let entry = k == 0 && !enter.is_empty();
+                // the clip frame each source frame of the animation shows: its section in the
+                // order it plays (backwards for one played backwards), then its lead-in's
+                for k in 0..(p.frames + p.head) {
+                    let f = if k >= p.frames { 1 + (k - p.frames) } else if p.reversed { p.from + p.frames - 1 - k } else { p.from + k };
+                    // (a fighter's every animation has an entry: its rules hear of it)
+                    let entry = k == 0 && (!enter.is_empty() || mine.is_some_and(|n| n.fighter) || extra.contains_key(&p.fm_name));
                     if native_code(p.sym, f).is_none() && !entry { continue }
                     at.push((2 * k, f));
-                    if f == 1 { at.push((1, f)); }
+                    if k == 0 && f == 1 { at.push((1, f)); }
                 }
             }
             for k in (1..p.frames).filter(|_| mine.is_none()) {
@@ -976,15 +988,23 @@ pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceMode
                     ids.push(id);
                 }
                 let id = crate::uuid_gen::det_uuid(&format!("{tag}::{i}"));
-                let text = if mine.is_some() {
+                let text = if let Some(n) = mine {
                     let own = native_code(p.sym, f).unwrap_or_default();
+                    // a fighter's entry goes through its rules: an animation the engine starts is
+                    // entered once the engine has entered its state, one its code starts at once;
+                    // a variant of the engine's (a turn borrowing the stand's frames) is not a new
+                    // clip, and keeps the one it is on
+                    let entry = |body: String| if n.fighter {
+                        format!("PeptideRuntime.entered({}, {}, function() {{\n{body}\n}});{}", compile::quote(&p.fm_name), p.borrowed,
+                            extra.get(&p.fm_name).map(|x| format!("\n{x}")).unwrap_or_default())
+                    } else { body };
                     match (i, f) {
                         // the clip's first frame as the object is made: on the second engine frame
                         (1, _) => format!("// this is frame 1 of the clip in SSF2, run here for compatibility as the object is made:\n// SSF2 runs a new clip's first frame at the end of the frame it was made in, after its maker's\n// code (which can place it, set it up or send it to another frame first, and then this never\n// runs), where Fraymakers runs a new object's first keyframe while making it. entered any other\n// way, the frame runs on the first engine frame as usual\nif (PeptideRuntime.born == true) {{\n{enter}{own}\n}}"),
                         // entered later (a jump, a loop, the engine's own state); and an animation's
                         // first frame passed through by a jump into its middle does not run
-                        (0, 1) => format!("if (PeptideRuntime.born != true) {{\n{enter}if (PeptideRuntime.passing != true) {{\n{own}\n}}\n}}"),
-                        (0, _) => format!("{enter}if (PeptideRuntime.passing != true) {{\n{own}\n}}"),
+                        (0, 1) => format!("if (PeptideRuntime.born != true) {{\n{}\n}}", entry(format!("{enter}if (PeptideRuntime.passing != true) {{\n{own}\n}}"))),
+                        (0, _) => entry(format!("{enter}if (PeptideRuntime.passing != true) {{\n{own}\n}}")),
                         _ => own,
                     }
                 } else {
@@ -1653,31 +1673,33 @@ fn entry_box_writes(model: &SourceModel, pieces: &[Piece]) -> Vec<(crate::compil
     out
 }
 
-/// the calls through which code reaches a clip's children by place rather than by name (the
-/// others that take a child need the child in hand already)
-/// the clip an object's frames are the engine's own on: one clip every animation shows forwards
-/// from its own frames (none reversed or led into; an engine state's animation that borrows one of
-/// them runs that frame as it is entered), each of whose frame scripts is on a frame an
-/// animation shows. its frames' code is on the entity's keyframes and the engine plays it: the
-/// runtime only keeps its record (where it is, the children its frames place) for code that
-/// reads it
+/// the clips an object's frames are the engine's own on: the frames each animation shows (a
+/// section played backwards last to first, a lead-in's frames after its section's) have their code
+/// on the entity's keyframes and the engine plays them; the runtime keeps only the clip's record
+/// (where it is, the children its frames place) for code that reads it, and runs a frame no
+/// animation shows when code sends the clip there (a clip whose own lead-in into its first section
+/// has code past its first frame is not one: nothing plays it). where the object's animations show several
+/// clips, each is the one the object's clip places under the animation's label
 pub fn native_clip(model: &SourceModel, pieces: &[Piece], root: Option<u16>) -> Option<Native> {
-    if pieces.is_empty() || pieces.iter().any(|p| p.reversed || p.head > 0) { return None }
+    if pieces.is_empty() { return None }
     let syms: BTreeSet<u16> = pieces.iter().map(|p| p.sym).collect();
+    // a clip that plays a lead-in of its own with code on it before its first section (past its
+    // first frame, which runs as it is made) has frames no animation of the engine's plays through
     for &sym in &syms {
-        let shown = |f: u32| pieces.iter().any(|p| p.sym == sym && f >= p.from && f < p.from + p.frames);
+        let shown = |f: u32| pieces.iter().any(|p| p.sym == sym && ((f >= p.from && f < p.from + p.frames) || (f >= 1 && f <= p.head)));
+        let first = pieces.iter().filter(|p| p.sym == sym).map(|p| p.from).min().unwrap_or(1);
         if let Some(c) = model.class_of(sym) {
-            if c.frame_scripts.iter().any(|fs| !shown(fs.frame + 1)) { return None }
+            if c.frame_scripts.iter().map(|fs| fs.frame + 1).any(|f| f > 1 && f < first && !shown(f)) { return None }
         }
     }
-    if syms.len() == 1 { return Some(Native { syms, labelled: false }) }
+    if syms.len() == 1 { return Some(Native { syms, labelled: false, fighter: false }) }
     // several clips: each the one the object's clip places on the frame of the animation's label
     let sprite = model.sprites.get(&root?)?;
     for p in pieces {
         let (f0, _) = sprite.labels.iter().find(|(_, l)| *l == p.label)?;
         if !sprite.frames.get(*f0)?.iter().any(|k| k.char_id == p.sym && k.name.is_some()) { return None }
     }
-    Some(Native { syms, labelled: true })
+    Some(Native { syms, labelled: true, fighter: false })
 }
 
 /// whether a placed clip does nothing anyone can see once nobody's code reaches it: its class (and

@@ -519,6 +519,8 @@ Fighters.startAsked = function(me, n, ?at) {
 	var st = anim == null ? null : Fighters.stateOf(anim);
 	if (st != null && fm.getAnimation() != anim) {
 		fm.toState(st, anim);
+		// entered at once, as code's jump is: the clip's jump below lands on its frames
+		PeptideRuntime.runEntries();
 		// the runtime shows it from here: the clip's jump below lands on this animation's frames
 		PeptideRuntime.shown = anim;
 		PeptideRuntime.shownBy = anim;
