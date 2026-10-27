@@ -90,15 +90,6 @@ PeptideRuntime.start = function(fm, data, kind) {
 	// a kind whose code starts once the match is live runs it then (the stage: `Stages.boot`)
 	if (PeptideRuntime.kind.initLate != true) PeptideRuntime.run(me.initialize);
 	PeptideRuntime.making = false;
-	// the frame scripts its clips entered as they were made run once the whole tree is there, as
-	// the code is written: before what made it goes on (a kind whose code starts late, the stage,
-	// runs them at its first update, after its boot)
-	if (PeptideRuntime.kind.initLate != true) {
-		var held = PeptideRuntime.held;
-		PeptideRuntime.held = null;
-		PeptideRuntime.fresh = true;
-		if (held != null) for (h in held) if (h.clip.__held == h && h.clip.currentFrame == h.frame) MovieClip.runFrame(h.clip, h.frame);
-	}
 
 	// the engine's first animation is followed at the first update, once the frame scripts the
 	// object's clips entered while it was made have run (the source runs them as it builds them,
