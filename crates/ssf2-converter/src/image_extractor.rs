@@ -155,6 +155,30 @@ pub struct FrameImageEntry {
     /// This is the TRUE rotation center in world space.
     pub anim_origin_x: f64,
     pub anim_origin_y: f64,
+    /// What the placement does to the picture's look that an IMAGE keyframe has no field for: its
+    /// colour transform, blend mode and filters. A piece with any of them is drawn into a
+    /// flattened picture with them applied (`flatten`).
+    pub look: Look,
+}
+
+/// A placement's colour transform (RGB multiply then add), blend mode and filters, each only when
+/// it changes anything.
+#[derive(Debug, Clone, Default)]
+pub struct Look {
+    pub tint: Option<[f64; 6]>,
+    pub blend: Option<swf::BlendMode>,
+    pub filters: Vec<swf::Filter>,
+}
+
+impl Look {
+    pub fn of(p: &crate::swf_timeline::Placed) -> Look {
+        let tint = p.tint.as_ref().filter(|t| (0..3).any(|i| (t.mul[i] - 1.0).abs() > 1e-6 || t.add[i].abs() > 1e-6))
+            .map(|t| [t.mul[0], t.mul[1], t.mul[2], t.add[0], t.add[1], t.add[2]]);
+        let blend = p.blend.filter(|b| !matches!(b, swf::BlendMode::Normal | swf::BlendMode::Layer));
+        Look { tint, blend, filters: p.filters.clone() }
+    }
+    /// nothing an IMAGE keyframe cannot say
+    pub fn is_plain(&self) -> bool { self.tint.is_none() && self.blend.is_none() && self.filters.is_empty() }
 }
 
 /// Per-animation per-frame image references.
@@ -1124,6 +1148,9 @@ fn build_anim_frame_images(
                             placed_now.and_then(|f| f.iter().find(|p| p.depth == depth))
                                 .map(|p| p.alpha).unwrap_or(1.0)
                         };
+                        let look_at = |depth: u16| -> Look {
+                            placed_now.and_then(|f| f.iter().find(|p| p.depth == depth)).map(Look::of).unwrap_or_default()
+                        };
 
                         // Animation local origin (0,0) in world space = root_xf.apply(0,0)
                         // This is the TRUE rotation center: Flash rotates sub-sprites around (0,0).
@@ -1152,6 +1179,7 @@ fn build_anim_frame_images(
                                 world_d: wd,
                                 anim_origin_x,
                                 anim_origin_y,
+                                look: look_at(depth),
                             });
                         }
 
@@ -1197,6 +1225,8 @@ fn build_anim_frame_images(
                                         world_d: wd,
                                         anim_origin_x: effect_origin_x,
                                         anim_origin_y: effect_origin_y,
+                                        // and its colour, blend and filters
+                                        look: look_at(depth),
                                     });
                                 }
                             }

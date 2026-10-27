@@ -758,6 +758,10 @@ at no more than one keyframe per two frames keeps its own layer; every run of th
 in a frame, in depth order, is drawn into one picture (`<char>_flat_<hash>.png`, shared by every
 frame that draws the run alike), placed as a plain translation. the layers are the places in the
 frame (run, kept piece, run, ...), so a layer holds the same kept piece for its whole life.
+a piece whose placement colours it (an RGB colour transform), blends it or filters it is always
+drawn into a picture with them applied, since an IMAGE keyframe can say none of them: its blend
+mixes with what is under it in its run, and a costume swap no longer recolours it (the colours
+are baked).
 
 ### .meta sidecar files
 

@@ -97,6 +97,7 @@ fn blank(depth: u16) -> FrameImageEntry {
         local_matrix: ImageLocalMatrix::from_abcd(1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
         world_tx: 0.0, world_ty: 0.0, world_sx: 1.0, world_sy: 1.0, world_rotation: 0.0,
         world_a: 1.0, world_b: 0.0, world_c: 0.0, world_d: 1.0, anim_origin_x: 0.0, anim_origin_y: 0.0,
+        look: Default::default(),
     }
 }
 
@@ -119,8 +120,10 @@ pub fn flatten(
     std::fs::create_dir_all(&sprites)?;
     let mut next_id: u16 = images.keys().copied().filter(|k| *k != u16::MAX).max().unwrap_or(0).max(59_999) + 1;
     let mut drawn: HashMap<String, (u16, String, f64, f64)> = HashMap::new();
-    let mut decoded: HashMap<u16, Option<tiny_skia::Pixmap>> = HashMap::new();
+    let mut decoded: HashMap<u16, Option<image::RgbaImage>> = HashMap::new();
     let mut count = 0usize;
+    let styled = anim_images.values().flat_map(|a| a.frames.values().flatten()).filter(|e| !e.look.is_plain()).count();
+    if styled > 0 { log::info!("{styled} placement(s) drawn with their colour, blend or filters"); }
 
     for anim in anim_images.values_mut() {
         let total = anim.frames.keys().max().map(|m| *m as u32 + 1).unwrap_or(0) as u16;
@@ -148,6 +151,8 @@ pub fn flatten(
         // which keep their own layer: on two frames or more, and moving as tweens do
         let mut kept: Vec<bool> = tracks.iter().map(|t| {
             if t.frames.len() < 2 { return false }
+            // a colour, a blend or a filter is drawn into the picture: no tween carries it
+            if t.frames.iter().any(|(f, i)| !anim.frames[f][*i].look.is_plain()) { return false }
             let p: Vec<[f64; 6]> = t.frames.iter().map(|(f, i)| art.placement(&anim.frames[f][*i])).collect();
             keyframes_needed(&p) * 2 <= p.len()
         }).collect();
@@ -198,12 +203,17 @@ pub fn flatten(
             let mut row: Vec<FrameImageEntry> = (0..lanes).map(|_| blank(base)).collect();
             for (slot, run) in units.iter().enumerate() {
                 if run.is_empty() { continue }
-                if run.len() == 1 { row[slot] = entries[run[0]].clone(); continue }
+                if run.len() == 1 && entries[run[0]].look.is_plain() { row[slot] = entries[run[0]].clone(); continue }
                 // a run of pieces: one picture, drawn once for every frame that places them alike
                 let pieces: Vec<&FrameImageEntry> = run.iter().map(|i| &entries[*i]).collect();
+                // keyed by where its pieces are from the first one's whole pixel: a run that only
+                // slides by whole pixels is the same picture, placed that much further on
+                let first = art.transform(pieces[0]);
+                let (ox, oy) = (first[4].floor(), first[5].floor());
                 let key: String = pieces.iter().map(|e| {
-                    let m = art.transform(e);
-                    format!("{}:{}:{}|", art.bitmap_of(e), m.iter().map(|v| format!("{:x}", v.to_bits())).collect::<Vec<_>>().join(","), e.alpha.to_bits())
+                    let mut m = art.transform(e);
+                    m[4] -= ox; m[5] -= oy;
+                    format!("{}:{}:{}:{:?}|", art.bitmap_of(e), m.iter().map(|v| format!("{:x}", v.to_bits())).collect::<Vec<_>>().join(","), e.alpha.to_bits(), e.look)
                 }).collect();
                 let hit = match drawn.get(&key) {
                     Some(h) => Some(h.clone()),
@@ -217,12 +227,13 @@ pub fn flatten(
                             next_id = next_id.checked_add(1).ok_or_else(|| anyhow::anyhow!("{char_name}: more flattened pictures than picture ids"))?;
                             count += 1;
                         }
-                        let h = h.map(|(id, sym, _, _, x, y)| (id, sym, x, y));
+                        let h = h.map(|(id, sym, _, _, x, y)| (id, sym, x - ox, y - oy));
                         if let Some(h) = &h { drawn.insert(key.clone(), h.clone()); }
                         h
                     }
                 };
                 let Some((id, sym, x, y)) = hit else { row[slot] = pieces[0].clone(); continue };
+                let (x, y) = (x + ox, y + oy);
                 let k = 1.0 / RES;
                 let mut e = pieces[0].clone();
                 e.shape_id = id;
@@ -256,49 +267,62 @@ fn draw_run(
     pieces: &[&FrameImageEntry],
     art: &Art,
     images: &BTreeMap<u16, ExtractedImage>,
-    decoded: &mut HashMap<u16, Option<tiny_skia::Pixmap>>,
+    decoded: &mut HashMap<u16, Option<image::RgbaImage>>,
     char_dir: &Path,
     sprites: &Path,
     char_name: &str,
     key: &str,
     id: u16,
 ) -> anyhow::Result<Option<(u16, String, u32, u32, f64, f64)>> {
-    let mut placed: Vec<([f64; 6], u16, f32)> = Vec::new();
+    // each piece's picture as it looks placed: coloured, filtered, and where its corner went
+    let mut placed: Vec<([f64; 6], tiny_skia::Pixmap, f32, tiny_skia::BlendMode)> = Vec::new();
     let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     for e in pieces {
         let bmp = art.bitmap_of(e);
         let Some(img) = images.get(&bmp) else { continue };
-        let pix = decoded.entry(bmp).or_insert_with(|| {
-            let rgba = image::open(char_dir.join(&img.png_path)).ok()?.to_rgba8();
-            let (w, h) = rgba.dimensions();
-            let mut data = rgba.into_raw();
-            for px in data.chunks_exact_mut(4) {
-                let a = px[3] as u32;
-                for c in &mut px[..3] { *c = ((*c as u32 * a + 127) / 255) as u8; }
+        let rgba = decoded.entry(bmp).or_insert_with(|| image::open(char_dir.join(&img.png_path)).ok().map(|i| i.to_rgba8()));
+        let Some(rgba) = rgba else { continue };
+        let mut m = art.transform(e);
+        let mut rgba = rgba.clone();
+        if let Some(t) = e.look.tint {
+            // the source's rule: scale, then offset, then clamp
+            for px in rgba.pixels_mut() {
+                for c in 0..3 { px[c] = (px[c] as f64 * t[c] + t[3 + c]).clamp(0.0, 255.0) as u8; }
             }
-            tiny_skia::Pixmap::from_vec(data, tiny_skia::IntSize::from_wh(w, h)?)
-        });
-        let Some(pix) = pix else { continue };
-        let m = art.transform(e);
-        let (w, h) = (pix.width() as f64, pix.height() as f64);
+        }
+        if !e.look.filters.is_empty() {
+            let (sx, sy) = ((m[0] * m[0] + m[1] * m[1]).sqrt(), (m[2] * m[2] + m[3] * m[3]).sqrt());
+            let (out, dx, dy) = crate::swf_filter::apply(&rgba, &e.look.filters, sx, sy);
+            // the filter grew the picture: its corner moved by (dx, dy) of its own pixels
+            m[4] += m[0] * dx as f64 + m[2] * dy as f64;
+            m[5] += m[1] * dx as f64 + m[3] * dy as f64;
+            rgba = out;
+        }
+        let (w, h) = rgba.dimensions();
+        let mut data = rgba.into_raw();
+        for px in data.chunks_exact_mut(4) {
+            let a = px[3] as u32;
+            for c in &mut px[..3] { *c = ((*c as u32 * a + 127) / 255) as u8; }
+        }
+        let Some(pix) = tiny_skia::IntSize::from_wh(w, h).and_then(|s| tiny_skia::Pixmap::from_vec(data, s)) else { continue };
+        let (w, h) = (w as f64, h as f64);
         for (u, v) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
             let (x, y) = (m[0] * u + m[2] * v + m[4], m[1] * u + m[3] * v + m[5]);
             x0 = x0.min(x); y0 = y0.min(y); x1 = x1.max(x); y1 = y1.max(y);
         }
-        placed.push((m, bmp, e.alpha as f32));
+        placed.push((m, pix, e.alpha as f32, blend_of(e.look.blend)));
     }
     if placed.is_empty() { return Ok(None) }
     let (x0, y0) = (x0.floor(), y0.floor());
     let (w, h) = (((x1 - x0) * RES).ceil().max(1.0), ((y1 - y0) * RES).ceil().max(1.0));
     if w > 4096.0 || h > 4096.0 { return Ok(None) }
     let Some(mut canvas) = tiny_skia::Pixmap::new(w as u32, h as u32) else { return Ok(None) };
-    for (m, bmp, alpha) in &placed {
-        let Some(Some(pix)) = decoded.get(bmp) else { continue };
+    for (m, pix, alpha, blend) in &placed {
         let r = RES as f32;
         let t = tiny_skia::Transform::from_row(
             m[0] as f32 * r, m[1] as f32 * r, m[2] as f32 * r, m[3] as f32 * r,
             ((m[4] - x0) * RES) as f32, ((m[5] - y0) * RES) as f32);
-        let paint = tiny_skia::PixmapPaint { opacity: alpha.clamp(0.0, 1.0), blend_mode: tiny_skia::BlendMode::SourceOver, quality: tiny_skia::FilterQuality::Bicubic };
+        let paint = tiny_skia::PixmapPaint { opacity: alpha.clamp(0.0, 1.0), blend_mode: *blend, quality: tiny_skia::FilterQuality::Bicubic };
         canvas.draw_pixmap(0, 0, pix.as_ref(), &paint, t, None);
     }
     // back to straight alpha for the picture on disk
@@ -310,6 +334,24 @@ fn draw_run(
     let sym = format!("{}_flat_{:016x}", crate::image_extractor::sanitize_name(char_name), fnv(key));
     image::save_buffer(sprites.join(format!("{sym}.png")), &data, w as u32, h as u32, image::ExtendedColorType::Rgba8)?;
     Ok(Some((id, sym, w as u32, h as u32, x0, y0)))
+}
+
+/// a placement's blend mode as the drawing's: what it mixes with is what is under it in its run
+fn blend_of(b: Option<swf::BlendMode>) -> tiny_skia::BlendMode {
+    use tiny_skia::BlendMode as T;
+    match b {
+        Some(swf::BlendMode::Multiply) => T::Multiply,
+        Some(swf::BlendMode::Screen) => T::Screen,
+        Some(swf::BlendMode::Lighten) => T::Lighten,
+        Some(swf::BlendMode::Darken) => T::Darken,
+        Some(swf::BlendMode::Difference) => T::Difference,
+        Some(swf::BlendMode::Add) => T::Plus,
+        Some(swf::BlendMode::Overlay) => T::Overlay,
+        Some(swf::BlendMode::HardLight) => T::HardLight,
+        Some(swf::BlendMode::Alpha) => T::DestinationIn,
+        Some(swf::BlendMode::Erase) => T::DestinationOut,
+        _ => T::SourceOver,
+    }
 }
 
 #[cfg(test)]

@@ -118,8 +118,10 @@ SAMPLE_CHARS = ["sandbag", "mario", "zelda", "link", "samus", "kirby", "pikachu"
 # the publish step decodes every picture it imports, so what it can carry is measured in
 # bytes of art more than in files: a fighter's thousand small cels publish in a minute, a
 # stage's 1278 full-width frames (103MB) do not publish in ninety, and 1.6GB runs the publisher
-# out of memory.
-ASSET_BUDGET_IMAGES = 3000
+# out of memory. the count is a backstop: kirby, with a hat and a pose for every fighter he
+# copies and his colours, blends and filters drawn into his pictures, ships about 3100 small
+# ones (21MB).
+ASSET_BUDGET_IMAGES = 4000
 ASSET_BUDGET_BYTES = 250 * 1024 * 1024
 EXPORT_TIMEOUT_MS = int(os.environ.get("EXPORT_TIMEOUT", 2400000))
 CONVERT_TIMEOUT_S = 2400
