@@ -280,6 +280,7 @@ MovieClip.enter = function(me, n) {
 // the playhead is on a frame: its children placed and its label read, its script not run (the
 // engine runs it, from the frame's keyframe)
 MovieClip.arrive = function(me, n) {
+	var from = me.currentFrame;
 	me.currentFrame = n;
 	var tl = me.__tl;
 	if (tl != null) {
@@ -311,8 +312,40 @@ MovieClip.arrive = function(me, n) {
 			if (l[0] <= n) me.currentLabel = l[1];
 			if (l[0] == n) me.currentFrameLabel = l[1];
 		}
-		MovieClip.place(me, tl.frames[n - 1]);
+		// a step on to a frame that places what the one before did leaves the children as they are
+		// (as Flash does: a child the code took off stays off)
+		if (!(from == n - 1 && MovieClip.sameAsBefore(tl, i))) MovieClip.place(me, tl.frames[n - 1]);
 	}
+};
+
+// whether a frame places just what the frame before it does, worked out once a timeline
+MovieClip.sameAsBefore = function(tl, i) {
+	if (tl.__same == null) {
+		var same = [false];
+		var f = 1;
+		while (f < tl.frames.length) { same.push(MovieClip.samePlacing(tl.frames[f - 1], tl.frames[f])); f++; }
+		tl.__same = same;
+	}
+	return i > 0 && i < tl.__same.length && tl.__same[i];
+};
+MovieClip.samePlacing = function(a, b) {
+	if (a == b) return true;
+	if (a == null || b == null || a.length != b.length) return false;
+	var k = 0;
+	while (k < a.length) {
+		var x = a[k];
+		var y = b[k];
+		if (x.length != y.length || x[0] != y[0] || x[1] != y[1] || x[2] != y[2]) return false;
+		var at = x.length > 3 ? x[3] : null;
+		var bt = y.length > 3 ? y[3] : null;
+		if (at != bt) {
+			if (at == null || bt == null || at.length != bt.length) return false;
+			var j = 0;
+			while (j < at.length) { if (at[j] != bt[j]) return false; j++; }
+		}
+		k++;
+	}
+	return true;
 };
 
 MovieClip.runFrame = function(me, n) {
