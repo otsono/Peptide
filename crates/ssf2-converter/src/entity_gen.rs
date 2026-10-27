@@ -1036,7 +1036,7 @@ pub fn generate_entity(
                     // magic particle at fill 0.078 came out ~13x oversized). Absent fill (vector
                     // shapes, 1:1 bitmaps) it is (1,1). Negative scales are flips, which FrayTools
                     // supports.
-                    let place = |f: u32| -> Option<(String, [f64; 6])> {
+                    let place = |f: u32| -> Option<(String, crate::flatten::Pose)> {
                         let entry = held[f as usize].as_ref()?;
                         let shape_id = entry.shape_id;
                         let img = img_result.images.get(&img_result.shape_to_bitmap.get(&shape_id).copied().unwrap_or(shape_id))
@@ -1062,6 +1062,11 @@ pub fn generate_entity(
                             crate::fm_placement::mirrored(placement)
                         } else { placement };
                         let (fm_sx, fm_sy) = (placement.scale_x, placement.scale_y);
+                        // the pivot is the piece's own registration point, in its picture's pixels:
+                        // where the source turns and scales it from, so a tween turns it about the
+                        // same point (the engine draws a still frame the same whatever the pivot)
+                        let reg = img_result.shape_pivot.get(&shape_id).copied().unwrap_or((0.0, 0.0));
+                        let (mut pivot_x, mut pivot_y) = (round2(-reg.0), round2(-reg.1));
                         let (mut fm_x, mut fm_y, mut rot) = (placement.x, placement.y, placement.rotation);
                         // FM's engine applies its OWN rotation during the TUMBLE state, about the
                         // entity position, so for tumble ONLY the authored rotation is stripped
@@ -1072,6 +1077,7 @@ pub fn generate_entity(
                             fm_x = round2(-fm_sx * img.width as f64 / 2.0);
                             fm_y = round2(-fm_sy * img.height as f64 / 2.0);
                             rot = 0.0;
+                            (pivot_x, pivot_y) = (0.0, 0.0);
                         }
                         // hurt_heavy is also a launched pose (see box_shift above): the art moves
                         // by the same hurtbox-union-to-origin delta as the boxes. No rotation strip.
@@ -1081,14 +1087,31 @@ pub fn generate_entity(
                         }
                         // the opacity the SOURCE gives this placement: Flash animates a fade, a
                         // flash or a ghosting trail as alpha
-                        Some((meta_guid, [fm_x, fm_y, fm_sx, fm_sy, round2(rot), round2(entry.alpha)]))
+                        Some((meta_guid, [fm_x, fm_y, fm_sx, fm_sy, round2(rot), round2(entry.alpha), pivot_x, pivot_y]))
                     };
-                    let placed: Vec<Option<(String, [f64; 6])>> = (0..total).map(place).collect();
+                    let mut placed: Vec<Option<(String, crate::flatten::Pose)>> = (0..total).map(place).collect();
+                    // each run of one picture on the layer takes the pivot its tweens fit best: the
+                    // registration point (a turn about it) or the picture's corner (a scale about
+                    // it, as FrayTools keeps the corner's offset from the pivot at the start scale
+                    // while nothing turns)
+                    let mut i = 0usize;
+                    while i < placed.len() {
+                        let Some((guid, _)) = placed[i].clone() else { i += 1; continue };
+                        let mut j = i;
+                        while j < placed.len() && placed[j].as_ref().is_some_and(|(g, _)| *g == guid) { j += 1; }
+                        let poses: Vec<crate::flatten::Pose> = placed[i..j].iter().map(|p| p.as_ref().unwrap().1).collect();
+                        let corner = crate::flatten::at_corner(&poses);
+                        if crate::flatten::keyframes_at(&corner) < crate::flatten::keyframes_at(&poses) {
+                            for (k, q) in corner.into_iter().enumerate() { placed[i + k].as_mut().unwrap().1 = q; }
+                        }
+                        i = j;
+                    }
 
                     // Keyframes: a run of frames placed alike is one keyframe; a run where the
                     // same picture moves in a straight line (place, scale, turn and opacity, each
                     // the even step between the run's ends) is one tweened keyframe, the run's
-                    // last frame starting the next.
+                    // last frame starting the next. a turn or a scale goes about the pivot (the
+                    // piece's registration point), as the source's does.
                     let mut f: u32 = 0;
                     while f < total {
                         let cur = &placed[f as usize];
@@ -1118,8 +1141,8 @@ pub fn generate_entity(
                                 "$id": id,
                                 "alpha": v[5],
                                 "imageAsset": guid,
-                                "pivotX": 0.0,
-                                "pivotY": 0.0,
+                                "pivotX": v[6],
+                                "pivotY": v[7],
                                 "pluginMetadata": {},
                                 // SWF world_rot = atan2(b,a) in y-down coords, normalised to
                                 // FrayTools' 0-360 range (no negation)

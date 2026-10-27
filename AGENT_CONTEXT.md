@@ -726,7 +726,7 @@ symbol; symbols are NOT shared across frames because the world matrix varies):
 ```json
 { "$id": "...", "alpha": 1,
   "imageAsset": "meta_guid",         // GUID from the PNG's .meta sidecar (NOT a file path)
-  "pivotX": 0, "pivotY": 0,          // bitmap (0,0); shape_pivot offsets are folded into x/y
+  "pivotX": 0, "pivotY": 0,          // a tween's turning point (see below); x/y is the corner
   "pluginMetadata": {},
   "rotation": 350.5,                  // CW-positive degrees, normalized to [0, 360)
   "scaleX": 1.1, "scaleY": 1.1,       // signed: negative = flip
@@ -750,7 +750,13 @@ IMAGE keyframe:
 consecutive frames with the same picture placed alike are run-length encoded into one
 keyframe. a run where the same picture moves in a straight line (place, scale, turn and
 opacity each the even step between the run's two ends) is one keyframe with `"tweened": true`
-(`LINEAR`), the run's last frame starting the next keyframe.
+(`LINEAR`), the run's last frame starting the next keyframe. a tween is checked against the
+engine's own tween maths: it turns and scales about the symbol's pivot while the pivot moves in a
+straight line. each run of one picture on a layer takes the pivot its tweens fit best, the piece's
+registration point (where the source turns it about) or the picture's corner (a scale fits this
+way, since the tween keeps the corner's offset from the pivot at the start scale while nothing
+turns). the pivot does not move a still frame (measured live: the same turned pose drawn alike
+with pivot 0 and 30).
 
 which pieces get layers: `flatten.rs` follows each piece (same depth, same picture) across the
 frames it is on. a piece on two frames or more whose placements take holds and straight tweens

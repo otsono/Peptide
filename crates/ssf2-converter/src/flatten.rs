@@ -45,29 +45,70 @@ impl Art<'_> {
         [a * fx, b * fx, c * fy, d * fy, e.world_tx + a * ox + c * oy, e.world_ty + b * ox + d * oy]
     }
 
-    /// the piece as the entity places it: x, y, scale x and y, turn, opacity
-    fn placement(&self, e: &FrameImageEntry) -> [f64; 6] {
+    /// the piece as the entity places it (`Pose`): its pivot is the piece's own registration
+    /// point, where the source turns and scales it from, in its picture's pixels
+    fn placement(&self, e: &FrameImageEntry) -> Pose {
+        let pivot = self.shape_pivot.get(&e.shape_id).copied().unwrap_or((0.0, 0.0));
         let p = crate::fm_placement::image_placement(
             &crate::fm_placement::WorldPlacement {
                 tx: e.world_tx, ty: e.world_ty, sx: e.world_sx, sy: e.world_sy, rotation: e.world_rotation,
                 a: e.world_a, b: e.world_b, c: e.world_c, d: e.world_d,
             },
-            self.shape_pivot.get(&e.shape_id).copied().unwrap_or((0.0, 0.0)),
+            pivot,
             self.shape_fill_scale.get(&e.shape_id).copied().unwrap_or((1.0, 1.0)),
         );
-        [p.x, p.y, p.scale_x, p.scale_y, p.rotation, e.alpha]
+        [p.x, p.y, p.scale_x, p.scale_y, p.rotation, e.alpha, -pivot.0, -pivot.1]
     }
 }
 
-/// whether `mid` is where a straight tween from `a` to `b` puts it at `t` (to the placements'
-/// own rounding)
-pub fn on_line(a: &[f64; 6], b: &[f64; 6], mid: &[f64; 6], t: f64) -> bool {
-    const TOL: [f64; 6] = [0.06, 0.06, 0.006, 0.006, 0.2, 0.02];
-    (0..6).all(|i| (a[i] + (b[i] - a[i]) * t - mid[i]).abs() <= TOL[i])
+/// An IMAGE symbol's placement: x, y, scale x and y, turn, opacity, and its pivot x and y.
+pub type Pose = [f64; 8];
+
+/// where a tween puts a picture's corner part of the way (`t`) from one pose to the next: it turns
+/// about its pivot by the eased turn, and the pivot moves in a straight line between where it is
+/// on the two poses. the packer expands a tween by the same steps (`fra_pack::tweened_position`),
+/// as FrayTools previews it; worked in y-up space, angles counter-clockwise
+pub fn tweened_corner(a: &Pose, b: &Pose, t: f64) -> (f64, f64) {
+    let lerp = |p: f64, q: f64| p + (q - p) * t;
+    let pivot_at = |o: (f64, f64), p: (f64, f64), deg: f64| -> (f64, f64) {
+        if deg % 360.0 == 0.0 { return (o.0 + p.0, o.1 + p.1) }
+        let len = (p.0 * p.0 + p.1 * p.1).sqrt();
+        let ang = p.1.atan2(p.0) + deg.to_radians();
+        (o.0 + len * ang.cos(), o.1 + len * ang.sin())
+    };
+    let (sx, sy, rot) = (lerp(a[2], b[2]), lerp(a[3], b[3]), lerp(a[4], b[4]));
+    let pivot = (lerp(a[6] * sx, b[6] * sx), -lerp(a[7] * sy, b[7] * sy));
+    let origin = (a[0], -a[1]);
+    let moved = if a[4] == rot { origin } else {
+        let abs = pivot_at(origin, pivot, -a[4]);
+        let len = (pivot.0 * pivot.0 + pivot.1 * pivot.1).sqrt();
+        let back = pivot.1.atan2(pivot.0) - std::f64::consts::PI - rot.to_radians();
+        (abs.0 + len * back.cos(), abs.1 + len * back.sin())
+    };
+    let own = |p: &Pose| { let q = pivot_at((p[0], -p[1]), (p[6] * p[2], -p[7] * p[3]), -p[4]); (q.0, -q.1) };
+    let (p1, p2) = (own(a), own(b));
+    (moved.0 + lerp(p1.0, p2.0) - p1.0, -moved.1 + lerp(p1.1, p2.1) - p1.1)
 }
 
-/// how many keyframes a piece's placements take as holds and straight tweens
-pub fn keyframes_needed(p: &[[f64; 6]]) -> usize {
+/// whether `mid` is where a linear tween from `a` to `b` puts it at `t` (to the placements' own
+/// rounding)
+pub fn on_line(a: &Pose, b: &Pose, mid: &Pose, t: f64) -> bool {
+    const TOL: [f64; 8] = [0.06, 0.06, 0.006, 0.006, 0.2, 0.02, 0.01, 0.01];
+    if !(2..8).all(|i| (a[i] + (b[i] - a[i]) * t - mid[i]).abs() <= TOL[i]) { return false }
+    let (x, y) = tweened_corner(a, b, t);
+    (x - mid[0]).abs() <= TOL[0] && (y - mid[1]).abs() <= TOL[1]
+}
+
+/// how many keyframes a piece's placements take as holds and straight tweens, about whichever
+/// pivot fits them better
+pub fn keyframes_needed(p: &[Pose]) -> usize { keyframes_at(p).min(keyframes_at(&at_corner(p))) }
+
+/// the same poses with the pivot at the picture's corner: a tween then moves the corner in a
+/// straight line (a scale about the registration point fits this way, a turn about it the other)
+pub fn at_corner(p: &[Pose]) -> Vec<Pose> { p.iter().map(|q| { let mut q = *q; q[6] = 0.0; q[7] = 0.0; q }).collect() }
+
+/// how many keyframes the poses take as they are (their own pivots)
+pub fn keyframes_at(p: &[Pose]) -> usize {
     let n = p.len();
     let (mut i, mut k) = (0usize, 0usize);
     while i < n {
@@ -153,7 +194,7 @@ pub fn flatten(
             if t.frames.len() < 2 { return false }
             // a colour, a blend or a filter is drawn into the picture: no tween carries it
             if t.frames.iter().any(|(f, i)| !anim.frames[f][*i].look.is_plain()) { return false }
-            let p: Vec<[f64; 6]> = t.frames.iter().map(|(f, i)| art.placement(&anim.frames[f][*i])).collect();
+            let p: Vec<Pose> = t.frames.iter().map(|(f, i)| art.placement(&anim.frames[f][*i])).collect();
             keyframes_needed(&p) * 2 <= p.len()
         }).collect();
         // each frame as its units, bottom to top: runs of the rest and kept pieces in turn (an empty
@@ -358,7 +399,7 @@ fn blend_of(b: Option<swf::BlendMode>) -> tiny_skia::BlendMode {
 mod tests {
     use super::*;
 
-    fn p(x: f64, y: f64, r: f64) -> [f64; 6] { [x, y, 1.0, 1.0, r, 1.0] }
+    fn p(x: f64, y: f64, r: f64) -> Pose { [x, y, 1.0, 1.0, r, 1.0, 0.0, 0.0] }
 
     #[test]
     fn a_hold_and_a_straight_move_take_a_keyframe_each() {
@@ -368,8 +409,35 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_about_its_registration_point_is_one_tween() {
+        // a 20x10 picture whose registration point is its centre, turned 90 degrees about it in
+        // four steps: its corner swings round the centre
+        let pose = |deg: f64| -> Pose {
+            let r = deg.to_radians();
+            let (cx, cy) = (100.0, 50.0);
+            // corner = centre + R(deg)·(-10, -5), y-down, clockwise-positive
+            let (dx, dy) = (-10.0, -5.0);
+            [cx + r.cos() * dx - r.sin() * dy, cy + r.sin() * dx + r.cos() * dy, 1.0, 1.0, deg, 1.0, 10.0, 5.0]
+        };
+        let t: Vec<Pose> = (0..=4).map(|i| pose(i as f64 * 22.5)).collect();
+        assert_eq!(keyframes_needed(&t), 2, "one tween and the keyframe it reaches");
+    }
+
+    #[test]
+    fn the_tween_turns_about_the_pivot_as_the_packer_does() {
+        // the packer's own case (fra_pack: a_turning_image_keeps_its_pivot_where_it_is)
+        let a: Pose = [0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 10.0, 0.0];
+        let b: Pose = [10.0, -10.0, 1.0, 1.0, 90.0, 1.0, 10.0, 0.0];
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let (x, y) = tweened_corner(&a, &b, t);
+            assert!((((x - 10.0).powi(2) + y.powi(2)).sqrt() - 10.0).abs() < 1e-9, "at {t}: ({x}, {y})");
+        }
+        assert_eq!(tweened_corner(&a, &b, 1.0), (10.0, -10.0));
+    }
+
+    #[test]
     fn jitter_takes_a_keyframe_a_frame() {
-        let t: Vec<[f64; 6]> = (0..8).map(|i| p(if i % 2 == 0 { 0.0 } else { 5.0 }, i as f64, 0.0)).collect();
+        let t: Vec<Pose> = (0..8).map(|i| p(if i % 2 == 0 { 0.0 } else { 5.0 }, i as f64, 0.0)).collect();
         assert!(keyframes_needed(&t) * 2 > t.len());
     }
 }
