@@ -1963,9 +1963,13 @@ before treating one as a gap.
 
 **the release sample's two failures.** `verify.py sample --ssf2` passes 18 of 20. fox's side
 special runs 47 engine frames where the source's 32 frames want 64 (C6): its dash stops at the
-stage's edge on both engines, and the port, a few pixels further on after the same walk (the
-accepted walk spacing), slides off the edge (`slideOff` from the move's frame 20) and grabs the
-ledge. galaxy tours'
+stage's edge on both engines, and the port, 14.6 pixels further on, slides off the edge
+(`slideOff` from the move's frame 20) and grabs the ledge. `move_trace.py fox "right:8
+right+special" --at=250` shows the two gaps: the walk's speed carries 8 pixels into the move's
+first frame here, where the source stops dead on it (`Fighters.attackStartSlow`), and after the
+freeze of the illusion's hit the port moves 4.5, 3.5, 1.5 where the source moves 1: the hit is
+dealt by the projectiles the move fires, so the fighter's freeze never reaches
+`Fighters.freezeSlow`, which only a hit by its own boxes arms. galaxy tours'
 background has a 45-frame child that loops in 59 engine frames against the source's 90 (S7, the
 nested-loop backdrop family below). both fail the same way with fighters off the native playhead.
 
