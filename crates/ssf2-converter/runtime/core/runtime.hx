@@ -112,11 +112,18 @@ PeptideRuntime.updating = false;
 PeptideRuntime.inTimer = false;
 // what comes due as the frame's script is done (a one-frame timer it started, Timers.create)
 PeptideRuntime.afterFrame = [];
+PeptideRuntime.frameVx = null;
 PeptideRuntime.frameDone = function() {
 	while (PeptideRuntime.afterFrame.length > 0) {
 		var due = PeptideRuntime.afterFrame;
 		PeptideRuntime.afterFrame = [];
 		for (f in due) f();
+	}
+	var vx = PeptideRuntime.frameVx;
+	if (vx != null) {
+		PeptideRuntime.frameVx = null;
+		var fm = PeptideRuntime.fm;
+		if (!fm.isDisposed()) PeptideRuntime.kind.speedsSet(PeptideRuntime.object, fm.getXSpeed() != vx);
 	}
 };
 PeptideRuntime.update = function() {
@@ -480,6 +487,10 @@ PeptideRuntime.clockedUpdate = function() {
 // the engine's own clip on a frame its keyframe runs: its record goes there first (where it is,
 // the children that frame places), for the frame's code to read
 PeptideRuntime.clipAt = function(f) {
+	// the object's x speed before the frame's code, as `run` keeps it around code it runs: a kind
+	// that answers a speed its code set is told once the frame is done
+	if (PeptideRuntime.depth == 0 && PeptideRuntime.kind != null && PeptideRuntime.kind.speedsSet != null && !PeptideRuntime.fm.isDisposed())
+		PeptideRuntime.frameVx = PeptideRuntime.fm.getXSpeed();
 	var st = PeptideRuntime.shownClip();
 	if (st != null && st.currentFrame != f) MovieClip.arrive(st, f);
 	return st;
