@@ -1967,9 +1967,11 @@ stage's edge on both engines, and the port, 14.6 pixels further on, slides off t
 (`slideOff` from the move's frame 20) and grabs the ledge. `move_trace.py fox "right:8
 right+special" --at=250` shows the two gaps: the walk's speed carries 8 pixels into the move's
 first frame here, where the source stops dead on it (`Fighters.attackStartSlow`), and after the
-freeze of the illusion's hit the port moves 4.5, 3.5, 1.5 where the source moves 1: the hit is
-dealt by the projectiles the move fires, so the fighter's freeze never reaches
-`Fighters.freezeSlow`, which only a hit by its own boxes arms. galaxy tours'
+freeze of the illusion's hit the port moves 4.5, 3.5, 1.5 where the source moves 1. the hit is
+dealt by the projectiles the move fires, but arming `Fighters.freezeSlow` for any freeze changed
+nothing, so the slowdown is skipped elsewhere (`attackSlows`, or a freeze that is not the
+engine's hitstop): the next step is a live read of the fighter's hitstop and speed through it.
+galaxy tours'
 background has a 45-frame child that loops in 59 engine frames against the source's 90 (S7, the
 nested-loop backdrop family below). both fail the same way with fighters off the native playhead.
 
