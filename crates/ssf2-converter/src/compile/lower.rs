@@ -921,6 +921,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         }
         if let Some(b) = self.runtime_base() {
             if !in_static && self.pkg.runtime.has_member(&b, n) {
+                if let Some(t) = self.own_playhead(n) { return t }
                 if self.pkg.runtime.has_getter(&b, n) { return format!("me.get_{}()", ident(n)) }
                 return format!("me.{}", ident(n));
             }
@@ -960,6 +961,33 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         v
     }
 
+    /// the clip's own playhead, read off the engine while one of the animations that show the
+    /// clip is playing: the clip frame is the animation's first plus one for every two engine
+    /// frames, and its label the last one at or before it. elsewhere (or while a jump of the
+    /// code's waits for the engine to follow it) the clip's own record
+    fn own_playhead(&mut self, n: &str) -> Option<String> {
+        if !matches!(n, "currentFrame" | "currentLabel" | "totalFrames") { return None }
+        if self.scopes.iter().any(|s| s.is_static) { return None }
+        let p = self.jumps.as_ref()?.playhead.clone()?;
+        if n == "totalFrames" { return Some(p.total.to_string()) }
+        if p.starts.is_empty() { return None }
+        let (a, e) = (self.fresh("__a"), self.fresh("__e"));
+        let mut frame = "me.currentFrame".to_string();
+        for (anim, from, frames) in p.starts.iter().rev() {
+            let last = from + frames.saturating_sub(1);
+            frame = format!("{a} == {} ? Std.int(Math.min({from} + Std.int(({e} - 1) / 2), {last})) : {frame}", quote(anim));
+        }
+        let at = format!("var {a} = self.getAnimation(); var {e} = self.getCurrentFrame(); PeptideRuntime.dirty ? me.currentFrame : {frame}");
+        if n == "currentFrame" { return Some(format!("({{ {at}; }})")) }
+        // the label: tested from the last back to the first, each test wrapping the earlier ones
+        let f = self.fresh("__f");
+        let mut labels = p.labels.clone();
+        labels.sort_by_key(|x| x.0);
+        let mut chain = "null".to_string();
+        for (lf, l) in &labels { chain = format!("{f} >= {lf} ? {} : ({chain})", quote(l)); }
+        Some(format!("({{ var {f} = ({{ {at}; }}); {chain}; }})"))
+    }
+
     fn member(&mut self, o: &Expr, n: &str) -> String {
         if n.starts_with('#') { self.problem(format!("a slot by number ({n})")); }
         if let Expr::Name(cls) = o {
@@ -992,6 +1020,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             }
         }
         if self.is_me(o) {
+            if let Some(t) = self.own_playhead(n) { return t }
             if self.own_getter(n) { return format!("me.get_{}()", ident(n)) }
             if self.stored(n) { return self.cell_read("me", n, self.own_field(n, false)) }
             return format!("me.{}", ident(n));

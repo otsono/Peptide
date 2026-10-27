@@ -54,7 +54,12 @@ pub fn label_jumps(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, cr
         let Some(c) = model.class_of(sym) else { continue };
         let Some(sprite) = model.sprites.get(&sym) else { continue };
         let own: Vec<&Piece> = pieces.iter().filter(|p| p.sym == sym && !p.borrowed && !p.reversed && p.head == 0).collect();
-        let mut j = crate::compile::ClipJumps { anims: own.iter().map(|p| p.fm_name.clone()).collect(), labels: BTreeMap::new(), autolink: None };
+        let playhead = crate::compile::Playhead {
+            starts: own.iter().map(|p| (p.fm_name.clone(), p.from, p.frames)).collect(),
+            labels: sprite.labels.iter().map(|(f, l)| (*f as u32 + 1, l.clone())).collect(),
+            total: sprite.frames.len() as u32,
+        };
+        let mut j = crate::compile::ClipJumps { anims: own.iter().map(|p| p.fm_name.clone()).collect(), labels: BTreeMap::new(), autolink: None, playhead: Some(playhead) };
         for (f0, label) in &sprite.labels {
             let f = *f0 as u32 + 1;
             let hits: Vec<&&Piece> = own.iter().filter(|p| f >= p.from && f < p.from + p.frames).collect();
@@ -403,6 +408,8 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     let plan = frame_plan(model, pieces, &effect_syms);
     let none = BTreeSet::new();
     let mut jumps = label_jumps(model, pieces);
+    // a projectile's playhead is the engine's: its code reads where its clip is off the engine
+    if spec.kind != "projectile" { for j in jumps.values_mut() { j.playhead = None; } }
     for (c, code) in &spec.autolink { jumps.entry(c.clone()).or_default().autolink = Some(code.clone()); }
     let mut detached: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut found: Vec<crate::compile::Landing> = Vec::new();
@@ -1249,7 +1256,7 @@ mod landing_stats_tests {
             boxes: vec![(1, vec![("damage".into(), 9.0)])],
         };
         let mut jumps = BTreeMap::new();
-        jumps.insert("Clip".to_string(), crate::compile::ClipJumps { anims: vec!["aerial_up".into(), "aerial_up_land".into()], labels: BTreeMap::new(), autolink: None });
+        jumps.insert("Clip".to_string(), crate::compile::ClipJumps { anims: vec!["aerial_up".into(), "aerial_up_land".into()], labels: BTreeMap::new(), autolink: None , playhead: None});
         landing_stats(&dir, &[(landing, vec!["aerial_up_land".into()])], &jumps).unwrap();
         let anim = std::fs::read_to_string(dir.join("AnimationStats.hx")).unwrap();
         let hit = std::fs::read_to_string(dir.join("HitboxStats.hx")).unwrap();
