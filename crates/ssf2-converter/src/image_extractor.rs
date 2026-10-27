@@ -563,6 +563,16 @@ pub fn extract_images_from_swf_only(
         log::info!("Pre-rendered {} sheared frame placement(s) as baked bitmaps", skew_count);
     }
 
+    // 6. Flatten each frame's display list: pieces that move as tweens keep their own layers,
+    //    every run of the rest is drawn into one picture (`flatten`).
+    let char_dir = sprites_dir.parent().and_then(|p| p.parent()).unwrap_or(&sprites_dir).to_path_buf();
+    let flat = crate::flatten::flatten(&mut anim_images, &mut images,
+        &crate::flatten::Art { shape_to_bitmap: &shape_to_bitmap, shape_pivot: &shape_pivot, shape_fill_scale: &shape_fill_scale },
+        &char_dir, char_name)?;
+    if flat > 0 {
+        log::info!("Flattened {} run(s) of pieces into pictures", flat);
+    }
+
     Ok(ImageExtractionResult {
         images,
         shape_to_bitmap,
@@ -1592,7 +1602,7 @@ impl PngBatch {
     }
 }
 
-fn sanitize_name(name: &str) -> String {
+pub(crate) fn sanitize_name(name: &str) -> String {
     name.replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_")
 }
 

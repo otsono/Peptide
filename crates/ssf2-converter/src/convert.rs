@@ -267,6 +267,11 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
         char_names.iter().map(|c| opts.output.join(c)).collect()
     };
     for dir in &lint_dirs {
+        match prune_unplaced_sprites(dir) {
+            Ok(0) => {}
+            Ok(n) => log::info!("dropped {n} sprite(s) nothing places"),
+            Err(e) => all_warnings.push(format!("pruning sprites in {}: {e}", dir.display())),
+        }
         for problem in lint_emitted_hscript(dir) {
             log::error!("{problem}");
             all_warnings.push(problem);
@@ -289,6 +294,58 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
         log_blocks: accumulated_logs,
         warnings: all_warnings,
     })
+}
+
+/// Drops the sprites nothing in the project uses: no entity places the picture, and no other file
+/// of the project names it (by its guid or its id). Pieces a flattened picture draws are left
+/// with no placement of their own, as are pictures drawn for animations no entity keeps; the
+/// publish carries (and counts) every picture in the library. Each `verify.json` is then given
+/// the art that is left.
+fn prune_unplaced_sprites(dir: &Path) -> Result<usize> {
+    fn files(d: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = fs::read_dir(d) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() { files(&p, out) } else { out.push(p) }
+        }
+    }
+    let mut all = Vec::new();
+    files(dir, &mut all);
+    let named = |p: &Path, ext: &str| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(ext));
+    // what the project says about its pictures: the entities' placements, and anything else it
+    // writes in text (a manifest, stats, a script)
+    let mut text = String::new();
+    for p in &all {
+        if named(p, ".png") || named(p, ".png.meta") || named(p, ".wav") || named(p, ".ogg") || named(p, ".mp3") || named(p, ".fra") { continue }
+        if let Ok(t) = fs::read_to_string(p) { text.push_str(&t); text.push('\n'); }
+    }
+    let mut dropped = 0usize;
+    for meta in all.iter().filter(|p| named(p, ".png.meta")) {
+        let Ok(v) = fs::read_to_string(meta).map(|t| serde_json::from_str::<serde_json::Value>(&t)) else { continue };
+        let Ok(v) = v else { continue };
+        let guid = v["guid"].as_str().unwrap_or("");
+        let id = v["id"].as_str().unwrap_or("");
+        if guid.is_empty() || text.contains(guid) || (!id.is_empty() && text.contains(&format!("\"{id}\""))) { continue }
+        let png = meta.with_extension("");
+        let _ = fs::remove_file(&png);
+        fs::remove_file(meta)?;
+        dropped += 1;
+    }
+    if dropped > 0 {
+        for plan in all.iter().filter(|p| named(p, "verify.json")) {
+            let Some(root) = plan.parent() else { continue };
+            let Ok(mut v) = fs::read_to_string(plan).map(|t| serde_json::from_str::<serde_json::Value>(&t)) else { continue };
+            let Ok(v) = v.as_mut() else { continue };
+            if v.get("assets").is_none() { continue }
+            let mut lib = Vec::new();
+            files(&root.join("library"), &mut lib);
+            let pngs: Vec<&PathBuf> = lib.iter().filter(|p| named(p, ".png")).collect();
+            let bytes: u64 = pngs.iter().map(|p| fs::metadata(p).map(|m| m.len()).unwrap_or(0)).sum();
+            v["assets"] = serde_json::json!({ "images": pngs.len(), "bytes": bytes });
+            fs::write(plan, serde_json::to_string_pretty(v)?)?;
+        }
+    }
+    Ok(dropped)
 }
 
 /// Enumerate the `.fraytools` project files this run produced. Multi-char writes

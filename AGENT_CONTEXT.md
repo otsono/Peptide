@@ -747,8 +747,17 @@ IMAGE keyframe:
   "pluginMetadata": {} }
 ```
 
-consecutive frames with the same symbol AND identical world matrix are run-length
-encoded into one keyframe.
+consecutive frames with the same picture placed alike are run-length encoded into one
+keyframe. a run where the same picture moves in a straight line (place, scale, turn and
+opacity each the even step between the run's two ends) is one keyframe with `"tweened": true`
+(`LINEAR`), the run's last frame starting the next keyframe.
+
+which pieces get layers: `flatten.rs` follows each piece (same depth, same picture) across the
+frames it is on. a piece on two frames or more whose placements take holds and straight tweens
+at no more than one keyframe per two frames keeps its own layer; every run of the other pieces
+in a frame, in depth order, is drawn into one picture (`<char>_flat_<hash>.png`, shared by every
+frame that draws the run alike), placed as a plain translation. the layers are the places in the
+frame (run, kept piece, run, ...), so a layer holds the same kept piece for its whole life.
 
 ### .meta sidecar files
 

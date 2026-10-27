@@ -1016,178 +1016,129 @@ pub fn generate_entity(
                     // An exit slot filled from its entry animation plays the entry BACKWARDS.
                     if split.reversed { held.reverse(); }
 
+                    // Each frame's picture and where the entity places it: x, y, scale x and y,
+                    // turn and opacity.
+                    //
+                    // FrayTools IMAGE-symbol model:
+                    //   world(L) = (x, y) + R(rotation)·diag(sx,sy)·L
+                    // The bitmap's local (0,0) is placed at (x, y) and the image rotates/scales
+                    // around it. The SWF places the bitmap with world matrix
+                    //   world_pt = M·L + (tx, ty),  M = R(rot)·diag(sx,sy).
+                    // Faithfully reproducing it (x=tx, y=ty, rotation/scale from the
+                    // decomposition) is exact for every frame, so a spin (orbiting translation +
+                    // rotation) stays anchored automatically, with no special-casing.
+                    //
+                    // For a DefineShape with a bitmap fill the bitmap is offset inside the shape;
+                    // shape_pivot is that offset, so the bitmap origin lands at M·shape_pivot.
+                    // The shape's bitmap-FILL scale is folded into the placement: SSF2 references
+                    // a high-res bitmap through a DefineShape whose fill matrix scales it (often
+                    // far down), so without it the sprite renders 1/fill too big (zelda's shared
+                    // magic particle at fill 0.078 came out ~13x oversized). Absent fill (vector
+                    // shapes, 1:1 bitmaps) it is (1,1). Negative scales are flips, which FrayTools
+                    // supports.
+                    let place = |f: u32| -> Option<(String, [f64; 6])> {
+                        let entry = held[f as usize].as_ref()?;
+                        let shape_id = entry.shape_id;
+                        let img = img_result.images.get(&img_result.shape_to_bitmap.get(&shape_id).copied().unwrap_or(shape_id))
+                            .or_else(|| img_result.images.values().find(|img| img.symbol_name == entry.symbol_name))?;
+                        let meta_guid = image_guids.get(&img.symbol_name).cloned().unwrap_or_default();
+                        let (fsx, fsy) = img_result.shape_fill_scale.get(&shape_id).copied().unwrap_or((1.0, 1.0));
+                        // Where a placed shape lands is ONE conversion, shared with the stage art
+                        // path (see `fm_placement`).
+                        let placement = crate::fm_placement::image_placement(
+                            &crate::fm_placement::WorldPlacement {
+                                tx: round2(entry.world_tx), ty: round2(entry.world_ty),
+                                sx: round2(entry.world_sx), sy: round2(entry.world_sy),
+                                rotation: round2(entry.world_rotation),
+                                a: entry.world_a, b: entry.world_b, c: entry.world_c, d: entry.world_d,
+                            },
+                            img_result.shape_pivot.get(&shape_id).copied().unwrap_or((0.0, 0.0)),
+                            (fsx, fsy),
+                        );
+                        // A turn animation is drawn facing the direction being turned FROM, and
+                        // fraymakers flips the character's facing when the turn STARTS, so the
+                        // art mirrors for the whole animation.
+                        let placement = if anim_name == "stand_turn" || anim_name == "run_turn" {
+                            crate::fm_placement::mirrored(placement)
+                        } else { placement };
+                        let (fm_sx, fm_sy) = (placement.scale_x, placement.scale_y);
+                        let (mut fm_x, mut fm_y, mut rot) = (placement.x, placement.y, placement.rotation);
+                        // FM's engine applies its OWN rotation during the TUMBLE state, about the
+                        // entity position, so for tumble ONLY the authored rotation is stripped
+                        // and the pose centred on the origin, so the engine's spin rotates it in
+                        // place. FrayTools places an IMAGE so its centre lands at
+                        // (x + scaleX*w/2, y + scaleY*h/2) with SIGNED scales.
+                        if anim_name == "tumble" {
+                            fm_x = round2(-fm_sx * img.width as f64 / 2.0);
+                            fm_y = round2(-fm_sy * img.height as f64 / 2.0);
+                            rot = 0.0;
+                        }
+                        // hurt_heavy is also a launched pose (see box_shift above): the art moves
+                        // by the same hurtbox-union-to-origin delta as the boxes. No rotation strip.
+                        if anim_name == "hurt_heavy" {
+                            fm_x = round2(fm_x + box_shift.0);
+                            fm_y = round2(fm_y + box_shift.1);
+                        }
+                        // the opacity the SOURCE gives this placement: Flash animates a fade, a
+                        // flash or a ghosting trail as alpha
+                        Some((meta_guid, [fm_x, fm_y, fm_sx, fm_sy, round2(rot), round2(entry.alpha)]))
+                    };
+                    let placed: Vec<Option<(String, [f64; 6])>> = (0..total).map(place).collect();
+
+                    // Keyframes: a run of frames placed alike is one keyframe; a run where the
+                    // same picture moves in a straight line (place, scale, turn and opacity, each
+                    // the even step between the run's ends) is one tweened keyframe, the run's
+                    // last frame starting the next.
                     let mut f: u32 = 0;
                     while f < total {
-                        let entry = held[f as usize].as_ref();
-
-                        // Key for run-length: same symbol AND same world transform
-                        let sym_name = entry.map(|e| e.symbol_name.as_str());
-                        let shape_id = entry.map(|e| e.shape_id);
-                        let world_tx  = entry.map(|e| round2(e.world_tx)).unwrap_or(0.0);
-                        let world_ty  = entry.map(|e| round2(e.world_ty)).unwrap_or(0.0);
-                        let world_sx  = entry.map(|e| round2(e.world_sx)).unwrap_or(1.0);
-                        let world_sy  = entry.map(|e| round2(e.world_sy)).unwrap_or(1.0);
-                        let world_rot = entry.map(|e| round2(e.world_rotation)).unwrap_or(0.0);
-
-                        // Run-length encode consecutive frames with identical symbol + world transform.
+                        let cur = &placed[f as usize];
                         let mut run = 1u32;
-                        while f + run < total {
-                            let next = held[(f + run) as usize].as_ref();
-                            let matches = next.map(|e| e.symbol_name.as_str()) == sym_name
-                                && next.map(|e| round2(e.world_tx))       == sym_name.is_some().then_some(world_tx)
-                                && next.map(|e| round2(e.world_ty))       == sym_name.is_some().then_some(world_ty)
-                                && next.map(|e| round2(e.world_sx))       == sym_name.is_some().then_some(world_sx)
-                                && next.map(|e| round2(e.world_sy))       == sym_name.is_some().then_some(world_sy)
-                                && next.map(|e| round2(e.world_rotation)) == sym_name.is_some().then_some(world_rot);
-                            if matches { run += 1; } else { break; }
+                        while f + run < total && placed[(f + run) as usize] == *cur { run += 1; }
+                        let mut tweened = false;
+                        if let (1, Some((guid, from))) = (run, cur) {
+                            let mut best = None;
+                            for g in (f + 2)..total {
+                                let Some((gg, to)) = &placed[g as usize] else { break };
+                                if gg != guid { break }
+                                let span = (g - f) as f64;
+                                let straight = ((f + 1)..g).all(|m| match &placed[m as usize] {
+                                    Some((mg, mid)) if mg == guid => crate::flatten::on_line(from, to, mid, (m - f) as f64 / span),
+                                    _ => false,
+                                });
+                                if straight { best = Some(g) } else { break }
+                            }
+                            if let Some(g) = best { run = g - f; tweened = true; }
                         }
 
                         let kf_id = uuid(char_id, &format!("kf_image_{}_s{}_f{}", anim_name, slot, f));
-
-                        // Resolve bitmap and create a per-placement IMAGE symbol with world coords
-                        let bitmap_img = shape_id.and_then(|sid| {
-                            let bmp_id = img_result.shape_to_bitmap.get(&sid).copied().unwrap_or(sid);
-                            img_result.images.get(&bmp_id)
-                        }).or_else(|| {
-                            sym_name.and_then(|sn| {
-                                img_result.images.values().find(|img| img.symbol_name == sn)
-                            })
-                        });
-
-                        let symbol_ref = if let Some(img) = bitmap_img {
-                            // Create a per-placement symbol (unique per anim/slot/frame)
-                            let per_placement_sym_id = uuid(char_id,
-                                &format!("sym_img_{}_s{}_f{}", anim_name, slot, f));
-                            let meta_guid = image_guids.get(&img.symbol_name)
-                                .cloned().unwrap_or_default();
-
-                            // FrayTools IMAGE-symbol model:
-                            //   world(L) = (x, y) + R(rotation)·diag(sx,sy)·L
-                            // The bitmap's local (0,0) is placed at (x, y) and the
-                            // image rotates/scales around it.
-                            //
-                            // The SWF places the bitmap with world matrix
-                            //   world_pt = M·L + (tx, ty),  M = R(rot)·diag(sx,sy).
-                            // Faithfully reproducing it — x=tx, y=ty, rotation/scale
-                            // from the decomposition — is exact for every frame, so a
-                            // spin (orbiting translation + rotation) stays anchored
-                            // automatically, with no special-casing.
-                            //
-                            // For a DefineShape with a bitmap fill the bitmap is
-                            // offset inside the shape; shape_pivot is that offset, so
-                            // the bitmap origin lands at M·shape_pivot.
-                            //
-                            // Preserve sign: negative scaleX/scaleY = flip, which FrayTools supports.
-                            // stand_turn has no SSF2 sprite — it's the idle pose mirrored
-                            // horizontally in place, so negate scaleX for it.
-                            // Fold the shape's bitmap-FILL scale into the placement.
-                            // SSF2 references a high-res bitmap through a DefineShape whose
-                            // fill matrix scales it (often far down). The PNG is at native
-                            // res, so without this the sprite renders 1/fill too big (e.g.
-                            // zelda's shared magic particle at fill 0.078 → ~13× oversized,
-                            // the screen-filling nair effect). M_place·M_fill composes to
-                            // scale (world_sx·fsx, world_sy·fsy) with the same rotation, and
-                            // the stored shape_pivot (= fill_tx / fsx) × fsx recovers the
-                            // true fill translation in pixels. Absent fill (vector shapes,
-                            // 1:1 bitmaps) → (1,1), so body sprites are untouched.
-                            let (fsx, fsy) = shape_id
-                                .and_then(|sid| img_result.shape_fill_scale.get(&sid))
-                                .copied()
-                                .unwrap_or((1.0, 1.0));
-                            // Where a placed shape lands is ONE conversion, shared with the stage
-                            // art path: SSF2 content is SSF2 content, and a clock hand on a
-                            // backdrop is placed by the same kind of matrix as an arm on a
-                            // character (see `fm_placement`).
-                            let placement = crate::fm_placement::image_placement(
-                                &crate::fm_placement::WorldPlacement {
-                                    tx: world_tx, ty: world_ty, sx: world_sx, sy: world_sy,
-                                    rotation: world_rot,
-                                    a: entry.map(|e| e.world_a).unwrap_or(1.0),
-                                    b: entry.map(|e| e.world_b).unwrap_or(0.0),
-                                    c: entry.map(|e| e.world_c).unwrap_or(0.0),
-                                    d: entry.map(|e| e.world_d).unwrap_or(1.0),
-                                },
-                                shape_id.and_then(|sid| img_result.shape_pivot.get(&sid)).copied()
-                                    .unwrap_or((0.0, 0.0)),
-                                (fsx, fsy),
-                            );
-                            // A turn animation is drawn facing the direction being turned FROM,
-                            // and fraymakers flips the character's facing when the turn STARTS, so
-                            // the art mirrors for the whole animation -- not just its first frame,
-                            // which left the rest of a run turn facing backwards.
-                            let turn_flip = anim_name == "stand_turn" || anim_name == "run_turn";
-                            let placement = if turn_flip {
-                                crate::fm_placement::mirrored(placement)
-                            } else {
-                                placement
-                            };
-                            let fm_sx = placement.scale_x;
-                            let fm_sy = placement.scale_y;
-                            let mut fm_x = placement.x;
-                            let fm_y = placement.y;
-
-                            // FM's engine applies its OWN rotation during the TUMBLE state, about
-                            // the entity position, so a baked SSF2 per-frame rotation/offset fights
-                            // it (the sprite orbits without spinning). For tumble ONLY: strip the
-                            // authored rotation AND centre the pose on the origin so the engine's
-                            // spin rotates it in place (the official template centres its tumble
-                            // pose the same way). Every other animation keeps the authored
-                            // corner + rotation form. FrayTools places an IMAGE so its centre
-                            // lands at (x + scaleX*w/2, y + scaleY*h/2) with SIGNED scales
-                            // (scaleY is negative under the y-flip), so centring on the origin
-                            // means x = -scaleX*w/2, y = -scaleY*h/2.
-                            let mut fm_y = fm_y;
-                            let pivot_x = 0.0_f64;
-                            let pivot_y = 0.0_f64;
-                            let mut emit_rot = placement.rotation;
-                            if anim_name == "tumble" {
-                                if let Some(img) = bitmap_img {
-                                    let (hw, hh) = (img.width as f64 / 2.0, img.height as f64 / 2.0);
-                                    fm_x = round2(-fm_sx * hw);
-                                    fm_y = round2(-fm_sy * hh);
-                                    emit_rot = 0.0;
-                                }
-                            }
-                            // hurt_heavy is also a launched pose (see box_shift above): translate
-                            // the art by the same hurtbox-union-to-origin delta as the boxes, so
-                            // the body centres on the entity position with art-box registration
-                            // preserved exactly. No rotation strip -- the engine doesn't spin
-                            // hurt_heavy.
-                            if anim_name == "hurt_heavy" {
-                                fm_x = round2(fm_x + box_shift.0);
-                                fm_y = round2(fm_y + box_shift.1);
-                            }
-
+                        let symbol_ref = cur.as_ref().map(|(guid, v)| {
+                            // a per-placement symbol (unique per anim/slot/frame)
+                            let id = uuid(char_id, &format!("sym_img_{}_s{}_f{}", anim_name, slot, f));
                             symbols.push(json!({
-                                "$id": per_placement_sym_id,
-                                // the opacity the SOURCE gives this placement: Flash animates a
-                                // fade, a flash or a ghosting trail as alpha, and emitting a flat
-                                // 1 turns all of them into hard cuts
-                                "alpha": round2(entry.map(|e| e.alpha).unwrap_or(1.0)),
-                                "imageAsset": meta_guid,
-                                "pivotX": pivot_x,
-                                "pivotY": pivot_y,
+                                "$id": id,
+                                "alpha": v[5],
+                                "imageAsset": guid,
+                                "pivotX": 0.0,
+                                "pivotY": 0.0,
                                 "pluginMetadata": {},
-                                // SWF world_rot = atan2(b,a) in y-down coords.
-                                // Normalize to FrayTools 0-360 range (no negation).
-                                "rotation": round2(emit_rot),
-                                "scaleX": fm_sx,
-                                "scaleY": fm_sy,
+                                // SWF world_rot = atan2(b,a) in y-down coords, normalised to
+                                // FrayTools' 0-360 range (no negation)
+                                "rotation": v[4],
+                                "scaleX": v[2],
+                                "scaleY": v[3],
                                 "type": "IMAGE",
-                                "x": fm_x,
-                                "y": fm_y
+                                "x": v[0],
+                                "y": v[1]
                             }));
-                            Some(per_placement_sym_id)
-                        } else {
-                            None
-                        };
+                            id
+                        });
 
                         keyframes.push(json!({
                             "$id": kf_id,
                             "type": "IMAGE",
                             "length": run,
                             "symbol": symbol_ref.map(Value::String).unwrap_or(Value::Null),
-                            "tweened": false,
+                            "tweened": tweened,
                             "tweenType": "LINEAR",
                             "pluginMetadata": {}
                         }));

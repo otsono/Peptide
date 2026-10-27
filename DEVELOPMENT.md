@@ -1079,8 +1079,9 @@ wiring still owed for the not-yet-shipped FM transformation API.
 `.entity` files are JSON. the top-level shape is `{ animations[], layers[],
 keyframes[], symbols[], paletteMap, pluginMetadata, plugins, version: 14, … }`.
 each animation owns an ordered layer stack -- `LABEL`, `FRAME_SCRIPT`,
-`COLLISION_BODY`, one `COLLISION_BOX` / `POINT` per box instance, one `IMAGE`
-per depth slot -- and layers reference keyframes which reference symbols. the
+`COLLISION_BODY`, one `COLLISION_BOX` / `POINT` per box instance, and `IMAGE`
+layers for the frame's pieces (a piece that moves as a tween keeps its own; the rest are
+flattened into one picture per run, `flatten.rs`) -- and layers reference keyframes which reference symbols. the
 full schema (every layer/symbol/keyframe shape, the box-type enum, `.meta`
 sidecar format) is the ground truth in [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md) --
 keep it open when working on `entity_gen.rs`.
@@ -1141,6 +1142,8 @@ what is solid:
   COLLISION_BOX symbols; itemBox pivot-at-bottom-centre.
 - shear-bake fallback for sheared image placements
   (`prerender_skewed_frames`).
+- display-list flattening and tween detection (`flatten.rs`, and the IMAGE keyframes in
+  `entity_gen.rs`).
 - costume/palette extraction from `misc.ssf` (with k-means fallback).
 - sound extraction to WAV via `ffmpeg` (Nellymoser, MP3, ADPCM).
 - deterministic GUIDs.
