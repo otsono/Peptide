@@ -1961,16 +1961,16 @@ before treating one as a gap.
 
 ## known issues & gaps
 
-**the release sample's one failure.** `verify.py sample --ssf2` passes 19 of 20. fox's side
-special runs 48 engine frames where the source's 32 frames want 64 (C6): fox slides off the
-stage's edge after the move's dash and grabs the ledge. the move now starts where the walk ended
-(47.1 against the source's 47.45; a `resetMovement` put-back reads where the fighter last stood
-before the attack's frame). what is left, read live with `move_trace.py fox "right:8
-right+special" --at=250`, is two speed rules every fighter goes through: a speed the move's code
-sets is slowed by the source before it moves on it and by the port after (+9, +7 there against
-about 10.5 a frame here), and through the hit's freeze the source slows the fighter to 1 where
-the port comes out at 1.95, so the move's frame-20 friction (0.0325) lets the port slide on past
-the edge.
+**accepted engine differences.** gaps between the two engines that stay as they are: don't
+chase them or count them as open.
+
+| difference | what it shows |
+|---|---|
+| a downward hit on a fighter standing on the floor launches with this engine's strength | naruto's down tilt reads 0.77 of this engine's launch at 0% (`hit_parity.py` lists it under `accepted`) |
+| two standing fighters are pushed apart at this engine's rate and settle at its own gap | the `=` spacing lines in `hit_parity.py`, and the moves the gap moves (samus's bomb, ness's pk flash, krystal's jab angle, isaac's gaia, zelda's din's fire) |
+| an aerial starts at each engine's own point of the hop | aerial hit counts and drop-move timing (sonic's up air, ganondorf's back air, mario's neutral air) |
+| a move whose code rolls at random lands differently run to run | luigi's misfire, game & watch's judge and chef, peach's turnips, waluigi's dice |
+| a speed a move's code sets is slowed by the source before it moves on it and by this engine after, and the hit's freeze slows it to 1 there and 1.95 here | fox's side special (`verify.py sample --ssf2` C6: 48 engine frames where the source's 32 want 64): the low frame-20 friction (0.0325) lets fox slide past the edge after the dash and grab the ledge. read live with `move_trace.py fox "right:8 right+special" --at=250`. the move starts where the source's does (47.1 against 47.45) |
 
 **a clip nobody named that runs its own clock under a sectioned one plays its owner's sections.**
 the walk gives it its own clip and marks its owner (`Instance::clock`), and `clock_segments` cuts
