@@ -3609,6 +3609,7 @@ fn render_art_layers(
     shown_clips: &std::collections::BTreeSet<String>,
     collision_syms: &std::collections::BTreeSet<String>,
 ) -> StageArtSet {
+    let _tiles = TileCacheScope::open();
     let root_m = root_mat(root_tags, sym_names);
     // symbol names of clips whose animated segments are all event-driven (filled as the segment
     // reader prunes each clip; see `clip_segments`)
@@ -5109,6 +5110,29 @@ fn single_shape_frames(
     }).collect())
 }
 
+/// What a composited tile's picture is made from: the shape and bitmap tables' places, its size,
+/// its flips and its filters.
+type TileKey = (usize, usize, u32, u32, (bool, bool), String);
+
+thread_local! {
+    /// The tiles one `render_art_layers` call has made, open only while it runs (`TileCacheScope`),
+    /// when the tables the keys point at are borrowed and cannot move.
+    static TILE_CACHE: std::cell::RefCell<Option<std::collections::HashMap<TileKey, Option<std::sync::Arc<(image::RgbaImage, i64, i64)>>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Opens the tile cache for as long as it lives, and empties it after.
+struct TileCacheScope;
+impl TileCacheScope {
+    fn open() -> Self {
+        TILE_CACHE.with(|c| *c.borrow_mut() = Some(Default::default()));
+        TileCacheScope
+    }
+}
+impl Drop for TileCacheScope {
+    fn drop(&mut self) { TILE_CACHE.with(|c| *c.borrow_mut() = None); }
+}
+
 fn composite_layer(
     art: &[&Instance],
     shape_defs: &BTreeMap<u16, &swf::Shape>,
@@ -5161,13 +5185,16 @@ fn composite_layer(
     // hard-light path both read-modify-write the shared canvas, so their order is the layer's
     // draw order and must not change. Output is therefore identical to the serial version.
     struct Tile {
-        img: image::RgbaImage,
+        img: std::sync::Arc<(image::RgbaImage, i64, i64)>,
         ox: i64,
         oy: i64,
         blend: Option<swf::BlendMode>,
     }
 
-    let make_tile = |inst: &&Instance| -> Option<Tile> {
+    // a tile's picture: rasterized at its size, flipped and filtered, with how far the filter
+    // moved its corner. It depends on nothing but `tile_key`, so one picture serves every frame
+    // and placement that draws that shape the same way.
+    let make_tile = |inst: &&Instance| -> Option<(image::RgbaImage, i64, i64)> {
         let (tw, th) = tw_th(inst);
         if let Ok(want) = std::env::var("PEPTIDE_SHAPE_TRACE") {
             if want == "all" || want.split(',').any(|x| x.trim().parse::<u16>() == Ok(inst.shape_id)) {
@@ -5201,8 +5228,7 @@ fn composite_layer(
         let (fx, fy) = inst.flip;
         if fx { scaled = imageops::flip_horizontal(&scaled); }
         if fy { scaled = imageops::flip_vertical(&scaled); }
-        let mut ox_px = (inst.aabb.left() - min_x).round() as i64;
-        let mut oy_px = (inst.aabb.top() - min_y).round() as i64;
+        let (mut ox_px, mut oy_px) = (0i64, 0i64);
         // A filter spreads OUTSIDE the shape it is on, so the tile grows and its corner moves.
         // Flash states the spread in the art's own pixels, and this tile is already at its placed
         // size, so the spread is scaled the same way the art was.
@@ -5216,23 +5242,56 @@ fn composite_layer(
             let (img, dx, dy) = crate::swf_filter::apply(&scaled, &inst.filters, sx, sy);
             scaled = img; ox_px += dx; oy_px += dy;
         }
-        Some(Tile { img: scaled, ox: ox_px, oy: oy_px, blend: inst.blend })
+        Some((scaled, ox_px, oy_px))
     };
 
-    // fan out over contiguous chunks so results come back already in list order
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(art.len()).max(1);
-    let chunk = art.len().div_ceil(threads);
-    let tiles: Vec<Option<Tile>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = art
-            .chunks(chunk)
-            .map(|part| scope.spawn(|| part.iter().map(&make_tile).collect::<Vec<_>>()))
-            .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
-    });
+    // what a tile's picture depends on; the two tables' places tell one stage's shape `n` from
+    // another's while the cache is open (`TileCacheScope`)
+    let tile_key = |inst: &Instance| -> TileKey {
+        let (tw, th) = tw_th(inst);
+        let shape = shape_defs.get(&inst.shape_id).map_or(0, |s| *s as *const swf::Shape as usize);
+        (shape, bitmaps as *const _ as usize, tw, th, inst.flip, format!("{:?}", inst.filters))
+    };
+    let keys: Vec<TileKey> = art.iter().map(|i| tile_key(i)).collect();
+    let mut have: std::collections::HashMap<TileKey, Option<std::sync::Arc<(RgbaImage, i64, i64)>>> =
+        TILE_CACHE.with(|c| c.borrow().as_ref().map(|m| {
+            keys.iter().filter_map(|k| m.get(k).map(|v| (k.clone(), v.clone()))).collect()
+        }).unwrap_or_default());
+    // the pictures not made yet, each once, made across all cores in list order
+    let mut todo: Vec<(TileKey, &&Instance)> = Vec::new();
+    for (k, i) in keys.iter().zip(art) {
+        if !have.contains_key(k) && !todo.iter().any(|(t, _)| t == k) { todo.push((k.clone(), i)); }
+    }
+    if !todo.is_empty() {
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(todo.len()).max(1);
+        let chunk = todo.len().div_ceil(threads);
+        let made: Vec<Option<(RgbaImage, i64, i64)>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = todo
+                .chunks(chunk)
+                .map(|part| scope.spawn(|| part.iter().map(|(_, i)| make_tile(i)).collect::<Vec<_>>()))
+                .collect();
+            handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        TILE_CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            for ((k, _), m) in todo.into_iter().zip(made) {
+                let m = m.map(std::sync::Arc::new);
+                if let Some(cache) = c.as_mut() { cache.insert(k.clone(), m.clone()); }
+                have.insert(k, m);
+            }
+        });
+    }
+    let tiles: Vec<Option<Tile>> = art.iter().zip(&keys).map(|(inst, k)| {
+        let img = have.get(k).cloned().flatten()?;
+        let ox = (inst.aabb.left() - min_x).round() as i64 + img.1;
+        let oy = (inst.aabb.top() - min_y).round() as i64 + img.2;
+        Some(Tile { img, ox, oy, blend: inst.blend })
+    }).collect();
 
     let mut drew = false;
     for tile in tiles.into_iter().flatten() {
-        let Tile { img: scaled, ox: ox_px, oy: oy_px, blend } = tile;
+        let Tile { img, ox: ox_px, oy: oy_px, blend } = tile;
+        let scaled = &img.0;
         if blend == Some(swf::BlendMode::HardLight) {
             // SSF2 draws this placement with HardLight (bowserscastle's lightmask gradient over
             // the lava). FM stage layers have no blend modes, so emulate in the bake: hard-light
@@ -5257,7 +5316,7 @@ fn composite_layer(
                 dp[3] = (((da * (1.0 - sa) + sa) * 255.0).min(255.0)) as u8;
             }
         } else {
-            imageops::overlay(&mut canvas, &scaled, ox_px, oy_px);
+            imageops::overlay(&mut canvas, scaled, ox_px, oy_px);
         }
         drew = true;
     }
