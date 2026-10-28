@@ -1961,7 +1961,7 @@ before treating one as a gap.
 
 ## known issues & gaps
 
-**the release sample's two failures.** `verify.py sample --ssf2` passes 18 of 20. fox's side
+**the release sample's one failure.** `verify.py sample --ssf2` passes 19 of 20. fox's side
 special runs 47 engine frames where the source's 32 frames want 64 (C6): its dash stops at the
 stage's edge on both engines, and the port, 14.6 pixels further on, slides off the edge
 (`slideOff` from the move's frame 20) and grabs the ledge. `move_trace.py fox "right:8
@@ -1970,15 +1970,14 @@ further on here (51.1 against 45.5, the accepted walk spacing), and the move its
 there: `resetMovement`'s put-back holds the fighter where the attack began, the freeze slowdown is
 paid (5.2 to 1.95 on the first frame out), and the move's friction is the source's. those pixels
 carry fox past the edge, where the air friction (0.1625) lets him slide on to the ledge.
-galaxy tours'
-background has a 45-frame child that loops in 59 engine frames against the source's 90 (S7, the
-nested-loop backdrop family below). the child is an anonymous clip under an anonymous one-frame
-wrapper inside the sectioned `background`, and the walk only gives a child its own clip when it is
-named or classed (`child_clip` in `stage_parser.rs`), so it is baked into the background's section
-pictures and holds still through their two-frame holds. giving every animated child under a
-sectioned clip its own clip split out fourteen elements, each sampled over the parent's whole
-854 frames (205 distinct pictures, the sections' transitions), which breaks the sections the
-stage's code drives: the fix needs the child emitted at its own length and shown by section. both fail the same way with fighters off the native playhead.
+
+**a clip nobody named that runs its own clock under a sectioned one plays its owner's sections.**
+the walk gives it its own clip and marks its owner (`Instance::clock`), and `clock_segments` cuts
+its art by the owner's labels, so the stage drives it as it drives the owner; a section the owner
+loops on or stops in shows the piece's whole loop, drawn where the owner holds it. galaxy tours'
+45-frame child under its backdrop froze on the backdrop's two-frame holds before. the cross-engine
+check takes such a child as ported when an object of its clip plays a section at the child's own
+length (`phase_lens` in the plan).
 
 **the SSF2 test fixture's platforms draw with the floor's art.** a platform draws with the clip
 named by its `linkage_id`, and the fixture answers with its terrain clip for everything

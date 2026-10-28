@@ -9832,7 +9832,8 @@ fn emit_bg_sectioned_vfx(layer: &BgLayerRef, eid: &str, i: usize, lib: &Path,
     let (ox, oy) = origin;
     plan.push(json!({ "kind": "object", "id": eid, "var": format!("_bg{i}"), "x": ox, "y": oy,
                       "clip": layer.clip, "names": layer.named_path,
-                      "phases": spans.iter().map(|(n, ..)| n.clone()).collect::<Vec<_>>() }));
+                      "phases": spans.iter().map(|(n, ..)| n.clone()).collect::<Vec<_>>(),
+                      "phase_lens": spans.iter().map(|(.., l)| *l).collect::<Vec<_>>() }));
     tables.elements.push(BootElement {
         index: i, id: eid.to_string(), segmented: true, x: ox, y: oy,
         at: match layer.pan { Some((px, py)) => BootAt::Pan(px, py), None => layer.plane.boot_at() },
@@ -10004,7 +10005,8 @@ fn emit_bg_segmented(
         let (ox, oy) = bg_element_origin(layer);
         plan.push(json!({ "kind": "object", "id": eid, "var": format!("_bg{i}"), "x": ox, "y": oy,
                           "clip": layer.clip, "names": layer.named_path, "rides": rider.and_then(|hz| hz.instance_name.clone()),
-                          "phases": spans.iter().map(|(n, ..)| n.clone()).collect::<Vec<_>>() }));
+                          "phases": spans.iter().map(|(n, ..)| n.clone()).collect::<Vec<_>>(),
+                      "phase_lens": spans.iter().map(|(.., l)| *l).collect::<Vec<_>>() }));
     }
     // a segment that loops plays over until the script moves on; one the source stops on holds
     // its last frame, which is the frame the source shows while it waits

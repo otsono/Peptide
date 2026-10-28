@@ -784,6 +784,10 @@ struct Instance {
     /// unnamed clip that slides a piece back and forth is the piece's loop even when the nearest
     /// NAMED clip is the whole stage.
     chain_len: usize,
+    /// A clip nobody named that runs its own timeline under a clip that holds sections: the
+    /// sectioned clip (its owner), the clip itself and where it stands this frame. Flash keeps such
+    /// a clip looping while its owner holds a section, so it ships as its own loop the owner moves.
+    clock: Option<(u16, u16, Mat)>,
 }
 
 /// Parse the SSF2 stage at `path` into a [`StageModel`], rendering its art (read-only).
@@ -2266,7 +2270,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
                 let per_frame: Vec<Vec<Instance>> = (0..span).map(|g| {
                     let mut out = Vec::new();
                     if let Some(children) = clip.get(g % clip.len().max(1)) {
-                        walk_frame(children, Mat::id(), g, None, None, &planes, &sym_names, &shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &no_phase, Some(cid), 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, &std::collections::BTreeSet::new(), false, &std::collections::BTreeSet::new(), false, false, &[], 1);
+                        walk_frame(children, Mat::id(), g, None, None, &planes, &sym_names, &shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &no_phase, Some(cid), 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, &std::collections::BTreeSet::new(), false, &std::collections::BTreeSet::new(), false, false, &[], 1, None);
                     }
                     out.retain(|i| shape_defs.contains_key(&i.shape_id));
                     out
@@ -2316,7 +2320,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         let drawn = |g: usize| -> Vec<(u16, i64, i64, i64, i64)> {
             let mut out = Vec::new();
             if let Some(children) = frames.get(g) {
-                walk_frame(children, Mat::id(), 0, Some("terrain"), Some("terrain"), &planes, &sym_names, &shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &no_phase, Some(tid), 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, &hidden_clips, false, &collision_syms, false, false, &[], 1);
+                walk_frame(children, Mat::id(), 0, Some("terrain"), Some("terrain"), &planes, &sym_names, &shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &no_phase, Some(tid), 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, &hidden_clips, false, &collision_syms, false, false, &[], 1, None);
             }
             let mut v: Vec<(u16, i64, i64, i64, i64)> = out.iter()
                 .filter(|i| shape_defs.contains_key(&i.shape_id) && !i.hidden_by_class && !i.under_collision && art_kind(i) == ArtKind::Stage
@@ -2998,6 +3002,7 @@ fn walk_frame(
     // code can reach a piece by (`getBackground().movingplatLsprite.sprite`)
     named: &[String],
     chain_len: usize,
+    clock: Option<(u16, u16, Mat)>,
 ) {
     if rec > 8 { return; }
     for (id, local, name, pinned, pdepth, pblend, palpha, pvisible, ptint, pfilters) in children {
@@ -3051,6 +3056,7 @@ fn walk_frame(
                 tint: ptint.under(&ptint_parent),
                 filters: chain(filters, pfilters),
                 named_path: named.to_vec(),
+                clock,
             });
         }
         if let Some(frames) = sprite_frames.get(id) {
@@ -3091,7 +3097,13 @@ fn walk_frame(
             // loop through every section. a child with a timeline of its own (the clouds, 720
             // frames of sliding) keeps its own clock, as it does in Flash while the parent holds.
             let still = sprite_frames.get(id).is_none_or(|f| f.len() <= 1);
-            let child_clip = if name.is_some() || !sym.is_empty() {
+            // ...and so does one nobody named: an animated clip under a clip that holds sections runs
+            // its own clock there (galaxy tours' 45-frame loop under its backdrop), so it is its own
+            // piece, which its owner moves (`Instance::clock`)
+            let unnamed_clock = name.is_none() && sym.is_empty() && !still
+                && inst_clip.is_some_and(|c| labelled.contains(&c));
+            let child_clock = if unnamed_clock { inst_clip.map(|p| (p, *id, world)) } else { clock };
+            let child_clip = if name.is_some() || !sym.is_empty() || unnamed_clock {
                 if still && inst_clip.is_some_and(|c| labelled.contains(&c)) && !labelled.contains(id) { inst_clip } else { Some(*id) }
             } else { inst_clip };
             let child_only_ground = my_collision && f.iter().any(|(_, _, n, ..)| n.as_deref() == Some("ground"));
@@ -3100,7 +3112,7 @@ fn walk_frame(
                 fn gcd(a: usize, b: usize) -> usize { if b == 0 { a } else { gcd(b, a % b) } }
                 (chain_len / gcd(chain_len, frames.len()) * frames.len()).min(1 << 20)
             } else { chain_len };
-            walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1, child_anchor, child_path, pblend.or(blend), phase_rank, child_clip, alpha * palpha, ptint.under(&ptint_parent), &chain(filters, pfilters), labelled, hidden_syms, my_hidden, collision_syms, my_collision, child_only_ground, &child_named, child_chain);
+            walk_frame(f, world, global_frame, next.as_deref(), my_plane, planes, sym_names, shape_defs, sprite_frames, out, rec + 1, child_anchor, child_path, pblend.or(blend), phase_rank, child_clip, alpha * palpha, ptint.under(&ptint_parent), &chain(filters, pfilters), labelled, hidden_syms, my_hidden, collision_syms, my_collision, child_only_ground, &child_named, child_chain, child_clock);
         }
     }
 }
@@ -3667,7 +3679,7 @@ fn render_art_layers(
     let frame_instances = |g: usize| -> Vec<Instance> {
         let root = &root_frames[root_idx];
         let mut out = Vec::new();
-        walk_frame(root, root_m, g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &phase_rank, None, 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, hidden_clips, false, collision_syms, false, false, &[], 1);
+        walk_frame(root, root_m, g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &phase_rank, None, 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, hidden_clips, false, collision_syms, false, false, &[], 1, None);
         // exclude non-art PLANES (terrain/masks/spawns, by instance name) and any stray
         // collision/scaffolding markers (by linkage suffix) that slipped into an art plane.
         if std::env::var("PEPTIDE_STAGE_DEBUG").is_ok() {
@@ -3716,7 +3728,7 @@ fn render_art_layers(
         let root = &root_frames[root_idx];
         let mut out = Vec::new();
         walk_frame(root, root_m, g, None, None, planes, sym_names, shape_defs, &sprite_frames,
-                   &mut out, 0, (0.0, 0.0), 0, None, &phase_rank, None, 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, hidden_clips, false, collision_syms, false, false, &[], 1);
+                   &mut out, 0, (0.0, 0.0), 0, None, &phase_rank, None, 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, hidden_clips, false, collision_syms, false, false, &[], 1, None);
         out.retain(|i| shape_defs.contains_key(&i.shape_id) && {
             let n = i.sym_name.to_ascii_lowercase();
             let l = i.inst_name.as_deref().unwrap_or_default().to_ascii_lowercase();
@@ -3877,7 +3889,49 @@ fn render_art_layers(
     // their own crop come out stretched and shifted against one another. Padding (rather than
     // re-rasterising onto union bounds) keeps the one-cel-plus-rotation form the rings use, which
     // is the difference between a 12MB stage and an 87MB one.
-    let seg = |inst: &Instance, fr: &[StageArt]| clip_segments(Some(&inst), fr, sprites, sym_names, &sprite_frames, abcs, &phase_rank, &deferred_event_clips);
+    // A PIECE RUNNING ITS OWN CLOCK under a clip that holds sections plays that clip's sections,
+    // since its owner moves it with them, and loops on its own where the owner holds: a section
+    // the owner loops on or stops in shows the piece's whole loop, drawn where the owner holds it
+    // (galaxy tours' 45-frame loop froze on the backdrop's two-frame holds). `fr` is the piece's
+    // art over the samples, which run the owner straight through.
+    let clock_segments = |inst: &Instance, fr: &[StageArt]| -> Vec<BgSegment> {
+        let Some((owner, own, _)) = inst.clock else { return Vec::new() };
+        let mut lead = inst.clone();
+        lead.inst_clip = Some(owner);
+        let segs = clip_segments(Some(&&lead), fr, sprites, sym_names, &sprite_frames, abcs, &phase_rank, &deferred_event_clips);
+        let own_frames = sprite_frames.get(&own).cloned().unwrap_or_default();
+        let starts: std::collections::HashMap<String, usize> = sprites.get(&owner)
+            .map(|t| crate::sprite_parser::extract_frame_labels_from_tags(t).into_iter().map(|(l, f)| (l, f as usize)).collect())
+            .unwrap_or_default();
+        let empty: std::collections::BTreeSet<String> = Default::default();
+        let no_phase: std::collections::HashMap<(u16, (i64, i64)), usize> = Default::default();
+        // the piece's own loop, its owner holding it where it stands at sample `at`
+        let own_loop = |at: usize| -> Option<Vec<StageArt>> {
+            let m = sampled.get(at)?.0.iter()
+                .find(|i| i.inst_path == inst.inst_path && i.clock.is_some_and(|c| c.1 == own))?.clock?.2;
+            let walked: Vec<Vec<Instance>> = own_frames.iter().enumerate().map(|(k, f)| {
+                let mut out = Vec::new();
+                walk_frame(f, m, k, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &no_phase, Some(own), 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, &empty, false, &empty, false, false, &[], 1, None);
+                out.retain(|i| shape_defs.contains_key(&i.shape_id));
+                out
+            }).collect();
+            let b = union_bounds(&walked.iter().flatten().collect::<Vec<_>>());
+            walked.iter().map(|w| composite_grp(w.iter().collect(), b)).collect()
+        };
+        segs.into_iter().map(|mut sg| {
+            let held = match &sg.next {
+                Some(crate::abc_parser::LabelJump::Always(t)) => *t == sg.label,
+                Some(crate::abc_parser::LabelJump::Stop) | Some(crate::abc_parser::LabelJump::Hold(_)) => true,
+                _ => false,
+            };
+            if held && sg.frames.len() < own_frames.len() {
+                if let Some(f) = starts.get(&sg.label).and_then(|s| own_loop(*s)) { sg.frames = f; }
+            }
+            sg
+        }).collect()
+    };
+    let seg = |inst: &Instance, fr: &[StageArt]| if inst.clock.is_some() { clock_segments(inst, fr) }
+        else { clip_segments(Some(&inst), fr, sprites, sym_names, &sprite_frames, abcs, &phase_rank, &deferred_event_clips) };
     let group_bg_layers = |member: &dyn Fn(&Instance) -> bool, one_canvas: bool| -> Vec<BgLayer> {
         // one layer per distinct PLACEMENT (sym_name + instance anchor), not per symbol: repeated
         // placements of one symbol (16 torch-ember emitters at 16 wall positions) become 16 objects
@@ -3986,6 +4040,15 @@ fn render_art_layers(
             }).collect();
             let animated = per_frame.len() == n_samples
                 && per_frame.windows(2).any(|w| w[0].png != w[1].png);
+            // a piece running its own clock plays its owner's sections (`clock_segments`)
+            if all.first().is_some_and(|i| i.clock.is_some()) {
+                let mut segments = clock_segments(all[0], &per_frame);
+                for s in &mut segments { s.frames = rle(std::mem::take(&mut s.frames)); }
+                if !segments.is_empty() {
+                    let frames = segments.iter().flat_map(|s| s.frames.iter().cloned()).collect();
+                    return Some(((sname.clone(), *ax, *ay, *apath), BgLayer { named_path: all[0].named_path.clone(), behind_base, presence: Vec::new(), name: sname.clone(), clip: sname.clone(), frames, segments, pan: None, fades: false, authored_alpha: elem_alpha, starts_hidden: all.iter().any(|i| i.hidden_by_class) }));
+                }
+            }
             // a label-segmented clip is a state machine: its emitted art is the segments SSF2 can
             // reach, chained by their jumps, NOT the whole timeline played end to end.
             let segments = if animated {
@@ -4243,7 +4306,7 @@ fn render_art_layers(
                             walk_frame(&clip[g % clip.len()], Mat::id(), g, Some(&bg.linkage_id), Some("cambg"), planes,
                                 sym_names, shape_defs, &sprite_frames, &mut insts, 0, (0.0, 0.0),
                                 0, None, &phase_rank, Some(cid), 1.0,
-                                crate::swf_timeline::Tint::ID, &[], &labelled, &std::collections::BTreeSet::new(), false, &std::collections::BTreeSet::new(), false, false, &[], clip.len().max(1));
+                                crate::swf_timeline::Tint::ID, &[], &labelled, &std::collections::BTreeSet::new(), false, &std::collections::BTreeSet::new(), false, false, &[], clip.len().max(1), None);
                             insts.retain(|i| shape_defs.contains_key(&i.shape_id));
                             (insts, None)
                         })
@@ -4605,7 +4668,7 @@ fn render_art_layers(
         let mut out = Vec::new();
         walk_frame(root, root_m, base_idx, None, None, planes, sym_names, shape_defs,
                    &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &phase_rank, None, 1.0,
-                   crate::swf_timeline::Tint::ID, &[], &labelled, &std::collections::BTreeSet::new(), false, &std::collections::BTreeSet::new(), false, false, &[], 1);
+                   crate::swf_timeline::Tint::ID, &[], &labelled, &std::collections::BTreeSet::new(), false, &std::collections::BTreeSet::new(), false, false, &[], 1, None);
         out.iter()
             .find(|i| i.sym_name.to_ascii_lowercase().contains("light_source"))
             .map(|i| (((i.cx - ox) * scale), ((i.cy - oy) * scale)))
@@ -5354,7 +5417,7 @@ fn extract_labeled_clip_anims(
         // walk_frame itself pins graphic placements to their ratio-selected frame.
         let per_frame: Vec<Vec<Instance>> = (0..sub_len).map(|g| {
             let mut out = Vec::new();
-            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &no_phase, None, 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, &std::collections::BTreeSet::new(), false, &std::collections::BTreeSet::new(), false, false, &[], 1);
+            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &no_phase, None, 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, &std::collections::BTreeSet::new(), false, &std::collections::BTreeSet::new(), false, false, &[], 1, None);
             out.retain(|i| shape_defs.contains_key(&i.shape_id));
             out
         }).collect();
@@ -5956,7 +6019,7 @@ fn walk<'a>(
                 x_sign: world.x_sign(), flip: world.flips(),
                 inst_anchor: (0.0, 0.0), inst_path: 0, place: Default::default(), leaf_depth: 0, blend: None, inst_clip: None, chain_len: 1, alpha: 1.0, // geometry walk feeds collision/hazards, not art grouping
                 tint: crate::swf_timeline::Tint::ID, // geometry walk: collision, never drawn
-                named_path: Vec::new(),
+                named_path: Vec::new(), clock: None,
                 filters: Vec::new(),
             });
         }

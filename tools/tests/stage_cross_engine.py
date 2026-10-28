@@ -712,8 +712,9 @@ def run(stage, fm_eng=None, ssf2_eng=None):
         clip = o.get("clip") or _clip_of_id(o.get("id", ""))
         pos = (round(float(o["x"])), round(float(o["y"])))
         seen = fm_cgo_anims.get(pos, set())
-        m = machines.setdefault(clip, {"phases": set(), "seen": set()})
+        m = machines.setdefault(clip, {"phases": set(), "seen": set(), "lens": set()})
         m["phases"].update(key_of(p) for p in o.get("phases", []))
+        m["lens"].update(o.get("phase_lens", []))
         m["seen"].update(key_of(s) for s in seen)
     if plan:
         for (x, y), n in fm_pos_all.items():
@@ -814,6 +815,11 @@ def run(stage, fm_eng=None, ssf2_eng=None):
                 matched += 1
             elif not other and sched:
                 verdict = f"ok ({len(sched)} keep the stage's timeline: placed under a schedule or moved by it, the clip inside at every moment the source draws it)"
+                matched += 1
+            elif not other and " \u25b8 child" in nm and m is not None and m.get("lens", set()) & {want, want_ctrl}:
+                # a child that runs its own clock inside a clip that holds sections plays the
+                # clip's sections, and its whole loop in each one the clip holds on
+                verdict = f"ok — plays its own {want}-frame loop in the sections its owner holds"
                 matched += 1
             else:
                 verdict = f"LENGTH MISMATCH — by name: Fraymakers plays {sorted(set(other))} frames, expected {want} or {want_ctrl}"
