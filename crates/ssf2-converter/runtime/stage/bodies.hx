@@ -17,11 +17,15 @@
 // holds a stand-in for it (`shell`), with every method and stored field the class declares
 // (`DATA.faces`, by class): what is asked of it then waits, and the object takes it up in its own
 // script as it starts. Once it has started, a call is the object's own method, run in its own
-// script (`Bodies.direct`), or handed to its next update (`exports.__asks`) where an engine runs
+// script (`StageObjects.direct`), or handed to its next update (`exports.__asks`) where an engine runs
 // another script's methods without that script's helpers.
 
 var StageObjects = {};
 StageObjects.installed = false;
+// a call from another script runs at once, in the object's own code: what the engine does for a
+// method one script publishes and another calls. false hands each call to the object's next
+// update instead, for an engine that runs such a method without its own script's helpers
+StageObjects.direct = true;
 
 // the members of the source's api that a stage and its objects answer differently from a fighter:
 // put on the api as the script starts (a fighter's script carries none of this)
@@ -57,45 +61,6 @@ StageObjects.install = function() {
 	PeptideAPI.getPlatformBetweenPoints = function(a, b, ?opts) { return (a == null || b == null) ? null : between(AS3.num(a.x) - o.x, AS3.num(a.y) - o.y, AS3.num(b.x) - o.x, AS3.num(b.y) - o.y, opts); };
 	PeptideAPI.hitTestGroundBetweenPoints = PeptideAPI.getPlatformBetweenPoints;
 	PeptideAPI.hitTestGround = function(x, y, ?opts) { return between(AS3.num(x) - o.x, AS3.num(y) - o.y - 1, AS3.num(x) - o.x, AS3.num(y) - o.y + 1, opts); };
-	// a body an object gives itself: its floor, and its walls and underside when it is solid
-	PeptideGameObject.makeOwnFloor = function(me, x, y, w, h, ?terrain) { return Bodies.ownFloor(me, x, y, w, h, terrain); };
-	PeptideGameObject.dropOwnFloor = function(me) { Bodies.dropFloor(me); };
-	// a surface that is a body's faces is all of them at once
-	var fallthrough = PeptidePlatform.setFallthrough;
-	PeptidePlatform.setFallthrough = function(me, v) {
-		var fs = Bodies.facesOf(me);
-		if (fs == null) { fallthrough(me, v); return; }
-		me.__fallthrough = AS3.truthy(v);
-		me.__fallSet = true;
-		for (f in fs) f.st.updateStructureStats({ disabled: me.__fallthrough });
-	};
-	var stats = PeptidePlatform.structureStats;
-	PeptidePlatform.structureStats = function(me, o) {
-		var fs = Bodies.facesOf(me);
-		if (fs == null) { stats(me, o); return; }
-		for (f in fs) f.st.updateStructureStats(o);
-	};
-	var stat = PeptidePlatform.structureStat;
-	PeptidePlatform.structureStat = function(me, k) {
-		var fs = Bodies.facesOf(me);
-		return fs == null ? stat(me, k) : (fs.length == 0 ? null : fs[0].st.getStructureStat(k));
-	};
-	var ignore = PeptidePlatform.addIgnoreObject;
-	PeptidePlatform.addIgnoreObject = function(me, x) {
-		var fs = Bodies.facesOf(me);
-		var e = Stage.engineOf(x);
-		if (fs == null) { ignore(me, x); return; }
-		if (e != null) for (f in fs) f.st.addToBlacklist(e);
-	};
-	var unignore = PeptidePlatform.removeIgnoreObject;
-	PeptidePlatform.removeIgnoreObject = function(me, x) {
-		var fs = Bodies.facesOf(me);
-		var e = Stage.engineOf(x);
-		if (fs == null) { unignore(me, x); return; }
-		if (e != null) for (f in fs) f.st.removeFromBlacklist(e);
-	};
-	// an enemy's stats, as this engine keeps those of an object of its own
-	PeptideEnemy.updateEnemyStats = function(me, s) { Bodies.stats(me, s); };
 	// the attack an object is in is the one it started, whether or not its clip has a label for it
 	var attack = PeptideGameObject.startAttack;
 	PeptideGameObject.startAttack = function(me, n, ?f, ?special) { me.__attack = AS3.str(n); return attack(me, n, f, special); };
@@ -148,7 +113,7 @@ StageObjects.view = function(h, n) {
 		if (ex != null && ex.__source != null) home.__liveAtMake = (home.__liveAtMake == null ? 0 : home.__liveAtMake) + 1;
 		else home.__startedLater = (home.__startedLater == null ? 0 : home.__startedLater) + 1;
 	}
-	if (Bodies.direct == true && ex != null && ex.__source != null) return ex.__source;
+	if (StageObjects.direct == true && ex != null && ex.__source != null) return ex.__source;
 	for (v in Objects.made) if (v.__fm == h) return v;
 	var p = { __fm: h, __early: [], __started: false, __mc: null };
 	var faces = PeptideRuntime.data.faces == null ? null : PeptideRuntime.data.faces.get(n);
@@ -209,7 +174,7 @@ StageObjects.send = function(p, i, a) {
 	if (h == null || h.isDisposed()) return null;
 	var ex = h.exports;
 	if (p.__started != true || ex == null) { p.__early.push({ i: i, a: a }); return null; }
-	if (Bodies.direct == true && ex.__call != null) return ex.__call(i, a);
+	if (StageObjects.direct == true && ex.__call != null) return ex.__call(i, a);
 	if (ex.__asks != null) ex.__asks.push({ i: i, a: a });
 	return null;
 };
@@ -217,10 +182,6 @@ StageObjects.send = function(p, i, a) {
 // ---- the object's kind ---------------------------------------------------------------------------
 
 var Bodies = {};
-// a call from another script runs at once, in the object's own code: what the engine does for a
-// method one script publishes and another calls. false hands each call to the object's next
-// update instead, for an engine that runs such a method without its own script's helpers
-Bodies.direct = true;
 // the engine class an object is when the class its package declares is no game object (a
 // platform the tree places): an enemy, with the class on top
 Bodies.api = function() { return PeptideEnemy; };
@@ -246,7 +207,7 @@ Bodies.start = function(fm, data) {
 	var o = data.object;
 	StageObjects.install();
 	var shell = StageObjects.claim(fm);
-	var me = (shell != null && Bodies.direct == true) ? shell : {};
+	var me = (shell != null && StageObjects.direct == true) ? shell : {};
 	me.__is = null;
 	Bodies.api().build(me);
 	o.cls.build(me);
@@ -536,11 +497,6 @@ Bodies.dropFloor = function(me) {
 	var faces = me.__selfPlatforms;
 	me.__selfPlatforms = [];
 	Bodies.release(faces);
-};
-
-// the faces a surface the source holds stands for: a body's, or none (an engine surface)
-Bodies.facesOf = function(me) {
-	return me == null ? null : me.__faces;
 };
 
 // the object is gone: its faces wait for the next object, and its script ends

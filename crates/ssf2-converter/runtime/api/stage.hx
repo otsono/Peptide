@@ -296,12 +296,34 @@ PeptidePlatform.addMovement = function(me, m) {
 	if (me.__moves == null) { me.__moves = []; me.__moveAt = 0; me.__moveT = 0.0; }
 	me.__moves.push(m);
 };
-// a surface's own stats: the engine's structure, or every face of a body (stage boot sets the latter)
-PeptidePlatform.structureStats = function(me, o) { if (me != null && me.__fm != null) me.__fm.updateStructureStats(o); };
-PeptidePlatform.structureStat = function(me, k) { return me == null || me.__fm == null ? null : me.__fm.getStructureStat(k); };
-PeptidePlatform.setFallthrough = function(me, v) { me.__fallthrough = AS3.truthy(v); me.__fm.updateStructureStats({ disabled: me.__fallthrough }); };
-PeptidePlatform.addIgnoreObject = function(me, o) { var e = Stage.engineOf(o); if (e != null) me.__fm.addToBlacklist(e); };
-PeptidePlatform.removeIgnoreObject = function(me, o) { var e = Stage.engineOf(o); if (e != null) me.__fm.removeFromBlacklist(e); };
+// a surface's own stats: the engine's structure, or every face of a body (`__faces`, a body an
+// object stands for) at once
+PeptidePlatform.structureStats = function(me, o) {
+	if (me == null) return;
+	if (me.__faces != null) { for (f in me.__faces) f.st.updateStructureStats(o); return; }
+	if (me.__fm != null) me.__fm.updateStructureStats(o);
+};
+PeptidePlatform.structureStat = function(me, k) {
+	if (me == null) return null;
+	if (me.__faces != null) return me.__faces.length == 0 ? null : me.__faces[0].st.getStructureStat(k);
+	return me.__fm == null ? null : me.__fm.getStructureStat(k);
+};
+PeptidePlatform.setFallthrough = function(me, v) {
+	me.__fallthrough = AS3.truthy(v);
+	if (me.__faces == null) { me.__fm.updateStructureStats({ disabled: me.__fallthrough }); return; }
+	me.__fallSet = true;
+	for (f in me.__faces) f.st.updateStructureStats({ disabled: me.__fallthrough });
+};
+PeptidePlatform.addIgnoreObject = function(me, o) {
+	var e = Stage.engineOf(o);
+	if (e == null) return;
+	if (me.__faces == null) me.__fm.addToBlacklist(e); else for (f in me.__faces) f.st.addToBlacklist(e);
+};
+PeptidePlatform.removeIgnoreObject = function(me, o) {
+	var e = Stage.engineOf(o);
+	if (e == null) return;
+	if (me.__faces == null) me.__fm.removeFromBlacklist(e); else for (f in me.__faces) f.st.removeFromBlacklist(e);
+};
 // where it was the first time its start was asked for (where it was put, before its own code moved
 // it), in the source's space
 PeptidePlatform.getStartPosition = function(me) {

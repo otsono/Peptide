@@ -114,13 +114,13 @@ PeptideGameObject.moveIfClear = function(me, dx, dy) {
 // one self platform at a time: making one replaces the last. it is a platform (stood on from
 // above, dropped through) unless it is asked for as terrain
 // a self platform the shape of a clip: the clip's own extent, as the package measured it
-PeptideGameObject.makeOwnFloorOf = function(me, mc, ?terrain) {
+PeptideGameObject.makeOwnFloorOf = function(me, mc, ?terrain, ?make) {
 	var all = PeptideRuntime.data.clipBounds;
 	var b = mc == null || mc.__linkage == null || all == null ? null : all.get(mc.__linkage);
 	// a clip the code drew into itself: what it drew
 	if (b == null && mc != null && mc.__vec != null) { var v = mc.__vec; b = { x: mc.x + v.x0, y: mc.y + v.y0, w: v.x1 - v.x0, h: v.y1 - v.y0 }; }
 	if (b == null) { PeptideRuntime.gap("createSelfPlatformWithMC: a clip the package has no extent for"); return null; }
-	var p = PeptideGameObject.makeOwnFloor(me, b.x, b.y, b.w, b.h, terrain);
+	var p = (make != null ? make : PeptideGameObject.makeOwnFloor)(me, b.x, b.y, b.w, b.h, terrain);
 	// the platform's clip is the one it was made from (the code hides it through the platform)
 	if (p != null && p.__mc == null) p.__mc = mc;
 	return p;

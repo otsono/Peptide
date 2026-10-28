@@ -377,6 +377,11 @@
       "setX": "{eng}.setX((AS3.num({0}) - PeptideRuntime.data.origin.x) * {size})",
       "setY": "{eng}.setY((AS3.num({0}) - PeptideRuntime.data.origin.y) * {size})",
       "getLedges": "StageObjects.ledges()",
+      // a body it gives itself is faces, as a placed one is (stage/bodies.hx)
+      "makeOwnFloor": "Bodies.ownFloor({recv}, {0}, {1}, {2}, {3}, {4})",
+      "createSelfPlatformWithMC": "PeptideGameObject.makeOwnFloorOf({recv}, {0}, {1}, Bodies.ownFloor)",
+      "dropOwnFloor": "Bodies.dropFloor({recv})",
+      "updateEnemyStats": "Bodies.stats({recv}, {0})",
       "setScreenKOEnabled": "PeptideRuntime.gap(\"setScreenKOEnabled: the stage turning screen KOs off\")"
     },
     // a stage's object: places in the stage's space, as its stage's own code has them, and the
@@ -395,6 +400,11 @@
       "setY": "{eng}.setY((AS3.num({0}) - PeptideRuntime.data.origin.y) * {size})",
       "getLedges": "StageObjects.ledges()",
       "stanceClip": "Bodies.stance({recv})",
+      // a body it gives itself is faces, as a placed one is (stage/bodies.hx)
+      "makeOwnFloor": "Bodies.ownFloor({recv}, {0}, {1}, {2}, {3}, {4})",
+      "createSelfPlatformWithMC": "PeptideGameObject.makeOwnFloorOf({recv}, {0}, {1}, Bodies.ownFloor)",
+      "dropOwnFloor": "Bodies.dropFloor({recv})",
+      "updateEnemyStats": "Bodies.stats({recv}, {0})",
       "setScreenKOEnabled": "PeptideRuntime.gap(\"setScreenKOEnabled: the stage turning screen KOs off\")"
     },
     // a projectile a stage's object fires: places in the stage's space too
