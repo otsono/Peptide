@@ -1962,14 +1962,15 @@ before treating one as a gap.
 ## known issues & gaps
 
 **the release sample's one failure.** `verify.py sample --ssf2` passes 19 of 20. fox's side
-special runs 47 engine frames where the source's 32 frames want 64 (C6): its dash stops at the
-stage's edge on both engines, and the port, 14.6 pixels further on, slides off the edge
-(`slideOff` from the move's frame 20) and grabs the ledge. `move_trace.py fox "right:8
-right+special" --at=250` and a live read of speed and hitstop pin it: the walk ends 5.6 pixels
-further on here (51.1 against 45.5, the accepted walk spacing), and the move itself matches from
-there: `resetMovement`'s put-back holds the fighter where the attack began, the freeze slowdown is
-paid (5.2 to 1.95 on the first frame out), and the move's friction is the source's. those pixels
-carry fox past the edge, where the air friction (0.1625) lets him slide on to the ledge.
+special runs 48 engine frames where the source's 32 frames want 64 (C6): fox slides off the
+stage's edge after the move's dash and grabs the ledge. the move now starts where the walk ended
+(47.1 against the source's 47.45; a `resetMovement` put-back reads where the fighter last stood
+before the attack's frame). what is left, read live with `move_trace.py fox "right:8
+right+special" --at=250`, is two speed rules every fighter goes through: a speed the move's code
+sets is slowed by the source before it moves on it and by the port after (+9, +7 there against
+about 10.5 a frame here), and through the hit's freeze the source slows the fighter to 1 where
+the port comes out at 1.95, so the move's frame-20 friction (0.0325) lets the port slide on past
+the edge.
 
 **a clip nobody named that runs its own clock under a sectioned one plays its owner's sections.**
 the walk gives it its own clip and marks its owner (`Instance::clock`), and `clock_segments` cuts

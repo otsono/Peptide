@@ -137,6 +137,13 @@ Fighters.engineFrame = function(me) {
 	Fighters.attackLedge(me);
 	Fighters.attackStartSlow(me);
 	me.__stood = me.__fm.isOnFloor();
+	// where it stood on the last frame it was not attacking: an attack the engine starts has moved
+	// it once on its old speed by the time the runtime hears of it, and one that starts from a
+	// standstill goes back there (AttackRules.began)
+	if (!me.__fm.inStateGroup(CStateGroup.ATTACK)) {
+		if (me.__calmOn != PeptideRuntime.frame) { me.__lastCalm = me.__calm; me.__calmOn = PeptideRuntime.frame; }
+		me.__calm = [me.__fm.getX(), me.__fm.getY()];
+	}
 	Fighters.relaunch(me);
 	Attacks.carry(me);
 	if (me.__stunWant != null) {

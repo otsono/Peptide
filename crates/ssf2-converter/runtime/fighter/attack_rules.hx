@@ -90,8 +90,9 @@ AttackRules.began = function(me, ?entering) {
 	// speed the fighter had and moves it once on that speed before the next update, so the reset is
 	// made again there, and an attack that starts from a standstill is put back where it began
 	me.__resetAgain = entering == true;
-	me.__entryX = fm.getX();
-	me.__entryY = fm.getY();
+	var calm = entering == true ? (me.__calmOn == PeptideRuntime.frame ? me.__lastCalm : me.__calm) : null;
+	me.__entryX = calm != null ? calm[0] : fm.getX();
+	me.__entryY = calm != null ? calm[1] : fm.getY();
 	// its running time starts here (Attacks.execTime)
 	me.__execFrom = PeptideRuntime.frame;
 	me.__execFrozen = me.__frozenFrames == null ? 0 : me.__frozenFrames;
