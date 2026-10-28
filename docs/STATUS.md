@@ -1972,7 +1972,13 @@ paid (5.2 to 1.95 on the first frame out), and the move's friction is the source
 carry fox past the edge, where the air friction (0.1625) lets him slide on to the ledge.
 galaxy tours'
 background has a 45-frame child that loops in 59 engine frames against the source's 90 (S7, the
-nested-loop backdrop family below). both fail the same way with fighters off the native playhead.
+nested-loop backdrop family below). the child is an anonymous clip under an anonymous one-frame
+wrapper inside the sectioned `background`, and the walk only gives a child its own clip when it is
+named or classed (`child_clip` in `stage_parser.rs`), so it is baked into the background's section
+pictures and holds still through their two-frame holds. giving every animated child under a
+sectioned clip its own clip split out fourteen elements, each sampled over the parent's whole
+854 frames (205 distinct pictures, the sections' transitions), which breaks the sections the
+stage's code drives: the fix needs the child emitted at its own length and shown by section. both fail the same way with fighters off the native playhead.
 
 **the SSF2 test fixture's platforms draw with the floor's art.** a platform draws with the clip
 named by its `linkage_id`, and the fixture answers with its terrain clip for everything
