@@ -194,8 +194,8 @@ PeptideAPI.matchStatistics = function(c) {
 	PeptideRuntime.gap("getMatchStatistics: the match's score");
 	return { score: 0, kos: 0, falls: 0, selfDestructs: 0, damageDealt: 0, damageTaken: 0 };
 };
-// the machine's time: none here, so the one fixed moment `Date` keeps (runtime/flash/misc.hx)
-PeptideAPI.getTimestamp = function() { PeptideRuntime.gap("getTimestamp: the machine's clock (a fixed moment here)"); return Date.create(Date.now); };
+// the machine's time: none here, so the one fixed moment a `Date` is made at (native_classes.jsonc)
+PeptideAPI.getTimestamp = function() { PeptideRuntime.gap("getTimestamp: the machine's clock (a fixed moment here)"); return Date.fromTime(1767268800000.0); };
 PeptideAPI.hitboxTest = function(a, at, b, bt) { PeptideRuntime.gap("hitboxTest: two objects' boxes against each other"); return []; };
 // the match's settings: a versus match on none of the source's stages, with none of its special
 // modes on (read as a bit string: every bit off)

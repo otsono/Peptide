@@ -356,9 +356,9 @@ Projectiles.steer = function(me) {
 // a floor under its feet, by a short line through them
 Projectiles.floorAt = function(fm) {
 	if (fm.hitTestStructuresWithLineSegment == null) return false;
-	var a = EnginePoint.create(fm.getX(), fm.getY() - 2);
-	var b = EnginePoint.create(fm.getX(), fm.getY() + 2);
-	var hits = fm.hitTestStructuresWithLineSegment(a, b, EnginePoint.create(b.x, b.y), { structureType: StructureType.FLOOR });
+	var a = Point.create(fm.getX(), fm.getY() - 2);
+	var b = Point.create(fm.getX(), fm.getY() + 2);
+	var hits = fm.hitTestStructuresWithLineSegment(a, b, Point.create(b.x, b.y), { structureType: StructureType.FLOOR });
 	return hits != null && hits.length > 0;
 };
 

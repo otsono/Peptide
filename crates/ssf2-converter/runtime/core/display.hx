@@ -160,7 +160,7 @@ MovieClip.build = function(me) {
 	me.getRect = function(?space) {
 		var bs = PeptideRuntime.data.symBounds;
 		var b = bs == null ? null : bs.get(me.__sym);
-		if (b == null) return Rectangle.create(me.x, me.y, 0, 0);
+		if (b == null) return new Rectangle(me.x, me.y, 0, 0);
 		var x = b.x; var y = b.y; var w = b.w; var h = b.h;
 		var c = me;
 		var n = 0;
@@ -174,7 +174,7 @@ MovieClip.build = function(me) {
 		}
 		if (w < 0) { x = x + w; w = -w; }
 		if (h < 0) { y = y + h; h = -h; }
-		return Rectangle.create(x, y, w, h);
+		return new Rectangle(x, y, w, h);
 	};
 	me.getBounds = me.getRect;
 	me.getChildIndex = function(c) {
@@ -428,3 +428,58 @@ MovieClip.tick = function(me) {
 		if (c.__tl != null && c.parent == me && (c.totalFrames > 1 || c.__kids.length > 0)) MovieClip.tick(c);
 	}
 };
+
+// a display object's transform: its colour transform tints the engine's object it stands for
+// class Transform
+var Transform = { name: "Transform" };
+Transform.build = function(me) {
+	if (me.__is == null) me.__is = [];
+	me.__is.push("Transform");
+	me.__ct = null;
+	me.get_colorTransform = function() { return me.__ct == null ? new RgbaColorShader() : me.__ct; };
+	me.set_colorTransform = function(ct) { me.__ct = ct; if (ct != null) Visuals.tint(me.__owner, ct); return ct; };
+};
+Transform.init = function(me, ?owner) { me.__owner = owner; };
+Transform.create = function(?owner) { var me = {}; Transform.build(me); Transform.init(me, owner); return me; };
+
+// a picture drawn into by code: this engine draws no pixels, so it keeps its size and says a
+// drawing call is a gap
+// class BitmapData
+var BitmapData = { name: "BitmapData" };
+BitmapData.build = function(me) {
+	if (me.__is == null) me.__is = [];
+	me.__is.push("BitmapData");
+	me.fillRect = function(r, c) { PeptideRuntime.gap("BitmapData.fillRect: no pixel drawing here"); };
+	me.setPixel = function(x, y, c) { PeptideRuntime.gap("BitmapData.setPixel: no pixel drawing here"); };
+	me.setPixel32 = me.setPixel;
+	me.getPixel = function(x, y) { return me.fill; };
+	me.getPixel32 = me.getPixel;
+	me.copyPixels = function(src, r, p, ?a, ?ap, ?merge) { PeptideRuntime.gap("BitmapData.copyPixels: no pixel drawing here"); };
+	me.draw = function(src, ?m, ?ct, ?blend, ?clip, ?smooth) { PeptideRuntime.gap("BitmapData.draw: no pixel drawing here"); };
+	me.colorTransform = function(r, ct) { PeptideRuntime.gap("BitmapData.colorTransform: no pixel drawing here"); };
+	me.lock = function() {};
+	me.unlock = function(?r) {};
+	me.dispose = function() {};
+	me.clone = function() { return BitmapData.create(me.width, me.height, me.transparent, me.fill); };
+};
+BitmapData.init = function(me, w, h, ?transparent, ?fill) {
+	me.width = w; me.height = h;
+	me.transparent = transparent == null ? true : transparent;
+	me.fill = fill == null ? 0xFFFFFFFF : fill;
+	me.rect = new Rectangle(0, 0, w, h);
+};
+BitmapData.create = function(w, h, ?transparent, ?fill) { var me = {}; BitmapData.build(me); BitmapData.init(me, w, h, transparent, fill); return me; };
+
+// class Bitmap
+var Bitmap = { name: "Bitmap" };
+Bitmap.build = function(me) {
+	DisplayObject.build(me);
+	me.__is.push("Bitmap");
+};
+Bitmap.init = function(me, ?data, ?snap, ?smooth) {
+	me.bitmapData = data;
+	me.x = 0; me.y = 0; me.scaleX = 1; me.scaleY = 1; me.rotation = 0; me.alpha = 1; me.visible = true;
+	me.width = data == null ? 0 : data.width;
+	me.height = data == null ? 0 : data.height;
+};
+Bitmap.create = function(?data, ?snap, ?smooth) { var me = {}; Bitmap.build(me); Bitmap.init(me, data, snap, smooth); return me; };

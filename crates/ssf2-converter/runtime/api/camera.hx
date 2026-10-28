@@ -31,7 +31,7 @@ PeptideCamera.addTimedTarget = function(me, o, n) { var e = Stage.engineOf(o); i
 PeptideCamera.deleteTimedCameraTarget = function(me, o) { var e = Stage.engineOf(o); if (e != null) match.getCamera().deleteTimedTarget(e); };
 PeptideCamera.addTimedTargetPoint = function(me, p, n) {
 	var s = PeptideRuntime.data.units.size;
-	var q = EnginePoint.create(AS3.num(p.x) * s, AS3.num(p.y) * s);
+	var q = Point.create(AS3.num(p.x) * s, AS3.num(p.y) * s);
 	me.__points.push({ p: p, q: q });
 	match.getCamera().addTimedTargetPoint(q, AS3.num(n) * 2);
 };

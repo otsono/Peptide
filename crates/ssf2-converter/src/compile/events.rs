@@ -37,8 +37,8 @@ impl EventTable {
     }
 }
 
-/// the source event a listener call names: a string, or a constant of the runtime's event class
-/// (`PeptideEvent.GROUND_TOUCH`, read from the runtime's own definition of it)
+/// the source event a listener call names: a string, or a constant of the API's event table
+/// (`PeptideEvent.GROUND_TOUCH`, read from `api_constants.jsonc`)
 pub fn named(runtime: &super::runtime::Runtime, e: &crate::model::ast::Expr) -> Option<String> {
     use crate::model::ast::Expr;
     match e {
@@ -46,11 +46,8 @@ pub fn named(runtime: &super::runtime::Runtime, e: &crate::model::ast::Expr) -> 
         Expr::Member(o, n) => {
             let Expr::Name(c) = &**o else { return None };
             if super::short(c) != "PeptideEvent" { return None }
-            let line = format!("PeptideEvent.{n} = \"");
-            runtime.files.values().find_map(|t| {
-                let at = t.find(&line)? + line.len();
-                Some(t[at..].split('"').next()?.to_string())
-            })
+            let v = runtime.constants.get(&format!("PeptideEvent.{n}"))?;
+            Some(v.trim_matches('"').to_string())
         }
         _ => None,
     }

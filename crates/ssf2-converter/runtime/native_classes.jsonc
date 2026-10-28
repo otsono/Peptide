@@ -1,0 +1,63 @@
+// Flash's classes that this engine's scripts have a version of, written as that version at
+// conversion: nothing in the runtime stands in for them.
+//
+// `make` is content's `new Class(...)`: `{args}` is the arguments as given, `{0}`, `{1}` ... one
+// each (one left out is `null`). `is` is the engine's class a type test (`is`, `as`, a typed
+// catch) checks against, where its name can be read as a value. `statics` are the class's own
+// functions the engine's class lacks, as templates of their arguments; the rest are called as
+// they are. `constants` are written in place. a member the engine's object lacks is a row in
+// api_calls.jsonc, under its name.
+{
+  "Point": {
+    // the engine's point: `add`, `offset`, `equals`, `clone`, `polar`, `interpolate` as Flash's
+    "make": "Point.create({args})",
+    "is": "Point",
+    "statics": {
+      "distance": "{0}.distance({1})"
+    }
+  },
+  "Rectangle": {
+    "make": "new Rectangle({args})",
+    "is": "Rectangle"
+  },
+  "Matrix": {
+    "make": "new Matrix({args})",
+    "is": "Matrix"
+  },
+  // a colour transform is the engine's colour shader: the same eight values in the same order,
+  // and `color` sets the offsets as Flash's does
+  "ColorTransform": {
+    "make": "new RgbaColorShader({args})",
+    "is": "RgbaColorShader"
+  },
+  // Flash's glow (color, alpha, blurX, blurY, strength, ...) as the engine's: its blur is the radius
+  "GlowFilter": {
+    "make": "({ var __glow = new GlowFilter(); if ({0} != null) __glow.color = {0}; if ({1} != null) __glow.alpha = {1}; if ({2} != null) __glow.radius = {2}; __glow; })",
+    "is": "GlowFilter"
+  },
+  // a pattern is the engine's: `test` is `match`, and a string's replace takes one (AS3.replace)
+  "RegExp": {
+    "make": "new EReg({0}, ({1} == null ? \"\" : {1}))"
+  },
+  // a date: this engine has no clock to read (a match runs the same on every machine), so "now"
+  // is one fixed moment, noon on the first of the year
+  "Date": {
+    "make": "({0} == null ? Date.fromTime(1767268800000.0) : ({1} == null ? Date.fromTime(AS3.num({0})) : new Date(AS3.num({0}), AS3.num({1}), ({2} == null ? 1 : AS3.num({2})), ({3} == null ? 0 : AS3.num({3})), ({4} == null ? 0 : AS3.num({4})), ({5} == null ? 0 : AS3.num({5})))))",
+    "is": "Date"
+  },
+  // an error is what it says: a message, an id and its name
+  "Error": {
+    "make": "{ message: ({0} == null ? \"\" : {0}), errorID: ({1} == null ? 0 : {1}), name: \"Error\" }"
+  },
+  "Event": {
+    "constants": { "ENTER_FRAME": "\"enterFrame\"", "ADDED": "\"added\"", "ADDED_TO_STAGE": "\"addedToStage\"",
+      "REMOVED": "\"removed\"", "REMOVED_FROM_STAGE": "\"removedFromStage\"", "COMPLETE": "\"complete\"" }
+  },
+  // this engine has no blend modes: the names only
+  "BlendMode": {
+    "constants": { "NORMAL": "\"normal\"", "ADD": "\"add\"", "SCREEN": "\"screen\"", "MULTIPLY": "\"multiply\"",
+      "OVERLAY": "\"overlay\"", "HARDLIGHT": "\"hardlight\"", "LIGHTEN": "\"lighten\"", "DARKEN": "\"darken\"",
+      "DIFFERENCE": "\"difference\"", "SUBTRACT": "\"subtract\"", "ALPHA": "\"alpha\"", "ERASE": "\"erase\"",
+      "INVERT": "\"invert\"", "LAYER": "\"layer\"" }
+  }
+}

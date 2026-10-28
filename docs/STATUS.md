@@ -1972,6 +1972,9 @@ chase them or count them as open.
 | a move whose code rolls at random lands differently run to run | luigi's misfire, game & watch's judge and chef, peach's turnips, waluigi's dice |
 | a speed a move's code sets is slowed by the source before it moves on it and by this engine after, and the hit's freeze slows it to 1 there and 1.95 here | fox's side special (`verify.py sample --ssf2` C6: 48 engine frames where the source's 32 want 64): the low frame-20 friction (0.0325) lets fox slide past the edge after the dash and grab the ledge. read live with `move_trace.py fox "right:8 right+special" --at=250`. the move starts where the source's does (47.1 against 47.45) |
 
+**pichu's down special ends early.** `verify.py char pichu --ssf2` fails C6: the thunder runs 69
+engine frames where the source's 36 frames want 72, then stands. open: the cause is not found yet.
+
 **a clip nobody named that runs its own clock under a sectioned one plays its owner's sections.**
 the walk gives it its own clip and marks its owner (`Instance::clock`), and `clock_segments` cuts
 its art by the owner's labels, so the stage drives it as it drives the owner; a section the owner

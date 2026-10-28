@@ -194,8 +194,39 @@ fn cases() -> Vec<(&'static str, Vec<Stmt>, &'static str)> {
             ]),
             ret(reg(3)),
         ], "ab"),
+        // Flash's classes, as the engine's own versions of them (native_classes.jsonc)
+        ("Point add makes a new point", r(conv(Conv::String, method(pt(1, 2), "add", vec![pt(3, 4)]))), "(x=4, y=6)"),
+        ("Point subtract", r(conv(Conv::String, method(pt(1, 2), "subtract", vec![pt(3, 4)]))), "(x=-2, y=-2)"),
+        ("Point normalize", vec![
+            set(1, pt(3, 4)), Stmt::Expr(method(reg(1), "normalize", vec![int(10)])), ret(member(reg(1), "x")),
+        ], "6"),
+        ("Point.distance", r(method(name("flash.geom:Point"), "distance", vec![pt(0, 0), pt(3, 4)])), "5"),
+        ("Point.interpolate", r(member(method(name("flash.geom:Point"), "interpolate", vec![pt(0, 0), pt(10, 0), num(0.25)]), "x")), "7.5"),
+        ("is Point", r(bin(BinOp::Is, pt(1, 2), name("flash.geom:Point"))), "true"),
+        ("a rectangle is no Point", r(bin(BinOp::Is, rect(0, 0, 1, 1), name("flash.geom:Point"))), "false"),
+        ("Rectangle holds its far edge out", r(method(rect(0, 0, 10, 10), "contains", vec![int(10), int(5)])), "false"),
+        ("Rectangle holds its near edge in", r(method(rect(0, 0, 10, 10), "contains", vec![int(0), int(0)])), "true"),
+        ("Rectangle union", r(member(method(rect(0, 0, 1, 1), "union", vec![rect(5, 5, 1, 1)]), "width")), "6"),
+        ("Rectangle offset", vec![
+            set(1, rect(1, 2, 3, 4)), Stmt::Expr(method(reg(1), "offset", vec![int(1), int(1)])), ret(member(reg(1), "bottom")),
+        ], "7"),
+        ("ColorTransform color sets the offsets", vec![
+            set(1, Expr::New(b(name("flash.geom:ColorTransform")), vec![num(0.5)])),
+            Stmt::Assign(Place::Member(reg(1), "color".into()), int(0xFF8000)),
+            ret(bin(BinOp::Add, bin(BinOp::Add, member(reg(1), "greenOffset"), st(",")), member(reg(1), "redMultiplier"))),
+        ], "128,0"),
+        ("RegExp test", r(method(Expr::New(b(name("RegExp")), vec![st("a+b")]), "test", vec![st("xaab")])), "true"),
+        ("replace with a global RegExp", r(method(st("banana"), "replace", vec![Expr::New(b(name("RegExp")), vec![st("a"), st("g")]), st("o")])), "bonono"),
+        ("replace with a RegExp", r(method(st("banana"), "replace", vec![Expr::New(b(name("RegExp")), vec![st("a")]), st("o")])), "bonana"),
+        ("Error message", r(member(Expr::New(b(name("Error")), vec![st("bad")]), "message")), "bad"),
+        ("Error as a string", r(conv(Conv::String, Expr::New(b(name("Error")), vec![st("bad")]))), "Error: bad"),
+        ("Date of numbers", r(method(Expr::New(b(name("Date")), vec![int(2024), int(1), int(29)]), "getDate", vec![])), "29"),
     ]
 }
+
+fn member(o: Expr, n: &str) -> Expr { Expr::Member(b(o), n.into()) }
+fn pt(x: i64, y: i64) -> Expr { Expr::New(b(name("flash.geom:Point")), vec![int(x), int(y)]) }
+fn rect(x: i64, y: i64, w: i64, h: i64) -> Expr { Expr::New(b(name("flash.geom:Rectangle")), vec![int(x), int(y), int(w), int(h)]) }
 
 /// The suite's cases as script text (`AS3_SUITE`); `tools/tests/lang_suite_runner.hx` runs them.
 pub fn language_suite(runtime: &Runtime) -> String {
@@ -215,7 +246,8 @@ pub fn language_suite(runtime: &Runtime) -> String {
 mod tests {
     #[test]
     fn every_case_compiles() {
-        let rt = super::Runtime::empty();
+        // the runtime's own files: Flash's classes are the engine's by its tables
+        let rt = super::Runtime::locate().map(|d| super::Runtime::load(&d)).unwrap_or_else(super::Runtime::empty);
         let text = super::language_suite(&rt);
         assert!(text.contains("AS3_SUITE.push"));
     }

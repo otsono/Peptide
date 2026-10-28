@@ -61,8 +61,8 @@ PeptideStage.clearInterval = function(me, h) { if (h != null && h.fn != null) Ti
 // what the source's engine places fighters and items by, and the smash ball's area: this engine
 // keeps its own, so the stage gets places to hold and move that move nothing here
 PeptideStage.getSpawnPositionMCs = function(me) { PeptideRuntime.gap("getSpawnPositionMCs: the engine's own spawn points"); return []; };
-PeptideStage.getSmashBallBounds = function(me) { PeptideRuntime.gap("getSmashBallBounds: the smash ball's area"); return Rectangle.create(0, 0, 0, 0); };
-PeptideStage.getItemSpawnBoundsList = function(me) { PeptideRuntime.gap("getItemSpawnBoundsList: where items fall"); return [Rectangle.create(0, 0, 0, 0)]; };
+PeptideStage.getSmashBallBounds = function(me) { PeptideRuntime.gap("getSmashBallBounds: the smash ball's area"); return new Rectangle(0, 0, 0, 0); };
+PeptideStage.getItemSpawnBoundsList = function(me) { PeptideRuntime.gap("getItemSpawnBoundsList: where items fall"); return [new Rectangle(0, 0, 0, 0)]; };
 
 var Stage = {};
 Stage.current = null;
@@ -189,12 +189,12 @@ Stage.between = function(ax, ay, bx, by, ?o) {
 	var terrains = opt("terrains", opt("terrain", true));
 	var platforms = opt("platforms", true);
 	var ignore = o == null ? null : AS3.at(o, "ignoreList");
-	var p1 = EnginePoint.create(AS3.num(ax) * s, AS3.num(ay) * s);
-	var p2 = EnginePoint.create(AS3.num(bx) * s, AS3.num(by) * s);
+	var p1 = Point.create(AS3.num(ax) * s, AS3.num(ay) * s);
+	var p2 = Point.create(AS3.num(bx) * s, AS3.num(by) * s);
 	var best = null;
 	var bestD = 0.0;
 	for (k in [StructureType.FLOOR, StructureType.CEILING, StructureType.LEFT_WALL, StructureType.RIGHT_WALL]) {
-		var out = EnginePoint.create(p2.x, p2.y);
+		var out = Point.create(p2.x, p2.y);
 		var t = Stage.tester(PeptideRuntime.fm);
 		var hits = t == null ? null : t.hitTestStructuresWithLineSegment(p1, p2, out, { structureType: k });
 		if (hits == null) continue;
@@ -265,8 +265,8 @@ PeptideCollisionBoundary.hitTestPoint = function(me, x, y, ?shape) {
 	if (me.__rect != null) { var r = me.__rect; return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h; }
 	fm = Stage.tester(fm);
 	if (fm == null) return false;
-	var out = EnginePoint.create(px, py - 2000);
-	var hits = fm.hitTestStructuresWithLineSegment(EnginePoint.create(px, py), out, out, { structureType: StructureType.FLOOR });
+	var out = Point.create(px, py - 2000);
+	var hits = fm.hitTestStructuresWithLineSegment(Point.create(px, py), out, out, { structureType: StructureType.FLOOR });
 	if (hits == null) return false;
 	for (h in hits) {
 		if (me.__fm != null && h != me.__fm) continue;

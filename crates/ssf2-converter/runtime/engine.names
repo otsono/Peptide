@@ -54,3 +54,10 @@ StructureType
 VfxLayer
 VfxStats
 CharacterActions
+Rectangle
+Matrix
+GlowFilter
+HsbcColorFilter
+RgbaColorShader
+Date
+StringMap

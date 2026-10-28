@@ -24,6 +24,21 @@ pub struct RuntimeClass {
     pub statics: BTreeSet<String>,
     /// members put on the object itself (`me.NAME = ...` in its build)
     pub own: BTreeSet<String>,
+    /// one of the engine's own classes (`native_classes.jsonc`): its members are the engine's to
+    /// answer, so none is reported unknown
+    pub native: bool,
+}
+
+/// A Flash class content uses that the engine's scripts have their own version of
+/// (`native_classes.jsonc`).
+#[derive(Default, Clone, Debug)]
+pub struct NativeClass {
+    /// content's `new Class(...)`, as a template of its arguments
+    pub make: Option<String>,
+    /// the engine's class a type test checks against
+    pub is: Option<String>,
+    /// the class's own functions the engine's class lacks, as templates of their arguments
+    pub statics: BTreeMap<String, String>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -47,6 +62,10 @@ pub struct Runtime {
     /// (`inert.jsonc`)
     pub inert_calls: BTreeMap<String, BTreeSet<String>>,
     pub inert_values: BTreeSet<String>,
+    /// Flash's classes the engine has its own version of, by name (`native_classes.jsonc`)
+    pub natives: BTreeMap<String, NativeClass>,
+    /// the API's tables of values (`api_constants.jsonc`): read only as their values, at conversion
+    pub tables: BTreeSet<String>,
     /// a runtime class's constants (`Class.NAME = literal;`, names in capitals), by `Class.NAME`:
     /// content that reads one gets the value written in place, and the table stays out of its script
     pub constants: BTreeMap<String, String>,
@@ -106,6 +125,30 @@ impl Runtime {
             }
             rt.inert_values = json["values"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
         }
+        if let Ok(text) = std::fs::read_to_string(dir.join("native_classes.jsonc")) {
+            let json: serde_json::Value = serde_json::from_str(&crate::mappings::strip_jsonc(&text))
+                .unwrap_or_else(|e| panic!("runtime/native_classes.jsonc is malformed: {e}"));
+            for (name, row) in json.as_object().into_iter().flatten() {
+                let text = |k: &str| row.get(k).and_then(|v| v.as_str()).map(String::from);
+                let rows = |k: &str| row.get(k).and_then(|v| v.as_object()).map(|o| o.iter()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect::<BTreeMap<_, _>>()).unwrap_or_default();
+                for (k, v) in rows("constants") { rt.constants.insert(format!("{name}.{k}"), v); }
+                rt.natives.insert(name.clone(), NativeClass { make: text("make"), is: text("is"), statics: rows("statics") });
+                rt.classes.insert(name.clone(), RuntimeClass { name: name.clone(), native: true, ..Default::default() });
+                rt.globals.insert(name.clone());
+            }
+        }
+        if let Ok(text) = std::fs::read_to_string(dir.join("api_constants.jsonc")) {
+            let json: serde_json::Value = serde_json::from_str(&crate::mappings::strip_jsonc(&text))
+                .unwrap_or_else(|e| panic!("runtime/api_constants.jsonc is malformed: {e}"));
+            for (name, rows) in json.as_object().into_iter().flatten() {
+                for (k, v) in rows.as_object().into_iter().flatten() {
+                    if let Some(v) = v.as_str() { rt.constants.insert(format!("{name}.{k}"), v.to_string()); }
+                }
+                rt.classes.insert(name.clone(), RuntimeClass { name: name.clone(), native: true, ..Default::default() });
+                rt.tables.insert(name.clone());
+            }
+        }
         if let Ok(text) = std::fs::read_to_string(dir.join("engine.names")) {
             rt.engine_names = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(String::from).collect();
         }
@@ -124,6 +167,11 @@ impl Runtime {
         }
         rt.constants.retain(|_, v| !v.is_empty());
         rt
+    }
+
+    /// the engine's version of a Flash class, by its name with or without its package
+    pub fn native(&self, class: &str) -> Option<&NativeClass> {
+        self.natives.get(class).or_else(|| self.natives.get(super::short(class)))
     }
 
     /// The rows as one kind of object writes them: its own rows over everyone's.
@@ -211,7 +259,7 @@ impl Runtime {
         let mut cur = self.classes.get(class).or_else(|| self.classes.get(super::short(class)));
         let mut n = 0;
         while let Some(c) = cur {
-            if c.members.contains(name) || c.getters.contains(name) || c.setters.contains(name) { return true }
+            if c.native || c.members.contains(name) || c.getters.contains(name) || c.setters.contains(name) { return true }
             n += 1;
             if n > 32 { break }
             cur = c.extends.as_ref().and_then(|e| self.classes.get(e));

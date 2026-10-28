@@ -30,7 +30,7 @@ Visuals.filters = function(target, o) {
 	}
 	var channels = o.redMultiplier != null || o.greenMultiplier != null || o.blueMultiplier != null
 		|| o.redOffset != null || o.greenOffset != null || o.blueOffset != null;
-	if (channels) Visuals.tint(target, ColorTransform.create(o.redMultiplier, o.greenMultiplier, o.blueMultiplier, 1,
+	if (channels) Visuals.tint(target, new RgbaColorShader(o.redMultiplier, o.greenMultiplier, o.blueMultiplier, 1,
 		o.redOffset, o.greenOffset, o.blueOffset, 0));
 };
 

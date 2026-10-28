@@ -103,9 +103,9 @@ PeptideUtils.setColorFilters = function(target, o) { Visuals.filters(target, o);
 PeptideUtils.setBrightness = function(target, v) {
 	v = AS3.num(v);
 	if (Math.abs(v) > 100) v = v > 0 ? 100 : -100;
-	Visuals.tint(target, ColorTransform.create(1, 1, 1, 1, v * 2.55, v * 2.55, v * 2.55, 0));
+	Visuals.tint(target, new RgbaColorShader(1, 1, 1, 1, v * 2.55, v * 2.55, v * 2.55, 0));
 };
 PeptideUtils.setTint = function(target, rm, gm, bm, am, ro, go, bo, ao) {
-	Visuals.tint(target, ColorTransform.create(rm, gm, bm, am, ro, go, bo, ao));
+	Visuals.tint(target, new RgbaColorShader(rm, gm, bm, am, ro, go, bo, ao));
 };
 PeptideUtils.replacePalette = function(mc, ?data, ?a, ?b) { PeptideRuntime.gap("replacePalette: recolouring a clip by palette"); };

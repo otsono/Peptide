@@ -383,7 +383,13 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
                 } else {
                     let mut chain = String::new();
                     for (i, c) in catches.iter().enumerate() {
-                        let test = match &c.type_name { Some(ty) => format!("AS3.is({var}, {})", quote(ty)), None => "true".into() };
+                        let test = match &c.type_name {
+                            Some(ty) => match self.native_type(ty) {
+                                Some(t) => format!("Std.isOfType({var}, {t})"),
+                                None => format!("AS3.is({var}, {})", quote(ty)),
+                            },
+                            None => "true".into(),
+                        };
                         let b = self.block(&c.body, depth + 1);
                         chain.push_str(&format!("{}if ({test}) {b}", if i == 0 { tabs(depth + 1) } else { " else ".into() }));
                     }
@@ -787,9 +793,47 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
                 }
             }
             BinOp::In => format!("AS3.has({}, {})", self.expr(b), self.expr(a)),
-            BinOp::Is | BinOp::InstanceOf => format!("AS3.is({}, {})", self.expr(a), self.type_name(b)),
-            BinOp::As => format!("AS3.as({}, {})", self.expr(a), self.type_name(b)),
+            BinOp::Is | BinOp::InstanceOf => match self.native_type_of(b) {
+                Some(t) => format!("Std.isOfType({}, {t})", self.expr(a)),
+                None => format!("AS3.is({}, {})", self.expr(a), self.type_name(b)),
+            },
+            BinOp::As => match self.native_type_of(b) {
+                Some(t) => { let v = self.fresh("__v"); format!("({{ var {v} = {}; Std.isOfType({v}, {t}) ? {v} : null; }})", self.expr(a)) }
+                None => format!("AS3.as({}, {})", self.expr(a), self.type_name(b)),
+            },
         }
+    }
+
+    /// the engine's class a type test against one of Flash's checks, where the engine has its own
+    /// version of it and content defines none by that name
+    fn native_type(&self, n: &str) -> Option<String> {
+        if self.pkg.class_named(n).is_some() { return None }
+        self.pkg.runtime.native(n)?.is.clone()
+    }
+
+    fn native_type_of(&self, t: &Expr) -> Option<String> {
+        match t { Expr::Name(n) if self.local_name(n).is_none() => self.native_type(n), _ => None }
+    }
+
+    /// a template of the engine's version of a Flash class (`native_classes.jsonc`) filled in with
+    /// arguments: `{args}` all of them, `{N}` one (a left-out one is `null`), one used more than
+    /// once worked out once
+    fn native_text(&mut self, t: &str, args: &[Expr]) -> String {
+        let texts: Vec<String> = args.iter().map(|x| self.expr(x)).collect();
+        let mut out = t.replace("{args}", &texts.join(", "));
+        let mut binds: Vec<String> = Vec::new();
+        for (i, v) in texts.iter().enumerate() {
+            let slot = format!("{{{i}}}");
+            let plain = v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
+            let v = if out.matches(&slot).count() > 1 && !plain {
+                let a = self.fresh("__a");
+                binds.push(format!("var {a} = {v};"));
+                a
+            } else { format!("({v})") };
+            out = out.replace(&slot, &v);
+        }
+        for i in args.len()..10 { out = out.replace(&format!("{{{i}}}"), "null"); }
+        if binds.is_empty() { format!("({out})") } else { format!("({{ {} {out}; }})", binds.join(" ")) }
     }
 
     /// a type as the `is`/`as` rules name it
@@ -1002,6 +1046,12 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             // a runtime class's constant (an event's name, a state's number): its value, in place
             if self.local_name(cls).is_none() && !self.content_member(cls) {
                 if let Some(v) = self.pkg.runtime.constants.get(&format!("{cls}.{n}")) { return v.clone() }
+                // a table of the API's values (`api_constants.jsonc`) that lists no such name: no
+                // value, since nothing in the script holds the table
+                if self.pkg.runtime.tables.contains(short(cls)) && self.pkg.class_named(cls).is_none() {
+                    self.unknown.insert(format!("{cls}.{n}"));
+                    return "null".into();
+                }
             }
         }
         let obj = self.expr_atom(o);
@@ -1400,6 +1450,12 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
                 if let Some(c) = self.api_call(&recv, m, args) { return c }
             }
             if let Expr::Name(cls) = &**o {
+                // a function of one of Flash's classes that the engine's version lacks
+                if self.local_name(cls).is_none() && self.pkg.class_named(cls).is_none() {
+                    if let Some(t) = self.pkg.runtime.native(cls).and_then(|c| c.statics.get(m.as_str())).cloned() {
+                        return self.native_text(&t, args);
+                    }
+                }
                 if cls == "Math" && self.local_name(cls).is_none() {
                     let a: Vec<String> = args.iter().map(|x| self.expr(x)).collect();
                     return match m.as_str() {
@@ -1479,6 +1535,10 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             Expr::Name(n) => match n.as_str() {
                 "Array" => format!("AS3.array([{a}])"),
                 "Object" => "{}".into(),
+                _ if self.pkg.class_named(n).is_none() && self.pkg.runtime.native(n).is_some_and(|c| c.make.is_some()) => {
+                    let t = self.pkg.runtime.native(n).and_then(|c| c.make.clone()).unwrap_or_default();
+                    self.native_text(&t, args)
+                }
                 _ => {
                     let cls = match self.pkg.class_ident(n) {
                         Some(i) => i,

@@ -58,7 +58,7 @@ what that costs, concretely:
    string or a json field.
 5. **only our code and the input's.** output holds this runtime and the content the user gave the
    converter, nothing of SSF2's: the SDK classes every package bundles are answered by the
-   runtime's own (`runtime/api/tables.hx`, `api/helpers.hx`, `fighter/fighter_ext.hx`) and never
+   runtime's own (`runtime/api_constants.jsonc`, `api/helpers.hx`, `fighter/fighter_ext.hx`) and never
    emitted, and SSF2's API names are renamed to the runtime's (`runtime/api_names.jsonc`). the one
    exception is the type strings `getType()` answers, which content compares against.
 6. **nothing is silently dropped.** a member the runtime lacks is listed in the conversion report
@@ -87,7 +87,7 @@ helper strings in Rust and the TOML templates, and the decompiler's own renames 
 | `runtime/projectile/` | the source engine's projectile: launch, lifetime, decay, homing, the stick's pull, control, trail, bounce, limit, bounds, its death |
 | `runtime/stage/` | stage objects, placed bodies, parts; `boot.hx` makes what a stage puts down as the match starts, from its `DATA.stage.boot` tables; `stages.hx` is the stage's kind (the boot once the match is live, names and regions, the schedules the boot put down); `planes.hx` is its planes (the stage clip's children, bound to the elements drawn for them, plus named surfaces, ground friction and push, library clips); `weather.hx` draws the clips the stage's weather class moves; `bodies.hx` is a stage object's kind (`entry/object.hx`): its body (a placed outline, or the floor its code makes), the stats it declares in the engine's terms, its hit refresh, no hit freeze, and the stand-in its maker holds until its script starts (`DATA.faces`, `DATA.object.invoke`) |
 | `runtime/api/` | the API members content calls, grouped by the object they are called on |
-| `runtime/flash/` | the Flash classes content uses (Point, Rectangle, Dictionary, ColorTransform, filters as data, Event, Error) |
+| `runtime/native_classes.jsonc` | Flash's classes the engine's scripts have their own version of, written as that version at conversion: `Point`, `Rectangle`, `Matrix`, `ColorTransform` (the engine's `RgbaColorShader`), `GlowFilter`, `RegExp` (`EReg`), `Date`, an `Error` as its fields, `Event` and `BlendMode` as their values; the members the engine's versions lack are `api_calls.jsonc` rows. what has none stays the runtime's: `Dictionary` (any key) in `core/as3.hx`, `Transform`, `Bitmap` and `BitmapData` in `core/display.hx` |
 | `runtime/entry/` | each object kind's entry (`initialize`, `update`, what the gates ask), emitted last |
 | `runtime/engine.names` | the engine's own script globals, measured in a running fighter; a content class by one of these names is written with a `_` after it |
 | `runtime/api_calls.jsonc` | content's API calls written as the Fraymakers calls they are, at conversion (`getX` is `{eng}.getX() / 1.3`); a listed call leaves nothing for the runtime to answer, and the runtime member it replaces is deleted. `by_kind` holds the rows one kind writes its own way (a stage's planes are its own clips; anyone else's are the fighters' layer) |

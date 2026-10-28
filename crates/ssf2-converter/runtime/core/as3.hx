@@ -93,7 +93,10 @@ AS3.random = function() { return Random.getFloat(0, 1); };
 AS3.str = function(v) {
 	if (v == null) return "null";
 	if (Std.isOfType(v, String) || Std.isOfType(v, Float) || Std.isOfType(v, Bool)) return Std.string(v);
+	if (Std.isOfType(v, Point)) return "(x=" + AS3.str(v.x) + ", y=" + AS3.str(v.y) + ")";
+	if (Std.isOfType(v, Rectangle)) return "(x=" + AS3.str(v.x) + ", y=" + AS3.str(v.y) + ", w=" + AS3.str(v.width) + ", h=" + AS3.str(v.height) + ")";
 	if (v.__is == null && v.__type == null) {
+		if (v.errorID != null && v.message != null) return "Error: " + AS3.str(v.message);
 		if (AS3.isArray(v)) { var out = []; for (x in v) out.push(x == null ? "" : AS3.str(x)); return out.join(","); }
 		return "[object Object]";
 	}
@@ -237,6 +240,9 @@ AS3.copyOf = function(o) {
 		return d;
 	}
 	if (Std.isOfType(o, String) || Std.isOfType(o, Float) || o == true || o == false) return o;
+	// Flash's geometry is the engine's own, which copies itself
+	if (Std.isOfType(o, Point)) return Point.create(o.x, o.y);
+	if (Std.isOfType(o, Rectangle) || Std.isOfType(o, Matrix)) return o.clone();
 	if (o.__copy != null) return o.__copy();
 	return AS3.isArray(o) ? o.copy() : o;
 };
@@ -306,12 +312,11 @@ AS3.concat = function(o, args) {
 // a string's first match of a string replaced (AS3's replace with a string pattern)
 AS3.replace = function(o, pat, rep) {
 	if (!AS3.isStr(o)) return o.replace(pat, rep);
-	// a pattern is matched as the text it is (RegExp keeps only a literal one), every match when
-	// it is global
-	var re = pat != null && pat.__regexp == true;
-	var p = re ? pat.source : AS3.str(pat);
+	// a pattern (the engine's own: a string has no `replace`) replaces its first match, or every
+	// one when it is global, as AS3's does
+	if (pat != null && !AS3.isStr(pat) && pat.replace != null) return pat.replace(o, AS3.str(rep));
+	var p = AS3.str(pat);
 	var r = AS3.str(rep);
-	if (re && pat.global) return p.length == 0 ? o : o.split(p).join(r);
 	var i = o.indexOf(p);
 	return i < 0 ? o : o.substr(0, i) + r + o.substr(i + p.length);
 };
@@ -395,4 +400,30 @@ AS3.typeOf = function(v) {
 	if (Std.isOfType(v, String)) return "string";
 	if (Std.isOfType(v, Float)) return "number";
 	return "object";
+};
+
+// ---- Flash's map by any value (the engine's maps are by string or by object, not either) ------
+
+// a map keyed by any value: a string or number by its text, an object by itself
+// class Dictionary
+var Dictionary = { name: "Dictionary" };
+Dictionary.build = function(me) {
+	if (me.__is == null) me.__is = [];
+	me.__is.push("Dictionary");
+	me.__dict = true;
+	me.__s = new haxe.ds.StringMap();
+	me.__o = new haxe.ds.ObjectMap();
+};
+Dictionary.init = function(me, ?weak) {};
+Dictionary.create = function(?weak) { var me = {}; Dictionary.build(me); return me; };
+Dictionary.plain = function(k) { return k == null || Std.isOfType(k, String) || Std.isOfType(k, Float) || k == true || k == false; };
+Dictionary.get = function(d, k) { return Dictionary.plain(k) ? d.__s.get(AS3.str(k)) : d.__o.get(k); };
+Dictionary.set = function(d, k, v) { if (Dictionary.plain(k)) d.__s.set(AS3.str(k), v); else d.__o.set(k, v); return v; };
+Dictionary.has = function(d, k) { return Dictionary.plain(k) ? d.__s.exists(AS3.str(k)) : d.__o.exists(k); };
+Dictionary.remove = function(d, k) { return Dictionary.plain(k) ? d.__s.remove(AS3.str(k)) : d.__o.remove(k); };
+Dictionary.keys = function(d) {
+	var out = [];
+	for (k in d.__s.keys()) out.push(k);
+	for (k in d.__o.keys()) out.push(k);
+	return out;
 };

@@ -97,8 +97,8 @@ PeptideGameObject.netSpeed = function(me, ?a, ?b) { var x = PeptideGameObject.ne
 // ---- the camera and the stage ----
 PeptideGameObject.attachToFloor = function(me) {
 	var f = me.__fm;
-	var out = EnginePoint.create(f.getX(), f.getY() + 4);
-	var hits = f.hitTestStructuresWithLineSegment(EnginePoint.create(f.getX(), f.getY() - 4), out, out, { structureType: StructureType.FLOOR });
+	var out = Point.create(f.getX(), f.getY() + 4);
+	var hits = f.hitTestStructuresWithLineSegment(Point.create(f.getX(), f.getY() - 4), out, out, { structureType: StructureType.FLOOR });
 	if (hits == null || hits.length == 0) return;
 	f.setY(out.y);
 	f.attachToFloor(hits[0]);
@@ -205,7 +205,7 @@ PeptideGameObject.getWidth = function(me) { var v = AS3.at(PeptideGameObject.own
 // origin): its declared width and height over its feet, else the engine's collision box
 PeptideGameObject.boundsRect = function(me, ox, oy) {
 	var fm = me.__fm;
-	if (fm == null) return Rectangle.create();
+	if (fm == null) return new Rectangle();
 	var size = PeptideRuntime.data.units.size;
 	var x = fm.getX() / size + ox;
 	var y = fm.getY() / size + oy;
@@ -217,7 +217,7 @@ PeptideGameObject.boundsRect = function(me, ox, oy) {
 			h = Math.abs(fm.getEcbFootY() - fm.getEcbHeadY()) / size;
 		} catch (err:Dynamic) {}
 	}
-	return Rectangle.create(x - w / 2, y - h, w, h);
+	return new Rectangle(x - w / 2, y - h, w, h);
 };
 // how see-through it is: its engine object, and the clip its code holds
 // its attack hits again: who it has hit is forgotten, and the engine's boxes come back

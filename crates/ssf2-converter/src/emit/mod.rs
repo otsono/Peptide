@@ -726,8 +726,10 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     for (_, text) in frames.values() { seed.push_str(text); }
     // what the entity's keyframes call: the engine's own clip's frames call nothing of the runtime's
     // clock (`clock_entity`)
+    // (a stage's entity has keyframes only where its clip has frame scripts: emit::stage)
+    let keyed = spec.kind != "stage" || pieces.iter().any(|p| model.class_of(p.sym).is_some_and(|c| !c.frame_scripts.is_empty()));
     seed.push_str(if native.is_some() { " PeptideRuntime.clipAt PeptideRuntime.frameDone PeptideRuntime.passing PeptideRuntime.born PeptideRuntime.enterLabel PeptideRuntime.entered " }
-        else { " PeptideRuntime.kf PeptideRuntime.at PeptideRuntime.runAt " });
+        else if keyed { " PeptideRuntime.kf PeptideRuntime.at PeptideRuntime.runAt " } else { "" });
     let kept = shake::shake(&files, &seed);
     let kept = format!("{kept}{}", rollback_fields(&kept));
     out.insert_str(runtime_at, &kept);
