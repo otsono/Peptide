@@ -319,13 +319,32 @@ fn prune_unplaced_sprites(dir: &Path) -> Result<usize> {
         if named(p, ".png") || named(p, ".png.meta") || named(p, ".wav") || named(p, ".ogg") || named(p, ".mp3") || named(p, ".fra") { continue }
         if let Ok(t) = fs::read_to_string(p) { text.push_str(&t); text.push('\n'); }
     }
-    let mut dropped = 0usize;
+    let mut metas = Vec::new();
     for meta in all.iter().filter(|p| named(p, ".png.meta")) {
         let Ok(v) = fs::read_to_string(meta).map(|t| serde_json::from_str::<serde_json::Value>(&t)) else { continue };
         let Ok(v) = v else { continue };
-        let guid = v["guid"].as_str().unwrap_or("");
-        let id = v["id"].as_str().unwrap_or("");
-        if guid.is_empty() || text.contains(guid) || (!id.is_empty() && text.contains(&format!("\"{id}\""))) { continue }
+        let guid = v["guid"].as_str().unwrap_or("").to_string();
+        let id = v["id"].as_str().filter(|i| !i.is_empty()).map(|i| format!("\"{i}\""));
+        metas.push((meta, guid, id));
+    }
+    // every guid and quoted id the text names, found in one pass over it rather than one a picture
+    let needles: std::collections::BTreeSet<&str> = metas.iter()
+        .flat_map(|(_, g, i)| std::iter::once(g.as_str()).chain(i.as_deref()))
+        .filter(|n| !n.is_empty()).collect();
+    let mut seen = std::collections::HashSet::new();
+    if !needles.is_empty() {
+        let alt = needles.iter().map(|n| regex::escape(n)).collect::<Vec<_>>().join("|");
+        let re = regex::RegexBuilder::new(&alt).size_limit(1 << 28).dfa_size_limit(1 << 28).build()?;
+        let mut at = 0;
+        // step one byte past each match's start, so a needle overlapping the one before is found too
+        while let Some(m) = re.find_at(&text, at) {
+            seen.insert(m.as_str());
+            at = m.start() + text[m.start()..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    let mut dropped = 0usize;
+    for (meta, guid, id) in metas {
+        if guid.is_empty() || seen.contains(guid.as_str()) || id.as_deref().is_some_and(|i| seen.contains(i)) { continue }
         let png = meta.with_extension("");
         let _ = fs::remove_file(&png);
         fs::remove_file(meta)?;
