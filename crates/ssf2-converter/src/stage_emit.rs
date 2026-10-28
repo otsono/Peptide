@@ -711,18 +711,14 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     // where the stage script asks for the boot: the placed bodies in its initialize, the rest once
     // the match is live, and each weather field's particles once there is a camera. A named clip
     // and a weather field are the script's own variables, so it binds those itself.
-    let boot_spawns = if boot.has_placed() { "\t\t\tStageBoot.placed(owner);\n".to_string() } else { String::new() };
+    let boot_spawns = if boot.has_placed() { boot.placed_calls("\t\t\t", "owner") } else { String::new() };
     let spawns = if !boot.spawns_at_start() { String::new() } else {
-        let mut s = String::from("\t\t\tStageBoot.spawn(owner, chars, m_hazardsOn);\n");
-        for (k, g) in boot.groups.iter().enumerate() {
-            s.push_str(&format!("\t\t\t{} = StageBoot.group({k});\n", g.name));
-        }
+        let mut s = boot.spawn_calls("\t\t\t", "owner", "chars", "m_hazardsOn", |g, made| format!("{} = {made};", g.name));
         s.push_str(&group_fields);
-        if !boot.cam_bg.is_empty() { s.push_str("\t\t\tStageBoot.camBg();\n"); }
         s
     };
-    let weather_spawn: String = boot.weather.iter().enumerate()
-        .map(|(k, w)| format!("\t\t\tm_weather{f} = StageBoot.weather({k}, m_weatherAlpha{f});\n", f = w.field))
+    let weather_spawn: String = boot.weather.iter()
+        .map(|w| format!("\t\t\tm_weather{f} = StageBoot.weather({}, m_weatherAlpha{f});\n", crate::emit::stage_tables::weather_row(w), f = w.field))
         .collect();
     // The stage class's OWN code, alongside the generated script rather than instead of it.
     //
@@ -1039,8 +1035,7 @@ function __pushUpdate() {{\n\
         // the boot's tables and the runtime that makes what they list, after every pass above:
         // they are data and the runtime's own code, not the stage's to rewrite
         if boot.is_empty() { body } else {
-            format!("{body}\n// ---- the stage's boot: what it puts down as the match starts\n{}\n// ---- runtime: runtime/stage/boot.hx\n{}",
-                    boot.literal(), crate::emit::stage_tables::boot_runtime()?)
+            format!("{body}\n// ---- runtime: runtime/stage/boot.hx\n{}", crate::emit::stage_tables::boot_runtime()?)
         }
     };
     write_script(&scripts.join(format!("{id}Script.hx")), &stage_script)?;
@@ -12120,36 +12115,44 @@ mod hazard_tests {
     fn hazard_spawns_with_null_owner() {
         // a null hitbox owner is neutral and passes the engine's team-hit validation (hits
         // everyone), and createCustomGameObject accepts a null owner.
-        let spawn = "\t\t\tStageBoot.spawn(owner, chars, m_hazardsOn);\n";
-        let s = script_hx("demo", false, spawn, "", &[], ("", ""), 0, "", &[], (0.0, 0.0), 1.0, (0.0, 0.0), &Default::default(), &Default::default(), &[], "");
+        let mut t = StageTables { objects_declared: 1, ..Default::default() };
+        t.objects.push(BootObject { index: 0, id: "demohazard0".into(), x: 0.0, y: 0.0, front: false, fg: None,
+            name: None, gated: false, placed: false, deck: None });
+        let spawn = t.spawn_calls("\t\t\t", "owner", "chars", "m_hazardsOn", |_, made| made);
+        let s = script_hx("demo", false, &spawn, "", &[], ("", ""), 0, "", &[], (0.0, 0.0), 1.0, (0.0, 0.0), &Default::default(), &Default::default(), &[], "");
         assert!(s.contains("var owner = null;"), "hazard owner should be null: {s}");
-        assert!(s.contains("StageBoot.spawn(owner"), "no spawn call: {s}");
+        assert!(s.contains("StageBoot.object({ i: 0, id: \"demohazard0\""), "no spawn call: {s}");
         let boot = crate::emit::stage_tables::boot_runtime().expect("the runtime's stage boot");
         assert!(boot.contains("createCustomGameObject(self.getResource().getContent(o.id), owner)"),
                 "the boot makes an object with the owner it is handed: {boot}");
     }
 
-    /// The boot tables as a literal: every section present, no row with a trailing comma, and the
-    /// numbers at the precision the boot has always had them.
+    /// The boot as calls: placed bodies apart from the rest, the hazards switch around what the
+    /// source gates, each element by its kind, and the numbers at the precision the boot has always
+    /// had them.
     #[test]
-    fn boot_tables_literal() {
+    fn boot_calls() {
         let mut t = StageTables { objects_declared: 2, ..Default::default() };
         t.structures.push(BootStructure { id: "demoplatform0".into(), name: Some("plat".into()) });
         t.objects.push(BootObject { index: 1, id: "demohazard1".into(), x: 12.345, y: -3.0, front: false, fg: None,
             name: None, gated: true, placed: false, deck: None });
+        t.objects.push(BootObject { index: 0, id: "demobody0".into(), x: 1.0, y: 2.0, front: false, fg: None,
+            name: Some("body".into()), gated: false, placed: true, deck: Some((-5.0, -10.0, 5.0)) });
         t.elements.push(BootElement { index: 0, id: "demo_el".into(), segmented: false, x: 728.0, y: -60.19000000000002,
             at: BootAt::Pan(0.25, 1.0), shown: vec![(0, 10)], tint: None, alpha: Some(0.5), hidden: true, ride: None, follow: None,
             path: Vec::new(), labels: Vec::new(), sections: None, carry: None, chain: None });
-        let lit = t.literal();
-        assert!(lit.starts_with("var DATA = { stage: { boot: {"), "{lit}");
-        assert!(lit.contains("x: 12.3, y: -3.0"), "object places at one decimal: {lit}");
-        assert!(lit.contains("x: 728, y: -60.19000000000002"), "an element's place is written as it always was: {lit}");
-        assert!(lit.contains("at: { pan: true, px: 0.2500, py: 1.0000 }"), "{lit}");
-        assert!(lit.contains("alpha: 0.500"), "{lit}");
-        assert!(!lit.contains(",\n\t]") && !lit.contains(", ]"), "no trailing comma: {lit}");
-        assert!(t.spawns_at_start() && !t.has_placed() && !t.is_empty());
-    }
-}
+        let placed = t.placed_calls("", "null");
+        assert!(placed.contains("StageBoot.object({ i: 0, id: \"demobody0\", x: 1.0, y: 2.0"), "{placed}");
+        assert!(!placed.contains("demohazard1"), "{placed}");
+        let spawn = t.spawn_calls("", "null", "chars", "hazardsOn", |_, made| made);
+        assert!(spawn.contains("StageBoot.structure(\"demoplatform0\", \"plat\");"), "{spawn}");
+        assert!(spawn.contains("StageBoot.deck({ i: 0, deck: { l: -5.0, t: -10.0, r: 5.0 } }, chars);"), "{spawn}");
+        assert!(spawn.contains("if (hazardsOn) {\n\tStageBoot.object({ i: 1, id: \"demohazard1\", x: 12.3, y: -3.0"), "object places at one decimal, behind the switch: {spawn}");
+        assert!(spawn.contains("StageBoot.effect({ i: 0, id: \"demo_el\", seg: false, x: 728, y: -60.19000000000002"), "an element's place is written as it always was: {spawn}");
+        assert!(spawn.contains("at: { pan: true, px: 0.2500, py: 1.0000 }"), "{spawn}");
+        assert!(spawn.contains("alpha: 0.500"), "{spawn}");
+        assert!(t.spawns_at_start() && t.has_placed() && !t.is_empty() && t.has_pan() && t.has_shown() && !t.has_tint());
+    }}
 
 /// The art fallback, reachable from the stage tests. Exposed rather than duplicated so the tests
 /// pin the code that actually ships.

@@ -92,7 +92,7 @@ Planes.bind = function() {
 		if (v == null) continue;
 		var path = e.path.copy();
 		while (path.length > 0 && top.indexOf(path[0]) < 0) path.shift();
-		var row = { v: v, i: e.i, seg: DATA.stage.boot.elements[e.i].seg == true, path: path, labels: e.labels, over: [],
+		var row = { v: v, i: e.i, seg: e.seg == true, sections: e.sections, path: path, labels: e.labels, over: [],
 		            bx: v.getX(), by: v.getY(), dx: 0.0, dy: 0.0, shown: true, alpha: 1.0 };
 		for (b in Planes.bound) if (Planes.under(b.path, path)) {
 			row.over.push(b);
@@ -203,7 +203,7 @@ Planes.jumped = function(b, f, stop) {
 // animation stats plays it here (shown, as the label the stage plays on it shows a clip hidden by
 // its first frame); one whose sections roll for where they go takes the ask in its own script
 Planes.go = function(e, go) {
-	var sec = DATA.stage.boot.elements[e.i].sections;
+	var sec = e.sections;
 	if (sec == null) { if (e.v.exports != null) e.v.exports.__go = go; return; }
 	var k = -1;
 	var at = 0;
@@ -224,7 +224,7 @@ Planes.go = function(e, go) {
 };
 // whether a sectioned element is already in the section a label names
 Planes.playing = function(e, l) {
-	var sec = DATA.stage.boot.elements[e.i].sections;
+	var sec = e.sections;
 	if (sec == null) return e.v.exports != null && e.v.exports.__go == l;
 	var k = e.labels.indexOf(l);
 	return k >= 0 && e.v.getAnimation() == sec.anims[k];

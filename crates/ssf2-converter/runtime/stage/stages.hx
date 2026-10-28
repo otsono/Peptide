@@ -149,7 +149,7 @@ Stages.begin = function(me) {
 };
 // the bodies the tree placed, once the stage's clip is there: they are part of the stage from its
 // first frame, ahead of the fighters and of the stage's own code
-Stages.made = function(me) { StageBoot.placed(null); };
+Stages.made = function(me) { PeptideRuntime.data.stage.placed(null); };
 
 // the objects the stage puts down are its classes' objects: one the stage's own code makes it
 // leaves to that code
@@ -185,10 +185,7 @@ Stages.boot = function(me) {
 	var chars = match.getCharacters();
 	if (chars == null || chars.length == 0) return;
 	var cfg = match.getMatchSettingsConfig();
-	var b = PeptideRuntime.data.stage.boot;
-	StageBoot.spawn(null, chars, cfg == null || cfg.hazards);
-	for (k in 0...b.groups.length) Stages.groups.set(b.groups[k].n, StageBoot.group(k));
-	if (b.camBg.length > 0) StageBoot.camBg();
+	PeptideRuntime.data.stage.spawn(null, chars, cfg == null || cfg.hazards);
 	Planes.bind();
 	__verifyBuilt = true;
 	if (me != null) PeptideRuntime.run(me.initialize);
@@ -201,37 +198,40 @@ Stages.clock = function() {
 	return f > 1 ? f : Stages.frames;
 };
 
-// every one of this engine's frames: what rides an object follows it, and the schedules move on
+// every one of this engine's frames: the stage's upkeep, which the conversion writes with only the
+// parts below the stage has something for (what rides an object, the timeline's showing and
+// hiding, the pan containers, the planes, the surfaces, the weather, the opacity and colour
+// schedules)
 Stages.engineFrame = function(me) {
 	Stages.frames++;
+	PeptideRuntime.data.stage.upkeep(Stages.clock());
+};
+// what rides an object follows it
+Stages.follow = function() {
 	for (f in __follow) {
 		if (f.v == null || f.o == null) continue;
 		f.v.setX(f.o.getX() + (f.dx != null ? f.dx : 0));
 		f.v.setY(f.o.getY() + (f.dy != null ? f.dy : 0));
 	}
-	var t = Stages.clock();
-	// shown over runs of [from, to) on the clock: a cursor per container, moved on only forward
+};
+// shown over runs of [from, to) on the clock: a cursor per container, moved on only forward
+Stages.shown = function(t) {
 	for (e in m_shown) {
 		if (t < e.at) e.i = 0;
 		e.at = t;
 		while (e.i < e.on.length && t >= e.on[e.i][1]) e.i++;
 		e.c.visible = e.i < e.on.length && t >= e.on[e.i][0];
 	}
-	Stages.pan();
-	// what the code changed on its clips reaches what is drawn for them, and the surfaces and the
-	// weather move on
-	Planes.frame();
-	Planes.camBgs();
-	Planes.ground();
-	Planes.riding();
-	Planes.libFrame();
-	Weather.frame();
-	// opacity and colour hold each key until the next, on the piece's own loop
+};
+// opacity and colour hold each key until the next, on the piece's own loop
+Stages.alphas = function(t) {
 	for (e in m_alpha) {
 		var c = e.len > 0 ? t % e.len : t;
 		Stages.key(e, c);
 		e.c.alpha = e.k[e.i][1];
 	}
+};
+Stages.tints = function(t) {
 	for (e in m_tint) {
 		var c = e.len > 0 ? t % e.len : t;
 		Stages.key(e, c);
@@ -281,7 +281,7 @@ Stages.region = function(n) {
 // surface the stage entity carries, or a region its tree placed
 Stages.named = function(n) {
 	for (e in __namedObjs) if (e.n == n) {
-		for (st in PeptideRuntime.data.stage.boot.structures) if (st.name == n) return Stages.withClip(Platforms.view(e.o), n);
+		if (PeptideRuntime.data.stage.structureNames.indexOf(n) >= 0) return Stages.withClip(Platforms.view(e.o), n);
 		return Objects.view(e.o);
 	}
 	var s = Planes.surface(n);

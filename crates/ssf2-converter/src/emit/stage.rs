@@ -624,8 +624,8 @@ fn object_invoke(src: &SourceModel, runtime: &Runtime, class: &str) -> String {
 fn stage_data(model: &crate::stage_parser::StageModel, src: &crate::model::SourceModel, input: &StageInput) -> String {
     let list = |rows: Vec<String>| if rows.is_empty() { "[]".to_string() } else { format!("[\n\t{}\n]", rows.join(",\n\t")) };
     let strs = |v: &[String]| v.iter().map(|s| compile::quote(s)).collect::<Vec<_>>().join(", ");
-    let elements = input.tables.elements.iter().map(|e| format!("{{ i: {}, path: [{}], labels: [{}] }}",
-        e.index, strs(&e.path), strs(&e.labels))).collect();
+    let elements = input.tables.elements.iter().map(|e| format!("{{ i: {}, seg: {}, path: [{}], labels: [{}], sections: {} }}",
+        e.index, e.segmented, strs(&e.path), strs(&e.labels), super::stage_tables::sections_literal(e))).collect();
     let surfaces = input.surfaces.iter().map(|(n, s)| format!("{{ n: {}, s: [{}] }}", compile::quote(n), strs(s))).collect();
     let particles = input.particles.iter().map(|(n, id)| format!("{{ n: {}, id: {} }}", compile::quote(n), compile::quote(id))).collect();
     // each field's particles as a variable of the stage's own (the field's index, as its effect
@@ -638,10 +638,28 @@ fn stage_data(model: &crate::stage_parser::StageModel, src: &crate::model::Sourc
     let lib = input.lib.iter().map(|(n, parts)| format!("{{ n: {}, sym: {}, parts: [{parts}] }}", compile::quote(n),
         src.symbol_of(n).map(|s| s.to_string()).unwrap_or_else(|| "null".into()))).collect();
     let by_code: Vec<String> = input.rows.iter().filter(|r| r.by_code).map(|r| r.id.clone()).collect();
-    format!("{lists}{}{}DATA.stage.weatherLists = {};\nDATA.stage.elements = {};\nDATA.stage.surfaces = {};\nDATA.stage.frictions = [{}];\nDATA.stage.pushes = [{}];\n\
+    // the stage's upkeep each frame, on its clock `t`: only the parts it has something for
+    let t = input.tables;
+    let weather = !t.weather.is_empty() || !input.particles.is_empty();
+    let upkeep: String = [
+        (t.has_riders(), "Stages.follow();"),
+        (t.has_shown(), "Stages.shown(t);"),
+        (t.has_pan(), "Stages.pan();"),
+        (true, "Planes.frame();"),
+        (src.declared("camera").and_then(|c| c.get("backgrounds").cloned()).is_some_and(|b| matches!(b, Value::Arr(ref v) if !v.is_empty())), "Planes.camBgs();"),
+        (!input.frictions.is_empty() || !input.pushes.is_empty() || !input.surfaces.is_empty(), "Planes.ground();"),
+        (t.has_follow(), "Planes.riding();"),
+        (!input.lib.is_empty(), "Planes.libFrame();"),
+        (weather, "Weather.frame();"),
+        (t.has_fade(), "Stages.alphas(t);"),
+        (t.has_tint(), "Stages.tints(t);"),
+    ].iter().filter(|(on, _)| *on).map(|(_, c)| format!(" {c}")).collect();
+    let structure_names: Vec<String> = t.structures.iter().filter_map(|s| s.name.clone()).collect();
+    format!("DATA.stage = {{}};\nDATA.stage.upkeep = function(t) {{{upkeep} }};\nDATA.stage.weatherDeclared = {};\nDATA.stage.structureNames = [{}];\n\
+{lists}{}{}DATA.stage.weatherLists = {};\nDATA.stage.elements = {};\nDATA.stage.surfaces = {};\nDATA.stage.frictions = [{}];\nDATA.stage.pushes = [{}];\n\
 DATA.stage.particles = {};\nDATA.stage.particleCap = {};\nDATA.stage.lib = {};\nDATA.stage.placedAt = [{}];\nDATA.stage.origin = {{ x: {:.4}, y: {:.4} }};\n\
 DATA.origin = DATA.stage.origin;\nDATA.stage.byCode = [{}];\n",
-        stage_boot_data(model, src, input), clip_bounds_data(model, src), list(weather_lists), list(elements), list(surfaces), input.frictions.join(", "), input.pushes.join(", "),
+        !t.weather.is_empty(), strs(&structure_names), stage_boot_data(model, src, input), clip_bounds_data(model, src), list(weather_lists), list(elements), list(surfaces), input.frictions.join(", "), input.pushes.join(", "),
         list(particles), input.particle_cap, list(lib), input.placed_at, input.origin.0, input.origin.1, strs(&by_code))
 }
 
@@ -689,6 +707,9 @@ fn stage_boot_data(model: &crate::stage_parser::StageModel, src: &crate::model::
         .map(|s| s.to_string()).unwrap_or_else(|| "null".into())).collect();
     // the track the stage declares, which its code can time itself by (final destination)
     let music = model.ssf2_music.first().map(|m| compile::quote(m)).unwrap_or_else(|| "null".into());
-    format!("DATA.stage = {{}};\nDATA.stage.boot = {};\nDATA.stage.regions = {regions};\nDATA.stage.pan = {{ x: {:.2}, y: {:.2} }};\nDATA.stage.cameraBackgrounds = [{}];\nDATA.stage.cameraBackgroundClips = [{}];\nDATA.stage.music = {music};\n",
-        input.tables.boot(), input.pan.0, input.pan.1, cam_bgs.join(", "), cam_syms.join(", "))
+    let t = input.tables;
+    let placed = t.placed_calls("\t", "owner");
+    let spawn = t.spawn_calls("\t", "owner", "chars", "hazardsOn", |g, made| format!("Stages.groups.set({}, {made});", compile::quote(&g.name)));
+    format!("DATA.stage.placed = function(owner) {{\n{placed}}};\nDATA.stage.spawn = function(owner, chars, hazardsOn) {{\n{spawn}}};\nDATA.stage.regions = {regions};\nDATA.stage.pan = {{ x: {:.2}, y: {:.2} }};\nDATA.stage.cameraBackgrounds = [{}];\nDATA.stage.cameraBackgroundClips = [{}];\nDATA.stage.music = {music};\n",
+        input.pan.0, input.pan.1, cam_bgs.join(", "), cam_syms.join(", "))
 }

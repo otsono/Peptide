@@ -1,7 +1,6 @@
-// A stage's boot: what it puts down when the match starts, read off the converter's tables
-// (`DATA.stage.boot`) and made in the order they list it. Its structures, its declared objects
-// (the placed bodies first, before the fighters exist), its backdrop elements and the named clips
-// they make up, its camera backgrounds' opacity, and its weather.
+// A stage's boot: what it puts down when the match starts. The conversion writes the boot as calls,
+// in the order the stage puts things down, each with the row it makes (`emit/stage_tables.rs`):
+// here is how each kind of piece is made, and a stage carries only the kinds it puts down.
 //
 // Everything made goes on `__made` (what the running stage says it built), and the lists the
 // stage's frame keeps (`m_owned`, `__follow`, `m_shown`, `m_tint`, `m_alpha`, `__platFollow`) and
@@ -9,70 +8,22 @@
 // stage script's own.
 
 var StageBoot = {};
-// what was made, by the tables' index: a declared object by its place in the stage's list, a
+// what was made, by the boot's index: a declared object by its place in the stage's list, a
 // backdrop element by its place in the element list
 StageBoot.hz = [];
 StageBoot.bg = [];
 
-StageBoot.sized = function() {
-	var b = DATA.stage.boot;
-	while (StageBoot.hz.length < b.objectsDeclared) StageBoot.hz.push(null);
-	while (StageBoot.bg.length < b.elements.length) StageBoot.bg.push(null);
+// room for every object the stage declares and every element it draws
+StageBoot.sized = function(objects, elements) {
+	while (StageBoot.hz.length < objects) StageBoot.hz.push(null);
+	while (StageBoot.bg.length < elements) StageBoot.bg.push(null);
 };
 
-// the bodies the tree placed: part of the stage from its first frame, ahead of the fighters
-StageBoot.placed = function(owner) {
-	var b = DATA.stage.boot;
-	StageBoot.sized();
-	var i = 0;
-	while (i < b.objects.length) {
-		var o = b.objects[i];
-		if (o.placed == true) StageBoot.object(o, owner);
-		i = i + 1;
-	}
-};
-
-// everything else, once the match is live: structures, the objects (what the source puts behind
-// the hazards switch only while hazards are on), then the backdrop elements
-StageBoot.spawn = function(owner, chars, hazardsOn) {
-	var b = DATA.stage.boot;
-	StageBoot.sized();
-	var i = 0;
-	while (i < b.structures.length) {
-		var s = b.structures[i];
-		var h = match.createStructure(self.getResource().getContent(s.id));
-		__made.push({ id: s.id, k: "s", o: h });
-		if (s.name != null) __nameObject(s.name, h);
-		i = i + 1;
-	}
-	var gated = false;
-	i = 0;
-	while (i < b.objects.length) {
-		var o = b.objects[i];
-		if (o.placed == true) {
-			if (o.deck != null) StageBoot.deck(o, chars);
-		} else if (o.gated == true) {
-			gated = true;
-		} else {
-			StageBoot.object(o, owner);
-		}
-		i = i + 1;
-	}
-	if (gated) {
-		if (hazardsOn) {
-			i = 0;
-			while (i < b.objects.length) {
-				var o = b.objects[i];
-				if (o.placed != true && o.gated == true) StageBoot.object(o, owner);
-				i = i + 1;
-			}
-		}
-	}
-	i = 0;
-	while (i < b.elements.length) {
-		StageBoot.element(b.elements[i], owner);
-		i = i + 1;
-	}
+// a structure, filed under the name the stage's code drives it by when it has one
+StageBoot.structure = function(id, name) {
+	var h = match.createStructure(self.getResource().getContent(id));
+	__made.push({ id: id, k: "s", o: h });
+	if (name != null) __nameObject(name, h);
 };
 
 // one declared object: made, put where it stands, drawn ahead of the fighters when it asks to be
@@ -120,84 +71,89 @@ StageBoot.container = function(at) {
 	return self.getBackgroundBehindContainer();
 };
 
-// one backdrop element. A looping one is an effect in a container of its own, which the stage's
-// timeline shows and hides; one whose clip switches sections is an object running its own script
-StageBoot.element = function(e, owner) {
-	var b = DATA.stage.boot;
-	var v = null;
-	// a sectioned piece in a camera background is effects in that background's container
-	if (e.chain != null) {
-		var c = Container.create();
-		var at = StageBoot.container(e.at);
-		if (at == null) return;
-		at.addChild(c);
-		var h = StageBoot.sectioned(e, c);
-		__made.push({ id: e.id, k: "o", o: h });
-		StageBoot.bg[e.i] = h;
+// a sectioned piece in a camera background: effects in that background's container
+StageBoot.chained = function(e) {
+	var c = Container.create();
+	var at = StageBoot.container(e.at);
+	if (at == null) return;
+	at.addChild(c);
+	var h = StageBoot.sectioned(e, c);
+	__made.push({ id: e.id, k: "o", o: h });
+	StageBoot.bg[e.i] = h;
+};
+
+// a piece that carries a named surface: that surface's structures, its art on the first
+StageBoot.carry = function(e) {
+	var parts = [];
+	for (cid in e.carry.ids) {
+		var st = match.createStructure(self.getResource().getContent(cid));
+		if (st == null) continue;
+		st.setX(e.x);
+		st.setY(e.y);
+		parts.push(st);
+		__made.push({ id: cid, k: "s", o: st });
+	}
+	Planes.carried.set(e.carry.n, parts);
+	StageBoot.bg[e.i] = StageBoot.carrier(parts, e.sections);
+};
+
+// a picture placed inside an object's own clip that never changes is drawn in the object's own
+// view, where the engine carries it with the object; one whose object has no view is drawn as
+// an effect riding it
+StageBoot.still = function(e, owner) {
+	var ro = StageBoot.hz[e.ride.o];
+	var s = ro == null || ro.getViewRootContainer == null ? null : Sprite.create(self.getResource().getContent(e.id));
+	if (s == null) {
+		if (e.seg == true) StageBoot.segment(e, owner); else StageBoot.effect(e);
 		return;
 	}
-	// a piece that carries a named surface is that surface's structures, its art on the first
-	if (e.carry != null) {
-		var parts = [];
-		for (cid in e.carry.ids) {
-			var st = match.createStructure(self.getResource().getContent(cid));
-			if (st == null) continue;
-			st.setX(e.x);
-			st.setY(e.y);
-			parts.push(st);
-			__made.push({ id: cid, k: "s", o: st });
-		}
-		Planes.carried.set(e.carry.n, parts);
-		StageBoot.bg[e.i] = StageBoot.carrier(parts, e.sections);
-		return;
+	s.x = e.ride.dx;
+	s.y = e.ride.dy;
+	ro.getViewRootContainer().addChildAt(s, 0);
+};
+
+// a piece whose clip switches sections: an object running its own script
+StageBoot.segment = function(e, owner) {
+	var v = match.createCustomGameObject(self.getResource().getContent(e.id), owner);
+	if (v != null) {
+		v.setX(e.x);
+		v.setY(e.y);
+		__made.push({ id: e.id, k: "o", o: v });
+		var p = StageBoot.container(e.at);
+		if (p != null) p.addChild(v.getViewRootContainer());
 	}
-	// a picture placed inside an object's own clip that never changes is drawn in the object's own
-	// view, where the engine carries it with the object (nothing in a named clip, which the code
-	// reaches as a group)
-	if (e.ride != null && e.ride.still == true && !StageBoot.grouped(e.i)) {
-		var ro = StageBoot.hz[e.ride.o];
-		var s = ro == null || ro.getViewRootContainer == null ? null : Sprite.create(self.getResource().getContent(e.id));
-		if (s != null) {
-			s.x = e.ride.dx;
-			s.y = e.ride.dy;
-			ro.getViewRootContainer().addChildAt(s, 0);
-			return;
-		}
+	StageBoot.rides(e, v);
+};
+
+// a looping piece: an effect in a container of its own, which the stage's timeline shows and hides
+StageBoot.effect = function(e) {
+	var v = match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(e.id), animation: "active", x: e.x, y: e.y, loop: true, timeout: -1, relativeWith: false, resizeWith: false }));
+	var c = Container.create();
+	StageBoot.container(e.at).addChild(c);
+	if (v != null) {
+		c.addChild(v.getViewRootContainer());
+		m_owned.push(v);
+		__made.push({ id: e.id, k: "v", o: v });
 	}
-	if (e.seg == true) {
-		v = match.createCustomGameObject(self.getResource().getContent(e.id), owner);
-		if (v != null) {
-			v.setX(e.x);
-			v.setY(e.y);
-			__made.push({ id: e.id, k: "o", o: v });
-			var p = StageBoot.container(e.at);
-			if (p != null) p.addChild(v.getViewRootContainer());
-		}
-	} else {
-		v = match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(e.id), animation: "active", x: e.x, y: e.y, loop: true, timeout: -1, relativeWith: false, resizeWith: false }));
-		var c = Container.create();
-		StageBoot.container(e.at).addChild(c);
-		if (v != null) {
-			c.addChild(v.getViewRootContainer());
-			m_owned.push(v);
-			__made.push({ id: e.id, k: "v", o: v });
-		}
-		if (e.shown != null) m_shown.push({ c: c, i: 0, at: 0, on: e.shown });
-		if (e.tint != null && v != null) {
-			var sh = new RgbaColorShader(1, 1, 1, 1, 0, 0, 0, 0);
-			v.addShader(sh);
-			m_tint.push({ s: sh, i: 0, j: -1, at: 0, len: e.tlen, k: b.tints[e.tint] });
-		}
-		if (e.alpha != null && v != null) v.getViewRootContainer().alpha = e.alpha;
-		if (e.hidden == true && v != null) v.setVisible(false);
+	if (e.shown != null) m_shown.push({ c: c, i: 0, at: 0, on: e.shown });
+	if (e.tint != null && v != null) {
+		var sh = new RgbaColorShader(1, 1, 1, 1, 0, 0, 0, 0);
+		v.addShader(sh);
+		m_tint.push({ s: sh, i: 0, j: -1, at: 0, len: e.tlen, k: e.tint });
 	}
+	if (e.alpha != null && v != null) v.getViewRootContainer().alpha = e.alpha;
+	if (e.hidden == true && v != null) v.setVisible(false);
+	StageBoot.rides(e, v);
+};
+
+// what a piece is to the rest of the stage: its handle by index, the object it rides, and the
+// surface its plane moves by label riding it
+StageBoot.rides = function(e, v) {
 	StageBoot.bg[e.i] = v;
-	// a piece placed inside an object's own clip is that object's picture: it rides the object
 	if (e.ride != null && v != null) {
 		var ao = StageBoot.hz[e.ride.o];
 		if (ao != null && ao.getX != null) __follow.push({ v: v, o: ao, dx: e.ride.dx, dy: e.ride.dy });
 	}
-	// a surface its plane moves by label rides this picture
 	if (e.follow != null && v != null) __platFollow.push({ v: v, n: e.follow.n, at: e.follow.at, bx: [], by: [] });
 };
 
@@ -283,48 +239,24 @@ StageBoot.sectioned = function(e, c) {
 	return h;
 };
 
-// whether an element is a part of a named clip
-StageBoot.grouped = function(i) {
-	var gs = DATA.stage.boot.groups;
-	var k = 0;
-	while (k < gs.length) {
-		if (gs[k].parts.indexOf(i) >= 0) return true;
-		k = k + 1;
-	}
-	return false;
-};
-
 // a named clip: the object the tree placed under that name when there is one, else a group of
 // the elements that came out of the clip
-StageBoot.group = function(k) {
-	var g = DATA.stage.boot.groups[k];
+StageBoot.group = function(g) {
 	if (__objectNamed(g.n) != null && __objectNamed(g.n).exports != null) return __objectNamed(g.n);
 	var parts = [];
-	var i = 0;
-	while (i < g.parts.length) {
-		parts.push(StageBoot.bg[g.parts[i]]);
-		i = i + 1;
-	}
+	for (i in g.parts) parts.push(StageBoot.bg[i]);
 	return __clipGroup(parts, g.labels, g.src, g.ws, g.plane);
 };
 
-// the camera backgrounds' opacity: a schedule the frame runs for one that fades, a constant for
-// one that does not
-StageBoot.camBg = function() {
-	var b = DATA.stage.boot;
+// a camera background's opacity: a schedule the frame runs for one that fades, a constant for one
+// that does not
+StageBoot.camFade = function(i, len, k) {
 	var cbg = match.getCamera().getBackgroundContainers();
-	var i = 0;
-	while (i < b.camBg.length) {
-		var e = b.camBg[i];
-		if (cbg != null && cbg.length > e.i) {
-			if (e.k != null) {
-				m_alpha.push({ c: cbg[e.i], i: 0, j: -1, at: 0, len: e.len, k: e.k });
-			} else {
-				cbg[e.i].alpha = e.a;
-			}
-		}
-		i = i + 1;
-	}
+	if (cbg != null && cbg.length > i) m_alpha.push({ c: cbg[i], i: 0, j: -1, at: 0, len: len, k: k });
+};
+StageBoot.camAlpha = function(i, a) {
+	var cbg = match.getCamera().getBackgroundContainers();
+	if (cbg != null && cbg.length > i) cbg[i].alpha = a;
 };
 
 // `lo + U(0, span) / 100`, the draw the tables state a spread as
@@ -336,8 +268,7 @@ StageBoot.draw = function(d) {
 
 // one weather field's particles, scattered over the view: as many as keep the source's density
 // over this engine's screen, within the cap. Returns the field's particle list.
-StageBoot.weather = function(k, alpha) {
-	var w = DATA.stage.boot.weather[k];
+StageBoot.weather = function(w, alpha) {
 	var cam = match.getCamera();
 	var shw = w.hw;
 	var shh = w.hh;

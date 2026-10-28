@@ -41,7 +41,7 @@ Weather.particleOf = function(c) {
 Weather.frame = function() {
 	Weather.frames++;
 	if (Weather.layer == null) {
-		if (Weather.frames == 2 && DATA.stage.boot.weather.length > 0)
+		if (Weather.frames == 2 && DATA.stage.weatherDeclared == true)
 			PeptideRuntime.gap("the stage's weather is made by a class its package does not carry");
 		return;
 	}
