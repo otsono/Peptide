@@ -386,19 +386,6 @@ Objects.face = function(fm, right) {
 	if (fm.getType() != EntityType.CHARACTER && fm.exports != null) fm.exports.__facing = right;
 	if (right) fm.faceRight(); else fm.faceLeft();
 };
-// a fighter's slowdown a source frame, in this engine's units: the animation's own where it states
-// one, the fighter's otherwise (the rules that slow a fighter in its attack pay it)
-Objects.slideStep = function(fm, ?air) {
-	if (fm.getType() != EntityType.CHARACTER) return 0;
-	if (air == null) air = !fm.isOnFloor();
-	var f = fm.getAnimationStat(air ? "aerialFriction" : "friction");
-	if (f == null || f < 0) f = fm.getCharacterStat(air ? "aerialFriction" : "friction");
-	return f == null ? 0 : f * 1.5;
-};
-Objects.slowed = function(v, s) {
-	if (s == 0 || v == 0) return v;
-	return v > 0 ? Math.max(v - s, 0) : Math.min(v + s, 0);
-};
 // what isn't a fighter reads and sets its x speed along the way it was thrown in the source, and
 // says it faces right until its own code turns it; turning it changes neither (link's arrow and
 // boomerang and simon's cross, thrown left, slow and turn on the source's frames; chibi-robo's
@@ -408,14 +395,13 @@ Objects.alongThrow = function(fm, v) {
 	var thrown = fm.exports == null || fm.exports.__thrownRight == null ? true : fm.exports.__thrownRight == true;
 	return fm.isFacingRight() == thrown ? v : -v;
 };
-// an x speed as the source's code reads and writes it: a fighter's as it is (a write noted, so the
-// slowdown an attack starts with leaves it alone), anything else's along its throw
+// an x speed as the source's code reads and writes it: a fighter's as it is, anything else's along
+// its throw
 Objects.xSpeed = function(fm) {
 	return fm.getType() == EntityType.CHARACTER ? fm.getXSpeed() : Objects.alongThrow(fm, fm.getXSpeed());
 };
 Objects.setXSpeed = function(fm, v) {
 	if (fm.getType() != EntityType.CHARACTER) { fm.setXSpeed(Objects.alongThrow(fm, v)); return; }
-	if (fm.exports != null) fm.exports.__wroteX = PeptideRuntime.frame;
 	fm.setXSpeed(v);
 };
 // taken off: a surface stops being one; an item goes at once; anything else ends the way the

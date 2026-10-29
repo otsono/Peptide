@@ -16,7 +16,6 @@ Fighters.entering = function(me, anim, ?again) {
 		me.__usedLabel = null;
 	}
 	AttackRules.track(me, p.label);
-	Fighters.attackStartSlow(me);
 };
 Fighters.recover = function(fm, n) { var d = fm.getDamage(); fm.setDamage(Math.max(0, d - AS3.num(n))); return d > 0; };
 // the last projectile it made, ended or not: the source hands it back either way, and its code asks
@@ -35,10 +34,6 @@ Fighters.endAnimation = function(me) {
 	else fm.toState(CState.FALL);
 };
 
-// a body status the source switches on and off: this engine grants one for a span and cannot
-// end it early, so a status switched on is granted again every frame until it is switched off
-
-
 // the speeds the fighter's code set this time: its walk answers an x speed
 Fighters.speedsSet = function(me, x) {
 	if (x) Fighters.xSet(me, me.__fm.getXSpeed() / PeptideRuntime.data.units.speed);
@@ -48,9 +43,9 @@ Fighters.speedsSet = function(me, x) {
 // so a fighter whose walk starts from nothing (sandbag) stops dead until its next write, and one
 // whose walk starts moving (bowser writes 0 on his walk's first frame) walks on. a zero with no
 // starting speed is held until the next write or the next animation, where this engine's walk
-// would accelerate it. a nonzero one under a held direction carries one source frame of the walk's
-// acceleration (the source accelerates a scripted walk speed before it moves on it: bowser's 2
-// reads 2.5, its cap, on the very next frame)
+// would accelerate it.
+// not ported: a nonzero speed written under a held direction takes one source frame of the walk's
+// acceleration first on the source (bowser's 2 reads 2.5 a frame early there); here it walks up to it
 Fighters.xSet = function(me, v) {
 	var fm = me.__fm;
 	var c = fm.isOnFloor() ? fm.getHeldControls() : null;
@@ -67,53 +62,13 @@ Fighters.xSet = function(me, v) {
 	var hold = (v == 0 && fm.isOnFloor()) ? fm.getAnimation() : null;
 	if (hold != null && me.__xHold == null) me.__xHoldAt = fm.getX();
 	me.__xHold = hold;
-	if (v != 0 && held) fm.setXSpeed(fm.getXSpeed() + (v > 0 ? 1 : -1) * fm.getCharacterStat("walkSpeedAcceleration") * 1.5);
 };
 
-// what holds on every one of this engine's frames
-// the frames a hit held an attacker still: the source moves it none and pulls it down none, but its
-// attack's slowdown runs on each of them (wario's side special writes -5 as it hits and is held 3
-// frames: it slides off at 3.2 on the source, and kept the whole 5 here, 18 pixels back against 7).
-// paid on its first frame out, a source frame's slowdown for each one held, the attack's own where it
-// states one and the fighter's otherwise; the source skips it under a direction held where the
-// attack gives control and lets it run (both declared, read as the source's defaults when not)
-Fighters.freezeSlow = function(me) {
-	var n = me.__frozenFrames == null ? 0 : me.__frozenFrames;
-	var owed = n - (me.__frozenPaid == null ? 0 : me.__frozenPaid);
-	me.__frozenPaid = n;
-	var fm = me.__fm;
-	if (owed <= 0 || me.__frozenUntil == null || !fm.inStateGroup(CStateGroup.ATTACK)) return;
-	var air = !fm.isOnFloor();
-	if (!Fighters.attackSlows(me, air)) return;
-	// this engine's slowdown is per its own frame, two to the source's one: one per frame held
-	fm.setXSpeed(Objects.slowed(fm.getXSpeed(), owed * Objects.slideStep(fm, air) / 1.5));
-};
-// whether the source slows a fighter in its attack this frame: always, but under a direction held
-// where the attack gives control and lets it run (both declared, read as the source's defaults when
-// not); an attack that keeps a share of its speed instead slows by that share
-Fighters.attackSlows = function(me, air) {
-	if ((air ? me.__decayMulAir : me.__decayMul) != null) return false;
-	var c = me.__fm.getHeldControls();
-	var dir = c != null && c.LEFT != c.RIGHT;
-	var ctl = AS3.truthy(Attacks.stat(me, "allowControl")) && (air || Attacks.stat(me, "allowControlGround") != false);
-	return (dir && ctl) || !AS3.truthy(Attacks.stat(me, "allowRun"));
-};
-// an attack begun on the floor: the source slows the fighter from the attack's first frame, before it
-// moves it, where this engine carries the speed it came in with through two of its frames before it
-// slows it, and the runtime hears of the attack only once the first of them has moved (falco's forward
-// tilt out of a walk slid 27.6 pixels here and 15.5 there). three of this engine's slowdowns are paid
-// as soon as it is heard of: the two it skips and the one the source takes first. not when the
-// attack's own code wrote a speed that frame
-Fighters.attackStartSlow = function(me) {
-	var fm = me.__fm;
-	var on = fm.inStateGroup(CStateGroup.ATTACK);
-	var was = me.__wasAttacking;
-	me.__wasAttacking = on;
-	if (!on || was == true || !fm.isOnFloor()) return;
-	if (fm.exports != null && fm.exports.__wroteX == PeptideRuntime.frame) return;
-	if (!Fighters.attackSlows(me, false)) return;
-	fm.setXSpeed(Objects.slowed(fm.getXSpeed(), 3 * Objects.slideStep(fm, false) / 1.5));
-};
+// not ported, small enough not to feel:
+// - a hit freezes the attacker still; the source runs its attack's slowdown through the freeze and
+//   this engine does not (wario's side special slides 18 pixels off a hit here, 7 there)
+// - a grounded attack out of a walk or dash: the source slows it from its first frame, this engine
+//   carries the old speed two frames first (falco's forward tilt slides 27.6 here, 15.5 there)
 
 // an attack in the air catches a ledge its grab box meets, as the source's does for any attack and
 // whichever way the fighter faces (falco's side special, dashed off the stage facing away from it,
@@ -133,17 +88,8 @@ Fighters.attackLedge = function(me) {
 };
 
 Fighters.engineFrame = function(me) {
-	Fighters.freezeSlow(me);
 	Fighters.attackLedge(me);
-	Fighters.attackStartSlow(me);
 	me.__stood = me.__fm.isOnFloor();
-	// where it stood on the last frame it was not attacking: an attack the engine starts has moved
-	// it once on its old speed by the time the runtime hears of it, and one that starts from a
-	// standstill goes back there (AttackRules.began)
-	if (!me.__fm.inStateGroup(CStateGroup.ATTACK)) {
-		if (me.__calmOn != PeptideRuntime.frame) { me.__lastCalm = me.__calm; me.__calmOn = PeptideRuntime.frame; }
-		me.__calm = [me.__fm.getX(), me.__fm.getY()];
-	}
 	Fighters.relaunch(me);
 	Attacks.carry(me);
 	if (me.__stunWant != null) {
@@ -176,14 +122,6 @@ Fighters.engineFrame = function(me) {
 		else { fm.setXSpeed(0); fm.setX(me.__xHoldAt); }
 	}
 };
-
-// a launch fades as the source's does: by the same amount every frame, 0.714 a source frame along
-// its line (0.232 an engine frame here), split across and up by the line's direction, in the air
-// and on the floor alike. this engine fades it 0.304 a frame along its line in the air (mario's up
-// tilt at 80% rose 0.93 a source frame slower each frame against the source's 0.70, and topped
-// out under the platform the source's landed on) and across at its whole rate on the floor (fox's
-// forward tilt slid to a stop 15 short). each engine frame the fade is put back to the source's;
-// a launch that is new, grew (a new hit) or turned takes its own line's split
 
 // a fighter riding a rocket moves by it alone while the attack it rides lasts: the speed it was
 // given, then `decay` less each frame down to nothing (measured on samus's bomb lift: a pixel up,
@@ -237,29 +175,10 @@ Fighters.frozen = function(me) {
 	return me.__fm.getHitstop() > 0;
 };
 
-// a FIXED hit (`weightKB`) launches by the weight of the fighter it hits on the source, its launch
-// `(weightKB * 0.5 + 1) * 1.4 * 200 / (weight + 100) + 18`, times its growth, plus its power; this
-// engine scales a fixed launch by nothing, and the conversion works it out for a fighter of 95
-// (mappings: fixed_knockback). put to the weight of the one it hit as it lands (lloyd's down
-// special, fixed at 150, sent a lloyd of 81 13 short of the source's peak)
-Fighters.fixedForWeight = function(me, index, foe) {
-	if (foe == null || index == null) return;
-	var wkb = AS3.num(Attacks.boxStat(me, index + 1, "weightKB"));
-	if (!(wkb > 0)) return;
-	var w = AS3.num(foe.getCharacterStat("weight"));
-	if (!(w > 0) || w == 95) return;
-	var g = Attacks.boxStat(me, index + 1, "kbConstant");
-	var p = Attacks.boxStat(me, index + 1, "power");
-	var gr = g == null ? 1 : AS3.num(g) / 100;
-	var pw = p == null ? 0 : AS3.num(p);
-	var at = function(weight) { return ((wkb * 0.5 + 1) * 1.4 * 200 / (weight + 100) + 18) * gr + pw; };
-	var r = at(w) / at(95);
-	if (!(r > 0) || r == 1) return;
-	foe.setXKnockback(foe.getXKnockback() * r);
-	foe.setYKnockback(foe.getYKnockback() * r);
-	var src = foe.exports == null ? null : foe.exports.__source;
-	if (src != null && src.__stunLaunch != null) src.__stunLaunch = src.__stunLaunch * r;
-};
+// not ported: a FIXED hit (`weightKB`) launches by the weight of the fighter it hits on the source;
+// the conversion works it out for a fighter of 95 (mappings: fixed_knockback), so a lighter or
+// heavier one flies a little short or long (lloyd's down special sent a lloyd of 81 13 short of the
+// source's peak)
 
 // a thrown fighter takes back the launch the let-go cleared (HIT_DEALT), out of the hold, over the
 // engine's own push for a let-go, and with no freeze of the engine's for it: the source's thrown
@@ -299,8 +218,6 @@ Fighters.begin = function(me) {
 		if (hs == null || hs.index == null) return;
 		// a hit lets the attack refresh
 		AttackRules.landed(me);
-		// (before a throw lets go and keeps the launch the let-go clears)
-		Fighters.fixedForWeight(me, hs.index, e.data.foe);
 		// the hit that throws lets go of the one it throws as it lands, launch and all: this engine
 		// held it on until the attack's own let-go (bowser's up throw carried its fighter up ten
 		// frames with no gravity, then dropped it with its launch gone, 0.54 as far as the source's)

@@ -44,13 +44,9 @@ AttackRules.reset = function(me) {
 AttackRules.began = function(me, ?entering) {
 	var fm = me.__fm;
 	AttackRules.reset(me);
-	// started as the engine entered it: the engine's own entry of the state comes after, keeps the
-	// speed the fighter had and moves it once on that speed before the next update, so the reset is
-	// made again there, and an attack that starts from a standstill is put back where it began
+	// started as the engine entered it: the engine's own entry of the state comes after and keeps the
+	// speed the fighter had, so the reset is made again there
 	me.__resetAgain = entering == true;
-	var calm = entering == true ? (me.__calmOn == PeptideRuntime.frame ? me.__lastCalm : me.__calm) : null;
-	me.__entryX = calm != null ? calm[0] : fm.getX();
-	me.__entryY = calm != null ? calm[1] : fm.getY();
 	// its running time starts here (Attacks.execTime)
 	me.__execFrom = PeptideRuntime.frame;
 	me.__execFrozen = me.__frozenFrames == null ? 0 : me.__frozenFrames;
@@ -221,12 +217,8 @@ AttackRules.engineFrame = function(me) {
 	AttackRules.refresh(me);
 	if (me.__resetAgain == true) {
 		me.__resetAgain = false;
-		// along the floor too: the step it took on its old speed is not the source's (falco's side
-		// special out of a walk slid 9 pixels into it, and off the ledge the source stops short of)
-		if (AS3.truthy(AttackRules.stat(me, "resetMovement"))) {
-			fm.setX(me.__entryX);
-			if (!fm.isOnFloor()) fm.setY(me.__entryY);
-		}
+		// not ported: the engine has moved it one step on its old speed by now, and the source's never
+		// took that step (falco's side special out of a walk slides 9 pixels further here)
 		AttackRules.reset(me);
 		// and the engine's entry put the animation's own stats back over the declared motion and
 		// steering (ganondorf's down special slid on his own friction, not its declared 1 a frame)
