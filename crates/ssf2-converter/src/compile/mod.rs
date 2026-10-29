@@ -223,6 +223,9 @@ pub struct ClipJumps {
     /// (`currentFrame`, `currentLabel`, `totalFrames` of the clip itself), where the object's kind
     /// reads it that way
     pub playhead: Option<Playhead>,
+    /// the stats the attack the clip shows declares (one every attack it shows agrees on), for a
+    /// write its code makes to read alongside its own
+    pub declared: BTreeMap<String, f64>,
 }
 
 /// a clip's frames as the engine shows them

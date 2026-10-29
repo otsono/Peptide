@@ -13,10 +13,13 @@
 //   cap       a speed cap in this engine's speed units, or off (-1) when the source's is negative
 //   zero      0
 //   unset     -1, which the engine reads as the fighter's own value
+//   value     the row's `value`, as written (and its `off` when a value the code works out as it
+//             plays is not true)
 // `when`: `negative` or `positive` limits a row to values of that sign; `true` or `false` to a
 // value that is so.
+// `with`: the row holds only when that other stat is stated true alongside.
 // `rank`: which of two stats setting one field wins, whatever order the source wrote them in:
-// `over` holds against the others, `under` never replaces one
+// `over` holds against the others, `under` never replaces one, `least` gives way to anything
 // `clamp`: the fighter's fall speed is held to the new value on the spot too. the source clamps
 // the fall after gravity every frame; this engine only stops gravity adding past its terminal
 // velocity, so a speed written above it would stay (ganondorf's dive sets its speed and then
@@ -44,11 +47,30 @@
     // also allows it (no ground acceleration, else the fighter's own)
     "allowControl":           [{ "field": "allowMovement", "as": "bool" }],
     "allowControlGround":     [{ "field": "groundSpeedAcceleration", "as": "zero", "when": "false", "rank": "over" },
-                               { "field": "groundSpeedAcceleration", "as": "unset", "when": "true", "rank": "under" }]
+                               { "field": "groundSpeedAcceleration", "as": "unset", "when": "true", "rank": "under" }],
+    // what it is immune to while it plays: invincible over super armor, and grabbable as well when
+    // it says so
+    // (one turned off takes it off, unless another stated with it holds)
+    "invincible":             [{ "field": "bodyStatus", "as": "value", "value": "BodyStatus.INVINCIBLE", "off": "BodyStatus.NONE", "when": "true" },
+                               { "field": "bodyStatus", "as": "value", "value": "BodyStatus.NONE", "when": "false", "rank": "least" }],
+    "forceGrabbable":         [{ "field": "bodyStatus", "as": "value", "value": "BodyStatus.INVINCIBLE_GRABBABLE", "when": "true", "with": "invincible", "rank": "over" }],
+    "superArmor":             [{ "field": "bodyStatus", "as": "value", "value": "BodyStatus.SUPER_ARMOR", "off": "BodyStatus.NONE", "when": "true", "rank": "under" },
+                               { "field": "bodyStatus", "as": "value", "value": "BodyStatus.NONE", "when": "false", "rank": "least" }]
     // resetMovement has no row: the engine's speed conservation sets a standstill as exactly 0,
     // where the source's rest in the air is a speed a step of gravity ahead here (a y speed is),
     // and the fighter is put back at the height it started from (peach's parasol, zeroed by the
     // engine, rose 7 higher and landed 3 frames late); the runtime starts it (AttackRules.reset)
+  },
+  // code every animation of an attack runs on its first frame, for a stat it declares (`when` as
+  // above): `{v}` is the stat's value, `{name}` another stat the attack declares (0 when none).
+  // `self` is the fighter, `me` the source's object for it
+  "code": {
+    // the source's combo protocol, which its engine runs and the clip only answers: while the
+    // attack plays, its button pressed (or held, for one that repeats on a hold) tells the clip to
+    // go on, through the two fields the fighter keeps (handled, continuePlaying); one that also
+    // charges goes on only once it is attacking (its `xframe` at "attack"). one watch per fighter,
+    // gone with the attack's state
+    "combo_max": { "when": "positive", "text": "(function() { var me = PeptideRuntime.object; if (me.__comboWatch != null) self.removeTimer(me.__comboWatch); var id = -1; id = self.addTimer(1, -1, function(?t) { if ({chargetime_max} > 0) { var xf = PeptideRuntime.xframeOf(PeptideRuntime.shownClip()); if (xf != null && xf != \"attack\") return; } if (me.handled != false) return; var sp = self.inState(CState.SPECIAL_NEUTRAL) || self.inState(CState.SPECIAL_SIDE) || self.inState(CState.SPECIAL_UP) || self.inState(CState.SPECIAL_DOWN); var h = self.getHeldControls(); var p = self.getPressedControls(); var pr = sp ? p.SPECIAL : (p.ATTACK || p.GRAB); var hd = sp ? h.SPECIAL : (h.ATTACK || h.GRAB); if (AS3.truthy(pr) || ({holdRepeat} != 0 && AS3.truthy(hd))) { me.continuePlaying = true; me.handled = true; } }, { persistent: false }); me.__comboWatch = id; })();" }
   },
   // what an attack that states nothing has: it goes off a floor's edge and ends once airborne
   "defaults": { "leaveGroundCancel": true, "slideOff": true },

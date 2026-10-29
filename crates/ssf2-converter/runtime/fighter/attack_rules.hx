@@ -32,11 +32,9 @@ AttackRules.track = function(me, ?entering) {
 };
 AttackRules.frame = function(me) {
 	AttackRules.track(me);
-	// a charge and a combo are an attack's: out of one, their stats read nothing and they do nothing
-	if (me.__rulesBase != null) {
-		AttackRules.charge(me);
-		AttackRules.combo(me);
-	} else me.__chargeT = 0;
+	// a charge is an attack's: out of one, its stats read nothing and it does nothing
+	if (me.__rulesBase != null) AttackRules.charge(me);
+	else me.__chargeT = 0;
 	AttackRules.airDodge(me);
 };
 
@@ -291,37 +289,12 @@ AttackRules.engineFrame = function(me) {
 	// where holding the fall here (or popping it up) kept them in the air for a second hit
 	var m = fm.isOnFloor() ? me.__decayMul : me.__decayMulAir;
 	if (m != null) fm.setXVelocity(fm.getXVelocity() * m);
-	// invincibility and super armor it declares (or its writes switch), held for the attack
-	var status = null;
-	if (AS3.truthy(AttackRules.stat(me, "invincible"))) status = AS3.truthy(AttackRules.stat(me, "forceGrabbable")) ? BodyStatus.INVINCIBLE_GRABBABLE : BodyStatus.INVINCIBLE;
-	else if (AS3.truthy(AttackRules.stat(me, "superArmor"))) status = BodyStatus.SUPER_ARMOR;
-	if (status != null) fm.applyGlobalBodyStatus(status, 2);
 	// a landing's own animation states its steering itself (what the source's landing wrote)
 	var landing = PeptideRuntime.data.isLanding != null && PeptideRuntime.data.isLanding(fm.getAnimation()) == true;
 	if (me.__ctlOn != null && !landing) {
 		var want = AS3.truthy(me.__ctlOn) && (!fm.isOnFloor() || me.__ctlGround);
 		if (want != me.__ctlApplied) { me.__ctlApplied = want; fm.updateAnimationStats({ allowMovement: want }); }
 	}
-};
-
-// the source's combo protocol, which its engine runs and the clip only answers: while an attack
-// that declares combo_max plays, its button pressed (or held, for one that repeats on a hold)
-// tells the clip to go on, through the two fields the fighter keeps (handled, continuePlaying);
-// one that also charges goes on only once it is attacking (its `xframe` at "attack")
-AttackRules.combo = function(me) {
-	var cm = AttackRules.stat(me, "combo_max");
-	if (cm == null || AS3.num(cm) < 1) return;
-	var ct = AttackRules.stat(me, "chargetime_max");
-	var xf = AttackRules.xframe();
-	if (ct != null && AS3.num(ct) > 0 && xf != null && xf != "attack") return;
-	if (me.handled != false) return;
-	var fm = me.__fm;
-	var special = fm.inState(CState.SPECIAL_NEUTRAL) || fm.inState(CState.SPECIAL_SIDE) || fm.inState(CState.SPECIAL_UP) || fm.inState(CState.SPECIAL_DOWN);
-	var held = fm.getHeldControls();
-	var pressed = fm.getPressedControls();
-	var p = special ? pressed.SPECIAL : (pressed.ATTACK || pressed.GRAB);
-	var h = special ? held.SPECIAL : (held.ATTACK || held.GRAB);
-	if (AS3.truthy(p) || (AS3.truthy(AttackRules.stat(me, "holdRepeat")) && AS3.truthy(h))) { me.continuePlaying = true; me.handled = true; }
 };
 
 // the source's air dodge: on a fresh shield press in the air it plays its own clip where it is,

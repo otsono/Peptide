@@ -1237,12 +1237,28 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         let mut ranks = BTreeMap::new();
         let mut clamps: Vec<String> = Vec::new();
         let mut rest: Vec<(Expr, Expr)> = Vec::new();
+        let stated: Vec<(String, f64)> = pairs.iter().filter_map(|(k, v)| match k { Expr::Str(s) => lit(v).map(|n| (s.clone(), n)), _ => None }).collect();
+        // what the write states, over what the attack its clip shows declares
+        let declared = self.jumps.as_ref().map(|j| j.declared.clone()).unwrap_or_default();
+        let along = |w: &str| stated.iter().find(|(x, _)| x == w).map(|(_, n)| *n).or_else(|| declared.get(w).copied());
         for (k, v) in pairs {
             let key = match k { Expr::Str(s) => s.clone(), _ => { rest.push((k.clone(), v.clone())); continue } };
             match lit(v) {
-                Some(n) if table.put(&mut native, &mut ranks, &key, n, false) => clamps.extend(table.clamps(&key, n)),
+                Some(n) if table.put(&mut native, &mut ranks, &key, n, false, &along) => clamps.extend(table.clamps(&key, n)),
+                // a value the code works out as it plays, on a stat whose engine field is one value
+                // while it is true and another while not
+                None if table.dynamic(&key).is_some() && !native.iter().any(|(f, _)| Some(f) == table.dynamic(&key).map(|d| d.0).as_ref()) => {
+                    let (f, t) = table.dynamic(&key).unwrap_or_default();
+                    native.push((f, t.replace("{v}", &self.expr(v))));
+                }
                 _ => rest.push((k.clone(), v.clone())),
             }
+        }
+        // a declared stat that holds alongside one the write states (an attack declared grabbable
+        // whose code turns its invincibility on)
+        for (k, v) in &declared {
+            if stated.iter().any(|(x, _)| x == k) || !table.joins(k, &|w| stated.iter().any(|(x, _)| x == w)) { continue }
+            table.put(&mut native, &mut ranks, k, *v, false, &along);
         }
         if native.is_empty() { return None }
         let r = if recv.contains(['(', '[']) { self.fresh("__r") } else { recv.to_string() };

@@ -1123,7 +1123,7 @@ fn attacks_keep_on_landing(out: String, data: &CharacterData, splits: &[crate::a
         let fm = data.ssf2_to_fm_anim.get(&a.ssf2_name).cloned().unwrap_or_else(|| a.name.clone());
         let mut props: Vec<(String, String)> = table.defaults.clone();
         let mut ranks = std::collections::BTreeMap::new();
-        for (k, v) in &a.stats { table.put(&mut props, &mut ranks, k, *v, false); }
+        for (k, v) in &a.stats { table.put(&mut props, &mut ranks, k, *v, false, &|w| a.stats.get(w).copied()); }
         props.push(("landType".into(), "LandType.NONE".into()));
         names.insert(fm.clone(), props.clone());
         for s in splits { if s.source_anim == fm || s.source_anim == a.ssf2_name { names.insert(s.fm_name.clone(), props.clone()); } }

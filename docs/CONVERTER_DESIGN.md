@@ -83,7 +83,7 @@ helper strings in Rust and the TOML templates, and the decompiler's own renames 
 | module | holds |
 |---|---|
 | `runtime/core/` | units at the boundary, object handles, timelines and the frame-script registry, timers (the engine's own), events and listeners, spawning, the AS3 language helpers |
-| `runtime/fighter/` | what the source engine does around every fighter that Fraymakers does differently: air ease, attacks re-enabled on landing, engine charge, combo continuation, the source's knockback rules |
+| `runtime/fighter/` | what the source engine does around every fighter that Fraymakers does differently: air ease, attacks re-enabled on landing, engine charge, the source's knockback rules |
 | `runtime/projectile/` | the source engine's projectile: launch, lifetime, decay, homing, the stick's pull, control, trail, bounce, limit, bounds, its death |
 | `runtime/stage/` | stage objects, placed bodies, parts; `boot.hx` is how each kind of piece a stage puts down is made (the conversion writes the boot as one call per piece, in order, so a stage carries only the kinds it uses); `stages.hx` is the stage's kind (the boot once the match is live, names and regions, the upkeep pieces the conversion writes into the stage's frame when it has something for them); `planes.hx` is its planes (the stage clip's children, bound to the elements drawn for them, plus named surfaces, ground friction and push, library clips); `weather.hx` draws the clips the stage's weather class moves; `bodies.hx` is a stage object's kind (a stage carries it only when its own code gives a body or sets an enemy's stats) (`entry/object.hx`): its body (a placed outline, or the floor its code makes), the stats it declares in the engine's terms, its hit refresh, no hit freeze, and the stand-in its maker holds until its script starts (`DATA.faces`, `DATA.object.invoke`) |
 | `runtime/api/` | the API members content calls, grouped by the object they are called on |
@@ -218,7 +218,13 @@ function update() { PeptideRuntime.update(); }
     HitboxStats. a reversible box (the source's default) sends its victim away from the attacker,
     so a backward angle is written mirrored; one the source states is not reversible says so.
   - intangibility and invincibility the code switches are the animation's `bodyStatus`, and end
-    with it, as the template's dodges do.
+    with it, as the template's dodges do. so are the invincibility, grabbable invincibility and
+    super armor an attack declares or its code writes (`runtime/attack_stats.jsonc`; a value the
+    code works out as it plays picks between on and off where it is written).
+  - what the source's engine runs for an attack's declared stats that the engine has no stat
+    for is code its animations run on their first frame (`code` in `runtime/attack_stats.jsonc`):
+    the combo protocol (`combo_max`) is a watch of the fighter's own, gone with the attack's
+    state.
 - **effects are clips.** an attached effect is the source's clip for it, running its own frame
   scripts; the engine's effect follows the clip's frame and what the code sets on it (position,
   visibility, alpha, rotation, scale). it plays through `loop` times (once by default) unless its

@@ -59,7 +59,7 @@ pub fn label_jumps(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, cr
             labels: sprite.labels.iter().map(|(f, l)| (*f as u32 + 1, l.clone())).collect(),
             total: sprite.frames.len() as u32,
         };
-        let mut j = crate::compile::ClipJumps { anims: own.iter().map(|p| p.fm_name.clone()).collect(), labels: BTreeMap::new(), autolink: None, playhead: Some(playhead) };
+        let mut j = crate::compile::ClipJumps { anims: own.iter().map(|p| p.fm_name.clone()).collect(), labels: BTreeMap::new(), autolink: None, playhead: Some(playhead), declared: BTreeMap::new() };
         for (f0, label) in &sprite.labels {
             let f = *f0 as u32 + 1;
             let hits: Vec<&&Piece> = own.iter().filter(|p| f >= p.from && f < p.from + p.frames).collect();
@@ -68,6 +68,24 @@ pub fn label_jumps(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, cr
         out.insert(c.name.clone(), j);
     }
     out
+}
+
+/// the plain stats every attack a clip's frames show declares alike, by the root labels its
+/// pieces sit under
+fn declared_by_clip(model: &SourceModel, pieces: &[Piece], attacks: &Value, class: &str) -> BTreeMap<String, f64> {
+    let Value::Obj(atks) = attacks else { return BTreeMap::new() };
+    let labels: BTreeSet<&str> = pieces.iter().filter(|p| model.class_of(p.sym).is_some_and(|c| c.name == class)).map(|p| p.label.as_str()).collect();
+    let mut out: Option<BTreeMap<String, f64>> = None;
+    for l in labels {
+        let Some((_, Value::Obj(fields))) = atks.iter().find(|(k, _)| k == l) else { continue };
+        let these: BTreeMap<String, f64> = fields.iter().filter_map(|(k, v)| match v {
+            Value::Num(n) => Some((k.clone(), *n)),
+            Value::Bool(b) => Some((k.clone(), if *b { 1.0 } else { 0.0 })),
+            _ => None,
+        }).collect();
+        out = Some(match out { None => these, Some(had) => had.into_iter().filter(|(k, v)| these.get(k) == Some(v)).collect() });
+    }
+    out.unwrap_or_default()
 }
 
 /// the scales between the two worlds
@@ -425,6 +443,7 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     // off the engine
     if !matches!(spec.kind, "projectile" | "object") { for j in jumps.values_mut() { j.playhead = None; } }
     for (c, code) in &spec.autolink { jumps.entry(c.clone()).or_default().autolink = Some(code.clone()); }
+    for (c, j) in jumps.iter_mut() { j.declared = declared_by_clip(model, pieces, decls.attacks, c); }
     let mut detached: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut found: Vec<crate::compile::Landing> = Vec::new();
     // each class's static initializer, in the order the classes are made (a base before its own)
@@ -859,6 +878,23 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     let script = format!("{}DATA.animOf = function(l) {{ switch (l) {{ {} default: return null; }} }};\n", out.script, anim_of.join(" "));
     std::fs::write(dir.join("Script.hx"), &script)?;
     let mut cancels = attack_cancels(data, &model, &pieces, units);
+    // what each attack's declared stats have its animations run on their first frame
+    // (`code` in runtime/attack_stats.jsonc)
+    for a in &data.attacks {
+        let code = compile::attack_stats::table().first_frame(&a.stats);
+        if code.is_empty() { continue }
+        // every animation under the source label the attack's own animation is
+        let fm = data.ssf2_to_fm_anim.get(&a.ssf2_name).cloned().unwrap_or_else(|| a.name.clone());
+        let Some(label) = pieces.iter().find(|p| p.fm_name == fm).map(|p| p.label.clone()).filter(|l| !l.is_empty()) else { continue };
+        for p in pieces.iter().filter(|p| p.label == label) {
+            let c = cancels.entry(p.fm_name.clone()).or_default();
+            for (first, t) in &code {
+                if *first && p.fm_name != fm { continue }
+                if !c.is_empty() { c.push('\n'); }
+                c.push_str(t);
+            }
+        }
+    }
     // what the source's engine does in its own states, on the first frame of the animation that
     // shows each (runtime/engine_animations.jsonc)
     for (anim, code) in &compile::engine_anims::table().code {
@@ -1135,7 +1171,7 @@ fn landing_stats(dir: &std::path::Path, landings: &[(crate::compile::Landing, Ve
         for a in anims {
             let f = anim_fields.entry(a.clone()).or_default();
             let mut ranks = BTreeMap::new();
-            for (k, v) in &l.attack { table.put(f, &mut ranks, k, *v, true); }
+            for (k, v) in &l.attack { table.put(f, &mut ranks, k, *v, true, &|w| l.attack.iter().find(|(x, _)| x == w).map(|(_, n)| *n)); }
             for (i, pairs) in &l.boxes {
                 let raw: std::collections::BTreeMap<String, f64> = pairs.iter().cloned().collect();
                 let b = box_fields.entry(a.clone()).or_default().entry(*i).or_default();
@@ -1358,7 +1394,7 @@ mod landing_stats_tests {
             boxes: vec![(1, vec![("damage".into(), 9.0)])],
         };
         let mut jumps = BTreeMap::new();
-        jumps.insert("Clip".to_string(), crate::compile::ClipJumps { anims: vec!["aerial_up".into(), "aerial_up_land".into()], labels: BTreeMap::new(), autolink: None , playhead: None});
+        jumps.insert("Clip".to_string(), crate::compile::ClipJumps { anims: vec!["aerial_up".into(), "aerial_up_land".into()], labels: BTreeMap::new(), autolink: None , playhead: None, declared: BTreeMap::new() });
         landing_stats(&dir, &[(landing, vec!["aerial_up_land".into()])], &jumps).unwrap();
         let anim = std::fs::read_to_string(dir.join("AnimationStats.hx")).unwrap();
         let hit = std::fs::read_to_string(dir.join("HitboxStats.hx")).unwrap();
