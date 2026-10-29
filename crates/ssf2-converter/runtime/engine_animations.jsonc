@@ -21,6 +21,18 @@
     // by itself after five seconds (the source's 150 frames)
     "revival": "(function() { var n = 0; var s = PeptideRuntime.data.units.size; var y0 = self.getY(); self.setY(y0 - 30 * s); self.setXVelocity(0); self.setYVelocity(0); self.addTimer(1, -1, function(?t) { if (!self.inState(CState.REVIVAL)) return; n++; self.setYVelocity(0); if (n <= 60) self.setY(y0 - 30 * s + n * 0.5 * s); var c = self.getHeldControls(); if (n >= 300 || (n > 60 && (c.LEFT || c.RIGHT || c.UP || c.DOWN || c.ATTACK || c.SPECIAL || c.JUMP || c.SHIELD || c.GRAB))) self.toState(CState.FALL); }); })();"
   },
+  // a watch the listed animations start on their first frame (after their own `code`), one per
+  // fighter: a new start replaces the one running
+  "watches": {
+    // the source's air dodge: on a fresh shield press in the air, out of a jump or a fall, it plays
+    // its own clip where it is, keeping its momentum (measured: the source moves no distance on a
+    // neutral dodge); this engine's airdash, which blinks across the stage, is switched off in the
+    // fighter's stats
+    "airdodge": {
+      "animations": ["jump_in", "jump_back", "jump_loop", "jump_out", "jump_midair", "jump_midair_back", "fall_in", "fall_loop"],
+      "text": "(function() { var me = PeptideRuntime.object; if (PeptideRuntime.pieceOf(\"airdodge\") == null) return; if (me.__dodgeWatch != null) self.removeTimer(me.__dodgeWatch); var id = -1; id = self.addTimer(1, -1, function(?t) { if (!(self.inState(CState.JUMP_IN) || self.inState(CState.JUMP_LOOP) || self.inState(CState.JUMP_OUT) || self.inState(CState.JUMP_MIDAIR) || self.inState(CState.FALL))) { self.removeTimer(id); if (me.__dodgeWatch == id) me.__dodgeWatch = null; return; } var p = self.getPressedControls(); if (p == null || p.SHIELD != true || self.isOnFloor()) return; self.removeTimer(id); me.__dodgeWatch = null; self.toState(CState.FALL_SPECIAL); self.playAnimation(\"airdodge\"); }, { persistent: true }); me.__dodgeWatch = id; })();"
+    }
+  },
   // points an animation carries for the whole of its length, by layer name
   "points": {
     // the source hangs a fighter with the ledge at its origin, through every ledge action

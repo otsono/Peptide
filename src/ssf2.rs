@@ -1048,11 +1048,12 @@ fn cmd_compile(args: &[String]) -> Result<()> {
             let mut problems: Vec<String> = Vec::new();
             let none = Default::default();
             let no_entities = Default::default();
-            let out = emit::fighter_script(&m, &rt, &f, &[], units, &f.getter, &[], &none, &no_entities, Default::default());
+            let out = emit::fighter_script(&m, &rt, &f, &[], units, &f.getter, &[], &none, &no_entities, Default::default(), String::new());
             unknown.extend(out.unknown);
             problems.extend(out.problems);
             for (name, decl) in f.projectiles.entries().iter().chain(f.items.entries()) {
                 let spec = emit::ObjectSpec {
+                    keyed: String::new(),
                     kind: "projectile", others: &[], effects: &none, entities: &no_entities,
                     class: decl.get("classAPI").and_then(|v| v.class()).unwrap_or("PeptideProjectile").to_string(),
                     clip: decl.get("linkage_id").and_then(|v| v.str()).unwrap_or(name).to_string(),

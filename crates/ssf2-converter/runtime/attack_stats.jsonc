@@ -62,9 +62,20 @@
     // engine, rose 7 higher and landed 3 frames late); the runtime starts it (AttackRules.reset)
   },
   // code every animation of an attack runs on its first frame, for a stat it declares (`when` as
-  // above): `{v}` is the stat's value, `{name}` another stat the attack declares (0 when none).
-  // `self` is the fighter, `me` the source's object for it
+  // above; `unless` names a stat that, stated false, leaves it out; `first` runs it on the
+  // attack's own animation only): `{v}` is the stat's value, `{name}` another stat the attack
+  // declares (0 when none, `{name|d}` d). `self` is the fighter, `me` the source's object for it
   "code": {
+    // a charge the source's engine runs: an attack that declares a charge time and does not say
+    // it charges itself (`useChargeBar: 0`) is charged while its clip is in "charging". held, it
+    // stays (the clip loops itself); let go, or in the air when it does not charge there, it
+    // plays "attack"; charged to its time, it plays "finishedcharge", and from there a release
+    // plays "attack". how long it charged is the attack's `chargetime`, for the move's own code
+    "chargetime_max": { "unless": "useChargeBar", "text": "(function() { var me = PeptideRuntime.object; if (me.__chargeWatch != null) self.removeTimer(me.__chargeWatch); var id = -1; id = self.addTimer(1, -1, function(?t) { var st = PeptideRuntime.shownClip(); var xf = PeptideRuntime.xframeOf(st); if (xf != \"charging\" && xf != \"finishedcharge\") { me.__chargeT = 0; return; } var c = self.getHeldControls(); var held = c != null && AS3.truthy(c.SPECIAL); var go = null; if (xf == \"charging\") { me.__chargeT = (me.__chargeT == null ? 0 : me.__chargeT) + 0.5; if (!self.isOnFloor() && {chargeInAir|1} == 0) go = \"attack\"; else if (!held) go = \"attack\"; else if (me.__chargeT >= {v}) go = \"finishedcharge\"; } else if (!held) go = \"attack\"; if (go == null) return; Attacks.update(me, { chargetime: me.__chargeT }); PeptideRuntime.setXframe(st, go); me.__chargeT = 0; st.gotoAndPlay(go); }, { persistent: false }); me.__chargeWatch = id; })();" },
+    // an attack that says it flips turns its fighter around as it begins (marth's back air). this
+    // engine turns no one in a throw: a throw that flips is drawn and launched already turned
+    // (entity_gen.rs `turned_throws`), and the thrower turns once it is over
+    "flip": { "when": "true", "first": true, "text": "if (self.inState(CState.THROW_UP) || self.inState(CState.THROW_DOWN) || self.inState(CState.THROW_FORWARD) || self.inState(CState.THROW_BACK) || self.inState(CState.GRAB_HOLD)) PeptideRuntime.object.__turnAtEnd = true; else if (self.isFacingRight()) self.faceLeft(); else self.faceRight();" },
     // the source's combo protocol, which its engine runs and the clip only answers: while the
     // attack plays, its button pressed (or held, for one that repeats on a hold) tells the clip to
     // go on, through the two fields the fighter keeps (handled, continuePlaying); one that also

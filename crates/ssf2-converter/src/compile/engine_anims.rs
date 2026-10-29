@@ -28,6 +28,16 @@ pub fn table() -> &'static EngineAnims {
             v["x"].as_f64().unwrap_or(0.0), v["y"].as_f64().unwrap_or(0.0),
             v["animations"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
         ))).collect()).unwrap_or_default();
-        EngineAnims { stats: strings(&json["stats"]), code: strings(&json["code"]), points }
+        let mut code = strings(&json["code"]);
+        // a watch several animations start: each one's first frame runs it after its own code
+        for w in json["watches"].as_object().into_iter().flat_map(|o| o.values()) {
+            let Some(text) = w["text"].as_str() else { continue };
+            for a in w["animations"].as_array().into_iter().flatten().filter_map(|x| x.as_str()) {
+                let c = code.entry(a.to_string()).or_default();
+                if !c.is_empty() { c.push(' '); }
+                c.push_str(text);
+            }
+        }
+        EngineAnims { stats: strings(&json["stats"]), code, points }
     })
 }

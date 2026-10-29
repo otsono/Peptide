@@ -305,6 +305,10 @@ pub struct ObjectSpec<'a> {
     /// data the conversion worked out for the object outside its package, as script statements
     /// (a stage's boot tables): written with the rest of its data
     pub data: String,
+    /// code the conversion puts on the entity's keyframes beside the clip's own frames (what an
+    /// attack's declared stats and the engine's states run on a first frame): the runtime it
+    /// reaches is kept
+    pub keyed: String,
 }
 
 /// What a package declares that every object of it reads: a fighter's attacks, projectiles and
@@ -348,9 +352,10 @@ fn package_data(decls: &Decls, others: &[String], entities: &BTreeMap<String, St
 pub fn fighter_script(model: &SourceModel, runtime: &Runtime, fighter: &crate::model::declare::Fighter,
                       pieces: &[Piece], units: Units, title: &str, others: &[String],
                       effects: &BTreeMap<String, Vec<Piece>>, entities: &BTreeMap<String, String>,
-                      autolink: BTreeMap<String, (String, String)>) -> Emitted {
+                      autolink: BTreeMap<String, (String, String)>, keyed: String) -> Emitted {
     let spec = ObjectSpec {
         kind: "fighter",
+        keyed,
         others,
         effects,
         entities,
@@ -743,6 +748,7 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     files.sort_by_key(|(p, _)| (!p.starts_with("core/as3"), !p.starts_with("core/"), p.to_string()));
     let mut seed = out[runtime_at..].to_string();
     for (_, text) in frames.values() { seed.push_str(text); }
+    seed.push_str(&spec.keyed);
     // what the entity's keyframes call: the engine's own clip's frames call nothing of the runtime's
     // clock (`clock_entity`)
     // (a stage's entity has keyframes only where its clip has frame scripts: emit::stage)
@@ -870,13 +876,6 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         autolink_calls(&links, &entity_hitboxes(&json), &stated)
     };
     for l in &links { unplaced.extend(l.dropped.iter().map(|d| format!("{} autolink, {d}: the engine's autolink has no such setting", l.anim))); }
-    let out = fighter_script(&model, &runtime, fighter, &pieces, units, char_name, &others, &effects, &entities, calls);
-    // the animation each of the source's labels is here (an attack started from outside the
-    // fighter's code is entered by it)
-    let anim_of: Vec<String> = data.ssf2_to_fm_anim.iter()
-        .map(|(l, a)| format!("case {}: return {};", compile::quote(l), compile::quote(a))).collect();
-    let script = format!("{}DATA.animOf = function(l) {{ switch (l) {{ {} default: return null; }} }};\n", out.script, anim_of.join(" "));
-    std::fs::write(dir.join("Script.hx"), &script)?;
     let mut cancels = attack_cancels(data, &model, &pieces, units);
     // what each attack's declared stats have its animations run on their first frame
     // (`code` in runtime/attack_stats.jsonc)
@@ -903,6 +902,14 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         if !c.is_empty() { c.push('\n'); }
         c.push_str(code);
     }
+    let keyed: String = cancels.values().cloned().collect::<Vec<_>>().join("\n");
+    let out = fighter_script(&model, &runtime, fighter, &pieces, units, char_name, &others, &effects, &entities, calls, keyed);
+    // the animation each of the source's labels is here (an attack started from outside the
+    // fighter's code is entered by it)
+    let anim_of: Vec<String> = data.ssf2_to_fm_anim.iter()
+        .map(|(l, a)| format!("case {}: return {};", compile::quote(l), compile::quote(a))).collect();
+    let script = format!("{}DATA.animOf = function(l) {{ switch (l) {{ {} default: return null; }} }};\n", out.script, anim_of.join(" "));
+    std::fs::write(dir.join("Script.hx"), &script)?;
     clock_entity(&char_dir.join(format!("library/entities/{char_pascal}.entity")), char_name, &model, &pieces, &out.frames, &cancels, out.native.as_ref())?;
     landing_stats(&dir, &out.landings, &label_jumps(&model, &pieces))?;
     // what a clip's frame writes of its boxes as it starts an animation is that animation's own
@@ -1277,7 +1284,7 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
                 let entity = char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content)));
                 let has = entity_animations(&entity);
                 let pieces: Vec<Piece> = pieces.into_iter().filter(|p| has.contains(&p.fm_name)).collect();
-                let spec = ObjectSpec { kind: "projectile", others, effects, entities, class: c.name.clone(),
+                let spec = ObjectSpec { keyed: String::new(), kind: "projectile", others, effects, entities, class: c.name.clone(),
                     clip: entity_key.clone(), clip_sym: Some(sym), stats, autolink: BTreeMap::new(), data: String::new() };
                 let emitted = object_script(model, runtime, &spec, &Decls::of(fighter), &pieces, units, &entity_key);
                 std::fs::write(&script, &emitted.script)?;
@@ -1295,6 +1302,7 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
         let (pieces, missing): (Vec<Piece>, Vec<Piece>) = pieces.into_iter().partition(|p| has.contains(&p.fm_name));
         unplaced.extend(missing.iter().map(|p| format!("{entity_key}: {} has no such animation", p.fm_name)));
         let spec = ObjectSpec {
+            keyed: String::new(),
             kind: "projectile",
             others,
             effects,

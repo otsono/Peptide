@@ -32,46 +32,6 @@ AttackRules.track = function(me, ?entering) {
 };
 AttackRules.frame = function(me) {
 	AttackRules.track(me);
-	// a charge is an attack's: out of one, its stats read nothing and it does nothing
-	if (me.__rulesBase != null) AttackRules.charge(me);
-	else me.__chargeT = 0;
-	AttackRules.airDodge(me);
-};
-
-// the frame label the move's clip says it is in (its `xframe`), which the source's engine reads
-AttackRules.xframe = function() {
-	var st = PeptideRuntime.shownClip();
-	return PeptideRuntime.xframeOf(st);
-};
-
-// a charge the source's engine runs: an attack that declares a charge time and does not say it
-// charges itself (`useChargeBar: 0`) is charged while its clip is in "charging". held, it stays
-// (the clip loops itself); let go, or in the air when it does not charge there, it plays "attack";
-// charged to its time, it plays "finishedcharge", and from there a release plays "attack". how
-// long it charged is the attack's `chargetime`, for the move's own code to read
-AttackRules.charge = function(me) {
-	var xf = AttackRules.xframe();
-	var ct = AttackRules.stat(me, "chargetime_max");
-	var bar = AttackRules.stat(me, "useChargeBar");
-	var engine = ct != null && (bar == null || AS3.num(bar) != 0);
-	if (!engine || (xf != "charging" && xf != "finishedcharge")) { me.__chargeT = 0; return; }
-	var fm = me.__fm;
-	var c = fm.getHeldControls();
-	var held = c != null && AS3.truthy(c.SPECIAL);
-	var go = null;
-	if (xf == "charging") {
-		me.__chargeT = (me.__chargeT == null ? 0 : me.__chargeT) + 0.5;
-		var air = AttackRules.stat(me, "chargeInAir");
-		if (!fm.isOnFloor() && air != null && AS3.num(air) == 0) go = "attack";
-		else if (!held) go = "attack";
-		else if (me.__chargeT >= AS3.num(ct)) go = "finishedcharge";
-	} else if (!held) go = "attack";
-	if (go == null) return;
-	var st = PeptideRuntime.shownClip();
-	Attacks.update(me, { chargetime: me.__chargeT });
-	PeptideRuntime.setXframe(st, go);
-	me.__chargeT = 0;
-	st.gotoAndPlay(go);
 };
 
 // resetMovement: it starts from a standstill (mario's up special took seven frames of fall
@@ -99,17 +59,6 @@ AttackRules.began = function(me, ?entering) {
 	me.__useSerial = (me.__useSerial == null ? 0 : me.__useSerial) + 1;
 	me.__thrownFoe = null;
 	me.__releasedFoe = null;
-	// an attack that says it flips turns its fighter around as it begins (marth's back air). this
-	// engine turns no one in a throw: a throw that flips is drawn and launched already turned
-	// (entity_gen.rs `turned_throws`), and the thrower turns once it is over
-	// (read off the attack being begun: begun as the engine enters it, the clip still shows the
-	// one before, and the fighter is still holding)
-	var atk = AS3.at(PeptideRuntime.data.pkg.attacks, me.__rulesBase);
-	if (atk != null && AS3.truthy(AS3.at(atk, "flip"))) {
-		if (AttackRules.throwing(fm) || fm.inState(CState.GRAB_HOLD)) {
-			me.__turnAtEnd = true;
-		} else if (fm.isFacingRight()) fm.faceLeft(); else fm.faceRight();
-	}
 	AttackRules.motion(me);
 	AttackRules.control(me);
 	me.__endSound = AS3.truthy(AttackRules.stat(me, "cancelSoundOnEnd"));
@@ -295,19 +244,4 @@ AttackRules.engineFrame = function(me) {
 		var want = AS3.truthy(me.__ctlOn) && (!fm.isOnFloor() || me.__ctlGround);
 		if (want != me.__ctlApplied) { me.__ctlApplied = want; fm.updateAnimationStats({ allowMovement: want }); }
 	}
-};
-
-// the source's air dodge: on a fresh shield press in the air it plays its own clip where it is,
-// keeping its momentum (measured: the source moves no distance on a neutral dodge); this
-// engine's airdash, which blinks across the stage, is switched off in the fighter's stats
-AttackRules.airDodge = function(me) {
-	var fm = me.__fm;
-	var c = fm.getHeldControls();
-	var held = c != null && c.SHIELD == true;
-	var fresh = held && me.__dodgeHeld != true;
-	me.__dodgeHeld = held;
-	if (!fresh || fm.isOnFloor() || PeptideRuntime.pieceOf("airdodge") == null) return;
-	if (!(fm.inState(CState.JUMP_IN) || fm.inState(CState.JUMP_LOOP) || fm.inState(CState.JUMP_OUT) || fm.inState(CState.JUMP_MIDAIR) || fm.inState(CState.FALL))) return;
-	fm.toState(CState.FALL_SPECIAL);
-	fm.playAnimation("airdodge");
 };

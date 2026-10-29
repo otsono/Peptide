@@ -109,6 +109,7 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     let rows: Vec<&ObjectRow> = input.rows.iter().collect();
     let tables = format!("{}{}", object_tables(&src, &runtime, &rows), clip_bounds_data(model, &src));
     let spec = ObjectSpec {
+        keyed: String::new(),
         kind: "stage",
         others: &[],
         effects: &effects,
@@ -211,6 +212,7 @@ fn runtime_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &Object
     let effects = BTreeMap::new();
     let entities = BTreeMap::new();
     let spec = ObjectSpec {
+        keyed: String::new(),
         kind: "object",
         others: &[],
         effects: &effects,
@@ -298,6 +300,7 @@ fn runtime_projectiles(src: &SourceModel, runtime: &Runtime, dir: &Path, decls: 
             let effects = BTreeMap::new();
             let entities = BTreeMap::new();
             let spec = ObjectSpec {
+        keyed: String::new(),
                 kind: "projectile",
                 others: &[],
                 effects: &effects,
