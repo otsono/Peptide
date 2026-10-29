@@ -27,6 +27,9 @@ const GAP: u32 = 1;
 /// deflate's effort on the sheets: measured on the largest fighter and stage, 3 is nearly as fast
 /// as 1 and gives a stage's sheets a third less room, where 6 doubles a stage's time
 const PNG_LEVEL: u32 = 3;
+/// the effort when the smallest sheets are asked for (`Options::png_max`), as the editor's own
+/// exporter compresses with its PNG compression on
+const PNG_LEVEL_MAX: u32 = 9;
 /// rows a sheet is compressed in at a time: 64 bands to a full sheet, small enough to spread
 /// over any pool and large enough that the joins cost nothing
 const PNG_BAND_ROWS: usize = 64;
@@ -90,10 +93,24 @@ struct Placed { sheet: usize, frame: usize, trim_x: f64, trim_y: f64 }
 /// The JSON steps are millions of small ones, which go on the pool only where the allocator
 /// lets threads allocate side by side; in the browser one lock serialises them and the threads
 /// make those steps many times slower than one thread.
+///
+/// `header` and `png_max` are the editor's own exporter settings (its JSON compression type and
+/// PNG compression), so a package can be asked for the way that exporter would write it.
 #[derive(Clone, Copy)]
-pub struct Options { pub parallel_json: bool }
+pub struct Options { pub parallel_json: bool, pub header: HeaderText, pub png_max: bool }
 
-impl Default for Options { fn default() -> Self { Options { parallel_json: true } } }
+impl Default for Options { fn default() -> Self { Options { parallel_json: true, header: HeaderText::Raw, png_max: false } } }
+
+/// how the header's JSON is written: compact, base64 of the compact text, or indented two spaces
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum HeaderText { #[default] Raw, Base64, Pretty }
+
+impl HeaderText {
+    /// by the editor exporter's name for it (`raw`, `base64`, `prettify`); anything else is raw
+    pub fn named(name: &str) -> Self {
+        match name { "base64" => HeaderText::Base64, "prettify" => HeaderText::Pretty, _ => HeaderText::Raw }
+    }
+}
 
 pub fn build(lib: &Library) -> Result<Built> {
     build_timed(lib, Options::default(), &|| 0.0).map(|(b, _)| b)
@@ -208,7 +225,7 @@ pub fn build_timed(lib: &Library, opts: Options, clock: &dyn Fn() -> f64) -> Res
             image::imageops::replace(&mut sheet, &img, rx as i64, ry as i64);
             frames.extend([rx, ry, img.width(), img.height()]);
         }
-        Ok((s.group.clone(), frames, encode_png(&sheet)))
+        Ok((s.group.clone(), frames, encode_png(&sheet, if opts.png_max { PNG_LEVEL_MAX } else { PNG_LEVEL })))
     }).collect::<Result<_>>()?;
 
     step("sheets");
@@ -281,7 +298,12 @@ pub fn build_timed(lib: &Library, opts: Options, clock: &dyn Fn() -> f64) -> Res
     });
     step("scripts");
     let mut head = Vec::new();
-    if opts.parallel_json { write_json(&header, &mut head)?; } else { serde_json::to_writer(&mut head, &header)?; }
+    match opts.header {
+        HeaderText::Pretty => serde_json::to_writer_pretty(&mut head, &header)?,
+        _ if opts.parallel_json => write_json(&header, &mut head)?,
+        _ => serde_json::to_writer(&mut head, &header)?,
+    }
+    if opts.header == HeaderText::Base64 { head = base64(&head); }
     step("header");
     let mut bytes = Vec::with_capacity(4 + head.len() + at);
     bytes.extend_from_slice(&(head.len() as u32).to_be_bytes());
@@ -290,6 +312,20 @@ pub fn build_timed(lib: &Library, opts: Options, clock: &dyn Fn() -> f64) -> Res
     step("assemble");
     Ok((Built { name, bytes, entities: entities.len(), scripts: lib.scripts.len() + 1 + lib.palettes.len(),
                audio: lib.audio.len(), sheets: sheets.len(), warnings }, steps))
+}
+
+/// standard base64 (with padding) of `b`
+fn base64(b: &[u8]) -> Vec<u8> {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(b.len().div_ceil(3) * 4);
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        out.push(A[(n >> 18) as usize & 63]);
+        out.push(A[(n >> 12) as usize & 63]);
+        out.push(if c.len() > 1 { A[(n >> 6) as usize & 63] } else { b'=' });
+        out.push(if c.len() > 2 { A[n as usize & 63] } else { b'=' });
+    }
+    out
 }
 
 /// `serde_json`'s compact text of `v`, byte for byte, with the elements of every long array
@@ -327,7 +363,7 @@ fn write_json(v: &Value, out: &mut Vec<u8>) -> Result<()> {
 /// of rows is filtered and deflated on its own and the bands are joined into the one stream
 /// (each but the last ends on a flush, so the next starts on a byte), as pigz does. Rows only
 /// look left, never up, so a band needs nothing from the one before it.
-fn encode_png(img: &RgbaImage) -> Vec<u8> {
+fn encode_png(img: &RgbaImage, level: u32) -> Vec<u8> {
     let (w, h) = img.dimensions();
     let stride = w as usize * 4;
     let raw = img.as_raw();
@@ -344,7 +380,7 @@ fn encode_png(img: &RgbaImage) -> Vec<u8> {
             filtered.extend_from_slice(&row);
         }
         let last = y1 == h as usize;
-        let mut z = flate2::Compress::new(flate2::Compression::new(PNG_LEVEL), false);
+        let mut z = flate2::Compress::new(flate2::Compression::new(level), false);
         let mut out = Vec::with_capacity(filtered.len() / 2 + 64);
         let flush = if last { flate2::FlushCompress::Finish } else { flate2::FlushCompress::Sync };
         loop {
@@ -766,9 +802,34 @@ mod tests {
     fn a_banded_png_decodes_to_the_same_pixels() {
         for (w, h) in [(1, 1), (37, 63), (64, 64), (130, PNG_BAND_ROWS as u32 * 3 + 5)] {
             let img = picture(w, h);
-            let back = image::load_from_memory(&encode_png(&img)).expect("decodes").to_rgba8();
+            let back = image::load_from_memory(&encode_png(&img, PNG_LEVEL)).expect("decodes").to_rgba8();
             assert_eq!(back, img, "{w}x{h}");
         }
+    }
+
+    #[test]
+    fn a_max_effort_png_decodes_to_the_same_pixels_in_less_room() {
+        let img = picture(130, PNG_BAND_ROWS as u32 * 2);
+        let (fast, max) = (encode_png(&img, PNG_LEVEL), encode_png(&img, PNG_LEVEL_MAX));
+        assert_eq!(image::load_from_memory(&max).expect("decodes").to_rgba8(), img);
+        assert!(max.len() <= fast.len());
+    }
+
+    #[test]
+    fn the_header_is_written_the_way_it_is_asked_for() {
+        let lib = Library { manifest: json!({ "resourceId": "r", "content": [] }), manifest_meta: json!({ "guid": "m", "id": "manifest" }), ..Default::default() };
+        let header = |h| {
+            let b = build_timed(&lib, Options { header: h, ..Options::default() }, &|| 0.0).expect("builds").0.bytes;
+            let n = u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize;
+            String::from_utf8(b[4..4 + n].to_vec()).unwrap()
+        };
+        let raw = header(HeaderText::Raw);
+        let pretty = header(HeaderText::Pretty);
+        assert!(pretty.contains("\n  \""));
+        assert_eq!(serde_json::from_str::<Value>(&pretty).unwrap(), serde_json::from_str::<Value>(&raw).unwrap());
+        assert_eq!(header(HeaderText::Base64).into_bytes(), base64(raw.as_bytes()));
+        assert_eq!(base64(b"Ma"), b"TWE=");
+        assert_eq!(base64(b"Man"), b"TWFu");
     }
 
     #[test]
@@ -810,8 +871,8 @@ mod tests {
             manifest_meta: json!({ "guid": "m" }),
             ..Default::default()
         };
-        let a = build_timed(&lib, Options { parallel_json: true }, &|| 0.0).unwrap().0;
-        let b = build_timed(&lib, Options { parallel_json: false }, &|| 0.0).unwrap().0;
+        let a = build_timed(&lib, Options { parallel_json: true, ..Options::default() }, &|| 0.0).unwrap().0;
+        let b = build_timed(&lib, Options { parallel_json: false, ..Options::default() }, &|| 0.0).unwrap().0;
         assert_eq!(a.name, "pkg");
         assert_eq!(a.bytes, b.bytes);
     }
