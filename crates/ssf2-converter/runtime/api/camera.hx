@@ -29,10 +29,16 @@ PeptideCamera.addForcedTarget = function(me, o) { var e = Stage.engineOf(o); if 
 PeptideCamera.deleteForcedTarget = function(me, o) { var e = Stage.engineOf(o); if (e != null) match.getCamera().deleteForcedTarget(e); };
 PeptideCamera.addTimedTarget = function(me, o, n) { var e = Stage.engineOf(o); if (e != null) match.getCamera().addTimedTarget(e, AS3.num(n) * 2); };
 PeptideCamera.deleteTimedCameraTarget = function(me, o) { var e = Stage.engineOf(o); if (e != null) match.getCamera().deleteTimedTarget(e); };
+// a timed point is the camera's for its time: one whose time is up is the engine's to drop, and goes
+// from the list here too (a stage that asks for one every frame kept every one it ever asked for)
 PeptideCamera.addTimedTargetPoint = function(me, p, n) {
 	var s = PeptideRuntime.data.units.size;
+	var now = match.getElapsedFrames();
+	var live = [];
+	for (r in me.__points) if (r.until > now) live.push(r);
+	me.__points = live;
 	var q = Point.create(AS3.num(p.x) * s, AS3.num(p.y) * s);
-	me.__points.push({ p: p, q: q });
+	me.__points.push({ p: p, q: q, until: now + AS3.num(n) * 2 });
 	match.getCamera().addTimedTargetPoint(q, AS3.num(n) * 2);
 };
 PeptideCamera.deleteTimedTargetPoint = function(me, p) {

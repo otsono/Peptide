@@ -1972,6 +1972,14 @@ chase them or count them as open.
 | a move whose code rolls at random lands differently run to run | luigi's misfire, game & watch's judge and chef, peach's turnips, waluigi's dice |
 | a speed a move's code sets is slowed by the source before it moves on it and by this engine after, and the hit's freeze slows it to 1 there and 1.95 here | fox's side special (`verify.py sample --ssf2` C6: 48 engine frames where the source's 32 want 64): the low frame-20 friction (0.0325) lets fox slide past the edge after the dash and grab the ledge. read live with `move_trace.py fox "right:8 right+special" --at=250`. the move starts where the source's does (47.1 against 47.45) |
 
+**butterbuilding gets slower the longer it runs.** its stage class's update costs about 5 ms a
+frame and climbs by roughly a second of cpu every 2400 frames (the engine with its segment
+objects holds at about 8 ms, the runtime's upkeep at about 7 ms; a built-in stage takes under
+1). turning its update's scroll-and-camera branch off holds the cost flat, and its hazard
+platform loop is flat either way; memory, rollback and the runtime's own lists don't grow. one
+cause was the camera's timed points (every one the stage asked for was kept); the rest is still
+inside that branch. measure with `ps -o time=` over `tick 2400` at `speed 8`.
+
 **two projectiles still run on the runtime's clock.** every fighter, object and projectile plays
 its clip as the engine's own animations except pac-man's hydrant and rayman's plum: each mixes
 animations of its own clip (the projectile defaults) with child clips its labels place, and the
