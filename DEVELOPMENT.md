@@ -830,9 +830,12 @@ touched the ground, the move's own code lands it. the attack's declared stats ar
 animation's own, as `runtime/attack_stats.jsonc` maps them.
 
 a projectile's declared steering (x slowdown, homing, stick influence, stick aim, rotation) is code
-in `runtime/projectile_stats.jsonc`: each row its stats take becomes a timer its own script puts on
-it as it starts (`DATA.nativeStats`). a row stays with the runtime when the projectile's code names
-a stat it reads, or another declaration sharing its clip states one otherwise.
+in `runtime/projectile_stats.jsonc`: each row its stats take writes its variables and a named
+function into the projectile's script, and its `update()` calls them (`DATA.nativeStats`) every
+frame it flies. a row stays with the runtime when the projectile's code names a stat it reads, or
+another declaration sharing its clip states one otherwise. an attack's `code` rows in
+`runtime/attack_stats.jsonc` work the same way: the function goes into the fighter's script once,
+and each animation's first frame calls it with the attack's values (`chargeAttack(40, 1)`).
 
 ### 6.2 `mappings/character/animations.jsonc`
 

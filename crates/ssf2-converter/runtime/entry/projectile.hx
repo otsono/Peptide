@@ -1,8 +1,12 @@
 // The entry the engine calls on a projectile's script. Emitted last, after the projectile's data.
 
-// its declared stats' own timers (`DATA.nativeStats`, runtime/projectile_stats.jsonc) start once it has
-function initialize() { PeptideRuntime.start(self, DATA, Projectiles); if (!self.isDisposed()) DATA.nativeStats(); }
-function update() { PeptideRuntime.update(); }
+function initialize() { PeptideRuntime.start(self, DATA, Projectiles); }
+// what its declared stats have it do (`DATA.nativeStats`, runtime/projectile_stats.jsonc) runs after
+// its own frame, while it flies: not frozen by a hit, nor playing its end
+function update() {
+	PeptideRuntime.update();
+	if (DATA.nativeStats != null && !self.isDisposed() && self.getHitstop() == 0 && self.getState() != PState.DESTROYING) DATA.nativeStats();
+}
 // the engine's own end (its death bounds, or any kill) tells the source's end once
 function onKill() { if (PeptideRuntime.object != null) Projectiles.killed(PeptideRuntime.object); }
 function onTeardown() { PeptideRuntime.teardown(self); }

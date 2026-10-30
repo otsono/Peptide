@@ -1048,7 +1048,7 @@ fn cmd_compile(args: &[String]) -> Result<()> {
             let mut problems: Vec<String> = Vec::new();
             let none = Default::default();
             let no_entities = Default::default();
-            let out = emit::fighter_script(&m, &rt, &f, &[], units, &f.getter, &[], &none, &no_entities, Default::default(), String::new());
+            let out = emit::fighter_script(&m, &rt, &f, &[], units, &f.getter, &[], &none, &no_entities, Default::default(), String::new(), String::new());
             unknown.extend(out.unknown);
             problems.extend(out.problems);
             for (name, decl) in f.projectiles.entries().iter().chain(f.items.entries()) {

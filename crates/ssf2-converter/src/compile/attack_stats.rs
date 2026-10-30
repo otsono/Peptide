@@ -23,7 +23,7 @@ pub struct AttackStats {
 }
 
 #[derive(Debug, Default)]
-struct Code { when: Option<String>, unless: Option<String>, first: bool, text: String }
+struct Code { when: Option<String>, unless: Option<String>, first: bool, call: String, code: Vec<String>, same_as: Option<String> }
 
 pub fn table() -> &'static AttackStats {
     static T: OnceLock<AttackStats> = OnceLock::new();
@@ -54,7 +54,9 @@ pub fn table() -> &'static AttackStats {
                 when: v["when"].as_str().map(String::from),
                 unless: v["unless"].as_str().map(String::from),
                 first: v["first"].as_bool().unwrap_or(false),
-                text: v["text"].as_str()?.to_string(),
+                call: v["call"].as_str()?.to_string(),
+                code: v["code"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
+                same_as: v["same_as"].as_str().map(String::from),
             }))).collect();
         }
         if let Some(o) = json["defaults"].as_object() {
@@ -104,20 +106,28 @@ impl AttackStats {
         rows.iter().filter(|r| r.clamp && v >= 0.0).map(|_| num(v * s.velocity_scale())).collect()
     }
 
-    /// the code an attack's animations run on their first frame for what it declares: each `code`
+    /// the calls an attack's animations make on their first frame for what it declares: each `code`
     /// entry whose stat it declares (and whose `when` holds, and whose `unless` it does not state
     /// false), with `{v}` its value and `{name}` the value of another stat it declares (`{name|d}`
     /// gives `d` when it declares none, else 0). each comes with whether only the attack's own
-    /// animation runs it (`first`), rather than every one under its label
-    pub fn first_frame(&self, stats: &BTreeMap<String, f64>) -> Vec<(bool, String)> {
+    /// animation runs it (`first`), rather than every one under its label, and the row it is
+    pub fn first_frame(&self, stats: &BTreeMap<String, f64>) -> Vec<(bool, String, String)> {
         let mut out = Vec::new();
         for (key, c) in &self.code {
             let Some(&v) = stats.get(key) else { continue };
             let ok = match c.when.as_deref() { Some("positive") => v > 0.0, Some("negative") => v < 0.0, Some("true") => v != 0.0, Some("false") => v == 0.0, _ => true };
             if !ok || c.unless.as_ref().is_some_and(|u| stats.get(u) == Some(&0.0)) { continue }
-            out.push((c.first, fill(&c.text, v, stats)));
+            out.push((c.first, fill(&c.call, v, stats), key.clone()));
         }
         out
+    }
+
+    /// the code the fighter's script holds for the rows its attacks take, each once (a row that is
+    /// `same_as` another writes that one's)
+    pub fn code(&self, taken: &std::collections::BTreeSet<String>) -> Vec<String> {
+        let owners: std::collections::BTreeSet<&str> = taken.iter().filter_map(|k| self.code.get(k)
+            .map(|c| c.same_as.as_deref().unwrap_or(k))).collect();
+        owners.into_iter().filter_map(|k| self.code.get(k)).flat_map(|c| c.code.iter().cloned()).collect()
     }
 
     /// whether a row of this stat holds only alongside one of the given stats

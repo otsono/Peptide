@@ -352,7 +352,7 @@ fn package_data(decls: &Decls, others: &[String], entities: &BTreeMap<String, St
 pub fn fighter_script(model: &SourceModel, runtime: &Runtime, fighter: &crate::model::declare::Fighter,
                       pieces: &[Piece], units: Units, title: &str, others: &[String],
                       effects: &BTreeMap<String, Vec<Piece>>, entities: &BTreeMap<String, String>,
-                      autolink: BTreeMap<String, (String, String)>, keyed: String) -> Emitted {
+                      autolink: BTreeMap<String, (String, String)>, keyed: String, data: String) -> Emitted {
     let spec = ObjectSpec {
         kind: "fighter",
         keyed,
@@ -364,7 +364,7 @@ pub fn fighter_script(model: &SourceModel, runtime: &Runtime, fighter: &crate::m
         clip_sym: None,
         stats: fighter.stats.clone(),
         autolink,
-        data: String::new(),
+        data,
     };
     object_script(model, runtime, &spec, &Decls::of(fighter), pieces, units, title)
 }
@@ -711,7 +711,7 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
         for ((s, _), (_, t)) in &frames { if tree.contains(s) { text.push_str(t) } }
         let item = decls.items.entries().iter().any(|(n, d)| n == title
             || d.get("linkage_id").and_then(|v| v.str()) == Some(clip.as_str()));
-        // what its declared stats have it do as it flies, as its own timers (runtime/
+        // what its declared stats have it do as it flies, as code of its own (runtime/
         // projectile_stats.jsonc), where nothing changes them as it flies: its code names none of
         // them, and every declaration sharing its clip states them alike. a held item flies by its
         // holder, and keeps the runtime's
@@ -725,9 +725,13 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
         let written = |k: &str| crate::dyn_re(&format!(r"\b{k}\b")).is_match(code)
             || sharing.iter().any(|d| format!("{:?}", d.get(k)) != format!("{:?}", spec.stats.get(k)));
         let units_of = [("speed", units.speed), ("accel", units.accel), ("size", units.size)];
-        let (native, replaced) = if item { (vec![], vec![]) } else { compile::projectile_stats::table().rows(&stats, &written, &units_of) };
-        out.push_str(&projectile_frames(&text, item, &replaced));
-        out.push_str(&format!("DATA.nativeStats = function() {{\n{}}};\n", native.iter().map(|t| format!("\t{t}\n")).collect::<String>()));
+        let taken = if item { Default::default() } else { compile::projectile_stats::table().rows(&stats, &written, &units_of) };
+        out.push_str(&projectile_frames(&text, item, &taken.replaced));
+        if !taken.calls.is_empty() {
+            out.push_str("// ---- what its declared stats have it do each frame it flies: runtime/projectile_stats.jsonc\n");
+            for l in &taken.code { out.push_str(l); out.push('\n'); }
+            out.push_str(&format!("DATA.nativeStats = function() {{ {} }};\n", taken.calls.join(" ")));
+        }
     }
     let native = if matches!(spec.kind, "projectile" | "object" | "fighter") {
         native_clip(model, pieces, clip_sym).map(|n| Native { fighter: spec.kind == "fighter", ..n })
@@ -896,6 +900,8 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     let mut cancels = attack_cancels(data, &model, &pieces, units);
     // what each attack's declared stats have its animations run on their first frame
     // (`code` in runtime/attack_stats.jsonc)
+    // (the functions those calls make are written into its script once)
+    let mut taken = std::collections::BTreeSet::new();
     for a in &data.attacks {
         let code = compile::attack_stats::table().first_frame(&a.stats);
         if code.is_empty() { continue }
@@ -904,8 +910,9 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         let Some(label) = pieces.iter().find(|p| p.fm_name == fm).map(|p| p.label.clone()).filter(|l| !l.is_empty()) else { continue };
         for p in pieces.iter().filter(|p| p.label == label) {
             let c = cancels.entry(p.fm_name.clone()).or_default();
-            for (first, t) in &code {
+            for (first, t, key) in &code {
                 if *first && p.fm_name != fm { continue }
+                taken.insert(key.clone());
                 if !c.is_empty() { c.push('\n'); }
                 c.push_str(t);
             }
@@ -920,7 +927,11 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         c.push_str(code);
     }
     let keyed: String = cancels.values().cloned().collect::<Vec<_>>().join("\n");
-    let out = fighter_script(&model, &runtime, fighter, &pieces, units, char_name, &others, &effects, &entities, calls, keyed);
+    let stat_code = compile::attack_stats::table().code(&taken);
+    let stat_code = if stat_code.is_empty() { String::new() } else {
+        format!("// ---- what its attacks' declared stats have them do: runtime/attack_stats.jsonc\n{}\n", stat_code.join("\n"))
+    };
+    let out = fighter_script(&model, &runtime, fighter, &pieces, units, char_name, &others, &effects, &entities, calls, keyed, stat_code);
     // the animation each of the source's labels is here (an attack started from outside the
     // fighter's code is entered by it)
     let anim_of: Vec<String> = data.ssf2_to_fm_anim.iter()
@@ -1854,7 +1865,7 @@ fn projectile_frames(text: &str, item: bool, replaced: &[String]) -> String {
     if says(&["influenceXMovement", "influenceYMovement"]) { engine.push("Projectiles.influence(me);") }
     if says(&["controlDirection"]) { engine.push("Projectiles.control(me);") }
     if says(&["rotate"]) { engine.push("Projectiles.rotate(me);") }
-    // (a piece its stats' own timers stand in for is not run here: `DATA.nativeStats`)
+    // (a piece its stats' own code stands in for is not run here: `DATA.nativeStats`)
     let kept = |l: &&str| !replaced.iter().any(|r| l.starts_with(&format!("{r}(")));
     let frame: Vec<&str> = frame.into_iter().filter(kept).collect();
     let engine: Vec<&str> = engine.into_iter().filter(kept).collect();

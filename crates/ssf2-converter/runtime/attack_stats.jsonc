@@ -61,32 +61,112 @@
     // and the fighter is put back at the height it started from (peach's parasol, zeroed by the
     // engine, rose 7 higher and landed 3 frames late); the runtime starts it (AttackRules.reset)
   },
-  // code every animation of an attack runs on its first frame, for a stat it declares (`when` as
-  // above; `unless` names a stat that, stated false, leaves it out; `first` runs it on the
-  // attack's own animation only): `{v}` is the stat's value, `{name}` another stat the attack
-  // declares (0 when none, `{name|d}` d). `self` is the fighter, `me` the source's object for it
+  // what an attack's declared stats have each of its animations do on their first frame (`when`
+  // as above; `unless` names a stat that, stated false, leaves it out; `first` runs it on the
+  // attack's own animation only). `code` is written into the fighter's script once, for any
+  // attack that takes the row (the same code under two rows once); `call` goes on the first
+  // frame: `{v}` is the stat's value, `{name}` another stat the attack declares (0 when none,
+  // `{name|d}` d). `self` is the fighter, `PeptideRuntime.object` the source's object for it
   "code": {
-    // a charge the source's engine runs: an attack that declares a charge time and does not say
-    // it charges itself (`useChargeBar: 0`) is charged while its clip is in "charging". held, it
-    // stays (the clip loops itself); let go, or in the air when it does not charge there, it
-    // plays "attack"; charged to its time, it plays "finishedcharge", and from there a release
-    // plays "attack". how long it charged is the attack's `chargetime`, for the move's own code
-    "chargetime_max": { "unless": "useChargeBar", "text": "(function() { var me = PeptideRuntime.object; if (me.__chargeWatch != null) self.removeTimer(me.__chargeWatch); var id = -1; id = self.addTimer(1, -1, function(?t) { var st = PeptideRuntime.shownClip(); var xf = PeptideRuntime.xframeOf(st); if (xf != \"charging\" && xf != \"finishedcharge\") { me.__chargeT = 0; return; } var c = self.getHeldControls(); var held = c != null && AS3.truthy(c.SPECIAL); var go = null; if (xf == \"charging\") { me.__chargeT = (me.__chargeT == null ? 0 : me.__chargeT) + 0.5; if (!self.isOnFloor() && {chargeInAir|1} == 0) go = \"attack\"; else if (!held) go = \"attack\"; else if (me.__chargeT >= {v}) go = \"finishedcharge\"; } else if (!held) go = \"attack\"; if (go == null) return; Attacks.update(me, { chargetime: me.__chargeT }); PeptideRuntime.setXframe(st, go); me.__chargeT = 0; st.gotoAndPlay(go); }, { persistent: false }); me.__chargeWatch = id; })();" },
-    // an attack that says it flips turns its fighter around as it begins (marth's back air). this
-    // engine turns no one in a throw: a throw that flips is drawn and launched already turned
-    // (entity_gen.rs `turned_throws`), and the thrower turns once it is over
-    "flip": { "when": "true", "first": true, "text": "if (self.inState(CState.THROW_UP) || self.inState(CState.THROW_DOWN) || self.inState(CState.THROW_FORWARD) || self.inState(CState.THROW_BACK) || self.inState(CState.GRAB_HOLD)) PeptideRuntime.object.__turnAtEnd = true; else if (self.isFacingRight()) self.faceLeft(); else self.faceRight();" },
-    // a positive slowdown keeps a share of the speed each source frame (jigglypuff's side special
-    // keeps 0.8), on the floor or in the air: the engine's friction off for the animation, and its
-    // square root kept each engine frame until another animation plays
-    "xSpeedDecay": { "when": "positive", "text": "(function() { if (self.exports.__keepWatch != null) self.removeTimer(self.exports.__keepWatch); var a = self.getAnimation(); self.updateAnimationStats({ friction: 0 }); var id = -1; id = self.addTimer(1, -1, function(?t) { if (self.getAnimation() != a) { self.removeTimer(id); return; } if (self.isOnFloor()) self.setXVelocity(self.getXVelocity() * Math.sqrt({v})); }, { persistent: false }); self.exports.__keepWatch = id; })();" },
-    "xSpeedDecayAir": { "when": "positive", "text": "(function() { if (self.exports.__keepWatchAir != null) self.removeTimer(self.exports.__keepWatchAir); var a = self.getAnimation(); self.updateAnimationStats({ aerialFriction: 0 }); var id = -1; id = self.addTimer(1, -1, function(?t) { if (self.getAnimation() != a) { self.removeTimer(id); return; } if (!self.isOnFloor()) self.setXVelocity(self.getXVelocity() * Math.sqrt({v})); }, { persistent: false }); self.exports.__keepWatchAir = id; })();" },
-    // the source's combo protocol, which its engine runs and the clip only answers: while the
-    // attack plays, its button pressed (or held, for one that repeats on a hold) tells the clip to
-    // go on, through the two fields the fighter keeps (handled, continuePlaying); one that also
-    // charges goes on only once it is attacking (its `xframe` at "attack"). one watch per fighter,
-    // gone with the attack's state
-    "combo_max": { "when": "positive", "text": "(function() { var me = PeptideRuntime.object; if (me.__comboWatch != null) self.removeTimer(me.__comboWatch); var id = -1; id = self.addTimer(1, -1, function(?t) { if ({chargetime_max} > 0) { var xf = PeptideRuntime.xframeOf(PeptideRuntime.shownClip()); if (xf != null && xf != \"attack\") return; } if (me.handled != false) return; var sp = self.inState(CState.SPECIAL_NEUTRAL) || self.inState(CState.SPECIAL_SIDE) || self.inState(CState.SPECIAL_UP) || self.inState(CState.SPECIAL_DOWN); var h = self.getHeldControls(); var p = self.getPressedControls(); var pr = sp ? p.SPECIAL : (p.ATTACK || p.GRAB); var hd = sp ? h.SPECIAL : (h.ATTACK || h.GRAB); if (AS3.truthy(pr) || ({holdRepeat} != 0 && AS3.truthy(hd))) { me.continuePlaying = true; me.handled = true; } }, { persistent: false }); me.__comboWatch = id; })();" }
+    "chargetime_max": { "unless": "useChargeBar", "call": "chargeAttack({v}, {chargeInAir|1});",
+      "code": [
+        "// a charge the source's engine runs: an attack that declares a charge time and does not say",
+        "// it charges itself (`useChargeBar: 0`) is charged while its clip is in \"charging\". held, it",
+        "// stays (the clip loops itself); let go, or in the air when it does not charge there, it",
+        "// plays \"attack\"; charged to its time, it plays \"finishedcharge\", and from there a release",
+        "// plays \"attack\". how long it charged is the attack's `chargetime`, for the move's own code",
+        "function chargeAttack(most, inAir) {",
+        "\tvar me = PeptideRuntime.object;",
+        "\tif (me.__chargeWatch != null) self.removeTimer(me.__chargeWatch);",
+        "\tme.__chargeWatch = self.addTimer(1, -1, function(?t) {",
+        "\t\tvar clip = PeptideRuntime.shownClip();",
+        "\t\tvar at = PeptideRuntime.xframeOf(clip);",
+        "\t\tif (at != \"charging\" && at != \"finishedcharge\") {",
+        "\t\t\tme.__chargeT = 0;",
+        "\t\t\treturn;",
+        "\t\t}",
+        "\t\tvar c = self.getHeldControls();",
+        "\t\tvar held = c != null && AS3.truthy(c.SPECIAL);",
+        "\t\tvar go = null;",
+        "\t\tif (at == \"charging\") {",
+        "\t\t\tme.__chargeT = (me.__chargeT == null ? 0 : me.__chargeT) + 0.5;",
+        "\t\t\tif (!held || (!self.isOnFloor() && inAir == 0)) go = \"attack\";",
+        "\t\t\telse if (me.__chargeT >= most) go = \"finishedcharge\";",
+        "\t\t} else if (!held) go = \"attack\";",
+        "\t\tif (go == null) return;",
+        "\t\tAttacks.update(me, { chargetime: me.__chargeT });",
+        "\t\tPeptideRuntime.setXframe(clip, go);",
+        "\t\tme.__chargeT = 0;",
+        "\t\tclip.gotoAndPlay(go);",
+        "\t}, { persistent: false });",
+        "}"
+      ] },
+    "flip": { "when": "true", "first": true, "call": "turnAround();",
+      "code": [
+        "// an attack that says it flips turns its fighter around as it begins (marth's back air). this",
+        "// engine turns no one in a throw: a throw that flips is drawn and launched already turned",
+        "// (entity_gen.rs `turned_throws`), and the thrower turns once it is over",
+        "function turnAround() {",
+        "\tif (self.inState(CState.THROW_UP) || self.inState(CState.THROW_DOWN) || self.inState(CState.THROW_FORWARD) || self.inState(CState.THROW_BACK) || self.inState(CState.GRAB_HOLD)) PeptideRuntime.object.__turnAtEnd = true;",
+        "\telse if (self.isFacingRight()) self.faceLeft();",
+        "\telse self.faceRight();",
+        "}"
+      ] },
+    "xSpeedDecay": { "when": "positive", "call": "keepSpeed({v}, true);",
+      "code": [
+        "// a positive slowdown keeps a share of the speed each source frame (jigglypuff's side special",
+        "// keeps 0.8), on the floor or in the air: the engine's friction off for the animation, and its",
+        "// square root kept each engine frame until another animation plays",
+        "var keepOnFloor = null;",
+        "var keepInAir = null;",
+        "function keepSpeed(share, onFloor) {",
+        "\tvar anim = self.getAnimation();",
+        "\tvar kept = Math.sqrt(share);",
+        "\tvar id = -1;",
+        "\tid = self.addTimer(1, -1, function(?t) {",
+        "\t\tif (self.getAnimation() != anim) self.removeTimer(id);",
+        "\t\telse if (self.isOnFloor() == onFloor) self.setXVelocity(self.getXVelocity() * kept);",
+        "\t}, { persistent: false });",
+        "\tif (onFloor) {",
+        "\t\tif (keepOnFloor != null) self.removeTimer(keepOnFloor);",
+        "\t\tkeepOnFloor = id;",
+        "\t\tself.updateAnimationStats({ friction: 0 });",
+        "\t} else {",
+        "\t\tif (keepInAir != null) self.removeTimer(keepInAir);",
+        "\t\tkeepInAir = id;",
+        "\t\tself.updateAnimationStats({ aerialFriction: 0 });",
+        "\t}",
+        "}"
+      ] },
+    "xSpeedDecayAir": { "when": "positive", "call": "keepSpeed({v}, false);", "same_as": "xSpeedDecay" },
+    "combo_max": { "when": "positive", "call": "watchCombo({chargetime_max}, {holdRepeat});",
+      "code": [
+        "// the source's combo protocol, which its engine runs and the clip only answers: while the",
+        "// attack plays, its button pressed (or held, for one that repeats on a hold) tells the clip to",
+        "// go on, through the two fields the fighter keeps (handled, continuePlaying); one that also",
+        "// charges goes on only once it is attacking (its `xframe` at \"attack\"). one watch per fighter,",
+        "// gone with the attack's state",
+        "function watchCombo(chargeTime, holdRepeat) {",
+        "\tvar me = PeptideRuntime.object;",
+        "\tif (me.__comboWatch != null) self.removeTimer(me.__comboWatch);",
+        "\tme.__comboWatch = self.addTimer(1, -1, function(?t) {",
+        "\t\tif (chargeTime > 0) {",
+        "\t\t\tvar at = PeptideRuntime.xframeOf(PeptideRuntime.shownClip());",
+        "\t\t\tif (at != null && at != \"attack\") return;",
+        "\t\t}",
+        "\t\tif (me.handled != false) return;",
+        "\t\tvar special = self.inState(CState.SPECIAL_NEUTRAL) || self.inState(CState.SPECIAL_SIDE) || self.inState(CState.SPECIAL_UP) || self.inState(CState.SPECIAL_DOWN);",
+        "\t\tvar pressed = self.getPressedControls();",
+        "\t\tvar held = self.getHeldControls();",
+        "\t\tvar press = special ? pressed.SPECIAL : (pressed.ATTACK || pressed.GRAB);",
+        "\t\tvar hold = special ? held.SPECIAL : (held.ATTACK || held.GRAB);",
+        "\t\tif (AS3.truthy(press) || (holdRepeat != 0 && AS3.truthy(hold))) {",
+        "\t\t\tme.continuePlaying = true;",
+        "\t\t\tme.handled = true;",
+        "\t\t}",
+        "\t}, { persistent: false });",
+        "}"
+      ] }
   },
   // what an attack that states nothing has: it goes off a floor's edge and ends once airborne
   "defaults": { "leaveGroundCancel": true, "slideOff": true },

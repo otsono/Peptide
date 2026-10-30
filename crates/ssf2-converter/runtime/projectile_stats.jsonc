@@ -1,47 +1,147 @@
-// what a projectile's declared stats have it do as it flies, as its own engine timers, settled at
-// conversion. the source's engine moves a projectile by these stats every frame; here each one it
-// states puts a timer on it as it starts (`self` is the projectile), running every engine frame
-// until it ends, standing still while it is frozen by a hit, and doing nothing while it plays its
-// end.
+// what a projectile's declared stats have it do as it flies, settled at conversion. the source's
+// engine moves a projectile by these stats every frame; here each one it states writes its
+// variables and a function into the projectile's script, and its update calls that function every
+// engine frame it flies (not while it is frozen by a hit, nor while it plays its end).
 //
 // each row, by the stat that takes it:
 //   when       `positive`, `negative`, `nonnegative`, `true` or `false`: the value it holds for
 //   yields_to  another row that, taken too, does this one's work as well
+//   same_as    another row whose code this one writes (one function serving both stats)
 //   reads      the other stats its code reads
 //   replaces   the runtime's piece it stands in for
-//   text       the code: `{v}` the stat's value, `{name}` another stat the projectile states (0
-//              when none, `{name|d}` d), `{@speed}` `{@accel}` `{@size}` the source's units in
-//              this engine's
+//   code       the lines it writes into the script, once: `{v}` the stat's value, `{name}` another
+//              stat the projectile states (0 when none, `{name|d}` d), `{@speed}` `{@accel}`
+//              `{@size}` the source's units in this engine's
+//   call       what its update runs each frame
 // a row is not taken when the projectile's own code changes a stat it reads as it flies, or
-// another declaration that shares its clip states one otherwise: the runtime's piece runs then
+// another declaration that shares its clip states one otherwise: the runtime's piece runs then.
+// rows run in the order written here
 {
   "code": {
-    // homing: the heading turns toward the middle of the nearest opponent that can be hit, a share
-    // of the turn each source frame (`homingEase`, half as much an engine frame), keeping its own
-    // speed less its slowdown (samus's missile, launched at 10 with 0.15, slows by 0.15 a source
-    // frame while it turns). it flies its first source frame straight
-    "homingSpeed": { "when": "nonnegative", "reads": ["xdecay", "homingEase"], "replaces": "Projectiles.steer",
-      "text": "(function() { var d = {xdecay|0} * {@speed} * 0.5; var ease = Math.max(1, {homingEase|1}) * 2; var s = { n: 0, heading: null }; self.addTimer(1, -1, function(?t) { if (self.getState() == PState.DESTROYING) return; s.n++; if (s.n < 2) { if (d != 0) self.setXSpeed(self.getXSpeed() - d); return; } var sp = Math.sqrt(self.getXSpeed() * self.getXSpeed() + self.getYSpeed() * self.getYSpeed()) - d; if (sp < 0) sp = 0; var target = null; var best = 1.0e12; for (c in match.getCharacters()) { if (c == self.getOwner() || c.isDisposed() || c.hasBodyStatus(BodyStatus.INTANGIBLE) || c.hasBodyStatus(BodyStatus.INVINCIBLE)) continue; var dx = c.getX() - self.getX(); var dy = c.getY() - self.getY(); if (dx * dx + dy * dy < best) { best = dx * dx + dy * dy; target = c; } } if (target == null) return; var ty = target.getY() - target.getCharacterStat(target.isOnFloor() ? \"floorHeadPosition\" : \"aerialHeadPosition\") / 2; var want = Math.atan2(ty - self.getY(), target.getX() - self.getX()); if (s.heading == null) s.heading = Math.atan2(self.getYSpeed(), self.flipX(self.getXSpeed())); var diff = want - s.heading; while (diff > Math.PI) diff -= 2 * Math.PI; while (diff < -Math.PI) diff += 2 * Math.PI; s.heading += diff / ease; self.setXSpeed(self.flipX(Math.cos(s.heading) * sp)); self.setYSpeed(Math.sin(s.heading) * sp); }, { persistent: true, pauseCondition: function() { return self.getHitstop() > 0; } }); })();" },
-    // its x slowdown: a steady push back against the way it faces, each source frame. it stops at
-    // nothing when it slows a shot going forward; a negative one speeds it up (zelda's din's fire),
-    // and one going backward keeps on speeding back (link's boomerang on its way home)
-    "xdecay": { "when": "true", "yields_to": "homingSpeed", "reads": ["homingSpeed"], "replaces": "Projectiles.steer",
-      "text": "(function() { var d = {v} * {@speed} * 0.5; self.addTimer(1, -1, function(?t) { if (self.getState() == PState.DESTROYING) return; var v = self.getXSpeed(); var w = v - d; self.setXSpeed(d > 0 && v >= 0 && w < 0 ? 0 : w); }, { persistent: true, pauseCondition: function() { return self.getHitstop() > 0; } }); })();" },
-    // the owner's held stick nudges it, per axis: stepped toward the held way by the axis' factor
-    // each engine frame, back toward nothing when the stick is let go, capped at its movement, and
-    // added to where it is on top of its own flight
-    "influenceXMovement": { "when": "positive", "reads": ["influenceYMovement", "influenceXFactor", "influenceYFactor"], "replaces": "Projectiles.influence",
-      "text": "(function() { var xm = {v} * {@speed}; var ym = {influenceYMovement|0} * {@speed}; var xf = {influenceXFactor|0} * {@speed}; var yf = {influenceYFactor|0} * {@speed}; var s = { x: 0.0, y: 0.0 }; var step = function(v, f, cap, plus, minus) { if (plus == true) v += f; else if (minus == true) v -= f; else if (v > 0) { v -= f; if (v < 0) v = 0; } else if (v < 0) { v += f; if (v > 0) v = 0; } if (v > cap) v = cap; if (v < -cap) v = -cap; return v; }; self.addTimer(1, -1, function(?t) { if (self.getState() == PState.DESTROYING) return; var o = self.getOwner(); if (o == null || o.getHeldControls == null) return; var c = o.getHeldControls(); if (xm > 0) s.x = step(s.x, xf, xm, c.RIGHT, c.LEFT); if (ym > 0) s.y = step(s.y, yf, ym, c.DOWN, c.UP); self.setX(self.getX() + s.x); self.setY(self.getY() + s.y); }, { persistent: true, pauseCondition: function() { return self.getHitstop() > 0; } }); })();" },
-    "influenceYMovement": { "when": "positive", "yields_to": "influenceXMovement", "reads": ["influenceXMovement", "influenceYFactor"], "replaces": "Projectiles.influence",
-      "text": "(function() { var ym = {v} * {@speed}; var yf = {influenceYFactor|0} * {@speed}; var s = { y: 0.0 }; var step = function(v, f, cap, plus, minus) { if (plus == true) v += f; else if (minus == true) v -= f; else if (v > 0) { v -= f; if (v < 0) v = 0; } else if (v < 0) { v += f; if (v > 0) v = 0; } if (v > cap) v = cap; if (v < -cap) v = -cap; return v; }; self.addTimer(1, -1, function(?t) { if (self.getState() == PState.DESTROYING) return; var o = self.getOwner(); if (o == null || o.getHeldControls == null) return; var c = o.getHeldControls(); s.y = step(s.y, yf, ym, c.DOWN, c.UP); self.setY(self.getY() + s.y); }, { persistent: true, pauseCondition: function() { return self.getHitstop() > 0; } }); })();" },
-    // the owner aims it with the stick, eight ways, at its launch's x speed: eased a sixth of the
-    // way toward the aim each engine frame when `calcAngle` is set, snapped to it otherwise. it
-    // starts along the angle stated
-    "controlDirection": { "when": "nonnegative", "reads": ["xspeed", "calcAngle"], "replaces": "Projectiles.control",
-      "text": "(function() { var sp = Math.abs({xspeed|0} * {@speed}); var s = { aim: {v} * Math.PI / 180 }; self.addTimer(1, -1, function(?t) { if (self.getState() == PState.DESTROYING) return; var o = self.getOwner(); if (o != null && o.getHeldControls != null) { var c = o.getHeldControls(); var want = -1.0; if (c.UP && c.LEFT) want = 2.35619449; else if (c.UP && c.RIGHT) want = 0.78539816; else if (c.DOWN && c.LEFT) want = 3.92699082; else if (c.DOWN && c.RIGHT) want = 5.49778714; else if (c.UP) want = 1.57079633; else if (c.DOWN) want = 4.71238898; else if (c.LEFT) want = 3.14159265; else if (c.RIGHT) want = 0; if (want >= 0) { if ({calcAngle|0} != 0) { var d = want - s.aim; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; s.aim += d / 6; } else s.aim = want; } } self.setXSpeed(self.flipX(Math.cos(s.aim) * sp)); self.setYSpeed(-Math.sin(s.aim) * sp); }, { persistent: true, pauseCondition: function() { return self.getHitstop() > 0; } }); })();" },
-    // turned to face the way it flies. this engine turns an object after mirroring it, so one
-    // facing left turns the other way round for the same climb
-    "rotate": { "when": "true", "replaces": "Projectiles.rotate",
-      "text": "self.addTimer(1, -1, function(?t) { if (self.getState() == PState.DESTROYING) return; var vx = self.getXVelocity(); var vy = self.getYVelocity(); if (vx == 0 && vy == 0) return; var a = Math.atan2(vy, self.isFacingRight() ? vx : -vx) * 180 / Math.PI; self.setRotation(self.isFacingRight() ? a : -a); }, { persistent: true, pauseCondition: function() { return self.getHitstop() > 0; } });" }
+    "homingSpeed": { "when": "nonnegative", "reads": ["xdecay", "homingEase"], "replaces": "Projectiles.steer", "call": "homeIn();",
+      "code": [
+        "// homing: the heading turns toward the middle of the nearest opponent that can be hit, a share",
+        "// of the turn each source frame (`homingEase`, half as much an engine frame), keeping its own",
+        "// speed less its slowdown (samus's missile, launched at 10 with 0.15, slows by 0.15 a source",
+        "// frame while it turns). it flies its first frame straight",
+        "var homingSlowdown = {xdecay|0} * {@speed} * 0.5;",
+        "var homingEase = Math.max(1, {homingEase|1}) * 2;",
+        "var homingHeading = null;",
+        "var homingFrames = 0;",
+        "function homeIn() {",
+        "\thomingFrames++;",
+        "\tif (homingFrames < 2) {",
+        "\t\tif (homingSlowdown != 0) self.setXSpeed(self.getXSpeed() - homingSlowdown);",
+        "\t\treturn;",
+        "\t}",
+        "\tvar speed = Math.max(0, Math.sqrt(self.getXSpeed() * self.getXSpeed() + self.getYSpeed() * self.getYSpeed()) - homingSlowdown);",
+        "\tvar target = null;",
+        "\tvar nearest = 1.0e12;",
+        "\tfor (c in match.getCharacters()) {",
+        "\t\tif (c == self.getOwner() || c.isDisposed() || c.hasBodyStatus(BodyStatus.INTANGIBLE) || c.hasBodyStatus(BodyStatus.INVINCIBLE)) continue;",
+        "\t\tvar dx = c.getX() - self.getX();",
+        "\t\tvar dy = c.getY() - self.getY();",
+        "\t\tif (dx * dx + dy * dy < nearest) {",
+        "\t\t\tnearest = dx * dx + dy * dy;",
+        "\t\t\ttarget = c;",
+        "\t\t}",
+        "\t}",
+        "\tif (target == null) return;",
+        "\tvar middle = target.getY() - target.getCharacterStat(target.isOnFloor() ? \"floorHeadPosition\" : \"aerialHeadPosition\") / 2;",
+        "\tvar want = Math.atan2(middle - self.getY(), target.getX() - self.getX());",
+        "\tif (homingHeading == null) homingHeading = Math.atan2(self.getYSpeed(), self.flipX(self.getXSpeed()));",
+        "\tvar turn = want - homingHeading;",
+        "\twhile (turn > Math.PI) turn -= 2 * Math.PI;",
+        "\twhile (turn < -Math.PI) turn += 2 * Math.PI;",
+        "\thomingHeading += turn / homingEase;",
+        "\tself.setXSpeed(self.flipX(Math.cos(homingHeading) * speed));",
+        "\tself.setYSpeed(Math.sin(homingHeading) * speed);",
+        "}"
+      ] },
+    "xdecay": { "when": "true", "yields_to": "homingSpeed", "reads": ["homingSpeed"], "replaces": "Projectiles.steer", "call": "slowDown();",
+      "code": [
+        "// its x slowdown: a steady push back against the way it faces, each source frame. it stops at",
+        "// nothing when it slows a shot going forward; a negative one speeds it up (zelda's din's fire),",
+        "// and one going backward keeps on speeding back (link's boomerang on its way home)",
+        "var slowdown = {v} * {@speed} * 0.5;",
+        "function slowDown() {",
+        "\tvar speed = self.getXSpeed();",
+        "\tvar slowed = speed - slowdown;",
+        "\tself.setXSpeed(slowdown > 0 && speed >= 0 && slowed < 0 ? 0 : slowed);",
+        "}"
+      ] },
+    "influenceXMovement": { "when": "positive", "reads": ["influenceYMovement", "influenceXFactor", "influenceYFactor"], "replaces": "Projectiles.influence", "call": "followStick();",
+      "code": [
+        "// the owner's held stick nudges it, per axis: stepped toward the held way by the axis' factor",
+        "// each engine frame, back toward nothing when the stick is let go, kept within its movement,",
+        "// and added to where it is on top of its own flight",
+        "var stickReachX = {influenceXMovement|0} * {@speed};",
+        "var stickReachY = {influenceYMovement|0} * {@speed};",
+        "var stickStepX = {influenceXFactor|0} * {@speed};",
+        "var stickStepY = {influenceYFactor|0} * {@speed};",
+        "var stickX = 0.0;",
+        "var stickY = 0.0;",
+        "function nudge(v, step, reach, plus, minus) {",
+        "\tif (plus) v += step;",
+        "\telse if (minus) v -= step;",
+        "\telse if (v > 0) v = Math.max(0, v - step);",
+        "\telse if (v < 0) v = Math.min(0, v + step);",
+        "\treturn Math.max(-reach, Math.min(reach, v));",
+        "}",
+        "function followStick() {",
+        "\tvar owner = self.getOwner();",
+        "\tif (owner == null || owner.getHeldControls == null) return;",
+        "\tvar held = owner.getHeldControls();",
+        "\tif (stickReachX > 0) {",
+        "\t\tstickX = nudge(stickX, stickStepX, stickReachX, held.RIGHT, held.LEFT);",
+        "\t\tself.setX(self.getX() + stickX);",
+        "\t}",
+        "\tif (stickReachY > 0) {",
+        "\t\tstickY = nudge(stickY, stickStepY, stickReachY, held.DOWN, held.UP);",
+        "\t\tself.setY(self.getY() + stickY);",
+        "\t}",
+        "}"
+      ] },
+    "influenceYMovement": { "when": "positive", "yields_to": "influenceXMovement", "same_as": "influenceXMovement", "reads": ["influenceXMovement", "influenceXFactor", "influenceYFactor"], "replaces": "Projectiles.influence" },
+    "controlDirection": { "when": "nonnegative", "reads": ["xspeed", "calcAngle"], "replaces": "Projectiles.control", "call": "aimByStick();",
+      "code": [
+        "// the owner aims it with the stick, eight ways, at its launch's x speed: eased a sixth of the",
+        "// way toward the aim each engine frame when `calcAngle` is set, snapped to it otherwise. it",
+        "// starts along the angle stated",
+        "var aimSpeed = Math.abs({xspeed|0} * {@speed});",
+        "var aimEases = {calcAngle|0} != 0;",
+        "var aim = {v} * Math.PI / 180;",
+        "function aimByStick() {",
+        "\tvar owner = self.getOwner();",
+        "\tif (owner != null && owner.getHeldControls != null) {",
+        "\t\tvar held = owner.getHeldControls();",
+        "\t\tvar across = held.LEFT ? -1 : (held.RIGHT ? 1 : 0);",
+        "\t\tvar up = held.UP ? 1 : (held.DOWN ? -1 : 0);",
+        "\t\tif (across != 0 || up != 0) {",
+        "\t\t\tvar want = Math.atan2(up, across);",
+        "\t\t\tif (aimEases) {",
+        "\t\t\t\tvar turn = want - aim;",
+        "\t\t\t\twhile (turn > Math.PI) turn -= 2 * Math.PI;",
+        "\t\t\t\twhile (turn < -Math.PI) turn += 2 * Math.PI;",
+        "\t\t\t\taim += turn / 6;",
+        "\t\t\t} else aim = want;",
+        "\t\t}",
+        "\t}",
+        "\tself.setXSpeed(self.flipX(Math.cos(aim) * aimSpeed));",
+        "\tself.setYSpeed(-Math.sin(aim) * aimSpeed);",
+        "}"
+      ] },
+    "rotate": { "when": "true", "replaces": "Projectiles.rotate", "call": "faceFlight();",
+      "code": [
+        "// turned to face the way it flies. this engine turns an object after mirroring it, so one",
+        "// facing left turns the other way round for the same climb",
+        "function faceFlight() {",
+        "\tvar vx = self.getXVelocity();",
+        "\tvar vy = self.getYVelocity();",
+        "\tif (vx == 0 && vy == 0) return;",
+        "\tvar angle = Math.atan2(vy, self.isFacingRight() ? vx : -vx) * 180 / Math.PI;",
+        "\tself.setRotation(self.isFacingRight() ? angle : -angle);",
+        "}"
+      ] }
   }
 }

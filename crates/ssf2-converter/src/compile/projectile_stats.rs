@@ -1,4 +1,4 @@
-//! What a projectile's declared stats have it do as it flies, as its own engine timers
+//! What a projectile's declared stats have it do as it flies, as code in its own script
 //! (`runtime/projectile_stats.jsonc`): the table holds the code, this only picks the rows a
 //! projectile's stats take and fills their values in.
 
@@ -6,7 +6,12 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 #[derive(Debug, Default)]
-struct Code { when: Option<String>, yields_to: Option<String>, reads: Vec<String>, replaces: String, text: String }
+struct Code { when: Option<String>, yields_to: Option<String>, same_as: Option<String>, reads: Vec<String>, replaces: String, code: Vec<String>, call: String }
+
+/// what a projectile's stats take: the lines written into its script, the calls its update makes
+/// each frame, and the runtime pieces they stand in for
+#[derive(Debug, Default)]
+pub struct Taken { pub code: Vec<String>, pub calls: Vec<String>, pub replaced: Vec<String> }
 
 #[derive(Debug, Default)]
 pub struct ProjectileStats { code: Vec<(String, Code)> }
@@ -22,10 +27,18 @@ pub fn table() -> &'static ProjectileStats {
             t.code = o.iter().filter_map(|(k, v)| Some((k.clone(), Code {
                 when: v["when"].as_str().map(String::from),
                 yields_to: v["yields_to"].as_str().map(String::from),
+                same_as: v["same_as"].as_str().map(String::from),
                 reads: v["reads"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
                 replaces: v["replaces"].as_str()?.to_string(),
-                text: v["text"].as_str()?.to_string(),
+                code: v["code"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
+                call: v["call"].as_str().unwrap_or_default().to_string(),
             }))).collect();
+            // a row that writes another's code takes it from there
+            let shared: Vec<(usize, Vec<String>, String)> = t.code.iter().enumerate().filter_map(|(i, (_, c))| {
+                let (_, o) = t.code.iter().find(|(k, _)| Some(k) == c.same_as.as_ref())?;
+                Some((i, o.code.clone(), o.call.clone()))
+            }).collect();
+            for (i, code, call) in shared { t.code[i].1.code = code; t.code[i].1.call = call; }
             // in the order the table writes them: each runs after the ones above it every frame
             t.code.sort_by_key(|(k, _)| o.keys().position(|x| x == k));
         }
@@ -39,24 +52,27 @@ fn holds(when: Option<&str>, v: f64) -> bool {
 }
 
 impl ProjectileStats {
-    /// the code a projectile's stats have it run, and the runtime pieces that code stands in for.
+    /// what a projectile's stats write into its script, what its update calls each frame, and the
+    /// runtime pieces that code stands in for.
     /// a row is taken when the projectile states its stat (and its `when` holds), when nothing it
     /// `reads` is `written` (its code changes it as it flies, or another declaration sharing the
     /// clip states it otherwise), and when the row it `yields_to` is not taken. `units` fills
     /// `{@speed}`, `{@accel}` and `{@size}`
-    pub fn rows(&self, stats: &BTreeMap<String, f64>, written: &dyn Fn(&str) -> bool, units: &[(&str, f64)]) -> (Vec<String>, Vec<String>) {
+    pub fn rows(&self, stats: &BTreeMap<String, f64>, written: &dyn Fn(&str) -> bool, units: &[(&str, f64)]) -> Taken {
         let taken: Vec<&(String, Code)> = self.code.iter().filter(|(k, c)| stats.get(k).is_some_and(|v| holds(c.when.as_deref(), *v))
             && !written(k) && !c.reads.iter().any(|r| written(r))).collect();
         let keys: Vec<&str> = taken.iter().map(|(k, _)| k.as_str()).collect();
-        let mut text = Vec::new();
-        let mut replaced = Vec::new();
+        let mut out = Taken::default();
         for (k, c) in taken {
             if c.yields_to.as_deref().is_some_and(|y| keys.contains(&y)) { continue }
-            let mut t = c.text.clone();
-            for (u, f) in units { t = t.replace(&format!("{{@{u}}}"), &super::attack_stats::num(*f)); }
-            text.push(super::attack_stats::fill(&t, stats[k], stats));
-            if !replaced.contains(&c.replaces) { replaced.push(c.replaces.clone()) }
+            for line in &c.code {
+                let mut t = line.clone();
+                for (u, f) in units { t = t.replace(&format!("{{@{u}}}"), &super::attack_stats::num(*f)); }
+                out.code.push(super::attack_stats::fill(&t, stats[k], stats));
+            }
+            out.calls.push(c.call.clone());
+            if !out.replaced.contains(&c.replaces) { out.replaced.push(c.replaces.clone()) }
         }
-        (text, replaced)
+        out
     }
 }

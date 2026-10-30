@@ -68,23 +68,17 @@ Actions.enabled = function(me, n) {
 
 // the source's engine puts every attack turned off back on when the fighter lands (measured:
 // pikachu's side special from a jump refuses his up special until he is down, and gives it back
-// once he is), watched by a timer for as long as one is off
+// once he is): the engine's own landing, listened for from the first time one is turned off
 Actions.watch = function(me) {
+	if (me.__actWatch == true) return;
+	me.__actWatch = true;
+	me.__fm.addEventListener(GameObjectEvent.LAND, function(e) { Actions.landed(me); }, { persistent: true });
+};
+Actions.landed = function(me) {
 	var fm = me.__fm;
-	if (me.__actWatch != null) return;
-	var s = { airborne: !fm.isOnFloor() };
-	var id = -1;
-	id = fm.addTimer(1, -1, function(?t) {
-		if (fm.isDisposed()) return;
-		if (me.__actOff == null || me.__actOff.length == 0) { fm.removeTimer(id); me.__actWatch = null; return; }
-		if (!fm.isOnFloor()) { s.airborne = true; return; }
-		if (!s.airborne) return;
-		s.airborne = false;
-		while (me.__actOff.length > 0) {
-			fm.removeStatusEffect(StatusEffectType.DISABLE_ACTION, me.__actEffect[0]);
-			me.__actOff.splice(0, 1);
-			me.__actEffect.splice(0, 1);
-		}
-	}, { persistent: true });
-	me.__actWatch = id;
+	while (me.__actOff.length > 0) {
+		fm.removeStatusEffect(StatusEffectType.DISABLE_ACTION, me.__actEffect[0]);
+		me.__actOff.splice(0, 1);
+		me.__actEffect.splice(0, 1);
+	}
 };
