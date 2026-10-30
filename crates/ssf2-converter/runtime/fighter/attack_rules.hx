@@ -97,22 +97,18 @@ AttackRules.ground = function(me) {
 // its motion. the conversion puts what an attack declares, and what its code writes as a plain
 // value, on the animation's own stats (`runtime/attack_stats.jsonc`); what is left here is what
 // the engine has no stat for, and a value the code works out as it plays. a positive slowdown is
-// a share kept each frame (jigglypuff's side special keeps 0.8), kept here as its square root
-// each of this engine's frames, with the engine's friction off
+// a share kept each frame (jigglypuff's side special keeps 0.8), run by the attack's own first-frame
+// code (`attack_stats.jsonc`). not ported: a share its code works out or writes as it plays
 AttackRules.motion = function(me) {
 	var fm = me.__fm;
 	var u = PeptideRuntime.data.units;
 	var written = Attacks.overrides(me);
 	var o = {};
 	var any = false;
-	me.__decayMul = null;
-	me.__decayMulAir = null;
 	var v = AttackRules.stat(me, "xSpeedDecay");
-	if (v != null && v > 0) { me.__decayMul = Math.sqrt(v); o.friction = 0; any = true; }
-	else if (v != null && v < 0 && written.exists("xSpeedDecay")) { o.friction = -v * u.accel; any = true; }
+	if (v != null && v < 0 && written.exists("xSpeedDecay")) { o.friction = -v * u.accel; any = true; }
 	v = AttackRules.stat(me, "xSpeedDecayAir");
-	if (v != null && v > 0) { me.__decayMulAir = Math.sqrt(v); o.aerialFriction = 0; any = true; }
-	else if (v != null && v < 0 && written.exists("xSpeedDecayAir")) { o.aerialFriction = -v * u.accel; any = true; }
+	if (v != null && v < 0 && written.exists("xSpeedDecayAir")) { o.aerialFriction = -v * u.accel; any = true; }
 	if (written.exists("xSpeedCap")) { o.groundSpeedCap = AS3.num(written.get("xSpeedCap")) * u.speed; any = true; }
 	if (written.exists("xSpeedAccel")) { o.groundSpeedAcceleration = AS3.num(written.get("xSpeedAccel")) * u.accel; any = true; }
 	if (written.exists("xSpeedAccelAir")) { o.aerialSpeedAcceleration = AS3.num(written.get("xSpeedAccelAir")) * u.accel; any = true; }
@@ -191,8 +187,6 @@ AttackRules.ended = function(me) {
 	if (me.__endVoice == true) Sounds.stopLast(me, true);
 	me.__endSound = false;
 	me.__endVoice = false;
-	me.__decayMul = null;
-	me.__decayMulAir = null;
 	me.__ctlOn = null;
 };
 
@@ -201,8 +195,8 @@ AttackRules.ended = function(me) {
 AttackRules.ease = function(me) {
 	var cap = AttackRules.easeCap(me);
 	me.__fm.updateAnimationStats({ terminalVelocity: cap == null ? -1 : cap });
-	// the source clamps the fall to it on the spot; this engine only stops gravity past it
-	if (cap != null && me.__fm.getYVelocity() > cap) me.__fm.setYVelocity(cap);
+	// not ported: the source clamps the fall to it on the spot, where this engine only stops adding
+	// gravity past it (a fall already faster than the cap keeps its speed a frame)
 };
 // the fall its attack's ease holds it to, in this engine's units (null when none is in force)
 AttackRules.easeCap = function(me) {
@@ -228,8 +222,6 @@ AttackRules.engineFrame = function(me) {
 	// an attack's `hit_ease` moves nothing the source shows: link's forward air (2) and pikachu's
 	// (-3) fall on through their hit at the speed they had, land, and are cut to their landing,
 	// where holding the fall here (or popping it up) kept them in the air for a second hit
-	var m = fm.isOnFloor() ? me.__decayMul : me.__decayMulAir;
-	if (m != null) fm.setXVelocity(fm.getXVelocity() * m);
 	// a landing's own animation states its steering itself (what the source's landing wrote)
 	var landing = PeptideRuntime.data.isLanding != null && PeptideRuntime.data.isLanding(fm.getAnimation()) == true;
 	if (me.__ctlOn != null && !landing) {

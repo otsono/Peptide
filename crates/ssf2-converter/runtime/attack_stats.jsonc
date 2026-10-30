@@ -9,7 +9,7 @@
 //   speed     the value in this engine's speed units
 //   accel     the value in this engine's acceleration units
 //   less      a slowdown the source states as a negative amount a frame, as this engine's
-//             friction (a positive one keeps a share of the speed instead: `share` below)
+//             friction (a positive one keeps a share of the speed instead: its `code` below)
 //   cap       a speed cap in this engine's speed units, or off (-1) when the source's is negative
 //   zero      0
 //   unset     -1, which the engine reads as the fighter's own value
@@ -76,6 +76,11 @@
     // engine turns no one in a throw: a throw that flips is drawn and launched already turned
     // (entity_gen.rs `turned_throws`), and the thrower turns once it is over
     "flip": { "when": "true", "first": true, "text": "if (self.inState(CState.THROW_UP) || self.inState(CState.THROW_DOWN) || self.inState(CState.THROW_FORWARD) || self.inState(CState.THROW_BACK) || self.inState(CState.GRAB_HOLD)) PeptideRuntime.object.__turnAtEnd = true; else if (self.isFacingRight()) self.faceLeft(); else self.faceRight();" },
+    // a positive slowdown keeps a share of the speed each source frame (jigglypuff's side special
+    // keeps 0.8), on the floor or in the air: the engine's friction off for the animation, and its
+    // square root kept each engine frame until another animation plays
+    "xSpeedDecay": { "when": "positive", "text": "(function() { if (self.exports.__keepWatch != null) self.removeTimer(self.exports.__keepWatch); var a = self.getAnimation(); self.updateAnimationStats({ friction: 0 }); var id = -1; id = self.addTimer(1, -1, function(?t) { if (self.getAnimation() != a) { self.removeTimer(id); return; } if (self.isOnFloor()) self.setXVelocity(self.getXVelocity() * Math.sqrt({v})); }, { persistent: false }); self.exports.__keepWatch = id; })();" },
+    "xSpeedDecayAir": { "when": "positive", "text": "(function() { if (self.exports.__keepWatchAir != null) self.removeTimer(self.exports.__keepWatchAir); var a = self.getAnimation(); self.updateAnimationStats({ aerialFriction: 0 }); var id = -1; id = self.addTimer(1, -1, function(?t) { if (self.getAnimation() != a) { self.removeTimer(id); return; } if (!self.isOnFloor()) self.setXVelocity(self.getXVelocity() * Math.sqrt({v})); }, { persistent: false }); self.exports.__keepWatchAir = id; })();" },
     // the source's combo protocol, which its engine runs and the clip only answers: while the
     // attack plays, its button pressed (or held, for one that repeats on a hold) tells the clip to
     // go on, through the two fields the fighter keeps (handled, continuePlaying); one that also
