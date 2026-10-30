@@ -11,6 +11,7 @@
 //! reported instead of guessed at.
 
 pub mod attack_stats;
+pub mod projectile_stats;
 pub mod autolink;
 pub mod engine_anims;
 pub mod events;

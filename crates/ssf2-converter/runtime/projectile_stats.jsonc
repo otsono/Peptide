@@ -1,0 +1,47 @@
+// what a projectile's declared stats have it do as it flies, as its own engine timers, settled at
+// conversion. the source's engine moves a projectile by these stats every frame; here each one it
+// states puts a timer on it as it starts (`self` is the projectile), running every engine frame
+// until it ends, standing still while it is frozen by a hit, and doing nothing while it plays its
+// end.
+//
+// each row, by the stat that takes it:
+//   when       `positive`, `negative`, `nonnegative`, `true` or `false`: the value it holds for
+//   yields_to  another row that, taken too, does this one's work as well
+//   reads      the other stats its code reads
+//   replaces   the runtime's piece it stands in for
+//   text       the code: `{v}` the stat's value, `{name}` another stat the projectile states (0
+//              when none, `{name|d}` d), `{@speed}` `{@accel}` `{@size}` the source's units in
+//              this engine's
+// a row is not taken when the projectile's own code changes a stat it reads as it flies, or
+// another declaration that shares its clip states one otherwise: the runtime's piece runs then
+{
+  "code": {
+    // homing: the heading turns toward the middle of the nearest opponent that can be hit, a share
+    // of the turn each source frame (`homingEase`, half as much an engine frame), keeping its own
+    // speed less its slowdown (samus's missile, launched at 10 with 0.15, slows by 0.15 a source
+    // frame while it turns). it flies its first source frame straight
+    "homingSpeed": { "when": "nonnegative", "reads": ["xdecay", "homingEase"], "replaces": "Projectiles.steer",
+      "text": "(function() { var d = {xdecay|0} * {@speed} * 0.5; var ease = Math.max(1, {homingEase|1}) * 2; var s = { n: 0, heading: null }; self.addTimer(1, -1, function(?t) { if (self.getState() == PState.DESTROYING) return; s.n++; if (s.n < 2) { if (d != 0) self.setXSpeed(self.getXSpeed() - d); return; } var sp = Math.sqrt(self.getXSpeed() * self.getXSpeed() + self.getYSpeed() * self.getYSpeed()) - d; if (sp < 0) sp = 0; var target = null; var best = 1.0e12; for (c in match.getCharacters()) { if (c == self.getOwner() || c.isDisposed() || c.hasBodyStatus(BodyStatus.INTANGIBLE) || c.hasBodyStatus(BodyStatus.INVINCIBLE)) continue; var dx = c.getX() - self.getX(); var dy = c.getY() - self.getY(); if (dx * dx + dy * dy < best) { best = dx * dx + dy * dy; target = c; } } if (target == null) return; var ty = target.getY() - target.getCharacterStat(target.isOnFloor() ? \"floorHeadPosition\" : \"aerialHeadPosition\") / 2; var want = Math.atan2(ty - self.getY(), target.getX() - self.getX()); if (s.heading == null) s.heading = Math.atan2(self.getYSpeed(), self.flipX(self.getXSpeed())); var diff = want - s.heading; while (diff > Math.PI) diff -= 2 * Math.PI; while (diff < -Math.PI) diff += 2 * Math.PI; s.heading += diff / ease; self.setXSpeed(self.flipX(Math.cos(s.heading) * sp)); self.setYSpeed(Math.sin(s.heading) * sp); }, { persistent: true, pauseCondition: function() { return self.getHitstop() > 0; } }); })();" },
+    // its x slowdown: a steady push back against the way it faces, each source frame. it stops at
+    // nothing when it slows a shot going forward; a negative one speeds it up (zelda's din's fire),
+    // and one going backward keeps on speeding back (link's boomerang on its way home)
+    "xdecay": { "when": "true", "yields_to": "homingSpeed", "reads": ["homingSpeed"], "replaces": "Projectiles.steer",
+      "text": "(function() { var d = {v} * {@speed} * 0.5; self.addTimer(1, -1, function(?t) { if (self.getState() == PState.DESTROYING) return; var v = self.getXSpeed(); var w = v - d; self.setXSpeed(d > 0 && v >= 0 && w < 0 ? 0 : w); }, { persistent: true, pauseCondition: function() { return self.getHitstop() > 0; } }); })();" },
+    // the owner's held stick nudges it, per axis: stepped toward the held way by the axis' factor
+    // each engine frame, back toward nothing when the stick is let go, capped at its movement, and
+    // added to where it is on top of its own flight
+    "influenceXMovement": { "when": "positive", "reads": ["influenceYMovement", "influenceXFactor", "influenceYFactor"], "replaces": "Projectiles.influence",
+      "text": "(function() { var xm = {v} * {@speed}; var ym = {influenceYMovement|0} * {@speed}; var xf = {influenceXFactor|0} * {@speed}; var yf = {influenceYFactor|0} * {@speed}; var s = { x: 0.0, y: 0.0 }; var step = function(v, f, cap, plus, minus) { if (plus == true) v += f; else if (minus == true) v -= f; else if (v > 0) { v -= f; if (v < 0) v = 0; } else if (v < 0) { v += f; if (v > 0) v = 0; } if (v > cap) v = cap; if (v < -cap) v = -cap; return v; }; self.addTimer(1, -1, function(?t) { if (self.getState() == PState.DESTROYING) return; var o = self.getOwner(); if (o == null || o.getHeldControls == null) return; var c = o.getHeldControls(); if (xm > 0) s.x = step(s.x, xf, xm, c.RIGHT, c.LEFT); if (ym > 0) s.y = step(s.y, yf, ym, c.DOWN, c.UP); self.setX(self.getX() + s.x); self.setY(self.getY() + s.y); }, { persistent: true, pauseCondition: function() { return self.getHitstop() > 0; } }); })();" },
+    "influenceYMovement": { "when": "positive", "yields_to": "influenceXMovement", "reads": ["influenceXMovement", "influenceYFactor"], "replaces": "Projectiles.influence",
+      "text": "(function() { var ym = {v} * {@speed}; var yf = {influenceYFactor|0} * {@speed}; var s = { y: 0.0 }; var step = function(v, f, cap, plus, minus) { if (plus == true) v += f; else if (minus == true) v -= f; else if (v > 0) { v -= f; if (v < 0) v = 0; } else if (v < 0) { v += f; if (v > 0) v = 0; } if (v > cap) v = cap; if (v < -cap) v = -cap; return v; }; self.addTimer(1, -1, function(?t) { if (self.getState() == PState.DESTROYING) return; var o = self.getOwner(); if (o == null || o.getHeldControls == null) return; var c = o.getHeldControls(); s.y = step(s.y, yf, ym, c.DOWN, c.UP); self.setY(self.getY() + s.y); }, { persistent: true, pauseCondition: function() { return self.getHitstop() > 0; } }); })();" },
+    // the owner aims it with the stick, eight ways, at its launch's x speed: eased a sixth of the
+    // way toward the aim each engine frame when `calcAngle` is set, snapped to it otherwise. it
+    // starts along the angle stated
+    "controlDirection": { "when": "nonnegative", "reads": ["xspeed", "calcAngle"], "replaces": "Projectiles.control",
+      "text": "(function() { var sp = Math.abs({xspeed|0} * {@speed}); var s = { aim: {v} * Math.PI / 180 }; self.addTimer(1, -1, function(?t) { if (self.getState() == PState.DESTROYING) return; var o = self.getOwner(); if (o != null && o.getHeldControls != null) { var c = o.getHeldControls(); var want = -1.0; if (c.UP && c.LEFT) want = 2.35619449; else if (c.UP && c.RIGHT) want = 0.78539816; else if (c.DOWN && c.LEFT) want = 3.92699082; else if (c.DOWN && c.RIGHT) want = 5.49778714; else if (c.UP) want = 1.57079633; else if (c.DOWN) want = 4.71238898; else if (c.LEFT) want = 3.14159265; else if (c.RIGHT) want = 0; if (want >= 0) { if ({calcAngle|0} != 0) { var d = want - s.aim; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; s.aim += d / 6; } else s.aim = want; } } self.setXSpeed(self.flipX(Math.cos(s.aim) * sp)); self.setYSpeed(-Math.sin(s.aim) * sp); }, { persistent: true, pauseCondition: function() { return self.getHitstop() > 0; } }); })();" },
+    // turned to face the way it flies. this engine turns an object after mirroring it, so one
+    // facing left turns the other way round for the same climb
+    "rotate": { "when": "true", "replaces": "Projectiles.rotate",
+      "text": "self.addTimer(1, -1, function(?t) { if (self.getState() == PState.DESTROYING) return; var vx = self.getXVelocity(); var vy = self.getYVelocity(); if (vx == 0 && vy == 0) return; var a = Math.atan2(vy, self.isFacingRight() ? vx : -vx) * 180 / Math.PI; self.setRotation(self.isFacingRight() ? a : -a); }, { persistent: true, pauseCondition: function() { return self.getHitstop() > 0; } });" }
+  }
+}

@@ -34,61 +34,32 @@ Fighters.endAnimation = function(me) {
 	else fm.toState(CState.FALL);
 };
 
-// the speeds the fighter's code set this time: its walk answers an x speed
+// the speeds the fighter's code set this time: a zero x speed it writes on the floor under a held
+// direction is the walk's own starting speed (accel_start of norm_xSpeed, both declared) on the
+// source, which walks on from it (bowser writes 0 on his walk's first frame and walks at 2.5)
 Fighters.speedsSet = function(me, x) {
-	if (x) Fighters.xSet(me, me.__fm.getXSpeed() / PeptideRuntime.data.units.speed);
-};
-// an x speed the fighter's code set, on the floor. under a held direction the source's walk
-// takes a zero to its starting speed (accel_start of norm_xSpeed, both declared) on its next step,
-// so a fighter whose walk starts from nothing (sandbag) stops dead until its next write, and one
-// whose walk starts moving (bowser writes 0 on his walk's first frame) walks on. a zero with no
-// starting speed is held until the next write or the next animation, where this engine's walk
-// would accelerate it.
-// not ported: a nonzero speed written under a held direction takes one source frame of the walk's
-// acceleration first on the source (bowser's 2 reads 2.5 a frame early there); here it walks up to it
-Fighters.xSet = function(me, v) {
+	if (!x || me != PeptideRuntime.object) return;
 	var fm = me.__fm;
-	var c = fm.isOnFloor() ? fm.getHeldControls() : null;
-	var held = c != null && (c.LEFT || c.RIGHT);
-	if (v == 0 && held && me == PeptideRuntime.object) {
-		var st = PeptideRuntime.data.object.stats;
-		var start = AS3.num(AS3.at(st, "accel_start")) * AS3.num(AS3.at(st, "norm_xSpeed"));
-		if (start > 0) {
-			me.__xHold = null;
-			fm.setXSpeed(start * PeptideRuntime.data.units.speed);
-			return;
-		}
-	}
-	var hold = (v == 0 && fm.isOnFloor()) ? fm.getAnimation() : null;
-	if (hold != null && me.__xHold == null) me.__xHoldAt = fm.getX();
-	me.__xHold = hold;
+	if (fm.getXSpeed() != 0 || !fm.isOnFloor()) return;
+	var c = fm.getHeldControls();
+	if (c == null || !(c.LEFT || c.RIGHT)) return;
+	var st = PeptideRuntime.data.object.stats;
+	var start = AS3.num(AS3.at(st, "accel_start")) * AS3.num(AS3.at(st, "norm_xSpeed"));
+	if (start > 0) fm.setXSpeed(start * PeptideRuntime.data.units.speed);
 };
 
 // not ported, small enough not to feel:
+// - a zero x speed the fighter's code writes on the floor, where the walk starts from nothing
+//   (sandbag): the source holds it still until the next write, this engine's walk accelerates it
+// - an attack catches a ledge by its own grab box as this engine's states allow, toward the way it
+//   faces (the source tries any attack in the air, either way: falco's side special, dashed off
+//   the stage facing away from it, hangs from the ledge there)
 // - a hit freezes the attacker still; the source runs its attack's slowdown through the freeze and
 //   this engine does not (wario's side special slides 18 pixels off a hit here, 7 there)
 // - a grounded attack out of a walk or dash: the source slows it from its first frame, this engine
 //   carries the old speed two frames first (falco's forward tilt slides 27.6 here, 15.5 there)
 
-// an attack in the air catches a ledge its grab box meets, as the source's does for any attack and
-// whichever way the fighter faces (falco's side special, dashed off the stage facing away from it,
-// hangs from the ledge there; it fell past it here): this engine tries a grab only from the states
-// it falls in, and toward the way the fighter faces, so the runtime tries it for an attack, turned
-// back if the grab does not take, and not while down is held
-Fighters.attackLedge = function(me) {
-	var fm = me.__fm;
-	if (!fm.inStateGroup(CStateGroup.ATTACK) || fm.isOnFloor()) return;
-	var c = fm.getHeldControls();
-	if (c != null && c.DOWN == true) return;
-	if (fm.attemptLedgeGrab()) return;
-	var right = fm.isFacingRight();
-	if (right) fm.faceLeft() else fm.faceRight();
-	if (fm.attemptLedgeGrab()) return;
-	if (right) fm.faceRight() else fm.faceLeft();
-};
-
 Fighters.engineFrame = function(me) {
-	Fighters.attackLedge(me);
 	me.__stood = me.__fm.isOnFloor();
 	Fighters.relaunch(me);
 	Attacks.carry(me);
@@ -115,30 +86,26 @@ Fighters.engineFrame = function(me) {
 	}
 	AttackRules.engineFrame(me);
 	for (st in me.__selfPlatforms) { st.setX(me.__fm.getX()); st.setY(me.__fm.getY()); }
-	Fighters.rocketFrame(me);
-	if (me.__xHold != null) {
-		var fm = me.__fm;
-		if (fm.getAnimation() != me.__xHold) me.__xHold = null;
-		else { fm.setXSpeed(0); fm.setX(me.__xHoldAt); }
-	}
 };
 
 // a fighter riding a rocket moves by it alone while the attack it rides lasts: the speed it was
-// given, then `decay` less each frame down to nothing (measured on samus's bomb lift: a pixel up,
-// then 9, 9, 8, ... 1, then held still until her move ends)
-Fighters.rocketFrame = function(me) {
-	var r = me.__rocket;
-	if (r == null) return;
+// given, then `decay` less each source frame down to nothing (measured on samus's bomb lift: a
+// pixel up, then 9, 9, 8, ... 1, then held still until her move ends), on a timer of its own
+Fighters.ride = function(me, r) {
 	var fm = me.__fm;
-	if (fm.getAnimation() != r.anim) { me.__rocket = null; return; }
-	if (r.n >= 2 && r.n % 2 == 0) {
-		r.vx = r.vx > 0 ? Math.max(0, r.vx - r.dx) : Math.min(0, r.vx + r.dx);
-		r.vy = r.vy > 0 ? Math.max(0, r.vy - r.dy) : Math.min(0, r.vy + r.dy);
-	}
-	r.n++;
 	var u = PeptideRuntime.data.units.speed;
-	fm.setXSpeed(r.vx * u);
-	fm.setYSpeed(r.vy * u);
+	var id = -1;
+	id = fm.addTimer(1, -1, function(?t) {
+		if (fm.isDisposed()) return;
+		if (fm.getAnimation() != r.anim) { fm.removeTimer(id); return; }
+		if (r.n >= 2 && r.n % 2 == 0) {
+			r.vx = r.vx > 0 ? Math.max(0, r.vx - r.dx) : Math.min(0, r.vx + r.dx);
+			r.vy = r.vy > 0 ? Math.max(0, r.vy - r.dy) : Math.min(0, r.vy + r.dy);
+		}
+		r.n++;
+		fm.setXSpeed(r.vx * u);
+		fm.setYSpeed(r.vy * u);
+	}, { persistent: true, pauseCondition: function() { return fm.getHitstop() > 0; } });
 };
 
 // an animation that runs out is the engine's to act on (its state machine ends it)
@@ -202,7 +169,7 @@ Fighters.begin = function(me) {
 	me.__fm.exports.__startRocket = function(r) {
 		Fighters.startAsked(me, r.attack, "rocket");
 		r.anim = me.__fm.getAnimation();
-		me.__rocket = r;
+		Fighters.ride(me, r);
 	};
 	me.__fm.addEventListener(GameObjectEvent.ENTER_HITSTOP, function(?e) { Fighters.relaunch(me); }, { persistent: true });
 	me.__used = new haxe.ds.StringMap();
@@ -477,7 +444,6 @@ Fighters.frame = function(me) {
 	// a throw its item asked for, from the item's own script
 	if (me.__fm.exports.__askToss == true) { me.__fm.exports.__askToss = null; Items.throwAsked(me); }
 	AttackRules.frame(me);
-	Actions.frame(me);
 	Items.frame(me);
 };
 

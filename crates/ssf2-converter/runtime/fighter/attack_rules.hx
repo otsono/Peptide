@@ -117,16 +117,34 @@ AttackRules.motion = function(me) {
 
 // steering. the conversion puts what an attack declares, and what its code writes as a plain
 // value, on the animation's own stats (`runtime/attack_stats.jsonc`); what is left here is a value
-// the code works out as it plays: in the air when the attack allows control, on the ground only
-// when it also allows ground control
+// the code works out as it plays, held by a timer for as long as the attack lasts: in the air when
+// the attack allows control, on the ground only when it also allows ground control (a landing's
+// own animation states its steering itself, what the source's landing wrote)
 AttackRules.control = function(me) {
+	var fm = me.__fm;
+	AttackRules.stopControl(me);
 	var written = Attacks.overrides(me);
-	me.__ctlApplied = null;
-	if (!written.exists("allowControl") && !written.exists("allowControlGround")) { me.__ctlOn = null; return; }
-	me.__ctlOn = AttackRules.stat(me, "allowControl");
+	if (!written.exists("allowControl") && !written.exists("allowControlGround")) return;
+	var on = AttackRules.stat(me, "allowControl");
 	var g = AttackRules.stat(me, "allowControlGround");
-	me.__ctlGround = g == null ? true : AS3.truthy(g);
-	if (me.__ctlOn == null && g != null) me.__ctlOn = false;
+	var ground = g == null ? true : AS3.truthy(g);
+	if (on == null && g != null) on = false;
+	if (on == null) return;
+	var base = me.__rulesBase;
+	var s = { applied: null };
+	var id = -1;
+	id = fm.addTimer(1, -1, function(?t) {
+		if (fm.isDisposed()) return;
+		if (me.__rulesBase != base) { fm.removeTimer(id); return; }
+		if (PeptideRuntime.data.isLanding != null && PeptideRuntime.data.isLanding(fm.getAnimation()) == true) return;
+		var want = AS3.truthy(on) && (!fm.isOnFloor() || ground);
+		if (want != s.applied) { s.applied = want; fm.updateAnimationStats({ allowMovement: want }); }
+	}, { persistent: true });
+	me.__ctlWatch = id;
+};
+AttackRules.stopControl = function(me) {
+	if (me.__ctlWatch != null && !me.__fm.isDisposed()) me.__fm.removeTimer(me.__ctlWatch);
+	me.__ctlWatch = null;
 };
 
 // the attack hits again every `refreshRate` of the source's frames while it lasts (the source's
@@ -187,7 +205,7 @@ AttackRules.ended = function(me) {
 	if (me.__endVoice == true) Sounds.stopLast(me, true);
 	me.__endSound = false;
 	me.__endVoice = false;
-	me.__ctlOn = null;
+	AttackRules.stopControl(me);
 };
 
 // air ease its code works out as it plays: the engine's own cap on the fall (a plain value is
@@ -222,10 +240,4 @@ AttackRules.engineFrame = function(me) {
 	// an attack's `hit_ease` moves nothing the source shows: link's forward air (2) and pikachu's
 	// (-3) fall on through their hit at the speed they had, land, and are cut to their landing,
 	// where holding the fall here (or popping it up) kept them in the air for a second hit
-	// a landing's own animation states its steering itself (what the source's landing wrote)
-	var landing = PeptideRuntime.data.isLanding != null && PeptideRuntime.data.isLanding(fm.getAnimation()) == true;
-	if (me.__ctlOn != null && !landing) {
-		var want = AS3.truthy(me.__ctlOn) && (!fm.isOnFloor() || me.__ctlGround);
-		if (want != me.__ctlApplied) { me.__ctlApplied = want; fm.updateAnimationStats({ allowMovement: want }); }
-	}
 };

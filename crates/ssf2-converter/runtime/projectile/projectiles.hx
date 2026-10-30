@@ -18,14 +18,10 @@ Projectiles.playsOut = false;
 Projectiles.afterSwitch = function(me) { Attacks.carry(me); };
 // where it comes in the source engine's pass over its objects: after the fighters
 Projectiles.order = 1;
-// a projectile made in the projectiles' own pass waits a source frame before its clip starts
-Projectiles.waits = function(me) {
-	if (me.__late == null || me.__late <= 0) return false;
-	me.__late--;
-	if (me.__late > 0) return true;
-	if (!me.__fm.isDisposed()) me.__fm.resume();
-	return false;
-};
+// not ported: one made in the projectiles' own pass (by another projectile's code) waits a source
+// frame on the source before its clip starts; here it starts at once (pichu's bolt arrives a frame
+// early)
+Projectiles.waits = function(me) { return false; };
 // its clip keeps its own stops (measured: a held frame stays where it is while it flies)
 // its animation clip plays on every frame, as a fighter's does, whatever a stop on it says (ness's
 // pk flash is sent to `boom` with a gotoAndStop and plays its blast out to the frame that ends it)
@@ -80,12 +76,11 @@ Projectiles.fire = function(owner, name, ?x, ?y, ?place, ?stats) {
 	if (xs == null) xs = Projectiles.declared(decl, ["groundSpeedCap", "ground_speed_cap", "aerialSpeedCap", "aerial_speed_cap"]);
 	var ys = Projectiles.declared(decl, ["yspeed", "ySpeed", "y_speed"]);
 	// made by code of an object the source's engine updates as late as a projectile or later (another
-	// projectile), it starts on the next pass: the source's engine updates fighters, then
-	// projectiles, and one made in the projectiles' pass waits for the next to move on
+	// projectile): the source's projectiles all belong to a fighter
 	var late = (PeptideRuntime.kind != null && PeptideRuntime.kind.order >= Projectiles.order) || (fm.exports != null && fm.exports.__inPass != null && fm.exports.__inPass > 0);
 	var g = Projectiles.declared(decl, ["gravity"]);
 	var gmax = Projectiles.declared(decl, ["maxgravity"]);
-	var launch = { x: px, y: py, xs: null, ys: null, name: n, decl: given, late: late, g: g == null ? 0 : AS3.num(g) * u.accel,
+	var launch = { x: px, y: py, xs: null, ys: null, name: n, decl: given, g: g == null ? 0 : AS3.num(g) * u.accel,
 		max: gmax == null ? null : AS3.num(gmax) * u.speed };
 	if ((xs != null && xs != 0) || (ys != null && ys != 0)) {
 		launch.xs = flipX(AS3.num(xs) * u.speed);
@@ -94,7 +89,7 @@ Projectiles.fire = function(owner, name, ?x, ?y, ?place, ?stats) {
 	// whose it is: the fighter's, when another projectile makes it (the source's projectiles all
 	// belong to a fighter, and this engine ends one along with the projectile that owns it)
 	var own = fm;
-	if (launch.late && fm.getOwner != null && fm.getOwner() != null && !fm.getOwner().isDisposed()) own = fm.getOwner();
+	if (late && fm.getOwner != null && fm.getOwner() != null && !fm.getOwner().isDisposed()) own = fm.getOwner();
 	// the launch comes first, as the source's engine gives it before the projectile's own code
 	// runs (which may change it): the projectile takes it up as it starts
 	own.exports.__launch = launch;
@@ -169,9 +164,6 @@ Projectiles.begin = function(me) {
 		var l = owner.exports.__launch;
 		owner.exports.__launch = null;
 		Projectiles.launch(fm, l);
-		// held on its first frame for one of the source's (its animation paused: set back to its
-		// first frame the engine would stop)
-		if (l.late == true) { me.__late = 2; fm.pause(); }
 	}
 	if (owner != null) fm.setCostumeIndex(owner.getCostumeIndex());
 	if (AS3.truthy(Projectiles.stat(me, "canBeReversed")) || Projectiles.stat(me, "canBeReversed") == null) {

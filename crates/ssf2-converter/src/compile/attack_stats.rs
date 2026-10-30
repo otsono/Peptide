@@ -64,7 +64,17 @@ pub fn table() -> &'static AttackStats {
     })
 }
 
-fn num(v: f64) -> String {
+/// a code row's text with `{v}` the stat's value and `{name}` the value of another stat stated
+/// alongside (`{name|d}` gives `d` when it states none, else 0)
+pub(crate) fn fill(text: &str, v: f64, stats: &BTreeMap<String, f64>) -> String {
+    let named = crate::re!(r"\{([A-Za-z_]\w*)(?:\|(-?[0-9.]+))?\}");
+    let t = text.replace("{v}", &num(v));
+    named.replace_all(&t, |m: &regex::Captures| {
+        stats.get(&m[1]).map(|x| num(*x)).unwrap_or_else(|| m.get(2).map_or("0".to_string(), |d| d.as_str().to_string()))
+    }).into_owned()
+}
+
+pub(crate) fn num(v: f64) -> String {
     if v == v.trunc() && v.abs() < 1e15 { format!("{}", v as i64) } else { format!("{}", (v * 1e6).round() / 1e6) }
 }
 
@@ -101,16 +111,11 @@ impl AttackStats {
     /// animation runs it (`first`), rather than every one under its label
     pub fn first_frame(&self, stats: &BTreeMap<String, f64>) -> Vec<(bool, String)> {
         let mut out = Vec::new();
-        let named = crate::re!(r"\{([A-Za-z_]\w*)(?:\|(-?[0-9.]+))?\}");
         for (key, c) in &self.code {
             let Some(&v) = stats.get(key) else { continue };
             let ok = match c.when.as_deref() { Some("positive") => v > 0.0, Some("negative") => v < 0.0, Some("true") => v != 0.0, Some("false") => v == 0.0, _ => true };
             if !ok || c.unless.as_ref().is_some_and(|u| stats.get(u) == Some(&0.0)) { continue }
-            let t = c.text.replace("{v}", &num(v));
-            let t = named.replace_all(&t, |m: &regex::Captures| {
-                stats.get(&m[1]).map(|x| num(*x)).unwrap_or_else(|| m.get(2).map_or("0".to_string(), |d| d.as_str().to_string()))
-            }).into_owned();
-            out.push((c.first, t));
+            out.push((c.first, fill(&c.text, v, stats)));
         }
         out
     }

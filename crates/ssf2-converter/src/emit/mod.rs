@@ -693,6 +693,7 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
         // what it says itself: its declared stats, its own class and the ones it extends, and the
         // code on its own frames (not the package's other classes, which every script carries)
         let mut text = format!("{:?}", spec.stats);
+        let declared = text.len();
         // (its code is the classes bound to its clip and to the clips placed inside it, where the
         // declaration names a base: pikachu's jolt hops from a clip it places)
         let tree = clip_tree(model, clip_sym);
@@ -710,7 +711,23 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
         for ((s, _), (_, t)) in &frames { if tree.contains(s) { text.push_str(t) } }
         let item = decls.items.entries().iter().any(|(n, d)| n == title
             || d.get("linkage_id").and_then(|v| v.str()) == Some(clip.as_str()));
-        out.push_str(&projectile_frames(&text, item));
+        // what its declared stats have it do as it flies, as its own timers (runtime/
+        // projectile_stats.jsonc), where nothing changes them as it flies: its code names none of
+        // them, and every declaration sharing its clip states them alike. a held item flies by its
+        // holder, and keeps the runtime's
+        let code = &text[declared..];
+        let stats: BTreeMap<String, f64> = spec.stats.entries().iter().filter_map(|(k, v)| match v {
+            Value::Num(n) => Some((k.clone(), *n)), Value::Bool(b) => Some((k.clone(), if *b { 1.0 } else { 0.0 })), _ => None }).collect();
+        let entity = spec.entities.get(title);
+        let sharing: Vec<&Value> = decls.projectiles.entries().iter().chain(decls.items.entries())
+            .filter(|(n, d)| (entity.is_some() && spec.entities.get(n) == entity) || d.get("linkage_id").and_then(|v| v.str()) == Some(clip.as_str()))
+            .map(|(_, d)| d).collect();
+        let written = |k: &str| crate::dyn_re(&format!(r"\b{k}\b")).is_match(code)
+            || sharing.iter().any(|d| format!("{:?}", d.get(k)) != format!("{:?}", spec.stats.get(k)));
+        let units_of = [("speed", units.speed), ("accel", units.accel), ("size", units.size)];
+        let (native, replaced) = if item { (vec![], vec![]) } else { compile::projectile_stats::table().rows(&stats, &written, &units_of) };
+        out.push_str(&projectile_frames(&text, item, &replaced));
+        out.push_str(&format!("DATA.nativeStats = function() {{\n{}}};\n", native.iter().map(|t| format!("\t{t}\n")).collect::<String>()));
     }
     let native = if matches!(spec.kind, "projectile" | "object" | "fighter") {
         native_clip(model, pieces, clip_sym).map(|n| Native { fighter: spec.kind == "fighter", ..n })
@@ -1818,7 +1835,7 @@ fn clip_tree(model: &SourceModel, root: Option<u16>) -> BTreeSet<u16> {
     seen
 }
 
-fn projectile_frames(text: &str, item: bool) -> String {
+fn projectile_frames(text: &str, item: bool, replaced: &[String]) -> String {
     let says = |words: &[&str]| words.iter().any(|w| crate::dyn_re(&format!(r"\b{w}\b")).is_match(text));
     let ground = says(&["groundTouch", "GROUND_TOUCH"]);
     let mut frame = vec!["if (Projectiles.gone(me)) return;", "if (Projectiles.lifetime(me)) return;"];
@@ -1837,6 +1854,10 @@ fn projectile_frames(text: &str, item: bool) -> String {
     if says(&["influenceXMovement", "influenceYMovement"]) { engine.push("Projectiles.influence(me);") }
     if says(&["controlDirection"]) { engine.push("Projectiles.control(me);") }
     if says(&["rotate"]) { engine.push("Projectiles.rotate(me);") }
+    // (a piece its stats' own timers stand in for is not run here: `DATA.nativeStats`)
+    let kept = |l: &&str| !replaced.iter().any(|r| l.starts_with(&format!("{r}(")));
+    let frame: Vec<&str> = frame.into_iter().filter(kept).collect();
+    let engine: Vec<&str> = engine.into_iter().filter(kept).collect();
     format!("Projectiles.frame = function(me) {{\n\t{}\n}};\nProjectiles.engineFrame = function(me) {{\n\t{}\n}};\n",
         frame.join("\n\t"), engine.join("\n\t"))
 }
