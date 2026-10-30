@@ -378,6 +378,8 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     let class = spec.class.clone();
     let clip = spec.clip.clone();
     let clip_sym = spec.clip_sym.or_else(|| model.symbol_of(&clip));
+    // what a projectile's update calls each frame for its declared stats, where they take any
+    let mut flies: Option<String> = None;
     // the effects' clips too: any object can attach one, and its clip runs here
     let effect_syms: Vec<u16> = spec.effects.values().filter_map(|p| p.first().map(|p| p.sym)).collect();
     // a stage's camera backgrounds are clips of its own, which its code can reach into
@@ -730,8 +732,8 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
         if !taken.calls.is_empty() {
             out.push_str("// ---- what its declared stats have it do each frame it flies: runtime/projectile_stats.jsonc\n");
             for l in &taken.code { out.push_str(l); out.push('\n'); }
-            out.push_str(&format!("DATA.nativeStats = function() {{ {} }};\n", taken.calls.join(" ")));
         }
+        flies = taken.frame;
     }
     let native = if matches!(spec.kind, "projectile" | "object" | "fighter") {
         native_clip(model, pieces, clip_sym).map(|n| Native { fighter: spec.kind == "fighter", ..n })
@@ -759,7 +761,13 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     // the entry: what the engine calls
     let entry = format!("entry/{}.hx", spec.kind);
     match runtime.files.get(&entry) {
-        Some(text) => out.push_str(&format!("\n// ---- runtime: runtime/{entry}\n{text}")),
+        Some(text) => {
+            // (a projectile's update calls its stats' frame function only where they wrote one)
+            let frame = compile::projectile_stats::table().frame_call();
+            let text: String = text.lines().filter(|l| flies.is_some() || frame.as_ref().is_none_or(|f| !l.contains(f.as_str())))
+                .map(|l| format!("{l}\n")).collect();
+            out.push_str(&format!("\n// ---- runtime: runtime/{entry}\n{text}"))
+        }
         None => problems.push(format!("the runtime has no {entry}")),
     }
     // the runtime: its language layer first, then everything else in path order, pruned to what
@@ -1876,7 +1884,7 @@ fn projectile_frames(text: &str, item: bool, replaced: &[String]) -> String {
     if says(&["influenceXMovement", "influenceYMovement"]) { engine.push("Projectiles.influence(me);") }
     if says(&["controlDirection"]) { engine.push("Projectiles.control(me);") }
     if says(&["rotate"]) { engine.push("Projectiles.rotate(me);") }
-    // (a piece its stats' own code stands in for is not run here: `DATA.nativeStats`)
+    // (a piece its stats' own code stands in for is not run here: `flyByStats`)
     let kept = |l: &&str| !replaced.iter().any(|r| l.starts_with(&format!("{r}(")));
     let frame: Vec<&str> = frame.into_iter().filter(kept).collect();
     let engine: Vec<&str> = engine.into_iter().filter(kept).collect();

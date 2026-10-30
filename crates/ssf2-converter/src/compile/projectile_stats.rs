@@ -11,10 +11,10 @@ struct Code { when: Option<String>, yields_to: Option<String>, same_as: Option<S
 /// what a projectile's stats take: the lines written into its script, the calls its update makes
 /// each frame, and the runtime pieces they stand in for
 #[derive(Debug, Default)]
-pub struct Taken { pub code: Vec<String>, pub calls: Vec<String>, pub replaced: Vec<String> }
+pub struct Taken { pub code: Vec<String>, pub calls: Vec<String>, pub replaced: Vec<String>, pub frame: Option<String> }
 
 #[derive(Debug, Default)]
-pub struct ProjectileStats { code: Vec<(String, Code)> }
+pub struct ProjectileStats { code: Vec<(String, Code)>, frame: Vec<String> }
 
 pub fn table() -> &'static ProjectileStats {
     static T: OnceLock<ProjectileStats> = OnceLock::new();
@@ -23,6 +23,7 @@ pub fn table() -> &'static ProjectileStats {
         let Ok(text) = std::fs::read_to_string(dir.join("projectile_stats.jsonc")) else { return ProjectileStats::default() };
         let json: serde_json::Value = serde_json::from_str(&crate::mappings::strip_jsonc(&text)).unwrap_or_default();
         let mut t = ProjectileStats::default();
+        t.frame = json["frame"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
         if let Some(o) = json["code"].as_object() {
             t.code = o.iter().filter_map(|(k, v)| Some((k.clone(), Code {
                 when: v["when"].as_str().map(String::from),
@@ -52,6 +53,11 @@ fn holds(when: Option<&str>, v: f64) -> bool {
 }
 
 impl ProjectileStats {
+    /// the call the update makes to `frame`'s function
+    pub fn frame_call(&self) -> Option<String> {
+        self.frame.iter().find_map(|l| l.strip_prefix("function ")?.split('(').next().map(|n| format!("{n}();")))
+    }
+
     /// what a projectile's stats write into its script, what its update calls each frame, and the
     /// runtime pieces that code stands in for.
     /// a row is taken when the projectile states its stat (and its `when` holds), when nothing it
@@ -72,6 +78,16 @@ impl ProjectileStats {
             }
             out.calls.push(c.call.clone());
             if !out.replaced.contains(&c.replaces) { out.replaced.push(c.replaces.clone()) }
+        }
+        // the function the update calls, running each taken row's call
+        if !out.calls.is_empty() {
+            for line in &self.frame {
+                match line.find("{calls}") {
+                    Some(at) => out.code.extend(out.calls.iter().map(|c| format!("{}{c}", &line[..at]))),
+                    None => out.code.push(line.clone()),
+                }
+            }
+            out.frame = self.frame_call();
         }
         out
     }

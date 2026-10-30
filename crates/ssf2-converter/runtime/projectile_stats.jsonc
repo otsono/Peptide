@@ -1,7 +1,8 @@
 // what a projectile's declared stats have it do as it flies, settled at conversion. the source's
 // engine moves a projectile by these stats every frame; here each one it states writes its
 // variables and a function into the projectile's script, and its update calls that function every
-// engine frame it flies (not while it is frozen by a hit, nor while it plays its end).
+// engine frame it flies (not while it is frozen by a hit, nor while it plays its end), through
+// one `flyByStats()` that calls each row's `call` in order
 //
 // each row, by the stat that takes it:
 //   when       `positive`, `negative`, `nonnegative`, `true` or `false`: the value it holds for
@@ -15,8 +16,15 @@
 //   call       what its update runs each frame
 // a row is not taken when the projectile's own code changes a stat it reads as it flies, or
 // another declaration that shares its clip states one otherwise: the runtime's piece runs then.
-// rows run in the order written here
+// rows run in the order written here, from `frame`: the function the update calls, `{calls}` each
+// taken row's `call`
 {
+  "frame": [
+    "// what its declared stats have it do each engine frame it flies",
+    "function flyByStats() {",
+    "\t{calls}",
+    "}"
+  ],
   "code": {
     "homingSpeed": { "when": "nonnegative", "reads": ["xdecay", "homingEase"], "replaces": "Projectiles.steer", "call": "homeIn();",
       "code": [
