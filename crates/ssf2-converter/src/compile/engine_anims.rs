@@ -1,5 +1,6 @@
 //! What the source's engine does in its own states, as this engine's animations
-//! (`runtime/engine_animations.jsonc`): stats, first-frame code and points, by animation name.
+//! (`runtime/engine_animations.jsonc`): stats, first-frame code, the functions that code runs, and
+//! points, by animation name.
 //! The table says what; this reads it.
 
 use std::collections::BTreeMap;
@@ -9,8 +10,11 @@ use std::sync::OnceLock;
 pub struct EngineAnims {
     /// animation -> the stats it states, as `field: value` text
     pub stats: BTreeMap<String, String>,
-    /// animation -> the code its first frame runs
-    pub code: BTreeMap<String, String>,
+    /// animation -> the code its first frame runs, each part with the animation the fighter must
+    /// have for it to run at all
+    pub code: BTreeMap<String, Vec<(Option<String>, String)>>,
+    /// name -> a function the fighter's script holds when its animations' code names it
+    pub functions: BTreeMap<String, Vec<String>>,
     /// layer name -> (x, y, the animations that carry it)
     pub points: BTreeMap<String, (f64, f64, Vec<String>)>,
 }
@@ -28,16 +32,26 @@ pub fn table() -> &'static EngineAnims {
             v["x"].as_f64().unwrap_or(0.0), v["y"].as_f64().unwrap_or(0.0),
             v["animations"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
         ))).collect()).unwrap_or_default();
-        let mut code = strings(&json["code"]);
+        // a part is one string or an array of lines
+        let lines = |v: &serde_json::Value| -> Option<String> {
+            match v {
+                serde_json::Value::String(t) => Some(t.clone()),
+                serde_json::Value::Array(a) => Some(a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("\n")),
+                _ => None,
+            }
+        };
+        let mut code: BTreeMap<String, Vec<(Option<String>, String)>> = json["code"].as_object().map(|o| o.iter()
+            .filter_map(|(k, v)| Some((k.clone(), vec![(None, lines(v)?)]))).collect()).unwrap_or_default();
         // a watch several animations start: each one's first frame runs it after its own code
         for w in json["watches"].as_object().into_iter().flat_map(|o| o.values()) {
-            let Some(text) = w["text"].as_str() else { continue };
+            let Some(text) = lines(&w["start"]) else { continue };
+            let needs = w["needs"].as_str().map(String::from);
             for a in w["animations"].as_array().into_iter().flatten().filter_map(|x| x.as_str()) {
-                let c = code.entry(a.to_string()).or_default();
-                if !c.is_empty() { c.push(' '); }
-                c.push_str(text);
+                code.entry(a.to_string()).or_default().push((needs.clone(), text.clone()));
             }
         }
-        EngineAnims { stats: strings(&json["stats"]), code, points }
+        let functions = json["functions"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(),
+            v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default())).collect()).unwrap_or_default();
+        EngineAnims { stats: strings(&json["stats"]), code, functions, points }
     })
 }

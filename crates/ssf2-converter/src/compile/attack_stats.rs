@@ -23,7 +23,7 @@ pub struct AttackStats {
 }
 
 #[derive(Debug, Default)]
-struct Code { when: Option<String>, unless: Option<String>, first: bool, call: String, code: Vec<String>, same_as: Option<String> }
+struct Code { when: Option<String>, unless: Option<String>, first: bool, call: Vec<String>, code: Vec<String>, same_as: Option<String> }
 
 pub fn table() -> &'static AttackStats {
     static T: OnceLock<AttackStats> = OnceLock::new();
@@ -54,8 +54,8 @@ pub fn table() -> &'static AttackStats {
                 when: v["when"].as_str().map(String::from),
                 unless: v["unless"].as_str().map(String::from),
                 first: v["first"].as_bool().unwrap_or(false),
-                call: v["call"].as_str()?.to_string(),
-                code: v["code"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
+                call: lines(&v["call"])?,
+                code: lines(&v["code"]).unwrap_or_default(),
                 same_as: v["same_as"].as_str().map(String::from),
             }))).collect();
         }
@@ -64,6 +64,15 @@ pub fn table() -> &'static AttackStats {
         }
         t
     })
+}
+
+/// a row's lines: one string, or an array of them
+fn lines(v: &serde_json::Value) -> Option<Vec<String>> {
+    match v {
+        serde_json::Value::String(s) => Some(vec![s.clone()]),
+        serde_json::Value::Array(a) => Some(a.iter().filter_map(|x| x.as_str().map(String::from)).collect()),
+        _ => None,
+    }
 }
 
 /// a code row's text with `{v}` the stat's value and `{name}` the value of another stat stated
@@ -106,7 +115,7 @@ impl AttackStats {
         rows.iter().filter(|r| r.clamp && v >= 0.0).map(|_| num(v * s.velocity_scale())).collect()
     }
 
-    /// the calls an attack's animations make on their first frame for what it declares: each `code`
+    /// the lines an attack's animations run on their first frame for what it declares: each `code`
     /// entry whose stat it declares (and whose `when` holds, and whose `unless` it does not state
     /// false), with `{v}` its value and `{name}` the value of another stat it declares (`{name|d}`
     /// gives `d` when it declares none, else 0). each comes with whether only the attack's own
@@ -117,7 +126,7 @@ impl AttackStats {
             let Some(&v) = stats.get(key) else { continue };
             let ok = match c.when.as_deref() { Some("positive") => v > 0.0, Some("negative") => v < 0.0, Some("true") => v != 0.0, Some("false") => v == 0.0, _ => true };
             if !ok || c.unless.as_ref().is_some_and(|u| stats.get(u) == Some(&0.0)) { continue }
-            out.push((c.first, fill(&c.call, v, stats), key.clone()));
+            out.push((c.first, c.call.iter().map(|l| fill(l, v, stats)).collect::<Vec<_>>().join("\n"), key.clone()));
         }
         out
     }

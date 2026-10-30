@@ -833,9 +833,14 @@ a projectile's declared steering (x slowdown, homing, stick influence, stick aim
 in `runtime/projectile_stats.jsonc`: each row its stats take writes its variables and a named
 function into the projectile's script, and its `update()` calls them (`DATA.nativeStats`) every
 frame it flies. a row stays with the runtime when the projectile's code names a stat it reads, or
-another declaration sharing its clip states one otherwise. an attack's `code` rows in
-`runtime/attack_stats.jsonc` work the same way: the function goes into the fighter's script once,
-and each animation's first frame calls it with the attack's values (`chargeAttack(40, 1)`).
+another declaration sharing its clip states one otherwise.
+
+an attack's `code` rows in `runtime/attack_stats.jsonc`, and the source's own states in
+`runtime/engine_animations.jsonc`, keep the timer in the timeline: the per-frame function and its
+variables go into the fighter's script once, and each animation's first frame sets the attack's
+values and starts a timer on that function (`chargeMost = 40; ... chargeTimer =
+self.addTimer(1, -1, chargeAttack, { persistent: true });`). the function takes its own timer off
+once another animation plays.
 
 ### 6.2 `mappings/character/animations.jsonc`
 

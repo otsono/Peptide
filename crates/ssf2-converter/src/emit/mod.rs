@@ -900,7 +900,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     let mut cancels = attack_cancels(data, &model, &pieces, units);
     // what each attack's declared stats have its animations run on their first frame
     // (`code` in runtime/attack_stats.jsonc)
-    // (the functions those calls make are written into its script once)
+    // (they start a timer on a function written into its script once)
     let mut taken = std::collections::BTreeSet::new();
     for a in &data.attacks {
         let code = compile::attack_stats::table().first_frame(&a.stats);
@@ -913,23 +913,34 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
             for (first, t, key) in &code {
                 if *first && p.fm_name != fm { continue }
                 taken.insert(key.clone());
-                if !c.is_empty() { c.push('\n'); }
-                c.push_str(t);
+                // two rows that share a timer write its start once
+                for line in t.lines() {
+                    if c.lines().any(|l| l == line) { continue }
+                    if !c.is_empty() { c.push('\n'); }
+                    c.push_str(line);
+                }
             }
         }
     }
     // what the source's engine does in its own states, on the first frame of the animation that
     // shows each (runtime/engine_animations.jsonc)
-    for (anim, code) in &compile::engine_anims::table().code {
-        if !pieces.iter().any(|p| &p.fm_name == anim) { continue }
-        let c = cancels.entry(anim.clone()).or_default();
-        if !c.is_empty() { c.push('\n'); }
-        c.push_str(code);
+    let has = |a: &str| pieces.iter().any(|p| p.fm_name == a);
+    for (anim, parts) in &compile::engine_anims::table().code {
+        if !has(anim) { continue }
+        for (_, code) in parts.iter().filter(|(needs, _)| needs.as_deref().is_none_or(has)) {
+            let c = cancels.entry(anim.clone()).or_default();
+            if !c.is_empty() { c.push('\n'); }
+            c.push_str(code);
+        }
     }
     let keyed: String = cancels.values().cloned().collect::<Vec<_>>().join("\n");
-    let stat_code = compile::attack_stats::table().code(&taken);
+    let mut stat_code = compile::attack_stats::table().code(&taken);
+    // the functions the source's own states run, for the ones its animations' code names
+    for (name, lines) in &compile::engine_anims::table().functions {
+        if regex::Regex::new(&format!(r"\b{name}\b")).is_ok_and(|r| r.is_match(&keyed)) { stat_code.extend(lines.iter().cloned()); }
+    }
     let stat_code = if stat_code.is_empty() { String::new() } else {
-        format!("// ---- what its attacks' declared stats have them do: runtime/attack_stats.jsonc\n{}\n", stat_code.join("\n"))
+        format!("// ---- what its attacks' declared stats and the source's own states have it do: runtime/attack_stats.jsonc, runtime/engine_animations.jsonc\n{}\n", stat_code.join("\n"))
     };
     let out = fighter_script(&model, &runtime, fighter, &pieces, units, char_name, &others, &effects, &entities, calls, keyed, stat_code);
     // the animation each of the source's labels is here (an attack started from outside the
