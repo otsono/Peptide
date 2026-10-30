@@ -1056,8 +1056,11 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         }
         let obj = self.expr_atom(o);
         // a listed call handed around as a value (a listener) when nothing in the runtime answers
-        // it by name: a function that makes the call, on the object it was taken from
-        if self.pkg.runtime.calls.contains_key(n) && !self.pkg.runtime.classes.values().any(|c| c.members.contains(n)) {
+        // it by name: a function that makes the call, on the object it was taken from. a field or
+        // getter of this object's own class by that name is that (link's boomerang keeps an
+        // `offset` number, not a rectangle's method)
+        let own = self.is_me(o) && (self.own_getter(n) || self.own_field(n, false));
+        if !own && self.pkg.runtime.calls.contains_key(n) && !self.pkg.runtime.classes.values().any(|c| c.members.contains(n)) {
             let r = self.fresh("__r");
             let args: Vec<String> = (0..4).map(|i| format!("__a{i}")).collect();
             if let Some(body) = self.api_text(&r, n, &args) {
