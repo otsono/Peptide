@@ -258,23 +258,17 @@ Fighters.begin = function(me) {
 		// move's own damage: a few percent harder here, accepted)
 		hs.damage = hs.damage * me.__fresh;
 		Hitboxes.poison(me, hs.index, e.data.foe);
-		// a box with no effect deals its damage to the one held and keeps hold of it: a throw's
-		// small hits (bowser's up throw hits six times, then its code gives the box its effect
-		// and that hit throws). this engine lets go at any hit, so the damage is dealt here
+		// a box with no effect hits the one held and keeps hold of it (its `flinch: false`): a
+		// throw's small hits (bowser's up throw hits six times, then its code gives the box its
+		// effect and that hit throws). the source launches no one it holds, where this engine
+		// launches a held fighter out of the hold and the throw's later hits miss it
 		// (stated: a box that says nothing of it has its effect, and null reads as false here)
 		var effect = Attacks.boxStat(me, hs.index + 1, "hasEffect");
 		if (isHeld && (effect == null || AS3.truthy(effect))) me.__releasedFoe = e.data.foe;
-		if (isHeld && effect != null && !AS3.truthy(effect)) {
-			hs.disabled = true;
-			e.data.foe.addDamage(hs.damage);
-			// still a hit the attack landed: it refreshes after it (AttackRules.refresh). not ported:
-			// the engine, told the hit is not one, freezes nothing for it (pikachu's forward throw
-			// shocks the one it holds twice before it throws, each holding pikachu a frame in the source)
-			AttackRules.landed(me);
-		}
+		else if (isHeld) { hs.baseKnockback = 0; hs.knockbackGrowth = 0; }
 		// a box that says it reverses the one it hits turns that fighter around, and its launch
 		// turns with it (mario's cape, stated at 180, sends the fighter away at 0 in the source)
-		else if (AS3.truthy(Attacks.boxStat(me, hs.index + 1, "reverse_character"))) {
+		if (AS3.truthy(Attacks.boxStat(me, hs.index + 1, "reverse_character"))) {
 			var foe = e.data.foe;
 			if (foe.isFacingRight()) foe.faceLeft(); else foe.faceRight();
 			hs.angle = 180 - hs.angle;
