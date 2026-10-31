@@ -1126,7 +1126,16 @@ fn attacks_keep_on_landing(out: String, data: &CharacterData, splits: &[crate::a
         for (k, v) in &a.stats { table.put(&mut props, &mut ranks, k, *v, false, &|w| a.stats.get(w).copied()); }
         props.push(("landType".into(), "LandType.NONE".into()));
         names.insert(fm.clone(), props.clone());
-        for s in splits { if s.source_anim == fm || s.source_anim == a.ssf2_name { names.insert(s.fm_name.clone(), props.clone()); } }
+        for s in splits {
+            if s.source_anim != fm && s.source_anim != a.ssf2_name { continue; }
+            let mut piece = props.clone();
+            // a piece played on in its head's own state is the same attack, and hits whoever the
+            // head already hit only once refreshed: it keeps the head's hit record (the engine
+            // names a state's animations by it, `special_down` then `special_down_loop`). a piece
+            // in another state starts its own (a smash's charge, then its attack)
+            if s.fm_name != fm && s.fm_name.starts_with(&format!("{fm}_")) { piece.push(("resetId".into(), "false".into())); }
+            names.insert(s.fm_name.clone(), piece);
+        }
     }
     out.lines().map(|l| {
         let name = l.trim_start().split(':').next().unwrap_or("").trim().to_string();
@@ -2999,6 +3008,9 @@ pub(crate) fn generate_projectile_animation_stats(proj: &entity_gen::ProjectileI
         // hit-id churn on state change (per template convention).
         if n == &anims.destroy && i > 0 {
             lines.push(req("projectile.stats.proj_anim_entry_destroy", &t.proj_anim_entry_destroy)
+                .replace("{{name}}", n));
+        } else if n != &anims.active {
+            lines.push(req("projectile.stats.proj_anim_entry_continued", &t.proj_anim_entry_continued)
                 .replace("{{name}}", n));
         } else {
             lines.push(req("projectile.stats.proj_anim_entry_normal", &t.proj_anim_entry_normal)

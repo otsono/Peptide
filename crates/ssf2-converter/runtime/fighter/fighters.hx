@@ -242,11 +242,6 @@ Fighters.begin = function(me) {
 		var again = false;
 		for (h in me.__hitAt) if (h.foe == e.data.foe && h.at == at) again = true;
 		if (again) { hs.disabled = true; return; }
-		// an attack hits each one once until it is refreshed, whichever of its boxes reaches it
-		// (here a second box of the same attack hit again: ganondorf's up throw twice)
-		if (me.__hitFoes == null) me.__hitFoes = [];
-		if (me.__hitFoes.indexOf(e.data.foe) >= 0) { hs.disabled = true; return; }
-		me.__hitFoes.push(e.data.foe);
 		var kept = [];
 		for (h in me.__hitAt) if (h.foe != e.data.foe) kept.push(h);
 		kept.push({ foe: e.data.foe, at: at });

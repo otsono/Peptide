@@ -593,6 +593,7 @@ pub struct ProjStatsTemplates {
     pub proj_anim_wrapper: String,
     pub proj_anim_entry_destroy: String,
     pub proj_anim_entry_normal: String,
+    pub proj_anim_entry_continued: String,
     pub proj_stats_body: String,
     pub proj_stats_physics_line: String,
     pub proj_stats_todo_line: String,

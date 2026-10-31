@@ -202,8 +202,6 @@ Projectiles.begin = function(me) {
 		var held = o == null || o.getAllGrabbedFoes == null ? null : o.getAllGrabbedFoes();
 		var effect = hs.index == null || hs.index < 0 ? null : Attacks.boxStat(me, hs.index + 1, "hasEffect");
 		if (effect != null && !AS3.truthy(effect) && held != null) for (h in held) if (h == e.data.foe) { hs.disabled = true; return; }
-		if (me.__hitFoes == null) me.__hitFoes = [];
-		if (me.__hitFoes.indexOf(e.data.foe) >= 0) { hs.disabled = true; return; }
 		// a box that turns for a fighter behind it judges behind from where it was before this
 		// frame's move, as the source checks its hits before it moves (a fast shot already past
 		// the fighter's middle still sends it the way it flies)
@@ -211,7 +209,6 @@ Projectiles.begin = function(me) {
 			var before = fm.getX() - Projectiles.xSpeed(fm);
 			if ((e.data.foe.getX() - before) * (fm.isFacingRight() ? 1 : -1) > 0) hs.reversibleAngle = false;
 		}
-		me.__hitFoes.push(e.data.foe);
 		// always fresh (x1.05, in its damage), and a place among its owner's last attacks once
 		// (Attacks.freshness)
 		hs.damage = hs.damage * 1.05;

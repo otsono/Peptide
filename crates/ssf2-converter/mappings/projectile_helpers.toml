@@ -257,6 +257,11 @@ proj_anim_entry_destroy = '    {{name}}: { endType: AnimationEndType.NONE, reset
 # {{name}}
 proj_anim_entry_normal = '    {{name}}: { endType: AnimationEndType.NONE }'
 
+# {{name}}
+# any animation but the one it is made in: a projectile is one attack for its life, and hits whoever
+# it has hit only once refreshed, whichever of its animations it is in (ness's pk fire, then its pillar)
+proj_anim_entry_continued = '    {{name}}: { endType: AnimationEndType.NONE, resetId: false }'
+
 # {{active}}, {{content_id}}, {{destroy}}, {{entity_id}}, {{physics}}, {{source_note}}, {{todos}}
 proj_stats_body = '''
 // Projectile stats for {{entity_id}}

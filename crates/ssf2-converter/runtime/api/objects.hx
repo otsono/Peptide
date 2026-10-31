@@ -222,7 +222,6 @@ PeptideGameObject.boundsRect = function(me, ox, oy) {
 // how see-through it is: its engine object, and the clip its code holds
 // its attack hits again: who it has hit is forgotten, and the engine's boxes come back
 PeptideGameObject.reactivate = function(me) {
-	me.__hitFoes = null;
 	me.__fm.reactivateHitboxes();
 	Attacks.carry(me, true);
 };

@@ -50,8 +50,8 @@ AttackRules.began = function(me, ?entering) {
 	// its running time starts here (Attacks.execTime)
 	me.__execFrom = PeptideRuntime.frame;
 	me.__execFrozen = me.__frozenFrames == null ? 0 : me.__frozenFrames;
-	// a new attack has hit no one yet, and thrown no one
-	me.__hitFoes = null;
+	// a new attack has thrown no one (whom it has hit is the engine's: each animation the attack
+	// starts on begins a hit record, and its pieces in the same state keep it, `resetId`)
 	me.__useSerial = (me.__useSerial == null ? 0 : me.__useSerial) + 1;
 	me.__thrownFoe = null;
 	me.__releasedFoe = null;
