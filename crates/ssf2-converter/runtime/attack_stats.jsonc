@@ -56,10 +56,10 @@
     "forceGrabbable":         [{ "field": "bodyStatus", "as": "value", "value": "BodyStatus.INVINCIBLE_GRABBABLE", "when": "true", "with": "invincible", "rank": "over" }],
     "superArmor":             [{ "field": "bodyStatus", "as": "value", "value": "BodyStatus.SUPER_ARMOR", "off": "BodyStatus.NONE", "when": "true", "rank": "under" },
                                { "field": "bodyStatus", "as": "value", "value": "BodyStatus.NONE", "when": "false", "rank": "least" }]
-    // resetMovement has no row: the engine's speed conservation sets a standstill as exactly 0,
-    // where the source's rest in the air is a speed a step of gravity ahead here (a y speed is),
-    // and the fighter is put back at the height it started from (peach's parasol, zeroed by the
-    // engine, rose 7 higher and landed 3 frames late); the runtime starts it (AttackRules.reset)
+    // resetMovement has no row here but a first-frame one below: the engine's speed conservation
+    // sets a standstill as exactly 0, where the source's rest in the air is a speed a step of
+    // gravity ahead here (a y speed is), and the fighter is put back at the height it started from
+    // (peach's parasol, zeroed by the engine, rose 7 higher and landed 3 frames late)
   },
   // what an attack's declared stats have each of its animations do on their first frame (`when`
   // as above; `unless` names a stat that, stated false, leaves it out; `first` runs it on the
@@ -118,6 +118,9 @@
         "\tclip.gotoAndPlay(go);",
         "}"
       ] },
+    // an attack that says it resets its movement starts from a standstill (mario's up special took
+    // seven frames of fall speed into its climb without it)
+    "resetMovement": { "when": "true", "first": true, "call": ["self.setXVelocity(0);", "self.setYVelocity(0);"] },
     "flip": { "when": "true", "first": true, "call": "turnAround();",
       "code": [
         "// an attack that says it flips turns its fighter around as it begins (marth's back air). this",

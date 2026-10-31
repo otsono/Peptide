@@ -34,11 +34,11 @@ AttackRules.frame = function(me) {
 	AttackRules.track(me);
 };
 
-// resetMovement: it starts from a standstill (mario's up special took seven frames of fall
-// speed into its climb without it)
+// resetMovement its code writes as it plays: it starts from a standstill (a declared one is the
+// attack's own first-frame code, `runtime/attack_stats.jsonc`)
 AttackRules.reset = function(me) {
 	var fm = me.__fm;
-	if (AS3.truthy(AttackRules.stat(me, "resetMovement"))) { fm.setXVelocity(0); fm.setYVelocity(0); }
+	if (Attacks.overrides(me).exists("resetMovement") && AS3.truthy(AttackRules.stat(me, "resetMovement"))) { fm.setXVelocity(0); fm.setYVelocity(0); }
 };
 // an attack begins: its declared motion, control, statuses and eases take hold
 AttackRules.began = function(me, ?entering) {

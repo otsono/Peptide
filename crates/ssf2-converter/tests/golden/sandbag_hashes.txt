@@ -22,7 +22,7 @@ c074beb86231e76047835f4943dcd65dab14dbe0b4a42c653c802ab7caa1601c  ./library/audi
 794800b16c99bb2473e5417bbe4f02a1f3b77d8f95905bd9bd17bb4b04ac78d2  ./library/costumes.palettes
 6b08fa9fc4f035ea41fa2d1d904b36efdcbdca7de2a90a713477f7919d4d2b94  ./library/costumes.palettes.meta
 d95890832cb98ceb7b98b6db65fd63f8c5580ff957b98cc63ef47a2b866ebd8f  ./library/entities/Menu.entity
-53b2f12a5ad050216fca42e21e13f3bfeb5b0698d76183f6c977a31c20888e3c  ./library/entities/Sandbag.entity
+5bb451f0cc25538476ace93eb5e71071a7d94461515febb80c477023c90548f5  ./library/entities/Sandbag.entity
 ec6140fcc233eb629d334c8b7e530bd03f018618f7589b255496e92c32225495  ./library/entities/sandbag_entrance_track.entity
 e61e30121aaf5b7ddb3f9fbfeccf9beba15dc240fb1817e7078a397826248719  ./library/entities/sandbag_fs_cutin.entity
 88bee2085861805acdae4b39c591b39ac6c7c1331a6333ae6de3dcac5936911c  ./library/entities/sandbag_nspec_blue.entity
@@ -54,7 +54,7 @@ f9c581305642c7c7663b3822e73f49eaba9edebd84d7fe6d0e8d0bffe683d8b4  ./library/scri
 802ff6d02189790162a4d670f4725be84fa29e7257bc5e1d339922a843b4efba  ./library/scripts/Sandbag/CharacterStats.hx.meta
 157225c58685c85a10b24b2feca8fd85d76c66613090f0dcb027436fe0978361  ./library/scripts/Sandbag/HitboxStats.hx
 8a40dc9a77ab0810c0cdc9dddc4ed593256b3a2ada891bda0a7a23d1eaa8d542  ./library/scripts/Sandbag/HitboxStats.hx.meta
-ee7fa17becf9d6d04cc9c7b4a7aaf8d3a503a1c840129fd0cef30ebf333d5f51  ./library/scripts/Sandbag/Script.hx
+0e2b1273a0b84997785fad4763ef5cd7befcef7553169202a0560fc7d49f953b  ./library/scripts/Sandbag/Script.hx
 94d0ad5cb1c6b15b7fdf0746d5b9c72d3220cbc396da05cbb7c048a29d1d7c0d  ./library/scripts/Sandbag/Script.hx.meta
 32737d64d3356ebd2dfe8b46778f2865b9e020c48f0a26645899d4179284d253  ./library/sprites/bitmap_102.png.meta
 1e8f2cc0bdfed63d66a8c3d91f1b49fdf64bf00d9f8b2d3a11ef6992706a39df  ./library/sprites/bitmap_26.png.meta
