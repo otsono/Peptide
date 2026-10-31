@@ -177,9 +177,8 @@ AttackRules.landed = function(me) {
 };
 AttackRules.startRefresh = function(me, n, firstIn) {
 	var fm = me.__fm;
-	// frozen: the engine's own freeze, the runtime's hold, or the source's freeze for the hit (its
-	// box's stated self-hitstop, where the engine's is shorter or none)
-	var paused = function() { return fm.getHitstop() > 0 || (me.__holdUntil != null && PeptideRuntime.frame <= me.__holdUntil) || (me.__frozenUntil != null && PeptideRuntime.frame <= me.__frozenUntil); };
+	// frozen: the engine's own freeze (its box's `selfHitstop`)
+	var paused = function() { return fm.getHitstop() > 0; };
 	var go = function(?t) { if (!fm.isDisposed() && me.__refreshTimer != null) PeptideGameObject.reactivate(me); };
 	me.__refreshRate = n;
 	me.__refreshTimer = fm.addTimer(2 * firstIn, 1, function(?t) {

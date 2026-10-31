@@ -40,10 +40,8 @@ Timers.create = function(owner, frames, repeat, fn, ?opts, ?fromFrame) {
 	// the frames its object stands frozen by a hit do not count toward it: the source runs none of
 	// that object while it is held still, its timers included (pac-man's side special refreshes on a
 	// two-frame timer and hits every three frames there, a frame of freeze after each hit). the
-	// engine's timer waits them out itself (`pauseCondition`), its own freeze or the runtime's hold
-	var paused = function() {
-		return (fm.getHitstop != null && fm.getHitstop() > 0) || (key.__holdUntil != null && PeptideRuntime.frame <= key.__holdUntil);
-	};
+	// engine's timer waits them out itself (`pauseCondition`)
+	var paused = function() { return fm.getHitstop != null && fm.getHitstop() > 0; };
 	// each time it fires: `left` more to go (-1 forever); the one that fires its last takes its record
 	var left = r;
 	var tick = function(?t) {

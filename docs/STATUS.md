@@ -1961,6 +1961,7 @@ chase them or count them as open.
 | two standing fighters are pushed apart at this engine's rate and settle at its own gap | the `=` spacing lines in `hit_parity.py`, and the moves the gap moves (samus's bomb, ness's pk flash, krystal's jab angle, isaac's gaia, zelda's din's fire) |
 | an aerial starts at each engine's own point of the hop | aerial hit counts and drop-move timing (sonic's up air, ganondorf's back air, mario's neutral air) |
 | a move whose code rolls at random lands differently run to run | luigi's misfire, game & watch's judge and chef, peach's turnips, waluigi's dice |
+| a hit with no effect on the fighter held freezes its attacker for nothing (a box's `selfHitstop` is the engine's, and this hit is not one to it) | pikachu's forward throw shocks at source frames 0, 3, 8, 12 against the source's 0, 4, 10, 15 (`hit_parity.py pikachu throw_forward`) |
 | an attack's slowdown is skipped through the attacker's hit freeze | wario's side special recoil slides 18 pixels back here, 7 on the source |
 | a grounded attack out of a walk or dash carries the old speed two engine frames before slowing | falco's jab slides 27.6 pixels here, 15.5 on the source |
 | an attack that resets movement keeps the one step the engine took on the old speed | falco's side special out of a walk starts about 9 pixels further on |

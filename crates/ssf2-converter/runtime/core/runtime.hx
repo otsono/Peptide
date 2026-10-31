@@ -207,19 +207,8 @@ PeptideRuntime.at = function(sym, f) {
 
 // a frame's script from its keyframe, on the clip `at` handed back (none: not this clip's frame):
 // what it throws is reported, and a jump it makes is settled
-// a frame the engine entered while the runtime holds the object still (a hit the engine freezes
-// nothing for, Fighters.frozen): its script waits for the hold to end, as the source's clip
-// does not move on while it is frozen
-PeptideRuntime.heldBack = function(f) {
-	var me = PeptideRuntime.object;
-	if (me == null || me.__holdUntil == null || PeptideRuntime.frame >= me.__holdUntil) return false;
-	if (me.__heldFrames == null) me.__heldFrames = [];
-	me.__heldFrames.push(f);
-	return true;
-};
 PeptideRuntime.runAt = function(clip, script) {
 	if (clip == null) return;
-	if (PeptideRuntime.heldBack(function() { PeptideRuntime.runAt(clip, script); })) return;
 	PeptideRuntime.run(script, clip);
 	PeptideRuntime.frameDone();
 	PeptideRuntime.settle();
@@ -229,7 +218,6 @@ PeptideRuntime.runAt = function(clip, script) {
 // (an animation's first keyframe enters it only when the runtime started it)
 PeptideRuntime.kf = function(sym, f) {
 	if (PeptideRuntime.ended == true || PeptideRuntime.root == null || PeptideRuntime.switching) return;
-	if (PeptideRuntime.heldBack(function() { PeptideRuntime.kf(sym, f); })) return;
 	// an animation the engine started is entered at the next update, once the engine has entered its
 	// state (a walk's own starting speed is set by then, and the entry frame's script writes over it
 	// as the source's does). its kind hears of it now, before the engine first moves it (an attack's

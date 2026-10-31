@@ -126,21 +126,8 @@ Fighters.beforeTick = function(me) {
 	if (st != null) st.__playing = true;
 };
 
-// held still by a hit
-Fighters.frozen = function(me) {
-	// a hit the engine freezes nothing for (a held throw's own shock): held here (HIT_DEALT), then let go
-	if (me.__holdUntil != null) {
-		if (PeptideRuntime.frame <= me.__holdUntil) {
-			if (me.__heldOn != PeptideRuntime.frame) { me.__heldOn = PeptideRuntime.frame; me.__heldCount = (me.__heldCount == null ? 0 : me.__heldCount) + 1; }
-			return true;
-		}
-		me.__holdUntil = null;
-		me.__fm.resume();
-		if (me.__heldSpeed != null) { me.__fm.setXSpeed(me.__heldSpeed[0]); me.__fm.setYSpeed(me.__heldSpeed[1]); me.__heldSpeed = null; }
-		if (me.__heldFrames != null) { var fs = me.__heldFrames; me.__heldFrames = null; for (f in fs) f(); }
-	}
-	return me.__fm.getHitstop() > 0;
-};
+// held still by a hit: the engine's own freeze, its box's `selfHitstop`
+Fighters.frozen = function(me) { return me.__fm.getHitstop() > 0; };
 
 // not ported: a FIXED hit (`weightKB`) launches by the weight of the fighter it hits on the source;
 // the conversion works it out for a fighter of 95 (mappings: fixed_knockback), so a lighter or
@@ -209,12 +196,6 @@ Fighters.begin = function(me) {
 			foe.__stunLag = Attacks.boxStat(me, hs.index + 1, "hitLag");
 			if (foe.__stunWant != null && foe.__stunLaunch != null) foe.__stunWant = Fighters.stunWant(foe);
 		}
-		// the attacker freezes the engine's own way (a frame later than the source's: accepted)
-		if (hs.selfHitstop != null && hs.selfHitstop >= 0 && me.__freezes == true) {
-			me.__freezes = false;
-			// the source frames the hit holds the attacker for (its engine frames, two to one)
-			me.__frozenUntil = PeptideRuntime.frame + hs.selfHitstop;
-		}
 		var was = me.__vars.get("__peptideHits");
 		var log = AS3.truthy(was) ? AS3.str(was) : "";
 		me.__vars.set("__peptideHits", log + (hs.index == 0 ? "attackBox" : "attackBox" + (hs.index + 1)) + ",");
@@ -255,11 +236,8 @@ Fighters.begin = function(me) {
 		// (a source frame is two of the animation's own frames, 1-2, 3-4..., as its boxes are laid
 		// out: counted on the match's frames instead, the two halves of one box frame could fall in
 		// two source frames, and meta knight's tornado, refreshed between them, hit twice in one)
-		// (on the match's frames less those the runtime held still, Fighters.frozen: a held frame is
-		// no new frame of the source's)
 		var cf = me.__fm.getCurrentFrame();
-		var eff = PeptideRuntime.frame - (me.__heldCount == null ? 0 : me.__heldCount);
-		var at = (eff - (cf - 1)) * 1000 + ((cf - 1) >> 1);
+		var at = (PeptideRuntime.frame - (cf - 1)) * 1000 + ((cf - 1) >> 1);
 		if (me.__hitAt == null) me.__hitAt = [];
 		var again = false;
 		for (h in me.__hitAt) if (h.foe == e.data.foe && h.at == at) again = true;
@@ -279,8 +257,6 @@ Fighters.begin = function(me) {
 		// in the hit's damage, so the launch is worked out from it too (the source launches from the
 		// move's own damage: a few percent harder here, accepted)
 		hs.damage = hs.damage * me.__fresh;
-		// a hit that freezes the attacker (HIT_DEALT counts its freeze toward a refresh)
-		if (hs.selfHitstop != null && hs.selfHitstop > 0 && hs.disabled != true) me.__freezes = true;
 		Hitboxes.poison(me, hs.index, e.data.foe);
 		// a box with no effect deals its damage to the one held and keeps hold of it: a throw's
 		// small hits (bowser's up throw hits six times, then its code gives the box its effect
@@ -291,22 +267,10 @@ Fighters.begin = function(me) {
 		if (isHeld && effect != null && !AS3.truthy(effect)) {
 			hs.disabled = true;
 			e.data.foe.addDamage(hs.damage);
-			// still a hit the attack landed: it refreshes after it (AttackRules.refresh), and it
-			// freezes the attacker for its own count as any hit does. the engine, told the hit is
-			// not one, freezes nothing, so the runtime holds it (pikachu's forward throw shocks the
-			// one it holds twice before it throws, each holding pikachu a frame in the source)
+			// still a hit the attack landed: it refreshes after it (AttackRules.refresh). not ported:
+			// the engine, told the hit is not one, freezes nothing for it (pikachu's forward throw
+			// shocks the one it holds twice before it throws, each holding pikachu a frame in the source)
 			AttackRules.landed(me);
-			if (hs.selfHitstop != null && hs.selfHitstop > 0) {
-				me.__freezes = false;
-				// the frames it holds count from the one after the hit, and it is let go the frame
-				// after the last of them (Fighters.frozen): one less is the box's whole count
-				me.__holdUntil = PeptideRuntime.frame + hs.selfHitstop - 1;
-				me.__heldSpeed = [me.__fm.getXSpeed(), me.__fm.getYSpeed()];
-				me.__fm.pause();
-				me.__fm.setXSpeed(0);
-				me.__fm.setYSpeed(0);
-				me.__frozenUntil = PeptideRuntime.frame + hs.selfHitstop;
-			}
 		}
 		// a box that says it reverses the one it hits turns that fighter around, and its launch
 		// turns with it (mario's cape, stated at 180, sends the fighter away at 0 in the source)
