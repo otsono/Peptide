@@ -35,7 +35,7 @@ AttackRules.frame = function(me) {
 };
 
 // resetMovement its code writes as it plays: it starts from a standstill (a declared one is the
-// attack's own first-frame code, `runtime/attack_stats.jsonc`)
+// animation's own speed conservation, `runtime/attack_stats.jsonc`)
 AttackRules.reset = function(me) {
 	var fm = me.__fm;
 	if (Attacks.overrides(me).exists("resetMovement") && AS3.truthy(AttackRules.stat(me, "resetMovement"))) { fm.setXVelocity(0); fm.setYVelocity(0); }
