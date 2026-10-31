@@ -829,7 +829,7 @@ plays on through a landing (`landType:LandType.NONE`, `attacks_keep_on_landing` 
 touched the ground, the move's own code lands it. the attack's declared stats are its
 animation's own, as `runtime/attack_stats.jsonc` maps them.
 
-a projectile's declared steering (x slowdown, homing, stick influence, stick aim, rotation) is code
+a projectile's declared steering (x slowdown, homing, stick influence, stick aim, rotation) and trail are code
 in `runtime/projectile_stats.jsonc`: each row its stats take writes its variables and a named
 function into the projectile's script, gathered in `flyByStats()`, which its `update()` calls every
 frame it flies. a row stays with the runtime when the projectile's code names a stat it reads, or

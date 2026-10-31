@@ -63,9 +63,15 @@ impl ProjectileStats {
     /// a row is taken when the projectile states its stat (and its `when` holds), when nothing it
     /// `reads` is `written` (its code changes it as it flies, or another declaration sharing the
     /// clip states it otherwise), and when the row it `yields_to` is not taken. `units` fills
-    /// `{@speed}`, `{@accel}` and `{@size}`
-    pub fn rows(&self, stats: &BTreeMap<String, f64>, written: &dyn Fn(&str) -> bool, units: &[(&str, f64)]) -> Taken {
-        let taken: Vec<&(String, Code)> = self.code.iter().filter(|(k, c)| stats.get(k).is_some_and(|v| holds(c.when.as_deref(), *v))
+    /// `{@speed}`, `{@accel}` and `{@size}`; a row `when` `effect` takes a stat in `names` that
+    /// `effect` resolves to the engine's effect stats, and fills them in as `{@effect}`
+    pub fn rows(&self, stats: &BTreeMap<String, f64>, names: &BTreeMap<String, String>, effect: &dyn Fn(&str) -> Option<String>,
+                written: &dyn Fn(&str) -> bool, units: &[(&str, f64)]) -> Taken {
+        // a stat that names an effect holds when the object can make it
+        let effect_of = |k: &str| names.get(k).filter(|n| !n.is_empty()).and_then(|n| effect(n));
+        let states = |k: &str, c: &Code| if c.when.as_deref() == Some("effect") { effect_of(k).is_some() }
+            else { stats.get(k).is_some_and(|v| holds(c.when.as_deref(), *v)) };
+        let taken: Vec<&(String, Code)> = self.code.iter().filter(|(k, c)| states(k, c)
             && !written(k) && !c.reads.iter().any(|r| written(r))).collect();
         let keys: Vec<&str> = taken.iter().map(|(k, _)| k.as_str()).collect();
         let mut out = Taken::default();
@@ -74,7 +80,8 @@ impl ProjectileStats {
             for line in &c.code {
                 let mut t = line.clone();
                 for (u, f) in units { t = t.replace(&format!("{{@{u}}}"), &super::attack_stats::num(*f)); }
-                out.code.push(super::attack_stats::fill(&t, stats[k], stats));
+                if let Some(e) = effect_of(k) { t = t.replace("{@effect}", &e); }
+                out.code.push(super::attack_stats::fill(&t, stats.get(k).copied().unwrap_or(0.0), stats));
             }
             out.calls.push(c.call.clone());
             if !out.replaced.contains(&c.replaces) { out.replaced.push(c.replaces.clone()) }

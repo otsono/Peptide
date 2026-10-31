@@ -5,14 +5,15 @@
 // one `flyByStats()` that calls each row's `call` in order
 //
 // each row, by the stat that takes it:
-//   when       `positive`, `negative`, `nonnegative`, `true` or `false`: the value it holds for
+//   when       `positive`, `negative`, `nonnegative`, `true` or `false`: the value it holds for;
+//              `effect`: it names an effect the object can make
 //   yields_to  another row that, taken too, does this one's work as well
 //   same_as    another row whose code this one writes (one function serving both stats)
 //   reads      the other stats its code reads
 //   replaces   the runtime's piece it stands in for
 //   code       the lines it writes into the script, once: `{v}` the stat's value, `{name}` another
 //              stat the projectile states (0 when none, `{name|d}` d), `{@speed}` `{@accel}`
-//              `{@size}` the source's units in this engine's
+//              `{@size}` the source's units in this engine's, `{@effect}` the effect's stats
 //   call       what its update runs each frame
 // a row is not taken when the projectile's own code changes a stat it reads as it flies, or
 // another declaration that shares its clip states one otherwise: the runtime's piece runs then.
@@ -137,6 +138,24 @@
         "\t}",
         "\tself.setXSpeed(self.flipX(Math.cos(aim) * aimSpeed));",
         "\tself.setYSpeed(-Math.sin(aim) * aimSpeed);",
+        "}"
+      ] },
+    "trailEffect": { "when": "effect", "reads": ["trailEffectInterval", "trailEffectRotate"], "replaces": "Projectiles.trail", "call": "dropTrail();",
+      "code": [
+        "// its trail: its effect dropped where it is every `trailEffectInterval` engine frames (every one",
+        "// for 0), turned along the way it flies when `trailEffectRotate` is set",
+        "var trailEvery = {trailEffectInterval|1};",
+        "var trailTurns = {trailEffectRotate|0};",
+        "var trailWait = 0;",
+        "function dropTrail() {",
+        "\ttrailWait++;",
+        "\tif (trailWait < trailEvery) return;",
+        "\ttrailWait = 0;",
+        "\tvar trail = match.createVfx(new VfxStats({ {@effect} }), self);",
+        "\tif (trail == null || trailTurns == 0) return;",
+        "\tvar across = self.flipX(self.getXSpeed());",
+        "\tvar angle = Math.atan2(self.getYSpeed(), trail.isFacingRight() ? across : -across) * 180 / Math.PI;",
+        "\ttrail.setRotation(trail.isFacingRight() ? angle : -angle);",
         "}"
       ] },
     "rotate": { "when": "true", "replaces": "Projectiles.rotate", "call": "faceFlight();",

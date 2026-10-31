@@ -727,7 +727,15 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
         let written = |k: &str| crate::dyn_re(&format!(r"\b{k}\b")).is_match(code)
             || sharing.iter().any(|d| format!("{:?}", d.get(k)) != format!("{:?}", spec.stats.get(k)));
         let units_of = [("speed", units.speed), ("accel", units.accel), ("size", units.size)];
-        let taken = if item { Default::default() } else { compile::projectile_stats::table().rows(&stats, &written, &units_of) };
+        let names: BTreeMap<String, String> = spec.stats.entries().iter().filter_map(|(k, v)| v.str().map(|s| (k.clone(), s.to_string()))).collect();
+        // an effect it names, as the engine's effect stats: a shared one is this engine's global
+        // one, else the one it carries (one it has neither of draws nothing, and keeps the runtime's)
+        let effect = |n: &str| match crate::mappings::api_commands().global_vfx_map.iter().find(|(g, _)| g.as_str() == n) {
+            Some((_, c)) => Some(format!("spriteContent: \"global::vfx.vfx\", animation: GlobalVfx.{c}")),
+            None => spec.effects.get(n).and_then(|ps| ps.first()).map(|p|
+                format!("spriteContent: self.getResource().getContent({}), animation: {}", compile::quote(n), compile::quote(&p.fm_name))),
+        };
+        let taken = if item { Default::default() } else { compile::projectile_stats::table().rows(&stats, &names, &effect, &written, &units_of) };
         out.push_str(&projectile_frames(&text, item, &taken.replaced));
         if !taken.calls.is_empty() {
             out.push_str("// ---- what its declared stats have it do each frame it flies: runtime/projectile_stats.jsonc\n");
