@@ -59,7 +59,7 @@ pub fn label_jumps(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, cr
             labels: sprite.labels.iter().map(|(f, l)| (*f as u32 + 1, l.clone())).collect(),
             total: sprite.frames.len() as u32,
         };
-        let mut j = crate::compile::ClipJumps { anims: own.iter().map(|p| p.fm_name.clone()).collect(), labels: BTreeMap::new(), autolink: None, playhead: Some(playhead), declared: BTreeMap::new() };
+        let mut j = crate::compile::ClipJumps { anims: own.iter().map(|p| p.fm_name.clone()).collect(), labels: BTreeMap::new(), autolink: None, playhead: Some(playhead), declared: BTreeMap::new(), sounds: BTreeMap::new() };
         for (f0, label) in &sprite.labels {
             let f = *f0 as u32 + 1;
             let hits: Vec<&&Piece> = own.iter().filter(|p| f >= p.from && f < p.from + p.frames).collect();
@@ -86,6 +86,22 @@ fn declared_by_clip(model: &SourceModel, pieces: &[Piece], attacks: &Value, clas
         out = Some(match out { None => these, Some(had) => had.into_iter().filter(|(k, v)| these.get(k) == Some(v)).collect() });
     }
     out.unwrap_or_default()
+}
+
+/// the numbered sounds of the one attack a clip's frames show (every root label its pieces sit
+/// under is that attack's): what a play of `attackSound<n>` or `attackVoice<n>` plays. none where
+/// the attack stops its last sound (or voice) as it ends, which the runtime keeps to stop
+fn sounds_by_clip(model: &SourceModel, pieces: &[Piece], attacks: &Value, class: &str) -> BTreeMap<String, String> {
+    let Value::Obj(atks) = attacks else { return BTreeMap::new() };
+    let labels: BTreeSet<&str> = pieces.iter().filter(|p| model.class_of(p.sym).is_some_and(|c| c.name == class)).map(|p| p.label.as_str()).collect();
+    let [label] = labels.into_iter().collect::<Vec<_>>()[..] else { return BTreeMap::new() };
+    let Some((_, Value::Obj(fields))) = atks.iter().find(|(k, _)| k == label) else { return BTreeMap::new() };
+    let on = |k: &str| fields.iter().any(|(f, v)| f == k && !matches!(v, Value::Bool(false) | Value::Null));
+    fields.iter().filter_map(|(k, v)| {
+        let Value::Str(id) = v else { return None };
+        let kept = (k.starts_with("attackSound") && !on("cancelSoundOnEnd")) || (k.starts_with("attackVoice") && !on("cancelVoiceOnEnd"));
+        (kept && k.ends_with("_id")).then(|| (k.clone(), id.clone()))
+    }).collect()
 }
 
 /// the scales between the two worlds
@@ -457,6 +473,7 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     if !matches!(spec.kind, "projectile" | "object") { for j in jumps.values_mut() { j.playhead = None; } }
     for (c, code) in &spec.autolink { jumps.entry(c.clone()).or_default().autolink = Some(code.clone()); }
     for (c, j) in jumps.iter_mut() { j.declared = declared_by_clip(model, pieces, decls.attacks, c); }
+    if spec.kind == "fighter" { for (c, j) in jumps.iter_mut() { j.sounds = sounds_by_clip(model, pieces, decls.attacks, c); } }
     let mut detached: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut found: Vec<crate::compile::Landing> = Vec::new();
     // each class's static initializer, in the order the classes are made (a base before its own)
@@ -1489,7 +1506,7 @@ mod landing_stats_tests {
             boxes: vec![(1, vec![("damage".into(), 9.0)])],
         };
         let mut jumps = BTreeMap::new();
-        jumps.insert("Clip".to_string(), crate::compile::ClipJumps { anims: vec!["aerial_up".into(), "aerial_up_land".into()], labels: BTreeMap::new(), autolink: None , playhead: None, declared: BTreeMap::new() });
+        jumps.insert("Clip".to_string(), crate::compile::ClipJumps { anims: vec!["aerial_up".into(), "aerial_up_land".into()], labels: BTreeMap::new(), autolink: None , playhead: None, declared: BTreeMap::new(), sounds: BTreeMap::new() });
         landing_stats(&dir, &[(landing, vec!["aerial_up_land".into()])], &jumps).unwrap();
         let anim = std::fs::read_to_string(dir.join("AnimationStats.hx")).unwrap();
         let hit = std::fs::read_to_string(dir.join("HitboxStats.hx")).unwrap();

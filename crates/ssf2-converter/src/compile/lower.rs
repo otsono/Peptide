@@ -1198,6 +1198,14 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         if !used && matches!(m, "createVfx" | "createVfxOverlay") {
             if let Some(t) = self.native_vfx(recv, args) { return Some(t) }
         }
+        // an attack's numbered sound, from the attack the clip shows: the engine plays it
+        if !used && matches!(m, "playAttackSfx" | "playVoiceSfx") {
+            let n = match args { [] => Some(1), [Expr::Int(n)] => Some(*n), [Expr::Num(n)] if n.fract() == 0.0 => Some(*n as i64), _ => None };
+            let key = n.map(|n| format!("{}{}_id", if m == "playAttackSfx" { "attackSound" } else { "attackVoice" }, n.max(1)));
+            if let Some(id) = key.and_then(|k| self.jumps.as_ref()?.sounds.get(&k).cloned()) {
+                return Some(format!("AudioClip.play({recv}.__fm.getResource().getContent({}))", quote(&id)));
+            }
+        }
         // a sound it names outright and lets go of: the engine plays it
         if !used && m == "playSound" && self.plain_sounds {
             if let [Expr::Str(id)] = args {

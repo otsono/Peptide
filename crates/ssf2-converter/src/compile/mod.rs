@@ -227,6 +227,10 @@ pub struct ClipJumps {
     /// the stats the attack the clip shows declares (one every attack it shows agrees on), for a
     /// write its code makes to read alongside its own
     pub declared: BTreeMap<String, f64>,
+    /// the numbered sounds (`attackSound1_id`, `attackVoice2_id` ..) of the one attack the clip
+    /// shows, for a play of them its code makes: none where the clip shows anything else, or where
+    /// the attack stops its last sound or voice as it ends
+    pub sounds: BTreeMap<String, String>,
 }
 
 /// a clip's frames as the engine shows them
