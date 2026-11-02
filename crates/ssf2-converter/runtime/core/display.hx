@@ -120,8 +120,8 @@ MovieClip.build = function(me) {
 	me.stop = function() { if (life.on != true) return; me.__playing = false; PeptideRuntime.hold(me, true); };
 	me.gotoAndPlay = function(frame, ?scene) { if (life.on != true) return; me.__playing = true; MovieClip.goto(me, frame); };
 	me.gotoAndStop = function(frame, ?scene) { if (life.on != true) return; me.__playing = false; MovieClip.goto(me, frame); };
-	if (all || uses.nextFrame == true) me.nextFrame = function() { if (life.on != true) return; me.__playing = false; MovieClip.goto(me, me.currentFrame + 1); };
-	if (all || uses.prevFrame == true) me.prevFrame = function() { if (life.on != true) return; me.__playing = false; MovieClip.goto(me, me.currentFrame - 1); };
+	if (all || uses.nextFrame == true) me.nextFrame = function() { if (life.on != true) return; me.__playing = false; MovieClip.goto(me, PeptideRuntime.now(me).currentFrame + 1); };
+	if (all || uses.prevFrame == true) me.prevFrame = function() { if (life.on != true) return; me.__playing = false; MovieClip.goto(me, PeptideRuntime.now(me).currentFrame - 1); };
 	me.getChildByName = function(n) {
 		for (k in me.__kids) if (k.clip.name == n) return k.clip;
 		return null;
@@ -259,18 +259,18 @@ MovieClip.goto = function(me, f) {
 	var n = MovieClip.frameOf(me, f);
 	if (n < 1) return;
 	if (n > me.totalFrames) n = me.totalFrames;
-	if (n == me.currentFrame) return;
+	// (the engine's own clip, where the engine shows it)
+	if (n == PeptideRuntime.now(me).currentFrame) return;
 	// the clip an engine animation shows jumped: the engine is moved to the frame that shows it.
 	// said before the frame's script runs, as the playhead's move stands whatever that script does:
 	// one that stops on an error (saffron city's charmander reads a flame it never fired) left
 	// the engine where it was, the clip was put back there, and the code jumped it again every frame
-	if (PeptideRuntime.native && me == PeptideRuntime.shownClip() && PeptideRuntime.engineJump(me, n)) return;
+	if (me == PeptideRuntime.shownClip() && PeptideRuntime.played(me) && PeptideRuntime.engineJump(me, n)) return;
 	// the root sent to a label its code names: the engine plays the animation that label's clip
 	// shows, whose first keyframe puts the root there and runs the clip's first frame
-	if (PeptideRuntime.native && me == PeptideRuntime.root && !PeptideRuntime.switching && Std.isOfType(f, String)
+	if (me == PeptideRuntime.root && PeptideRuntime.data.nativeSyms != null && !PeptideRuntime.switching && Std.isOfType(f, String)
 		&& PeptideRuntime.engineLabel(AS3.str(f))) return;
-	if (PeptideRuntime.native && me.__sym != null && PeptideRuntime.data.nativeSyms != null && PeptideRuntime.data.nativeSyms.exists(me.__sym)
-		&& PeptideRuntime.shows(me.__sym, n)) { MovieClip.arrive(me, n); return; }
+	if (PeptideRuntime.played(me) && PeptideRuntime.shows(me.__sym, n)) { MovieClip.arrive(me, n); return; }
 	PeptideRuntime.moved(me);
 	MovieClip.enter(me, n);
 };
@@ -358,8 +358,7 @@ MovieClip.samePlacing = function(a, b) {
 MovieClip.runFrame = function(me, n) {
 	// a clip the engine plays as the object's own runs the frames its animations show from the
 	// entity's keyframes (a frame none shows runs here, when code sends the clip to it)
-	if (PeptideRuntime.native && PeptideRuntime.data.nativeSyms != null && PeptideRuntime.data.nativeSyms.exists(me.__sym)
-		&& PeptideRuntime.shows(me.__sym, n)) return;
+	if (PeptideRuntime.played(me) && PeptideRuntime.shows(me.__sym, n)) return;
 	var s = me.__scripts.get(n - 1);
 	if (s != null) PeptideRuntime.run(s);
 };
@@ -420,7 +419,10 @@ MovieClip.tick = function(me) {
 	// the clip an engine animation shows moves with the engine's frame (PeptideRuntime.sync); its
 	// children still move here. asked only of a clip that would move
 	if (me.__playing && me.totalFrames > 1 && !PeptideRuntime.clocked(me)) {
-		MovieClip.enter(me, me.currentFrame >= me.totalFrames ? 1 : me.currentFrame + 1);
+		var n = me.currentFrame >= me.totalFrames ? 1 : me.currentFrame + 1;
+		// the engine's own clip played on out of its lead-in: the engine takes it up from the frame
+		// it reaches, whose keyframe runs it
+		if (!(me == PeptideRuntime.shownClip() && PeptideRuntime.played(me) && PeptideRuntime.engineJump(me, n))) MovieClip.enter(me, n);
 	}
 	// (a child of one frame with none of its own has nothing to move: not visited)
 	if (before != null) for (k in before) {

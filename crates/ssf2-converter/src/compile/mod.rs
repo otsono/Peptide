@@ -220,10 +220,6 @@ pub struct ClipJumps {
     /// the code its calls that turn the source's autolink on and off become, over `{fm}` (the
     /// fighter's engine handle), when the conversion made the autolink the engine's own
     pub autolink: Option<(String, String)>,
-    /// where the engine's animations show the clip, so its playhead is read off the engine
-    /// (`currentFrame`, `currentLabel`, `totalFrames` of the clip itself), where the object's kind
-    /// reads it that way
-    pub playhead: Option<Playhead>,
     /// the stats the attack the clip shows declares (one every attack it shows agrees on), for a
     /// write its code makes to read alongside its own
     pub declared: BTreeMap<String, f64>,
@@ -231,17 +227,6 @@ pub struct ClipJumps {
     /// shows, for a play of them its code makes: none where the clip shows anything else, or where
     /// the attack stops its last sound or voice as it ends
     pub sounds: BTreeMap<String, String>,
-}
-
-/// a clip's frames as the engine shows them
-#[derive(Clone, Debug, Default)]
-pub struct Playhead {
-    /// each animation that shows the clip from its first frame on: (animation, the clip frame it
-    /// starts on, how many clip frames it shows)
-    pub starts: Vec<(String, u32, u32)>,
-    /// the clip's labels, by the frame each is on
-    pub labels: Vec<(u32, String)>,
-    pub total: u32,
 }
 
 pub fn compile_class_detached(model: &SourceModel, runtime: &Runtime, class: &str, detached: &BTreeSet<String>, jumps: Option<ClipJumps>,

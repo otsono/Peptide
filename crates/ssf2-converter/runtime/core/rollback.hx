@@ -145,7 +145,7 @@ Rollback.save = function(t) {
 		clips: clips,
 		objects: objects,
 		exports: fm == null ? null : Rollback.saveExports(fm.exports),
-		rt: [PeptideRuntime.frame, PeptideRuntime.shown, PeptideRuntime.shownBy, PeptideRuntime.dirty, PeptideRuntime.landing,
+		rt: [PeptideRuntime.frame, PeptideRuntime.shown, PeptideRuntime.shownBy, PeptideRuntime.dirty, null,
 			Rollback.copy(PeptideRuntime.held), PeptideRuntime.fresh, PeptideRuntime.ended, PeptideRuntime.lastEngineFrame, PeptideRuntime.root,
 			null, PeptideRuntime.lastEngineAnim],
 		live: Effects.live.copy(),
@@ -158,7 +158,7 @@ Rollback.save = function(t) {
 Rollback.load = function(r) {
 	var rt = r.rt;
 	PeptideRuntime.frame = rt[0]; PeptideRuntime.shown = rt[1]; PeptideRuntime.shownBy = rt[2]; PeptideRuntime.dirty = rt[3];
-	PeptideRuntime.landing = rt[4]; PeptideRuntime.held = Rollback.copy(rt[5]); PeptideRuntime.fresh = rt[6]; PeptideRuntime.ended = rt[7];
+	PeptideRuntime.held = Rollback.copy(rt[5]); PeptideRuntime.fresh = rt[6]; PeptideRuntime.ended = rt[7];
 	PeptideRuntime.lastEngineFrame = rt[8]; PeptideRuntime.root = rt[9];
 	PeptideRuntime.lastEngineAnim = rt[11];
 	for (c in r.clips) Rollback.loadClip(c);

@@ -11,9 +11,10 @@
 // k is the engine's 2k-1 and 2k, drawn the same), so the runtime sets 2k-1 on both engine frames
 // and 2k is what is drawn: the source's frame, for both of its engine frames.
 //
-// When the engine changes the animation itself (a hit, a landing, a move it starts on an input),
-// the runtime sees it at its next update and puts the source's clip where that animation is
-// (`adopt`).
+// The engine plays the object's clips as its own animations (the clips emit's `native_clip` names,
+// `DATA.nativeSyms`): each frame's code is on its keyframe, and the clip's record follows the
+// engine's frame. a clip none of whose frames an animation shows (an effect, a child, the stage's
+// own clip) plays on the runtime's clock (`MovieClip.tick`).
 
 var PeptideRuntime = {};
 PeptideRuntime.data = null;
@@ -38,7 +39,6 @@ PeptideRuntime.reported = new haxe.ds.StringMap();
 // frame scripts entered while the object is being made: they run at its first update, as a new
 // clip's first frame does in the source (a projectile's maker can send it to a label first)
 PeptideRuntime.making = false;
-PeptideRuntime.native = false;
 // the object was made and has had no update yet: its first frame runs on the engine's second
 // (emit's `clock_entity`)
 PeptideRuntime.born = false;
@@ -59,9 +59,6 @@ PeptideRuntime.start = function(fm, data, kind) {
 	PeptideRuntime.ended = false;
 	PeptideRuntime.fm = fm;
 	PeptideRuntime.data = data;
-	// the engine plays the object's clip as its own: its frames' code is on the keyframes, and the
-	// runtime keeps no playhead of its own for it (emit's `native_clip`)
-	PeptideRuntime.native = data.native == true;
 	PeptideRuntime.born = true;
 	PeptideRuntime.pieceIndex = null;
 	PeptideRuntime.firstFrames = null;
@@ -154,22 +151,26 @@ PeptideRuntime.afterUpdate = function() {
 
 // ---- the engine's clock: its animations play, and their keyframes run the source's frames ------
 //
-// every object's entity carries the source's frames on its keyframes, and the engine plays it. a source frame shows as two engine frames, and the first one's keyframe runs the
-// frame (`kf`) as the engine enters it: before that frame's update and hits. the source's timers
-// and update run on the second engine frame of the frame before, so its order holds: timers,
-// update, then the frame. an animation's first keyframe is its entry. a jump by the source's code
-// moves the engine to the frame that shows where it landed (`pin`).
+// every object's entity carries the source's frames on its keyframes, and the engine plays it. a
+// source frame shows as two engine frames, and the first one's keyframe runs the frame as the
+// engine enters it: before that frame's update and hits. the source's timers and update run on
+// the second engine frame of the frame before, so its order holds: timers, update, then the frame.
+// an animation's first keyframe is its entry. a jump by the source's code is the engine's own
+// (`engineJump`, `engineLabel`); one it cannot name moves the engine once the code is done (`pin`).
 
 PeptideRuntime.lastEngineFrame = -1;
 PeptideRuntime.lastEngineAnim = null;
 PeptideRuntime.dirty = false;
 // the animation the runtime itself last started (the engine's own entries are the engine's)
 PeptideRuntime.shownBy = null;
-// a jump the engine is being moved for: the frame it lands on (its keyframe runs its script)
-PeptideRuntime.landing = -1;
 // the runtime is switching the engine's animation for a jump
 PeptideRuntime.switching = false;
 
+// a clip whose frames the engine plays as the object's own animations (`DATA.nativeSyms`)
+PeptideRuntime.played = function(clip) {
+	var syms = PeptideRuntime.data == null ? null : PeptideRuntime.data.nativeSyms;
+	return syms != null && clip.__sym != null && syms.exists(clip.__sym);
+};
 // the clip whose playhead the engine's frame is
 PeptideRuntime.clocked = function(clip) {
 	return PeptideRuntime.data != null && clip == PeptideRuntime.shownClip() && !PeptideRuntime.leadIn(clip);
@@ -189,89 +190,6 @@ PeptideRuntime.leadIn = function(clip) {
 	}
 	var first = firsts.get(clip.__sym);
 	return first != null && clip.currentFrame < first;
-};
-
-// a keyframe whose frame's script is written on it: the clip, when the engine is entering that
-// frame of it (it moved on to it, or a jump the engine was just moved for landed on it), else null
-PeptideRuntime.at = function(sym, f) {
-	if (PeptideRuntime.ended == true || PeptideRuntime.root == null || PeptideRuntime.switching) return null;
-	if (PeptideRuntime.fm.getAnimation() != PeptideRuntime.shown) return null;
-	// another object's code jumped the clip since the engine last showed it (pit's down special
-	// sends its orbitars to `end`): the engine goes where the clip is, and the frame it was
-	// about to enter is no longer the clip's (the jump ran the frame it landed on)
-	if (PeptideRuntime.dirty) { PeptideRuntime.pin(); return null; }
-	var st = PeptideRuntime.shownClip();
-	if (st == null || st.__sym != sym) return null;
-	if (st.currentFrame == f) {
-		if (PeptideRuntime.landing != f) return null;
-		PeptideRuntime.landing = -1;
-		return st;
-	}
-	MovieClip.arrive(st, f);
-	return st;
-};
-
-// a frame's script from its keyframe, on the clip `at` handed back (none: not this clip's frame):
-// what it throws is reported, and a jump it makes is settled
-PeptideRuntime.runAt = function(clip, script) {
-	if (clip == null) return;
-	PeptideRuntime.run(script, clip);
-	PeptideRuntime.frameDone();
-	PeptideRuntime.settle();
-};
-
-// a keyframe: the engine entered the first engine frame of source frame `f` of clip `sym`
-// (an animation's first keyframe enters it only when the runtime started it)
-PeptideRuntime.kf = function(sym, f) {
-	if (PeptideRuntime.ended == true || PeptideRuntime.root == null || PeptideRuntime.switching) return;
-	// an animation the engine started is entered at the next update, once the engine has entered its
-	// state (a walk's own starting speed is set by then, and the entry frame's script writes over it
-	// as the source's does). its kind hears of it now, before the engine first moves it (an attack's
-	// start takes effect from its first frame, as in the source)
-	if (PeptideRuntime.fm.getAnimation() != PeptideRuntime.shown) {
-		// the source's code played it (a jump compiled to the engine's own, which runs the frame
-		// it lands on at once, as the source's jump does): the clip goes there now
-		if (PeptideRuntime.depth > 0 && !PeptideRuntime.making && PeptideRuntime.jumped(sym, f)) return;
-		// a landing the engine started: the source's clip goes to its landing frame as the fighter
-		// touches down, and that frame's script runs before the frame's hits (mario's down air
-		// readies its landing box there; taken at the next update, the box it had hit once more
-		// and the landing box hit again)
-		if (PeptideRuntime.data.isLanding != null && PeptideRuntime.data.isLanding(PeptideRuntime.fm.getAnimation()) == true) {
-			PeptideRuntime.follow();
-			return;
-		}
-		if (f == 1) PeptideRuntime.kind.entering(PeptideRuntime.object, PeptideRuntime.fm.getAnimation());
-		return;
-	}
-	// a jump from another object's code goes first, as in `at`
-	if (PeptideRuntime.dirty) { PeptideRuntime.pin(); return; }
-	var st = PeptideRuntime.shownClip();
-	// a frame the clip is already on ran when the clip got there (a jump landing on it)
-	if (st == null || st.__sym != sym || st.currentFrame == f) return;
-	MovieClip.enter(st, f);
-	PeptideRuntime.frameDone();
-	PeptideRuntime.settle();
-};
-
-// the engine went to an animation the source's code played: the clip is put on the frame it shows
-// (its label under the root, then the frame, whose script runs)
-PeptideRuntime.jumped = function(sym, f) {
-	var anim = PeptideRuntime.fm.getAnimation();
-	var p = PeptideRuntime.pieceOf(anim);
-	if (p == null || p.sym != sym) return false;
-	PeptideRuntime.shown = anim;
-	PeptideRuntime.shownBy = anim;
-	PeptideRuntime.dirty = false;
-	var root = PeptideRuntime.root;
-	if (p.label != "" && root.currentLabel != p.label) {
-		PeptideRuntime.switching = true;
-		root.gotoAndStop(p.label);
-		PeptideRuntime.switching = false;
-	}
-	var st = PeptideRuntime.shownClip();
-	if (st != null && st.__sym == sym && st.currentFrame != f) MovieClip.enter(st, f);
-	if (st != null) st.__enteredOn = PeptideRuntime.frame;
-	return true;
 };
 
 // the source's code jumped a clip: when it is the one an animation shows (or the root, whose
@@ -343,9 +261,7 @@ PeptideRuntime.pin = function() {
 			PeptideRuntime.switched();
 			return;
 		}
-		PeptideRuntime.landing = st.currentFrame;
-		PeptideRuntime.playFrame(n, true);
-		PeptideRuntime.landing = -1;
+		PeptideRuntime.playFrame(n);
 		return;
 	}
 	PeptideRuntime.dirty = false;
@@ -356,11 +272,7 @@ PeptideRuntime.pin = function() {
 	PeptideRuntime.showAnimation(p.anim);
 	PeptideRuntime.switching = false;
 	PeptideRuntime.switched();
-	if (n > 1) {
-		PeptideRuntime.landing = st.currentFrame;
-		PeptideRuntime.playFrame(n, true);
-		PeptideRuntime.landing = -1;
-	}
+	PeptideRuntime.playFrame(n);
 };
 
 // the engine to another animation of the clip it shows: the source is still in the same state, so
@@ -404,36 +316,30 @@ PeptideRuntime.sync = function() {
 			fm0.setScaleY(b[1] * Math.abs(sy));
 		}
 	}
-	// the clip shown (`shownClip`) and the animation's piece (`pieceOf`, once its index is made),
-	// read here: every frame of every object
-	if (root == null) return;
-	var st = root.__c_stance != null ? root.__c_stance.get() : root.stance;
-	if (st == null) st = root;
-	var anim = fm0.getAnimation();
-	var p = PeptideRuntime.pieceIndex == null ? PeptideRuntime.pieceOf(anim) : (anim == null ? null : PeptideRuntime.pieceIndex.get(anim));
-	if (p == null || st.__sym != p.sym || (PeptideRuntime.kind.playsOut != true && PeptideRuntime.leadIn(st))) return;
-	var k = Std.int((fm0.getCurrentFrame() - 1) / 2);
-	// (`clipFrame`, for a section played forwards with no lead-in)
-	var f = (p.head == null || p.head == 0) && !p.reversed && k < p.frames ? p.from + k : PeptideRuntime.clipFrame(p, k);
-	if (f != st.currentFrame) MovieClip.arrive(st, f);
-	// the engine's own clip: the animation played out goes on to the section after it
-	// (`DATA.sections`)
-	if (PeptideRuntime.native) {
-		var fm1 = PeptideRuntime.fm;
-		if (fm1.getCurrentFrame() >= fm1.getTotalFrames() && PeptideRuntime.data.sections != null) {
-			var after = PeptideRuntime.data.sections.get(fm1.getAnimation());
-			if (after != null) { PeptideRuntime.shown = after; PeptideRuntime.shownBy = after; PeptideRuntime.showAnimation(after); PeptideRuntime.switched(); }
-		}
-		return;
-	}
-	// an object whose engine has no ways on from an animation (a projectile) goes on to the one that
-	// shows its clip's next frame once this one is played out; so does a fighter's animation whose
-	// clip plays on into one its engine has no way to (a charge special let go runs into its attack)
-	if ((!PeptideRuntime.kind.playsOut || p.on != null) && st.__playing && PeptideRuntime.fm.getCurrentFrame() >= PeptideRuntime.fm.getTotalFrames()) {
-		var next = st.currentFrame >= st.totalFrames ? 1 : st.currentFrame + 1;
-		var q = PeptideRuntime.pieceAt(st.__sym, next);
-		if (q != null && q.anim != p.anim && (!PeptideRuntime.kind.playsOut || q.anim == p.on)) { PeptideRuntime.shown = q.anim; PeptideRuntime.shownBy = q.anim; PeptideRuntime.showAnimation(q.anim); PeptideRuntime.switched(); }
-	}
+	// the animation played out goes on to the section after it, where the engine has no way on of
+	// its own (`DATA.sections`), once the clip is out of its lead-in
+	var sections = PeptideRuntime.data.sections;
+	if (sections == null || fm0.getCurrentFrame() < fm0.getTotalFrames()) return;
+	var after = sections.get(fm0.getAnimation());
+	if (after == null || (PeptideRuntime.kind.playsOut != true && PeptideRuntime.leadIn(PeptideRuntime.shownClip()))) return;
+	PeptideRuntime.shown = after;
+	PeptideRuntime.shownBy = after;
+	PeptideRuntime.showAnimation(after);
+	PeptideRuntime.switched();
+};
+
+// a clip's record where the engine shows it, for code that reads where it is (its frame, its
+// label, the children that frame places): the engine's own clip moves only when code moves it or
+// runs on it, so it is brought to the engine's frame first. a jump the engine has yet to follow
+// (`dirty`) is where the clip is, as is a lead-in the runtime plays
+PeptideRuntime.now = function(clip) {
+	if (clip == null || PeptideRuntime.dirty || clip != PeptideRuntime.shownClip() || !PeptideRuntime.played(clip)) return clip;
+	var fm = PeptideRuntime.fm;
+	var p = PeptideRuntime.pieceOf(fm.getAnimation());
+	if (p == null || p.sym != clip.__sym || (PeptideRuntime.kind.playsOut != true && PeptideRuntime.leadIn(clip))) return clip;
+	var f = PeptideRuntime.clipFrame(p, Std.int((fm.getCurrentFrame() - 1) / 2));
+	if (f != clip.currentFrame) MovieClip.arrive(clip, f);
+	return clip;
 };
 
 PeptideRuntime.clockedUpdate = function() {
@@ -470,7 +376,7 @@ PeptideRuntime.clockedUpdate = function() {
 	// first was done): back on its first frame from further on, with no jump of the code's on the
 	// way. the engine runs no first keyframe for it, so its kind hears of the new start here
 	if (fm.getCurrentFrame() == 1 && PeptideRuntime.lastEngineFrame > 1 && fm.getAnimation() == PeptideRuntime.lastEngineAnim
-			&& !PeptideRuntime.dirty && PeptideRuntime.landing < 0)
+			&& !PeptideRuntime.dirty)
 		PeptideRuntime.kind.entering(PeptideRuntime.object, fm.getAnimation(), true);
 	PeptideRuntime.sync();
 	PeptideRuntime.lastEngineFrame = fm.getCurrentFrame();
@@ -649,19 +555,11 @@ PeptideRuntime.engineJump = function(clip, n) {
 PeptideRuntime.follow = function() {
 	var anim = PeptideRuntime.fm.getAnimation();
 	if (anim == PeptideRuntime.shown) return;
-	// the engine's own clip: its keyframes run its frames, wherever the engine goes
-	if (PeptideRuntime.native) { PeptideRuntime.shown = anim; PeptideRuntime.dirty = false; return; }
-	// a clip still in its lead-in plays that out first: its frames set the object up, and the engine's
-	// animation is taken up once the clip reaches a section it shows
-	if (PeptideRuntime.leadIn(PeptideRuntime.shownClip())) return;
-	// a jump made before it showed anything is its maker's, as it was made (simon's jab picks its
-	// whip's pose as it fires it): the clip stays where that put it, and the engine goes there
-	var first = PeptideRuntime.shown == null;
+	// its keyframes run its frames, wherever the engine goes: a jump still waiting from the clip it
+	// has left is moot
 	PeptideRuntime.shown = anim;
-	PeptideRuntime.shownBy = null;
-	if (!first) PeptideRuntime.dirty = false;
-	PeptideRuntime.adopt(anim);
-	};
+	PeptideRuntime.dirty = false;
+};
 
 // the script ends: its timers stop, and so does the rest of it
 PeptideRuntime.teardown = function(?fm) {
@@ -859,52 +757,15 @@ PeptideRuntime.pieceAt = function(sym, frame) {
 	return own != null ? own : any;
 };
 
-// the engine is playing an animation: the root goes to the label it is under, the clip it shows
-// to its first frame
-PeptideRuntime.adopt = function(anim) {
-	var p = PeptideRuntime.pieceOf(anim);
-	// an animation of the engine's own the source has none of (a crouch's way out, where the
-	// source stands straight up): the engine plays it, noted rather than an error
-	if (p == null) { PeptideRuntime.say("the engine plays " + anim + ", which no source frame shows"); return; }
-	var root = PeptideRuntime.root;
-	var st = PeptideRuntime.shownClip();
-	// already on a frame the animation shows (a playhead that moved on into it): it stays there
-	if (st != null && st.__sym == p.sym && st.currentFrame >= p.from && st.currentFrame < p.from + p.frames) return;
-	// the engine's own variant of what the clip already shows (a turn, an idle's fidget): the
-	// source has no such move, so its clip plays on where it is. an attack the engine starts is a
-	// new attack, and starts; on an object with no variants of the engine's but the animations it
-	// borrows (a projectile's spawn), any other section is one it was told to play, and it goes there
-	var same = st != null && st.__sym == p.sym && (p.label == "" || root.currentLabel == p.label);
-	if (same && (PeptideRuntime.kind.variants == true || p.borrowed) && AS3.at(PeptideRuntime.data.pkg.attacks, p.label) == null) return;
-	var before = st;
-	if (p.label != "" && root.currentLabel != p.label) root.gotoAndStop(p.label);
-	st = PeptideRuntime.shownClip();
-	// a clip the label jump just placed has entered its first frame and run its script, which
-	// may have sent it on (a move that picks its section): it stays where that put it. a clip
-	// already there goes to the animation's first frame
-	var placed = st != before && st != null && st.__sym == p.sym && p.from == 1;
-	if (st != null && !placed && st.currentFrame != p.from) st.gotoAndPlay(p.from);
-	// the source's first frame of the new state is the one its entry put the clip on (or the one
-	// that frame's script jumped to): the clip moves on from the next source frame
-	if (st != null) st.__enteredOn = PeptideRuntime.frame;
-};
-
-
 // a frame of the animation the engine is on now, short of its last: a source frame shows as the
 // first of its two engine frames, so the last is the engine's own to reach. set there, the engine
 // ends the animation where it stands, and ending a state on the frame it began stops the engine
-// dead (an engine-only variant such as a turn can be shorter than the clip it borrows)
-PeptideRuntime.playFrame = function(n, ?ours) {
+// dead (an engine-only variant such as a turn can be shorter than the clip it borrows). nor its
+// first frame, ever: the engine starts every animation there itself
+PeptideRuntime.playFrame = function(n) {
 	var fm = PeptideRuntime.fm;
-	if (fm.getAnimation() != PeptideRuntime.shown) return;
-	// the first frame of an animation the engine entered itself is the engine's: set there, a
-	// state that began this frame can be ended on it, which stops the engine dead (measured: a
-	// fighter turning while its clip showed a later frame)
-	if (ours != true && fm.getCurrentFrame() <= 1) return;
 	var total = fm.getTotalFrames();
 	if (n > total - 1) n = total - 1;
-	// nor its first frame, ever: the engine starts every animation there itself, and set back
-	// onto it a state that began a frame ago can end on it (the same stop)
 	if (n <= 1) return;
 	fm.playFrame(n);
 };

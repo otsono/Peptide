@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::stage_tables::StageTables;
-use super::{clock_entity, entity_animations, object_script, Decls, Emitted, ObjectSpec, Piece, Units};
+use super::{entity_animations, object_script, Decls, Emitted, ObjectSpec, Piece, Units};
 use crate::compile::{self, Runtime};
 use crate::model::ast::{Expr, Place, Stmt};
 use crate::model::declare::Value;
@@ -124,11 +124,7 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     let out = object_script(&src, &runtime, &spec, &decls, &pieces, units, id);
     let scripts = dir.join("library").join("scripts").join("stage");
     std::fs::write(scripts.join(format!("{id}Script.hx")), &out.script)?;
-    // the entity's keyframes run the stage clip's frame scripts, where its frames have any (a clip
-    // with none follows the engine's frame at each update)
-    if pieces.iter().any(|p| src.class_of(p.sym).is_some_and(|c| !c.frame_scripts.is_empty())) {
-        clock_entity(&entity, id, &src, &pieces, &out.frames, &BTreeMap::new(), None)?;
-    }
+    // (the stage's clip runs its own frames: the engine plays none of them)
     // each object, run by its own class
     let object_runtime = Runtime::load(&located).for_kind("object");
     let mut reports = serde_json::Map::new();

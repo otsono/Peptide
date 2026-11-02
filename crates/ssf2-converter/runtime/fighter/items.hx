@@ -9,7 +9,7 @@ Items.content = function(name) { return AS3.at(PeptideRuntime.data.pkg.contents,
 
 // where the item box is on the frame the fighter shows, in the source's units from its origin
 Items.box = function(me) {
-	var st = PeptideRuntime.shownClip();
+	var st = PeptideRuntime.now(PeptideRuntime.shownClip());
 	var p = st == null ? null : PeptideRuntime.pieceAt(st.__sym, st.currentFrame);
 	if (p == null || p.itemBox.length == 0) return { x: 0, y: 0 };
 	var k = st.currentFrame - p.from;
