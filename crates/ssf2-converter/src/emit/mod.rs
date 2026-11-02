@@ -443,7 +443,13 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     }
     for c in &classes { place(c, model, &classes, &mut placed, &mut order) }
     let effect_syms: BTreeSet<u16> = spec.effects.values().flat_map(|ps| ps.iter().map(|p| p.sym)).collect();
-    let plan = frame_plan(model, pieces, &effect_syms);
+    let native = if matches!(spec.kind, "projectile" | "object" | "fighter") {
+        native_clip(model, pieces, clip_sym).map(|n| Native { fighter: spec.kind == "fighter", ..n })
+    } else { None };
+    // (the object's own clip the runtime keeps under its native ones keeps its frame scripts)
+    let kept = runtime_clip(pieces, clip_sym).filter(|_| native.is_some());
+    let planned: Vec<Piece> = pieces.iter().filter(|p| Some(p.sym) != kept).cloned().collect();
+    let plan = frame_plan(model, &planned, &effect_syms);
     let none = BTreeSet::new();
     let mut jumps = label_jumps(model, pieces);
     // a projectile's or a stage object's playhead is the engine's: its code reads where its clip is
@@ -743,9 +749,6 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
         }
         flies = taken.frame;
     }
-    let native = if matches!(spec.kind, "projectile" | "object" | "fighter") {
-        native_clip(model, pieces, clip_sym).map(|n| Native { fighter: spec.kind == "fighter", ..n })
-    } else { None };
     if let Some(n) = &native {
         // and each animation's next: the one that shows the clip's next frame once it is played
         // out (the clip plays on into its next section; a projectile's animation that ends on its
@@ -1057,6 +1060,8 @@ pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceMode
             // engine's second as well, for the object's birth (and, where each animation is a
             // state's own clip, the entry that puts the object's clip on its label)
             let mine = native.filter(|n| n.syms.contains(&p.sym));
+            // (a native object's own clip the runtime keeps: `runtime_clip`)
+            if native.is_some() && mine.is_none() { continue }
             let enter = match mine { Some(n) if n.labelled => format!("PeptideRuntime.enterLabel({});\n", compile::quote(&p.label)), _ => String::new() };
             if mine.is_some() {
                 at.clear();
@@ -1782,6 +1787,9 @@ fn entry_box_writes(model: &SourceModel, pieces: &[Piece]) -> Vec<(crate::compil
 /// has code past its first frame is not one: nothing plays it). where the object's animations show several
 /// clips, each is the one the object's clip places under the animation's label
 pub fn native_clip(model: &SourceModel, pieces: &[Piece], root: Option<u16>) -> Option<Native> {
+    let kept = runtime_clip(pieces, root);
+    let pieces: Vec<Piece> = pieces.iter().filter(|p| Some(p.sym) != kept).cloned().collect();
+    let pieces = pieces.as_slice();
     if pieces.is_empty() { return None }
     let syms: BTreeSet<u16> = pieces.iter().map(|p| p.sym).collect();
     // a clip that plays a lead-in of its own with code on it before its first section (past its
@@ -1801,6 +1809,15 @@ pub fn native_clip(model: &SourceModel, pieces: &[Piece], root: Option<u16>) -> 
         if !sprite.frames.get(*f0)?.iter().any(|k| k.char_id == p.sym && k.name.is_some()) { return None }
     }
     Some(Native { syms, labelled: true, fighter: false })
+}
+
+/// the object's own clip, where its animations also show clips it places (a class's object whose
+/// states are clips under its labels, with the projectile's spawn, idle and destroy made of its own
+/// frames): its frames stay the runtime's, run as its labels are entered, as they are where its
+/// states alone are animations, and the animations made of it carry no code
+pub fn runtime_clip(pieces: &[Piece], root: Option<u16>) -> Option<u16> {
+    let root = root?;
+    (pieces.iter().any(|p| p.sym == root) && pieces.iter().any(|p| p.sym != root)).then_some(root)
 }
 
 /// whether a placed clip does nothing anyone can see once nobody's code reaches it: its class (and
