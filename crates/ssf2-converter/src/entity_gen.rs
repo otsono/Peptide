@@ -278,7 +278,6 @@ fn reorder_animations(animations: &mut Vec<Value>, layers: &mut Vec<Value>, keyf
 /// neither dropped nor sorted back into the main list.
 fn append_missing_template_animations(
     animations: &mut Vec<Value>, layers: &mut Vec<Value>, keyframes: &mut Vec<Value>, char_id: &str,
-    image_slots: usize,
 ) {
     let present: std::collections::BTreeSet<String> = animations.iter()
         .filter_map(|a| a.get("name").and_then(Value::as_str).map(String::from))
@@ -299,22 +298,15 @@ fn append_missing_template_animations(
         "name": "====MISSING ANIMATIONS====", "layers": [sep_layer], "pluginMetadata": {} }));
 
     for name in &missing {
-        // A stub still has to address every image slot. These stand in for moves the character
-        // does not have, but the states are real and can be entered, and an animation that leaves
-        // a layer unaddressed shows whatever the last animation put there -- so a missing move
-        // would wear the leftovers of whatever preceded it.
-        let mut layer_ids: Vec<String> = Vec::new();
-        for slot in 0..image_slots.max(1) {
-            let kf_id = uuid(char_id, &format!("kf_missing_{}_{}", name, slot));
-            let layer_id = uuid(char_id, &format!("layer_missing_{}_{}", name, slot));
-            keyframes.push(json!({ "$id": kf_id, "type": "IMAGE", "length": 1, "symbol": Value::Null,
-                "tweened": false, "tweenType": "LINEAR", "pluginMetadata": {} }));
-            layers.push(json!({ "$id": layer_id, "name": format!("Image {}", slot), "type": "IMAGE",
-                "keyframes": [kf_id], "hidden": false, "locked": false, "pluginMetadata": {} }));
-            layer_ids.push(layer_id);
-        }
+        // one blank image layer: the state is real and can be entered, and shows nothing
+        let kf_id = uuid(char_id, &format!("kf_missing_{}_0", name));
+        let layer_id = uuid(char_id, &format!("layer_missing_{}_0", name));
+        keyframes.push(json!({ "$id": kf_id, "type": "IMAGE", "length": 1, "symbol": Value::Null,
+            "tweened": false, "tweenType": "LINEAR", "pluginMetadata": {} }));
+        layers.push(json!({ "$id": layer_id, "name": "Image 0", "type": "IMAGE",
+            "keyframes": [kf_id], "hidden": false, "locked": false, "pluginMetadata": {} }));
         animations.push(json!({ "$id": uuid(char_id, &format!("anim_missing_{}", name)),
-            "name": name, "layers": layer_ids, "pluginMetadata": {} }));
+            "name": name, "layers": [layer_id], "pluginMetadata": {} }));
     }
     log::info!("Added {} missing template animation stub(s) under ====MISSING ANIMATIONS====: {}",
         missing.len(), missing.join(", "));
@@ -975,10 +967,6 @@ pub fn generate_entity(
 
         // ── 5. IMAGE layers (one per depth slot, back-to-front) ────────────────────
         {
-            // Every animation addresses the SAME number of slots: the deepest any of them needs.
-            // The ones it uses carry its images; the rest are blanked below.
-            let entity_image_slots = img_result.anim_images.values()
-                .map(|a| a.max_depth_slots.max(1)).max().unwrap_or(1);
             // the pictures of a slice the image pass split off itself are kept under the slice's
             // own name, counted from its first frame, as its boxes are (luigi's side special:
             // under the source's name only the charge's 15 frames are left, and the attack drew
@@ -1194,38 +1182,6 @@ pub fn generate_entity(
                 }));
                 anim_image_layer_ids.push(img_layer_id);
             }
-
-            // Then BLANK the slots this animation does not use.
-            //
-            // A layer the engine is not told about keeps whatever the previous animation put
-            // there. Sandbag's revival is five layers deep (the neutral pose plus its platform
-            // and glow); walk is one. Walk after revival therefore inherits four layers it never
-            // asked for, and the platform rides along under the character for as long as the next
-            // animation stays shallow. It reads as a stray frame of the wrong move, which is a
-            // hard thing to trace back to a layer count.
-            //
-            // SSF2 does not have the problem because a Flash timeline clears its own layers. Here
-            // each animation has to say so, which costs one empty keyframe per unused slot: the
-            // layer exists, is addressed, and is explicitly holding nothing.
-            for slot in num_slots..entity_image_slots {
-                let img_layer_id = uuid(char_id, &format!("layer_image_{}_{}", anim_name, slot));
-                let kf_id = uuid(char_id, &format!("kf_image_blank_{}_{}", anim_name, slot));
-                keyframes.push(json!({
-                    "$id": kf_id, "type": "IMAGE", "length": frame_count.max(1),
-                    "symbol": Value::Null, "tweened": false, "tweenType": "LINEAR",
-                    "pluginMetadata": {}
-                }));
-                layers.push(json!({
-                    "$id": img_layer_id,
-                    "name": format!("Image {}", slot),
-                    "type": "IMAGE",
-                    "keyframes": [kf_id],
-                    "hidden": false,
-                    "locked": false,
-                    "pluginMetadata": {}
-                }));
-                anim_image_layer_ids.push(img_layer_id);
-            }
         }
 
         // Emit IMAGE layers first (drawn behind), then the collision/label/script
@@ -1321,10 +1277,7 @@ pub fn generate_entity(
     // Order template animations per the character template; relegate everything that is
     // neither a template animation nor a direct variant of one to an UNUSED section.
     reorder_animations(&mut animations, &mut layers, &mut keyframes, char_id);
-    let entity_image_slots = img_result.anim_images.values()
-        .map(|a| a.max_depth_slots.max(1)).max().unwrap_or(1);
-    append_missing_template_animations(&mut animations, &mut layers, &mut keyframes, char_id,
-        entity_image_slots);
+    append_missing_template_animations(&mut animations, &mut layers, &mut keyframes, char_id);
 
     let entity = json!({
         "animations": animations,
