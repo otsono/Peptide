@@ -758,12 +758,14 @@ way, since the tween keeps the corner's offset from the pivot at the start scale
 turns). the pivot does not move a still frame (measured live: the same turned pose drawn alike
 with pivot 0 and 30).
 
-which pieces get layers: `flatten.rs` follows each piece (same depth, same picture) across the
-frames it is on. a piece on two frames or more whose placements take holds and straight tweens
-at no more than one keyframe per two frames keeps its own layer; every run of the other pieces
-in a frame, in depth order, is drawn into one picture (`<char>_flat_<hash>.png`, shared by every
-frame that draws the run alike), placed as a plain translation. the layers are the places in the
-frame (run, kept piece, run, ...), so a layer holds the same kept piece for its whole life.
+which pieces get layers: `flatten.rs` sorts a frame's pieces by what the source's library says
+they are. a piece of the fighter's own drawing (a picture the library links to a class, the
+fighter's frames are) keeps its own picture and placement on a layer of its own. every run of the
+other pieces (effect art, linked to nothing) between two pieces of the fighter is drawn into one
+picture (`<char>_flat_<hash>.png`, shared by every frame that draws the run alike), placed as a
+plain translation; a run of one keeps its own picture and placement, so it still holds and
+tweens. the layers are the places in the frame (run, fighter, run, ...): the effects behind the
+fighter, the fighter, and the effects in front of it.
 a piece whose placement colours it (an RGB colour transform), blends it or filters it is always
 drawn into a picture with them applied, since an IMAGE keyframe can say none of them: its blend
 mixes with what is under it in its run, and a costume swap no longer recolours it (the colours

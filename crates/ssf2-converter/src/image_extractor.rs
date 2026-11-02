@@ -23,6 +23,9 @@ pub struct ExtractedImage {
     /// effect), false for a real character bitmap (DefineBits). The skew-bake palette
     /// re-snap only applies to character bitmaps, never vector-rendered effects.
     pub is_vector: bool,
+    /// whether the source's library links it to a class of its own: a fighter's own drawing is
+    /// (`mario_bair0`), the art of its effects is not
+    pub linked: bool,
 }
 
 /// Maps shape/character IDs to bitmap IDs (DefineShape → bitmap fill ID)
@@ -387,9 +390,9 @@ pub fn extract_images_from_swf_only(
                 let h = bmp.height as u32;
 
                 // Find the symbol name: prefer the shape's symbol that references this bitmap
-                let sym = find_symbol_for_bitmap(id, &symbols, &shape_to_bitmap)
-                    .unwrap_or_else(|| symbols.get(&id).cloned()
-                        .unwrap_or_else(|| format!("bitmap_{}", id)));
+                let linked_as = find_symbol_for_bitmap(id, &symbols, &shape_to_bitmap).or_else(|| symbols.get(&id).cloned());
+                let linked = linked_as.is_some();
+                let sym = linked_as.unwrap_or_else(|| format!("bitmap_{}", id));
 
                 match decode_lossless(bmp) {
                     Ok(rgba_data) => {
@@ -404,6 +407,7 @@ pub fn extract_images_from_swf_only(
                             height: h,
                             png_path: format!("library/sprites/{}", filename),
                             is_vector: false,
+                            linked,
                         });
                     }
                     Err(e) => {
@@ -414,9 +418,9 @@ pub fn extract_images_from_swf_only(
             swf::Tag::DefineBitsJpeg3(jpeg) => {
                 let id = jpeg.id;
                 if !wanted(id) { continue; }
-                let sym = find_symbol_for_bitmap(id, &symbols, &shape_to_bitmap)
-                    .unwrap_or_else(|| symbols.get(&id).cloned()
-                        .unwrap_or_else(|| format!("jpeg_{}", id)));
+                let linked_as = find_symbol_for_bitmap(id, &symbols, &shape_to_bitmap).or_else(|| symbols.get(&id).cloned());
+                let linked = linked_as.is_some();
+                let sym = linked_as.unwrap_or_else(|| format!("jpeg_{}", id));
 
                 match decode_jpeg3(jpeg) {
                     Ok((w, h, rgba_data)) => {
@@ -431,6 +435,7 @@ pub fn extract_images_from_swf_only(
                             height: h,
                             png_path: format!("library/sprites/{}", filename),
                             is_vector: false,
+                            linked,
                         });
                     }
                     Err(e) => {
@@ -532,7 +537,7 @@ pub fn extract_images_from_swf_only(
                     images.insert(shape.id, ExtractedImage {
                         bitmap_id: shape.id, symbol_name: sym, width: r.width, height: r.height,
                         png_path: format!("library/sprites/{}", filename),
-                        is_vector: true,
+                        is_vector: true, linked: symbols.contains_key(&shape.id),
                     });
                     shape_to_bitmap.insert(shape.id, shape.id);
                     shape_pivot.insert(shape.id, r.origin_px);
@@ -548,7 +553,7 @@ pub fn extract_images_from_swf_only(
                     images.insert(m.id, ExtractedImage {
                         bitmap_id: m.id, symbol_name: sym, width: r.width, height: r.height,
                         png_path: format!("library/sprites/{}", filename),
-                        is_vector: true,
+                        is_vector: true, linked: symbols.contains_key(&m.id),
                     });
                     shape_to_bitmap.insert(m.id, m.id);
                     shape_pivot.insert(m.id, r.origin_px);
@@ -914,6 +919,7 @@ fn prerender_skewed_frames(
                 height: dst_h,
                 png_path: format!("library/sprites/{}", filename),
                 is_vector: src_img.is_vector,
+                linked: src_img.linked,
             });
             let v = (new_id, new_sym, dst_w, dst_h, min_x, min_y);
             cache.insert(cache_key, v.clone());
@@ -2680,6 +2686,7 @@ pub fn composite_head(
         height: ch,
         png_path: format!("library/sprites/{filename}"),
         is_vector: true,
+        linked: false,
     }))
 }
 

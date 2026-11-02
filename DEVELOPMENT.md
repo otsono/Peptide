@@ -1093,8 +1093,8 @@ wiring still owed for the not-yet-shipped FM transformation API.
 keyframes[], symbols[], paletteMap, pluginMetadata, plugins, version: 14, … }`.
 each animation owns an ordered layer stack -- `LABEL`, `FRAME_SCRIPT`,
 `COLLISION_BODY`, one `COLLISION_BOX` / `POINT` per box instance, and `IMAGE`
-layers for the frame's pieces (a piece that moves as a tween keeps its own; the rest are
-flattened into one picture per run, `flatten.rs`) -- and layers reference keyframes which reference symbols. the
+layers for the frame's pieces (the fighter's own drawing keeps its own; the effect art behind
+and in front of it is flattened into one picture per run, `flatten.rs`) -- and layers reference keyframes which reference symbols. the
 full schema (every layer/symbol/keyframe shape, the box-type enum, `.meta`
 sidecar format) is the ground truth in [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md) --
 keep it open when working on `entity_gen.rs`.

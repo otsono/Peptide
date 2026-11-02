@@ -1,19 +1,18 @@
 //! A frame's display list, flattened.
 //!
 //! A source frame places any number of pieces at their depths, and the image pass gives each its
-//! own picture and placement. A move drawn from many vector pieces (zelda's neutral special) then
+//! own picture and placement. A move drawn with many effect pieces (zelda's neutral special) then
 //! comes out as dozens of layers whose pieces change places from frame to frame. Here the pieces
-//! are sorted into two kinds, by what each does over the frames it is on:
+//! are sorted by what they are in the source's library:
 //!
-//! - a piece that keeps its depth and its picture, and whose placement moves as the engine's own
-//!   tween does (it holds, or goes in a straight line between two keyframes in place, scale,
-//!   turn and opacity), keeps its own layer: the entity writes it as holds and tweens.
-//! - everything else is flattened: on each frame, every run of such pieces between two kept ones
-//!   is drawn into one picture, in depth order, through each piece's own placement. a run of one
-//!   keeps its own picture.
+//! - a piece of the fighter's own drawing (a picture the library links to a class) keeps its own
+//!   picture and placement, on a layer of its own.
+//! - every run of the other pieces (effect art) between two pieces of the fighter is drawn into one
+//!   picture, in depth order, through each piece's own placement. a run of one keeps its own
+//!   picture and placement, so it can still hold and tween.
 //!
-//! The layers are then the kept pieces and the runs between them, in depth order, the same layer
-//! for the same piece or run on every frame (a frame without one holds nothing on its layer).
+//! The layers are then the runs and the fighter's pieces in depth order: the effects behind the
+//! fighter, the fighter, and the effects in front of it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -43,21 +42,6 @@ impl Art<'_> {
         let (a, b, c, d) = (e.world_a, e.world_b, e.world_c, e.world_d);
         let (ox, oy) = (px * fx, py * fy);
         [a * fx, b * fx, c * fy, d * fy, e.world_tx + a * ox + c * oy, e.world_ty + b * ox + d * oy]
-    }
-
-    /// the piece as the entity places it (`Pose`): its pivot is the piece's own registration
-    /// point, where the source turns and scales it from, in its picture's pixels
-    fn placement(&self, e: &FrameImageEntry) -> Pose {
-        let pivot = self.shape_pivot.get(&e.shape_id).copied().unwrap_or((0.0, 0.0));
-        let p = crate::fm_placement::image_placement(
-            &crate::fm_placement::WorldPlacement {
-                tx: e.world_tx, ty: e.world_ty, sx: e.world_sx, sy: e.world_sy, rotation: e.world_rotation,
-                a: e.world_a, b: e.world_b, c: e.world_c, d: e.world_d,
-            },
-            pivot,
-            self.shape_fill_scale.get(&e.shape_id).copied().unwrap_or((1.0, 1.0)),
-        );
-        [p.x, p.y, p.scale_x, p.scale_y, p.rotation, e.alpha, -pivot.0, -pivot.1]
     }
 }
 
@@ -99,10 +83,6 @@ pub fn on_line(a: &Pose, b: &Pose, mid: &Pose, t: f64) -> bool {
     (x - mid[0]).abs() <= TOL[0] && (y - mid[1]).abs() <= TOL[1]
 }
 
-/// how many keyframes a piece's placements take as holds and straight tweens, about whichever
-/// pivot fits them better
-pub fn keyframes_needed(p: &[Pose]) -> usize { keyframes_at(p).min(keyframes_at(&at_corner(p))) }
-
 /// the same poses with the pivot at the picture's corner: a tween then moves the corner in a
 /// straight line (a scale about the registration point fits this way, a turn about it the other)
 pub fn at_corner(p: &[Pose]) -> Vec<Pose> { p.iter().map(|q| { let mut q = *q; q[6] = 0.0; q[7] = 0.0; q }).collect() }
@@ -128,9 +108,6 @@ pub fn keyframes_at(p: &[Pose]) -> usize {
     }
     k
 }
-
-/// One piece over the frames it stays on (same depth, same picture): where it is on each.
-struct Track { frames: Vec<(u16, usize)> }
 
 fn blank(depth: u16) -> FrameImageEntry {
     FrameImageEntry {
@@ -169,72 +146,28 @@ pub fn flatten(
     for anim in anim_images.values_mut() {
         let total = anim.frames.keys().max().map(|m| *m as u32 + 1).unwrap_or(0) as u16;
         if total == 0 { continue }
-        // the pieces, followed from frame to frame by depth and picture
-        let mut tracks: Vec<Track> = Vec::new();
-        let mut open: HashMap<(u16, u16), usize> = HashMap::new();
-        let mut track_of: BTreeMap<(u16, usize), usize> = BTreeMap::new();
+        // the fighter's own drawing (a picture the source links to a class) is never drawn together
+        // with anything: it is its own unit on every frame, and splits the art in front of it from
+        // the art behind
+        let own = |e: &FrameImageEntry| images.get(&art.bitmap_of(e)).is_some_and(|i| i.linked);
+        // each frame as its units, bottom to top: a run of effect art, a piece of the fighter, the
+        // next run and so on (an empty run where two pieces of the fighter meet). the layers are the
+        // units' places, so the art behind the fighter, the fighter and the art in front of it each
+        // keep a layer of their own
+        let mut list: BTreeMap<u16, Vec<Vec<usize>>> = BTreeMap::new();
         for f in 0..total {
-            let mut still: HashMap<(u16, u16), usize> = HashMap::new();
-            if let Some(entries) = anim.frames.get(&f) {
-                for (i, e) in entries.iter().enumerate() {
-                    let key = (e.depth, e.shape_id);
-                    let t = match open.get(&key) {
-                        Some(t) => *t,
-                        None => { tracks.push(Track { frames: Vec::new() }); tracks.len() - 1 }
-                    };
-                    tracks[t].frames.push((f, i));
-                    track_of.insert((f, i), t);
-                    still.insert(key, t);
+            let Some(entries) = anim.frames.get(&f) else { continue };
+            let mut units: Vec<Vec<usize>> = vec![Vec::new()];
+            for (i, e) in entries.iter().enumerate() {
+                if is_blank(e) { continue }
+                if own(e) {
+                    units.push(vec![i]);
+                    units.push(Vec::new());
+                } else {
+                    units.last_mut().unwrap().push(i);
                 }
             }
-            open = still;
-        }
-        // which keep their own layer: on two frames or more, and moving as tweens do
-        let mut kept: Vec<bool> = tracks.iter().map(|t| {
-            if t.frames.len() < 2 { return false }
-            // a colour, a blend or a filter is drawn into the picture: no tween carries it
-            if t.frames.iter().any(|(f, i)| !anim.frames[f][*i].look.is_plain()) { return false }
-            let p: Vec<Pose> = t.frames.iter().map(|(f, i)| art.placement(&anim.frames[f][*i])).collect();
-            keyframes_needed(&p) * 2 <= p.len()
-        }).collect();
-        // each frame as its units, bottom to top: runs of the rest and kept pieces in turn (an empty
-        // run where two kept pieces meet). the layers are the units' places: the first run, the
-        // first kept piece, the second run and so on, so a frame takes as many layers as it has
-        // units and a layer holds whatever is at its place. a kept piece holds its place all the
-        // way (its tweens are on one layer): one that does not is flattened with the rest, until
-        // every kept piece does
-        let units = |kept: &[bool]| -> BTreeMap<u16, Vec<Vec<usize>>> {
-            let mut out = BTreeMap::new();
-            for f in 0..total {
-                let Some(entries) = anim.frames.get(&f) else { continue };
-                let mut list: Vec<Vec<usize>> = vec![Vec::new()];
-                for (i, e) in entries.iter().enumerate() {
-                    if is_blank(e) { continue }
-                    if kept[track_of[&(f, i)]] {
-                        list.push(vec![i]);
-                        list.push(Vec::new());
-                    } else {
-                        list.last_mut().unwrap().push(i);
-                    }
-                }
-                out.insert(f, list);
-            }
-            out
-        };
-        let mut list = units(&kept);
-        loop {
-            let mut place: HashMap<usize, usize> = HashMap::new();
-            let mut moved: Vec<usize> = Vec::new();
-            for (f, l) in &list {
-                for (slot, run) in l.iter().enumerate() {
-                    if slot % 2 == 0 { continue }
-                    let t = track_of[&(*f, run[0])];
-                    if *place.entry(t).or_insert(slot) != slot { moved.push(t); }
-                }
-            }
-            if moved.is_empty() { break }
-            for t in moved { kept[t] = false; }
-            list = units(&kept);
+            list.insert(f, units);
         }
         let lanes = list.values().map(Vec::len).max().unwrap_or(1);
         let mut frames: BTreeMap<u16, Vec<FrameImageEntry>> = BTreeMap::new();
@@ -263,7 +196,7 @@ pub fn flatten(
                         if let Some((id, sym, w, hgt, ..)) = &h {
                             images.insert(*id, ExtractedImage {
                                 bitmap_id: *id, symbol_name: sym.clone(), width: *w, height: *hgt,
-                                png_path: format!("library/sprites/{sym}.png"), is_vector: true,
+                                png_path: format!("library/sprites/{sym}.png"), is_vector: true, linked: false,
                             });
                             next_id = next_id.checked_add(1).ok_or_else(|| anyhow::anyhow!("{char_name}: more flattened pictures than picture ids"))?;
                             count += 1;
@@ -279,7 +212,9 @@ pub fn flatten(
                 let mut e = pieces[0].clone();
                 e.shape_id = id;
                 e.symbol_name = sym;
+                // its opacity, colour, blend and filters are in the picture now
                 e.alpha = 1.0;
+                e.look = Default::default();
                 e.world_tx = x; e.world_ty = y;
                 e.world_a = k; e.world_b = 0.0; e.world_c = 0.0; e.world_d = k;
                 e.world_sx = k; e.world_sy = k; e.world_rotation = 0.0;
@@ -315,6 +250,28 @@ fn draw_run(
     key: &str,
     id: u16,
 ) -> anyhow::Result<Option<(u16, String, u32, u32, f64, f64)>> {
+    let Some((canvas, x0, y0)) = compose(pieces, art, images, decoded, char_dir) else { return Ok(None) };
+    let (w, h) = (canvas.width(), canvas.height());
+    // back to straight alpha for the picture on disk
+    let mut data = canvas.take();
+    for px in data.chunks_exact_mut(4) {
+        let a = px[3] as u32;
+        if a > 0 && a < 255 { for c in &mut px[..3] { *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8; } }
+    }
+    let sym = format!("{}_flat_{:016x}", crate::image_extractor::sanitize_name(char_name), fnv(key));
+    image::save_buffer(sprites.join(format!("{sym}.png")), &data, w, h, image::ExtendedColorType::Rgba8)?;
+    Ok(Some((id, sym, w, h, x0, y0)))
+}
+
+/// The pieces drawn together, in order, each through its own placement (premultiplied), and where
+/// the picture's corner is in the world. None when nothing of it can be drawn.
+fn compose(
+    pieces: &[&FrameImageEntry],
+    art: &Art,
+    images: &BTreeMap<u16, ExtractedImage>,
+    decoded: &mut HashMap<u16, Option<image::RgbaImage>>,
+    char_dir: &Path,
+) -> Option<(tiny_skia::Pixmap, f64, f64)> {
     // each piece's picture as it looks placed: coloured, filtered, and where its corner went
     let mut placed: Vec<([f64; 6], tiny_skia::Pixmap, f32, tiny_skia::BlendMode)> = Vec::new();
     let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
@@ -353,11 +310,11 @@ fn draw_run(
         }
         placed.push((m, pix, e.alpha as f32, blend_of(e.look.blend)));
     }
-    if placed.is_empty() { return Ok(None) }
+    if placed.is_empty() { return None }
     let (x0, y0) = (x0.floor(), y0.floor());
     let (w, h) = (((x1 - x0) * RES).ceil().max(1.0), ((y1 - y0) * RES).ceil().max(1.0));
-    if w > 4096.0 || h > 4096.0 { return Ok(None) }
-    let Some(mut canvas) = tiny_skia::Pixmap::new(w as u32, h as u32) else { return Ok(None) };
+    if w > 4096.0 || h > 4096.0 { return None }
+    let mut canvas = tiny_skia::Pixmap::new(w as u32, h as u32)?;
     for (m, pix, alpha, blend) in &placed {
         let r = RES as f32;
         let t = tiny_skia::Transform::from_row(
@@ -366,15 +323,7 @@ fn draw_run(
         let paint = tiny_skia::PixmapPaint { opacity: alpha.clamp(0.0, 1.0), blend_mode: *blend, quality: tiny_skia::FilterQuality::Bicubic };
         canvas.draw_pixmap(0, 0, pix.as_ref(), &paint, t, None);
     }
-    // back to straight alpha for the picture on disk
-    let mut data = canvas.take();
-    for px in data.chunks_exact_mut(4) {
-        let a = px[3] as u32;
-        if a > 0 && a < 255 { for c in &mut px[..3] { *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8; } }
-    }
-    let sym = format!("{}_flat_{:016x}", crate::image_extractor::sanitize_name(char_name), fnv(key));
-    image::save_buffer(sprites.join(format!("{sym}.png")), &data, w as u32, h as u32, image::ExtendedColorType::Rgba8)?;
-    Ok(Some((id, sym, w as u32, h as u32, x0, y0)))
+    Some((canvas, x0, y0))
 }
 
 /// a placement's blend mode as the drawing's: what it mixes with is what is under it in its run
@@ -405,7 +354,7 @@ mod tests {
     fn a_hold_and_a_straight_move_take_a_keyframe_each() {
         let mut t = vec![p(0.0, 0.0, 0.0); 4];
         t.extend((0..=6).map(|i| p(i as f64 * 3.0, 0.0, i as f64 * 10.0)));
-        assert_eq!(keyframes_needed(&t), 3);
+        assert_eq!(keyframes_at(&t), 3);
     }
 
     #[test]
@@ -420,7 +369,7 @@ mod tests {
             [cx + r.cos() * dx - r.sin() * dy, cy + r.sin() * dx + r.cos() * dy, 1.0, 1.0, deg, 1.0, 10.0, 5.0]
         };
         let t: Vec<Pose> = (0..=4).map(|i| pose(i as f64 * 22.5)).collect();
-        assert_eq!(keyframes_needed(&t), 2, "one tween and the keyframe it reaches");
+        assert_eq!(keyframes_at(&t), 2, "one tween and the keyframe it reaches");
     }
 
     #[test]
@@ -438,6 +387,6 @@ mod tests {
     #[test]
     fn jitter_takes_a_keyframe_a_frame() {
         let t: Vec<Pose> = (0..8).map(|i| p(if i % 2 == 0 { 0.0 } else { 5.0 }, i as f64, 0.0)).collect();
-        assert!(keyframes_needed(&t) * 2 > t.len());
+        assert!(keyframes_at(&t) * 2 > t.len());
     }
 }
