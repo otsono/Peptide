@@ -60,9 +60,11 @@ Fighters.speedsSet = function(me, x) {
 //   carries the old speed two frames first (falco's forward tilt slides 27.6 here, 15.5 there)
 
 Fighters.engineFrame = function(me) {
-	me.__stood = me.__fm.isOnFloor();
-	Fighters.relaunch(me);
-	Attacks.carry(me);
+	var fm = me.__fm;
+	me.__stood = fm.isOnFloor();
+	// (each called when it has something to do: PeptideRuntime.update)
+	if (me.__relaunch != null) Fighters.relaunch(me);
+	if (fm.getAnimation() != me.__writtenAnim) Attacks.carry(me);
 	if (me.__stunWant != null) {
 		// put in once the hit's freeze is over (nothing runs here while it holds): the source's
 		// hold counts down from its first frame out of the freeze (read on mario's tilts at 80%:
@@ -84,8 +86,9 @@ Fighters.engineFrame = function(me) {
 			me.__fm.forceStartHitstun(want);
 		}
 	}
-	AttackRules.engineFrame(me);
-	for (st in me.__selfPlatforms) { st.setX(me.__fm.getX()); st.setY(me.__fm.getY()); }
+	if (fm.getState() != me.__trackState || (me.__mc == null ? null : me.__mc.currentLabel) != me.__trackLabel) AttackRules.track(me);
+	if (me.__rulesBase != null) AttackRules.engineFrame(me);
+	if (me.__selfPlatforms.length > 0) for (st in me.__selfPlatforms) { st.setX(fm.getX()); st.setY(fm.getY()); }
 };
 
 // a fighter riding a rocket moves by it alone while the attack it rides lasts: the speed it was
@@ -115,14 +118,16 @@ Fighters.afterSwitch = function(me) { Attacks.carry(me); };
 Fighters.variants = true;
 // where it comes in the source engine's pass over its objects: first
 Fighters.order = 0;
-Fighters.waits = function(me) { return false; };
+// it never starts late (PeptideRuntime.clockedUpdate)
+Fighters.waits = null;
 Fighters.attackChanged = function(me, stats) { AttackRules.changed(me, stats); };
 
 // the source's engine plays a fighter's animation clip (its `stance`) itself, every frame, whatever
 // the clip's own stop says: a move holds by looping two frames (kirby's stone freezes on
 // `freeze`, whose next frame jumps back to it), and a jump by its code plays on from there
 Fighters.beforeTick = function(me) {
-	var st = PeptideRuntime.stanceOf(me.__mc);
+	var mc = me.__mc;
+	var st = mc == null ? null : (mc.__c_stance != null ? mc.__c_stance.get() : mc.stance);
 	if (st != null) st.__playing = true;
 };
 
@@ -392,12 +397,16 @@ Fighters.stateOf = function(anim) {
 
 // what the source's engine does around the fighter every one of its frames, before its code
 Fighters.frame = function(me) {
-	Events.stateMoved(me);
-	Fighters.noteUsed(me);
+	var fm = me.__fm;
+	var label = me.__mc == null ? null : me.__mc.currentLabel;
+	// (each called when it has something to do: PeptideRuntime.update)
+	if (me.__listeners != null) Events.stateMoved(me);
+	if (label != me.__usedLabel) Fighters.noteUsed(me);
 	// a throw its item asked for, from the item's own script
-	if (me.__fm.exports.__askToss == true) { me.__fm.exports.__askToss = null; Items.throwAsked(me); }
-	AttackRules.frame(me);
-	Items.frame(me);
+	if (fm.exports.__askToss == true) { fm.exports.__askToss = null; Items.throwAsked(me); }
+	// (the label read again: what ran above can have moved the clip)
+	if (fm.getState() != me.__trackState || (me.__mc == null ? null : me.__mc.currentLabel) != me.__trackLabel) AttackRules.track(me);
+	if (me.__item != null || me.__itemLabel != null) Items.frame(me);
 };
 
 

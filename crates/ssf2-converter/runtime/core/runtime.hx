@@ -126,14 +126,17 @@ PeptideRuntime.frameDone = function() {
 		if (!fm.isDisposed()) PeptideRuntime.kind.speedsSet(PeptideRuntime.object, fm.getXSpeed() != vx);
 	}
 };
+// a call into the script's own functions is most of what a frame costs (more than a read of the
+// engine's), so the steps of an update are called only when they have something to do, asked
+// here first
 PeptideRuntime.update = function() {
 	if (PeptideRuntime.ended == true) return;
-	Rollback.frame();
+	if (Rollback.tick != null) Rollback.frame();
 	PeptideRuntime.frame++;
 	PeptideRuntime.updating = true;
 	PeptideRuntime.clockedUpdate();
 	PeptideRuntime.updating = false;
-	PeptideRuntime.afterUpdate();
+	if (PeptideRuntime.later.length > 0) PeptideRuntime.afterUpdate();
 };
 // what waits for the update it was asked in to finish (an object that ends itself mid-update has
 // the rest of that update still to run on its fields, as the source's does)
@@ -398,10 +401,17 @@ PeptideRuntime.sync = function() {
 			fm0.setScaleY(b[1] * Math.abs(sy));
 		}
 	}
-	var st = PeptideRuntime.shownClip();
-	var p = PeptideRuntime.pieceOf(PeptideRuntime.fm.getAnimation());
-	if (st == null || p == null || st.__sym != p.sym || PeptideRuntime.leadIn(st)) return;
-	var f = PeptideRuntime.clipFrame(p, Std.int((PeptideRuntime.fm.getCurrentFrame() - 1) / 2));
+	// the clip shown (`shownClip`) and the animation's piece (`pieceOf`, once its index is made),
+	// read here: every frame of every object
+	if (root == null) return;
+	var st = root.__c_stance != null ? root.__c_stance.get() : root.stance;
+	if (st == null) st = root;
+	var anim = fm0.getAnimation();
+	var p = PeptideRuntime.pieceIndex == null ? PeptideRuntime.pieceOf(anim) : (anim == null ? null : PeptideRuntime.pieceIndex.get(anim));
+	if (p == null || st.__sym != p.sym || (PeptideRuntime.kind.playsOut != true && PeptideRuntime.leadIn(st))) return;
+	var k = Std.int((fm0.getCurrentFrame() - 1) / 2);
+	// (`clipFrame`, for a section played forwards with no lead-in)
+	var f = (p.head == null || p.head == 0) && !p.reversed && k < p.frames ? p.from + k : PeptideRuntime.clipFrame(p, k);
 	if (f != st.currentFrame) MovieClip.arrive(st, f);
 	// the engine's own clip: the animation played out goes on to the section after it
 	// (`DATA.sections`)
@@ -425,8 +435,10 @@ PeptideRuntime.sync = function() {
 
 PeptideRuntime.clockedUpdate = function() {
 	var fm = PeptideRuntime.fm;
-	// an object that starts a source frame late does nothing until then
-	if (PeptideRuntime.kind.waits(PeptideRuntime.object)) return;
+	var kind = PeptideRuntime.kind;
+	// an object that starts a source frame late does nothing until then (a kind that never waits
+	// has none)
+	if (kind.waits != null && kind.waits(PeptideRuntime.object)) return;
 	// a new object's first update: the frame scripts held while it was made, on the clips they
 	// were entered on (each clip's latest, when it is still on that frame)
 	if (PeptideRuntime.held != null) {
@@ -440,15 +452,15 @@ PeptideRuntime.clockedUpdate = function() {
 		for (h in held) if (h.clip.__held == h && h.clip.currentFrame == h.frame) MovieClip.runFrame(h.clip, h.frame);
 	}
 	// the engine's own change of animation first: a jump still waiting from the clip it has left
-	// is that clip's, and moot
-	PeptideRuntime.follow();
-	PeptideRuntime.runEntries();
-	PeptideRuntime.settle();
+	// is that clip's, and moot (`follow`, `runEntries` and `settle`, each when it has anything to do)
+	if (fm.getAnimation() != PeptideRuntime.shown) PeptideRuntime.follow();
+	if (PeptideRuntime.entries.length > 0) PeptideRuntime.runEntries();
+	if (PeptideRuntime.dirty) PeptideRuntime.pin();
 	// held still by a hit: its timers wait out these frames (Timers.create)
-	if (PeptideRuntime.kind.frozen(PeptideRuntime.object)) {
+	if (kind.frozen != null && kind.frozen(PeptideRuntime.object)) {
 		var o = PeptideRuntime.object;
 		o.__frozenFrames = (o.__frozenFrames == null ? 0 : o.__frozenFrames) + 1;
-		Effects.show();
+		if (Effects.live.length > 0) Effects.show();
 		return;
 	}
 	// the engine started the animation it shows over again (an attack pressed again before the
@@ -461,10 +473,10 @@ PeptideRuntime.clockedUpdate = function() {
 	PeptideRuntime.lastEngineFrame = fm.getCurrentFrame();
 	PeptideRuntime.lastEngineAnim = fm.getAnimation();
 	PeptideRuntime.sourceFrame();
-	PeptideRuntime.settle();
-	PeptideRuntime.follow();
-	PeptideRuntime.kind.engineFrame(PeptideRuntime.object);
-	Effects.show();
+	if (PeptideRuntime.dirty) PeptideRuntime.pin();
+	if (fm.getAnimation() != PeptideRuntime.shown) PeptideRuntime.follow();
+	kind.engineFrame(PeptideRuntime.object);
+	if (Effects.live.length > 0) Effects.show();
 	// no longer just made once the engine is past the first frame of the animation it is on (an
 	// update can come in the same frame the object was made in, when its maker's update runs
 	// before its own, and a maker can send it to another animation first, whose entry then runs
@@ -660,22 +672,24 @@ PeptideRuntime.teardown = function(?fm) {
 // playheads move on
 PeptideRuntime.sourceFrame = function() {
 	var me = PeptideRuntime.object;
+	var kind = PeptideRuntime.kind;
 	// the kind's own rules count the engine's frames (a press shows for one of them): every one
-	PeptideRuntime.kind.frame(me);
+	kind.frame(me);
 	// the source's code runs once a source frame, whole, on every other engine frame (the first
 	// update is one of them)
 	if (PeptideRuntime.frame % 2 == 0) return;
 	// the camera as the code reads it, once a source frame, before its code
 	if (PeptideAPI.camera != null) PeptideCamera.refresh(PeptideAPI.camera);
 	if (me.update != null) PeptideRuntime.run(me.update);
-	Events.dispatch(me, "gameTickEnd");
-	Events.dispatch(PeptideAPI, "gameTickEnd");
-	for (o in Events.everyFrame.copy()) Events.dispatch(o, "enterFrame");
+	// (an object no one listens on hears nothing: `dispatch` asks the same first)
+	if (me.__listeners != null) Events.dispatch(me, "gameTickEnd");
+	if (PeptideAPI.__listeners != null) Events.dispatch(PeptideAPI, "gameTickEnd");
+	if (Events.everyFrame.length > 0) for (o in Events.everyFrame.copy()) Events.dispatch(o, "enterFrame");
 	// the first one finishes making the object: nothing moves on yet
 	if (PeptideRuntime.fresh == true) { PeptideRuntime.fresh = false; return; }
-	PeptideRuntime.kind.beforeTick(me);
-	MovieClip.tick(PeptideRuntime.root);
-	Effects.frame();
+	if (kind.beforeTick != null) kind.beforeTick(me);
+	if (PeptideRuntime.root != null) MovieClip.tick(PeptideRuntime.root);
+	if (Effects.live.length > 0) Effects.frame();
 };
 
 // run the source's code; what it throws is reported once and does not stop the rest

@@ -103,7 +103,7 @@ Stages.isPlane = function(c) {
 	for (n in Stages.planeNames) if (root.getChildByName(Planes.childOf(n)) == c) return true;
 	return false;
 };
-Stages.frozen = function(me) { return false; };
+Stages.frozen = null;
 // the named clips the boot made, by name
 Stages.groups = new haxe.ds.StringMap();
 // how many frames the stage has run

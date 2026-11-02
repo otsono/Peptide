@@ -1981,11 +1981,6 @@ platform loop is flat either way; memory, rollback and the runtime's own lists d
 cause was the camera's timed points (every one the stage asked for was kept); the rest is still
 inside that branch. measure with `ps -o time=` over `tick 2400` at `speed 8`.
 
-**two projectiles still run on the runtime's clock.** every fighter, object and projectile plays
-its clip as the engine's own animations except pac-man's hydrant and rayman's plum: each mixes
-animations of its own clip (the projectile defaults) with child clips its labels place, and the
-native path takes one or the other (`native_clip` in emit/mod.rs).
-
 **pichu's down special ends early.** `verify.py char pichu --ssf2` fails C6: the thunder runs 69
 engine frames where the source's 36 frames want 72, then stands. open: the cause is not found yet.
 
@@ -2772,12 +2767,12 @@ are catalogued in the two new sections above; the items here are the main conver
    answer for. judge each rule by whether a player could tell, not by whether a probe can
    measure it.
 
-   measured (`runtime_cost.py mario`, two fighters, the time a frame saves with each part
-   stubbed): standing, 5.67 ms a frame, of which the runtime's update is 2.73; `sync` 1.73,
-   `kind.engineFrame` 1.33, `kind.frame` 0.85, `MovieClip.tick` 0.68, `Effects.show` 0.49.
-   fighting, 10.8 ms, update 7.6, `follow` 2.9. the parts overlap, so these are a guide, not a
-   split (and the tool's own stubbing drifts its fighting baseline; an unstubbed fight holds near
-   12 ms).
+   measured (`runtime_cost.py mario`, two fighters, the engine's processor time a frame saves
+   with each part stubbed): standing, 2.39 ms a frame, of which the runtime's update is 0.84
+   (`sourceFrame` 0.35, `sync` 0.14, `kind.frame` 0.11, `MovieClip.tick` 0.11); fighting, 4.13.
+   a frame's wall time only moves in whole screen refreshes (1/480 s at speed 8), so a part read
+   off the wall clock reads as nothing or as a whole refresh. the parts overlap, so these are a
+   guide, not a split (a stubbed part can break a move, and the fighting baseline drifts then).
 
    a stage object costs about 1.0 ms a frame, idle: bomb factory's blocks, by the slope of frame
    time over live blocks (five points a run). the stage keeps adding blocks until its grid is
@@ -2928,14 +2923,16 @@ are catalogued in the two new sections above; the items here are the main conver
   patch time (the engine has no module loader), remapping every function, type and string index
   across the two; `hlbc` can read and write those tables, but the remapping is a cross-module
   linker and needs a feasibility spike before any feature leans on it.
-- **a converted fighter costs the engine about 1 ms a frame standing still and 1.3 fighting.**
-  two converted marios run about 6.6 ms a frame fighting where two built-in fighters run 4 (the
-  engine at full speed, `runtime_cost.py`, `--fight`). a call in the engine's script costs about
-  5 us, so the runtime's cost is its count of calls. the sharpest part left is an attack's first
-  frame, which makes the clip its label places and every clip that places (`follow`, about 2.4 ms
-  of a fighting frame). a named child no code can reach is not made (nothing reads its name or a
-  text it starts with, nothing walks the children, and its class only sets its own properties):
-  a fighter's frames place boxes under names its code never asks for, and those were most of it.
+- **a converted fighter's runtime costs the engine about 0.4 ms a frame standing still.** two
+  converted marios take 2.39 ms of the engine's processor a frame standing (the runtime's update
+  0.84 of it) and 4.13 fighting (`runtime_cost.py`, `--fight`). a call into one of the script's own
+  functions costs more than a read of the engine's, so the runtime's cost is its count of calls,
+  and an update asks whether a step has anything to do before it calls it (1.28 ms to 0.84
+  standing). the sharpest part left is an attack's first frame,
+  which makes the clip its label places and every clip that places (`follow`). a named child no
+  code can reach is not made (nothing reads its name or a text it starts with, nothing walks the
+  children, and its class only sets its own properties): a fighter's frames place boxes under
+  names its code never asks for, and those were most of it.
 - **a match with a built-in fighter in a later slot does not start from the harness.** the first
   fighter is booted as built-in or custom by whether its package is installed, and two different
   converted fighters start together; a later slot is always loaded as a custom package, so a

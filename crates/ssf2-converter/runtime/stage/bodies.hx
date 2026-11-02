@@ -190,10 +190,10 @@ Bodies.entering = function(me, anim, ?again) {};
 Bodies.playsOut = false;
 // where it comes in the source engine's pass over its objects: after the fighters
 Bodies.order = 1;
-Bodies.waits = function(me) { return false; };
+Bodies.waits = null;
 Bodies.beforeTick = function(me) {};
 // a hit never freezes it: the source's objects take a hit down their own path and run on
-Bodies.frozen = function(me) { return false; };
+Bodies.frozen = null;
 
 // the script starts: the object (the stand-in its maker holds, when one was made for it), its
 // clip, its constructor and its initialize, as the runtime starts any object, then what was asked

@@ -21,7 +21,7 @@ Projectiles.order = 1;
 // not ported: one made in the projectiles' own pass (by another projectile's code) waits a source
 // frame on the source before its clip starts; here it starts at once (pichu's bolt arrives a frame
 // early)
-Projectiles.waits = function(me) { return false; };
+Projectiles.waits = null;
 // its clip keeps its own stops (measured: a held frame stays where it is while it flies)
 // its animation clip plays on every frame, as a fighter's does, whatever a stop on it says (ness's
 // pk flash is sent to `boom` with a gotoAndStop and plays its blast out to the frame that ends it)

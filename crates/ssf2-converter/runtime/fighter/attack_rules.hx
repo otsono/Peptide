@@ -30,9 +30,6 @@ AttackRules.track = function(me, ?entering) {
 		if (base != null) AttackRules.began(me, entering != null);
 	}
 };
-AttackRules.frame = function(me) {
-	AttackRules.track(me);
-};
 
 // resetMovement its code writes as it plays: it starts from a standstill (a declared one is the
 // animation's own speed conservation, `runtime/attack_stats.jsonc`)
@@ -220,10 +217,9 @@ AttackRules.easeCap = function(me) {
 	var ease = me.__rulesBase == null ? null : AttackRules.stat(me, "air_ease");
 	return ease == null || AS3.num(ease) < 0 ? null : AS3.num(ease) * PeptideRuntime.data.units.speed;
 };
-// every engine frame
+// every engine frame the fighter is in an attack, once `track` has caught up (Fighters.engineFrame)
 AttackRules.engineFrame = function(me) {
 	var fm = me.__fm;
-	AttackRules.track(me);
 	if (me.__rulesBase == null) return;
 	AttackRules.refresh(me);
 	if (me.__resetAgain == true) {
