@@ -18,9 +18,7 @@ Projectiles.playsOut = false;
 Projectiles.afterSwitch = function(me) { Attacks.carry(me); };
 // where it comes in the source engine's pass over its objects: after the fighters
 Projectiles.order = 1;
-// not ported: one made in the projectiles' own pass (by another projectile's code) waits a source
-// frame on the source before its clip starts; here it starts at once (pichu's bolt arrives a frame
-// early)
+// (one made in the projectiles' own pass waits a source frame by the engine's freeze: Projectiles.fire)
 Projectiles.waits = null;
 // its clip keeps its own stops (measured: a held frame stays where it is while it flies)
 // its animation clip plays on every frame, as a fighter's does, whatever a stop on it says (ness's
@@ -77,7 +75,8 @@ Projectiles.fire = function(owner, name, ?x, ?y, ?place, ?stats) {
 	var ys = Projectiles.declared(decl, ["yspeed", "ySpeed", "y_speed"]);
 	// made by code of an object the source's engine updates as late as a projectile or later (another
 	// projectile): the source's projectiles all belong to a fighter
-	var late = (PeptideRuntime.kind != null && PeptideRuntime.kind.order >= Projectiles.order) || (fm.exports != null && fm.exports.__inPass != null && fm.exports.__inPass > 0);
+	var late = (PeptideRuntime.kind != null && PeptideRuntime.kind.order >= Projectiles.order) || (fm.exports != null && fm.exports.__inPass != null && fm.exports.__inPass > 0)
+		|| (fm.exports != null && fm.exports.__passAt == match.getElapsedFrames());
 	var g = Projectiles.declared(decl, ["gravity"]);
 	var gmax = Projectiles.declared(decl, ["maxgravity"]);
 	var launch = { x: px, y: py, xs: null, ys: null, name: n, decl: given, g: g == null ? 0 : AS3.num(g) * u.accel,
@@ -102,6 +101,11 @@ Projectiles.fire = function(owner, name, ?x, ?y, ?place, ?stats) {
 	// charge its toss was given, and throws as far as that charge says)
 	if (stats != null && p.exports != null) p.exports.__fired = stats;
 	if (own.exports.__launch != null) { own.exports.__launch = null; Projectiles.launch(p, launch); }
+	// one made by another projectile's code waits a source frame before it starts, as the source's
+	// does (made in the projectiles' pass, it is first updated in the next): the engine's own freeze
+	// holds it, its clip, its movement and its timers, for those two engine frames (a freeze counts
+	// down once on the frame it starts). pichu's cloud's bolt reached her a source frame early
+	if (late) p.forceStartHitstop(3, false);
 	// the one its maker has out now
 	fm.exports.__lastProj = p;
 	return Objects.view(p);

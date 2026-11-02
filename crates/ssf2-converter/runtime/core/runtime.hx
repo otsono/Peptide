@@ -113,12 +113,15 @@ PeptideRuntime.inTimer = false;
 // what comes due as the frame's script is done (a one-frame timer it started, Timers.create)
 PeptideRuntime.afterFrame = [];
 PeptideRuntime.frameVx = null;
+// the owner a projectile's frame code is running for (`clipAt`)
+PeptideRuntime.passOwner = null;
 PeptideRuntime.frameDone = function() {
 	while (PeptideRuntime.afterFrame.length > 0) {
 		var due = PeptideRuntime.afterFrame;
 		PeptideRuntime.afterFrame = [];
 		for (f in due) f();
 	}
+	if (PeptideRuntime.passOwner != null) { PeptideRuntime.passOwner.exports.__passAt = null; PeptideRuntime.passOwner = null; }
 	var vx = PeptideRuntime.frameVx;
 	if (vx != null) {
 		PeptideRuntime.frameVx = null;
@@ -491,6 +494,14 @@ PeptideRuntime.clipAt = function(f) {
 	// that answers a speed its code set is told once the frame is done
 	if (PeptideRuntime.depth == 0 && PeptideRuntime.kind != null && PeptideRuntime.kind.speedsSet != null && !PeptideRuntime.fm.isDisposed())
 		PeptideRuntime.frameVx = PeptideRuntime.fm.getXSpeed();
+	// a projectile's frame code is the source's projectile pass, as `run` marks it: its owner is
+	// told until the frame is done (`frameDone`), on this engine frame only, should the code stop
+	// short of it (Projectiles.fire)
+	if (PeptideRuntime.kind != null && PeptideRuntime.kind.order > 0) {
+		var fm = PeptideRuntime.fm;
+		var owner = fm.isDisposed() || fm.getOwner == null ? null : fm.getOwner();
+		if (owner != null) { owner.exports.__passAt = match.getElapsedFrames(); PeptideRuntime.passOwner = owner; }
+	}
 	var st = PeptideRuntime.shownClip();
 	if (st != null && st.currentFrame != f) MovieClip.arrive(st, f);
 	return st;
