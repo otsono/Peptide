@@ -240,13 +240,16 @@ pub struct Playhead {
     pub total: u32,
 }
 
-pub fn compile_class_detached(model: &SourceModel, runtime: &Runtime, class: &str, detached: &BTreeSet<String>, jumps: Option<ClipJumps>)
+pub fn compile_class_detached(model: &SourceModel, runtime: &Runtime, class: &str, detached: &BTreeSet<String>, jumps: Option<ClipJumps>,
+                              vfx: &BTreeMap<String, String>, plain_sounds: bool)
     -> Option<(String, Vec<String>, BTreeSet<String>, BTreeMap<String, String>, Vec<Landing>)> {
     let pkg = Package::new(model, runtime);
     let c = model.classes.get(class)?;
     let mut w = lower::ClassWriter::new(&pkg, c);
     w.detached = detached.clone();
     w.jumps = jumps;
+    w.vfx = vfx.clone();
+    w.plain_sounds = plain_sounds;
     let text = w.class_section();
     Some((text, w.problems.clone(), w.unknown.clone(), w.detached_text.clone(), w.landings.clone()))
 }

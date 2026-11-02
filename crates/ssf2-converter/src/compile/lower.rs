@@ -42,6 +42,13 @@ pub struct ClassWriter<'p, 'a> {
     used_override: Option<bool>,
     /// the landings the engine makes for this class's code
     pub landings: Vec<super::Landing>,
+    /// the effects an attach the code lets go of plays as the engine's own alone (one piece of a
+    /// clip with no code of its own, or a shared one the engine has): name -> its `VfxStats`
+    /// content and animation, given the object's engine handle as `{eng}`
+    pub vfx: BTreeMap<String, String>,
+    /// a sound the code plays and lets go of is the engine's own play: nothing asks for it again
+    /// (no attack of the object's stops its last sound as it ends)
+    pub plain_sounds: bool,
 }
 
 #[derive(Default)]
@@ -72,7 +79,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         }
         let int_fields = whole_number_fields(pkg, class);
         ClassWriter { pkg, class, int_fields, problems: Vec::new(), unknown: BTreeSet::new(), scopes: Vec::new(), uniq: 0, supers_used, shapes: None,
-            detached: BTreeSet::new(), detached_text: BTreeMap::new(), jumps: None, landings: Vec::new(), in_frame: false, top_unused: false, call_unused: false, used_override: None }
+            detached: BTreeSet::new(), detached_text: BTreeMap::new(), jumps: None, landings: Vec::new(), in_frame: false, top_unused: false, call_unused: false, used_override: None, vfx: BTreeMap::new(), plain_sounds: false }
     }
 
     fn problem(&mut self, p: impl Into<String>) { self.problems.push(p.into()) }
@@ -1188,8 +1195,63 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             return Some(format!("({{ var {r} = {recv}; {r}.{id} != null ? {r}.{id}({args}) : {t}; }})",
                 id = ident(m), args = a.join(", ")));
         }
+        if !used && matches!(m, "createVfx" | "createVfxOverlay") {
+            if let Some(t) = self.native_vfx(recv, args) { return Some(t) }
+        }
+        // a sound it names outright and lets go of: the engine plays it
+        if !used && m == "playSound" && self.plain_sounds {
+            if let [Expr::Str(id)] = args {
+                return Some(format!("AudioClip.play({recv}.__fm.getResource().getContent({}))", quote(id)));
+            }
+        }
         self.used_override = Some(used);
         self.api_text(recv, m, &a)
+    }
+
+    /// an effect the code attaches and lets go of, named outright, with its options written out:
+    /// the engine's own effect, made where the source puts it and left to play out (the runtime
+    /// takes the same short way for it as the match runs, `Effects.attach`). an option it does not
+    /// know, a `loop`, or a lock or a layer worked out as it runs keeps the runtime's way
+    fn native_vfx(&mut self, recv: &str, args: &[Expr]) -> Option<String> {
+        let name = match args.first()? { Expr::Str(s) => s.clone(), _ => return None };
+        let content = self.vfx.get(&name)?.clone();
+        let mut opts: BTreeMap<String, &Expr> = BTreeMap::new();
+        match args.get(1) {
+            None | Some(Expr::Null) | Some(Expr::Undefined) => {}
+            Some(Expr::Object(kv)) => for (k, v) in kv {
+                let Expr::Str(k) = k else { return None };
+                // (`syncHitStun` the runtime has no answer for either)
+                if k == "syncHitStun" { continue }
+                if !matches!(k.as_str(), "x" | "y" | "scaleX" | "scaleY" | "rotation" | "behind" | "parentLock") { return None }
+                opts.insert(k.clone(), v);
+            },
+            _ => return None,
+        }
+        let flag = |k: &str| -> Option<bool> { match opts.get(k) { None => Some(false), Some(Expr::Bool(b)) => Some(*b), _ => None } };
+        let (locked, behind) = (flag("parentLock")?, flag("behind")?);
+        let size = crate::mappings::character_stats().scaling.size_multiplier;
+        let r = self.fresh("__r");
+        let f = self.fresh("__f");
+        let v = self.fresh("__v");
+        // (a number written out is that number)
+        let num = |w: &mut Self, k: &str| opts.get(k).map(|e| { let t = w.expr(e); if t.trim_matches(['(', ')']).parse::<f64>().is_ok() { t.trim_matches(['(', ')']).to_string() } else { format!("AS3.num({t})") } });
+        let (ox, oy) = (num(self, "x"), num(self, "y"));
+        let mut stats = vec![content.replace("{eng}", &f)];
+        for k in ["scaleX", "scaleY"] { if let Some(t) = num(self, k) { stats.push(format!("{k}: {t}")); } }
+        if behind { stats.push("layer: VfxLayer.CHARACTERS_BACK".into()); }
+        let off = |o: &Option<String>| o.as_ref().map(|t| format!("{t} * {size}")).unwrap_or_else(|| "0".into());
+        let at = |o: &Option<String>| o.as_ref().map(|t| format!(" + {t} * {size}")).unwrap_or_default();
+        let mut after = Vec::new();
+        if locked {
+            // riding its owner, which mirrors the offset with it: the source's own flip taken back off
+            stats.push(format!("x: {f}.flipX({}), y: {}, relativeWith: true, resizeWith: true, flipWith: true", off(&ox), off(&oy)));
+        } else {
+            after.push(format!("{v}.setX({f}.getX(){})", at(&ox)));
+            after.push(format!("{v}.setY({f}.getY(){})", at(&oy)));
+        }
+        if let Some(t) = num(self, "rotation") { after.push(format!("{v}.setRotation({t})")); }
+        let after = if after.is_empty() { String::new() } else { format!(" if ({v} != null) {{ {}; }}", after.join("; ")) };
+        Some(format!("({{ var {r} = {recv}; var {f} = {r}.__fm; var {v} = match.createVfx(new VfxStats({{ {} }}), {f});{after} }})", stats.join(", ")))
     }
 
     /// `recv.addEventListener(event, fn, opts)` (or its removal, or the question) for an event the

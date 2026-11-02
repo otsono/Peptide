@@ -503,8 +503,35 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
         }
     }
     let texts: BTreeSet<String> = said.into_iter().filter(|(_, (all, keys))| all > keys).map(|(s, _)| s).collect();
+    // the effects an attach can make as the engine's own alone: a shared one this engine has, else
+    // one piece of a clip with no code of its own (a stage's own effects go the runtime's way, the
+    // stage being no game object)
+    let mut vfx: BTreeMap<String, String> = BTreeMap::new();
+    if spec.kind != "stage" {
+        let lits = compile::string_literals(model);
+        for (name, ps) in spec.effects {
+            // (the section it starts in: what a clip that goes at its end has after it never shows)
+            let Some(p) = ps.iter().find(|p| p.from == 1) else { continue };
+            if (ps.len() == 1 && model.class_of(p.sym).is_none()) || plays_once(model, p) {
+                vfx.insert(name.clone(), format!("spriteContent: {{eng}}.getResource().getContent({}), animation: {}", compile::quote(name), compile::quote(&p.fm_name)));
+            }
+        }
+        for (name, constant) in &crate::mappings::api_commands().global_vfx_map {
+            if lits.contains(name) { vfx.insert(name.clone(), format!("spriteContent: \"global::vfx.vfx\", animation: GlobalVfx.{constant}")); }
+        }
+    }
+    // a sound the code plays and lets go of is the engine's own, unless an attack of a fighter's
+    // stops the last one it played as it ends (`cancelSoundOnEnd`)
+    fn says(v: &Value, key: &str) -> bool {
+        match v {
+            Value::Obj(o) => o.iter().any(|(k, x)| (k == key && !matches!(x, Value::Bool(false) | Value::Null)) || says(x, key)),
+            Value::Arr(a) => a.iter().any(|x| says(x, key)),
+            _ => false,
+        }
+    }
+    let plain_sounds = spec.kind != "fighter" || !says(decls.attacks, "cancelSoundOnEnd");
     for c in &order {
-        let Some((text, p, u, d, l)) = compile::compile_class_detached(model, runtime, c, plan.detach.get(c).unwrap_or(&none), jumps.get(c).cloned()) else { continue };
+        let Some((text, p, u, d, l)) = compile::compile_class_detached(model, runtime, c, plan.detach.get(c).unwrap_or(&none), jumps.get(c).cloned(), &vfx, plain_sounds) else { continue };
         cinits.extend(cinit_at.captures_iter(&text).map(|m| format!("{}.cinit", &m[1])));
         found.extend(l);
         problems.extend(p.into_iter().map(|x| format!("{c}: {x}")));
@@ -1809,6 +1836,42 @@ pub fn native_clip(model: &SourceModel, pieces: &[Piece], root: Option<u16>) -> 
         if !sprite.frames.get(*f0)?.iter().any(|k| k.char_id == p.sym && k.name.is_some()) { return None }
     }
     Some(Native { syms, labelled: true, fighter: false })
+}
+
+/// an effect's clip that plays its frames once and goes, as the engine's own effect does: its class,
+/// a plain clip's, does nothing but register its frame scripts, and the first of those, on the
+/// piece's last frame or the one after, stops it and takes it off its parent (what comes after
+/// never runs)
+fn plays_once(model: &SourceModel, p: &Piece) -> bool {
+    use crate::model::ast::Stmt;
+    let Some(c) = model.class_of(p.sym) else { return false };
+    if !matches!(compile::short(&c.super_name), "MovieClip" | "Sprite") { return false }
+    // (the clip's own member, as `this.m` or bare)
+    fn mine(e: &Expr) -> Option<&str> {
+        match e { Expr::Member(o, m) if matches!(**o, Expr::This) => Some(m), Expr::Name(m) => Some(m), _ => None }
+    }
+    fn call(s: &Stmt) -> Option<(&Expr, &Vec<Expr>)> {
+        match s { Stmt::Expr(Expr::Call(f, a)) => Some((&**f, a)), _ => None }
+    }
+    // the constructor registers its scripts and nothing else
+    let quiet = c.constructor.body.iter().all(|s| matches!(s, Stmt::Return(None) | Stmt::Expr(Expr::SuperCall(..)))
+        || call(s).is_some_and(|(f, _)| mine(f) == Some("addFrameScript")));
+    if !quiet || c.methods.iter().any(|m| !c.frame_scripts.iter().any(|fs| fs.method == m.name)) { return false }
+    // no script at all: it plays through once, as one with no class does
+    let Some(first) = c.frame_scripts.iter().min_by_key(|fs| fs.frame) else { return true };
+    let last = p.from + p.frames - 1;
+    if first.frame + 1 < last || first.frame + 1 > last + 1 { return false }
+    let Some(m) = c.methods.iter().find(|m| m.name == first.method) else { return false };
+    let mut gone = false;
+    for s in &m.function.body {
+        match call(s) {
+            Some((f, a)) if mine(f) == Some("stop") && a.is_empty() => {}
+            Some((Expr::Member(o, rc), a)) if rc == "removeChild" && mine(o) == Some("parent") && matches!(a.as_slice(), [Expr::This]) => gone = true,
+            _ if matches!(s, Stmt::Return(None)) => {}
+            _ => return false,
+        }
+    }
+    gone
 }
 
 /// the object's own clip, where its animations also show clips it places (a class's object whose
