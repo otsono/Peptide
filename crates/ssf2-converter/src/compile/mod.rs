@@ -199,6 +199,17 @@ pub fn compile_package(model: &SourceModel, runtime: &Runtime) -> Compiled {
 /// One class, compiled, with some of its methods written apart (`detached`): the class's section
 /// without them, its problems and unknown names, and each detached method's function text.
 #[allow(clippy::type_complexity)]
+/// an effect the engine's own plays alone: its `VfxStats` content and animation, given the object's
+/// engine handle as `{eng}`, and the frame whose script takes its clip off its parent (none where
+/// it plays its section out, or where it is a shared one the engine has)
+#[derive(Clone, Debug)]
+pub struct NativeVfx {
+    pub stats: String,
+    pub gone: Option<u32>,
+    /// one of the object's own (not a shared one): kept by the code, it is still the engine's
+    pub own: bool,
+}
+
 /// a landing the engine makes (a floor-touch listener whose only work was to take the move to a
 /// label): the label, the animation it starts when the code that set it up is that clip's own,
 /// and the stats the listener wrote, which are the landing animation's own
@@ -230,14 +241,14 @@ pub struct ClipJumps {
 }
 
 pub fn compile_class_detached(model: &SourceModel, runtime: &Runtime, class: &str, detached: &BTreeSet<String>, jumps: Option<ClipJumps>,
-                              vfx: &BTreeMap<String, String>, plain_sounds: bool)
+                              vfx: Option<&BTreeMap<String, Option<NativeVfx>>>, plain_sounds: bool)
     -> Option<(String, Vec<String>, BTreeSet<String>, BTreeMap<String, String>, Vec<Landing>)> {
     let pkg = Package::new(model, runtime);
     let c = model.classes.get(class)?;
     let mut w = lower::ClassWriter::new(&pkg, c);
     w.detached = detached.clone();
     w.jumps = jumps;
-    w.vfx = vfx.clone();
+    w.vfx = vfx.cloned();
     w.plain_sounds = plain_sounds;
     let text = w.class_section();
     Some((text, w.problems.clone(), w.unknown.clone(), w.detached_text.clone(), w.landings.clone()))

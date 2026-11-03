@@ -40,12 +40,13 @@ pub struct ClassWriter<'p, 'a> {
     top_unused: bool,
     call_unused: bool,
     used_override: Option<bool>,
+    own_override: Option<u32>,
     /// the landings the engine makes for this class's code
     pub landings: Vec<super::Landing>,
-    /// the effects an attach the code lets go of plays as the engine's own alone (one piece of a
-    /// clip with no code of its own, or a shared one the engine has): name -> its `VfxStats`
-    /// content and animation, given the object's engine handle as `{eng}`
-    pub vfx: BTreeMap<String, String>,
+    /// the effects the engine's own plays alone (one piece of a clip with no code of its own, or a
+    /// shared one the engine has), by name; none for one the object has that the runtime plays.
+    /// none at all where the object's effects are not known (a stage's)
+    pub vfx: Option<BTreeMap<String, Option<super::NativeVfx>>>,
     /// a sound the code plays and lets go of is the engine's own play: nothing asks for it again
     /// (no attack of the object's stops its last sound as it ends)
     pub plain_sounds: bool,
@@ -79,7 +80,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         }
         let int_fields = whole_number_fields(pkg, class);
         ClassWriter { pkg, class, int_fields, problems: Vec::new(), unknown: BTreeSet::new(), scopes: Vec::new(), uniq: 0, supers_used, shapes: None,
-            detached: BTreeSet::new(), detached_text: BTreeMap::new(), jumps: None, landings: Vec::new(), in_frame: false, top_unused: false, call_unused: false, used_override: None, vfx: BTreeMap::new(), plain_sounds: false }
+            detached: BTreeSet::new(), detached_text: BTreeMap::new(), jumps: None, landings: Vec::new(), in_frame: false, top_unused: false, call_unused: false, used_override: None, own_override: None, vfx: None, plain_sounds: false }
     }
 
     fn problem(&mut self, p: impl Into<String>) { self.problems.push(p.into()) }
@@ -1181,6 +1182,15 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
         if !used && matches!(m, "createVfx" | "createVfxOverlay") {
             if let Some(t) = self.native_vfx(recv, args) { return Some(t) }
         }
+        // one it keeps, of its own, whose clip has no code: the engine's effect plays it, and the
+        // clip the code holds follows it (`Effects.attach`'s `own`, the frame it goes on or 0)
+        if used && matches!(m, "createVfx" | "createVfxOverlay") {
+            if let Some(Expr::Str(name)) = args.first() {
+                if let Some(Some(v)) = self.vfx.as_ref().and_then(|m| m.get(name)) {
+                    if v.own { self.own_override = Some(v.gone.unwrap_or(0)); }
+                }
+            }
+        }
         // an attack's numbered sound, from the attack the clip shows: the engine plays it
         if !used && matches!(m, "playAttackSfx" | "playVoiceSfx") {
             let n = match args { [] => Some(1), [Expr::Int(n)] => Some(*n), [Expr::Num(n)] if n.fract() == 0.0 => Some(*n as i64), _ => None };
@@ -1205,7 +1215,12 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
     /// know, a `loop`, or a lock or a layer worked out as it runs keeps the runtime's way
     fn native_vfx(&mut self, recv: &str, args: &[Expr]) -> Option<String> {
         let name = match args.first()? { Expr::Str(s) => s.clone(), _ => return None };
-        let content = self.vfx.get(&name)?.clone();
+        // one the object neither carries nor has a shared one for is not made (`Effects.attach`)
+        let Some(native) = self.vfx.as_ref()?.get(&name).cloned() else { return Some(format!("PeptideRuntime.noEffect({})", quote(&name))) };
+        let native = native?;
+        // (one whose clip goes before its section ends: the engine's effect times out after the
+        // frames it showed)
+        let content = match native.gone { Some(n) => format!("{}, timeout: {}", native.stats, 2 * (n - 1)), None => native.stats };
         let mut opts: BTreeMap<String, &Expr> = BTreeMap::new();
         match args.get(1) {
             None | Some(Expr::Null) | Some(Expr::Undefined) => {}
@@ -1393,7 +1408,10 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             .replace("{size}", &scaling.size_multiplier.to_string())
             .replace("{speed}", &scaling.velocity_scale().to_string())
             .replace("{frame}", if self.in_frame { "true" } else { "false" })
-            .replace("{used}", if self.used_override.take().unwrap_or(true) { "true" } else { "false" });
+            .replace("{used}", if self.used_override.take().unwrap_or(true) { "true" } else { "false" })
+            ;
+        // (a row's `{own}`: left out where it is not said)
+        out = match self.own_override.take() { Some(n) => out.replace("{own}", &n.to_string()), None => out.replace(", {own}", "").replace("{own}", "null") };
         // an argument used more than once is worked out once, like the receiver
         let mut binds: Vec<(String, String)> = Vec::new();
         if bind { binds.push((r.clone(), recv.to_string())); }

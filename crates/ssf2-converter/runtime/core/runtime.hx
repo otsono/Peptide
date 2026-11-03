@@ -201,6 +201,7 @@ PeptideRuntime.moved = function(clip) {
 
 // the source's code stopped or restarted the clip an animation shows: the engine holds or plays on
 PeptideRuntime.hold = function(clip, on) {
+	if (clip.__own != null) { var v = clip.__vfx; if (v != null && !v.isDisposed()) { if (on) v.pause(); else v.resume(); } return; }
 	if (!PeptideRuntime.clocked(clip) || PeptideRuntime.kind.playsOut) return;
 	if (on) PeptideRuntime.fm.pause(); else PeptideRuntime.fm.resume();
 };
@@ -333,6 +334,18 @@ PeptideRuntime.sync = function() {
 // runs on it, so it is brought to the engine's frame first. a jump the engine has yet to follow
 // (`dirty`) is where the clip is, as is a lead-in the runtime plays
 PeptideRuntime.now = function(clip) {
+	// an effect's clip the engine's effect plays (`Effects.attach`'s `own`): on that effect's frame
+	if (clip != null && clip.__own != null) {
+		var v = clip.__vfx;
+		if (v == null || v.isDisposed()) return clip;
+		var f = Std.int((v.getCurrentFrame() - 1) / 2) + 1;
+		if (f == clip.currentFrame) return clip;
+		clip.currentFrame = f;
+		clip.currentLabel = null;
+		clip.currentFrameLabel = null;
+		if (clip.__tl != null) for (l in clip.__tl.labels) { if (l[0] <= f) clip.currentLabel = l[1]; if (l[0] == f) clip.currentFrameLabel = l[1]; }
+		return clip;
+	}
 	if (clip == null || PeptideRuntime.dirty || clip != PeptideRuntime.shownClip() || !PeptideRuntime.played(clip)) return clip;
 	var fm = PeptideRuntime.fm;
 	var p = PeptideRuntime.pieceOf(fm.getAnimation());

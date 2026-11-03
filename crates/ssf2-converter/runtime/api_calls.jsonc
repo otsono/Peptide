@@ -2,7 +2,9 @@
 //
 // a call to a listed member becomes its template, in place: `{eng}` is the engine object of the
 // object it is asked of, `{recv}` that object itself (for a helper that keeps state on it), `{0}`, `{1}` ... its arguments, `{size}` and `{speed}` the units source
-// numbers are scaled by. nothing is left to answer it while the match runs. a member content
+// numbers are scaled by, `{used}` whether anything takes its result, and `{own}` (left out when
+// not said) the frame an effect the code keeps goes on, where the engine's effect plays it alone
+// (0: it plays its section out). nothing is left to answer it while the match runs. a member content
 // defines itself keeps its own; a member listed here that content hands around as a value (a
 // listener) is still answered by the runtime until it moves too.
 {
@@ -112,8 +114,8 @@
   "getProjectileStat": "Projectiles.stat({recv}, {0})",
   "getEnemyStat": "{recv}.__stats == null ? null : Projectiles.stat({recv}, {0})",
   "createProjectile": "Projectiles.fire({recv}, {0}, {1}, {2}, {3}, {4})",
-  "createVfx": "Effects.attach({recv}, {0}, {1}, {used})",
-  "createVfxOverlay": "Effects.attach({recv}, {0}, {1}, {used})",
+  "createVfx": "Effects.attach({recv}, {0}, {1}, {used}, {own})",
+  "createVfxOverlay": "Effects.attach({recv}, {0}, {1}, {used}, {own})",
   "playSound": "Sounds.play({recv}, {0})",
   "stopSound": "Sounds.stop({0})",
   "shake": "match.getCamera().shake(AS3.num({0}))",

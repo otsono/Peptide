@@ -259,6 +259,13 @@ MovieClip.goto = function(me, f) {
 	var n = MovieClip.frameOf(me, f);
 	if (n < 1) return;
 	if (n > me.totalFrames) n = me.totalFrames;
+	// an effect's clip the engine's effect plays: that effect goes to the frame (the clip reads it
+	// from there, `PeptideRuntime.now`)
+	if (me.__own != null) {
+		var v = me.__vfx;
+		if (v != null && !v.isDisposed()) { v.playFrame(2 * n - 1); if (me.__playing) v.resume(); else v.pause(); }
+		return;
+	}
 	// (the engine's own clip, where the engine shows it)
 	if (n == PeptideRuntime.now(me).currentFrame) return;
 	// the clip an engine animation shows jumped: the engine is moved to the frame that shows it.

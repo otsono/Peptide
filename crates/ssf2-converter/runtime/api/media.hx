@@ -29,10 +29,12 @@ Sounds.attack = function(me, prefix, n) {
 // it to a frame, and its own frame scripts run. The engine's effect follows that clip: its frame
 // (by the effect's animations, DATA.effects), and what the code sets on it. It plays through once
 // (or `loop` times) and is gone, unless its clip stops itself; taken off its parent, it is gone.
+// One whose clip has no code (`own`, said at conversion: the frame its clip goes on, or 0) is played
+// by the engine's effect, and the clip follows it instead: no frames run here.
 var Effects = {};
 Effects.live = [];
 
-Effects.attach = function(me, id, ?opts, ?used) {
+Effects.attach = function(me, id, ?opts, ?used, ?own) {
 	var fm = me == null ? null : me.__fm;
 	if (fm == null || id == null) return null;
 	var name = AS3.str(id);
@@ -86,7 +88,10 @@ Effects.attach = function(me, id, ?opts, ?used) {
 		if (o.rotation != null) vfx.setRotation(AS3.num(o.rotation));
 		return null;
 	}
-	var clip = pieces != null && pieces.length > 0 ? PeptideRuntime.makeClip(pieces[0].sym, Stage.layer) : MovieClip.create();
+	var played = own != null && pieces != null && pieces.length == 1 && o.loop == null;
+	var clip = played ? MovieClip.create() : pieces != null && pieces.length > 0 ? PeptideRuntime.makeClip(pieces[0].sym, Stage.layer) : MovieClip.create();
+	// (its labels, none of its frames entered)
+	if (played) { MovieClip.attach(clip, pieces[0].sym, true); clip.currentFrame = 1; clip.__own = own; }
 	// a clip with no timeline of its own here (an effect drawn from another package): a playhead
 	// as long as the animations that show it
 	if (clip.__tl == null && pieces != null) {
@@ -99,7 +104,7 @@ Effects.attach = function(me, id, ?opts, ?used) {
 	}
 	clip.parent = Stage.layer;
 	clip.__vfx = vfx;
-	clip.__pieces = pieces;
+	clip.__pieces = played ? null : pieces;
 	// a global effect ends itself when the engine's animation does
 	clip.__global = global != null;
 	clip.__locked = locked;
@@ -133,6 +138,8 @@ Effects.remove = function(c) {
 Effects.frame = function() {
 	for (c in Effects.live.copy()) {
 		if (c.__vfx.isDisposed()) { Effects.live.remove(c); continue; }
+		// (the engine's own plays it: gone on the frame its clip's script takes it off)
+		if (c.__own != null) { if (c.__own > 0 && PeptideRuntime.now(c).currentFrame >= c.__own) Effects.remove(c); continue; }
 		if (c.__born == PeptideRuntime.frame || c.__global == true) continue;
 		if (c.__playing && c.currentFrame >= c.totalFrames) {
 			c.__loops--;
