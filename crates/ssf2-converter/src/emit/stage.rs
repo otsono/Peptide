@@ -75,21 +75,22 @@ pub struct Body {
     pub ledges: (bool, bool),
 }
 
-/// The stage's script, written the runtime's way over the one at `scripts/stage/<id>Script.hx`,
-/// then each object's over its own. Returns what the stage's script is, or why it could not be
-/// written (the stage pipeline's scripts then stay); an object it cannot write keeps its own.
-/// Returns too the objects written.
-pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input: &StageInput) -> anyhow::Result<(Emitted, Vec<String>)> {
+/// The stage's script at `scripts/stage/<id>Script.hx`, then each classed object's and each
+/// projectile's over the stand-in the stage pipeline left. Returns what the stage's script is, the
+/// objects written, and the clips the stage's class sends to a frame; an error when any of them
+/// cannot be written, since nothing else writes them.
+pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input: &StageInput) -> anyhow::Result<(Emitted, Vec<String>, BTreeSet<String>)> {
     let id = &model.id;
     let located = Runtime::locate().ok_or_else(|| anyhow::anyhow!("the runtime's files are not where the converter looks for them"))?;
     let runtime = Runtime::load(&located).for_kind("stage");
     let (src, renamed) = runtime.read_package(&std::fs::read(&model.source)?)?;
     let (class, clip, sym) = src.stage()
         .ok_or_else(|| anyhow::anyhow!("the package registers no stage class with a clip of its own"))?;
-    // a stage and its objects reach each other the runtime's way or the stage pipeline's, never a
-    // mix: an object the runtime cannot write (its class is another package's, the runtime does not
-    // read that one yet) keeps the whole stage on the pipeline's scripts
-    for r in &input.rows { object_files(&src, dir, r)?; }
+    // each object's class is read from the package that has it: the stage's own, or one the game
+    // keeps loaded alongside it (`lent_packages`)
+    let lent = lent_packages(&runtime, &src, &input.rows);
+    let models: Vec<&SourceModel> = std::iter::once(&src).chain(&lent).collect();
+    for r in &input.rows { object_files(home(&models, &r.class), dir, r)?; }
     // the stage's own art is one animation of its entity, showing the stage clip's frames
     let entity = dir.join("library").join("entities").join(format!("{id}.entity"));
     let frames = src.sprites.get(&sym).map(|s| s.frame_count as u32).unwrap_or(1).max(1);
@@ -102,12 +103,12 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     let none = Value::Null;
     // what the stage's classes declare they fire, by the name their code fires each under: every
     // script of the stage finds them there (`DATA.pkg.projectiles`)
-    let projectiles = declared_projectiles(&src, &runtime, std::iter::once(class.as_str()).chain(input.rows.iter().map(|r| r.class.as_str())));
+    let projectiles = declared_projectiles(&models, &runtime, std::iter::once(class.as_str()).chain(input.rows.iter().map(|r| r.class.as_str())));
     let decls = Decls { attacks: &none, projectiles: &projectiles, items: &none, objects: input.objects.clone() };
     let effects = BTreeMap::new();
     let entities = BTreeMap::new();
     let rows: Vec<&ObjectRow> = input.rows.iter().collect();
-    let tables = format!("{}{}", object_tables(&src, &runtime, &rows), clip_bounds_data(model, &src));
+    let tables = format!("{}{}", object_tables(&models, &runtime, &rows), clip_bounds_data(model, &src));
     let spec = ObjectSpec {
         keyed: String::new(),
         kind: "stage",
@@ -130,25 +131,18 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     let mut reports = serde_json::Map::new();
     let mut written = Vec::new();
     for row in &input.rows {
-        let report = match runtime_object(&src, &object_runtime, dir, row, &decls, &tables, units, input.origin) {
-            Ok(Some(o)) => {
-                written.push(row.id.clone());
-                serde_json::json!({ "problems": o.problems, "unknown": o.unknown, "unplaced": o.unplaced })
-            }
-            Ok(None) => serde_json::json!({ "problems": [format!("{}: its class is not in this package", row.class)] }),
-            Err(e) => serde_json::json!({ "problems": [format!("its script stays the stage pipeline's: {e}")] }),
-        };
-        reports.insert(row.id.clone(), report);
+        let o = runtime_object(home(&models, &row.class), &object_runtime, dir, row, &decls, &tables, units, input.origin)
+            .map_err(|e| anyhow::anyhow!("its object {}: {e}", row.id))?
+            .ok_or_else(|| anyhow::anyhow!("its object {} is of a class no package has ({})", row.id, row.class))?;
+        written.push(row.id.clone());
+        reports.insert(row.id.clone(), serde_json::json!({ "problems": o.problems, "unknown": o.unknown, "unplaced": o.unplaced }));
     }
     // each projectile they fire, run by its own class too
     let projectile_runtime = Runtime::load(&located).for_kind("stage_projectile");
     let mut fired = serde_json::Map::new();
-    for (key, result) in runtime_projectiles(&src, &projectile_runtime, dir, &decls, &tables, units, input.origin) {
-        let report = match result {
-            Ok(o) => serde_json::json!({ "problems": o.problems, "unknown": o.unknown, "unplaced": o.unplaced }),
-            Err(e) => serde_json::json!({ "problems": [format!("its script stays the stage pipeline's: {e}")] }),
-        };
-        fired.insert(key, report);
+    for (key, result) in runtime_projectiles(&models, &projectile_runtime, dir, &decls, &tables, units, input.origin) {
+        let o = result.map_err(|e| anyhow::anyhow!("the projectile {key}: {e}"))?;
+        fired.insert(key, serde_json::json!({ "problems": o.problems, "unknown": o.unknown, "unplaced": o.unplaced }));
     }
     let report = serde_json::json!({
         "problems": out.problems,
@@ -158,7 +152,26 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
         "projectiles": fired,
     });
     std::fs::write(dir.join("runtime_report.json"), serde_json::to_string_pretty(&report)?)?;
-    Ok((out, written))
+    let played = sent_to_a_frame(&src, &spec.class);
+    Ok((out, written, played))
+}
+
+/// The clips a class sends to a frame by name (`platformHolder.gotoAndStop(3)`): the frame such a
+/// clip shows is the code's to pick, not its own timeline's.
+fn sent_to_a_frame(src: &SourceModel, class: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let chain = std::iter::once(class.to_string()).chain(src.supers(class));
+    for c in chain.filter_map(|n| class_of(src, &n)) {
+        for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor]) {
+            crate::model::ast::walk_exprs(&f.body, &mut |e| {
+                let Expr::Call(callee, _) = e else { return };
+                let Expr::Member(on, m) = callee.as_ref() else { return };
+                if !matches!(m.as_str(), "gotoAndStop" | "gotoAndPlay") { return }
+                if let Expr::Member(_, n) | Expr::Name(n) = on.as_ref() { out.insert(n.clone()); }
+            });
+        }
+    }
+    out
 }
 
 /// What one object's script came to: what could not be written, the names nothing answers, and
@@ -176,6 +189,29 @@ fn class_of<'a>(src: &'a SourceModel, name: &str) -> Option<&'a crate::model::Cl
         let first = hits.next()?;
         hits.next().is_none().then_some(first)
     })
+}
+
+/// The packages the game keeps loaded alongside a stage that hold the classes of the stage's
+/// objects it does not carry itself: a stage can make an object of a class that lives in one of
+/// them (`shared_packages`), and that object runs its class from there.
+fn lent_packages(runtime: &Runtime, src: &SourceModel, rows: &[ObjectRow]) -> Vec<SourceModel> {
+    let mut wanted: BTreeSet<&str> = rows.iter().map(|r| r.class.as_str()).filter(|c| class_of(src, c).is_none()).collect();
+    let mut out = Vec::new();
+    for pkg in crate::shared_packages::packages() {
+        if wanted.is_empty() { break }
+        let Ok((m, _)) = runtime.read_package(&pkg.swf) else { continue };
+        let has: Vec<&str> = wanted.iter().copied().filter(|c| class_of(&m, c).is_some()).collect();
+        if has.is_empty() { continue }
+        for c in has { wanted.remove(c); }
+        out.push(m);
+    }
+    out
+}
+
+/// The package a class is read from: the first of the stage's packages that has it, else the
+/// stage's own.
+fn home<'a>(models: &[&'a SourceModel], class: &str) -> &'a SourceModel {
+    models.iter().copied().find(|m| class_of(m, class).is_some()).unwrap_or(models[0])
 }
 
 /// One object's script, over the one at `scripts/hazard/<id>Script.hx`: its class, on the clip
@@ -230,11 +266,12 @@ fn runtime_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &Object
 
 /// What some of the package's classes declare they fire (`getProjectileStats`, the nearest in
 /// each one's chain), merged by name: the first class to declare a name keeps it.
-fn declared_projectiles<'a>(src: &SourceModel, runtime: &Runtime, classes: impl Iterator<Item = &'a str>) -> Value {
-    let pkg = compile::Package::new(src, runtime);
+fn declared_projectiles<'a>(models: &[&SourceModel], runtime: &Runtime, classes: impl Iterator<Item = &'a str>) -> Value {
     let mut out: Vec<(String, Value)> = Vec::new();
     for class in classes {
+        let src = home(models, class);
         let Some(c) = class_of(src, class) else { continue };
+        let pkg = compile::Package::new(src, runtime);
         let declared = pkg.chain(&c.name).0.into_iter()
             .find_map(|k| k.methods.iter().find(|m| m.name == "getProjectileStats" && !m.is_static))
             .and_then(|m| crate::model::declare::returned(&m.function.body));
@@ -244,6 +281,7 @@ fn declared_projectiles<'a>(src: &SourceModel, runtime: &Runtime, classes: impl 
     }
     // ...and a projectile some code fires by its class (`spawnProjectile(CharmanderFire, owner)`):
     // its own stats are its declaration, under its class's name, and it runs that class
+    for src in models.iter().copied() {
     let mut fired: BTreeSet<String> = BTreeSet::new();
     for c in src.classes.values() {
         for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor]) {
@@ -267,6 +305,7 @@ fn declared_projectiles<'a>(src: &SourceModel, runtime: &Runtime, classes: impl 
         if !fields.iter().any(|(k, _)| k == "classAPI") { fields.push(("classAPI".to_string(), Value::Class(x.clone()))); }
         out.push((x, Value::Obj(fields)));
     }
+    }
     if out.is_empty() { Value::Null } else { Value::Obj(out) }
 }
 
@@ -275,7 +314,7 @@ fn declared_projectiles<'a>(src: &SourceModel, runtime: &Runtime, classes: impl 
 /// the clip its declaration names, with the animations its entity has. Its entity's own frame
 /// code goes, since the runtime runs its clip's frames now. Returned by the clip it draws.
 #[allow(clippy::too_many_arguments)]
-fn runtime_projectiles(src: &SourceModel, runtime: &Runtime, dir: &Path, decls: &Decls, tables: &str,
+fn runtime_projectiles(models: &[&SourceModel], runtime: &Runtime, dir: &Path, decls: &Decls, tables: &str,
                        units: Units, origin: (f64, f64)) -> Vec<(String, anyhow::Result<ObjectOut>)> {
     let lib = dir.join("library");
     // the pieces the stage pipeline cut for each projectile's entity, by the clip it draws
@@ -283,6 +322,10 @@ fn runtime_projectiles(src: &SourceModel, runtime: &Runtime, dir: &Path, decls: 
     let mut out = Vec::new();
     for (name, decl) in decls.projectiles.entries() {
         let Some(linkage) = decl.get("linkage_id").and_then(|v| v.str()) else { continue };
+        // read from the package that has its class, else the one that has its clip
+        let class = decl.get("classAPI").and_then(|v| v.class());
+        let src = class.filter(|c| models.iter().any(|m| class_of(m, c).is_some())).map(|c| home(models, c))
+            .or_else(|| models.iter().copied().find(|m| m.symbol_of(linkage).is_some())).unwrap_or(models[0]);
         // one script per entity, from the first declaration that draws with it
         let Some(key) = pieces_of.keys().find(|k| k.eq_ignore_ascii_case(linkage)).cloned() else { continue };
         let pieces = pieces_of.remove(&key).unwrap_or_default();
@@ -301,7 +344,7 @@ fn runtime_projectiles(src: &SourceModel, runtime: &Runtime, dir: &Path, decls: 
                 others: &[],
                 effects: &effects,
                 entities: &entities,
-                class: decl.get("classAPI").and_then(|v| v.class()).unwrap_or("PeptideProjectile").to_string(),
+                class: class.unwrap_or("PeptideProjectile").to_string(),
                 clip: linkage.to_string(),
                 clip_sym: None,
                 stats: decl.clone(),
@@ -554,12 +597,13 @@ fn members(pkg: &compile::Package, class: &str) -> (Vec<(String, usize)>, Vec<St
 /// converted from (`DATA.contentClass`), and each class's members as a stand-in holds them until
 /// the object's own script has started (`DATA.faces`: `f(p, i)` is the member numbered `i`,
 /// `c(p, j)` the field whose write is `j` and read `j + 1`; see `runtime/stage/bodies.hx`).
-fn object_tables(src: &SourceModel, runtime: &Runtime, rows: &[&ObjectRow]) -> String {
-    let pkg = compile::Package::new(src, runtime);
+fn object_tables(models: &[&SourceModel], runtime: &Runtime, rows: &[&ObjectRow]) -> String {
     let mut out = String::from("DATA.contentClass = new haxe.ds.StringMap();\nDATA.faces = new haxe.ds.StringMap();\n");
     let mut done: BTreeSet<String> = BTreeSet::new();
     for row in rows {
+        let src = home(models, &row.class);
         let Some(c) = class_of(src, &row.class) else { continue };
+        let pkg = compile::Package::new(src, runtime);
         let short = compile::short(&c.name).to_string();
         out.push_str(&format!("DATA.contentClass.set({}, {});\n", compile::quote(&row.id), compile::quote(&short)));
         if !done.insert(short.clone()) { continue }

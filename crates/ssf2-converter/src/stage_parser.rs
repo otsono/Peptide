@@ -2838,9 +2838,6 @@ fn object_from_declarations(
     actor: &crate::stage_abc::SpawnedActor, scale: f64, terrain_off: Option<(f64, f64)>,
     death_box: Option<&Rect>, clip_box: Option<&Rect>,
 ) -> Option<(Hazard, bool)> {
-    // an item runs its own class as a stage object on the runtime path (its code walks it, turns
-    // it, sends it flying); the text path has nothing to run it on
-    if actor.base == crate::ssf2_objects::ITEM_BASE && std::env::var_os("PEPTIDE_STAGE_TEXT").is_some() { return None; }
     let (mut w, mut h) = (
         actor.own_stats.get("width").copied().unwrap_or(0.0) * scale,
         actor.own_stats.get("height").copied().unwrap_or(0.0) * scale,
@@ -5487,23 +5484,11 @@ fn extract_labeled_clip_anims(
             all.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max),
             all.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max),
         ));
-        let mut frames: Vec<StageArt> = per_frame.iter()
+        let frames: Vec<StageArt> = per_frame.iter()
             .filter_map(|insts| composite_layer(&insts.iter().collect::<Vec<_>>(), shape_defs, bitmaps, ox, oy, bounds))
             .collect();
-        // arrange the frames so FM's play-once-and-hold (endType NONE) freezes on the SAME frame
-        // SSF2 freezes on: truncate at the play-until frame, and when the freeze target differs
-        // (gotoAndStop to a label) append that frame as the final held one.
-        // on the runtime path the clip's own frame scripts run as it plays, holds and all: the frames
-        // are kept whole and split at its labels below
-        let runtime_path = std::env::var("PEPTIDE_STAGE_TEXT").is_err();
-        let stop_frame = if runtime_path { None } else { hold_frames }.and_then(|(until, at)| {
-            if until + 1 < frames.len() { frames.truncate(until + 1); }
-            if at != until {
-                let held = frames.get(at).or(frames.first()).cloned()?;
-                frames.push(held);
-            }
-            Some(frames.len() - 1)
-        });
+        // the clip's own frame scripts run as it plays, holds and all: the frames are kept whole
+        // and split at its labels below
         // A label that draws NOTHING is still a state the class plays: bomb factory's block is
         // hidden on "dead" before it is started and again after it breaks. Dropped, its state had
         // to be guessed an animation and the block wore a lit bomb while it was supposed to be
@@ -5520,12 +5505,12 @@ fn extract_labeled_clip_anims(
             abcs.iter().find_map(|a| crate::abc_parser::extract_self_played_labels(a, class)));
         let driver_labels: Vec<(String, u16)> = driver_id.and_then(|id| sprites.get(&id))
             .map(|t| crate::sprite_parser::extract_frame_labels_from_tags(t)).unwrap_or_default();
-        let split = self_played.as_ref().filter(|_| driver_labels.len() > 1 && stop_frame.is_none());
+        let split = self_played.as_ref().filter(|_| driver_labels.len() > 1);
         // ...and on the runtime path every driving clip with labels splits at them, whoever plays
         // them: the runtime takes each label's section as the animation that shows it (mushroom
         // kingdom 3's piranha plant attacks and dies in sections of its stance)
         let none = crate::abc_parser::SelfPlayedLabels::default();
-        let split_by_runtime = split.is_none() && runtime_path && driver_labels.len() > 1;
+        let split_by_runtime = split.is_none() && driver_labels.len() > 1;
         let split = split.or_else(|| split_by_runtime.then_some(&none));
         if let Some(sp) = split {
             for (i, (name, start)) in driver_labels.iter().enumerate() {
@@ -5534,7 +5519,7 @@ fn extract_labeled_clip_anims(
                 if from >= frames.len() || to <= from { continue; }
                 // on the runtime path a section is named under the label that places its clip: two sections' clips may share labels (saffron city's pokemon each run
                 // `entrance` .. `end`), and one entity animation stands for one of them
-                let named = if runtime_path { format!("{label}_{name}") } else { name.clone() };
+                let named = format!("{label}_{name}");
                 anims.push(ClipAnim {
                     label: named,
                     frames: frames[from..to.min(frames.len())].to_vec(),
@@ -5547,7 +5532,7 @@ fn extract_labeled_clip_anims(
             }
             continue;
         }
-        anims.push(ClipAnim { label: label.clone(), frames, stop_frame, frame_velocities, clip_scripts: clip_scripts.clone(),
+        anims.push(ClipAnim { label: label.clone(), frames, stop_frame: None, frame_velocities, clip_scripts: clip_scripts.clone(),
                               loops: false, pick_between: Vec::new() });
     }
     anims

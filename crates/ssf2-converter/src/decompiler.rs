@@ -292,7 +292,7 @@ impl Expr {
                         rendered.truncate(1);
                         // the value is left in the source's units: a script speaks those
                         // throughout, and the boundary helpers the translation wraps every write
-                        // and read in (`__sv`/`__isv`, api_mappings::SpeedUnits) convert. scaling
+                        // and read in (`__sv`/`__isv`, api_mappings::speed_boundary_helpers) convert. scaling
                         // here as well shrank any speed that was read back, kept in a local and
                         // written again (ness's rocket bounced at two thirds of its speed).
                         // a speed set to nothing at all: the source can write the call with no

@@ -89,11 +89,6 @@ PEPTIDE_STAGE_DEBUG=1 peptide ssf2 stage <stage.ssf> --info
 # ...prints, among others: [art-frame] (what the art walk kept per sample), [plane-only] (what
 # stays painted after the split-out pieces leave), [hz-clip-search] (an object's clip candidates)
 
-# a stage-script line through the emitter's passes (needs --out: the passes run when emitting):
-# every line holding the text, as it stands after each pass, and the span + written set the
-# unwritten-slot pass judged it in; PEPTIDE_DUMP_PREPASS writes the text that pass received
-PEPTIDE_TRACE_LINE=leftSecond PEPTIDE_DUMP_PREPASS=/tmp/pre.hx peptide ssf2 stage <stage.ssf> --out /tmp/x
-
 # the full placement tree (every PlaceObject with name/symbol/plane/position, indented)
 PEPTIDE_STAGE_TREE=1 PEPTIDE_STAGE_DEBUG=1 peptide ssf2 stage <stage.ssf> --info
 

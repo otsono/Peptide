@@ -436,9 +436,9 @@ three sub-systems are worth calling out:
   modules walk those timelines frame-by-frame and produce per-animation,
   per-frame, per-layer data structures.
 
-- **rewriter pipeline** (`api_mappings::translate_ssf2_to_fm`): the old text path. a
-  fighter no longer goes through it; a projectile or item made from another package and every
-  stage script still do -- see [§5.5](#55-the-translation-pipeline-api_mappingsrs) for the
+- **rewriter pipeline** (`api_mappings::translate_ssf2_to_fm`): the old text path. fighters
+  and stages no longer go through it; a projectile or item a fighter makes from another package
+  still does -- see [§5.5](#55-the-translation-pipeline-api_mappingsrs) for the
   exact order.
 
 `haxe_gen::generate` and then `emit::runtime_fighter` write the *output* -- `main.rs` just
@@ -645,8 +645,8 @@ ADPCM uses a generic FLV wrapper.
 ### 5.5 the translation pipeline (`api_mappings.rs`)
 
 the old text path. a fighter's script and the projectiles and items it declares come from the
-runtime (§5.3); what still goes through here is a projectile or item made from another package,
-and stage scripts. `translate_ssf2_to_fm(code)` is the single entry every block of decompiled
+runtime (§5.3); what still goes through here is a projectile or item made from another
+package. `translate_ssf2_to_fm(code)` is the single entry every block of decompiled
 Haxe passes through. the fixed order:
 
 1. **`remove_readiness_guards`** -- strip `if (SSF2API.isReady())` wrappers, inline the body.
@@ -734,7 +734,6 @@ rebuild or special binary needed:
 | `PEPTIDE_WALK_TRACE=<substr>` | trace clip placements whose name/symbol matches during the stage walk |
 | `PEPTIDE_DUMP_ANIM_LABELS` | each character source animation's internal frame labels + content-switch frames |
 | `PEPTIDE_BG_INLINE` | force backdrop elements baked into the stage layer (debug/diff aid) |
-| `PEPTIDE_DECOMP_HAZARD` | emit stage hazards via the decompiler reconstruction instead of the template |
 
 ### 5.7 diagnostic binaries (`src/bin/`)
 
@@ -934,10 +933,9 @@ unified places**:
    frames early). `api_mappings::speeds_cross_the_boundary` runs first in
    `translate_ssf2_to_fm`: a write goes through `__sv(v)`, a read comes back through
    `__isv(..)`, zero is left alone, and the script's own arithmetic and comparisons stay in
-   the units its author wrote. the helpers sit in every text-path projectile preamble, the
-   stage script and every stage object's preamble: one rule for every script,
-   a speed kept in a variable included. the helpers carry the whole conversion
-   (`api_mappings::SpeedUnits`): a write crosses by `velocity_scale`, a read by its inverse,
+   the units its author wrote. the helpers sit in every text-path projectile preamble: one rule for
+   every script, a speed kept in a variable included. the helpers carry the whole conversion
+   (`api_mappings::speed_boundary_helpers`): a write crosses by `velocity_scale`, a read by its inverse,
    and the decompiler leaves every number as the source wrote it, so a speed read back, kept
    in a local and written again comes out as it went in (measured with `tools/trajectory.py`:
    ganondorf writes -23 and both engines record -21.4, one step of gravity taken off).
@@ -962,9 +960,6 @@ unified places**:
    so pikachu's cloud sits where the source puts it and its bolt lands on the source's frame. a label names a split only when one clip
    carries that label (`_jumpLabel`'s fallback); a name several clips use resolves within the
    playing clip as the script runs.
-   a stage object's call on the floor it stands on (`getCurrentFloor()` kept in a variable,
-   then `.sink()` on it) goes through the ask channel to the object whose published deck that
-   face is (`__floorOwner`, stage_emit), the way a call on an object it spawned does.
 
 4. **HitboxStats.hx and projectile-hitbox values** -- `entity_gen` and
    `haxe_gen::generate_projectile_hitbox_stats` both consult

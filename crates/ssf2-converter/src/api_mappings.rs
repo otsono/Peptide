@@ -1057,7 +1057,7 @@ pub fn translate_ssf2_to_fm(code: &str) -> String {
 /// label boundary (a boomerang stopped slowing the moment it went from `start` to `loop`). Started
 /// through `__srcTimer`: kept by the engine, and taken off by the script at the state change.
 fn source_timers_last_to_the_state_change(code: &str) -> String {
-    if IN_STAGE.with(|c| c.get()) || STAGE_CONTENT.with(|c| c.get()) || !code.contains("self.addTimer(") {
+    if STAGE_CONTENT.with(|c| c.get()) || !code.contains("self.addTimer(") {
         return code.to_string()
     }
     crate::re!(r"\bself\.addTimer\(").replace_all(code, "__srcTimer(").into_owned()
@@ -1929,31 +1929,6 @@ function __fireNamed(n, ox, oy, ?abs, ?who) {{\n\
         list(&|n| num(launch.get(n).map(|o| o.1).unwrap_or(0.0))))
 }
 
-/// `spawnEnemy(SomeClass)` -> `match.createCustomGameObject(getContent("<id>SomeClass"), null)`.
-///
-/// SSF2 spawns a stage's objects by handing the engine a CLASS; Fraymakers spawns one by handing
-/// `match` a piece of CONTENT. Those are the same act with different currency, and the converter
-/// already ships each of those classes as content -- so the call has an exact equivalent and used
-/// to be marked as having none. While it was, every spawn a stage's own code performs was
-/// commented out, which is why a reconstructed stage was inert: it kept its timers, its random
-/// rolls and its coordinates, and dropped the line that makes the thing exist.
-///
-/// `content_id` maps the SSF2 class name to the emitted content id, since only the caller knows
-/// what the package ended up calling it.
-pub fn rewrite_spawn_enemy_calls(code: &str, content_id: &dyn Fn(&str) -> String) -> String {
-    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| {
-        // the whole receiver chain goes with it: `match.`/`self.` before spawnEnemy would
-        // otherwise be left dangling in front of the replacement.
-        // the class either way: a stage names the class itself, or names it as a string, and both
-        // are the stage saying which of its own objects to make.
-        regex::Regex::new(r#"(?:[A-Za-z_]\w*(?:\([^()]*\))?\.)*spawnEnemy\(\s*"?([A-Za-z_]\w*)"?\s*\)"#).expect("regex")
-    });
-    re.replace_all(code, |caps: &regex::Captures| {
-        format!("match.createCustomGameObject(self.getResource().getContent(\"{}\"), null)",
-            content_id(&caps[1]))
-    }).into_owned()
-}
 
 /// The stage's bounds, reached the way Fraymakers hands them over.
 ///
@@ -2117,7 +2092,7 @@ thread_local! {
     /// True while translating code whose `self` IS the stage. Installed by `SelfIsStageGuard`.
     static SELF_IS_STAGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// True while translating a fighter's or a projectile's script, whose positions cross the
-    /// size scale through `__sp`/`__isp` (see `SpeedUnits::ApiLayer`). A stage object's script
+    /// size scale through `__sp`/`__isp` (see `speed_boundary_helpers`). A stage object's script
     /// carries its own position boundary and its own passes read its `getX()` calls, so it is
     /// left alone. Installed by `PositionsCrossGuard`.
     static POSITIONS_CROSS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -3894,40 +3869,19 @@ pub(crate) fn speeds_cross_the_boundary(code: &str) -> String {
 
 /// The two helpers `speeds_cross_the_boundary` leaves a script needing, for its preamble, and
 /// the two a short-circuit used as a value needs (the source answers the operand it settled on;
-/// the host's operators answer a bool).
-pub(crate) fn speed_boundary_helpers() -> String {
-    speed_boundary_helpers_for(SpeedUnits::ApiLayer)
-}
-
+/// the host's operators answer a bool). A script speaks the source's units throughout (its
+/// literals, its locals, what it reads back), and the boundary converts both ways: a write by the
+/// velocity scale (the source steps 30 times a second in a world the conversion makes
+/// `size_multiplier` bigger), a read by its inverse; a position crosses by the size scale.
+/// Measured with `tools/trajectory.py`: ganondorf writes -23 and both engines record -21.4 (one
+/// step of its gravity taken off); game and watch writes -25 and records -23.7.
 /// The fighter's boundary helpers, for the integration test that pins where the scale lives.
 pub fn speed_boundary_helpers_for_test() -> String { speed_boundary_helpers() }
 
-/// What a script's stated speed is worth to this engine. A script speaks the source's units
-/// throughout (its literals, its locals, what it reads back), and the boundary converts both
-/// ways: a write by the velocity scale (the source steps 30 times a second in a world the
-/// conversion makes `size_multiplier` bigger), a read by its inverse. Measured with
-/// `tools/trajectory.py`: ganondorf writes -23 and both engines record -21.4 (one step of its
-/// gravity taken off); game and watch writes -25 and records -23.7; simon writes 28.34.
-#[derive(Clone, Copy)]
-pub(crate) enum SpeedUnits {
-    /// A fighter's or a projectile's script: positions cross by the size scale too.
-    ApiLayer,
-    /// A stage object's script: its positions are already the stage's.
-    Scaled,
-}
-
-pub(crate) fn speed_boundary_helpers_for(units: SpeedUnits) -> String {
+pub(crate) fn speed_boundary_helpers() -> String {
     let vs = crate::mappings::character_stats().scaling.velocity_scale();
-    // a position a script states, in the source's pixels: the size scale here
-    let sp = match units {
-        SpeedUnits::ApiLayer => crate::mappings::character_stats().scaling.size_multiplier,
-        SpeedUnits::Scaled => 1.0,
-    };
-    let gstep = match units {
-        SpeedUnits::ApiLayer => "",
-        SpeedUnits::Scaled => "function __gStep() { return 0; }\nfunction __xWrite(v) { return __sv(v); }\n",
-    };
-    format!("// a speed the script states, as this engine takes it (see api_mappings::SpeedUnits)\n\
+    let sp = crate::mappings::character_stats().scaling.size_multiplier;
+    format!("// a speed the script states, as this engine takes it (see api_mappings::speed_boundary_helpers)\n\
              function __sv(v) {{ return v * {vs:.4}; }}\nfunction __isv(v) {{ return v / {vs:.4}; }}\n\
              // a y speed a script sets: the source's engine adds one frame of gravity to it before it moves\n\
              // (simon's -20 moves -18.35 on its first frame there), this engine moves on the value as set\n\
@@ -3939,7 +3893,7 @@ pub(crate) fn speed_boundary_helpers_for(units: SpeedUnits) -> String {
              // a match option this engine does not have is off: it reads as 0 however it is asked\n\
              function __optionOffStr(name) {{ return {{ toString: function(radix) {{ return \"0\"; }} }}; }}\n\
              // reverse() answers the array in the source and nothing here (no apostrophe in this comment: one before a helper hid it from the loader)\n\
-             function __arrayReversed(a) {{ if (a == null) {{ return null; }} var out = []; var __i = a.length - 1; while (__i >= 0) {{ out.push(a[__i]); __i = __i - 1; }} return out; }}\n{gstep}")
+             function __arrayReversed(a) {{ if (a == null) {{ return null; }} var out = []; var __i = a.length - 1; while (__i >= 0) {{ out.push(a[__i]); __i = __i - 1; }} return out; }}\n")
 }
 
 /// The clip-clock and for-each helpers a FIGHTER's or a PROJECTILE's script needs (a stage
@@ -4100,8 +4054,6 @@ pub fn hitbox_writes_carried(code: &str) -> String {
     }).collect::<Vec<_>>().join("\n") + if code.ends_with('\n') { "\n" } else { "" }
 }
 
-/// Who a fighter is, by the id its stats state: what every script this converter makes publishes.
-pub const STATS_NAME_OF: &str = "function __statsNameOf(o) { if (o != null && o.exports != null && o.exports.__statsName != null) { return o.exports.__statsName; } return \"\"; }\n";
 
 /// What a script that is not the fighter's does to ask the fighter for a label jump.
 pub const ASK_LABEL: &str = "\
@@ -5566,7 +5518,7 @@ fn slices_of_strings_too(code: &str) -> String {
 /// what it made) is asked on its exports and ends itself in its own update, the way it ends at the
 /// death bounds; anything else is killed as before. A stage has its own preamble and is left be.
 fn others_ended_through_their_own_end(code: &str) -> String {
-    if IN_STAGE.with(|c| c.get()) || !code.contains(".kill()") { return code.to_string() }
+    if !code.contains(".kill()") { return code.to_string() }
     crate::re!(r"(^|[^\w.])([A-Za-z_]\w*(?:\.\w+|\(\)|\[[^\]\[]*\])*)\.kill\(\)")
         .replace_all(code, |c: &regex::Captures| {
             if &c[2] == "self" { c[0].to_string() } else { format!("{}__endOther({})", &c[1], &c[2]) }
@@ -6880,89 +6832,6 @@ pub fn uncomment_calls_to_with(code: &str, locals: &std::collections::HashSet<St
     joined
 }
 
-/// Comment out any `}` whose matching `{` lives on a commented-out line. When a
-/// translator neutralizes a block-opening statement (`if (self.getMC()...) {` becomes
-/// `// [SSF2-only: getMC] if (...) {`), the opening brace is now inside a comment but
-/// the matching `}` is still live code, so the script no longer parses and the engine
-/// drops the whole handler silently. This whole-file post-pass walks braces in source
-/// order on a stack tagged by whether each opener was dead, and comments any live close
-/// that matches a dead open. Iterates to a fixpoint to absorb nested cascades. #13.
-/// Give back a closing brace that was struck out from under a LIVE block.
-///
-/// Striking a line takes its brackets with it. Where the line that OPENED the block was struck
-/// too, that is right and `balance_commented_blocks` handles the other direction. Where the
-/// opener is still live, the block never closes, the script runs off the end of the file, and the
-/// engine -- which drops a script it cannot parse WHOLE -- throws away every object that stage
-/// was going to make. Six stages ended that way.
-///
-/// A REPAIR, not a rule: it looks at the finished script, and if the braces already balance it
-/// does nothing at all. So it cannot disturb a script that was fine.
-pub fn restore_struck_closers(code: &str) -> String {
-    // WHERE it is owed, not how many. Counting the file over and handing the closers back to the
-    // first struck line that happens to close something puts the brace in the wrong block: DAT61
-    // got one inside a dead if/else, which ended the function early and left the function's own
-    // `}` as a token nothing expected -- so the script did not parse, and the stage lost every
-    // object it makes. The file balanced, which is why counting could not see it.
-    //
-    // A block belongs to whoever OPENED it. Walking the braces in order and remembering, for each
-    // open, whether the line that opened it was live, says exactly which closers are owed: the
-    // ones where a LIVE block is closed by a line that was struck. Those, and no others.
-    let dead_line = |l: &str| l.trim_start().starts_with("//");
-    // the braces that stand for structure: on a struck line, the ones the marker hides; on a live
-    // one, the ones outside strings and before any trailing comment
-    fn structural(line: &str, dead: bool) -> Vec<bool> {
-        let b = line.as_bytes();
-        let mut v = Vec::new();
-        if dead {
-            for &c in b { if c == b'{' { v.push(true) } else if c == b'}' { v.push(false) } }
-            return v;
-        }
-        let mut in_str: Option<u8> = None;
-        let mut i = 0;
-        while i < b.len() {
-            let c = b[i];
-            match in_str {
-                Some(q) => {
-                    if c == b'\\' { i += 2; continue }
-                    if c == q { in_str = None }
-                }
-                None => match c {
-                    b'/' if i + 1 < b.len() && b[i + 1] == b'/' => break,
-                    b'"' | b'\'' => in_str = Some(c),
-                    b'{' => v.push(true),
-                    b'}' => v.push(false),
-                    _ => {}
-                },
-            }
-            i += 1;
-        }
-        v
-    }
-    let mut opened_live: Vec<bool> = Vec::new();
-    let mut owed_at: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
-    for (idx, line) in code.lines().enumerate() {
-        let dead = dead_line(line);
-        for is_open in structural(line, dead) {
-            if is_open { opened_live.push(!dead); continue }
-            // a close with nothing open above it is someone else's problem, not this one's
-            let Some(was_live) = opened_live.pop() else { continue };
-            if was_live && dead { *owed_at.entry(idx).or_insert(0) += 1; }
-        }
-    }
-    if owed_at.is_empty() { return code.to_string() }
-    let mut out = String::with_capacity(code.len());
-    for (idx, line) in code.lines().enumerate() {
-        if let Some(&give) = owed_at.get(&idx) {
-            let indent = &line[..line.len() - line.trim_start().len()];
-            out.push_str(&format!("{indent}{} {}\n", "}".repeat(give), line.trim()));
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    if !code.ends_with('\n') { while out.ends_with('\n') { out.pop(); } }
-    out
-}
 
 pub fn balance_commented_blocks(code: &str) -> String {
     fn is_dead(line: &str) -> bool {
@@ -8211,33 +8080,6 @@ function quorbSlamStart(?arg0) {\n\
     }
 }
 
-/// A call on nothing, inside an expression, is nothing.
-///
-/// When a reach into the display tree has no counterpart here it reads as `null`, and the call that
-/// was made on it is left as `null(args)`. As a whole statement that is a statement with nothing to
-/// do; inside an expression it is one VALUE the port does not have, and blanking the statement
-/// throws away the rest of the line with it.
-pub fn drop_calls_on_nothing(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut rest = line;
-    while let Some(at) = rest.find("null(") {
-        out.push_str(&rest[..at]);
-        let after = &rest[at + "null(".len()..];
-        let mut depth = 1i32;
-        let mut end = after.len();
-        for (i, ch) in after.char_indices() {
-            match ch {
-                '(' => depth += 1,
-                ')' => { depth -= 1; if depth == 0 { end = i; break } }
-                _ => {}
-            }
-        }
-        out.push_str("null");
-        rest = &after[(end + 1).min(after.len())..];
-    }
-    out.push_str(rest);
-    out
-}
 
 #[cfg(test)]
 mod runtime_passes_tests {
@@ -8367,7 +8209,7 @@ fn self_is_projectile() -> bool { SELF_IS_PROJECTILE.with(|c| c.get()) }
 /// also multiplies or offsets the colour channels has nothing here to show it with, and is left for
 /// the pass that strikes what has no counterpart (half of it would draw a different colour).
 fn colour_settings_the_engine_can_show(code: &str) -> String {
-    if IN_STAGE.with(|c| c.get()) || STAGE_CONTENT.with(|c| c.get()) || !code.contains("setColorFilters(") {
+    if STAGE_CONTENT.with(|c| c.get()) || !code.contains("setColorFilters(") {
         return code.to_string()
     }
     const SHOWN: &[&str] = &["hue", "saturation", "brightness", "contrast", "alphaMultiplier"];
@@ -8410,7 +8252,7 @@ fn label_jumps_on_others(code: &str) -> String {
     if !["stancePlayFrame(", "playFrameLabel(", "gotoAndPlay(", "gotoAndStop("].iter().any(|k| code.contains(k)) { return code.to_string() }
     // a stage's jumps are its own emitter's: a clip it plays is a plane child it drew, not an
     // entity with a script to ask (bowser's castle's podoboos stopped stepping when asked)
-    if IN_STAGE.with(|c| c.get()) || SELF_IS_STAGE.with(|c| c.get()) { return code.to_string() }
+    if SELF_IS_STAGE.with(|c| c.get()) { return code.to_string() }
     // a receiver is a chain of names, calls and index reads (`dotArray.get()[i.get()]`)
     crate::re!(r#"((?:[A-Za-z_]\w*(?:\(\))?(?:\[[^\]\[]*\])*\.)*[A-Za-z_]\w*(?:\(\))?(?:\[[^\]\[]*\])*)\.(?:stancePlayFrame|playFrameLabel|gotoAndPlay|gotoAndStop)\(\s*("[^"]+")\s*\)"#)
         .replace_all(code, |c: &regex::Captures| {
@@ -8428,23 +8270,10 @@ fn label_jumps_on_others(code: &str) -> String {
 /// its own code, and the one that made it in a projectile's. A stage's `self` is no fighter's, and
 /// is left as it is.
 fn the_character_behind_self(code: &str) -> String {
-    if IN_STAGE.with(|c| c.get()) || !code.contains("getCharacter(") { return code.to_string() }
+    if !code.contains("getCharacter(") { return code.to_string() }
     let who = if self_is_projectile() { "self.getOwner()" } else { "self" };
     crate::re!(r"\b(?:SSF2API|match)\.getCharacter\(\s*self(?:\.self)?(?:\.get(?:Uid|UID|ID)\(\))?\s*\)")
         .replace_all(code, who).into_owned()
-}
-
-thread_local! {
-    static IN_STAGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Translating a stage's own scripts for as long as this lives.
-pub struct StageScope(bool);
-impl StageScope {
-    pub fn enter() -> StageScope { StageScope(IN_STAGE.with(|c| c.replace(true))) }
-}
-impl Drop for StageScope {
-    fn drop(&mut self) { let was = self.0; IN_STAGE.with(|c| c.set(was)); }
 }
 
 /// THE STAGE, from a fighter's or a projectile's script: the global `stage`, which every script
@@ -8453,7 +8282,7 @@ impl Drop for StageScope {
 /// call, so did every line that only wanted the stage's bounds.
 fn the_stage_from_outside(code: &str) -> String {
     // a stage and the objects it makes reach it their own way (the object is handed its stage)
-    if IN_STAGE.with(|c| c.get()) || STAGE_CONTENT.with(|c| c.get()) { return code.to_string() }
+    if STAGE_CONTENT.with(|c| c.get()) { return code.to_string() }
     code.replace("match.getStage()", "stage").replace("SSF2API.getStage()", "stage")
 }
 
@@ -8461,7 +8290,7 @@ fn the_stage_from_outside(code: &str) -> String {
 /// positions, which it keeps in the source's (`__isp`): converted the same way. Run once the
 /// source's names for the bounds have become this engine's.
 fn stage_rects_in_source_units(code: &str) -> String {
-    if IN_STAGE.with(|c| c.get()) || STAGE_CONTENT.with(|c| c.get()) { return code.to_string() }
+    if STAGE_CONTENT.with(|c| c.get()) { return code.to_string() }
     crate::re!(r"(^|[^\w.])stage\.(getCameraBounds|getDeathBounds)\(\)\.getRectangle\(\)")
         .replace_all(code, "${1}__srcRect(stage.${2}())").into_owned()
 }
