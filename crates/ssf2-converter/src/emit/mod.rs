@@ -255,6 +255,51 @@ pub fn reachable(model: &SourceModel, runtime: &Runtime, roots: &[String], clip_
     (classes, symbols)
 }
 
+/// What an object's script carries: the classes and clips its own class and clip reach, and the
+/// effects it can attach with theirs. An effect is one it can attach when its code or what it
+/// declares names it (a projectile's trail is in its stats), or when its code attaches one by a
+/// name it works out as it runs; a stage carries every effect. A piece borrowed from another
+/// package carries no symbol of this one, so no code of it.
+fn attachable(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, decls: &Decls, roots: &[u16]) -> (BTreeSet<String>, BTreeSet<u16>) {
+    let effects: Vec<(&String, u16)> = spec.effects.iter()
+        .filter_map(|(name, ps)| Some((name, ps.first()?.sym))).filter(|(_, s)| *s != 0).collect();
+    // the calls that attach an effect, by the API rows written as the runtime's attach
+    let attaches: BTreeSet<&str> = runtime.calls.iter().filter(|(_, t)| t.starts_with("Effects.attach("))
+        .map(|(m, _)| m.as_str()).collect();
+    let mut named: BTreeSet<String> = BTreeSet::new();
+    fn strings(v: &Value, out: &mut BTreeSet<String>) {
+        match v {
+            Value::Str(s) => { out.insert(s.clone()); }
+            Value::Arr(items) => for i in items { strings(i, out) },
+            Value::Obj(kv) => for (_, i) in kv { strings(i, out) },
+            _ => {}
+        }
+    }
+    for v in [&spec.stats, decls.attacks, decls.projectiles, decls.items] { strings(v, &mut named); }
+    let mut any = spec.kind == "stage";
+    let mut syms: Vec<u16> = roots.to_vec();
+    loop {
+        let (classes, symbols) = reachable(model, runtime, std::slice::from_ref(&spec.class), &syms);
+        for c in &classes {
+            let Some(cm) = model.classes.get(c) else { continue };
+            let fs = cm.methods.iter().map(|m| &m.function).chain([&cm.constructor, &cm.static_init]);
+            for f in fs {
+                ast::walk_exprs(&f.body, &mut |e| match e {
+                    Expr::Str(s) => { named.insert(s.clone()); }
+                    Expr::Call(callee, args) => if let Expr::Member(_, m) = callee.as_ref() {
+                        if attaches.contains(m.as_str()) && !matches!(args.first(), Some(Expr::Str(_))) { any = true }
+                    },
+                    _ => {}
+                });
+            }
+        }
+        let more: Vec<u16> = effects.iter().filter(|(n, s)| (any || named.contains(*n)) && !syms.contains(s))
+            .map(|(_, s)| *s).collect();
+        if more.is_empty() { return (classes, symbols) }
+        syms.extend(more);
+    }
+}
+
 /// A declared value as a script literal.
 pub fn literal(v: &Value, class_ident: &dyn Fn(&str) -> Option<String>) -> String {
     match v {
@@ -395,16 +440,15 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
     let clip_sym = spec.clip_sym.or_else(|| model.symbol_of(&clip));
     // what a projectile's update calls each frame for its declared stats, where they take any
     let mut flies: Option<String> = None;
-    // the effects' clips too: any object can attach one, and its clip runs here
-    let effect_syms: Vec<u16> = spec.effects.values().filter_map(|p| p.first().map(|p| p.sym)).collect();
     // a stage's camera backgrounds are clips of its own, which its code can reach into
     let camera_syms: Vec<u16> = if spec.kind != "stage" { Vec::new() } else {
         model.declared("camera").as_ref().and_then(|c| c.get("backgrounds").cloned())
             .map(|b| match b { Value::Arr(items) => items, _ => Vec::new() }).unwrap_or_default().iter()
             .filter_map(|b| b.get("linkage_id").and_then(|v| v.str()).and_then(|l| model.symbol_of(l))).collect()
     };
-    let (classes, symbols) = reachable(model, runtime, std::slice::from_ref(&class),
-        &clip_sym.into_iter().chain(effect_syms).chain(camera_syms).collect::<Vec<_>>());
+    // the effects' clips too: the ones this object can attach run here (`attachable`)
+    let roots: Vec<u16> = clip_sym.into_iter().chain(camera_syms).collect();
+    let (classes, symbols) = attachable(model, runtime, spec, decls, &roots);
     let pkg = compile::Package::new(model, runtime);
 
     out.push_str(&format!("// {title}: converted from SSF2 by Peptide.\n//\n// sections, in order: the runtime (copies of runtime/*.hx: edit those, not these), this\n// {}'s classes as the source defines them, its data, and the entry the engine calls.\n\n", spec.kind));
