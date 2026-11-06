@@ -1,0 +1,71 @@
+// an object's own code written as plain Fraymakers code (compile/native.rs): the API calls it
+// makes, as the engine's calls.
+//
+// a row is the call on the engine object it is asked of: `{self}` that object (`self`, or the
+// variable holding the owner), `{0}`, `{1}` ... its arguments, `{size}` `{speed}` `{accel}` the
+// units the source's numbers are scaled by. a row is a string, or an object with the `code` and
+// what its value is (`returns`: bool, number, string, object), which a test of it needs to know.
+//
+// a call with no row here, and none of the few the writer settles itself (listeners, a jump by
+// label, a stat by name), keeps the object on the runtime: the conversion reports which call it
+// was, so the next row to write is the one most content needs.
+{
+  // who and where
+  "getOwner": { "code": "{self}.getOwner()", "returns": "object" },
+  "getX": { "code": "{self}.getX() / {size}", "returns": "number" },
+  "getY": { "code": "{self}.getY() / {size}", "returns": "number" },
+  "setX": "{self}.setX({0} * {size})",
+  "setY": "{self}.setY({0} * {size})",
+  "isFacingRight": { "code": "{self}.isFacingRight()", "returns": "bool" },
+  "faceRight": "{self}.faceRight()",
+  "faceLeft": "{self}.faceLeft()",
+  "isOnGround": { "code": "{self}.isOnFloor()", "returns": "bool" },
+  "getRotation": { "code": "{self}.getRotation()", "returns": "number" },
+  "setRotation": "{self}.setRotation({0})",
+  "resetRotation": "{self}.resetRotation()",
+  "setScale": "{self}.setScaleX({0}); {self}.setScaleY({1})",
+  "setVisibility": "{self}.setVisible({0})",
+
+  // how it moves: a projectile's x speed is along the way it faces, on both engines
+  "getXSpeed": { "code": "{self}.getXSpeed() / {speed}", "returns": "number" },
+  "getYSpeed": { "code": "{self}.getYSpeed() / {speed}", "returns": "number" },
+  "setXSpeed": "{self}.setXSpeed({0} * {speed})",
+  "setYSpeed": "{self}.setYSpeed({0} * {speed})",
+
+  // what it can be hit by
+  "getIntangibility": { "code": "{self}.hasBodyStatus(BodyStatus.INTANGIBLE)", "returns": "bool" },
+  "getInvincibility": { "code": "{self}.hasBodyStatus(BodyStatus.INVINCIBLE)", "returns": "bool" },
+  "isDisposed": { "code": "{self}.isDisposed()", "returns": "bool" },
+
+  // damage
+  "getDamage": { "code": "{self}.getDamage()", "returns": "number" },
+  "setDamage": "{self}.setDamage({0})",
+
+  // its boxes hit again what they hit already
+  "refreshAttackID": "{self}.reactivateHitboxes()",
+
+  // the API's own calls (`SSF2API.print`): an empty row is a call that does nothing here
+  "PeptideAPI.print": "",
+
+  // its sounds and its end
+  "playSound": "AudioClip.play({self}.getResource().getContent({0}))",
+  "destroy": "{self}.kill()",
+
+  // a fighter's own variables, kept by its script (a fighter still on the runtime keeps them on
+  // the object it published)
+  "sharedVar": "{self}.exports.__source.__vars.get({0})",
+  "setSharedVar": "{self}.exports.__source.__vars.set({0}, {1})",
+
+  // a projectile's stats its code writes (`updateProjectileStats`), as the engine's own: `{v}` the
+  // value written. a stat that switches off what it declares (its trail, its turn) is the switch
+  // in projectile_stats.jsonc instead
+  "projectile_stats": {
+    "gravity": "self.updateProjectileStats({ gravity: {v} * {accel} })",
+    "maxgravity": "self.updateProjectileStats({ terminalVelocity: {v} * {speed} })",
+    "max_gravity": "self.updateProjectileStats({ terminalVelocity: {v} * {speed} })",
+    "ghost": "self.updateProjectileStats({ ghost: {v} })",
+    "surviveDeathBounds": "self.updateGameObjectStats({ deathBoundsDestroy: !{v} })",
+    // its lifetime, from when it was made: two engine frames to a source frame
+    "time_max": "life.set(Std.int({v} * 2))"
+  }
+}

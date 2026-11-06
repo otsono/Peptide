@@ -6,12 +6,18 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 #[derive(Debug, Default)]
-struct Code { when: Option<String>, yields_to: Option<String>, same_as: Option<String>, reads: Vec<String>, replaces: String, code: Vec<String>, call: String }
+struct Code { when: Option<String>, yields_to: Option<String>, same_as: Option<String>, reads: Vec<String>, replaces: String, code: Vec<String>, call: String, switch: Option<String>, start: Option<String>, native: bool }
 
 /// what a projectile's stats take: the lines written into its script, the calls its update makes
 /// each frame, and the runtime pieces they stand in for
 #[derive(Debug, Default)]
-pub struct Taken { pub code: Vec<String>, pub calls: Vec<String>, pub replaced: Vec<String>, pub frame: Option<String> }
+pub struct Taken {
+    pub code: Vec<String>, pub calls: Vec<String>, pub replaced: Vec<String>, pub frame: Option<String>,
+    /// the variable that turns a taken row off and on, by its stat (`switch`)
+    pub switches: BTreeMap<String, String>,
+    /// what the object's initialize runs once, for the taken rows that say (`start`)
+    pub starts: Vec<String>,
+}
 
 #[derive(Debug, Default)]
 pub struct ProjectileStats { code: Vec<(String, Code)>, frame: Vec<String> }
@@ -33,6 +39,9 @@ pub fn table() -> &'static ProjectileStats {
                 replaces: v["replaces"].as_str()?.to_string(),
                 code: v["code"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
                 call: v["call"].as_str().unwrap_or_default().to_string(),
+                switch: v["switch"].as_str().map(String::from),
+                start: v["start"].as_str().map(String::from),
+                native: v["native"].as_bool().unwrap_or(false),
             }))).collect();
             // a row that writes another's code takes it from there
             let shared: Vec<(usize, Vec<String>, String)> = t.code.iter().enumerate().filter_map(|(i, (_, c))| {
@@ -67,11 +76,18 @@ impl ProjectileStats {
     /// `effect` resolves to the engine's effect stats, and fills them in as `{@effect}`
     pub fn rows(&self, stats: &BTreeMap<String, f64>, names: &BTreeMap<String, String>, effect: &dyn Fn(&str) -> Option<String>,
                 written: &dyn Fn(&str) -> bool, units: &[(&str, f64)]) -> Taken {
+        self.rows_for(stats, names, effect, written, units, false)
+    }
+
+    /// `rows`, for an object whose own code is written as Fraymakers code (`native`): the rows
+    /// only that takes are taken too
+    pub fn rows_for(&self, stats: &BTreeMap<String, f64>, names: &BTreeMap<String, String>, effect: &dyn Fn(&str) -> Option<String>,
+                written: &dyn Fn(&str) -> bool, units: &[(&str, f64)], native: bool) -> Taken {
         // a stat that names an effect holds when the object can make it
         let effect_of = |k: &str| names.get(k).filter(|n| !n.is_empty()).and_then(|n| effect(n));
         let states = |k: &str, c: &Code| if c.when.as_deref() == Some("effect") { effect_of(k).is_some() }
             else { stats.get(k).is_some_and(|v| holds(c.when.as_deref(), *v)) };
-        let taken: Vec<&(String, Code)> = self.code.iter().filter(|(k, c)| states(k, c)
+        let taken: Vec<&(String, Code)> = self.code.iter().filter(|(k, c)| (native || !c.native) && states(k, c)
             && !written(k) && !c.reads.iter().any(|r| written(r))).collect();
         let keys: Vec<&str> = taken.iter().map(|(k, _)| k.as_str()).collect();
         let mut out = Taken::default();
@@ -83,7 +99,9 @@ impl ProjectileStats {
                 if let Some(e) = effect_of(k) { t = t.replace("{@effect}", &e); }
                 out.code.push(super::attack_stats::fill(&t, stats.get(k).copied().unwrap_or(0.0), stats));
             }
-            out.calls.push(c.call.clone());
+            if let Some(v) = &c.switch { out.switches.insert(k.clone(), v.clone()); }
+            if let Some(st) = &c.start { out.starts.push(st.clone()); }
+            if !c.call.is_empty() { out.calls.push(c.call.clone()); }
             if !out.replaced.contains(&c.replaces) { out.replaced.push(c.replaces.clone()) }
         }
         // the function the update calls, running each taken row's call

@@ -69,6 +69,9 @@ pub struct Runtime {
     /// a runtime class's constants (`Class.NAME = literal;`, names in capitals), by `Class.NAME`:
     /// content that reads one gets the value written in place, and the table stays out of its script
     pub constants: BTreeMap<String, String>,
+    /// the skeletons of objects written as plain Fraymakers code (`native/*.hx`, by kind): no part
+    /// of the runtime, so read apart from it
+    pub native_files: BTreeMap<String, String>,
 }
 
 impl Runtime {
@@ -156,6 +159,10 @@ impl Runtime {
         for p in files {
             let Ok(text) = std::fs::read_to_string(&p) else { continue };
             let rel = p.strip_prefix(dir).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+            if let Some(kind) = rel.strip_prefix("native/").and_then(|r| r.strip_suffix(".hx")) {
+                rt.native_files.insert(kind.to_string(), text);
+                continue;
+            }
             rt.read_file(&text);
             // a name written twice is not a constant
             let re = crate::dyn_re(r#"(?m)^([A-Za-z_][A-Za-z0-9_]*\.[A-Z][A-Z0-9_]*) = ("[^"\\]*"|-?[0-9]+(?:\.[0-9]+)?|true|false);\s*$"#);

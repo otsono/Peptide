@@ -13,8 +13,15 @@
 //   replaces   the runtime's piece it stands in for
 //   code       the lines it writes into the script, once: `{v}` the stat's value, `{name}` another
 //              stat the projectile states (0 when none, `{name|d}` d), `{@speed}` `{@accel}`
-//              `{@size}` the source's units in this engine's, `{@effect}` the effect's stats
+//              `{@size}` the source's units in this engine's, `{@effect}` the effect's stats,
+//              `{@clip}` the clip it shows (text)
 //   call       what its update runs each frame
+//   start      what its initialize runs once, instead of a `call` each frame
+//   native     true: taken only where the object's code is written as Fraymakers code (the
+//              runtime does this one its own way)
+//   switch     the variable its code turns it off and on again with: a write of the stat by the
+//              object's own code to nothing (or back to what it declares) sets it, where the
+//              object's code is written as Fraymakers code (compile/native.rs)
 // a row is not taken when the projectile's own code changes a stat it reads as it flies, or
 // another declaration that shares its clip states one otherwise: the runtime's piece runs then.
 // rows run in the order written here, from `frame`: the function the update calls, `{calls}` each
@@ -27,6 +34,35 @@
     "}"
   ],
   "code": {
+    "limit": { "when": "positive", "reads": ["limitOverwrite"], "replaces": "Projectiles.limit", "start": "keepToLimit();", "native": true,
+      "code": [
+        "// at most {v} of it out at once for its owner: the oldest goes to make room when",
+        "// `limitOverwrite` is set, else this one does not stay. the ones out are kept on the owner, by clip",
+        "function keepToLimit() {",
+        "\tvar owner = self.getOwner();",
+        "\tif (owner == null) return;",
+        "\tif (owner.exports.__limits == null) owner.exports.__limits = new haxe.ds.StringMap();",
+        "\tvar out = owner.exports.__limits.get({@clip});",
+        "\tif (out == null) {",
+        "\t\tout = [];",
+        "\t\towner.exports.__limits.set({@clip}, out);",
+        "\t}",
+        "\tvar k = 0;",
+        "\twhile (k < out.length) {",
+        "\t\tif (out[k] == null || out[k].isDisposed()) out.splice(k, 1); else k++;",
+        "\t}",
+        "\tif ({limitOverwrite|0} != 0) {",
+        "\t\twhile (out.length >= {v}) {",
+        "\t\t\tvar oldest = out.shift();",
+        "\t\t\tif (oldest != null && !oldest.isDisposed()) oldest.kill();",
+        "\t\t}",
+        "\t} else if (out.length >= {v}) {",
+        "\t\tself.kill();",
+        "\t\treturn;",
+        "\t}",
+        "\tout.push(self);",
+        "}"
+      ] },
     "homingSpeed": { "when": "nonnegative", "reads": ["xdecay", "homingEase"], "replaces": "Projectiles.steer", "call": "homeIn();",
       "code": [
         "// homing: the heading turns toward the middle of the nearest opponent that can be hit, a share",
@@ -140,14 +176,16 @@
         "\tself.setYSpeed(-Math.sin(aim) * aimSpeed);",
         "}"
       ] },
-    "trailEffect": { "when": "effect", "reads": ["trailEffectInterval", "trailEffectRotate"], "replaces": "Projectiles.trail", "call": "dropTrail();",
+    "trailEffect": { "when": "effect", "reads": ["trailEffectInterval", "trailEffectRotate"], "replaces": "Projectiles.trail", "call": "dropTrail();", "switch": "trailOn",
       "code": [
         "// its trail: its effect dropped where it is every `trailEffectInterval` engine frames (every one",
         "// for 0), turned along the way it flies when `trailEffectRotate` is set",
         "var trailEvery = {trailEffectInterval|1};",
         "var trailTurns = {trailEffectRotate|0};",
         "var trailWait = 0;",
+        "var trailOn = true;",
         "function dropTrail() {",
+        "\tif (!trailOn) return;",
         "\ttrailWait++;",
         "\tif (trailWait < trailEvery) return;",
         "\ttrailWait = 0;",
@@ -158,11 +196,13 @@
         "\ttrail.setRotation(trail.isFacingRight() ? angle : -angle);",
         "}"
       ] },
-    "rotate": { "when": "true", "replaces": "Projectiles.rotate", "call": "faceFlight();",
+    "rotate": { "when": "true", "replaces": "Projectiles.rotate", "call": "faceFlight();", "switch": "rotating",
       "code": [
         "// turned to face the way it flies. this engine turns an object after mirroring it, so one",
         "// facing left turns the other way round for the same climb",
+        "var rotating = true;",
         "function faceFlight() {",
+        "\tif (!rotating) return;",
         "\tvar vx = self.getXVelocity();",
         "\tvar vy = self.getYVelocity();",
         "\tif (vx == 0 && vy == 0) return;",

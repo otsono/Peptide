@@ -6,6 +6,7 @@
 //! them.
 
 mod shake;
+pub mod native_projectile;
 pub mod stage;
 pub mod stage_tables;
 
@@ -1058,13 +1059,18 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     autolink_entity(&entity_path, &dir.join("HitboxStats.hx"), char_name, &links, units.size)?;
     engine_animations(&entity_path, &dir.join("AnimationStats.hx"), char_name)?;
     // each projectile and item the fighter declares runs on the runtime too
+    let owner = native_projectile::Owner { attacks: &fighter.attacks, anims: pieces.iter().map(|p| (p.fm_name.clone(), p.label.clone())).collect() };
+    let mut natively: Vec<(String, Result<(), String>)> = Vec::new();
     let projectiles = runtime_projectiles(char_dir, &model, &runtime, fighter, units, &others,
-        &effects, &entities, &mut projectile_pieces, &mut unplaced)?;
+        &effects, &entities, &mut projectile_pieces, &mut unplaced, &owner, &mut natively)?;
     let report = serde_json::json!({
         "problems": out.problems.iter().chain(projectiles.iter().flat_map(|(_, e)| e.problems.iter())).collect::<Vec<_>>(),
         "unplaced": unplaced,
         "unknown": out.unknown.iter().chain(projectiles.iter().flat_map(|(_, e)| e.unknown.iter())).collect::<BTreeSet<_>>(),
         "projectiles": projectiles.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+        // the projectiles written as Fraymakers code, and why each other one is still the runtime's
+        "native": natively.iter().filter(|(_, r)| r.is_ok()).map(|(n, _)| n).collect::<Vec<_>>(),
+        "on_runtime": natively.iter().filter_map(|(n, r)| r.as_ref().err().map(|e| (n.clone(), serde_json::Value::String(e.clone())))).collect::<serde_json::Map<_, _>>(),
         // the box stats an animation took from what its clip writes as it starts (by the source's
         // box number and field names), so a check against the declared boxes knows them
         "box_writes": box_writes.iter().map(|(l, _)| (l.anim.clone().unwrap_or_default(), serde_json::Value::Object(
@@ -1362,7 +1368,8 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
                        fighter: &crate::model::declare::Fighter, units: Units, others: &[String],
                        effects: &BTreeMap<String, Vec<Piece>>, entities: &BTreeMap<String, String>,
                        pieces_of: &mut BTreeMap<String, Vec<Piece>>,
-                       unplaced: &mut Vec<String>) -> anyhow::Result<Vec<(String, Emitted)>> {
+                       unplaced: &mut Vec<String>, owner: &native_projectile::Owner,
+                       natively: &mut Vec<(String, Result<(), String>)>) -> anyhow::Result<Vec<(String, Emitted)>> {
     let mut out = Vec::new();
     let decls: Vec<&(String, Value)> = fighter.projectiles.entries().iter().chain(fighter.items.entries()).collect();
     // one script per entity, from the first declaration written as it (a projectile fired by
@@ -1420,8 +1427,20 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
             autolink: BTreeMap::new(),
             data: String::new(),
         };
-        let emitted = object_script(model, runtime, &spec, &Decls::of(fighter), &pieces, units, name);
         let script = char_dir.join(format!("library/scripts/Projectile/{}Script.hx", crate::haxe_gen::snake_to_pascal(&entity_key)));
+        // its own code as Fraymakers code, where it can be (`native_projectile`)
+        if script.exists() && std::env::var("PEPTIDE_NATIVE_PROJECTILES").map(|v| v != "0").unwrap_or(true) {
+            match native_projectile::write(char_dir, model, runtime, &spec, &Decls::of(fighter), &pieces, units, name, &entity_key, owner) {
+                Ok(text) => {
+                    std::fs::write(&script, &text)?;
+                    natively.push((entity_key.clone(), Ok(())));
+                    out.push((entity_key, Emitted { script: text, problems: Vec::new(), unknown: BTreeSet::new(), frames: BTreeMap::new(), landings: Vec::new(), native: None }));
+                    continue;
+                }
+                Err(why) => natively.push((entity_key.clone(), Err(why))),
+            }
+        }
+        let emitted = object_script(model, runtime, &spec, &Decls::of(fighter), &pieces, units, name);
         if script.exists() {
             std::fs::write(&script, &emitted.script)?;
             native_entity(&entity, &entity_key, model, &pieces, &emitted)?;

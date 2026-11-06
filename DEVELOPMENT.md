@@ -595,6 +595,18 @@ tables) and `runtime/entry/<kind>.hx`. `runtime_report.json` beside the project 
 place: a member nothing provides (`unknown`), an animation no source frame shows or a source frame
 no animation shows (`unplaced`). the verify gates run on it unchanged.
 
+a declared projectile whose own code can be said in plain Fraymakers code skips the runtime
+entirely (`emit/native_projectile.rs`, `compile/native.rs`): its classes' fields become the
+engine's state containers, its methods and frame scripts become the script's functions (the
+entity's keyframes call them), and every API call is a row of `runtime/native_calls.jsonc`. the
+parts every projectile has (lifetime, costume, reflection, the source's fresh-hit bonus) are
+`runtime/native/projectile.hx`, and what its declared stats do each frame are the rows of
+`runtime/projectile_stats.jsonc`. link's arrow is about 160 lines this way. anything the writer
+has no plain form for keeps the projectile on the runtime, and `runtime_report.json` names the
+reason under `on_runtime` (the projectiles that made it are under `native`), so the next row
+to write is the one most content needs. `PEPTIDE_NATIVE_PROJECTILES=0` puts every one back on
+the runtime, for a comparison.
+
 ### 5.4 extraction layer
 
 #### `extractor.rs`

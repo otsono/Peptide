@@ -15,6 +15,7 @@ pub mod projectile_stats;
 pub mod autolink;
 pub mod engine_anims;
 pub mod events;
+pub mod native;
 mod lower;
 pub mod runtime;
 pub mod suite;
