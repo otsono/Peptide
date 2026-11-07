@@ -341,6 +341,15 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     if blocks.contains("last_used") { update.push("usedFrame();".into()); }
     if blocks.contains("own_floor") { update.push("ownFloorFrame();".into()); }
     if blocks.contains("items") { update.push("itemFrame();".into()); }
+    // a clip its animations show, made anew as the fighter comes to it: its fields as they start
+    let fresh = fresh_clips(f, &parts, &w);
+    if !fresh.is_empty() || blocks.contains("fresh_clip") {
+        let mut cases = Vec::new();
+        for (class, sets) in &fresh { cases.push(format!("case {}: {}", compile::quote(class), sets.join(" "))); }
+        let block = native::helper(rt, "fighter_rules", "fresh_clip", "", &[], &cases).map_err(one)?;
+        if let Some(fs) = slots.get_mut("functions") { fs.push(String::new()); fs.extend(block.lines().map(String::from)); }
+        update.push("shownFrame();".into());
+    }
     slots.insert("update", update);
     slots.insert("own_tick", w.tick.clone());
     let anims: BTreeSet<String> = f.pieces.iter().map(|p| p.fm_name.clone()).collect();
@@ -354,7 +363,13 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
 
     // its entity: each frame with code calls it, and what each animation's attack declares runs on its first
     let entity = char_dir.join(format!("library/entities/{char_pascal}.entity"));
-    let frames = w.frames.clone();
+    let mut frames = w.frames.clone();
+    for class in fresh.keys() {
+        let Some(sym) = f.model.classes.get(class).and_then(|c| c.symbol) else { continue };
+        let call = format!("freshClip({});", compile::quote(class));
+        let e = frames.entry((sym, 1)).or_default();
+        *e = if e.is_empty() { call } else { format!("{call}\n{e}") };
+    }
     let mut extra: BTreeMap<(String, u32), String> = BTreeMap::new();
     let field_ref = crate::re!(r"\{field:(\w+)\}");
     for (anim, code) in first_frame {
@@ -429,6 +444,23 @@ fn root_fields(model: &SourceModel, class: &crate::model::ClassModel, sym: u16) 
             let v = match v { Expr::Str(x) => compile::quote(x), Expr::Num(n) => n.to_string(), Expr::Int(n) => n.to_string(), Expr::Bool(b) => b.to_string(), Expr::Null => "null".into(), _ => continue };
             out.entry(name.clone()).or_default().push((label.clone(), v));
         }
+    }
+    out
+}
+
+/// each clip class its animations show and the code that puts its fields back to how they start:
+/// the containers' own starting values (its own class and its root clip are made once)
+fn fresh_clips(f: &Fighting, parts: &Parts, w: &native::Written) -> BTreeMap<String, Vec<String>> {
+    let decl = crate::re!(r"^var (\w+) = self\.make\w+\((.*)\);$");
+    let start: BTreeMap<String, String> = w.fields.iter().filter_map(|l| decl.captures(l.trim()).map(|c| (c[1].to_string(), c[2].to_string()))).collect();
+    let root = f.model.class_of(parts.root).map(|c| c.name.clone());
+    let own = parts.itself.map(|c| c.name.clone());
+    let shown: BTreeSet<String> = f.pieces.iter().filter_map(|p| f.model.class_of(p.sym).map(|c| c.name.clone())).collect();
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for ((class, _), id) in &w.field_ids {
+        if Some(class) == root.as_ref() || Some(class) == own.as_ref() || !shown.contains(class) { continue }
+        let Some(v) = start.get(id) else { continue };
+        out.entry(class.clone()).or_default().push(format!("{id}.set({v});"));
     }
     out
 }

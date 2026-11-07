@@ -662,6 +662,38 @@ function rideRocket() {
 	self.setYSpeed(r.vy * SPEED);
 }
 
+// ---- fresh_clip
+//: its cases are each clip class's fields, back to how they start
+// a clip made anew: the source makes a fresh one each time the fighter comes to it from another,
+// its fields as they start (a loop or a jump inside it keeps the one it has). this runs first
+// thing on the clip's first frame, by what was shown the update before
+var shownBefore = self.makeObject(null);
+function freshClip(c) {
+	if (classOf(shownBefore.get()) == c) return;
+	switch (c) {
+		// {cases}
+	}
+}
+function shownFrame() {
+	var was = shownBefore.get();
+	var now = self.getAnimation();
+	// (the clip it showed is gone: what it listened for on the fighter goes with it)
+	if (was != null && classOf(was) != classOf(now)) clipLeft(classOf(was));
+	shownBefore.set(now);
+}
+
+// what a clip of its animations listens for on the fighter belongs to that clip, and goes when the
+// fighter leaves it for another clip (the source's clip and its code are gone by then)
+var clipListeners = self.makeObject([]);
+function clipListen(c, ev, fn) {
+	clipListeners.get().push({ c: c, ev: ev, fn: fn });
+}
+function clipLeft(c) {
+	var keep = [];
+	for (l in clipListeners.get()) if (l.c == c) self.removeEventListener(l.ev, l.fn); else keep.push(l);
+	clipListeners.set(keep);
+}
+
 // ---- timers
 // a timer its code makes (`createTimer(frames, repeats, fn)`): two engine frames to a source frame,
 // forever for none. it drops with the state it was made in unless asked to stay, waits out the
@@ -673,6 +705,8 @@ function startTimer(n, times, fn, keep, inFrame) {
 	var first = inFrame ? 2 * n - 2 : 2 * n;
 	if (first == 2 * n) { t.id = self.addTimer(2 * n, times, function() { tickTimer(t); }, opts); return t; }
 	t.id = self.addTimer(first < 1 ? 1 : first, 1, function() {
+		// (its first run is that timer's last: its id is the engine's to give out again)
+		t.id = -1;
 		tickTimer(t);
 		if (!t.dead && t.left != 0) t.id = self.addTimer(2 * n, t.left, function() { tickTimer(t); }, opts);
 	}, opts);
@@ -680,13 +714,17 @@ function startTimer(n, times, fn, keep, inFrame) {
 }
 function tickTimer(t) {
 	if (t.dead) return;
-	if (t.left > 0) { t.left--; if (t.left == 0) t.dead = true; }
+	// (one that has run its last forgets the engine's id, so stopping it later stops nothing else)
+	if (t.left > 0) { t.left--; if (t.left == 0) { t.dead = true; t.id = -1; } }
 	t.fn();
 }
 function stopTimer(t) {
 	if (t == null) return;
 	t.dead = true;
+	// (the engine gives ids out again, one object's timers counting from one: a stale one would
+	// stop another of its timers)
 	if (t.id >= 0) self.removeTimer(t.id);
+	t.id = -1;
 }
 
 // ---- ledges

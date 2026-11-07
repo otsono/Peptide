@@ -94,6 +94,9 @@
     "time_max": "life.set(Std.int({v} * 2))"
   },
 
+  // the camera shaken
+  "PeptideAPI.shakeCamera": "match.getCamera().shake({0})",
+
   // the API's arithmetic (`SSF2Utils`)
   "PeptideUtils.toRadians": { "code": "{0} * (Math.PI / 180)", "returns": "number" },
   "PeptideUtils.toDegrees": { "code": "{0} * (180 / Math.PI)", "returns": "number" },
@@ -108,6 +111,10 @@
   "getGrabbedOpponents": { "code": "{self}.getAllGrabbedFoes()", "returns": "object" },
   "flip": "if ({self}.isFacingRight()) {self}.faceLeft(); else {self}.faceRight()",
   // the one it holds drawn in front of it or behind it
+  // the one it holds, and drawn behind or in front of another
+  "getGrabbedOpponent": { "code": "({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length > 0 ? {self}.getAllGrabbedFoes()[0] : null)", "returns": "object" },
+  "bringBehind": "{self}.sendBehind({0})",
+  "bringInFront": "{self}.bringInFront({0})",
   "swapDepthGrabbed": "if ({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length > 0) { if ({0} == true) {self}.bringInFront({self}.getAllGrabbedFoes()[0]); else {self}.sendBehind({self}.getAllGrabbedFoes()[0]); }",
   // the one it holds shows one of its own poses, by label (its own script's jump)
   "grabbedHurtFrame": "if ({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length > 0 && {self}.getAllGrabbedFoes()[0].exports.__playFrame != null) {self}.getAllGrabbedFoes()[0].exports.__playFrame({0})",

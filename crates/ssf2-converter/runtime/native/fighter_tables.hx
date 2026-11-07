@@ -116,7 +116,10 @@ function fieldOf(clip, name) {
 // ---- stance_class
 // the class of the clip each animation shows
 function stanceClass() {
-	switch (self.getAnimation()) {
+	return classOf(self.getAnimation());
+}
+function classOf(a) {
+	switch (a) {
 		// {cases}
 	}
 	return null;

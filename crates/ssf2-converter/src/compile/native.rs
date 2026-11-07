@@ -1412,6 +1412,13 @@ impl<'o, 'a> Writer<'o, 'a> {
                     if !self.helpers.contains_key(&name) { self.helpers.insert(name.clone(), helper(self.o.runtime, "helpers", "make_enemy", &name, &[("FIRE", f)], &[])?); }
                     return Ok((format!("{name}()"), Ty::Object));
                 }
+                // an effect made by the API: on the object whose code makes it, as its own
+                (_, "createVfx" | "createVfxOverlay", _) if c.contains("PeptideAPI") => {
+                    let saved = std::mem::replace(&mut self.effect_on, "self".into());
+                    let r = if top { self.top = true; let r = self.effect(args); self.top = false; r } else { self.kept_effect(args) };
+                    self.effect_on = saved;
+                    return r;
+                }
                 // the API's own calls with a row (`PeptideAPI.print`)
                 (_, _, _) if c.contains("PeptideAPI") => {
                     let row = calls().rows.get(&format!("PeptideAPI.{m}")).cloned().ok_or_else(|| format!("calls PeptideAPI.{m}, which has no row in native_calls.jsonc"))?;
@@ -1650,7 +1657,8 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             ("removeTimer", [f]) if mine => {
                 let id = self.timer_of(f)?;
-                return Ok((format!("self.removeTimer({id}.get())"), Ty::Any));
+                // (and forgets the id: the engine gives it out again, to another of its timers)
+                return Ok((format!("self.removeTimer({id}.get());\n{id}.set(-1)"), Ty::Any));
             }
             ("playFrame", [Expr::Str(label)]) if mine => return Ok((self.jump(label)?.trim_end_matches(';').to_string(), Ty::Any)),
             ("playFrame", _) if mine => return Err("jumps its own clip to a label worked out as it runs".into()),
@@ -2287,8 +2295,9 @@ self.playFrameLabel({})", quote(f))); }
                 let def = helper(self.o.runtime, "helpers", "floor_listener", &wrapper, &[("LISTENER", h.clone())], &[])?;
                 self.helpers.insert(wrapper.clone(), def);
             }
+            let owned = self.clip_listen(engine, &wrapper);
             return Ok((if m == "addEventListener" {
-                format!("self.addEventListener({engine}, {wrapper}, {{ persistent: true }});\n{listening}.set(true)")
+                format!("self.addEventListener({engine}, {wrapper}, {{ persistent: true }});\n{listening}.set(true){owned}")
             } else {
                 format!("self.removeEventListener({engine}, {wrapper});\n{listening}.set(false)")
             }, Ty::Any));
@@ -2299,11 +2308,21 @@ self.playFrameLabel({})", quote(f))); }
             self.kept.insert(listening.clone(), format!("// whether {h} listens now\nvar {listening} = self.{}(false);", bool_make(self.o.fighter)));
             format!(";\n{listening}.set({})", m == "addEventListener")
         } else { String::new() };
+        let owned = if who == "self" { self.clip_listen(engine, &h) } else { String::new() };
         Ok((if m == "addEventListener" {
-            format!("{who}.addEventListener({engine}, {h}, {{ persistent: true }}){note}")
+            format!("{who}.addEventListener({engine}, {h}, {{ persistent: true }}){note}{owned}")
         } else {
             format!("{who}.removeEventListener({engine}, {h}){note}")
         }, Ty::Any))
+    }
+
+    /// a fighter's listener added by one of its stance clips' code: noted as that clip's, so it goes
+    /// when the fighter leaves the clip (`fresh_clip`). its own class and root clip stay
+    fn clip_listen(&mut self, engine: &str, h: &str) -> String {
+        if !self.o.fighter || self.is_itself() { return String::new() }
+        if self.o.model.class_of(self.o.root).is_some_and(|c| c.name == self.class) { return String::new() }
+        self.blocks.insert("fresh_clip".into());
+        format!(";\nclipListen({}, {engine}, {h})", quote(&self.class))
     }
 
     /// the function a listener (or timer) it hands over is: one of its own methods, a closure, or
