@@ -341,12 +341,11 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     if blocks.contains("last_used") { update.push("usedFrame();".into()); }
     if blocks.contains("own_floor") { update.push("ownFloorFrame();".into()); }
     if blocks.contains("items") { update.push("itemFrame();".into()); }
-    // a clip its animations show, made anew as the fighter comes to it: its fields as they start
-    let fresh = fresh_clips(f, &parts, &w);
-    if !fresh.is_empty() || blocks.contains("fresh_clip") {
-        let mut cases = Vec::new();
-        for (class, sets) in &fresh { cases.push(format!("case {}: {}", compile::quote(class), sets.join(" "))); }
-        let block = native::helper(rt, "fighter_rules", "fresh_clip", "", &[], &cases).map_err(one)?;
+    // a clip its animations show, made anew as the fighter comes to it: its fields, its frame code's
+    // own variables, declared as it starts
+    let entries = clip_entries(f, &w);
+    if entries.iter().any(|e| e.guard.is_some()) || blocks.contains("fresh_clip") {
+        let block = native::helper(rt, "fighter_rules", "fresh_clip", "", &[], &[]).map_err(one)?;
         if let Some(fs) = slots.get_mut("functions") { fs.push(String::new()); fs.extend(block.lines().map(String::from)); }
         update.push("shownFrame();".into());
     }
@@ -364,13 +363,22 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     // its entity: each frame with code calls it, and what each animation's attack declares runs on its first
     let entity = char_dir.join(format!("library/entities/{char_pascal}.entity"));
     let mut frames = w.frames.clone();
-    // (a one-frame timer its frame code makes ticks once that code is done)
-    if blocks.contains("timers") { for code in frames.values_mut() { code.push_str("\nrunAfterFrame();"); } }
-    for class in fresh.keys() {
-        let Some(sym) = f.model.classes.get(class).and_then(|c| c.symbol) else { continue };
-        let call = format!("freshClip({});", compile::quote(class));
-        let e = frames.entry((sym, 1)).or_default();
-        *e = if e.is_empty() { call } else { format!("{call}\n{e}") };
+    // (a one-frame timer its frame code makes ticks once that code is done, a `return` too)
+    let timers = blocks.contains("timers");
+    for code in frames.values_mut() {
+        *code = code.replace(native::FRAME_RETURN, if timers { "runAfterFrame(); return;" } else { "return;" });
+        if timers { code.push_str("\nrunAfterFrame();"); }
+    }
+    for e in &entries {
+        let decl = match &e.guard {
+            None => e.decls.join("\n"),
+            Some(anims) => {
+                let test: Vec<String> = anims.iter().map(|a| format!("shownBefore.get() != {}", compile::quote(a))).collect();
+                format!("if ({}) {{\n{}\n}}", test.join(" && "), e.decls.iter().map(|d| format!("\t{d}")).collect::<Vec<_>>().join("\n"))
+            }
+        };
+        let code = frames.entry((e.sym, e.frame)).or_default();
+        *code = if code.is_empty() { decl } else { format!("{decl}\n{code}") };
     }
     let mut extra: BTreeMap<(String, u32), String> = BTreeMap::new();
     let field_ref = crate::re!(r"\{field:(\w+)\}");
@@ -450,19 +458,36 @@ fn root_fields(model: &SourceModel, class: &crate::model::ClassModel, sym: u16) 
     out
 }
 
-/// each clip class its animations show and the code that puts its fields back to how they start:
-/// the containers' own starting values (its own class and its root clip are made once)
-fn fresh_clips(f: &Fighting, parts: &Parts, w: &native::Written) -> BTreeMap<String, Vec<String>> {
-    let decl = crate::re!(r"^var (\w+) = self\.make\w+\((.*)\);$");
-    let start: BTreeMap<String, String> = w.fields.iter().filter_map(|l| decl.captures(l.trim()).map(|c| (c[1].to_string(), c[2].to_string()))).collect();
-    let root = f.model.class_of(parts.root).map(|c| c.name.clone());
-    let own = parts.itself.map(|c| c.name.clone());
-    let shown: BTreeSet<String> = f.pieces.iter().filter_map(|p| f.model.class_of(p.sym).map(|c| c.name.clone())).collect();
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for ((class, _), id) in &w.field_ids {
-        if Some(class) == root.as_ref() || Some(class) == own.as_ref() || !shown.contains(class) { continue }
-        let Some(v) = start.get(id) else { continue };
-        out.entry(class.clone()).or_default().push(format!("{id}.set({v});"));
+/// where a clip its animations show starts, and what its frame code declares there
+struct Entry { sym: u16, frame: u32, decls: Vec<String>, guard: Option<Vec<String>> }
+
+/// each clip class's fields, declared by its frame code where the fighter comes to the clip: on the
+/// first frame of each animation showing it. plainly where one animation shows the whole clip from its
+/// first frame, as an attack, and its code never jumps it; else unless the fighter was showing that
+/// clip already (a loop, or a jump between its labels' animations, keeps the clip it has)
+fn clip_entries(f: &Fighting, w: &native::Written) -> Vec<Entry> {
+    use crate::model::ast::Expr;
+    let mut out = Vec::new();
+    for (class, decls) in &w.frame_fields {
+        let Some(c) = f.model.classes.get(class) else { continue };
+        let Some(sym) = c.symbol else { continue };
+        let pieces: Vec<&super::Piece> = f.pieces.iter().filter(|p| p.sym == sym).collect();
+        if pieces.is_empty() { continue }
+        let mut jumps = false;
+        for m in &c.methods {
+            crate::model::ast::walk_exprs(&m.function.body, &mut |e| if let Expr::Call(g, _) = e {
+                if matches!(&**g, Expr::Member(_, n) | Expr::Name(n) if matches!(n.as_str(), "gotoAndPlay" | "gotoAndStop" | "nextFrame" | "prevFrame" | "play")) { jumps = true }
+            });
+        }
+        let one = pieces.len() == 1 && { let p = pieces[0]; p.from == 1 && !p.reversed && p.head == 0 && f.fighter.attacks.get(&p.label).is_some() };
+        let mut anims: Vec<String> = pieces.iter().map(|p| p.fm_name.clone()).collect();
+        anims.sort();
+        anims.dedup();
+        let mut at: BTreeSet<u32> = BTreeSet::new();
+        for p in &pieces { at.insert(if p.reversed { p.from + p.frames - 1 } else { p.from }); }
+        for frame in at {
+            out.push(Entry { sym, frame, decls: decls.clone(), guard: if one && !jumps { None } else { Some(anims.clone()) } });
+        }
     }
     out
 }

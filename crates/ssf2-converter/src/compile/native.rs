@@ -220,6 +220,11 @@ pub struct Written {
     pub stat_keys: BTreeSet<String>,
     /// the container each class's field is kept in, by (class, field), for the fields its code uses
     pub field_ids: BTreeMap<(String, String), String>,
+    /// a clip's fields its frames keep as their own variables, by class: each one's declaration as
+    /// the clip starts
+    pub frame_fields: BTreeMap<String, Vec<String>>,
+    /// the frames whose code is written straight into their keyframes (the rest call their function)
+    pub inlined: BTreeSet<(u16, u32)>,
 }
 
 /// whether a method of an object's classes is ever run: a frame script, one of the API's hooks, or
@@ -327,12 +332,20 @@ struct Writer<'o, 'a> {
     seen: BTreeMap<String, Ty>,
     /// whether the fields' types were learned (and stay as learned)
     learned: bool,
+    /// the fields kept as plain variables of the frames' own code (a clip's), by member key
+    plain: BTreeSet<String>,
+    /// every name the script itself defines, which a frame's own variables keep clear of
+    globals: BTreeSet<String>,
+    /// the next function written is a frame's code, written straight into its keyframe
+    inline: bool,
+    /// the function being written is that
+    frame_top: bool,
 }
 
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
         let mut w = Writer { o, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
-                             locals: BTreeMap::new(), helpers: BTreeMap::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false };
+                             locals: BTreeMap::new(), helpers: BTreeMap::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "initialize", "update", "onTeardown", "onKill", "life", "age", "started", "freshHit"]
             .into_iter().map(String::from).collect();
@@ -395,10 +408,16 @@ impl<'o, 'a> Writer<'o, 'a> {
             for f in &c.fields {
                 let holds = if w.holds_itself(c, &f.name) { Holds::Itself } else { Holds::Value(Ty::declared(f.type_name.as_deref())) };
                 let id = if holds == Holds::Itself { "self".to_string() } else { name_for(&f.name, c, &mut taken) };
-                if w.holds_owner(c, &f.name) { w.owners.insert(format!("{id}.get()")); }
+                // (a fighter's clip's field is a variable of the clip's own frame code: the frames and
+                // the script share one scope, and the engine rolls those back too)
+                let own = o.itself.is_some_and(|i| i.name == c.name);
+                let plain = o.fighter && !own && holds != Holds::Itself && c.symbol.is_some_and(|s| s != o.root);
+                if plain { w.plain.insert(member_key(&c.name, &f.name)); }
+                if w.holds_owner(c, &f.name) { w.owners.insert(if plain { id.clone() } else { format!("{id}.get()") }); }
                 w.fields.insert(member_key(&c.name, &f.name), (id, holds));
             }
         }
+        w.globals = taken;
         Ok(w)
     }
 
@@ -472,6 +491,7 @@ impl<'o, 'a> Writer<'o, 'a> {
     fn write(&mut self) -> Result<Written, String> {
         let mut out = Written::default();
         let classes: Vec<&ClassModel> = self.o.itself.into_iter().chain(self.o.classes.iter().copied()).collect();
+        let mut inlined: Vec<((u16, u32), String, String)> = Vec::new();
         // the object's own class: its constructor's work and its hooks
         if let Some(c) = self.o.itself {
             self.class = c.name.clone();
@@ -501,9 +521,19 @@ impl<'o, 'a> Writer<'o, 'a> {
             for m in c.methods.iter().filter(|m| !declares(m) && (!self.o.fighter || reached(self.o.model, c, m))) {
                 let name = self.methods[&member_key(&c.name, &method_name(m))].clone();
                 self.in_frame = frame_of.contains_key(m.name.as_str());
-                let text = self.function(&name, &m.function).map_err(|e| format!("{}.{}: {e}", short(&c.name), m.name))?;
+                // (a fighter's frame's code is its keyframe's: written there as it is, unless other code
+                // calls it by name too)
+                let at = frame_of.get(m.name.as_str()).copied().zip(c.symbol);
+                self.inline = self.o.fighter && at.is_some();
+                let text = self.function(&name, &m.function).map_err(|e| format!("{}.{}: {e}", short(&c.name), m.name));
+                self.inline = false;
+                let text = text?;
+                if let (Some((f, sym)), true) = (at, self.o.fighter) {
+                    inlined.push(((sym, f + 1), name.clone(), text));
+                    continue;
+                }
                 out.functions.push(text);
-                if let (Some(f), Some(sym)) = (frame_of.get(m.name.as_str()), c.symbol) {
+                if let Some((f, sym)) = at {
                     out.frames.insert((sym, f + 1), format!("{name}();"));
                 }
             }
@@ -519,13 +549,21 @@ impl<'o, 'a> Writer<'o, 'a> {
             // (a fighter's true-or-false and text fields are object containers: the engine keeps
             // few of the others for a whole match, and two fighters running the same script ran out)
             let make = match ty {
-                Ty::Num if whole => format!("self.makeInt({})", default.unwrap_or_else(|| "0".into())),
-                Ty::Num => format!("self.makeFloat({})", default.unwrap_or_else(|| "0".into())),
-                Ty::Bool if !self.o.fighter => format!("self.makeBool({})", default.unwrap_or_else(|| "false".into())),
-                Ty::Bool => format!("self.makeObject({})", default.unwrap_or_else(|| "false".into())),
-                Ty::Str if !self.o.fighter => format!("self.makeString({})", default.unwrap_or_else(|| "null".into())),
-                _ => format!("self.makeObject({})", default.unwrap_or_else(|| "null".into())),
+                Ty::Num if whole => format!("self.makeInt({})", default.clone().unwrap_or_else(|| "0".into())),
+                Ty::Num => format!("self.makeFloat({})", default.clone().unwrap_or_else(|| "0".into())),
+                Ty::Bool if !self.o.fighter => format!("self.makeBool({})", default.clone().unwrap_or_else(|| "false".into())),
+                Ty::Bool => format!("self.makeObject({})", default.clone().unwrap_or_else(|| "false".into())),
+                Ty::Str if !self.o.fighter => format!("self.makeString({})", default.clone().unwrap_or_else(|| "null".into())),
+                _ => format!("self.makeObject({})", default.clone().unwrap_or_else(|| "null".into())),
             };
+            if self.plain.contains(key) {
+                // (a clip's: declared by its own frame code as the clip starts; another object reads it
+                // through a getter, the scope being the script's)
+                let start = default.clone().unwrap_or_else(|| match ty { Ty::Num => "0".into(), Ty::Bool => "false".into(), _ => "null".into() });
+                out.frame_fields.entry(class.to_string()).or_default().push(format!("var {id} = {start};"));
+                out.field_ids.insert((class.to_string(), field.to_string()), format!("{{ get: function() {{ return {id}; }}, set: function(v) {{ {id} = v; }} }}"));
+                continue;
+            }
             out.fields.push(format!("var {id} = {make};"));
             out.field_ids.insert((class.to_string(), field.to_string()), id.clone());
         }
@@ -557,6 +595,24 @@ impl<'o, 'a> Writer<'o, 'a> {
             out.publish.push("self.exports.__playFrame = jumpTo;".into());
         }
         out.functions.extend(self.helpers.values().cloned());
+        // (a frame other code calls by name stays a function its keyframe calls)
+        let called = |name: &str, out: &Written, inlined: &[((u16, u32), String, String)]| {
+            let re = regex::Regex::new(&format!(r"\b{}\(", regex::escape(name))).unwrap();
+            out.functions.iter().chain(out.start.iter()).chain(out.tick.iter()).any(|t| re.is_match(t))
+                || inlined.iter().any(|(_, n, t)| n != name && re.is_match(t))
+        };
+        for (at, name, text) in &inlined {
+            if called(name, &out, &inlined) {
+                out.functions.push(text.replace(FRAME_RETURN, "return;"));
+                out.frames.insert(*at, format!("{name}();"));
+            } else {
+                // (a frame with no code of its own keeps no keyframe code)
+                let body = frame_body(text);
+                if body.trim().is_empty() { continue }
+                out.frames.insert(*at, body);
+                out.inlined.insert(*at);
+            }
+        }
         out.blocks = self.blocks.clone();
         out.stat_keys = self.stat_keys.clone();
         Ok(out)
@@ -596,7 +652,10 @@ impl<'o, 'a> Writer<'o, 'a> {
         let mut seen: BTreeSet<String> = if name.is_empty() { self.captured.clone() } else { BTreeSet::new() };
         seen.extend(captured.iter().cloned());
         let outer = std::mem::replace(&mut self.captured, seen);
+        // (a frame's code written into its keyframe; a function it makes is a function again)
+        let top = std::mem::replace(&mut self.frame_top, std::mem::take(&mut self.inline));
         let r = self.function_body(name, f, &params, nparams, &debug, &captured);
+        self.frame_top = top;
         self.captured = outer;
         r
     }
@@ -613,19 +672,22 @@ impl<'o, 'a> Writer<'o, 'a> {
         let mut copies = BTreeSet::new();
         walk(&body, &mut |s| if let Stmt::Assign(Place::Local(r), v) = s { if matches!(v, Expr::This) { copies.insert(*r); } });
         walk(&body, &mut |s| if let Stmt::Assign(Place::Local(r), v) = s { if !matches!(v, Expr::This) { copies.remove(r); } });
+        if self.frame_top { if let Some(n) = captured.iter().find(|n| self.globals.contains(*n)) { return Err(format!("a frame's variable {n}, which its closures share, is named like one of the script's")) } }
         let mut decl: Vec<String> = captured.iter().map(|n| format!("\tvar {n} = null;")).collect();
         // (the decompiler's own temporaries, as variables of the function)
         let mut temps = BTreeSet::new();
         walk(&body, &mut |s| if let Stmt::Assign(Place::Temp(t), _) = s { temps.insert(*t); });
         walk_exprs(&body, &mut |e| if let Expr::Temp(t) = e { temps.insert(*t); });
         for t in &temps { decl.push(format!("\tvar __t{t} = null;")); }
+        // (a frame's own variables, in the script's scope, keep clear of the names the script defines)
+        let clear = |n: String, w: &Self| if w.frame_top && w.globals.contains(&n) { format!("{name}_{n}") } else { n };
         for r in &regs {
             if copies.contains(r) {
-                let n = debug.get(r).map(|s| ident(s)).unwrap_or_else(|| format!("v{r}"));
+                let n = clear(debug.get(r).map(|s| ident(s)).unwrap_or_else(|| format!("v{r}")), self);
                 self.locals.insert(*r, (n, Holds::Clip));
                 continue;
             }
-            let n = debug.get(r).map(|s| ident(s)).unwrap_or_else(|| format!("v{r}"));
+            let n = clear(debug.get(r).map(|s| ident(s)).unwrap_or_else(|| format!("v{r}")), self);
             decl.push(format!("\tvar {n} = null;"));
             self.locals.insert(*r, (n, Holds::Value(Ty::Any)));
         }
@@ -692,7 +754,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             Stmt::Break => vec![format!("{tab}break;")],
             Stmt::Continue => vec![format!("{tab}continue;")],
-            Stmt::Return(None) => vec![format!("{tab}return;")],
+            Stmt::Return(None) => vec![format!("{tab}{}", if self.frame_top { FRAME_RETURN } else { "return;" })],
             Stmt::Return(Some(e)) => vec![format!("{tab}return {};", self.expr(e)?.0)],
             Stmt::Switch(v, cases, default) => {
                 let mut out = vec![format!("{tab}switch ({}) {{", self.expr(v)?.0)];
@@ -802,8 +864,9 @@ impl<'o, 'a> Writer<'o, 'a> {
                         e.1 = Holds::Value(now);
                     }
                 }
+                let plain = self.plain.contains(&key);
                 self.read.insert(key);
-                Ok(vec![format!("{id}.set({val});")])
+                Ok(vec![if plain { format!("{id} = {val};") } else { format!("{id}.set({val});") }])
             }
             // (a copy of its clip, as the decompiler keeps one for `this.n++`: its reads are its own)
             Place::Local(r) if matches!(v, Expr::This) => {
@@ -1146,8 +1209,10 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// one of its own fields or methods, read
     fn own(&mut self, n: &str) -> Result<(String, Ty), String> {
         if let Some((id, holds)) = self.field(n) {
-            self.read.insert(member_key(&self.class, n));
-            return Ok(match holds { Holds::Itself | Holds::Clip => (id, Ty::Object), Holds::Value(t) => (format!("{id}.get()"), t) });
+            let key = member_key(&self.class, n);
+            let plain = self.plain.contains(&key);
+            self.read.insert(key);
+            return Ok(match holds { Holds::Itself | Holds::Clip => (id, Ty::Object), Holds::Value(t) if plain => (id, t), Holds::Value(t) => (format!("{id}.get()"), t) });
         }
         if let Some(id) = self.method(n) { return Ok((id, Ty::Object)) }
         // (one read through its getter)
@@ -2726,3 +2791,14 @@ fn walk_places(list: &[Stmt], f: &mut dyn FnMut(u32)) {
 /// the container a note of true or false is kept in: a fighter's an object (the engine keeps few
 /// true-or-false containers for a whole match)
 fn bool_make(fighter: bool) -> &'static str { if fighter { "makeObject" } else { "makeBool" } }
+
+/// what a frame's `return` is written as in its keyframe, for the emitter to finish (a frame's code
+/// ends with what the rules run after it, which a `return` must run too)
+pub const FRAME_RETURN: &str = "return; //frame";
+
+/// a frame's function's body, as its keyframe's code: its lines, a tab less
+fn frame_body(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() < 2 { return String::new() }
+    lines[1..lines.len() - 1].iter().map(|l| l.strip_prefix('\t').unwrap_or(l)).collect::<Vec<_>>().join("\n")
+}

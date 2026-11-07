@@ -622,9 +622,15 @@ declare, the label its clip is on, its item box) are `fighter_tables.hx`, filled
 declarations. a jump by label on the clip it shows goes to the animation that shows the label in
 the clip of the one playing (`stanceJump`). a method nothing in the package names is a template's
 leftover and is not written. what each field holds is learned from all its code before any of it
-is written; a typed field keeps its type. a clip is made anew as the fighter comes to it from
-another clip: its fields start over and what it listened for on the fighter goes with the clip it
-left (`fresh_clip`). a root clip with nothing to run, whose frames only set its fields, answers
+is written; a typed field keeps its type. each frame's code is its keyframe's code, written there
+as it is (a frame other code calls by name stays a function its keyframe calls). keyframe code and
+the script share one scope, and the engine rolls frame variables back too, so a clip's fields are
+plain variables its frame code declares where the fighter comes to the clip: outright where one
+attack's animation shows the whole clip and its code never jumps it, else unless the fighter was
+showing that clip already (a loop or a jump between its labels keeps the clip it has). a frame's own
+variables keep clear of the names the script defines. only the fighter's own class keeps its fields
+in the script; another object reads a clip's field through a getter. what a clip listened for on
+the fighter goes with the clip it left (`fresh_clip`). a root clip with nothing to run, whose frames only set its fields, answers
 them by the label it shows. a jump to the frame it is on stays there (playing an animation again
 from inside its own first frame would run that frame again, forever). a native projectile plays
 its clip on into the next animation itself (`playOn`): on a projectile the engine's own end of an

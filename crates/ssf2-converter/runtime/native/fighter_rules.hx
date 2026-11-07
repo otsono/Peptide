@@ -671,17 +671,9 @@ function rideRocket() {
 }
 
 // ---- fresh_clip
-//: its cases are each clip class's fields, back to how they start
-// a clip made anew: the source makes a fresh one each time the fighter comes to it from another,
-// its fields as they start (a loop or a jump inside it keeps the one it has). this runs first
-// thing on the clip's first frame, by what was shown the update before
+// the clip it showed the update before: a clip's frame code declares its fields as the fighter comes
+// to it from another (a loop or a jump inside it keeps the one it has)
 var shownBefore = self.makeObject(null);
-function freshClip(c) {
-	if (classOf(shownBefore.get()) == c) return;
-	switch (c) {
-		// {cases}
-	}
-}
 function shownFrame() {
 	var was = shownBefore.get();
 	var now = self.getAnimation();
