@@ -1598,7 +1598,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                 return Ok((format!("setRefresh({v})"), Ty::Any));
             }
             // a fighter's state: a projectile is in none of them
-            ("inState", [_]) if mine => return Ok(("false".into(), Ty::Bool)),
+            ("inState", [_]) if mine && !self.o.fighter => return Ok(("false".into(), Ty::Bool)),
             ("setState", [st]) if !mine => {
                 let name = self.state_name(st)?;
                 let to = states().get(&name).and_then(|s| s.enter.clone()).ok_or_else(|| format!("sets a fighter's state to {name}, which this engine's fighters have none of"))?;
