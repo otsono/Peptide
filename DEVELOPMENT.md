@@ -620,7 +620,7 @@ attacks turned off by name) are the blocks of `runtime/native/fighter_rules.hx` 
 and the tables they read (the attack each animation shows, what each attack and its boxes
 declare, the label its clip is on, its item box) are `fighter_tables.hx`, filled in from its
 declarations. a jump by label on the clip it shows goes to the animation that shows the label in
-the clip of the one playing (`stanceJump`). a method nothing in the package names is a template's
+the clip of the one playing (`stanceJump`), and a jump in a clip several animations show stays in the one playing (a ground and an air version showing one clip whole only cross where the engine links them). a method nothing in the package names is a template's
 leftover and is not written. what each field holds is learned from all its code before any of it
 is written; a typed field keeps its type. each frame's code is its keyframe's code, written there
 as it is (a frame other code calls by name stays a function its keyframe calls). keyframe code and

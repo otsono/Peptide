@@ -949,9 +949,11 @@ impl<'o, 'a> Writer<'o, 'a> {
         if has == Some(false) { return Ok(format!("// (the source jumps to {label} here, which its clip does not have)")) }
         let unique = self.o.jumps.get(&self.class).and_then(|j| j.labels.get(label)).cloned();
         // a fighter's clip label that several animations show, or none: the one playing, if it
-        // shows it; a part of the clip none shows is one this engine never plays
-        if unique.is_none() && self.o.fighter {
-            let hits: Vec<(String, String, bool)> = self.o.stance_labels.get(&self.class).map(|v| v.iter().filter(|(_, l, _)| l == label).cloned().collect()).unwrap_or_default();
+        // shows it (a ground and an air animation showing one clip whole stay apart, as the engine
+        // links them); a part of the clip none shows is one this engine never plays
+        let hits: Vec<(String, String, bool)> = if self.o.fighter { self.o.stance_labels.get(&self.class).map(|v| v.iter().filter(|(_, l, _)| l == label).cloned().collect()).unwrap_or_default() } else { Vec::new() };
+        let shown_by: BTreeSet<&str> = hits.iter().map(|(a, _, _)| a.as_str()).collect();
+        if (unique.is_none() || shown_by.len() > 1) && self.o.fighter {
             let Some((first, _, first_start)) = hits.first().cloned() else { return Ok(format!("// (the source goes on to {label} here, a part of its clip no animation here shows)")) };
             let mut out = vec!["switch (self.getAnimation()) {".to_string()];
             for (a, _, start) in &hits {
