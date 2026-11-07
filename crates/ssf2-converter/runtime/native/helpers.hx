@@ -113,9 +113,17 @@ function NAME(label) {
 function goToLabel(label, anims, starts) {
 	var i = anims.indexOf(self.getAnimation());
 	if (i < 0) i = 0;
-	if (starts[i]) { self.playAnimation(anims[i]); return; }
+	if (starts[i]) { playStart(anims[i]); return; }
 	if (self.getAnimation() != anims[i]) self.playAnimation(anims[i]);
 	self.playFrameLabel(label);
+}
+
+// ---- play_start
+// the first frame of animation `a`. one already on it stays: the source's jump to the frame it is
+// on runs that frame's code no second time, and playing it again here would, from inside it
+function NAME(a) {
+	if (self.getAnimation() == a && self.getCurrentFrame() <= 2) return;
+	self.playAnimation(a);
 }
 
 // ---- landing_lag

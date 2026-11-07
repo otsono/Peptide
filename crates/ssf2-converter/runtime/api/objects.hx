@@ -424,11 +424,15 @@ Objects.toToss = function(me) {
 Objects.made = [];
 Objects.view = function(fm) {
 	if (fm == null) return null;
-	if (fm.exports != null && fm.exports.__source != null) return fm.exports.__source;
+	var src = fm.exports != null ? fm.exports.__source : null;
+	if (src != null && src.__fm != null) return src;
 	for (v in Objects.made) if (v.__fm == fm) return v;
 	var me = {};
 	if (fm.getType() == EntityType.CHARACTER) PeptideCharacter.build(me); else PeptideGameObject.build(me);
 	me.__fm = fm;
+	// one written as Fraymakers code publishes only what its code keeps by name and the stats it
+	// set: the stand-in shares those
+	if (src != null) { me.__vars = src.__vars; if (src.__stats != null) me.__stats = src.__stats; }
 	Objects.made.push(me);
 	return me;
 };

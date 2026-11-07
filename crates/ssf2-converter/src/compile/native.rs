@@ -420,7 +420,15 @@ impl<'o, 'a> Writer<'o, 'a> {
         if let Some(mut f) = fresh {
             for (k, ty) in &self.seen {
                 if let Some(e) = f.fields.get_mut(k) {
-                    if let Holds::Value(declared) = e.1 { e.1 = Holds::Value(if declared == Ty::Any { *ty } else { join(declared, *ty) }); }
+                    // (a typed one keeps its type: the source makes whatever goes in one of those, unless
+                    // that is an object, as a sound kept where a number was)
+                    if let Holds::Value(declared) = e.1 {
+                        e.1 = Holds::Value(match (declared, *ty) {
+                            (Ty::Any, t) => t,
+                            (d, Ty::Any) => d,
+                            (d, t) => join(d, t),
+                        });
+                    }
                 }
             }
             f.learned = true;
@@ -884,15 +892,17 @@ impl<'o, 'a> Writer<'o, 'a> {
             let Some((first, _, first_start)) = hits.first().cloned() else { return Ok(format!("// (the source goes on to {label} here, a part of its clip no animation here shows)")) };
             let mut out = vec!["switch (self.getAnimation()) {".to_string()];
             for (a, _, start) in &hits {
-                out.push(format!("\tcase {}: {};", quote(a), if *start { format!("self.playAnimation({})", quote(a)) } else { format!("self.playFrameLabel({})", quote(label)) }));
+                let to = if *start { self.play_start(a)? } else { format!("self.playFrameLabel({})", quote(label)) };
+                out.push(format!("\tcase {}: {to};", quote(a)));
             }
-            out.push(format!("\tdefault: {};", if first_start { format!("self.playAnimation({})", quote(&first)) } else { format!("{{ self.playAnimation({}); self.playFrameLabel({}); }}", quote(&first), quote(label)) }));
+            let to = if first_start { self.play_start(&first)? } else { format!("{{ self.playAnimation({}); self.playFrameLabel({}); }}", quote(&first), quote(label)) };
+            out.push(format!("\tdefault: {to};"));
             out.push("}".into());
             return Ok(out.join("\n"));
         }
         let (anim, start) = unique.ok_or_else(|| format!("jumps to {label}, which no animation shows"))?;
         Ok(if start {
-            format!("self.playAnimation({});", quote(&anim))
+            format!("{};", self.play_start(&anim)?)
         } else {
             // (a label inside an animation: that animation, at the label)
             format!("if (self.getAnimation() != {a}) self.playAnimation({a});\nself.playFrameLabel({});", quote(label), a = quote(&anim))
@@ -2061,11 +2071,21 @@ self.playFrameLabel({})", quote(f))); }
 
     /// a jump by label on the clip it shows, from code that may run under any of them: the
     /// animation that shows the label in the clip of the animation it plays
+    /// a jump to an animation's first frame (one already on it stays there)
+    fn play_start(&mut self, anim: &str) -> Result<String, String> {
+        if !self.helpers.contains_key("playStart") {
+            let def = helper(self.o.runtime, "helpers", "play_start", "playStart", &[], &[])?;
+            self.helpers.insert("playStart".into(), def);
+        }
+        Ok(format!("playStart({})", quote(anim)))
+    }
+
     fn stance_jump(&mut self, label: &str) -> Result<String, String> {
         // (the clip being written is the one it shows: its own jump)
         if self.o.jumps.contains_key(&self.class) { return self.jump(label) }
         let name = "stanceJump".to_string();
         if !self.helpers.contains_key(&name) {
+            self.play_start("")?;
             let mut lines = Vec::new();
             for (class, hits) in self.o.stance_labels {
                 // (each clip, by the animations that show it: a label's animations, and whether it
