@@ -10,6 +10,9 @@ pub struct EventTable {
     pub engine: BTreeMap<String, String>,
     /// source event name -> the engine's event, told with the source's states either side
     pub state: BTreeMap<String, String>,
+    /// the engine's events a listener added without `persistent` is told of: one the engine raises
+    /// while the animation it was added in still plays
+    pub heard_in_animation: Vec<String>,
 }
 
 pub fn table() -> &'static EventTable {
@@ -21,7 +24,8 @@ pub fn table() -> &'static EventTable {
         let read = |v: &serde_json::Value| -> BTreeMap<String, String> {
             v.as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()).unwrap_or_default()
         };
-        EventTable { engine: read(&json["engine"]), state: read(&json["state"]) }
+        let heard = json["heard_in_animation"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+        EventTable { engine: read(&json["engine"]), state: read(&json["state"]), heard_in_animation: heard }
     })
 }
 

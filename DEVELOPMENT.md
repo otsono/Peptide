@@ -629,8 +629,11 @@ plain variables its frame code declares where the fighter comes to the clip: out
 attack's animation shows the whole clip and its code never jumps it, else unless the fighter was
 showing that clip already (a loop or a jump between its labels keeps the clip it has). a frame's own
 variables keep clear of the names the script defines. only the fighter's own class keeps its fields
-in the script; another object reads a clip's field through a getter. what a clip listened for on
-the fighter goes with the clip it left (`fresh_clip`). a root clip with nothing to run, whose frames only set its fields, answers
+in the script; another object reads a clip's field through a getter. what a clip listens for on
+the fighter goes with the clip, as the source's does: the engine drops a listener added without
+`persistent` as the animation changes, so a clip one animation shows listens that way for an event
+heard while the animation plays (`runtime/events.jsonc` `heard_in_animation`); any other listener,
+and any on a clip several animations show, stays until the fighter leaves the clip (`fresh_clip`). a root clip with nothing to run, whose frames only set its fields, answers
 them by the label it shows. a jump to the frame it is on stays there (playing an animation again
 from inside its own first frame would run that frame again, forever). a native projectile plays
 its clip on into the next animation itself (`playOn`): on a projectile the engine's own end of an

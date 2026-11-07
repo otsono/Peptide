@@ -30,5 +30,12 @@
   },
   // a change of state: the engine's event, told to the source's listeners with the source's own
   // states either side (the runtime keeps them)
-  "state": { "stateChange": "EntityEvent.STATE_CHANGE" }
+  "state": { "stateChange": "EntityEvent.STATE_CHANGE" },
+  // the engine's events a listener added without `persistent` hears: raised while the animation it
+  // was added in still plays. the engine drops such a listener as the animation (or the state)
+  // changes, so a clip one animation shows listens for these that way and its listener goes with it,
+  // as the source's goes with its clip. an event raised as the state changes (its own change, a hit
+  // taken) never reaches one, so a listener for any event not listed here stays until the fighter
+  // leaves the clip. measured live, one at a time
+  "heard_in_animation": ["EntityEvent.COLLIDE_FLOOR"]
 }
