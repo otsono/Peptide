@@ -216,3 +216,45 @@ function NAME(o, clip, name, v) {
 	var c = o == null || o.exports.__fieldOf == null ? null : o.exports.__fieldOf(clip, name);
 	if (c != null) c.set(v);
 }
+
+// ---- make_enemy
+//: FIRE the function that fires it
+// an enemy it makes, carried by a projectile here (not a projectile in the source, as an item is
+// not either; the harness leaves both out of its count)
+function NAME() {
+	var o = FIRE(0, 0);
+	if (o != null) { o.exports.__isEnemy = true; o.exports.__np = true; }
+	return o;
+}
+
+// ---- controls_of
+// another fighter's controls, by the source's names: its first button is special, its second attack
+function NAME(o, pressed) {
+	var c = o == null ? null : (pressed == true ? o.getPressedControls() : o.getHeldControls());
+	if (c == null) return {};
+	return { UP: c.UP, DOWN: c.DOWN, LEFT: c.LEFT, RIGHT: c.RIGHT, JUMP: c.JUMP, JUMP2: false,
+	         BUTTON1: c.SPECIAL, BUTTON2: c.ATTACK, SPECIAL: c.SPECIAL, ATTACK: c.ATTACK,
+	         SHIELD: c.SHIELD, SHIELD2: false, GRAB: c.GRAB, TAUNT: false, TAP_JUMP: c.TAP_JUMP };
+}
+
+// ---- move_if_clear
+//: SIZE the source's size here
+// an object moved as far as solid ground lets it, in the source's units: true when nothing was in the way
+function NAME(o, dx, dy) {
+	var x = o.getX();
+	var y = o.getY();
+	var a = Point.create(x, y - SIZE);
+	var b = Point.create(x + dx * SIZE, y - SIZE + dy * SIZE);
+	var hits = o.hitTestStructuresWithLineSegment(a, b, Point.create(b.x, b.y), {});
+	if (hits != null && hits.length > 0) return false;
+	o.setX(x + dx * SIZE);
+	o.setY(y + dy * SIZE);
+	return true;
+}
+
+// ---- source_rect
+//: SIZE the source's size here
+// a rectangle of the stage's, in the source's units
+function NAME(r) {
+	return r == null ? null : { x: r.x / SIZE, y: r.y / SIZE, width: r.width / SIZE, height: r.height / SIZE };
+}

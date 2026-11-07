@@ -166,6 +166,8 @@
     "SSF2Character": "EntityType.CHARACTER",
     "SSF2Projectile": "EntityType.PROJECTILE",
     "SSF2Item": "EntityType.ITEM",
-    "SSF2Enemy": "EntityType.CUSTOM_GAME_OBJECT"
+    "SSF2Enemy": "EntityType.CUSTOM_GAME_OBJECT",
+    // (a stage's path node, which no object here is)
+    "SSF2Beacon": "-1"
   }
 }

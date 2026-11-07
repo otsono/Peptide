@@ -743,7 +743,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                 Ok(vec![format!("self.set{}({val});", if f == "scaleX" { "ScaleX" } else { "ScaleY" })])
             }
             // a field of its owner's clip
-            Place::Member(mc, f) if self.o.owner_native && self.owner_clip(mc).is_some() => {
+            Place::Member(mc, f) if self.owner_clip(mc).is_some() => {
                 let (who, clip) = self.owner_clip(mc).unwrap_or_default();
                 let (val, _) = self.expr(v)?;
                 Ok(vec![format!("{}({who}, {}, {}, {val});", self.owner_field("set")?, quote(&clip), quote(f))])
@@ -1016,6 +1016,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                     ("uint", "MAX_VALUE") => "4294967295.0".into(), _ => "0".into(),
                 }, Ty::Num)
             }
+            // a field of a record one of its own declaration methods declares: its value, as written
+            Expr::Member(c, f) if matches!(&**c, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(o, m) if self.expr(o).is_ok_and(|(w, _)| w == "self") && self.declared_field(m, f).is_some())) => {
+                let Expr::Call(g, _) = &**c else { unreachable!() };
+                let Expr::Member(_, m) = &**g else { unreachable!() };
+                (self.declared_field(m, f).unwrap_or_default(), Ty::Any)
+            }
             // where an object (or its clip, drawn as it) is, in the source's units
             Expr::Member(o, n) if matches!(n.as_str(), "x" | "y") && self.a_value(o) && self.expr(o).is_ok_and(|(_, t)| t == Ty::Body) => {
                 let (v, _) = self.expr(o)?;
@@ -1028,7 +1034,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                 (who, Ty::Body)
             }
             // a field of its owner's clip (its root, or the clip its animation shows), or where it is
-            Expr::Member(mc, n) if self.o.owner_native && self.owner_clip(mc).is_some() && !matches!(n.as_str(), "currentFrameLabel" | "currentLabel") => {
+            Expr::Member(mc, n) if self.owner_clip(mc).is_some() && !matches!(n.as_str(), "currentFrameLabel" | "currentLabel") => {
                 let (who, clip) = self.owner_clip(mc).unwrap_or_default();
                 if matches!(n.as_str(), "x" | "y") { return Ok((format!("{who}.get{}() / {}", n.to_uppercase(), number(self.o.size)), Ty::Num)) }
                 return Ok((format!("{}({who}, {}, {})", self.owner_field("get")?, quote(&clip), quote(n)), Ty::Any));
@@ -1213,7 +1219,8 @@ impl<'o, 'a> Writer<'o, 'a> {
         if !a.is_empty() { return None }
         let clip = match m.as_str() { "getMC" => "root", "getStanceMC" | "stanceClip" => "stance", _ => return None };
         let who = self.expr(o).ok()?.0;
-        self.owners.contains(&who).then(|| (who, clip.to_string()))
+        // (any other object's: each kind of fighter publishes its clips' fields)
+        (who != "self").then(|| (who, clip.to_string()))
     }
 
     /// the helper that reads (or writes) a field of its owner's clips through what the owner publishes
@@ -1247,6 +1254,12 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// though a variable it shares with a closure is one)
     fn a_value(&self, o: &Expr) -> bool {
         match o { Expr::This => false, Expr::Name(n) => self.captured.contains(&ident(n)), _ => true }
+    }
+
+    /// a helper of `helpers.hx` that takes the source's size, written once
+    fn sized_helper(&mut self, key: &str, name: &str) -> Result<String, String> {
+        if !self.helpers.contains_key(name) { self.helpers.insert(name.into(), helper(self.o.runtime, "helpers", key, name, &[("SIZE", number(self.o.size))], &[])?); }
+        Ok(name.into())
     }
 
     /// whether a value is a copy of its own clip
@@ -1357,6 +1370,22 @@ impl<'o, 'a> Writer<'o, 'a> {
             match (short(c), m.as_str(), args) {
                 (_, "getProjectile" | "getItem" | "getEnemy" | "getCharacter", [Expr::This]) if c.contains("PeptideAPI") => return Ok(("self".into(), Ty::Object)),
                 (_, "isReady", []) if c.contains("PeptideAPI") => return Ok(("true".into(), Ty::Bool)),
+                // the ground on a line, and an enemy made: a fighter's blocks
+                (_, "hitTestGround" | "hitTestGroundBetweenPoints", _) if c.contains("PeptideAPI") && self.o.fighter => {
+                    self.blocks.insert("ground_test".into());
+                    let vs: Result<Vec<String>, String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect();
+                    let vs = vs?;
+                    let opt = |i: usize| vs.get(i).cloned().unwrap_or_else(|| "null".into());
+                    return Ok((if m == "hitTestGround" { format!("groundBetween({0}, {1} - 1, {0}, {1} + 1, {2})", opt(0), opt(1), opt(2)) }
+                        else { format!("(({0}) == null || ({1}) == null ? null : groundBetween(({0}).x, ({0}).y, ({1}).x, ({1}).y, {2}))", opt(0), opt(1), opt(2)) }, Ty::Object));
+                }
+                (_, "makeEnemy", [k]) if c.contains("PeptideAPI") && self.o.fighter => {
+                    let n = match k { Expr::Str(n) => n.clone(), Expr::Name(n) => short(n).to_string(), _ => return Err("makes an enemy named as it runs".into()) };
+                    let f = self.fire(&n, "self")?;
+                    let name = format!("makeEnemy_{}", ident(&n));
+                    if !self.helpers.contains_key(&name) { self.helpers.insert(name.clone(), helper(self.o.runtime, "helpers", "make_enemy", &name, &[("FIRE", f)], &[])?); }
+                    return Ok((format!("{name}()"), Ty::Object));
+                }
                 // the API's own calls with a row (`PeptideAPI.print`)
                 (_, _, _) if c.contains("PeptideAPI") => {
                     let row = calls().rows.get(&format!("PeptideAPI.{m}")).cloned().ok_or_else(|| format!("calls PeptideAPI.{m}, which has no row in native_calls.jsonc"))?;
@@ -1512,8 +1541,14 @@ impl<'o, 'a> Writer<'o, 'a> {
     fn declared_record(&self, n: &str) -> Option<String> {
         let c = self.o.itself?;
         let m = c.methods.iter().find(|m| m.name == n && declares(m))?;
-        let v = crate::model::declare::returned(&m.function.body)?;
-        Some(crate::emit::literal(&v, &|_| None))
+        Some(plain_value(&crate::model::declare::returned(&m.function.body)?))
+    }
+
+    /// a field of one of its own declaration methods' records, as written
+    fn declared_field(&self, n: &str, f: &str) -> Option<String> {
+        let c = self.o.itself?;
+        let m = c.methods.iter().find(|m| m.name == n && declares(m))?;
+        crate::model::declare::returned(&m.function.body)?.get(f).map(plain_value)
     }
 
     fn own_call(&mut self, id: &str, args: &[Expr]) -> Result<(String, Ty), String> {
@@ -1539,10 +1574,12 @@ impl<'o, 'a> Writer<'o, 'a> {
             // an attack's stats written on a projectile: none is a projectile's here but the rate it
             // hits again at, which is the runtime's still
             ("updateAnimationStats", [Expr::Object(pairs)]) if mine => {
-                if pairs.iter().any(|(k, _)| matches!(k, Expr::Str(k) if k == "refreshRate") || !matches!(k, Expr::Str(_))) {
-                    return Err("writes the rate it hits again at".into());
-                }
-                return Ok((String::new(), Ty::Any));
+                if pairs.iter().any(|(k, _)| !matches!(k, Expr::Str(_))) { return Err("writes an attack stat by a name worked out as it runs".into()) }
+                // (the rate it hits again at: `runtime/native/refresh.hx`)
+                let Some((_, v)) = pairs.iter().find(|(k, _)| matches!(k, Expr::Str(k) if k == "refreshRate")) else { return Ok((String::new(), Ty::Any)) };
+                self.blocks.insert("refresh".into());
+                let (v, _) = self.expr(v)?;
+                return Ok((format!("setRefresh({v})"), Ty::Any));
             }
             // a fighter's state: a projectile is in none of them
             ("inState", [_]) if mine => return Ok(("false".into(), Ty::Bool)),
@@ -1651,11 +1688,11 @@ impl<'o, 'a> Writer<'o, 'a> {
                 }
                 return Ok((format!("{name}({who})"), Ty::Any));
             }
-            ("moveIfClear" | "safeMove", [dx, dy]) if self.o.fighter => {
-                self.blocks.insert("move_clear".into());
+            ("moveIfClear" | "safeMove", [dx, dy]) => {
+                let f = self.sized_helper("move_if_clear", "moveIfClear")?;
                 let (dx, _) = self.expr(dx)?;
                 let (dy, _) = self.expr(dy)?;
-                return Ok((format!("moveIfClear({who}, {dx}, {dy})"), Ty::Bool));
+                return Ok((format!("{f}({who}, {dx}, {dy})"), Ty::Bool));
             }
             // a stat of a projectile it fired: what its declaration states (by the name it was fired by)
             ("getProjectileStat", [Expr::Str(k)]) if self.o.fighter && !mine => {
@@ -1667,9 +1704,9 @@ impl<'o, 'a> Writer<'o, 'a> {
                 self.blocks.insert("ledges".into());
                 return Ok(("stageLedges()".into(), Ty::Rect));
             }
-            ("getDeathBounds" | "getCameraBounds", []) if self.o.fighter && who == "stage" => {
-                self.blocks.insert("rects".into());
-                return Ok((format!("sourceRect(stage.{m}())"), Ty::Rect));
+            ("getDeathBounds" | "getCameraBounds", []) if who == "stage" => {
+                let f = self.sized_helper("source_rect", "sourceRect")?;
+                return Ok((format!("{f}(stage.{m}())"), Ty::Rect));
             }
             // a stat another fighter states: what its code set, as it publishes it, else the engine's
             ("getCharacterStat", [k]) if self.o.fighter && !mine => {
@@ -1693,13 +1730,30 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let rot = match rest.first() { None => "false".to_string(), Some(x) => self.test(x)? };
                 return Ok((format!("if ({who}.exports.__rocket != null) {who}.exports.__rocket({sp}, {an}, {de}, {rot})"), Ty::Any));
             }
+            // another fighter's controls, by the source's names
+            ("getControls", a) if !mine => {
+                if !self.helpers.contains_key("controlsOf") { self.helpers.insert("controlsOf".into(), helper(self.o.runtime, "helpers", "controls_of", "controlsOf", &[], &[])?); }
+                let p = match a.first() { None => "false".to_string(), Some(x) => self.test(x)? };
+                return Ok((format!("controlsOf({who}, {p})"), Ty::Object));
+            }
+            // the animation another fighter plays, as the source names it: the label its script publishes
+            ("getAnimation", []) if !mine && !self.owners.contains(who) => {
+                return Ok((format!("({who} != null && {who}.exports.__label != null ? {who}.exports.__label() : null)"), Ty::Str));
+            }
             // the animation its owner plays, as the source names it: its clip's label
             ("getAnimation", []) if self.owners.contains(who) => return Ok((format!("{}({who})", self.owner_label()?), Ty::Str)),
             ("getAnimationStat", [Expr::Str(k)]) if !mine && super::attack_stats::table().read(k).is_some() => {
                 let (field, back) = super::attack_stats::table().read(k).unwrap_or_default();
                 return Ok((back.replace("{v}", &format!("{who}.getAnimationStat({})", quote(&field))), Ty::Any));
             }
-            ("getAnimationStat", [Expr::Str(k)]) if !mine && !self.owners.contains(who) => return Err(format!("reads another object's attack stat {k}")),
+            // one that puts it in a body status: whether it holds that status now
+            ("getAnimationStat", [Expr::Str(k)]) if !mine && super::attack_stats::table().read_status(k).is_some() => {
+                return Ok((format!("{who}.hasBodyStatus({})", super::attack_stats::table().read_status(k).unwrap_or_default()), Ty::Bool));
+            }
+            // another fighter's attack stat: what its script answers (each kind of fighter publishes it)
+            ("getAnimationStat", [Expr::Str(k)]) if !mine && !self.owners.contains(who) => {
+                return Ok((format!("({who} != null && {who}.exports.__attackStat != null ? {who}.exports.__attackStat({}) : null)", quote(k)), Ty::Any));
+            }
             ("getAnimationStat", [Expr::Str(k)]) if !mine => {
                 let (name, def) = (self.o.owner_stat)(k).ok_or_else(|| format!("reads its owner's attack stat {k}, which no attack of its owner declares"))?;
                 // (one no attack of its owner declares is nothing, as the source answers)
@@ -1857,17 +1911,17 @@ self.playFrameLabel({})", quote(f))); }
                 Ok((out.join(";\n"), Ty::Any))
             }
             ("getDeathBounds" | "getCameraBounds", []) => {
-                block(self, "rects");
-                Ok((format!("sourceRect(stage.{m}())"), Ty::Rect))
+                let f = self.sized_helper("source_rect", "sourceRect")?;
+                Ok((format!("{f}(stage.{m}())"), Ty::Rect))
             }
             // what its code keeps by name, on the object it publishes
             ("sharedVar", [k]) => { let (k, _) = self.expr(k)?; Ok((format!("source.__vars.get({k})"), Ty::Any)) }
             ("setSharedVar", [k, v]) => { let (k, _) = self.expr(k)?; let (v, _) = self.expr(v)?; Ok((format!("source.__vars.set({k}, {v})"), Ty::Any)) }
             ("moveIfClear" | "safeMove", [dx, dy]) => {
-                block(self, "move_clear");
+                let f = self.sized_helper("move_if_clear", "moveIfClear")?;
                 let (dx, _) = self.expr(dx)?;
                 let (dy, _) = self.expr(dy)?;
-                Ok((format!("moveIfClear(self, {dx}, {dy})"), Ty::Bool))
+                Ok((format!("{f}(self, {dx}, {dy})"), Ty::Bool))
             }
             // a floor of its own, carried with it
             ("makeOwnFloor", a) if a.len() >= 4 => {
@@ -1882,6 +1936,7 @@ self.playFrameLabel({})", quote(f))); }
                 let (t, _) = self.expr(t)?;
                 Ok((if m == "getNearestPath" { format!("nearestPath({t})") } else { format!("nearest({t})") }, Ty::Object))
             }
+            ("recover", [n]) => { block(self, "recover"); let (n, _) = self.expr(n)?; Ok((format!("recover({n})"), Ty::Bool)) }
             ("forceOnGround", _) => { block(self, "floor_hold"); Ok(("holdToFloor()".into(), Ty::Any)) }
             ("allowAttack", [on, Expr::Str(label), rest @ ..]) => {
                 block(self, "attack"); block(self, "actions");
@@ -2311,6 +2366,23 @@ pub fn fill_slots(text: &str, slots: &BTreeMap<&str, Vec<String>>) -> String {
 }
 
 // ---- small pieces -----------------------------------------------------------------------------
+
+/// a declared value as a plain Haxe value (a record's fields named, a class by its name)
+fn plain_value(v: &crate::model::declare::Value) -> String {
+    use crate::model::declare::Value;
+    match v {
+        Value::Null | Value::Computed(_) => "null".into(),
+        Value::Bool(b) => b.to_string(),
+        Value::Num(n) => number(*n),
+        Value::Str(s) | Value::Class(s) => quote(s),
+        Value::Arr(items) => format!("[{}]", items.iter().map(plain_value).collect::<Vec<_>>().join(", ")),
+        Value::Obj(kv) => {
+            let parts: Vec<String> = kv.iter().filter(|(k, _)| k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !k.starts_with(|c: char| c.is_ascii_digit()))
+                .map(|(k, v)| format!("{k}: {}", plain_value(v))).collect();
+            if parts.is_empty() { "{}".into() } else { format!("{{ {} }}", parts.join(", ")) }
+        }
+    }
+}
 
 /// what a value is that is one of two: what they agree on, the one known where the other is not,
 /// and a rectangle where the other is only some object (or none)

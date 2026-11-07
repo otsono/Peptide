@@ -36,3 +36,9 @@ fn link_is_plain_fraymakers_code() { native("link") }
 
 #[test]
 fn pikachu_is_plain_fraymakers_code() { native("pikachu") }
+
+#[test]
+fn fox_is_plain_fraymakers_code() { native("fox") }
+
+#[test]
+fn rayman_is_plain_fraymakers_code() { native("rayman") }

@@ -94,6 +94,12 @@ pub(crate) fn num(v: f64) -> String {
 impl AttackStats {
     /// a stat read back from the engine's field it maps to, as source text over `{v}` (the field's
     /// value): only a stat one plain row maps, whose engine value turns back into the source's
+    /// a stat that puts the attacker in a body status while it is true (`superArmor`): the status,
+    /// for a read of it off another object (whether it holds that status now)
+    pub fn read_status(&self, key: &str) -> Option<String> {
+        self.rows.get(key)?.iter().find(|r| r.field == "bodyStatus" && r.how == "value" && r.when.as_deref() == Some("true") && r.with.is_none())?.value.clone()
+    }
+
     pub fn read(&self, key: &str) -> Option<(String, String)> {
         let rows = self.rows.get(key)?;
         let [r] = rows.as_slice() else { return None };

@@ -605,26 +605,6 @@ function engineStat(name) {
 	return b.get(name);
 }
 
-// ---- rects
-// a rectangle of the stage's, in the source's units
-function sourceRect(r) {
-	return r == null ? null : { x: r.x / SIZE, y: r.y / SIZE, width: r.width / SIZE, height: r.height / SIZE };
-}
-
-// ---- move_clear
-// an object moved as far as solid ground lets it, in the source's units: true when nothing was in the way
-function moveIfClear(o, dx, dy) {
-	var x = o.getX();
-	var y = o.getY();
-	var a = Point.create(x, y - SIZE);
-	var b = Point.create(x + dx * SIZE, y - SIZE + dy * SIZE);
-	var hits = o.hitTestStructuresWithLineSegment(a, b, Point.create(b.x, b.y), {});
-	if (hits != null && hits.length > 0) return false;
-	o.setX(x + dx * SIZE);
-	o.setY(y + dy * SIZE);
-	return true;
-}
-
 // ---- fired_stats
 // a stat of a projectile it fired, as its declaration states it (by the name it was fired by)
 function firedStat(p, k) {
@@ -748,4 +728,38 @@ function dropOwnFloor() {
 }
 function ownFloorFrame() {
 	for (st in ownFloors.get()) { st.setX(self.getX()); st.setY(self.getY()); }
+}
+
+// ---- ground_test
+// the nearest surface on the line between two spots (the source's units): terrain, platforms or
+// both as the options ask (`terrains`, `platforms`), none in `ignoreList`
+function groundBetween(ax, ay, bx, by, ?o) {
+	var terrains = o == null || (o.terrains != false && o.terrain != false);
+	var platforms = o == null || o.platforms != false;
+	var ignore = o == null ? null : o.ignoreList;
+	var p1 = Point.create(ax * SIZE, ay * SIZE);
+	var p2 = Point.create(bx * SIZE, by * SIZE);
+	var best = null;
+	var bestD = 0.0;
+	for (k in [StructureType.FLOOR, StructureType.CEILING, StructureType.LEFT_WALL, StructureType.RIGHT_WALL]) {
+		var out = Point.create(p2.x, p2.y);
+		var hits = self.hitTestStructuresWithLineSegment(p1, p2, out, { structureType: k });
+		if (hits == null) continue;
+		for (st in hits) {
+			var drop = st.getStructureStat("dropThrough") == true;
+			if (drop ? !platforms : !terrains) continue;
+			if (ignore != null && ignore.indexOf(st) >= 0) continue;
+			var d = (out.x - p1.x) * (out.x - p1.x) + (out.y - p1.y) * (out.y - p1.y);
+			if (best == null || d < bestD) { best = st; bestD = d; }
+		}
+	}
+	return best;
+}
+
+// ---- recover
+// damage it heals, down to none: whether it had any
+function recover(n) {
+	var d = self.getDamage();
+	self.setDamage(Math.max(0, d - n));
+	return d > 0;
 }

@@ -121,3 +121,12 @@ function stanceClass() {
 	}
 	return null;
 }
+
+// ---- root_label
+// the source's label each animation shows (its clip's label), for another object's code
+function rootLabel() {
+	switch (self.getAnimation()) {
+		// {cases}
+	}
+	return null;
+}

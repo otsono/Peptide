@@ -41,12 +41,11 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let clip_sym = spec.clip_sym.or_else(|| model.symbol_of(&spec.clip)).ok_or("its clip is no symbol")?;
     if pieces.is_empty() { return Err("no animations".into()) }
 
-    // what the source's engine does for it each frame that has no plain form here yet
-    for k in ["refreshRate"] {
-        if spec.stats.get(k).is_some_and(|v| matches!(v, Value::Num(n) if *n > 0.0) || matches!(v, Value::Bool(true))) {
-            return Err(format!("declares {k}"));
-        }
-    }
+    // the rate its attack hits again at, where it declares one (its own, else its idle attack's)
+    let refresh = match spec.stats.get("refreshRate").or_else(|| spec.stats.get("attack_idle").and_then(|a| a.get("refreshRate"))) {
+        Some(Value::Num(n)) if *n > 0.0 && *n < 999.0 => Some(num(*n)),
+        _ => None,
+    };
 
     // the classes whose code it runs: the classes of the clips its animations show. any other clip
     // inside it with code of its own keeps it on the runtime
@@ -174,11 +173,17 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         update.push("touchFrame();".into());
     }
     update.extend(taken.frame.iter().cloned());
+    // the rate it hits again at, declared or written by its code
+    let mut starts = taken.starts.clone();
+    if refresh.is_some() || written.blocks.contains("refresh") {
+        functions.push(native::helper(runtime, "refresh", "projectile", "", &[], &[])?);
+        if let Some(r) = &refresh { starts.push(format!("setRefresh({r});")); }
+    }
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     slots.insert("fields", written.fields.clone());
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
     if reversible { slots.insert("reflect", vec!["// turned back by a reflector".into(), "Common.enableReflectionListener({ mode: \"X\", replaceOwner: true });".into()]); }
-    slots.insert("start", taken.starts.clone());
+    slots.insert("start", starts);
     slots.insert("first", first.into_iter().cloned().collect());
     slots.insert("update", update);
     slots.insert("own_start", written.start.clone());
