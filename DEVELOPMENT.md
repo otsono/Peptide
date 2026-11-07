@@ -621,8 +621,12 @@ and the tables they read (the attack each animation shows, what each attack and 
 declare, the label its clip is on, its item box) are `fighter_tables.hx`, filled in from its
 declarations. a jump by label on the clip it shows goes to the animation that shows the label in
 the clip of the one playing (`stanceJump`). a method nothing in the package names is a template's
-leftover and is not written. `runtime_report.json` says `fighter_native`, and lists every
-function still holding it on the runtime under `fighter_on_runtime`.
+leftover and is not written. what each field holds is learned from all its code before any of it
+is written. what other objects' code asks of a fighter it publishes on its exports (its clips'
+fields as containers, an attack started, a rocket, its attack's stats, its label), and a
+fighter on the runtime publishes the same, so a projectile reaches either the same way.
+`runtime_report.json` says `fighter_native`, and lists every function still holding it on the
+runtime under `fighter_on_runtime`.
 `PEPTIDE_NATIVE_FIGHTERS=0` keeps every fighter on the runtime.
 
 ### 5.4 extraction layer
