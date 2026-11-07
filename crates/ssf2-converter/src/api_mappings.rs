@@ -7073,9 +7073,13 @@ pub struct ConversionLog {
     pub local_fns: std::collections::BTreeSet<String>,
 }
 
+/// One per thread: a conversion translates its scripts on the thread that runs it, and two run at
+/// once (the test suite's) must not count each other's calls.
 fn conversion_log() -> &'static std::sync::Mutex<ConversionLog> {
-    static LOG: std::sync::OnceLock<std::sync::Mutex<ConversionLog>> = std::sync::OnceLock::new();
-    LOG.get_or_init(|| std::sync::Mutex::new(ConversionLog::default()))
+    thread_local! {
+        static LOG: &'static std::sync::Mutex<ConversionLog> = Box::leak(Box::new(std::sync::Mutex::new(ConversionLog::default())));
+    }
+    LOG.with(|l| *l)
 }
 
 /// Reset the conversion log — call at the start of each character so per-

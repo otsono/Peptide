@@ -87,7 +87,9 @@
     "maxgravity": "self.updateProjectileStats({ terminalVelocity: {v} * {speed} })",
     "max_gravity": "self.updateProjectileStats({ terminalVelocity: {v} * {speed} })",
     "ghost": "self.updateProjectileStats({ ghost: {v} })",
-    "surviveDeathBounds": "self.updateGameObjectStats({ deathBoundsDestroy: !{v} })",
+    // (whether it outlives the death bounds is read as it is made: written later, it changes nothing,
+    // as measured on pikachu's thunder, which falls on past them to the end of its life)
+    "surviveDeathBounds": "// (the source writes surviveDeathBounds here: it was read as this was made)",
     // its lifetime, from when it was made: two engine frames to a source frame
     "time_max": "life.set(Std.int({v} * 2))"
   },

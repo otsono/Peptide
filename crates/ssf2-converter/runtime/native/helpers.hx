@@ -118,6 +118,13 @@ function goToLabel(label, anims, starts) {
 	self.playFrameLabel(label);
 }
 
+// ---- own_call
+//: CALL the call it makes
+// one of its own engine calls, as a timer of its code makes it
+function NAME() {
+	CALL;
+}
+
 // ---- play_start
 // the first frame of animation `a`. one already on it stays: the source's jump to the frame it is
 // on runs that frame's code no second time, and playing it again here would, from inside it

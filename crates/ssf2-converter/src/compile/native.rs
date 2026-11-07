@@ -2186,6 +2186,16 @@ self.playFrameLabel({})", quote(f))); }
             Expr::Member(t, n) if matches!(**t, Expr::This) => self.method(n),
             Expr::Name(n) => self.method(n),
             Expr::Function(c) => Some(self.closure(c)?),
+            // (one of its own engine calls: a function that makes it)
+            Expr::Member(t, n) if self.expr(t).is_ok_and(|(w, _)| w == "self") => {
+                let (call, _) = self.api("self", n, &[])?;
+                let name = format!("call_{}", ident(n));
+                if !self.helpers.contains_key(&name) {
+                    let def = helper(self.o.runtime, "helpers", "own_call", &name, &[("CALL", call)], &[])?;
+                    self.helpers.insert(name.clone(), def);
+                }
+                Some(name)
+            }
             _ => None,
         }.ok_or("times something other than its own method")?;
         let id = format!("{name}Timer");

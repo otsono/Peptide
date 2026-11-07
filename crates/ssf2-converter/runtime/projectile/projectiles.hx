@@ -639,7 +639,8 @@ PeptideProjectile.updateProjectileStats = function(me, o) {
 			var keep = AS3.truthy(v) && AS3.truthy(Projectiles.stat(me, "rideGround")) && me.__fm.isOnFloor();
 			me.__fm.updateProjectileStats({ ghost: AS3.truthy(v) && !keep });
 		}
-		if (k == "surviveDeathBounds") me.__fm.updateGameObjectStats({ deathBoundsDestroy: !AS3.truthy(v) });
+		// (whether it outlives the death bounds is read as it is made: written later it changes
+		// nothing, as measured on pikachu's thunder, which falls on past them to the end of its life)
 		if (k == "gravity") me.__fm.updateProjectileStats({ gravity: AS3.num(v) * PeptideRuntime.data.units.accel });
 		// the fall it is held to: 0 holds it where it is (ness's pk flash bursts and hangs there, and
 		// fell on here, its code's cap never reaching the engine)

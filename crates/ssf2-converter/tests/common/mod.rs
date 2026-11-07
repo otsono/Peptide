@@ -204,6 +204,13 @@ pub fn shared_conversion(name: &str) -> Option<PathBuf> {
         return Some(ready);
     }
 
+    // (a conversion by an older build is never read again: every edit makes a new one, and they
+    // filled the disk)
+    if let Some(all) = root.parent().and_then(|p| std::fs::read_dir(p).ok()) {
+        for e in all.flatten() {
+            if e.path() != root { let _ = std::fs::remove_dir_all(e.path()); }
+        }
+    }
     let staging = root.join(format!(".staging-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).ok()?;

@@ -18,7 +18,7 @@ fn links_arrow_is_plain_fraymakers_code() {
         assert!(!script.contains(runtime), "the arrow's script reaches the runtime ({runtime})");
     }
     // its own code, as the engine's calls
-    for call in ["self.updateHitboxStats(0, { damage: dmg.get() })", "self.playAnimation(\"vanish\")",
+    for call in ["self.updateHitboxStats(0, { damage: dmg.get() })", "playStart(\"vanish\")",
                  "self.addEventListener(EntityEvent.COLLIDE_FLOOR, toContinue, { persistent: true })"] {
         assert!(script.contains(call), "the arrow's script has no `{call}`");
     }
