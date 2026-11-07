@@ -630,7 +630,8 @@ PeptideProjectile.updateProjectileStats = function(me, o) {
 	// kept as the projectile's own; the one this engine also keeps is handed on
 	for (k in AS3.keysOf(o)) {
 		var v = AS3.at(o, k);
-		me.__stats.set(k, v);
+		// (a projectile written as Fraymakers code keeps no table here: the engine's part still applies)
+		if (me.__stats != null) me.__stats.set(k, v);
 		// this engine's ghost lets go of the floor too: one that rides the ground (`rideGround`) and
 		// is on it stays on it, as the source's does (isaac's gaia turns ghost as it rises from the
 		// floor and fell through it here)

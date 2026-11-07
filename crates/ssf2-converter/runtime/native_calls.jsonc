@@ -65,12 +65,12 @@
   "PeptideAPI.randomInteger": { "code": "Random.getInt({0}, {1})", "returns": "number" },
   "PeptideAPI.getCamera": { "code": "match.getCamera()", "returns": "object" },
   "PeptideAPI.playSound": { "code": "AudioClip.play(self.getResource().getContent({0}))", "returns": "object" },
-  "PeptideAPI.stopSound": "if ({0} != null) {0}.stop()",
+  "PeptideAPI.stopSound": "if ({0} != null && !Std.isOfType({0}, Float)) {0}.stop()",
 
   // its sounds and its end
   "playSound": { "code": "AudioClip.play({self}.getResource().getContent({0}))", "returns": "object" },
-  // a sound it played, stopped (the clip `playSound` answered)
-  "stopSound": "if ({0} != null) {0}.stop()",
+  // a sound it played, stopped (the clip `playSound` answered; a number it holds instead stops nothing)
+  "stopSound": "if ({0} != null && !Std.isOfType({0}, Float)) {0}.stop()",
   "destroy": "{self}.kill()",
 
   // a fighter's own variables, kept by its script (a fighter still on the runtime keeps them on
