@@ -322,12 +322,17 @@ struct Writer<'o, 'a> {
     captured: BTreeSet<String>,
     /// what each of them holds, as far as its code says
     captured_ty: BTreeMap<String, Ty>,
+    /// the first pass, learning what each field holds, and what it has seen put in each
+    learning: bool,
+    seen: BTreeMap<String, Ty>,
+    /// whether the fields' types were learned (and stay as learned)
+    learned: bool,
 }
 
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
         let mut w = Writer { o, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
-                             locals: BTreeMap::new(), helpers: BTreeMap::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new() };
+                             locals: BTreeMap::new(), helpers: BTreeMap::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "initialize", "update", "onTeardown", "onKill", "life", "age", "started", "freshHit"]
             .into_iter().map(String::from).collect();
@@ -401,6 +406,7 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// written before the frame that fills a field reads it right): a pass whose text is dropped
     fn learn_fields(&mut self) {
         let fresh = Writer::new(self.o).ok();
+        self.learning = true;
         let classes: Vec<&ClassModel> = self.o.itself.into_iter().chain(self.o.classes.iter().copied()).collect();
         for c in classes {
             self.class = c.name.clone();
@@ -412,7 +418,12 @@ impl<'o, 'a> Writer<'o, 'a> {
         }
         // (everything else it gathered starts over)
         if let Some(mut f) = fresh {
-            for (k, (_, h)) in &self.fields { if let Some(e) = f.fields.get_mut(k) { e.1 = h.clone(); } }
+            for (k, ty) in &self.seen {
+                if let Some(e) = f.fields.get_mut(k) {
+                    if let Holds::Value(declared) = e.1 { e.1 = Holds::Value(if declared == Ty::Any { *ty } else { join(declared, *ty) }); }
+                }
+            }
+            f.learned = true;
             *self = f;
         }
     }
@@ -766,8 +777,13 @@ impl<'o, 'a> Writer<'o, 'a> {
                 // (an object put in a field declared a number is an object's: a sound it played, kept to stop it)
                 let key = member_key(&self.class, f);
                 // (a rectangle put in a field that held nothing before reads as one)
+                // (learning: every kind of value the code puts in it, joined)
+                if self.learning {
+                    let was = self.seen.get(&key).copied();
+                    self.seen.insert(key.clone(), match was { None => ty, Some(w) => join(w, ty) });
+                }
                 // (it never goes back: a sound kept in a field the code later zeroes is still an object's)
-                if let Some(e) = self.fields.get_mut(&key) {
+                if let Some(e) = self.fields.get_mut(&key).filter(|_| !self.learned) {
                     if let Holds::Value(had) = e.1 {
                         let now = match (had, ty) {
                             (Ty::Any, t) => t,
@@ -2392,6 +2408,19 @@ fn merge(a: Ty, b: Ty) -> Ty {
         (Ty::Any, t) | (t, Ty::Any) => t,
         (Ty::Rect, Ty::Object) | (Ty::Object, Ty::Rect) => Ty::Rect,
         (Ty::Body, Ty::Object) | (Ty::Object, Ty::Body) => Ty::Body,
+        _ => Ty::Any,
+    }
+}
+
+/// what a field holds that its code fills with both: the same where they agree, an object where a
+/// number or a flag is later an object (a sound it played), the more particular object, and
+/// anything otherwise (a flag it later counts with)
+fn join(a: Ty, b: Ty) -> Ty {
+    match (a, b) {
+        _ if a == b => a,
+        (Ty::Any, _) | (_, Ty::Any) => Ty::Any,
+        (Ty::Num | Ty::Bool | Ty::Str, Ty::Object) | (Ty::Object, Ty::Num | Ty::Bool | Ty::Str) => Ty::Object,
+        (Ty::Object, t @ (Ty::Rect | Ty::Body)) | (t @ (Ty::Rect | Ty::Body), Ty::Object) => t,
         _ => Ty::Any,
     }
 }
