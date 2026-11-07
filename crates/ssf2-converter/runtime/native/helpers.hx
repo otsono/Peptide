@@ -118,6 +118,18 @@ function goToLabel(label, anims, starts) {
 	self.playFrameLabel(label);
 }
 
+// ---- plays_on
+//: its cases are each animation its clip plays on from, into the one that shows its next frame
+// its clip plays on past an animation's last frame into the animation that shows its next frame.
+// the engine holds a last frame here: an animation it ends itself goes by the projectile's state
+// instead, back to its first or gone
+function NAME() {
+	if (self.getCurrentFrame() < self.getTotalFrames()) return;
+	switch (self.getAnimation()) {
+		// {cases}
+	}
+}
+
 // ---- own_call
 //: CALL the call it makes
 // one of its own engine calls, as a timer of its code makes it

@@ -269,6 +269,20 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         field_cases.extend(lines);
         field_cases.push("\t}".into());
     }
+    // (a clip class with nothing to run here, whose frames only set its fields to plain values: each
+    // field is what the frame of the label it shows set it to, as another object's code reads it)
+    if let Some(rc) = f.model.class_of(parts.root).filter(|c| !w.field_ids.keys().any(|(k, _)| k == &c.name)) {
+        let set = root_fields(f.model, rc, parts.root);
+        if !set.is_empty() {
+            field_cases.push(format!("case {}:", compile::quote(&rc.name)));
+            field_cases.push("\tswitch (name) {".into());
+            for (field, by_label) in set {
+                let cases: Vec<String> = by_label.iter().map(|(l, v)| format!("case {}: return {v};", compile::quote(l))).collect();
+                field_cases.push(format!("\t\tcase {}: return {{ get: function() {{ switch (rootLabel()) {{ {} }} return null; }} }};", compile::quote(&field), cases.join(" ")));
+            }
+            field_cases.push("\t}".into());
+        }
+    }
     let itself = parts.itself.map(|c| compile::quote(&c.name)).unwrap_or_else(|| "null".into());
     let root = f.model.class_of(parts.root).map(|c| compile::quote(&c.name)).unwrap_or_else(|| "null".into());
     functions.push(native::helper(rt, "fighter_tables", "field_of", "", &[("ITSELF", itself), ("ROOT", root)], &field_cases).map_err(one)?);
@@ -399,3 +413,22 @@ fn item_tables(f: &Fighting) -> Result<Vec<String>, String> {
 }
 
 fn num(n: f64) -> String { if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") } }
+
+/// what each labelled frame of a clip's code sets its own fields to, where it sets a plain value:
+/// field -> (label, value as written)
+fn root_fields(model: &SourceModel, class: &crate::model::ClassModel, sym: u16) -> BTreeMap<String, Vec<(String, String)>> {
+    use crate::model::ast::{Expr, Place, Stmt};
+    let mut out: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let Some(sprite) = model.sprites.get(&sym) else { return out };
+    for (frame, label) in &sprite.labels {
+        let Some(fs) = class.frame_scripts.iter().find(|fs| fs.frame as usize == *frame) else { continue };
+        let Some(m) = class.methods.iter().find(|m| m.name == fs.method) else { continue };
+        for st in &m.function.body {
+            let Stmt::Assign(Place::Member(t, name), v) = st else { continue };
+            if !matches!(t, Expr::This) { continue }
+            let v = match v { Expr::Str(x) => compile::quote(x), Expr::Num(n) => n.to_string(), Expr::Int(n) => n.to_string(), Expr::Bool(b) => b.to_string(), Expr::Null => "null".into(), _ => continue };
+            out.entry(name.clone()).or_default().push((label.clone(), v));
+        }
+    }
+    out
+}

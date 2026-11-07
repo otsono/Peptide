@@ -173,6 +173,12 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         update.push("touchFrame();".into());
     }
     update.extend(taken.frame.iter().cloned());
+    // its clip playing on from one animation into the next
+    let on: Vec<String> = plays_into(model, pieces).iter().map(|(a, b)| format!("case {}: self.playAnimation({});", compile::quote(a), compile::quote(b))).collect();
+    if !on.is_empty() {
+        functions.push(native::helper(runtime, "helpers", "plays_on", "playOn", &[], &on)?);
+        update.push("playOn();".into());
+    }
     // the rate it hits again at, declared or written by its code
     let mut starts = taken.starts.clone();
     if refresh.is_some() || written.blocks.contains("refresh") {
@@ -355,18 +361,29 @@ pub fn keyframes_with(path: &Path, key: &str, model: &SourceModel, pieces: &[Pie
     Ok(())
 }
 
-/// each animation plays on into the one that shows its clip's next frame, as the clip does
-/// (`nextAnimation`); one that shows its own next frame again loops
-fn plays_on(path: &Path, model: &SourceModel, pieces: &[Piece]) -> anyhow::Result<()> {
-    let Ok(mut text) = std::fs::read_to_string(path) else { return Ok(()) };
-    for p in pieces.iter().filter(|p| !p.borrowed && !p.reversed && p.head == 0) {
+/// each animation and the one that shows its clip's next frame, which the clip plays on into
+fn next_pieces<'a>(model: &SourceModel, pieces: &'a [Piece]) -> Vec<(&'a Piece, &'a Piece)> {
+    pieces.iter().filter(|p| !p.borrowed && !p.reversed && p.head == 0).filter_map(|p| {
         let total = model.sprites.get(&p.sym).map(|s| s.frames.len() as u32).unwrap_or(0);
         let next = if p.from + p.frames > total { 1 } else { p.from + p.frames };
-        let Some(q) = pieces.iter().find(|q| !q.borrowed && q.sym == p.sym && next >= q.from && next < q.from + q.frames) else { continue };
-        let end = if q.fm_name == p.fm_name { "endType: AnimationEndType.LOOP".to_string() }
-            else { format!("endType: AnimationEndType.AUTO, nextAnimation: {}", compile::quote(&q.fm_name)) };
+        pieces.iter().find(|q| !q.borrowed && q.sym == p.sym && next >= q.from && next < q.from + q.frames).map(|q| (p, q))
+    }).collect()
+}
+
+/// the animations that play on into another, by name (the projectile's update plays it: on a
+/// projectile the engine's own end of an animation goes by its state, not `nextAnimation`)
+fn plays_into(model: &SourceModel, pieces: &[Piece]) -> Vec<(String, String)> {
+    next_pieces(model, pieces).into_iter().filter(|(p, q)| q.fm_name != p.fm_name).map(|(p, q)| (p.fm_name.clone(), q.fm_name.clone())).collect()
+}
+
+/// one that shows its own next frame again loops; one that plays on into another holds its last
+/// frame for the update to move it on
+fn plays_on(path: &Path, model: &SourceModel, pieces: &[Piece]) -> anyhow::Result<()> {
+    let Ok(mut text) = std::fs::read_to_string(path) else { return Ok(()) };
+    for (p, q) in next_pieces(model, pieces) {
+        if q.fm_name != p.fm_name { continue }
         let row = format!("{}: {{ endType: AnimationEndType.NONE", p.fm_name);
-        text = text.replace(&row, &format!("{}: {{ {end}", p.fm_name));
+        text = text.replace(&row, &format!("{}: {{ endType: AnimationEndType.LOOP", p.fm_name));
     }
     std::fs::write(path, text)?;
     Ok(())
