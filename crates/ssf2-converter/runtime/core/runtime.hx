@@ -869,6 +869,21 @@ PeptideRuntime.stanceOf = function(mc) {
 	if (mc == null) return null;
 	return mc.__c_stance != null ? mc.__c_stance.get() : mc.stance;
 };
+// the clip an object shows, as its code asks for it: one whose script is written as Fraymakers
+// code (a native projectile) shows none of the runtime's, so it is a stand-in whose jumps are the
+// object's own (`exports.__playFrame`)
+PeptideRuntime.stanceOfObject = function(me) {
+	if (me == null) return null;
+	var ex = me.__fm == null ? null : me.__fm.exports;
+	if (me.__mc == null && ex != null && ex.__playFrame != null) {
+		if (me.__standIn == null) {
+			var jump = ex.__playFrame;
+			me.__standIn = { gotoAndStop: function(l) { jump(l); }, gotoAndPlay: function(l) { jump(l); } };
+		}
+		return me.__standIn;
+	}
+	return PeptideRuntime.stanceOf(me.__mc);
+};
 PeptideRuntime.xframeOf = function(st) {
 	if (st == null) return null;
 	return st.__c_xframe != null ? st.__c_xframe.get() : st.xframe;

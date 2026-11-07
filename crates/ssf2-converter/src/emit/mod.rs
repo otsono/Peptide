@@ -1059,7 +1059,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     autolink_entity(&entity_path, &dir.join("HitboxStats.hx"), char_name, &links, units.size)?;
     engine_animations(&entity_path, &dir.join("AnimationStats.hx"), char_name)?;
     // each projectile and item the fighter declares runs on the runtime too
-    let owner = native_projectile::Owner { attacks: &fighter.attacks, anims: pieces.iter().map(|p| (p.fm_name.clone(), p.label.clone())).collect() };
+    let owner = native_projectile::Owner { attacks: &fighter.attacks, stats: &fighter.stats, anims: pieces.iter().map(|p| (p.fm_name.clone(), p.label.clone())).collect() };
     let mut natively: Vec<(String, Result<(), String>)> = Vec::new();
     let projectiles = runtime_projectiles(char_dir, &model, &runtime, fighter, units, &others,
         &effects, &entities, &mut projectile_pieces, &mut unplaced, &owner, &mut natively)?;

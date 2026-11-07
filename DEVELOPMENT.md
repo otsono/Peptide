@@ -598,10 +598,14 @@ no animation shows (`unplaced`). the verify gates run on it unchanged.
 a declared projectile whose own code can be said in plain Fraymakers code skips the runtime
 entirely (`emit/native_projectile.rs`, `compile/native.rs`): its classes' fields become the
 engine's state containers, its methods and frame scripts become the script's functions (the
-entity's keyframes call them), and every API call is a row of `runtime/native_calls.jsonc`. the
-parts every projectile has (lifetime, costume, reflection, the source's fresh-hit bonus) are
-`runtime/native/projectile.hx`, and what its declared stats do each frame are the rows of
-`runtime/projectile_stats.jsonc`. link's arrow is about 160 lines this way. anything the writer
+entity's keyframes call them), and every API call is a row of `runtime/native_calls.jsonc` (or
+an `api_calls.jsonc` row that reaches nothing of the runtime). the parts every projectile has
+(lifetime, costume, reflection, the source's fresh-hit bonus) are `runtime/native/projectile.hx`,
+the source's floor touch is `floor.hx`, the functions its code may need (an owner's attack
+stat, its owner's label, firing another projectile) are blocks of `helpers.hx`, what its declared
+stats do each frame are the rows of `runtime/projectile_stats.jsonc`, and fighter states are
+`runtime/states.jsonc`. a class of its own (`classAPI`) runs as the object itself: its
+`initialize` as it starts, its `update` each source frame. link's arrow is about 160 lines this way. anything the writer
 has no plain form for keeps the projectile on the runtime, and `runtime_report.json` names the
 reason under `on_runtime` (the projectiles that made it are under `native`), so the next row
 to write is the one most content needs. `PEPTIDE_NATIVE_PROJECTILES=0` puts every one back on

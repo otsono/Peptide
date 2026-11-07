@@ -34,6 +34,22 @@
     "}"
   ],
   "code": {
+    "bounce": { "when": "positive", "reads": ["bounce_decay"], "replaces": "Projectiles.bounce", "native": true,
+      "start": "self.addEventListener(EntityEvent.COLLIDE_FLOOR, bounceOff, { persistent: true });",
+      "code": [
+        "// it bounces off the floor at {v}, each bounce `bounce_decay` of the one before, and ends",
+        "// once a bounce would be under half a pixel a frame",
+        "var bounces = self.makeInt(0);",
+        "function bounceOff(?e) {",
+        "\tvar height = {v} * {@speed} * Math.pow({bounce_decay|1}, bounces.get());",
+        "\tbounces.inc();",
+        "\tif (height < 0.5) {",
+        "\t\tself.kill();",
+        "\t\treturn;",
+        "\t}",
+        "\tself.setYSpeed(-height);",
+        "}"
+      ] },
     "limit": { "when": "positive", "reads": ["limitOverwrite"], "replaces": "Projectiles.limit", "start": "keepToLimit();", "native": true,
       "code": [
         "// at most {v} of it out at once for its owner: the oldest goes to make room when",
@@ -149,6 +165,7 @@
       ] },
     "influenceYMovement": { "when": "positive", "yields_to": "influenceXMovement", "same_as": "influenceXMovement", "reads": ["influenceXMovement", "influenceXFactor", "influenceYFactor"], "replaces": "Projectiles.influence" },
     "controlDirection": { "when": "nonnegative", "reads": ["xspeed", "calcAngle"], "replaces": "Projectiles.control", "call": "aimByStick();",
+      "start": "self.updateGameObjectStats({ deathBoundsDestroy: false });",
       "code": [
         "// the owner aims it with the stick, eight ways, at its launch's x speed: eased a sixth of the",
         "// way toward the aim each engine frame when `calcAngle` is set, snapped to it otherwise. it",

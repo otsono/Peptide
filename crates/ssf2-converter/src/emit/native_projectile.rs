@@ -18,6 +18,8 @@ use crate::model::SourceModel;
 /// what the projectile's owner declares for its attacks, for its code's reads of them
 pub struct Owner<'a> {
     pub attacks: &'a Value,
+    /// its own stats (`cData`)
+    pub stats: &'a Value,
     /// each of the owner's animations, and the attack (its clip's label) it shows
     pub anims: Vec<(String, String)>,
 }
@@ -26,14 +28,19 @@ pub struct Owner<'a> {
 pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, decls: &Decls,
              pieces: &[Piece], units: Units, title: &str, entity_key: &str, owner: &Owner) -> Result<String, String> {
     let skeleton = runtime.native_files.get("projectile").ok_or("the runtime has no native/projectile.hx")?;
-    if compile::short(&spec.class) != "PeptideProjectile" { return Err(format!("its class {} is its own", spec.class)) }
+    // its own class, where its package gives it one: the API's projectile, extended
+    let itself = if compile::short(&spec.class) == "PeptideProjectile" { None } else {
+        let c = model.classes.get(&spec.class).or_else(|| model.classes.values().find(|c| compile::short(&c.name) == compile::short(&spec.class)))
+            .ok_or_else(|| format!("its class {} is not in its package", spec.class))?;
+        Some(c)
+    };
     let item = decls.items.entries().iter().any(|(n, d)| n == title || d.get("linkage_id").and_then(|v| v.str()) == Some(spec.clip.as_str()));
     if item { return Err("an item, which its holder moves".into()) }
     let clip_sym = spec.clip_sym.or_else(|| model.symbol_of(&spec.clip)).ok_or("its clip is no symbol")?;
     if pieces.is_empty() { return Err("no animations".into()) }
 
     // what the source's engine does for it each frame that has no plain form here yet
-    for k in ["bounce", "refreshRate", "controlDirection", "homingSpeed"] {
+    for k in ["refreshRate"] {
         if spec.stats.get(k).is_some_and(|v| matches!(v, Value::Num(n) if *n > 0.0) || matches!(v, Value::Bool(true))) {
             return Err(format!("declares {k}"));
         }
@@ -49,7 +56,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         if shown.contains(&sym) { classes.push(c) }
         else if !quiet(model, runtime, &c.name) { return Err(format!("{} inside it has code of its own", c.name)) }
     }
-    if classes.is_empty() { return Err("no code of its own".into()) }
+    if classes.is_empty() && itself.is_none() { return Err("no code of its own".into()) }
     // a clip whose code its owner reaches into keeps the object the owner holds
     let names: BTreeSet<&str> = classes.iter().map(|c| c.name.as_str()).collect();
     for c in model.classes.values().filter(|c| !names.contains(c.name.as_str()) && !runtime.provides(&c.name)) {
@@ -98,12 +105,10 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
             let v = match v { Value::Num(n) => num(*n), Value::Bool(b) => b.to_string(), Value::Str(s) => compile::quote(s), _ => continue };
             cases.entry(v).or_default().push(compile::quote(anim));
         }
-        if cases.is_empty() { return None }
+        if cases.is_empty() { return Some(("null".into(), String::new())) }
         let name = format!("ownerAttack_{}", compile::ident(k));
-        let mut def = format!("// what the attack its owner is in declares for its {k}, by the animation that shows it\nfunction {name}(owner) {{\n\tswitch (owner.getAnimation()) {{\n");
-        for (v, anims) in &cases { def.push_str(&format!("\t\tcase {}: return {v};\n", anims.join(", "))); }
-        def.push_str("\t}\n\treturn null;\n}");
-        Some((name, def))
+        let lines: Vec<String> = cases.iter().map(|(v, anims)| format!("case {}: return {v};", anims.join(", "))).collect();
+        native::helper(runtime, "helpers", "owner_attack", &name, &[("STAT", k.to_string())], &lines).ok().map(|def| (name, def))
     };
 
     // an effect its code makes: one of its own whose clip does nothing but play once, or a shared one
@@ -117,10 +122,24 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         let gone = if ps.len() == 1 && (p.sym == 0 || model.class_of(p.sym).is_none()) { None } else { super::plays_once(model, p)? };
         Some((format!("spriteContent: self.getResource().getContent({}), animation: {}", compile::quote(name), compile::quote(&p.fm_name)), gone))
     };
+    // a projectile its owner declares, for one its code fires
+    let fired = |name: &str| -> Option<(String, [f64; 4])> {
+        let decl = decls.projectiles.get(name)?;
+        let key = spec.entities.get(name)?;
+        let n = |ks: &[&str]| ks.iter().find_map(|k| match decl.get(k) { Some(Value::Num(v)) => Some(*v), _ => None }).unwrap_or(0.0);
+        Some((crate::projectile_gen::projectile_content_id(key),
+              [n(&["xoffset", "xOffset", "x_offset"]), n(&["yoffset", "yOffset", "y_offset"]), n(&["xspeed", "xSpeed", "x_speed"]), n(&["yspeed", "ySpeed", "y_speed"])]))
+    };
+    // a stat its owner states, for a read of it: what it declares, where its code has not changed it
+    let owner_stat_of = |k: &str| -> Option<String> {
+        match owner.stats.get(k)? { Value::Num(n) => Some(num(*n)), Value::Bool(b) => Some(b.to_string()), Value::Str(s) => Some(compile::quote(s)), _ => None }
+    };
+    let pkg = compile::Package::new(model, runtime);
+    let owner_stores = |f: &str| pkg.stored.contains(f);
     let jumps = label_jumps(model, pieces);
     let object = native::Object {
-        model, classes: classes.clone(), jumps: &jumps, runtime, declared: &declared, switches: &taken.switches,
-        owner_stat: &owner_stat, effect: &made, size: units.size, speed: units.speed, accel: units.accel,
+        model, itself, classes: classes.clone(), jumps: &jumps, runtime, declared: &declared, switches: &taken.switches,
+        owner_stat: &owner_stat, effect: &made, owner_anims: &owner.anims, fired: &fired, owner_declares: &owner_stat_of, owner_stores: &owner_stores, root: clip_sym, size: units.size, speed: units.speed, accel: units.accel,
     };
     let written = native::write(&object)?;
 
@@ -133,19 +152,37 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     if !taken.code.is_empty() {
         functions.push(format!("// ---- what its declared stats have it do each frame it flies: runtime/projectile_stats.jsonc\n{}", taken.code.join("\n")));
     }
+    // its floor listeners, told of the floor the source's way
+    let mut update: Vec<String> = Vec::new();
+    if !written.floor.is_empty() {
+        let told: Vec<String> = written.floor.iter().map(|(listening, h)| if written.floor_speed {
+            format!("if ({listening}.get()) onFloor({h});") } else { format!("if ({listening}.get()) {h}(null);") }).collect();
+        functions.push(native::helper(runtime, "floor", "told", "", &[], &told)?);
+        if written.floor_speed { functions.push(native::helper(runtime, "floor", "speed", "", &[], &[])?); }
+        if written.floor_speed { update.push("airFrame();".into()); }
+        update.push("floorFrame();".into());
+    }
+    update.extend(taken.frame.iter().cloned());
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     slots.insert("fields", written.fields.clone());
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
     if reversible { slots.insert("reflect", vec!["// turned back by a reflector".into(), "Common.enableReflectionListener({ mode: \"X\", replaceOwner: true });".into()]); }
     slots.insert("start", taken.starts.clone());
     slots.insert("first", first.into_iter().cloned().collect());
-    slots.insert("update", taken.frame.iter().cloned().collect());
-    let script = fill(skeleton, &slots)
+    slots.insert("update", update);
+    slots.insert("own_start", written.start.clone());
+    slots.insert("own_tick", written.tick.clone());
+    slots.insert("publish", written.publish.clone());
+    slots.insert("ends", written.ends.iter().map(|(l, h)| format!("if ({l}.get()) {h}(null);")).collect());
+    let script = native::fill_slots(skeleton, &slots)
         .replace("{title}", title)
         .replace("{classes}", &classes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "))
         .replace("makeInt(LIFE)", &format!("makeInt({})", num(life * 2.0)));
     // (a first update with nothing to run)
-    let script = script.replace("\tif (!started.get()) {\n\t\tstarted.set(true);\n\t}\n", "");
+    // (a part with nothing in it)
+    let script = script.replace("\tif (!started.get()) {\n\t\tstarted.set(true);\n\t}\n", "")
+        .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (age.get() % 2 == 1) {\n\t}\n", "")
+        .replace("\n// its end: whoever listens for it is told\nfunction onKill() {\n}\n", "");
 
     // its entity: each frame with code calls it, and each animation plays on into the next
     let content = crate::projectile_gen::projectile_content_id(entity_key);
@@ -311,26 +348,6 @@ fn plays_on(path: &Path, model: &SourceModel, pieces: &[Piece]) -> anyhow::Resul
     }
     std::fs::write(path, text)?;
     Ok(())
-}
-
-/// the skeleton with each `// {slot}` line replaced by the slot's lines, at that line's indent
-/// (an empty slot takes its line out)
-fn fill(skeleton: &str, slots: &BTreeMap<&str, Vec<String>>) -> String {
-    let mut out = String::new();
-    for line in skeleton.lines() {
-        let t = line.trim_start();
-        let slot = t.strip_prefix("// {").and_then(|r| r.strip_suffix('}')).filter(|n| slots.contains_key(n) || !n.contains(' '));
-        match slot {
-            Some(name) => {
-                let indent = &line[..line.len() - t.len()];
-                for l in slots.get(name).into_iter().flatten() {
-                    if l.is_empty() { out.push('\n') } else { out.push_str(&format!("{indent}{l}\n")) }
-                }
-            }
-            None => { out.push_str(line); out.push('\n'); }
-        }
-    }
-    out
 }
 
 fn num(n: f64) -> String { if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") } }

@@ -28,6 +28,8 @@ PeptideGameObject.build = function(me) {
 // the clip its animations show goes to the frame: a fighter's `stance`, else the object's own clip
 // (a projectile's)
 PeptideGameObject.playFrame = function(me, label) {
+	// an object whose script is written as Fraymakers code jumps itself
+	if (me.__mc == null && me.__fm != null && me.__fm.exports != null && me.__fm.exports.__playFrame != null) { me.__fm.exports.__playFrame(label); return; }
 	var s = PeptideRuntime.stanceOf(me.__mc);
 	if (s == null) s = me.__mc;
 	if (s != null && s.gotoAndPlay != null) s.gotoAndPlay(label);

@@ -6,8 +6,9 @@
 // units the source's numbers are scaled by. a row is a string, or an object with the `code` and
 // what its value is (`returns`: bool, number, string, object), which a test of it needs to know.
 //
-// a call with no row here, and none of the few the writer settles itself (listeners, a jump by
-// label, a stat by name), keeps the object on the runtime: the conversion reports which call it
+// a call with no row here takes the runtime's own row (`api_calls.jsonc`) where that is the
+// engine's calls alone. one with neither, and none of the few the writer settles itself
+// (listeners, a jump by label, a stat by name), keeps the object on the runtime: the conversion reports which call it
 // was, so the next row to write is the one most content needs.
 {
   // who and where
@@ -31,6 +32,8 @@
   "getYSpeed": { "code": "{self}.getYSpeed() / {speed}", "returns": "number" },
   "setXSpeed": "{self}.setXSpeed({0} * {speed})",
   "setYSpeed": "{self}.setYSpeed({0} * {speed})",
+  // its speed set by a heading: degrees, up from the way it faces
+  "angleControl": "{self}.setXSpeed({self}.flipX(Math.cos({1} * Math.PI / 180) * {0} * {speed})); {self}.setYSpeed(-Math.sin({1} * Math.PI / 180) * {0} * {speed})",
 
   // what it can be hit by
   "getIntangibility": { "code": "{self}.hasBodyStatus(BodyStatus.INTANGIBLE)", "returns": "bool" },
@@ -44,11 +47,30 @@
   // its boxes hit again what they hit already
   "refreshAttackID": "{self}.reactivateHitboxes()",
 
+  // a fighter's ends: to rest, and out of the move it is in (on the floor it stands, in the air an
+  // attack ends and anything else falls)
+  "toIdle": "if ({self}.getType() == EntityType.CHARACTER) {self}.toState(CState.STAND)",
+  "endAnimation": "if ({self}.isOnFloor()) {self}.toState(CState.STAND); else if ({self}.inStateGroup(CStateGroup.ATTACK)) {self}.endAnimation(); else {self}.toState(CState.FALL)",
+  // let go: a fighter holding someone lets them go, and one held is let go by whoever holds it
+  "release": "if ({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length > 0) {self}.releaseAllCharacters(); else for (c in match.getCharacters()) { var held = c.getAllGrabbedFoes(); if (held != null && held.indexOf({self}) >= 0) c.releaseCharacter({self}); }",
+  // a jump by label on another object's clip: its owner's script runs it (`exports.__playFrame`)
+  "playFrame": "if ({self}.exports.__playFrame != null) {self}.exports.__playFrame({0})",
+  // the projectile a fighter fired last
+  "getCurrentProjectile": { "code": "{self}.exports.__lastProj", "returns": "object" },
+
   // the API's own calls (`SSF2API.print`): an empty row is a call that does nothing here
   "PeptideAPI.print": "",
+  // a number from the match's own random, which a rollback replays alike
+  "PeptideAPI.random": { "code": "Random.getFloat(0, 1)", "returns": "number" },
+  "PeptideAPI.randomInteger": { "code": "Random.getInt({0}, {1})", "returns": "number" },
+  "PeptideAPI.getCamera": { "code": "match.getCamera()", "returns": "object" },
+  "PeptideAPI.playSound": { "code": "AudioClip.play(self.getResource().getContent({0}))", "returns": "object" },
+  "PeptideAPI.stopSound": "if ({0} != null) {0}.stop()",
 
   // its sounds and its end
-  "playSound": "AudioClip.play({self}.getResource().getContent({0}))",
+  "playSound": { "code": "AudioClip.play({self}.getResource().getContent({0}))", "returns": "object" },
+  // a sound it played, stopped (the clip `playSound` answered)
+  "stopSound": "if ({0} != null) {0}.stop()",
   "destroy": "{self}.kill()",
 
   // a fighter's own variables, kept by its script (a fighter still on the runtime keeps them on
@@ -67,5 +89,13 @@
     "surviveDeathBounds": "self.updateGameObjectStats({ deathBoundsDestroy: !{v} })",
     // its lifetime, from when it was made: two engine frames to a source frame
     "time_max": "life.set(Std.int({v} * 2))"
+  },
+
+  // the source's names for the kinds of object, which content compares `getType()` with
+  "types": {
+    "SSF2Character": "EntityType.CHARACTER",
+    "SSF2Projectile": "EntityType.PROJECTILE",
+    "SSF2Item": "EntityType.ITEM",
+    "SSF2Enemy": "EntityType.CUSTOM_GAME_OBJECT"
   }
 }

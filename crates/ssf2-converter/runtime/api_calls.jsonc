@@ -138,7 +138,7 @@
   "inHitStun": "{eng}.getHitstop() > 0",
   "getScale": "Point.create({eng}.getScaleX(), {eng}.getScaleY())",
   "getAnimation": "{recv}.__mc != null ? {recv}.__mc.currentLabel : {eng}.getAnimation()",
-  "stanceClip": "PeptideRuntime.stanceOf({recv}.__mc)",
+  "stanceClip": "PeptideRuntime.stanceOfObject({recv})",
   "getCurrentPlatform": "Platforms.view({eng}.getCurrentFloor())",
   "forceOnGround": "PeptideGameObject.attachToFloor({recv})",
   "getNoDropThrough": "PeptidePlatform.structureStat({recv}, \"dropThrough\") != true",

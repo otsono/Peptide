@@ -26,6 +26,8 @@ function initialize() {
 	// {reflect}
 	self.setState(PState.ACTIVE);
 	// {start}
+	// {own_start}
+	// {publish}
 	// a projectile's hit is always fresh in the source: x1.05 on what each box deals
 	self.addEventListener(GameObjectEvent.HITBOX_CONNECTED, freshHit, { persistent: true });
 }
@@ -44,5 +46,14 @@ function update() {
 		self.kill();
 		return;
 	}
+	// what its own class runs each of the source's frames (every second engine frame)
+	if (age.get() % 2 == 1) {
+		// {own_tick}
+	}
 	// {update}
+}
+
+// its end: whoever listens for it is told
+function onKill() {
+	// {ends}
 }

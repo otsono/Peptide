@@ -1,0 +1,42 @@
+// the source's fighter states as this engine's, by the source's name for each:
+//   is      a test of a fighter's state (`inState(CState.X)`) is whether it is in any of these
+//           engine states (a `CStateGroup` is that whole group); none, and it tests false
+//   enter   the engine state a fighter goes to when the source's code sets this one
+{
+  "IDLE": { "is": ["CState.STAND", "CState.STAND_TURN"], "enter": "CState.STAND" },
+  "ENTRANCE": { "is": ["CState.INTRO"] },
+  "REVIVAL": { "is": ["CState.REVIVAL"] },
+  "WALK": { "is": ["CState.WALK_IN", "CState.WALK_LOOP", "CState.WALK_OUT"], "enter": "CState.WALK_IN" },
+  "RUN": { "is": ["CState.RUN", "CState.RUN_TURN"], "enter": "CState.RUN" },
+  "JUMP_CHAMBER": { "is": ["CState.JUMP_SQUAT"], "enter": "CState.JUMP_SQUAT" },
+  "JUMP_RISING": { "is": ["CState.JUMP_IN", "CState.JUMP_LOOP"], "enter": "CState.JUMP_IN" },
+  "JUMP_FALLING": { "is": ["CState.FALL", "CState.JUMP_OUT"], "enter": "CState.FALL" },
+  "LAND": { "is": ["CState.LAND"], "enter": "CState.LAND" },
+  "ATTACKING": { "is": ["CStateGroup.ATTACK"] },
+  "LEDGE_ROLL": { "is": ["CState.LEDGE_ROLL"] },
+  "CROUCH": { "is": ["CState.CROUCH_IN", "CState.CROUCH_LOOP", "CState.CROUCH_OUT"], "enter": "CState.CROUCH_IN" },
+  "INJURED": { "is": ["CState.HURT_LIGHT", "CState.HURT_MEDIUM", "CState.HURT_HEAVY"], "enter": "CState.HURT_LIGHT" },
+  "FLYING": { "is": ["CState.HURT_HEAVY", "CState.TUMBLE"], "enter": "CState.HURT_HEAVY" },
+  "DODGE_ROLL": { "is": ["CState.ROLL"], "enter": "CState.ROLL" },
+  "SIDESTEP_DODGE": { "is": ["CState.SPOT_DODGE"], "enter": "CState.SPOT_DODGE" },
+  "LEDGE_HANG": { "is": ["CState.LEDGE_IN", "CState.LEDGE_LOOP", "CState.LEDGE_HANG"], "enter": "CState.LEDGE_HANG" },
+  "LEDGE_CLIMB": { "is": ["CState.LEDGE_CLIMB"], "enter": "CState.LEDGE_CLIMB" },
+  "ROLL": { "is": ["CState.ROLL", "CState.LEDGE_ROLL"] },
+  "SHIELDING": { "is": ["CState.SHIELD_IN", "CState.SHIELD_LOOP", "CState.SHIELD_HURT", "CState.SHIELD_OUT"], "enter": "CState.SHIELD_IN" },
+  "TUMBLE_FALL": { "is": ["CState.TUMBLE"], "enter": "CState.TUMBLE" },
+  "CRASH_LAND": { "is": ["CState.CRASH_BOUNCE", "CState.CRASH_LOOP"], "enter": "CState.CRASH_BOUNCE" },
+  "CRASH_GETUP": { "is": ["CState.CRASH_GET_UP"], "enter": "CState.CRASH_GET_UP" },
+  "CAUGHT": { "is": ["CState.GRABBED_HOLD"] },
+  "STAR_KO": { "is": ["CState.STAR_KO"] },
+  "SCREEN_KO": { "is": ["CState.SCREEN_KO"] },
+  "DEAD": { "is": ["CState.KO"] },
+  "SKID": { "is": ["CState.SKID"], "enter": "CState.SKID" },
+  "JUMP_MIDAIR_RISING": { "is": ["CState.JUMP_MIDAIR"], "enter": "CState.JUMP_MIDAIR" },
+  "DISABLED": { "is": ["CState.DISABLED"] },
+  "DASH": { "is": ["CState.DASH"], "enter": "CState.DASH" },
+  "TURN": { "is": ["CState.STAND_TURN", "CState.RUN_TURN"] },
+  "TECH_GROUND": { "is": ["CState.TECH"] },
+  "TECH_ROLL": { "is": ["CState.TECH_ROLL"] },
+  "HEAVY_LAND": { "is": ["CState.LAND"], "enter": "CState.LAND" },
+  "STAMINA_KO": { "is": ["CState.STAMINA_KO"] }
+}
