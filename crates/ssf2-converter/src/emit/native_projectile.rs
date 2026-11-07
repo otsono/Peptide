@@ -22,6 +22,8 @@ pub struct Owner<'a> {
     pub stats: &'a Value,
     /// each of the owner's animations, and the attack (its clip's label) it shows
     pub anims: Vec<(String, String)>,
+    /// whether the owner is written as Fraymakers code
+    pub native: bool,
 }
 
 /// The projectile's script and entity, written natively; or why it stays on the runtime.
@@ -142,7 +144,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let object = native::Object {
         model, itself, classes: classes.clone(), jumps: &jumps, runtime, declared: &declared, switches: &taken.switches,
         owner_stat: &owner_stat, effect: &made, owner_anims: &owner.anims, fired: &fired, owner_declares: &owner_stat_of, owner_stores: &owner_stores, root: clip_sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false,
-        root_anim: &|_| None, walk_start: None, stance_labels: &no_labels, clip_frames: &no_frames,
+        root_anim: &|_| None, walk_start: None, stance_labels: &no_labels, clip_frames: &no_frames, owner_native: owner.native,
     };
     let written = native::write(&object)?;
 
@@ -164,6 +166,12 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         if written.floor_speed { functions.push(native::helper(runtime, "floor", "speed", "", &[], &[])?); }
         if written.floor_speed { update.push("airFrame();".into()); }
         update.push("floorFrame();".into());
+    }
+    // its listeners for meeting its owner, told as it does
+    if !written.touches.is_empty() {
+        let told: Vec<String> = written.touches.iter().map(|(l, h)| format!("if ({l}.get()) {h}(e);")).collect();
+        functions.push(native::helper(runtime, "touch", "owner", "", &[], &told)?);
+        update.push("touchFrame();".into());
     }
     update.extend(taken.frame.iter().cloned());
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();

@@ -91,3 +91,33 @@ function firedDeclared(name, k) {
 	}
 	return null;
 }
+
+// ---- anim_of
+// the animation each of the source's labels is
+function animOf(label) {
+	switch (label) {
+		// {cases}
+	}
+	return null;
+}
+
+// ---- field_of
+//: ITSELF its own class, ROOT its clip's class
+// the container a field of one of its clips is kept in, for another object's code ("self" its own
+// class, "root" its clip, "stance" the clip its animation shows)
+function fieldOf(clip, name) {
+	var c = clip == "self" ? ITSELF : (clip == "root" ? ROOT : stanceClass());
+	switch (c) {
+		// {cases}
+	}
+	return null;
+}
+
+// ---- stance_class
+// the class of the clip each animation shows
+function stanceClass() {
+	switch (self.getAnimation()) {
+		// {cases}
+	}
+	return null;
+}

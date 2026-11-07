@@ -23,7 +23,7 @@ pub struct AttackStats {
 }
 
 #[derive(Debug, Default)]
-struct Code { when: Option<String>, unless: Option<String>, first: bool, call: Vec<String>, code: Vec<String>, same_as: Option<String>, native: Option<Vec<String>> }
+struct Code { when: Option<String>, unless: Option<String>, first: bool, call: Vec<String>, code: Vec<String>, same_as: Option<String>, native: Option<Vec<String>>, native_call: Option<Vec<String>> }
 
 pub fn table() -> &'static AttackStats {
     static T: OnceLock<AttackStats> = OnceLock::new();
@@ -57,6 +57,7 @@ pub fn table() -> &'static AttackStats {
                 call: lines(&v["call"])?,
                 code: lines(&v["code"]).unwrap_or_default(),
                 native: lines(&v["native"]),
+                native_call: lines(&v["native_call"]),
                 same_as: v["same_as"].as_str().map(String::from),
             }))).collect();
         }
@@ -121,13 +122,17 @@ impl AttackStats {
     /// false), with `{v}` its value and `{name}` the value of another stat it declares (`{name|d}`
     /// gives `d` when it declares none, else 0). each comes with whether only the attack's own
     /// animation runs it (`first`), rather than every one under its label, and the row it is
-    pub fn first_frame(&self, stats: &BTreeMap<String, f64>) -> Vec<(bool, String, String)> {
+    pub fn first_frame(&self, stats: &BTreeMap<String, f64>) -> Vec<(bool, String, String)> { self.first_frame_of(stats, false) }
+
+    /// the same, for a fighter written as Fraymakers code: a row's `native_call` lines where it has them
+    pub fn first_frame_of(&self, stats: &BTreeMap<String, f64>, native: bool) -> Vec<(bool, String, String)> {
         let mut out = Vec::new();
         for (key, c) in &self.code {
             let Some(&v) = stats.get(key) else { continue };
             let ok = match c.when.as_deref() { Some("positive") => v > 0.0, Some("negative") => v < 0.0, Some("true") => v != 0.0, Some("false") => v == 0.0, _ => true };
             if !ok || c.unless.as_ref().is_some_and(|u| stats.get(u) == Some(&0.0)) { continue }
-            out.push((c.first, c.call.iter().map(|l| fill(l, v, stats)).collect::<Vec<_>>().join("\n"), key.clone()));
+            let call = if native { c.native_call.as_ref().unwrap_or(&c.call) } else { &c.call };
+            out.push((c.first, call.iter().map(|l| fill(l, v, stats)).collect::<Vec<_>>().join("\n"), key.clone()));
         }
         out
     }

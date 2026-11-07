@@ -264,6 +264,51 @@
         "\t\tme.handled = true;",
         "\t}",
         "}"
+      ],
+      // (written as Fraymakers code: the two fields are the attack's own clip's containers, which
+      // its first frame hands the watch, `{field:name}`)
+      "native_call": [
+        "comboChargeTime = {chargetime_max|0};",
+        "comboHoldRepeat = {holdRepeat|0};",
+        "comboIn = self.getAnimation();",
+        "comboHandled = {field:handled};",
+        "comboGoOn = {field:continuePlaying};",
+        "self.removeTimer(comboTimer);",
+        "comboTimer = self.addTimer(1, -1, watchCombo, { persistent: true });"
+      ],
+      "native": [
+        "// the source's combo protocol, which its engine runs and the clip only answers: while the",
+        "// attack plays, its button pressed (or held, for one that repeats on a hold) tells the clip to",
+        "// go on, through two fields of the attack's clip (handled, continuePlaying); one that also",
+        "// charges goes on only once it is attacking (its clip at \"attack\"). its animations start",
+        "// the timer; it stops once another animation plays",
+        "var comboChargeTime = 0.0;",
+        "var comboHoldRepeat = 0;",
+        "var comboIn = null;",
+        "var comboTimer = -1;",
+        "var comboHandled = null;",
+        "var comboGoOn = null;",
+        "function watchCombo() {",
+        "\tif (self.getAnimation() != comboIn) {",
+        "\t\tself.removeTimer(comboTimer);",
+        "\t\tcomboTimer = -1;",
+        "\t\treturn;",
+        "\t}",
+        "\tif (comboChargeTime > 0) {",
+        "\t\tvar at = clipLabel();",
+        "\t\tif (at != null && at != \"attack\") return;",
+        "\t}",
+        "\tif (comboHandled == null || comboHandled.get() != false) return;",
+        "\tvar special = self.inState(CState.SPECIAL_NEUTRAL) || self.inState(CState.SPECIAL_SIDE) || self.inState(CState.SPECIAL_UP) || self.inState(CState.SPECIAL_DOWN);",
+        "\tvar pressed = self.getPressedControls();",
+        "\tvar held = self.getHeldControls();",
+        "\tvar press = special ? pressed.SPECIAL : (pressed.ATTACK || pressed.GRAB);",
+        "\tvar hold = special ? held.SPECIAL : (held.ATTACK || held.GRAB);",
+        "\tif (press == true || (comboHoldRepeat != 0 && hold == true)) {",
+        "\t\tif (comboGoOn != null) comboGoOn.set(true);",
+        "\t\tcomboHandled.set(true);",
+        "\t}",
+        "}"
       ] }
   },
   // what an attack that states nothing has: it goes off a floor's edge and ends once airborne

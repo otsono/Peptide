@@ -148,7 +148,7 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
         model, itself: parts.itself, classes: parts.classes.clone(), jumps: &jumps, runtime: f.runtime, declared: &declares, switches: &switches,
         owner_stat: &no_stat, effect: &made, owner_anims: &anims, fired: &fired, owner_declares: &declares, owner_stores: &stores,
         root: parts.root, size: f.units.size, speed: f.units.speed, accel: f.units.accel, fighter: true,
-        root_anim: &root_anim, walk_start: (start > 0.0).then_some(start), stance_labels: &labels, clip_frames: &frames_of,
+        root_anim: &root_anim, walk_start: (start > 0.0).then_some(start), stance_labels: &labels, clip_frames: &frames_of, owner_native: false,
     };
     if all {
         let why = native::census(&object);
@@ -184,9 +184,17 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
 
     // the rules every fighter is played by, and what its code calls of them
     let mut blocks: BTreeSet<String> = w.blocks.clone();
-    for b in ["attack", "sounds", "refresh", "hits"] { blocks.insert(b.into()); }
+    for b in ["attack", "sounds", "refresh", "hits", "asked", "start_attack"] { blocks.insert(b.into()); }
+    // the attack a rocket rides in: the one whose clip has a `rocket` frame to start it at (its air
+    // one where it has two)
+    let mut rocketing: Vec<&str> = f.pieces.iter().filter(|p| f.model.sprites.get(&p.sym).is_some_and(|sp| sp.labels.iter().any(|(_, l)| l == "rocket")))
+        .map(|p| p.label.as_str()).filter(|l| !l.is_empty()).collect();
+    rocketing.sort_by_key(|l| (!l.ends_with("_air"), l.to_string()));
+    rocketing.dedup();
+    let rocket = rocketing.first().map(|l| compile::quote(l));
+    if rocket.is_some() { blocks.insert("rocket".into()); }
     let mut functions = w.functions.clone();
-    let order = ["attack", "sounds", "refresh", "hits", "walk_start", "end_move", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "last_used", "char_stats", "rects", "move_clear", "fired_stats"];
+    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "walk_start", "end_move", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "last_used", "char_stats", "rects", "move_clear", "fired_stats", "timers"];
     for b in order.iter().filter(|b| blocks.contains(**b)) {
         let words: Vec<(&str, String)> = match *b {
             "walk_start" => {
@@ -195,6 +203,9 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
             }
             "items" => vec![("TOSS", num(f.units.item_toss)), ("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed))],
             "rects" | "move_clear" => vec![("SIZE", num(f.units.size))],
+            "rocket" => vec![("ATTACK", rocket.clone().unwrap_or_else(|| "null".into())), ("SPEED", num(f.units.speed)),
+                ("BLOCKED", native::state_tests(rt, "self", &[10, 13, 14, 15, 19, 20])), ("ATTACKING", native::state_tests(rt, "self", &[9])),
+                ("STOPS", native::state_tests(rt, "self", &[22, 16, 18]))],
             _ => Vec::new(),
         };
         functions.push(format!("// ---- {b}: runtime/native/fighter_rules.hx\n{}", native::helper(rt, "fighter_rules", b, "", &words, &[]).map_err(one)?));
@@ -242,6 +253,25 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         }
     }
     functions.push(table("attack_label", &labels)?);
+    // what other objects' code asks of it: its labels' animations, its clips' fields
+    let anim_cases: Vec<String> = f.anim_of.iter().map(|(l, a)| format!("case {}: return {};", compile::quote(l), compile::quote(a))).collect();
+    functions.push(table("anim_of", &anim_cases)?);
+    let mut by_class: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for ((class, field), id) in &w.field_ids { by_class.entry(class.as_str()).or_default().push(format!("\t\tcase {}: return {id};", compile::quote(field))); }
+    let mut field_cases = Vec::new();
+    for (class, lines) in by_class {
+        field_cases.push(format!("case {}:", compile::quote(class)));
+        field_cases.push("\tswitch (name) {".into());
+        field_cases.extend(lines);
+        field_cases.push("\t}".into());
+    }
+    let itself = parts.itself.map(|c| compile::quote(&c.name)).unwrap_or_else(|| "null".into());
+    let root = f.model.class_of(parts.root).map(|c| compile::quote(&c.name)).unwrap_or_else(|| "null".into());
+    functions.push(native::helper(rt, "fighter_tables", "field_of", "", &[("ITSELF", itself), ("ROOT", root)], &field_cases).map_err(one)?);
+    let mut stance: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for p in f.pieces { if let Some(c) = f.model.class_of(p.sym) { stance.entry(c.name.clone()).or_default().push(compile::quote(&p.fm_name)); } }
+    let stance_cases: Vec<String> = stance.iter().map(|(c, a)| { let mut a = a.clone(); a.dedup(); format!("case {}: return {};", a.join(", "), compile::quote(c)) }).collect();
+    functions.push(table("stance_class", &stance_cases)?);
     functions.push(table("declared", &t)?);
     functions.push(table("declared_box", &boxes)?);
     if blocks.contains("items") { functions.extend(item_tables(f).map_err(|e| vec![e])?); }
@@ -275,7 +305,12 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     slots.insert("fields", w.fields.clone());
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
-    slots.insert("publish", w.publish.clone());
+    let mut publish = w.publish.clone();
+    publish.push("// what another object's code asks of it: an attack started, a rocket ridden, its clips' fields".into());
+    publish.push("self.exports.__forceAttack = forceAttackAsked;".into());
+    if rocket.is_some() { publish.push("self.exports.__rocket = rocketAsked;".into()); }
+    publish.push("self.exports.__fieldOf = fieldOf;".into());
+    slots.insert("publish", publish);
     slots.insert("start", vec!["listenForHits();".into()]);
     slots.insert("own_start", w.start.clone());
     let mut update = vec!["hitFrame();".to_string(), "attackFrame();".into()];
@@ -296,7 +331,13 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let entity = char_dir.join(format!("library/entities/{char_pascal}.entity"));
     let frames = w.frames.clone();
     let mut extra: BTreeMap<(String, u32), String> = BTreeMap::new();
-    for (anim, code) in first_frame { extra.insert((anim.clone(), 0), code.clone()); }
+    let field_ref = crate::re!(r"\{field:(\w+)\}");
+    for (anim, code) in first_frame {
+        // (a field of the clip the animation shows: its container, or none where its code keeps none)
+        let class = f.pieces.iter().find(|p| &p.fm_name == anim).and_then(|p| f.model.class_of(p.sym)).map(|c| c.name.clone()).unwrap_or_default();
+        let code = field_ref.replace_all(code, |c: &regex::Captures| w.field_ids.get(&(class.clone(), c[1].to_string())).cloned().unwrap_or_else(|| "null".into())).to_string();
+        extra.insert((anim.clone(), 0), code);
+    }
     super::native_projectile::keyframes_with(&entity, title, f.model, f.pieces, &frames, false, &extra).map_err(|e| vec![e.to_string()])?;
     Ok(script)
 }

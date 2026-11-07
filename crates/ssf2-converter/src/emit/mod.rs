@@ -1000,27 +1000,31 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         autolink_calls(&links, &entity_hitboxes(&json), &stated)
     };
     for l in &links { unplaced.extend(l.dropped.iter().map(|d| format!("{} autolink, {d}: the engine's autolink has no such setting", l.anim))); }
-    let mut cancels = attack_cancels(data, &model, &pieces, units);
+    let mut cancels = attack_cancels(data, &model, &pieces, units, false);
+    let mut native_cancels = attack_cancels(data, &model, &pieces, units, true);
     // what each attack's declared stats have its animations run on their first frame
     // (`code` in runtime/attack_stats.jsonc)
     // (they start a timer on a function written into its script once)
     let mut taken = std::collections::BTreeSet::new();
     for a in &data.attacks {
         let code = compile::attack_stats::table().first_frame(&a.stats);
+        let native_code = compile::attack_stats::table().first_frame_of(&a.stats, true);
         if code.is_empty() { continue }
         // every animation under the source label the attack's own animation is
         let fm = data.ssf2_to_fm_anim.get(&a.ssf2_name).cloned().unwrap_or_else(|| a.name.clone());
         let Some(label) = pieces.iter().find(|p| p.fm_name == fm).map(|p| p.label.clone()).filter(|l| !l.is_empty()) else { continue };
         for p in pieces.iter().filter(|p| p.label == label) {
-            let c = cancels.entry(p.fm_name.clone()).or_default();
-            for (first, t, key) in &code {
-                if *first && p.fm_name != fm { continue }
-                taken.insert(key.clone());
-                // two rows that share a timer write its start once
-                for line in t.lines() {
-                    if c.lines().any(|l| l == line) { continue }
-                    if !c.is_empty() { c.push('\n'); }
-                    c.push_str(line);
+            for (into, code) in [(&mut cancels, &code), (&mut native_cancels, &native_code)] {
+                let c = into.entry(p.fm_name.clone()).or_default();
+                for (first, t, key) in code {
+                    if *first && p.fm_name != fm { continue }
+                    taken.insert(key.clone());
+                    // two rows that share a timer write its start once
+                    for line in t.lines() {
+                        if c.lines().any(|l| l == line) { continue }
+                        if !c.is_empty() { c.push('\n'); }
+                        c.push_str(line);
+                    }
                 }
             }
         }
@@ -1031,13 +1035,15 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     for (anim, parts) in &compile::engine_anims::table().code {
         if !has(anim) { continue }
         for (_, code) in parts.iter().filter(|(needs, _)| needs.as_deref().is_none_or(has)) {
-            let c = cancels.entry(anim.clone()).or_default();
-            if !c.is_empty() { c.push('\n'); }
-            c.push_str(code);
+            for into in [&mut cancels, &mut native_cancels] {
+                let c = into.entry(anim.clone()).or_default();
+                if !c.is_empty() { c.push('\n'); }
+                c.push_str(code);
+            }
         }
     }
     // (the scale of the source's pixels, filled in)
-    for c in cancels.values_mut() { *c = c.replace("{size}", &literal(&Value::Num(units.size), &|_| None)); }
+    for c in cancels.values_mut().chain(native_cancels.values_mut()) { *c = c.replace("{size}", &literal(&Value::Num(units.size), &|_| None)); }
     let keyed: String = cancels.values().cloned().collect::<Vec<_>>().join("\n");
     let mut stat_code = compile::attack_stats::table().code(&taken);
     // (a fighter written as Fraymakers code takes a row's own lines for it, where it has them)
@@ -1056,7 +1062,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     let fighting = native_fighter::Fighting { model: &model, runtime: &runtime, fighter, pieces: &pieces, units, effects: &effects, entities: &entities, anim_of: &anim_of };
     let stat_lines = native_stat_code;
     let natively_written = if std::env::var("PEPTIDE_NATIVE_FIGHTERS").map(|v| v != "0").unwrap_or(true) {
-        native_fighter::write(char_dir, char_pascal, char_name, &fighting, &cancels, &stat_lines)
+        native_fighter::write(char_dir, char_pascal, char_name, &fighting, &native_cancels, &stat_lines)
     } else { Err(vec!["written on the runtime (PEPTIDE_NATIVE_FIGHTERS=0)".into()]) };
     let fighter_census = natively_written.as_ref().err().cloned().unwrap_or_default();
     let out = fighter_script(&model, &runtime, fighter, &pieces, units, char_name, &others, &effects, &entities, calls, keyed, stat_code);
@@ -1078,7 +1084,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     autolink_entity(&entity_path, &dir.join("HitboxStats.hx"), char_name, &links, units.size)?;
     engine_animations(&entity_path, &dir.join("AnimationStats.hx"), char_name)?;
     // each projectile and item the fighter declares runs on the runtime too
-    let owner = native_projectile::Owner { attacks: &fighter.attacks, stats: &fighter.stats, anims: pieces.iter().map(|p| (p.fm_name.clone(), p.label.clone())).collect() };
+    let owner = native_projectile::Owner { attacks: &fighter.attacks, stats: &fighter.stats, anims: pieces.iter().map(|p| (p.fm_name.clone(), p.label.clone())).collect(), native: natively_written.is_ok() };
     let mut natively: Vec<(String, Result<(), String>)> = Vec::new();
     let projectiles = runtime_projectiles(char_dir, &model, &runtime, fighter, units, &others,
         &effects, &entities, &mut projectile_pieces, &mut unplaced, &owner, &mut natively)?;
@@ -1268,7 +1274,7 @@ pub(crate) fn native_entity(entity: &std::path::Path, key: &str, model: &SourceM
 /// made with once its clip says it is waiting (a clip that says nothing is) drops its fall and
 /// sends the clip to its `finish` label, once (kirby's stone). The check is the attack's own, on
 /// its first frame: a timer of the engine's that ends with the attack's state.
-fn attack_cancels(data: &crate::extractor::CharacterData, model: &SourceModel, pieces: &[Piece], units: Units) -> BTreeMap<String, String> {
+fn attack_cancels(data: &crate::extractor::CharacterData, model: &SourceModel, pieces: &[Piece], units: Units, native: bool) -> BTreeMap<String, String> {
     let jumps = label_jumps(model, pieces);
     let mut out = BTreeMap::new();
     for a in data.attacks.iter().filter(|a| a.stats.get("cancel").is_some_and(|v| *v != 0.0)) {
@@ -1280,18 +1286,19 @@ fn attack_cancels(data: &crate::extractor::CharacterData, model: &SourceModel, p
             let jump = match finish {
                 Some((anim, true)) => format!("self.playAnimation(\"{anim}\");"),
                 Some((anim, false)) => format!("if (self.getAnimation() == \"{anim}\") self.playFrameLabel(\"finish\");"),
+                None if native => "stanceJump(\"finish\");".to_string(),
                 None => "if (__st != null) __st.gotoAndPlay(\"finish\");".to_string(),
             };
+            // (written as Fraymakers code: whether its clip is waiting is the clip's own container)
+            let waiting = if native { "\tvar __w = {field:waiting};\n\tif (__w != null && __w.get() != true) return;" } else {
+                "\tvar __st = PeptideRuntime.shownClip();\n\t// a clip that declares it says (unset is not waiting); one that does not is waiting\n\tvar __w = __st == null ? true : (__st.__c_waiting != null ? AS3.truthy(__st.__c_waiting.get()) : (__st.waiting == null ? true : AS3.truthy(__st.waiting)));\n\tif (!__w) return;" };
             out.insert(p.fm_name.clone(), format!(
 "// its declared `cancel`: holding {what} once its clip is waiting cuts it short at `finish`
 (function() {{ var armed = true; self.addTimer(1, -1, function(?t) {{
 	if (!armed) return;
 	var __c = self.getHeldControls();
 	if (!({held})) return;
-	var __st = PeptideRuntime.shownClip();
-	// a clip that declares it says (unset is not waiting); one that does not is waiting
-	var __w = __st == null ? true : (__st.__c_waiting != null ? AS3.truthy(__st.__c_waiting.get()) : (__st.waiting == null ? true : AS3.truthy(__st.waiting)));
-	if (!__w) return;
+{waiting}
 	armed = false;
 	self.setYSpeed(self.isOnFloor() ? 0 : -4 * {speed} + self.getCharacterStat(\"gravity\") * 1.5);
 	{jump}

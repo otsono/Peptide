@@ -201,3 +201,18 @@ function NAME(?x, ?y, ?place) {
 	self.exports.__lastProj = p;
 	return p;
 }
+
+// ---- owner_field
+// a field of one of its owner's clips ("self" its own class, "root" its clip, "stance" the clip its
+// animation shows), through what the owner publishes
+function NAME(o, clip, name) {
+	var c = o == null || o.exports.__fieldOf == null ? null : o.exports.__fieldOf(clip, name);
+	return c == null ? null : c.get();
+}
+
+// ---- owner_set_field
+// a field of one of its owner's clips written, through what the owner publishes
+function NAME(o, clip, name, v) {
+	var c = o == null || o.exports.__fieldOf == null ? null : o.exports.__fieldOf(clip, name);
+	if (c != null) c.set(v);
+}

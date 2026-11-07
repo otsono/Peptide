@@ -608,3 +608,80 @@ function firedStat(p, k) {
 	if (p == null || p.exports == null || p.exports.__launched == null) return null;
 	return firedDeclared(p.exports.__launched.name, k);
 }
+
+// ---- asked
+//: what another object's code asks of it, published as it starts (`self.exports`): an attack
+//: started at a frame of its clip, and the fields of its clips. `animOf`, `fieldOf` and
+//: `stanceClass` are written for it from its animations and its classes
+// an attack another object's code starts on it, by the source's label, at a label of its clip
+function forceAttackAsked(label, ?frame) {
+	var anim = animOf(label);
+	if (anim == null) return;
+	startAttack(anim);
+	if (frame != null && frame != true) stanceJump(frame);
+}
+
+// ---- rocket
+//: ATTACK the attack its rocket rides in, else null; BLOCKED, ATTACKING and STOPS the tests of
+//: the source's states it is not set off in, its attacking, and those it stands from first
+// a rocket another object sets off on it (samus's bomb's lift): into the attack it rides, at its
+// `rocket` frame, carried by the speed and angle given, losing `decay` of it a source frame, while
+// that attack lasts; not on or climbing a ledge, grabbing, hurt or launched, and in an attack
+// only in a down special
+var rocketAnim = self.makeObject(null);
+var rocketSpeed = self.makeObject(null);
+var rocketTimer = self.makeInt(-1);
+function rocketAsked(speed, angle, decay, ?rotate) {
+	var attack = ATTACK;
+	if (attack == null) return;
+	if (BLOCKED) return;
+	var label = attackLabel(self.getAnimation());
+	if ((ATTACKING) && (label == null || label.indexOf("b_down") < 0)) return;
+	if (STOPS) self.toState(CState.STAND);
+	var a = angle * Math.PI / 180;
+	var d = Math.abs(decay);
+	forceAttackAsked(attack, "rocket");
+	rocketAnim.set(self.getAnimation());
+	rocketSpeed.set({ vx: speed * Math.cos(a), vy: -speed * Math.sin(a), dx: d * Math.abs(Math.cos(a)), dy: d * Math.abs(Math.sin(a)), n: 0 });
+	self.removeTimer(rocketTimer.get());
+	rocketTimer.set(self.addTimer(1, -1, rideRocket, { persistent: true, pauseCondition: frozen }));
+}
+// a speed given, then `decay` less each source frame down to nothing, until its attack is over
+function rideRocket() {
+	if (self.getAnimation() != rocketAnim.get()) { self.removeTimer(rocketTimer.get()); rocketTimer.set(-1); return; }
+	var r = rocketSpeed.get();
+	if (r.n >= 2 && r.n % 2 == 0) {
+		r.vx = r.vx > 0 ? Math.max(0, r.vx - r.dx) : Math.min(0, r.vx + r.dx);
+		r.vy = r.vy > 0 ? Math.max(0, r.vy - r.dy) : Math.min(0, r.vy + r.dy);
+	}
+	r.n++;
+	self.setXSpeed(r.vx * SPEED);
+	self.setYSpeed(r.vy * SPEED);
+}
+
+// ---- timers
+// a timer its code makes (`createTimer(frames, repeats, fn)`): two engine frames to a source frame,
+// forever for none. it drops with the state it was made in unless asked to stay, waits out the
+// fighter's freezes, and one made in a frame's code comes due two engine frames sooner the first
+// time (the source ticks the frame it is made in too). the record is what its code stops it by
+function startTimer(n, times, fn, keep, inFrame) {
+	var t = { id: -1, left: times, dead: false, fn: fn };
+	var opts = { persistent: keep, pauseCondition: frozen };
+	var first = inFrame ? 2 * n - 2 : 2 * n;
+	if (first == 2 * n) { t.id = self.addTimer(2 * n, times, function() { tickTimer(t); }, opts); return t; }
+	t.id = self.addTimer(first < 1 ? 1 : first, 1, function() {
+		tickTimer(t);
+		if (!t.dead && t.left != 0) t.id = self.addTimer(2 * n, t.left, function() { tickTimer(t); }, opts);
+	}, opts);
+	return t;
+}
+function tickTimer(t) {
+	if (t.dead) return;
+	if (t.left > 0) { t.left--; if (t.left == 0) t.dead = true; }
+	t.fn();
+}
+function stopTimer(t) {
+	if (t == null) return;
+	t.dead = true;
+	if (t.id >= 0) self.removeTimer(t.id);
+}

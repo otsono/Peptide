@@ -30,3 +30,6 @@ fn mario_is_plain_fraymakers_code() { native("mario") }
 
 #[test]
 fn samus_is_plain_fraymakers_code() { native("samus") }
+
+#[test]
+fn link_is_plain_fraymakers_code() { native("link") }

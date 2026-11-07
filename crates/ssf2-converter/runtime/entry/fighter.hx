@@ -6,6 +6,9 @@ function initialize() {
 	// a jump by label asked by another object's code (a projectile written as Fraymakers code jumps
 	// its owner's clip through this), run as the fighter's own code
 	self.exports.__playFrame = function(label) { PeptideRuntime.run(function() { PeptideGameObject.playFrame(PeptideRuntime.object, label); }); };
+	// an attack another object's code starts on it (at a frame of its clip), and a rocket it rides
+	self.exports.__forceAttack = function(label, ?frame) { PeptideRuntime.run(function() { Fighters.startAsked(PeptideRuntime.object, label, frame); }); };
+	self.exports.__rocket = function(speed, angle, decay, ?rotate) { PeptideRuntime.run(function() { PeptideCharacter.rocket(PeptideRuntime.object, speed, angle, decay, rotate); }); };
 	self.exports.__traceStart = function() { Rollback.trace = []; Rollback.engineOf = []; Rollback.replayed = 0; Rollback.mismatches = []; Rollback.traceFrom = Rollback.tick.get(); return Rollback.traceFrom; };
 	self.exports.__traceLength = function() { return Rollback.trace == null ? 0 : Rollback.trace.length; };
 	self.exports.__traceRead = Rollback.traceRead;
