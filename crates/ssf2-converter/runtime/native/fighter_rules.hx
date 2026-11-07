@@ -26,6 +26,8 @@ function throwing() {
 
 // a stat of the attack it is in: what its code wrote since it began, else what it declares
 function attackStat(k) {
+	// (an attack's first frame reads its own: its code runs before the frame's update would see it begin)
+	attackFrame();
 	var w = attackWritten.get();
 	if (w.exists(k)) return w.get(k);
 	return attackIn.get() == null ? null : declared(attackIn.get(), k);
@@ -33,14 +35,20 @@ function attackStat(k) {
 
 // stats its code writes on the attack: kept for the rest of it
 function attackWrite(k, v) {
+	attackFrame();
 	attackWritten.get().set(k, v);
 }
 
 // every frame: an attack's start and end, on the frame they happen
+var attackTurning = false;
 function attackFrame() {
+	// (what runs as one ends reads that one's stats: it is still the attack it is in)
+	if (attackTurning) return;
 	var label = (self.inStateGroup(CStateGroup.ATTACK) || throwing()) ? attackLabel(self.getAnimation()) : null;
 	if (label == attackIn.get()) return;
+	attackTurning = true;
 	attackEnded();
+	attackTurning = false;
 	attackIn.set(label);
 	if (label == null) return;
 	attackUse.inc();
@@ -704,6 +712,14 @@ function startTimer(n, times, fn, keep, inFrame) {
 	var opts = { persistent: keep, pauseCondition: frozen };
 	var first = inFrame ? 2 * n - 2 : 2 * n;
 	if (first == 2 * n) { t.id = self.addTimer(2 * n, times, function() { tickTimer(t); }, opts); return t; }
+	// a one-frame one made in a frame's code ticks in that frame, once the frame's code is done
+	// (sooner, it reads what the code sets after making it), and then each source frame
+	if (first == 0) {
+		afterFrame.get().push(function() { tickTimer(t); });
+		var rest = times < 0 ? -1 : times - 1;
+		if (rest != 0) t.id = self.addTimer(2 * n, rest, function() { tickTimer(t); }, opts);
+		return t;
+	}
 	t.id = self.addTimer(first < 1 ? 1 : first, 1, function() {
 		// (its first run is that timer's last: its id is the engine's to give out again)
 		t.id = -1;
@@ -711,6 +727,14 @@ function startTimer(n, times, fn, keep, inFrame) {
 		if (!t.dead && t.left != 0) t.id = self.addTimer(2 * n, t.left, function() { tickTimer(t); }, opts);
 	}, opts);
 	return t;
+}
+// what waits for the end of the frame's code: a one-frame timer it made
+var afterFrame = self.makeObject([]);
+function runAfterFrame() {
+	var waiting = afterFrame.get();
+	if (waiting.length == 0) return;
+	afterFrame.set([]);
+	for (f in waiting) f();
 }
 function tickTimer(t) {
 	if (t.dead) return;

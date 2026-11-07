@@ -622,7 +622,13 @@ declare, the label its clip is on, its item box) are `fighter_tables.hx`, filled
 declarations. a jump by label on the clip it shows goes to the animation that shows the label in
 the clip of the one playing (`stanceJump`). a method nothing in the package names is a template's
 leftover and is not written. what each field holds is learned from all its code before any of it
-is written. what other objects' code asks of a fighter it publishes on its exports (its clips'
+is written; a typed field keeps its type. a clip is made anew as the fighter comes to it from
+another clip: its fields start over and what it listened for on the fighter goes with the clip it
+left (`fresh_clip`). a root clip with nothing to run, whose frames only set its fields, answers
+them by the label it shows. a jump to the frame it is on stays there (playing an animation again
+from inside its own first frame would run that frame again, forever). a native projectile plays
+its clip on into the next animation itself (`playOn`): on a projectile the engine's own end of an
+animation goes by its state. what other objects' code asks of a fighter it publishes on its exports (its clips'
 fields as containers, an attack started, a rocket, its attack's stats, its label), and a
 fighter on the runtime publishes the same, so a projectile reaches either the same way.
 `runtime_report.json` says `fighter_native`, and lists every function still holding it on the

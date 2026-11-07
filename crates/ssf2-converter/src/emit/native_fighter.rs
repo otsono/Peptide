@@ -364,6 +364,8 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     // its entity: each frame with code calls it, and what each animation's attack declares runs on its first
     let entity = char_dir.join(format!("library/entities/{char_pascal}.entity"));
     let mut frames = w.frames.clone();
+    // (a one-frame timer its frame code makes ticks once that code is done)
+    if blocks.contains("timers") { for code in frames.values_mut() { code.push_str("\nrunAfterFrame();"); } }
     for class in fresh.keys() {
         let Some(sym) = f.model.classes.get(class).and_then(|c| c.symbol) else { continue };
         let call = format!("freshClip({});", compile::quote(class));
