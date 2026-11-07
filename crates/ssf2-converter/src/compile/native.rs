@@ -32,6 +32,11 @@ struct Calls {
     types: BTreeMap<String, String>,
     /// a projectile stat written by its code, as the engine's own stat (`{v}` the value)
     projectile_stats: BTreeMap<String, String>,
+    /// a projectile's states, by the source's names, as the engine's test (`{self}` the projectile)
+    projectile_states: BTreeMap<String, String>,
+    /// the API's records made with `new`, by class, and the calls they answer
+    records: BTreeMap<String, String>,
+    record_calls: BTreeMap<String, String>,
 }
 
 fn calls() -> &'static Calls {
@@ -45,6 +50,16 @@ fn calls() -> &'static Calls {
         for (k, v) in json.as_object().into_iter().flatten() {
             if k == "types" {
                 t.types = v.as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect();
+                continue;
+            }
+            if k == "records" || k == "record_calls" {
+                let m: BTreeMap<String, String> = v.as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect();
+                if k == "records" { t.records = m } else { t.record_calls = m }
+                continue;
+            }
+            if k == "projectile_states" {
+                t.projectile_states = v.as_object().into_iter().flatten()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect();
                 continue;
             }
             if k == "projectile_stats" {
@@ -107,7 +122,7 @@ pub enum Ty { Bool, Num, Str, Object, Rect, Body, #[default] Any }
 
 impl Ty {
     fn named(n: &str) -> Ty {
-        match n { "bool" => Ty::Bool, "number" => Ty::Num, "string" => Ty::Str, "object" => Ty::Object, "rect" => Ty::Rect, _ => Ty::Any }
+        match n { "bool" => Ty::Bool, "number" => Ty::Num, "string" => Ty::Str, "object" => Ty::Object, "rect" | "record" => Ty::Rect, _ => Ty::Any }
     }
     fn declared(t: Option<&str>) -> Ty {
         match t.map(short) { Some("Number" | "int" | "uint") => Ty::Num, Some("Boolean") => Ty::Bool, Some("String") => Ty::Str, _ => Ty::Any }
@@ -235,6 +250,7 @@ fn reached(model: &SourceModel, c: &ClassModel, m: &crate::model::MethodModel) -
 /// Write the object's classes as Fraymakers code, or say why they cannot be.
 pub fn write(o: &Object) -> Result<Written, String> {
     let mut w = Writer::new(o)?;
+    w.learn_fields();
     w.write()
 }
 
@@ -242,6 +258,7 @@ pub fn write(o: &Object) -> Result<Written, String> {
 /// (`class.method: why`): the work list for taking it off the runtime.
 pub fn census(o: &Object) -> Vec<String> {
     let mut w = match Writer::new(o) { Ok(w) => w, Err(e) => return vec![e] };
+    w.learn_fields();
     let mut out = Vec::new();
     let classes: Vec<&ClassModel> = o.itself.into_iter().chain(o.classes.iter().copied()).collect();
     for c in classes {
@@ -301,12 +318,16 @@ struct Writer<'o, 'a> {
     testing: bool,
     /// whether the function being written is a frame script
     in_frame: bool,
+    /// the variables the function being written shares with the closures it makes
+    captured: BTreeSet<String>,
+    /// what each of them holds, as far as its code says
+    captured_ty: BTreeMap<String, Ty>,
 }
 
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
         let mut w = Writer { o, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
-                             locals: BTreeMap::new(), helpers: BTreeMap::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false };
+                             locals: BTreeMap::new(), helpers: BTreeMap::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new() };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "initialize", "update", "onTeardown", "onKill", "life", "age", "started", "freshHit"]
             .into_iter().map(String::from).collect();
@@ -374,6 +395,26 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
         }
         Ok(w)
+    }
+
+    /// what each field holds, learned from all the code before any of it is written (a method
+    /// written before the frame that fills a field reads it right): a pass whose text is dropped
+    fn learn_fields(&mut self) {
+        let fresh = Writer::new(self.o).ok();
+        let classes: Vec<&ClassModel> = self.o.itself.into_iter().chain(self.o.classes.iter().copied()).collect();
+        for c in classes {
+            self.class = c.name.clone();
+            for m in c.methods.iter().filter(|m| !declares(m)) {
+                let name = self.methods[&member_key(&c.name, &method_name(m))].clone();
+                self.in_frame = c.frame_scripts.iter().any(|fs| fs.method == m.name);
+                let _ = self.function(&name, &m.function);
+            }
+        }
+        // (everything else it gathered starts over)
+        if let Some(mut f) = fresh {
+            for (k, (_, h)) in &self.fields { if let Some(e) = f.fields.get_mut(k) { e.1 = h.clone(); } }
+            *self = f;
+        }
     }
 
     /// whether every value the class's code puts in a field is the object's owner
@@ -529,7 +570,19 @@ impl<'o, 'a> Writer<'o, 'a> {
         count(&f.body, nparams, &mut reads, &mut through);
         // (an argument read as a plain value is one a call hands it, as any variable)
         let _ = (reads, through);
-        if !f.activation.is_empty() { return Err("a closure captures its variables".into()) }
+        // the variables a closure of its captures: plain variables of the function, which a
+        // closure written in place sees (the interpreter's closures keep their maker's variables)
+        let captured: Vec<String> = f.activation.iter().map(|(_, n)| ident(n)).collect();
+        // (a closure written in place sees its maker's too)
+        let mut seen: BTreeSet<String> = if name.is_empty() { self.captured.clone() } else { BTreeSet::new() };
+        seen.extend(captured.iter().cloned());
+        let outer = std::mem::replace(&mut self.captured, seen);
+        let r = self.function_body(name, f, &params, nparams, &debug, &captured);
+        self.captured = outer;
+        r
+    }
+
+    fn function_body(&mut self, name: &str, f: &Function, params: &[String], nparams: u32, debug: &BTreeMap<u32, String>, captured: &[String]) -> Result<String, String> {
         // (the decompiler's leftovers tidied first)
         let mut body = f.body.clone();
         tidy(&mut body);
@@ -541,7 +594,12 @@ impl<'o, 'a> Writer<'o, 'a> {
         let mut copies = BTreeSet::new();
         walk(&body, &mut |s| if let Stmt::Assign(Place::Local(r), v) = s { if matches!(v, Expr::This) { copies.insert(*r); } });
         walk(&body, &mut |s| if let Stmt::Assign(Place::Local(r), v) = s { if !matches!(v, Expr::This) { copies.remove(r); } });
-        let mut decl = Vec::new();
+        let mut decl: Vec<String> = captured.iter().map(|n| format!("\tvar {n} = null;")).collect();
+        // (the decompiler's own temporaries, as variables of the function)
+        let mut temps = BTreeSet::new();
+        walk(&body, &mut |s| if let Stmt::Assign(Place::Temp(t), _) = s { temps.insert(*t); });
+        walk_exprs(&body, &mut |e| if let Expr::Temp(t) = e { temps.insert(*t); });
+        for t in &temps { decl.push(format!("\tvar __t{t} = null;")); }
         for r in &regs {
             if copies.contains(r) {
                 let n = debug.get(r).map(|s| ident(s)).unwrap_or_else(|| format!("v{r}"));
@@ -564,7 +622,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 }
             }
         }
-        Ok(format!("function {name}({}) {{\n{}\n}}", params.join(", "), lines.join("\n")).replace("{\n\n}", "{\n}"))
+        let head = if name.is_empty() { "function".to_string() } else { format!("function {name}") };
+        Ok(format!("{head}({}) {{\n{}\n}}", params.join(", "), lines.join("\n")).replace("{\n\n}", "{\n}"))
     }
 
     fn block(&mut self, list: &[Stmt], depth: usize) -> Result<Vec<String>, String> {
@@ -690,7 +749,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                 Ok(vec![format!("{}({who}, {}, {}, {val});", self.owner_field("set")?, quote(&clip), quote(f))])
             }
             // a field of its owner's
-            Place::Member(o, f) if !matches!(o, Expr::This) && { let w = self.expr(o).map(|x| x.0).unwrap_or_default(); self.owners.contains(&w) } => {
+            Place::Member(o, f) if !matches!(o, Expr::This | Expr::Call(..)) && { let w = self.expr(o).map(|x| x.0).unwrap_or_default(); self.owners.contains(&w) } => {
                 let (who, _) = self.expr(o)?;
                 let (val, _) = self.expr(v)?;
                 if self.o.owner_native { return Ok(vec![format!("{}({who}, \"self\", {}, {val});", self.owner_field("set")?, quote(f))]) }
@@ -707,7 +766,18 @@ impl<'o, 'a> Writer<'o, 'a> {
                 // (an object put in a field declared a number is an object's: a sound it played, kept to stop it)
                 let key = member_key(&self.class, f);
                 // (a rectangle put in a field that held nothing before reads as one)
-                if let Some(e) = self.fields.get_mut(&key) { if (matches!(e.1, Holds::Value(Ty::Any | Ty::Object)) && ty != Ty::Any) || (ty == Ty::Object && !matches!(e.1, Holds::Value(Ty::Rect | Ty::Body))) { e.1 = Holds::Value(ty) } }
+                // (it never goes back: a sound kept in a field the code later zeroes is still an object's)
+                if let Some(e) = self.fields.get_mut(&key) {
+                    if let Holds::Value(had) = e.1 {
+                        let now = match (had, ty) {
+                            (Ty::Any, t) => t,
+                            (Ty::Num | Ty::Bool | Ty::Str, Ty::Object | Ty::Rect | Ty::Body) => ty,
+                            (Ty::Object, Ty::Rect | Ty::Body) => ty,
+                            _ => had,
+                        };
+                        e.1 = Holds::Value(now);
+                    }
+                }
                 self.read.insert(key);
                 Ok(vec![format!("{id}.set({val});")])
             }
@@ -731,10 +801,24 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let set = match f.as_str() { "scaleX" => "setScaleX", "scaleY" => "setScaleY", "alpha" => "setAlpha", "rotation" => "setRotation", _ => "setVisible" };
                 Ok(vec![format!("{who}.{set}({val});")])
             }
+            // a field of a record it keeps
+            Place::Member(o, f) if self.a_value(o) && !matches!(o, Expr::Local(_)) && self.expr(o).is_ok_and(|(_, t)| t == Ty::Rect) => {
+                let (who, _) = self.expr(o)?;
+                let (val, _) = self.expr(v)?;
+                Ok(vec![format!("{who}.{f} = {val};")])
+            }
             Place::Member(Expr::Local(r), f) if self.locals.get(r).is_some_and(|(_, h)| *h == Holds::Value(Ty::Rect)) => {
                 let n = self.locals.get(r).map(|x| x.0.clone()).unwrap_or_default();
                 let (val, _) = self.expr(v)?;
                 Ok(vec![format!("{n}.{f} = {val};")])
+            }
+            // a field of its own class, written through the fighter from one of its clips
+            Place::Member(o, f) if self.o.fighter && !self.is_itself() && !matches!(o, Expr::This) && self.expr(o).is_ok_and(|(w, _)| w == "self")
+                && self.o.itself.is_some_and(|c| self.fields.contains_key(&member_key(&c.name, f)) || self.methods.contains_key(&member_key(&c.name, &format!("set:{f}")))) => {
+                let saved = std::mem::replace(&mut self.class, self.o.itself.map(|c| c.name.clone()).unwrap_or_default());
+                let r = self.assign(&Place::Member(Expr::This, f.clone()), v);
+                self.class = saved;
+                r
             }
             Place::Member(o, f) if self.o.fighter && !matches!(o, Expr::This) && !self.is_clip(o) && !matches!(o, Expr::Name(_)) => {
                 let (who, _) = self.expr(o)?;
@@ -742,6 +826,16 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (val, _) = self.expr(v)?;
                 let set = if (self.o.owner_stores)(f) { format!("__c_{}.set({val})", ident(f)) } else { format!("{} = {val}", ident(f)) };
                 Ok(vec![format!("if ({who} != null && {who}.exports.__source != null) {who}.exports.__source.{set};")])
+            }
+            Place::Temp(t) => {
+                let (val, _) = self.expr(v)?;
+                Ok(vec![format!("__t{t} = {val};")])
+            }
+            Place::Name(n) if self.captured.contains(&ident(n)) => {
+                let (val, ty) = self.expr(v)?;
+                let had = self.captured_ty.get(&ident(n)).copied().unwrap_or(Ty::Any);
+                self.captured_ty.insert(ident(n), merge(had, ty));
+                Ok(vec![format!("{} = {val};", ident(n))])
             }
             Place::Index(a, i) => {
                 let (a, _) = self.expr(a)?;
@@ -825,16 +919,39 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             Expr::This if self.is_itself() => ("self".into(), Ty::Object),
             Expr::Member(t, n) if n == "currentFrame" && self.o.fighter && matches!(**t, Expr::This) && self.field(n).is_none() => (self.clip_frame_helper()?, Ty::Num),
+            Expr::Member(t, n) if matches!(n.as_str(), "currentLabel" | "currentFrameLabel") && self.o.fighter && matches!(**t, Expr::This) && self.field(n).is_none() => {
+                self.blocks.insert("clip_label".into());
+                ("clipLabel()".into(), Ty::Str)
+            }
+            Expr::Name(n) if matches!(n.as_str(), "currentLabel" | "currentFrameLabel") && self.o.fighter && self.field(n).is_none() => {
+                self.blocks.insert("clip_label".into());
+                ("clipLabel()".into(), Ty::Str)
+            }
             // where its clip's parent (the fighter) is, in the source's units
             Expr::Member(t, n) if matches!(&**t, Expr::Name(p) if p == "parent") && matches!(n.as_str(), "x" | "y") =>
                 (format!("self.get{}() / {}", n.to_uppercase(), number(self.o.size)), Ty::Num),
             Expr::Member(t, f) if matches!(**t, Expr::This) => return self.own(f),
             Expr::Member(t, f) if matches!(&**t, Expr::Local(r) if self.locals.get(r).is_some_and(|(_, h)| *h == Holds::Clip)) => return self.own(f),
             // a field of its owner's (a read of one that is no call)
-            Expr::Member(o, f) if !matches!(**o, Expr::This) && { let w = self.expr(o).map(|x| x.0).unwrap_or_default(); self.owners.contains(&w) } => {
+            Expr::Member(o, f) if !matches!(**o, Expr::This | Expr::Call(..)) && { let w = self.expr(o).map(|x| x.0).unwrap_or_default(); self.owners.contains(&w) } => {
                 let (who, _) = self.expr(o)?;
                 if self.o.owner_native { return Ok((format!("{}({who}, \"self\", {})", self.owner_field("get")?, quote(f)), Ty::Any)) }
                 return Ok((if (self.o.owner_stores)(f) { format!("{who}.exports.__source.__c_{}.get()", ident(f)) } else { format!("{who}.exports.__source.{}", ident(f)) }, Ty::Any));
+            }
+            // where the clip its animation shows is, as its own clip reads it
+            Expr::Member(mc, n) if self.o.fighter && matches!(n.as_str(), "currentLabel" | "currentFrameLabel" | "currentFrame")
+                && matches!(&**mc, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "stanceClip" | "getStanceMC") && self.expr(o).is_ok_and(|(w, _)| w == "self"))) => {
+                if n == "currentFrame" { return Ok((self.clip_frame_helper()?, Ty::Num)) }
+                self.blocks.insert("clip_label".into());
+                return Ok(("clipLabel()".into(), Ty::Str));
+            }
+            // a field of its own class, read through the fighter from one of its clips
+            Expr::Member(o, f) if self.o.fighter && !self.is_itself() && !matches!(**o, Expr::This) && self.expr(o).is_ok_and(|(w, _)| w == "self")
+                && self.o.itself.is_some_and(|c| self.fields.contains_key(&member_key(&c.name, f)) || self.methods.contains_key(&member_key(&c.name, &format!("get:{f}")))) => {
+                let saved = std::mem::replace(&mut self.class, self.o.itself.map(|c| c.name.clone()).unwrap_or_default());
+                let r = self.own(f);
+                self.class = saved;
+                return r;
             }
             // a field of the event a listener is handed
             Expr::Member(d, field) if matches!(&**d, Expr::Member(a, n) if n == "data" && matches!(**a, Expr::Local(_))) => {
@@ -844,6 +961,9 @@ impl<'o, 'a> Writer<'o, 'a> {
                 return record(&arg, field);
             }
             Expr::Name(n) if self.field(n).is_some() || self.method(n).is_some() || self.method(&format!("get:{n}")).is_some() => return self.own(n),
+            // a variable its function shares with a closure it makes
+            Expr::Temp(t) => (format!("__t{t}"), Ty::Any),
+            Expr::Name(n) if self.captured.contains(&ident(n)) => (ident(n), self.captured_ty.get(&ident(n)).copied().unwrap_or(Ty::Any)),
             // the clip it shows sits in the object: its parent is the object
             Expr::Name(n) if n == "parent" => ("self".into(), Ty::Body),
             // the frame its clip is on
@@ -856,21 +976,27 @@ impl<'o, 'a> Writer<'o, 'a> {
                 (format!("({v} == null || {v}.isDisposed() ? null : {v})"), Ty::Object)
             }
             // a field of a record its code got back (its controls: `c.LEFT`)
-            Expr::Member(o, n) if n.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()) && !matches!(**o, Expr::This | Expr::Name(_)) => {
+            Expr::Member(o, n) if n.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()) && self.a_value(o) => {
                 let (v, _) = self.expr(o)?;
                 (format!("{}.{n}", paren(&v)), Ty::Any)
             }
-            Expr::Member(o, n) if !matches!(**o, Expr::This | Expr::Name(_)) && matches!(n.as_str(), "scaleX" | "scaleY" | "alpha" | "rotation") && !self.is_clip(o) => {
+            Expr::Member(o, n) if self.a_value(o) && matches!(n.as_str(), "scaleX" | "scaleY" | "alpha" | "rotation") && !self.is_clip(o) => {
                 let (v, _) = self.expr(o)?;
                 let get = match n.as_str() { "scaleX" => "getScaleX", "scaleY" => "getScaleY", "alpha" => "getAlpha", _ => "getRotation" };
                 (format!("{}.{get}()", paren(&v)), Ty::Num)
             }
-            // a rectangle it was handed (the stage's bounds, in the source's units): its fields
-            Expr::Member(o, n) if matches!(n.as_str(), "x" | "y" | "width" | "height") && !matches!(**o, Expr::This | Expr::Name(_)) && self.expr(o).is_ok_and(|(_, t)| t == Ty::Rect) => {
+            // a record it was handed (the stage's bounds in the source's units, its palette): its fields
+            Expr::Member(o, n) if self.a_value(o) && self.expr(o).is_ok_and(|(_, t)| t == Ty::Rect) => {
                 let (v, _) = self.expr(o)?;
-                (format!("{}.{n}", paren(&v)), Ty::Num)
+                (format!("{}.{n}", paren(&v)), if matches!(n.as_str(), "x" | "y" | "width" | "height") { Ty::Num } else { Ty::Rect })
             }
             Expr::Member(o, n) if n == "length" => { let (v, _) = self.expr(o)?; (format!("{}.length", paren(&v)), Ty::Num) }
+            Expr::New(c, a) if matches!(&**c, Expr::Name(n) if calls().records.contains_key(short(n))) => {
+                let Expr::Name(n) = &**c else { unreachable!() };
+                let mut t = calls().records[short(n)].clone();
+                for (i, x) in a.iter().enumerate() { let (v, _) = self.expr(x)?; t = t.replace(&format!("{{{i}}}"), &paren(&v)); }
+                (crate::re!(r"\{\d\}").replace_all(&t, "null").to_string(), Ty::Rect)
+            }
             Expr::New(c, a) if matches!(&**c, Expr::Name(n) if short(n) == "Point") && a.len() <= 2 => {
                 let x = match a.first() { Some(e) => self.expr(e)?.0, None => "0".into() };
                 let y = match a.get(1) { Some(e) => self.expr(e)?.0, None => "0".into() };
@@ -881,8 +1007,17 @@ impl<'o, 'a> Writer<'o, 'a> {
                 (if short(n) == "Array" { "[]".into() } else { "{}".into() }, Ty::Object)
             }
             Expr::Member(o, n) if matches!(&**o, Expr::Name(c) if c == "Math") => (format!("Math.{n}"), Ty::Num),
+            // AS3's number limits
+            Expr::Member(o, n) if matches!(&**o, Expr::Name(c) if matches!(short(c), "Number" | "int" | "uint")) && matches!(n.as_str(), "MAX_VALUE" | "MIN_VALUE") => {
+                let Expr::Name(c) = &**o else { unreachable!() };
+                (match (short(c), n.as_str()) {
+                    ("Number", "MAX_VALUE") => "1.7976931348623157e308".into(), ("Number", _) => "5e-324".into(),
+                    ("int", "MAX_VALUE") => "2147483647".into(), ("int", _) => "-2147483648".into(),
+                    ("uint", "MAX_VALUE") => "4294967295.0".into(), _ => "0".into(),
+                }, Ty::Num)
+            }
             // where an object (or its clip, drawn as it) is, in the source's units
-            Expr::Member(o, n) if matches!(n.as_str(), "x" | "y") && !matches!(**o, Expr::This | Expr::Name(_)) && self.expr(o).is_ok_and(|(_, t)| t == Ty::Body) => {
+            Expr::Member(o, n) if matches!(n.as_str(), "x" | "y") && self.a_value(o) && self.expr(o).is_ok_and(|(_, t)| t == Ty::Body) => {
                 let (v, _) = self.expr(o)?;
                 (format!("{}.get{}() / {}", paren(&v), n.to_uppercase(), number(self.o.size)), Ty::Num)
             }
@@ -906,6 +1041,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (who, _) = self.expr(who)?;
                 if who == "self" { return Err("reads its own clip's label".into()) }
                 return Ok((format!("{}({who})", self.owner_label()?), Ty::Str));
+            }
+            // a field of another object's, which its script keeps on the object it publishes
+            Expr::Member(o, f) if self.o.fighter && self.a_value(o) && !self.is_clip(o) && f != "data" && f.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && self.expr(o).is_ok_and(|(w, t)| w != "self" && matches!(t, Ty::Object | Ty::Any)) => {
+                let (who, _) = self.expr(o)?;
+                let get = if (self.o.owner_stores)(f) { format!("__c_{}.get()", ident(f)) } else { ident(f) };
+                return Ok((format!("({who} == null || {who}.exports.__source == null ? null : {who}.exports.__source.{get})"), Ty::Any));
             }
             Expr::Call(f, args) => return self.call(f, args),
             Expr::Unary(UnOp::Not, x) => (format!("!{}", paren(&self.test(x)?)), Ty::Bool),
@@ -958,10 +1099,11 @@ impl<'o, 'a> Writer<'o, 'a> {
                 (if parts.is_empty() { "{}".into() } else { format!("{{ {} }}", parts.join(", ")) }, Ty::Object)
             }
             Expr::Index(a, i) => {
-                let (a, _) = self.expr(a)?;
+                let (a, ta) = self.expr(a)?;
                 let (i, ti) = self.expr(i)?;
                 if ti == Ty::Str { return Err("reads by a name worked out as it runs".into()) }
-                (format!("{}[{i}]", paren(&a)), Ty::Any)
+                // (an item of a list of records is a record)
+                (format!("{}[{i}]", paren(&a)), if ta == Ty::Rect { Ty::Rect } else { Ty::Any })
             }
             Expr::New(..) => return Err("makes an object".into()),
             Expr::Assign(..) => return Err("uses an assignment as a value".into()),
@@ -984,12 +1126,22 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// a closure the code makes, as a function of the script's own: one that captures none of the
     /// function's variables reads only the object's fields and methods, so it is the same anywhere
     fn closure(&mut self, f: &Function) -> Result<String, String> {
-        if !f.activation.is_empty() { return Err("a closure that keeps variables of its own for another".into()) }
         let mut captures = false;
         crate::model::ast::walk_exprs(&f.body, &mut |e| if let Expr::Name(n) = e {
             if self.field(n).is_none() && self.method(n).is_none() && n != "Math" && !n.contains("Peptide") { captures = true }
         });
-        if captures { return Err("a closure that reads a variable of the function that makes it".into()) }
+        // (one that reads its maker's variables is written where it is made, and sees them)
+        if captures || !f.activation.is_empty() {
+            let unknown: Vec<String> = { let mut u = Vec::new(); crate::model::ast::walk_exprs(&f.body, &mut |e| if let Expr::Name(n) = e {
+                if self.field(n).is_none() && self.method(n).is_none() && n != "Math" && !n.contains("Peptide") && !self.captured.contains(&ident(n)) && !f.activation.iter().any(|(_, a)| a == n) && !self.o.model.classes.values().any(|c| short(&c.name) == n) { u.push(n.clone()) }
+            }); u };
+            if !unknown.is_empty() { return Err(format!("a closure that reads {}, which is no variable of its maker", unknown[0])) }
+            let (locals, effects) = (std::mem::take(&mut self.locals), self.effects);
+            let text = self.function("", f);
+            self.locals = locals;
+            self.effects = effects;
+            return Ok(paren(&text?));
+        }
         let n = self.helpers.keys().filter(|k| k.starts_with("closure")).count() + 1;
         let name = format!("closure{n}");
         let (locals, effects) = (std::mem::take(&mut self.locals), self.effects);
@@ -1069,6 +1221,32 @@ impl<'o, 'a> Writer<'o, 'a> {
         let (key, name) = if how == "set" { ("owner_set_field", "setOwnerField") } else { ("owner_field", "ownerField") };
         if !self.helpers.contains_key(name) { self.helpers.insert(name.into(), helper(self.o.runtime, "helpers", key, name, &[], &[])?); }
         Ok(name.into())
+    }
+
+    /// the one record its class ever puts in a field, where it puts nothing else there
+    fn only_record(&self, f: &str) -> Option<Expr> {
+        let c = self.o.model.classes.get(&self.class)?;
+        let mut found: Option<Expr> = None;
+        let mut other = false;
+        for m in &c.methods {
+            walk(&m.function.body, &mut |s| if let Stmt::Assign(Place::Member(Expr::This, g), v) = s {
+                if g != f { return }
+                let mut v = v;
+                while let Expr::Coerce(_, x) = v { v = x; }
+                match (v, &found) {
+                    (Expr::Object(_), None) => found = Some(v.clone()),
+                    (Expr::Object(_), Some(r)) if r == v => {}
+                    _ => other = true,
+                }
+            });
+        }
+        if other { None } else { found }
+    }
+
+    /// whether an expression is a value its code holds (not its clip, and not a name of the API's,
+    /// though a variable it shares with a closure is one)
+    fn a_value(&self, o: &Expr) -> bool {
+        match o { Expr::This => false, Expr::Name(n) => self.captured.contains(&ident(n)), _ => true }
     }
 
     /// whether a value is a copy of its own clip
@@ -1185,11 +1363,44 @@ impl<'o, 'a> Writer<'o, 'a> {
                     if row.code.is_empty() && top { return Ok((String::new(), Ty::Any)) }
                     return self.fill(&row, "self", args, m);
                 }
+                // the API's helpers written as plain functions (`runtime/native/utils.hx`)
+                (n, _, _) if n.contains("PeptideUtils") && self.o.runtime.native_files.get("utils").is_some_and(|t| t.lines().any(|l| l.trim_end() == format!("// ---- {m}"))) => {
+                    if !self.helpers.contains_key(m.as_str()) { self.helpers.insert(m.clone(), helper(self.o.runtime, "utils", m, m, &[], &[])?); }
+                    let vs: Result<Vec<String>, String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect();
+                    return Ok((format!("{m}({})", vs?.join(", ")), if m == "getVelocityVector" { Ty::Rect } else { Ty::Num }));
+                }
+                // the API's other helpers with a row (`PeptideUtils.toDegrees`)
+                (n, _, _) if calls().rows.contains_key(&format!("{n}.{m}")) => {
+                    let row = calls().rows[&format!("{n}.{m}")].clone();
+                    return self.fill(&row, "self", args, m);
+                }
                 ("Math", _, _) => {
                     let vs: Result<Vec<String>, String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect();
                     return Ok((format!("Math.{m}({})", vs?.join(", ")), Ty::Num));
                 }
                 _ => {}
+            }
+        }
+        // another object's clip sent to a label: its own script's jump, through what it publishes
+        if let Expr::Call(g, a) = &**recv {
+            if a.is_empty() && matches!(m.as_str(), "gotoAndStop" | "gotoAndPlay") && matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "stanceClip" | "getStanceMC" | "getMC") && self.expr(o).is_ok_and(|(w, _)| w != "self")) {
+                let Expr::Member(o, _) = &**g else { unreachable!() };
+                let (who, _) = self.expr(o)?;
+                let [l] = args else { return Err(format!("calls {m} with other than one frame")) };
+                let (l, _) = self.expr(l)?;
+                return Ok((format!("if ({who} != null && {who}.exports.__playFrame != null) {who}.exports.__playFrame({l})"), Ty::Any));
+            }
+        }
+        // the clip its animation shows (its stance), asked of directly: its jumps, as its own
+        if self.o.fighter {
+            if let Expr::Call(g, a) = &**recv {
+                if a.is_empty() && matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "stanceClip" | "getStanceMC") && self.expr(o).is_ok_and(|(w, _)| w == "self")) {
+                    return match (m.as_str(), args) {
+                        ("gotoAndStop" | "gotoAndPlay", [l]) => Ok((self.jump_to_value(l)?, Ty::Any)),
+                        ("stop" | "play", []) => Ok((String::new(), Ty::Any)),
+                        _ => Err(format!("calls {m} on the clip its animation shows")),
+                    };
+                }
             }
         }
         // an effect it keeps taken off where it sits: gone; its own clip taken off its parent is a
@@ -1201,7 +1412,16 @@ impl<'o, 'a> Writer<'o, 'a> {
                 return Ok((format!("if ({v} != null && !{v}.isDisposed()) {v}.kill()"), Ty::Any));
             }
         }
-        let (who, _) = self.expr(recv)?;
+        let (who, who_ty) = self.expr(recv)?;
+        // a call a record answers
+        if who_ty == Ty::Rect {
+            let row = calls().record_calls.get(m.as_str()).cloned().ok_or_else(|| format!("calls {m} on a record"))?;
+            return self.fill(&Row { code: row, returns: Ty::Any }, &who, args, m);
+        }
+        // one of its own declaration methods: the record it declares
+        if who == "self" && args.is_empty() {
+            if let Some(r) = self.declared_record(m) { return Ok((r, Ty::Rect)) }
+        }
         // a method of the object's own class, called through the object from another of its classes
         if who == "self" && !self.is_itself() {
             if let Some(id) = self.itself_method(m) { return self.own_call(&id, args) }
@@ -1231,7 +1451,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             None | Some(Expr::Null) | Some(Expr::Undefined) => {}
             Some(Expr::Object(kv)) => for (k, v) in kv {
                 let Expr::Str(k) = k else { return Err("makes an effect with options named as it runs".into()) };
-                if !matches!(k.as_str(), "x" | "y" | "scaleX" | "scaleY" | "rotation" | "behind" | "parentLock" | "syncHitStun" | "flipOnX") {
+                if !matches!(k.as_str(), "x" | "y" | "scaleX" | "scaleY" | "rotation" | "behind" | "parentLock" | "syncHitStun" | "flipOnX" | "loop") {
                     return Err(format!("makes an effect with its {k} set"));
                 }
                 opts.insert(k.clone(), v);
@@ -1240,6 +1460,8 @@ impl<'o, 'a> Writer<'o, 'a> {
         }
         let flag = |k: &str| -> Result<bool, String> { match opts.get(k) { None => Ok(false), Some(Expr::Bool(b)) => Ok(*b), _ => Err(format!("makes an effect with {k} worked out as it runs")) } };
         let (locked, behind) = (flag("parentLock")?, flag("behind")?);
+        // (one asked to loop plays on until it is taken off)
+        let looped = matches!(opts.get("loop"), Some(Expr::Bool(true)) | Some(Expr::Int(_)) | Some(Expr::Num(_)));
         let num = |w: &mut Self, k: &str| -> Result<Option<String>, String> { opts.get(k).map(|e| Ok(w.expr(e)?.0)).transpose() };
         let (ox, oy) = (num(self, "x")?, num(self, "y")?);
         let size = number(self.o.size);
@@ -1250,6 +1472,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         if let Some(n) = gone { st.push(format!("timeout: {}", 2 * (n.max(1) - 1))); }
         for k in ["scaleX", "scaleY"] { if let Some(t) = num(self, k)? { st.push(format!("{k}: {t}")); } }
         if behind { st.push("layer: VfxLayer.CHARACTERS_BACK".into()); }
+        if looped { st.retain(|x| !x.starts_with("timeout:")); st.push("loop: true".into()); }
         let mut after = Vec::new();
         if locked {
             // riding the object, which mirrors the offset with it
@@ -1275,14 +1498,22 @@ impl<'o, 'a> Writer<'o, 'a> {
         // (made again without its placing, which `placeEffect` does)
         let Some(Expr::Object(kv)) = args.get(1) else { return Err("keeps an effect it places after making it".into()) };
         let placed = |k: &str| kv.iter().find(|(x, _)| matches!(x, Expr::Str(x) if x == k)).map(|(_, v)| v.clone());
-        if placed("rotation").is_some() { return Err("keeps an effect it turns after making it".into()) }
-        let rest: Vec<(Expr, Expr)> = kv.iter().filter(|(k, _)| !matches!(k, Expr::Str(k) if k == "x" || k == "y")).cloned().collect();
+        let rest: Vec<(Expr, Expr)> = kv.iter().filter(|(k, _)| !matches!(k, Expr::Str(k) if k == "x" || k == "y" || k == "rotation")).cloned().collect();
         let (make, _) = self.effect(&[args[0].clone(), Expr::Object(rest)])?;
         let size = number(self.o.size);
         let off = |w: &mut Self, k: &str| -> Result<String, String> { Ok(match placed(k) { None => "0".into(), Some(e) => fold(&format!("{} * {size}", paren(&w.expr(&e)?.0))) }) };
         let (x, y) = (off(self, "x")?, off(self, "y")?);
         self.blocks.insert("place_effect".into());
-        Ok((format!("placeEffect({make}, {x}, {y})"), ty))
+        let rot = match placed("rotation") { None => "null".to_string(), Some(e) => self.expr(&e)?.0 };
+        Ok((format!("placeEffect({make}, {x}, {y}, {rot})"), ty))
+    }
+
+    /// a call of one of its own declaration methods: the record it declares, as written
+    fn declared_record(&self, n: &str) -> Option<String> {
+        let c = self.o.itself?;
+        let m = c.methods.iter().find(|m| m.name == n && declares(m))?;
+        let v = crate::model::declare::returned(&m.function.body)?;
+        Some(crate::emit::literal(&v, &|_| None))
     }
 
     fn own_call(&mut self, id: &str, args: &[Expr]) -> Result<(String, Ty), String> {
@@ -1320,6 +1551,29 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let to = states().get(&name).and_then(|s| s.enter.clone()).ok_or_else(|| format!("sets a fighter's state to {name}, which this engine's fighters have none of"))?;
                 return Ok((format!("{who}.toState({to})"), Ty::Any));
             }
+            // another projectile's own stats written: the engine's own stat on it
+            ("updateProjectileStats", [Expr::Object(pairs)]) if !mine && self.o.fighter => {
+                let mut out = Vec::new();
+                for (k, v) in pairs {
+                    let Expr::Str(k) = k else { return Err("writes a stat by a name worked out as it runs".into()) };
+                    let t = calls().projectile_stats.get(k).filter(|t| t.starts_with("self.")).ok_or_else(|| format!("writes another projectile's stat {k}, which has no row in native_calls.jsonc"))?.clone();
+                    let (val, _) = self.expr(v)?;
+                    out.push(fold(&format!("{who}{}", &t[4..]).replace("{v}", &paren(&val)).replace("{size}", &number(self.o.size))
+                        .replace("{speed}", &number(self.o.speed)).replace("{accel}", &number(self.o.accel))));
+                }
+                return Ok((out.join(";\n"), Ty::Any));
+            }
+            // a projectile's state, by the source's name for it
+            ("inState", [Expr::Member(c, n)]) if matches!(&**c, Expr::Name(c) if short(c) == "PeptidePState") => {
+                let t = calls().projectile_states.get(n).ok_or_else(|| format!("tests a projectile's state {n}, which has no row in native_calls.jsonc"))?;
+                return Ok((t.replace("{self}", who), Ty::Bool));
+            }
+            // attack stats written on another object, that this engine keeps none of: nothing here,
+            // as the runtime keeps them for nothing that reads them
+            ("updateAnimationStats" | "updateAttackStats", [Expr::Object(pairs)]) if !mine && self.o.fighter
+                && pairs.iter().all(|(k, _)| matches!(k, Expr::Str(k) if !super::attack_stats::table().maps(k) && k != "refreshRate")) => {
+                return Ok(("// (not ported, as on the runtime: attack stats this engine keeps none of, written on another object)".into(), Ty::Any));
+            }
             ("inState", [st]) => {
                 let name = self.state_name(st)?;
                 let tests: Vec<String> = states().get(&name).into_iter().flat_map(|s| s.is.iter()).map(|t| if t.starts_with("CStateGroup.") {
@@ -1347,6 +1601,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let i = box_index(i)?;
                 let back = scale.map(|s| format!(" / {}", number(s))).unwrap_or_default();
                 return Ok((format!("self.getHitboxStats({i}).{field}{back}"), Ty::Num));
+            }
+            ("updateHitboxStats", [i, Expr::Member(t, f)]) if matches!(**t, Expr::This) && (mine || self.o.fighter) => {
+                let record = self.only_record(f).ok_or_else(|| format!("writes box stats from {f}, a record worked out as it runs"))?;
+                return self.api(who, m, &[i.clone(), record]);
             }
             ("updateHitboxStats", [i, Expr::Object(pairs)]) if mine || self.o.fighter => {
                 let i = box_index(i)?;
@@ -1404,6 +1662,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                 self.blocks.insert("fired_stats".into());
                 self.stat_keys.insert(format!("projectile:{k}"));
                 return Ok((format!("firedStat({who}, {})", quote(k)), Ty::Any));
+            }
+            ("getLedges", []) if self.o.fighter && who == "stage" => {
+                self.blocks.insert("ledges".into());
+                return Ok(("stageLedges()".into(), Ty::Rect));
             }
             ("getDeathBounds" | "getCameraBounds", []) if self.o.fighter && who == "stage" => {
                 self.blocks.insert("rects".into());
@@ -1606,6 +1868,19 @@ self.playFrameLabel({})", quote(f))); }
                 let (dx, _) = self.expr(dx)?;
                 let (dy, _) = self.expr(dy)?;
                 Ok((format!("moveIfClear(self, {dx}, {dy})"), Ty::Bool))
+            }
+            // a floor of its own, carried with it
+            ("makeOwnFloor", a) if a.len() >= 4 => {
+                block(self, "own_floor");
+                let vs: Result<Vec<String>, String> = a.iter().take(4).map(|x| Ok(self.expr(x)?.0)).collect();
+                let solid = match a.get(4) { None => "false".to_string(), Some(x) => self.test(x)? };
+                Ok((format!("makeOwnFloor({}, {solid})", vs?.join(", ")), Ty::Object))
+            }
+            ("dropOwnFloor", []) => { block(self, "own_floor"); Ok(("dropOwnFloor()".into(), Ty::Any)) }
+            ("getNearestPath" | "getNearest", [t, ..]) => {
+                block(self, "nearest");
+                let (t, _) = self.expr(t)?;
+                Ok((if m == "getNearestPath" { format!("nearestPath({t})") } else { format!("nearest({t})") }, Ty::Object))
             }
             ("forceOnGround", _) => { block(self, "floor_hold"); Ok(("holdToFloor()".into(), Ty::Any)) }
             ("allowAttack", [on, Expr::Str(label), rest @ ..]) => {
@@ -1878,11 +2153,18 @@ self.playFrameLabel({})", quote(f))); }
             self.kept.insert(listening.clone(), format!("// whether {h} listens for meeting its owner now\nvar {listening} = self.makeBool(false);"));
             return Ok((format!("{listening}.set({})", m == "addEventListener"), Ty::Any));
         }
+        if matches!(name.as_str(), "projDestroyed" | "itemDestroyed" | "enemyDestroyed") && who != "self" && self.o.fighter {
+            let h = self.handler(handler)?;
+            return Ok((if m == "addEventListener" { format!("{who}.addEventListener(EntityEvent.DISPOSE, {h}, {{ persistent: true }})") } else { format!("{who}.removeEventListener(EntityEvent.DISPOSE, {h})") }, Ty::Any));
+        }
         let ends = name == "projDestroyed" && who == "self";
         let table = super::events::table();
-        let engine = if ends { &name } else {
-            table.engine.get(&name).or_else(|| table.state.get(&name)).ok_or_else(|| format!("listens for {name}, which this engine does not raise"))?
-        };
+        let raised = table.engine.get(&name).or_else(|| table.state.get(&name));
+        // (one neither this engine nor the runtime ever raises is heard by no one on either path)
+        if raised.is_none() && !ends && !self.o.runtime.files.values().any(|t| t.contains(&format!("\"{name}\""))) {
+            return Ok((format!("// (it listens for the source's {name}, which nothing here raises)"), Ty::Any));
+        }
+        let engine = if ends { &name } else { raised.ok_or_else(|| format!("listens for {name}, which this engine does not raise"))? };
         let h = self.handler(handler)?;
 
         // its own end: told from the engine's `onKill`, through a note of whether it listens

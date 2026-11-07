@@ -194,7 +194,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let rocket = rocketing.first().map(|l| compile::quote(l));
     if rocket.is_some() { blocks.insert("rocket".into()); }
     let mut functions = w.functions.clone();
-    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "walk_start", "end_move", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "last_used", "char_stats", "rects", "move_clear", "fired_stats", "timers"];
+    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "walk_start", "end_move", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "last_used", "char_stats", "rects", "move_clear", "fired_stats", "timers", "ledges", "own_floor", "nearest"];
     for b in order.iter().filter(|b| blocks.contains(**b)) {
         let words: Vec<(&str, String)> = match *b {
             "walk_start" => {
@@ -202,7 +202,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
                 vec![("START", num(stat("accel_start") * stat("norm_xSpeed") * f.units.speed))]
             }
             "items" => vec![("TOSS", num(f.units.item_toss)), ("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed))],
-            "rects" | "move_clear" => vec![("SIZE", num(f.units.size))],
+            "rects" | "move_clear" | "ledges" | "own_floor" => vec![("SIZE", num(f.units.size))],
             "rocket" => vec![("ATTACK", rocket.clone().unwrap_or_else(|| "null".into())), ("SPEED", num(f.units.speed)),
                 ("BLOCKED", native::state_tests(rt, "self", &[10, 13, 14, 15, 19, 20])), ("ATTACKING", native::state_tests(rt, "self", &[9])),
                 ("STOPS", native::state_tests(rt, "self", &[22, 16, 18]))],
@@ -315,6 +315,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     slots.insert("own_start", w.start.clone());
     let mut update = vec!["hitFrame();".to_string(), "attackFrame();".into()];
     if blocks.contains("last_used") { update.push("usedFrame();".into()); }
+    if blocks.contains("own_floor") { update.push("ownFloorFrame();".into()); }
     if blocks.contains("items") { update.push("itemFrame();".into()); }
     slots.insert("update", update);
     slots.insert("own_tick", w.tick.clone());

@@ -539,12 +539,35 @@ function actionsBack(?e) {
 }
 
 // ---- place_effect
-// an effect its code keeps, placed off where it is
-function placeEffect(e, x, y) {
+// an effect its code keeps, placed off where it is (and turned, where it asks)
+function placeEffect(e, x, y, ?rot) {
 	if (e == null) return null;
 	e.setX(self.getX() + x);
 	e.setY(self.getY() + y);
+	if (rot != null) e.setRotation(rot);
 	return e;
+}
+
+// ---- nearest
+// the nearest object of a kind ("character", "player", "item", "projectile", "enemy"), and that one
+// as the source's path to it
+function nearest(type) {
+	var list = (type == "character" || type == "player") ? match.getCharacters() : (type == "enemy" ? match.getCustomGameObjects() : match.getProjectiles());
+	var best = null;
+	var bd = 1.0e12;
+	for (o in list) {
+		if (o == self || o.isDisposed()) continue;
+		if (type == "item" && (o.exports == null || o.exports.__isItem != true)) continue;
+		var dx = o.getX() - self.getX();
+		var dy = o.getY() - self.getY();
+		var d = dx * dx + dy * dy;
+		if (d < bd) { bd = d; best = o; }
+	}
+	return best;
+}
+function nearestPath(type) {
+	var t = nearest(type);
+	return t == null ? [] : [t];
 }
 
 // ---- last_used
@@ -684,4 +707,45 @@ function stopTimer(t) {
 	if (t == null) return;
 	t.dead = true;
 	if (t.id >= 0) self.removeTimer(t.id);
+}
+
+// ---- ledges
+// the stage's ledges, where each is in the source's units
+function stageLedges() {
+	var out = [];
+	for (st in match.getStructures()) {
+		if (st.getAllPoints == null) continue;
+		var pts = st.getAllPoints();
+		if (pts == null || pts.length < 2) continue;
+		if (st.getStructureStat("leftLedge") == true) out.push({ x: pts[0].x / SIZE, y: pts[0].y / SIZE });
+		if (st.getStructureStat("rightLedge") == true) { var p = pts[pts.length - 1]; out.push({ x: p.x / SIZE, y: p.y / SIZE }); }
+	}
+	return out;
+}
+
+// ---- own_floor
+// a floor of its own, the size given (the source's units, from where it is): one at a time, a
+// platform it stands on and drops through unless it is asked for as terrain, carried with it
+var ownFloors = self.makeObject([]);
+function makeOwnFloor(x, y, w, h, ?terrain) {
+	dropOwnFloor();
+	var x0 = Math.min(x, x + w) * SIZE;
+	var x1 = Math.max(x, x + w) * SIZE;
+	var y0 = y * SIZE;
+	var st = match.createLineSegmentStructure([x0, y0, x1, y0], null);
+	if (st == null) return null;
+	var solid = terrain == true;
+	st.updateStructureStats({ structureType: StructureType.FLOOR, dropThrough: !solid, leftLedge: solid, rightLedge: solid });
+	st.addToBlacklist(self);
+	st.setX(self.getX());
+	st.setY(self.getY());
+	ownFloors.get().push(st);
+	return st;
+}
+function dropOwnFloor() {
+	for (st in ownFloors.get()) { st.updateStructureStats({ disabled: true }); st.setX(-2000); st.setY(-3000); }
+	ownFloors.set([]);
+}
+function ownFloorFrame() {
+	for (st in ownFloors.get()) { st.setX(self.getX()); st.setY(self.getY()); }
 }
