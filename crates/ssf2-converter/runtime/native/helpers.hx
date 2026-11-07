@@ -92,3 +92,112 @@ function NAME(label) {
 		// {cases}
 	}
 }
+
+// ---- own_stat
+//: STAT the stat, DECLARED what it states for it
+// its STAT: what its code set it to since, else what it states
+function NAME() {
+	return source.__stats.exists("STAT") ? source.__stats.get("STAT") : DECLARED;
+}
+
+// ---- stance_jump
+//: its cases are each clip's labels, as the animations that show each
+// a jump by label on the clip it shows: the animation that shows the label in the clip of the one
+// it plays (a label no animation here shows is a part of the clip this engine never plays)
+function NAME(label) {
+	switch (self.getAnimation()) {
+		// {cases}
+	}
+}
+// one of `anims` shows the label (`starts`: as its first frame): the one playing if it is one of them
+function goToLabel(label, anims, starts) {
+	var i = anims.indexOf(self.getAnimation());
+	if (i < 0) i = 0;
+	if (starts[i]) { self.playAnimation(anims[i]); return; }
+	if (self.getAnimation() != anims[i]) self.playAnimation(anims[i]);
+	self.playFrameLabel(label);
+}
+
+// ---- landing_lag
+//: CONTINUE its listener that goes on from `continue`
+// its landing: on touching down, the attack goes on from `continue` (`on`), or it lands
+function NAME(on) {
+	self.removeEventListener(EntityEvent.COLLIDE_FLOOR, CONTINUE);
+	self.removeEventListener(EntityEvent.COLLIDE_FLOOR, landOnTouch);
+	self.addEventListener(EntityEvent.COLLIDE_FLOOR, on ? CONTINUE : landOnTouch, { persistent: true });
+	if (self.isOnFloor()) { if (on) CONTINUE(null); else landOnTouch(null); }
+}
+function landOnTouch(?e) {
+	self.removeEventListener(EntityEvent.COLLIDE_FLOOR, landOnTouch);
+	self.toState(CState.LAND);
+}
+
+// ---- jump_to_continue
+// touched down in an attack that goes on there: from `continue`, with no steering, ending if it leaves the floor
+function NAME(?e) {
+	self.removeEventListener(EntityEvent.COLLIDE_FLOOR, jumpToContinue);
+	self.updateAnimationStats({ allowMovement: false, leaveGroundCancel: true });
+	stanceJump("continue");
+}
+
+// ---- clip_frame
+//: its cases are each animation's first clip frame
+// the frame its clip is on, as the source counts the clip's frames
+function NAME() {
+	var k = Std.int((self.getCurrentFrame() - 1) / 2);
+	switch (self.getAnimation()) {
+		// {cases}
+	}
+	return k + 1;
+}
+
+// ---- to_clip_frame
+//: its cases are each clip's animations, the first clip frame each shows and how many
+// its clip sent to a frame by number: the animation of its clip that shows it, at it
+function NAME(n) {
+	var f = Std.int(n);
+	switch (self.getAnimation()) {
+		// {cases}
+	}
+}
+function goToFrame(f, anims, froms, lens) {
+	var i = 0;
+	while (i < anims.length) {
+		if (f >= froms[i] && f < froms[i] + lens[i]) {
+			if (self.getAnimation() != anims[i]) self.playAnimation(anims[i]);
+			self.playFrame((f - froms[i]) * 2 + 1);
+			return;
+		}
+		i++;
+	}
+}
+
+// ---- fighter_fire
+//: PROJECTILE its name, CONTENT its content, DX DY its declared offset, XS YS its declared launch
+//: (already in this engine's speed), SIZE the source's size here
+// it fires PROJECTILE: off where it is (fired into the floor it stands on, on that floor), launched
+// the way it faces. the launch is handed over first, as the source gives it before the
+// projectile's own code runs: a projectile on the runtime takes it up as it starts
+function NAME(?x, ?y, ?place) {
+	if (x == null) x = 0;
+	if (y == null) y = 0;
+	var px = self.getX() + self.flipX((x + DX) * SIZE);
+	var py = self.getY() + (y + DY) * SIZE;
+	if (place == true && (x != 0 || y != 0)) { px = x * SIZE; py = y * SIZE; }
+	else if (self.isOnFloor() && py > self.getY()) py = self.getY();
+	var launch = { x: px, y: py, xs: null, ys: null, name: "PROJECTILE", decl: null, g: 0, max: null };
+	if (XS != 0 || YS != 0) { launch.xs = self.flipX(XS); launch.ys = YS; }
+	self.exports.__launch = launch;
+	var p = match.createProjectile(self.getResource().getContent("CONTENT"), self);
+	if (p == null) { self.exports.__launch = null; return null; }
+	if (p.exports != null) p.exports.__thrownRight = p.isFacingRight();
+	if (self.exports.__launch != null) {
+		self.exports.__launch = null;
+		p.exports.__launched = launch;
+		p.setX(px);
+		p.setY(py);
+		if (launch.xs != null) { p.setXSpeed(p.flipX(launch.xs)); p.setYSpeed(launch.ys); }
+	}
+	self.exports.__lastProj = p;
+	return p;
+}

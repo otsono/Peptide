@@ -54,7 +54,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         let Some(c) = model.class_of(sym) else { continue };
         if runtime.provides(&c.name) { continue }
         if shown.contains(&sym) { classes.push(c) }
-        else if !quiet(model, runtime, &c.name) { return Err(format!("{} inside it has code of its own", c.name)) }
+        else if !is_quiet(model, runtime, &c.name) { return Err(format!("{} inside it has code of its own", c.name)) }
     }
     if classes.is_empty() && itself.is_none() { return Err("no code of its own".into()) }
     // a clip whose code its owner reaches into keeps the object the owner holds
@@ -137,9 +137,12 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let pkg = compile::Package::new(model, runtime);
     let owner_stores = |f: &str| pkg.stored.contains(f);
     let jumps = label_jumps(model, pieces);
+    let no_labels = BTreeMap::new();
+    let no_frames = BTreeMap::new();
     let object = native::Object {
         model, itself, classes: classes.clone(), jumps: &jumps, runtime, declared: &declared, switches: &taken.switches,
-        owner_stat: &owner_stat, effect: &made, owner_anims: &owner.anims, fired: &fired, owner_declares: &owner_stat_of, owner_stores: &owner_stores, root: clip_sym, size: units.size, speed: units.speed, accel: units.accel,
+        owner_stat: &owner_stat, effect: &made, owner_anims: &owner.anims, fired: &fired, owner_declares: &owner_stat_of, owner_stores: &owner_stores, root: clip_sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false,
+        root_anim: &|_| None, walk_start: None, stance_labels: &no_labels, clip_frames: &no_frames,
     };
     let written = native::write(&object)?;
 
@@ -187,7 +190,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     // its entity: each frame with code calls it, and each animation plays on into the next
     let content = crate::projectile_gen::projectile_content_id(entity_key);
     let entity_path = char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content)));
-    keyframes(&entity_path, entity_key, model, pieces, &written.frames).map_err(|e| e.to_string())?;
+    keyframes_with(&entity_path, entity_key, model, pieces, &written.frames, true, &BTreeMap::new()).map_err(|e| e.to_string())?;
     let anim_stats = char_dir.join(format!("library/scripts/Projectile/{}AnimationStats.hx", crate::haxe_gen::snake_to_pascal(entity_key)));
     plays_on(&anim_stats, model, pieces).map_err(|e| e.to_string())?;
     Ok(script)
@@ -195,7 +198,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
 
 /// whether a class (and what it extends of the package's) only stops or plays its clip, sets its
 /// own properties to plain values and registers its frame scripts: nothing anyone sees here
-fn quiet(model: &SourceModel, runtime: &Runtime, class: &str) -> bool {
+pub fn is_quiet(model: &SourceModel, runtime: &Runtime, class: &str) -> bool {
     let plain = |e: &Expr| matches!(e, Expr::Null | Expr::Undefined | Expr::Bool(_) | Expr::Num(_) | Expr::Int(_) | Expr::Str(_));
     let mut cur = model.classes.get(class);
     while let Some(c) = cur {
@@ -235,7 +238,10 @@ fn clip_frame(p: &Piece, k: u32) -> u32 {
 /// the entity's keyframes: a "Source frames" layer on each animation, whose keyframe on each
 /// source frame with code calls that frame's function, and a "Source labels" layer with the
 /// clip's labels inside it (a jump to one plays the animation at the label)
-fn keyframes(path: &Path, key: &str, model: &SourceModel, pieces: &[Piece], frames: &BTreeMap<(u16, u32), String>) -> anyhow::Result<()> {
+/// (`born`: its first frame runs once its maker is done, as a projectile's does; `extra`: more code
+/// on an animation's engine frame, by its name and the frame's index)
+pub fn keyframes_with(path: &Path, key: &str, model: &SourceModel, pieces: &[Piece], frames: &BTreeMap<(u16, u32), String>,
+                      born: bool, extra: &BTreeMap<(String, u32), String>) -> anyhow::Result<()> {
     let Ok(bytes) = std::fs::read(path) else { return Ok(()) };
     let mut json: serde_json::Value = serde_json::from_slice(&bytes)?;
     let lens: BTreeMap<String, u64> = {
@@ -258,9 +264,12 @@ fn keyframes(path: &Path, key: &str, model: &SourceModel, pieces: &[Piece], fram
         let mut at: Vec<(u32, String)> = Vec::new();
         for k in 0..(p.frames + p.head) {
             let f = clip_frame(p, k);
-            let Some(call) = frames.get(&(p.sym, f)) else { continue };
+            let more = extra.get(&(p.fm_name.clone(), 2 * k));
+            let call = frames.get(&(p.sym, f));
+            if call.is_none() && more.is_none() { continue }
             // the first frame as the object is made runs once its maker is done (`update`)
-            let code = if k == 0 && f == 1 { format!("if (started.get()) {call}") } else { call.clone() };
+            let mut code = match call { Some(c) if born && k == 0 && f == 1 => format!("if (started.get()) {c}"), Some(c) => c.clone(), None => String::new() };
+            if let Some(m) = more { if !code.is_empty() { code.push('\n'); } code.push_str(m); }
             if 2 * k < total { at.push((2 * k, code)); }
         }
         let tag = format!("{key}::{}::native", p.fm_name);
@@ -313,7 +322,7 @@ fn keyframes(path: &Path, key: &str, model: &SourceModel, pieces: &[Piece], fram
     }
     // a conversion run again replaces what it wrote before
     let old: BTreeSet<String> = json["layers"].as_array().map(|a| a.iter()
-        .filter(|l| l["name"] == "Source frames" || l["name"] == "Source labels").filter_map(|l| l["$id"].as_str().map(String::from)).collect()).unwrap_or_default();
+        .filter(|l| l["name"] == "Source frames" || l["name"] == "Source labels" || (!born && l["type"] == "FRAME_SCRIPT")).filter_map(|l| l["$id"].as_str().map(String::from)).collect()).unwrap_or_default();
     let old_kfs: BTreeSet<String> = json["layers"].as_array().map(|a| a.iter()
         .filter(|l| old.contains(l["$id"].as_str().unwrap_or("")))
         .flat_map(|l| l["keyframes"].as_array().cloned().unwrap_or_default())

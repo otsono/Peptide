@@ -1036,11 +1036,12 @@ impl DebugTarget for FraymakersTarget {
 }
 
 /// The script that reads or sets a fighter's named value on Fraymakers, run inside the
-/// fighter's own script (`e@pN`): the runtime keeps them on the object its code works with.
+/// fighter's own script (`e@pN`): every fighter publishes the object its code keeps them on
+/// (`exports.__source`), whether it is written natively or runs on the runtime.
 pub fn fm_var_expr(name: &str, value: Option<f64>) -> String {
     match value {
-        Some(v) => format!("(function(){{var o=Objects.view(self);o.__vars.set(\"{name}\",{v});return o.__vars.get(\"{name}\");}})()"),
-        None => format!("Objects.view(self).__vars.get(\"{name}\")"),
+        Some(v) => format!("(function(){{var o=self.exports.__source;o.__vars.set(\"{name}\",{v});return o.__vars.get(\"{name}\");}})()"),
+        None => format!("self.exports.__source.__vars.get(\"{name}\")"),
     }
 }
 

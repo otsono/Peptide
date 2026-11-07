@@ -1,7 +1,8 @@
 // what the source's engine does in its own states, as this engine's animations: stats an
 // animation states, code its first frame runs, and points it carries. keyed by this engine's
 // animation names (the ones the conversion writes); an animation the fighter has none of is
-// skipped. `self` is the fighter, as in any keyframe of its entity.
+// skipped. `self` is the fighter, as in any keyframe of its entity; `{size}` the scale of the
+// source's pixels to this engine's.
 {
   "stats": {
     // the source steers an air dodge (its engine lets the dodge drift under the held direction)
@@ -30,7 +31,7 @@
     "revival": [
       "revivedAt = self.getY();",
       "revivalFrames = 0;",
-      "self.setY(revivedAt - 30 * PeptideRuntime.data.units.size);",
+      "self.setY(revivedAt - 30 * {size});",
       "self.setXVelocity(0);",
       "self.setYVelocity(0);",
       "self.removeTimer(revivalTimer);",
@@ -77,7 +78,7 @@
       "\t}",
       "\trevivalFrames++;",
       "\tself.setYVelocity(0);",
-      "\tvar s = PeptideRuntime.data.units.size;",
+      "\tvar s = {size};",
       "\tif (revivalFrames <= 60) self.setY(revivedAt - 30 * s + revivalFrames * 0.5 * s);",
       "\tvar c = self.getHeldControls();",
       "\tif (revivalFrames >= 300 || (revivalFrames > 60 && (c.LEFT || c.RIGHT || c.UP || c.DOWN || c.ATTACK || c.SPECIAL || c.JUMP || c.SHIELD || c.GRAB))) self.toState(CState.FALL);",

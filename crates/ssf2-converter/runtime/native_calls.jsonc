@@ -91,6 +91,43 @@
     "time_max": "life.set(Std.int({v} * 2))"
   },
 
+  // a fighter's own calls (a `{t0}` is the argument as a test, the source's way)
+  "setIntangibility": "{self}.updateAnimationStats({ bodyStatus: {t0} ? BodyStatus.INTANGIBLE : BodyStatus.NONE })",
+  "setInvincibility": "{self}.updateAnimationStats({ bodyStatus: {t0} ? BodyStatus.INVINCIBLE : BodyStatus.NONE })",
+  "setInterruptible": "Common.setIASA({t0})",
+  "getGrabbedOpponents": { "code": "{self}.getAllGrabbedFoes()", "returns": "object" },
+  "flip": "if ({self}.isFacingRight()) {self}.faceLeft(); else {self}.faceRight()",
+  // the one it holds drawn in front of it or behind it
+  "swapDepthGrabbed": "if ({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length > 0) { if ({0} == true) {self}.bringInFront({self}.getAllGrabbedFoes()[0]); else {self}.sendBehind({self}.getAllGrabbedFoes()[0]); }",
+  // the one it holds shows one of its own poses, by label (its own script's jump)
+  "grabbedHurtFrame": "if ({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length > 0 && {self}.getAllGrabbedFoes()[0].exports.__playFrame != null) {self}.getAllGrabbedFoes()[0].exports.__playFrame({0})",
+  // not ported: an effect or clip moved in the drawing order of the stage (this engine draws an
+  // effect on the layer it was made on)
+  "pushEffectBehind": "",
+  "swapDepths": "",
+  "swapChildren": "",
+  "getMidground": { "code": "stage", "returns": "object" },
+  "PeptideAPI.getStage": { "code": "stage", "returns": "object" },
+  // an item asked to fly free (its own script throws it)
+  "toToss": "if ({self}.exports.__ask != null) {self}.exports.__ask(\"toss\", null)",
+  // a fighter grabbed by the one with that id; let go by whoever holds it
+  "getUID": { "code": "{self}.getUid()", "returns": "number" },
+  "grab": "for (c in match.getCharacters()) if (c.getUid() == {0} && c != {self}) c.attemptGrab({self})",
+  "grabRelease": "if ({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length > 0) {self}.releaseAllCharacters(); else for (c in match.getCharacters()) { var held = c.getAllGrabbedFoes(); if (held != null && held.indexOf({self}) >= 0) c.releaseCharacter({self}); }",
+  "isEqual": { "code": "({0} == {self})", "returns": "bool" },
+  "camFocus": "match.getCamera().addTimedTarget({self}, {0} * 2)",
+  // not ported, as on the runtime: a named box's rectangle
+  "getHitBox": { "code": "null", "returns": "rect" },
+  // a list's and a text's own calls
+  "push": "{self}.push({0})",
+  "splice": { "code": "{self}.splice({0}, {1})", "returns": "object" },
+  "split": { "code": "{self}.split({0})", "returns": "object" },
+  "toString": { "code": "Std.string({self})", "returns": "string" },
+  // the match's clock, in the source's frames
+  "PeptideAPI.getElapsedFrames": { "code": "Std.int(match.getElapsedFrames() / 2)", "returns": "number" },
+  "PeptideAPI.randomBetween": { "code": "Random.getInt({0}, {1})", "returns": "number" },
+  "PeptideAPI.randomUnit": { "code": "Random.getFloat(0, 1)", "returns": "number" },
+
   // the source's names for the kinds of object, which content compares `getType()` with
   "types": {
     "SSF2Character": "EntityType.CHARACTER",

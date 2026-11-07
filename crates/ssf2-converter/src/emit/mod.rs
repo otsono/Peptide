@@ -6,6 +6,7 @@
 //! them.
 
 mod shake;
+pub mod native_fighter;
 pub mod native_projectile;
 pub mod stage;
 pub mod stage_tables;
@@ -1035,24 +1036,42 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
             c.push_str(code);
         }
     }
+    // (the scale of the source's pixels, filled in)
+    for c in cancels.values_mut() { *c = c.replace("{size}", &literal(&Value::Num(units.size), &|_| None)); }
     let keyed: String = cancels.values().cloned().collect::<Vec<_>>().join("\n");
     let mut stat_code = compile::attack_stats::table().code(&taken);
+    // (a fighter written as Fraymakers code takes a row's own lines for it, where it has them)
+    let mut native_stat_code = compile::attack_stats::table().code_of(&taken, true);
     // the functions the source's own states run, for the ones its animations' code names
     for (name, lines) in &compile::engine_anims::table().functions {
-        if regex::Regex::new(&format!(r"\b{name}\b")).is_ok_and(|r| r.is_match(&keyed)) { stat_code.extend(lines.iter().cloned()); }
+        if regex::Regex::new(&format!(r"\b{name}\b")).is_ok_and(|r| r.is_match(&keyed)) { stat_code.extend(lines.iter().cloned()); native_stat_code.extend(lines.iter().cloned()); }
     }
+    let size_text = literal(&Value::Num(units.size), &|_| None);
+    for l in stat_code.iter_mut().chain(native_stat_code.iter_mut()) { *l = l.replace("{size}", &size_text); }
     let stat_code = if stat_code.is_empty() { String::new() } else {
         format!("// ---- what its attacks' declared stats and the source's own states have it do: runtime/attack_stats.jsonc, runtime/engine_animations.jsonc\n{}\n", stat_code.join("\n"))
     };
+    // its own code as Fraymakers code, where it can be (`native_fighter`)
+    let anim_of: BTreeMap<String, String> = data.ssf2_to_fm_anim.iter().map(|(l, a)| (l.clone(), a.clone())).collect();
+    let fighting = native_fighter::Fighting { model: &model, runtime: &runtime, fighter, pieces: &pieces, units, effects: &effects, entities: &entities, anim_of: &anim_of };
+    let stat_lines = native_stat_code;
+    let natively_written = if std::env::var("PEPTIDE_NATIVE_FIGHTERS").map(|v| v != "0").unwrap_or(true) {
+        native_fighter::write(char_dir, char_pascal, char_name, &fighting, &cancels, &stat_lines)
+    } else { Err(vec!["written on the runtime (PEPTIDE_NATIVE_FIGHTERS=0)".into()]) };
+    let fighter_census = natively_written.as_ref().err().cloned().unwrap_or_default();
     let out = fighter_script(&model, &runtime, fighter, &pieces, units, char_name, &others, &effects, &entities, calls, keyed, stat_code);
     // the animation each of the source's labels is here (an attack started from outside the
     // fighter's code is entered by it)
     let anim_of: Vec<String> = data.ssf2_to_fm_anim.iter()
         .map(|(l, a)| format!("case {}: return {};", compile::quote(l), compile::quote(a))).collect();
     let script = format!("{}DATA.animOf = function(l) {{ switch (l) {{ {} default: return null; }} }};\n", out.script, anim_of.join(" "));
-    std::fs::write(dir.join("Script.hx"), &script)?;
-    clock_entity(&char_dir.join(format!("library/entities/{char_pascal}.entity")), char_name, &model, &pieces, &out.frames, &cancels, out.native.as_ref())?;
-    landing_stats(&dir, &out.landings, &label_jumps(&model, &pieces))?;
+    if let Ok(native) = &natively_written {
+        std::fs::write(dir.join("Script.hx"), native)?;
+    } else {
+        std::fs::write(dir.join("Script.hx"), &script)?;
+        clock_entity(&char_dir.join(format!("library/entities/{char_pascal}.entity")), char_name, &model, &pieces, &out.frames, &cancels, out.native.as_ref())?;
+        landing_stats(&dir, &out.landings, &label_jumps(&model, &pieces))?;
+    }
     // what a clip's frame writes of its boxes as it starts an animation is that animation's own
     let box_writes = entry_box_writes(&model, &pieces);
     landing_stats(&dir, &box_writes, &label_jumps(&model, &pieces))?;
@@ -1064,6 +1083,10 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     let projectiles = runtime_projectiles(char_dir, &model, &runtime, fighter, units, &others,
         &effects, &entities, &mut projectile_pieces, &mut unplaced, &owner, &mut natively)?;
     let report = serde_json::json!({
+        // whether the fighter's own code is written as Fraymakers code, and what keeps it on the
+        // runtime, function by function, where it is not
+        "fighter_native": natively_written.is_ok(),
+        "fighter_on_runtime": fighter_census,
         "problems": out.problems.iter().chain(projectiles.iter().flat_map(|(_, e)| e.problems.iter())).collect::<Vec<_>>(),
         "unplaced": unplaced,
         "unknown": out.unknown.iter().chain(projectiles.iter().flat_map(|(_, e)| e.unknown.iter())).collect::<BTreeSet<_>>(),

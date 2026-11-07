@@ -611,6 +611,20 @@ reason under `on_runtime` (the projectiles that made it are under `native`), so 
 to write is the one most content needs. `PEPTIDE_NATIVE_PROJECTILES=0` puts every one back on
 the runtime, for a comparison.
 
+a fighter goes the same way (`emit/native_fighter.rs`, the same writer): its own class runs as
+the fighter, the classes of the clips its animations show are its frame scripts (each class's
+members its own), and its entity's keyframes call them. its script is `runtime/native/fighter.hx`
+filled in; what the source's engine does around every fighter (a hit's hold, a throw's let-go,
+one hit a source frame, freshness, refresh rate, an attack's start and end, items it holds,
+attacks turned off by name) are the blocks of `runtime/native/fighter_rules.hx` its code needs,
+and the tables they read (the attack each animation shows, what each attack and its boxes
+declare, the label its clip is on, its item box) are `fighter_tables.hx`, filled in from its
+declarations. a jump by label on the clip it shows goes to the animation that shows the label in
+the clip of the one playing (`stanceJump`). a method nothing in the package names is a template's
+leftover and is not written. `runtime_report.json` says `fighter_native`, and lists every
+function still holding it on the runtime under `fighter_on_runtime`.
+`PEPTIDE_NATIVE_FIGHTERS=0` keeps every fighter on the runtime.
+
 ### 5.4 extraction layer
 
 #### `extractor.rs`

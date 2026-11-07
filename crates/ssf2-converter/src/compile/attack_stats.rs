@@ -23,7 +23,7 @@ pub struct AttackStats {
 }
 
 #[derive(Debug, Default)]
-struct Code { when: Option<String>, unless: Option<String>, first: bool, call: Vec<String>, code: Vec<String>, same_as: Option<String> }
+struct Code { when: Option<String>, unless: Option<String>, first: bool, call: Vec<String>, code: Vec<String>, same_as: Option<String>, native: Option<Vec<String>> }
 
 pub fn table() -> &'static AttackStats {
     static T: OnceLock<AttackStats> = OnceLock::new();
@@ -56,6 +56,7 @@ pub fn table() -> &'static AttackStats {
                 first: v["first"].as_bool().unwrap_or(false),
                 call: lines(&v["call"])?,
                 code: lines(&v["code"]).unwrap_or_default(),
+                native: lines(&v["native"]),
                 same_as: v["same_as"].as_str().map(String::from),
             }))).collect();
         }
@@ -133,10 +134,14 @@ impl AttackStats {
 
     /// the code the fighter's script holds for the rows its attacks take, each once (a row that is
     /// `same_as` another writes that one's)
-    pub fn code(&self, taken: &std::collections::BTreeSet<String>) -> Vec<String> {
+    pub fn code(&self, taken: &std::collections::BTreeSet<String>) -> Vec<String> { self.code_of(taken, false) }
+
+    /// the same, for a fighter written as Fraymakers code: a row's `native` lines where it has them
+    pub fn code_of(&self, taken: &std::collections::BTreeSet<String>, native: bool) -> Vec<String> {
         let owners: std::collections::BTreeSet<&str> = taken.iter().filter_map(|k| self.code.get(k)
             .map(|c| c.same_as.as_deref().unwrap_or(k))).collect();
-        owners.into_iter().filter_map(|k| self.code.get(k)).flat_map(|c| c.code.iter().cloned()).collect()
+        owners.into_iter().filter_map(|k| self.code.get(k))
+            .flat_map(|c| if native { c.native.clone().unwrap_or_else(|| c.code.clone()) } else { c.code.clone() }).collect()
     }
 
     /// whether a row of this stat holds only alongside one of the given stats
