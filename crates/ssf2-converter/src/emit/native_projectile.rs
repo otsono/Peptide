@@ -140,10 +140,11 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let jumps = label_jumps(model, pieces);
     let no_labels = BTreeMap::new();
     let no_frames = BTreeMap::new();
+    let no_links = BTreeSet::new();
     let object = native::Object {
         model, itself, classes: classes.clone(), jumps: &jumps, runtime, declared: &declared, switches: &taken.switches,
         owner_stat: &owner_stat, effect: &made, owner_anims: &owner.anims, fired: &fired, owner_declares: &owner_stat_of, owner_stores: &owner_stores, root: clip_sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false,
-        root_anim: &|_| None, walk_start: None, stance_labels: &no_labels, clip_frames: &no_frames, owner_native: owner.native,
+        root_anim: &|_| None, walk_start: None, stance_labels: &no_labels, clip_frames: &no_frames, frame_links: &no_links, owner_native: owner.native,
     };
     let written = native::write(&object)?;
 

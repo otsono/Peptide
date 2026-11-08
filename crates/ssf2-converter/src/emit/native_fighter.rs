@@ -68,6 +68,25 @@ pub struct Fighting<'a> {
     /// every projectile entity its package has, by its key (an enemy made by its class is one
     /// named as the class)
     pub entity_keys: &'a BTreeSet<String>,
+    /// the animations the engine links at the same frame, each way (`frame_links`)
+    pub frame_links: &'a BTreeSet<(String, String)>,
+}
+
+/// the animations the engine links at the same frame, each way: what its animation stats give a
+/// link-frames land or leave type, and the animation it links to
+pub fn frame_links(stats: &str) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    for line in stats.lines() {
+        let (Some(o), Some(c)) = (line.find('{'), line.rfind('}')) else { continue };
+        let Some(name) = line[..o].trim().strip_suffix(':').map(str::trim) else { continue };
+        let props: BTreeMap<&str, &str> = line[o + 1..c].split(',').filter_map(|p| p.split_once(':')).map(|(k, v)| (k.trim(), v.trim().trim_matches('"'))).collect();
+        for (kind, to) in [("landType", "landAnimation"), ("leaveGroundType", "leaveGroundAnimation")] {
+            if props.get(kind).is_some_and(|t| t.ends_with(".LINK_FRAMES")) {
+                if let Some(a) = props.get(to) { out.insert((name.to_string(), a.to_string())); out.insert((a.to_string(), name.to_string())); }
+            }
+        }
+    }
+    out
 }
 
 fn plain(v: &Value) -> Option<String> {
@@ -152,7 +171,7 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
         model, itself: parts.itself, classes: parts.classes.clone(), jumps: &jumps, runtime: f.runtime, declared: &declares, switches: &switches,
         owner_stat: &no_stat, effect: &made, owner_anims: &anims, fired: &fired, owner_declares: &declares, owner_stores: &stores,
         root: parts.root, size: f.units.size, speed: f.units.speed, accel: f.units.accel, fighter: true,
-        root_anim: &root_anim, walk_start: (start > 0.0).then_some(start), stance_labels: &labels, clip_frames: &frames_of, owner_native: false,
+        root_anim: &root_anim, walk_start: (start > 0.0).then_some(start), stance_labels: &labels, clip_frames: &frames_of, frame_links: f.frame_links, owner_native: false,
     };
     if all {
         let why = native::census(&object);
@@ -348,6 +367,12 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         let block = native::helper(rt, "fighter_rules", "fresh_clip", "", &[], &[]).map_err(one)?;
         if let Some(fs) = slots.get_mut("functions") { fs.push(String::new()); fs.extend(block.lines().map(String::from)); }
         update.push("shownFrame();".into());
+    }
+    if blocks.contains("frame_links") {
+        let block = native::helper(rt, "fighter_rules", "frame_links", "", &[], &[]).map_err(one)?;
+        if let Some(fs) = slots.get_mut("functions") { fs.push(String::new()); fs.extend(block.lines().map(String::from)); }
+        if let Some(st) = slots.get_mut("start") { st.push("listenForLinks();".into()); }
+        update.push("linkFrame();".into());
     }
     slots.insert("update", update);
     slots.insert("own_tick", w.tick.clone());

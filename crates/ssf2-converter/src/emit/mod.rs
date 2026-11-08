@@ -1060,7 +1060,10 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     // its own code as Fraymakers code, where it can be (`native_fighter`)
     let anim_of: BTreeMap<String, String> = data.ssf2_to_fm_anim.iter().map(|(l, a)| (l.clone(), a.clone())).collect();
     let entity_keys: BTreeSet<String> = projectile_pieces.keys().cloned().collect();
-    let fighting = native_fighter::Fighting { model: &model, runtime: &runtime, fighter, pieces: &pieces, units, effects: &effects, entities: &entities, anim_of: &anim_of, entity_keys: &entity_keys };
+    // (the links its animation stats give the engine, as written)
+    let stats = std::fs::read_to_string(char_dir.join(format!("library/scripts/{char_pascal}/AnimationStats.hx"))).unwrap_or_default();
+    let frame_links = native_fighter::frame_links(&stats);
+    let fighting = native_fighter::Fighting { model: &model, runtime: &runtime, fighter, pieces: &pieces, units, effects: &effects, entities: &entities, anim_of: &anim_of, entity_keys: &entity_keys, frame_links: &frame_links };
     let stat_lines = native_stat_code;
     let natively_written = if std::env::var("PEPTIDE_NATIVE_FIGHTERS").map(|v| v != "0").unwrap_or(true) {
         native_fighter::write(char_dir, char_pascal, char_name, &fighting, &native_cancels, &stat_lines)

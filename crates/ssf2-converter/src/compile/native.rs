@@ -185,6 +185,9 @@ pub struct Object<'a> {
     pub stance_labels: &'a BTreeMap<String, Vec<(String, String, bool)>>,
     /// a fighter's: the clip frames each animation shows (its first, how many), by clip class
     pub clip_frames: &'a BTreeMap<String, Vec<(String, u32, u32)>>,
+    /// a fighter's: the animations the engine links at the same frame, each way (it goes from one
+    /// to the other as it lands or leaves the ground mid-move, keeping the frame)
+    pub frame_links: &'a BTreeSet<(String, String)>,
     /// a projectile's: whether its owner is written as Fraymakers code (its fields are then reached
     /// through what it publishes, `exports.__fieldOf`)
     pub owner_native: bool,
@@ -2362,11 +2365,11 @@ self.playFrameLabel({})", quote(f))); }
                 let def = helper(self.o.runtime, "helpers", "floor_listener", &wrapper, &[("LISTENER", h.clone())], &[])?;
                 self.helpers.insert(wrapper.clone(), def);
             }
-            let (opts, owned) = self.clip_listen(engine, &wrapper);
+            let (opts, owned, unowned) = self.clip_listen(engine, &wrapper);
             return Ok((if m == "addEventListener" {
                 format!("self.addEventListener({engine}, {wrapper}, {opts});\n{listening}.set(true){owned}")
             } else {
-                format!("self.removeEventListener({engine}, {wrapper});\n{listening}.set(false)")
+                format!("self.removeEventListener({engine}, {wrapper});\n{listening}.set(false){unowned}")
             }, Ty::Any));
         }
         // (a note of whether it listens, for its code's question: `hasEventListener`)
@@ -2375,30 +2378,41 @@ self.playFrameLabel({})", quote(f))); }
             self.kept.insert(listening.clone(), format!("// whether {h} listens now\nvar {listening} = self.{}(false);", bool_make(self.o.fighter)));
             format!(";\n{listening}.set({})", m == "addEventListener")
         } else { String::new() };
-        let (opts, owned) = if who == "self" { self.clip_listen(engine, &h) } else { ("{ persistent: true }", String::new()) };
+        let (opts, owned, unowned) = if who == "self" { self.clip_listen(engine, &h) } else { ("{ persistent: true }", String::new(), String::new()) };
         Ok((if m == "addEventListener" {
             format!("{who}.addEventListener({engine}, {h}, {opts}){note}{owned}")
         } else {
-            format!("{who}.removeEventListener({engine}, {h}){note}")
+            format!("{who}.removeEventListener({engine}, {h}){note}{unowned}")
         }, Ty::Any))
     }
 
     /// a fighter's listener added by one of its stance clips' code goes with the clip, as the
-    /// source's does: the options it is added with, and what notes it as the clip's. the engine
-    /// drops a listener added without `persistent` as the animation changes (or the state), so one
-    /// animation's clip adds it so for an event it hears in that animation (`runtime/events.jsonc`
-    /// `heard_in_animation`); any other is kept until the fighter leaves the clip for another
+    /// source's does: the options it is added with, what notes it as the clip's as it is added, and
+    /// as it is taken off. the engine drops a listener added without `persistent` as the animation
+    /// changes (or the state), so a clip one animation shows adds it so for an event it hears in
+    /// that animation (`runtime/events.jsonc` `heard_in_animation`), and so does a clip shown by
+    /// animations the engine links at the same frame, which adds it again in the one linked to
+    /// (`frame_links`); any other is kept until the fighter leaves the clip for another
     /// (`fresh_clip`). its own class and root clip keep theirs
-    fn clip_listen(&mut self, engine: &str, h: &str) -> (&'static str, String) {
+    fn clip_listen(&mut self, engine: &str, h: &str) -> (&'static str, String, String) {
         const KEPT: &str = "{ persistent: true }";
-        if !self.o.fighter || self.is_itself() { return (KEPT, String::new()) }
-        if self.o.model.class_of(self.o.root).is_some_and(|c| c.name == self.class) { return (KEPT, String::new()) }
+        const FREE: &str = "{ persistent: false }";
+        if !self.o.fighter || self.is_itself() { return (KEPT, String::new(), String::new()) }
+        if self.o.model.class_of(self.o.root).is_some_and(|c| c.name == self.class) { return (KEPT, String::new(), String::new()) }
         let mut anims: Vec<&str> = self.o.clip_frames.get(&self.class).map(|v| v.iter().map(|(a, _, _)| a.as_str()).collect()).unwrap_or_default();
         anims.sort();
         anims.dedup();
-        if anims.len() == 1 && super::events::table().heard_in_animation.iter().any(|e| e == engine) { return ("{ persistent: false }", String::new()) }
+        let heard = super::events::table().heard_in_animation.iter().any(|e| e == engine);
+        if heard && anims.len() == 1 { return (FREE, String::new(), String::new()) }
+        // (every animation that shows it is linked to another that does: the fighter only goes
+        // between them by the engine's link, which keeps the clip as the source does)
+        let linked = |a: &str| self.o.frame_links.iter().any(|(x, y)| (x == a && anims.contains(&y.as_str())) || (y == a && anims.contains(&x.as_str())));
+        if heard && anims.len() > 1 && anims.iter().all(|a| linked(a)) {
+            self.blocks.insert("frame_links".into());
+            return (FREE, format!(";\nlinkListen({engine}, {h})"), format!(";\nlinkUnlisten({engine}, {h})"));
+        }
         self.blocks.insert("fresh_clip".into());
-        (KEPT, format!(";\nclipListen({}, {engine}, {h})", quote(&self.class)))
+        (KEPT, format!(";\nclipListen({}, {engine}, {h})", quote(&self.class)), String::new())
     }
 
     /// the function a listener (or timer) it hands over is: one of its own methods, a closure, or

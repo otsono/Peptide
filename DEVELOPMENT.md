@@ -632,8 +632,11 @@ variables keep clear of the names the script defines. only the fighter's own cla
 in the script; another object reads a clip's field through a getter. what a clip listens for on
 the fighter goes with the clip, as the source's does: the engine drops a listener added without
 `persistent` as the animation changes, so a clip one animation shows listens that way for an event
-heard while the animation plays (`runtime/events.jsonc` `heard_in_animation`); any other listener,
-and any on a clip several animations show, stays until the fighter leaves the clip (`fresh_clip`). a root clip with nothing to run, whose frames only set its fields, answers
+heard while the animation plays (`runtime/events.jsonc` `heard_in_animation`). so does a clip shown
+by animations the engine links at the same frame (a link-frames land or leave type in its animation
+stats): the link drops the listener, and the engine's `LINK_FRAMES` event adds it again in the
+animation linked to (`frame_links`). any other listener, and any on a clip several unlinked
+animations show, stays until the fighter leaves the clip (`fresh_clip`). a root clip with nothing to run, whose frames only set its fields, answers
 them by the label it shows. a jump to the frame it is on stays there (playing an animation again
 from inside its own first frame would run that frame again, forever). a native projectile plays
 its clip on into the next animation itself (`playOn`): on a projectile the engine's own end of an

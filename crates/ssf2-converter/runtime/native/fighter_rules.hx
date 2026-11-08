@@ -694,6 +694,42 @@ function clipLeft(c) {
 	clipListeners.set(keep);
 }
 
+// ---- frame_links
+// a listener a clip's code adds lives one animation, as the engine has it, and the clip goes on
+// when the engine links its animation to another at the same frame (the fighter lands or leaves
+// the ground mid-move): the link drops it, so it is added again in the animation linked to. what
+// the clip's code listens for, with the animation it lives in
+var linkListeners = self.makeObject([]);
+var linkShownBefore = self.makeObject(null);
+function linkListen(ev, fn) {
+	linkListeners.get().push({ a: self.getAnimation(), ev: ev, fn: fn });
+}
+function linkUnlisten(ev, fn) {
+	var keep = [];
+	for (l in linkListeners.get()) if (l.ev != ev || l.fn != fn) keep.push(l);
+	linkListeners.set(keep);
+}
+// (the engine tells of the link once the fighter is in the animation linked to)
+function framesLinked(e) {
+	var now = self.getAnimation();
+	for (l in linkListeners.get()) if (l.a != now) {
+		self.addEventListener(l.ev, l.fn, { persistent: false });
+		l.a = now;
+	}
+}
+function listenForLinks() {
+	self.addEventListener(GameObjectEvent.LINK_FRAMES, framesLinked, { persistent: true });
+}
+// an animation left any other way takes what it listened for with it
+function linkFrame() {
+	var now = self.getAnimation();
+	if (now == linkShownBefore.get()) return;
+	linkShownBefore.set(now);
+	var keep = [];
+	for (l in linkListeners.get()) if (l.a == now) keep.push(l);
+	linkListeners.set(keep);
+}
+
 // ---- timers
 // a timer its code makes (`createTimer(frames, repeats, fn)`): two engine frames to a source frame,
 // forever for none. it drops with the state it was made in unless asked to stay, waits out the
