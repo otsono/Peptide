@@ -40,3 +40,36 @@ function decel(v, d) {
 function getVelocityVector(speed, angle) {
 	return { x: speed * Math.cos(angle * Math.PI / 180), y: speed * Math.sin(angle * Math.PI / 180) };
 }
+
+// ---- darkenStage
+// the stage behind the fighters dimmed (true), or back as it was (false). a look only: nothing
+// a rollback puts back
+var stageDimmed = [];
+function darkenStage(on) {
+	for (r in stageDimmed) if (!r.c.isDisposed()) r.c.removeFilter(r.f);
+	stageDimmed = [];
+	var layers = match.getCamera().getBackgroundContainers();
+	if (!on || layers == null) return;
+	for (c in layers) {
+		var f = new HsbcColorFilter();
+		f.brightness = -0.5;
+		c.addFilter(f);
+		stageDimmed.push({ c: c, f: f });
+	}
+}
+
+// ---- numberIn
+// a whole number written in a base (2 to 36), as Flash's `toString(base)` writes it
+function numberIn(n, base) {
+	var digits = "0123456789abcdefghijklmnopqrstuvwxyz";
+	var v = Std.int(n);
+	if (v == 0) return "0";
+	var neg = v < 0;
+	if (neg) v = -v;
+	var out = "";
+	while (v > 0) {
+		out = digits.charAt(v % base) + out;
+		v = Std.int(v / base);
+	}
+	return neg ? "-" + out : out;
+}

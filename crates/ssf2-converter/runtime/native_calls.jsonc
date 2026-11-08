@@ -121,6 +121,12 @@
   // not ported: an effect or clip moved in the drawing order of the stage (this engine draws an
   // effect on the layer it was made on)
   "pushEffectBehind": "",
+  // the stage behind the fighters dimmed, as for a final smash, and back
+  "darken": { "code": "darkenStage(true)", "helper": "darkenStage" },
+  "lighten": { "code": "darkenStage(false)", "helper": "darkenStage" },
+  "killDarkener": { "code": "darkenStage(false)", "helper": "darkenStage" },
+  // not ported: a fighter turned metal (`gap` notes it in the report)
+  "setMetalStatus": { "code": "", "gap": "turns metal, which nothing here shows" },
   "swapDepths": "",
   "swapChildren": "",
   "getMidground": { "code": "stage", "returns": "object" },

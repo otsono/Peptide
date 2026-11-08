@@ -23,7 +23,9 @@ use super::{ident, quote, short, ClipJumps};
 
 /// a row of `native_calls.jsonc`: the engine's code for a call, and what its value is
 #[derive(Debug, Clone, Default)]
-struct Row { code: String, returns: Ty }
+/// a row: the call's code, what its value is, and the block of `runtime/native/utils.hx` its code
+/// calls, where it calls one
+struct Row { code: String, returns: Ty, helper: Option<String>, gap: Option<String> }
 
 #[derive(Debug, Default)]
 struct Calls {
@@ -68,10 +70,12 @@ fn calls() -> &'static Calls {
                 continue;
             }
             let row = match v {
-                serde_json::Value::String(s) => Row { code: s.clone(), returns: Ty::Any },
+                serde_json::Value::String(s) => Row { code: s.clone(), returns: Ty::Any, helper: None, gap: None },
                 serde_json::Value::Object(o) => Row {
                     code: o.get("code").and_then(|c| c.as_str()).unwrap_or_default().to_string(),
                     returns: Ty::named(o.get("returns").and_then(|r| r.as_str()).unwrap_or("")),
+                    helper: o.get("helper").and_then(|h| h.as_str()).map(String::from),
+                    gap: o.get("gap").and_then(|h| h.as_str()).map(String::from),
                 },
                 _ => continue,
             };
@@ -188,9 +192,24 @@ pub struct Object<'a> {
     /// a fighter's: the animations the engine links at the same frame, each way (it goes from one
     /// to the other as it lands or leaves the ground mid-move, keeping the frame)
     pub frame_links: &'a BTreeSet<(String, String)>,
+    /// a fighter's: the clip each animation shows, as (animation, clip symbol, first frame, how many)
+    pub anim_clips: &'a [(String, u16, u32, u32)],
     /// a projectile's: whether its owner is written as Fraymakers code (its fields are then reached
     /// through what it publishes, `exports.__fieldOf`)
     pub owner_native: bool,
+}
+
+/// whether a clip is only art: no class, or one whose frames' code moves nothing but its own
+/// playhead (a loop held on its frame). its art is drawn into its parent's, so turning it shows
+/// nothing here either way
+fn art_only(model: &SourceModel, sym: u16) -> bool {
+    let Some(c) = model.class_of(sym) else { return true };
+    c.frame_scripts.iter().all(|fs| c.methods.iter().find(|m| m.name == fs.method).is_some_and(|m| m.function.body.iter().all(|st| match st {
+        Stmt::Return(None) => true,
+        Stmt::Expr(Expr::Call(f, _)) => matches!(&**f, Expr::Member(t, m) if matches!(**t, Expr::This) && matches!(m.as_str(), "gotoAndStop" | "gotoAndPlay" | "stop" | "play" | "nextFrame" | "prevFrame"))
+            || matches!(&**f, Expr::Name(m) if matches!(m.as_str(), "gotoAndStop" | "gotoAndPlay" | "stop" | "play" | "nextFrame" | "prevFrame")),
+        _ => false,
+    })))
 }
 
 /// the object's code, ready to go into its script
@@ -228,6 +247,11 @@ pub struct Written {
     pub frame_fields: BTreeMap<String, Vec<String>>,
     /// the frames whose code is written straight into their keyframes (the rest call their function)
     pub inlined: BTreeSet<(u16, u32)>,
+    /// what the source does that nothing here does
+    pub gaps: BTreeSet<String>,
+    /// the animations its code jumps into at a label inside them: their first frame's own code
+    /// waits out such a jump (`playLabelIn`)
+    pub mid_targets: BTreeSet<String>,
 }
 
 /// whether a method of an object's classes is ever run: a frame script, one of the API's hooks, or
@@ -294,6 +318,10 @@ struct Writer<'o, 'a> {
     locals: BTreeMap<u32, (String, Holds)>,
     /// helpers the code needs, by name
     helpers: BTreeMap<String, String>,
+    /// what the source does that nothing here does, noted for the report
+    gaps: BTreeSet<String>,
+    /// the animations its code jumps into at a label inside them (`playLabelIn`)
+    mid_targets: BTreeSet<String>,
     /// state containers the helpers need, by name
     kept: BTreeMap<String, String>,
     /// fields some code reads or writes
@@ -348,7 +376,7 @@ struct Writer<'o, 'a> {
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
         let mut w = Writer { o, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
-                             locals: BTreeMap::new(), helpers: BTreeMap::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false };
+                             locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "initialize", "update", "onTeardown", "onKill", "life", "age", "started", "freshHit"]
             .into_iter().map(String::from).collect();
@@ -409,7 +437,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 });
             }
             for f in &c.fields {
-                let holds = if w.holds_itself(c, &f.name) { Holds::Itself } else { Holds::Value(Ty::declared(f.type_name.as_deref())) };
+                // (one declared as one of the API's records is that record)
+                let record = f.type_name.as_deref().map(short).is_some_and(|t| {
+                    let t = o.runtime.names.classes.get(t).map(String::as_str).unwrap_or(t);
+                    calls().records.contains_key(t)
+                });
+                let holds = if w.holds_itself(c, &f.name) { Holds::Itself } else if record { Holds::Value(Ty::Rect) } else { Holds::Value(Ty::declared(f.type_name.as_deref())) };
                 let id = if holds == Holds::Itself { "self".to_string() } else { name_for(&f.name, c, &mut taken) };
                 // (a fighter's clip's field is a variable of the clip's own frame code: the frames and
                 // the script share one scope, and the engine rolls those back too)
@@ -617,6 +650,8 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
         }
         out.blocks = self.blocks.clone();
+        out.gaps = self.gaps.clone();
+        out.mid_targets = self.mid_targets.clone();
         out.stat_keys = self.stat_keys.clone();
         Ok(out)
     }
@@ -806,6 +841,18 @@ impl<'o, 'a> Writer<'o, 'a> {
                 }
             }
         }
+        // a named clip its own clip places, moved to a frame: its art is drawn into the fighter's
+        // frames, so nothing here turns it (noted where it was, and in the report)
+        if let Expr::Call(f, _) = e {
+            if let Expr::Member(c, m) = &**f {
+                if matches!(m.as_str(), "gotoAndStop" | "gotoAndPlay" | "play" | "stop" | "nextFrame" | "prevFrame") {
+                    if let Some(name) = self.stance_child(c).map(|(n, _)| n).or_else(|| self.own_child(c)) {
+                        self.gaps.insert(format!("steps its {name} clip, whose art is drawn into the fighter's"));
+                        return Ok(format!("// (its {name} clip's art is drawn into the fighter's: its {m} turns nothing here)"));
+                    }
+                }
+            }
+        }
         self.top = true;
         let t = self.expr(e)?.0;
         self.top = false;
@@ -825,6 +872,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                 && self.o.model.classes.get(&self.class).and_then(|c| c.symbol) != Some(self.o.root) => {
                 let (val, _) = self.expr(v)?;
                 Ok(vec![format!("self.set{}({val});", if f == "scaleX" { "ScaleX" } else { "ScaleY" })])
+            }
+            // a colour transform set on its own clip: the fighter shows it, as one shader the values
+            // are copied into (the source copies the transform as it is set)
+            Place::Member(Expr::Member(mc, t), f) if self.o.fighter && t == "transform" && f == "colorTransform"
+                && matches!(&**mc, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "getMC" | "getStanceMC" | "stanceClip") && self.expr(o).is_ok_and(|(w, _)| w == "self"))) => {
+                let (val, _) = self.expr(v)?;
+                self.blocks.insert("tint".into());
+                Ok(vec![format!("showTint({val});")])
             }
             // a field of its owner's clip
             Place::Member(mc, f) if self.owner_clip(mc).is_some() => {
@@ -963,7 +1018,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let to = if *start { self.play_start(a)? } else { format!("self.playFrameLabel({})", quote(label)) };
                 out.push(format!("\tcase {}: {to};", quote(a)));
             }
-            let to = if first_start { self.play_start(&first)? } else { format!("{{ self.playAnimation({}); self.playFrameLabel({}); }}", quote(&first), quote(label)) };
+            let to = if first_start { self.play_start(&first)? } else { self.play_label_in(&first, label) };
             out.push(format!("\tdefault: {to};"));
             out.push("}".into());
             return Ok(out.join("\n"));
@@ -973,8 +1028,17 @@ impl<'o, 'a> Writer<'o, 'a> {
             format!("{};", self.play_start(&anim)?)
         } else {
             // (a label inside an animation: that animation, at the label)
-            format!("if (self.getAnimation() != {a}) self.playAnimation({a});\nself.playFrameLabel({});", quote(label), a = quote(&anim))
+            format!("{};", self.play_label_in(&anim, label))
         })
+    }
+
+    /// a fighter's jump to a label inside an animation: that animation started without its first
+    /// frame's own code (the source goes straight to the label's frame), then the label
+    fn play_label_in(&mut self, anim: &str, label: &str) -> String {
+        if !self.o.fighter { return format!("{{ if (self.getAnimation() != {a}) self.playAnimation({a}); self.playFrameLabel({}); }}", quote(label), a = quote(anim)) }
+        self.blocks.insert("mid_jump".into());
+        self.mid_targets.insert(anim.to_string());
+        format!("playLabelIn({}, {})", quote(anim), quote(label))
     }
 
     // ---- tests and values ---------------------------------------------------------------------
@@ -1001,6 +1065,20 @@ impl<'o, 'a> Writer<'o, 'a> {
 
     fn expr(&mut self, e: &Expr) -> Result<(String, Ty), String> {
         Ok(match e {
+            // an effect it makes drawn behind it: the effect made behind it (the effect is the value)
+            Expr::Call(f, a) if matches!(&**f, Expr::Member(_, m) if m == "pushEffectBehind")
+                && matches!(a.first(), Some(Expr::Call(g, _)) if matches!(&**g, Expr::Member(_, m) if matches!(m.as_str(), "attachEffect" | "createVfx"))) => {
+                let Some(Expr::Call(g, eargs)) = a.first() else { unreachable!() };
+                let mut eargs = eargs.clone();
+                let behind = (Expr::Str("behind".into()), Expr::Bool(true));
+                match eargs.get_mut(1) {
+                    Some(Expr::Object(kv)) => kv.push(behind),
+                    None => eargs.push(Expr::Object(vec![behind])),
+                    Some(Expr::Null | Expr::Undefined) => eargs[1] = Expr::Object(vec![behind]),
+                    _ => return Err("draws behind it an effect made with options worked out as it runs".into()),
+                }
+                return self.expr(&Expr::Call(g.clone(), eargs));
+            }
             Expr::Null | Expr::Undefined => ("null".into(), Ty::Object),
             Expr::Bool(b) => (b.to_string(), Ty::Bool),
             Expr::Num(n) => (number(*n), Ty::Num),
@@ -1046,6 +1124,16 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let r = self.own(f);
                 self.class = saved;
                 return r;
+            }
+            // a stat of the box an event's hit was made with: the engine's, in the source's units
+            Expr::Member(b, k) if matches!(&**b, Expr::Member(d, n) if n == "attackBoxData" && matches!(&**d, Expr::Member(a, n) if n == "data" && matches!(**a, Expr::Local(_)))) => {
+                let Expr::Member(d, _) = &**b else { unreachable!() };
+                let Expr::Member(a, _) = &**d else { unreachable!() };
+                let Expr::Local(r) = &**a else { unreachable!() };
+                let (arg, _) = self.locals.get(r).cloned().ok_or("an unknown variable")?;
+                let (f, scale) = hitbox_field(k)?;
+                let v = format!("{arg}.data.hitboxStats.{f}");
+                return Ok((match scale { Some(sc) => format!("{v} / {}", number(sc)), None => v }, Ty::Num));
             }
             // a field of the event a listener is handed
             Expr::Member(d, field) if matches!(&**d, Expr::Member(a, n) if n == "data" && matches!(**a, Expr::Local(_))) => {
@@ -1151,6 +1239,13 @@ impl<'o, 'a> Writer<'o, 'a> {
             Expr::Call(f, args) => return self.call(f, args),
             Expr::Unary(UnOp::Not, x) => (format!("!{}", paren(&self.test(x)?)), Ty::Bool),
             Expr::Unary(UnOp::Neg, x) => { let (t, _) = self.expr(x)?; (format!("-{}", paren(&t)), Ty::Num) }
+            // whether the clip it shows places a named clip of its own (`hasName()`, from the clips' placements)
+            Expr::Binary(op @ (BinOp::Eq | BinOp::Ne | BinOp::StrictEq | BinOp::StrictNe), a, b)
+                if matches!((&**a, &**b), (x, Expr::Null | Expr::Undefined) | (Expr::Null | Expr::Undefined, x) if self.stance_child(x).is_some()) => {
+                let x = if matches!(**b, Expr::Null | Expr::Undefined) { a } else { b };
+                let has = self.child_test(x)?;
+                return Ok((if matches!(op, BinOp::Ne | BinOp::StrictNe) { has } else { format!("!{has}") }, Ty::Bool));
+            }
             Expr::Binary(op, a, b) => return self.binary(*op, a, b),
             // (as a value, the source's `a || b` is one of them: `a` if it passes, else `b`)
             Expr::And(x, y) | Expr::Or(x, y) if !self.testing && !self.both_bool(x, y) => {
@@ -1205,7 +1300,23 @@ impl<'o, 'a> Writer<'o, 'a> {
                 // (an item of a list of records is a record)
                 (format!("{}[{i}]", paren(&a)), if ta == Ty::Rect { Ty::Rect } else { Ty::Any })
             }
-            Expr::New(..) => return Err("makes an object".into()),
+            // one of Flash's classes the engine has its own version of (`runtime/native_classes.jsonc`)
+            Expr::New(c, args) => {
+                let Expr::Name(n) = &**c else { return Err("makes an object".into()) };
+                if self.o.model.classes.contains_key(n) || self.o.model.classes.values().any(|c| short(&c.name) == n.as_str()) { return Err("makes an object".into()) }
+                let make = self.o.runtime.native(n).and_then(|k| k.make.clone()).ok_or("makes an object")?;
+                let mut texts = Vec::new();
+                for a in args { texts.push(self.expr(a)?.0); }
+                let mut out = make.replace("{args}", &texts.join(", "));
+                for i in 0..10 {
+                    let slot = format!("{{{i}}}");
+                    let Some(v) = texts.get(i) else { out = out.replace(&slot, "null"); continue };
+                    // (one used more than once is read more than once: only a plain one)
+                    if out.matches(&slot).count() > 1 && !v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.') { return Err("makes an object of a value worked out as it runs".into()) }
+                    out = out.replace(&slot, &paren(v));
+                }
+                (out, Ty::Rect)
+            }
             Expr::Assign(..) => return Err("uses an assignment as a value".into()),
             other => return Err(describe(other)),
         })
@@ -1435,7 +1546,28 @@ impl<'o, 'a> Writer<'o, 'a> {
     // ---- calls --------------------------------------------------------------------------------
 
     fn call(&mut self, f: &Expr, args: &[Expr]) -> Result<(String, Ty), String> {
+        let top = self.top;
+        let r = self.call_written(f, args)?;
+        // (a call whose row does nothing gives no value to use)
+        if !top && r.0.trim().is_empty() {
+            let m = match f { Expr::Member(_, m) => m.clone(), other => describe(other) };
+            return Err(format!("uses what its {m} gives, which nothing here does"));
+        }
+        Ok(r)
+    }
+
+    fn call_written(&mut self, f: &Expr, args: &[Expr]) -> Result<(String, Ty), String> {
         let top = std::mem::replace(&mut self.top, false);
+        // the source's autolink, where the conversion made it the engine's own for the clip: turning
+        // it on or off sets the angle of the animation's hitboxes, toward the animation's own point
+        if let Expr::Member(_, m) = f {
+            if self.o.fighter && matches!(m.as_str(), "startAutolink" | "stopAutolink" | "setAutolinkPoint" | "setAutolinkRule") {
+                if let Some((on, off)) = self.o.jumps.get(&self.class).and_then(|j| j.autolink.clone()) {
+                    let code = match m.as_str() { "startAutolink" => on, "stopAutolink" => off, _ => String::new() };
+                    return Ok((code.replace("{fm}", "self"), Ty::Any));
+                }
+            }
+        }
         let Expr::Member(recv, m) = f else {
             // AS3's conversions, called as functions
             if let (Expr::Name(n), [x]) = (f, args) {
@@ -1466,6 +1598,13 @@ impl<'o, 'a> Writer<'o, 'a> {
             match (short(c), m.as_str(), args) {
                 (_, "getProjectile" | "getItem" | "getEnemy" | "getCharacter", [Expr::This]) if c.contains("PeptideAPI") => return Ok(("self".into(), Ty::Object)),
                 (_, "isReady", []) if c.contains("PeptideAPI") => return Ok(("true".into(), Ty::Bool)),
+                // the end of every frame of the game, heard by a fighter: the end of its own update
+                (_, "addEventListener" | "removeEventListener", [ev, h, ..]) if c.contains("PeptideAPI") && self.o.fighter
+                    && super::events::named(self.o.runtime, ev).as_deref() == Some("gameTickEnd") => {
+                    let h = self.handler(h)?;
+                    self.blocks.insert("tick_end".into());
+                    return Ok((format!("{}({h})", if m == "addEventListener" { "listenTickEnd" } else { "unlistenTickEnd" }), Ty::Any));
+                }
                 // the ground on a line, and an enemy made: a fighter's blocks
                 (_, "hitTestGround" | "hitTestGroundBetweenPoints", _) if c.contains("PeptideAPI") && self.o.fighter => {
                     self.blocks.insert("ground_test".into());
@@ -1545,10 +1684,16 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
         }
         let (who, who_ty) = self.expr(recv)?;
+        // a number written in a base (`toString(16)`)
+        if m == "toString" && args.len() == 1 {
+            if !self.helpers.contains_key("numberIn") { self.helpers.insert("numberIn".into(), helper(self.o.runtime, "utils", "numberIn", "numberIn", &[], &[])?); }
+            let (b, _) = self.expr(&args[0])?;
+            return Ok((format!("numberIn({who}, {b})"), Ty::Str));
+        }
         // a call a record answers
         if who_ty == Ty::Rect {
             let row = calls().record_calls.get(m.as_str()).cloned().ok_or_else(|| format!("calls {m} on a record"))?;
-            return self.fill(&Row { code: row, returns: Ty::Any }, &who, args, m);
+            return self.fill(&Row { code: row, returns: Ty::Any, helper: None, gap: None }, &who, args, m);
         }
         // one of its own declaration methods: the record it declares
         if who == "self" && args.is_empty() {
@@ -1750,8 +1895,27 @@ impl<'o, 'a> Writer<'o, 'a> {
             ("updateHitboxStats", [i, Expr::Object(pairs)]) if mine || self.o.fighter => {
                 let i = box_index(i)?;
                 let mut set = Vec::new();
+                // a fixed launch worked out as it runs: the source's rule written out, where it is
+                // one (above 0), else the box's own power and growth
+                let named = |n: &str| pairs.iter().find(|(k, _)| matches!(k, Expr::Str(k) if k == n)).map(|(_, v)| v);
+                let live_fixed = named("weightKB").is_some_and(|w| literal(w).is_none());
+                if live_fixed {
+                    let hb = crate::mappings::character_hitbox_stats();
+                    let rule = hb.fields.iter().find(|f| f.fm_field == "fixed_knockback").ok_or("writes a fixed launch the mapping has no rule for")?;
+                    let (per, plus) = (rule.per_unit.ok_or("writes a fixed launch the mapping has no rule for")?, rule.constant.ok_or("writes a fixed launch the mapping has no rule for")?);
+                    let w = self.expr(named("weightKB").unwrap())?.0;
+                    let kbc = match named("kbConstant") { Some(v) => self.expr(v)?.0, None => "100".into() };
+                    let pw = match named("power") { Some(v) => self.expr(v)?.0, None => "0".into() };
+                    let (base, bs) = hitbox_field("power")?;
+                    let (growth, gs) = hitbox_field("kbConstant")?;
+                    let sc = |v: String, s: Option<f64>| match s { Some(s) => format!("{} * {}", paren(&v), number(s)), None => v };
+                    let fixed = sc(format!("({} * {} + {}) * {} / 100 + {}", paren(&w), number(per), number(plus), paren(&kbc), paren(&pw)), bs);
+                    set.push(format!("{base}: ({} > 0 ? {fixed} : {})", paren(&w), sc(pw.clone(), bs)));
+                    set.push(format!("{growth}: ({} > 0 ? 0 : {})", paren(&w), sc(kbc.clone(), gs)));
+                }
                 for (k, v) in pairs {
                     let Expr::Str(k) = k else { return Err("writes a box stat by a name worked out as it runs".into()) };
+                    if live_fixed && matches!(k.as_str(), "weightKB" | "kbConstant" | "power") { continue }
                     // a fixed launch: worked out from the fields written with it, as a declared one is
                     if k == "weightKB" {
                         let lits: BTreeMap<String, f64> = pairs.iter().filter_map(|(k, v)| match (k, literal(v)) { (Expr::Str(k), Some(t)) => t.parse::<f64>().ok().map(|n| (k.clone(), n)), _ => None }).collect();
@@ -2040,6 +2204,14 @@ self.playFrameLabel({})", quote(f))); }
                 let (t, _) = self.expr(t)?;
                 Ok((if m == "getNearestPath" { format!("nearestPath({t})") } else { format!("nearest({t})") }, Ty::Object))
             }
+            ("getHomingTarget", []) => { block(self, "nearest"); Ok(("nearest(\"character\")".into(), Ty::Body)) }
+            ("homeTowardsTarget", [sp, t]) => {
+                block(self, "home");
+                let (sp, _) = self.expr(sp)?;
+                let (t, _) = self.expr(t)?;
+                Ok((format!("homeTowards({sp}, {t})"), Ty::Any))
+            }
+            ("getNearestLedge", []) => { block(self, "ledges"); Ok(("nearestLedge()".into(), Ty::Rect)) }
             ("recover", [n]) => { block(self, "recover"); let (n, _) = self.expr(n)?; Ok((format!("recover({n})"), Ty::Bool)) }
             ("forceOnGround", _) => { block(self, "floor_hold"); Ok(("holdToFloor()".into(), Ty::Any)) }
             ("allowAttack", [on, Expr::Str(label), rest @ ..]) => {
@@ -2193,7 +2365,7 @@ self.playFrameLabel({})", quote(f))); }
     fn engine_row(&self, m: &str) -> Option<Row> {
         let t = self.o.runtime.calls.get(m)?;
         // (one the runtime notes as a gap does nothing there: nothing here, and no value)
-        if t.starts_with("PeptideRuntime.gap(") { return Some(Row { code: "null".into(), returns: Ty::Object }) }
+        if t.starts_with("PeptideRuntime.gap(") { return Some(Row { code: "null".into(), returns: Ty::Object, helper: None, gap: None }) }
         if ["{recv}", "{frame}", "{used}", "{own}"].iter().any(|x| t.contains(x)) { return None }
         // (a number the runtime makes sure is one: the source's code hands it one)
         let t = crate::re!(r"AS3\.num\((\{\d\})\)").replace_all(t, "$1").to_string();
@@ -2203,11 +2375,15 @@ self.playFrameLabel({})", quote(f))); }
             rt.globals.contains(n) && !rt.natives.contains_key(n) && !rt.engine_names.contains(n)
         });
         if reaches { return None }
-        Some(Row { code: t.replace("{eng}", "{self}"), returns: Ty::Any })
+        Some(Row { code: t.replace("{eng}", "{self}"), returns: Ty::Any, helper: None, gap: None })
     }
 
     /// a row filled in: the object it is asked of, its arguments, the units
     fn fill(&mut self, row: &Row, who: &str, args: &[Expr], m: &str) -> Result<(String, Ty), String> {
+        if let Some(g) = &row.gap { self.gaps.insert(g.clone()); }
+        if let Some(h) = &row.helper {
+            if !self.helpers.contains_key(h) { self.helpers.insert(h.clone(), helper(self.o.runtime, "utils", h, h, &[], &[])?); }
+        }
         let mut t = row.code.replace("{self}", who)
             .replace("{size}", &number(self.o.size)).replace("{speed}", &number(self.o.speed)).replace("{accel}", &number(self.o.accel));
         for (i, a) in args.iter().enumerate() {
@@ -2287,7 +2463,10 @@ self.playFrameLabel({})", quote(f))); }
     /// a source frame, forever for none. one function keeps one timer: starting it again restarts it
     fn timer(&mut self, frames: &Expr, repeat: &Expr, f: &Expr, rest: &[Expr]) -> Result<(String, Ty), String> {
         // (its timers are kept whatever it asks: `persistent` says nothing more here)
-        let plain_opts = |e: &Expr| matches!(e, Expr::Null | Expr::Undefined | Expr::Bool(_)) || matches!(e, Expr::Object(kv) if kv.iter().all(|(k, _)| matches!(k, Expr::Str(k) if k == "persistent" || k == "hitStunPause" || k == "pauseHitstun" || k == "inverseCondition")));
+        let fighter = self.o.fighter;
+        let plain_opts = |e: &Expr| matches!(e, Expr::Null | Expr::Undefined | Expr::Bool(_)) || matches!(e, Expr::Object(kv) if kv.iter().all(|(k, _)| matches!(k, Expr::Str(k) if k == "persistent" || k == "hitStunPause" || k == "pauseHitstun" || k == "inverseCondition" || (fighter && k == "condition"))));
+        // (a fighter's timer with a condition runs its code only while that holds)
+        let condition = rest.iter().find_map(|e| match e { Expr::Object(kv) => kv.iter().find(|(k, _)| matches!(k, Expr::Str(k) if k == "condition")).map(|(_, v)| v.clone()), _ => None });
         // (`inverseCondition` the runtime keeps no more of than this does)
         // (one held while it is frozen by a hit: the engine's freeze pauses it)
         let paused = rest.iter().any(|e| matches!(e, Expr::Object(kv) if kv.iter().any(|(k, v)| matches!(k, Expr::Str(k) if k == "pauseHitstun") && matches!(v, Expr::Bool(true)))));
@@ -2310,7 +2489,11 @@ self.playFrameLabel({})", quote(f))); }
             self.blocks.insert("timers".into());
             self.blocks.insert("refresh".into());
             let n = match n.parse::<f64>() { Ok(v) => number(v.max(1.0).round()), Err(_) => format!("Std.int(Math.max(1, {}))", paren(&n)) };
-            return Ok((format!("stopTimer({id}.get());\n{id}.set(startTimer({n}, {times}, {name}, {keep}, {}))", self.in_frame), Ty::Any));
+            let run = match condition {
+                Some(c) => { let t = self.test(&Expr::Call(Box::new(c), vec![]))?; format!("function() {{ if ({t}) {name}(); }}") }
+                None => name.clone(),
+            };
+            return Ok((format!("stopTimer({id}.get());\n{id}.set(startTimer({n}, {times}, {run}, {keep}, {}))", self.in_frame), Ty::Any));
         }
         let opts = "{ persistent: true }";
         Ok((format!("self.removeTimer({id}.get());\n{id}.set(self.addTimer({every}, {times}, {name}, {opts}))"), Ty::Any))
@@ -2384,6 +2567,75 @@ self.playFrameLabel({})", quote(f))); }
         } else {
             format!("{who}.removeEventListener({engine}, {h}){note}{unowned}")
         }, Ty::Any))
+    }
+
+    /// a named clip the clip its animation shows places (`getStanceMC().name`), whose own frames
+    /// run no code: its name, and each animation whose clip places it with the runs of the
+    /// animation's source frames it is on (none where it is on all of them)
+    fn stance_child(&mut self, e: &Expr) -> Option<(String, Vec<(String, Vec<(usize, usize)>)>)> {
+        if !self.o.fighter { return None }
+        let Expr::Member(mc, name) = e else { return None };
+        let Expr::Call(g, a) = &**mc else { return None };
+        if !a.is_empty() || !matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "getStanceMC" | "stanceClip") && self.expr(o).is_ok_and(|(w, _)| w == "self")) { return None }
+        let mut out: Vec<(String, Vec<(usize, usize)>)> = Vec::new();
+        for (anim, sym, from, n) in self.o.anim_clips {
+            let Some(sp) = self.o.model.sprites.get(sym) else { continue };
+            let mut on = Vec::new();
+            for f in sp.frames.iter().skip(from.saturating_sub(1) as usize).take(*n as usize) {
+                let here: Vec<&crate::swf_timeline::Placed> = f.iter().filter(|p| p.name.as_deref() == Some(name.as_str())).collect();
+                // (one whose own frames run code is played here as its code says: not this)
+                if here.iter().any(|p| !art_only(self.o.model, p.char_id)) { return None }
+                on.push(!here.is_empty());
+            }
+            if !on.iter().any(|x| *x) || out.iter().any(|(a, _)| a == anim) { continue }
+            let mut runs = Vec::new();
+            if !on.iter().all(|x| *x) {
+                let mut i = 0;
+                while i < on.len() {
+                    if on[i] { let s = i; while i < on.len() && on[i] { i += 1; } runs.push((s, i)); } else { i += 1; }
+                }
+            }
+            out.push((anim.clone(), runs));
+        }
+        (!out.is_empty()).then(|| (name.clone(), out))
+    }
+
+    /// a named clip its own clip places (`this.name`, in a clip's code), whose own frames run no code
+    fn own_child(&self, e: &Expr) -> Option<String> {
+        if !self.o.fighter { return None }
+        let Expr::Member(t, name) = e else { return None };
+        if !matches!(&**t, Expr::This) && !matches!(&**t, Expr::Local(r) if self.locals.get(r).is_some_and(|(_, h)| *h == Holds::Clip)) { return None }
+        let sym = self.o.model.classes.get(&self.class)?.symbol?;
+        let sp = self.o.model.sprites.get(&sym)?;
+        let placed: Vec<&crate::swf_timeline::Placed> = sp.frames.iter().flatten().filter(|p| p.name.as_deref() == Some(name.as_str())).collect();
+        if placed.is_empty() || placed.iter().any(|p| !art_only(self.o.model, p.char_id)) { return None }
+        Some(name.clone())
+    }
+
+    /// the test whether the clip its animation shows places a named clip: a function of its own
+    /// script, by the animations whose clip does (and the source frames of the animation it is on,
+    /// where not all)
+    fn child_test(&mut self, e: &Expr) -> Result<String, String> {
+        let (name, anims) = self.stance_child(e).ok_or("reads a clip its clip places")?;
+        let f = format!("has{}{}", name[..1].to_uppercase(), ident(&name[1..]));
+        if !self.helpers.contains_key(&f) {
+            let whole: Vec<String> = anims.iter().filter(|(_, r)| r.is_empty()).map(|(a, _)| quote(a)).collect();
+            let mut lines = vec![format!("// whether the clip it shows places its {name} clip"), format!("function {f}() {{")];
+            let some: Vec<&(String, Vec<(usize, usize)>)> = anims.iter().filter(|(_, r)| !r.is_empty()).collect();
+            // (the source frame it is on: two engine frames each)
+            if !some.is_empty() { lines.push("\tvar k = Std.int((self.getCurrentFrame() - 1) / 2);".into()); }
+            lines.push("\tswitch (self.getAnimation()) {".into());
+            if !whole.is_empty() { lines.push(format!("\t\tcase {}: return true;", whole.join(", "))); }
+            for (a, runs) in some {
+                let tests: Vec<String> = runs.iter().map(|(s, e)| if *s == 0 { format!("k < {e}") } else { format!("(k >= {s} && k < {e})") }).collect();
+                lines.push(format!("\t\tcase {}: return {};", quote(a), tests.join(" || ")));
+            }
+            lines.push("\t}".into());
+            lines.push("\treturn false;".into());
+            lines.push("}".into());
+            self.helpers.insert(f.clone(), lines.join("\n"));
+        }
+        Ok(format!("{f}()"))
     }
 
     /// a fighter's listener added by one of its stance clips' code goes with the clip, as the
@@ -2493,8 +2745,14 @@ pub fn helper(runtime: &super::runtime::Runtime, file: &str, key: &str, name: &s
     let mut out = block.join("\n").trim().to_string();
     let mut words: Vec<(&str, String)> = words.to_vec();
     words.push(("NAME", name.to_string()));
+    // (one pass: a word's value is never read for another word)
     words.sort_by_key(|(w, _)| std::cmp::Reverse(w.len()));
-    for (w, v) in &words { out = crate::dyn_re(&format!(r"\b{w}\b")).replace_all(&out, regex::NoExpand(v)).to_string(); }
+    let alts: Vec<String> = words.iter().filter(|(w, _)| !w.is_empty()).map(|(w, _)| regex::escape(w)).collect();
+    if !alts.is_empty() {
+        out = crate::dyn_re(&format!(r"\b(?:{})\b", alts.join("|"))).replace_all(&out, |c: &regex::Captures| {
+            words.iter().find(|(w, _)| *w == &c[0]).map(|(_, v)| v.clone()).unwrap_or_default()
+        }).to_string();
+    }
     let mut slots = BTreeMap::new();
     slots.insert("cases", cases.to_vec());
     Ok(fill_slots(&out, &slots).trim_end().to_string())

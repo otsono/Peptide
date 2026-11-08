@@ -1063,7 +1063,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     // (the links its animation stats give the engine, as written)
     let stats = std::fs::read_to_string(char_dir.join(format!("library/scripts/{char_pascal}/AnimationStats.hx"))).unwrap_or_default();
     let frame_links = native_fighter::frame_links(&stats);
-    let fighting = native_fighter::Fighting { model: &model, runtime: &runtime, fighter, pieces: &pieces, units, effects: &effects, entities: &entities, anim_of: &anim_of, entity_keys: &entity_keys, frame_links: &frame_links };
+    let fighting = native_fighter::Fighting { model: &model, runtime: &runtime, fighter, pieces: &pieces, units, effects: &effects, entities: &entities, anim_of: &anim_of, entity_keys: &entity_keys, frame_links: &frame_links, autolink: &calls };
     let stat_lines = native_stat_code;
     let natively_written = if std::env::var("PEPTIDE_NATIVE_FIGHTERS").map(|v| v != "0").unwrap_or(true) {
         native_fighter::write(char_dir, char_pascal, char_name, &fighting, &native_cancels, &stat_lines)
@@ -1075,7 +1075,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     let anim_of: Vec<String> = data.ssf2_to_fm_anim.iter()
         .map(|(l, a)| format!("case {}: return {};", compile::quote(l), compile::quote(a))).collect();
     let script = format!("{}DATA.animOf = function(l) {{ switch (l) {{ {} default: return null; }} }};\n", out.script, anim_of.join(" "));
-    if let Ok(native) = &natively_written {
+    if let Ok((native, _)) = &natively_written {
         std::fs::write(dir.join("Script.hx"), native)?;
     } else {
         std::fs::write(dir.join("Script.hx"), &script)?;
@@ -1097,6 +1097,8 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         // runtime, function by function, where it is not
         "fighter_native": natively_written.is_ok(),
         "fighter_on_runtime": fighter_census,
+        // what its source does that its Fraymakers code does not
+        "fighter_gaps": natively_written.as_ref().map(|(_, g)| g.iter().cloned().collect::<Vec<_>>()).unwrap_or_default(),
         "problems": out.problems.iter().chain(projectiles.iter().flat_map(|(_, e)| e.problems.iter())).collect::<Vec<_>>(),
         "unplaced": unplaced,
         "unknown": out.unknown.iter().chain(projectiles.iter().flat_map(|(_, e)| e.unknown.iter())).collect::<BTreeSet<_>>(),

@@ -70,6 +70,8 @@ pub struct Fighting<'a> {
     pub entity_keys: &'a BTreeSet<String>,
     /// the animations the engine links at the same frame, each way (`frame_links`)
     pub frame_links: &'a BTreeSet<(String, String)>,
+    /// the code its clips' autolink calls become, by class (`autolink_calls`)
+    pub autolink: &'a BTreeMap<String, (String, String)>,
 }
 
 /// the animations the engine links at the same frame, each way: what its animation stats give a
@@ -132,7 +134,8 @@ fn stance_labels(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, Vec<
 /// The fighter's code written natively, or why it cannot be yet (every reason, when `all`).
 fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a>), Vec<String>> {
     let parts = parts(f.model, f.runtime, f.fighter).map_err(|e| vec![e])?;
-    let jumps = label_jumps(f.model, f.pieces);
+    let mut jumps = label_jumps(f.model, f.pieces);
+    for (c, code) in f.autolink { jumps.entry(c.clone()).or_default().autolink = Some(code.clone()); }
     let labels = stance_labels(f.model, f.pieces);
     let mut frames_of: BTreeMap<String, Vec<(String, u32, u32)>> = BTreeMap::new();
     let mut shown: Vec<&Piece> = f.pieces.iter().filter(|p| !p.reversed && p.head == 0).collect();
@@ -167,11 +170,13 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
     let root_anim = |l: &str| f.anim_of.get(l).cloned();
     let stat = |k: &str| match f.fighter.stats.get(k) { Some(Value::Num(n)) => *n, _ => 0.0 };
     let start = stat("accel_start") * stat("norm_xSpeed") * f.units.speed;
+    let mut clips: Vec<(String, u16, u32, u32)> = f.pieces.iter().filter(|p| !p.reversed && p.head == 0).map(|p| (p.fm_name.clone(), p.sym, p.from, p.frames)).collect();
+    clips.sort();
     let object = native::Object {
         model, itself: parts.itself, classes: parts.classes.clone(), jumps: &jumps, runtime: f.runtime, declared: &declares, switches: &switches,
         owner_stat: &no_stat, effect: &made, owner_anims: &anims, fired: &fired, owner_declares: &declares, owner_stores: &stores,
         root: parts.root, size: f.units.size, speed: f.units.speed, accel: f.units.accel, fighter: true,
-        root_anim: &root_anim, walk_start: (start > 0.0).then_some(start), stance_labels: &labels, clip_frames: &frames_of, frame_links: f.frame_links, owner_native: false,
+        root_anim: &root_anim, walk_start: (start > 0.0).then_some(start), stance_labels: &labels, clip_frames: &frames_of, frame_links: f.frame_links, anim_clips: &clips, owner_native: false,
     };
     if all {
         let why = native::census(&object);
@@ -189,7 +194,7 @@ pub fn census(f: &Fighting) -> Vec<String> {
 /// The fighter's script, written natively, with its entity's keyframes calling its frames; or
 /// every reason it stays on the runtime.
 pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, first_frame: &BTreeMap<String, String>, stat_code: &[String])
-    -> Result<String, Vec<String>> {
+    -> Result<(String, BTreeSet<String>), Vec<String>> {
     let (w, parts) = written(f, true)?;
     let rt = f.runtime;
     let skeleton = rt.native_files.get("fighter").ok_or_else(|| vec!["the runtime has no native/fighter.hx".to_string()])?;
@@ -210,14 +215,16 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     for b in ["attack", "sounds", "refresh", "hits", "asked", "start_attack"] { blocks.insert(b.into()); }
     // the attack a rocket rides in: the one whose clip has a `rocket` frame to start it at (its air
     // one where it has two)
-    let mut rocketing: Vec<&str> = f.pieces.iter().filter(|p| f.model.sprites.get(&p.sym).is_some_and(|sp| sp.labels.iter().any(|(_, l)| l == "rocket")))
-        .map(|p| p.label.as_str()).filter(|l| !l.is_empty()).collect();
+    // (by the animations that show it: the attack is the one its label table says the animation
+    // is, as an air piece of a clip it shares carries the clip's label)
+    let mut rocketing: Vec<String> = f.pieces.iter().filter(|p| f.model.sprites.get(&p.sym).is_some_and(|sp| sp.labels.iter().any(|(_, l)| l == "rocket")))
+        .filter_map(|p| f.anim_of.iter().find(|(_, a)| **a == p.fm_name).map(|(l, _)| l.clone()).or_else(|| (!p.label.is_empty()).then(|| p.label.clone()))).collect();
     rocketing.sort_by_key(|l| (!l.ends_with("_air"), l.to_string()));
     rocketing.dedup();
     let rocket = rocketing.first().map(|l| compile::quote(l));
     if rocket.is_some() { blocks.insert("rocket".into()); }
     let mut functions = w.functions.clone();
-    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "walk_start", "end_move", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "last_used", "char_stats", "fired_stats", "timers", "ledges", "own_floor", "nearest", "ground_test", "recover"];
+    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "walk_start", "end_move", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "fired_stats", "timers", "ledges", "home", "own_floor", "nearest", "ground_test", "recover"];
     for b in order.iter().filter(|b| blocks.contains(**b)) {
         let words: Vec<(&str, String)> = match *b {
             "walk_start" => {
@@ -226,6 +233,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
             }
             "items" => vec![("TOSS", num(f.units.item_toss)), ("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed))],
             "ledges" | "own_floor" | "ground_test" => vec![("SIZE", num(f.units.size))],
+            "home" => vec![("SPEED", num(f.units.speed))],
             "rocket" => vec![("ATTACK", rocket.clone().unwrap_or_else(|| "null".into())), ("SPEED", num(f.units.speed)),
                 ("BLOCKED", native::state_tests(rt, "self", &[10, 13, 14, 15, 19, 20])), ("ATTACKING", native::state_tests(rt, "self", &[9])),
                 ("STOPS", native::state_tests(rt, "self", &[22, 16, 18]))],
@@ -296,6 +304,12 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
             field_cases.push(format!("case {}:", compile::quote(&rc.name)));
             field_cases.push("\tswitch (name) {".into());
             for (field, by_label) in set {
+                // (a field each frame sets to its own label is the label)
+                let labels: BTreeSet<&str> = f.model.sprites.get(&parts.root).map(|sp| sp.labels.iter().map(|(_, l)| l.as_str()).collect()).unwrap_or_default();
+                if by_label.iter().all(|(l, v)| *v == compile::quote(l)) && labels.iter().all(|l| by_label.iter().any(|(b, _)| b == l)) {
+                    field_cases.push(format!("\t\tcase {}: return {{ get: function() {{ return rootLabel(); }} }};", compile::quote(&field)));
+                    continue;
+                }
                 let cases: Vec<String> = by_label.iter().map(|(l, v)| format!("case {}: return {v};", compile::quote(l))).collect();
                 field_cases.push(format!("\t\tcase {}: return {{ get: function() {{ switch (rootLabel()) {{ {} }} return null; }} }};", compile::quote(&field), cases.join(" ")));
             }
@@ -368,12 +382,15 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         if let Some(fs) = slots.get_mut("functions") { fs.push(String::new()); fs.extend(block.lines().map(String::from)); }
         update.push("shownFrame();".into());
     }
+    // (last: the end of the frame, after everything else its update does)
+    let tick_end = blocks.contains("tick_end");
     if blocks.contains("frame_links") {
         let block = native::helper(rt, "fighter_rules", "frame_links", "", &[], &[]).map_err(one)?;
         if let Some(fs) = slots.get_mut("functions") { fs.push(String::new()); fs.extend(block.lines().map(String::from)); }
         if let Some(st) = slots.get_mut("start") { st.push("listenForLinks();".into()); }
         update.push("linkFrame();".into());
     }
+    if tick_end { update.push("tickEndFrame();".into()); }
     slots.insert("update", update);
     slots.insert("own_tick", w.tick.clone());
     let anims: BTreeSet<String> = f.pieces.iter().map(|p| p.fm_name.clone()).collect();
@@ -394,6 +411,14 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         *code = code.replace(native::FRAME_RETURN, if timers { "runAfterFrame(); return;" } else { "return;" });
         if timers { code.push_str("\nrunAfterFrame();"); }
     }
+    // (an animation its code jumps into at a label: its first frame's own code waits that out,
+    // its clip's declarations do not)
+    for p in f.pieces.iter().filter(|p| w.mid_targets.contains(&p.fm_name) && !p.reversed && p.head == 0) {
+        let at = (p.sym, p.from);
+        if let Some(code) = frames.get_mut(&at).filter(|c| !c.trim().is_empty()) {
+            *code = format!("if (!midJump.get()) {{\n{}\n}}", code.lines().map(|l| format!("\t{l}")).collect::<Vec<_>>().join("\n"));
+        }
+    }
     for e in &entries {
         let decl = match &e.guard {
             None => e.decls.join("\n"),
@@ -403,7 +428,9 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
             }
         };
         let code = frames.entry((e.sym, e.frame)).or_default();
-        *code = if code.is_empty() { decl } else { format!("{decl}\n{code}") };
+        // (a block's close followed by a line opening with `(` reads as a call of the block)
+        let sep = if decl.trim_end().ends_with('}') && super::native_projectile::opens_with_paren(code) { ";\n" } else { "\n" };
+        *code = if code.is_empty() { decl } else { format!("{decl}{sep}{code}") };
     }
     let mut extra: BTreeMap<(String, u32), String> = BTreeMap::new();
     let field_ref = crate::re!(r"\{field:(\w+)\}");
@@ -414,7 +441,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         extra.insert((anim.clone(), 0), code);
     }
     super::native_projectile::keyframes_with(&entity, title, f.model, f.pieces, &frames, false, &extra).map_err(|e| vec![e.to_string()])?;
-    Ok(script)
+    Ok((script, w.gaps.clone()))
 }
 
 /// the label its clip is on (the last one at or before the frame it shows), as the source reads it

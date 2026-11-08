@@ -694,6 +694,56 @@ function clipLeft(c) {
 	clipListeners.set(keep);
 }
 
+// ---- mid_jump
+// a jump to a label inside another animation: the engine runs an animation's first frame as it
+// starts it, and the source goes straight to the label's frame, so that frame's own code waits
+// this out (`if (!midJump.get())`)
+var midJump = self.makeObject(false);
+function playLabelIn(anim, label) {
+	if (self.getAnimation() != anim) {
+		midJump.set(true);
+		self.playAnimation(anim);
+		midJump.set(false);
+	}
+	self.playFrameLabel(label);
+}
+
+// ---- tick_end
+// what its code listens for at the end of every frame of the game: the end of its own update, in
+// the order its code asked
+var tickEnds = self.makeObject([]);
+function listenTickEnd(fn) {
+	if (tickEnds.get().indexOf(fn) < 0) tickEnds.get().push(fn);
+}
+function unlistenTickEnd(fn) {
+	tickEnds.get().remove(fn);
+}
+function tickEndFrame() {
+	for (fn in tickEnds.get().copy()) fn(null);
+}
+
+// ---- tint
+// a colour transform its code sets on its clip: the fighter shows it as one colour shader, the
+// transform's values copied in as it is set (changing the transform after shows nothing until it
+// is set again, as the source's does)
+var tintShown = self.makeObject(null);
+function showTint(ct) {
+	var sh = tintShown.get();
+	if (sh == null) {
+		sh = new RgbaColorShader();
+		self.addShader(sh);
+		tintShown.set(sh);
+	}
+	sh.redMultiplier = ct.redMultiplier;
+	sh.greenMultiplier = ct.greenMultiplier;
+	sh.blueMultiplier = ct.blueMultiplier;
+	sh.alphaMultiplier = ct.alphaMultiplier;
+	sh.redOffset = ct.redOffset;
+	sh.greenOffset = ct.greenOffset;
+	sh.blueOffset = ct.blueOffset;
+	sh.alphaOffset = ct.alphaOffset;
+}
+
 // ---- frame_links
 // a listener a clip's code adds lives one animation, as the engine has it, and the clip goes on
 // when the engine links its animation to another at the same frame (the fighter lands or leaves
@@ -791,6 +841,29 @@ function stageLedges() {
 		if (st.getStructureStat("rightLedge") == true) { var p = pts[pts.length - 1]; out.push({ x: p.x / SIZE, y: p.y / SIZE }); }
 	}
 	return out;
+}
+// the stage's ledge nearest it (the source's units), or null where the stage has none
+function nearestLedge() {
+	var best = null;
+	var bd = 0.0;
+	for (l in stageLedges()) {
+		var dx = l.x - self.getX() / SIZE;
+		var dy = l.y - self.getY() / SIZE;
+		var d = dx * dx + dy * dy;
+		if (best == null || d < bd) { best = l; bd = d; }
+	}
+	return best;
+}
+
+// ---- home
+// it heads straight for the one given at a speed (the source's units), facing the way it goes
+function homeTowards(speed, target) {
+	if (target == null) return;
+	var a = Math.atan2(target.getY() - self.getY(), target.getX() - self.getX());
+	var xs = speed * Math.cos(a);
+	if (xs <= 0) self.faceLeft(); else self.faceRight();
+	self.setXSpeed(Math.abs(xs) * SPEED);
+	self.setYSpeed(speed * Math.sin(a) * SPEED);
 }
 
 // ---- own_floor

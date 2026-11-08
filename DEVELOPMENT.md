@@ -643,8 +643,16 @@ its clip on into the next animation itself (`playOn`): on a projectile the engin
 animation goes by its state. what other objects' code asks of a fighter it publishes on its exports (its clips'
 fields as containers, an attack started, a rocket, its attack's stats, its label), and a
 fighter on the runtime publishes the same, so a projectile reaches either the same way.
-`runtime_report.json` says `fighter_native`, and lists every function still holding it on the
-runtime under `fighter_on_runtime`.
+a jump to a label inside another animation goes through `playLabelIn`, and that animation's
+first frame's own code skips while it does (the engine runs the first frame as it starts an
+animation; the source goes straight to the label). a named clip its clip places whose own code
+only moves its own playhead is art drawn into the fighter's: a test of it reads the clips'
+placements (`hasName()`), and turning its frames is a noted gap. a colour transform set on its
+clip is one `RgbaColorShader` (`showTint`), Flash's classes are made as `native_classes.jsonc`
+says, and the game's tick end is the end of its update. a row of `native_calls.jsonc` can name a
+block of `runtime/native/utils.hx` its code calls (`helper`) and a gap it leaves (`gap`).
+`runtime_report.json` says `fighter_native`, lists every function still holding it on the
+runtime under `fighter_on_runtime`, and what the native code leaves out under `fighter_gaps`.
 `PEPTIDE_NATIVE_FIGHTERS=0` keeps every fighter on the runtime.
 
 ### 5.4 extraction layer

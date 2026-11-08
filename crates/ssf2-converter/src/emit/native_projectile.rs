@@ -144,7 +144,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let object = native::Object {
         model, itself, classes: classes.clone(), jumps: &jumps, runtime, declared: &declared, switches: &taken.switches,
         owner_stat: &owner_stat, effect: &made, owner_anims: &owner.anims, fired: &fired, owner_declares: &owner_stat_of, owner_stores: &owner_stores, root: clip_sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false,
-        root_anim: &|_| None, walk_start: None, stance_labels: &no_labels, clip_frames: &no_frames, frame_links: &no_links, owner_native: owner.native,
+        root_anim: &|_| None, walk_start: None, stance_labels: &no_labels, clip_frames: &no_frames, frame_links: &no_links, anim_clips: &[], owner_native: owner.native,
     };
     let written = native::write(&object)?;
 
@@ -260,6 +260,12 @@ fn clip_frame(p: &Piece, k: u32) -> u32 {
 /// clip's labels inside it (a jump to one plays the animation at the label)
 /// (`born`: its first frame runs once its maker is done, as a projectile's does; `extra`: more code
 /// on an animation's engine frame, by its name and the frame's index)
+/// whether code's first statement (past its comments) opens with `(`: after a block's close it
+/// would read as a call of the block
+pub fn opens_with_paren(code: &str) -> bool {
+    code.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("//")).is_some_and(|l| l.starts_with('('))
+}
+
 pub fn keyframes_with(path: &Path, key: &str, model: &SourceModel, pieces: &[Piece], frames: &BTreeMap<(u16, u32), String>,
                       born: bool, extra: &BTreeMap<(String, u32), String>) -> anyhow::Result<()> {
     let Ok(bytes) = std::fs::read(path) else { return Ok(()) };
@@ -289,7 +295,12 @@ pub fn keyframes_with(path: &Path, key: &str, model: &SourceModel, pieces: &[Pie
             if call.is_none() && more.is_none() { continue }
             // the first frame as the object is made runs once its maker is done (`update`)
             let mut code = match call { Some(c) if born && k == 0 && f == 1 => format!("if (started.get()) {c}"), Some(c) => c.clone(), None => String::new() };
-            if let Some(m) = more { if !code.is_empty() { code.push('\n'); } code.push_str(m); }
+            if let Some(m) = more {
+                // (a block's close followed by a line opening with `(` reads as a call of the block)
+                if code.trim_end().ends_with('}') && opens_with_paren(m) { code.push(';'); }
+                if !code.is_empty() { code.push('\n'); }
+                code.push_str(m);
+            }
             if 2 * k < total { at.push((2 * k, code)); }
         }
         let tag = format!("{key}::{}::native", p.fm_name);
