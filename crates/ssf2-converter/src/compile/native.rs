@@ -2204,7 +2204,9 @@ self.playFrameLabel({})", quote(f))); }
                 let (t, _) = self.expr(t)?;
                 Ok((if m == "getNearestPath" { format!("nearestPath({t})") } else { format!("nearest({t})") }, Ty::Object))
             }
-            ("getHomingTarget", []) => { block(self, "nearest"); Ok(("nearest(\"character\")".into(), Ty::Body)) }
+            // (the source's engine picks a homing target in its own range and says so by its
+            // `homingTarget` event; nothing here picks one, so there is none to head for)
+            ("getHomingTarget", []) => { self.gaps.insert("homes on a target the source's engine picks, which nothing here picks".into()); Ok(("null".into(), Ty::Body)) }
             ("homeTowardsTarget", [sp, t]) => {
                 block(self, "home");
                 let (sp, _) = self.expr(sp)?;
