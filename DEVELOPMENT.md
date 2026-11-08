@@ -638,11 +638,18 @@ stats): the link drops the listener, and the engine's `LINK_FRAMES` event adds i
 animation linked to (`frame_links`). any other listener, and any on a clip several unlinked
 animations show, stays until the fighter leaves the clip (`fresh_clip`). a root clip with nothing to run, whose frames only set its fields, answers
 them by the label it shows. a jump to the frame it is on stays there (playing an animation again
-from inside its own first frame would run that frame again, forever). a native projectile plays
-its clip on into the next animation itself (`playOn`): on a projectile the engine's own end of an
-animation goes by its state. what other objects' code asks of a fighter it publishes on its exports (its clips'
+from inside its own first frame would run that frame again, forever). a native fighter or
+projectile plays its clip on into the next animation itself (`playOn`, a charge's base into its
+attack), where the engine would end the move or hold the frame. what other objects' code asks of a fighter it publishes on its exports (its clips'
 fields as containers, an attack started, a rocket, its attack's stats, its label), and a
-fighter on the runtime publishes the same, so a projectile reaches either the same way.
+fighter on the runtime publishes the same, so a projectile reaches either the same way. where
+some class of the package reads another object's clip label, each native object publishes its
+own (`__stanceLabel`, read with `stanceLabelOf`); where some class writes another object's
+projectile stats, each native projectile publishes `__setStats`, which does in its own script
+what its own code would (a switch of its steering, a stat it keeps). a field of the record an
+event hands a listener is read as `runtime/events.jsonc` `record` says (a wall's side is the
+structure type the engine's wall event carries: a wall on the object's left is a structure's
+right side); one no record of the source's carries reads as nothing, as it does there.
 a jump to a label inside another animation goes through `playLabelIn`, and that animation's
 first frame's own code skips while it does (the engine runs the first frame as it starts an
 animation; the source goes straight to the label). a named clip its clip places whose own code

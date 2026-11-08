@@ -13,6 +13,11 @@ pub struct EventTable {
     /// the engine's events a listener added without `persistent` is told of: one the engine raises
     /// while the animation it was added in still plays
     pub heard_in_animation: Vec<String>,
+    /// a field of the record the source hands a listener -> (the engine's code, with `{arg}` the
+    /// event, and what the value is)
+    pub record: BTreeMap<String, (String, String)>,
+    /// the fields the source's records carry that `record` does not translate
+    pub unrecorded: Vec<String>,
 }
 
 pub fn table() -> &'static EventTable {
@@ -25,7 +30,14 @@ pub fn table() -> &'static EventTable {
             v.as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()).unwrap_or_default()
         };
         let heard = json["heard_in_animation"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
-        EventTable { engine: read(&json["engine"]), state: read(&json["state"]), heard_in_animation: heard }
+        let strings = |v: &serde_json::Value| -> Vec<String> {
+            v.as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default()
+        };
+        let record = json["record"].as_object().map(|o| o.iter().filter_map(|(k, v)| {
+            Some((k.clone(), (v["code"].as_str()?.to_string(), v["is"].as_str().unwrap_or("any").to_string())))
+        }).collect()).unwrap_or_default();
+        EventTable { engine: read(&json["engine"]), state: read(&json["state"]), heard_in_animation: heard,
+            record, unrecorded: strings(&json["unrecorded"]) }
     })
 }
 

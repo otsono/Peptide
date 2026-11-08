@@ -93,6 +93,13 @@ function NAME(label) {
 	}
 }
 
+// ---- set_stats
+//: its cases are each stat another object's code writes on it, as its own code would write it
+// the stats another object's code writes on it (through `exports.__setStats`), as its own code would
+function setStats(stats) {
+	// {cases}
+}
+
 // ---- own_stat
 //: STAT the stat, DECLARED what it states for it
 // its STAT: what its code set it to since, else what it states
@@ -120,9 +127,8 @@ function goToLabel(label, anims, starts) {
 
 // ---- plays_on
 //: its cases are each animation its clip plays on from, into the one that shows its next frame
-// its clip plays on past an animation's last frame into the animation that shows its next frame.
-// the engine holds a last frame here: an animation it ends itself goes by the projectile's state
-// instead, back to its first or gone
+// its clip plays on past an animation's last frame into the animation that shows its next frame,
+// where the engine would hold that frame or end the move
 function NAME() {
 	if (self.getCurrentFrame() < self.getTotalFrames()) return;
 	switch (self.getAnimation()) {

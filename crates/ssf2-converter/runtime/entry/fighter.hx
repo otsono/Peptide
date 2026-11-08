@@ -11,6 +11,8 @@ function initialize() {
 	self.exports.__rocket = function(speed, angle, decay, ?rotate) { PeptideRuntime.run(function() { PeptideCharacter.rocket(PeptideRuntime.object, speed, angle, decay, rotate); }); };
 	// the source's label its clip is on, for another object's code
 	self.exports.__label = function() { var o = PeptideRuntime.object; return o == null || o.__mc == null ? null : o.__mc.currentLabel; };
+	// and the label the clip its animation shows is on
+	self.exports.__stanceLabel = function() { var o = PeptideRuntime.object; var s = o == null ? null : PeptideRuntime.stanceOf(o.__mc); return s == null ? null : s.currentLabel; };
 	// a stat of the attack it is in, for another object's code
 	self.exports.__attackStat = function(k) { return Attacks.stat(PeptideRuntime.object, k); };
 	// a field of one of its clips ("self" its own object, "root" its clip, "stance" the clip its

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 #[derive(Debug, Default)]
-struct Code { when: Option<String>, yields_to: Option<String>, same_as: Option<String>, reads: Vec<String>, replaces: String, code: Vec<String>, call: String, switch: Option<String>, start: Option<String>, native: bool }
+struct Code { when: Option<String>, yields_to: Option<String>, same_as: Option<String>, reads: Vec<String>, replaces: String, code: Vec<String>, call: String, switch: Option<String>, switches: BTreeMap<String, String>, start: Option<String>, native: bool }
 
 /// what a projectile's stats take: the lines written into its script, the calls its update makes
 /// each frame, and the runtime pieces they stand in for
@@ -20,7 +20,7 @@ pub struct Taken {
 }
 
 #[derive(Debug, Default)]
-pub struct ProjectileStats { code: Vec<(String, Code)>, frame: Vec<String> }
+pub struct ProjectileStats { code: Vec<(String, Code)>, frame: Vec<String>, when_tests: BTreeMap<String, String> }
 
 pub fn table() -> &'static ProjectileStats {
     static T: OnceLock<ProjectileStats> = OnceLock::new();
@@ -29,6 +29,7 @@ pub fn table() -> &'static ProjectileStats {
         let Ok(text) = std::fs::read_to_string(dir.join("projectile_stats.jsonc")) else { return ProjectileStats::default() };
         let json: serde_json::Value = serde_json::from_str(&crate::mappings::strip_jsonc(&text)).unwrap_or_default();
         let mut t = ProjectileStats::default();
+        t.when_tests = json["when_tests"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()).unwrap_or_default();
         t.frame = json["frame"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
         if let Some(o) = json["code"].as_object() {
             t.code = o.iter().filter_map(|(k, v)| Some((k.clone(), Code {
@@ -40,6 +41,7 @@ pub fn table() -> &'static ProjectileStats {
                 code: v["code"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
                 call: v["call"].as_str().unwrap_or_default().to_string(),
                 switch: v["switch"].as_str().map(String::from),
+                switches: v["switches"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()).unwrap_or_default(),
                 start: v["start"].as_str().map(String::from),
                 native: v["native"].as_bool().unwrap_or(false),
             }))).collect();
@@ -56,12 +58,22 @@ pub fn table() -> &'static ProjectileStats {
     })
 }
 
-fn holds(when: Option<&str>, v: f64) -> bool {
+pub fn holds(when: Option<&str>, v: f64) -> bool {
     match when { Some("positive") => v > 0.0, Some("negative") => v < 0.0, Some("nonnegative") => v >= 0.0,
                  Some("true") => v != 0.0, Some("false") => v == 0.0, _ => true }
 }
 
 impl ProjectileStats {
+    /// the `when` a stat's switch holds for: its own row's, or any value but false and 0
+    pub fn when_of(&self, stat: &str) -> String {
+        self.code.iter().find(|(k, _)| k == stat).and_then(|(_, c)| c.when.clone()).filter(|w| w != "effect").unwrap_or_else(|| "true".into())
+    }
+
+    /// whether a value written as it runs holds for a stat's switch, as code (`v` the value)
+    pub fn holds_test(&self, stat: &str, v: &str) -> Option<String> {
+        self.when_tests.get(&self.when_of(stat)).map(|t| t.replace("{v}", v))
+    }
+
     /// the call the update makes to `frame`'s function
     pub fn frame_call(&self) -> Option<String> {
         self.frame.iter().find_map(|l| l.strip_prefix("function ")?.split('(').next().map(|n| format!("{n}();")))
@@ -100,6 +112,7 @@ impl ProjectileStats {
                 out.code.push(super::attack_stats::fill(&t, stats.get(k).copied().unwrap_or(0.0), stats));
             }
             if let Some(v) = &c.switch { out.switches.insert(k.clone(), v.clone()); }
+            for (st, v) in &c.switches { out.switches.entry(st.clone()).or_insert_with(|| v.clone()); }
             if let Some(st) = &c.start { out.starts.push(st.clone()); }
             if !c.call.is_empty() { out.calls.push(c.call.clone()); }
             if !out.replaced.contains(&c.replaces) { out.replaced.push(c.replaces.clone()) }

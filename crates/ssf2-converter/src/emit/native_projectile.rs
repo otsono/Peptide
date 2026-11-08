@@ -186,6 +186,13 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         functions.push(native::helper(runtime, "refresh", "projectile", "", &[], &[])?);
         if let Some(r) = &refresh { starts.push(format!("setRefresh({r});")); }
     }
+    // the label its clip is on, for its own code and for another object's that reads it
+    let read_by_others = native::reads_others_label(model);
+    let mut publish = written.publish.clone();
+    if read_by_others || functions.iter().chain(written.start.iter()).chain(written.tick.iter()).any(|t| t.contains("clipLabel(")) || written.frames.values().any(|t| t.contains("clipLabel(")) {
+        functions.push(native::helper(runtime, "fighter_tables", "clip_label", "", &[], &super::native_fighter::clip_labels(model, pieces))?);
+        if read_by_others { publish.push("self.exports.__stanceLabel = clipLabel;".into()); }
+    }
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     slots.insert("fields", written.fields.clone());
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
@@ -195,7 +202,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     slots.insert("update", update);
     slots.insert("own_start", written.start.clone());
     slots.insert("own_tick", written.tick.clone());
-    slots.insert("publish", written.publish.clone());
+    slots.insert("publish", publish);
     slots.insert("ends", written.ends.iter().map(|(l, h)| format!("if ({l}.get()) {h}(null);")).collect());
     let script = native::fill_slots(skeleton, &slots)
         .replace("{title}", title)

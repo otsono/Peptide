@@ -37,5 +37,26 @@
   // as the source's goes with its clip. an event raised as the state changes (its own change, a hit
   // taken) never reaches one, so a listener for any event not listed here stays until the fighter
   // leaves the clip. measured live, one at a time
-  "heard_in_animation": ["EntityEvent.COLLIDE_FLOOR"]
+  "heard_in_animation": ["EntityEvent.COLLIDE_FLOOR"],
+  // the fields of the record the source's engine hands a listener, as this engine's event has them
+  // (`{arg}` is the event). `is` says what the value is: a test passes here only on a literal true
+  "record": {
+    // whoever was hit, or hit it, is the event's foe; the one listening is the object itself
+    "receiver":  { "code": "{arg}.data.foe", "is": "object" },
+    "opponent":  { "code": "{arg}.data.foe", "is": "object" },
+    "grabbed":   { "code": "{arg}.data.foe", "is": "object" },
+    "grabber":   { "code": "{arg}.data.foe", "is": "object" },
+    "projectile": { "code": "{arg}.data.foe", "is": "object" },
+    "caller":    { "code": "self", "is": "object" },
+    // the side of the object a wall it met is on: a wall to its left is a structure's right side.
+    // `top` is a ceiling, which this engine tells of with its own event, so a wall's is never one
+    "left":      { "code": "{arg}.data.structureType == StructureType.RIGHT_WALL", "is": "bool" },
+    "right":     { "code": "{arg}.data.structureType == StructureType.LEFT_WALL", "is": "bool" },
+    "top":       { "code": "{arg}.data.structureType == StructureType.CEILING", "is": "bool" }
+  },
+  // the other fields the source's engine puts in a record it hands a listener, which nothing above
+  // translates yet. a field in neither list is in no record of the source's: reading it gives
+  // nothing there, and so it does here
+  "unrecorded": ["attackBoxData", "attackData", "auto", "callerAttackBoxData", "damage", "fromState", "holder",
+    "isMetal", "receiverAttackBoxData", "sizeStatus", "target", "toState", "type", "victim"]
 }

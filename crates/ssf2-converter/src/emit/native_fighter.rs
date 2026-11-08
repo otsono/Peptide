@@ -330,7 +330,9 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     functions.push(table("declared", &t)?);
     functions.push(table("declared_box", &boxes)?);
     if blocks.contains("items") { functions.extend(item_tables(f).map_err(|e| vec![e])?); }
-    if code_text.contains("clipLabel(") || functions.iter().any(|t| t.contains("clipLabel(")) { functions.push(table("clip_label", &clip_labels(f))?); }
+    // (the label its clip is on, for its own code and for another object's that reads it)
+    let read_by_others = native::reads_others_label(f.model);
+    if read_by_others || code_text.contains("clipLabel(") || functions.iter().any(|t| t.contains("clipLabel(")) { functions.push(table("clip_label", &clip_labels(f.model, f.pieces))?); }
     if blocks.contains("fired_stats") {
         let wanted: BTreeSet<&str> = w.stat_keys.iter().filter_map(|k| k.strip_prefix("projectile:")).collect();
         let mut l = Vec::new();
@@ -367,6 +369,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     publish.push("self.exports.__fieldOf = fieldOf;".into());
     publish.push("self.exports.__attackStat = attackStat;".into());
     publish.push("self.exports.__label = rootLabel;".into());
+    if read_by_others { publish.push("self.exports.__stanceLabel = clipLabel;".into()); }
     slots.insert("publish", publish);
     slots.insert("start", vec!["listenForHits();".into()]);
     slots.insert("own_start", w.start.clone());
@@ -381,6 +384,15 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         let block = native::helper(rt, "fighter_rules", "fresh_clip", "", &[], &[]).map_err(one)?;
         if let Some(fs) = slots.get_mut("functions") { fs.push(String::new()); fs.extend(block.lines().map(String::from)); }
         update.push("shownFrame();".into());
+    }
+    // its clip playing on past an animation's last frame into the one that shows its next frame
+    // (a charge's base into its attack), where the engine would end the move
+    let mut on: Vec<String> = f.pieces.iter().filter_map(|p| p.on.as_ref().map(|q| format!("case {}: self.playAnimation({});", compile::quote(&p.fm_name), compile::quote(q)))).collect();
+    on.dedup();
+    if !on.is_empty() {
+        let block = native::helper(rt, "helpers", "plays_on", "playOn", &[], &on).map_err(one)?;
+        if let Some(fs) = slots.get_mut("functions") { fs.push(String::new()); fs.extend(block.lines().map(String::from)); }
+        update.push("playOn();".into());
     }
     // (last: the end of the frame, after everything else its update does)
     let tick_end = blocks.contains("tick_end");
@@ -445,10 +457,10 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
 }
 
 /// the label its clip is on (the last one at or before the frame it shows), as the source reads it
-fn clip_labels(f: &Fighting) -> Vec<String> {
+pub fn clip_labels(model: &SourceModel, pieces: &[Piece]) -> Vec<String> {
     let mut t = Vec::new();
-    for p in f.pieces.iter().filter(|p| !p.reversed && p.head == 0) {
-        let Some(sprite) = f.model.sprites.get(&p.sym) else { continue };
+    for p in pieces.iter().filter(|p| !p.reversed && p.head == 0) {
+        let Some(sprite) = model.sprites.get(&p.sym) else { continue };
         let mut labels: Vec<(u32, &str)> = sprite.labels.iter().map(|(f0, l)| (*f0 as u32 + 1, l.as_str())).collect();
         labels.sort();
         let before = labels.iter().rfind(|(fr, _)| *fr <= p.from).map(|(_, l)| *l);

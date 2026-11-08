@@ -139,6 +139,14 @@
   "grabRelease": "if ({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length > 0) {self}.releaseAllCharacters(); else for (c in match.getCharacters()) { var held = c.getAllGrabbedFoes(); if (held != null && held.indexOf({self}) >= 0) c.releaseCharacter({self}); }",
   "isEqual": { "code": "({0} == {self})", "returns": "bool" },
   "camFocus": "match.getCamera().addTimedTarget({self}, {0} * 2)",
+  // the camera's targets, on the camera (`PeptideAPI.getCamera()`)
+  "addTarget": "{self}.addTarget({0})",
+  "deleteTarget": "{self}.deleteTarget({0})",
+  "addForcedTarget": "{self}.addForcedTarget({0})",
+  "deleteForcedTarget": "{self}.deleteForcedTarget({0})",
+  // not ported: the camera's zoom, which this engine frames for itself (as on the runtime)
+  "updateCameraParameters": { "code": "", "gap": "sets the camera's zoom, which this engine frames for itself" },
+  "getCameraParameter": { "code": "null", "returns": "object", "gap": "sets the camera's zoom, which this engine frames for itself" },
   // not ported, as on the runtime: a named box's rectangle
   "getHitBox": { "code": "null", "returns": "rect" },
   // its palette, as the runtime answers it: none set here

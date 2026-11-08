@@ -58,6 +58,13 @@ function darkenStage(on) {
 	}
 }
 
+// ---- stanceLabelOf
+// the label another object's clip is on, as its own script publishes it (null for none)
+function stanceLabelOf(o) {
+	if (o == null || o.exports.__stanceLabel == null) return null;
+	return o.exports.__stanceLabel();
+}
+
 // ---- numberIn
 // a whole number written in a base (2 to 36), as Flash's `toString(base)` writes it
 function numberIn(n, base) {

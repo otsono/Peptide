@@ -19,14 +19,25 @@
 //   start      what its initialize runs once, instead of a `call` each frame
 //   native     true: taken only where the object's code is written as Fraymakers code (the
 //              runtime does this one its own way)
-//   switch     the variable its code turns it off and on again with: a write of the stat by the
-//              object's own code to nothing (or back to what it declares) sets it, where the
-//              object's code is written as Fraymakers code (compile/native.rs)
+//   switch     the variable its code turns it off and on again with: a write of the stat sets it
+//              to whether the value holds (its `when`), or on again for what it declares, where
+//              the object's code is written as Fraymakers code (compile/native.rs)
+//   switches   other stats it reads that turn a part of it off and on, each to its variable (on
+//              for any value but false and 0)
 // a row is not taken when the projectile's own code changes a stat it reads as it flies, or
 // another declaration that shares its clip states one otherwise: the runtime's piece runs then.
 // rows run in the order written here, from `frame`: the function the update calls, `{calls}` each
 // taken row's `call`
 {
+  // whether a value written as it runs holds for a row, by its `when` (`{v}` the value): what a
+  // stat another object's code writes on it sets its switch to
+  "when_tests": {
+    "positive": "{v} > 0",
+    "negative": "{v} < 0",
+    "nonnegative": "{v} >= 0",
+    "true": "{v} != false && {v} != 0",
+    "false": "{v} == false || {v} == 0"
+  },
   "frame": [
     "// what its declared stats have it do each engine frame it flies",
     "function flyByStats() {",
@@ -131,7 +142,8 @@
         "\tself.setXSpeed(slowdown > 0 && speed >= 0 && slowed < 0 ? 0 : slowed);",
         "}"
       ] },
-    "influenceXMovement": { "when": "positive", "reads": ["influenceYMovement", "influenceXFactor", "influenceYFactor"], "replaces": "Projectiles.influence", "call": "followStick();",
+    "influenceXMovement": { "when": "positive", "reads": ["influenceYMovement", "influenceXFactor", "influenceYFactor"], "replaces": "Projectiles.influence", "call": "followStick();", "switch": "nudgedAcross",
+      "switches": { "influenceYMovement": "nudgedUp" },
       "code": [
         "// the owner's held stick nudges it, per axis: stepped toward the held way by the axis' factor",
         "// each engine frame, back toward nothing when the stick is let go, kept within its movement,",
@@ -142,6 +154,8 @@
         "var stickStepY = {influenceYFactor|0} * {@speed};",
         "var stickX = 0.0;",
         "var stickY = 0.0;",
+        "var nudgedAcross = true;",
+        "var nudgedUp = true;",
         "function nudge(v, step, reach, plus, minus) {",
         "\tif (plus) v += step;",
         "\telse if (minus) v -= step;",
@@ -153,18 +167,19 @@
         "\tvar owner = self.getOwner();",
         "\tif (owner == null || owner.getHeldControls == null) return;",
         "\tvar held = owner.getHeldControls();",
-        "\tif (stickReachX > 0) {",
+        "\tif (stickReachX > 0 && nudgedAcross) {",
         "\t\tstickX = nudge(stickX, stickStepX, stickReachX, held.RIGHT, held.LEFT);",
         "\t\tself.setX(self.getX() + stickX);",
         "\t}",
-        "\tif (stickReachY > 0) {",
+        "\tif (stickReachY > 0 && nudgedUp) {",
         "\t\tstickY = nudge(stickY, stickStepY, stickReachY, held.DOWN, held.UP);",
         "\t\tself.setY(self.getY() + stickY);",
         "\t}",
         "}"
       ] },
-    "influenceYMovement": { "when": "positive", "yields_to": "influenceXMovement", "same_as": "influenceXMovement", "reads": ["influenceXMovement", "influenceXFactor", "influenceYFactor"], "replaces": "Projectiles.influence" },
-    "controlDirection": { "when": "nonnegative", "reads": ["xspeed", "calcAngle"], "replaces": "Projectiles.control", "call": "aimByStick();",
+    "influenceYMovement": { "when": "positive", "yields_to": "influenceXMovement", "same_as": "influenceXMovement", "reads": ["influenceXMovement", "influenceXFactor", "influenceYFactor"], "replaces": "Projectiles.influence", "switch": "nudgedUp",
+      "switches": { "influenceXMovement": "nudgedAcross" } },
+    "controlDirection": { "when": "nonnegative", "reads": ["xspeed", "calcAngle"], "replaces": "Projectiles.control", "call": "aimByStick();", "switch": "aimed",
       "start": "self.updateGameObjectStats({ deathBoundsDestroy: false });",
       "code": [
         "// the owner aims it with the stick, eight ways, at its launch's x speed: eased a sixth of the",
@@ -173,7 +188,9 @@
         "var aimSpeed = Math.abs({xspeed|0} * {@speed});",
         "var aimEases = {calcAngle|0} != 0;",
         "var aim = {v} * Math.PI / 180;",
+        "var aimed = true;",
         "function aimByStick() {",
+        "\tif (!aimed) return;",
         "\tvar owner = self.getOwner();",
         "\tif (owner != null && owner.getHeldControls != null) {",
         "\t\tvar held = owner.getHeldControls();",
@@ -194,11 +211,12 @@
         "}"
       ] },
     "trailEffect": { "when": "effect", "reads": ["trailEffectInterval", "trailEffectRotate"], "replaces": "Projectiles.trail", "call": "dropTrail();", "switch": "trailOn",
+      "switches": { "trailEffectRotate": "trailTurns" },
       "code": [
         "// its trail: its effect dropped where it is every `trailEffectInterval` engine frames (every one",
         "// for 0), turned along the way it flies when `trailEffectRotate` is set",
         "var trailEvery = {trailEffectInterval|1};",
-        "var trailTurns = {trailEffectRotate|0};",
+        "var trailTurns = {trailEffectRotate|0} != 0;",
         "var trailWait = 0;",
         "var trailOn = true;",
         "function dropTrail() {",
@@ -207,7 +225,7 @@
         "\tif (trailWait < trailEvery) return;",
         "\ttrailWait = 0;",
         "\tvar trail = match.createVfx(new VfxStats({ {@effect} }), self);",
-        "\tif (trail == null || trailTurns == 0) return;",
+        "\tif (trail == null || !trailTurns) return;",
         "\tvar across = self.flipX(self.getXSpeed());",
         "\tvar angle = Math.atan2(self.getYSpeed(), trail.isFacingRight() ? across : -across) * 180 / Math.PI;",
         "\ttrail.setRotation(trail.isFacingRight() ? angle : -angle);",
