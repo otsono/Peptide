@@ -863,8 +863,14 @@ pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, 
         Some(text) => {
             // (a projectile's update calls its stats' frame function only where they wrote one)
             let frame = compile::projectile_stats::table().frame_call();
+            let setters: Vec<String> = if spec.kind == "projectile" {
+                compile::native::others_write_stats(model).into_iter()
+                    .filter(|k| !matches!(compile::native::stat_row(k), Some(compile::native::StatRow::Engine(_) | compile::native::StatRow::Note(_))))
+                    .map(|k| format!("\tself.exports.__{} = {{ set: function(v) {{ PeptideRuntime.run(function() {{ PeptideProjectile.updateProjectileStats(PeptideRuntime.object, {{ {}: v }}); }}); }} }};\n",
+                        compile::ident(&k), compile::ident(&k))).collect()
+            } else { Vec::new() };
             let text: String = text.lines().filter(|l| flies.is_some() || frame.as_ref().is_none_or(|f| !l.contains(f.as_str())))
-                .map(|l| format!("{l}\n")).collect();
+                .map(|l| if l.trim() == "// {setters}" { setters.concat() } else { format!("{l}\n") }).collect();
             out.push_str(&format!("\n// ---- runtime: runtime/{entry}\n{text}"))
         }
         None => problems.push(format!("the runtime has no {entry}")),

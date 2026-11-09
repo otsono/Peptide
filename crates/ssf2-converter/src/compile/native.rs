@@ -638,27 +638,22 @@ impl<'o, 'a> Writer<'o, 'a> {
             out.functions.push(helper(self.o.runtime, "helpers", "jump_to", "jumpTo", &[], &cases)?);
             out.publish.push("self.exports.__playFrame = jumpTo;".into());
         }
-        // its stats another object's code writes, as its own code would write them
+        // its stats another object's code writes that this engine keeps none of, each published as
+        // a setter (`who.exports.__stat.set(v)`); the engine's own stats are written straight on it
         let written_by_others = if self.o.fighter { BTreeSet::new() } else { others_write_stats(self.o.model) };
-        if !written_by_others.is_empty() {
-            let mut lines = Vec::new();
-            for k in &written_by_others {
-                let v = format!("stats.{}", ident(k));
-                let does = if let Some(var) = self.o.switches.get(k) {
-                    super::projectile_stats::table().holds_test(k, &v).map(|t| format!("{var} = {t};"))
-                } else if self.own_stats.contains(k) {
-                    Some(format!("{}.set({v});", self.own_stat(k)))
-                } else {
-                    calls().projectile_stats.get(k).filter(|t| !t.trim_start().starts_with("//")).map(|t| format!("{};", fold(&t.replace("{v}", &v).replace("{size}", &number(self.o.size))
-                        .replace("{speed}", &number(self.o.speed)).replace("{accel}", &number(self.o.accel)))))
-                };
-                // (a stat nothing it does here reads changes nothing)
-                if let Some(d) = does { lines.push(format!("if ({v} != null) {d}")); }
-            }
-            if !lines.is_empty() {
-                out.functions.push(helper(self.o.runtime, "helpers", "set_stats", "setStats", &[], &lines)?);
-                out.publish.push("self.exports.__setStats = setStats;".into());
-            }
+        for k in &written_by_others {
+            let published = if let Some(var) = self.o.switches.get(k) {
+                super::projectile_stats::table().holds_test(k, "v").map(|t| format!("{{ set: function(v) {{ {var} = {t}; }} }}"))
+            } else if self.own_stats.contains(k) {
+                Some(self.own_stat(k))
+            } else {
+                match stat_row(k) {
+                    Some(StatRow::Kept(t)) => Some(format!("{{ set: function(v) {{ {}; }} }}", self.stat_code(&t, "v"))),
+                    _ => None,
+                }
+            };
+            // (a stat nothing it does here reads changes nothing)
+            if let Some(p) = published { out.publish.push(format!("self.exports.__{} = {p};", ident(k))); }
         }
         out.functions.extend(self.helpers.values().cloned());
         // (a frame other code calls by name stays a function its keyframe calls)
@@ -1902,16 +1897,22 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let to = states().get(&name).and_then(|s| s.enter.clone()).ok_or_else(|| format!("sets a fighter's state to {name}, which this engine's fighters have none of"))?;
                 return Ok((format!("{who}.toState({to})"), Ty::Any));
             }
-            // another projectile's own stats written: the engine's own stat on it
-            // (written by its own script, which publishes what it does with each: `exports.__setStats`)
+            // another projectile's own stats written: the engine's own stat on it, and through the
+            // setter it publishes for one this engine keeps none of (`exports.__stat`)
             ("updateProjectileStats", [Expr::Object(pairs)]) if !mine => {
-                let mut kv = Vec::new();
+                let mut lines = Vec::new();
                 for (k, v) in pairs {
                     let Expr::Str(k) = k else { return Err("writes a stat by a name worked out as it runs".into()) };
                     let (val, _) = self.expr(v)?;
-                    kv.push(format!("{}: {val}", ident(k)));
+                    let id = ident(k);
+                    lines.push(match stat_row(k) {
+                        Some(StatRow::Engine(t)) => format!("{};", crate::dyn_re(r"\bself\.").replace_all(&self.stat_code(&t, &val), format!("{who}.").as_str())),
+                        Some(StatRow::Note(t)) => t,
+                        _ => format!("if ({who}.exports.__{id} != null) {who}.exports.__{id}.set({val});"),
+                    });
                 }
-                return Ok((format!("if ({who} != null && {who}.exports.__setStats != null) {who}.exports.__setStats({{ {} }})", kv.join(", ")), Ty::Any));
+                let body = lines.iter().map(|l| format!("\t{l}")).collect::<Vec<_>>().join("\n");
+                return Ok((format!("if ({who} != null) {{\n{body}\n}}"), Ty::Any));
             }
             // a projectile's state, by the source's name for it
             ("inState", [Expr::Member(c, n)]) if matches!(&**c, Expr::Name(c) if short(c) == "PeptidePState") => {
@@ -2492,6 +2493,12 @@ self.playFrameLabel({})", quote(f))); }
         }
     }
 
+    /// a `native_calls.jsonc` `projectile_stats` row's code for the value `v`
+    fn stat_code(&self, t: &str, v: &str) -> String {
+        fold(&t.replace("{v}", &paren(v)).replace("{size}", &number(self.o.size))
+            .replace("{speed}", &number(self.o.speed)).replace("{accel}", &number(self.o.accel)))
+    }
+
     /// the container a stat of its own is kept in (one this engine has no counterpart for), from
     /// what it declares
     fn own_stat(&mut self, k: &str) -> String {
@@ -2795,8 +2802,7 @@ self.playFrameLabel({})", quote(f))); }
             }
             let t = calls().projectile_stats.get(k).ok_or_else(|| format!("writes its stat {k}, which has no row in native_calls.jsonc"))?.clone();
             let (val, _) = self.expr(v)?;
-            out.push(fold(&t.replace("{v}", &paren(&val)).replace("{size}", &number(self.o.size))
-                .replace("{speed}", &number(self.o.speed)).replace("{accel}", &number(self.o.accel))));
+            out.push(self.stat_code(&t, &val));
         }
         Ok((out.join(";\n"), Ty::Any))
     }
@@ -3131,9 +3137,18 @@ fn walk(list: &[Stmt], f: &mut dyn FnMut(&Stmt)) {
     }
 }
 
+/// what a projectile stat's `native_calls.jsonc` row does: the engine's own stat (`self.` calls),
+/// a note of what the source's write does here, or a container its own script keeps
+pub enum StatRow { Engine(String), Note(String), Kept(String) }
+
+pub fn stat_row(k: &str) -> Option<StatRow> {
+    let t = calls().projectile_stats.get(k)?.clone();
+    Some(if t.trim_start().starts_with("//") { StatRow::Note(t) } else if t.trim_start().starts_with("self.") { StatRow::Engine(t) } else { StatRow::Kept(t) })
+}
+
 /// the projectile stats any class of the package writes on another object
 /// (`o.updateProjectileStats({...})`): an object that could be written so publishes what it does
-/// with each (`exports.__setStats`)
+/// each it keeps itself as a setter (`exports.__stat`)
 pub fn others_write_stats(model: &crate::model::SourceModel) -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
     for c in model.classes.values() {

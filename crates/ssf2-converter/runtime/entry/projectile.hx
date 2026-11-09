@@ -2,8 +2,9 @@
 
 function initialize() {
 	PeptideRuntime.start(self, DATA, Projectiles);
-	// its stats another object's code writes (a fighter written as Fraymakers code writes them through this)
-	self.exports.__setStats = function(stats) { PeptideRuntime.run(function() { PeptideProjectile.updateProjectileStats(PeptideRuntime.object, stats); }); };
+	// its stats another object's code writes that this engine keeps none of, each a setter the
+	// writer calls (`who.exports.__stat.set(v)`): the runtime keeps them
+	// {setters}
 }
 // what its declared stats have it do (`flyByStats`, runtime/projectile_stats.jsonc) runs after its
 // own frame, while it flies: not frozen by a hit, nor playing its end. a projectile whose stats

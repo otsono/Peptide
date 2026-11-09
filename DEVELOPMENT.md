@@ -645,8 +645,9 @@ fields as containers, an attack started, a rocket, its attack's stats, its label
 fighter on the runtime publishes the same, so a projectile reaches either the same way. where
 some class of the package reads another object's clip label, each native object publishes its
 own (`__stanceLabel`, read with `stanceLabelOf`); where some class writes another object's
-projectile stats, each native projectile publishes `__setStats`, which does in its own script
-what its own code would (a switch of its steering, a stat it keeps). a field of the record an
+projectile stats, the writer sets one the engine keeps straight on it (`proj.updateProjectileStats`),
+and each projectile publishes a setter for every other one (`proj.exports.__controlDirection.set(-1)`:
+a switch of its steering, a stat it keeps, its lifetime). a field of the record an
 event hands a listener is read as `runtime/events.jsonc` `record` says (a wall's side is the
 structure type the engine's wall event carries: a wall on the object's left is a structure's
 right side); one no record of the source's carries reads as nothing, as it does there.

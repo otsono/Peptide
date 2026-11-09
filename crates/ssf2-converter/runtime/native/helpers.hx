@@ -93,13 +93,6 @@ function NAME(label) {
 	}
 }
 
-// ---- set_stats
-//: its cases are each stat another object's code writes on it, as its own code would write it
-// the stats another object's code writes on it (through `exports.__setStats`), as its own code would
-function setStats(stats) {
-	// {cases}
-}
-
 // ---- own_stat
 //: STAT the stat, DECLARED what it states for it
 // its STAT: what its code set it to since, else what it states
