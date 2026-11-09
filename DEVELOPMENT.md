@@ -658,7 +658,9 @@ by name (`namedEffect`), and a clip it holds is sent to a label or frame with `e
 palettes the conversion writes. a field that only ever holds a new one of a class
 `runtime/native/classes.hx` writes out (FrameTimer) is that class flattened under the field's
 name (`soundLoop_tick()`), keeping only what the code uses. a row's optional argument is
-`{,1}` (`native_calls.jsonc`).
+`{,1}` (`native_calls.jsonc`). a clip an effect places that its holder's code turns (`fruitMC.chargingFruit.gotoAndStop(n)`)
+is cut from the effect's art into an animation of its own on the effect's entity, made with the
+effect and kept on its place (`withInners`, `innerClip`, `followInners`).
 a jump to a label inside another animation goes through `playLabelIn`, and that animation's
 first frame's own code skips while it does (the engine runs the first frame as it starts an
 animation; the source goes straight to the label). a named clip its clip places whose own code

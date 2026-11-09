@@ -961,12 +961,26 @@ fn process_character(
     let sounds = sounds;
 
     // Discover projectiles, effects, head sprite.
-    let (mut projectiles, effects, head_sprite) = image_extractor::discover_projectiles_and_head_from_swf(
+    let (mut projectiles, mut effects, head_sprite) = image_extractor::discover_projectiles_and_head_from_swf(
         parsed_swf, char_name, char_data.thumbnail.as_deref(),
     ).unwrap_or_else(|e| {
         log::warn!("discover_projectiles_and_head failed: {}", e);
         (vec![], vec![], None)
     });
+    // THE CLIPS AN EFFECT PLACES THAT ITS HOLDER'S CODE TURNS (`fruitMC.chargingFruit.gotoAndStop(n)`):
+    // drawn apart from the effect's art, each a vfx of its own riding it, so the code can pick its frame
+    {
+        let code: String = char_data.scripts.iter().map(|sc| sc.code.as_str()).collect::<Vec<_>>().join("\n");
+        for e in effects.iter_mut() {
+            for child in image_extractor::named_children_of_sprite(parsed_swf, e.sprite_id) {
+                let (name, sid) = (child.name, child.sprite_id);
+                let re = crate::dyn_re(&format!(r"\.{}\.(?:gotoAndStop|gotoAndPlay|play|stop)\(", regex::escape(&name)));
+                // (only one placed straight on its own timeline, where its place can be read)
+                let placed = image_extractor::child_placements(parsed_swf, e.sprite_id, &name).iter().any(Option::is_some);
+                if placed && re.is_match(&code) { e.inner_parts.push((name, sid)); }
+            }
+        }
+    }
     // A THING SPAWNED BY ITS CLASS (`spawnEnemy(PacManHydrant)`). The class declares what it
     // is: its clip (`linkage_id`), its numbers and its flags in `getOwnStats`, and its methods
     // are the object's own. Entered in the projectile table under the class's name, it is

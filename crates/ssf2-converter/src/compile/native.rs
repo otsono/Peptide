@@ -208,6 +208,8 @@ pub struct Object<'a> {
     /// its costumes' colours: the colours its art is drawn in, and what each costume (in the
     /// engine's costume order) turns each into, as ARGB
     pub palette: Option<(Vec<u32>, Vec<Vec<u32>>)>,
+    /// the clips each effect places that its code turns, by the effect's name
+    pub effect_inners: BTreeMap<String, Vec<crate::entity_gen::InnerClip>>,
 }
 
 /// one of a fighter's parts: how its code names it, and each animation that places it, as
@@ -334,6 +336,8 @@ struct Writer<'o, 'a> {
     flat: BTreeMap<String, String>,
     /// the flattened fields written so far: its name in the script -> the class
     flat_used: BTreeMap<String, String>,
+    /// what it runs each of this engine's frames besides (the clips its effects place, followed)
+    every_frame_extra: BTreeSet<String>,
     /// field -> (its name in the script, what it holds)
     fields: BTreeMap<String, (String, Holds)>,
     /// method -> its function's name
@@ -408,7 +412,7 @@ struct Writer<'o, 'a> {
 
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
-        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
+        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), every_frame_extra: BTreeSet::new(), fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
                              locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new() };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "initialize", "update", "onTeardown", "onKill", "life", "age", "started", "freshHit"]
@@ -718,6 +722,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         out.stat_keys = self.stat_keys.clone();
         self.write_flat(&mut out);
         self.write_parts(&mut out)?;
+        out.every_frame.extend(self.every_frame_extra.iter().cloned());
         Ok(out)
     }
 
@@ -1259,6 +1264,12 @@ impl<'o, 'a> Writer<'o, 'a> {
             // a held clip's colour transform, read to be changed and set again: a fresh one (the
             // source's starts as its clip's, which shows none here until the code sets one)
             Expr::Member(x, n) if n == "colorTransform" && matches!(&**x, Expr::Member(_, t) if t == "transform") => (calls_ct(), Ty::Object),
+            // a clip one of its effects places that its code turns: its own vfx, riding the effect
+            Expr::Member(o, n) if self.is_inner(n) && !matches!(**o, Expr::This) && !self.is_clip(o) && self.field(n).is_none() => {
+                let (v, _) = self.expr(o)?;
+                self.inner_clips()?;
+                (format!("innerClip({v}, {})", quote(n)), Ty::Object)
+            }
             // one of its parts, as a value: its vfx (placed first, so it is there)
             Expr::Member(_, _) if self.part_of(e).is_some() => {
                 let name = self.part_of(e).unwrap_or_default();
@@ -1964,7 +1975,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         // drawn into its art here, so nothing sends that anywhere
         if matches!(m.as_str(), "gotoAndStop" | "gotoAndPlay" | "stop" | "play") && !matches!(**recv, Expr::This) && !self.is_clip(recv) {
             if let Expr::Member(o, n) = &**recv {
-                if !matches!(**o, Expr::This) && self.field(n).is_none() { return Err(format!("sends {n}, a clip inside one it holds, to a frame")) }
+                if !matches!(**o, Expr::This) && self.field(n).is_none() && !self.is_inner(n) { return Err(format!("sends {n}, a clip inside one it holds, to a frame")) }
             }
             let (who, _) = self.expr(recv)?;
             let hold = matches!(m.as_str(), "gotoAndStop" | "stop");
@@ -2069,6 +2080,10 @@ impl<'o, 'a> Writer<'o, 'a> {
             self.effect_art()?;
             let extra: Vec<String> = st.into_iter().filter(|x| !x.is_empty()).collect();
             format!("namedEffect({n}, {on}, {{ {} }})", extra.join(", "))
+        } else if self.o.effect_inners.contains_key(&name) {
+            // (with the clips it places that its code turns)
+            self.inner_clips()?;
+            format!("withInners(match.createVfx(new VfxStats({{ {} }}), {on}), {})", st.join(", "), quote(&name))
         } else { format!("match.createVfx(new VfxStats({{ {} }}), {on})", st.join(", ")) };
         if after.is_empty() { return Ok((make, Ty::Any)) }
         self.effects += 1;
@@ -2101,6 +2116,28 @@ impl<'o, 'a> Writer<'o, 'a> {
         Ok(())
     }
 
+    /// the helpers that make and keep the clips its effects place that its code turns
+    fn inner_clips(&mut self) -> Result<(), String> {
+        if self.helpers.contains_key("withInners") { return Ok(()) }
+        let mut of = Vec::new();
+        let mut place = Vec::new();
+        for (effect, clips) in &self.o.effect_inners {
+            let list: Vec<String> = clips.iter().map(|c| format!("[{}, {}]", quote(&c.name), quote(&c.art))).collect();
+            of.push(format!("case {}: return [{}];", quote(effect), list.join(", ")));
+            for c in clips {
+                for (anim, m) in &c.placed {
+                    place.push(format!("case {}: return [{}, {}, {}, {}, {}];", quote(&format!("{effect}/{}/{anim}", c.name)),
+                        number(m.tx), number(m.ty), number(m.rotation), number(m.sx), number(m.sy)));
+                }
+            }
+        }
+        let main = helper(self.o.runtime, "helpers", "inner_clips", "withInners", &[], &of)?;
+        let at = helper(self.o.runtime, "helpers", "inner_place", "innerPlace", &[], &place)?;
+        self.helpers.insert("withInners".into(), format!("{main}\n\n{at}"));
+        self.every_frame_extra.insert("followInners();".into());
+        Ok(())
+    }
+
     /// the art of each effect it can make, by name, for one its code names as it runs
     fn effect_art(&mut self) -> Result<(), String> {
         if self.helpers.contains_key("namedEffect") { return Ok(()) }
@@ -2110,7 +2147,8 @@ impl<'o, 'a> Writer<'o, 'a> {
             let timeout = gone.map(|g| format!(", timeout: {}", 2 * (g.max(1) - 1))).unwrap_or_default();
             cases.push(format!("case {}: return new VfxStats({{ {stats}{timeout} }});", quote(&n)));
         }
-        self.helpers.insert("namedEffect".into(), helper(self.o.runtime, "helpers", "named_effect", "namedEffect", &[], &cases)?);
+        let made = if self.o.effect_inners.is_empty() { "match.createVfx(stats, on)".to_string() } else { self.inner_clips()?; "withInners(match.createVfx(stats, on), name)".to_string() };
+        self.helpers.insert("namedEffect".into(), helper(self.o.runtime, "helpers", "named_effect", "namedEffect", &[("MADE", made)], &cases)?);
         Ok(())
     }
 
@@ -2974,6 +3012,9 @@ self.playFrameLabel({})", quote(f))); }
     }
 
     /// a named clip its own clip places (`this.name`, in a clip's code), whose own frames run no code
+    /// whether some effect of its places a clip of this name that its code turns
+    fn is_inner(&self, n: &str) -> bool { self.o.effect_inners.values().flatten().any(|c| c.name == n) }
+
     /// a clip it holds, for a colour set on it: one of its parts, or a value (an effect)
     fn held_clip(&mut self, x: &Expr) -> Result<String, String> {
         if let Some(name) = self.part_of(x) { return Ok(format!("partNow({})", part_id(&name))) }

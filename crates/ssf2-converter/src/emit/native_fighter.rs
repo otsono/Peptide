@@ -79,6 +79,8 @@ pub struct Fighting<'a> {
     pub content: &'a str,
     /// its costumes' colours (`costumes.palettes`, as written)
     pub palette: Option<(Vec<u32>, Vec<Vec<u32>>)>,
+    /// the clips each effect places that its code turns
+    pub effect_inners: &'a BTreeMap<String, Vec<crate::entity_gen::InnerClip>>,
 }
 
 /// the animations the engine links at the same frame, each way: what its animation stats give a
@@ -230,10 +232,12 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
         root_anim: &root_anim, walk_start: (start > 0.0).then_some(start), stance_labels: &labels, clip_frames: &frames_of, frame_links: f.frame_links, anim_clips: &clips, owner_native: false,
         effect_names: f.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
         effect_pieces: f.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames)))
-            .chain(part_pieces(f.parts)).collect(),
+            .chain(part_pieces(f.parts))
+            .chain(f.effect_inners.iter().flat_map(|(n, cs)| cs.iter().map(move |c| (format!("{n}/{}", c.name), c.art.clone(), 1, c.frames.max(1))))).collect(),
         parts: shown_parts(f.part_placements),
         content: f.content.to_string(),
         palette: f.palette.clone(),
+        effect_inners: f.effect_inners.clone(),
     };
     if all {
         let why = native::census(&object);

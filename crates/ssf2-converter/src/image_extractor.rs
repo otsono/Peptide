@@ -1752,6 +1752,34 @@ pub fn named_descendants_of_sprite(swf: &swf::Swf<'_>, sprite_id: u16) -> Vec<Na
     out
 }
 
+/// where a sprite places the child it names on each of its frames (0-based; none where it
+/// places none), in the sprite's own space
+pub fn child_placements(swf: &swf::Swf<'_>, sprite_id: u16, name: &str) -> Vec<Option<ImageLocalMatrix>> {
+    let mut out = Vec::new();
+    // what sits at each depth: its name and place
+    let mut at: BTreeMap<u16, (String, ImageLocalMatrix)> = BTreeMap::new();
+    for tag in sprite_tags(swf, sprite_id).unwrap_or(&[]) {
+        match tag {
+            swf::Tag::PlaceObject(po) => {
+                let named = po.name.as_ref().map(|n| String::from_utf8_lossy(n.as_bytes()).to_string());
+                match &po.action {
+                    swf::PlaceObjectAction::Place(_) | swf::PlaceObjectAction::Replace(_) => { at.insert(po.depth, (named.unwrap_or_default(), po_to_mat(po))); }
+                    swf::PlaceObjectAction::Modify => {
+                        if let Some(e) = at.get_mut(&po.depth) {
+                            if po.matrix.is_some() { e.1 = po_to_mat(po); }
+                            if let Some(n) = named { e.0 = n; }
+                        }
+                    }
+                }
+            }
+            swf::Tag::RemoveObject(r) => { at.remove(&r.depth); }
+            swf::Tag::ShowFrame => out.push(at.values().find(|(n, _)| n == name).map(|(_, m)| *m)),
+            _ => {}
+        }
+    }
+    out
+}
+
 pub fn extract_projectile_frame_images_from_swf(
     swf: &swf::Swf<'_>,
     char_id: &str,
@@ -2154,6 +2182,9 @@ pub struct DiscoveredEffect {
     /// emitted entity animations; falls back to a single `vfx`
     /// animation when there are no labels.
     pub inner_labels: Vec<(u16, String)>,
+    /// the clips it places whose code turns them (sends to a frame): each drawn apart from its
+    /// art, as (the name it places it under, the clip's sprite)
+    pub inner_parts: Vec<(String, u16)>,
 }
 
 /// The head/portrait sprite discovered in the SWF.
@@ -2602,6 +2633,7 @@ pub fn discover_projectiles_and_head_from_swf(
                 name,
                 frame_count: sprite.num_frames.max(1),
                 inner_labels,
+                inner_parts: Vec::new(),
             });
         }
     }

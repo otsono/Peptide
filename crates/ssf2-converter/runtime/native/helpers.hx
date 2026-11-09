@@ -94,7 +94,8 @@ function NAME(label) {
 }
 
 // ---- named_effect
-//: its cases are each effect it can make, by name, as the engine's stats for it
+//: its cases are each effect it can make, by name, as the engine's stats for it; MADE the effect made
+//: (with the clips it places that its code turns, where some effect has those)
 // an effect its code names as it runs: the art of the one by that name (none, for a name it has no
 // effect of), with the options the call sets
 function NAME(name, on, options) {
@@ -107,7 +108,7 @@ function NAME(name, on, options) {
 	if (options.layer != null) stats.layer = options.layer;
 	if (options.loop == true) { stats.loop = true; stats.timeout = -1; }
 	if (options.relativeWith == true) { stats.relativeWith = true; stats.resizeWith = true; stats.flipWith = true; }
-	return match.createVfx(stats, on);
+	return MADE;
 }
 function effectArt(name) {
 	switch (name) {
@@ -178,6 +179,77 @@ function tintClip(clip, ct) {
 	sh.alphaOffset = ct.alphaOffset;
 	clip.addShader(sh);
 	clipTints.get().set(key, sh);
+}
+
+// ---- inner_clips
+//: its cases are each effect that places clips its code turns, as those clips and their art
+// the clips an effect places that its code turns (sends to a frame), drawn apart from its art:
+// each a vfx of its own, made with the effect and kept on its place in the effect's animation
+var innerClips = self.makeObject(null);
+function withInners(effect, name) {
+	if (effect == null) return null;
+	var list = innerClipsOf(name);
+	if (list.length == 0) return effect;
+	if (innerClips.get() == null) innerClips.set([]);
+	for (c in list) {
+		var v = match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(name), animation: c[1], loop: true, timeout: -1 }), self);
+		if (v != null) innerClips.get().push({ effect: effect, name: name, clip: c[0], vfx: v });
+	}
+	followInners();
+	return effect;
+}
+// the vfx of the clip it names inside an effect (none where the effect places no such clip)
+function innerClip(effect, clip) {
+	if (effect == null || innerClips.get() == null) return null;
+	for (e in innerClips.get()) if (e.effect == effect && e.clip == clip) return e.vfx;
+	return null;
+}
+// each frame: every inner clip on its place in its effect, gone with it
+function followInners() {
+	var all = innerClips.get();
+	if (all == null) return;
+	var i = 0;
+	while (i < all.length) {
+		var e = all[i];
+		if (e.effect.isDisposed() || e.vfx.isDisposed()) {
+			if (!e.vfx.isDisposed()) e.vfx.kill();
+			all.splice(i, 1);
+			continue;
+		}
+		var at = innerPlace(e.name, e.clip, e.effect.getAnimation());
+		if (at == null) e.vfx.setVisible(false);
+		else {
+			var facing = e.effect.isFacingRight() ? 1 : -1;
+			var turn = e.effect.getRotation() * Math.PI / 180;
+			var dx = at[0] * e.effect.getScaleX();
+			var dy = at[1] * e.effect.getScaleY();
+			e.vfx.setX(e.effect.getX() + facing * (dx * Math.cos(turn) - dy * Math.sin(turn)));
+			e.vfx.setY(e.effect.getY() + dx * Math.sin(turn) + dy * Math.cos(turn));
+			if (facing < 0) e.vfx.faceLeft(); else e.vfx.faceRight();
+			e.vfx.setRotation(e.effect.getRotation() + facing * at[2]);
+			e.vfx.setScaleX(at[3] * e.effect.getScaleX());
+			e.vfx.setScaleY(at[4] * e.effect.getScaleY());
+			e.vfx.setVisible(e.effect.getVisible());
+		}
+		i++;
+	}
+}
+function innerClipsOf(name) {
+	switch (name) {
+		// {cases}
+	}
+	return [];
+}
+
+// ---- inner_place
+//: its cases are each effect's animations that place an inner clip, as where
+// where an effect's animation places an inner clip: x, y, rotation, scale x, scale y (none where
+// it places none)
+function innerPlace(name, clip, anim) {
+	switch (name + "/" + clip + "/" + anim) {
+		// {cases}
+	}
+	return null;
 }
 
 // ---- own_stat

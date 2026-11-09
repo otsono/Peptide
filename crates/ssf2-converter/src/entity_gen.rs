@@ -376,6 +376,22 @@ thread_local! {
 /// Effects built while this is on come from another package: their symbols are that package's
 /// numbers, which name nothing (or something else) here, so their pieces carry no symbol.
 pub fn set_borrowing(on: bool) { BORROWING.with(|c| c.set(on)); }
+/// a clip an effect places that its holder's code turns: drawn apart, as its own animation of the
+/// effect's entity (`art`), placed where each of the effect's animations puts it
+#[derive(Debug, Clone)]
+pub struct InnerClip {
+    pub name: String,
+    pub art: String,
+    pub frames: u32,
+    pub placed: Vec<(String, crate::image_extractor::ImageLocalMatrix)>,
+}
+thread_local! {
+    static EFFECT_INNERS: std::cell::RefCell<BTreeMap<String, Vec<InnerClip>>> = Default::default();
+}
+/// The inner clips of the effects the conversion wrote, by the effect's linkage name.
+pub fn take_effect_inners() -> BTreeMap<String, Vec<InnerClip>> {
+    EFFECT_INNERS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
 /// The same for the effects the conversion wrote, by the effect's linkage name.
 pub fn take_effect_pieces() -> BTreeMap<String, Vec<crate::emit::Piece>> {
     EFFECT_PIECES.with(|c| std::mem::take(&mut *c.borrow_mut()))
@@ -2581,11 +2597,13 @@ pub fn generate_effect_entity(
     let total_frames = effect.frame_count.max(1) as u32;
 
     // Pull per-frame images by walking the effect sprite's timeline.
-    let frame_images = crate::image_extractor::extract_projectile_frame_images_from_swf(
+    let skip: Vec<String> = effect.inner_parts.iter().map(|(n, _)| n.clone()).collect();
+    let frame_images = crate::image_extractor::extract_projectile_frame_images_from_swf_skipping(
         parsed_swf,
         char_id,
         effect.sprite_id,
         img_result,
+        &skip,
     ).unwrap_or(crate::image_extractor::ProjectileFrameImages {
         frames: vec![],
         matrices: vec![],
@@ -2692,6 +2710,25 @@ pub fn generate_effect_entity(
             "pluginMetadata": {}
         }));
     }
+
+    // its inner clips' own frames, an animation each, and where each of its animations places them
+    let mut inner_parts: Vec<ProjectilePartData> = Vec::new();
+    let mut inners: Vec<InnerClip> = Vec::new();
+    for (name, sid) in &effect.inner_parts {
+        let Ok(pfi) = crate::image_extractor::extract_projectile_frame_images_from_swf(parsed_swf, char_id, *sid, img_result) else { continue };
+        if pfi.image_guids.is_empty() { continue }
+        let anim = format!("part_{name}_{sid}");
+        let at = crate::image_extractor::child_placements(parsed_swf, effect.sprite_id, name);
+        let placed: Vec<(String, crate::image_extractor::ImageLocalMatrix)> = segments.iter()
+            .filter_map(|(seg, start, end)| (*start..*end).find_map(|f| at.get(f).copied().flatten()).map(|m| (seg.clone(), m))).collect();
+        inners.push(InnerClip { name: name.clone(), art: anim.clone(), frames: pfi.frames.len() as u32, placed });
+        inner_parts.push(ProjectilePartData {
+            path: name.clone(), anim, matrix: Default::default(), frame_count: pfi.frames.len() as u16,
+            image_frames: pfi.frames, image_matrices: pfi.matrices, image_parts: pfi.parts, image_guids: pfi.image_guids, labels: Vec::new(),
+        });
+    }
+    push_part_animations(&mut keyframes, &mut layers, &mut symbols, char_id, &format!("eff_{effect_id}"), &inner_parts, &mut animations);
+    if !inners.is_empty() { EFFECT_INNERS.with(|c| { c.borrow_mut().insert(effect.name.clone(), inners); }); }
 
     // 30fps → 60fps: hold every keyframe for two frames.
     double_keyframe_lengths(&mut keyframes);

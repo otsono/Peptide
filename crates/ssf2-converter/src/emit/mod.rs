@@ -995,6 +995,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         others.push(short);
     }
     let effects = crate::entity_gen::take_effect_pieces();
+    let effect_inners = crate::entity_gen::take_effect_inners();
     let dir = char_dir.join(format!("library/scripts/{char_pascal}"));
     let entity_path = char_dir.join(format!("library/entities/{char_pascal}.entity"));
     // the source's autolink as the engine's own (runtime/autolink.jsonc)
@@ -1070,7 +1071,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     let stats = std::fs::read_to_string(char_dir.join(format!("library/scripts/{char_pascal}/AnimationStats.hx"))).unwrap_or_default();
     let frame_links = native_fighter::frame_links(&stats);
     let fighting = native_fighter::Fighting { model: &model, runtime: &runtime, fighter, pieces: &pieces, units, effects: &effects, entities: &entities, anim_of: &anim_of, entity_keys: &entity_keys, frame_links: &frame_links, autolink: &calls, parts: &data.parts, part_placements: &data.part_placements, content: char_name,
-        palette: std::fs::read_to_string(char_dir.join("library/costumes.palettes")).ok().and_then(|t| native_fighter::palette_of(&t)) };
+        palette: std::fs::read_to_string(char_dir.join("library/costumes.palettes")).ok().and_then(|t| native_fighter::palette_of(&t)), effect_inners: &effect_inners };
     let stat_lines = native_stat_code;
     let natively_written = if std::env::var("PEPTIDE_NATIVE_FIGHTERS").map(|v| v != "0").unwrap_or(true) {
         native_fighter::write(char_dir, char_pascal, char_name, &fighting, &native_cancels, &stat_lines)
