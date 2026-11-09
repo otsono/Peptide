@@ -1878,6 +1878,8 @@ pub struct ProjectileStateData {
     /// clip carries its own code, and a script that belonged to another state's frame 7 was
     /// ending the flight of sora's keyblade on frame 7 of its throw.
     pub frame_scripts: BTreeMap<u16, String>,
+    /// the labels inside its clip: (1-based frame, label)
+    pub labels: Vec<(u16, String)>,
 }
 
 /// Generate a projectile.entity file for a single SSF2 projectile.
@@ -1895,6 +1897,252 @@ pub struct ProjectileStateData {
 ///   - `projectileSpawn` — 1 frame, first frame image
 ///   - `projectileIdle` — all frames with hitbox/hurtbox
 ///   - `projectileDestroy` — last frame image + blank frame script
+/// a clip's layers cut into windows of its frames (`(name, start, end)`, 0-based, end past the
+/// last): each window's own layers, holding the part of each keyframe that falls inside it, pushed
+/// beside the rest, as (name, its layer ids). `key` seeds their ids
+fn cut_windows(keyframes: &mut Vec<Value>, layers: &mut Vec<Value>, char_id: &str, key: &str, full_layers: &[Value], windows: &[(String, u32, u32)]) -> Vec<(String, Vec<String>)> {
+    let kf_index: BTreeMap<String, usize> = keyframes.iter().enumerate()
+        .filter_map(|(i, k)| k["$id"].as_str().map(|id| (id.to_string(), i))).collect();
+    let mut new_kfs: Vec<Value> = Vec::new();
+    let mut new_layers: Vec<Value> = Vec::new();
+    let mut out = Vec::new();
+    for (name, start, end) in windows {
+        let mut layer_ids: Vec<String> = Vec::new();
+        for layer in full_layers {
+            let lid = layer["$id"].as_str().unwrap_or_default().to_string();
+            let mut ids: Vec<String> = Vec::new();
+            let mut at: u32 = 0;
+            for (k, kid) in layer["keyframes"].as_array().cloned().unwrap_or_default().iter().enumerate() {
+                let Some(&ki) = kid.as_str().and_then(|id| kf_index.get(id)) else { continue };
+                let len = keyframes[ki]["length"].as_u64().unwrap_or(1) as u32;
+                let (a, b) = (at.max(*start), (at + len).min(*end));
+                at += len;
+                if b <= a { continue }
+                let mut kf = keyframes[ki].clone();
+                let nid = uuid(char_id, &format!("proj_{}_seg_{}_{}_{}", key, name, lid, k));
+                kf["$id"] = json!(nid);
+                kf["length"] = json!(b - a);
+                new_kfs.push(kf);
+                ids.push(nid);
+            }
+            if ids.is_empty() { continue }
+            let mut nl = layer.clone();
+            let nlid = uuid(char_id, &format!("proj_{}_seg_{}_layer_{}", key, name, lid));
+            nl["$id"] = json!(nlid);
+            nl["keyframes"] = json!(ids);
+            new_layers.push(nl);
+            layer_ids.push(nlid);
+        }
+        out.push((name.clone(), layer_ids));
+    }
+    keyframes.extend(new_kfs);
+    layers.extend(new_layers);
+    out
+}
+
+/// a clip's collision boxes as layers, one per box it names, over `total_frames` source frames
+/// (`key` seeds their ids)
+fn push_box_layers(keyframes: &mut Vec<Value>, layers: &mut Vec<Value>, symbols: &mut Vec<Value>, char_id: &str, key: &str,
+                   boxes: &AnimationBoxData, total_frames: u32) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    // Collect all unique instance names across frames
+    // a name is not unique on a frame; see the character path above
+    let mut instances_in_proj: std::collections::BTreeSet<(String, usize)> = Default::default();
+    for frame_boxes in boxes.frames.values() {
+        let mut seen: std::collections::BTreeMap<&str, usize> = Default::default();
+        for b in frame_boxes {
+            let n = seen.entry(b.instance_name.as_str()).or_insert(0);
+            instances_in_proj.insert((b.instance_name.clone(), *n));
+            *n += 1;
+        }
+    }
+    let layer_names = box_layer_names(&instances_in_proj);
+
+    for (inst_name, occurrence) in instances_in_proj.iter() {
+        let occurrence = *occurrence;
+        let occ_key = if occurrence == 0 { String::new() } else { format!("_{occurrence}") };
+        let box_type = BoxType::from_instance_name(inst_name).unwrap_or(BoxType::Hurtbox);
+        let fm_box_type = box_type_to_fm(box_type);
+        let color = box_color(box_type);
+        let (prefix, box_idx) = layer_names[&(inst_name.clone(), occurrence)].clone();
+        let fm_layer_name = format!("{prefix}{box_idx}");
+
+        let mut box_kf_ids: Vec<String> = Vec::new();
+        let mut frame_idx: u32 = 0;
+
+        // Collect active frames for this instance
+        let mut active_frames: Vec<(usize, &crate::sprite_parser::FrameBox)> = Vec::new();
+        for f in 0..total_frames {
+            if let Some(frame_boxes) = boxes.frames.get(&(f as u16)) {
+                if let Some(fb) = frame_boxes.iter()
+                    .filter(|b| &b.instance_name == inst_name).nth(occurrence)
+                {
+                    active_frames.push((f as usize, fb));
+                }
+            }
+        }
+
+        let is_point = box_type == crate::sprite_parser::BoxType::GrabHoldBox;
+        let kf_type = if is_point { "POINT" } else { "COLLISION_BOX" };
+
+        // Build keyframes using run-length encoding
+        let mut i = 0;
+        while i < active_frames.len() {
+            let (start_frame, fb) = active_frames[i];
+            let mut run_end = i;
+            while run_end + 1 < active_frames.len() {
+                let (next_f, next_fb) = active_frames[run_end + 1];
+                let (cur_f, _) = active_frames[run_end];
+                let consecutive = next_f == cur_f + 1;
+                let same_geom = (next_fb.x - fb.x).abs() < 0.01
+                    && (next_fb.y - fb.y).abs() < 0.01
+                    && (next_fb.width - fb.width).abs() < 0.01
+                    && (next_fb.height - fb.height).abs() < 0.01
+                    && (next_fb.rotation - fb.rotation).abs() < 0.01;
+                if consecutive && same_geom { run_end += 1; } else { break; }
+            }
+            let run_len = (active_frames[run_end].0 - start_frame + 1) as u32;
+
+            // Gap keyframe
+            if start_frame as u32 > frame_idx {
+                let gap_kf_id = uuid(char_id, &format!("proj_{}_box_gap_{}{}_{}", key, inst_name, occ_key, frame_idx));
+                keyframes.push(json!({
+                    "$id": gap_kf_id,
+                    "type": kf_type,
+                    "length": (start_frame as u32) - frame_idx,
+                    "symbol": Value::Null,
+                    "tweened": false,
+                    "tweenType": "LINEAR",
+                    "pluginMetadata": {}
+                }));
+                box_kf_ids.push(gap_kf_id);
+            }
+
+            // Box symbol
+            let sym_id = uuid(char_id, &format!("proj_{}_box_sym_{}{}_{}", key, inst_name, occ_key, start_frame));
+            if is_point {
+                let cx = round2(fb.x + fb.width / 2.0);
+                let cy = round2(fb.y + fb.height);
+                symbols.push(json!({
+                    "$id": sym_id,
+                    "alpha": 1,
+                    "color": color,
+                    "pluginMetadata": {},
+                    "rotation": 0,
+                    "type": "POINT",
+                    "x": cx,
+                    "y": cy
+                }));
+            } else {
+                // Mirror the Character.entity collision-box emission exactly
+                // (see the path above): ItemBox pivots on its bottom-centre
+                // (the hand) and bakes the rotation into the top-left so the
+                // hand stays pinned under rotation; every other box type is
+                // already AABB-collapsed to rotation 0 in sprite_parser, so
+                // it uses a centre pivot and raw top-left. Without this,
+                // rotated projectile itemboxes drift exactly like the
+                // character path did before the bake.
+                let (pivot_x, pivot_y) = if box_type == crate::sprite_parser::BoxType::ItemBox {
+                    (fb.width / 2.0, fb.height)        // bottom-centre = hand
+                } else {
+                    (fb.width / 2.0, fb.height / 2.0)  // centre
+                };
+                let theta = ((fb.rotation % 360.0) + 360.0) % 360.0;
+                let (box_x, box_y) = if box_type == crate::sprite_parser::BoxType::ItemBox {
+                    let hand = crate::fraytools_transform::intended_pivot_point(
+                        fb.x, fb.y, pivot_x, pivot_y);
+                    let off = crate::fraytools_transform::collision_box_anchor(
+                        0.0, 0.0, pivot_x, pivot_y, theta);
+                    (hand.0 - off.0, hand.1 - off.1)
+                } else {
+                    (fb.x, fb.y)
+                };
+                symbols.push(json!({
+                    "$id": sym_id,
+                    "alpha": 0.5,
+                    "color": color,
+                    "pivotX": round2(pivot_x),
+                    "pivotY": round2(pivot_y),
+                    "pluginMetadata": {},
+                    "rotation": round2(theta),
+                    "scaleX": round2(fb.width),
+                    "scaleY": round2(fb.height),
+                    "type": "COLLISION_BOX",
+                    "x": round2(box_x),
+                    "y": round2(box_y)
+                }));
+            }
+
+            let kf_id = uuid(char_id, &format!("proj_{}_box_kf_{}{}_{}", key, inst_name, occ_key, start_frame));
+            keyframes.push(json!({
+                "$id": kf_id,
+                "type": kf_type,
+                "length": run_len,
+                "symbol": sym_id,
+                "tweened": false,
+                "tweenType": "LINEAR",
+                "pluginMetadata": {}
+            }));
+            box_kf_ids.push(kf_id);
+            frame_idx = start_frame as u32 + run_len;
+            i = run_end + 1;
+        }
+
+        // Tail gap
+        if frame_idx < total_frames {
+            let tail_kf_id = uuid(char_id, &format!("proj_{}_box_tail_{}{}_{}", key, inst_name, occ_key, frame_idx));
+            keyframes.push(json!({
+                "$id": tail_kf_id,
+                "type": kf_type,
+                "length": total_frames - frame_idx,
+                "symbol": Value::Null,
+                "tweened": false,
+                "tweenType": "LINEAR",
+                "pluginMetadata": {}
+            }));
+            box_kf_ids.push(tail_kf_id);
+        }
+
+        if box_kf_ids.is_empty() { continue; }
+
+        let layer_id = uuid(char_id, &format!("proj_{}_box_layer_{}{}", key, inst_name, occ_key));
+        if is_point {
+            layers.push(json!({
+                "$id": layer_id,
+                "name": fm_layer_name,
+                "type": "POINT",
+                "keyframes": box_kf_ids,
+                "hidden": false,
+                "locked": false,
+                "pluginMetadata": {
+                    "com.fraymakers.FraymakersMetadata": {
+                        "pointType": "GRAB_HOLD_POINT"
+                    }
+                }
+            }));
+        } else {
+            layers.push(json!({
+                "$id": layer_id,
+                "name": fm_layer_name,
+                "type": "COLLISION_BOX",
+                "keyframes": box_kf_ids,
+                "hidden": false,
+                "locked": false,
+                "defaultAlpha": 0.5,
+                "defaultColor": color,
+                "pluginMetadata": {
+                    "com.fraymakers.FraymakersMetadata": {
+                        "collisionBoxType": fm_box_type,
+                        "index": box_idx
+                    }
+                }
+            }));
+        }
+        out.push(layer_id);
+    }
+    out
+}
+
 /// Map an SSF2 projectile outer-sprite frame label to a Fraymakers animation name.
 /// attack_idle → projectileIdle (the default), attack_hold → projectileHeld, etc.
 pub fn ssf2_proj_label_to_fm_anim(label: &str) -> String {
@@ -2076,204 +2324,10 @@ pub fn generate_projectile_entity(
     });
 
     // ── Build collision box layers for idle (from inner sprite boxes) ────
-    let mut idle_box_layer_ids: Vec<String> = Vec::new();
-    if let Some(boxes) = &proj.boxes {
-        // Collect all unique instance names across frames
-        // a name is not unique on a frame; see the character path above
-        let mut instances_in_proj: std::collections::BTreeSet<(String, usize)> = Default::default();
-        for frame_boxes in boxes.frames.values() {
-            let mut seen: std::collections::BTreeMap<&str, usize> = Default::default();
-            for b in frame_boxes {
-                let n = seen.entry(b.instance_name.as_str()).or_insert(0);
-                instances_in_proj.insert((b.instance_name.clone(), *n));
-                *n += 1;
-            }
-        }
-        let layer_names = box_layer_names(&instances_in_proj);
-
-        for (inst_name, occurrence) in instances_in_proj.iter() {
-            let occurrence = *occurrence;
-            let occ_key = if occurrence == 0 { String::new() } else { format!("_{occurrence}") };
-            let box_type = BoxType::from_instance_name(inst_name).unwrap_or(BoxType::Hurtbox);
-            let fm_box_type = box_type_to_fm(box_type);
-            let color = box_color(box_type);
-            let (prefix, box_idx) = layer_names[&(inst_name.clone(), occurrence)].clone();
-            let fm_layer_name = format!("{prefix}{box_idx}");
-
-            let mut box_kf_ids: Vec<String> = Vec::new();
-            let mut frame_idx: u32 = 0;
-
-            // Collect active frames for this instance
-            let mut active_frames: Vec<(usize, &crate::sprite_parser::FrameBox)> = Vec::new();
-            for f in 0..total_frames {
-                if let Some(frame_boxes) = boxes.frames.get(&(f as u16)) {
-                    if let Some(fb) = frame_boxes.iter()
-                        .filter(|b| &b.instance_name == inst_name).nth(occurrence)
-                    {
-                        active_frames.push((f as usize, fb));
-                    }
-                }
-            }
-
-            let is_point = box_type == crate::sprite_parser::BoxType::GrabHoldBox;
-            let kf_type = if is_point { "POINT" } else { "COLLISION_BOX" };
-
-            // Build keyframes using run-length encoding
-            let mut i = 0;
-            while i < active_frames.len() {
-                let (start_frame, fb) = active_frames[i];
-                let mut run_end = i;
-                while run_end + 1 < active_frames.len() {
-                    let (next_f, next_fb) = active_frames[run_end + 1];
-                    let (cur_f, _) = active_frames[run_end];
-                    let consecutive = next_f == cur_f + 1;
-                    let same_geom = (next_fb.x - fb.x).abs() < 0.01
-                        && (next_fb.y - fb.y).abs() < 0.01
-                        && (next_fb.width - fb.width).abs() < 0.01
-                        && (next_fb.height - fb.height).abs() < 0.01
-                        && (next_fb.rotation - fb.rotation).abs() < 0.01;
-                    if consecutive && same_geom { run_end += 1; } else { break; }
-                }
-                let run_len = (active_frames[run_end].0 - start_frame + 1) as u32;
-
-                // Gap keyframe
-                if start_frame as u32 > frame_idx {
-                    let gap_kf_id = uuid(char_id, &format!("proj_{}_box_gap_{}{}_{}", proj_id, inst_name, occ_key, frame_idx));
-                    keyframes.push(json!({
-                        "$id": gap_kf_id,
-                        "type": kf_type,
-                        "length": (start_frame as u32) - frame_idx,
-                        "symbol": Value::Null,
-                        "tweened": false,
-                        "tweenType": "LINEAR",
-                        "pluginMetadata": {}
-                    }));
-                    box_kf_ids.push(gap_kf_id);
-                }
-
-                // Box symbol
-                let sym_id = uuid(char_id, &format!("proj_{}_box_sym_{}{}_{}", proj_id, inst_name, occ_key, start_frame));
-                if is_point {
-                    let cx = round2(fb.x + fb.width / 2.0);
-                    let cy = round2(fb.y + fb.height);
-                    symbols.push(json!({
-                        "$id": sym_id,
-                        "alpha": 1,
-                        "color": color,
-                        "pluginMetadata": {},
-                        "rotation": 0,
-                        "type": "POINT",
-                        "x": cx,
-                        "y": cy
-                    }));
-                } else {
-                    // Mirror the Character.entity collision-box emission exactly
-                    // (see the path above): ItemBox pivots on its bottom-centre
-                    // (the hand) and bakes the rotation into the top-left so the
-                    // hand stays pinned under rotation; every other box type is
-                    // already AABB-collapsed to rotation 0 in sprite_parser, so
-                    // it uses a centre pivot and raw top-left. Without this,
-                    // rotated projectile itemboxes drift exactly like the
-                    // character path did before the bake.
-                    let (pivot_x, pivot_y) = if box_type == crate::sprite_parser::BoxType::ItemBox {
-                        (fb.width / 2.0, fb.height)        // bottom-centre = hand
-                    } else {
-                        (fb.width / 2.0, fb.height / 2.0)  // centre
-                    };
-                    let theta = ((fb.rotation % 360.0) + 360.0) % 360.0;
-                    let (box_x, box_y) = if box_type == crate::sprite_parser::BoxType::ItemBox {
-                        let hand = crate::fraytools_transform::intended_pivot_point(
-                            fb.x, fb.y, pivot_x, pivot_y);
-                        let off = crate::fraytools_transform::collision_box_anchor(
-                            0.0, 0.0, pivot_x, pivot_y, theta);
-                        (hand.0 - off.0, hand.1 - off.1)
-                    } else {
-                        (fb.x, fb.y)
-                    };
-                    symbols.push(json!({
-                        "$id": sym_id,
-                        "alpha": 0.5,
-                        "color": color,
-                        "pivotX": round2(pivot_x),
-                        "pivotY": round2(pivot_y),
-                        "pluginMetadata": {},
-                        "rotation": round2(theta),
-                        "scaleX": round2(fb.width),
-                        "scaleY": round2(fb.height),
-                        "type": "COLLISION_BOX",
-                        "x": round2(box_x),
-                        "y": round2(box_y)
-                    }));
-                }
-
-                let kf_id = uuid(char_id, &format!("proj_{}_box_kf_{}{}_{}", proj_id, inst_name, occ_key, start_frame));
-                keyframes.push(json!({
-                    "$id": kf_id,
-                    "type": kf_type,
-                    "length": run_len,
-                    "symbol": sym_id,
-                    "tweened": false,
-                    "tweenType": "LINEAR",
-                    "pluginMetadata": {}
-                }));
-                box_kf_ids.push(kf_id);
-                frame_idx = start_frame as u32 + run_len;
-                i = run_end + 1;
-            }
-
-            // Tail gap
-            if frame_idx < total_frames {
-                let tail_kf_id = uuid(char_id, &format!("proj_{}_box_tail_{}{}_{}", proj_id, inst_name, occ_key, frame_idx));
-                keyframes.push(json!({
-                    "$id": tail_kf_id,
-                    "type": kf_type,
-                    "length": total_frames - frame_idx,
-                    "symbol": Value::Null,
-                    "tweened": false,
-                    "tweenType": "LINEAR",
-                    "pluginMetadata": {}
-                }));
-                box_kf_ids.push(tail_kf_id);
-            }
-
-            if box_kf_ids.is_empty() { continue; }
-
-            let layer_id = uuid(char_id, &format!("proj_{}_box_layer_{}{}", proj_id, inst_name, occ_key));
-            if is_point {
-                layers.push(json!({
-                    "$id": layer_id,
-                    "name": fm_layer_name,
-                    "type": "POINT",
-                    "keyframes": box_kf_ids,
-                    "hidden": false,
-                    "locked": false,
-                    "pluginMetadata": {
-                        "com.fraymakers.FraymakersMetadata": {
-                            "pointType": "GRAB_HOLD_POINT"
-                        }
-                    }
-                }));
-            } else {
-                layers.push(json!({
-                    "$id": layer_id,
-                    "name": fm_layer_name,
-                    "type": "COLLISION_BOX",
-                    "keyframes": box_kf_ids,
-                    "hidden": false,
-                    "locked": false,
-                    "defaultAlpha": 0.5,
-                    "defaultColor": color,
-                    "pluginMetadata": {
-                        "com.fraymakers.FraymakersMetadata": {
-                            "collisionBoxType": fm_box_type,
-                            "index": box_idx
-                        }
-                    }
-                }));
-            }
-            idle_box_layer_ids.push(layer_id);
-        }
-    }
+    let idle_box_layer_ids: Vec<String> = match &proj.boxes {
+        Some(boxes) => push_box_layers(&mut keyframes, &mut layers, &mut symbols, char_id, &proj_id.to_string(), boxes, total_frames),
+        None => Vec::new(),
+    };
 
     // ── projectileSpawn animation (1 frame, first image, every part) ─────
     {
@@ -2361,9 +2415,6 @@ pub fn generate_projectile_entity(
                 let end = labels.get(i + 1).map(|(nf, _)| *nf).unwrap_or(total_frames);
                 if end > start { windows.push((name.clone(), start, end)); }
             }
-            // one layer's keyframes, cut to a window: the part of each that overlaps
-            let kf_index: std::collections::BTreeMap<String, usize> = keyframes.iter().enumerate()
-                .filter_map(|(i, k)| k["$id"].as_str().map(|id| (id.to_string(), i))).collect();
             let full_layers: Vec<Value> = {
                 let mut v: Vec<Value> = idle_image_layer_ids.iter()
                     .map(|id| layers.iter().find(|l| l["$id"] == json!(id)).cloned().expect("image layer")).collect();
@@ -2371,37 +2422,10 @@ pub fn generate_projectile_entity(
                 for b in &idle_box_layer_ids { v.push(layers.iter().find(|l| l["$id"] == json!(b)).cloned().expect("box layer")); }
                 v
             };
-            let mut new_kfs: Vec<Value> = Vec::new();
-            let mut new_layers: Vec<Value> = Vec::new();
             let mut seg_anims: Vec<Value> = Vec::new();
-            for (name, start, end) in &windows {
-                let mut layer_ids: Vec<String> = Vec::new();
-                for layer in &full_layers {
-                    let lid = layer["$id"].as_str().unwrap_or_default().to_string();
-                    let mut ids: Vec<String> = Vec::new();
-                    let mut at: u32 = 0;
-                    for (k, kid) in layer["keyframes"].as_array().cloned().unwrap_or_default().iter().enumerate() {
-                        let Some(&ki) = kid.as_str().and_then(|id| kf_index.get(id)) else { continue };
-                        let len = keyframes[ki]["length"].as_u64().unwrap_or(1) as u32;
-                        let (a, b) = (at.max(*start), (at + len).min(*end));
-                        at += len;
-                        if b <= a { continue }
-                        let mut kf = keyframes[ki].clone();
-                        let nid = uuid(char_id, &format!("proj_{}_seg_{}_{}_{}", proj_id, name, lid, k));
-                        kf["$id"] = json!(nid);
-                        kf["length"] = json!(b - a);
-                        new_kfs.push(kf);
-                        ids.push(nid);
-                    }
-                    if ids.is_empty() { continue }
-                    let mut nl = layer.clone();
-                    let nlid = uuid(char_id, &format!("proj_{}_seg_{}_layer_{}", proj_id, name, lid));
-                    nl["$id"] = json!(nlid);
-                    nl["keyframes"] = json!(ids);
-                    new_layers.push(nl);
-                    layer_ids.push(nlid);
-                }
-                pieces.push(piece(name, &idle_label, idle_sym, start + 1, end - start, false));
+            for (name, layer_ids) in cut_windows(&mut keyframes, &mut layers, char_id, &proj_id.to_string(), &full_layers, &windows) {
+                let (_, start, end) = windows.iter().find(|(n, _, _)| *n == name).cloned().unwrap_or_default();
+                pieces.push(piece(&name, &idle_label, idle_sym, start + 1, end - start, false));
                 seg_anims.push(json!({
                     "$id": uuid(char_id, &format!("proj_{}_anim_seg_{}", proj_id, name)),
                     "name": name, "layers": layer_ids, "pluginMetadata": {}
@@ -2410,8 +2434,6 @@ pub fn generate_projectile_entity(
             let taken: std::collections::BTreeSet<String> = windows.iter().map(|(n, _, _)| n.clone()).collect();
             animations.retain(|a| !a["name"].as_str().is_some_and(|n| taken.contains(n)));
             animations.extend(seg_anims);
-            keyframes.extend(new_kfs);
-            layers.extend(new_layers);
             // what no animation names any more goes with it
             let used_layers: std::collections::BTreeSet<String> = animations.iter()
                 .flat_map(|a| a["layers"].as_array().cloned().unwrap_or_default())
@@ -2443,13 +2465,41 @@ pub fn generate_projectile_entity(
             &format!("proj_{}_extra_{}_script", proj_id, state_slug), total.max(1) as u32,
             if runtime_runs_frames { &none } else { &state_data.frame_scripts });
 
+        // its boxes (a thrown item's hits are its toss clip's; one held hits nothing)
+        let box_layer_ids: Vec<String> = match &state_data.boxes {
+            Some(b) if state_data.label != "attack_hold" => push_box_layers(&mut keyframes, &mut layers, &mut symbols, char_id, &format!("{proj_id}_extra_{state_slug}"), b, total.max(1) as u32),
+            _ => Vec::new(),
+        };
         pieces.push(piece(&anim_name, &state_data.label, state_data.sprite_id, 1, state_data.frame_count as u32, false));
+        let all: Vec<String> = img_layer_ids.iter().cloned().chain(std::iter::once(script_layer_id.clone())).chain(box_layer_ids.iter().cloned()).collect();
         animations.push(json!({
             "$id": uuid(char_id, &format!("proj_{}_extra_{}_anim", proj_id, state_slug)),
             "name": anim_name,
-            "layers": img_layer_ids.iter().cloned().map(Value::from).chain(std::iter::once(Value::from(script_layer_id))).collect::<Vec<Value>>(),
+            "layers": all,
             "pluginMetadata": {}
         }));
+        // each label inside its clip, an animation of its own under the state's name
+        // (`toss_spinRight`): the code's jump to a label lands in the clip its state shows
+        let tag = state_data.label.strip_prefix("attack_").unwrap_or(&state_data.label).to_string();
+        let mut labels: Vec<(u32, String)> = state_data.labels.iter()
+            .map(|(f, l)| ((*f as u32).saturating_sub(1).min((total as u32).saturating_sub(1)), crate::haxe_gen::label_ident(l))).collect();
+        labels.sort_by_key(|(f, _)| *f);
+        labels.dedup_by(|a, b| a.0 == b.0);
+        if !labels.is_empty() {
+            let windows: Vec<(String, u32, u32)> = labels.iter().enumerate().filter_map(|(i, (f, name))| {
+                let end = labels.get(i + 1).map(|(nf, _)| *nf).unwrap_or(total as u32);
+                (end > *f).then(|| (format!("{tag}_{name}"), *f, end))
+            }).collect();
+            let full: Vec<Value> = all.iter().filter_map(|id| layers.iter().find(|l| l["$id"] == json!(id)).cloned()).collect();
+            for (name, ids) in cut_windows(&mut keyframes, &mut layers, char_id, &format!("{proj_id}_extra_{state_slug}"), &full, &windows) {
+                let (_, start, end) = windows.iter().find(|(n, _, _)| *n == name).cloned().unwrap_or_default();
+                pieces.push(piece(&name, &state_data.label, state_data.sprite_id, start + 1, end - start, false));
+                animations.push(json!({
+                    "$id": uuid(char_id, &format!("proj_{}_extra_{}_seg_{}", proj_id, state_slug, name)),
+                    "name": name, "layers": ids, "pluginMetadata": {}
+                }));
+            }
+        }
     }
 
     // the named children its code addresses: one animation each, and one per label

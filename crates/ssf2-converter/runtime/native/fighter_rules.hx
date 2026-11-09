@@ -408,11 +408,16 @@ function generateItem(name) {
 	var id = itemContent(name);
 	var content = id == null ? null : self.getResource().getContent(id);
 	if (content == null) return null;
-	var it = match.createProjectile(content, self);
+	// (a custom game object carrying the item handler, which keeps itself in the hand; else a
+	// projectile, touching nothing until thrown)
+	var object = itemIsObject(name);
+	var it = object ? match.createCustomGameObject(content, self) : match.createProjectile(content, self);
 	if (it == null) return null;
-	// in the hand from its first frame, touching nothing until thrown
-	it.exports.__ghostDeclared = it.getProjectileStat("ghost") == true;
-	it.updateProjectileStats({ ghost: true });
+	if (!object) {
+		it.exports.__ghostDeclared = it.getProjectileStat("ghost") == true;
+		it.updateProjectileStats({ ghost: true });
+	}
+	self.exports.__tossItem = tossItem;
 	placeItem(it);
 	it.exports.__holder = self;
 	it.exports.__isItem = true;

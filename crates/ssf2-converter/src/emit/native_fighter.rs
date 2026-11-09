@@ -205,6 +205,10 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
         }
         let ps = f.effects.get(name)?;
         let p = ps.iter().find(|p| p.from == 1)?;
+        // (one whose clip's own frames turn it is kept playing, and its code done for it: `effect_code`)
+        if super::effect_code(model, ps).is_some() && super::plays_once(model, p).is_none() {
+            return Some((format!("spriteContent: self.getResource().getContent({}), animation: {}, loop: true", compile::quote(name), compile::quote(&p.fm_name)), None));
+        }
         let gone = if ps.len() == 1 && (p.sym == 0 || model.class_of(p.sym).is_none()) { None } else { super::plays_once(model, p)? };
         Some((format!("spriteContent: self.getResource().getContent({}), animation: {}", compile::quote(name), compile::quote(&p.fm_name)), gone))
     };
@@ -228,7 +232,7 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
     let object = native::Object {
         model, itself: parts.itself, classes: parts.classes.clone(), jumps: &jumps, runtime: f.runtime, declared: &declares, switches: &switches,
         owner_stat: &no_stat, effect: &made, owner_anims: &anims, fired: &fired, owner_declares: &declares, owner_stores: &stores,
-        root: parts.root, size: f.units.size, speed: f.units.speed, accel: f.units.accel, fighter: true,
+        root: parts.root, size: f.units.size, speed: f.units.speed, accel: f.units.accel, fighter: true, item: false,
         root_anim: &root_anim, walk_start: (start > 0.0).then_some(start), stance_labels: &labels, clip_frames: &frames_of, frame_links: f.frame_links, anim_clips: &clips, owner_native: false,
         effect_names: f.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
         effect_pieces: f.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames)))
@@ -238,6 +242,11 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
         content: f.content.to_string(),
         palette: f.palette.clone(),
         effect_inners: f.effect_inners.clone(),
+        effect_code: f.effects.iter().filter_map(|(n, ps)| {
+            let p = ps.iter().find(|p| p.from == 1)?;
+            if super::plays_once(model, p).is_some() { return None }
+            super::effect_code(model, ps).map(|c| (n.clone(), c))
+        }).collect(),
     };
     if all {
         let why = native::census(&object);
@@ -560,6 +569,7 @@ fn item_tables(f: &Fighting) -> Result<Vec<String>, String> {
     }
     Ok(vec![native::helper(rt, "fighter_tables", "item_box", "", &[], &boxes)?,
             native::helper(rt, "fighter_tables", "item_content", "", &[], &content)?,
+            native::helper(rt, "fighter_tables", "item_object", "", &[], &[])?,
             native::helper(rt, "fighter_tables", "item_declared", "", &[], &declared)?])
 }
 

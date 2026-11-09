@@ -18,6 +18,10 @@ pub struct EventTable {
     pub record: BTreeMap<String, (String, String)>,
     /// the fields the source's records carry that `record` does not translate
     pub unrecorded: Vec<String>,
+    /// source event name -> the list of an item's own listeners its handler tells (`item.hx`)
+    pub item: BTreeMap<String, String>,
+    /// the fields of the record an item's handler hands its frame interrupt -> what each is
+    pub interrupt: BTreeMap<String, String>,
 }
 
 pub fn table() -> &'static EventTable {
@@ -37,7 +41,7 @@ pub fn table() -> &'static EventTable {
             Some((k.clone(), (v["code"].as_str()?.to_string(), v["is"].as_str().unwrap_or("any").to_string())))
         }).collect()).unwrap_or_default();
         EventTable { engine: read(&json["engine"]), state: read(&json["state"]), heard_in_animation: heard,
-            record, unrecorded: strings(&json["unrecorded"]) }
+            record, unrecorded: strings(&json["unrecorded"]), item: read(&json["item"]), interrupt: read(&json["interrupt"]) }
     })
 }
 

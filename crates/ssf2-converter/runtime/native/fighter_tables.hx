@@ -74,6 +74,16 @@ function itemContent(name) {
 	return null;
 }
 
+// ---- item_object
+// whether an item it can make is a custom game object carrying the item handler
+// (runtime/native/item.hx), its code written as Fraymakers code, rather than a projectile
+function itemIsObject(name) {
+	switch (name) {
+		case ITEM_OBJECTS: return true;
+	}
+	return false;
+}
+
 // ---- item_declared
 // what each item it can make declares
 function itemDeclared(name, k) {

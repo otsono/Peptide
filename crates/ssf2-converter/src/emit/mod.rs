@@ -60,7 +60,9 @@ pub fn label_jumps(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, cr
         for (f0, label) in &sprite.labels {
             let f = *f0 as u32 + 1;
             let hits: Vec<&&Piece> = own.iter().filter(|p| f >= p.from && f < p.from + p.frames).collect();
-            if let [p] = hits.as_slice() { j.labels.insert(label.clone(), (p.fm_name.clone(), f == p.from)); }
+            // (where the whole clip and the label's own cut both show it, the cut that starts there)
+            let at = if let [p] = hits.as_slice() { Some(*p) } else { hits.iter().find(|p| p.from == f).copied() };
+            if let Some(p) = at { j.labels.insert(label.clone(), (p.fm_name.clone(), f == p.from)); }
         }
         out.insert(c.name.clone(), j);
     }
@@ -1100,6 +1102,21 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     let mut natively: Vec<(String, Result<(), String>)> = Vec::new();
     let projectiles = runtime_projectiles(char_dir, &model, &runtime, fighter, units, &others,
         &effects, &entities, &mut projectile_pieces, &mut unplaced, &owner, &mut natively)?;
+    // the items written as Fraymakers code are custom game objects carrying the item handler; the
+    // fighter's script makes them so (`itemIsObject`)
+    let mut objects: Vec<String> = Vec::new();
+    for (name, _) in fighter.items.entries() {
+        let Some(key) = entities.get(name) else { continue };
+        if !natively.iter().any(|(k, r)| k == key && r.is_ok()) { continue }
+        custom_game_object(char_dir, key)?;
+        objects.push(compile::quote(name));
+    }
+    let fighter_script = dir.join("Script.hx");
+    if let Ok(text) = std::fs::read_to_string(&fighter_script) {
+        let line = if objects.is_empty() { String::new() } else { format!("\t\tcase {}: return true;\n", objects.join(", ")) };
+        let patched = text.replace("\t\tcase ITEM_OBJECTS: return true;\n", &line);
+        if patched != text { std::fs::write(&fighter_script, patched)?; }
+    }
     let report = serde_json::json!({
         // whether the fighter's own code is written as Fraymakers code, and what keeps it on the
         // runtime, function by function, where it is not
@@ -1128,6 +1145,32 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         std::fs::write(&plan_path, serde_json::to_string_pretty(&plan)?)?;
     }
     Ok(out)
+}
+
+/// An item written as Fraymakers code, made a custom game object: its entity, its script and its
+/// entry in the manifest say so (its stats file's fields are a game object's too)
+fn custom_game_object(char_dir: &std::path::Path, key: &str) -> anyhow::Result<()> {
+    let content = crate::projectile_gen::projectile_content_id(key);
+    let set_type = |v: &mut serde_json::Value| {
+        if let Some(m) = v.pointer_mut("/pluginMetadata/com.fraymakers.FraymakersMetadata/objectType") { *m = serde_json::json!("CUSTOM_GAME_OBJECT"); }
+    };
+    let entity = char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content)));
+    let meta = char_dir.join(format!("library/scripts/Projectile/{}Script.hx.meta", crate::haxe_gen::snake_to_pascal(key)));
+    for path in [&entity, &meta] {
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        let mut json: serde_json::Value = serde_json::from_slice(&bytes)?;
+        set_type(&mut json);
+        std::fs::write(path, serde_json::to_string_pretty(&json)?)?;
+    }
+    let manifest = char_dir.join("library/manifest.json");
+    if let Ok(bytes) = std::fs::read(&manifest) {
+        let mut json: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if let Some(list) = json["content"].as_array_mut() {
+            for c in list.iter_mut().filter(|c| c["id"] == content.as_str()) { c["type"] = serde_json::json!("customGameObject"); }
+        }
+        std::fs::write(&manifest, serde_json::to_string_pretty(&json)?)?;
+    }
+    Ok(())
 }
 
 /// An entity's animations carry the source's frames on their keyframes: the clip the engine plays
@@ -1963,6 +2006,49 @@ fn plays_once(model: &SourceModel, p: &Piece) -> Option<Option<u32>> {
     }
     // (a script past the piece's last frame: the animation ends there itself)
     gone.then_some((first.frame < last).then_some(first.frame + 1))
+}
+
+/// what an effect's clip's own frames do, where all they do is turn the clip (stop it, play it on,
+/// jump it to a label, take it off its parent): each as (its animation, the engine frame of it the
+/// code is on, what it does as this engine's code with `e` the effect). none where its frames do
+/// anything else, or nothing at all
+pub fn effect_code(model: &SourceModel, pieces: &[Piece]) -> Option<Vec<(String, u32, String)>> {
+    use crate::model::ast::Stmt;
+    let sym = pieces.first()?.sym;
+    let c = model.class_of(sym)?;
+    if !matches!(compile::short(&c.super_name), "MovieClip" | "Sprite") || c.frame_scripts.is_empty() { return None }
+    let mine = |e: &Expr| -> Option<String> { match e { Expr::Member(o, m) if matches!(**o, Expr::This) => Some(m.clone()), Expr::Name(m) => Some(m.clone()), _ => None } };
+    // where a clip frame is: the animation showing it, and its engine frame there
+    let at = |f: u32| pieces.iter().find(|p| f >= p.from && f < p.from + p.frames).map(|p| (p.fm_name.clone(), 2 * (f - p.from) + 1));
+    let sprite = model.sprites.get(&sym)?;
+    let label_at = |l: &str| sprite.labels.iter().find(|(_, x)| x == l).map(|(f, _)| *f as u32 + 1);
+    let mut out = Vec::new();
+    for fs in &c.frame_scripts {
+        let m = c.methods.iter().find(|m| m.name == fs.method)?;
+        let mut does: Vec<String> = Vec::new();
+        for st in &m.function.body {
+            match st {
+                Stmt::Return(None) => {}
+                Stmt::Expr(Expr::Call(f, a)) if matches!(&**f, Expr::Member(_, rc) if rc == "removeChild") && matches!(a.as_slice(), [Expr::This]) => does.push("e.kill();".into()),
+                Stmt::Expr(Expr::Call(f, a)) => match (mine(f).as_deref(), a.as_slice()) {
+                    (Some("stop"), []) => does.push("e.pause();".into()),
+                    (Some("play"), []) => does.push("e.resume();".into()),
+                    (Some(g @ ("gotoAndStop" | "gotoAndPlay")), [Expr::Str(l)]) => {
+                        let (anim, frame) = at(label_at(l)?)?;
+                        does.push(format!("effectGo(e, {}, {frame}, {});", compile::quote(&anim), g == "gotoAndStop"));
+                    }
+                    _ => return None,
+                },
+                // (taken off its parent: gone, as the effect is here)
+                Stmt::If(_, then, els) if els.is_empty() && then.iter().all(|t| matches!(t, Stmt::Expr(Expr::Call(f, a)) if matches!(&**f, Expr::Member(_, rc) if rc == "removeChild") && matches!(a.as_slice(), [Expr::This]))) => does.push("e.kill();".into()),
+                _ => return None,
+            }
+        }
+        if does.is_empty() { continue }
+        let (anim, frame) = at(fs.frame + 1)?;
+        out.push((anim, frame, does.join(" ")));
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// the object's own clip, where its animations also show clips it places (a class's object whose

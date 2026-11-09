@@ -2122,6 +2122,8 @@ pub struct ProjectileState {
     pub inner_sprite_name: String,
     /// Frame count of the inner sprite
     pub inner_frame_count: u16,
+    /// the labels inside this stance's clip: (1-based frame, label)
+    pub labels: Vec<(u16, String)>,
     /// where the projectile's clip places this stance: its art and boxes are in the stance's
     /// own space, and the projectile's origin is the outer clip's
     pub stance: ImageLocalMatrix,
@@ -2200,6 +2202,23 @@ pub struct DiscoveredHead {
     pub image_shape_id: Option<u16>,
 }
 
+/// the labels a sprite's timeline carries: (1-based frame, label)
+pub fn sprite_labels(swf: &swf::Swf<'_>, sprite_id: u16) -> Vec<(u16, String)> {
+    let mut out = Vec::new();
+    let mut frame: u16 = 1;
+    for tag in sprite_tags(swf, sprite_id).unwrap_or(&[]) {
+        match tag {
+            swf::Tag::FrameLabel(fl) => {
+                let label = fl.label.to_str_lossy(encoding_rs::WINDOWS_1252).to_string();
+                if !label.is_empty() { out.push((frame, label)); }
+            }
+            swf::Tag::ShowFrame => frame += 1,
+            _ => {}
+        }
+    }
+    out
+}
+
 /// One projectile, read off its root sprite: the `stance` child under each label is the clip it
 /// draws with, `attack_idle` the one it flies with, and the labels inside that clip its own
 /// animations. Shared by the character walk (every sprite carrying `attack_idle`) and a stage's
@@ -2232,6 +2251,7 @@ fn projectile_of_sprite(swf: &swf::Swf<'_>, symbols: &BTreeMap<u16, String>, spr
                         }).unwrap_or(1);
                         if let Some(label) = cur_label.take() {
                             states.push(ProjectileState {
+                                labels: sprite_labels(swf, *id),
                                 label,
                                 inner_sprite_id: *id,
                                 inner_sprite_name: inner_sym,
@@ -2286,7 +2306,7 @@ fn projectile_of_sprite(swf: &swf::Swf<'_>, symbols: &BTreeMap<u16, String>, spr
 
     if std::env::var("PEPTIDE_TRACE_LABELS").is_ok() {
         eprintln!("[trace-proj] {sprite_name} states={:?} labels={inner_labels:?}",
-                  states.iter().map(|s| (s.label.clone(), s.inner_frame_count)).collect::<Vec<_>>());
+                  states.iter().map(|s| (s.label.clone(), s.inner_frame_count, s.labels.clone())).collect::<Vec<_>>());
     }
     DiscoveredProjectile {
         sprite_id: sprite.id,

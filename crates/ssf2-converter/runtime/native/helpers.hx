@@ -252,6 +252,37 @@ function innerPlace(name, clip, anim) {
 	return null;
 }
 
+// ---- effect_code
+//: its cases are each effect frame its clip's own code is on, as what that code does (`e` the effect)
+// the effects it makes whose clips' own frames turn them (stop, jump to a label, take themselves
+// off): kept, and each frame the frame each is on does what its clip's code does
+var codedEffects = self.makeObject(null);
+function keepCoded(effect, name) {
+	if (effect == null) return null;
+	if (codedEffects.get() == null) codedEffects.set([]);
+	codedEffects.get().push({ effect: effect, name: name });
+	return effect;
+}
+function runEffectCode() {
+	var all = codedEffects.get();
+	if (all == null) return;
+	var i = 0;
+	while (i < all.length) {
+		var e = all[i].effect;
+		if (e.isDisposed()) { all.splice(i, 1); continue; }
+		switch (all[i].name + "/" + e.getAnimation() + "/" + e.getCurrentFrame()) {
+			// {cases}
+		}
+		i++;
+	}
+}
+// an effect sent to a frame of one of its animations, and held there or played on
+function effectGo(e, anim, frame, hold) {
+	if (e.getAnimation() != anim) e.playAnimation(anim);
+	e.playFrame(frame);
+	if (hold) e.pause(); else e.resume();
+}
+
 // ---- own_stat
 //: STAT the stat, DECLARED what it states for it
 // its STAT: what its code set it to since, else what it states

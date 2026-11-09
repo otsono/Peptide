@@ -660,7 +660,14 @@ palettes the conversion writes. a field that only ever holds a new one of a clas
 name (`soundLoop_tick()`), keeping only what the code uses. a row's optional argument is
 `{,1}` (`native_calls.jsonc`). a clip an effect places that its holder's code turns (`fruitMC.chargingFruit.gotoAndStop(n)`)
 is cut from the effect's art into an animation of its own on the effect's entity, made with the
-effect and kept on its place (`withInners`, `innerClip`, `followInners`).
+effect and kept on its place (`withInners`, `innerClip`, `followInners`). an effect whose clip's own frames only turn
+it (stop, jump to a label, take itself off) is kept, and each frame does what its frame's code
+says (`keepCoded`, `runEffectCode`). an item written natively is a custom game object carrying
+`runtime/native/item.hx`'s SSF2ItemHandler: its state (free, held, thrown, gone), anyone picking
+it up with grab and its own code throwing it on that holder's next attack, hits only while
+thrown, and the events it raises (`events.jsonc` `item`). each of its stances' labels is an
+animation (`toss_spinRight`), and its own jumps go to the stance its state shows (`playStance`).
+the fighter that makes one asks `itemIsObject` which kind it is.
 a jump to a label inside another animation goes through `playLabelIn`, and that animation's
 first frame's own code skips while it does (the engine runs the first frame as it starts an
 animation; the source goes straight to the label). a named clip its clip places whose own code

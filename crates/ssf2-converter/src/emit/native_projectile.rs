@@ -29,15 +29,14 @@ pub struct Owner<'a> {
 /// The projectile's script and entity, written natively; or why it stays on the runtime.
 pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, decls: &Decls,
              pieces: &[Piece], units: Units, title: &str, entity_key: &str, owner: &Owner) -> Result<String, String> {
-    let skeleton = runtime.native_files.get("projectile").ok_or("the runtime has no native/projectile.hx")?;
+    let item = decls.items.entries().iter().any(|(n, d)| n == title || d.get("linkage_id").and_then(|v| v.str()) == Some(spec.clip.as_str()));
+    let skeleton = runtime.native_files.get(if item { "item" } else { "projectile" }).ok_or("the runtime has no native/projectile.hx or native/item.hx")?;
     // its own class, where its package gives it one: the API's projectile, extended
-    let itself = if compile::short(&spec.class) == "PeptideProjectile" { None } else {
+    let itself = if matches!(compile::short(&spec.class), "PeptideProjectile" | "PeptideItem") { None } else {
         let c = model.classes.get(&spec.class).or_else(|| model.classes.values().find(|c| compile::short(&c.name) == compile::short(&spec.class)))
             .ok_or_else(|| format!("its class {} is not in its package", spec.class))?;
         Some(c)
     };
-    let item = decls.items.entries().iter().any(|(n, d)| n == title || d.get("linkage_id").and_then(|v| v.str()) == Some(spec.clip.as_str()));
-    if item { return Err("an item, which its holder moves".into()) }
     let clip_sym = spec.clip_sym.or_else(|| model.symbol_of(&spec.clip)).ok_or("its clip is no symbol")?;
     if pieces.is_empty() { return Err("no animations".into()) }
 
@@ -144,11 +143,11 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let no_links = BTreeSet::new();
     let object = native::Object {
         model, itself, classes: classes.clone(), jumps: &jumps, runtime, declared: &declared, switches: &taken.switches,
-        owner_stat: &owner_stat, effect: &made, owner_anims: &owner.anims, fired: &fired, owner_declares: &owner_stat_of, owner_stores: &owner_stores, root: clip_sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false,
+        owner_stat: &owner_stat, effect: &made, owner_anims: &owner.anims, fired: &fired, owner_declares: &owner_stat_of, owner_stores: &owner_stores, root: clip_sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item,
         root_anim: &|_| None, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &no_links, anim_clips: &[], owner_native: owner.native,
         effect_names: spec.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
         effect_pieces: spec.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames))).collect(),
-        parts: Vec::new(), content: String::new(), palette: None, effect_inners: BTreeMap::new(),
+        parts: Vec::new(), content: String::new(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(),
     };
     let written = native::write(&object)?;
 
@@ -212,6 +211,18 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         .replace("{title}", title)
         .replace("{classes}", &classes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "))
         .replace("makeInt(LIFE)", &format!("makeInt({})", num(life * 2.0)));
+    // (an item's handler, filled in with what it declares)
+    let script = if !item { script } else {
+        let n = |k: &str, d: f64| match spec.stats.get(k) { Some(Value::Num(v)) => *v, _ => d };
+        let b = |k: &str, d: bool| match spec.stats.get(k) { Some(Value::Bool(v)) => *v, Some(Value::Num(v)) => *v != 0.0, _ => d };
+        let words = [("TOSS", num(n("tossSpeed", units.item_toss))), ("PICKUP", b("canPickup", true).to_string()),
+            ("WIDTH", num(n("width", 20.0))), ("HEIGHT", num(n("height", 20.0))), ("SIZE", num(units.size)), ("SPEED", num(units.speed)),
+            ("GHOST", b("ghost", false).to_string()), ("GRAVITY", num(n("gravity", 0.0) * units.accel)),
+            ("FALL_CAP", num(n("max_gravity", n("maxgravity", 0.0)) * units.speed)), ("IDLE_ANIM", compile::quote(&start))];
+        let mut t = script;
+        for (w, v) in words { t = crate::dyn_re(&format!(r"\b{w}\b")).replace_all(&t, v.as_str()).to_string(); }
+        t
+    };
     // (a first update with nothing to run)
     // (a part with nothing in it)
     let script = script.replace("\tif (!started.get()) {\n\t\tstarted.set(true);\n\t}\n", "")

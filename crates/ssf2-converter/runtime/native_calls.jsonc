@@ -154,6 +154,17 @@
   "paletteData": { "code": "{ paletteSwap: { colors: [], replacements: [] }, paletteSwapPA: { colors: [], replacements: [] } }", "returns": "record" },
   // an object it made takes its colours (an effect has none to take, as on the runtime)
   "applyPalette": "if ({0} != null && {0}.getType() == EntityType.PROJECTILE) {0}.setCostumeIndex({self}.getCostumeIndex())",
+  // an item's own calls, on its handler (`runtime/native/item.hx`)
+  "setFrameInterrupt": "frameInterrupt.set({0})",
+  "isZDropped": { "code": "zDropped.get()", "returns": "bool" },
+  "getHolder": { "code": "holder.get()", "returns": "object" },
+  // an item's own stats written by its code: the engine's stat for each it keeps (`{v}` the value)
+  "item_stats": {
+    "gravity": "gravity: {v} * {accel}",
+    "max_gravity": "terminalVelocity: {v} * {speed}",
+    "maxgravity": "terminalVelocity: {v} * {speed}",
+    "ghost": "ghost: {v}"
+  },
   // a list's and a text's own calls
   "slice": { "code": "{self}.slice({0}{,1})", "returns": "object" },
   "indexOf": { "code": "{self}.indexOf({0})", "returns": "number" },
@@ -162,6 +173,8 @@
   "split": { "code": "{self}.split({0})", "returns": "object" },
   "toString": { "code": "Std.string({self})", "returns": "string" },
   // the match's clock, in the source's frames
+  // the stage's structure a line crosses (`ignoreFallthrough` passes over one dropped through)
+  "PeptideAPI.getPlatformBetweenPoints": { "code": "platformBetween({0}, {1}{,2})", "helper": "platformBetween", "returns": "object" },
   "PeptideAPI.getElapsedFrames": { "code": "Std.int(match.getElapsedFrames() / 2)", "returns": "number" },
   "PeptideAPI.randomBetween": { "code": "Random.getInt({0}, {1})", "returns": "number" },
   "PeptideAPI.randomUnit": { "code": "Random.getFloat(0, 1)", "returns": "number" },

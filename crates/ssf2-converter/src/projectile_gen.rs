@@ -517,6 +517,7 @@ pub fn generate_projectiles(
                 boxes: state_boxes,
                 frame_count: state.inner_frame_count,
                 frame_scripts: state_frames,
+                labels: state.labels.clone(),
             });
         }
         // Extract image frames from the inner sprite using effect-sprite flattening.

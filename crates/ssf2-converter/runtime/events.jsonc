@@ -28,6 +28,15 @@
     "reverseHit":           "GameObjectEvent.REFLECTBOX_CONNECTED",
     "reverse":              "GameObjectEvent.REFLECTED"
   },
+  // the events an item's handler raises itself (`runtime/native/item.hx`): its own listeners for
+  // them, the list the handler tells
+  "item": {
+    "itemPickup": "pickupListeners",
+    "itemTossed": "tossListeners"
+  },
+  // the fields of the record an item's handler hands its frame interrupt (its holder's attack put
+  // to it first), read as they are, and what each is
+  "interrupt": { "targetFrame": "string", "character": "object", "cStick": "bool", "zair": "bool" },
   // a change of state: the engine's event, told to the source's listeners with the source's own
   // states either side (the runtime keeps them)
   "state": { "stateChange": "EntityEvent.STATE_CHANGE" },
