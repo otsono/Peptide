@@ -651,6 +651,14 @@ a switch of its steering, a stat it keeps, its lifetime). a field of the record 
 event hands a listener is read as `runtime/events.jsonc` `record` says (a wall's side is the
 structure type the engine's wall event carries: a wall on the object's left is a structure's
 right side); one no record of the source's carries reads as nothing, as it does there.
+a fighter's parts (named clips its code turns, cut from the animations' art) are each a vfx
+riding it (`runtime/native/parts.hx`, `placeParts`). an effect named as it runs looks its art up
+by name (`namedEffect`), and a clip it holds is sent to a label or frame with `effectLabel` /
+`effectFrame` and tinted with `tintClip`; its costumes' colours are a table read from the
+palettes the conversion writes. a field that only ever holds a new one of a class
+`runtime/native/classes.hx` writes out (FrameTimer) is that class flattened under the field's
+name (`soundLoop_tick()`), keeping only what the code uses. a row's optional argument is
+`{,1}` (`native_calls.jsonc`).
 a jump to a label inside another animation goes through `playLabelIn`, and that animation's
 first frame's own code skips while it does (the engine runs the first frame as it starts an
 animation; the source goes straight to the label). a named clip its clip places whose own code

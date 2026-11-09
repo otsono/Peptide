@@ -93,6 +93,93 @@ function NAME(label) {
 	}
 }
 
+// ---- named_effect
+//: its cases are each effect it can make, by name, as the engine's stats for it
+// an effect its code names as it runs: the art of the one by that name (none, for a name it has no
+// effect of), with the options the call sets
+function NAME(name, on, options) {
+	var stats = effectArt(name);
+	if (stats == null) return null;
+	if (options.x != null) stats.x = options.x;
+	if (options.y != null) stats.y = options.y;
+	if (options.scaleX != null) stats.scaleX = options.scaleX;
+	if (options.scaleY != null) stats.scaleY = options.scaleY;
+	if (options.layer != null) stats.layer = options.layer;
+	if (options.loop == true) { stats.loop = true; stats.timeout = -1; }
+	if (options.relativeWith == true) { stats.relativeWith = true; stats.resizeWith = true; stats.flipWith = true; }
+	return match.createVfx(stats, on);
+}
+function effectArt(name) {
+	switch (name) {
+		// {cases}
+	}
+	return null;
+}
+
+// ---- effect_jump
+//: its cases are each effect animation, as the animations of the effect that has it
+// an effect it holds sent to a label (each of an effect's labels is an animation of it, else a
+// label inside the one it plays) and held there or played on
+function NAME(effect, label, hold) {
+	if (effect == null || effect.isDisposed()) return;
+	if (effect.hasAnimation(label)) effect.playAnimation(label); else effect.playFrameLabel(label);
+	if (hold) effect.pause(); else effect.resume();
+}
+// one sent to a frame by number, as the source counts its clip's frames
+function effectFrame(effect, n, hold) {
+	if (effect == null || effect.isDisposed()) return;
+	var f = Std.int(n);
+	switch (effect.getAnimation()) {
+		// {cases}
+	}
+	if (hold) effect.pause(); else effect.resume();
+}
+function goToFrameOf(effect, f, anims, froms, lens) {
+	var i = 0;
+	while (i < anims.length) {
+		if (f >= froms[i] && f < froms[i] + lens[i]) {
+			if (effect.getAnimation() != anims[i]) effect.playAnimation(anims[i]);
+			effect.playFrame((f - froms[i]) * 2 + 1);
+			return;
+		}
+		i++;
+	}
+}
+
+// ---- costume_palette
+//: its cases are its colours and each costume's, in the engine's costume order
+// its costumes' colours, as the source reads them: the colours its art is drawn in, and what the
+// costume it wears turns each into
+function NAME() {
+	// {cases}
+	var mine = costumes[self.getCostumeIndex()];
+	if (mine == null) mine = colors;
+	return { paletteSwap: { colors: colors, replacements: mine }, paletteSwapPA: { colors: colors, replacements: mine } };
+}
+
+// ---- tint_clip
+// a colour transform its code sets on a clip it holds (an effect, a part): shown on it as a colour
+// shader, the values copied in as it is set, the one it set before on that clip taken off
+var clipTints = self.makeObject(null);
+function tintClip(clip, ct) {
+	if (clip == null || clip.isDisposed() || ct == null) return;
+	if (clipTints.get() == null) clipTints.set(new haxe.ds.StringMap());
+	var key = Std.string(clip.getUid());
+	var was = clipTints.get().get(key);
+	if (was != null) clip.removeShader(was);
+	var sh = new RgbaColorShader();
+	sh.redMultiplier = ct.redMultiplier;
+	sh.greenMultiplier = ct.greenMultiplier;
+	sh.blueMultiplier = ct.blueMultiplier;
+	sh.alphaMultiplier = ct.alphaMultiplier;
+	sh.redOffset = ct.redOffset;
+	sh.greenOffset = ct.greenOffset;
+	sh.blueOffset = ct.blueOffset;
+	sh.alphaOffset = ct.alphaOffset;
+	clip.addShader(sh);
+	clipTints.get().set(key, sh);
+}
+
 // ---- own_stat
 //: STAT the stat, DECLARED what it states for it
 // its STAT: what its code set it to since, else what it states

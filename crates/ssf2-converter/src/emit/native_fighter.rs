@@ -72,6 +72,13 @@ pub struct Fighting<'a> {
     pub frame_links: &'a BTreeSet<(String, String)>,
     /// the code its clips' autolink calls become, by class (`autolink_calls`)
     pub autolink: &'a BTreeMap<String, (String, String)>,
+    /// its parts' frames and where each animation places them (`convert`'s fighter parts)
+    pub parts: &'a [crate::entity_gen::ProjectilePartData],
+    pub part_placements: &'a [crate::entity_gen::PartPlacement],
+    /// the content its own animations are
+    pub content: &'a str,
+    /// its costumes' colours (`costumes.palettes`, as written)
+    pub palette: Option<(Vec<u32>, Vec<Vec<u32>>)>,
 }
 
 /// the animations the engine links at the same frame, each way: what its animation stats give a
@@ -142,6 +149,44 @@ pub fn clip_frames_of(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String,
     frames_of
 }
 
+/// its costumes' colours from the palettes the conversion writes: the colours its art is drawn in
+/// (in the source's order) and, per costume in the engine's order, what each turns into
+pub fn palette_of(text: &str) -> Option<(Vec<u32>, Vec<Vec<u32>>)> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let hex = |e: &serde_json::Value, k: &str| e.get(k).and_then(|s| s.as_str()).and_then(|s| u32::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).ok());
+    let colors: Vec<u32> = v.get("colors")?.as_array()?.iter().filter_map(|e| hex(e, "color")).collect();
+    let maps: Vec<Vec<u32>> = v.get("maps")?.as_array()?.iter().map(|m| {
+        m.get("colors").and_then(|c| c.as_array()).map(|cs| cs.iter().filter_map(|e| hex(e, "targetColor")).collect()).unwrap_or_default()
+    }).collect();
+    (!colors.is_empty()).then_some((colors, maps))
+}
+
+/// its parts' art as effect animations (a jump of one by frame plays them as an effect's): the
+/// whole timeline first, then each label's cut of it
+fn part_pieces(parts: &[crate::entity_gen::ProjectilePartData]) -> Vec<(String, String, u32, u32)> {
+    let mut out = Vec::new();
+    for p in parts {
+        let total = p.frame_count.max(1) as u32;
+        out.push((p.anim.clone(), p.anim.clone(), 1, total));
+        for (i, (label, at)) in p.labels.iter().enumerate() {
+            let end = p.labels.get(i + 1).map(|(_, f)| *f as u32).unwrap_or(total + 1);
+            out.push((p.anim.clone(), format!("{}_{}", p.anim, crate::haxe_gen::label_ident(label)), *at as u32, end.saturating_sub(*at as u32).max(1)));
+        }
+    }
+    out
+}
+
+/// its parts, by name, as each animation places them (one with no art of its own shows nothing)
+fn shown_parts(placements: &[crate::entity_gen::PartPlacement]) -> Vec<native::Part> {
+    let mut by: BTreeMap<String, native::Part> = BTreeMap::new();
+    for pl in placements.iter().filter(|p| !p.art.is_empty()) {
+        let e = by.entry(pl.name.clone()).or_insert_with(|| native::Part { name: pl.name.clone(), placed: Vec::new() });
+        let m = &pl.matrix;
+        e.placed.push((pl.fm_anim.clone(), pl.art.clone(), m.tx, m.ty, m.rotation, m.sx, m.sy));
+    }
+    by.into_values().collect()
+}
+
 /// The fighter's code written natively, or why it cannot be yet (every reason, when `all`).
 fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a>), Vec<String>> {
     let parts = parts(f.model, f.runtime, f.fighter).map_err(|e| vec![e])?;
@@ -183,6 +228,12 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
         owner_stat: &no_stat, effect: &made, owner_anims: &anims, fired: &fired, owner_declares: &declares, owner_stores: &stores,
         root: parts.root, size: f.units.size, speed: f.units.speed, accel: f.units.accel, fighter: true,
         root_anim: &root_anim, walk_start: (start > 0.0).then_some(start), stance_labels: &labels, clip_frames: &frames_of, frame_links: f.frame_links, anim_clips: &clips, owner_native: false,
+        effect_names: f.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
+        effect_pieces: f.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames)))
+            .chain(part_pieces(f.parts)).collect(),
+        parts: shown_parts(f.part_placements),
+        content: f.content.to_string(),
+        palette: f.palette.clone(),
     };
     if all {
         let why = native::census(&object);
@@ -408,6 +459,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         if let Some(st) = slots.get_mut("start") { st.push("listenForLinks();".into()); }
         update.push("linkFrame();".into());
     }
+    update.extend(w.every_frame.iter().cloned());
     if tick_end { update.push("tickEndFrame();".into()); }
     slots.insert("update", update);
     slots.insert("own_tick", w.tick.clone());

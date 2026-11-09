@@ -2,7 +2,8 @@
 // makes, as the engine's calls.
 //
 // a row is the call on the engine object it is asked of: `{self}` that object (`self`, or the
-// variable holding the owner), `{0}`, `{1}` ... its arguments, `{size}` `{speed}` `{accel}` the
+// variable holding the owner), `{0}`, `{1}` ... its arguments (`{,1}` one the call may leave off,
+// written after a comma where it passes one), `{size}` `{speed}` `{accel}` the
 // units the source's numbers are scaled by. a row is a string, or an object with the `code` and
 // what its value is (`returns`: bool, number, string, object, or record for one whose fields its
 // code reads plainly, a rectangle or a palette), which a test of it needs to know.
@@ -154,7 +155,8 @@
   // an object it made takes its colours (an effect has none to take, as on the runtime)
   "applyPalette": "if ({0} != null && {0}.getType() == EntityType.PROJECTILE) {0}.setCostumeIndex({self}.getCostumeIndex())",
   // a list's and a text's own calls
-  "slice": { "code": "{self}.slice({0}, {1})", "returns": "object" },
+  "slice": { "code": "{self}.slice({0}{,1})", "returns": "object" },
+  "indexOf": { "code": "{self}.indexOf({0})", "returns": "number" },
   "push": "{self}.push({0})",
   "splice": { "code": "{self}.splice({0}, {1})", "returns": "object" },
   "split": { "code": "{self}.split({0})", "returns": "object" },
