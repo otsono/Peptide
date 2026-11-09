@@ -103,7 +103,7 @@ fn plain(v: &Value) -> Option<String> {
 
 /// every animation that shows a label of a clip, by the clip's class: (animation, label, whether
 /// the label is the animation's first frame)
-fn stance_labels(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, Vec<(String, String, bool)>> {
+pub fn stance_labels(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, Vec<(String, String, bool)>> {
     let mut out: BTreeMap<String, Vec<(String, String, bool)>> = BTreeMap::new();
     // (a piece cut under another label's name still shows the clip's own frames: its own first)
     let mut own: Vec<&Piece> = pieces.iter().filter(|p| !p.reversed && p.head == 0).collect();
@@ -131,18 +131,24 @@ fn stance_labels(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, Vec<
     out
 }
 
+/// the clip frames each animation shows (its first, how many), by the clip's class
+pub fn clip_frames_of(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, Vec<(String, u32, u32)>> {
+    let mut frames_of: BTreeMap<String, Vec<(String, u32, u32)>> = BTreeMap::new();
+    let mut shown: Vec<&Piece> = pieces.iter().filter(|p| !p.reversed && p.head == 0).collect();
+    shown.sort_by_key(|p| p.borrowed);
+    for p in shown {
+        if let Some(c) = model.class_of(p.sym) { frames_of.entry(c.name.clone()).or_default().push((p.fm_name.clone(), p.from, p.frames)); }
+    }
+    frames_of
+}
+
 /// The fighter's code written natively, or why it cannot be yet (every reason, when `all`).
 fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a>), Vec<String>> {
     let parts = parts(f.model, f.runtime, f.fighter).map_err(|e| vec![e])?;
     let mut jumps = label_jumps(f.model, f.pieces);
     for (c, code) in f.autolink { jumps.entry(c.clone()).or_default().autolink = Some(code.clone()); }
     let labels = stance_labels(f.model, f.pieces);
-    let mut frames_of: BTreeMap<String, Vec<(String, u32, u32)>> = BTreeMap::new();
-    let mut shown: Vec<&Piece> = f.pieces.iter().filter(|p| !p.reversed && p.head == 0).collect();
-    shown.sort_by_key(|p| p.borrowed);
-    for p in shown {
-        if let Some(c) = f.model.class_of(p.sym) { frames_of.entry(c.name.clone()).or_default().push((p.fm_name.clone(), p.from, p.frames)); }
-    }
+    let frames_of = clip_frames_of(f.model, f.pieces);
     let declares = |k: &str| -> Option<String> { f.fighter.stats.get(k).and_then(plain) };
     let no_stat = |_: &str| -> Option<(String, String)> { None };
     let model = f.model;

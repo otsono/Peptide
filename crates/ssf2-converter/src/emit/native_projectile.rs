@@ -138,13 +138,14 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let pkg = compile::Package::new(model, runtime);
     let owner_stores = |f: &str| pkg.stored.contains(f);
     let jumps = label_jumps(model, pieces);
-    let no_labels = BTreeMap::new();
-    let no_frames = BTreeMap::new();
+    // (the labels and frames of its clips, for a jump its code works out as it runs)
+    let labels = super::native_fighter::stance_labels(model, pieces);
+    let frames_of = super::native_fighter::clip_frames_of(model, pieces);
     let no_links = BTreeSet::new();
     let object = native::Object {
         model, itself, classes: classes.clone(), jumps: &jumps, runtime, declared: &declared, switches: &taken.switches,
         owner_stat: &owner_stat, effect: &made, owner_anims: &owner.anims, fired: &fired, owner_declares: &owner_stat_of, owner_stores: &owner_stores, root: clip_sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false,
-        root_anim: &|_| None, walk_start: None, stance_labels: &no_labels, clip_frames: &no_frames, frame_links: &no_links, anim_clips: &[], owner_native: owner.native,
+        root_anim: &|_| None, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &no_links, anim_clips: &[], owner_native: owner.native,
     };
     let written = native::write(&object)?;
 

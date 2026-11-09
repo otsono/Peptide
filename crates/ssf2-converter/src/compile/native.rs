@@ -1200,6 +1200,9 @@ impl<'o, 'a> Writer<'o, 'a> {
             Expr::Name(n) if self.captured.contains(&ident(n)) => (ident(n), self.captured_ty.get(&ident(n)).copied().unwrap_or(Ty::Any)),
             // the clip it shows sits in the object: its parent is the object
             Expr::Name(n) if n == "parent" => ("self".into(), Ty::Body),
+            // how many frames the clip the code is on has: the clip's own count
+            Expr::Name(n) if n == "totalFrames" && self.field(n).is_none() => (self.total_frames()?, Ty::Num),
+            Expr::Member(t, n) if n == "totalFrames" && matches!(**t, Expr::This) && self.field(n).is_none() => (self.total_frames()?, Ty::Num),
             // the frame its clip is on
             Expr::Name(n) if n == "currentFrame" && self.o.fighter => (self.clip_frame_helper()?, Ty::Num),
             Expr::Member(t, n) if n == "currentFrame" && self.o.fighter && (matches!(**t, Expr::This) || self.is_clip(t)) => (self.clip_frame_helper()?, Ty::Num),
@@ -1462,6 +1465,18 @@ impl<'o, 'a> Writer<'o, 'a> {
             self.jump_by_number = Some(helper(self.o.runtime, "helpers", "to_clip_frame", "toClipFrame", &[], &to)?);
         }
         Ok("clipFrame()".into())
+    }
+
+    /// how many frames the clip of the class being written has (one count: every clip it is bound to alike)
+    fn total_frames(&self) -> Result<String, String> {
+        let counts: BTreeSet<usize> = self.o.model.sprites.iter()
+            .filter(|(sym, _)| self.o.model.class_of(**sym).is_some_and(|c| c.name == self.class))
+            .map(|(_, sp)| sp.frame_count).collect();
+        match counts.len() {
+            1 => Ok(counts.into_iter().next().unwrap_or_default().to_string()),
+            0 => Err("reads totalFrames of a clip it is bound to none of".into()),
+            _ => Err("reads totalFrames of clips of different lengths".into()),
+        }
     }
 
     /// one of the class being written's own methods, by name
@@ -1942,9 +1957,18 @@ impl<'o, 'a> Writer<'o, 'a> {
                 return Ok((format!("self.removeTimer({id}.get());\n{id}.set(-1)"), Ty::Any));
             }
             ("playFrame", [Expr::Str(label)]) if mine => return Ok((self.jump(label)?.trim_end_matches(';').to_string(), Ty::Any)),
-            ("playFrame", _) if mine => return Err("jumps its own clip to a label worked out as it runs".into()),
+            // (to a frame worked out as it runs: by label or by number, whichever it is)
+            ("playFrame", [v]) if mine => return Ok((self.jump_to_value(v)?, Ty::Any)),
             ("updateProjectileStats", [Expr::Object(pairs)]) if mine => return self.projectile_stats(pairs),
-            ("getProjectileStat", [Expr::Str(k)]) if mine && self.own_stats.contains(k) => return Ok((format!("{}.get()", self.own_stat(k)), Ty::Any)),
+            // its own size: the `width` and `height` it declares (nothing, when it declares none),
+            // or what its code set them to since
+            ("getWidth" | "getHeight", []) if mine && !self.o.fighter => {
+                let k = if m == "getWidth" { "width" } else { "height" };
+                if self.own_stats.contains(k) { return Ok((format!("{}.get()", self.own_stat(k)), Ty::Num)) }
+                let v = (self.o.declared)(k).ok_or_else(|| format!("reads its {k}, which its declarations do not agree on"))?;
+                return Ok((if v == "null" { "0".into() } else { v }, Ty::Num));
+            }
+            ("getProjectileStat", [Expr::Str(k)]) if mine && self.own_stats.contains(k) =>return Ok((format!("{}.get()", self.own_stat(k)), Ty::Any)),
             ("getProjectileStat", [Expr::Str(k)]) if mine => {
                 return (self.o.declared)(k).map(|v| (v, Ty::Any)).ok_or_else(|| format!("reads its stat {k}, which its declarations do not agree on"));
             }
