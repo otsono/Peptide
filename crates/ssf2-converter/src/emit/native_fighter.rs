@@ -247,6 +247,7 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
             if super::plays_once(model, p).is_some() { return None }
             super::effect_code(model, ps).map(|c| (n.clone(), c))
         }).collect(),
+        power_record: power_of(f).is_some(),
     };
     if all {
         let why = native::census(&object);
@@ -294,7 +295,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let rocket = rocketing.first().map(|l| compile::quote(l));
     if rocket.is_some() { blocks.insert("rocket".into()); }
     let mut functions = w.functions.clone();
-    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "walk_start", "end_move", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "fired_stats", "timers", "ledges", "home", "own_floor", "nearest", "ground_test", "recover"];
+    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "walk_start", "end_move", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "fired_stats", "timers", "ledges", "home", "own_floor", "nearest", "ground_test", "recover", "copy_power"];
     for b in order.iter().filter(|b| blocks.contains(**b)) {
         let words: Vec<(&str, String)> = match *b {
             "walk_start" => {
@@ -303,6 +304,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
             }
             "items" => vec![("TOSS", num(f.units.item_toss)), ("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed))],
             "ledges" | "own_floor" | "ground_test" => vec![("SIZE", num(f.units.size))],
+            "copy_power" => vec![("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed))],
             "home" => vec![("SPEED", num(f.units.speed))],
             "rocket" => vec![("ATTACK", rocket.clone().unwrap_or_else(|| "null".into())), ("SPEED", num(f.units.speed)),
                 ("BLOCKED", native::state_tests(rt, "self", &[10, 13, 14, 15, 19, 20])), ("ATTACKING", native::state_tests(rt, "self", &[9])),
@@ -431,7 +433,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
 
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     slots.insert("fields", w.fields.clone());
-    slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
+    let mut functions_extra: Vec<String> = Vec::new();
     let mut publish = w.publish.clone();
     publish.push("// what another object's code asks of it: an attack started, a rocket ridden, its clips' fields".into());
     publish.push("self.exports.__forceAttack = forceAttackAsked;".into());
@@ -439,14 +441,46 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     publish.push("self.exports.__fieldOf = fieldOf;".into());
     publish.push("self.exports.__attackStat = attackStat;".into());
     publish.push("self.exports.__label = rootLabel;".into());
+    // (a fighter that takes powers has the one it holds make the items it does not declare)
+    if blocks.contains("copy_power") { publish.push("self.exports.__powerItem = powerItem;".into()); }
+    // the power it gives a fighter that swallows it, where it declares one
+    if let Some(power) = power_of(f) {
+        let mut cases = Vec::new();
+        for (name, decl) in f.fighter.projectiles.entries() {
+            let Some(key) = f.entities.get(name) else { continue };
+            let content = crate::projectile_gen::projectile_content_id(key);
+            let n = |ks: &[&str]| ks.iter().find_map(|k| match decl.get(k) { Some(Value::Num(v)) => Some(*v), _ => None }).unwrap_or(0.0);
+            let [dx, dy, xs, ys] = [n(&["xoffset", "xOffset", "x_offset"]), n(&["yoffset", "yOffset", "y_offset"]), n(&["xspeed", "xSpeed", "x_speed"]), n(&["yspeed", "ySpeed", "y_speed"])];
+            cases.push(format!("case {}: return {{ content: {}, dx: {}, dy: {}, xs: {}, ys: {} }};", compile::quote(name), compile::quote(&content),
+                num(dx), num(dy), num(xs * f.units.speed), num(ys * f.units.speed)));
+        }
+        functions_extra.push(native::helper(f.runtime, "fighter_rules", "kirby_power", "", &[("POWER", compile::quote(&power)), ("SIZE", num(f.units.size))], &cases).map_err(|e| vec![e])?);
+        // (and its effects, the clips inside them, and its items, where it has them)
+        let written: String = functions.join("\n");
+        let has = |fun: &str| written.contains(&format!("function {fun}("));
+        let mut record = vec![format!("id: {}", compile::quote(&power)), "fire: firePower".to_string()];
+        if has("namedEffect") { record.push("effect: namedEffect".into()); }
+        if has("innerClip") && has("effectFrame") {
+            functions_extra.push(native::helper(f.runtime, "fighter_rules", "kirby_power_inner", "", &[], &[]).map_err(|e| vec![e])?);
+            record.push("inner: powerInnerFor".into());
+        }
+        if has("itemContent") {
+            functions_extra.push(native::helper(f.runtime, "fighter_rules", "kirby_power_item", "", &[], &[]).map_err(|e| vec![e])?);
+            record.push("item: powerItemFor".into());
+        }
+        publish.push(format!("self.exports.__kirbyPower = {{ {} }};", record.join(", ")));
+    }
     if read_by_others { publish.push("self.exports.__stanceLabel = clipLabel;".into()); }
     slots.insert("publish", publish);
+    functions.extend(functions_extra);
+    slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
     slots.insert("start", vec!["listenForHits();".into()]);
     slots.insert("own_start", w.start.clone());
     let mut update = vec!["hitFrame();".to_string(), "attackFrame();".into()];
     if blocks.contains("last_used") { update.push("usedFrame();".into()); }
     if blocks.contains("own_floor") { update.push("ownFloorFrame();".into()); }
     if blocks.contains("items") { update.push("itemFrame();".into()); }
+    if blocks.contains("copy_power") { update.push("powerFrame();".into()); }
     // a clip its animations show, made anew as the fighter comes to it: its fields, its frame code's
     // own variables, declared as it starts
     let entries = clip_entries(f, &w);
@@ -574,6 +608,11 @@ fn item_tables(f: &Fighting) -> Result<Vec<String>, String> {
 }
 
 fn num(n: f64) -> String { if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") } }
+
+/// the power a fighter gives one that swallows it: the name its stats declare (`power`)
+fn power_of(f: &Fighting) -> Option<String> {
+    f.fighter.stats.get("power").and_then(|v| v.str()).filter(|p| !p.is_empty()).map(String::from)
+}
 
 /// what each labelled frame of a clip's code sets its own fields to, where it sets a plain value:
 /// field -> (label, value as written)

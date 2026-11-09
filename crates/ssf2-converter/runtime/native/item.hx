@@ -131,9 +131,10 @@ function placeOn(who) {
 }
 
 // what another script asks of it (`exports.__ask`): a fighter that made it holds it, throws it,
-// and puts its attack to it first
+// and puts its attack to it first; anyone turns its pickup on or off
 function asked(kind, ?v) {
 	if (kind == "hold") holdBy(self.exports.__holder, false);
+	else if (kind == "pickup") pickupOn.set(v == true);
 	else if (kind == "toss") letGo(self.exports.__zDropped == true);
 	else if (kind == "interrupt") {
 		var f = frameInterrupt.get();

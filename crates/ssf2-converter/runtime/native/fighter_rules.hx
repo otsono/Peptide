@@ -402,13 +402,23 @@ function placeItem(it) {
 function askItem(it, kind, ?v) {
 	if (it != null && it.exports != null && it.exports.__ask != null) it.exports.__ask(kind, v);
 }
-function generateItem(name) {
-	var id = itemContent(name);
+function generateItem(name, ?by) {
+	var id = by != null ? null : itemContent(name);
 	var content = id == null ? null : self.getResource().getContent(id);
-	if (content == null) return null;
-	// (a custom game object carrying the item handler, which keeps itself in the hand)
-	var it = match.createCustomGameObject(content, self);
+	// (one of another fighter's, made by that one through the power it publishes)
+	if (by != null) {
+		var rec = by.exports == null ? null : by.exports.__kirbyPower;
+		var made = rec == null || rec.item == null ? null : rec.item(name, self);
+		return made == null ? null : holdMade(made, name);
+	}
+	// (a custom game object carrying the item handler, which keeps itself in the hand: its own, or
+	// one the power it holds makes)
+	var it = content != null ? match.createCustomGameObject(content, self) : (self.exports.__powerItem != null ? self.exports.__powerItem(name) : null);
 	if (it == null) return null;
+	return holdMade(it, name);
+}
+// an item it has made, held from now on
+function holdMade(it, name) {
 	self.exports.__tossItem = tossItem;
 	placeItem(it);
 	it.exports.__holder = self;
@@ -922,4 +932,183 @@ function recover(n) {
 	var d = self.getDamage();
 	self.setDamage(Math.max(0, d - n));
 	return d > 0;
+}
+
+// ---- kirby_power
+//: POWER the power it declares (`power`, in its stats); SIZE the source's size here. its cases are
+//: each projectile it declares: its content, offset and launch (already in this engine's speed)
+// the power it gives a fighter that swallows it, on its exports (`__kirbyPower`): the name it
+// declares, and its own projectiles, fired for the one that has its power as if that one fired them
+function powerShot(name) {
+	switch (name) {
+		// {cases}
+	}
+	return null;
+}
+function firePower(name, owner, ?x, ?y) {
+	var d = powerShot(name);
+	if (d == null || owner == null || owner.isDisposed()) return null;
+	if (x == null) x = 0;
+	if (y == null) y = 0;
+	var px = owner.getX() + owner.flipX((x + d.dx) * SIZE);
+	var py = owner.getY() + (y + d.dy) * SIZE;
+	if (owner.isOnFloor() && py > owner.getY()) py = owner.getY();
+	// (the launch handed over first, as its own throws hand theirs: one on the runtime takes it up)
+	var launch = { x: px, y: py, xs: null, ys: null, name: name, decl: null, g: 0, max: null };
+	if (d.xs != 0 || d.ys != 0) { launch.xs = owner.flipX(d.xs); launch.ys = d.ys; }
+	owner.exports.__launch = launch;
+	var p = match.createProjectile(self.getResource().getContent(d.content), owner);
+	if (p == null) { owner.exports.__launch = null; return null; }
+	if (p.exports != null) p.exports.__thrownRight = p.isFacingRight();
+	if (owner.exports.__launch != null) {
+		owner.exports.__launch = null;
+		p.exports.__launched = launch;
+		p.setX(px);
+		p.setY(py);
+		if (launch.xs != null) { p.setXSpeed(p.flipX(launch.xs)); p.setYSpeed(launch.ys); }
+	}
+	p.exports.__shotName = name;
+	owner.exports.__lastProj = p;
+	return p;
+}
+
+// ---- kirby_power_item
+// an item of its own made for the one that has its power, which holds it as its own
+function powerItemFor(name, holder) {
+	var id = itemContent(name);
+	var content = id == null ? null : self.getResource().getContent(id);
+	if (content == null || holder == null) return null;
+	return match.createCustomGameObject(content, holder);
+}
+
+// ---- kirby_power_inner
+// a clip inside one of its effects made for the one that has its power, sent to a frame
+function powerInnerFor(effect, clip, frame, hold) {
+	var c = innerClip(effect, clip);
+	if (c == null) return;
+	if (frame != null) effectFrame(c, frame, hold); else if (hold) c.pause(); else c.resume();
+}
+
+// ---- copy_power
+//: a fighter whose code takes another's power (`KirbyPower`, `getCurrentKirbyPower`). the
+//: power is the record the one it swallowed publishes (`exports.__kirbyPower`: `id`, and `fire`,
+//: which fires that one's projectiles for this one); any fighter can publish one
+// the power it holds, and how much damage it has left to take before it loses it
+var power = self.makeObject(null);
+var powerDamageLeft = self.makeObject(0);
+var powerDamageWas = self.makeObject(0);
+function powerName() {
+	var p = power.get();
+	return p == null ? null : p.id;
+}
+// a power taken: the record its move was handed (or a name its code gives), else none
+function takePower(v) {
+	var p = v == null ? null : (Std.isOfType(v, String) ? { id: v, fire: null } : v);
+	if (p != null && (p.id == null || p.id == "")) p = null;
+	power.set(p);
+	// (the one swallowed is let out as the move takes its power)
+	if (full.get() != null) letOut(full.get(), false);
+	powerDamageLeft.set(45);
+	powerDamageWas.set(self.getDamage());
+}
+// lost: a taunt, or enough damage taken while it holds it
+function dropPower() {
+	if (power.get() == null) return;
+	power.set(null);
+}
+// a projectile it does not declare, fired from the power it holds as the one it copied fires it
+function firePowerShot(name, ?x, ?y) {
+	var p = power.get();
+	if (p == null || p.fire == null) return null;
+	return p.fire(name, self, x, y);
+}
+// an effect it has no art for, made by the one it copied (none where that one has no such effect)
+function powerEffect(name, on, options) {
+	var p = power.get();
+	if (p == null || p.effect == null) return null;
+	return p.effect(name, on, options);
+}
+// a clip inside an effect of the power it holds, sent to a frame by the one it copied
+function powerInner(effect, clip, frame, hold) {
+	var p = power.get();
+	if (p != null && p.inner != null) p.inner(effect, clip, frame, hold);
+}
+// an item it does not declare, made by the one it copied (its own `generateItem` holds it)
+function powerItem(name) {
+	var p = power.get();
+	if (p == null || p.item == null) return null;
+	return p.item(name, self);
+}
+// full: one it grabbed in its neutral special, holding no power, is held inside it, unseen, where it
+// stands, struggling out over 60 of the source's frames (sooner as it mashes); an attack spits it out,
+// a special or down swallows it: the move plays from its start and, once its clip is "sucking", the one
+// inside takes 6 damage, its power goes to the move as the move's `power`, and the move swallows
+var full = self.makeObject(null);
+var fullHold = self.makeInt(0);
+var fullNext = self.makeObject(null);
+function letOut(foe, spat) {
+	full.set(null);
+	if (foe == null || foe.isDisposed()) return;
+	foe.setVisible(true);
+	foe.setX(self.getX() + self.flipX(spat ? 20 : 0) * SIZE);
+	foe.setY(self.getY());
+	if (spat) { foe.setXSpeed(self.flipX(9) * SPEED); foe.setYSpeed(-4 * SPEED); }
+	else { foe.setYSpeed(-8 * SPEED); self.setXSpeed(self.flipX(-9) * SPEED); }
+}
+function powerFrame() {
+	if (power.get() != null) {
+		if (self.inState(CState.TAUNT)) { dropPower(); return; }
+		var d = self.getDamage();
+		if (d > powerDamageWas.get()) powerDamageLeft.set(powerDamageLeft.get() - (d - powerDamageWas.get()));
+		powerDamageWas.set(d);
+		if (powerDamageLeft.get() <= 0) dropPower();
+		return;
+	}
+	var foe = full.get();
+	var label = rootLabel();
+	if (foe == null) {
+		var held = self.getAllGrabbedFoes();
+		if (held == null || held.length == 0 || (label != "b" && label != "b_air")) return;
+		foe = held[0];
+		self.releaseAllCharacters();
+		full.set(foe);
+		fullHold.set(120);
+		fullNext.set(null);
+		foe.setVisible(false);
+		self.toState(self.isOnFloor() ? CState.STAND : CState.FALL);
+		return;
+	}
+	if (foe.isDisposed()) { full.set(null); return; }
+	// (the one inside goes with it, and does nothing)
+	foe.setX(self.getX());
+	foe.setY(self.getY());
+	foe.setXSpeed(0);
+	foe.setYSpeed(0);
+	foe.forceStartHitstop(2, false);
+	var asked = fullNext.get();
+	if (asked != null) {
+		// (the move it was asked for, once its clip says it is "sucking": the `xframe` its code sets)
+		var xf = fieldOf("stance", "xframe");
+		if (xf == null || xf.get() != "sucking") return;
+		fullNext.set(null);
+		if (asked == "swallow") {
+			var f = fieldOf("stance", "power");
+			if (f != null) f.set(foe.exports == null ? null : foe.exports.__kirbyPower);
+			foe.addDamage(6);
+			stanceJump("swallow");
+		} else {
+			stanceJump("spit");
+			letOut(foe, true);
+		}
+		return;
+	}
+	// (each engine frame half a source frame; each control the one inside presses, a frame more)
+	var c = foe.getPressedControls();
+	var struggle = c == null ? 0 : (c.ATTACK || c.SPECIAL || c.JUMP || c.SHIELD || c.UP || c.DOWN || c.LEFT || c.RIGHT ? 2 : 0);
+	fullHold.set(fullHold.get() - 1 - struggle);
+	if (fullHold.get() <= 0) { letOut(foe, false); return; }
+	var mine = self.getPressedControls();
+	if (mine == null) return;
+	if (mine.ATTACK) { fullNext.set("spit"); forceAttackAsked("b"); }
+	else if (mine.SPECIAL || mine.DOWN) { fullNext.set("swallow"); forceAttackAsked("b"); }
 }

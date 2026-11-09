@@ -168,3 +168,91 @@ function statOf(o, k) {
 	if (o.exports.__statOf != null) return o.exports.__statOf(k);
 	return k == "linkage_id" ? o.exports.__itemName : null;
 }
+
+// ---- takeDamageOf
+// a hit its code deals another object outright (`takeDamage`), as the source's does: the damage,
+// and the launch its stats state (base and growth against the damage it has and its weight, at the
+// stated angle turned the way the one dealing it faces), with the freeze they state
+function takeDamageOf(o, stats, ?by) {
+	if (o == null || o.isDisposed() || stats == null) return true;
+	var dmg = stats.damage == null ? 0 : stats.damage;
+	var before = o.getDamage();
+	if (dmg != 0) o.addDamage(dmg);
+	var power = stats.power == null ? 0 : stats.power;
+	// (a growth it does not state is the source's 100)
+	var growth = stats.kbConstant == null ? 100 : stats.kbConstant;
+	if ((power > 0 || growth > 0) && stats.hasEffect != false) {
+		var weight = o.getType() == EntityType.CHARACTER ? o.getCharacterStat("weight") : 100;
+		var t = before + dmg;
+		var kb = ((((t * 0.1 + dmg * t * 0.05) * 1.4 * (200 / (weight + 100))) + 18) * (growth * 0.01)) + power;
+		var dir = stats.direction == null ? 0 : stats.direction;
+		if (by != null && !by.isFacingRight()) dir = 180 - dir;
+		var r = dir * Math.PI / 180;
+		var v = kb * 0.213725 * SPEED;
+		o.setXKnockback(Math.cos(r) * v);
+		o.setYKnockback(-Math.sin(r) * v);
+	}
+	if (stats.hitStun != null && stats.hitStun > 0 && o.getType() == EntityType.CHARACTER) o.forceStartHitstop(Std.int(stats.hitStun * 2));
+	return true;
+}
+
+// ---- boundsOf
+// a box of the stage's (its camera's or its death bounds), in the source's units
+function boundsOf(a) {
+	if (a == null) return null;
+	var r = a.getRectangle();
+	if (r == null) return null;
+	var x = (a.getX() + r.x) / SIZE;
+	var y = (a.getY() + r.y) / SIZE;
+	var w = r.width / SIZE;
+	var h = r.height / SIZE;
+	return { x: x, y: y, width: w, height: h, left: x, top: y, right: x + w, bottom: y + h };
+}
+
+// ---- exportedStats
+// an object's stats as a record to make it again by (`exportStats`): its name, the name it was
+// fired or made under, and the fighter whose it is
+function exportedStats(o) {
+	if (o == null || o.exports == null) return null;
+	var name = o.exports.__statOf != null ? o.exports.__statOf("linkage_id") : o.exports.__itemName;
+	return { linkage_id: name, name: o.exports.__shotName, nme: o.exports.__itemName, chr: o.getOwner() };
+}
+
+// ---- fireStats
+// a projectile made again from the record its stats were exported to: fired by the fighter whose
+// it is, through the power it publishes, for this one
+function fireStats(rec, ?x, ?y) {
+	if (rec == null || rec.chr == null || rec.chr.exports == null) return null;
+	var p = rec.chr.exports.__kirbyPower;
+	return p == null || p.fire == null ? null : p.fire(rec.name, self, x, y);
+}
+
+// ---- itemsInMatch
+// the match's items: every custom game object carrying the item handler
+function itemsInMatch() {
+	var out = [];
+	for (o in match.getCustomGameObjects()) if (o.exports != null && o.exports.__isItem == true && !o.isDisposed()) out.push(o);
+	return out;
+}
+
+// ---- pointDistance
+// how far apart two points are
+function pointDistance(a, b) {
+	var dx = a.x - b.x;
+	var dy = a.y - b.y;
+	return Math.sqrt(dx * dx + dy * dy);
+}
+
+// ---- itemStatsOn
+// stats written on another object that is an item: the engine's own where it keeps one (in this
+// engine's units), and whether it can be picked up, through what its handler publishes
+function itemStatsOn(o, stats) {
+	if (o == null || o.isDisposed() || stats == null) return;
+	var set = {};
+	var any = false;
+	if (stats.ghost != null) { set.ghost = stats.ghost; any = true; }
+	if (stats.gravity != null) { set.gravity = stats.gravity * ACCEL; any = true; }
+	if (stats.max_gravity != null) { set.terminalVelocity = stats.max_gravity * SPEED; any = true; }
+	if (any && o.updateGameObjectStats != null) o.updateGameObjectStats(set);
+	if (stats.canPickup != null && o.exports != null && o.exports.__ask != null) o.exports.__ask("pickup", stats.canPickup);
+}

@@ -23,3 +23,19 @@ function FIELD_get_duration() { return FIELD_length.get(); }
 function FIELD_set_duration(v) { FIELD_length.set(Std.int(Math.max(0, v))); FIELD_elapsed.set(Std.int(Math.min(FIELD_elapsed.get(), FIELD_length.get()))); }
 function FIELD_get_data() { return FIELD_data.get(); }
 function FIELD_set_data(v) { FIELD_data.set(v); }
+
+// ---- FrameTimer as a record
+//: kept as a record where the code keeps several (one in each record of a list): the same calls,
+//: on the record (`FrameTimer_tick(t)`), and `FrameTimer_copy(t)` for a copy written back
+function FrameTimer_new(?frames) { return { length: frames == null ? 0 : Std.int(frames), elapsed: 0, data: null }; }
+function FrameTimer_tick(t, ?n) { FrameTimer_set_elapsedFrames(t, t.elapsed + (n == null ? 1 : n)); }
+function FrameTimer_reset(t) { t.elapsed = 0; }
+function FrameTimer_finish(t) { t.elapsed = t.length; }
+function FrameTimer_get_completed(t) { return t.elapsed >= t.length; }
+function FrameTimer_get_elapsedFrames(t) { return t.elapsed; }
+function FrameTimer_set_elapsedFrames(t, v) { t.elapsed = Std.int(Math.max(0, Math.min(v, t.length))); }
+function FrameTimer_get_duration(t) { return t.length; }
+function FrameTimer_set_duration(t, v) { t.length = Std.int(Math.max(0, v)); t.elapsed = Std.int(Math.min(t.elapsed, t.length)); }
+function FrameTimer_get_data(t) { return t.data; }
+function FrameTimer_set_data(t, v) { t.data = v; }
+function FrameTimer_copy(t) { return t == null ? null : { length: t.length, elapsed: t.elapsed, data: t.data }; }

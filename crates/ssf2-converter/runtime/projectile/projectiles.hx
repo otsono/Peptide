@@ -107,6 +107,7 @@ Projectiles.fire = function(owner, name, ?x, ?y, ?place, ?stats) {
 	// down once on the frame it starts). pichu's cloud's bolt reached her a source frame early
 	if (late) p.forceStartHitstop(3, false);
 	// the one its maker has out now
+	if (p.exports != null) p.exports.__shotName = n;
 	fm.exports.__lastProj = p;
 	return Objects.view(p);
 };

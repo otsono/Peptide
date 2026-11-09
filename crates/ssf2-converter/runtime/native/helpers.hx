@@ -414,6 +414,7 @@ function NAME(?x, ?y, ?place) {
 		p.setY(py);
 		if (launch.xs != null) { p.setXSpeed(p.flipX(launch.xs)); p.setYSpeed(launch.ys); }
 	}
+	p.exports.__shotName = "PROJECTILE";
 	self.exports.__lastProj = p;
 	return p;
 }

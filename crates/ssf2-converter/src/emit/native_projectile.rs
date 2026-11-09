@@ -155,7 +155,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         root_anim: &|_| None, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &no_links, anim_clips: &[], owner_native: owner.native,
         effect_names: spec.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
         effect_pieces: spec.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames))).collect(),
-        parts: Vec::new(), content: String::new(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(),
+        parts: Vec::new(), content: String::new(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
     };
     let written = if bare || (classes.is_empty() && itself.is_none()) { native::Written::default() } else { native::write(&object)? };
 
@@ -193,13 +193,17 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     }
     // the rate it hits again at, declared or written by its code
     let mut starts = taken.starts.clone();
+    let mut publish_refresh = false;
     if refresh.is_some() || written.blocks.contains("refresh") {
         functions.push(native::helper(runtime, "refresh", "projectile", "", &[], &[])?);
         if let Some(r) = &refresh { starts.push(format!("setRefresh({r});")); }
+        publish_refresh = true;
     }
     // the label its clip is on, for its own code and for another object's that reads it
     let read_by_others = native::reads_others_label(model);
     let mut publish = written.publish.clone();
+    // (the rate it hits again at, for another object's code that writes it)
+    if publish_refresh { publish.push("self.exports.__refresh = setRefresh;".into()); }
     if read_by_others || functions.iter().chain(written.start.iter()).chain(written.tick.iter()).any(|t| t.contains("clipLabel(")) || written.frames.values().any(|t| t.contains("clipLabel(")) {
         functions.push(native::helper(runtime, "fighter_tables", "clip_label", "", &[], &super::native_fighter::clip_labels(model, pieces))?);
         if read_by_others { publish.push("self.exports.__stanceLabel = clipLabel;".into()); }

@@ -179,9 +179,43 @@
   // colour settings on an object: its alpha, an hsbc filter, a channel shader
   "setColorFilters": { "code": "colorFilters({self}, {0})", "helper": "colorFilters" },
   "PeptideUtils.setColorFilters": { "code": "colorFilters({0}, {1})", "helper": "colorFilters" },
+  // a hit dealt outright, its launch worked out as the source's
+  "takeDamage": { "code": "takeDamageOf({self}, {0}{,1})", "helper": "takeDamageOf", "returns": "bool" },
+  // into its grab's hold with the one it holds (let go of in the air)
+  "toGrabbing": "if ({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length == 1) { if (!{self}.isOnFloor()) {self}.releaseAllCharacters(); else {self}.toState(CState.GRAB_HOLD); }",
+  // the one it holds let go of (the launch the source spits it out with is not ported)
+  "ejectOpponent": { "code": "{self}.releaseAllCharacters()", "gap": "ejectOpponent: the launch of the one spat out" },
+  // how long its attack has run, in the source's frames (this animation's, where an attack plays several)
+  "getExecTime": { "code": "Std.int(({self}.getCurrentFrame() + 1) / 2)", "returns": "number" },
+  // a hurt its code answers first: no hit is held back here, as on the runtime
+  "setHurtInterrupt": { "code": "", "gap": "setHurtInterrupt: a hit its code takes before the engine does" },
+  // two objects' boxes against each other, by the source's box kinds: none is answered here, as on the runtime
+  "PeptideAPI.hitboxTest": { "code": "[]", "returns": "object", "gap": "hitboxTest: two objects' boxes against each other" },
+  // the colours its costume is drawn in, changed by its code: kept to itself, as on the runtime
+  "setPaletteData": { "code": "", "gap": "setPaletteSwapData: colours its code changes as it runs" },
+  // the stage's camera and death bounds, in the source's units
+  "PeptideAPI.getCamBounds": { "code": "boundsOf(match.getStage().getCameraBounds())", "helper": "boundsOf", "returns": "rect" },
+  "PeptideAPI.getDeathBounds": { "code": "boundsOf(match.getStage().getDeathBounds())", "helper": "boundsOf", "returns": "rect" },
+  // a value as another class: the value itself
+  "PeptideUtils.cast": { "code": "{0}", "returns": "object" },
+  // the clip of the hat a copied power gives: the engine draws none here, and its colours change nothing
+  "copyHatClip": { "code": "null", "returns": "object", "gap": "the hat a copied power gives (getKirbyHatMC)" },
+  "PeptideUtils.replacePalette": { "code": "", "gap": "replacePalette: a clip recoloured by its code" },
+  // the game's quality settings: every one on, as both engines run here
+  "PeptideAPI.getQualitySettings": { "code": "{ weather: true, stage_effects: \"enabled\", ambient_lighting: \"enabled\", global_effects: true }", "returns": "record" },
+  // the match's fighters
+  "PeptideAPI.getCharacters": { "code": "match.getCharacters()", "returns": "object" },
+  // the match's items: every custom game object that is one
+  "PeptideAPI.getItems": { "code": "itemsInMatch()", "helper": "itemsInMatch", "returns": "object" },
+  // how far apart two points are
+  "Point.distance": { "code": "pointDistance({0}, {1})", "helper": "pointDistance", "returns": "number" },
+  // another object's stats as an item (its own stats are its handler's): the engine's for each it keeps
+  "updateItemStats": { "code": "itemStatsOn({self}, {0})", "helper": "itemStatsOn" },
   // what another object declares
   "getItemStat": { "code": "statOf({self}, {0})", "helper": "statOf" },
   "getEnemyStat": { "code": "statOf({self}, {0})", "helper": "statOf" },
+  // an object's stats as a record (its name, to make it again by)
+  "exportStats": { "code": "exportedStats({self})", "helper": "exportedStats", "returns": "record" },
   "PeptideAPI.getPlatformBetweenPoints": { "code": "platformBetween({0}, {1}{,2})", "helper": "platformBetween", "returns": "object" },
   "PeptideAPI.getElapsedFrames": { "code": "Std.int(match.getElapsedFrames() / 2)", "returns": "number" },
   "PeptideAPI.randomBetween": { "code": "Random.getInt({0}, {1})", "returns": "number" },
