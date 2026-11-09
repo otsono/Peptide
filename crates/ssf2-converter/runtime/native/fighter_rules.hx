@@ -1039,10 +1039,14 @@ function powerItem(name) {
 	if (p == null || p.item == null) return null;
 	return p.item(name, self);
 }
-// full: one it grabbed in its neutral special, holding no power, is held inside it, unseen, where it
+//: COPY_MOVES the source's names for its copy move (each animation showing the clip whose code
+//: takes the power), SWALLOW and SPIT the labels in that clip where it swallows and spits, SUCKING
+//: the `xframe` its first frame sets, POWER_FIELD the field it reads the power from: all read off
+//: its clip (`native_fighter::copy_move`). the numbers are the source game's own
+// full: one it grabbed in its copy move, holding no power, is held inside it, unseen, where it
 // stands, struggling out over 60 of the source's frames (sooner as it mashes); an attack spits it out,
-// a special or down swallows it: the move plays from its start and, once its clip is "sucking", the one
-// inside takes 6 damage, its power goes to the move as the move's `power`, and the move swallows
+// a special or down swallows it: the move plays from its start and, once its clip says it is drawing
+// one in, the one inside takes 6 damage, its power goes to the move's power field, and the move swallows
 var full = self.makeObject(null);
 var fullHold = self.makeInt(0);
 var fullNext = self.makeObject(null);
@@ -1068,7 +1072,7 @@ function powerFrame() {
 	var label = rootLabel();
 	if (foe == null) {
 		var held = self.getAllGrabbedFoes();
-		if (held == null || held.length == 0 || (label != "b" && label != "b_air")) return;
+		if (held == null || held.length == 0 || COPY_MOVES.indexOf(label) < 0) return;
 		foe = held[0];
 		self.releaseAllCharacters();
 		full.set(foe);
@@ -1087,17 +1091,17 @@ function powerFrame() {
 	foe.forceStartHitstop(2, false);
 	var asked = fullNext.get();
 	if (asked != null) {
-		// (the move it was asked for, once its clip says it is "sucking": the `xframe` its code sets)
+		// (the move it was asked for, once its clip says it is drawing one in: the `xframe` its code sets)
 		var xf = fieldOf("stance", "xframe");
-		if (xf == null || xf.get() != "sucking") return;
+		if (xf == null || xf.get() != SUCKING) return;
 		fullNext.set(null);
 		if (asked == "swallow") {
-			var f = fieldOf("stance", "power");
+			var f = fieldOf("stance", POWER_FIELD);
 			if (f != null) f.set(foe.exports == null ? null : foe.exports.__kirbyPower);
 			foe.addDamage(6);
-			stanceJump("swallow");
+			stanceJump(SWALLOW);
 		} else {
-			stanceJump("spit");
+			if (SPIT != null) stanceJump(SPIT);
 			letOut(foe, true);
 		}
 		return;
@@ -1109,6 +1113,6 @@ function powerFrame() {
 	if (fullHold.get() <= 0) { letOut(foe, false); return; }
 	var mine = self.getPressedControls();
 	if (mine == null) return;
-	if (mine.ATTACK) { fullNext.set("spit"); forceAttackAsked("b"); }
-	else if (mine.SPECIAL || mine.DOWN) { fullNext.set("swallow"); forceAttackAsked("b"); }
+	if (mine.ATTACK) { fullNext.set("spit"); forceAttackAsked(COPY_MOVES[0]); }
+	else if (mine.SPECIAL || mine.DOWN) { fullNext.set("swallow"); forceAttackAsked(COPY_MOVES[0]); }
 }

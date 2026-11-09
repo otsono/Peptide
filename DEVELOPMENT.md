@@ -674,16 +674,21 @@ a top-level name a written script declares twice fails the conversion (`declared
 a class of the package's own that a field holds one of (`new InhaleController(this)`) is written out
 under the field's name: its fields containers (`inhale__state`), its methods functions
 (`inhale_update()`), its constructor `inhale_new()`, and a field it fills with the object itself is
-`self`. one the code keeps several of (a list) is a record: `K_new()` makes it, its methods are
-functions handed it first (`me`), and a call on a list element that writes the record works on a copy
-(`K_copy`) written back as a new list, so a rollback puts the old one back; a `FrameTimer` inside a
-record is its record form (`classes.hx`, `FrameTimer as a record`).
+`self`. one the code keeps several of (a field it pushes them onto, writes them into by index, or
+fills with a list of them) is a record: `K_new()` makes it, its methods are functions handed it first
+(`me`), its fields read straight off it, and a call that writes it (on `list[i]`, or a variable
+holding one) works on a copy (`K_copy`) written back where it sits as a new list, so a rollback puts
+the old one back; a `FrameTimer` inside a record is its record form (`classes.hx`).
 copied powers: a fighter whose stats declare a `power` publishes `exports.__kirbyPower` (its name;
 `fire`, its projectiles fired for the one that copied it; `effect`, `inner` and `item` where it has
 effects, clips inside them and items). a fighter whose code takes powers (`KirbyPower`,
-`getCurrentKirbyPower`) gets `fighter_rules.hx`'s `copy_power`: one it grabs in its neutral special
-goes inside it (full), an attack spits it out, a special or down swallows it and the move's `power`
-gets its record, and a projectile, effect or item it does not have comes from the power it holds.
+`getCurrentKirbyPower`) gets `fighter_rules.hx`'s `copy_power`: one it grabs in its copy move goes
+inside it (full), an attack spits it out, a special or down swallows it, and a projectile, effect or
+item it does not have comes from the power it holds. the copy move is read off its clip
+(`native_fighter::copy_move`): the clip whose frame code takes the power is the move, the label over
+that frame is where it swallows, the label over the frame that lets the one it holds out is where it
+spits, the `xframe` its first frame sets says it is drawing one in, and the field the power is read
+from gets the swallowed one's record.
 a jump to a label inside another animation goes through `playLabelIn`, and that animation's
 first frame's own code skips while it does (the engine runs the first frame as it starts an
 animation; the source goes straight to the label). a named clip its clip places whose own code

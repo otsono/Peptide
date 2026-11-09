@@ -360,6 +360,9 @@ struct Writer<'o, 'a> {
     recs: Vec<&'a ClassModel>,
     rec_lists: BTreeMap<String, String>,
     record: Option<String>,
+    /// the variables of the function being written that hold a record of a list: the class, and
+    /// the list's field
+    rec_locals: BTreeMap<u32, (String, String)>,
     /// what it runs each of this engine's frames besides (the clips its effects place, followed)
     every_frame_extra: BTreeSet<String>,
     /// a value read already for the write being made (`assign`, a field of another class's)
@@ -438,7 +441,7 @@ struct Writer<'o, 'a> {
 
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
-        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), record: None, every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
+        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), record: None, rec_locals: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
                              locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new() };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "initialize", "update", "onTeardown", "onKill", "onDestroy", "life", "age", "started", "freshHit"]
@@ -600,13 +603,26 @@ impl<'o, 'a> Writer<'o, 'a> {
                         w.recs.push(k);
                         grow = true;
                     });
+                    // (a field it keeps them in: one it pushes them onto, writes them into by index, or
+                    // fills with a list of them)
+                    let made = |e: &Expr| match e { Expr::New(n, _) => match &**n { Expr::Name(n) => plain_class(n).map(|k| k.name.clone()), _ => None }, _ => None };
                     walk_exprs(body, &mut |e| if let Expr::Call(f, a) = e {
-                        if let (Expr::Member(l, m), [Expr::New(n, _)]) = (&**f, a.as_slice()) {
+                        if let (Expr::Member(l, m), [x]) = (&**f, a.as_slice()) {
                             if m != "push" { return }
-                            let (Expr::Member(t, fl), Expr::Name(n)) = (&**l, &**n) else { return };
+                            let Expr::Member(t, fl) = &**l else { return };
                             if !matches!(**t, Expr::This) { return }
-                            if let Some(k) = plain_class(n) { w.rec_lists.insert(member_key(&c.name, fl), k.name.clone()); }
+                            if let Some(k) = made(x) { w.rec_lists.insert(member_key(&c.name, fl), k); }
                         }
+                    });
+                    walk(body, &mut |st| match st {
+                        Stmt::Assign(Place::Index(Expr::Member(t, fl), _), v) if matches!(**t, Expr::This) => {
+                            if let Some(k) = made(v) { w.rec_lists.insert(member_key(&c.name, fl), k); }
+                        }
+                        Stmt::Assign(Place::Member(Expr::This, fl), Expr::Array(xs)) if !xs.is_empty() => {
+                            let ks: BTreeSet<Option<String>> = xs.iter().map(made).collect();
+                            if ks.len() == 1 { if let Some(Some(k)) = ks.into_iter().next() { w.rec_lists.insert(member_key(&c.name, fl), k); } }
+                        }
+                        _ => {}
                     });
                 }
             }
@@ -1006,6 +1022,7 @@ impl<'o, 'a> Writer<'o, 'a> {
     fn function_written(&mut self, name: &str, f: &Function) -> Result<String, String> {
         if f.rest { return Err("takes the rest of its arguments".into()) }
         self.locals.clear();
+        self.rec_locals.clear();
         self.effects = 0;
         let debug: BTreeMap<u32, String> = f.local_names.iter().cloned().collect();
         let mut params = Vec::new();
@@ -1407,6 +1424,15 @@ impl<'o, 'a> Writer<'o, 'a> {
                 Ok(vec![format!("{}[{i}] = {val};", paren(&a))])
             }
             Place::Local(r) => {
+                // (one of the records of a list it keeps)
+                match v {
+                    Expr::Index(l, _) if matches!(&**l, Expr::Member(t, fl) if matches!(**t, Expr::This) && self.rec_lists.contains_key(&member_key(&self.class, fl))) => {
+                        let Expr::Member(_, fl) = &**l else { unreachable!() };
+                        let k = self.rec_lists[&member_key(&self.class, fl)].clone();
+                        self.rec_locals.insert(*r, (k, fl.clone()));
+                    }
+                    _ => { self.rec_locals.remove(r); }
+                }
                 let (val, ty) = self.expr(v)?;
                 let (n, _) = self.locals.get(r).cloned().ok_or("an unknown variable")?;
                 if ty != Ty::Any { self.locals.insert(*r, (n.clone(), Holds::Value(ty))); }
@@ -1454,6 +1480,16 @@ impl<'o, 'a> Writer<'o, 'a> {
             return Ok(format!("switch (self.getAnimation()) {{\n\tcase {}: {to};\n}}", cases.join(", ")));
         }
         Ok(format!("{to};"))
+    }
+
+    /// the class of a record a value is, where it is one of a list it keeps (`this.foes[i]`, or a
+    /// variable holding one)
+    fn record_of(&self, x: &Expr) -> Option<String> {
+        match x {
+            Expr::Local(r) => self.rec_locals.get(r).map(|(k, _)| k.clone()),
+            Expr::Index(l, _) => match &**l { Expr::Member(t, fl) if matches!(**t, Expr::This) => self.rec_lists.get(&member_key(&self.class, fl)).cloned(), _ => None },
+            _ => None,
+        }
     }
 
     /// the animations that show the clip of the class being written
@@ -1554,6 +1590,13 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             // (a record's own code: the record)
             Expr::This if self.record.is_some() => ("me".into(), Ty::Object),
+            // a field of a record of a list it keeps, read from outside the record: on the record
+            Expr::Member(x, n) if self.record_of(x).is_some_and(|k| self.fields.contains_key(&member_key(&k, n))) => {
+                let k = self.record_of(x).unwrap_or_default();
+                let ty = match self.fields.get(&member_key(&k, n)) { Some((_, Holds::Value(t))) => *t, _ => Ty::Any };
+                let (v, _) = self.expr(x)?;
+                (format!("{}.{}", paren(&v), ident(n)), ty)
+            }
             Expr::This if self.is_itself() => ("self".into(), Ty::Object),
             Expr::Member(t, n) if n == "currentFrame" && self.o.fighter && matches!(**t, Expr::This) && self.field(n).is_none() => (self.clip_frame_helper()?, Ty::Num),
             Expr::Member(t, n) if matches!(n.as_str(), "currentLabel" | "currentFrameLabel") && matches!(**t, Expr::This) && self.field(n).is_none() => {
@@ -2188,6 +2231,25 @@ impl<'o, 'a> Writer<'o, 'a> {
                         let set = if self.plain.contains(&member_key(&self.class, fl)) { format!("{fid} = __l;") } else { format!("{fid}.set(__l);") };
                         return Ok((format!("{{ var __l = {list}.copy(); var __r = {kid}_copy(__l[{ix}]); {id}(__r{rest}); __l[{ix}] = __r; {set} }}"), Ty::Any));
                     }
+                }
+            }
+        }
+        // a call on a variable holding a record of a list: the same, the copy written back where the
+        // record sits in the list now
+        if let Expr::Member(recv, m) = f {
+            if let Expr::Local(r) = &**recv {
+                if let Some((k, fl)) = self.rec_locals.get(r).cloned() {
+                    let kid = ident(short(&k));
+                    let id = self.methods.get(&member_key(&k, m)).cloned().ok_or_else(|| format!("calls {m} of a {}, which it has none of", short(&k)))?;
+                    let (x, _) = self.expr(recv)?;
+                    let vs: Vec<String> = args.iter().map(|a| Ok(self.expr(a)?.0)).collect::<Result<_, String>>()?;
+                    let rest = if vs.is_empty() { String::new() } else { format!(", {}", vs.join(", ")) };
+                    let ty = self.method_ty.get(&id).copied().unwrap_or(Ty::Any);
+                    if !record_writes(self.o.model, &k, m) { return Ok((format!("{id}({x}{rest})"), ty)) }
+                    let (list, _) = self.expr(&Expr::Member(Box::new(Expr::This), fl.clone()))?;
+                    let (fid, _) = self.field(&fl).ok_or("a list of no field")?;
+                    let set = if self.plain.contains(&member_key(&self.class, &fl)) { format!("{fid} = __l;") } else { format!("{fid}.set(__l);") };
+                    return Ok((format!("{{ var __l = {list}.copy(); var __r = {kid}_copy({x}); {id}(__r{rest}); var __i = __l.indexOf({x}); if (__i >= 0) __l[__i] = __r; {set} {x} = __r; }}"), Ty::Any));
                 }
             }
         }
@@ -4087,7 +4149,7 @@ fn put(s: Stmt, r: u32, v: &Expr) -> Stmt {
     }
 }
 
-fn walk(list: &[Stmt], f: &mut dyn FnMut(&Stmt)) {
+pub fn walk(list: &[Stmt], f: &mut dyn FnMut(&Stmt)) {
     for s in list {
         f(s);
         match s {

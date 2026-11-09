@@ -304,7 +304,15 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
             }
             "items" => vec![("TOSS", num(f.units.item_toss)), ("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed))],
             "ledges" | "own_floor" | "ground_test" => vec![("SIZE", num(f.units.size))],
-            "copy_power" => vec![("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed))],
+            "copy_power" => {
+                // (the move that swallows, read from the clip whose code takes the power)
+                let m = copy_move(f);
+                let q = |v: Option<&String>| v.map(|t| compile::quote(t)).unwrap_or_else(|| "null".into());
+                let moves = m.as_ref().map(|m| m.moves.iter().map(|x| compile::quote(x)).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+                vec![("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed)), ("COPY_MOVES", format!("[{moves}]")),
+                     ("SWALLOW", q(m.as_ref().map(|m| &m.swallow))), ("SPIT", q(m.as_ref().and_then(|m| m.spit.as_ref()))),
+                     ("SUCKING", q(m.as_ref().and_then(|m| m.sucking.as_ref()))), ("POWER_FIELD", q(m.as_ref().map(|m| &m.field)))]
+            }
             "home" => vec![("SPEED", num(f.units.speed))],
             "rocket" => vec![("ATTACK", rocket.clone().unwrap_or_else(|| "null".into())), ("SPEED", num(f.units.speed)),
                 ("BLOCKED", native::state_tests(rt, "self", &[10, 13, 14, 15, 19, 20])), ("ATTACKING", native::state_tests(rt, "self", &[9])),
@@ -559,7 +567,9 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         extra.insert((anim.clone(), 0), code);
     }
     super::native_projectile::keyframes_with(&entity, title, f.model, f.pieces, &frames, false, &extra).map_err(|e| vec![e.to_string()])?;
-    Ok((script, w.gaps.clone()))
+    let mut gaps = w.gaps.clone();
+    if blocks.contains("copy_power") && copy_move(f).is_none() { gaps.insert("takes powers, but no clip of its says where it swallows (its code writes no KirbyPower in a frame)".into()); }
+    Ok((script, gaps))
 }
 
 /// the label its clip is on (the last one at or before the frame it shows), as the source reads it
@@ -608,6 +618,45 @@ fn item_tables(f: &Fighting) -> Result<Vec<String>, String> {
 }
 
 fn num(n: f64) -> String { if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") } }
+
+/// the move a fighter that takes powers swallows with, as its own clip states it: the clip whose
+/// frame code takes the power (`KirbyPower = this.power`) is the move (each animation showing it,
+/// by its label); the label over that frame is where it swallows, the label over the frame that
+/// lets the one it holds out (`ejectOpponent`) where it spits, the `xframe` its first frame sets
+/// what it is while it draws one in, and the field the power is read from is the one the source's
+/// game hands it the swallowed one's power in
+pub struct CopyMove { pub moves: Vec<String>, pub swallow: String, pub spit: Option<String>, pub sucking: Option<String>, pub field: String }
+
+pub fn copy_move(f: &Fighting) -> Option<CopyMove> {
+    use crate::model::ast::{Expr, Place, Stmt};
+    for c in f.model.classes.values() {
+        let Some(sym) = c.symbol else { continue };
+        let labels = f.model.sprites.get(&sym).map(|sp| sp.labels.clone()).unwrap_or_default();
+        let label_at = |frame: u32| labels.iter().filter(|(f0, _)| *f0 as u32 <= frame).max_by_key(|(f0, _)| *f0).map(|(_, l)| l.clone());
+        let body_of = |m: &str| c.methods.iter().find(|x| x.name == m).map(|x| &x.function.body);
+        let mut take: Option<(u32, String)> = None;
+        let mut spit = None;
+        let mut sucking = None;
+        for fs in &c.frame_scripts {
+            let Some(body) = body_of(&fs.method) else { continue };
+            crate::compile::native::walk(body, &mut |st| match st {
+                Stmt::Assign(Place::Member(_, n), Expr::Member(_, v)) if n == "KirbyPower" && take.is_none() => take = Some((fs.frame, v.clone())),
+                Stmt::Assign(Place::Member(t, n), Expr::Str(v)) if fs.frame == 0 && n == "xframe" && matches!(t, Expr::This) => sucking = Some(v.clone()),
+                _ => {}
+            });
+            crate::model::ast::walk_exprs(body, &mut |e| if let Expr::Call(g, _) = e {
+                if matches!(&**g, Expr::Member(_, m) if matches!(m.as_str(), "ejectOpponent" | "shootOutOpponent")) && spit.is_none() { spit = label_at(fs.frame); }
+            });
+        }
+        let Some((frame, field)) = take else { continue };
+        let swallow = label_at(frame)?;
+        let mut moves: Vec<String> = Vec::new();
+        for p in f.pieces.iter().filter(|p| p.sym == sym && !p.label.is_empty()) { if !moves.contains(&p.label) { moves.push(p.label.clone()); } }
+        if moves.is_empty() { continue }
+        return Some(CopyMove { moves, swallow, spit, sucking, field });
+    }
+    None
+}
 
 /// the power a fighter gives one that swallows it: the name its stats declare (`power`)
 fn power_of(f: &Fighting) -> Option<String> {
