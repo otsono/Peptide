@@ -23,6 +23,8 @@ var itemState = self.makeInt(0);
 // a fighter that made it throws it itself)
 var holder = self.makeObject(null);
 var pickedUp = self.makeBool(false);
+// whether it can be picked up now (its code turns this off: `canPickup`)
+var pickupOn = self.makeBool(true);
 // whether it was let go without a throw (its holder was hit or grabbed)
 var zDropped = self.makeBool(false);
 // what its holder's attack is put to first, while it is held (`setFrameInterrupt`)
@@ -39,6 +41,17 @@ var HALF_WIDTH = WIDTH * SIZE / 2;
 var HEIGHT_UP = HEIGHT * SIZE;
 
 function inItemState(n) { return itemState.get() == n; }
+// what it declares, for another object's code that asks (`getItemStat`)
+function itemStat(k) {
+	switch (k) {
+		case "linkage_id": return self.exports.__itemName;
+		case "canPickup": return CAN_PICKUP && pickupOn.get();
+		case "tossSpeed": return TOSS_SPEED;
+		case "width": return WIDTH;
+		case "height": return HEIGHT;
+	}
+	return null;
+}
 // its state changed: it shows the clip that state has (held, thrown, lying free)
 function itemTo(n) {
 	if (itemState.get() == n) return;
@@ -172,7 +185,7 @@ function handleItem() {
 		}
 		return;
 	}
-	if (CAN_PICKUP && inItemState(0)) {
+	if (CAN_PICKUP && pickupOn.get() && inItemState(0)) {
 		for (c in match.getCharacters()) {
 			if (c.isDisposed() || knocked(c)) continue;
 			var ctl = c.getPressedControls();
@@ -202,6 +215,8 @@ function initialize() {
 	self.setState(PState.ACTIVE);
 	self.exports.__ask = asked;
 	self.exports.__isItem = true;
+	self.exports.__inItemState = inItemState;
+	self.exports.__statOf = itemStat;
 	self.addEventListener(GameObjectEvent.HITBOX_CONNECTED, hitOnlyThrown, { persistent: true });
 	// {start}
 	// {own_start}

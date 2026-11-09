@@ -385,8 +385,8 @@ function stopListening() {
 // ---- items
 //: TOSS an item's throw speed where it states none, in this engine's units. `itemBox`,
 //: `itemContent` and `itemDeclared` are written for it from its animations and declarations
-// an item it generates: a projectile of its own riding its item box until it is thrown. the item's
-// own script takes the hold and the throw as asks on its exports (`__holder`, `__ask`)
+// an item it generates: a custom game object of its own riding its item box until it is thrown.
+// the item's handler takes the hold and the throw as asks on its exports (`__holder`, `__ask`)
 function heldItem() {
 	var it = self.exports.__heldItem;
 	if (it != null && it.isDisposed()) { self.exports.__heldItem = null; return null; }
@@ -400,23 +400,15 @@ function placeItem(it) {
 	self.exports.__iby = b.y;
 }
 function askItem(it, kind, ?v) {
-	if (it == null || it.exports == null) return;
-	if (it.exports.__ask != null) { it.exports.__ask(kind, v); return; }
-	if (kind == "attack") it.exports.__askAttack = v; else if (kind == "interrupt") it.exports.__askInterrupt = v; else it.exports.__askState = kind;
+	if (it != null && it.exports != null && it.exports.__ask != null) it.exports.__ask(kind, v);
 }
 function generateItem(name) {
 	var id = itemContent(name);
 	var content = id == null ? null : self.getResource().getContent(id);
 	if (content == null) return null;
-	// (a custom game object carrying the item handler, which keeps itself in the hand; else a
-	// projectile, touching nothing until thrown)
-	var object = itemIsObject(name);
-	var it = object ? match.createCustomGameObject(content, self) : match.createProjectile(content, self);
+	// (a custom game object carrying the item handler, which keeps itself in the hand)
+	var it = match.createCustomGameObject(content, self);
 	if (it == null) return null;
-	if (!object) {
-		it.exports.__ghostDeclared = it.getProjectileStat("ghost") == true;
-		it.updateProjectileStats({ ghost: true });
-	}
 	self.exports.__tossItem = tossItem;
 	placeItem(it);
 	it.exports.__holder = self;

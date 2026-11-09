@@ -37,7 +37,10 @@ PeptideGameObject.playFrame = function(me, label) {
 // a state by the source's number: a fighter's own; anything gone is dead (42)
 PeptideGameObject.inState = function(me, n) {
 	if ((me.__fm == null || me.__fm.isDisposed())) return AS3.int(n) == 42;
-	return me.__fm.getType() == EntityType.CHARACTER ? States.is(me.__fm, AS3.int(n)) : false;
+	if (me.__fm.getType() == EntityType.CHARACTER) return States.is(me.__fm, AS3.int(n));
+	// an item's state, as its handler keeps it
+	if (me.__fm.exports != null && me.__fm.exports.__inItemState != null) return me.__fm.exports.__inItemState(AS3.int(n));
+	return false;
 };
 // ---- being hit and hitting (the source's hitstun is a freeze: this engine's hitstop) ----
 PeptideGameObject.applyKnockbackSpeed = function(me, speed, angle) {
@@ -159,7 +162,7 @@ PeptideGameObject.getNearestLedge = function(me) {
 // the nearest of a kind ("character", "player", "item", "projectile", "enemy")
 PeptideGameObject.getNearest = function(me, type, ?skipTeam, ?skipOwner) {
 	var fm = me.__fm;
-	var list = (type == "character" || type == "player") ? match.getCharacters() : (type == "enemy") ? match.getCustomGameObjects() : match.getProjectiles();
+	var list = (type == "character" || type == "player") ? match.getCharacters() : (type == "enemy" || type == "item") ? match.getCustomGameObjects() : match.getProjectiles();
 	var best = null;
 	var bd = 1.0e12;
 	for (o in list) {
@@ -421,6 +424,15 @@ Objects.toToss = function(me) {
 	if (me.__fm.getType() == EntityType.CHARACTER) { me.__fm.exports.__askToss = true; return; }
 	if (PeptideItem.getItemStat(me, "canToss") != false) PeptideItem.attack(me, "attack_toss");
 };
+// its clip: the one its script keeps, else, for a fighter written as Fraymakers code, the label
+// it is on as its own script answers it (a fighter's clip shows one labelled frame a move)
+Objects.mc = function(me) {
+	if (me == null || me.__mc != null) return me == null ? null : me.__mc;
+	var ex = me.__fm == null ? null : me.__fm.exports;
+	if (ex == null || ex.__label == null) return null;
+	var l = ex.__label();
+	return { currentLabel: l, currentFrameLabel: l };
+};
 Objects.made = [];
 Objects.view = function(fm) {
 	if (fm == null) return null;
@@ -428,7 +440,9 @@ Objects.view = function(fm) {
 	if (src != null && src.__fm != null) return src;
 	for (v in Objects.made) if (v.__fm == fm) return v;
 	var me = {};
-	if (fm.getType() == EntityType.CHARACTER) PeptideCharacter.build(me); else PeptideGameObject.build(me);
+	if (fm.getType() == EntityType.CHARACTER) PeptideCharacter.build(me);
+	else if (fm.exports != null && fm.exports.__isItem == true) PeptideItem.build(me);
+	else PeptideGameObject.build(me);
 	me.__fm = fm;
 	// one written as Fraymakers code publishes only what its code keeps by name and the stats it
 	// set: the stand-in shares those

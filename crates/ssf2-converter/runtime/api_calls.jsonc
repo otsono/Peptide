@@ -347,7 +347,7 @@
   "updateEnemyStats": "PeptideEnemy.updateEnemyStats({recv}, {0})",
   // what any object does, by what it has (its engine object, its data)
   "getType": "{recv}.__type",
-  "getMC": "{recv}.__mc",
+  "getMC": "Objects.mc({recv})",
   "setXSpeed": "Objects.setXSpeed({eng}, AS3.num({0}) * {speed})",
   "playFrame": "PeptideGameObject.playFrame({recv}, {0})",
   "inState": "PeptideGameObject.inState({recv}, {0})",

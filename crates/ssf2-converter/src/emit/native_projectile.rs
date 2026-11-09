@@ -26,13 +26,21 @@ pub struct Owner<'a> {
     pub native: bool,
 }
 
+/// whether a declaration is one of the fighter's items (an item is always a custom game object
+/// carrying the item handler, never a projectile)
+pub fn is_item(decls: &Decls, spec: &ObjectSpec, title: &str) -> bool {
+    decls.items.entries().iter().any(|(n, d)| n == title || d.get("linkage_id").and_then(|v| v.str()) == Some(spec.clip.as_str()))
+}
+
 /// The projectile's script and entity, written natively; or why it stays on the runtime.
+/// (`bare`: an item whose own code cannot be written carries the item handler alone)
+#[allow(clippy::too_many_arguments)]
 pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, decls: &Decls,
-             pieces: &[Piece], units: Units, title: &str, entity_key: &str, owner: &Owner) -> Result<String, String> {
-    let item = decls.items.entries().iter().any(|(n, d)| n == title || d.get("linkage_id").and_then(|v| v.str()) == Some(spec.clip.as_str()));
+             pieces: &[Piece], units: Units, title: &str, entity_key: &str, owner: &Owner, bare: bool) -> Result<String, String> {
+    let item = is_item(decls, spec, title);
     let skeleton = runtime.native_files.get(if item { "item" } else { "projectile" }).ok_or("the runtime has no native/projectile.hx or native/item.hx")?;
     // its own class, where its package gives it one: the API's projectile, extended
-    let itself = if matches!(compile::short(&spec.class), "PeptideProjectile" | "PeptideItem") { None } else {
+    let itself = if bare || matches!(compile::short(&spec.class), "PeptideProjectile" | "PeptideItem") { None } else {
         let c = model.classes.get(&spec.class).or_else(|| model.classes.values().find(|c| compile::short(&c.name) == compile::short(&spec.class)))
             .ok_or_else(|| format!("its class {} is not in its package", spec.class))?;
         Some(c)
@@ -50,16 +58,16 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     // inside it with code of its own keeps it on the runtime
     let shown: BTreeSet<u16> = pieces.iter().map(|p| p.sym).collect();
     let mut classes = Vec::new();
-    for sym in clip_tree(model, Some(clip_sym)) {
+    for sym in clip_tree(model, Some(clip_sym)).into_iter().filter(|_| !bare) {
         let Some(c) = model.class_of(sym) else { continue };
         if runtime.provides(&c.name) { continue }
         if shown.contains(&sym) { classes.push(c) }
         else if !is_quiet(model, runtime, &c.name) { return Err(format!("{} inside it has code of its own", c.name)) }
     }
-    if classes.is_empty() && itself.is_none() { return Err("no code of its own".into()) }
+    if classes.is_empty() && itself.is_none() && !item { return Err("no code of its own".into()) }
     // a clip whose code its owner reaches into keeps the object the owner holds
     let names: BTreeSet<&str> = classes.iter().map(|c| c.name.as_str()).collect();
-    for c in model.classes.values().filter(|c| !names.contains(c.name.as_str()) && !runtime.provides(&c.name)) {
+    for c in model.classes.values().filter(|c| !bare && !names.contains(c.name.as_str()) && !runtime.provides(&c.name)) {
         for f in c.methods.iter().map(|m| &m.function) {
             let mut listens = false;
             crate::model::ast::walk_exprs(&f.body, &mut |e| if let Expr::Str(s) = e { if matches!(s.as_str(), "projDestroyed" | "itemDestroyed") { listens = true } });
@@ -149,7 +157,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         effect_pieces: spec.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames))).collect(),
         parts: Vec::new(), content: String::new(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(),
     };
-    let written = native::write(&object)?;
+    let written = if bare || (classes.is_empty() && itself.is_none()) { native::Written::default() } else { native::write(&object)? };
 
     // its script
     let life = spec.stats.get("time_max").and_then(|v| match v { Value::Num(n) => Some(*n), _ => None }).unwrap_or(60.0);
@@ -228,6 +236,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let script = script.replace("\tif (!started.get()) {\n\t\tstarted.set(true);\n\t}\n", "")
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (age.get() % 2 == 1) {\n\t}\n", "")
         .replace("\n// its end: whoever listens for it is told\nfunction onKill() {\n}\n", "");
+    if let Some(n) = native::declared_twice(&script) { return Err(format!("its script declares {n} twice")) }
 
     // its entity: each frame with code calls it, and each animation plays on into the next
     let content = crate::projectile_gen::projectile_content_id(entity_key);

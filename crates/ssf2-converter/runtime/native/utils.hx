@@ -118,3 +118,53 @@ function numberIn(n, base) {
 	}
 	return neg ? "-" + out : out;
 }
+
+// ---- colorFilters
+// the colour settings its code puts on an object (`setColorFilters`): its alpha, a hue/saturation/
+// brightness/contrast filter, and a colour shader for the channels, each replacing the last it set
+// on that object; none (`null`, `false`) takes them off
+var colorFiltersOn = self.makeObject(null);
+function colorFilters(t, o) {
+	if (t == null || t.isDisposed()) return;
+	if (colorFiltersOn.get() == null) colorFiltersOn.set(new haxe.ds.StringMap());
+	var key = Std.string(t.getUid());
+	var was = colorFiltersOn.get().get(key);
+	if (was != null) {
+		if (was.f != null) t.removeFilter(was.f);
+		if (was.s != null) t.removeShader(was.s);
+		colorFiltersOn.get().remove(key);
+	}
+	if (o == null || o == false) { t.setAlpha(1); return; }
+	if (o.alphaMultiplier != null) t.setAlpha(o.alphaMultiplier);
+	var on = { f: null, s: null };
+	if (o.hue != null || o.saturation != null || o.brightness != null || o.contrast != null) {
+		var h = new HsbcColorFilter();
+		if (o.hue != null) h.hue = o.hue;
+		if (o.saturation != null) h.saturation = o.saturation / 100;
+		if (o.brightness != null) h.brightness = o.brightness / 100;
+		if (o.contrast != null) h.contrast = o.contrast / 100;
+		t.addFilter(h);
+		on.f = h;
+	}
+	if (o.redMultiplier != null || o.greenMultiplier != null || o.blueMultiplier != null || o.redOffset != null || o.greenOffset != null || o.blueOffset != null) {
+		var sh = new RgbaColorShader();
+		sh.redMultiplier = o.redMultiplier != null ? o.redMultiplier : 1;
+		sh.greenMultiplier = o.greenMultiplier != null ? o.greenMultiplier : 1;
+		sh.blueMultiplier = o.blueMultiplier != null ? o.blueMultiplier : 1;
+		sh.redOffset = o.redOffset != null ? o.redOffset : 0;
+		sh.greenOffset = o.greenOffset != null ? o.greenOffset : 0;
+		sh.blueOffset = o.blueOffset != null ? o.blueOffset : 0;
+		t.addShader(sh);
+		on.s = sh;
+	}
+	colorFiltersOn.get().set(key, on);
+}
+
+// ---- statOf
+// what another object declares (`getItemStat`, `getEnemyStat`, `getProjectileStat` on it): what its
+// script answers for its stats, else an item's name
+function statOf(o, k) {
+	if (o == null || o.exports == null) return null;
+	if (o.exports.__statOf != null) return o.exports.__statOf(k);
+	return k == "linkage_id" ? o.exports.__itemName : null;
+}

@@ -662,12 +662,15 @@ name (`soundLoop_tick()`), keeping only what the code uses. a row's optional arg
 is cut from the effect's art into an animation of its own on the effect's entity, made with the
 effect and kept on its place (`withInners`, `innerClip`, `followInners`). an effect whose clip's own frames only turn
 it (stop, jump to a label, take itself off) is kept, and each frame does what its frame's code
-says (`keepCoded`, `runEffectCode`). an item written natively is a custom game object carrying
+says (`keepCoded`, `runEffectCode`). every item is a custom game object carrying
 `runtime/native/item.hx`'s SSF2ItemHandler: its state (free, held, thrown, gone), anyone picking
 it up with grab and its own code throwing it on that holder's next attack, hits only while
 thrown, and the events it raises (`events.jsonc` `item`). each of its stances' labels is an
 animation (`toss_spinRight`), and its own jumps go to the stance its state shows (`playStance`).
-the fighter that makes one asks `itemIsObject` which kind it is.
+an item whose own code has no plain form carries the handler alone, and `runtime_report.json`'s
+`items_without_own_code` says why. another object's code reads an item's state and stats through
+what the handler publishes (`__inItemState`, `__statOf`), and `setColorFilters` is `colorFilters`.
+a top-level name a written script declares twice fails the conversion (`declared_twice`).
 a jump to a label inside another animation goes through `playLabelIn`, and that animation's
 first frame's own code skips while it does (the engine runs the first frame as it starts an
 animation; the source goes straight to the label). a named clip its clip places whose own code

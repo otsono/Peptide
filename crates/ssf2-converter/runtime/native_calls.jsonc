@@ -163,7 +163,9 @@
     "gravity": "gravity: {v} * {accel}",
     "max_gravity": "terminalVelocity: {v} * {speed}",
     "maxgravity": "terminalVelocity: {v} * {speed}",
-    "ghost": "ghost: {v}"
+    "ghost": "ghost: {v}",
+    // (kept by the item handler, runtime/native/item.hx: a statement, `;` ended)
+    "canPickup": "pickupOn.set({v});"
   },
   // a list's and a text's own calls
   "slice": { "code": "{self}.slice({0}{,1})", "returns": "object" },
@@ -174,6 +176,12 @@
   "toString": { "code": "Std.string({self})", "returns": "string" },
   // the match's clock, in the source's frames
   // the stage's structure a line crosses (`ignoreFallthrough` passes over one dropped through)
+  // colour settings on an object: its alpha, an hsbc filter, a channel shader
+  "setColorFilters": { "code": "colorFilters({self}, {0})", "helper": "colorFilters" },
+  "PeptideUtils.setColorFilters": { "code": "colorFilters({0}, {1})", "helper": "colorFilters" },
+  // what another object declares
+  "getItemStat": { "code": "statOf({self}, {0})", "helper": "statOf" },
+  "getEnemyStat": { "code": "statOf({self}, {0})", "helper": "statOf" },
   "PeptideAPI.getPlatformBetweenPoints": { "code": "platformBetween({0}, {1}{,2})", "helper": "platformBetween", "returns": "object" },
   "PeptideAPI.getElapsedFrames": { "code": "Std.int(match.getElapsedFrames() / 2)", "returns": "number" },
   "PeptideAPI.randomBetween": { "code": "Random.getInt({0}, {1})", "returns": "number" },

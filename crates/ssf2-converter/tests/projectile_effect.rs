@@ -44,6 +44,7 @@ fn effect(name: &str, frames: u16, labels: &[(u16, &str)]) -> DiscoveredEffect {
         name: name.to_string(),
         frame_count: frames,
         inner_labels: labels.iter().map(|(f, l)| (*f, l.to_string())).collect(),
+        inner_parts: Vec::new(),
     }
 }
 

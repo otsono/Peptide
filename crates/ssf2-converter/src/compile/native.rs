@@ -2325,17 +2325,24 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let v = self.o.runtime.constants.get(&format!("PeptideIState.{n}")).cloned().ok_or_else(|| format!("tests an item state {n} the API has no number for"))?;
                 return Ok((format!("inItemState({v})"), Ty::Bool));
             }
+            // another object's item state: as its handler keeps it, where it is an item
+            ("inState", [Expr::Member(c, n)]) if !mine && matches!(&**c, Expr::Name(c) if short(c) == "PeptideIState") => {
+                let v = self.o.runtime.constants.get(&format!("PeptideIState.{n}")).cloned().ok_or_else(|| format!("tests an item state {n} the API has no number for"))?;
+                return Ok((format!("({who}.exports.__inItemState != null && {who}.exports.__inItemState({v}))"), Ty::Bool));
+            }
             // its own stats written by its code: the engine's stat for each it keeps
             ("updateItemStats", [Expr::Object(pairs)]) if mine && self.o.item => {
-                let mut set = Vec::new();
+                let (mut set, mut kept) = (Vec::new(), Vec::new());
                 for (k, v) in pairs {
                     let Expr::Str(k) = k else { return Err("writes an item stat by a name worked out as it runs".into()) };
                     let Some(t) = calls().item_stats.get(k).cloned() else { continue };
                     let (v, _) = self.expr(v)?;
-                    set.push(self.stat_code(&t, &v));
+                    // (one the item handler keeps itself is a statement of its own, `;` ended)
+                    if t.ends_with(';') { kept.push(t.replace("{v}", &v)); } else { set.push(self.stat_code(&t, &v)); }
                 }
-                if set.is_empty() { return Ok(("// (its code writes item stats this engine keeps none of)".into(), Ty::Any)) }
-                return Ok((format!("self.updateGameObjectStats({{ {} }})", set.join(", ")), Ty::Any));
+                if !set.is_empty() { kept.insert(0, format!("self.updateGameObjectStats({{ {} }});", set.join(", "))); }
+                if kept.is_empty() { return Ok(("// (its code writes item stats this engine keeps none of)".into(), Ty::Any)) }
+                return Ok((kept.join("\n").trim_end_matches(';').to_string(), Ty::Any));
             }
             // its holder told to throw it: the throw its handler makes
             ("toToss", []) if !mine && self.o.item => return Ok(("tossByHolder()".into(), Ty::Any)),
@@ -3343,6 +3350,20 @@ pub fn helper(runtime: &super::runtime::Runtime, file: &str, key: &str, name: &s
     let mut slots = BTreeMap::new();
     slots.insert("cases", cases.to_vec());
     Ok(fill_slots(&out, &slots).trim_end().to_string())
+}
+
+/// a name a written script declares twice at its top level (`var` or `function`): the second hides
+/// the first from every function that reads it, so two parts of the script would share one name
+pub fn declared_twice(script: &str) -> Option<String> {
+    let mut seen = BTreeSet::new();
+    for line in script.lines() {
+        let name = line.strip_prefix("var ").or_else(|| line.strip_prefix("function "))
+            .map(|r| r.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or(""));
+        if let Some(n) = name.filter(|n| !n.is_empty()) {
+            if !seen.insert(n.to_string()) { return Some(n.to_string()) }
+        }
+    }
+    None
 }
 
 /// a text with each `// {slot}` line replaced by the slot's lines, at that line's indent (an

@@ -157,7 +157,7 @@ PeptideAPI.clipByLinkage = function(n) { var c = MovieClip.create(); c.__linkage
 // ---- spawning ---------------------------------------------------------------------------------
 PeptideAPI.getItems = function() {
 	var out = [];
-	for (p in match.getProjectiles()) if (p.exports != null && p.exports.__isItem == true && !p.isDisposed()) out.push(Objects.view(p));
+	for (p in match.getCustomGameObjects()) if (p.exports != null && p.exports.__isItem == true && !p.isDisposed()) out.push(Objects.view(p));
 	return out;
 };
 PeptideAPI.makeEnemy = function(c) {
@@ -173,20 +173,9 @@ PeptideAPI.makeEnemy = function(c) {
 PeptideAPI.makePickup = function(name, ?x, ?y) {
 	var n = AS3.str(name);
 	if (Items.content(n) == null) { PeptideRuntime.gap("makePickup: " + n + " (an item this package has no entity for)"); return null; }
-	var o = PeptideAPI.makeEnemy(n);
-	if (o == null) return null;
-	o.__fm.exports.__isItem = true;
-	o.__fm.exports.__np = true;
-	var s = PeptideRuntime.data.units.size;
-	if (x != null) o.__fm.setX(AS3.num(x) * s);
-	if (y != null) o.__fm.setY(AS3.num(y) * s);
-	return o;
+	return Items.make(PeptideAPI.characterOf(PeptideRuntime.object).__fm, n, x, y);
 };
-PeptideAPI.placePickup = function(c) {
-	var o = PeptideAPI.makeEnemy(c);
-	if (o != null) { o.__fm.exports.__isItem = true; o.__fm.exports.__np = true; }
-	return o;
-};
+PeptideAPI.placePickup = function(c) { return PeptideAPI.makePickup(Std.isOfType(c, String) ? c : c.name); };
 // the damage an attack's box does with its charge in: the engine states it on the box it hit with
 PeptideAPI.calculateChargeDamage = function(box) { var d = box == null ? null : AS3.at(box, "damage"); return d == null ? 0 : AS3.num(d); };
 // a fighter's match record: this engine keeps its lives and damage, not the source's score

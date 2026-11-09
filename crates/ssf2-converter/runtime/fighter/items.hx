@@ -1,6 +1,6 @@
-// An item the fighter generates: a projectile of its own, riding the source's item box until it
-// is thrown. The item's own script takes the hold and the throw up as asks on its exports
-// (`__holder`, `__askState`, `__askActive`), in its own scope.
+// An item the fighter generates: a custom game object of its own carrying the item handler
+// (runtime/native/item.hx), riding the source's item box until it is thrown. The handler takes the
+// hold and the throw up as asks on its exports (`__holder`, `__ask`), in its own scope.
 
 var Items = {};
 
@@ -39,21 +39,16 @@ Items.generate = function(me, name) {
 	var id = Items.content(AS3.str(name));
 	var content = id == null ? null : fm.getResource().getContent(id);
 	if (content == null) { PeptideRuntime.report("no item " + AS3.str(name)); return null; }
-	var it = match.createProjectile(content, fm);
+	var it = match.createCustomGameObject(content, fm);
 	if (it == null) return null;
-	// in the hand from its first frame: over the floor its body would meet where it is made,
-	// and touching nothing until thrown
-	if (it.exports != null) it.exports.__ghostDeclared = it.getProjectileStat("ghost") == true;
-	it.updateProjectileStats({ ghost: true });
 	Items.place(me, it);
-	if (it.exports != null) { it.exports.__holder = fm; it.exports.__isItem = true; it.exports.__np = true; Items.ask(it.exports, "hold"); }
-	// the item's own object when its script already runs (its class's methods are the source's to
-	// call: a bob-omb's explode), else a plain one
-	var item = it.exports == null ? null : it.exports.__source;
-	if (item == null) { item = {}; PeptideItem.build(item); }
-	item.__fm = it;
+	it.exports.__holder = fm;
+	it.exports.__isItem = true;
+	it.exports.__np = true;
+	it.exports.__itemName = AS3.str(name);
+	Items.ask(it.exports, "hold");
+	var item = Objects.view(it);
 	item.__holder = me;
-	item.__name = AS3.str(name);
 	me.__item = item;
 	return item;
 };
@@ -118,12 +113,23 @@ Items.remove = function(me) {
 	me.__item = null;
 };
 
-// asked of an item, in its own script: the ask it publishes (`__ask`), else a field its own frame
-// reads (one made without the runtime)
-Items.ask = function(ex, kind, ?v) {
-	if (ex == null) return;
-	if (ex.__ask != null) { ex.__ask(kind, v); return; }
-	if (kind == "attack") ex.__askAttack = v; else if (kind == "interrupt") ex.__askInterrupt = v; else ex.__askState = kind;
+// asked of an item, in its own script: the ask its handler publishes (`__ask`)
+Items.ask = function(ex, kind, ?v) { if (ex != null && ex.__ask != null) ex.__ask(kind, v); };
+
+// an item made on the stage at a spot (source units), held by no one
+Items.make = function(owner, name, ?x, ?y) {
+	var id = Items.content(AS3.str(name));
+	var content = id == null ? null : owner.getResource().getContent(id);
+	if (content == null) return null;
+	var it = match.createCustomGameObject(content, owner);
+	if (it == null) return null;
+	it.exports.__isItem = true;
+	it.exports.__np = true;
+	it.exports.__itemName = AS3.str(name);
+	var s = PeptideRuntime.data.units.size;
+	if (x != null) it.setX(AS3.num(x) * s);
+	if (y != null) it.setY(AS3.num(y) * s);
+	return Objects.view(it);
 };
 
 // every frame the fighter holds one, the item rides the box
@@ -150,8 +156,9 @@ PeptideItem.build = function(me) {
 };
 // what the item declares: its name is its linkage, the rest its own stats
 PeptideItem.getItemStat = function(me, k) {
-	if (k == "linkage_id") return me.__name;
-	return AS3.at(AS3.at(PeptideRuntime.data.pkg.items, me.__name), k);
+	var name = me.__fm == null || me.__fm.exports == null ? null : me.__fm.exports.__itemName;
+	if (k == "linkage_id") return name;
+	return AS3.at(AS3.at(PeptideRuntime.data.pkg.items, name), k);
 };
 // the item's own attacks (its toss, its idle), when its stats let it: started in its own script,
 // directly when this is that script's item, else asked of it. the holder
@@ -168,9 +175,9 @@ PeptideItem.updateItemStats = function(me, o) {
 	for (k in AS3.keysOf(o)) {
 		var v = AS3.at(o, k);
 		me.__stats.set(k, v);
-		if (k == "gravity") me.__fm.updateProjectileStats({ gravity: AS3.num(v) * u.speed * 0.5 });
-		else if (k == "max_gravity" || k == "maxgravity") me.__fm.updateProjectileStats({ terminalVelocity: AS3.num(v) * u.speed });
-		else if (k == "ghost") me.__fm.updateProjectileStats({ ghost: AS3.truthy(v) });
+		if (k == "gravity") me.__fm.updateGameObjectStats({ gravity: AS3.num(v) * u.accel });
+		else if (k == "max_gravity" || k == "maxgravity") me.__fm.updateGameObjectStats({ terminalVelocity: AS3.num(v) * u.speed });
+		else if (k == "ghost") me.__fm.updateGameObjectStats({ ghost: AS3.truthy(v) });
 	}
 };
 PeptideItem.init = function(me, ?api) {};

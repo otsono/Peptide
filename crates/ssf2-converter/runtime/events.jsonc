@@ -61,6 +61,8 @@
     // `top` is a ceiling, which this engine tells of with its own event, so a wall's is never one
     "left":      { "code": "{arg}.data.structureType == StructureType.RIGHT_WALL", "is": "bool" },
     "right":     { "code": "{arg}.data.structureType == StructureType.LEFT_WALL", "is": "bool" },
+    "leftSide":  { "code": "{arg}.data.structureType == StructureType.RIGHT_WALL", "is": "bool" },
+    "rightSide": { "code": "{arg}.data.structureType == StructureType.LEFT_WALL", "is": "bool" },
     "top":       { "code": "{arg}.data.structureType == StructureType.CEILING", "is": "bool" }
   },
   // the other fields the source's engine puts in a record it hands a listener, which nothing above

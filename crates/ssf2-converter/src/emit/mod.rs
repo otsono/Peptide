@@ -1100,22 +1100,13 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     // each projectile and item the fighter declares runs on the runtime too
     let owner = native_projectile::Owner { attacks: &fighter.attacks, stats: &fighter.stats, anims: pieces.iter().map(|p| (p.fm_name.clone(), p.label.clone())).collect(), native: natively_written.is_ok() };
     let mut natively: Vec<(String, Result<(), String>)> = Vec::new();
+    let mut item_gaps: Vec<(String, String)> = Vec::new();
     let projectiles = runtime_projectiles(char_dir, &model, &runtime, fighter, units, &others,
-        &effects, &entities, &mut projectile_pieces, &mut unplaced, &owner, &mut natively)?;
-    // the items written as Fraymakers code are custom game objects carrying the item handler; the
-    // fighter's script makes them so (`itemIsObject`)
-    let mut objects: Vec<String> = Vec::new();
+        &effects, &entities, &mut projectile_pieces, &mut unplaced, &owner, &mut natively, &mut item_gaps)?;
+    // every item is a custom game object carrying the item handler
     for (name, _) in fighter.items.entries() {
         let Some(key) = entities.get(name) else { continue };
-        if !natively.iter().any(|(k, r)| k == key && r.is_ok()) { continue }
         custom_game_object(char_dir, key)?;
-        objects.push(compile::quote(name));
-    }
-    let fighter_script = dir.join("Script.hx");
-    if let Ok(text) = std::fs::read_to_string(&fighter_script) {
-        let line = if objects.is_empty() { String::new() } else { format!("\t\tcase {}: return true;\n", objects.join(", ")) };
-        let patched = text.replace("\t\tcase ITEM_OBJECTS: return true;\n", &line);
-        if patched != text { std::fs::write(&fighter_script, patched)?; }
     }
     let report = serde_json::json!({
         // whether the fighter's own code is written as Fraymakers code, and what keeps it on the
@@ -1130,6 +1121,8 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         "projectiles": projectiles.iter().map(|(n, _)| n).collect::<Vec<_>>(),
         // the projectiles written as Fraymakers code, and why each other one is still the runtime's
         "native": natively.iter().filter(|(_, r)| r.is_ok()).map(|(n, _)| n).collect::<Vec<_>>(),
+        // the items whose own code is not written, which carry the item handler alone, and why
+        "items_without_own_code": item_gaps.iter().map(|(n, why)| (n.clone(), serde_json::Value::String(why.clone()))).collect::<serde_json::Map<_, _>>(),
         "on_runtime": natively.iter().filter_map(|(n, r)| r.as_ref().err().map(|e| (n.clone(), serde_json::Value::String(e.clone())))).collect::<serde_json::Map<_, _>>(),
         // the box stats an animation took from what its clip writes as it starts (by the source's
         // box number and field names), so a check against the declared boxes knows them
@@ -1456,7 +1449,8 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
                        effects: &BTreeMap<String, Vec<Piece>>, entities: &BTreeMap<String, String>,
                        pieces_of: &mut BTreeMap<String, Vec<Piece>>,
                        unplaced: &mut Vec<String>, owner: &native_projectile::Owner,
-                       natively: &mut Vec<(String, Result<(), String>)>) -> anyhow::Result<Vec<(String, Emitted)>> {
+                       natively: &mut Vec<(String, Result<(), String>)>,
+                       item_gaps: &mut Vec<(String, String)>) -> anyhow::Result<Vec<(String, Emitted)>> {
     let mut out = Vec::new();
     let decls: Vec<&(String, Value)> = fighter.projectiles.entries().iter().chain(fighter.items.entries()).collect();
     // one script per entity, from the first declaration written as it (a projectile fired by
@@ -1515,9 +1509,18 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
             data: String::new(),
         };
         let script = char_dir.join(format!("library/scripts/Projectile/{}Script.hx", crate::haxe_gen::snake_to_pascal(&entity_key)));
-        // its own code as Fraymakers code, where it can be (`native_projectile`)
-        if script.exists() && std::env::var("PEPTIDE_NATIVE_PROJECTILES").map(|v| v != "0").unwrap_or(true) {
-            match native_projectile::write(char_dir, model, runtime, &spec, &Decls::of(fighter), &pieces, units, name, &entity_key, owner) {
+        // its own code as Fraymakers code, where it can be (`native_projectile`). an item is always
+        // written so: one whose own code cannot be carries the item handler alone, with the reason
+        let item = native_projectile::is_item(&Decls::of(fighter), &spec, name);
+        if script.exists() && (item || std::env::var("PEPTIDE_NATIVE_PROJECTILES").map(|v| v != "0").unwrap_or(true)) {
+            let mut written = native_projectile::write(char_dir, model, runtime, &spec, &Decls::of(fighter), &pieces, units, name, &entity_key, owner, false);
+            if item {
+                if let Err(why) = &written {
+                    item_gaps.push((entity_key.clone(), why.clone()));
+                    written = native_projectile::write(char_dir, model, runtime, &spec, &Decls::of(fighter), &pieces, units, name, &entity_key, owner, true);
+                }
+            }
+            match written {
                 Ok(text) => {
                     std::fs::write(&script, &text)?;
                     natively.push((entity_key.clone(), Ok(())));
