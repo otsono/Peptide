@@ -2401,7 +2401,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         if matches!(m.as_str(), "gotoAndStop" | "gotoAndPlay" | "stop" | "play") && !matches!(**recv, Expr::This) && !self.is_clip(recv) {
             if let Expr::Member(o, n) = &**recv {
                 // (inside an effect of the power it holds: the clip the one it copied draws apart, `powerInner`)
-                if !matches!(**o, Expr::This) && self.field(n).is_none() && !self.is_inner(n) && self.o.fighter && takes_power(self.o.model) {
+                if !matches!(**o, Expr::This) && self.field(n).is_none() && !self.is_inner(n) && self.o.fighter && takes_power(self.o.model, self.o.runtime) {
                     self.copy_power()?;
                     let (holder, _) = self.expr(o)?;
                     let hold = matches!(m.as_str(), "gotoAndStop" | "stop");
@@ -2466,7 +2466,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         let mut found = if named.is_some() { Some((String::new(), None)) } else { (self.o.effect)(&name) };
         // (one a fighter has no art for, where it takes powers: the effect of the power it holds,
         // made by the one it copied, `powerEffect`)
-        let from_power = found.is_none() && self.o.fighter && takes_power(self.o.model);
+        let from_power = found.is_none() && self.o.fighter && takes_power(self.o.model, self.o.runtime);
         if from_power { named = Some(quote(&name)); found = Some((String::new(), None)); }
         let Some((stats, gone)) = found else {
             // (one with no art in this conversion shows nothing on either path)
@@ -3366,7 +3366,7 @@ self.playFrameLabel({})", quote(f))); }
     /// faces, belonging to the owner, and a source frame late (made in the projectiles' pass)
     fn fire(&mut self, name: &str, from: &str) -> Result<String, String> {
         // one a fighter does not declare: fired from the power it holds, where it takes powers
-        if (self.o.fired)(name).is_none() && self.o.fighter && from == "self" && takes_power(self.o.model) {
+        if (self.o.fired)(name).is_none() && self.o.fighter && from == "self" && takes_power(self.o.model, self.o.runtime) {
             self.copy_power()?;
             let f = format!("firePower_{}", ident(name));
             if !self.helpers.contains_key(&f) {
@@ -4254,9 +4254,10 @@ fn record_writes(model: &crate::model::SourceModel, class: &str, method: &str) -
 
 /// whether a package's code takes another fighter's power (writes its own `KirbyPower`, or asks
 /// which one it holds)
-pub fn takes_power(model: &crate::model::SourceModel) -> bool {
+pub fn takes_power(model: &crate::model::SourceModel, runtime: &super::runtime::Runtime) -> bool {
     let mut found = false;
-    for c in model.classes.values() {
+    // (its own classes: not the API's, which a package carries too)
+    for c in model.classes.values().filter(|c| !runtime.provides(&c.name)) {
         for body in c.methods.iter().map(|m| &m.function.body).chain([&c.constructor.body]) {
             walk_exprs(body, &mut |e| match e {
                 Expr::Member(_, n) if n == "KirbyPower" => found = true,
