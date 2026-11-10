@@ -181,6 +181,8 @@
   "PeptideUtils.setColorFilters": { "code": "colorFilters({0}, {1})", "helper": "colorFilters" },
   // a hit dealt outright, its launch worked out as the source's
   "takeDamage": { "code": "takeDamageOf({self}, {0}{,1})", "helper": "takeDamageOf", "returns": "bool" },
+  // to where the one it grabbed is
+  "toGrabbed": "if ({self}.getGrabbedFoe() != null) { {self}.setX({self}.getGrabbedFoe().getX()); {self}.setY({self}.getGrabbedFoe().getY()); }",
   // into its grab's hold with the one it holds (let go of in the air)
   "toGrabbing": "if ({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length == 1) { if (!{self}.isOnFloor()) {self}.releaseAllCharacters(); else {self}.toState(CState.GRAB_HOLD); }",
   // the one it holds let go of (the launch the source spits it out with is not ported)
@@ -214,6 +216,7 @@
   // what another object declares
   "getItemStat": { "code": "statOf({self}, {0})", "helper": "statOf" },
   "getEnemyStat": { "code": "statOf({self}, {0})", "helper": "statOf" },
+  "getGameObjectStat": { "code": "gameObjectStat({self}, {0})", "helper": "gameObjectStat" },
   // an object's stats as a record (its name, to make it again by)
   "exportStats": { "code": "exportedStats({self})", "helper": "exportedStats", "returns": "record" },
   "PeptideAPI.getPlatformBetweenPoints": { "code": "platformBetween({0}, {1}{,2})", "helper": "platformBetween", "returns": "object" },

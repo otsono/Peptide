@@ -169,6 +169,16 @@ function statOf(o, k) {
 	return k == "linkage_id" ? o.exports.__itemName : null;
 }
 
+// ---- gameObjectStat
+// a stat of any object by the source's name (`getGameObjectStat`): whether it can be hit is whether
+// it is a fighter, else what its script answers for its stats, else the engine's own stat
+function gameObjectStat(o, k) {
+	if (o == null) return null;
+	if (k == "canReceiveKnockback" || k == "canReceiveHits") return o.getType() == EntityType.CHARACTER;
+	var v = o.exports != null && o.exports.__statOf != null ? o.exports.__statOf(k) : null;
+	return v != null ? v : o.getGameObjectStat(k);
+}
+
 // ---- takeDamageOf
 // a hit its code deals another object outright (`takeDamage`), as the source's does: the damage,
 // and the launch its stats state (base and growth against the damage it has and its weight, at the
