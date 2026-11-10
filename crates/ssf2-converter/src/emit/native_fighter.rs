@@ -319,7 +319,9 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
                 ("STOPS", native::state_tests(rt, "self", &[22, 16, 18]))],
             _ => Vec::new(),
         };
-        functions.push(format!("// ---- {b}: runtime/native/fighter_rules.hx\n{}", native::helper(rt, "fighter_rules", b, "", &words, &[]).map_err(one)?));
+        // (a fighter that takes powers plays a power's own move where it has no animation for it)
+        let cases: Vec<String> = if *b == "asked" && blocks.contains("copy_power") { vec!["if (borrowedMove(label)) return;".into()] } else { Vec::new() };
+        functions.push(format!("// ---- {b}: runtime/native/fighter_rules.hx\n{}", native::helper(rt, "fighter_rules", b, "", &words, &cases).map_err(one)?));
     }
     // the tables the rules read: the attack each animation is, and what each attack declares
     let attacks = &f.fighter.attacks;

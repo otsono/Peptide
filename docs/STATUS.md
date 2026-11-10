@@ -1954,6 +1954,20 @@ before treating one as a gap.
 
 ## known issues & gaps
 
+**a power kirby has no art for** is the swallowed fighter's own neutral special, rehearsed while it
+is held and played back with its sprite over kirby (DEVELOPMENT, copied powers). live: pikachu and
+captain falcon with their published records cleared (so kirby sees only what any fighter shows)
+fire the thunder jolt and land the falcon punch as kirby's, hold through hitstop, and clean up when
+kirby is knocked out of the move. what the rehearsal can't see:
+
+| gap | why |
+|---|---|
+| a move that waits on a held button or a charge plays one pass | the rehearsal presses nothing, and stops where the code loops back |
+| sounds, effects and timers the rehearsed code starts still happen, inside kirby | only projectiles can be listed and taken back |
+| a projectile is re-made from its sprite id | the api gives a projectile's sprite, not the content it was made from; the two are the same in every mod seen so far |
+| a base-game fighter isn't tested live | the session can't load kirby's mod beside a base-game fighter (the second player resolves under the wrong namespace) |
+| boxes and art aren't rescaled when the two fighters' sizes differ | both fighters tested are size 1 |
+
 **accepted engine differences.** gaps between the two engines that stay as they are: don't
 chase them or count them as open.
 

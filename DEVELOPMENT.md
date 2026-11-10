@@ -689,6 +689,14 @@ item it does not have comes from the power it holds. the copy move is read off i
 that frame is where it swallows, the label over the frame that lets the one it holds out is where it
 spits, the `xframe` its first frame sets says it is drawing one in, and the field the power is read
 from gets the swallowed one's record.
+a power it has no art for (a fighter from any mod, peptide's or not) still comes with a move:
+`powerOf` has the swallowed fighter play its own `special_neutral` / `special_neutral_air` once,
+unseen while it is held, and writes down each frame (the frame shown, its hitboxes with their numbers
+and stats, the projectiles its code made, the speed it gave itself). when its code asks for a move it
+has no animation for while it holds that power (`forceAttackAsked`), `borrowedMove` plays the
+recording: it stays in its neutral special on its own body, the other fighter's sprite drawn over it
+in that fighter's colours, its boxes hitting as that fighter's stats, its projectiles fired as its own.
+nothing per fighter is written anywhere: the same rule copies any fighter.
 a jump to a label inside another animation goes through `playLabelIn`, and that animation's
 first frame's own code skips while it does (the engine runs the first frame as it starts an
 animation; the source goes straight to the label). a named clip its clip places whose own code

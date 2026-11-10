@@ -634,7 +634,10 @@ function firedStat(p, k) {
 // an attack another object's code starts on it, by the source's label, at a label of its clip
 function forceAttackAsked(label, ?frame) {
 	var anim = animOf(label);
-	if (anim == null) return;
+	if (anim == null) {
+		// {cases}
+		return;
+	}
 	startAttack(anim);
 	if (frame != null && frame != true) stanceJump(frame);
 }
@@ -1060,6 +1063,7 @@ function letOut(foe, spat) {
 	else { foe.setYSpeed(-8 * SPEED); self.setXSpeed(self.flipX(-9) * SPEED); }
 }
 function powerFrame() {
+	borrowedFrame();
 	if (power.get() != null) {
 		if (self.inState(CState.TAUNT)) { dropPower(); return; }
 		var d = self.getDamage();
@@ -1097,7 +1101,7 @@ function powerFrame() {
 		fullNext.set(null);
 		if (asked == "swallow") {
 			var f = fieldOf("stance", POWER_FIELD);
-			if (f != null) f.set(foe.exports == null ? null : foe.exports.__kirbyPower);
+			if (f != null) f.set(powerOf(foe));
 			foe.addDamage(6);
 			stanceJump(SWALLOW);
 		} else {
@@ -1115,4 +1119,172 @@ function powerFrame() {
 	if (mine == null) return;
 	if (mine.ATTACK) { fullNext.set("spit"); forceAttackAsked(COPY_MOVES[0]); }
 	else if (mine.SPECIAL || mine.DOWN) { fullNext.set("swallow"); forceAttackAsked(COPY_MOVES[0]); }
+}
+
+// the power a swallowed fighter gives: the record it publishes, if it publishes one, and in any case
+// its neutral special as it plays it itself (`rehearse`), so a fighter this one has no art for, made
+// anywhere, still lends it its move
+function powerOf(foe) {
+	var p = foe.exports == null ? null : foe.exports.__kirbyPower;
+	var rec = { id: null, fire: null, effect: null, inner: null, item: null, body: null };
+	if (p != null) { rec.id = p.id; rec.fire = p.fire; rec.effect = p.effect; rec.inner = p.inner; rec.item = p.item; }
+	if (rec.id == null) rec.id = foe.getGameObjectStat("spriteContent");
+	var ground = rehearse(foe, "special_neutral");
+	var air = rehearse(foe, "special_neutral_air");
+	if (ground != null || air != null) {
+		var shader = foe.getCostumeShader();
+		rec.body = { sprite: foe.getGameObjectStat("spriteContent"), palette: shader == null ? null : shader.paletteMap, ground: ground, air: air };
+	}
+	return rec;
+}
+
+// one of its moves played through by the fighter itself, unseen while it is held, and written down
+// frame by frame: the frame it shows, the hitboxes on it (and their stats), the projectiles its own
+// code makes there (taken away again) and the speed it gives itself. it stops where its code ends the
+// move, where the animation runs out, or where its code goes back to a frame it has shown already
+function rehearse(foe, anim) {
+	if (!foe.hasAnimation(anim)) return null;
+	var was = { anim: foe.getAnimation(), frame: foe.getCurrentFrame(), state: foe.getState(), right: foe.isFacingRight() };
+	var known = match.getProjectiles().copy();
+	foe.faceRight();
+	foe.setState(CState.SPECIAL_NEUTRAL);
+	foe.setXSpeed(0);
+	foe.setYSpeed(0);
+	foe.playAnimation(anim);
+	var frames = [];
+	var seen = [];
+	while (frames.length < 300) {
+		var at = foe.getAnimation() + "#" + foe.getCurrentFrame();
+		if (seen.indexOf(at) >= 0) break;
+		seen.push(at);
+		frames.push({ anim: foe.getAnimation(), frame: foe.getCurrentFrame(), hits: rehearsedHits(foe), shots: rehearsedShots(foe, known), xs: foe.getXSpeed(), ys: foe.getYSpeed() });
+		if (foe.getState() != CState.SPECIAL_NEUTRAL) break;
+		if (foe.getCurrentFrame() >= foe.getTotalFrames()) break;
+		foe.setXSpeed(0);
+		foe.setYSpeed(0);
+		foe.playFrame(foe.getCurrentFrame() + 1);
+	}
+	foe.setState(was.state);
+	foe.playAnimation(was.anim);
+	foe.playFrame(was.frame);
+	if (was.right) foe.faceRight(); else foe.faceLeft();
+	return frames.length == 0 ? null : frames;
+}
+// the hitboxes it shows now, each with its number and stats (its boxes tested against themselves
+// are the one way to learn which hitbox each is)
+function rehearsedHits(foe) {
+	var out = [];
+	var found = foe.hitTestEntity(foe, CollisionBoxType.HIT, CollisionBoxType.HIT);
+	if (found == null) return out;
+	var ids = [];
+	for (c in found) {
+		var b = c.boxA;
+		if (ids.indexOf(b.index) >= 0) continue;
+		ids.push(b.index);
+		out.push({ id: b.index, x: b.x, y: b.y, w: b.width, h: b.height, stats: foe.getHitboxStats(b.index, foe.getAnimation()) });
+	}
+	return out;
+}
+// the projectiles its code made this frame, where they are and how they move from it; each is
+// taken away at once (it is a rehearsal)
+function rehearsedShots(foe, known) {
+	var out = [];
+	for (p in match.getProjectiles()) {
+		if (known.indexOf(p) >= 0) continue;
+		out.push({ content: p.getGameObjectStat("spriteContent"), x: p.getX() - foe.getX(), y: p.getY() - foe.getY(), xs: p.getXSpeed(), ys: p.getYSpeed() });
+		p.kill();
+	}
+	return out;
+}
+
+// a move it asked for and has no animation for, while it holds a power that came with a move: that
+// power's move, played as the fighter it came from. it stays in its neutral special on its own body
+// (standing or falling, so it is hit where it is), with that fighter's art drawn over it frame by frame
+var borrowed = self.makeObject(null);
+var borrowedAt = self.makeInt(0);
+var borrowedHit = self.makeObject(null);
+// (the drawing is not game state: it is redrawn from `borrowedAt` every frame)
+var borrowedArt = null;
+function borrowedMove(label) {
+	var p = power.get();
+	if (p == null || p.body == null) return false;
+	var move = self.isOnFloor() ? p.body.ground : p.body.air;
+	if (move == null) move = self.isOnFloor() ? p.body.air : p.body.ground;
+	if (move == null) return false;
+	borrowed.set({ body: p.body, frames: move });
+	borrowedAt.set(0);
+	borrowedHit.set([]);
+	self.toState(CState.SPECIAL_NEUTRAL, self.isOnFloor() ? "stand" : "fall_loop");
+	return true;
+}
+function borrowedFrame() {
+	var b = borrowed.get();
+	if (b == null) { if (borrowedArt != null) borrowedDone(); return; }
+	if (!self.inState(CState.SPECIAL_NEUTRAL)) { borrowedDone(); return; }
+	// (in hitstop it holds its frame)
+	var t = borrowedAt.get();
+	if (self.getHitstop() > 0 && t > 0) { borrowedDraw(b, b.frames[t - 1]); return; }
+	if (t >= b.frames.length) {
+		borrowedDone();
+		self.toState(self.isOnFloor() ? CState.STAND : CState.FALL);
+		return;
+	}
+	var f = b.frames[t];
+	borrowedAt.set(t + 1);
+	borrowedDraw(b, f);
+	if (f.xs != 0 || f.ys != 0) { self.setXSpeed(self.flipX(f.xs)); self.setYSpeed(f.ys); }
+	for (s in f.shots) {
+		var q = match.createProjectile(s.content, self);
+		if (q == null) continue;
+		q.setX(self.getX() + self.flipX(s.x));
+		q.setY(self.getY() + s.y);
+		q.setXSpeed(self.flipX(s.xs));
+		q.setYSpeed(s.ys);
+		if (self.isFacingRight()) q.faceRight(); else q.faceLeft();
+	}
+	for (h in f.hits) borrowedStrike(h);
+}
+// a hitbox of the move on each other fighter it touches, once a hitbox a move, with that hitbox's stats
+function borrowedStrike(h) {
+	var done = borrowedHit.get();
+	for (foe in match.getCharacters()) {
+		if (foe == self || foe.isDisposed()) continue;
+		var key = foe.getUid() + ":" + h.id;
+		if (done.indexOf(key) >= 0 || !touches(h, foe)) continue;
+		borrowedHit.set(done.concat([key]));
+		done = borrowedHit.get();
+		self.syncHitboxStats(h.stats);
+		self.attemptHit(foe, h.stats, null);
+	}
+}
+// whether a box of its move, where it stands and as it faces, overlaps one of the other's hurtboxes
+function touches(h, foe) {
+	var hurt = foe.getCollisionBoxes(CollisionBoxType.HURT);
+	if (hurt == null) return false;
+	var ax = self.getX() + (self.isFacingRight() ? h.x : -(h.x + h.w));
+	var ay = self.getY() + h.y;
+	for (o in hurt) {
+		var bx = foe.getX() + (foe.isFacingRight() ? o.x : -(o.x + o.width));
+		var by = foe.getY() + o.y;
+		if (ax < bx + o.width && bx < ax + h.w && ay < by + o.height && by < ay + h.h) return true;
+	}
+	return false;
+}
+function borrowedDraw(b, f) {
+	if (borrowedArt == null || borrowedArt.isDisposed()) {
+		borrowedArt = Sprite.create(b.body.sprite);
+		self.getTopLayer().addChild(borrowedArt);
+	}
+	// (its colours go on after its animation: showing another animation drops them)
+	if (borrowedArt.currentAnimation != f.anim) {
+		borrowedArt.currentAnimation = f.anim;
+		if (b.body.palette != null) borrowedArt.setPalette(b.body.palette);
+	}
+	borrowedArt.currentFrame = f.frame;
+	self.getSprite().visible = false;
+}
+function borrowedDone() {
+	borrowed.set(null);
+	if (borrowedArt != null) { borrowedArt.remove(); borrowedArt = null; }
+	self.getSprite().visible = true;
 }
