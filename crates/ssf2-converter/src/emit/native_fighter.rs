@@ -311,7 +311,8 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
                 let moves = m.as_ref().map(|m| m.moves.iter().map(|x| compile::quote(x)).collect::<Vec<_>>().join(", ")).unwrap_or_default();
                 vec![("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed)), ("COPY_MOVES", format!("[{moves}]")),
                      ("SWALLOW", q(m.as_ref().map(|m| &m.swallow))), ("SPIT", q(m.as_ref().and_then(|m| m.spit.as_ref()))),
-                     ("SUCKING", q(m.as_ref().and_then(|m| m.sucking.as_ref()))), ("POWER_FIELD", q(m.as_ref().map(|m| &m.field)))]
+                     ("SUCKING", q(m.as_ref().and_then(|m| m.sucking.as_ref()))), ("POWER_FIELD", q(m.as_ref().map(|m| &m.field))),
+                     ("STRIKE_FRAMES", strike_frames(&char_dir.join(format!("library/entities/{char_pascal}.entity"))))]
             }
             "home" => vec![("SPEED", num(f.units.speed))],
             "rocket" => vec![("ATTACK", rocket.clone().unwrap_or_else(|| "null".into())), ("SPEED", num(f.units.speed)),
@@ -628,6 +629,30 @@ fn num(n: f64) -> String { if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}",
 /// what it is while it draws one in, and the field the power is read from is the one the source's
 /// game hands it the swallowed one's power in
 pub struct CopyMove { pub moves: Vec<String>, pub swallow: String, pub spit: Option<String>, pub sucking: Option<String>, pub field: String }
+
+/// the frame each animation of the entity first shows a hitbox on (from 1), as a script list of
+/// [animation, frame] pairs: where a pose of its own lands its blow
+fn strike_frames(entity: &Path) -> String {
+    let json: serde_json::Value = std::fs::read(entity).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let keys: BTreeMap<&str, &serde_json::Value> = json["keyframes"].as_array().map(|a| a.iter().filter_map(|k| Some((k["$id"].as_str()?, k))).collect()).unwrap_or_default();
+    let layers: BTreeMap<&str, &serde_json::Value> = json["layers"].as_array().map(|a| a.iter().filter_map(|l| Some((l["$id"].as_str()?, l))).collect()).unwrap_or_default();
+    let mut out = Vec::new();
+    for anim in json["animations"].as_array().into_iter().flatten() {
+        let Some(name) = anim["name"].as_str() else { continue };
+        let first = anim["layers"].as_array().into_iter().flatten().filter_map(|id| layers.get(id.as_str()?))
+            .filter(|l| l["name"].as_str().is_some_and(|n| n.starts_with("hitbox")))
+            .filter_map(|l| {
+                let mut at = 0;
+                for k in l["keyframes"].as_array()?.iter().filter_map(|id| keys.get(id.as_str()?)) {
+                    if k["symbol"].is_string() { return Some(at + 1) }
+                    at += k["length"].as_u64().unwrap_or(1);
+                }
+                None
+            }).min();
+        if let Some(n) = first { out.push(format!("[{}, {n}]", compile::quote(name))); }
+    }
+    format!("[{}]", out.join(", "))
+}
 
 pub fn copy_move(f: &Fighting) -> Option<CopyMove> {
     use crate::model::ast::{Expr, Place, Stmt};

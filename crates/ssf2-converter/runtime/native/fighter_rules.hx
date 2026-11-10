@@ -1045,7 +1045,8 @@ function powerItem(name) {
 //: COPY_MOVES the source's names for its copy move (each animation showing the clip whose code
 //: takes the power), SWALLOW and SPIT the labels in that clip where it swallows and spits, SUCKING
 //: the `xframe` its first frame sets, POWER_FIELD the field it reads the power from: all read off
-//: its clip (`native_fighter::copy_move`). the numbers are the source game's own
+//: its clip (`native_fighter::copy_move`); STRIKE_FRAMES each of its animations' first hitbox frame,
+//: read off its entity (`native_fighter::strike_frames`). the numbers are the source game's own
 // full: one it grabbed in its copy move, holding no power, is held inside it, unseen, where it
 // stands, struggling out over 60 of the source's frames (sooner as it mashes); an attack spits it out,
 // a special or down swallows it: the move plays from its start and, once its clip says it is drawing
@@ -1131,10 +1132,7 @@ function powerOf(foe) {
 	if (rec.id == null) rec.id = foe.getGameObjectStat("spriteContent");
 	var ground = rehearse(foe, "special_neutral");
 	var air = rehearse(foe, "special_neutral_air");
-	if (ground != null || air != null) {
-		var shader = foe.getCostumeShader();
-		rec.body = { sprite: foe.getGameObjectStat("spriteContent"), palette: shader == null ? null : shader.paletteMap, ground: ground, air: air };
-	}
+	if (ground != null || air != null) rec.body = { ground: ground, air: air };
 	return rec;
 }
 
@@ -1151,6 +1149,7 @@ function rehearse(foe, anim) {
 	foe.setXSpeed(0);
 	foe.setYSpeed(0);
 	foe.playAnimation(anim);
+	var mid = bodyMiddle(foe);
 	var frames = [];
 	var seen = [];
 	while (frames.length < 300) {
@@ -1168,7 +1167,15 @@ function rehearse(foe, anim) {
 	foe.playAnimation(was.anim);
 	foe.playFrame(was.frame);
 	if (was.right) foe.faceRight(); else foe.faceLeft();
-	return frames.length == 0 ? null : frames;
+	return frames.length == 0 ? null : { frames: frames, mid: mid };
+}
+// how high the middle of its body is over its feet, from its hurtboxes
+function bodyMiddle(foe) {
+	var hurt = foe.getCollisionBoxes(CollisionBoxType.HURT);
+	if (hurt == null || hurt.length == 0) return 0;
+	var top = 0.0; var bottom = 0.0;
+	for (o in hurt) { top = Math.min(top, o.y); bottom = Math.max(bottom, o.y + o.height); }
+	return (top + bottom) / 2;
 }
 // the hitboxes it shows now, each with its number and stats (its boxes tested against themselves
 // are the one way to learn which hitbox each is)
@@ -1198,8 +1205,11 @@ function rehearsedShots(foe, known) {
 }
 
 // a move it asked for and has no animation for, while it holds a power that came with a move: that
-// power's move, played as the fighter it came from. it stays in its neutral special on its own body
-// (standing or falling, so it is hit where it is), with that fighter's art drawn over it frame by frame
+// power's move, its hitboxes, projectiles and speeds as the fighter it came from played them, done in
+// this fighter's own art. it stays in its neutral special on its own body (standing or falling, so it
+// is hit where it is) and shows one of its own standard poses over the move's length: shooting when
+// the move makes projectiles, else a tilt (an aerial in the air) toward where its hitboxes reach.
+// the pose is drawn, not played, so the pose's own hitboxes and code stay out of it
 var borrowed = self.makeObject(null);
 var borrowedAt = self.makeInt(0);
 var borrowedHit = self.makeObject(null);
@@ -1208,14 +1218,33 @@ var borrowedArt = null;
 function borrowedMove(label) {
 	var p = power.get();
 	if (p == null || p.body == null) return false;
-	var move = self.isOnFloor() ? p.body.ground : p.body.air;
-	if (move == null) move = self.isOnFloor() ? p.body.air : p.body.ground;
+	var floor = self.isOnFloor();
+	var move = floor ? p.body.ground : p.body.air;
+	if (move == null) move = floor ? p.body.air : p.body.ground;
 	if (move == null) return false;
-	borrowed.set({ body: p.body, frames: move });
+	var lands = -1;
+	for (i in 0...move.frames.length) if (lands < 0 && (move.frames[i].hits.length > 0 || move.frames[i].shots.length > 0)) lands = i;
+	borrowed.set({ frames: move.frames, pose: borrowedPose(move, floor), lands: lands });
 	borrowedAt.set(0);
 	borrowedHit.set([]);
-	self.toState(CState.SPECIAL_NEUTRAL, self.isOnFloor() ? "stand" : "fall_loop");
+	self.toState(CState.SPECIAL_NEUTRAL, floor ? "stand" : "fall_loop");
 	return true;
+}
+// the pose of its own that fits the move: what the move does, read off its recording
+function borrowedPose(move, floor) {
+	var shoots = false; var dx = 0.0; var dy = 0.0; var n = 0;
+	for (f in move.frames) {
+		if (f.shots.length > 0) shoots = true;
+		for (h in f.hits) { dx += h.x + h.w / 2; dy += h.y + h.h / 2 - move.mid; n++; }
+	}
+	var pose = null;
+	if (shoots) pose = floor ? "item_shoot" : "item_throw_air_forward";
+	else if (n > 0) {
+		dx /= n; dy /= n;
+		var way = dy < -Math.abs(dx) ? "up" : (dy > Math.abs(dx) ? "down" : "forward");
+		pose = (floor ? "tilt_" : "aerial_") + way;
+	}
+	return pose != null && self.hasAnimation(pose) ? pose : null;
 }
 function borrowedFrame() {
 	var b = borrowed.get();
@@ -1223,7 +1252,7 @@ function borrowedFrame() {
 	if (!self.inState(CState.SPECIAL_NEUTRAL)) { borrowedDone(); return; }
 	// (in hitstop it holds its frame)
 	var t = borrowedAt.get();
-	if (self.getHitstop() > 0 && t > 0) { borrowedDraw(b, b.frames[t - 1]); return; }
+	if (self.getHitstop() > 0 && t > 0) { borrowedDraw(b, t - 1); return; }
 	if (t >= b.frames.length) {
 		borrowedDone();
 		self.toState(self.isOnFloor() ? CState.STAND : CState.FALL);
@@ -1231,7 +1260,7 @@ function borrowedFrame() {
 	}
 	var f = b.frames[t];
 	borrowedAt.set(t + 1);
-	borrowedDraw(b, f);
+	borrowedDraw(b, t);
 	if (f.xs != 0 || f.ys != 0) { self.setXSpeed(self.flipX(f.xs)); self.setYSpeed(f.ys); }
 	for (s in f.shots) {
 		var q = match.createProjectile(s.content, self);
@@ -1270,17 +1299,29 @@ function touches(h, foe) {
 	}
 	return false;
 }
-function borrowedDraw(b, f) {
+// its own pose drawn in its own colours over its hidden body, timed so the pose lands its blow on
+// the frame the move first lands its own (STRIKE_FRAMES: where each of its animations first shows a
+// hitbox, as [animation, frame] pairs), and stretched evenly where the pose has none
+var strikeFrames = STRIKE_FRAMES;
+function borrowedDraw(b, t) {
+	if (b.pose == null) return;
 	if (borrowedArt == null || borrowedArt.isDisposed()) {
-		borrowedArt = Sprite.create(b.body.sprite);
+		borrowedArt = Sprite.create(self.getGameObjectStat("spriteContent"));
 		self.getTopLayer().addChild(borrowedArt);
 	}
 	// (its colours go on after its animation: showing another animation drops them)
-	if (borrowedArt.currentAnimation != f.anim) {
-		borrowedArt.currentAnimation = f.anim;
-		if (b.body.palette != null) borrowedArt.setPalette(b.body.palette);
+	if (borrowedArt.currentAnimation != b.pose) {
+		borrowedArt.currentAnimation = b.pose;
+		var shader = self.getCostumeShader();
+		if (shader != null) borrowedArt.setPalette(shader.paletteMap);
 	}
-	borrowedArt.currentFrame = f.frame;
+	var all = borrowedArt.totalFrames;
+	var strike = null;
+	for (p in strikeFrames) if (p[0] == b.pose) strike = p[1];
+	var frame = 1 + Math.floor(t * all / b.frames.length);
+	if (strike != null && b.lands > 0 && t < b.lands) frame = 1 + Math.floor(t * (strike - 1) / b.lands);
+	else if (strike != null && b.lands >= 0) frame = strike + Math.floor((t - b.lands) * (all - strike + 1) / (b.frames.length - b.lands));
+	borrowedArt.currentFrame = Std.int(Math.min(frame, all));
 	self.getSprite().visible = false;
 }
 function borrowedDone() {

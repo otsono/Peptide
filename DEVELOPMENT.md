@@ -694,8 +694,12 @@ a power it has no art for (a fighter from any mod, peptide's or not) still comes
 unseen while it is held, and writes down each frame (the frame shown, its hitboxes with their numbers
 and stats, the projectiles its code made, the speed it gave itself). when its code asks for a move it
 has no animation for while it holds that power (`forceAttackAsked`), `borrowedMove` plays the
-recording: it stays in its neutral special on its own body, the other fighter's sprite drawn over it
-in that fighter's colours, its boxes hitting as that fighter's stats, its projectiles fired as its own.
+recording in its own art: it stays in its neutral special on its own body, the move's boxes hitting
+with that fighter's stats and its projectiles fired as its own, and shows one of its own standard
+poses (`borrowedPose`): `item_shoot` (`item_throw_air_forward` in the air) when the move makes
+projectiles, else a tilt (an aerial in the air) toward where the move's hitboxes reach. the pose is
+drawn, not played, so its own boxes and frame code stay out of it, and it's timed so its first
+hitbox frame (`STRIKE_FRAMES`, read off the entity at conversion) lands on the move's first hit.
 nothing per fighter is written anywhere: the same rule copies any fighter.
 a jump to a label inside another animation goes through `playLabelIn`, and that animation's
 first frame's own code skips while it does (the engine runs the first frame as it starts an

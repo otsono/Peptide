@@ -1955,9 +1955,10 @@ before treating one as a gap.
 ## known issues & gaps
 
 **a power kirby has no art for** is the swallowed fighter's own neutral special, rehearsed while it
-is held and played back with its sprite over kirby (DEVELOPMENT, copied powers). live: pikachu and
-captain falcon with their published records cleared (so kirby sees only what any fighter shows)
-fire the thunder jolt and land the falcon punch as kirby's, hold through hitstop, and clean up when
+is held and played back in kirby's own art, in a pose of his picked by what the move does
+(DEVELOPMENT, copied powers). live: pikachu and captain falcon with their published records cleared
+(so kirby sees only what any fighter shows) fire the thunder jolt from kirby's shooting pose and land
+the falcon punch on the strike frame of his forward tilt, hold through hitstop, and clean up when
 kirby is knocked out of the move. what the rehearsal can't see:
 
 | gap | why |
@@ -1966,7 +1967,8 @@ kirby is knocked out of the move. what the rehearsal can't see:
 | sounds, effects and timers the rehearsed code starts still happen, inside kirby | only projectiles can be listed and taken back |
 | a projectile is re-made from its sprite id | the api gives a projectile's sprite, not the content it was made from; the two are the same in every mod seen so far |
 | a base-game fighter isn't tested live | the session can't load kirby's mod beside a base-game fighter (the second player resolves under the wrong namespace) |
-| boxes and art aren't rescaled when the two fighters' sizes differ | both fighters tested are size 1 |
+| boxes aren't rescaled when the two fighters' sizes differ | both fighters tested are size 1 |
+| the pose shows what kind of move it is, not the move itself | kirby has no art of a fighter nobody drew a copy for; a move that only moves (no boxes, no shots) shows his plain stand or fall |
 
 **accepted engine differences.** gaps between the two engines that stay as they are: don't
 chase them or count them as open.
