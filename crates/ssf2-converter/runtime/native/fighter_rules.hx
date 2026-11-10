@@ -796,14 +796,14 @@ function linkFrame() {
 // fighter's freezes, and one made in a frame's code comes due two engine frames sooner the first
 // time (the source ticks the frame it is made in too). the record is what its code stops it by
 function startTimer(n, times, fn, keep, inFrame) {
-	var t = { id: -1, left: times, dead: false, fn: fn };
+	var t = { id: -1, left: times, dead: false, fn: fn, now: false };
 	var opts = { persistent: keep, pauseCondition: frozen };
 	var first = inFrame ? 2 * n - 2 : 2 * n;
 	if (first == 2 * n) { t.id = self.addTimer(2 * n, times, function() { tickTimer(t); }, opts); return t; }
-	// a one-frame one made in a frame's code ticks in that frame, once the frame's code is done
-	// (sooner, it reads what the code sets after making it), and then each source frame
+	// a one-frame one made in a frame's code ticks in that frame, right after the code that made it
+	// (`tickNow`), and then each source frame
 	if (first == 0) {
-		afterFrame.get().push(function() { tickTimer(t); });
+		t.now = true;
 		var rest = times < 0 ? -1 : times - 1;
 		if (rest != 0) t.id = self.addTimer(2 * n, rest, function() { tickTimer(t); }, opts);
 		return t;
@@ -816,13 +816,11 @@ function startTimer(n, times, fn, keep, inFrame) {
 	}, opts);
 	return t;
 }
-// what waits for the end of the frame's code: a one-frame timer it made
-var afterFrame = self.makeObject([]);
-function runAfterFrame() {
-	var waiting = afterFrame.get();
-	if (waiting.length == 0) return;
-	afterFrame.set([]);
-	for (f in waiting) f();
+// the first tick of a timer due in the frame that made it
+function tickNow(t) {
+	if (t == null || !t.now) return;
+	t.now = false;
+	tickTimer(t);
 }
 function tickTimer(t) {
 	if (t.dead) return;

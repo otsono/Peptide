@@ -3477,7 +3477,9 @@ self.playFrameLabel({})", quote(f))); }
                 Some(c) => { let t = self.test(&Expr::Call(Box::new(c), vec![]))?; format!("function() {{ if ({t}) {name}(); }}") }
                 None => name.clone(),
             };
-            return Ok((format!("stopTimer({id}.get());\n{id}.set(startTimer({n}, {times}, {run}, {keep}, {}))", self.in_frame), Ty::Any));
+            // (one due in the frame that made it ticks right after the code making it)
+            let now = if self.in_frame { format!(";\ntickNow({id}.get())") } else { String::new() };
+            return Ok((format!("stopTimer({id}.get());\n{id}.set(startTimer({n}, {times}, {run}, {keep}, {})){now}", self.in_frame), Ty::Any));
         }
         let opts = "{ persistent: true }";
         Ok((format!("self.removeTimer({id}.get());\n{id}.set(self.addTimer({every}, {times}, {name}, {opts}))"), Ty::Any))

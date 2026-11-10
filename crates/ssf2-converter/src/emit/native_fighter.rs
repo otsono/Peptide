@@ -536,12 +536,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     // its entity: each frame with code calls it, and what each animation's attack declares runs on its first
     let entity = char_dir.join(format!("library/entities/{char_pascal}.entity"));
     let mut frames = w.frames.clone();
-    // (a one-frame timer its frame code makes ticks once that code is done, a `return` too)
-    let timers = blocks.contains("timers");
-    for code in frames.values_mut() {
-        *code = code.replace(native::FRAME_RETURN, if timers { "runAfterFrame(); return;" } else { "return;" });
-        if timers { code.push_str("\nrunAfterFrame();"); }
-    }
+    for code in frames.values_mut() { *code = code.replace(native::FRAME_RETURN, "return;"); }
     // (an animation its code jumps into at a label: its first frame's own code waits that out,
     // its clip's declarations do not)
     for p in f.pieces.iter().filter(|p| w.mid_targets.contains(&p.fm_name) && !p.reversed && p.head == 0) {
