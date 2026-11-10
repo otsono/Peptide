@@ -1959,10 +1959,14 @@ is held and played back in kirby's own art, in a pose of his picked by what the 
 (DEVELOPMENT, copied powers). live: pikachu and captain falcon with their published records cleared
 (so kirby sees only what any fighter shows) fire the thunder jolt from kirby's shooting pose and land
 the falcon punch on the strike frame of his forward tilt, hold through hitstop, and clean up when
-kirby is knocked out of the move. what the rehearsal can't see:
+kirby is knocked out of the move. a native fighter's move runs its own frame code as kirby
+(`__actAs` / `__moveCode`): pikachu's thunder jolt came out of its own `fire_thunderJolt`, owned by
+kirby and at his position, and hit for 5.25. what the rehearsal can't see, where the move is played
+from the recording:
 
 | gap | why |
 |---|---|
+| a fighter still on the runtime path (captain falcon) has no `__moveCode`, and its frame code errors while rehearsed | stepping it frame by frame skips its playhead; its boxes and launch still come through |
 | a move that waits on a held button or a charge plays one pass | the rehearsal presses nothing, and stops where the code loops back |
 | sounds, effects and timers the rehearsed code starts still happen, inside kirby | only projectiles can be listed and taken back |
 | a projectile is re-made from its sprite id | the api gives a projectile's sprite, not the content it was made from; the two are the same in every mod seen so far |

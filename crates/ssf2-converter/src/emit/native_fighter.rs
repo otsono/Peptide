@@ -452,6 +452,8 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     publish.push("self.exports.__fieldOf = fieldOf;".into());
     publish.push("self.exports.__attackStat = attackStat;".into());
     publish.push("self.exports.__label = rootLabel;".into());
+    publish.push("self.exports.__actAs = actAs;".into());
+    publish.push("self.exports.__moveCode = moveCode;".into());
     // (a fighter that takes powers has the one it holds make the items it does not declare)
     if blocks.contains("copy_power") { publish.push("self.exports.__powerItem = powerItem;".into()); }
     // the power it gives a fighter that swallows it, where it declares one
@@ -569,7 +571,16 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         let code = field_ref.replace_all(code, |c: &regex::Captures| w.field_ids.get(&(class.clone(), c[1].to_string())).cloned().unwrap_or_else(|| "null".into())).to_string();
         extra.insert((anim.clone(), 0), code);
     }
+    // (its content is found in its own files even while its code acts as another fighter: `act_as`)
+    let own_files = |c: &str| c.replace("self.getResource()", "ownResource");
+    for code in frames.values_mut() { *code = own_files(code); }
+    for code in extra.values_mut() { *code = own_files(code); }
     super::native_projectile::keyframes_with(&entity, title, f.model, f.pieces, &frames, false, &extra).map_err(|e| vec![e.to_string()])?;
+    let act_as = native::helper(rt, "fighter_rules", "act_as", "", &[], &move_code(&entity)).map_err(one)?;
+    let script = own_files(&script);
+    // (its own files, first thing after its header, before any of its code reads them)
+    let head = script.lines().take_while(|l| l.starts_with("//")).map(|l| l.len() + 1).sum::<usize>().min(script.len());
+    let script = format!("{}// the files its content is found in, whoever its code is acting as\nvar ownResource = self.getResource();\n\n{}\n\n// ---- act_as: runtime/native/fighter_rules.hx\n{act_as}\n", &script[..head], &script[head..]);
     let mut gaps = w.gaps.clone();
     if blocks.contains("copy_power") && copy_move(f).is_none() { gaps.insert("takes powers, but no clip of its says where it swallows (its code writes no KirbyPower in a frame)".into()); }
     Ok((script, gaps))
@@ -629,6 +640,36 @@ fn num(n: f64) -> String { if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}",
 /// what it is while it draws one in, and the field the power is read from is the one the source's
 /// game hands it the swallowed one's power in
 pub struct CopyMove { pub moves: Vec<String>, pub swallow: String, pub spit: Option<String>, pub sucking: Option<String>, pub field: String }
+
+/// the moves a fighter that copies another runs the code of (the ones `copy_power` rehearses)
+const COPIED_MOVES: [&str; 2] = ["special_neutral", "special_neutral_air"];
+
+/// the code each frame of its copied moves runs, read back off its entity, as the cases of one
+/// switch by animation and frame (a frame from 1, as the engine counts it)
+fn move_code(entity: &Path) -> Vec<String> {
+    let json: serde_json::Value = std::fs::read(entity).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let keys: BTreeMap<&str, &serde_json::Value> = json["keyframes"].as_array().map(|a| a.iter().filter_map(|k| Some((k["$id"].as_str()?, k))).collect()).unwrap_or_default();
+    let layers: BTreeMap<&str, &serde_json::Value> = json["layers"].as_array().map(|a| a.iter().filter_map(|l| Some((l["$id"].as_str()?, l))).collect()).unwrap_or_default();
+    let mut cases = Vec::new();
+    for anim in json["animations"].as_array().into_iter().flatten() {
+        let Some(name) = anim["name"].as_str().filter(|n| COPIED_MOVES.contains(n)) else { continue };
+        for l in anim["layers"].as_array().into_iter().flatten().filter_map(|id| layers.get(id.as_str()?)).filter(|l| l["type"] == "FRAME_SCRIPT") {
+            let mut at = 0;
+            for k in l["keyframes"].as_array().into_iter().flatten().filter_map(|id| keys.get(id.as_str()?)) {
+                if let Some(code) = k["code"].as_str().filter(|c| !c.trim().is_empty()) {
+                    cases.push(format!("\tcase {}:", compile::quote(&format!("{name}#{}", at + 1))));
+                    cases.extend(code.lines().map(|c| format!("\t\t{c}")));
+                }
+                at += k["length"].as_u64().unwrap_or(1);
+            }
+        }
+    }
+    if cases.is_empty() { return cases }
+    let mut out = vec!["switch (anim + \"#\" + frame) {".to_string()];
+    out.extend(cases);
+    out.push("}".into());
+    out
+}
 
 /// the frame each animation of the entity first shows a hitbox on (from 1), as a script list of
 /// [animation, frame] pairs: where a pose of its own lands its blow

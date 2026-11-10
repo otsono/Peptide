@@ -700,6 +700,14 @@ poses (`borrowedPose`): `item_shoot` (`item_throw_air_forward` in the air) when 
 projectiles, else a tilt (an aerial in the air) toward where the move's hitboxes reach. the pose is
 drawn, not played, so its own boxes and frame code stay out of it, and it's timed so its first
 hitbox frame (`STRIKE_FRAMES`, read off the entity at conversion) lands on the move's first hit.
+where the swallowed fighter lets it, the move runs its real frame code instead of the recording's
+projectiles and speeds: every native fighter publishes `__actAs(me, fn)` (runs `fn` with its
+script's `self` pointed at `me`, so every function of its own the code calls acts on the copier) and
+`__moveCode(anim, frame)` (its neutral special's frame code as one switch, read off its entity), and
+its script finds content through `ownResource`, so its own projectiles and sounds still resolve while
+it acts as another. the copier calls them each frame of the move; hitboxes are entity data, not code,
+so they still come from the recording. a mod made anywhere can publish the same two to be copied in
+full; one that doesn't is played from the recording.
 nothing per fighter is written anywhere: the same rule copies any fighter.
 a jump to a label inside another animation goes through `playLabelIn`, and that animation's
 first frame's own code skips while it does (the engine runs the first frame as it starts an
