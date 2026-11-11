@@ -2,42 +2,6 @@
 // (emit/native_fighter.rs): each block's `// {cases}` line is replaced by the cases its package
 // gives it. Edit them here.
 
-// ---- attack_label
-// the attack (the source's label) each animation shows
-function attackLabel(anim) {
-	switch (anim) {
-		// {cases}
-	}
-	return null;
-}
-
-// ---- declared
-// what each attack declares, of the stats its rules and its code read
-function declared(label, k) {
-	switch (label) {
-		// {cases}
-	}
-	return null;
-}
-
-// ---- declared_box
-// what each attack's boxes declare, of the stats its rules read, by the source's box number
-function declaredBox(label, i, k) {
-	switch (label) {
-		// {cases}
-	}
-	return null;
-}
-
-// ---- label_anims
-// the animations each of the source's labels its code turns off shows
-function labelAnims(label) {
-	switch (label) {
-		// {cases}
-	}
-	return [];
-}
-
 // ---- clip_label
 // the label its clip is on, as the source reads it (the last at or before the frame it shows)
 function clipLabel() {
@@ -49,20 +13,13 @@ function clipLabel() {
 }
 
 // ---- item_box
-// where its item box is, in the source's units from its origin, on the frame it shows: from the
-// frame each row starts on, [frame, x, y, ...]
+//: SIZE the source's units in this engine's
+// where its item box is, in the source's units from its origin, on the frame it shows: the custom
+// box each animation that places one carries (`CUSTOM_BOX_A`, written from the source's)
 function itemBox() {
-	var k = Std.int((self.getCurrentFrame() - 1) / 2);
-	switch (self.getAnimation()) {
-		// {cases}
-	}
-	return { x: 0, y: 0 };
-}
-function boxAt(k, row) {
-	var i = 0;
-	var at = 0;
-	while (i < row.length) { if (row[i] <= k) at = i; i += 3; }
-	return { x: row[at + 1], y: row[at + 2] };
+	var bs = self.getCollisionBoxes(CollisionBoxType.CUSTOMA);
+	if (bs == null || bs.length == 0) return { x: 0, y: 0 };
+	return { x: bs[0].centerX / SIZE, y: bs[0].centerY / SIZE };
 }
 
 // ---- item_content
@@ -112,27 +69,30 @@ function animOf(label) {
 // the container a field of one of its clips is kept in, for another object's code ("self" its own
 // class, "root" its clip, "stance" the clip its animation shows)
 function fieldOf(clip, name) {
-	var c = clip == "self" ? ITSELF : (clip == "root" ? ROOT : classOf(self.getAnimation()));
+	var c = clip == "self" ? ITSELF : (clip == "root" ? ROOT : self.getAnimationStatsMetadata().clip);
 	switch (c) {
 		// {cases}
 	}
 	return null;
 }
 
-// ---- stance_class
-// the class of the clip each animation shows
-function classOf(a) {
-	switch (a) {
-		// {cases}
-	}
-	return null;
+// ---- clip_label_meta
+// the label its clip is on, as the source reads it (the last at or before the frame it shows): its
+// animation's metadata says, `clipLabel` as it starts and `clipLabels` [frame, label] inside it
+function clipLabel() {
+	var m = self.getAnimationStatsMetadata();
+	if (m == null) return null;
+	var at = m.clipLabel;
+	if (m.clipLabels == null) return at;
+	var k = Std.int((self.getCurrentFrame() - 1) / 2);
+	for (l in m.clipLabels) if (k >= l[0]) at = l[1];
+	return at;
 }
 
-// ---- root_label
-// the source's label each animation shows (its clip's label), for another object's code
+// ---- root_label_meta
+// the source's label its animation shows (its metadata's `label`), for another object's code
 function rootLabel() {
-	switch (self.getAnimation()) {
-		// {cases}
-	}
-	return null;
+	var m = self.getAnimationStatsMetadata();
+	return m == null ? null : m.label;
 }
+

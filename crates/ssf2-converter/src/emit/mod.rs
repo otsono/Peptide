@@ -1116,6 +1116,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     landing_stats(&dir, &box_writes, &label_jumps(&model, &pieces))?;
     autolink_entity(&entity_path, &dir.join("HitboxStats.hx"), char_name, &links, units.size)?;
     engine_animations(&entity_path, &dir.join("AnimationStats.hx"), char_name)?;
+    if natively_written.is_ok() { native_fighter::write_attack_meta(&dir.join("AnimationStats.hx"))?; }
     // each projectile and item the fighter declares runs on the runtime too
     let owner = native_projectile::Owner { attacks: &fighter.attacks, stats: &fighter.stats, anims: pieces.iter().map(|p| (p.fm_name.clone(), p.label.clone())).collect(), native: natively_written.is_ok() };
     let mut natively: Vec<(String, Result<(), String>)> = Vec::new();

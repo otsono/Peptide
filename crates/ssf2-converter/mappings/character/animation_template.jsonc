@@ -15,16 +15,18 @@
 // playing when it comes back down (landType NONE): the source runs an attack clip to its end
 // either way, so a hop inside one is not a landing.
 // Emitted by haxe_gen::generate_animation_stats; `props` is the object-literal body (empty = `{}`).
+// `walks`: the fighter walks or runs on its own in it, so a zero x speed its code writes there is
+// the walk's starting speed (the source's walk applies its speed after the code runs).
 [
   { "name": "stand", "props": "" },
   { "name": "stand_turn", "props": "" },
-  { "name": "walk_in", "props": "" },
-  { "name": "walk_loop", "props": "" },
-  { "name": "walk_out", "props": "" },
-  { "name": "dash", "props": "" },
-  { "name": "run", "props": "" },
-  { "name": "run_turn", "props": "" },
-  { "name": "skid", "props": "" },
+  { "name": "walk_in", "props": "", "walks": true },
+  { "name": "walk_loop", "props": "", "walks": true },
+  { "name": "walk_out", "props": "", "walks": true },
+  { "name": "dash", "props": "", "walks": true },
+  { "name": "run", "props": "", "walks": true },
+  { "name": "run_turn", "props": "", "walks": true },
+  { "name": "skid", "props": "", "walks": true },
   { "name": "jump_squat", "props": "" },
   { "name": "jump_in", "props": "" },
   { "name": "jump_midair", "props": "" },

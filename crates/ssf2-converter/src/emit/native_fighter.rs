@@ -295,13 +295,9 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let rocket = rocketing.first().map(|l| compile::quote(l));
     if rocket.is_some() { blocks.insert("rocket".into()); }
     let mut functions = w.functions.clone();
-    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "walk_start", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "fired_stats", "ledges", "home", "own_floor", "nearest", "ground_test", "recover", "copy_power"];
+    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "fired_stats", "ledges", "home", "own_floor", "nearest", "ground_test", "recover", "copy_power"];
     for b in order.iter().filter(|b| blocks.contains(**b)) {
         let words: Vec<(&str, String)> = match *b {
-            "walk_start" => {
-                let stat = |k: &str| match f.fighter.stats.get(k) { Some(Value::Num(n)) => *n, _ => 0.0 };
-                vec![("START", num(stat("accel_start") * stat("norm_xSpeed") * f.units.speed))]
-            }
             "items" => vec![("TOSS", num(f.units.item_toss)), ("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed))],
             "ledges" | "own_floor" | "ground_test" => vec![("SIZE", num(f.units.size))],
             "copy_power" => {
@@ -329,44 +325,52 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let table = |key: &str, lines: &[String]| native::helper(rt, "fighter_tables", key, "", &[], lines).map_err(|e| vec![e]);
     let mut cases: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in f.pieces { if !p.label.is_empty() && attacks.get(&p.label).is_some() { cases.entry(p.label.clone()).or_default().push(compile::quote(&p.fm_name)); } }
-    let labels: Vec<String> = cases.iter().map(|(label, anims)| { let mut a = anims.clone(); a.dedup(); format!("case {}: return {};", a.join(", "), compile::quote(label)) }).collect();
     let mut keys: BTreeSet<String> = w.stat_keys.iter().filter(|k| !k.contains(':') && !k.ends_with('*')).cloned().collect();
     for k in ["cancelSoundOnEnd", "cancelVoiceOnEnd", "refreshRate"] { keys.insert(k.into()); }
     let box_keys = ["hitLag", "bypassGrabbed", "bypassNonGrabbed", "hasEffect", "reverse_character", "poison", "poisonInterval", "poisonLength"];
-    let mut t = Vec::new();
-    let mut boxes = Vec::new();
+    // (each animation carries what the source says of it as its metadata: the label it shows, the
+    // class of its clip, the labels inside it; an attack's, the attack, what it declares that this
+    // engine has no stat for, and its boxes' by the source's box number)
+    let mut fields_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for p in f.pieces {
+        if fields_of.contains_key(&p.fm_name) { continue }
+        let mut fs = Vec::new();
+        if !p.label.is_empty() { fs.push(format!("label: {}", compile::quote(&p.label))); }
+        if let Some(c) = f.model.class_of(p.sym) { fs.push(format!("clip: {}", compile::quote(&c.name))); }
+        if let Some((before, inside)) = clip_label_data(f.model, p) {
+            fs.push(format!("clipLabel: {}", before.map(|b| compile::quote(&b)).unwrap_or_else(|| "null".into())));
+            if !inside.is_empty() { fs.push(format!("clipLabels: [{}]", inside.iter().map(|(k, l)| format!("[{k}, {}]", compile::quote(l))).collect::<Vec<_>>().join(", "))); }
+        }
+        fields_of.insert(p.fm_name.clone(), fs);
+    }
+    let mut meta: BTreeMap<String, String> = BTreeMap::new();
     for (label, a) in attacks.entries() {
-        if !cases.contains_key(label) { continue }
+        let Some(anims) = cases.get(label) else { continue };
         // (a sound numbered as it runs reads any of the attack's numbered ones)
         let mut ks: BTreeSet<String> = keys.clone();
         for pre in ["attackSound", "attackVoice"] {
             if w.stat_keys.contains(&format!("{pre}*")) { ks.extend(a.entries().iter().map(|(k, _)| k.clone()).filter(|k| k.starts_with(pre) && k.ends_with("_id"))); }
         }
-        let stats: Vec<String> = ks.iter().filter_map(|k| a.get(k).and_then(plain).filter(|v| v != "null").map(|v| format!("\t\tcase {}: return {v};", compile::quote(k)))).collect();
-        if !stats.is_empty() {
-            t.push(format!("case {}:", compile::quote(label)));
-            t.push("\tswitch (k) {".into());
-            t.extend(stats);
-            t.push("\t}".into());
-        }
-        let mut per: Vec<String> = Vec::new();
+        let mut fields = vec![format!("attack: {}", compile::quote(label))];
+        fields.extend(ks.iter().filter(|k| compile::ident(k) == **k).filter_map(|k| a.get(k).and_then(plain).filter(|v| v != "null").map(|v| format!("{k}: {v}"))));
+        let mut per: BTreeMap<u32, String> = BTreeMap::new();
         for (bn, b) in a.get("attackBoxes").map(|b| b.entries().to_vec()).unwrap_or_default() {
             let i = if bn == "attackBox" { 1 } else { match bn.strip_prefix("attackBox").and_then(|n| n.parse::<u32>().ok()) { Some(n) => n, None => continue } };
-            let st: Vec<String> = box_keys.iter().filter_map(|k| b.get(k).and_then(plain).filter(|v| v != "null").map(|v| format!("\t\t\tcase {}: return {v};", compile::quote(k)))).collect();
-            if st.is_empty() { continue }
-            per.push(format!("\tcase {i}:"));
-            per.push("\t\tswitch (k) {".into());
-            per.extend(st);
-            per.push("\t\t}".into());
+            let st: Vec<String> = box_keys.iter().filter_map(|k| b.get(k).and_then(plain).filter(|v| v != "null").map(|v| format!("{k}: {v}"))).collect();
+            if !st.is_empty() { per.insert(i, format!("{{ {} }}", st.join(", "))); }
         }
-        if !per.is_empty() {
-            boxes.push(format!("case {}:", compile::quote(label)));
-            boxes.push("switch (i) {".into());
-            boxes.extend(per);
-            boxes.push("}".into());
+        if let Some(last) = per.keys().max().copied() {
+            let list: Vec<String> = (1..=last).map(|i| per.get(&i).cloned().unwrap_or_else(|| "null".into())).collect();
+            fields.push(format!("boxes: [{}]", list.join(", ")));
+        }
+        for anim in anims {
+            let own = fields_of.remove(anim.trim_matches('"')).unwrap_or_default();
+            let all: Vec<String> = own.into_iter().chain(fields.iter().cloned()).collect();
+            meta.insert(anim.trim_matches('"').to_string(), format!("{{ {} }}", all.join(", ")));
         }
     }
-    functions.push(table("attack_label", &labels)?);
+    for (anim, fs) in fields_of { if !fs.is_empty() { meta.insert(anim, format!("{{ {} }}", fs.join(", "))); } }
+    if let Ok(mut m) = attack_meta().lock() { *m = meta; }
     // what other objects' code asks of it: its labels' animations, its clips' fields
     let anim_cases: Vec<String> = f.anim_of.iter().map(|(l, a)| format!("case {}: return {};", compile::quote(l), compile::quote(a))).collect();
     functions.push(table("anim_of", &anim_cases)?);
@@ -402,20 +406,11 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let itself = parts.itself.map(|c| compile::quote(&c.name)).unwrap_or_else(|| "null".into());
     let root = f.model.class_of(parts.root).map(|c| compile::quote(&c.name)).unwrap_or_else(|| "null".into());
     functions.push(native::helper(rt, "fighter_tables", "field_of", "", &[("ITSELF", itself), ("ROOT", root)], &field_cases).map_err(one)?);
-    let mut stance: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for p in f.pieces { if let Some(c) = f.model.class_of(p.sym) { stance.entry(c.name.clone()).or_default().push(compile::quote(&p.fm_name)); } }
-    let stance_cases: Vec<String> = stance.iter().map(|(c, a)| { let mut a = a.clone(); a.dedup(); format!("case {}: return {};", a.join(", "), compile::quote(c)) }).collect();
-    functions.push(table("stance_class", &stance_cases)?);
-    let mut by_label: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    for p in f.pieces.iter().filter(|p| !p.label.is_empty()) { by_label.entry(p.label.as_str()).or_default().push(compile::quote(&p.fm_name)); }
-    let label_cases: Vec<String> = by_label.iter().map(|(l, a)| { let mut a = a.clone(); a.dedup(); format!("case {}: return {};", a.join(", "), compile::quote(l)) }).collect();
-    functions.push(table("root_label", &label_cases)?);
-    functions.push(table("declared", &t)?);
-    functions.push(table("declared_box", &boxes)?);
+    functions.push(table("root_label_meta", &[])?);
     if blocks.contains("items") { functions.extend(item_tables(f).map_err(|e| vec![e])?); }
     // (the label its clip is on, for its own code and for another object's that reads it)
     let read_by_others = native::reads_others_label(f.model);
-    if read_by_others || code_text.contains("clipLabel(") || functions.iter().any(|t| t.contains("clipLabel(")) { functions.push(table("clip_label", &clip_labels(f.model, f.pieces))?); }
+    if read_by_others || code_text.contains("clipLabel(") || functions.iter().any(|t| t.contains("clipLabel(")) { functions.push(table("clip_label_meta", &[])?); }
     if blocks.contains("fired_stats") {
         let wanted: BTreeSet<&str> = w.stat_keys.iter().filter_map(|k| k.strip_prefix("projectile:")).collect();
         let mut l = Vec::new();
@@ -428,15 +423,6 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
             l.push("\t}".into());
         }
         functions.push(table("fired_declared", &l)?);
-    }
-    if blocks.contains("actions") {
-        let mut l = Vec::new();
-        for k in w.stat_keys.iter().filter_map(|k| k.strip_prefix("anims:")) {
-            let mut a: Vec<String> = f.pieces.iter().filter(|p| p.label == k).map(|p| compile::quote(&p.fm_name)).collect();
-            a.dedup();
-            l.push(format!("case {}: return [{}];", compile::quote(k), a.join(", ")));
-        }
-        functions.push(table("label_anims", &l)?);
     }
     if !stat_code.is_empty() {
         functions.push(format!("// ---- what its attacks' declared stats and the source's own states have it do: runtime/attack_stats.jsonc, runtime/engine_animations.jsonc\n{code_text}"));
@@ -451,6 +437,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     if rocket.is_some() { publish.push("self.exports.__rocket = rocketAsked;".into()); }
     publish.push("self.exports.__fieldOf = fieldOf;".into());
     publish.push("self.exports.__attackStat = attackStat;".into());
+    publish.push("self.exports.__attackMeta = attackMeta;".into());
     publish.push("self.exports.__label = rootLabel;".into());
     publish.push("self.exports.__actAs = actAs;".into());
     publish.push("self.exports.__moveCode = moveCode;".into());
@@ -537,6 +524,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let entity = char_dir.join(format!("library/entities/{char_pascal}.entity"));
     let mut frames = w.frames.clone();
     for code in frames.values_mut() { *code = code.replace(native::FRAME_RETURN, "return;"); }
+    walk_starts(f, &mut frames);
     // (an animation its code jumps into at a label: its first frame's own code waits that out,
     // its clip's declarations do not)
     for p in f.pieces.iter().filter(|p| w.mid_targets.contains(&p.fm_name) && !p.reversed && p.head == 0) {
@@ -571,13 +559,44 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     // ends, which needs the one it played last)
     let stops = ["cancelSoundOnEnd", "cancelVoiceOnEnd"].iter().any(|k| script.contains(&format!("case \"{k}\"")));
     let named_sound = regex::Regex::new(r#"playSoundOf\(("[^"\\]*"), (?:true|false)\)"#).expect("sound pattern");
+    // (a stat of the attack it is in is read off the attack's metadata: named outright, the field;
+    // numbered as it runs, the declared one of that number)
+    let stat_named = regex::Regex::new(r#"attackStat\("([A-Za-z_][A-Za-z0-9_]*)"\)"#).expect("stat pattern");
+    let stat_numbered = regex::Regex::new(r#"attackStat\("(attackSound|attackVoice)" \+ (Std\.int\(Math\.max\(1, [^()]*\)\)) \+ "_id"\)"#).expect("numbered pattern");
+    let numbered = |pre: &str| -> Vec<u32> {
+        let mut n: BTreeSet<u32> = BTreeSet::new();
+        for (_, a) in attacks.entries() { for (k, _) in a.entries() { if let Some(i) = k.strip_prefix(pre).and_then(|r| r.strip_suffix("_id")).and_then(|r| r.parse().ok()) { n.insert(i); } } }
+        n.into_iter().collect()
+    };
+    // (an attack turned off with no count: back on after what it declares, as read here)
+    let reenable = regex::Regex::new(r#"allowAttack\(([^;]*?), "([^"]*)" /\*reenable\*/\)"#).expect("reenable pattern");
+    let by_label = regex::Regex::new(r#"(allowAttack\(|attackAllowed\()([^;"]*?)"([^"]*)""#).expect("label pattern");
     let own_files = |c: &str| {
         let c = c.replace("self.getResource()", "ownResource");
+        let c = stat_named.replace_all(&c, "attackStat(\"$1\", attackMeta().$1)").into_owned();
+        let c = stat_numbered.replace_all(&c, |m: &regex::Captures| {
+            let n = &m[2];
+            let chain: String = numbered(&m[1]).iter().rev().fold("null".to_string(), |rest, i| format!("({n} == {i} ? attackMeta().{}{i}_id : {rest})", &m[1]));
+            format!("attackStat(\"{}\" + {n} + \"_id\", {chain})", &m[1])
+        }).into_owned();
+        let c = reenable.replace_all(&c, |m: &regex::Captures| {
+            let d = attacks.get(&m[2]).and_then(|a| a.get("reenableTimer")).and_then(|v| match v { Value::Num(n) if *n > 0.0 => Some(num(*n)), _ => None });
+            match d { Some(d) => format!("allowAttack({}, \"{}\", {d})", &m[1], &m[2]), None => format!("allowAttack({}, \"{}\")", &m[1], &m[2]) }
+        }).into_owned();
+        // (an attack turned off or asked of by its label: the label's animations, written in)
+        let c = by_label.replace_all(&c, |m: &regex::Captures| {
+            // (by the source's name for the move, else the clip label its animations show)
+            let mut a: Vec<String> = f.anim_of.get(&m[3]).map(|x| compile::quote(x)).into_iter()
+                .chain(f.pieces.iter().filter(|p| p.label == m[3]).map(|p| compile::quote(&p.fm_name))).collect();
+            a.dedup();
+            format!("{}{}[{}]", &m[1], &m[2], a.join(", "))
+        }).into_owned();
         if stops { c } else { named_sound.replace_all(&c, "AudioClip.play(ownResource.getContent($1))").into_owned() }
     };
     for code in frames.values_mut() { *code = own_files(code); }
     for code in extra.values_mut() { *code = own_files(code); }
     super::native_projectile::keyframes_with(&entity, title, f.model, f.pieces, &frames, false, &extra).map_err(|e| vec![e.to_string()])?;
+    if blocks.contains("items") { item_box_layers(&entity, title, f.pieces, f.units.size).map_err(|e| vec![e.to_string()])?; }
     let act_as = native::helper(rt, "fighter_rules", "act_as", "", &[], &move_code(&entity)).map_err(one)?;
     let script = own_files(&script);
     // (its own files, first thing after its header, before any of its code reads them)
@@ -609,12 +628,6 @@ pub fn clip_labels(model: &SourceModel, pieces: &[Piece]) -> Vec<String> {
 /// content each item it can make is, and what each declares
 fn item_tables(f: &Fighting) -> Result<Vec<String>, String> {
     let rt = f.runtime;
-    let mut rows: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for p in f.pieces.iter().filter(|p| !p.item_box.is_empty()) {
-        let row: Vec<String> = p.item_box.iter().map(|(k, x, y)| format!("{k}, {}, {}", num(*x), num(*y))).collect();
-        rows.entry(row.join(", ")).or_default().push(compile::quote(&p.fm_name));
-    }
-    let boxes: Vec<String> = rows.iter().map(|(row, anims)| format!("case {}: return boxAt(k, [{row}]);", anims.join(", "))).collect();
     let mut content = Vec::new();
     let mut names = Vec::new();
     for (name, _) in f.fighter.items.entries() {
@@ -632,7 +645,7 @@ fn item_tables(f: &Fighting) -> Result<Vec<String>, String> {
         declared.extend(st);
         declared.push("\t}".into());
     }
-    Ok(vec![native::helper(rt, "fighter_tables", "item_box", "", &[], &boxes)?,
+    Ok(vec![native::helper(rt, "fighter_tables", "item_box", "", &[("SIZE", num(f.units.size))], &[])?,
             native::helper(rt, "fighter_tables", "item_content", "", &[("NAMES", names.join(", "))], &content)?,
             native::helper(rt, "fighter_tables", "item_declared", "", &[], &declared)?])
 }
@@ -789,3 +802,112 @@ fn clip_entries(f: &Fighting, w: &native::Written) -> Vec<Entry> {
     }
     out
 }
+
+/// a zero x speed its frame code writes: in an animation it walks or runs in, the walk's own
+/// starting speed (its declared accel_start of norm_xSpeed), as the source's walk applies it after
+/// the code; anywhere else, zero
+fn walk_starts(f: &Fighting, frames: &mut BTreeMap<(u16, u32), String>) {
+    let walks: BTreeSet<&str> = crate::mappings::character_animation_template().iter().filter(|t| t.walks).map(|t| t.name.as_str()).collect();
+    let stat = |k: &str| match f.fighter.stats.get(k) { Some(Value::Num(n)) => *n, _ => 0.0 };
+    let start = num(stat("accel_start") * stat("norm_xSpeed") * f.units.speed);
+    let pattern = regex::Regex::new(r"self\.setXSpeed\(([^;]*?) /\*walk\*/\)").expect("walk pattern");
+    for ((sym, frame), code) in frames.iter_mut() {
+        if !code.contains("/*walk*/") { continue }
+        let walking = f.pieces.iter().any(|p| p.sym == *sym && *frame >= p.from && *frame < p.from + p.frames && walks.contains(p.fm_name.as_str()));
+        *code = pattern.replace_all(code, |c: &regex::Captures| {
+            let v = &c[1];
+            if !walking { format!("self.setXSpeed({v})") }
+            else if v.parse::<f64>().is_ok_and(|n| n == 0.0) { format!("self.setXSpeed({start})") }
+            else { format!("self.setXSpeed({v} == 0 ? {start} : {v})") }
+        }).into_owned();
+    }
+}
+
+/// each attack animation's metadata, as `write` worked it out (the animation's name, its literal)
+pub fn attack_meta() -> &'static std::sync::Mutex<BTreeMap<String, String>> {
+    static META: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, String>>> = std::sync::OnceLock::new();
+    META.get_or_init(Default::default)
+}
+
+/// its animations' stats with their attack metadata set: the last pass over the file, as the
+/// others rewrite its lines field by field
+pub fn write_attack_meta(stats: &std::path::Path) -> anyhow::Result<()> {
+    let meta = attack_meta().lock().map(|mut m| std::mem::take(&mut *m)).unwrap_or_default();
+    if meta.is_empty() { return Ok(()) }
+    let Ok(text) = std::fs::read_to_string(stats) else { return Ok(()) };
+    let out: Vec<String> = text.lines().map(|l| {
+        let name = l.trim_start().split(':').next().unwrap_or("").trim();
+        let Some(m) = meta.get(name).filter(|_| l.starts_with('\t') && !l.starts_with("\t\t")) else { return l.to_string() };
+        let Some(c) = l.rfind('}') else { return l.to_string() };
+        let body = l[..c].trim_end();
+        let sep = if body.ends_with('{') { " " } else { ", " };
+        format!("{body}{sep}metadata: {m} {}", &l[c..])
+    }).collect();
+    std::fs::write(stats, out.join("\n") + "\n")?;
+    Ok(())
+}
+
+/// where it holds an item, frame by frame, as the engine's own box: a custom box (`CUSTOM_BOX_A`)
+/// on each animation that places one, a box a pixel each way around the source's item box from
+/// the frame it moves to on (`getCollisionBoxes(CollisionBoxType.CUSTOMA)`)
+fn item_box_layers(entity: &std::path::Path, key: &str, pieces: &[Piece], size: f64) -> anyhow::Result<()> {
+    let Ok(bytes) = std::fs::read(entity) else { return Ok(()) };
+    let mut json: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let id = |s: String| crate::uuid_gen::det_uuid(&s);
+    let lens: BTreeMap<String, u64> = json["keyframes"].as_array().map(|a| a.iter().filter_map(|k| Some((k["$id"].as_str()?.to_string(), k["length"].as_u64().unwrap_or(1)))).collect()).unwrap_or_default();
+    let layer_len: BTreeMap<String, u64> = json["layers"].as_array().map(|a| a.iter().filter_map(|l| {
+        Some((l["$id"].as_str()?.to_string(), l["keyframes"].as_array()?.iter().filter_map(|k| lens.get(k.as_str()?)).sum()))
+    }).collect()).unwrap_or_default();
+    let (mut keyframes, mut symbols, mut layers) = (Vec::new(), Vec::new(), Vec::new());
+    let mut added: BTreeMap<String, String> = BTreeMap::new();
+    for p in pieces.iter().filter(|p| !p.item_box.is_empty()) {
+        if added.contains_key(&p.fm_name) { continue }
+        let Some(anim) = json["animations"].as_array().and_then(|a| a.iter().find(|x| x["name"] == p.fm_name.as_str())) else { continue };
+        let total = anim["layers"].as_array().map(|ls| ls.iter().filter_map(|l| layer_len.get(l.as_str()?)).copied().max().unwrap_or(0)).unwrap_or(0);
+        if total == 0 { continue }
+        let tag = format!("{key}::{}::itembox", p.fm_name);
+        let mut ids = Vec::new();
+        for (n, (k, x, y)) in p.item_box.iter().enumerate() {
+            let from = if n == 0 { 0 } else { (2 * k) as u64 };
+            let to = p.item_box.get(n + 1).map(|(k, _, _)| (2 * k) as u64).unwrap_or(total).min(total);
+            if to <= from { continue }
+            let sym = id(format!("{tag}::sym{n}"));
+            symbols.push(serde_json::json!({ "$id": sym, "alpha": 0.5, "color": "0x00ff00", "pivotX": 1.0, "pivotY": 1.0, "pluginMetadata": {},
+                "rotation": 0.0, "scaleX": 2.0, "scaleY": 2.0, "type": "COLLISION_BOX", "x": x * size - 1.0, "y": y * size - 1.0 }));
+            let k = id(format!("{tag}::{n}"));
+            keyframes.push(serde_json::json!({ "$id": k, "length": to - from, "pluginMetadata": {}, "symbol": sym, "tweenType": "LINEAR", "tweened": false, "type": "COLLISION_BOX" }));
+            ids.push(k);
+        }
+        if ids.is_empty() { continue }
+        let layer = id(format!("{tag}::layer"));
+        layers.push(serde_json::json!({ "$id": layer, "defaultAlpha": 0.5, "defaultColor": "0x00ff00", "hidden": false, "locked": false, "name": "customboxa0",
+            "pluginMetadata": { "com.fraymakers.FraymakersMetadata": { "collisionBoxType": "CUSTOM_BOX_A", "index": 0 } }, "type": "COLLISION_BOX", "keyframes": ids }));
+        added.insert(p.fm_name.clone(), layer);
+    }
+    if added.is_empty() { return Ok(()) }
+    if let Some(a) = json["keyframes"].as_array_mut() { a.extend(keyframes); }
+    if let Some(a) = json["symbols"].as_array_mut() { a.extend(symbols); }
+    if let Some(a) = json["layers"].as_array_mut() { a.extend(layers); }
+    if let Some(anims) = json["animations"].as_array_mut() {
+        for a in anims.iter_mut() {
+            let Some(l) = a["name"].as_str().and_then(|n| added.get(n)).cloned() else { continue };
+            if let Some(ls) = a["layers"].as_array_mut() { ls.push(serde_json::Value::String(l)); }
+        }
+    }
+    std::fs::write(entity, serde_json::to_string_pretty(&json)?)?;
+    Ok(())
+}
+
+/// the label a piece's clip is on as it starts (the last at or before its first frame) and the ones
+/// inside it, by the piece's own frame; none for a piece shown backwards or after a head
+fn clip_label_data(model: &SourceModel, p: &Piece) -> Option<(Option<String>, Vec<(u32, String)>)> {
+    if p.reversed || p.head != 0 { return None }
+    let sprite = model.sprites.get(&p.sym)?;
+    let mut labels: Vec<(u32, &str)> = sprite.labels.iter().map(|(f0, l)| (*f0 as u32 + 1, l.as_str())).collect();
+    labels.sort();
+    let before = labels.iter().rfind(|(fr, _)| *fr <= p.from).map(|(_, l)| l.to_string());
+    let inside: Vec<(u32, String)> = labels.iter().filter(|(fr, _)| *fr > p.from && *fr < p.from + p.frames).map(|(fr, l)| (fr - p.from, l.to_string())).collect();
+    if before.is_none() && inside.is_empty() { return None }
+    Some((before, inside))
+}
+

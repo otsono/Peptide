@@ -817,6 +817,9 @@ pub struct AnimTemplateEntry {
     pub name: String,
     #[serde(default)]
     pub props: String,
+    /// the fighter walks or runs on its own in it
+    #[serde(default)]
+    pub walks: bool,
 }
 
 pub fn character_animation_template() -> &'static Vec<AnimTemplateEntry> {

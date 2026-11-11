@@ -5,10 +5,13 @@
 
 // ---- attack
 //: the attack the fighter is in, as the source counts one: its clip's label, while the engine has it
-//: attacking (a throw too). `attackLabel` and `declared` are written for it from its declarations
+//: attacking (a throw too). each animation's metadata names its attack (`attack`) and carries what
+//: the attack declares of the source's that this engine has no stat for, its boxes' in `boxes`
 // the source attack it is in (its clip's label), and how many it has begun
 var attackIn = self.makeObject(null);
 var attackUse = self.makeInt(0);
+// what the attack it is in declares (its animation's metadata as it began)
+var attackMetaIn = self.makeObject(null);
 // the stats its code wrote for the attack since it began, over what the attack declares
 var attackWritten = self.makeObject(new haxe.ds.StringMap());
 // whom the attack threw (a box that passes over the one held passes over it too) and let go of
@@ -24,13 +27,25 @@ function throwing() {
 	return self.inState(CState.THROW_UP) || self.inState(CState.THROW_DOWN) || self.inState(CState.THROW_FORWARD) || self.inState(CState.THROW_BACK);
 }
 
-// a stat of the attack it is in: what its code wrote since it began, else what it declares
-function attackStat(k) {
+// what the animation it is in declares of the source's
+function animMeta() {
+	var m = self.getAnimationStatsMetadata();
+	return m == null ? { attack: null } : m;
+}
+// what the attack it is in declares, kept as it began (what runs as one ends reads that one's)
+function attackMeta() {
 	// (an attack's first frame reads its own: its code runs before the frame's update would see it begin)
+	attackFrame();
+	var m = attackMetaIn.get();
+	return m == null ? { attack: null } : m;
+}
+// a stat of the attack it is in: what its code wrote since it began, else what it declares
+// (`attackStat("k", attackMeta().k)`)
+function attackStat(k, declaredValue) {
 	attackFrame();
 	var w = attackWritten.get();
 	if (w.exists(k)) return w.get(k);
-	return attackIn.get() == null ? null : declared(attackIn.get(), k);
+	return attackIn.get() == null ? null : declaredValue;
 }
 
 // stats its code writes on the attack: kept for the rest of it
@@ -44,12 +59,13 @@ var attackTurning = false;
 function attackFrame() {
 	// (what runs as one ends reads that one's stats: it is still the attack it is in)
 	if (attackTurning) return;
-	var label = (self.inStateGroup(CStateGroup.ATTACK) || throwing()) ? attackLabel(self.getAnimation()) : null;
+	var label = (self.inStateGroup(CStateGroup.ATTACK) || throwing()) ? animMeta().attack : null;
 	if (label == attackIn.get()) return;
 	attackTurning = true;
 	attackEnded();
 	attackTurning = false;
 	attackIn.set(label);
+	attackMetaIn.set(label == null ? null : animMeta());
 	if (label == null) return;
 	attackUse.inc();
 	attackWritten.set(new haxe.ds.StringMap());
@@ -61,8 +77,8 @@ function attackFrame() {
 function attackEnded() {
 	if (attackIn.get() == null) return;
 	for (l in attackDone.get().copy()) l(null);
-	if (attackStat("cancelSoundOnEnd") == true && lastSound.get() != null) lastSound.get().stop();
-	if (attackStat("cancelVoiceOnEnd") == true && lastVoice.get() != null) lastVoice.get().stop();
+	if (attackStat("cancelSoundOnEnd", attackMeta().cancelSoundOnEnd) == true && lastSound.get() != null) lastSound.get().stop();
+	if (attackStat("cancelVoiceOnEnd", attackMeta().cancelVoiceOnEnd) == true && lastVoice.get() != null) lastVoice.get().stop();
 	attackStopRefresh();
 }
 
@@ -85,7 +101,7 @@ function attackRefreshes(r) { return r != null && r > 0 && r < 999; }
 
 function attackLanded() {
 	if (attackIn.get() == null || refreshTimer.get() >= 0) return;
-	var r = attackStat("refreshRate");
+	var r = attackStat("refreshRate", attackMeta().refreshRate);
 	if (!attackRefreshes(r)) return;
 	var n = Std.int(r);
 	// (at a rate of 1 the source refreshes in the frame after its first hit, inside the freeze)
@@ -117,10 +133,11 @@ function attackSetRefresh(r) {
 }
 
 // ---- hits
-//: how a hit lands and holds, the source's way. `declaredBox` is written from its declarations
-// a box stat of the attack it is in, by the source's box number (1 its `attackBox`)
-function boxStat(i, k) {
-	return attackIn.get() == null ? null : declaredBox(attackIn.get(), i, k);
+// what a box of the attack it is in declares of the source's, by the source's box number (1 its `attackBox`)
+function boxMeta(i) {
+	var b = attackIn.get() == null ? null : attackMeta().boxes;
+	if (b == null || i < 1 || i > b.length || b[i - 1] == null) return { none: true };
+	return b[i - 1];
 }
 
 // the attack hits a fighter at most once a source frame (a source frame is two of the animation's
@@ -153,10 +170,10 @@ function onBoxConnected(e) {
 	var box = hs.index + 1;
 	var held = self.getAllGrabbedFoes();
 	var isHeld = held != null && held.indexOf(foe) >= 0 && foe != releasedFoe.get();
-	if (isHeld && boxStat(box, "bypassGrabbed") == true) { hs.disabled = true; return; }
-	if (!isHeld && foe == thrownFoe.get() && boxStat(box, "bypassGrabbed") == true) { hs.disabled = true; return; }
+	if (isHeld && boxMeta(box).bypassGrabbed == true) { hs.disabled = true; return; }
+	if (!isHeld && foe == thrownFoe.get() && boxMeta(box).bypassGrabbed == true) { hs.disabled = true; return; }
 	if (isHeld) thrownFoe.set(foe);
-	if (!isHeld && boxStat(box, "bypassNonGrabbed") == true) { hs.disabled = true; return; }
+	if (!isHeld && boxMeta(box).bypassNonGrabbed == true) { hs.disabled = true; return; }
 	// a box that turns its launch for a fighter behind the attacker judges where the attacker
 	// stood before this frame's move
 	if (hs.reversibleAngle == true) {
@@ -174,14 +191,14 @@ function onBoxConnected(e) {
 	hitAt.set(kept);
 	hs.damage = hs.damage * freshness(attackIn.get());
 	// poison: its damage every interval for its length, one at a time on a fighter
-	var p = boxStat(box, "poison");
-	if (p != null && p > 0) poison(foe, p, boxStat(box, "poisonInterval"), boxStat(box, "poisonLength"));
+	var p = boxMeta(box).poison;
+	if (p != null && p > 0) poison(foe, p, boxMeta(box).poisonInterval, boxMeta(box).poisonLength);
 	// a box with no effect hits the one held and keeps hold of it, launching no one
-	var effect = boxStat(box, "hasEffect");
+	var effect = boxMeta(box).hasEffect;
 	if (isHeld && (effect == null || effect != false)) releasedFoe.set(foe);
 	else if (isHeld) { hs.baseKnockback = 0; hs.knockbackGrowth = 0; }
 	// a box that reverses the one it hits turns it around, and its launch with it
-	if (boxStat(box, "reverse_character") == true) {
+	if (boxMeta(box).reverse_character == true) {
 		if (foe.isFacingRight()) foe.faceLeft(); else foe.faceRight();
 		hs.angle = 180 - hs.angle;
 	}
@@ -216,7 +233,7 @@ function onHitDealt(e) {
 	}
 	var them = foe == null || foe.exports == null ? null : foe.exports.__source;
 	if (them != null) {
-		them.__stunLag = boxStat(hs.index + 1, "hitLag");
+		them.__stunLag = boxMeta(hs.index + 1).hitLag;
 		if (them.__stunWant != null && them.__stunLaunch != null) them.__stunWant = stunWant(them.__stunLaunch, them.__stunLag);
 	}
 	// which box landed each hit, by the source's name for it, for the harness (`gvar pN __peptideHits`)
@@ -297,17 +314,6 @@ function listenForHits() {
 	self.addEventListener(GameObjectEvent.EXIT_HITSTUN, onHitstunOut, { persistent: true });
 	self.addEventListener(GameObjectEvent.HIT_RECEIVED, onHitReceived, { persistent: true });
 	self.addEventListener(GameObjectEvent.ENTER_HITSTOP, onHitstop, { persistent: true });
-}
-
-// ---- walk_start
-//: START the walk's own starting speed (its declared accel_start of norm_xSpeed), in this engine's units
-// an x speed its code sets: zero, on the floor under a held direction, is the walk's own start on
-// the source, which walks on from it
-function setXSpeedFromCode(v) {
-	self.setXSpeed(v);
-	if (v != 0 || !self.isOnFloor()) return;
-	var c = self.getHeldControls();
-	if (c != null && (c.LEFT || c.RIGHT)) self.setXSpeed(START);
 }
 
 // ---- controls
@@ -488,7 +494,7 @@ function itemFrame() {
 	var it = heldItem();
 	if (it == null) { itemAttack.set(null); return; }
 	placeItem(it);
-	var label = attackLabel(self.getAnimation());
+	var label = animMeta().attack;
 	if (label != itemAttack.get()) {
 		itemAttack.set(label);
 		if (label != null) askItem(it, "interrupt", { targetFrame: label, character: self, cStick: false, zair: false });
@@ -497,7 +503,8 @@ function itemFrame() {
 
 // ---- actions
 //: an attack the source turns off or back on by its name (`setAttackEnabled(false, "b_down")`):
-//: this engine turns off the ACTIONS its animations start. `labelAnims` is written from its animations
+//: this engine turns off the ACTIONS its animations start (the animations of the label, written into
+//: the call at conversion)
 // the actions it has off, and the status effect holding each
 var actionsOff = self.makeObject([]);
 var actionEffects = self.makeObject([]);
@@ -512,9 +519,9 @@ var actionTable = [
 	["grab", CharacterActions.GRAB]
 ];
 // the actions the animations of the source's label start (the longest name that begins one)
-function actionsOf(label) {
+function actionsOf(anims) {
 	var out = [];
-	for (anim in labelAnims(label)) {
+	for (anim in anims) {
 		var best = null;
 		for (row in actionTable) if (anim.indexOf(row[0]) == 0 && (best == null || row[0].length > best[0].length)) best = row;
 		if (best != null && out.indexOf(best[1]) < 0) out.push(best[1]);
@@ -522,16 +529,12 @@ function actionsOf(label) {
 	return out;
 }
 // turned off with no count of frames, an attack comes back after the count it declares
-// (`reenableTimer`, source frames); 0 keeps it off. every one turned off is back on when it lands
-function allowAttack(on, label, ?frames) {
-	if (!on && (frames == null || frames < 0)) {
-		var d = declared(label, "reenableTimer");
-		frames = d != null && d > 0 ? d : null;
-	}
-	if (!on && frames != null && frames > 0) self.addTimer(Std.int(frames * 2), 1, function() { allowAttack(true, label, null); }, { persistent: true });
+// (`reenableTimer`, source frames, given at conversion); none keeps it off. every one turned off is back on when it lands
+function allowAttack(on, anims, ?frames) {
+	if (!on && frames != null && frames > 0) self.addTimer(Std.int(frames * 2), 1, function() { allowAttack(true, anims, null); }, { persistent: true });
 	var off = actionsOff.get();
 	var effects = actionEffects.get();
-	for (a in actionsOf(label)) {
+	for (a in actionsOf(anims)) {
 		var k = off.indexOf(a);
 		if (on && k >= 0) {
 			self.removeStatusEffect(StatusEffectType.DISABLE_ACTION, effects[k]);
@@ -548,8 +551,8 @@ function allowAttack(on, label, ?frames) {
 		self.addEventListener(GameObjectEvent.LAND, actionsBack, { persistent: true });
 	}
 }
-function attackAllowed(label) {
-	for (a in actionsOf(label)) if (actionsOff.get().indexOf(a) >= 0) return false;
+function attackAllowed(anims) {
+	for (a in actionsOf(anims)) if (actionsOff.get().indexOf(a) >= 0) return false;
 	return true;
 }
 function actionsBack(?e) {
@@ -597,7 +600,7 @@ var usedAt = self.makeObject(new haxe.ds.StringMap());
 var usedBefore = self.makeObject(new haxe.ds.StringMap());
 var usedLabel = self.makeObject(null);
 function usedFrame() {
-	var label = attackLabel(self.getAnimation());
+	var label = animMeta().attack;
 	if (label == usedLabel.get()) return;
 	usedLabel.set(label);
 	if (label == null) return;
@@ -605,7 +608,7 @@ function usedFrame() {
 	usedAt.get().set(label, frames.get() / 2);
 }
 function lastUsed(?n) {
-	var cur = attackLabel(self.getAnimation());
+	var cur = animMeta().attack;
 	var label = n == null ? cur : n;
 	if (label == null) return -1;
 	var at = usedBefore.get().exists(label) ? usedBefore.get().get(label) : 0;
@@ -660,7 +663,7 @@ function rocketAsked(speed, angle, decay, ?rotate) {
 	var attack = ATTACK;
 	if (attack == null) return;
 	if (BLOCKED) return;
-	var label = attackLabel(self.getAnimation());
+	var label = animMeta().attack;
 	if ((ATTACKING) && (label == null || label.indexOf("b_down") < 0)) return;
 	if (STOPS) self.toState(CState.STAND);
 	var a = angle * Math.PI / 180;
@@ -688,12 +691,15 @@ function rideRocket() {
 // the clip it showed the update before: a clip's frame code declares its fields as the fighter comes
 // to it from another (a loop or a jump inside it keeps the one it has)
 var shownBefore = self.makeObject(null);
+var shownClipBefore = self.makeObject(null);
 function shownFrame() {
 	var was = shownBefore.get();
-	var now = self.getAnimation();
+	var wasClip = shownClipBefore.get();
+	var nowClip = self.getAnimationStatsMetadata().clip;
 	// (the clip it showed is gone: what it listened for on the fighter goes with it)
-	if (was != null && classOf(was) != classOf(now)) clipLeft(classOf(was));
-	shownBefore.set(now);
+	if (was != null && wasClip != nowClip) clipLeft(wasClip);
+	shownBefore.set(self.getAnimation());
+	shownClipBefore.set(nowClip);
 }
 
 // what a clip of its animations listens for on the fighter belongs to that clip, and goes when the

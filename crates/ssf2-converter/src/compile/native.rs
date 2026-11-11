@@ -2983,7 +2983,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             // another fighter's attack stat: what its script answers (each kind of fighter publishes it)
             ("getAnimationStat", [Expr::Str(k)]) if !mine && !self.owners.contains(who) => {
-                return Ok((format!("({who} != null && {who}.exports.__attackStat != null ? {who}.exports.__attackStat({}) : null)", quote(k)), Ty::Any));
+                return Ok((format!("({who} != null && {who}.exports.__attackStat != null ? {who}.exports.__attackStat({}, {who}.exports.__attackMeta != null ? {who}.exports.__attackMeta().{} : null) : null)", quote(k), ident(k)), Ty::Any));
             }
             ("getAnimationStat", [Expr::Str(k)]) if !mine => {
                 let (name, def) = (self.o.owner_stat)(k).ok_or_else(|| format!("reads its owner's attack stat {k}, which no attack of its owner declares"))?;
@@ -3032,9 +3032,9 @@ impl<'o, 'a> Writer<'o, 'a> {
             ("setXSpeed", [v]) if self.o.walk_start.is_some() => {
                 let (v, _) = self.expr(v)?;
                 let speed = fold(&format!("{} * {}", paren(&v), number(self.o.speed)));
-                if speed.parse::<f64>().is_ok_and(|n| n != 0.0) { return Ok((format!("self.setXSpeed({speed})"), Ty::Any)) }
-                block(self, "walk_start");
-                Ok((format!("setXSpeedFromCode({speed})"), Ty::Any))
+                if speed.parse::<f64>().is_ok_and(|n| n != 0.0) || !self.in_frame { return Ok((format!("self.setXSpeed({speed})"), Ty::Any)) }
+                // (whether the frame is one of a walk's is settled per animation, `native_fighter::walk_starts`)
+                Ok((format!("self.setXSpeed({speed} /*walk*/)"), Ty::Any))
             }
             // its attack's stats written as it plays
             ("updateAnimationStats" | "updateAttackStats", [Expr::Object(pairs)]) => self.attack_stats(pairs),
@@ -3205,6 +3205,8 @@ self.playFrameLabel({})", quote(f))); }
                 self.stat_keys.insert(format!("anims:{label}"));
                 let on = self.test(on)?;
                 let frames = match rest.first() { None | Some(Expr::Null | Expr::Undefined) => String::new(), Some(x) => format!(", {}", self.expr(x)?.0) };
+                // (turned off for as long as the attack declares, read at conversion: `native_fighter::reenable`)
+                let frames = if frames.is_empty() { " /*reenable*/".to_string() } else { frames };
                 Ok((format!("allowAttack({on}, {}{frames})", quote(label)), Ty::Any))
             }
             ("attackAllowed", [Expr::Str(label)]) => {
@@ -3531,6 +3533,19 @@ self.playFrameLabel({})", quote(f))); }
                 Err(_) => format!("{id}.set(-1);\nif ({left} != 0) {{\n\t{id}Left.set({left});\n\t{make};\n}}"),
             };
             let first = if now { format!(";\n{call}") } else { String::new() };
+            // (a longer one made in a frame's code is due a source frame sooner the first time: a
+            // timer for that first tick, which starts the repeating one unless the tick stopped it)
+            let longer = n.parse::<f64>().ok().filter(|v| self.in_frame && v.round() > 1.0);
+            if let Some(v) = longer {
+                let opts = format!("{{ persistent: {keep}, pauseCondition: frozen }}");
+                let body = if finite { format!("{id}Left.set({id}Left.get() - 1); if ({id}Left.get() == 0) {id}.set(-1); {call};") } else { format!("{call};") };
+                let rest = match times.parse::<f64>() { Ok(t) if t < 0.0 => "-1".to_string(), Ok(t) => number(t - 1.0), Err(_) => format!("({times} < 0 ? -1 : {times} - 1)") };
+                let more = match rest.parse::<f64>() { Ok(0.0) => None, Ok(_) => Some(String::new()), Err(_) => Some(format!(" && {rest} != 0")) };
+                let again = more.map(|m| format!("if ({id}.get() != -1{m}) {id}.set(self.addTimer({every}, {rest}, {tick}, {opts}));")).unwrap_or_default();
+                let once = format!("{id}.set(self.addTimer({}, 1, function() {{ {body} {again} }}, {opts}))", number(2.0 * v.round() - 2.0));
+                let once = if finite { format!("{id}Left.set({left});\n{once}") } else { once };
+                return Ok((format!("self.removeTimer({id}.get());\n{once}"), Ty::Any));
+            }
             return Ok((format!("self.removeTimer({id}.get());\n{make}{first}"), Ty::Any));
         }
         let opts = "{ persistent: true }";

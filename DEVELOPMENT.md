@@ -620,10 +620,15 @@ the fighter, the classes of the clips its animations show are its frame scripts 
 members its own), and its entity's keyframes call them. its script is `runtime/native/fighter.hx`
 filled in; what the source's engine does around every fighter (a hit's hold, a throw's let-go,
 one hit a source frame, freshness, refresh rate, an attack's start and end, items it holds,
-attacks turned off by name) are the blocks of `runtime/native/fighter_rules.hx` its code needs,
-and the tables they read (the attack each animation shows, what each attack and its boxes
-declare, the label its clip is on, its item box) are `fighter_tables.hx`, filled in from its
-declarations. a jump by label on the clip it shows goes to the animation that shows the label in
+attacks turned off by name) are the blocks of `runtime/native/fighter_rules.hx` its code needs.
+what the source says of each animation is the animation's own metadata in `AnimationStats.hx`
+(`getAnimationStatsMetadata()`): its label, its clip's class, the labels inside it, and for an
+attack the attack and what it declares that this engine has no stat for (its boxes' as `boxes`),
+written last (`native_fighter::write_attack_meta`). a stat named outright reads its field
+(`attackStat("k", attackMeta().k)`). where it holds an item is a custom box on each animation
+(`CUSTOM_BOX_A`, read with `getCollisionBoxes`). an attack turned off by name takes its animations
+and declared `reenableTimer` at conversion. what other objects ask by a name worked out as they
+run (an animation by label, an item's content, a clip's field) stays in `fighter_tables.hx`. a jump by label on the clip it shows goes to the animation that shows the label in
 the clip of the one playing (`stanceJump`), and a jump in a clip several animations show stays in the one playing (a ground and an air version showing one clip whole only cross where the engine links them). a method nothing in the package names is a template's
 leftover and is not written. what each field holds is learned from all its code before any of it
 is written; a typed field keeps its type. each frame's code is its keyframe's code, written there
