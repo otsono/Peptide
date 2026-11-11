@@ -37,6 +37,10 @@ pub struct ConvertOptions {
     /// Explicit `misc.ssf` for costume palettes. Auto-detected next to the input
     /// when `None`.
     pub misc_ssf: Option<PathBuf>,
+    /// The installed game (its app, or its data folder): its shared packages hold what a fighter's
+    /// code makes or plays by name without carrying it (an item it pulls out, a sound it shares).
+    /// `None` reads `$PEPTIDE_SSF2_APP`/`$PEPTIDE_SSF2_DATA`, else the input's own folder.
+    pub game: Option<PathBuf>,
     /// Rollback flag: emit each character of a multi-character `.ssf` as its own
     /// project (the pre-Stage-B layout) instead of one unified project.
     pub per_character_projects: bool,
@@ -50,6 +54,7 @@ impl ConvertOptions {
             output: PathBuf::from("./characters"),
             name: None,
             misc_ssf: None,
+            game: None,
             per_character_projects: false,
         }
     }
@@ -90,6 +95,7 @@ pub fn run_conversion(opts: ConvertOptions) -> Result<ConversionSummary> {
     // what it borrows (shared sounds, shared classes) is looked for beside it, when beside it is
     // the game's own data
     if let Some(dir) = opts.input.parent() { crate::shared_packages::note_input_dir(dir); }
+    if let Some(game) = &opts.game { crate::shared_packages::note_game(game); }
     // Read + decompress SSF
     let ssf_data = fs::read(&opts.input).with_context(|| format!("read {}", opts.input.display()))?;
     log::info!("Loaded {} bytes", ssf_data.len());

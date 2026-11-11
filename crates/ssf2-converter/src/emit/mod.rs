@@ -996,6 +996,25 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         entities.insert(short.clone(), key);
         others.push(short);
     }
+    // an item its code makes by name that it does not carry: the game's shared packages declare
+    // it, and it is ported as one of the fighter's own items, its class run from that package
+    let lent = lent_items(&runtime, &others.iter().filter(|n| !entities.contains_key(*n)).cloned().collect::<Vec<_>>());
+    let mut with_lent = fighter.clone();
+    let mut lent_of: BTreeMap<String, &SourceModel> = BTreeMap::new();
+    for (m, decls) in &lent {
+        for (key, decl) in decls {
+            let mut items = with_lent.items.entries().to_vec();
+            items.push((key.clone(), decl.clone()));
+            with_lent.items = Value::Obj(items);
+            entities.insert(key.clone(), key.clone());
+            lent_of.insert(key.clone(), m);
+            unplaced.retain(|u| !u.starts_with(&format!("{key}: made from another package")));
+            if let Some(c) = decl.get("classAPI").and_then(|v| v.class()).and_then(|c| m.classes.get(c).or_else(|| m.classes.values().find(|x| compile::short(&x.name) == c))) {
+                if let Ok(mut l) = compile::native::lent_methods().lock() { l.extend(c.methods.iter().map(|x| x.name.clone())); }
+            }
+        }
+    }
+    let fighter = &with_lent;
     let effects = crate::entity_gen::take_effect_pieces();
     let effect_inners = crate::entity_gen::take_effect_inners();
     let dir = char_dir.join(format!("library/scripts/{char_pascal}"));
@@ -1102,7 +1121,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     let mut natively: Vec<(String, Result<(), String>)> = Vec::new();
     let mut item_gaps: Vec<(String, String)> = Vec::new();
     let projectiles = runtime_projectiles(char_dir, &model, &runtime, fighter, units, &others,
-        &effects, &entities, &mut projectile_pieces, &mut unplaced, &owner, &mut natively, &mut item_gaps)?;
+        &effects, &entities, &mut projectile_pieces, &mut unplaced, &owner, &mut natively, &mut item_gaps, &lent_of)?;
     // every item is a custom game object carrying the item handler
     for (name, _) in fighter.items.entries() {
         let Some(key) = entities.get(name) else { continue };
@@ -1440,6 +1459,31 @@ pub(crate) fn entity_animations(path: &std::path::Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// The items a fighter's code makes by name without carrying them, as the game's shared packages
+/// declare them: a package's main class returns its items as declarations, each naming the clip
+/// its code makes it by (`linkage_id`) and the class that runs it (`classAPI`). Each package that
+/// declares one, with the declarations it has, by the name the fighter makes it by.
+fn lent_items(runtime: &Runtime, wanted: &[String]) -> Vec<(SourceModel, Vec<(String, Value)>)> {
+    let mut out = Vec::new();
+    if wanted.is_empty() { return out }
+    for pkg in crate::shared_packages::packages() {
+        let Ok((m, _)) = runtime.read_package(&pkg.swf) else { continue };
+        let Some(main) = m.main_class() else { continue };
+        let mut found: Vec<(String, Value)> = Vec::new();
+        for meth in &main.methods {
+            let Some(Value::Arr(list)) = crate::model::declare::returned(&meth.function.body) else { continue };
+            for d in list {
+                let (Some(clip), Some(_)) = (d.get("linkage_id").and_then(|v| v.str()), d.get("classAPI").and_then(|v| v.class())) else { continue };
+                let Some(key) = wanted.iter().find(|w| w.eq_ignore_ascii_case(clip)) else { continue };
+                if found.iter().any(|(k, _)| k == key) { continue }
+                found.push((key.clone(), d.clone()));
+            }
+        }
+        if !found.is_empty() { out.push((m, found)); }
+    }
+    out
+}
+
 /// The runtime's path for the projectiles and items a fighter declares: each one the current
 /// pipeline wrote an entity for gets its script written the runtime's way, from its own
 /// declaration (the class that runs it, the clip that is its art, its stats).
@@ -1450,12 +1494,16 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
                        pieces_of: &mut BTreeMap<String, Vec<Piece>>,
                        unplaced: &mut Vec<String>, owner: &native_projectile::Owner,
                        natively: &mut Vec<(String, Result<(), String>)>,
-                       item_gaps: &mut Vec<(String, String)>) -> anyhow::Result<Vec<(String, Emitted)>> {
+                       item_gaps: &mut Vec<(String, String)>,
+                       lent: &BTreeMap<String, &SourceModel>) -> anyhow::Result<Vec<(String, Emitted)>> {
+    let own_model = model;
     let mut out = Vec::new();
     let decls: Vec<&(String, Value)> = fighter.projectiles.entries().iter().chain(fighter.items.entries()).collect();
     // one script per entity, from the first declaration written as it (a projectile fired by
     // another declaration sharing its clip takes that one's stats as it starts)
     for (entity_key, pieces) in std::mem::take(pieces_of) {
+        // (an item another package lends it runs its class from that package)
+        let model = lent.get(&entity_key).copied().unwrap_or(own_model);
         // written as it by name, else named as its clip (a declaration fired under one name that
         // draws with a clip of another has an entity for each)
         let by_clip = |d: &Value| d.get("linkage_id").and_then(|v| v.str()) == Some(entity_key.as_str());

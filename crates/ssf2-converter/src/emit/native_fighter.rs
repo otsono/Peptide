@@ -295,7 +295,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let rocket = rocketing.first().map(|l| compile::quote(l));
     if rocket.is_some() { blocks.insert("rocket".into()); }
     let mut functions = w.functions.clone();
-    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "walk_start", "end_move", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "fired_stats", "timers", "ledges", "home", "own_floor", "nearest", "ground_test", "recover", "copy_power"];
+    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "walk_start", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "fired_stats", "ledges", "home", "own_floor", "nearest", "ground_test", "recover", "copy_power"];
     for b in order.iter().filter(|b| blocks.contains(**b)) {
         let words: Vec<(&str, String)> = match *b {
             "walk_start" => {
@@ -567,7 +567,14 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         extra.insert((anim.clone(), 0), code);
     }
     // (its content is found in its own files even while its code acts as another fighter: `act_as`)
-    let own_files = |c: &str| c.replace("self.getResource()", "ownResource");
+    // (a sound named outright is the engine's play, unless an attack of its stops its sounds as it
+    // ends, which needs the one it played last)
+    let stops = ["cancelSoundOnEnd", "cancelVoiceOnEnd"].iter().any(|k| script.contains(&format!("case \"{k}\"")));
+    let named_sound = regex::Regex::new(r#"playSoundOf\(("[^"\\]*"), (?:true|false)\)"#).expect("sound pattern");
+    let own_files = |c: &str| {
+        let c = c.replace("self.getResource()", "ownResource");
+        if stops { c } else { named_sound.replace_all(&c, "AudioClip.play(ownResource.getContent($1))").into_owned() }
+    };
     for code in frames.values_mut() { *code = own_files(code); }
     for code in extra.values_mut() { *code = own_files(code); }
     super::native_projectile::keyframes_with(&entity, title, f.model, f.pieces, &frames, false, &extra).map_err(|e| vec![e.to_string()])?;
@@ -609,8 +616,12 @@ fn item_tables(f: &Fighting) -> Result<Vec<String>, String> {
     }
     let boxes: Vec<String> = rows.iter().map(|(row, anims)| format!("case {}: return boxAt(k, [{row}]);", anims.join(", "))).collect();
     let mut content = Vec::new();
+    let mut names = Vec::new();
     for (name, _) in f.fighter.items.entries() {
-        if let Some(key) = f.entities.get(name) { content.push(format!("case {}: return {};", compile::quote(name), compile::quote(&crate::projectile_gen::projectile_content_id(key)))); }
+        if let Some(key) = f.entities.get(name) {
+            content.push(format!("case {}: return {};", compile::quote(name), compile::quote(&crate::projectile_gen::projectile_content_id(key))));
+            names.push(compile::quote(name));
+        }
     }
     let mut declared = Vec::new();
     for (name, d) in f.fighter.items.entries() {
@@ -622,7 +633,7 @@ fn item_tables(f: &Fighting) -> Result<Vec<String>, String> {
         declared.push("\t}".into());
     }
     Ok(vec![native::helper(rt, "fighter_tables", "item_box", "", &[], &boxes)?,
-            native::helper(rt, "fighter_tables", "item_content", "", &[], &content)?,
+            native::helper(rt, "fighter_tables", "item_content", "", &[("NAMES", names.join(", "))], &content)?,
             native::helper(rt, "fighter_tables", "item_declared", "", &[], &declared)?])
 }
 

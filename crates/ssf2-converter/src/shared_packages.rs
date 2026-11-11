@@ -43,19 +43,31 @@ pub fn note_input_dir(dir: &Path) {
     if let Ok(mut g) = INPUT_DIR.lock() { *g = Some(dir.to_path_buf()); }
 }
 
+/// The installed game the conversion was told about (`ConvertOptions::game`).
+static GAME: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Note where the installed game is: its app, or its data folder.
+pub fn note_game(path: &Path) {
+    if let Ok(mut g) = GAME.lock() { *g = Some(path.to_path_buf()); }
+}
+
+/// The data folder of a game given as its app or as that folder itself.
+fn data_of(path: &Path) -> Option<PathBuf> {
+    // a mac bundle keeps its resources one level in; every other build keeps them beside the binary
+    [path.join("Contents/Resources/data"), path.join("data"), path.to_path_buf()].into_iter()
+        .find(|c| c.is_dir() && game_swf(c).is_some())
+}
+
 /// The game's data directory: told to us, worked out from the app path, or the directory the
 /// input came from when the game's own movie sits one level above it.
 fn data_dir() -> Option<PathBuf> {
+    if let Some(d) = GAME.lock().ok().and_then(|g| g.clone()).and_then(|g| data_of(&g)) { return Some(d); }
     if let Ok(d) = std::env::var("PEPTIDE_SSF2_DATA") {
         let p = PathBuf::from(d);
         if p.is_dir() { return Some(p); }
     }
     if let Ok(app) = std::env::var("PEPTIDE_SSF2_APP") {
-        let app = PathBuf::from(app);
-        // a mac bundle keeps its resources one level in; every other build keeps them beside the binary
-        if let Some(d) = [app.join("Contents/Resources/data"), app.join("data")].into_iter().find(|c| c.is_dir()) {
-            return Some(d);
-        }
+        if let Some(d) = data_of(&PathBuf::from(app)) { return Some(d); }
     }
     let input = INPUT_DIR.lock().ok()?.clone()?;
     game_swf(&input).map(|_| input)

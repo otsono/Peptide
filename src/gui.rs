@@ -852,7 +852,7 @@ fn list_projects(proxy: &EventLoopProxy<Ev>) {
     let _ = proxy.send_event(Ev::Js(format!("window.onProjects && onProjects({json})")));
 }
 
-/// Run an in-process conversion (`{input, output?, name?, miscSsf?}`) on this
+/// Run an in-process conversion (`{input, output?, name?, miscSsf?, game?}`) on this
 /// worker thread, reporting progress + the result back to the convert screen.
 fn run_convert(json: &str, proxy: &EventLoopProxy<Ev>) {
     use ssf2_converter::{run_conversion, ConvertOptions};
@@ -869,6 +869,10 @@ fn run_convert(json: &str, proxy: &EventLoopProxy<Ev>) {
     opts.misc_ssf = json_str_field(json, "miscSsf").filter(|s| !s.is_empty())
         .map(std::path::PathBuf::from)
         .or_else(|| if cfg.misc_ssf.is_empty() { None } else { Some(std::path::PathBuf::from(&cfg.misc_ssf)) });
+    // the installed game, whose shared packages hold the items, sounds and effects a fighter
+    // borrows: the convert screen's own field, else the SSF2 path the settings keep
+    opts.game = json_str_field(json, "game").filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from).or_else(|| cfg.ssf2_app());
 
     let _ = proxy.send_event(Ev::Js(format!(
         "window.onConvertProgress && onConvertProgress({})",

@@ -136,6 +136,13 @@ function asked(kind, ?v) {
 	if (kind == "hold") holdBy(self.exports.__holder, false);
 	else if (kind == "pickup") pickupOn.set(v == true);
 	else if (kind == "toss") letGo(self.exports.__zDropped == true);
+	// (sent into its thrown state by another object's code: it goes up at its throw speed, as the
+	// source's does with no direction given)
+	else if (kind == "toToss" && inItemState(1)) {
+		letGo(false);
+		self.setXSpeed(0);
+		self.setYSpeed(-TOSS_SPEED * SPEED);
+	}
 	else if (kind == "interrupt") {
 		var f = frameInterrupt.get();
 		if (f != null) f(v);

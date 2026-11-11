@@ -336,16 +336,16 @@ function NAME(a) {
 
 // ---- landing_lag
 //: CONTINUE its listener that goes on from `continue`
-// its landing: on touching down, the attack goes on from `continue` (`on`), or it lands
+// its landing: on touching down, the attack goes on from `continue` (`on`), or the engine lands it
 function NAME(on) {
 	self.removeEventListener(EntityEvent.COLLIDE_FLOOR, CONTINUE);
-	self.removeEventListener(EntityEvent.COLLIDE_FLOOR, landOnTouch);
-	self.addEventListener(EntityEvent.COLLIDE_FLOOR, on ? CONTINUE : landOnTouch, { persistent: true });
-	if (self.isOnFloor()) { if (on) CONTINUE(null); else landOnTouch(null); }
-}
-function landOnTouch(?e) {
-	self.removeEventListener(EntityEvent.COLLIDE_FLOOR, landOnTouch);
-	self.toState(CState.LAND);
+	if (on) {
+		self.addEventListener(EntityEvent.COLLIDE_FLOOR, CONTINUE, { persistent: true });
+		if (self.isOnFloor()) CONTINUE(null);
+		return;
+	}
+	self.updateAnimationStats({ landType: LandType.NORMAL });
+	if (self.isOnFloor()) self.toState(CState.LAND);
 }
 
 // ---- jump_to_continue

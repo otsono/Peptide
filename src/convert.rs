@@ -72,6 +72,7 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
     let mut output: Option<PathBuf> = None;
     let mut name: Option<String> = None;
     let mut misc_ssf: Option<PathBuf> = None;
+    let mut game: Option<PathBuf> = None;
     let mut per_character_projects = false;
     let mut verbose = false;
     let mut assume_yes = false;
@@ -82,6 +83,7 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
             "-o" | "--output" => { output = args.get(i + 1).map(PathBuf::from); i += 2; }
             "-n" | "--name" => { name = args.get(i + 1).cloned(); i += 2; }
             "--misc-ssf" => { misc_ssf = args.get(i + 1).map(PathBuf::from); i += 2; }
+            "--game" => { game = args.get(i + 1).map(PathBuf::from); i += 2; }
             "--per-character-projects" => { per_character_projects = true; i += 1; }
             "-y" | "--yes" => { assume_yes = true; i += 1; }
             "-v" | "--verbose" => { verbose = true; i += 1; }
@@ -120,6 +122,7 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
     if let Some(o) = output { opts.output = o; }
     opts.name = name;
     opts.misc_ssf = misc_ssf;
+    opts.game = game.or_else(|| crate::config::Config::load().ssf2_app());
     opts.per_character_projects = per_character_projects;
 
     let summary = run_conversion(opts)?;
@@ -170,6 +173,10 @@ OPTIONS:
                               from the SWF otherwise)
       --misc-ssf <FILE>       misc.ssf for costume palettes (auto-detected next
                               to the input file otherwise)
+      --game <PATH>           the installed SSF2 (app or data folder): its shared
+                              packages hold the items, sounds and effects a
+                              fighter uses without carrying them [default: the
+                              configured SSF2 path]
       --per-character-projects  Emit each character of a multi-character .ssf as
                               its own project (the pre-Stage-B layout)
   -y, --yes                   Acknowledge the conversion-permission notice and

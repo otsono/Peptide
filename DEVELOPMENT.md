@@ -237,6 +237,10 @@ Options:
                          selects only that character. Auto-detected if omitted.
       --misc-ssf <FILE>  Path to misc.ssf for costume palettes.
                          Auto-detected next to the input file if omitted.
+      --game <PATH>      The installed SSF2 (app or data folder): its shared packages
+                         hold the items, sounds and effects a fighter uses without
+                         carrying them. Defaults to the configured SSF2 path; the
+                         GUI's convert screen has the same field.
   -v, --verbose          Debug-level logging
 ```
 

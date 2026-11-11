@@ -513,6 +513,13 @@
           <button class="btn-sm" onclick="pickFile('c-misc','ssf,swf,dat')">Browse…</button>
         </div>
       </div>
+      <div class="field">
+        <label>SSF2 game <span class="hint" style="font-weight:400">(the items, sounds and effects a fighter uses from the game's shared packages come from here)</span></label>
+        <div class="inrow">
+          <input id="c-game" placeholder="the SSF2 path in Setup (/Applications/SSF2.app)" />
+          <button class="btn-sm" onclick="pickFile('c-game')">Browse…</button>
+        </div>
+      </div>
       <div class="form-actions">
         <button class="btn-primary" id="c-run" onclick="runConvert()">Convert</button>
       </div>
@@ -726,6 +733,7 @@
     // user's own edit.
     if(name==="convert" && !$("c-output").value){ $("c-output").value = CFG.outputDir || ""; }
     if(name==="convert" && !$("c-misc").value){ $("c-misc").value = CFG.miscSsf || ""; }
+    if(name==="convert" && !$("c-game").value){ $("c-game").value = CFG.ssf2App || ""; }
     if(name==="stage"){ if(typeof stageStartLoop==="function") stageStartLoop(); if(typeof STAGE!=="undefined" && !STAGE.loaded) stageStatus("Open a converted stage .fraytools to preview its parallax."); }
     else if(name!=="stage" && typeof stageStopLoop==="function"){ stageStopLoop(); }
   }
@@ -1407,6 +1415,7 @@
     const payload = JSON.stringify({
       input, output: $("c-output").value.trim(), name: $("c-name").value.trim(),
       miscSsf: $("c-misc").value.trim(),
+      game: $("c-game").value.trim(),
     });
     ipcSend("@@convert:start:"+payload);
   }

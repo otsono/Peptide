@@ -66,12 +66,18 @@ function boxAt(k, row) {
 }
 
 // ---- item_content
+//: NAMES the items it can make, by name
 // the content each item it can make is
 function itemContent(name) {
 	switch (name) {
 		// {cases}
 	}
 	return null;
+}
+// any one of the items it can make (the source's "random")
+function anyItemName() {
+	var all = [NAMES];
+	return all.length == 0 ? null : all[Random.getInt(0, all.length - 1)];
 }
 
 // ---- item_declared
@@ -106,7 +112,7 @@ function animOf(label) {
 // the container a field of one of its clips is kept in, for another object's code ("self" its own
 // class, "root" its clip, "stance" the clip its animation shows)
 function fieldOf(clip, name) {
-	var c = clip == "self" ? ITSELF : (clip == "root" ? ROOT : stanceClass());
+	var c = clip == "self" ? ITSELF : (clip == "root" ? ROOT : classOf(self.getAnimation()));
 	switch (c) {
 		// {cases}
 	}
@@ -115,9 +121,6 @@ function fieldOf(clip, name) {
 
 // ---- stance_class
 // the class of the clip each animation shows
-function stanceClass() {
-	return classOf(self.getAnimation());
-}
 function classOf(a) {
 	switch (a) {
 		// {cases}

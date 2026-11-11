@@ -878,6 +878,24 @@ impl<'o, 'a> Writer<'o, 'a> {
             out.functions.push(helper(self.o.runtime, "helpers", "jump_to", "jumpTo", &[], &cases)?);
             out.publish.push("self.exports.__playFrame = jumpTo;".into());
         }
+        // an object's own methods another object's code calls on it, on its exports
+        if !self.o.fighter {
+            if let Some(c) = self.o.itself {
+                let mut asked: BTreeSet<String> = asked_of_others().lock().map(|a| a.clone()).unwrap_or_default();
+                for k in self.o.model.classes.values() {
+                    for body in k.methods.iter().map(|m| &m.function.body).chain([&k.constructor.body]) {
+                        walk_exprs(body, &mut |e| if let Expr::Call(f, _) = e {
+                            if let Expr::Member(o, n) = &**f { if !matches!(**o, Expr::This) { asked.insert(n.clone()); } }
+                        });
+                    }
+                }
+                for m in c.methods.iter().filter(|m| !m.is_static && !declares(m) && asked.contains(&m.name)) {
+                    if let Some(id) = self.methods.get(&member_key(&c.name, &method_name(m))) {
+                        if out.functions.iter().any(|t| t.contains(&format!("function {id}("))) { out.publish.push(format!("self.exports.{} = {id};", ident(&m.name))); }
+                    }
+                }
+            }
+        }
         // a fighter's own methods another object's code calls on it (a projectile still on the
         // runtime reaches its owner's through `exports.__source`)
         if self.o.fighter {
@@ -1383,8 +1401,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (val, _) = self.expr(v)?;
                 Ok(vec![format!("{n}.{f} = {val};")])
             }
-            // a field of its own class, written through the fighter from one of its clips
-            Place::Member(o, f) if self.o.fighter && !self.is_itself() && !matches!(o, Expr::This) && self.expr(o).is_ok_and(|(w, _)| w == "self")
+            // a field of its own class, written through the object from one of its clips
+            Place::Member(o, f) if !self.is_itself() && !matches!(o, Expr::This) && self.expr(o).is_ok_and(|(w, _)| w == "self")
                 && self.o.itself.is_some_and(|c| self.fields.contains_key(&member_key(&c.name, f)) || self.methods.contains_key(&member_key(&c.name, &format!("set:{f}")))) => {
                 // (the value read here, in this class; stored as the fighter's own field)
                 self.given = Some(self.expr(v)?);
@@ -1392,6 +1410,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let r = self.assign(&Place::Member(Expr::This, f.clone()), v);
                 self.class = saved;
                 r
+            }
+            // (a field of another object an object writes: a runtime one keeps it on the object it
+            // publishes; a native one keeps its fields to itself, which is a gap)
+            Place::Member(o, f) if !self.o.fighter && !matches!(o, Expr::This) && !self.is_clip(o) && !matches!(o, Expr::Name(_) | Expr::Local(_)) && self.expr(o).is_ok_and(|(w, _)| w != "self") => {
+                let (who, _) = self.expr(o)?;
+                let (val, _) = self.expr(v)?;
+                self.gaps.insert(format!("writes {f} on another object, which keeps its fields to itself when it is native"));
+                Ok(vec![format!("if ({who} != null && {who}.exports.__source != null) {who}.exports.__source.{} = {val};", ident(f))])
             }
             Place::Member(o, f) if self.o.fighter && !matches!(o, Expr::This) && !self.is_clip(o) && !matches!(o, Expr::Name(_)) => {
                 let (who, _) = self.expr(o)?;
@@ -1625,8 +1651,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 self.blocks.insert("clip_label".into());
                 return Ok(("clipLabel()".into(), Ty::Str));
             }
-            // a field of its own class, read through the fighter from one of its clips
-            Expr::Member(o, f) if self.o.fighter && !self.is_itself() && !matches!(**o, Expr::This) && self.expr(o).is_ok_and(|(w, _)| w == "self")
+            // a field of its own class, read through the object from one of its clips
+            Expr::Member(o, f) if !self.is_itself() && !matches!(**o, Expr::This) && self.expr(o).is_ok_and(|(w, _)| w == "self")
                 && self.o.itself.is_some_and(|c| self.fields.contains_key(&member_key(&c.name, f)) || self.methods.contains_key(&member_key(&c.name, &format!("get:{f}")))) => {
                 let saved = std::mem::replace(&mut self.class, self.o.itself.map(|c| c.name.clone()).unwrap_or_default());
                 let r = self.own(f);
@@ -2284,6 +2310,13 @@ impl<'o, 'a> Writer<'o, 'a> {
             // one of its own methods, called bare
             if let Expr::Name(n) = f {
                 if let Some(id) = self.method(n) { return self.own_call(&id, args) }
+                // (an effect it makes, called bare: made on itself, as one called on it is)
+                if self.is_itself() && matches!(n.as_str(), "createVfx" | "createVfxOverlay") {
+                    let saved = std::mem::replace(&mut self.effect_on, "self".into());
+                    let r = if top { self.top = true; let r = self.effect(args); self.top = false; r } else { self.kept_effect(args) };
+                    self.effect_on = saved;
+                    return r;
+                }
                 if self.is_itself() { return self.api("self", n, args) }
                 return Err(format!("calls {n} on its clip"));
             }
@@ -2672,6 +2705,8 @@ impl<'o, 'a> Writer<'o, 'a> {
 
     /// an API call on an engine object (`who`: `self`, or the variable holding another)
     fn api(&mut self, who: &str, m: &str, args: &[Expr]) -> Result<(String, Ty), String> {
+        // an item put back to lying idle: its handler's own state, as the source's handler has it
+        if self.o.item && who == "self" && m == "toIdle" && args.is_empty() { return Ok(("itemTo(0)".into(), Ty::Any)) }
         let mine = who == "self";
         // its costumes' colours
         if matches!(m, "paletteData" | "getPaletteSwapData") && args.is_empty() && self.o.palette.is_some() { return Ok((self.costume_palette()?, Ty::Rect)) }
@@ -2778,11 +2813,6 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let tests: Vec<String> = states().get(&name).into_iter().flat_map(|s| s.is.iter()).map(|t| if t.starts_with("CStateGroup.") {
                     format!("{who}.inStateGroup({t})") } else { format!("{who}.inState({t})") }).collect();
                 return Ok((if tests.is_empty() { "false".into() } else { tests.join(" || ") }, Ty::Bool));
-            }
-            ("removeTimer", [f]) if mine && self.o.fighter => {
-                let id = self.timer_of(f)?;
-                self.blocks.insert("timers".into());
-                return Ok((format!("stopTimer({id}.get())"), Ty::Any));
             }
             ("removeTimer", [f]) if mine => {
                 let id = self.timer_of(f)?;
@@ -2976,11 +3006,16 @@ impl<'o, 'a> Writer<'o, 'a> {
         let row = match calls().rows.get(m).cloned().or_else(|| self.engine_row(m)) {
             Some(r) => r,
             None => {
-                // a method of another object's own class: its script keeps it on the object it publishes
-                let defined = !mine && self.o.model.classes.values().any(|c| !self.o.runtime.provides(&c.name) && c.methods.iter().any(|x| x.name == m));
+                // a method of another object's own class (of its package, or of an object it makes
+                // that another package lends it): that object publishes it on its exports, a
+                // runtime one on the object it publishes
+                let defined = !mine && (self.o.model.classes.values().any(|c| !self.o.runtime.provides(&c.name) && c.methods.iter().any(|x| x.name == m))
+                    || lent_methods().lock().is_ok_and(|l| l.iter().any(|x| x == m)));
                 if !defined { return Err(format!("calls {m}, which has no row in native_calls.jsonc")) }
-                let vs: Result<Vec<String>, String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect();
-                return Ok((format!("({who} != null && {who}.exports.__source != null ? {who}.exports.__source.{m}({}) : null)", vs?.join(", ")), Ty::Any));
+                let vs = args.iter().map(|x| Ok(self.expr(x)?.0)).collect::<Result<Vec<String>, String>>()?.join(", ");
+                if let Ok(mut a) = asked_of_others().lock() { a.insert(m.to_string()); }
+                // (one already gone has no script left to run it)
+                return Ok((format!("({who} != null && !{who}.isDisposed() && {who}.exports.{m} != null ? {who}.exports.{m}({vs}) : ({who} != null && {who}.exports.__source != null ? {who}.exports.__source.{m}({vs}) : null))"), Ty::Any));
             }
         };
         self.fill(&row, who, args, m)
@@ -2992,10 +3027,14 @@ impl<'o, 'a> Writer<'o, 'a> {
         let block = |w: &mut Self, b: &str| { w.blocks.insert(b.to_string()); };
         Some((|| -> Result<(String, Ty), String> { match (m, args) {
             // an x speed its code sets: the walk's own start under a held direction
+            // (a zero written on the ground under a held direction is the walk's start speed, the
+            // source's walk rule: a speed written as some other number is the engine's own write)
             ("setXSpeed", [v]) if self.o.walk_start.is_some() => {
-                block(self, "walk_start");
                 let (v, _) = self.expr(v)?;
-                Ok((format!("setXSpeedFromCode({})", fold(&format!("{} * {}", paren(&v), number(self.o.speed)))), Ty::Any))
+                let speed = fold(&format!("{} * {}", paren(&v), number(self.o.speed)));
+                if speed.parse::<f64>().is_ok_and(|n| n != 0.0) { return Ok((format!("self.setXSpeed({speed})"), Ty::Any)) }
+                block(self, "walk_start");
+                Ok((format!("setXSpeedFromCode({speed})"), Ty::Any))
             }
             // its attack's stats written as it plays
             ("updateAnimationStats" | "updateAttackStats", [Expr::Object(pairs)]) => self.attack_stats(pairs),
@@ -3078,7 +3117,7 @@ self.playFrameLabel({})", quote(f))); }
                 self.kept.insert(listening.clone(), format!("// whether {h} listens now\nvar {listening} = self.{}(false);", bool_make(self.o.fighter)));
                 Ok((format!("{listening}.get()"), Ty::Bool))
             }
-            ("endAttack" | "endAnimation", []) => { block(self, "end_move"); Ok(("endMove()".into(), Ty::Any)) }
+            ("endAttack" | "endAnimation", []) => Ok(("self.endAnimation()".into(), Ty::Any)),
             ("getControls", a) => {
                 block(self, "controls");
                 let p = match a.first() { None => "false".to_string(), Some(x) => self.test(x)? };
@@ -3145,7 +3184,8 @@ self.playFrameLabel({})", quote(f))); }
             ("getNearestPath" | "getNearest", [t, ..]) => {
                 block(self, "nearest");
                 let (t, _) = self.expr(t)?;
-                Ok((if m == "getNearestPath" { format!("nearestPath({t})") } else { format!("nearest({t})") }, Ty::Object))
+                // (the source's path to it: that one alone, or none)
+                Ok((if m == "getNearestPath" { format!("(nearest({t}) == null ? [] : [nearest({t})])") } else { format!("nearest({t})") }, Ty::Object))
             }
             // (the source's engine picks a homing target in its own range and says so by its
             // `homingTarget` event; nothing here picks one, so there is none to head for)
@@ -3437,9 +3477,7 @@ self.playFrameLabel({})", quote(f))); }
             _ => None,
         }.ok_or("times something other than its own method")?;
         let id = format!("{name}Timer");
-        // (a fighter's is the record its timers block keeps, `startTimer`)
-        let make = if self.o.fighter { "self.makeObject(null)" } else { "self.makeInt(-1)" };
-        self.kept.insert(id.clone(), format!("// the engine's timer running {name}, while there is one\nvar {id} = {make};"));
+        self.kept.insert(id.clone(), format!("// the engine's timer running {name}, while there is one\nvar {id} = self.makeInt(-1);"));
         Ok(id)
     }
 
@@ -3465,22 +3503,35 @@ self.playFrameLabel({})", quote(f))); }
             t => format!("({t} <= 0 ? -1 : {t})"),
         };
         if self.o.fighter {
-            // a fighter's timer drops with the state it was made in unless asked to stay, waits out its
-            // freezes, and, made in a frame's code, comes due two engine frames sooner the first time
-            // (the source ticks the frame it is made in too)
+            // a fighter's timer is the engine's: it drops with the state it was made in unless asked to
+            // stay, and waits out its freezes. one a source frame long made in a frame's code is run by
+            // that code right after making it, as its first tick (the source ticks the frame it is made
+            // in too); one that runs out forgets its id (the engine gives it out again)
             let _ = paused;
             let keep = rest.iter().any(|e| matches!(e, Expr::Bool(true)) || matches!(e, Expr::Object(kv) if kv.iter().any(|(k, v)| matches!(k, Expr::Str(k) if k == "persistent") && matches!(v, Expr::Bool(true)))));
-            self.blocks.insert("timers".into());
             self.blocks.insert("refresh".into());
-            let n = match n.parse::<f64>() { Ok(v) => number(v.max(1.0).round()), Err(_) => format!("Std.int(Math.max(1, {}))", paren(&n)) };
             let test = match condition { Some(c) => Some(self.test(&Expr::Call(Box::new(c), vec![]))?), None => None };
-            let run = match &test { Some(t) => format!("function() {{ if ({t}) {name}(); }}"), None => name.clone() };
-            // (one due in the frame that made it is run by that code right after making it: its first tick)
-            let now = if !self.in_frame { String::new() } else {
-                let call = match &test { Some(t) => format!("if ({t}) {name}()"), None => format!("{name}()") };
-                if n == "1" { format!(";\n{call}") } else { format!(";\nif ({n} == 1) {{ {call}; }}") }
+            let call = match &test { Some(t) => format!("if ({t}) {name}()"), None => format!("{name}()") };
+            let now = self.in_frame && n.parse::<f64>().is_ok_and(|v| v.round() <= 1.0);
+            let left = if !now { times.clone() } else { match times.parse::<f64>() {
+                Ok(v) if v < 0.0 => "-1".into(),
+                Ok(v) => number(v - 1.0),
+                Err(_) => format!("({times} < 0 ? -1 : {times} - 1)"),
+            } };
+            let finite = left != "-1";
+            let tick = if finite {
+                self.kept.insert(format!("{id}Left"), format!("// the ticks {name}'s timer has left\nvar {id}Left = self.makeInt(0);"));
+                format!("function() {{ {id}Left.set({id}Left.get() - 1); if ({id}Left.get() == 0) {id}.set(-1); {call}; }}")
+            } else { match &test { Some(t) => format!("function() {{ if ({t}) {name}(); }}"), None => name.clone() } };
+            let make = format!("{id}.set(self.addTimer({every}, {left}, {tick}, {{ persistent: {keep}, pauseCondition: frozen }}))");
+            let make = match left.parse::<f64>() {
+                Ok(0.0) => format!("{id}.set(-1)"),
+                Ok(_) if finite => format!("{id}Left.set({left});\n{make}"),
+                Ok(_) => make,
+                Err(_) => format!("{id}.set(-1);\nif ({left} != 0) {{\n\t{id}Left.set({left});\n\t{make};\n}}"),
             };
-            return Ok((format!("stopTimer({id}.get());\n{id}.set(startTimer({n}, {times}, {run}, {keep}, {})){now}", self.in_frame), Ty::Any));
+            let first = if now { format!(";\n{call}") } else { String::new() };
+            return Ok((format!("self.removeTimer({id}.get());\n{make}{first}"), Ty::Any));
         }
         let opts = "{ persistent: true }";
         Ok((format!("self.removeTimer({id}.get());\n{id}.set(self.addTimer({every}, {times}, {name}, {opts}))"), Ty::Any))
@@ -4303,6 +4354,19 @@ fn bool_make(fighter: bool) -> &'static str { if fighter { "makeObject" } else {
 /// what a frame's `return` is written as in its keyframe, for the emitter to finish (a frame's code
 /// ends with what the rules run after it, which a `return` must run too)
 pub const FRAME_RETURN: &str = "return; //frame";
+
+/// the methods a fighter's code calls on another object, which that object publishes for it
+pub fn asked_of_others() -> &'static std::sync::Mutex<BTreeSet<String>> {
+    static ASKED: std::sync::OnceLock<std::sync::Mutex<BTreeSet<String>>> = std::sync::OnceLock::new();
+    ASKED.get_or_init(Default::default)
+}
+
+/// the methods of the objects another package lends a fighter (an item its code makes that the
+/// game's shared packages hold): its code calls them on those objects, which publish them
+pub fn lent_methods() -> &'static std::sync::Mutex<BTreeSet<String>> {
+    static LENT: std::sync::OnceLock<std::sync::Mutex<BTreeSet<String>>> = std::sync::OnceLock::new();
+    LENT.get_or_init(Default::default)
+}
 
 /// a frame's function's body, as its keyframe's code: its lines, a tab less
 fn frame_body(text: &str) -> String {

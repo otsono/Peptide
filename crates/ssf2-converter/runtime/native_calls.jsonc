@@ -99,11 +99,17 @@
   "PeptideAPI.shakeCamera": "match.getCamera().shake({0})",
 
   // the API's arithmetic (`SSF2Utils`)
-  "PeptideUtils.toRadians": { "code": "{0} * (Math.PI / 180)", "returns": "number" },
-  "PeptideUtils.toDegrees": { "code": "{0} * (180 / Math.PI)", "returns": "number" },
-  "PeptideUtils.calculateXSpeed": { "code": "{0} * Math.cos({1} * Math.PI / 180)", "returns": "number" },
-  "PeptideUtils.calculateYSpeed": { "code": "{0} * Math.sin({1} * Math.PI / 180)", "returns": "number" },
-  "PeptideUtils.calculateSpeed": { "code": "Math.sqrt({0} * {0} + {1} * {1})", "returns": "number" },
+  "PeptideUtils.toRadians": { "code": "Math.toRadians({0})", "returns": "number" },
+  "PeptideUtils.toDegrees": { "code": "Math.toDegrees({0})", "returns": "number" },
+  "PeptideUtils.calculateXSpeed": { "code": "Math.calculateXVelocity({0}, {1})", "returns": "number" },
+  "PeptideUtils.calculateYSpeed": { "code": "Math.calculateYVelocity({0}, {1})", "returns": "number" },
+  "PeptideUtils.calculateSpeed": { "code": "Math.calculateSpeed({0}, {1})", "returns": "number" },
+  // (the engine's own: its angle between runs -180 up to 180, the source's 0 up to 360; its velocity
+  // calls take the speed first)
+  "PeptideUtils.forceBase360": { "code": "Math.modulo({0}, 360)", "returns": "number" },
+  "PeptideUtils.calculateDifferenceBetweenAngles": { "code": "Math.angleDifference({0}, {1})", "returns": "number" },
+  "PeptideUtils.getAngleBetween": { "code": "Math.modulo(Math.getAngleBetween(Point.create({0}.x, {0}.y), Point.create({1}.x, {1}.y)), 360)", "returns": "number" },
+  "PeptideUtils.getVelocityVector": { "code": "{ x: Math.calculateXVelocity({0}, {1}), y: Math.calculateYVelocity({0}, {1}) }", "returns": "rect" },
 
   // a fighter's own calls (a `{t0}` is the argument as a test, the source's way)
   "setIntangibility": "{self}.updateAnimationStats({ bodyStatus: {t0} ? BodyStatus.INTANGIBLE : BodyStatus.NONE })",
@@ -133,7 +139,7 @@
   "getMidground": { "code": "stage", "returns": "object" },
   "PeptideAPI.getStage": { "code": "stage", "returns": "object" },
   // an item asked to fly free (its own script throws it)
-  "toToss": "if ({self}.exports.__ask != null) {self}.exports.__ask(\"toss\", null)",
+  "toToss": "if ({self}.exports.__ask != null) {self}.exports.__ask(\"toToss\", null)",
   // a fighter grabbed by the one with that id; let go by whoever holds it
   "getUID": { "code": "{self}.getUid()", "returns": "number" },
   "grab": "for (c in match.getCharacters()) if (c.getUid() == {0} && c != {self}) c.attemptGrab({self})",
@@ -158,6 +164,8 @@
   "setFrameInterrupt": "frameInterrupt.set({0})",
   "isZDropped": { "code": "zDropped.get()", "returns": "bool" },
   "getHolder": { "code": "holder.get()", "returns": "object" },
+  // its holder letting go of the item it holds, asked by another object (the item itself)
+  "dropItem": "if ({self} != null && {self}.exports.__dropItem != null) {self}.exports.__dropItem()",
   // an item's own stats written by its code: the engine's stat for each it keeps (`{v}` the value)
   "item_stats": {
     "gravity": "gravity: {v} * {accel}",
@@ -210,7 +218,7 @@
   // the match's items: every custom game object that is one
   "PeptideAPI.getItems": { "code": "itemsInMatch()", "helper": "itemsInMatch", "returns": "object" },
   // how far apart two points are
-  "Point.distance": { "code": "pointDistance({0}, {1})", "helper": "pointDistance", "returns": "number" },
+  "Point.distance": { "code": "Math.getDistance(Point.create({0}.x, {0}.y), Point.create({1}.x, {1}.y))", "returns": "number" },
   // another object's stats as an item (its own stats are its handler's): the engine's for each it keeps
   "updateItemStats": { "code": "itemStatsOn({self}, {0})", "helper": "itemStatsOn" },
   // what another object declares
@@ -220,6 +228,11 @@
   // an object's stats as a record (its name, to make it again by)
   "exportStats": { "code": "exportedStats({self})", "helper": "exportedStats", "returns": "record" },
   "PeptideAPI.getPlatformBetweenPoints": { "code": "platformBetween({0}, {1}{,2})", "helper": "platformBetween", "returns": "object" },
+  "PeptideAPI.hitTestGroundBetweenPoints": { "code": "platformBetween({0}, {1}{,2})", "helper": "platformBetween", "returns": "object" },
+  // (the ground at a point: what a line through it a pixel each way meets)
+  "PeptideAPI.hitTestGround": { "code": "platformBetween({ x: {0}, y: ({1}) - 1 }, { x: {0}, y: ({1}) + 1 }{,2})", "helper": "platformBetween", "returns": "object" },
+  // an item another object makes: its owner makes it, lying free where it says
+  "PeptideAPI.makePickup": { "code": "(self.getOwner() != null && self.getOwner().exports.__makeItem != null ? self.getOwner().exports.__makeItem({0}{,1}{,2}) : null)", "returns": "object" },
   "PeptideAPI.getElapsedFrames": { "code": "Std.int(match.getElapsedFrames() / 2)", "returns": "number" },
   "PeptideAPI.randomBetween": { "code": "Random.getInt({0}, {1})", "returns": "number" },
   "PeptideAPI.randomUnit": { "code": "Random.getFloat(0, 1)", "returns": "number" },

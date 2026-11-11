@@ -310,14 +310,6 @@ function setXSpeedFromCode(v) {
 	if (c != null && (c.LEFT || c.RIGHT)) self.setXSpeed(START);
 }
 
-// ---- end_move
-// the end of a move: on the floor it stands; in the air an attack's animation ends; else it falls
-function endMove() {
-	if (self.isOnFloor()) self.toState(CState.STAND);
-	else if (self.inStateGroup(CStateGroup.ATTACK)) self.endAnimation();
-	else self.toState(CState.FALL);
-}
-
 // ---- controls
 // the source's controls, by its names: its first button is special, its second attack
 function controls(pressed) {
@@ -403,6 +395,7 @@ function askItem(it, kind, ?v) {
 	if (it != null && it.exports != null && it.exports.__ask != null) it.exports.__ask(kind, v);
 }
 function generateItem(name, ?by) {
+	if (name == "random" && by == null) name = anyItemName();
 	var id = by != null ? null : itemContent(name);
 	var content = id == null ? null : self.getResource().getContent(id);
 	// (one of another fighter's, made by that one through the power it publishes)
@@ -417,9 +410,25 @@ function generateItem(name, ?by) {
 	if (it == null) return null;
 	return holdMade(it, name);
 }
+// an item another object of its asks it to make (one item opening into another), lying free
+// where that one says
+function makeItem(name, ?x, ?y) {
+	if (name == "random") name = anyItemName();
+	var id = itemContent(name);
+	var content = id == null ? null : self.getResource().getContent(id);
+	if (content == null) return null;
+	var it = match.createCustomGameObject(content, self);
+	it.exports.__isItem = true;
+	it.exports.__np = true;
+	it.exports.__itemName = name;
+	if (x != null) { it.setX(x); it.setY(y); }
+	return it;
+}
 // an item it has made, held from now on
 function holdMade(it, name) {
 	self.exports.__tossItem = tossItem;
+	self.exports.__makeItem = makeItem;
+	self.exports.__dropItem = dropItem;
 	placeItem(it);
 	it.exports.__holder = self;
 	it.exports.__isItem = true;
@@ -564,10 +573,9 @@ function placeEffect(e, x, y, ?rot) {
 }
 
 // ---- nearest
-// the nearest object of a kind ("character", "player", "item", "projectile", "enemy"), and that one
-// as the source's path to it
+// the nearest object of a kind ("character", "player", "item", "projectile", "enemy")
 function nearest(type) {
-	var list = (type == "character" || type == "player") ? match.getCharacters() : (type == "enemy" ? match.getCustomGameObjects() : match.getProjectiles());
+	var list = (type == "character" || type == "player") ? match.getCharacters() : (type == "enemy" || type == "item" ? match.getCustomGameObjects() : match.getProjectiles());
 	var best = null;
 	var bd = 1.0e12;
 	for (o in list) {
@@ -579,10 +587,6 @@ function nearest(type) {
 		if (d < bd) { bd = d; best = o; }
 	}
 	return best;
-}
-function nearestPath(type) {
-	var t = nearest(type);
-	return t == null ? [] : [t];
 }
 
 // ---- last_used
@@ -630,7 +634,7 @@ function firedStat(p, k) {
 // ---- asked
 //: what another object's code asks of it, published as it starts (`self.exports`): an attack
 //: started at a frame of its clip, and the fields of its clips. `animOf`, `fieldOf` and
-//: `stanceClass` are written for it from its animations and its classes
+//: `classOf` are written for it from its animations and its classes
 // an attack another object's code starts on it, by the source's label, at a label of its clip
 function forceAttackAsked(label, ?frame) {
 	var anim = animOf(label);
@@ -788,48 +792,6 @@ function linkFrame() {
 	var keep = [];
 	for (l in linkListeners.get()) if (l.a == now) keep.push(l);
 	linkListeners.set(keep);
-}
-
-// ---- timers
-// a timer its code makes (`createTimer(frames, repeats, fn)`): two engine frames to a source frame,
-// forever for none. it drops with the state it was made in unless asked to stay, waits out the
-// fighter's freezes, and one made in a frame's code comes due two engine frames sooner the first
-// time (the source ticks the frame it is made in too). the record is what its code stops it by
-function startTimer(n, times, fn, keep, inFrame) {
-	var t = { id: -1, left: times, dead: false, fn: fn };
-	var opts = { persistent: keep, pauseCondition: frozen };
-	var first = inFrame ? 2 * n - 2 : 2 * n;
-	if (first == 2 * n) { t.id = self.addTimer(2 * n, times, function() { tickTimer(t); }, opts); return t; }
-	// a one-frame one made in a frame's code is run by that code right after making it, which is its
-	// first tick, and then each source frame
-	if (first == 0) {
-		var rest = times < 0 ? -1 : times - 1;
-		t.left = rest;
-		if (rest == 0) t.dead = true;
-		else t.id = self.addTimer(2 * n, rest, function() { tickTimer(t); }, opts);
-		return t;
-	}
-	t.id = self.addTimer(first < 1 ? 1 : first, 1, function() {
-		// (its first run is that timer's last: its id is the engine's to give out again)
-		t.id = -1;
-		tickTimer(t);
-		if (!t.dead && t.left != 0) t.id = self.addTimer(2 * n, t.left, function() { tickTimer(t); }, opts);
-	}, opts);
-	return t;
-}
-function tickTimer(t) {
-	if (t.dead) return;
-	// (one that has run its last forgets the engine's id, so stopping it later stops nothing else)
-	if (t.left > 0) { t.left--; if (t.left == 0) { t.dead = true; t.id = -1; } }
-	t.fn();
-}
-function stopTimer(t) {
-	if (t == null) return;
-	t.dead = true;
-	// (the engine gives ids out again, one object's timers counting from one: a stale one would
-	// stop another of its timers)
-	if (t.id >= 0) self.removeTimer(t.id);
-	t.id = -1;
 }
 
 // ---- ledges
