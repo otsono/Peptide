@@ -3473,12 +3473,13 @@ self.playFrameLabel({})", quote(f))); }
             self.blocks.insert("timers".into());
             self.blocks.insert("refresh".into());
             let n = match n.parse::<f64>() { Ok(v) => number(v.max(1.0).round()), Err(_) => format!("Std.int(Math.max(1, {}))", paren(&n)) };
-            let run = match condition {
-                Some(c) => { let t = self.test(&Expr::Call(Box::new(c), vec![]))?; format!("function() {{ if ({t}) {name}(); }}") }
-                None => name.clone(),
+            let test = match condition { Some(c) => Some(self.test(&Expr::Call(Box::new(c), vec![]))?), None => None };
+            let run = match &test { Some(t) => format!("function() {{ if ({t}) {name}(); }}"), None => name.clone() };
+            // (one due in the frame that made it is run by that code right after making it: its first tick)
+            let now = if !self.in_frame { String::new() } else {
+                let call = match &test { Some(t) => format!("if ({t}) {name}()"), None => format!("{name}()") };
+                if n == "1" { format!(";\n{call}") } else { format!(";\nif ({n} == 1) {{ {call}; }}") }
             };
-            // (one due in the frame that made it ticks right after the code making it)
-            let now = if self.in_frame { format!(";\ntickNow({id}.get())") } else { String::new() };
             return Ok((format!("stopTimer({id}.get());\n{id}.set(startTimer({n}, {times}, {run}, {keep}, {})){now}", self.in_frame), Ty::Any));
         }
         let opts = "{ persistent: true }";
