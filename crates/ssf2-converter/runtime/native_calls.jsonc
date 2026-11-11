@@ -175,6 +175,10 @@
     // (kept by the item handler, runtime/native/item.hx: a statement, `;` ended)
     "canPickup": "pickupOn.set({v});"
   },
+  // an item stat its own code reads that its handler keeps as it runs (`{declared}` what it declares)
+  "item_stat_reads": {
+    "canPickup": "({declared} != false && pickupOn.get())"
+  },
   // a list's and a text's own calls
   "slice": { "code": "{self}.slice({0}{,1})", "returns": "object" },
   "indexOf": { "code": "{self}.indexOf({0})", "returns": "number" },
@@ -221,10 +225,8 @@
   "Point.distance": { "code": "Math.getDistance(Point.create({0}.x, {0}.y), Point.create({1}.x, {1}.y))", "returns": "number" },
   // another object's stats as an item (its own stats are its handler's): the engine's for each it keeps
   "updateItemStats": { "code": "itemStatsOn({self}, {0})", "helper": "itemStatsOn" },
-  // what another object declares
-  "getItemStat": { "code": "statOf({self}, {0})", "helper": "statOf" },
-  "getEnemyStat": { "code": "statOf({self}, {0})", "helper": "statOf" },
-  "getGameObjectStat": { "code": "gameObjectStat({self}, {0})", "helper": "gameObjectStat" },
+  // (what another object declares, `getItemStat`/`getProjectileStat`/`getEnemyStat`/`getGameObjectStat`,
+  // is its stats' metadata read by the stat's name: src/compile/native.rs)
   // an object's stats as a record (its name, to make it again by)
   "exportStats": { "code": "exportedStats({self})", "helper": "exportedStats", "returns": "record" },
   "PeptideAPI.getPlatformBetweenPoints": { "code": "platformBetween({0}, {1}{,2})", "helper": "platformBetween", "returns": "object" },

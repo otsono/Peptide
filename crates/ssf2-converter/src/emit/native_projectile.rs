@@ -131,12 +131,13 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         Some((format!("spriteContent: self.getResource().getContent({}), animation: {}", compile::quote(name), compile::quote(&p.fm_name)), gone))
     };
     // a projectile its owner declares, for one its code fires
-    let fired = |name: &str| -> Option<(String, [f64; 4])> {
+    let fired = |name: &str| -> Option<(String, [f64; 4], Option<String>)> {
         let decl = decls.projectiles.get(name)?;
         let key = spec.entities.get(name)?;
         let n = |ks: &[&str]| ks.iter().find_map(|k| match decl.get(k) { Some(Value::Num(v)) => Some(*v), _ => None }).unwrap_or(0.0);
         Some((crate::projectile_gen::projectile_content_id(key),
-              [n(&["xoffset", "xOffset", "x_offset"]), n(&["yoffset", "yOffset", "y_offset"]), n(&["xspeed", "xSpeed", "x_speed"]), n(&["yspeed", "ySpeed", "y_speed"])]))
+              [n(&["xoffset", "xOffset", "x_offset"]), n(&["yoffset", "yOffset", "y_offset"]), n(&["xspeed", "xSpeed", "x_speed"]), n(&["yspeed", "ySpeed", "y_speed"])],
+              super::fired_record(decls, spec.entities, name)))
     };
     // a stat its owner states, for a read of it: what it declares, where its code has not changed it
     let owner_stat_of = |k: &str| -> Option<String> {

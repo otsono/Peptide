@@ -677,8 +677,14 @@ it up with grab and its own code throwing it on that holder's next attack, hits 
 thrown, and the events it raises (`events.jsonc` `item`). each of its stances' labels is an
 animation (`toss_spinRight`), and its own jumps go to the stance its state shows (`playStance`).
 an item whose own code has no plain form carries the handler alone, and `runtime_report.json`'s
-`items_without_own_code` says why. another object's code reads an item's state and stats through
-what the handler publishes (`__inItemState`, `__statOf`), and `setColorFilters` is `colorFilters`.
+`items_without_own_code` says why. another object's code reads an item's state through what the
+handler publishes (`__inItemState`), and `setColorFilters` is `colorFilters`.
+what an item, a projectile or an enemy declares is its stats' metadata (`metadata` in its
+`Stats.hx`, `emit::declare_in_stats`): another object's code reads a stat named outright as
+`declaredOf(o).k` (`getGameObjectStatsMetadata()`), and its own reads resolve at conversion. one
+fired under a declaration its entity isn't written from takes that one on as it's fired
+(`updateGameObjectStatsMetadata`). a stat its own code writes that the engine has no field for is
+a variable of its own, so another object reads the declared value.
 a top-level name a written script declares twice fails the conversion (`declared_twice`).
 a class of the package's own that a field holds one of (`new InhaleController(this)`) is written out
 under the field's name: its fields containers (`inhale__state`), its methods functions

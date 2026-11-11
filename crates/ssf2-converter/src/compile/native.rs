@@ -36,6 +36,8 @@ struct Calls {
     projectile_stats: BTreeMap<String, String>,
     /// an item stat written by its code, as the engine's stat (`{v}` the value)
     item_stats: BTreeMap<String, String>,
+    /// an item stat its own code reads that its handler keeps as it runs (`{declared}` what it declares)
+    item_stat_reads: BTreeMap<String, String>,
     /// a projectile's states, by the source's names, as the engine's test (`{self}` the projectile)
     projectile_states: BTreeMap<String, String>,
     /// the API's records made with `new`, by class, and the calls they answer
@@ -66,10 +68,10 @@ fn calls() -> &'static Calls {
                     .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect();
                 continue;
             }
-            if k == "projectile_stats" || k == "item_stats" {
+            if k == "projectile_stats" || k == "item_stats" || k == "item_stat_reads" {
                 let m: BTreeMap<String, String> = v.as_object().into_iter().flatten()
                     .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect();
-                if k == "projectile_stats" { t.projectile_stats = m } else { t.item_stats = m }
+                match k.as_str() { "projectile_stats" => t.projectile_stats = m, "item_stats" => t.item_stats = m, _ => t.item_stat_reads = m }
                 continue;
             }
             let row = match v {
@@ -169,7 +171,7 @@ pub struct Object<'a> {
     pub owner_anims: &'a [(String, String)],
     /// a projectile its owner's package declares, by name: its content, and its declared offset
     /// and launch (x, y offsets; x, y speeds), in the source's units
-    pub fired: &'a dyn Fn(&str) -> Option<(String, [f64; 4])>,
+    pub fired: &'a dyn Fn(&str) -> Option<(String, [f64; 4], Option<String>)>,
     /// a stat its owner declares, as code
     pub owner_declares: &'a dyn Fn(&str) -> Option<String>,
     /// whether its owner's code keeps a field in a state container (its package's code stores it),
@@ -499,6 +501,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                     if matches!(&**f, Expr::Member(_, n) if n == "updateProjectileStats") {
                         if let [Expr::Object(kv)] = a.as_slice() { for (k, _) in kv { if let Expr::Str(k) = k {
                             if !calls().projectile_stats.contains_key(k) && !o.switches.contains_key(k) { w.own_stats.insert(k.clone()); }
+                        } } }
+                    }
+                    // (an item's, the same: one its handler keeps none of)
+                    if o.item && matches!(&**f, Expr::Member(t, n) if n == "updateItemStats" && matches!(**t, Expr::This)) {
+                        if let [Expr::Object(kv)] = a.as_slice() { for (k, _) in kv { if let Expr::Str(k) = k {
+                            if !calls().item_stats.contains_key(k) { w.own_stats.insert(k.clone()); }
                         } } }
                     }
                 });
@@ -2127,6 +2135,12 @@ impl<'o, 'a> Writer<'o, 'a> {
     }
 
     /// a helper of `helpers.hx` that takes the source's size, written once
+    /// a function of `runtime/native/utils.hx`, written once
+    fn util(&mut self, name: &str) -> Result<String, String> {
+        if !self.helpers.contains_key(name) { self.helpers.insert(name.into(), helper(self.o.runtime, "utils", name, name, &[("SIZE", number(self.o.size)), ("SPEED", number(self.o.speed)), ("ACCEL", number(self.o.accel))], &[])?); }
+        Ok(name.into())
+    }
+
     fn sized_helper(&mut self, key: &str, name: &str) -> Result<String, String> {
         if !self.helpers.contains_key(name) { self.helpers.insert(name.into(), helper(self.o.runtime, "helpers", key, name, &[("SIZE", number(self.o.size))], &[])?); }
         Ok(name.into())
@@ -2780,6 +2794,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (mut set, mut kept) = (Vec::new(), Vec::new());
                 for (k, v) in pairs {
                     let Expr::Str(k) = k else { return Err("writes an item stat by a name worked out as it runs".into()) };
+                    if self.own_stats.contains(k) {
+                        let id = self.own_stat(k);
+                        let (v, _) = self.expr(v)?;
+                        kept.push(format!("{id}.set({v});"));
+                        continue;
+                    }
                     let Some(t) = calls().item_stats.get(k).cloned() else { continue };
                     let (v, _) = self.expr(v)?;
                     // (one the item handler keeps itself is a statement of its own, `;` ended)
@@ -2833,9 +2853,35 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let v = (self.o.declared)(k).ok_or_else(|| format!("reads its {k}, which its declarations do not agree on"))?;
                 return Ok((if v == "null" { "0".into() } else { v }, Ty::Num));
             }
-            ("getProjectileStat", [Expr::Str(k)]) if mine && self.own_stats.contains(k) =>return Ok((format!("{}.get()", self.own_stat(k)), Ty::Any)),
-            ("getProjectileStat", [Expr::Str(k)]) if mine => {
+            ("getProjectileStat" | "getItemStat" | "getEnemyStat", [Expr::Str(k)]) if mine && self.own_stats.contains(k) => return Ok((format!("{}.get()", self.own_stat(k)), Ty::Any)),
+            // (one its handler keeps as it runs: as the handler reads it, runtime/native_calls.jsonc `item_stat_reads`)
+            ("getItemStat", [Expr::Str(k)]) if mine && self.o.item && calls().item_stat_reads.contains_key(k) => {
+                let declared = (self.o.declared)(k).unwrap_or_else(|| "null".into());
+                return Ok((calls().item_stat_reads[k].replace("{declared}", &declared), Ty::Any));
+            }
+            ("getProjectileStat" | "getItemStat" | "getEnemyStat", [Expr::Str(k)]) if mine => {
                 return (self.o.declared)(k).map(|v| (v, Ty::Any)).ok_or_else(|| format!("reads its stat {k}, which its declarations do not agree on"));
+            }
+            // its own stat by the source's name: what it declares (or its code wrote since), else the engine's
+            ("getGameObjectStat", [Expr::Str(k)]) if mine => {
+                let declared = if self.own_stats.contains(k) { format!("{}.get()", self.own_stat(k)) } else { (self.o.declared)(k).unwrap_or_else(|| "null".into()) };
+                let g = self.util("gameObjectStat")?;
+                return Ok((format!("{g}(self, {}, {declared})", quote(k)), Ty::Any));
+            }
+            // what another object declares: its stats' metadata, which holds its declaration, read by
+            // the stat's own name (the engine's own stat, where it declares none: `getGameObjectStat`)
+            ("getProjectileStat" | "getItemStat" | "getEnemyStat" | "getGameObjectStat", [k]) if !mine => {
+                let named = match k { Expr::Str(k) if crate::re!(r"^[A-Za-z_]\w*$").is_match(k) => Some(k.clone()), _ => None };
+                let Some(k) = named else {
+                    self.gaps.insert(format!("{m}: reads another object's stat by a name worked out as it runs"));
+                    return Ok(("null".into(), Ty::Any));
+                };
+                let d = self.util("declaredOf")?;
+                if m == "getGameObjectStat" {
+                    let g = self.util("gameObjectStat")?;
+                    return Ok((format!("{g}({who}, {}, {d}({who}).{k})", quote(&k)), Ty::Any));
+                }
+                return Ok((format!("{d}({who}).{k}"), Ty::Any));
             }
             // (its own box's, or one of an object it made: an item it holds)
             // (one this engine keeps none of reads as nothing, as its writes land on nothing)
@@ -2923,12 +2969,6 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (dy, _) = self.expr(dy)?;
                 return Ok((format!("{f}({who}, {dx}, {dy})"), Ty::Bool));
             }
-            // a stat of a projectile it fired: what its declaration states (by the name it was fired by)
-            ("getProjectileStat", [Expr::Str(k)]) if self.o.fighter && !mine => {
-                self.blocks.insert("fired_stats".into());
-                self.stat_keys.insert(format!("projectile:{k}"));
-                return Ok((format!("firedStat({who}, {})", quote(k)), Ty::Any));
-            }
             ("getLedges", []) if self.o.fighter && who == "stage" => {
                 self.blocks.insert("ledges".into());
                 return Ok(("stageLedges()".into(), Ty::Rect));
@@ -2941,12 +2981,6 @@ impl<'o, 'a> Writer<'o, 'a> {
             ("getCharacterStat", [k]) if self.o.fighter && !mine => {
                 let (k, _) = self.expr(k)?;
                 return Ok((format!("({who}.exports.__source != null && {who}.exports.__source.__stats != null && {who}.exports.__source.__stats.exists({k}) ? {who}.exports.__source.__stats.get({k}) : {who}.getCharacterStat({k}))"), Ty::Any));
-            }
-            // what an item its fighter made declares
-            ("getItemStat", [k]) if self.o.fighter && !mine => {
-                self.blocks.insert("items".into());
-                let (k, _) = self.expr(k)?;
-                return Ok((format!("itemStat({who}, {k})"), Ty::Any));
             }
             // an attack its code starts on its owner, and a rocket it sets off on it: what the owner publishes
             ("forceAttack" | "startAttack", [label, rest @ ..]) if self.owners.contains(who) && !self.o.fighter => {
@@ -3416,14 +3450,16 @@ self.playFrameLabel({})", quote(f))); }
             }
             return Ok(f);
         }
-        let (content, [dx, dy, xs, ys]) = (self.o.fired)(name).ok_or_else(|| format!("fires {name}, which its owner does not declare"))?;
+        let (content, [dx, dy, xs, ys], declares) = (self.o.fired)(name).ok_or_else(|| format!("fires {name}, which its owner does not declare"))?;
         let by_owner = from != "self";
         let f = if by_owner { format!("ownerFires_{}", ident(name)) } else { format!("fire_{}", ident(name)) };
         let from = if by_owner { "self.getOwner()" } else { "self" };
         if self.helpers.contains_key(&f) { return Ok(f) }
         let speed = number(self.o.speed);
         let words = [("PROJECTILE", name.to_string()), ("CONTENT", content), ("FROM", from.to_string()), ("DX", number(dx)), ("DY", number(dy)),
-                     ("XS", fold(&format!("{} * {speed}", number(xs)))), ("YS", fold(&format!("{} * {speed}", number(ys)))), ("SIZE", number(self.o.size))];
+                     ("XS", fold(&format!("{} * {speed}", number(xs)))), ("YS", fold(&format!("{} * {speed}", number(ys)))), ("SIZE", number(self.o.size)),
+                     // (fired under a name its entity is not written from: it takes that one's declaration on)
+                     ("DECLARES", declares.map(|r| format!("p.updateGameObjectStatsMetadata({r});")).unwrap_or_default())];
         let def = helper(self.o.runtime, "helpers", if self.o.fighter { "fighter_fire" } else { "fire" }, &f, &words, &[])?;
         self.helpers.insert(f.clone(), def);
         Ok(f)

@@ -100,7 +100,7 @@ pub fn frame_links(stats: &str) -> BTreeSet<(String, String)> {
     out
 }
 
-fn plain(v: &Value) -> Option<String> {
+pub(super) fn plain(v: &Value) -> Option<String> {
     match v {
         Value::Num(n) => Some(num(*n)),
         Value::Bool(b) => Some(b.to_string()),
@@ -212,13 +212,14 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
         let gone = if ps.len() == 1 && (p.sym == 0 || model.class_of(p.sym).is_none()) { None } else { super::plays_once(model, p)? };
         Some((format!("spriteContent: self.getResource().getContent({}), animation: {}", compile::quote(name), compile::quote(&p.fm_name)), gone))
     };
-    let fired = |name: &str| -> Option<(String, [f64; 4])> {
+    let fired = |name: &str| -> Option<(String, [f64; 4], Option<String>)> {
         let key = f.entities.get(name).or_else(|| f.entity_keys.get(name))?;
         // (an enemy made by its class declares no launch)
-        let Some(decl) = f.fighter.projectiles.get(name) else { return Some((crate::projectile_gen::projectile_content_id(key), [0.0; 4])) };
+        let Some(decl) = f.fighter.projectiles.get(name) else { return Some((crate::projectile_gen::projectile_content_id(key), [0.0; 4], None)) };
         let n = |ks: &[&str]| ks.iter().find_map(|k| match decl.get(k) { Some(Value::Num(v)) => Some(*v), _ => None }).unwrap_or(0.0);
         Some((crate::projectile_gen::projectile_content_id(key),
-              [n(&["xoffset", "xOffset", "x_offset"]), n(&["yoffset", "yOffset", "y_offset"]), n(&["xspeed", "xSpeed", "x_speed"]), n(&["yspeed", "ySpeed", "y_speed"])]))
+              [n(&["xoffset", "xOffset", "x_offset"]), n(&["yoffset", "yOffset", "y_offset"]), n(&["xspeed", "xSpeed", "x_speed"]), n(&["yspeed", "ySpeed", "y_speed"])],
+              super::fired_record(&super::Decls::of(f.fighter), f.entities, name)))
     };
     let pkg = compile::Package::new(f.model, f.runtime);
     let stores = |n: &str| pkg.stored.contains(n);
@@ -295,7 +296,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let rocket = rocketing.first().map(|l| compile::quote(l));
     if rocket.is_some() { blocks.insert("rocket".into()); }
     let mut functions = w.functions.clone();
-    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "fired_stats", "ledges", "home", "own_floor", "nearest", "ground_test", "recover", "copy_power"];
+    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "ledges", "home", "own_floor", "nearest", "ground_test", "recover", "copy_power"];
     for b in order.iter().filter(|b| blocks.contains(**b)) {
         let words: Vec<(&str, String)> = match *b {
             "items" => vec![("TOSS", num(f.units.item_toss)), ("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed))],
@@ -411,19 +412,6 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     // (the label its clip is on, for its own code and for another object's that reads it)
     let read_by_others = native::reads_others_label(f.model);
     if read_by_others || code_text.contains("clipLabel(") || functions.iter().any(|t| t.contains("clipLabel(")) { functions.push(table("clip_label_meta", &[])?); }
-    if blocks.contains("fired_stats") {
-        let wanted: BTreeSet<&str> = w.stat_keys.iter().filter_map(|k| k.strip_prefix("projectile:")).collect();
-        let mut l = Vec::new();
-        for (name, d) in f.fighter.projectiles.entries() {
-            let st: Vec<String> = wanted.iter().filter_map(|k| d.get(k).and_then(plain).map(|v| format!("\t\tcase {}: return {v};", compile::quote(k)))).collect();
-            if st.is_empty() { continue }
-            l.push(format!("case {}:", compile::quote(name)));
-            l.push("\tswitch (k) {".into());
-            l.extend(st);
-            l.push("\t}".into());
-        }
-        functions.push(table("fired_declared", &l)?);
-    }
     if !stat_code.is_empty() {
         functions.push(format!("// ---- what its attacks' declared stats and the source's own states have it do: runtime/attack_stats.jsonc, runtime/engine_animations.jsonc\n{code_text}"));
     }
@@ -624,8 +612,8 @@ pub fn clip_labels(model: &SourceModel, pieces: &[Piece]) -> Vec<String> {
     t
 }
 
-/// the tables its items block reads: where its item box is on each frame of each animation, the
-/// content each item it can make is, and what each declares
+/// the tables its items block reads: where its item box is on each frame of each animation, and the
+/// content each item it can make is
 fn item_tables(f: &Fighting) -> Result<Vec<String>, String> {
     let rt = f.runtime;
     let mut content = Vec::new();
@@ -636,18 +624,8 @@ fn item_tables(f: &Fighting) -> Result<Vec<String>, String> {
             names.push(compile::quote(name));
         }
     }
-    let mut declared = Vec::new();
-    for (name, d) in f.fighter.items.entries() {
-        let st: Vec<String> = d.entries().iter().filter_map(|(k, v)| plain(v).map(|v| format!("\t\tcase {}: return {v};", compile::quote(k)))).collect();
-        if st.is_empty() { continue }
-        declared.push(format!("case {}:", compile::quote(name)));
-        declared.push("\tswitch (k) {".into());
-        declared.extend(st);
-        declared.push("\t}".into());
-    }
     Ok(vec![native::helper(rt, "fighter_tables", "item_box", "", &[("SIZE", num(f.units.size))], &[])?,
-            native::helper(rt, "fighter_tables", "item_content", "", &[("NAMES", names.join(", "))], &content)?,
-            native::helper(rt, "fighter_tables", "item_declared", "", &[], &declared)?])
+            native::helper(rt, "fighter_tables", "item_content", "", &[("NAMES", names.join(", "))], &content)?])
 }
 
 fn num(n: f64) -> String { if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") } }

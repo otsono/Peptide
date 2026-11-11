@@ -2,8 +2,6 @@
 
 function initialize() {
 	PeptideRuntime.start(self, DATA, Projectiles);
-	// what it declares, for another object's code that asks
-	self.exports.__statOf = function(k) { return Projectiles.stat(PeptideRuntime.object, k); };
 	// its stats another object's code writes that this engine keeps none of, each a setter the
 	// writer calls (`who.exports.__stat.set(v)`): the runtime keeps them
 	// {setters}

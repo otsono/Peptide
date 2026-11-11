@@ -37,24 +37,6 @@ function anyItemName() {
 	return all.length == 0 ? null : all[Random.getInt(0, all.length - 1)];
 }
 
-// ---- item_declared
-// what each item it can make declares
-function itemDeclared(name, k) {
-	switch (name) {
-		// {cases}
-	}
-	return null;
-}
-
-// ---- fired_declared
-// what each projectile it fires declares, of the stats its code reads
-function firedDeclared(name, k) {
-	switch (name) {
-		// {cases}
-	}
-	return null;
-}
-
 // ---- anim_of
 // the animation each of the source's labels is
 function animOf(label) {

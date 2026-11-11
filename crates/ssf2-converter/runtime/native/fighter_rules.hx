@@ -381,8 +381,8 @@ function stopListening() {
 }
 
 // ---- items
-//: TOSS an item's throw speed where it states none, in this engine's units. `itemBox`,
-//: `itemContent` and `itemDeclared` are written for it from its animations and declarations
+//: TOSS an item's throw speed where it states none, in this engine's units. `itemBox` and
+//: `itemContent` are written for it from its animations and declarations
 // an item it generates: a custom game object of its own riding its item box until it is thrown.
 // the item's handler takes the hold and the throw as asks on its exports (`__holder`, `__ask`)
 function heldItem() {
@@ -480,13 +480,6 @@ function removeItem() {
 	var it = heldItem();
 	if (it != null) it.kill();
 	self.exports.__heldItem = null;
-}
-// what an item it made declares
-function itemStat(it, k) {
-	if (it == null || it.exports == null) return null;
-	var name = it.exports.__itemName;
-	if (k == "linkage_id") return name;
-	return itemDeclared(name, k);
 }
 // every frame it holds one, the item rides the box; an attack begun while holding it is put to the item first
 var itemAttack = self.makeObject(null);
@@ -625,13 +618,6 @@ function engineStat(name) {
 	var b = statBase.get();
 	if (!b.exists(name)) b.set(name, self.getCharacterStat(name));
 	return b.get(name);
-}
-
-// ---- fired_stats
-// a stat of a projectile it fired, as its declaration states it (by the name it was fired by)
-function firedStat(p, k) {
-	if (p == null || p.exports == null || p.exports.__launched == null) return null;
-	return firedDeclared(p.exports.__launched.name, k);
 }
 
 // ---- asked

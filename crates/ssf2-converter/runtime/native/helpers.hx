@@ -44,13 +44,15 @@ function NAME(owner) {
 // ---- fire
 //: PROJECTILE its name, CONTENT its content, FROM who fires it (this one, or its owner when this
 //: one's code asks the owner), DX DY its declared offset, XS YS its declared launch (already in
-//: this engine's speed), SIZE the source's size here
+//: this engine's speed), SIZE the source's size here, DECLARES its declaration taken on (fired under
+//: a name its entity is not written from), else nothing
 // FROM fires PROJECTILE: off where it is, launched the way it faces
 function NAME(?x, ?y, ?place) {
 	if (x == null) x = 0;
 	if (y == null) y = 0;
 	var p = match.createProjectile(self.getResource().getContent("CONTENT"), self.getOwner());
 	if (p == null) return null;
+	DECLARES
 	if (place == true && (x != 0 || y != 0)) {
 		p.setX(x * SIZE);
 		p.setY(y * SIZE);
@@ -390,7 +392,8 @@ function goToFrame(f, anims, froms, lens) {
 
 // ---- fighter_fire
 //: PROJECTILE its name, CONTENT its content, DX DY its declared offset, XS YS its declared launch
-//: (already in this engine's speed), SIZE the source's size here
+//: (already in this engine's speed), SIZE the source's size here, DECLARES its declaration taken on
+//: (fired under a name its entity is not written from), else nothing
 // it fires PROJECTILE: off where it is (fired into the floor it stands on, on that floor), launched
 // the way it faces. the launch is handed over first, as the source gives it before the
 // projectile's own code runs: a projectile on the runtime takes it up as it starts
@@ -406,6 +409,7 @@ function NAME(?x, ?y, ?place) {
 	self.exports.__launch = launch;
 	var p = match.createProjectile(self.getResource().getContent("CONTENT"), self);
 	if (p == null) { self.exports.__launch = null; return null; }
+	DECLARES
 	if (p.exports != null) p.exports.__thrownRight = p.isFacingRight();
 	if (self.exports.__launch != null) {
 		self.exports.__launch = null;

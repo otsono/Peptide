@@ -41,17 +41,6 @@ var HALF_WIDTH = WIDTH * SIZE / 2;
 var HEIGHT_UP = HEIGHT * SIZE;
 
 function inItemState(n) { return itemState.get() == n; }
-// what it declares, for another object's code that asks (`getItemStat`)
-function itemStat(k) {
-	switch (k) {
-		case "linkage_id": return self.exports.__itemName;
-		case "canPickup": return CAN_PICKUP && pickupOn.get();
-		case "tossSpeed": return TOSS_SPEED;
-		case "width": return WIDTH;
-		case "height": return HEIGHT;
-	}
-	return null;
-}
 // its state changed: it shows the clip that state has (held, thrown, lying free)
 function itemTo(n) {
 	if (itemState.get() == n) return;
@@ -224,7 +213,6 @@ function initialize() {
 	self.exports.__ask = asked;
 	self.exports.__isItem = true;
 	self.exports.__inItemState = inItemState;
-	self.exports.__statOf = itemStat;
 	self.addEventListener(GameObjectEvent.HITBOX_CONNECTED, hitOnlyThrown, { persistent: true });
 	// {start}
 	// {own_start}

@@ -1523,6 +1523,7 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
             let stats = enemy.and_then(own_stats).unwrap_or(Value::Null);
             let class = enemy.or_else(|| model.classes.get(&entity_key)).or_else(|| model.classes.values().find(|c| compile::short(&c.name) == entity_key));
             if let (Some(c), Some(sym), true) = (class, pieces.first().map(|p| p.sym), script.exists()) {
+                declare_in_stats(char_dir, &entity_key, &stats)?;
                 let content = crate::projectile_gen::projectile_content_id(&entity_key);
                 let entity = char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content)));
                 let has = entity_animations(&entity);
@@ -1539,6 +1540,7 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
             pieces_of.insert(entity_key, pieces);
             continue;
         };
+        declare_in_stats(char_dir, &entity_key, decl)?;
         let content = crate::projectile_gen::projectile_content_id(&entity_key);
         let entity = char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content)));
         let has = entity_animations(&entity);
@@ -1588,6 +1590,42 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
         out.push((entity_key, emitted));
     }
     Ok(out)
+}
+
+/// what a declaration states, as a record of this engine's script: its plain fields (a number, a
+/// truth, a text), by name. `None` when it states none
+pub fn declared_record(d: &Value) -> Option<String> {
+    let fields: Vec<String> = d.entries().iter().filter(|(k, _)| crate::re!(r"^[A-Za-z_]\w*$").is_match(k))
+        .filter_map(|(k, v)| native_fighter::plain(v).map(|v| format!("{k}: {v}"))).collect();
+    (!fields.is_empty()).then(|| format!("{{ {} }}", fields.join(", ")))
+}
+
+/// the declaration an object's entity is written from: the first of the fighter's projectiles and
+/// items drawn as it (one fired under another name sharing its clip takes its own as it is fired)
+pub fn entity_declaration<'a>(decls: &Decls<'a>, entities: &BTreeMap<String, String>, key: &str) -> Option<&'a str> {
+    decls.projectiles.entries().iter().chain(decls.items.entries()).find(|(n, _)| entities.get(n).map(String::as_str) == Some(key)).map(|(n, _)| n.as_str())
+}
+
+/// what a projectile fired by a name declares, where its entity is written from another
+/// declaration sharing its clip: the record it takes on as it is fired
+pub fn fired_record(decls: &Decls, entities: &BTreeMap<String, String>, name: &str) -> Option<String> {
+    let key = entities.get(name)?;
+    if entity_declaration(decls, entities, key) == Some(name) { return None }
+    declared_record(decls.projectiles.get(name)?)
+}
+
+/// an object's declaration in its stats' metadata (`getGameObjectStatsMetadata()`), where another
+/// object's code reads what it declares
+fn declare_in_stats(char_dir: &std::path::Path, entity_key: &str, decl: &Value) -> anyhow::Result<()> {
+    let Some(record) = declared_record(decl) else { return Ok(()) };
+    let path = char_dir.join(format!("library/scripts/Projectile/{}Stats.hx", crate::haxe_gen::snake_to_pascal(entity_key)));
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(()) };
+    if text.contains("\n    metadata: ") { return Ok(()) }
+    let Some(end) = text.rfind('}') else { return Ok(()) };
+    let body = text[..end].trim_end();
+    let sep = if body.ends_with(',') || body.ends_with('{') { "" } else { "," };
+    std::fs::write(&path, format!("{body}{sep}\n    metadata: {record}\n{}", &text[end..]))?;
+    Ok(())
 }
 
 /// The x speeds the engine's walk animations have their clips set, in this engine's units: a

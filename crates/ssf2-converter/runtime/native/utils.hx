@@ -128,23 +128,21 @@ function colorFilters(t, o) {
 	colorFiltersOn.get().set(key, on);
 }
 
-// ---- statOf
-// what another object declares (`getItemStat`, `getEnemyStat`, `getProjectileStat` on it): what its
-// script answers for its stats, else an item's name
-function statOf(o, k) {
-	if (o == null || o.exports == null) return null;
-	if (o.exports.__statOf != null) return o.exports.__statOf(k);
-	return k == "linkage_id" ? o.exports.__itemName : null;
+// ---- declaredOf
+// what another object declares (`getItemStat`, `getEnemyStat`, `getProjectileStat` on it): its
+// stats' metadata, which holds its declaration (read by the stat's own name: `declaredOf(o).damage`)
+function declaredOf(o) {
+	var d = o == null || o.isDisposed() ? null : o.getGameObjectStatsMetadata();
+	return d == null ? {} : d;
 }
 
 // ---- gameObjectStat
 // a stat of any object by the source's name (`getGameObjectStat`): whether it can be hit is whether
-// it is a fighter, else what its script answers for its stats, else the engine's own stat
-function gameObjectStat(o, k) {
+// it is a fighter, else what it declares (`declared`, read from its metadata), else the engine's own stat
+function gameObjectStat(o, k, declared) {
 	if (o == null) return null;
 	if (k == "canReceiveKnockback" || k == "canReceiveHits") return o.getType() == EntityType.CHARACTER;
-	var v = o.exports != null && o.exports.__statOf != null ? o.exports.__statOf(k) : null;
-	return v != null ? v : o.getGameObjectStat(k);
+	return declared != null ? declared : o.getGameObjectStat(k);
 }
 
 // ---- takeDamageOf
@@ -192,7 +190,7 @@ function boundsOf(a) {
 // fired or made under, and the fighter whose it is
 function exportedStats(o) {
 	if (o == null || o.exports == null) return null;
-	var name = o.exports.__statOf != null ? o.exports.__statOf("linkage_id") : o.exports.__itemName;
+	var name = o.exports.__itemName != null ? o.exports.__itemName : declaredOf(o).linkage_id;
 	return { linkage_id: name, name: o.exports.__shotName, nme: o.exports.__itemName, chr: o.getOwner() };
 }
 
