@@ -531,6 +531,7 @@ function goPiece(e, v, go) {
 	if (at > 0) v.playFrame(at + 1);
 }
 function partNamed(n) {
+	if (n == null) return null;
 	var have = partsMade.get(n);
 	if (have != null) return have;
 	var els = [];

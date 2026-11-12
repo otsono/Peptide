@@ -541,9 +541,12 @@ def fm_animations(eng, stage, samples=4):
             # fighter the stage keeps out of the poses awaited) must not cost the whole cap
             if not await_walk(eng, "AWAIT:", since=mark, quiet=0.5, cap=30.0):
                 print(f"[{stage}] the engine did not answer an await; sampling on", file=sys.stderr)
-            # the port's own plane clips, where its runtime holds them: which section each is in
+            # the port's own plane clips: which section each is in, as the stage publishes them
+            # (`exports.__part`, the same on a stage written natively and one on the runtime; the
+            # midground's clip is the stage clip's `terrain`)
             for pn in ("background", "foreground", "midground"):
-                lab = eng.eval(f'Planes.get("{pn}").currentLabel')
+                clip = "terrain" if pn == "midground" else pn
+                lab = eng.eval(f'(stage.exports.__part == null || stage.exports.__part("{clip}") == null ? null : stage.exports.__part("{clip}").getLabel())')
                 if lab and lab not in ("None", "null"):
                     PLANE_LABELS.setdefault(pn, set()).add(lab)
             mark_tree = eng.tell("tree")

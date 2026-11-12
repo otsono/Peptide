@@ -535,6 +535,9 @@ impl<'o, 'a> Writer<'o, 'a> {
                     let t = o.runtime.names.classes.get(t).map(String::as_str).unwrap_or(t);
                     calls().records.contains_key(t)
                 });
+                // (one declared a plain `Object` that only ever holds a record literal, or an element of
+                // a field that only ever holds a list of them, is that record)
+                let record = record || (f.type_name.as_deref().map(short) == Some("Object") && holds_records(c, &f.name));
                 let holds = if w.holds_itself(c, &f.name) { Holds::Itself } else if record { Holds::Value(Ty::Rect) } else { Holds::Value(Ty::declared(f.type_name.as_deref())) };
                 let id = if holds == Holds::Itself { "self".to_string() } else { name_for(&f.name, c, &mut taken) };
                 // (a fighter's clip's field is a variable of the clip's own frame code: the frames and
@@ -1791,7 +1794,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 self.util("cameraBgName")?;
                 return Ok((format!("planePart(cameraBgName({i}))"), Ty::Object));
             }
-            Expr::Member(o, f) if self.o.stage && f == "mc" && self.expr(o).is_ok_and(|(w, _)| w.starts_with("cameraPlanes()")) => {
+            // (a camera background held in a variable: its part, under `mc`)
+            Expr::Member(o, f) if self.o.stage && f == "mc" && !matches!(**o, Expr::This) => {
                 let (v, _) = self.expr(o)?;
                 return Ok((format!("{v}.mc"), Ty::Object));
             }
@@ -2979,7 +2983,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         // (a plane is the stage clip's child of its name: the midground's is its terrain)
         let plane = match m { "getBackground" => Some("background"), "getForeground" => Some("foreground"), "getMidground" => Some("terrain"), "getShadowMask" | "getShadowMaskMC" => Some("shadowMask"), _ => None };
         if let Some(p) = plane.filter(|_| args.is_empty() && ((self.o.stage && mine) || who == "stage")) { self.util("planePart")?; return Ok((format!("planePart({})", quote(p)), Ty::Object)) }
-        if self.o.stage && mine && args.is_empty() && m == "getCameraBackgrounds" { self.util("stagePlane")?; self.util("cameraPlanes")?; return Ok(("cameraPlanes()".into(), Ty::Object)) }
+        if self.o.stage && mine && args.is_empty() && m == "getCameraBackgrounds" { self.util("planePart")?; self.util("cameraBgName")?; self.util("cameraPlanes")?; return Ok(("cameraPlanes()".into(), Ty::Object)) }
         // its costumes' colours
         if matches!(m, "paletteData" | "getPaletteSwapData") && args.is_empty() && self.o.palette.is_some() { return Ok((self.costume_palette()?, Ty::Rect)) }
         if mine && self.o.fighter {
@@ -4733,4 +4737,38 @@ mod tests {
         assert_eq!(fold("(-1) * x"), "-x");
         assert_eq!(fold("2 * 1.3"), "2.6");
     }
+}
+
+/// whether every value a class's code puts in a field is a record literal, or an element of one of
+/// its fields that only ever holds a list of record literals
+fn holds_records(c: &ClassModel, field: &str) -> bool {
+    let bodies: Vec<&Vec<Stmt>> = c.methods.iter().map(|m| &m.function.body).chain([&c.constructor.body]).collect();
+    // each value put in a field, with the body it is put in
+    let assigned = |f: &str| -> Vec<(Expr, &Vec<Stmt>)> {
+        let mut out = Vec::new();
+        for b in &bodies {
+            walk(b, &mut |st| if let Stmt::Assign(Place::Member(t, n), v) = st { if matches!(t, Expr::This) && n == f { out.push((v.clone(), *b)) } });
+        }
+        out
+    };
+    fn strip(e: &Expr) -> Expr { let mut e = e.clone(); while let Expr::Coerce(_, x) | Expr::Convert(_, x) = e { e = *x; } e }
+    let lists = |f: &str| { let vs = assigned(f); !vs.is_empty() && vs.iter().all(|(v, _)| matches!(strip(v), Expr::Array(ref items) if items.iter().all(|i| matches!(strip(i), Expr::Object(_))))) };
+    // an element of one of its fields holding records, read
+    let element = |e: &Expr| matches!(strip(e), Expr::Index(ref l, _) if matches!(&**l, Expr::Member(t, n) if matches!(**t, Expr::This) && lists(n)));
+    let vs = assigned(field);
+    !vs.is_empty() && vs.iter().all(|(v, body)| match strip(v) {
+        Expr::Object(_) | Expr::Null => true,
+        Expr::Index(ref l, _) if matches!(&**l, Expr::Member(t, n) if matches!(**t, Expr::This) && lists(n)) => true,
+        // (an element of a list its function fills only with such elements)
+        Expr::Index(ref l, _) => {
+            let Expr::Local(r) = **l else { return false };
+            let mut pushes = 0;
+            let mut other = false;
+            crate::model::ast::walk_exprs(body, &mut |e| if let Expr::Call(g, a) = e {
+                if let Expr::Member(t, n) = &**g { if matches!(**t, Expr::Local(x) if x == r) && n == "push" { pushes += 1; if !a.iter().all(|x| element(x)) { other = true } } }
+            });
+            pushes > 0 && !other
+        }
+        _ => false,
+    })
 }

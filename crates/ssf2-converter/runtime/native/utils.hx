@@ -293,8 +293,8 @@ function stagePlane(n) { return { plane: n }; }
 // its camera backgrounds, each as the plane it is
 function cameraPlanes() {
 	var out = [];
-	var cbg = match.getCamera() == null ? null : match.getCamera().getBackgroundContainers();
-	if (cbg != null) for (i in 0...cbg.length) out.push({ mc: stagePlane("camera" + i) });
+	var l = stage == null || stage.exports == null ? null : stage.exports.__cameraBgs;
+	if (l != null) for (i in 0...l.length) out.push({ mc: planePart(l[i]) });
 	return out;
 }
 
@@ -359,4 +359,10 @@ function madeObject(id, o) {
 function cameraBgName(i) {
 	var l = stage == null || stage.exports == null ? null : stage.exports.__cameraBgs;
 	return l == null || i < 0 || i >= l.length ? null : l[i];
+}
+
+// ---- safeGotoAndStop
+// a clip sent to a frame or a label and held there, where it has one (a clip of the stage's planes)
+function safeGotoAndStop(c, f) {
+	if (c != null && c.playLabel != null) c.playLabel(f, true);
 }
