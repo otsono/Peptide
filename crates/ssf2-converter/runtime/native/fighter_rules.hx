@@ -940,19 +940,21 @@ function powerInnerFor(effect, clip, frame, hold) {
 }
 
 // ---- act_as
-// its own code run as another fighter: `actAs` points this script's `self` at that fighter while
-// `fn` runs, so every function here the code calls acts on it (content is still found in this
-// fighter's own files: its script reads them through `ownResource`). `moveCode` is the code each
-// frame of its neutral special runs, by animation and frame: a fighter that copies the move runs it
-// as itself, frame by frame, through these two
+// the code each frame of its neutral special runs, by animation and frame, played by `me`: a fighter
+// that copies the move runs it as itself, frame by frame (`exports.__moveCode`). its code is written
+// against `self`, so `actAs` points this script's `self` at `me` while it runs, and every function
+// here the code calls acts on it (content is still found in this fighter's own files: its script
+// reads them through `ownResource`)
 function actAs(me, fn) {
 	var own = self;
 	self = me;
 	try { fn(); } catch (e:Dynamic) { self = own; throw e; }
 	self = own;
 }
-function moveCode(anim, frame) {
-	// {cases}
+function moveCode(me, anim, frame) {
+	actAs(me, function() {
+		// {cases}
+	});
 }
 
 // ---- copy_power
@@ -1095,10 +1097,9 @@ function powerOf(foe) {
 	if (rec.id == null) rec.id = foe.getGameObjectStat("spriteContent");
 	var ground = rehearse(foe, "special_neutral");
 	var air = rehearse(foe, "special_neutral_air");
-	// (its frame code too, where it lets another fighter run it as itself: `act_as`)
-	var act = foe.exports == null ? null : foe.exports.__actAs;
+	// (its frame code too, where it lets another fighter run it: `__moveCode(me, anim, frame)`)
 	var code = foe.exports == null ? null : foe.exports.__moveCode;
-	if (ground != null || air != null) rec.body = { ground: ground, air: air, act: act, code: code };
+	if (ground != null || air != null) rec.body = { ground: ground, air: air, code: code };
 	return rec;
 }
 
@@ -1190,7 +1191,7 @@ function borrowedMove(label) {
 	if (move == null) return false;
 	var lands = -1;
 	for (i in 0...move.frames.length) if (lands < 0 && (move.frames[i].hits.length > 0 || move.frames[i].shots.length > 0)) lands = i;
-	borrowed.set({ frames: move.frames, pose: borrowedPose(move, floor), lands: lands, act: p.body.act, code: p.body.code });
+	borrowed.set({ frames: move.frames, pose: borrowedPose(move, floor), lands: lands, code: p.body.code });
 	borrowedAt.set(0);
 	borrowedHit.set([]);
 	self.toState(CState.SPECIAL_NEUTRAL, floor ? "stand" : "fall_loop");
@@ -1229,8 +1230,8 @@ function borrowedFrame() {
 	borrowedDraw(b, t);
 	// (the fighter it came from runs that frame's own code as this one, where it lets it; else what
 	// the rehearsal saw that code do is done again)
-	if (b.act != null && b.code != null) {
-		b.act(self, function() { b.code(f.anim, f.frame); });
+	if (b.code != null) {
+		b.code(self, f.anim, f.frame);
 		for (h in f.hits) borrowedStrike(h);
 		return;
 	}

@@ -426,7 +426,6 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     publish.push("self.exports.__attackStat = attackStat;".into());
     publish.push("self.exports.__attackMeta = attackMeta;".into());
     publish.push("self.exports.__label = rootLabel;".into());
-    publish.push("self.exports.__actAs = actAs;".into());
     publish.push("self.exports.__moveCode = moveCode;".into());
     // (a fighter that takes powers has the one it holds make the items it does not declare)
     if blocks.contains("copy_power") { publish.push("self.exports.__powerItem = powerItem;".into()); }

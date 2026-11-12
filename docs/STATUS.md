@@ -1960,7 +1960,7 @@ is held and played back in kirby's own art, in a pose of his picked by what the 
 (so kirby sees only what any fighter shows) fire the thunder jolt from kirby's shooting pose and land
 the falcon punch on the strike frame of his forward tilt, hold through hitstop, and clean up when
 kirby is knocked out of the move. a native fighter's move runs its own frame code as kirby
-(`__actAs` / `__moveCode`): pikachu's thunder jolt came out of its own `fire_thunderJolt`, owned by
+(`__moveCode`): pikachu's thunder jolt came out of its own `fire_thunderJolt`, owned by
 kirby and at his position, and hit for 5.25; captain falcon's punch ran its own frames as kirby and
 hit for 22.5. what the rehearsal can't see, where the move is played
 from the recording:
