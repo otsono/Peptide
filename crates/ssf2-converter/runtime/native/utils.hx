@@ -348,9 +348,8 @@ function planePart(n) {
 }
 
 // ---- madeObject
-// an object the stage's code made, counted as made (where the verify gates read what it made)
+// an object the stage's code made (not counted with what its boot made, as the runtime counts)
 function madeObject(id, o) {
-	if (o != null) __made.push({ id: id, k: "o", o: o });
 	return o;
 }
 
@@ -365,4 +364,34 @@ function cameraBgName(i) {
 // a clip sent to a frame or a label and held there, where it has one (a clip of the stage's planes)
 function safeGotoAndStop(c, f) {
 	if (c != null && c.playLabel != null) c.playLabel(f, true);
+}
+
+// ---- clipRecord
+// a clip its code makes and moves (a raindrop, an ember), as a record: where it is, how it is
+// drawn, the clips it holds, and the particle effect it is drawn as (`id`, with its size)
+function clipRecord(id, ?w, ?h) {
+	return { x: 0.0, y: 0.0, scaleX: 1.0, scaleY: 1.0, alpha: 1.0, rotation: 0.0, visible: true, name: null,
+		kids: [], id: id, width: w == null ? 0.0 : w, height: h == null ? 0.0 : h, drawn: null };
+}
+
+// ---- clipAdd
+// a clip put in another (its code's `addChild`), and taken out
+function clipAdd(c, k) {
+	if (c != null && k != null && c.kids != null && c.kids.indexOf(k) < 0) c.kids.push(k);
+	return k;
+}
+function clipRemove(c, k) {
+	if (c != null && c.kids != null) c.kids.remove(k);
+	return k;
+}
+
+// ---- floorAttach
+// put on the floor just under it, where there is one
+function floorAttach(o) {
+	if (o == null || o.isDisposed()) return;
+	var out = Point.create(o.getX(), o.getY() + 4);
+	var hits = o.hitTestStructuresWithLineSegment(Point.create(o.getX(), o.getY() - 4), out, out, { structureType: StructureType.FLOOR });
+	if (hits == null || hits.length == 0) return;
+	o.setY(out.y);
+	o.attachToFloor(hits[0]);
 }

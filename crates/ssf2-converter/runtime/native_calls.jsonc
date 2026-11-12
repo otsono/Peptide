@@ -230,8 +230,8 @@
   // the colours its costume is drawn in, changed by its code: kept to itself, as on the runtime
   "setPaletteData": { "code": "", "gap": "setPaletteSwapData: colours its code changes as it runs" },
   // the stage's camera and death bounds, in the source's units
-  "PeptideAPI.getCamBounds": { "code": "boundsOf(match.getStage().getCameraBounds())", "helper": "boundsOf", "returns": "rect" },
-  "PeptideAPI.getDeathBounds": { "code": "boundsOf(match.getStage().getDeathBounds())", "helper": "boundsOf", "returns": "rect" },
+  "PeptideAPI.getCamBounds": { "code": "boundsOf(stage.getCameraBounds())", "helper": "boundsOf", "returns": "rect" },
+  "PeptideAPI.getDeathBounds": { "code": "boundsOf(stage.getDeathBounds())", "helper": "boundsOf", "returns": "rect" },
   // a value as another class: the value itself
   "PeptideUtils.cast": { "code": "{0}", "returns": "object" },
   // the clip of the hat a copied power gives: the engine draws none here, and its colours change nothing
@@ -275,6 +275,9 @@
   "dropOwnFloor": "dropOwnFloor()",
   // the nearest object of a kind
   "getNearest": { "code": "nearestOf({self}, {0})", "helper": "nearestOf", "returns": "object" },
+  // put on the floor just under it
+  "attachToFloor": { "code": "floorAttach({self})", "helper": "floorAttach" },
+  "forceOnGround": { "code": "floorAttach({self})", "helper": "floorAttach" },
   // a clip moved in the drawing order: this engine draws each object on its own layer
   "setChildIndex": "",
   // an object drawn in front of the fighters (the piece it names is drawn with it, from the tree)
@@ -283,6 +286,8 @@
   "PeptideAPI.currentActiveFinalSmash": { "code": "null", "returns": "object" },
   "PeptideAPI.isFSCutscenePlaying": { "code": "false", "returns": "bool" },
   "isUsingFinalSmash": { "code": "false", "returns": "bool" },
+  // the clip a stage's weather is put in (its fields drawn over the view: `stage_boot.hx` weather)
+  "getWeatherMC": { "code": "weatherRoot", "returns": "record" },
   // whether the match has its hazards on
   "PeptideAPI.isHazardsOn": { "code": "(match.getMatchSettingsConfig() == null || match.getMatchSettingsConfig().hazards == true)", "returns": "bool" },
   // the game's mode: none of the source's modes is played here

@@ -16,6 +16,11 @@
       "distance": "{0}.distance({1})"
     }
   },
+  // a list, and a map by any key (a dictionary keyed by the clips its code makes)
+  "Object": { "make": "{}" },
+  "Array": { "make": "[]" },
+  "Vector": { "make": "[]" },
+  "Dictionary": { "make": "new haxe.ds.ObjectMap()" },
   "Rectangle": {
     "make": "new Rectangle({args})",
     "is": "Rectangle"

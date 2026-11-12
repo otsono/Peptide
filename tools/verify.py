@@ -1477,7 +1477,9 @@ def s_built(ctx, r):
                 # the stage's own code fills its weather clip, and may leave it empty this match (a
                 # rain on a roll of the dice): nothing in the clip is the code's choice, clips in it
                 # with nothing drawn for them is the port's fault
-                held = eng.eval("Weather.layer == null ? 0 : Weather.layer.__kids.length")
+                # (the stage says how many clips its weather clip holds: a stage written natively
+                # publishes it, the runtime's holds its clip as `Weather.layer`)
+                held = eng.eval("(stage.exports.__weatherHeld != null ? stage.exports.__weatherHeld() : (Weather.layer == null ? 0 : Weather.layer.__kids.length))")
                 if str(held) == "0":
                     r.note(f"{w['id']}: the stage's code put no weather in its clip this match")
                 else:

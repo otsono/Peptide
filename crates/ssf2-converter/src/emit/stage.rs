@@ -131,10 +131,12 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     let mut reports = serde_json::Map::new();
     let mut written = Vec::new();
     let mut native_objects = Vec::new();
+    // (each library clip's measured extent, for a floor an object makes the shape of one)
+    let bounds: BTreeMap<String, (f64, f64, f64, f64)> = model.clip_bounds.iter().map(|(n, r)| (n.clone(), (r.x, r.y, r.w, r.h))).collect();
     for row in &input.rows {
         // written as plain Fraymakers code where its class has a plain form
         let census = object_census(home(&models, &row.class), &object_runtime, &row.class, units);
-        let native = match native_object(home(&models, &row.class), &object_runtime, dir, row, units) {
+        let native = match native_object(home(&models, &row.class), &object_runtime, dir, row, units, &bounds) {
             Ok(()) => true,
             Err(why) => { reports.insert(row.id.clone(), serde_json::json!({ "native": false, "on_runtime": why })); false }
         };
@@ -161,9 +163,14 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     // what holds the stage's own code on the runtime, function by function (the work list for
     // writing it as plain Fraymakers code)
     let mut none_written = None;
-    let mut census = stage_census(&src, &runtime, &spec.class, sym, &pieces, units, false, &mut none_written, &input.objects);
+    // (each weather particle's clip class, as its effect and the size of its clip)
+    let particles: BTreeMap<String, (String, f64, f64)> = input.particles.iter().map(|(n, id)| {
+        let r = model.clip_bounds.get(n);
+        (compile::short(n).to_string(), (id.clone(), r.map(|r| r.w).unwrap_or(0.0), r.map(|r| r.h).unwrap_or(0.0)))
+    }).collect();
+    let mut census = stage_census(&src, &runtime, &spec.class, sym, &pieces, units, false, &mut none_written, &input.objects, &particles);
     // written as plain Fraymakers code where everything it does has a plain form
-    let native = match native_stage(&src, &runtime, &spec.class, sym, &pieces, units, input, id, census.is_empty(), &regions_literal(model), &native_objects) {
+    let native = match native_stage(&src, &runtime, &spec.class, sym, &pieces, units, input, id, census.is_empty(), &regions_literal(model), &native_objects, &particles) {
         Ok(script) => { std::fs::write(scripts.join(format!("{id}Script.hx")), &script)?; true }
         Err(why) => { census.extend(why); census.sort(); census.dedup(); false }
     };
@@ -780,7 +787,8 @@ fn stage_boot_data(model: &crate::stage_parser::StageModel, src: &crate::model::
 
 /// Every reason the stage's own classes have no plain form yet, one per function: its class, and
 /// each class of a clip inside the stage's clip with code of its own.
-fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pieces: &[Piece], units: Units, written: bool, out: &mut Option<compile::native::Written>, objects: &[(String, String)]) -> Vec<String> {
+fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pieces: &[Piece], units: Units, written: bool, out: &mut Option<compile::native::Written>, objects: &[(String, String)], particles: &BTreeMap<String, (String, f64, f64)>) -> Vec<String> {
+    let particles = particles.clone();
     let made_objects: BTreeMap<String, String> = objects.iter().map(|(c, id)| (compile::short(c).to_string(), id.clone())).collect();
     let Some(itself) = class_of(src, class) else { return vec![format!("its class {class} is not in its package")] };
     let mut classes = Vec::new();
@@ -811,7 +819,7 @@ fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     let object = compile::native::Object {
         model: src, itself: Some(itself), classes, jumps: &jumps, runtime, declared: &none, switches: &switches,
         owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
-        root: sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: true, clip_parts: parts_of.clone(), made_objects: made_objects.clone(),
+        root: sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: true, clip_parts: parts_of.clone(), made_objects: made_objects.clone(), particles: particles.clone(), clip_bounds: BTreeMap::new(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: Vec::new(), effect_pieces: Vec::new(), parts: Vec::new(), content: String::new(), palette: None,
         effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
@@ -823,15 +831,13 @@ fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
 /// The stage's script as plain Fraymakers code: its boot as calls to `runtime/native/stage_boot.hx`'s
 /// pieces, the upkeep it has something for, and its own classes' code; or every reason it is not.
 #[allow(clippy::too_many_arguments)]
-fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pieces: &[Piece], units: Units, input: &StageInput, id: &str, code_ok: bool, regions: &str, native_objects: &[String]) -> Result<String, Vec<String>> {
+fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pieces: &[Piece], units: Units, input: &StageInput, id: &str, code_ok: bool, regions: &str, native_objects: &[String], particles: &BTreeMap<String, (String, f64, f64)>) -> Result<String, Vec<String>> {
     let t = input.tables;
     let mut why = Vec::new();
     for r in input.rows.iter().filter(|r| !native_objects.contains(&r.id)) { why.push(format!("its object {} is not written natively yet", r.id)); }
-    if !t.weather.is_empty() || !input.particles.is_empty() { why.push("it has weather, which is not written natively yet".into()); }
-    if !input.lib.is_empty() { why.push("its code makes clips from its library, which is not written natively yet".into()); }
     if !why.is_empty() || !code_ok { why.sort(); why.dedup(); return Err(why) }
     let mut written = None;
-    let reasons = stage_census(src, runtime, class, sym, pieces, units, true, &mut written, &input.objects);
+    let reasons = stage_census(src, runtime, class, sym, pieces, units, true, &mut written, &input.objects, particles);
     let Some(w) = written else { return Err(reasons) };
     let skeleton = runtime.native_files.get("stage").ok_or_else(|| vec!["the runtime has no native/stage.hx".to_string()])?;
     // the boot, as calls to the pieces (the named clips are the code's to ask for, and no native code asks yet)
@@ -867,18 +873,30 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     // the named clips of its planes, which its code and its objects' code reach (always: an object's
     // code asks the stage for them)
     blocks.push("parts");
+    // the weather its code makes: its clips, drawn each frame
+    let weather = w.functions.iter().chain(w.start.iter()).chain(w.tick.iter()).any(|f| f.contains("weatherRoot"));
+    if weather { blocks.push("weather"); upkeep.push("weatherUpkeep();".into()) }
+    let need_clip = weather && !w.functions.iter().any(|f| f.lines().any(|l| l.starts_with("function") && l.contains(" clipRecord(")));
     let mut seen = BTreeSet::new();
     blocks.retain(|b| seen.insert(*b));
+    // each weather field's list of drawn particles, as the stage's own variable (the field's index,
+    // as its effect is named)
+    let prefix = format!("{id}_weather");
+    let weather_fields: Vec<(String, String)> = input.particles.iter()
+        .filter_map(|(_, pid)| pid.strip_prefix(&prefix).map(|i| (pid.clone(), i.to_string()))).collect();
     let strs = |v: &[String]| v.iter().map(|s| compile::quote(s)).collect::<Vec<_>>().join(", ");
     let rows = |v: Vec<String>| if v.is_empty() { "[]".to_string() } else { format!("[{}]", v.join(", ")) };
     let words = [("PAN_X", format!("{}", input.pan.0)), ("PAN_Y", format!("{}", input.pan.1)), ("REGIONS", regions.to_string()),
         ("SURFACES", rows(input.surfaces.iter().map(|(n, s)| format!("{{ n: {}, s: [{}] }}", compile::quote(n), strs(s))).collect())),
         ("FRICTIONS", rows(input.frictions.clone())), ("PUSHES", rows(input.pushes.clone())), ("ACCEL", format!("{}", units.accel)),
-        ("SURFACES_ON", surfaces.to_string()),
+        ("SURFACES_ON", surfaces.to_string()), ("CAP", input.particle_cap.to_string()), ("SIZE", format!("{}", units.size)),
+        ("BY_CODE", format!("[{}]", input.rows.iter().filter(|r| r.by_code).map(|r| compile::quote(&r.id)).collect::<Vec<_>>().join(", "))),
+        ("WEATHER_LISTS", rows(weather_fields.iter().map(|(id, i)| format!("{{ id: {}, l: m_weather{i} }}", compile::quote(id))).collect())),
         ("ELEMENTS", rows(t.elements.iter().map(|e| format!("{{ i: {}, seg: {}, path: [{}], labels: [{}], sections: {} }}",
             e.index, e.segmented, strs(&e.path), strs(&e.labels), super::stage_tables::sections_literal(e))).collect()))];
     let mut functions = Vec::new();
     for b in blocks { functions.push(compile::native::helper(runtime, "stage_boot", b, "", &words, &[]).map_err(|e| vec![e])?) }
+    if need_clip { functions.push(compile::native::helper(runtime, "utils", "clipRecord", "clipRecord", &[], &[]).map_err(|e| vec![e])?) }
     functions.extend(w.functions.iter().cloned());
     // each clip of its planes with frame code of its own: run as its timeline reaches each frame
     for (cls, name) in placed_names(src, sym) {
@@ -894,7 +912,9 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
         upkeep.push(format!("{fname}();"));
     }
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    slots.insert("fields", w.fields.clone());
+    let mut fields = w.fields.clone();
+    fields.extend(weather_fields.iter().map(|(_, i)| format!("var m_weather{i} = [];")));
+    slots.insert("fields", fields);
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
     slots.insert("placed", placed.lines().map(String::from).collect());
     slots.insert("spawn", spawn.lines().filter(|l| !l.trim().is_empty()).map(String::from).collect());
@@ -904,6 +924,8 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     let mut publish = w.publish.clone();
     publish.push("self.exports.__named = objectNamed;".into());
     publish.push("self.exports.__part = partNamed;".into());
+    // (how many clips its weather clip holds, for the verify gates)
+    if weather { publish.push("self.exports.__weatherHeld = function() { return weatherRoot.kids.length; };".into()); }
     // (its camera backgrounds' names, each the name its pieces are drawn under)
     let cams: Vec<String> = src.declared("camera").as_ref().and_then(|c| c.get("backgrounds").cloned())
         .map(|b| match b { Value::Arr(items) => items, _ => Vec::new() }).unwrap_or_default().iter()
@@ -945,7 +967,7 @@ fn object_census(src: &SourceModel, runtime: &Runtime, class: &str, units: Units
     let object = compile::native::Object {
         model: src, itself: Some(itself), classes: Vec::new(), jumps: &jumps, runtime, declared: &none, switches: &switches,
         owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
-        root: 0, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(), made_objects: BTreeMap::new(),
+        root: 0, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(), made_objects: BTreeMap::new(), particles: BTreeMap::new(), clip_bounds: BTreeMap::new(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: Vec::new(), effect_pieces: Vec::new(), parts: Vec::new(), content: String::new(), palette: None,
         effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
@@ -956,7 +978,7 @@ fn object_census(src: &SourceModel, runtime: &Runtime, class: &str, units: Units
 /// A stage object's script as plain Fraymakers code: its own class (and the clips its animations
 /// show) through the native writer, on `runtime/native/object.hx` with the rules it uses from
 /// `object_rules.hx`. Every file is written only once all of it has a plain form.
-fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectRow, units: Units) -> Result<(), Vec<String>> {
+fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectRow, units: Units, bounds: &BTreeMap<String, (f64, f64, f64, f64)>) -> Result<(), Vec<String>> {
     let one = |e: String| vec![e];
     let c = class_of(src, &row.class).ok_or_else(|| one(format!("its class {} is not in its package", row.class)))?;
     let merged = super::native_projectile::inherited_class(src, runtime, c).map_err(one)?;
@@ -997,7 +1019,7 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     let object = compile::native::Object {
         model: src, itself: Some(itself), classes, jumps: &jumps, runtime, declared: &declared, switches: &switches,
         owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
-        root: root.unwrap_or(0), size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(), made_objects: BTreeMap::new(),
+        root: root.unwrap_or(0), size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(), made_objects: BTreeMap::new(), particles: BTreeMap::new(), clip_bounds: bounds.clone(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: crate::mappings::api_commands().global_vfx_map.keys().cloned().collect(), effect_pieces: Vec::new(), parts: Vec::new(),
         content: String::new(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,

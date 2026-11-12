@@ -334,7 +334,9 @@ function bootStill(e, owner) {
 // ---- object
 //: one declared object: made, put where it stands, drawn ahead of the fighters when it asks to be
 //: (with the separate piece it names riding it), and filed under the name the tree placed it by
+//: (one the stage's own code makes, BY_CODE, is left to that code)
 function bootObject(o, owner) {
+	if (BY_CODE.indexOf(o.id) >= 0) return;
 	var h = match.createCustomGameObject(self.getResource().getContent(o.id), owner);
 	if (h != null) {
 		h.setX(o.x);
@@ -546,8 +548,15 @@ function partNamed(n) {
 	// (nothing drawn under the name: an object filed under it speaks for it, else it is a clip that
 	// shows nothing, whose frame stays put)
 	var obj = els.length == 0 && sf == null ? objectNamed(n) : null;
+	// (a region the tree placed under the name: where it stands, and its size)
+	var region = null;
+	for (r in stageRegions) if (r.n == n) region = r;
 	if (obj != null && (obj.exports == null || obj.getCurrentFrame == null)) obj = null;
 	var p = { name: n, shown: true, alpha: 1.0, fall: false };
+	p.getX = function() { return region == null ? 0.0 : region.rx / SIZE; };
+	p.getY = function() { return region == null ? 0.0 : region.ry / SIZE; };
+	p.getWidth = function() { return region == null ? 0.0 : region.w / SIZE; };
+	p.getHeight = function() { return region == null ? 0.0 : region.h / SIZE; };
 	var each = function(f) { for (e in els) { var v = bootBg[e.i]; if (v != null) f(e, v); } };
 	// (the clip's own picture: the pieces drawn right under it)
 	var own = function(e) { return e.path.length == depth + 1; };
@@ -616,4 +625,85 @@ function NAME() {
 	switch (f) {
 		// {cases}
 	}
+}
+
+// ---- weather
+//: a stage's weather, as its own code makes it: the clips it puts in the weather clip
+//: (`getWeatherMC`, `weatherRoot`) and moves every frame, each drawn as its particle's effect over the
+//: view. the source draws that clip on its own screen (640 by 360), so a place in it is the same
+//: share of the camera's view here. at most CAP of one particle are drawn at once
+var weatherRoot = { x: 0.0, y: 0.0, scaleX: 1.0, scaleY: 1.0, alpha: 1.0, rotation: 0.0, visible: true, name: null, kids: [], id: null, width: 0.0, height: 0.0, drawn: null };
+var weatherDrawn = [];
+var weatherCounts = new haxe.ds.StringMap();
+// each weather field's drawn particles, by its effect (WEATHER_LISTS: the stage's own variables the
+// verify gates read)
+var weatherLists = WEATHER_LISTS;
+function weatherListOf(id) {
+	for (w in weatherLists) if (w.id == id) return w.l;
+	return null;
+}
+function weatherUpkeep() {
+	var cam = match.getCamera();
+	if (cam == null) return;
+	var vw = cam.getViewportWidth();
+	var vh = cam.getViewportHeight();
+	var view = { left: cam.getX() - vw / 2, topY: cam.getY() - vh / 2, kx: vw / 640.0, ky: vh / 360.0 };
+	for (d in weatherDrawn) d.seen = false;
+	weatherWalk(weatherRoot, 0.0, 0.0, 1.0, 1.0, true, 1.0, view);
+	var keep = [];
+	for (d in weatherDrawn) {
+		if (d.seen) { keep.push(d); continue; }
+		var wl = weatherListOf(d.c.id);
+		if (wl != null) wl.remove(d);
+		m_owned.remove(d.v);
+		d.v.destroy();
+		d.c.drawn = null;
+		weatherCounts.set(d.c.id, weatherCounts.get(d.c.id) - 1);
+	}
+	weatherDrawn = keep;
+}
+// a clip and the ones it holds, each at its place in the clips over it
+function weatherWalk(c, x0, y0, sx0, sy0, shown0, a0, view) {
+	for (kid in c.kids) {
+		var x = x0 + kid.x * sx0;
+		var y = y0 + kid.y * sy0;
+		var sx = sx0 * kid.scaleX;
+		var sy = sy0 * kid.scaleY;
+		var shown = shown0 && kid.visible != false;
+		var a = a0 * kid.alpha;
+		if (kid.id != null && kid.skip != true) {
+			var d = kid.drawn != null ? kid.drawn : weatherMake(kid);
+			if (d != null) {
+				d.seen = true;
+				d.v.setX(view.left + x * view.kx);
+				d.v.setY(view.topY + y * view.ky);
+				if (d.fresh || sx != d.sx || sy != d.sy || shown != d.shown || a != d.a) {
+					d.fresh = false;
+					d.sx = sx; d.sy = sy; d.shown = shown; d.a = a;
+					d.v.setScaleX(sx * view.kx / SIZE);
+					d.v.setScaleY(sy * view.ky / SIZE);
+					d.v.setVisible(shown && a > 0);
+					d.v.setAlpha(a);
+				}
+			}
+		}
+		if (kid.kids != null && kid.kids.length > 0) weatherWalk(kid, x, y, sx, sy, shown, a, view);
+	}
+}
+// the effect for a clip that has none yet (past the cap, the clip is left undrawn)
+function weatherMake(c) {
+	var n = weatherCounts.get(c.id);
+	if (n == null) n = 0;
+	if (n >= CAP) { c.skip = true; return null; }
+	var v = match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(c.id), animation: "active", loop: true, timeout: -1, relativeWith: false }));
+	if (v == null) return null;
+	self.getBackgroundEffectsContainer().addChild(v.getViewRootContainer());
+	m_owned.push(v);
+	var d = { c: c, v: v, seen: true, fresh: true, sx: 1.0, sy: 1.0, shown: true, a: 1.0 };
+	c.drawn = d;
+	weatherDrawn.push(d);
+	var wl = weatherListOf(c.id);
+	if (wl != null) wl.push(d);
+	weatherCounts.set(c.id, n + 1);
+	return d;
 }

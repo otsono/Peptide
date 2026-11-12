@@ -479,3 +479,32 @@ function NAME(o, dx, dy) {
 function NAME(r) {
 	return r == null ? null : { x: r.x / SIZE, y: r.y / SIZE, width: r.width / SIZE, height: r.height / SIZE };
 }
+
+// ---- own_field_named
+//: its cases are each of its fields, by the name its code builds (`this["block" + i]`)
+// one of its own fields, by a name its code works out as it runs
+function NAME(n) {
+	switch (n) {
+		// {cases}
+	}
+	return null;
+}
+
+// ---- own_field_set
+//: its cases are each of its fields, written by the name its code builds
+// one of its own fields written, by a name its code works out as it runs
+function NAME(n, v) {
+	switch (n) {
+		// {cases}
+	}
+}
+
+// ---- clip_total
+//: its cases are each animation's clip and how many frames that clip has
+// how many frames the clip its animation shows has, as the source counts them
+function NAME() {
+	switch (self.getAnimation()) {
+		// {cases}
+	}
+	return 1;
+}
