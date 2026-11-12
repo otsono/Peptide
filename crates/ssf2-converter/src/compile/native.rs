@@ -1573,6 +1573,9 @@ impl<'o, 'a> Writer<'o, 'a> {
                 // (the engine reads a stage's light from the animation it plays: `Stage.updateLightboxStats`
                 // has no effect, playing another animation rebuilds the stage's containers, fighters and
                 // all, and the frame is the stage's own clock)
+                // (moved along the stage: the conversion put its light so far overhead that every shadow
+                // falls straight down, as one kept over the fighters casts them, `stage_emit::light_follows`)
+                if f == "x" { return Ok(vec!["// (its light keeps over the fighters: the conversion put it overhead of the whole stage)".into()]) }
                 Ok(vec![format!("// (not ported: the source moves its light's {f} here; this engine's stage light cannot move as it runs)")])
             }
             // the stage's camera or death bounds moved by its code: the engine's stay where the

@@ -2012,6 +2012,15 @@ fn build_entity(model: &StageModel, art: &ArtRefs, carried_names: &BTreeSet<Stri
             Some(p) if p.1 < top => p,
             _ => (cx, ground - r_light_height(model)),
         };
+        // a light its own code keeps over the fighters as they go (`getLightSourceMC().x = ...`)
+        // casts every shadow straight down. this engine's light cannot move as it runs, so it goes
+        // so far overhead that its rays fall straight down everywhere on the stage, as the source's
+        // following light does
+        let follows = model.stage_script.as_deref().is_some_and(light_follows);
+        let (lx, ly) = if follows {
+            let span = model.death_box.as_ref().or(model.camera_box.as_ref()).map(|r| r.w.max(r.h)).unwrap_or(4000.0);
+            (cx, ground - span * 40.0)
+        } else { (lx, ly) };
         // how far the light still lights: everything the camera can frame at full strength, out
         // to the blast zone before it is gone. Both measured from the light itself, since that is
         // what the engine compares against.
@@ -5300,6 +5309,11 @@ fn write_meta(path: &Path, _stage_id: &str, id: &str, language: &str, object_typ
 /// The stage's own scale is NOT part of this. That scale carries SSF2's world into Fraymakers',
 /// and a camera background is not in the world: it is tethered to the camera and sized against the
 /// SCREEN, so it wants the ratio of the two screens and nothing else. Multiplied by the stage scale
+/// whether a stage's code moves its light along with the fighters (writes its light's `x`)
+pub fn light_follows(script: &str) -> bool {
+    script.match_indices("getLightSourceMC()").any(|(i, m)| script[i + m.len()..].trim_start().starts_with(".x"))
+}
+
 /// the camera every converted stage declares (its StageStats `camera`): the view at its closest, as
 /// the source's screen is. what the source's code asks of its camera by name (`getCameraParameter`)
 pub const CAMERA_STATS: [(&str, f64); 3] = [("minZoomHeight", 360.0), ("initialHeight", 360.0), ("initialWidth", 640.0)];
