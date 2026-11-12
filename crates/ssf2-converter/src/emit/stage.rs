@@ -854,7 +854,7 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     let words = [("PAN_X", format!("{}", input.pan.0)), ("PAN_Y", format!("{}", input.pan.1)), ("REGIONS", regions.to_string()),
         ("SURFACES", rows(input.surfaces.iter().map(|(n, s)| format!("{{ n: {}, s: [{}] }}", compile::quote(n), strs(s))).collect())),
         ("FRICTIONS", rows(input.frictions.clone())), ("PUSHES", rows(input.pushes.clone())), ("ACCEL", format!("{}", units.accel)),
-        ("SURFACE_LOOKUP", if surfaces { "var sf = surfaceNamed(n); if (sf != null) return sf;".to_string() } else { String::new() })];
+        ("SURFACES_ON", surfaces.to_string())];
     let mut functions = Vec::new();
     for b in blocks { functions.push(compile::native::helper(runtime, "stage_boot", b, "", &words, &[]).map_err(|e| vec![e])?) }
     functions.extend(w.functions.iter().cloned());

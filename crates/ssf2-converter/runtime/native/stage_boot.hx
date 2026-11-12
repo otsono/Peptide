@@ -149,7 +149,8 @@ function nameObject(n, o) {
 }
 function objectNamed(n) {
 	for (e in namedObjs) if (e.n == n) return e.o;
-	SURFACE_LOOKUP
+	// (a named surface, where the stage has any: SURFACES_ON)
+	if (SURFACES_ON) { var sf = surfaceNamed(n); if (sf != null) return sf; }
 	for (r in regionsMade) if (r.name == n) return r;
 	for (r in stageRegions) {
 		if (r.n != n) continue;
