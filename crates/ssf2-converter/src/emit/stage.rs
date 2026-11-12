@@ -144,7 +144,11 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
         let o = result.map_err(|e| anyhow::anyhow!("the projectile {key}: {e}"))?;
         fired.insert(key, serde_json::json!({ "problems": o.problems, "unknown": o.unknown, "unplaced": o.unplaced }));
     }
+    // what holds the stage's own code on the runtime, function by function (the work list for
+    // writing it as plain Fraymakers code)
+    let census = stage_census(&src, &runtime, &spec.class, sym, &pieces, units);
     let report = serde_json::json!({
+        "stage_on_runtime": census,
         "problems": out.problems,
         "unplaced": renamed,
         "unknown": out.unknown,
@@ -755,4 +759,36 @@ fn stage_boot_data(model: &crate::stage_parser::StageModel, src: &crate::model::
     let spawn = t.spawn_calls("\t", "owner", "chars", "hazardsOn", |g, made| format!("Stages.groups.set({}, {made});", compile::quote(&g.name)));
     format!("DATA.stage.placed = function(owner) {{\n{placed}}};\nDATA.stage.spawn = function(owner, chars, hazardsOn) {{\n{spawn}}};\nDATA.stage.regions = {regions};\nDATA.stage.pan = {{ x: {:.2}, y: {:.2} }};\nDATA.stage.cameraBackgrounds = [{}];\nDATA.stage.cameraBackgroundClips = [{}];\nDATA.stage.music = {music};\n",
         input.pan.0, input.pan.1, cam_bgs.join(", "), cam_syms.join(", "))
+}
+
+/// Every reason the stage's own classes have no plain form yet, one per function: its class, and
+/// each class of a clip inside the stage's clip with code of its own.
+fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pieces: &[Piece], units: Units) -> Vec<String> {
+    let Some(itself) = class_of(src, class) else { return vec![format!("its class {class} is not in its package")] };
+    let mut classes = Vec::new();
+    for s in super::clip_tree(src, Some(sym)) {
+        let Some(c) = src.class_of(s) else { continue };
+        if runtime.provides(&c.name) || c.name == itself.name || classes.iter().any(|x: &&crate::model::ClassModel| x.name == c.name) { continue }
+        classes.push(c);
+    }
+    let jumps = super::label_jumps(src, pieces);
+    let labels = super::native_fighter::stance_labels(src, pieces);
+    let frames_of = super::native_fighter::clip_frames_of(src, pieces);
+    let none = |_: &str| -> Option<String> { None };
+    let no_stat = |_: &str| -> Option<(String, String)> { None };
+    let no_effect = |_: &str| -> Option<(String, Option<u32>)> { None };
+    let no_fired = |_: &str| -> Option<(String, [f64; 4], Option<String>)> { None };
+    let no_store = |_: &str| false;
+    let no_anim = |_: &str| -> Option<String> { None };
+    let switches = BTreeMap::new();
+    let links = BTreeSet::new();
+    let object = compile::native::Object {
+        model: src, itself: Some(itself), classes, jumps: &jumps, runtime, declared: &none, switches: &switches,
+        owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
+        root: sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: true,
+        root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
+        effect_names: Vec::new(), effect_pieces: Vec::new(), parts: Vec::new(), content: String::new(), palette: None,
+        effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
+    };
+    compile::native::census(&object)
 }

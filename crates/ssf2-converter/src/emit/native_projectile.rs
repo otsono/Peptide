@@ -40,11 +40,14 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let item = is_item(decls, spec, title);
     let skeleton = runtime.native_files.get(if item { "item" } else { "projectile" }).ok_or("the runtime has no native/projectile.hx or native/item.hx")?;
     // its own class, where its package gives it one: the API's projectile, extended
-    let itself = if bare || matches!(compile::short(&spec.class), "PeptideProjectile" | "PeptideItem") { None } else {
+    let found = if bare || matches!(compile::short(&spec.class), "PeptideProjectile" | "PeptideItem") { None } else {
         let c = model.classes.get(&spec.class).or_else(|| model.classes.values().find(|c| compile::short(&c.name) == compile::short(&spec.class)))
             .ok_or_else(|| format!("its class {} is not in its package", spec.class))?;
         Some(c)
     };
+    // (a class that extends another of its package's is the two as one: `inherited`)
+    let merged = match found { Some(c) => inherited(model, runtime, c)?, None => None };
+    let itself = merged.as_ref().or(found);
     let clip_sym = spec.clip_sym.or_else(|| model.symbol_of(&spec.clip)).ok_or("its clip is no symbol")?;
     if pieces.is_empty() { return Err("no animations".into()) }
 
@@ -152,7 +155,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let no_links = BTreeSet::new();
     let object = native::Object {
         model, itself, classes: classes.clone(), jumps: &jumps, runtime, declared: &declared, switches: &taken.switches,
-        owner_stat: &owner_stat, effect: &made, owner_anims: &owner.anims, fired: &fired, owner_declares: &owner_stat_of, owner_stores: &owner_stores, root: clip_sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item,
+        owner_stat: &owner_stat, effect: &made, owner_anims: &owner.anims, fired: &fired, owner_declares: &owner_stat_of, owner_stores: &owner_stores, root: clip_sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item, stage: false,
         root_anim: &|_| None, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &no_links, anim_clips: &[], owner_native: owner.native,
         effect_names: spec.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
         effect_pieces: spec.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames))).collect(),
@@ -438,3 +441,34 @@ fn plays_on(path: &Path, model: &SourceModel, pieces: &[Piece]) -> anyhow::Resul
 }
 
 fn num(n: f64) -> String { if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") } }
+
+/// a class that extends another class of its package, as one class: the parent's fields and
+/// methods (its own parent's first), each one the child states again being the child's, and the
+/// constructors run parent first. None where it extends none of its package's classes
+fn inherited(model: &SourceModel, runtime: &Runtime, c: &crate::model::ClassModel) -> Result<Option<crate::model::ClassModel>, String> {
+    // (the API's own classes, which the runtime answers, are no parent written here)
+    let parent = |c: &crate::model::ClassModel| model.classes.get(&c.super_name).or_else(|| model.classes.values().find(|p| p.name != c.name && compile::short(&p.name) == compile::short(&c.super_name)))
+        .filter(|p| !runtime.provides(&p.name) && !runtime.provides(compile::short(&p.name)));
+    let Some(p) = parent(c) else { return Ok(None) };
+    let base = match inherited(model, runtime, p)? { Some(b) => b, None => p.clone() };
+    // (a method that calls the one it replaces would need both kept apart)
+    for m in &c.methods {
+        let mut calls_up = false;
+        crate::model::ast::walk_exprs(&m.function.body, &mut |e| if let crate::model::ast::Expr::SuperCall(n, _) = e { if !n.is_empty() && base.methods.iter().any(|b| &b.name == n) { calls_up = true } });
+        if calls_up { return Err(format!("{} calls the {} of {} it replaces", c.name, m.name, p.name)) }
+    }
+    let mut out = base.clone();
+    out.name = c.name.clone();
+    out.symbol = c.symbol.or(base.symbol);
+    out.fields.retain(|f| !c.fields.iter().any(|g| g.name == f.name));
+    out.fields.extend(c.fields.iter().cloned());
+    out.methods.retain(|m| !c.methods.iter().any(|g| g.name == m.name && g.kind == m.kind));
+    out.methods.extend(c.methods.iter().cloned());
+    // (the child's constructor, past its call up, after the parent's)
+    let own: Vec<crate::model::ast::Stmt> = c.constructor.body.iter().filter(|s| !matches!(s, crate::model::ast::Stmt::Expr(crate::model::ast::Expr::SuperCall(n, _)) if n.is_empty())).cloned().collect();
+    let mut body: Vec<crate::model::ast::Stmt> = base.constructor.body.iter().filter(|s| !matches!(s, crate::model::ast::Stmt::Return(None))).cloned().collect();
+    body.extend(own);
+    out.constructor.body = body;
+    out.unreadable.extend(c.unreadable.iter().cloned());
+    Ok(Some(out))
+}

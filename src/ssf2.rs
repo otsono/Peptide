@@ -1137,7 +1137,7 @@ fn cmd_model(args: &[String]) -> Result<()> {
 
 fn cmd_decompile(args: &[String]) -> Result<()> {
     let want = args.first().cloned()
-        .ok_or_else(|| anyhow::anyhow!("usage: peptide ssf2 decompile <ClassName> [method] [--swf <file>] [--asm]"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: peptide ssf2 decompile <ClassName> [method] [--swf <file> | --package <id|all>] [--asm]"))?;
     let method = args.get(1).filter(|a| !a.starts_with("--")).cloned();
     let swf_path = args.iter().position(|a| a == "--swf").and_then(|i| args.get(i + 1))
         .map(PathBuf::from).unwrap_or_else(|| ssf2_swf_path(&ssf2_app()));
@@ -1149,6 +1149,19 @@ fn cmd_decompile(args: &[String]) -> Result<()> {
     let shown = swf_path.display().to_string();
     // `--asm`: the methods as instruction listings, for code the decompiler leaves out
     let asm = args.iter().any(|a| a == "--asm");
+    // `--package <id>`: one of the installed game's shared packages, by its manifest id (`all`
+    // reads every one), for classes that live outside the game movie
+    if let Some(id) = args.iter().position(|a| a == "--package").and_then(|i| args.get(i + 1)) {
+        ssf2_converter::shared_packages::note_game(&ssf2_app());
+        let mut any = false;
+        for (pid, swf) in ssf2_converter::shared_packages::every_package() {
+            if id != "all" && &pid != id { continue }
+            any = true;
+            let _ = cmd_decompile_in(&swf, &want, method.as_deref(), &pid, asm);
+        }
+        if !any { bail!("no shared package {id}"); }
+        return Ok(());
+    }
     cmd_decompile_in(&bytes, &want, method.as_deref(), &shown, asm)
 }
 

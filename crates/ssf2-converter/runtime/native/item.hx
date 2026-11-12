@@ -54,6 +54,14 @@ function playStance(label) {
 	if (self.hasAnimation(a)) self.playAnimation(a);
 	else if (self.hasAnimation(label)) self.playAnimation(label);
 }
+// the label its clip is on: the animation it plays, as the label it was played by (`playStance`)
+function stanceLabel() {
+	var a = self.getAnimation();
+	if (a == null) return null;
+	if (a.indexOf("hold_") == 0) return a.substr(5);
+	if (a.indexOf("toss_") == 0) return a.substr(5);
+	return a;
+}
 function tell(listeners, e) { for (l in listeners.get().copy()) l(e); }
 
 // held: it rides its holder, touching nothing, until it is thrown or let go

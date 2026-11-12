@@ -15,6 +15,7 @@
 {
   // who and where
   "getOwner": { "code": "{self}.getOwner()", "returns": "object" },
+  "setOwner": "if ({0} != null) {self}.setOwner({0})",
   "getX": { "code": "{self}.getX() / {size}", "returns": "number" },
   "getY": { "code": "{self}.getY() / {size}", "returns": "number" },
   "setX": "{self}.setX({0} * {size})",
@@ -45,6 +46,8 @@
   // damage
   "getDamage": { "code": "{self}.getDamage()", "returns": "number" },
   "setDamage": "{self}.setDamage({0})",
+  // healed: its damage less that much, down to none
+  "recover": "{self}.addDamage(-Math.min({0}, {self}.getDamage()))",
 
   // its boxes hit again what they hit already
   "refreshAttackID": "{self}.reactivateHitboxes()",
@@ -62,6 +65,10 @@
 
   // the API's own calls (`SSF2API.print`): an empty row is a call that does nothing here
   "PeptideAPI.print": "",
+  // a stage set up for the game's quality tier: every setting is on here, so nothing is hidden
+  "PeptideStageQuality.init": "",
+  // (an object's own debug print, the same)
+  "trace": "",
   // a number from the match's own random, which a rollback replays alike
   "PeptideAPI.random": { "code": "Random.getFloat(0, 1)", "returns": "number" },
   "PeptideAPI.randomInteger": { "code": "Random.getInt({0}, {1})", "returns": "number" },
@@ -142,7 +149,7 @@
   "toToss": "if ({self}.exports.__ask != null) {self}.exports.__ask(\"toToss\", null)",
   // a fighter grabbed by the one with that id; let go by whoever holds it
   "getUID": { "code": "{self}.getUid()", "returns": "number" },
-  "grab": "for (c in match.getCharacters()) if (c.getUid() == {0} && c != {self}) c.attemptGrab({self})",
+  "grab": { "code": "grabBy({self}, {0})", "helper": "grabBy", "returns": "bool" },
   "grabRelease": "if ({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length > 0) {self}.releaseAllCharacters(); else for (c in match.getCharacters()) { var held = c.getAllGrabbedFoes(); if (held != null && held.indexOf({self}) >= 0) c.releaseCharacter({self}); }",
   "isEqual": { "code": "({0} == {self})", "returns": "bool" },
   "camFocus": "match.getCamera().addTimedTarget({self}, {0} * 2)",
@@ -173,12 +180,24 @@
     "maxgravity": "terminalVelocity: {v} * {speed}",
     "ghost": "ghost: {v}",
     // (kept by the item handler, runtime/native/item.hx: a statement, `;` ended)
-    "canPickup": "pickupOn.set({v});"
+    "canPickup": "pickupOn.set({v});",
+    // its life while free, from when it was made: two engine frames to a source frame
+    "time_max": "life.set(Std.int({v} * 2));"
   },
   // an item stat its own code reads that its handler keeps as it runs (`{declared}` what it declares)
   "item_stat_reads": {
     "canPickup": "({declared} != false && pickupOn.get())"
   },
+  // another object's size (its own is what it declares: src/compile/native.rs), and its scale
+  "getWidth": { "code": "sizeOf({self}, false)", "helper": "sizeOf", "returns": "number" },
+  "getHeight": { "code": "sizeOf({self}, true)", "helper": "sizeOf", "returns": "number" },
+  "getScale": { "code": "{ x: {self}.getScaleX(), y: {self}.getScaleY() }", "returns": "record" },
+  // the box an object takes up, and a rectangle's own calls (the engine's `Rectangle`)
+  "getBoundsRect": { "code": "boundsRectOf({self})", "helper": "boundsRectOf", "returns": "object" },
+  "offset": "{self}.x += {0}; {self}.y += {1}",
+  "intersection": { "code": "{self}.intersection({0})", "returns": "object" },
+  "intersects": { "code": "{self}.intersects({0})", "returns": "bool" },
+  "isEmpty": { "code": "{self}.isEmpty()", "returns": "bool" },
   // a list's and a text's own calls
   "slice": { "code": "{self}.slice({0}{,1})", "returns": "object" },
   "indexOf": { "code": "{self}.indexOf({0})", "returns": "number" },
@@ -199,6 +218,9 @@
   "toGrabbing": "if ({self}.getAllGrabbedFoes() != null && {self}.getAllGrabbedFoes().length == 1) { if (!{self}.isOnFloor()) {self}.releaseAllCharacters(); else {self}.toState(CState.GRAB_HOLD); }",
   // the one it holds let go of (the launch the source spits it out with is not ported)
   "ejectOpponent": { "code": "{self}.releaseAllCharacters()", "gap": "ejectOpponent: the launch of the one spat out" },
+  // the attack it is in, by the source's name for it (its clip's label): what a fighter publishes,
+  // else the animation it plays
+  "getCurrentFrame": { "code": "({self} == null ? null : ({self}.exports.__label != null ? {self}.exports.__label() : {self}.getAnimation()))", "returns": "string" },
   // how long its attack has run, in the source's frames (this animation's, where an attack plays several)
   "getExecTime": { "code": "Std.int(({self}.getCurrentFrame() + 1) / 2)", "returns": "number" },
   // a hurt its code answers first: no hit is held back here, as on the runtime
@@ -235,6 +257,15 @@
   "PeptideAPI.hitTestGround": { "code": "platformBetween({ x: {0}, y: ({1}) - 1 }, { x: {0}, y: ({1}) + 1 }{,2})", "helper": "platformBetween", "returns": "object" },
   // an item another object makes: its owner makes it, lying free where it says
   "PeptideAPI.makePickup": { "code": "(self.getOwner() != null && self.getOwner().exports.__makeItem != null ? self.getOwner().exports.__makeItem({0}{,1}{,2}) : null)", "returns": "object" },
+  // a launch by the source's formula, and its speed (source pixels a source frame)
+  "PeptideAPI.knockbackOf": { "code": "knockbackOf({0}, {1}, {2}, {3}, {4}, {5}{,6})", "helper": "knockbackOf", "returns": "number" },
+  "PeptideAPI.knockbackVelocityOf": { "code": "(({0}) * 0.213725)", "returns": "number" },
+  // a box's damage as its charge leaves it (nothing charges here)
+  "PeptideAPI.calculateChargeDamage": { "code": "({0} == null || {0}.damage == null ? 0 : {0}.damage)", "returns": "number" },
+  "PeptideAPI.getPlayer": { "code": "playerNumbered({0})", "helper": "playerNumbered", "returns": "object" },
+  "unattachFromFloor": "{self}.unattachFromFloor()",
+  // its life counted again from now
+  "resetTime": "age.set(0)",
   "PeptideAPI.getElapsedFrames": { "code": "Std.int(match.getElapsedFrames() / 2)", "returns": "number" },
   "PeptideAPI.randomBetween": { "code": "Random.getInt({0}, {1})", "returns": "number" },
   "PeptideAPI.randomUnit": { "code": "Random.getFloat(0, 1)", "returns": "number" },

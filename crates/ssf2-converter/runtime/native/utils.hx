@@ -225,3 +225,75 @@ function itemStatsOn(o, stats) {
 	if (any && o.updateGameObjectStats != null) o.updateGameObjectStats(set);
 	if (stats.canPickup != null && o.exports != null && o.exports.__ask != null) o.exports.__ask("pickup", stats.canPickup);
 }
+
+// ---- grabBy
+// held by the fighter with that id, or (with none of that id) by the fighter whose object asks: the
+// asker itself, else its root owner. answers whether it is held now
+function grabBy(o, uid) {
+	if (o == null || o.isDisposed()) return false;
+	var g = null;
+	for (c in match.getCharacters()) if (c.getUid() == uid) g = c;
+	if (g == null) g = self.getType() == EntityType.CHARACTER ? self : self.getRootOwner();
+	if (g == null || g == o || g.getType() != EntityType.CHARACTER) return false;
+	g.attemptGrab(o);
+	var held = g.getAllGrabbedFoes();
+	return held != null && held.indexOf(o) >= 0;
+}
+
+// ---- boundsRectOf
+// the box an object takes up, in the source's units: the size it declares, else its body's, standing
+// on its feet where it stands
+function boundsRectOf(o) {
+	if (o == null || o.isDisposed()) return new Rectangle(0, 0, 0, 0);
+	var d = o.getGameObjectStatsMetadata();
+	var w = d == null || d.width == null ? 0.0 : d.width;
+	var h = d == null || d.height == null ? 0.0 : d.height;
+	if (w <= 0 || h <= 0) {
+		w = Math.abs(o.getEcbRightHipX() - o.getEcbLeftHipX()) / SIZE;
+		h = Math.abs(o.getEcbFootY() - o.getEcbHeadY()) / SIZE;
+	}
+	var x = o.getX() / SIZE;
+	var y = o.getY() / SIZE;
+	return new Rectangle(x - w / 2, y - h, w, h);
+}
+
+// ---- sizeOf
+// how wide or tall an object is, in the source's units: the size it declares, else its body's
+function sizeOf(o, tall) {
+	if (o == null || o.isDisposed()) return 0;
+	var d = o.getGameObjectStatsMetadata();
+	var v = d == null ? null : (tall ? d.height : d.width);
+	if (v != null && v > 0) return v;
+	return (tall ? Math.abs(o.getEcbFootY() - o.getEcbHeadY()) : Math.abs(o.getEcbRightHipX() - o.getEcbLeftHipX())) / SIZE;
+}
+
+// ---- knockbackOf
+// a launch by the source's formula, in its units: the box's growth and base against the damage
+// dealt, the damage the one launched had and its weight (a charged one 1.2 times)
+function knockbackOf(growth, base, fixed, damage, had, weight, ?charged) {
+	var t = had + damage;
+	var w = weight == null ? 100 : weight;
+	var kb = ((((t * 0.1 + damage * t * 0.05) * 1.4 * (200 / (w + 100))) + 18) * (growth * 0.01)) + base;
+	return charged == true ? kb * 1.2 : kb;
+}
+
+// ---- playerNumbered
+// a player by number (from 1), as the match's fighters stand in player order
+function playerNumbered(n) {
+	var ps = match.getCharacters();
+	var i = Std.int(n) - 1;
+	return ps == null || i < 0 || i >= ps.length ? null : ps[i];
+}
+
+// ---- stagePlane
+// one of the stage's planes, by name
+function stagePlane(n) { return { plane: n }; }
+
+// ---- cameraPlanes
+// its camera backgrounds, each as the plane it is
+function cameraPlanes() {
+	var out = [];
+	var cbg = match.getCamera() == null ? null : match.getCamera().getBackgroundContainers();
+	if (cbg != null) for (i in 0...cbg.length) out.push({ mc: stagePlane("camera" + i) });
+	return out;
+}
