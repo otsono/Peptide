@@ -146,8 +146,17 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     }
     // what holds the stage's own code on the runtime, function by function (the work list for
     // writing it as plain Fraymakers code)
-    let census = stage_census(&src, &runtime, &spec.class, sym, &pieces, units);
+    let mut none_written = None;
+    let mut census = stage_census(&src, &runtime, &spec.class, sym, &pieces, units, false, &mut none_written);
+    // written as plain Fraymakers code where everything it does has a plain form
+    let native = if census.is_empty() {
+        match native_stage(&src, &runtime, &spec.class, sym, &pieces, units, input, id) {
+            Ok(script) => { std::fs::write(scripts.join(format!("{id}Script.hx")), &script)?; true }
+            Err(why) => { census.extend(why); false }
+        }
+    } else { false };
     let report = serde_json::json!({
+        "stage_native": native,
         "stage_on_runtime": census,
         "problems": out.problems,
         "unplaced": renamed,
@@ -763,12 +772,15 @@ fn stage_boot_data(model: &crate::stage_parser::StageModel, src: &crate::model::
 
 /// Every reason the stage's own classes have no plain form yet, one per function: its class, and
 /// each class of a clip inside the stage's clip with code of its own.
-fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pieces: &[Piece], units: Units) -> Vec<String> {
+fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pieces: &[Piece], units: Units, written: bool, out: &mut Option<compile::native::Written>) -> Vec<String> {
     let Some(itself) = class_of(src, class) else { return vec![format!("its class {class} is not in its package")] };
     let mut classes = Vec::new();
     for s in super::clip_tree(src, Some(sym)) {
         let Some(c) = src.class_of(s) else { continue };
         if runtime.provides(&c.name) || c.name == itself.name || classes.iter().any(|x: &&crate::model::ClassModel| x.name == c.name) { continue }
+        // (a clip whose code only sets its own fields to plain values and hides itself is a marker:
+        // the conversion read what it marks, and nothing here runs it)
+        if super::native_projectile::is_quiet(src, runtime, &c.name) { continue }
         classes.push(c);
     }
     let jumps = super::label_jumps(src, pieces);
@@ -790,5 +802,65 @@ fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
         effect_names: Vec::new(), effect_pieces: Vec::new(), parts: Vec::new(), content: String::new(), palette: None,
         effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
     };
-    compile::native::census(&object)
+    if !written { return compile::native::census(&object) }
+    match compile::native::write(&object) { Ok(w) => { *out = Some(w); Vec::new() } Err(e) => vec![e] }
+}
+
+/// The stage's script as plain Fraymakers code: its boot as calls to `runtime/native/stage_boot.hx`'s
+/// pieces, the upkeep it has something for, and its own classes' code; or every reason it is not.
+#[allow(clippy::too_many_arguments)]
+fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pieces: &[Piece], units: Units, input: &StageInput, id: &str) -> Result<String, Vec<String>> {
+    let t = input.tables;
+    let mut why = Vec::new();
+    if !input.rows.is_empty() { why.push("it puts down objects of its own classes, which are not written natively yet".to_string()); }
+    if !t.objects.is_empty() { why.push("its boot puts down objects, which are not written natively yet".into()); }
+    if !t.weather.is_empty() || !input.particles.is_empty() { why.push("it has weather, which is not written natively yet".into()); }
+    if !input.surfaces.is_empty() || !input.frictions.is_empty() || !input.pushes.is_empty() { why.push("it has named surfaces, friction or pushes, which are not written natively yet".into()); }
+    if !input.lib.is_empty() { why.push("its code makes clips from its library, which is not written natively yet".into()); }
+    for e in &t.elements {
+        let kind = if e.chain.is_some() { Some("a sectioned piece in a camera background") } else if e.carry.is_some() { Some("a piece carrying a surface") }
+            else if e.segmented { Some("a sectioned piece") } else if e.ride.is_some() { Some("a piece riding an object") } else if e.follow.is_some() { Some("a piece riding a surface") } else { None };
+        if let Some(k) = kind { why.push(format!("its boot puts down {k} ({}), which is not written natively yet", e.id)); }
+    }
+    if !why.is_empty() { why.sort(); why.dedup(); return Err(why) }
+    let mut written = None;
+    let reasons = stage_census(src, runtime, class, sym, pieces, units, true, &mut written);
+    let Some(w) = written else { return Err(reasons) };
+    let skeleton = runtime.native_files.get("stage").ok_or_else(|| vec!["the runtime has no native/stage.hx".to_string()])?;
+    // the boot, as calls to the pieces (the named clips are the code's to ask for, and no native code asks yet)
+    let rename = |text: String| text.replace("StageBoot.sized(", "bootSized(").replace("StageBoot.structure(", "bootStructure(")
+        .replace("StageBoot.effect(", "bootEffect(").replace("StageBoot.camAlpha(", "bootCamAlpha(").replace("StageBoot.camFade(", "bootCamFade(");
+    let placed = rename(t.placed_calls("", "null"));
+    let spawn = rename(t.spawn_calls("", "null", "chars", "hazardsOn", |_, _| String::new()));
+    if let Some(left) = placed.lines().chain(spawn.lines()).find(|l| l.contains("StageBoot.")) { return Err(vec![format!("its boot calls {}, which is not written natively yet", left.trim())]) }
+    // the pieces it uses
+    let mut blocks: Vec<&str> = vec!["sized"];
+    let uses = |n: &str| placed.contains(n) || spawn.contains(n);
+    if uses("bootStructure(") { blocks.push("structure") }
+    if uses("bootEffect(") { blocks.extend(["container", "pan", "effect"]) }
+    if uses("bootCamAlpha(") { blocks.push("cam_alpha") }
+    if uses("bootCamFade(") { blocks.push("cam_fade") }
+    let mut upkeep = Vec::new();
+    if t.has_shown() { blocks.push("shown"); upkeep.push("shownUpkeep(t);".to_string()) }
+    if t.has_pan() { upkeep.push("panUpkeep();".into()) }
+    if t.has_fade() || t.has_tint() { blocks.push("key") }
+    if t.has_fade() { blocks.push("alphas"); upkeep.push("alphasUpkeep(t);".into()) }
+    if t.has_tint() { blocks.push("tints"); upkeep.push("tintsUpkeep(t);".into()) }
+    let words = [("PAN_X", format!("{}", input.pan.0)), ("PAN_Y", format!("{}", input.pan.1))];
+    let mut functions = Vec::new();
+    for b in blocks { functions.push(compile::native::helper(runtime, "stage_boot", b, "", &words, &[]).map_err(|e| vec![e])?) }
+    functions.extend(w.functions.iter().cloned());
+    let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    slots.insert("fields", w.fields.clone());
+    slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
+    slots.insert("placed", placed.lines().map(String::from).collect());
+    slots.insert("spawn", spawn.lines().filter(|l| !l.trim().is_empty()).map(String::from).collect());
+    slots.insert("own_start", w.start.clone());
+    slots.insert("own_tick", w.tick.clone());
+    slots.insert("upkeep", upkeep);
+    slots.insert("publish", w.publish.clone());
+    let script = compile::native::fill_slots(skeleton, &slots).replace("{title}", id).replace("{classes}", class)
+        .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (stageFrames % 2 == 1) {\n\t}\n", "");
+    if let Some(n) = compile::native::declared_twice(&script) { return Err(vec![format!("its script declares {n} twice")]) }
+    Ok(script)
 }
