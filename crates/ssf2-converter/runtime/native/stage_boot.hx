@@ -540,8 +540,17 @@ function partNamed(n) {
 	if (have != null) return have;
 	var els = [];
 	var depth = -1;
+	// (the names over a piece the source reaches it by: a clip nobody named, `#<id>`, is there only
+	// for its own code, and its pieces are still its named parent's own)
+	var byName = n.charAt(0) == "#";
+	var pathOf = function(e) {
+		if (byName) return e.path;
+		var o = [];
+		for (s in e.path) if (s.charAt(0) != "#") o.push(s);
+		return o;
+	};
 	for (e in stageEls) {
-		var k = e.path.indexOf(n);
+		var k = pathOf(e).indexOf(n);
 		if (k < 0) continue;
 		els.push(e);
 		if (depth < 0 || k < depth) depth = k;
@@ -574,7 +583,7 @@ function partNamed(n) {
 	p.getRotation = function() { return p.rot; };
 	var each = function(f) { for (e in els) { var v = bootBg[e.i]; if (v != null) f(e, v); } };
 	// (the clip's own picture: the pieces drawn right under it)
-	var own = function(e) { return e.path.length == depth + 1; };
+	var own = function(e) { return pathOf(e).length == depth + 1; };
 	p.setVisible = function(on) { p.shown = on == true; if (obj != null) obj.setVisible(p.shown); each(function(e, v) { v.setVisible(p.shown); }); };
 	p.getVisible = function() { return p.shown; };
 	p.setAlpha = function(a) { p.alpha = a; each(function(e, v) { if (v.setAlpha != null) v.setAlpha(a); }); };

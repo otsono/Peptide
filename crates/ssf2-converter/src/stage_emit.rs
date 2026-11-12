@@ -355,7 +355,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         .map(|(i, a)| write_layer(&format!("fg{i}"), a)).collect::<Result<_>>()?;
     let promote_fg = !inline_bg && fg_refs.len() > 1;
     if promote_fg {
-        promoted_bg.push(BgLayerRef { starts_hidden: false, presence: Vec::new(), named_path: Vec::new(),
+        promoted_bg.push(BgLayerRef { starts_hidden: false, presence: Vec::new(), named_path: Vec::new(), clip_path: Vec::new(),
             name: "Foreground Art".to_string(), eid: "fg".to_string(), clip: "fg".to_string(),
             frames: fg_refs.clone(), plane: BgPlane::Foreground, segments: Vec::new(), pan: None, fades: false, authored_alpha: model.art.foreground_alpha,
         });
@@ -1620,6 +1620,9 @@ struct BgLayerRef {
     clip: String,
     /// Every instance name over the element, outermost first (see `BgLayer::named_path`).
     named_path: Vec<String>,
+    /// ...with the clips nobody named that have a class of their own (`#<id>`) among them: what a
+    /// native stage's elements table files the piece under, so that clip's code reaches it
+    clip_path: Vec<String>,
     /// The element's label-delimited segments as `(label, frame count, jump)`, when its SSF2 clip
     /// branches between them instead of looping. Frame counts index into `frames`, which is the
     /// segments concatenated in timeline order. Empty for an ordinary looping element.
@@ -4247,15 +4250,15 @@ fn build_element_layers(
             return Ok(vec![
                 // the still part and what moves over it are one clip, kept apart so the plate is
                 // rasterised once -- as LAYERS of that clip, not as two objects
-                BgLayerRef { starts_hidden, presence: presence.to_vec(), named_path: named_path.to_vec(), name: format!("{name} (plate)"), eid: plate_id, clip: clip.clone(),
+                BgLayerRef { starts_hidden, presence: presence.to_vec(), named_path: named_path.iter().filter(|n| !n.starts_with('#')).cloned().collect(), clip_path: named_path.to_vec(), name: format!("{name} (plate)"), eid: plate_id, clip: clip.clone(),
                              frames: vec![plate_ref],
                              plane, segments: Vec::new(), pan, fades, authored_alpha },
-                BgLayerRef { starts_hidden, presence: presence.to_vec(), named_path: named_path.to_vec(), name, eid: eid.to_string(), clip, frames: moving_refs, plane, segments: Vec::new(), pan, fades, authored_alpha },
+                BgLayerRef { starts_hidden, presence: presence.to_vec(), named_path: named_path.iter().filter(|n| !n.starts_with('#')).cloned().collect(), clip_path: named_path.to_vec(), name, eid: eid.to_string(), clip, frames: moving_refs, plane, segments: Vec::new(), pan, fades, authored_alpha },
             ]);
         }
     }
     let refs = write_element_frames(eid, frames, !segs.is_empty(), write_layer)?;
-    Ok(vec![BgLayerRef { starts_hidden, presence: presence.to_vec(), named_path: named_path.to_vec(), name, eid: eid.to_string(), clip, frames: refs, plane, segments: segs, pan, fades, authored_alpha }])
+    Ok(vec![BgLayerRef { starts_hidden, presence: presence.to_vec(), named_path: named_path.iter().filter(|n| !n.starts_with('#')).cloned().collect(), clip_path: named_path.to_vec(), name, eid: eid.to_string(), clip, frames: refs, plane, segments: segs, pan, fades, authored_alpha }])
 }
 
 /// Split a mostly-static animated element into a still PLATE plus a small moving piece.
@@ -4705,7 +4708,7 @@ fn emit_bg_elements(model: &StageModel, promoted: &[BgLayerRef], lib: &Path, pla
             },
             shown: layer.presence.clone(), tint, alpha, hidden, ride,
             follow: plat_follow(model, layer, &mut followed),
-            path: layer.named_path.clone(), labels: vec!["active".to_string()], sections: None, carry: None, chain: None,
+            path: layer.clip_path.clone(), labels: vec!["active".to_string()], sections: None, carry: None, chain: None,
         });
     }
     // The named clip, bound to everything that came out of it. One clip is one thing to the stage
@@ -4809,7 +4812,7 @@ fn emit_bg_sectioned_vfx(layer: &BgLayerRef, eid: &str, i: usize, lib: &Path,
         index: i, id: eid.to_string(), segmented: true, x: ox, y: oy,
         at: match layer.pan { Some((px, py)) => BootAt::Pan(px, py), None => layer.plane.boot_at() },
         shown: Vec::new(), tint: None, alpha: None, hidden: layer.starts_hidden, ride: None, follow: None,
-        path: layer.named_path.clone(), labels: spans.iter().map(|(n, ..)| n.clone()).collect(),
+        path: layer.clip_path.clone(), labels: spans.iter().map(|(n, ..)| n.clone()).collect(),
         sections: Some((spans.iter().map(|(n, ..)| anim_key(n)).collect(), spans.iter().map(|(.., l)| *l).collect())),
         carry: None,
         chain: Some(chain.iter().map(|n| n.map(|j| j as i64).unwrap_or(-1)).collect()),
@@ -4947,7 +4950,7 @@ fn emit_bg_carrier(
         index: i, id: eid.to_string(), segmented: true, x: ox, y: oy,
         at: match layer.pan { Some((px, py)) => BootAt::Pan(px, py), None => layer.plane.boot_at() },
         shown: Vec::new(), tint: None, alpha: None, hidden: false, ride: None, follow: None,
-        path: layer.named_path.clone(), labels: spans.iter().map(|(n, ..)| n.clone()).collect(),
+        path: layer.clip_path.clone(), labels: spans.iter().map(|(n, ..)| n.clone()).collect(),
         sections: Some((spans.iter().map(|(n, ..)| anim_key(n)).collect(), spans.iter().map(|(.., l)| *l).collect())),
         carry: Some((surface.to_string(), ids)), chain: None,
     });
@@ -5043,7 +5046,7 @@ fn emit_bg_segmented(
         },
         shown: Vec::new(), tint: None, alpha: None, hidden: false, ride,
         follow: plat_follow(model, layer, followed),
-        path: layer.named_path.clone(), labels: spans.iter().map(|(n, ..)| n.clone()).collect(),
+        path: layer.clip_path.clone(), labels: spans.iter().map(|(n, ..)| n.clone()).collect(),
         sections: chain.as_ref().map(|_| (spans.iter().map(|(n, ..)| anim_key(n)).collect(),
             spans.iter().map(|(.., l)| *l).collect())),
         carry: None, chain: None,
