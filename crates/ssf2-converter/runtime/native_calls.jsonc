@@ -277,6 +277,12 @@
   "getNearest": { "code": "nearestOf({self}, {0})", "helper": "nearestOf", "returns": "object" },
   // a clip moved in the drawing order: this engine draws each object on its own layer
   "setChildIndex": "",
+  // an object drawn in front of the fighters (the piece it names is drawn with it, from the tree)
+  "setForeground": "if ({self}.getViewRootContainer != null) stage.getForegroundStructuresContainer().addChild({self}.getViewRootContainer())",
+  // the final smash being used, and the cut-in it plays: none here, as on the runtime
+  "PeptideAPI.currentActiveFinalSmash": { "code": "null", "returns": "object" },
+  "PeptideAPI.isFSCutscenePlaying": { "code": "false", "returns": "bool" },
+  "isUsingFinalSmash": { "code": "false", "returns": "bool" },
   // whether the match has its hazards on
   "PeptideAPI.isHazardsOn": { "code": "(match.getMatchSettingsConfig() == null || match.getMatchSettingsConfig().hazards == true)", "returns": "bool" },
   // the game's mode: none of the source's modes is played here

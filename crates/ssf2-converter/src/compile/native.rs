@@ -369,6 +369,9 @@ struct Writer<'o, 'a> {
     /// the one being written
     recs: Vec<&'a ClassModel>,
     rec_lists: BTreeMap<String, String>,
+    /// lists of one of the runtime's classes with a record form (`classes.hx`, `K as a record`), by
+    /// field: each element a record, its calls `K_call(element)`
+    rt_lists: BTreeMap<String, String>,
     record: Option<String>,
     /// the variables of the function being written that hold a record of a list: the class, and
     /// the list's field
@@ -454,7 +457,7 @@ struct Writer<'o, 'a> {
 
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
-        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), record: None, rec_locals: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
+        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rt_lists: BTreeMap::new(), record: None, rec_locals: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
                              locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new(), param_ty: BTreeMap::new() };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "initialize", "update", "onTeardown", "onKill", "onDestroy", "life", "age", "started", "freshHit"]
@@ -537,7 +540,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                 });
                 // (one declared a plain `Object` that only ever holds a record literal, or an element of
                 // a field that only ever holds a list of them, is that record)
-                let record = record || (f.type_name.as_deref().map(short) == Some("Object") && holds_records(c, &f.name));
+                let record = record || (f.type_name.as_deref().map(short) == Some("Object") && holds_records(c, &f.name))
+                    // (one declared as one of Flash's classes the engine has its own of, a point: its
+                    // fields read plainly)
+                    || f.type_name.as_deref().is_some_and(|t| o.runtime.native(t).is_some());
                 let holds = if w.holds_itself(c, &f.name) { Holds::Itself } else if record { Holds::Value(Ty::Rect) } else { Holds::Value(Ty::declared(f.type_name.as_deref())) };
                 let id = if holds == Holds::Itself { "self".to_string() } else { name_for(&f.name, c, &mut taken) };
                 // (a fighter's clip's field is a variable of the clip's own frame code: the frames and
@@ -654,6 +660,19 @@ impl<'o, 'a> Writer<'o, 'a> {
                         _ => {}
                     });
                 }
+            }
+        }
+        // a field it keeps a list of one of the runtime's classes in, by index, where that class has a
+        // record form (`classes.hx`): a list of records
+        let rt_made = |e: &Expr| match e { Expr::New(n, _) => match &**n { Expr::Name(n) => {
+            let src = o.runtime.names.classes.iter().find(|(_, r)| short(r) == short(n)).map(|(s, _)| s.clone()).unwrap_or_else(|| short(n).to_string());
+            o.runtime.native_files.get("classes").filter(|t| t.lines().any(|l| l.trim_end() == format!("// ---- {src} as a record"))).map(|_| src)
+        }, _ => None }, _ => None };
+        for c in all.iter().copied() {
+            for body in c.methods.iter().map(|m| &m.function.body).chain([&c.constructor.body]) {
+                walk(body, &mut |st| if let Stmt::Assign(Place::Index(Expr::Member(t, fl), _), v) = st {
+                    if matches!(**t, Expr::This) { if let Some(k) = rt_made(v) { w.rt_lists.insert(member_key(&c.name, fl), k); } }
+                });
             }
         }
         for k in w.recs.clone() {
@@ -1361,6 +1380,31 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
         }
         match p {
+            // a list of runtime records: started empty, an element made, as a copy written back
+            Place::Member(Expr::This, f) if self.rt_list(f).is_some() && matches!(v, Expr::New(..) | Expr::Array(_) | Expr::Call(..)) => {
+                let (fid, _) = self.field(f).ok_or("a list of no field")?;
+                Ok(vec![format!("{fid}.set([]);")])
+            }
+            Place::Index(Expr::Member(t, f), i) if matches!(**t, Expr::This) && self.rt_list(f).is_some() => {
+                let k = self.rt_list(f).unwrap_or_default();
+                self.rt_record(&k)?;
+                let (fid, _) = self.field(f).ok_or("a list of no field")?;
+                let (ix, _) = self.expr(i)?;
+                let val = match v {
+                    Expr::New(_, args) => { let vs: Vec<String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect::<Result<_, String>>()?; format!("{k}_new({})", vs.join(", ")) }
+                    other => self.expr(other)?.0,
+                };
+                Ok(vec![format!("{{ var __l = {fid}.get().copy(); __l[{ix}] = {val}; {fid}.set(__l); }}")])
+            }
+            Place::Member(Expr::Index(l, i), prop) if matches!(&**l, Expr::Member(t, f) if matches!(**t, Expr::This) && self.rt_list(f).is_some()) => {
+                let Expr::Member(_, f) = &**l else { unreachable!() };
+                let k = self.rt_list(f).unwrap_or_default();
+                self.rt_record(&k)?;
+                let (fid, _) = self.field(f).ok_or("a list of no field")?;
+                let (ix, _) = self.expr(i)?;
+                let (val, _) = self.expr(v)?;
+                Ok(vec![format!("{{ var __l = {fid}.get().copy(); var __r = {k}_copy(__l[{ix}]); {k}_set_{prop}(__r, {val}); __l[{ix}] = __r; {fid}.set(__l); }}")])
+            }
             // the clip it shows hidden or shown: the object itself, as it is the object's look
             Place::Member(Expr::This, f) if f == "visible" && self.field(f).is_none() && !self.o.clip_parts.contains_key(&self.class) => {
                 let t = self.test(v)?;
@@ -1484,7 +1528,9 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             Place::Member(Expr::Local(r), f) if self.locals.get(r).is_some_and(|(_, h)| *h == Holds::Clip) => self.assign(&Place::Member(Expr::This, f.clone()), v),
             // the look of an effect or object it keeps
-            Place::Member(o, f) if !matches!(o, Expr::This) && matches!(f.as_str(), "x" | "y") && !self.is_clip(o) && !matches!(o, Expr::Name(n) if n == "parent") => {
+            Place::Member(o, f) if !matches!(o, Expr::This) && matches!(f.as_str(), "x" | "y") && !self.is_clip(o) && !matches!(o, Expr::Name(n) if n == "parent")
+                // (a record's, a point's, is its plain field: below)
+                && !self.expr(o).is_ok_and(|(_, t)| t == Ty::Rect) && !matches!(o, Expr::Local(r) if self.locals.get(r).is_some_and(|(_, h)| *h == Holds::Value(Ty::Rect))) => {
                 let (who, _) = self.expr(o)?;
                 if who == "self" { return Err(format!("writes its clip's {f}")) }
                 let (val, _) = self.expr(v)?;
@@ -1771,6 +1817,16 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (who, _) = self.expr(o)?;
                 if self.o.owner_native { return Ok((format!("{}({who}, \"self\", {})", self.owner_field("get")?, quote(f)), Ty::Any)) }
                 return Ok((if (self.o.owner_stores)(f) { format!("{who}.exports.__source.__c_{}.get()", ident(f)) } else { format!("{who}.exports.__source.{}", ident(f)) }, Ty::Any));
+            }
+            // a field of an element of a list of runtime records: its class's getter, handed it
+            Expr::Member(x, prop) if matches!(&**x, Expr::Index(l, _) if matches!(&**l, Expr::Member(t, f) if matches!(**t, Expr::This) && self.rt_list(f).is_some())) => {
+                let Expr::Index(l, i) = &**x else { unreachable!() };
+                let Expr::Member(_, f) = &**l else { unreachable!() };
+                let k = self.rt_list(f).unwrap_or_default();
+                self.rt_record(&k)?;
+                let (list, _) = self.expr(l)?;
+                let (ix, _) = self.expr(i)?;
+                return Ok((format!("{k}_get_{prop}({list}[{ix}])"), if prop == "completed" { Ty::Bool } else { Ty::Rect }));
             }
             // a field of a named clip of the planes: what it shows, its frame, its label, or a clip of
             // its by name
@@ -2190,6 +2246,16 @@ impl<'o, 'a> Writer<'o, 'a> {
         all.filter(|c| short(&c.name) == short(n) && c.fields.iter().any(|x| x.is_static && x.name == f)).map(|c| c.name.clone()).next()
     }
 
+    /// the runtime class a field keeps a list of records of, where it keeps one
+    fn rt_list(&self, f: &str) -> Option<String> { self.rt_lists.get(&member_key(&self.class, f)).cloned() }
+
+    /// the record form of one of the runtime's classes, written once (`classes.hx`)
+    fn rt_record(&mut self, k: &str) -> Result<(), String> {
+        let name = format!("{k}_record");
+        if !self.helpers.contains_key(&name) { self.helpers.insert(name, helper(self.o.runtime, "classes", &format!("{k} as a record"), "", &[], &[])?); }
+        Ok(())
+    }
+
     /// whether its clip's frames are counted here: a fighter's, or an object's whose animations
     /// show its clips' frames (`clip_frames`)
     fn counts_frames(&self) -> bool { self.o.fighter || self.o.clip_frames.values().any(|a| !a.is_empty()) }
@@ -2481,6 +2547,30 @@ impl<'o, 'a> Writer<'o, 'a> {
                         let set = if self.plain.contains(&member_key(&self.class, fl)) { format!("{fid} = __l;") } else { format!("{fid}.set(__l);") };
                         return Ok((format!("{{ var __l = {list}.copy(); var __r = {kid}_copy(__l[{ix}]); {id}(__r{rest}); __l[{ix}] = __r; {set} }}"), Ty::Any));
                     }
+                }
+            }
+        }
+        // a call on an element of a list of runtime records: its class's function, on a copy written
+        // back; and a function an element's field holds (`timerList[i].data.fn()`), called
+        if let Expr::Member(recv, m) = f {
+            if let Expr::Index(l, i) = &**recv {
+                if let Expr::Member(t, fl) = &**l {
+                    if matches!(**t, Expr::This) && self.rt_list(fl).is_some() {
+                        let k = self.rt_list(fl).unwrap_or_default();
+                        self.rt_record(&k)?;
+                        let (fid, _) = self.field(fl).ok_or("a list of no field")?;
+                        let (ix, _) = self.expr(i)?;
+                        let vs: Vec<String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect::<Result<_, String>>()?;
+                        let rest = if vs.is_empty() { String::new() } else { format!(", {}", vs.join(", ")) };
+                        return Ok((format!("{{ var __l = {fid}.get().copy(); var __r = {k}_copy(__l[{ix}]); {k}_{m}(__r{rest}); __l[{ix}] = __r; {fid}.set(__l); }}"), Ty::Any));
+                    }
+                }
+            }
+            if let Expr::Member(x, _) = &**recv {
+                if matches!(&**x, Expr::Index(l, _) if matches!(&**l, Expr::Member(t, fl) if matches!(**t, Expr::This) && self.rt_list(fl).is_some())) {
+                    let (who, _) = self.expr(recv)?;
+                    let vs: Vec<String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect::<Result<_, String>>()?;
+                    return Ok((format!("{who}.{m}({})", vs.join(", ")), Ty::Any));
                 }
             }
         }
