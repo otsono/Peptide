@@ -3855,8 +3855,15 @@ self.playFrameLabel({})", quote(f))); }
     /// declared stat has it do each frame
     fn projectile_stats(&mut self, pairs: &[(Expr, Expr)]) -> Result<(String, Ty), String> {
         let mut out = Vec::new();
+        // (what it writes goes on its stats' metadata too, where the others read it: `declaredOf`)
+        let mut shown = Vec::new();
         for (k, v) in pairs {
             let Expr::Str(k) = k else { return Err("writes a stat by a name worked out as it runs".into()) };
+            // (a value that makes or calls something is worked out once, by the write itself)
+            if crate::re!(r"^[A-Za-z_]\w*$").is_match(k) && !matches!(v, Expr::Call(..) | Expr::New(..)) {
+                let (val, _) = self.expr(v)?;
+                shown.push(format!("{k}: {val}"));
+            }
             if let Some(var) = self.o.switches.get(k) {
                 // off for nothing, on again for what it declares
                 let when = super::projectile_stats::table().when_of(k);
@@ -3883,6 +3890,7 @@ self.playFrameLabel({})", quote(f))); }
             let (val, _) = self.expr(v)?;
             out.push(self.stat_code(&t, &val));
         }
+        if !shown.is_empty() { out.push(format!("self.updateGameObjectStatsMetadata({{ {} }})", shown.join(", "))) }
         Ok((out.join(";\n"), Ty::Any))
     }
 }
