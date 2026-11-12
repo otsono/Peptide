@@ -1962,7 +1962,10 @@ the falcon punch on the strike frame of his forward tilt, hold through hitstop, 
 kirby is knocked out of the move. a native fighter's move runs its own frame code as kirby
 (`__moveCode`): pikachu's thunder jolt came out of its own `fire_thunderJolt`, owned by
 kirby and at his position, and hit for 5.25; captain falcon's punch ran its own frames as kirby and
-hit for 22.5. what the rehearsal can't see, where the move is played
+hit for 22.5. a move published as one call (`start`) runs live: kirby holds his frame until the
+mod's own timer sends him back to stand, the timer drops when he's knocked out of the move, and it
+fires through hitstop unless it was given a `pauseCondition` on his hitstop (measured: unpaused it
+fired 29 frames into an 80-frame hitstop). what the rehearsal can't see, where the move is played
 from the recording:
 
 | gap | why |

@@ -723,8 +723,13 @@ the recording. a converted fighter's code is written against `self`, so its `mov
 script's `self` at `me` while it runs (`actAs`) and finds content through `ownResource`, so its own
 projectiles and sounds still resolve. a mod made anywhere can publish the same one to be copied in
 full, with no swap: its function takes `self` as its first parameter (the one playing the move) and
-reads its own content through a script-level `var copiedChar = self;`. one that publishes nothing is
-played from the recording.
+reads its own content through a script-level `var copiedChar = self;`. or it publishes the whole move
+as one call, `__kirbyPower.start(me)`: the copier enters its neutral special, holds one frame (the
+record's `art`, a sprite of the mod's own, else its pose where it lands its blow), calls `start` once
+and takes only the hitboxes from the recording. the move is the mod's from there: its timers on `me`
+(non-persistent, so a hit ends them with the move) fire the later frames, and its last one sends
+`me` back to stand or fall, which ends the move. one that publishes nothing is played from the
+recording.
 nothing per fighter is written anywhere: the same rule copies any fighter.
 a jump to a label inside another animation goes through `playLabelIn`, and that animation's
 first frame's own code skips while it does (the engine runs the first frame as it starts an

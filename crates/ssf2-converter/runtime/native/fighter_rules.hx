@@ -1099,7 +1099,11 @@ function powerOf(foe) {
 	var air = rehearse(foe, "special_neutral_air");
 	// (its frame code too, where it lets another fighter run it: `__moveCode(me, anim, frame)`)
 	var code = foe.exports == null ? null : foe.exports.__moveCode;
-	if (ground != null || air != null) rec.body = { ground: ground, air: air, code: code };
+	// (or the whole move as one call, `start(me)`, which ends it itself, with art of its own to hold)
+	var start = p == null ? null : p.start;
+	var art = null;
+	if (p != null && p.art != null && p.art.content != null) art = { content: foe.getResource().getContent(p.art.content), animation: p.art.animation, frame: p.art.frame == null ? 1 : p.art.frame };
+	if (ground != null || air != null || start != null) rec.body = { ground: ground, air: air, code: code, start: start, art: art };
 	return rec;
 }
 
@@ -1188,13 +1192,17 @@ function borrowedMove(label) {
 	var floor = self.isOnFloor();
 	var move = floor ? p.body.ground : p.body.air;
 	if (move == null) move = floor ? p.body.air : p.body.ground;
-	if (move == null) return false;
+	var start = p.body.start;
+	if (move == null && start == null) return false;
+	var frames = move == null ? [] : move.frames;
 	var lands = -1;
-	for (i in 0...move.frames.length) if (lands < 0 && (move.frames[i].hits.length > 0 || move.frames[i].shots.length > 0)) lands = i;
-	borrowed.set({ frames: move.frames, pose: borrowedPose(move, floor), lands: lands, code: p.body.code });
+	for (i in 0...frames.length) if (lands < 0 && (frames[i].hits.length > 0 || frames[i].shots.length > 0)) lands = i;
+	borrowed.set({ frames: frames, pose: move == null ? null : borrowedPose(move, floor), lands: lands, code: p.body.code, start: start, art: p.body.art });
 	borrowedAt.set(0);
 	borrowedHit.set([]);
 	self.toState(CState.SPECIAL_NEUTRAL, floor ? "stand" : "fall_loop");
+	// (a move that is one call runs it now: it holds one frame until that call's own code ends it)
+	if (start != null) { start(self); borrowedDraw(borrowed.get(), 0); }
 	return true;
 }
 // the pose of its own that fits the move: what the move does, read off its recording
@@ -1220,6 +1228,14 @@ function borrowedFrame() {
 	// (in hitstop it holds its frame)
 	var t = borrowedAt.get();
 	if (self.getHitstop() > 0 && t > 0) { borrowedDraw(b, t - 1); return; }
+	// (a move that is one call takes only its hitboxes from the recording, and is ended by its own code)
+	if (b.start != null) {
+		borrowedDraw(b, t);
+		if (t >= b.frames.length) return;
+		borrowedAt.set(t + 1);
+		for (h in b.frames[t].hits) borrowedStrike(h);
+		return;
+	}
 	if (t >= b.frames.length) {
 		borrowedDone();
 		self.toState(self.isOnFloor() ? CState.STAND : CState.FALL);
@@ -1278,6 +1294,17 @@ function touches(h, foe) {
 // hitbox, as [animation, frame] pairs), and stretched evenly where the pose has none
 var strikeFrames = STRIKE_FRAMES;
 function borrowedDraw(b, t) {
+	// (art it came with is held on its own frame, in its own colours)
+	if (b.art != null) {
+		if (borrowedArt == null || borrowedArt.isDisposed()) {
+			borrowedArt = Sprite.create(b.art.content);
+			if (b.art.animation != null) borrowedArt.currentAnimation = b.art.animation;
+			borrowedArt.currentFrame = b.art.frame;
+			self.getTopLayer().addChild(borrowedArt);
+		}
+		self.getSprite().visible = false;
+		return;
+	}
 	if (b.pose == null) return;
 	if (borrowedArt == null || borrowedArt.isDisposed()) {
 		borrowedArt = Sprite.create(self.getGameObjectStat("spriteContent"));
@@ -1292,6 +1319,8 @@ function borrowedDraw(b, t) {
 	var all = borrowedArt.totalFrames;
 	var strike = null;
 	for (p in strikeFrames) if (p[0] == b.pose) strike = p[1];
+	// (a move that is one call holds the pose where it lands its blow)
+	if (b.start != null) { borrowedArt.currentFrame = strike == null ? all : strike; self.getSprite().visible = false; return; }
 	var frame = 1 + Math.floor(t * all / b.frames.length);
 	if (strike != null && b.lands > 0 && t < b.lands) frame = 1 + Math.floor(t * (strike - 1) / b.lands);
 	else if (strike != null && b.lands >= 0) frame = strike + Math.floor((t - b.lands) * (all - strike + 1) / (b.frames.length - b.lands));
