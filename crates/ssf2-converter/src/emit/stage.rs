@@ -161,7 +161,7 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     // what holds the stage's own code on the runtime, function by function (the work list for
     // writing it as plain Fraymakers code)
     let mut none_written = None;
-    let mut census = stage_census(&src, &runtime, &spec.class, sym, &pieces, units, false, &mut none_written);
+    let mut census = stage_census(&src, &runtime, &spec.class, sym, &pieces, units, false, &mut none_written, &input.objects);
     // written as plain Fraymakers code where everything it does has a plain form
     let native = match native_stage(&src, &runtime, &spec.class, sym, &pieces, units, input, id, census.is_empty(), &regions_literal(model), &native_objects) {
         Ok(script) => { std::fs::write(scripts.join(format!("{id}Script.hx")), &script)?; true }
@@ -780,7 +780,8 @@ fn stage_boot_data(model: &crate::stage_parser::StageModel, src: &crate::model::
 
 /// Every reason the stage's own classes have no plain form yet, one per function: its class, and
 /// each class of a clip inside the stage's clip with code of its own.
-fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pieces: &[Piece], units: Units, written: bool, out: &mut Option<compile::native::Written>) -> Vec<String> {
+fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pieces: &[Piece], units: Units, written: bool, out: &mut Option<compile::native::Written>, objects: &[(String, String)]) -> Vec<String> {
+    let made_objects: BTreeMap<String, String> = objects.iter().map(|(c, id)| (compile::short(c).to_string(), id.clone())).collect();
     let Some(itself) = class_of(src, class) else { return vec![format!("its class {class} is not in its package")] };
     let mut classes = Vec::new();
     for s in super::clip_tree(src, Some(sym)) {
@@ -810,7 +811,7 @@ fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     let object = compile::native::Object {
         model: src, itself: Some(itself), classes, jumps: &jumps, runtime, declared: &none, switches: &switches,
         owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
-        root: sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: true, clip_parts: parts_of.clone(),
+        root: sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: true, clip_parts: parts_of.clone(), made_objects: made_objects.clone(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: Vec::new(), effect_pieces: Vec::new(), parts: Vec::new(), content: String::new(), palette: None,
         effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
@@ -830,7 +831,7 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     if !input.lib.is_empty() { why.push("its code makes clips from its library, which is not written natively yet".into()); }
     if !why.is_empty() || !code_ok { why.sort(); why.dedup(); return Err(why) }
     let mut written = None;
-    let reasons = stage_census(src, runtime, class, sym, pieces, units, true, &mut written);
+    let reasons = stage_census(src, runtime, class, sym, pieces, units, true, &mut written, &input.objects);
     let Some(w) = written else { return Err(reasons) };
     let skeleton = runtime.native_files.get("stage").ok_or_else(|| vec!["the runtime has no native/stage.hx".to_string()])?;
     // the boot, as calls to the pieces (the named clips are the code's to ask for, and no native code asks yet)
@@ -903,6 +904,11 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     let mut publish = w.publish.clone();
     publish.push("self.exports.__named = objectNamed;".into());
     publish.push("self.exports.__part = partNamed;".into());
+    // (its camera backgrounds' names, each the name its pieces are drawn under)
+    let cams: Vec<String> = src.declared("camera").as_ref().and_then(|c| c.get("backgrounds").cloned())
+        .map(|b| match b { Value::Arr(items) => items, _ => Vec::new() }).unwrap_or_default().iter()
+        .map(|b| b.get("linkage_id").and_then(|v| v.str()).map(compile::quote).unwrap_or_else(|| "null".into())).collect();
+    publish.push(format!("self.exports.__cameraBgs = [{}];", cams.join(", ")));
     slots.insert("publish", publish);
     let script = compile::native::fill_slots(skeleton, &slots).replace("{title}", id).replace("{classes}", class)
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (stageFrames % 2 == 1) {\n\t}\n", "");
@@ -939,7 +945,7 @@ fn object_census(src: &SourceModel, runtime: &Runtime, class: &str, units: Units
     let object = compile::native::Object {
         model: src, itself: Some(itself), classes: Vec::new(), jumps: &jumps, runtime, declared: &none, switches: &switches,
         owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
-        root: 0, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(),
+        root: 0, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(), made_objects: BTreeMap::new(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: Vec::new(), effect_pieces: Vec::new(), parts: Vec::new(), content: String::new(), palette: None,
         effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
@@ -991,7 +997,7 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     let object = compile::native::Object {
         model: src, itself: Some(itself), classes, jumps: &jumps, runtime, declared: &declared, switches: &switches,
         owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
-        root: root.unwrap_or(0), size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(),
+        root: root.unwrap_or(0), size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(), made_objects: BTreeMap::new(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: crate::mappings::api_commands().global_vfx_map.keys().cloned().collect(), effect_pieces: Vec::new(), parts: Vec::new(),
         content: String::new(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,

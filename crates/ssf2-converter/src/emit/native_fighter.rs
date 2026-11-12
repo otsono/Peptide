@@ -233,7 +233,7 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
     let object = native::Object {
         model, itself: parts.itself, classes: parts.classes.clone(), jumps: &jumps, runtime: f.runtime, declared: &declares, switches: &switches,
         owner_stat: &no_stat, effect: &made, owner_anims: &anims, fired: &fired, owner_declares: &declares, owner_stores: &stores,
-        root: parts.root, size: f.units.size, speed: f.units.speed, accel: f.units.accel, fighter: true, item: false, stage: false, clip_parts: BTreeMap::new(),
+        root: parts.root, size: f.units.size, speed: f.units.speed, accel: f.units.accel, fighter: true, item: false, stage: false, clip_parts: BTreeMap::new(), made_objects: BTreeMap::new(),
         root_anim: &root_anim, walk_start: (start > 0.0).then_some(start), stance_labels: &labels, clip_frames: &frames_of, frame_links: f.frame_links, anim_clips: &clips, owner_native: false,
         effect_names: f.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
         effect_pieces: f.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames)))

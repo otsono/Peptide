@@ -542,16 +542,20 @@ function partNamed(n) {
 		if (depth < 0 || k < depth) depth = k;
 	}
 	var sf = SURFACES_ON ? surfaceNamed(n) : null;
-	if (els.length == 0 && sf == null) return objectNamed(n);
+	// (nothing drawn under the name: an object filed under it speaks for it, else it is a clip that
+	// shows nothing, whose frame stays put)
+	var obj = els.length == 0 && sf == null ? objectNamed(n) : null;
+	if (obj != null && (obj.exports == null || obj.getCurrentFrame == null)) obj = null;
 	var p = { name: n, shown: true, alpha: 1.0, fall: false };
 	var each = function(f) { for (e in els) { var v = bootBg[e.i]; if (v != null) f(e, v); } };
 	// (the clip's own picture: the pieces drawn right under it)
 	var own = function(e) { return e.path.length == depth + 1; };
-	p.setVisible = function(on) { p.shown = on == true; each(function(e, v) { v.setVisible(p.shown); }); };
+	p.setVisible = function(on) { p.shown = on == true; if (obj != null) obj.setVisible(p.shown); each(function(e, v) { v.setVisible(p.shown); }); };
 	p.getVisible = function() { return p.shown; };
 	p.setAlpha = function(a) { p.alpha = a; each(function(e, v) { if (v.setAlpha != null) v.setAlpha(a); }); };
 	p.getAlpha = function() { return p.alpha; };
 	p.playLabel = function(f, stop) {
+		if (obj != null) { if (obj.exports.__playFrame != null) obj.exports.__playFrame(f); return; }
 		if (!(Std.isOfType(f, Float) || Std.isOfType(f, Int))) {
 			var l = phaseOf(f);
 			each(function(e, v) { if (e.seg && e.labels.indexOf(l) >= 0) goPiece(e, v, l); });
@@ -567,6 +571,7 @@ function partNamed(n) {
 	p.hold = function(stop) { each(function(e, v) { if (!own(e)) return; if (stop) { if (v.pause != null) v.pause(); } else if (v.resume != null) v.resume(); }); };
 	// the frame its clip is on, as the source counts it: its first sectioned piece's section and frame
 	p.getFrame = function() {
+		if (obj != null) return Std.int((obj.getCurrentFrame() - 1) / 2) + 1;
 		for (e in els) {
 			var v = bootBg[e.i];
 			if (v == null || v.getCurrentFrame == null) continue;

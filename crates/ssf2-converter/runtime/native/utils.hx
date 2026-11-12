@@ -346,3 +346,17 @@ function metadataWrite(o, s) {
 function planePart(n) {
 	return stage == null || stage.exports == null || stage.exports.__part == null ? null : stage.exports.__part(n);
 }
+
+// ---- madeObject
+// an object the stage's code made, counted as made (where the verify gates read what it made)
+function madeObject(id, o) {
+	if (o != null) __made.push({ id: id, k: "o", o: o });
+	return o;
+}
+
+// ---- cameraBgName
+// the name of one of the stage's camera backgrounds, by its place in its list (the stage publishes them)
+function cameraBgName(i) {
+	var l = stage == null || stage.exports == null ? null : stage.exports.__cameraBgs;
+	return l == null || i < 0 || i >= l.length ? null : l[i];
+}

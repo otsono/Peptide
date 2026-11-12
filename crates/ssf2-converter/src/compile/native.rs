@@ -192,6 +192,9 @@ pub struct Object<'a> {
     /// a stage's: the name each clip class it runs is placed under in its planes (its `self` is that
     /// named clip of the planes, `planePart`)
     pub clip_parts: BTreeMap<String, String>,
+    /// a stage's: the content each class its code makes an object of was converted to, by the
+    /// class's short name (`makeEnemy(CastleSiegeStatue1)`)
+    pub made_objects: BTreeMap<String, String>,
     /// a fighter's: the animation each of its clip's labels is (an attack its code starts by name)
     pub root_anim: &'a dyn Fn(&str) -> Option<String>,
     /// a fighter's: the walk's own starting speed, in this engine's units, where it declares one
@@ -1356,7 +1359,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         }
         match p {
             // the clip it shows hidden or shown: the object itself, as it is the object's look
-            Place::Member(Expr::This, f) if f == "visible" && self.field(f).is_none() => {
+            Place::Member(Expr::This, f) if f == "visible" && self.field(f).is_none() && !self.o.clip_parts.contains_key(&self.class) => {
                 let t = self.test(v)?;
                 Ok(vec![format!("self.setVisible({t});")])
             }
@@ -1393,6 +1396,28 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (val, _) = self.expr(v)?;
                 if self.o.owner_native { return Ok(vec![format!("{}({who}, \"self\", {}, {val});", self.owner_field("set")?, quote(f))]) }
                 Ok(vec![if (self.o.owner_stores)(f) { format!("{who}.exports.__source.__c_{}.set({val});", ident(f)) } else { format!("{who}.exports.__source.{} = {val};", ident(f)) }])
+            }
+            // a clip of a stage's planes writing its own visibility or opacity: its part's
+            Place::Member(Expr::This, f) if self.o.clip_parts.contains_key(&self.class) && matches!(f.as_str(), "visible" | "alpha") && self.field(f).is_none() => {
+                self.util("planePart")?;
+                let p = format!("planePart({})", quote(&self.o.clip_parts[&self.class]));
+                let (val, _) = self.expr(v)?;
+                Ok(vec![format!("if ({p} != null) {p}.{}({val});", if f == "visible" { "setVisible" } else { "setAlpha" })])
+            }
+            // a surface it holds let through or not: its structures' own
+            Place::Member(o, f) if f == "fallthrough" && !matches!(o, Expr::This) && self.expr(o).is_ok_and(|(w, _)| w != "self" && !w.starts_with("planePart(")) => {
+                let (who, _) = self.expr(o)?;
+                let (val, _) = self.expr(v)?;
+                Ok(vec![format!("if ({who} != null && {who}.updateStructureStats != null) {who}.updateStructureStats({{ dropThrough: {val} == true }});")])
+            }
+            // whether an object's clip shows, written: whether the object does (its own, or another's)
+            Place::Member(mc, f) if matches!(f.as_str(), "visible" | "alpha")
+                && matches!(mc, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(_, m) | Expr::Name(m) if matches!(m.as_str(), "getMC" | "stanceClip" | "getStanceMC"))) => {
+                let Expr::Call(g, _) = mc else { unreachable!() };
+                let who = match &**g { Expr::Member(o, _) => self.expr(o)?.0, _ => "self".to_string() };
+                if who.starts_with("planePart(") { return Err("writes a field of a clip of its planes' own clip".into()) }
+                let (val, _) = self.expr(v)?;
+                Ok(vec![if f == "visible" { format!("{who}.setVisible({val});") } else { format!("{who}.setAlpha({val});") }])
             }
             // a field of a named clip of the planes written: shown, faded, let through
             Place::Member(o, f) if self.expr(o).is_ok_and(|(w, _)| w.starts_with("planePart(")) => {
@@ -1758,7 +1783,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                     _ => { self.util("planePart")?; (format!("planePart({})", quote(f)), Ty::Object) }
                 });
             }
-            // one of a stage's camera backgrounds, as the plane it is (`cameraPlanes`)
+            // one of a stage's camera backgrounds, as the clip of its planes it is (by its name)
+            Expr::Member(o, f) if self.o.stage && f == "mc" && self.expr(o).is_ok_and(|(w, _)| w.starts_with("cameraPlanes()[") && w.ends_with(']')) => {
+                let (v, _) = self.expr(o)?;
+                let i = v.trim_start_matches("cameraPlanes()[").trim_end_matches(']').to_string();
+                self.util("planePart")?;
+                self.util("cameraBgName")?;
+                return Ok((format!("planePart(cameraBgName({i}))"), Ty::Object));
+            }
             Expr::Member(o, f) if self.o.stage && f == "mc" && self.expr(o).is_ok_and(|(w, _)| w.starts_with("cameraPlanes()")) => {
                 let (v, _) = self.expr(o)?;
                 return Ok((format!("{v}.mc"), Ty::Object));
@@ -2555,6 +2587,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                     if !self.helpers.contains_key(&name) { self.helpers.insert(name.clone(), helper(self.o.runtime, "helpers", "make_enemy", &name, &[("FIRE", f)], &[])?); }
                     return Ok((format!("{name}()"), Ty::Object));
                 }
+                // an object a stage's code makes by its class (a stage object's code too)
+                (_, "makeEnemy" | "spawnPlatform", _) if c.contains("PeptideAPI") && !self.o.fighter => {
+                    return self.api("self", &format!("PeptideAPI.{m}"), args);
+                }
                 // an effect made by the API: on the object whose code makes it, as its own
                 (_, "createVfx" | "createVfxOverlay", _) if c.contains("PeptideAPI") => {
                     let saved = std::mem::replace(&mut self.effect_on, "self".into());
@@ -2913,6 +2949,19 @@ impl<'o, 'a> Writer<'o, 'a> {
         // a stage's planes: named values, which nothing here drives yet (a jump, a field or a child of
         // one keeps the stage on the runtime)
         if who.starts_with("stagePlane(") { return Err(format!("drives its {} plane, which no plain form drives yet", who.trim_start_matches("stagePlane(").trim_end_matches(')'))) }
+        // an object made by its class: the content the class was converted to, made on the stage
+        if matches!(m, "PeptideAPI.makeEnemy" | "PeptideAPI.spawnPlatform") {
+            if let Some(Expr::Name(c)) = args.first() {
+                let id = self.o.made_objects.get(short(c)).cloned().ok_or_else(|| format!("makes an object of {c}, a class this package does not convert"))?;
+                let made = format!("match.createCustomGameObject(self.getResource().getContent({}), null)", quote(&id));
+                // (counted as made, where the stage's script keeps that list for the verify gates)
+                if self.o.stage {
+                    let f = self.util("madeObject")?;
+                    return Ok((format!("{f}({}, {made})", quote(&id)), Ty::Object));
+                }
+                return Ok((made, Ty::Object));
+            }
+        }
         // a named clip of the stage's planes: what the stage publishes for it (`planePart`)
         if who.starts_with("planePart(") {
             let a = |w: &mut Self, i: usize| -> Result<String, String> { Ok(w.expr(args.get(i).ok_or("names no frame")?)?.0) };
@@ -2928,7 +2977,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             };
         }
         // (a plane is the stage clip's child of its name: the midground's is its terrain)
-        let plane = match m { "getBackground" => Some("background"), "getForeground" => Some("foreground"), "getMidground" => Some("terrain"), "getShadowMask" => Some("shadowMask"), _ => None };
+        let plane = match m { "getBackground" => Some("background"), "getForeground" => Some("foreground"), "getMidground" => Some("terrain"), "getShadowMask" | "getShadowMaskMC" => Some("shadowMask"), _ => None };
         if let Some(p) = plane.filter(|_| args.is_empty() && ((self.o.stage && mine) || who == "stage")) { self.util("planePart")?; return Ok((format!("planePart({})", quote(p)), Ty::Object)) }
         if self.o.stage && mine && args.is_empty() && m == "getCameraBackgrounds" { self.util("stagePlane")?; self.util("cameraPlanes")?; return Ok(("cameraPlanes()".into(), Ty::Object)) }
         // its costumes' colours
