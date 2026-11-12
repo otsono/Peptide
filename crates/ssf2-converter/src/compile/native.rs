@@ -4765,7 +4765,7 @@ fn holds_records(c: &ClassModel, field: &str) -> bool {
             let mut pushes = 0;
             let mut other = false;
             crate::model::ast::walk_exprs(body, &mut |e| if let Expr::Call(g, a) = e {
-                if let Expr::Member(t, n) = &**g { if matches!(**t, Expr::Local(x) if x == r) && n == "push" { pushes += 1; if !a.iter().all(|x| element(x)) { other = true } } }
+                if let Expr::Member(t, n) = &**g { if matches!(**t, Expr::Local(x) if x == r) && n == "push" { pushes += 1; if !a.iter().all(&element) { other = true } } }
             });
             pushes > 0 && !other
         }
