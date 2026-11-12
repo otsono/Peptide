@@ -1570,7 +1570,10 @@ impl<'o, 'a> Writer<'o, 'a> {
             // the runtime)
             Place::Member(Expr::Call(g, a), f) if a.is_empty() && matches!(&**g, Expr::Member(_, m) | Expr::Name(m) if m == "getLightSourceMC") => {
                 self.expr(v)?;
-                Ok(vec![format!("// (not ported: the source moves its light's {f} here; this engine's stage lights cannot be changed as it runs, `Stage.updateLightboxStats` has no effect)")])
+                // (the engine reads a stage's light from the animation it plays: `Stage.updateLightboxStats`
+                // has no effect, playing another animation rebuilds the stage's containers, fighters and
+                // all, and the frame is the stage's own clock)
+                Ok(vec![format!("// (not ported: the source moves its light's {f} here; this engine's stage light cannot move as it runs)")])
             }
             // the stage's camera or death bounds moved by its code: the engine's stay where the
             // conversion put them (as on the runtime, which hands its code a copy)
