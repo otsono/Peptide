@@ -135,7 +135,9 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
             .map_err(|e| anyhow::anyhow!("its object {}: {e}", row.id))?
             .ok_or_else(|| anyhow::anyhow!("its object {} is of a class no package has ({})", row.id, row.class))?;
         written.push(row.id.clone());
-        reports.insert(row.id.clone(), serde_json::json!({ "problems": o.problems, "unknown": o.unknown, "unplaced": o.unplaced }));
+        // what keeps its own code on the runtime, function by function
+        let census = object_census(home(&models, &row.class), &object_runtime, &row.class, units);
+        reports.insert(row.id.clone(), serde_json::json!({ "on_runtime": census, "problems": o.problems, "unknown": o.unknown, "unplaced": o.unplaced }));
     }
     // each projectile they fire, run by its own class too
     let projectile_runtime = Runtime::load(&located).for_kind("stage_projectile");
@@ -149,12 +151,10 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     let mut none_written = None;
     let mut census = stage_census(&src, &runtime, &spec.class, sym, &pieces, units, false, &mut none_written);
     // written as plain Fraymakers code where everything it does has a plain form
-    let native = if census.is_empty() {
-        match native_stage(&src, &runtime, &spec.class, sym, &pieces, units, input, id) {
-            Ok(script) => { std::fs::write(scripts.join(format!("{id}Script.hx")), &script)?; true }
-            Err(why) => { census.extend(why); false }
-        }
-    } else { false };
+    let native = match native_stage(&src, &runtime, &spec.class, sym, &pieces, units, input, id, census.is_empty(), &regions_literal(model)) {
+        Ok(script) => { std::fs::write(scripts.join(format!("{id}Script.hx")), &script)?; true }
+        Err(why) => { census.extend(why); census.sort(); census.dedup(); false }
+    };
     let report = serde_json::json!({
         "stage_native": native,
         "stage_on_runtime": census,
@@ -748,11 +748,7 @@ fn clip_bounds_data(model: &crate::stage_parser::StageModel, src: &crate::model:
 
 /// The boot, the regions, the pan size and the camera backgrounds.
 fn stage_boot_data(model: &crate::stage_parser::StageModel, src: &crate::model::SourceModel, input: &StageInput) -> String {
-    let regions: Vec<String> = model.named_boxes.iter().map(|(n, r)| {
-        let (rx, ry) = model.named_regs.get(n).copied().unwrap_or((r.x, r.y));
-        format!("{{ n: {}, x: {:.1}, y: {:.1}, w: {:.1}, h: {:.1}, rx: {rx:.1}, ry: {ry:.1} }}", compile::quote(n), r.x, r.y, r.w, r.h)
-    }).collect();
-    let regions = if regions.is_empty() { "[]".to_string() } else { format!("[\n\t{}\n]", regions.join(",\n\t")) };
+    let regions = regions_literal(model);
     let linkages: Vec<Option<String>> = src.declared("camera").as_ref().and_then(|c| c.get("backgrounds").cloned())
         .map(|b| match b { Value::Arr(items) => items, _ => Vec::new() }).unwrap_or_default().iter()
         .map(|b| b.get("linkage_id").and_then(|v| v.str()).map(String::from)).collect();
@@ -809,44 +805,56 @@ fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
 /// The stage's script as plain Fraymakers code: its boot as calls to `runtime/native/stage_boot.hx`'s
 /// pieces, the upkeep it has something for, and its own classes' code; or every reason it is not.
 #[allow(clippy::too_many_arguments)]
-fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pieces: &[Piece], units: Units, input: &StageInput, id: &str) -> Result<String, Vec<String>> {
+fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pieces: &[Piece], units: Units, input: &StageInput, id: &str, code_ok: bool, regions: &str) -> Result<String, Vec<String>> {
     let t = input.tables;
     let mut why = Vec::new();
     if !input.rows.is_empty() { why.push("it puts down objects of its own classes, which are not written natively yet".to_string()); }
     if !t.objects.is_empty() { why.push("its boot puts down objects, which are not written natively yet".into()); }
     if !t.weather.is_empty() || !input.particles.is_empty() { why.push("it has weather, which is not written natively yet".into()); }
-    if !input.surfaces.is_empty() || !input.frictions.is_empty() || !input.pushes.is_empty() { why.push("it has named surfaces, friction or pushes, which are not written natively yet".into()); }
     if !input.lib.is_empty() { why.push("its code makes clips from its library, which is not written natively yet".into()); }
-    for e in &t.elements {
-        let kind = if e.chain.is_some() { Some("a sectioned piece in a camera background") } else if e.carry.is_some() { Some("a piece carrying a surface") }
-            else if e.segmented { Some("a sectioned piece") } else if e.ride.is_some() { Some("a piece riding an object") } else if e.follow.is_some() { Some("a piece riding a surface") } else { None };
-        if let Some(k) = kind { why.push(format!("its boot puts down {k} ({}), which is not written natively yet", e.id)); }
-    }
-    if !why.is_empty() { why.sort(); why.dedup(); return Err(why) }
+    if !why.is_empty() || !code_ok { why.sort(); why.dedup(); return Err(why) }
     let mut written = None;
     let reasons = stage_census(src, runtime, class, sym, pieces, units, true, &mut written);
     let Some(w) = written else { return Err(reasons) };
     let skeleton = runtime.native_files.get("stage").ok_or_else(|| vec!["the runtime has no native/stage.hx".to_string()])?;
     // the boot, as calls to the pieces (the named clips are the code's to ask for, and no native code asks yet)
-    let rename = |text: String| text.replace("StageBoot.sized(", "bootSized(").replace("StageBoot.structure(", "bootStructure(")
-        .replace("StageBoot.effect(", "bootEffect(").replace("StageBoot.camAlpha(", "bootCamAlpha(").replace("StageBoot.camFade(", "bootCamFade(");
+    let rename = |text: String| crate::re!(r"StageBoot\.(\w)(\w*)\(").replace_all(&text, |c: &regex::Captures| format!("boot{}{}(", c[1].to_uppercase(), &c[2])).to_string();
     let placed = rename(t.placed_calls("", "null"));
-    let spawn = rename(t.spawn_calls("", "null", "chars", "hazardsOn", |_, _| String::new()));
+    let spawn = rename(t.spawn_calls("", "null", "chars", "hazardsOn", |g, made| format!("stageGroups.set({}, {made});", compile::quote(&g.name))));
     if let Some(left) = placed.lines().chain(spawn.lines()).find(|l| l.contains("StageBoot.")) { return Err(vec![format!("its boot calls {}, which is not written natively yet", left.trim())]) }
     // the pieces it uses
-    let mut blocks: Vec<&str> = vec!["sized"];
+    let mut blocks: Vec<&str> = vec!["sized", "named", "rides"];
     let uses = |n: &str| placed.contains(n) || spawn.contains(n);
     if uses("bootStructure(") { blocks.push("structure") }
-    if uses("bootEffect(") { blocks.extend(["container", "pan", "effect"]) }
+    if uses("bootEffect(") || uses("bootStill(") { blocks.extend(["container", "pan", "effect"]) }
+    if uses("bootSegment(") || uses("bootStill(") { blocks.extend(["container", "pan", "segment"]) }
+    if uses("bootChained(") { blocks.extend(["container", "pan", "sectioned", "chained"]) }
+    if uses("bootCarry(") { blocks.push("carry") }
+    if uses("bootStill(") { blocks.push("still") }
+    if uses("bootObject(") { blocks.push("object") }
+    if uses("bootDeck(") { blocks.push("deck") }
+    if uses("bootGroup(") { blocks.push("group") }
     if uses("bootCamAlpha(") { blocks.push("cam_alpha") }
     if uses("bootCamFade(") { blocks.push("cam_fade") }
     let mut upkeep = Vec::new();
+    if t.has_riders() || uses("bootObject(") { blocks.push("follow"); upkeep.push("followUpkeep();".to_string()) }
     if t.has_shown() { blocks.push("shown"); upkeep.push("shownUpkeep(t);".to_string()) }
     if t.has_pan() { upkeep.push("panUpkeep();".into()) }
     if t.has_fade() || t.has_tint() { blocks.push("key") }
     if t.has_fade() { blocks.push("alphas"); upkeep.push("alphasUpkeep(t);".into()) }
     if t.has_tint() { blocks.push("tints"); upkeep.push("tintsUpkeep(t);".into()) }
-    let words = [("PAN_X", format!("{}", input.pan.0)), ("PAN_Y", format!("{}", input.pan.1))];
+    let surfaces = !input.surfaces.is_empty();
+    if surfaces { blocks.push("surfaces") }
+    if surfaces || !input.frictions.is_empty() || !input.pushes.is_empty() { blocks.push("ground"); upkeep.push("groundUpkeep();".into()) }
+    if t.has_follow() { blocks.push("riding"); upkeep.push("ridingUpkeep();".into()) }
+    let mut seen = BTreeSet::new();
+    blocks.retain(|b| seen.insert(*b));
+    let strs = |v: &[String]| v.iter().map(|s| compile::quote(s)).collect::<Vec<_>>().join(", ");
+    let rows = |v: Vec<String>| if v.is_empty() { "[]".to_string() } else { format!("[{}]", v.join(", ")) };
+    let words = [("PAN_X", format!("{}", input.pan.0)), ("PAN_Y", format!("{}", input.pan.1)), ("REGIONS", regions.to_string()),
+        ("SURFACES", rows(input.surfaces.iter().map(|(n, s)| format!("{{ n: {}, s: [{}] }}", compile::quote(n), strs(s))).collect())),
+        ("FRICTIONS", rows(input.frictions.clone())), ("PUSHES", rows(input.pushes.clone())), ("ACCEL", format!("{}", units.accel)),
+        ("SURFACE_LOOKUP", if surfaces { "var sf = surfaceNamed(n); if (sf != null) return sf;".to_string() } else { String::new() })];
     let mut functions = Vec::new();
     for b in blocks { functions.push(compile::native::helper(runtime, "stage_boot", b, "", &words, &[]).map_err(|e| vec![e])?) }
     functions.extend(w.functions.iter().cloned());
@@ -858,9 +866,48 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     slots.insert("own_start", w.start.clone());
     slots.insert("own_tick", w.tick.clone());
     slots.insert("upkeep", upkeep);
-    slots.insert("publish", w.publish.clone());
+    let mut publish = w.publish.clone();
+    publish.push("self.exports.__named = objectNamed;".into());
+    slots.insert("publish", publish);
     let script = compile::native::fill_slots(skeleton, &slots).replace("{title}", id).replace("{classes}", class)
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (stageFrames % 2 == 1) {\n\t}\n", "");
     if let Some(n) = compile::native::declared_twice(&script) { return Err(vec![format!("its script declares {n} twice")]) }
     Ok(script)
+}
+
+/// The regions the tree placed under a name: each one's rectangle and the point its clip is placed
+/// by (this engine's units).
+fn regions_literal(model: &crate::stage_parser::StageModel) -> String {
+    let regions: Vec<String> = model.named_boxes.iter().map(|(n, r)| {
+        let (rx, ry) = model.named_regs.get(n).copied().unwrap_or((r.x, r.y));
+        format!("{{ n: {}, x: {:.1}, y: {:.1}, w: {:.1}, h: {:.1}, rx: {rx:.1}, ry: {ry:.1} }}", compile::quote(n), r.x, r.y, r.w, r.h)
+    }).collect();
+    if regions.is_empty() { "[]".to_string() } else { format!("[\n\t{}\n]", regions.join(",\n\t")) }
+}
+
+/// Every reason a stage object's own class has no plain form yet, one per function.
+fn object_census(src: &SourceModel, runtime: &Runtime, class: &str, units: Units) -> Vec<String> {
+    let Some(c) = class_of(src, class) else { return vec![format!("its class {class} is not in its package")] };
+    let merged = super::native_projectile::inherited_class(src, runtime, c);
+    let itself = match &merged { Ok(Some(m)) => m, Ok(None) => c, Err(e) => return vec![e.clone()] };
+    let jumps = BTreeMap::new();
+    let labels = BTreeMap::new();
+    let frames_of = BTreeMap::new();
+    let none = |_: &str| -> Option<String> { None };
+    let no_stat = |_: &str| -> Option<(String, String)> { None };
+    let no_effect = |_: &str| -> Option<(String, Option<u32>)> { None };
+    let no_fired = |_: &str| -> Option<(String, [f64; 4], Option<String>)> { None };
+    let no_store = |_: &str| false;
+    let no_anim = |_: &str| -> Option<String> { None };
+    let switches = BTreeMap::new();
+    let links = BTreeSet::new();
+    let object = compile::native::Object {
+        model: src, itself: Some(itself), classes: Vec::new(), jumps: &jumps, runtime, declared: &none, switches: &switches,
+        owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
+        root: 0, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false,
+        root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
+        effect_names: Vec::new(), effect_pieces: Vec::new(), parts: Vec::new(), content: String::new(), palette: None,
+        effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
+    };
+    compile::native::census(&object)
 }

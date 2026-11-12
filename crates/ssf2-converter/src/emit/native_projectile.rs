@@ -258,7 +258,11 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
 /// whether a class (and what it extends of the package's) only stops or plays its clip, sets its
 /// own properties to plain values and registers its frame scripts: nothing anyone sees here
 pub fn is_quiet(model: &SourceModel, runtime: &Runtime, class: &str) -> bool {
-    let plain = |e: &Expr| matches!(e, Expr::Null | Expr::Undefined | Expr::Bool(_) | Expr::Num(_) | Expr::Int(_) | Expr::Str(_));
+    // (a class named as a value declares what the clip is, `classAPI = Platform`: the conversion
+    // reads it off the tree)
+    let plain = |e: &Expr| matches!(e, Expr::Null | Expr::Undefined | Expr::Bool(_) | Expr::Num(_) | Expr::Int(_) | Expr::Str(_))
+        || matches!(e, Expr::Unary(crate::model::ast::UnOp::Neg, x) if matches!(**x, Expr::Num(_) | Expr::Int(_)))
+        || matches!(e, Expr::Name(n) if runtime.provides(n) || runtime.provides(compile::short(n)) || model.classes.values().any(|c| compile::short(&c.name) == compile::short(n)));
     let mut cur = model.classes.get(class);
     while let Some(c) = cur {
         for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor]) {
@@ -445,6 +449,8 @@ fn num(n: f64) -> String { if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}",
 /// a class that extends another class of its package, as one class: the parent's fields and
 /// methods (its own parent's first), each one the child states again being the child's, and the
 /// constructors run parent first. None where it extends none of its package's classes
+pub fn inherited_class(model: &SourceModel, runtime: &Runtime, c: &crate::model::ClassModel) -> Result<Option<crate::model::ClassModel>, String> { inherited(model, runtime, c) }
+
 fn inherited(model: &SourceModel, runtime: &Runtime, c: &crate::model::ClassModel) -> Result<Option<crate::model::ClassModel>, String> {
     // (the API's own classes, which the runtime answers, are no parent written here)
     let parent = |c: &crate::model::ClassModel| model.classes.get(&c.super_name).or_else(|| model.classes.values().find(|p| p.name != c.name && compile::short(&p.name) == compile::short(&c.super_name)))

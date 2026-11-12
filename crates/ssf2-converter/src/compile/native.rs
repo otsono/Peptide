@@ -466,10 +466,17 @@ impl<'o, 'a> Writer<'o, 'a> {
         let all: Vec<&ClassModel> = o.itself.into_iter().chain(o.classes.iter().copied()).collect();
         for c in &all {
             let own = o.itself.is_some_and(|i| i.name == c.name);
-            let base_ok = if own { if o.fighter { matches!(short(&c.super_name), "PeptideCharacter" | "PeptideCharacterExt") } else if o.item { short(&c.super_name) == "PeptideItem" } else if o.stage { short(&c.super_name) == "PeptideStage" } else { short(&c.super_name) == "PeptideProjectile" } } else { matches!(short(&c.super_name), "MovieClip" | "Sprite") };
+            let base_ok = if own { if o.fighter { matches!(short(&c.super_name), "PeptideCharacter" | "PeptideCharacterExt") } else if o.item { short(&c.super_name) == "PeptideItem" } else if o.stage { short(&c.super_name) == "PeptideStage" } else { matches!(short(&c.super_name), "PeptideProjectile" | "PeptideEnemy" | "PeptidePlatform") } } else { matches!(short(&c.super_name), "MovieClip" | "Sprite") };
             if !base_ok { return Err(format!("{} extends {}, whose code is not written here", c.name, c.super_name)) }
             if !c.unreadable.is_empty() { return Err(format!("{} has code that could not be read", c.name)) }
-            if c.fields.iter().any(|f| f.is_static) || c.methods.iter().any(|m| m.is_static) { return Err(format!("{} has statics", c.name)) }
+            // (a static field is one of its fields where there is one of it, a stage, or where nothing
+            // writes it; a static method is its method)
+            let written_static = |f: &crate::model::Field| all.iter().any(|k| k.methods.iter().any(|m| {
+                let mut w = false;
+                walk(&m.function.body, &mut |st| if let Stmt::Assign(Place::Member(t, n), _) = st { if n == &f.name && matches!(t, Expr::Name(cn) if short(cn) == short(&c.name)) { w = true } });
+                w
+            }));
+            if c.fields.iter().any(|f| f.is_static && !o.stage && written_static(f)) { return Err(format!("{} has statics its code writes", c.name)) }
             // the constructor only registers the frame scripts (the object's own class's sets its fields, written as its start)
             for s in c.constructor.body.iter().filter(|_| !own) {
                 let fine = match s {
@@ -1368,6 +1375,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                 if self.o.owner_native { return Ok(vec![format!("{}({who}, \"self\", {}, {val});", self.owner_field("set")?, quote(f))]) }
                 Ok(vec![if (self.o.owner_stores)(f) { format!("{who}.exports.__source.__c_{}.set({val});", ident(f)) } else { format!("{who}.exports.__source.{} = {val};", ident(f)) }])
             }
+            // a static field of one of its classes, written by the class's name: its field
+            Place::Member(Expr::Name(n), f) if self.static_class(n, f).is_some() => {
+                let owner = self.static_class(n, f).unwrap_or_default();
+                let saved = std::mem::replace(&mut self.class, owner);
+                let r = self.assign(&Place::Member(Expr::This, f.clone()), v);
+                self.class = saved;
+                r
+            }
             Place::Member(Expr::This, f) => {
                 // (a value read already, where the write is another class's field: `given`)
                 let given = self.given.take();
@@ -1675,6 +1690,15 @@ impl<'o, 'a> Writer<'o, 'a> {
                 (format!("self.get{}() / {}", n.to_uppercase(), number(self.o.size)), Ty::Num),
             Expr::Member(t, f) if matches!(**t, Expr::This) => return self.own(f),
             Expr::Member(t, f) if matches!(&**t, Expr::Local(r) if self.locals.get(r).is_some_and(|(_, h)| *h == Holds::Clip)) => return self.own(f),
+            // a static field of one of its classes, read by the class's name: its field
+            Expr::Member(o, f) if matches!(&**o, Expr::Name(n) if self.static_class(n, f).is_some()) => {
+                let Expr::Name(n) = &**o else { unreachable!() };
+                let owner = self.static_class(n, f).unwrap_or_default();
+                let saved = std::mem::replace(&mut self.class, owner);
+                let r = self.own(f);
+                self.class = saved;
+                return r;
+            }
             // a field of its owner's (a read of one that is no call)
             Expr::Member(o, f) if !matches!(**o, Expr::This | Expr::Call(..)) && { let w = self.expr(o).map(|x| x.0).unwrap_or_default(); self.owners.contains(&w) } => {
                 let (who, _) = self.expr(o)?;
@@ -2069,6 +2093,12 @@ impl<'o, 'a> Writer<'o, 'a> {
             self.helpers.insert("boxRecordOf".into(), format!("// a box's stats as the source's record: the engine's box, in the source's units\nfunction boxRecordOf(b) {{\n\treturn b == null ? null : {{ {} }};\n}}", fields.join(", ")));
         }
         Ok("boxRecordOf".into())
+    }
+
+    /// the class of its own whose static field a read by class name (`castlesiege.ROCK_TIME`) names
+    fn static_class(&self, n: &str, f: &str) -> Option<String> {
+        let all = self.o.itself.into_iter().chain(self.o.classes.iter().copied());
+        all.filter(|c| short(&c.name) == short(n) && c.fields.iter().any(|x| x.is_static && x.name == f)).map(|c| c.name.clone()).next()
     }
 
     /// whether its clip's frames are counted here: a fighter's, or an object's whose animations
@@ -3096,7 +3126,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                 return Ok((format!("{f}(stage.{m}())"), Ty::Rect));
             }
             // a stat another fighter states: what its code set, as it publishes it, else the engine's
-            ("getCharacterStat", [k]) if self.o.fighter && !mine => {
+            ("getCharacterStat", [k]) if !mine => {
                 let (k, _) = self.expr(k)?;
                 return Ok((format!("({who}.exports.__source != null && {who}.exports.__source.__stats != null && {who}.exports.__source.__stats.exists({k}) ? {who}.exports.__source.__stats.get({k}) : {who}.getCharacterStat({k}))"), Ty::Any));
             }

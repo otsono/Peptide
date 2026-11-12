@@ -266,6 +266,18 @@
   "unattachFromFloor": "{self}.unattachFromFloor()",
   // its life counted again from now
   "resetTime": "age.set(0)",
+  // what the stage files under a name (a structure, else a region): asked of the stage
+  "PeptideAPI.getPlatform": { "code": "(stage == null || stage.exports.__named == null ? null : stage.exports.__named({0}))", "returns": "object" },
+  "PeptideAPI.getCollisionBoundary": { "code": "(stage == null || stage.exports.__named == null ? null : stage.exports.__named({0}))", "returns": "object" },
+  // whether the match has its hazards on
+  "PeptideAPI.isHazardsOn": { "code": "(match.getMatchSettingsConfig() == null || match.getMatchSettingsConfig().hazards == true)", "returns": "bool" },
+  // the game's mode: none of the source's modes is played here
+  "PeptideAPI.getGameMode": { "code": "-1", "returns": "number" },
+  // the match's clock, in the source's frames (`getGameTimer().getCurrentTime()`)
+  "PeptideAPI.getGameTimer": { "code": "null", "returns": "object" },
+  "getCurrentTime": { "code": "Std.int(match.getElapsedFrames() / 2)", "returns": "number" },
+  // the floor it stands on
+  "getCurrentPlatform": { "code": "{self}.getCurrentFloor()", "returns": "object" },
   "PeptideAPI.getElapsedFrames": { "code": "Std.int(match.getElapsedFrames() / 2)", "returns": "number" },
   "PeptideAPI.randomBetween": { "code": "Random.getInt({0}, {1})", "returns": "number" },
   "PeptideAPI.randomUnit": { "code": "Random.getFloat(0, 1)", "returns": "number" },

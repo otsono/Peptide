@@ -5,6 +5,8 @@
 // ---- sized
 //: the handles the boot files by index (a piece riding another is found by it)
 var bootBg = [];
+// the structures each piece carrying a named surface made, by the surface's name
+var carried = new haxe.ds.StringMap();
 function bootSized(objects, elements) {
 	while (bootBg.length < elements) bootBg.push(null);
 }
@@ -14,6 +16,7 @@ function bootSized(objects, elements) {
 function bootStructure(id, name) {
 	var h = match.createStructure(self.getResource().getContent(id));
 	__made.push({ id: id, k: "s", o: h });
+	if (name != null) nameObject(name, h);
 }
 
 // ---- container
@@ -74,7 +77,7 @@ function bootEffect(e) {
 	}
 	if (e.alpha != null && v != null) v.getViewRootContainer().alpha = e.alpha;
 	if (e.hidden == true && v != null) v.setVisible(false);
-	bootBg[e.i] = v;
+	bootRides(e, v);
 }
 
 // ---- cam_alpha
@@ -131,5 +134,361 @@ function tintsUpkeep(t) {
 		e.s.redOffset = k[4];
 		e.s.greenOffset = k[5];
 		e.s.blueOffset = k[6];
+	}
+}
+
+// ---- named
+//: what the stage files under a name, as its code (and its objects' code, through
+//: `exports.__named`) asks for one: a structure the boot made, else a region the tree placed
+//: (REGIONS: each region's rectangle and the point its clip is placed by, this engine's units)
+var namedObjs = [];
+var stageRegions = REGIONS;
+var regionsMade = [];
+function nameObject(n, o) {
+	if (o != null) namedObjs.push({ n: n, o: o });
+}
+function objectNamed(n) {
+	for (e in namedObjs) if (e.n == n) return e.o;
+	SURFACE_LOOKUP
+	for (r in regionsMade) if (r.name == n) return r;
+	for (r in stageRegions) {
+		if (r.n != n) continue;
+		// (a region its code moves moves its rectangle with it)
+		var rect = { x: r.x, y: r.y, w: r.w, h: r.h };
+		var e = { name: n, x: r.rx, y: r.ry, rect: rect };
+		e.getX = function() { return e.x; };
+		e.getY = function() { return e.y; };
+		e.setX = function(v) { rect.x += v - e.x; e.x = v; };
+		e.setY = function(v) { rect.y += v - e.y; e.y = v; };
+		e.isDisposed = function() { return false; };
+		regionsMade.push(e);
+		return e;
+	}
+	return null;
+}
+
+// ---- rides
+//: what a piece is to the rest of the stage: its handle by index, the object it rides, and the
+//: surface its plane moves by label riding it
+var bootHz = [];
+var platFollow = [];
+function bootRides(e, v) {
+	bootBg[e.i] = v;
+	if (e.ride != null && v != null) {
+		var ao = bootHz[e.ride.o];
+		if (ao != null && ao.getX != null) __follow.push({ v: v, o: ao, dx: e.ride.dx, dy: e.ride.dy });
+	}
+	if (e.follow != null && v != null) platFollow.push({ v: v, n: e.follow.n, at: e.follow.at, bx: [], by: [] });
+}
+
+// ---- follow
+//: what rides an object follows it
+function followUpkeep() {
+	for (f in __follow) {
+		if (f.v == null || f.o == null) continue;
+		f.v.setX(f.o.getX() + (f.dx != null ? f.dx : 0));
+		f.v.setY(f.o.getY() + (f.dy != null ? f.dy : 0));
+	}
+}
+
+// ---- segment
+//: a piece whose clip switches sections: an object running its own script
+function bootSegment(e, owner) {
+	var v = match.createCustomGameObject(self.getResource().getContent(e.id), owner);
+	if (v != null) {
+		v.setX(e.x);
+		v.setY(e.y);
+		__made.push({ id: e.id, k: "o", o: v });
+		var p = bootContainer(e.at);
+		if (p != null) p.addChild(v.getViewRootContainer());
+	}
+	bootRides(e, v);
+}
+
+// ---- sectioned
+//: a sectioned piece drawn as effects: the section playing is one effect, and at its end an engine
+//: timer plays the section that follows (or the section's last frame, held, where the source
+//: stops); the stage plays a section on it by name
+function bootSectioned(e, c) {
+	var sec = e.sections;
+	var h = { exports: {}, v: null, k: -1, t: -1, dx: 0.0, dy: 0.0 };
+	var drop = function(v) { if (v != null && !v.isDisposed()) v.kill(); };
+	var show = function(anim, loop) {
+		var v = match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(e.id), animation: anim, x: e.x, y: e.y, loop: loop, timeout: -1, relativeWith: false, resizeWith: false }));
+		if (v != null) c.addChild(v.getViewRootContainer());
+		return v;
+	};
+	h.play = function(k) {
+		if (h.t >= 0) { self.removeTimer(h.t); h.t = -1; }
+		drop(h.v);
+		h.k = k;
+		var n = e.chain[k];
+		h.v = show(sec.anims[k], n == k);
+		if (n == k) return;
+		h.t = self.addTimer(sec.lens[k], 1, function() {
+			h.t = -1;
+			if (n >= 0) { h.play(n); return; }
+			var was = h.v;
+			h.v = show(sec.anims[k] + "_hold", true);
+			drop(was);
+		}, { persistent: true });
+	};
+	h.getX = function() { return e.x + h.dx; };
+	h.getY = function() { return e.y + h.dy; };
+	h.setX = function(x) { h.dx = x - e.x; c.x = h.dx; };
+	h.setY = function(y) { h.dy = y - e.y; c.y = h.dy; };
+	h.setVisible = function(v) { c.visible = v; };
+	h.getVisible = function() { return c.visible; };
+	h.setAlpha = function(a) { c.alpha = a; };
+	h.playAnimation = function(a) { var k = sec.anims.indexOf(a); if (k >= 0) h.play(k); };
+	h.playFrame = function(f) {};
+	h.pause = function() { if (h.v != null && !h.v.isDisposed()) h.v.pause(); };
+	h.resume = function() { if (h.v != null && !h.v.isDisposed()) h.v.resume(); };
+	h.getAnimation = function() { return h.k < 0 ? null : sec.anims[h.k]; };
+	h.getCurrentFrame = function() { return h.v == null || h.v.isDisposed() ? 0 : h.v.getCurrentFrame(); };
+	h.getTotalFrames = function() { return h.v == null || h.v.isDisposed() ? 0 : h.v.getTotalFrames(); };
+	h.isDisposed = function() { return false; };
+	if (e.hidden == true) c.visible = false;
+	h.play(0);
+	return h;
+}
+
+// ---- chained
+//: a sectioned piece in a camera background: effects in that background's container
+function bootChained(e) {
+	var c = Container.create();
+	var at = bootContainer(e.at);
+	if (at == null) return;
+	at.addChild(c);
+	var h = bootSectioned(e, c);
+	__made.push({ id: e.id, k: "o", o: h });
+	bootBg[e.i] = h;
+}
+
+// ---- carry
+//: a piece that carries a named surface: that surface's structures, its art on the first, as the one
+//: piece the stage moves, shows and plays (each holds every section in one animation, a label at
+//: each section's start, so a section is played by its label)
+function bootCarry(e) {
+	var parts = [];
+	for (cid in e.carry.ids) {
+		var st = match.createStructure(self.getResource().getContent(cid));
+		if (st == null) continue;
+		st.setX(e.x);
+		st.setY(e.y);
+		parts.push(st);
+		__made.push({ id: cid, k: "s", o: st });
+	}
+	carried.set(e.carry.n, parts);
+	bootBg[e.i] = bootCarrier(parts, e.sections);
+}
+function bootCarrier(parts, sec) {
+	var h = { exports: {}, at: 0 };
+	var each = function(f) { for (p in parts) if (!p.isDisposed()) f(p); };
+	var start = function(k) { var s = 1; for (i in 0...k) s += sec.lens[i]; return s; };
+	h.getX = function() { return parts.length > 0 ? parts[0].getX() : 0.0; };
+	h.getY = function() { return parts.length > 0 ? parts[0].getY() : 0.0; };
+	h.setX = function(x) { each(function(p) { p.setX(x); }); };
+	h.setY = function(y) { each(function(p) { p.setY(y); }); };
+	h.setVisible = function(v) { if (parts.length > 0) parts[0].setVisible(v); };
+	h.setAlpha = function(a) { if (parts.length > 0) parts[0].setAlpha(a); };
+	h.playAnimation = function(a) {
+		var k = sec.anims.indexOf(a);
+		if (k < 0) return;
+		h.at = k;
+		each(function(p) { p.playFrameLabel(a); p.resume(); });
+	};
+	h.playFrame = function(f) { var s = start(h.at); each(function(p) { p.playFrame(s + f - 1); }); };
+	h.pause = function() { each(function(p) { p.pause(); }); };
+	h.resume = function() { each(function(p) { p.resume(); }); };
+	h.getAnimation = function() {
+		if (parts.length == 0) return null;
+		var f = parts[0].getCurrentFrame();
+		var s = 1;
+		for (i in 0...sec.lens.length) { if (f < s + sec.lens[i]) return sec.anims[i]; s += sec.lens[i]; }
+		return sec.anims[sec.anims.length - 1];
+	};
+	h.getCurrentFrame = function() { return parts.length > 0 ? parts[0].getCurrentFrame() : 0; };
+	h.getTotalFrames = function() { return parts.length > 0 ? parts[0].getTotalFrames() : 0; };
+	h.isDisposed = function() { return parts.length == 0 || parts[0].isDisposed(); };
+	return h;
+}
+
+// ---- still
+//: a picture placed inside an object's own clip that never changes is drawn in the object's own
+//: view, where the engine carries it with the object; one whose object has no view is drawn as an
+//: effect riding it
+function bootStill(e, owner) {
+	var ro = bootHz[e.ride.o];
+	var s = ro == null || ro.getViewRootContainer == null ? null : Sprite.create(self.getResource().getContent(e.id));
+	if (s == null) {
+		if (e.seg == true) bootSegment(e, owner); else bootEffect(e);
+		return;
+	}
+	s.x = e.ride.dx;
+	s.y = e.ride.dy;
+	ro.getViewRootContainer().addChildAt(s, 0);
+}
+
+// ---- object
+//: one declared object: made, put where it stands, drawn ahead of the fighters when it asks to be
+//: (with the separate piece it names riding it), and filed under the name the tree placed it by
+function bootObject(o, owner) {
+	var h = match.createCustomGameObject(self.getResource().getContent(o.id), owner);
+	if (h != null) {
+		h.setX(o.x);
+		h.setY(o.y);
+		__made.push({ id: o.id, k: "o", o: h });
+	}
+	if (o.front == true) {
+		if (h != null) self.getForegroundStructuresContainer().addChild(h.getViewRootContainer());
+		if (o.fg != null) {
+			var v = match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(o.fg), animation: "active", x: 0, y: 0, loop: true, timeout: -1, relativeWith: false, resizeWith: false }));
+			if (v != null) {
+				self.getForegroundStructuresContainer().addChild(v.getViewRootContainer());
+				__follow.push({ v: v, o: h });
+			}
+		}
+	}
+	if (o.name != null) nameObject(o.name, h);
+	while (bootHz.length <= o.i) bootHz.push(null);
+	bootHz[o.i] = h;
+}
+
+// ---- deck
+//: the engine puts a fighter down on the stage's own floor, so one whose entrance is over a placed
+//: body starts inside it: it goes on the body's deck, where the source starts it
+function bootDeck(o, chars) {
+	var h = bootHz[o.i];
+	if (h == null) return;
+	var k = 0;
+	while (k < chars.length) {
+		var c = chars[k];
+		if (c != null && c.getX() >= h.getX() + o.deck.l && c.getX() <= h.getX() + o.deck.r && c.getY() > h.getY() + o.deck.t) c.setY(h.getY() + o.deck.t);
+		k = k + 1;
+	}
+}
+
+// ---- group
+//: a named clip that came out as pieces: the object the tree placed under that name when there is
+//: one, else the pieces, shown, hidden and faded together
+var stageGroups = new haxe.ds.StringMap();
+function bootGroup(g) {
+	var named = null;
+	for (e in namedObjs) if (e.n == g.n) named = e.o;
+	if (named != null && named.exports != null) return named;
+	var parts = [];
+	for (i in g.parts) parts.push(bootBg[i]);
+	var grp = { parts: parts, labels: g.labels, name: g.src, widths: g.ws, plane: g.plane, visible: true };
+	grp.setVisible = function(v) {
+		grp.visible = v;
+		for (p in parts) if (p != null) p.setVisible(v);
+	};
+	grp.setAlpha = function(a) {
+		for (p in parts) if (p != null) p.setAlpha(a);
+	};
+	return grp;
+}
+
+// ---- surfaces
+//: a surface the stage entity carries under a name (SURFACES: each name and its structures' names):
+//: its structures, moved and switched together, standing where the tree placed its clip; its code
+//: can give it a ground friction as the match runs (an ice floor)
+var surfaceRows = SURFACES;
+var surfacesMade = new haxe.ds.StringMap();
+var codedFriction = [];
+function surfaceNamed(n) {
+	var have = surfacesMade.get(n);
+	if (have != null) return have;
+	var row = null;
+	for (r in surfaceRows) if (r.n == n) row = r;
+	if (row == null) return null;
+	var sts = [];
+	var find = function() {
+		if (sts.length == 0 && carried.exists(n)) for (st in carried.get(n)) sts.push(st);
+		if (sts.length == 0) for (k in row.s) { var st = match.getStructureByName(k); if (st != null) sts.push(st); }
+		return sts;
+	};
+	var at = null;
+	for (r in stageRegions) if (r.n == n) at = r;
+	var e = { name: n, x: at == null ? 0.0 : at.rx, y: at == null ? 0.0 : at.ry, exports: {} };
+	e.getX = function() { return e.x; };
+	e.getY = function() { return e.y; };
+	e.setX = function(v) { var d = v - e.x; e.x = v; for (st in find()) st.setX(st.getX() + d); };
+	e.setY = function(v) { var d = v - e.y; e.y = v; for (st in find()) st.setY(st.getY() + d); };
+	e.isDisposed = function() { return false; };
+	e.updateStructureStats = function(o) { for (st in find()) st.updateStructureStats(o); };
+	e.getStructureStat = function(k) { var l = find(); return l.length > 0 ? l[0].getStructureStat(k) : null; };
+	e.addToBlacklist = function(o) { for (st in find()) st.addToBlacklist(o); };
+	e.removeFromBlacklist = function(o) { for (st in find()) st.removeFromBlacklist(o); };
+	e.structures = find;
+	e.setDecelFriction = function(v) { e.decel = v * ACCEL; if (codedFriction.indexOf(e) < 0) codedFriction.push(e); };
+	e.setAccelFriction = function(v) { e.accel = v * ACCEL; if (codedFriction.indexOf(e) < 0) codedFriction.push(e); };
+	surfacesMade.set(n, e);
+	return e;
+}
+
+// ---- ground
+//: the pieces with a ground friction of their own (a fighter standing in one slows by it, and gets
+//: its own back on leaving) and the ones with a sideways push (a fighter standing in one is moved):
+//: FRICTIONS and PUSHES, each a box in this engine's units
+var frictionRows = FRICTIONS;
+var pushRows = PUSHES;
+var frictionHeld = [];
+function groundUpkeep() {
+	if (frictionRows.length == 0 && pushRows.length == 0 && codedFriction.length == 0) return;
+	var ps = match.getCharacters();
+	for (i in 0...ps.length) {
+		var p = ps[i];
+		while (frictionHeld.length <= i) frictionHeld.push(null);
+		var on = null;
+		if (p.isOnFloor()) {
+			var x = p.getX();
+			var y = p.getY();
+			for (b in frictionRows) if (x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1) on = b;
+			if (codedFriction.length > 0) {
+				var floor = p.getCurrentFloor();
+				for (c in codedFriction) if (floor != null && c.structures().indexOf(floor) >= 0) {
+					var f0 = p.getCharacterStat("friction");
+					var a0 = p.getCharacterStat("walkSpeedAcceleration");
+					var held = frictionHeld[i];
+					on = { f: c.decel != null ? c.decel : (held != null ? held.f : f0), a: c.accel != null ? c.accel : (held != null ? held.a : a0) };
+				}
+			}
+			for (b in pushRows) if (x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1) p.setX(p.getX() + b.dx);
+		}
+		if (on != null) {
+			if (frictionHeld[i] == null) frictionHeld[i] = { f: p.getCharacterStat("friction"), a: p.getCharacterStat("walkSpeedAcceleration") };
+			if (p.getCharacterStat("friction") != on.f || p.getCharacterStat("walkSpeedAcceleration") != on.a)
+				p.updateCharacterStats({ friction: on.f, walkSpeedAcceleration: on.a });
+		} else if (frictionHeld[i] != null) {
+			p.updateCharacterStats({ friction: frictionHeld[i].f, walkSpeedAcceleration: frictionHeld[i].a });
+			frictionHeld[i] = null;
+		}
+	}
+}
+
+// ---- riding
+//: a surface whose plane moves it by label rides its own picture: its structures sit where the
+//: picture's current frame has moved from where it was put
+function ridingUpkeep() {
+	for (e in platFollow) {
+		if (e.v == null) continue;
+		var l = (e.v.exports != null && e.v.exports.__label != null) ? e.v.exports.__label : e.v.getAnimation();
+		var d = null;
+		for (a in e.at) if (a.l == l) d = a.d;
+		if (d == null || d.length == 0) continue;
+		var j = Std.int((e.v.getCurrentFrame() - 1) / 2);
+		if (j < 0) j = 0;
+		if (j * 2 + 1 >= d.length) j = Std.int(d.length / 2) - 1;
+		for (r in surfaceRows) if (r.n == e.n) {
+			for (s in 0...r.s.length) {
+				var st = match.getStructureByName(r.s[s]);
+				if (st == null) continue;
+				if (e.bx.length <= s) { e.bx.push(st.getX()); e.by.push(st.getY()); }
+				st.setX(e.bx[s] + d[j * 2]);
+				st.setY(e.by[s] + d[j * 2 + 1]);
+			}
+		}
 	}
 }
