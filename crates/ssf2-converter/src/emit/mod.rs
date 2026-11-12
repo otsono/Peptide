@@ -49,6 +49,37 @@ pub struct Piece {
 /// its labels that one animation shows, the animation and whether the label is its first frame,
 /// with every animation the clip's frames are (a jump is the engine's own only while one of them
 /// is playing: the fighter's clip is this one)
+/// the labels of every clip an object's animations show, as one table: the jumps its own class
+/// makes, which play its clip (or the stance its clip places) by label
+pub fn own_jumps(model: &SourceModel, pieces: &[Piece], root: Option<u16>) -> crate::compile::ClipJumps {
+    let own: Vec<&Piece> = pieces.iter().filter(|p| !p.borrowed && !p.reversed && p.head == 0).collect();
+    let mut j = crate::compile::ClipJumps { anims: own.iter().map(|p| p.fm_name.clone()).collect(), labels: BTreeMap::new(), autolink: None, declared: BTreeMap::new(), sounds: BTreeMap::new() };
+    // (its clip's own labels first: each one plays the stance it places there from its start, or the
+    // clip itself from the label)
+    if let Some(sp) = root.and_then(|r| model.sprites.get(&r)) {
+        for (f0, label) in &sp.labels {
+            let stance = sp.frames.get(*f0).and_then(|placed| placed.iter().find(|p| p.name.as_deref() == Some("stance")).map(|p| p.char_id));
+            let at = match stance {
+                Some(st) => own.iter().filter(|p| p.sym == st).min_by_key(|p| p.from),
+                None => own.iter().find(|p| Some(p.sym) == root && p.from == *f0 as u32 + 1),
+            };
+            if let Some(p) = at { j.labels.insert(label.clone(), (p.fm_name.clone(), true)); }
+        }
+    }
+    let syms: BTreeSet<u16> = own.iter().map(|p| p.sym).collect();
+    for sym in syms {
+        let Some(sprite) = model.sprites.get(&sym) else { continue };
+        for (f0, label) in &sprite.labels {
+            if j.labels.contains_key(label) { continue }
+            let f = *f0 as u32 + 1;
+            let hits: Vec<&&Piece> = own.iter().filter(|p| p.sym == sym && f >= p.from && f < p.from + p.frames).collect();
+            let at = if let [p] = hits.as_slice() { Some(*p) } else { hits.iter().find(|p| p.from == f).copied() };
+            if let Some(p) = at { j.labels.insert(label.clone(), (p.fm_name.clone(), f == p.from)); }
+        }
+    }
+    j
+}
+
 pub fn label_jumps(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, crate::compile::ClipJumps> {
     let mut out = BTreeMap::new();
     let syms: BTreeSet<u16> = pieces.iter().map(|p| p.sym).collect();

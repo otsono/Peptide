@@ -433,7 +433,7 @@ fn plays_into(model: &SourceModel, pieces: &[Piece]) -> Vec<(String, String)> {
 
 /// one that shows its own next frame again loops; one that plays on into another holds its last
 /// frame for the update to move it on
-fn plays_on(path: &Path, model: &SourceModel, pieces: &[Piece]) -> anyhow::Result<()> {
+pub fn plays_on(path: &Path, model: &SourceModel, pieces: &[Piece]) -> anyhow::Result<()> {
     let Ok(mut text) = std::fs::read_to_string(path) else { return Ok(()) };
     for (p, q) in next_pieces(model, pieces) {
         if q.fm_name != p.fm_name { continue }

@@ -713,6 +713,16 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             f.method_ty = self.returns.iter().filter(|(_, t)| **t == Ty::Bool).map(|(k, t)| (k.clone(), *t)).collect();
             f.param_ty = self.param_ty.iter().filter(|(_, t)| **t == Ty::Rect).map(|(k, t)| (k.clone(), *t)).collect();
+            // (a hurt its code answers first is handed a record: `setHurtInterrupt(checkHurt)`)
+            for c in self.o.itself.into_iter().chain(self.o.classes.iter().copied()) {
+                for m in &c.methods {
+                    crate::model::ast::walk_exprs(&m.function.body, &mut |e| if let Expr::Call(g, a) = e {
+                        if !matches!(&**g, Expr::Member(_, n) | Expr::Name(n) if n == "setHurtInterrupt") { return }
+                        let named = match a.first() { Some(Expr::Member(t, n)) if matches!(**t, Expr::This) => Some(n.clone()), Some(Expr::Name(n)) => Some(n.clone()), _ => None };
+                        if let Some(id) = named.and_then(|n| f.methods.get(&member_key(&c.name, &n)).cloned()) { f.param_ty.insert((id, 0), Ty::Rect); }
+                    });
+                }
+            }
             f.learned = true;
             *self = f;
         }
@@ -3044,6 +3054,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let anim = match rest.first() { Some(Expr::Str(l)) => format!(", {}", quote(l)), None | Some(Expr::Null | Expr::Undefined) => String::new(), Some(_) => return Err("exports a box of an animation worked out as it runs".into()) };
                 return Ok((format!("{}({who}.getHitboxStats({i}{anim}))", self.box_record()?), Ty::Rect));
             }
+            // an attack a stage object starts on itself: the animation its label is
+            ("forceAttack" | "startAttack", [Expr::Str(label), ..]) if mine && !self.o.fighter && !self.o.item => {
+                return Ok((self.jump(label)?.trim_end_matches(';').to_string(), Ty::Any));
+            }
+            ("forceAttack" | "startAttack", [label, ..]) if mine && !self.o.fighter && !self.o.item => return Ok((self.jump_to_value(label)?, Ty::Any)),
+            // whether fighters drop through it: its own floors, or the surface asked
+            ("setFallthrough", [v]) if mine && !self.o.fighter && !self.o.stage => { let (v, _) = self.expr(v)?; return Ok((format!("facesThrough({v})"), Ty::Any)) }
+            ("setFallthrough", [v]) => { let (v, _) = self.expr(v)?; return Ok((format!("if ({who} != null) {who}.updateStructureStats({{ dropThrough: {v} == true }})"), Ty::Any)) }
             // (its own boxes, or another object's: a projectile it fired)
             ("updateHitboxStats", [i, Expr::Object(pairs)]) => {
                 let i = box_index(i)?;
@@ -4049,7 +4067,7 @@ self.playFrameLabel({})", quote(f))); }
             let (val, _) = self.expr(v)?;
             out.push(self.stat_code(&t, &val));
         }
-        if !shown.is_empty() { out.push(format!("self.updateGameObjectStatsMetadata({{ {} }})", shown.join(", "))) }
+        if !shown.is_empty() { let m = self.util("metadataWrite")?; out.push(format!("{m}(self, {{ {} }})", shown.join(", "))) }
         Ok((out.join(";\n"), Ty::Any))
     }
 }

@@ -269,6 +269,14 @@
   // what the stage files under a name (a structure, else a region): asked of the stage
   "PeptideAPI.getPlatform": { "code": "(stage == null || stage.exports.__named == null ? null : stage.exports.__named({0}))", "returns": "object" },
   "PeptideAPI.getCollisionBoundary": { "code": "(stage == null || stage.exports.__named == null ? null : stage.exports.__named({0}))", "returns": "object" },
+  // a stage object's stats written by its code, and the floor it gives itself (`object_rules.hx`)
+  "updateEnemyStats": { "code": "enemyStats({self}, {0})", "helper": "enemyStats" },
+  "makeOwnFloor": { "code": "ownFloor({0}, {1}, {2}, {3}{,4})", "returns": "object" },
+  "dropOwnFloor": "dropOwnFloor()",
+  // the nearest object of a kind
+  "getNearest": { "code": "nearestOf({self}, {0})", "helper": "nearestOf", "returns": "object" },
+  // a clip moved in the drawing order: this engine draws each object on its own layer
+  "setChildIndex": "",
   // whether the match has its hazards on
   "PeptideAPI.isHazardsOn": { "code": "(match.getMatchSettingsConfig() == null || match.getMatchSettingsConfig().hazards == true)", "returns": "bool" },
   // the game's mode: none of the source's modes is played here

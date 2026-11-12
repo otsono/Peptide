@@ -297,3 +297,46 @@ function cameraPlanes() {
 	if (cbg != null) for (i in 0...cbg.length) out.push({ mc: stagePlane("camera" + i) });
 	return out;
 }
+
+// ---- enemyStats
+// stats a stage object's code gives it (source names and units): the engine's own for each it keeps,
+// and all of them on its metadata, where other objects read it
+function enemyStats(o, s) {
+	if (o == null || o.isDisposed() || s == null) return;
+	var set = {};
+	var any = false;
+	if (s.gravity != null) { set.gravity = s.gravity * ACCEL; any = true; }
+	if (s.max_ySpeed != null && s.max_ySpeed > 0) { set.terminalVelocity = s.max_ySpeed * SPEED; any = true; }
+	if (s.surviveDeathBounds != null) { set.deathBoundsDestroy = s.surviveDeathBounds != true; any = true; }
+	if (s.ghost != null) { set.ghost = s.ghost == true; any = true; }
+	if (any) o.updateGameObjectStats(set);
+	if (s.canReceiveKnockback == false) o.applyGlobalBodyStatus(BodyStatus.LAUNCH_ARMOR, -1);
+	if (o.getGameObjectStatsMetadata() == null) o.updateGameObjectStats({ metadata: s });
+	else o.updateGameObjectStatsMetadata(s);
+}
+
+// ---- nearestOf
+// the nearest object of a kind ("character", "player", "item", "projectile", "enemy") to one
+function nearestOf(o, type) {
+	var list = (type == "character" || type == "player") ? match.getCharacters() : (type == "enemy" || type == "item") ? match.getCustomGameObjects() : match.getProjectiles();
+	var best = null;
+	var bd = 1.0e12;
+	for (x in list) {
+		if (x == o || x.isDisposed()) continue;
+		if (type == "item" && (x.exports == null || x.exports.__isItem != true)) continue;
+		var dx = x.getX() - o.getX();
+		var dy = x.getY() - o.getY();
+		var d = dx * dx + dy * dy;
+		if (d < bd) { bd = d; best = x; }
+	}
+	return best;
+}
+
+// ---- metadataWrite
+// fields written onto an object's stats' metadata: merged where it declares some, set where it
+// declares none (the merge has nothing to merge into)
+function metadataWrite(o, s) {
+	if (o == null || o.isDisposed() || s == null) return;
+	if (o.getGameObjectStatsMetadata() == null) o.updateGameObjectStats({ metadata: s });
+	else o.updateGameObjectStatsMetadata(s);
+}
