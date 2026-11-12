@@ -459,6 +459,15 @@ struct Writer<'o, 'a> {
     /// what each of its own methods' arguments is handed, by (method, argument), learned from every
     /// call of it (a record every call hands it is read as one)
     param_ty: BTreeMap<(String, usize), Ty>,
+    /// what a list a function is handed holds, by function and place, where every call hands it a
+    /// list field of records; and the variables of the function being written that hold one
+    param_elem: BTreeMap<(String, usize), Ty>,
+    /// its fields that only ever hold a clip of the stage's planes (a part), and what was seen of each
+    part_fields: BTreeMap<String, bool>,
+    /// what only feeds drawing, by class (its fields), and the variables of the function being written
+    drawn: BTreeMap<String, BTreeSet<String>>,
+    drawn_locals: BTreeSet<u32>,
+    local_elem: BTreeMap<u32, Ty>,
     /// what each of the decompiler's temporaries holds in the function being written
     temp_ty: BTreeMap<u32, Ty>,
     /// what each list field holds, learned from what its code pushes onto it
@@ -470,7 +479,7 @@ struct Writer<'o, 'a> {
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
         let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rt_lists: BTreeMap::new(), record: None, rec_locals: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
-                             locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new(), param_ty: BTreeMap::new(), temp_ty: BTreeMap::new(), list_elem: BTreeMap::new(), defaults: Vec::new() };
+                             locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new(), param_ty: BTreeMap::new(), param_elem: BTreeMap::new(), part_fields: BTreeMap::new(), drawn: BTreeMap::new(), drawn_locals: BTreeSet::new(), local_elem: BTreeMap::new(), temp_ty: BTreeMap::new(), list_elem: BTreeMap::new(), defaults: Vec::new() };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "initialize", "update", "onTeardown", "onKill", "onDestroy", "life", "age", "started", "freshHit"]
             .into_iter().map(String::from).collect();
@@ -719,18 +728,21 @@ impl<'o, 'a> Writer<'o, 'a> {
         let fresh = Writer::new(self.o).ok();
         self.learning = true;
         let classes: Vec<&ClassModel> = self.o.itself.into_iter().chain(self.o.classes.iter().copied()).chain(self.pkg.iter().copied()).collect();
-        for c in classes {
-            self.class = c.name.clone();
-            for m in c.methods.iter().filter(|m| !declares(m)) {
-                let name = self.methods[&member_key(&c.name, &method_name(m))].clone();
-                self.in_frame = c.frame_scripts.iter().any(|fs| fs.method == m.name);
-                let _ = self.function(&name, &m.function);
+        // (twice over: what one function learns, another written before it reads)
+        for _ in 0..2 {
+            for c in &classes {
+                self.class = c.name.clone();
+                // (its constructor first: what it fills its fields with as it is made)
+                self.in_frame = false;
+                let name = self.methods.get(&member_key(&c.name, "new")).cloned().unwrap_or_else(|| "construct".into());
+                let body: Vec<Stmt> = c.constructor.body.iter().filter(|s| !matches!(s, Stmt::Expr(Expr::SuperCall(..)))).cloned().collect();
+                let _ = self.function(&name, &Function { body, ..c.constructor.clone() });
+                for m in c.methods.iter().filter(|m| !declares(m)) {
+                    let name = self.methods[&member_key(&c.name, &method_name(m))].clone();
+                    self.in_frame = c.frame_scripts.iter().any(|fs| fs.method == m.name);
+                    let _ = self.function(&name, &m.function);
+                }
             }
-            // (and its constructor: what it fills its fields with as it is made)
-            self.in_frame = false;
-            let name = self.methods.get(&member_key(&c.name, "new")).cloned().unwrap_or_else(|| "construct".into());
-            let body: Vec<Stmt> = c.constructor.body.iter().filter(|s| !matches!(s, Stmt::Expr(Expr::SuperCall(..)))).cloned().collect();
-            let _ = self.function(&name, &Function { body, ..c.constructor.clone() });
         }
         for k in self.recs.clone() {
             self.class = k.name.clone();
@@ -759,6 +771,8 @@ impl<'o, 'a> Writer<'o, 'a> {
             f.method_ty = self.returns.iter().filter(|(_, t)| **t == Ty::Bool).map(|(k, t)| (k.clone(), *t)).collect();
             f.param_ty = self.param_ty.iter().filter(|(_, t)| **t == Ty::Rect).map(|(k, t)| (k.clone(), *t)).collect();
             f.list_elem = self.list_elem.iter().filter(|(_, t)| **t == Ty::Rect).map(|(k, t)| (k.clone(), *t)).collect();
+            f.param_elem = self.param_elem.iter().filter(|(_, t)| **t == Ty::Rect).map(|(k, t)| (k.clone(), *t)).collect();
+            f.part_fields = self.part_fields.iter().filter(|(_, v)| **v).map(|(k, v)| (k.clone(), *v)).collect();
             // (a hurt its code answers first is handed a record: `setHurtInterrupt(checkHurt)`)
             for c in self.o.itself.into_iter().chain(self.o.classes.iter().copied()) {
                 for m in &c.methods {
@@ -1146,6 +1160,19 @@ impl<'o, 'a> Writer<'o, 'a> {
         // (a record's method: handed the record first)
         if self.record.is_some() && !name.ends_with("_new") { params.push("me".to_string()); }
         let mut defaults: Vec<String> = Vec::new();
+        self.local_elem.clear();
+        if !self.drawn.contains_key(&self.class) {
+            let none = BTreeSet::new();
+            let inert = self.o.runtime.inert_calls.get("BitmapData").unwrap_or(&none);
+            let fields = self.o.model.classes.get(&self.class).map(|c| Drawing::of(c, self.o.model, inert).fields).unwrap_or_default();
+            self.drawn.insert(self.class.clone(), fields);
+        }
+        {
+            let none = BTreeSet::new();
+            let inert = self.o.runtime.inert_calls.get("BitmapData").unwrap_or(&none);
+            let d = Drawing { inert, model: self.o.model, fields: self.drawn.get(&self.class).cloned().unwrap_or_default() };
+            self.drawn_locals = d.locals(&f.body, f.params.len() as u32, self.o.model);
+        }
         for (i, p) in f.params.iter().enumerate() {
             let n = ident(&p.name);
             // (one left off takes the default it declares)
@@ -1154,6 +1181,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             // (untyped: what every call of it hands it, where that is a record)
             let ty = match Ty::declared(p.type_name.as_deref()) { Ty::Any => self.param_ty.get(&(name.to_string(), i)).copied().unwrap_or(Ty::Any), t => t };
             self.locals.insert(i as u32 + 1, (n, Holds::Value(ty)));
+            match self.param_elem.get(&(name.to_string(), i)).copied() { Some(e) if !self.learning || e == Ty::Rect => { self.local_elem.insert(i as u32 + 1, e); } _ => { self.local_elem.remove(&(i as u32 + 1)); } }
         }
         // an event a listener is handed is this engine's: it is read only through the fields of the
         // source's record this engine's event has (`record`)
@@ -1213,6 +1241,11 @@ impl<'o, 'a> Writer<'o, 'a> {
         walk(&body, &mut |s| if let Stmt::Assign(Place::Temp(t), _) = s { temps.insert(*t); });
         walk_exprs(&body, &mut |e| if let Expr::Temp(t) = e { temps.insert(*t); });
         for t in &temps { decl.push(format!("\tvar __t{t} = null;")); }
+        // (and the values it joins from two ways, `__j<block>_<slot>`)
+        let mut joins = BTreeSet::new();
+        walk(&body, &mut |s| if let Stmt::Assign(Place::Join { block, slot }, _) = s { joins.insert((*block, *slot)); });
+        walk_exprs(&body, &mut |e| if let Expr::Join { block, slot } = e { joins.insert((*block, *slot)); });
+        for (b, sl) in &joins { decl.push(format!("\tvar __j{b}_{sl} = null;")); }
         // (a frame's own variables, in the script's scope, keep clear of the names the script defines)
         let clear = |n: String, w: &Self| if w.frame_top && w.globals.contains(&n) { format!("{name}_{n}") } else { n };
         // (a variable the function only ever sets to a record, or to nothing, is that record from the
@@ -1251,13 +1284,11 @@ impl<'o, 'a> Writer<'o, 'a> {
         if matches!(body.last(), Some(Stmt::Return(None))) { body.pop(); }
         let mut lines = decl;
         lines.append(&mut std::mem::take(&mut self.defaults));
-        for s in &body {
-            match self.stmt(s, 1) {
-                Ok(l) => lines.extend(l),
-                Err(e) => {
-                    if std::env::var("PEPTIDE_NATIVE_WHY").is_ok() { eprintln!("{name}: {e}\n  at {s:?}"); }
-                    return Err(e);
-                }
+        match self.block(&body, 1) {
+            Ok(l) => lines.extend(l),
+            Err(e) => {
+                if std::env::var("PEPTIDE_NATIVE_WHY").is_ok() { eprintln!("{name}: {e}"); }
+                return Err(e);
             }
         }
         let head = if name.is_empty() { "function".to_string() } else { format!("function {name}") };
@@ -1266,7 +1297,24 @@ impl<'o, 'a> Writer<'o, 'a> {
 
     fn block(&mut self, list: &[Stmt], depth: usize) -> Result<Vec<String>, String> {
         let mut out = Vec::new();
-        for s in list { out.extend(self.stmt(s, depth)?); }
+        // (`PEPTIDE_CENSUS_ALL`: every statement that has no plain form yet is told, not only the first)
+        let all = std::env::var("PEPTIDE_CENSUS_ALL").is_ok();
+        let none = BTreeSet::new();
+        let inert = self.o.runtime.inert_calls.get("BitmapData").unwrap_or(&none);
+        let d = Drawing { inert, model: self.o.model, fields: self.drawn.get(&self.class).cloned().unwrap_or_default() };
+        let mut dropped = false;
+        for s in list {
+            // (drawing that comes to nothing here, and what only feeds it: said once)
+            if d.void(s, &self.drawn_locals, self.o.model) {
+                if !dropped { out.push(format!("{}// (not ported: the source draws pixels here, which this engine never shows)", "\t".repeat(depth))); dropped = true; }
+                continue;
+            }
+            match self.stmt(s, depth) {
+                Ok(t) => out.extend(t),
+                Err(e) if all && !e.starts_with("\u{1}") => { eprintln!("[census-all] {}: {e} @@ {}", self.current_fn, format!("{s:?}").chars().take(400).collect::<String>()); }
+                Err(e) => return Err(e),
+            }
+        }
         Ok(out)
     }
 
@@ -1414,7 +1462,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         if let Place::Member(t, f) = p {
             let whole = Expr::Member(Box::new(t.clone()), f.clone());
             if let Some((id, k)) = self.flat_of(&whole) {
-                self.kept.insert(format!("{id}_isMade"), format!("var {id}_isMade = false;"));
+                if !id.contains('.') { self.kept.insert(format!("{id}_isMade"), format!("var {id}_isMade = false;")); }
                 // (nothing, or a cast that answers null: not made)
                 let mut inner = v;
                 while let Expr::Coerce(_, x) = inner { inner = x; }
@@ -1517,12 +1565,27 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (val, _) = self.expr(v)?;
                 Ok(vec![if f == "visible" { format!("{who}.setVisible({val});") } else { format!("{who}.setAlpha({val});") }])
             }
+            // the stage's light moved by its code: the engine's stays where the conversion put it (as on
+            // the runtime)
+            Place::Member(Expr::Call(g, a), f) if a.is_empty() && matches!(&**g, Expr::Member(_, m) | Expr::Name(m) if m == "getLightSourceMC") => {
+                self.expr(v)?;
+                Ok(vec![format!("// (not ported: the source moves its light's {f} here; this engine's light stays where the conversion put it)")])
+            }
+            // the stage's camera or death bounds moved by its code: the engine's stay where the
+            // conversion put them (as on the runtime, which hands its code a copy)
+            Place::Member(Expr::Call(g, a), f) if a.is_empty() && matches!(&**g, Expr::Member(_, m) | Expr::Name(m) if matches!(m.as_str(), "getCameraBounds" | "getDeathBounds"))
+                && (self.o.stage || matches!(&**g, Expr::Member(o, _) if self.expr(o).is_ok_and(|(w, _)| w == "stage"))) => {
+                let (Expr::Member(_, m) | Expr::Name(m)) = &**g else { unreachable!() };
+                self.expr(v)?;
+                Ok(vec![format!("// (not ported: the source moves its {m} rectangle's {f} here; this engine's stays where the conversion put it)")])
+            }
             // a field of a named clip of the planes written: shown, faded, let through (a field its own
             // class declares is its own, below)
-            Place::Member(o, f) if !(matches!(o, Expr::This) && self.field(f).is_some()) && self.expr(o).is_ok_and(|(w, _)| w.starts_with("planePart(")) => {
+            Place::Member(o, f) if !(matches!(o, Expr::This) && self.field(f).is_some()) && (self.expr(o).is_ok_and(|(w, _)| w.starts_with("planePart(")) || self.part_field(o)) => {
                 let (p, _) = self.expr(o)?;
                 let (val, _) = self.expr(v)?;
-                let call = match f.as_str() { "visible" => "setVisible", "alpha" => "setAlpha", "fallthrough" => "setFallthrough", _ => return Err(format!("writes the {f} of a clip of its planes, which no plain form answers yet")) };
+                let call = match f.as_str() { "visible" => "setVisible", "alpha" => "setAlpha", "fallthrough" => "setFallthrough",
+                    "x" => "setX", "y" => "setY", "scaleX" => "setScaleX", "scaleY" => "setScaleY", "rotation" => "setRotation", "width" => "setWidth", "height" => "setHeight", _ => return Err(format!("writes the {f} of a clip of its planes, which no plain form answers yet")) };
                 Ok(vec![format!("if ({p} != null) {p}.{call}({val});")])
             }
             // a static field of one of its classes, written by the class's name: its field
@@ -1548,8 +1611,17 @@ impl<'o, 'a> Writer<'o, 'a> {
                 // (a rectangle put in a field that held nothing before reads as one)
                 // (learning: every kind of value the code puts in it, joined)
                 if self.learning {
+                    // (a list written out whole, of records or of lists of them: its elements are records)
+                    fn records_at_leaves(e: &Expr) -> bool { match e { Expr::Array(v) => !v.is_empty() && v.iter().all(records_at_leaves), Expr::Object(_) => true, _ => false } }
+                    let mut lit = v;
+                    while let Expr::Coerce(_, x) | Expr::Convert(_, x) = lit { lit = x; }
+                    if matches!(lit, Expr::Array(_)) && records_at_leaves(lit) { self.list_elem.insert(key.clone(), Ty::Rect); }
                     let was = self.seen.get(&key).copied();
                     self.seen.insert(key.clone(), match was { None => ty, Some(w) => join(w, ty) });
+                    // (a part of the planes, every time: the field is one)
+                    let part = val.starts_with("planePart(") || val == "null";
+                    let had = self.part_fields.get(&key).copied().unwrap_or(true);
+                    self.part_fields.insert(key.clone(), had && part);
                 }
                 // (it never goes back: a sound kept in a field the code later zeroes is still an object's)
                 if let Some(e) = self.fields.get_mut(&key).filter(|_| !self.learned) {
@@ -1643,6 +1715,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                 self.temp_ty.insert(*t, ty);
                 Ok(vec![format!("__t{t} = {val};")])
             }
+            Place::Join { block, slot } => {
+                let (val, _) = self.expr(v)?;
+                Ok(vec![format!("__j{block}_{slot} = {val};")])
+            }
             Place::Name(n) if self.captured.contains(&ident(n)) => {
                 let (val, ty) = self.expr(v)?;
                 let had = self.captured_ty.get(&ident(n)).copied().unwrap_or(Ty::Any);
@@ -1694,6 +1770,12 @@ impl<'o, 'a> Writer<'o, 'a> {
         let class = self.o.model.classes.get(&self.class);
         let has = class.and_then(|c| c.symbol).and_then(|s| self.o.model.sprites.get(&s)).map(|sp| sp.labels.iter().any(|(_, l)| l == label));
         if has == Some(false) { return Ok(format!("// (the source jumps to {label} here, which its clip does not have)")) }
+        // (the object's own class: a label none of the clips its animations show has)
+        if has.is_none() && self.is_itself() && !self.o.fighter {
+            let anywhere = crate::emit::clip_tree(self.o.model, Some(self.o.root)).into_iter()
+                .filter_map(|s| self.o.model.sprites.get(&s)).any(|sp| sp.labels.iter().any(|(_, l)| l == label));
+            if !anywhere { return Ok(format!("// (the source jumps to {label} here, which its clip does not have)")) }
+        }
         let unique = self.o.jumps.get(&self.class).and_then(|j| j.labels.get(label)).cloned();
         // a fighter's clip label that several animations show, or none: the one playing, if it
         // shows it (a ground and an air animation showing one clip whole stay apart, as the engine
@@ -1717,6 +1799,9 @@ impl<'o, 'a> Writer<'o, 'a> {
             out.push("}".into());
             return Ok(out.join("\n"));
         }
+        // (an object's own class sending its clip to a part no animation here shows: nowhere, as a
+        // fighter's does)
+        if unique.is_none() && self.is_itself() && !self.o.fighter { return Ok(format!("// (the source goes on to {label} here, a part of its clip no animation here shows)")) }
         let (anim, start) = unique.ok_or_else(|| format!("jumps to {label}, which no animation shows"))?;
         let to = if start { self.play_start(&anim)? } else { self.play_label_in(&anim, label) };
         // (a fighter's: only while it shows its clip)
@@ -1762,7 +1847,7 @@ impl<'o, 'a> Writer<'o, 'a> {
     fn test(&mut self, e: &Expr) -> Result<String, String> {
         // (a field written out under its name, tested: whether it has been made)
         if let Some((id, _)) = self.flat_of(e) {
-            self.kept.insert(format!("{id}_isMade"), format!("var {id}_isMade = false;"));
+            if !id.contains('.') { self.kept.insert(format!("{id}_isMade"), format!("var {id}_isMade = false;")); }
             return Ok(format!("{id}_isMade"));
         }
         // (a test of `a && b` is the two tests)
@@ -1814,7 +1899,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             // (one tested as a value: whether it has been made)
             Expr::Member(_, f) if self.flat_of(e).is_some() && self.testing => {
                 let (id, _) = self.flat_of(e).unwrap_or_default();
-                self.kept.insert(format!("{id}_isMade"), format!("var {id}_isMade = false;"));
+                if !id.contains('.') { self.kept.insert(format!("{id}_isMade"), format!("var {id}_isMade = false;")); }
                 (format!("{id}_isMade"), Ty::Bool)
             }
             Expr::Member(_, f) if self.flat_of(e).is_some() => {
@@ -1880,6 +1965,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                     _ => (format!("planePart({})", quote(f)), Ty::Object),
                 });
             }
+            // a child its stage's timeline places under the field's name, which its code never fills:
+            // that clip of the planes (Flash fills the field as the clip is made)
+            Expr::Member(t, f) if matches!(**t, Expr::This) && self.timeline_child(f) => {
+                self.util("planePart")?;
+                return Ok((format!("planePart({})", quote(f)), Ty::Object));
+            }
             Expr::Member(t, f) if matches!(**t, Expr::This) => return self.own(f),
             Expr::Member(t, f) if matches!(&**t, Expr::Local(r) if self.locals.get(r).is_some_and(|(_, h)| *h == Holds::Clip)) => return self.own(f),
             // a static field of one of its classes, read by the class's name: its field
@@ -1909,7 +2000,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             // a field of a named clip of the planes: what it shows, its frame, its label, or a clip of
             // its by name
-            Expr::Member(o, f) if self.expr(o).is_ok_and(|(w, _)| w.starts_with("planePart(")) => {
+            Expr::Member(o, f) if self.expr(o).is_ok_and(|(w, _)| w.starts_with("planePart(")) || self.part_field(o) => {
                 let (p, _) = self.expr(o)?;
                 return Ok(match f.as_str() {
                     "visible" => (format!("({p} == null || {p}.getVisible())"), Ty::Bool),
@@ -1922,7 +2013,11 @@ impl<'o, 'a> Writer<'o, 'a> {
                     "y" => (format!("({p} == null ? 0 : {p}.getY())"), Ty::Num),
                     "width" => (format!("({p} == null ? 0 : {p}.getWidth())"), Ty::Num),
                     "height" => (format!("({p} == null ? 0 : {p}.getHeight())"), Ty::Num),
-                    "scaleX" | "scaleY" | "rotation" | "totalFrames" => return Err(format!("reads the {f} of a clip of its planes, which no plain form answers yet")),
+                    "scaleX" => (format!("({p} == null ? 1 : {p}.getScaleX())"), Ty::Num),
+                    "scaleY" => (format!("({p} == null ? 1 : {p}.getScaleY())"), Ty::Num),
+                    "rotation" => (format!("({p} == null ? 0 : {p}.getRotation())"), Ty::Num),
+                    "numChildren" => (format!("({p} == null ? 0 : {p}.numKids())"), Ty::Num),
+                    "totalFrames" => return Err(format!("reads the {f} of a clip of its planes, which no plain form answers yet")),
                     _ => { self.util("planePart")?; (format!("planePart({})", quote(f)), Ty::Object) }
                 });
             }
@@ -1939,10 +2034,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (v, _) = self.expr(o)?;
                 return Ok((format!("{v}.mc"), Ty::Object));
             }
+            // a constant of one of its package's classes, read through an object of it: its value
+            Expr::Member(o, f) if !matches!(**o, Expr::This) && self.const_of(f).is_some() => (self.const_of(f).unwrap_or_default(), Ty::Any),
             // a field of another object's own class (one its package defines): through what it publishes
             Expr::Member(o, f) if !matches!(**o, Expr::This | Expr::Call(..)) && !matches!(f.as_str(), "x" | "y" | "length")
                 && self.a_value(o) && !matches!(&**o, Expr::Local(r) if self.locals.get(r).is_some_and(|(_, h)| *h == Holds::Clip))
-                && self.o.model.classes.values().any(|c| c.symbol.is_some() && c.fields.iter().any(|x| &x.name == f))
+                && self.o.model.classes.values().any(|c| (c.symbol.is_some() || self.o.runtime.provides(&c.super_name)) && c.fields.iter().any(|x| &x.name == f && !x.is_static))
                 && self.expr(o).is_ok_and(|(w, t)| w != "self" && !self.owners.contains(&w) && matches!(t, Ty::Any | Ty::Object | Ty::Body)) => {
                 let (who, _) = self.expr(o)?;
                 return Ok((format!("{}({who}, \"self\", {})", self.owner_field("get")?, quote(f)), Ty::Any));
@@ -1970,7 +2067,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 return Ok(("clipTotal()".into(), Ty::Num));
             }
             Expr::Member(mc, n) if (self.counts_frames() || n != "currentFrame") && matches!(n.as_str(), "currentLabel" | "currentFrameLabel" | "currentFrame")
-                && matches!(&**mc, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "stanceClip" | "getStanceMC") && self.expr(o).is_ok_and(|(w, _)| w == "self"))) => {
+                && matches!(&**mc, Expr::Call(g, a) if a.is_empty() && (matches!(&**g, Expr::Name(s) if matches!(s.as_str(), "stanceClip" | "getStanceMC") && !self.o.item)
+                    || matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "stanceClip" | "getStanceMC") && self.expr(o).is_ok_and(|(w, _)| w == "self")))) => {
                 if n == "currentFrame" { return Ok((self.clip_frame_helper()?, Ty::Num)) }
                 self.blocks.insert("clip_label".into());
                 return Ok(("clipLabel()".into(), Ty::Str));
@@ -2020,9 +2118,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                     Some(v) => v,
                     None => {
                         self.gaps.insert(format!("reads the {field} of an event, which no event of the source's carries"));
-                        ("null".into(), Ty::Any)
+                        // (nothing, as a record: what its code reads of it, behind its own test of it)
+                        ("null".into(), Ty::Rect)
                     }
                 });
+            }
+            Expr::Name(n) if self.timeline_child(n) => {
+                self.util("planePart")?;
+                return Ok((format!("planePart({})", quote(n)), Ty::Object));
             }
             Expr::Name(n) if self.field(n).is_some() || self.method(n).is_some() || self.method(&format!("get:{n}")).is_some() => return self.own(n),
             // a weather particle's clip class as a value: the effect it is drawn as, with its size
@@ -2032,6 +2135,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             // a variable its function shares with a closure it makes
             Expr::Temp(t) => (format!("__t{t}"), self.temp_ty.get(t).copied().unwrap_or(Ty::Any)),
+            Expr::Join { block, slot } => (format!("__j{block}_{slot}"), Ty::Any),
             Expr::Name(n) if self.captured.contains(&ident(n)) => (ident(n), self.captured_ty.get(&ident(n)).copied().unwrap_or(Ty::Any)),
             // the clip it shows sits in the object: its parent is the object
             Expr::Name(n) if n == "parent" => ("self".into(), Ty::Body),
@@ -2063,7 +2167,9 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (v, t) = self.expr(o)?;
                 (format!("{}.{n}", paren(&v)), if t == Ty::Controls { Ty::Bool } else { Ty::Any })
             }
-            Expr::Member(o, n) if self.a_value(o) && matches!(n.as_str(), "scaleX" | "scaleY" | "alpha" | "rotation") && !self.is_clip(o) => {
+            Expr::Member(o, n) if self.a_value(o) && matches!(n.as_str(), "scaleX" | "scaleY" | "alpha" | "rotation") && !self.is_clip(o)
+                // (a record's, a clip its code made, is its plain field, as its writes are)
+                && !self.expr(o).is_ok_and(|(_, t)| t == Ty::Rect) && !matches!(&**o, Expr::Local(r) if self.locals.get(r).is_some_and(|(_, h)| *h == Holds::Value(Ty::Rect))) => {
                 let (v, _) = self.expr(o)?;
                 let get = match n.as_str() { "scaleX" => "getScaleX", "scaleY" => "getScaleY", "alpha" => "getAlpha", _ => "getRotation" };
                 (format!("{}.{get}()", paren(&v)), Ty::Num)
@@ -2167,6 +2273,12 @@ impl<'o, 'a> Writer<'o, 'a> {
             Expr::Unary(UnOp::Not, x) => (format!("!{}", paren(&self.test(x)?)), Ty::Bool),
             Expr::Unary(UnOp::Neg, x) => { let (t, _) = self.expr(x)?; (format!("-{}", paren(&t)), Ty::Num) }
             // whether the clip it shows places a named clip of its own (`hasName()`, from the clips' placements)
+            // an object tested against one of its package's classes: the class it publishes
+            Expr::Binary(BinOp::Is, x, k) if matches!(&**k, Expr::Name(n) if self.o.model.classes.values().any(|c| short(&c.name) == short(n) && !self.o.runtime.provides(&c.name))) => {
+                let Expr::Name(n) = &**k else { unreachable!() };
+                let (v, _) = self.expr(x)?;
+                (format!("({v} != null && {v}.exports != null && {v}.exports.__className == {})", quote(short(n))), Ty::Bool)
+            }
             Expr::Binary(op @ (BinOp::Eq | BinOp::Ne | BinOp::StrictEq | BinOp::StrictNe), a, b)
                 if matches!((&**a, &**b), (x, Expr::Null | Expr::Undefined) | (Expr::Null | Expr::Undefined, x) if self.stance_child(x).is_some()) => {
                 let x = if matches!(**b, Expr::Null | Expr::Undefined) { a } else { b };
@@ -2239,7 +2351,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             Expr::Index(a, i) => {
                 // (an element of a list field its code only pushes records onto)
-                let learned = match &**a { Expr::Member(t, fl) if matches!(**t, Expr::This) => self.list_elem.get(&member_key(&self.class, fl)).copied(), _ => None };
+                let learned = match &**a { Expr::Member(t, fl) if matches!(**t, Expr::This) => self.list_elem.get(&member_key(&self.class, fl)).copied(), Expr::Local(r) => self.local_elem.get(r).copied(), _ => None };
                 let (a, ta) = self.expr(a)?;
                 let (i, ti) = self.expr(i)?;
                 if ti == Ty::Str { return Err("reads by a name worked out as it runs".into()) }
@@ -2284,7 +2396,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                 (out, if matches!(short(n), "Array" | "Vector" | "Dictionary") { Ty::Object } else { Ty::Rect })
             }
             Expr::Assign(..) => return Err("uses an assignment as a value".into()),
-            other => return Err(describe(other)),
+            other => { if std::env::var("PEPTIDE_CENSUS_ALL").is_ok() { eprintln!("[census-expr] {other:?}"); } return Err(describe(other)) }
         })
     }
 
@@ -2399,6 +2511,17 @@ impl<'o, 'a> Writer<'o, 'a> {
         let def = helper(self.o.runtime, "helpers", if set { "own_field_set" } else { "own_field_named" }, &name, &[], &cases)?;
         self.helpers.insert(name.clone(), def);
         Ok(name)
+    }
+
+    /// a constant some class of its package states for a name (one value, whichever class states it)
+    fn const_of(&self, f: &str) -> Option<String> {
+        let mut vals: BTreeSet<String> = BTreeSet::new();
+        for c in self.o.model.classes.values().filter(|c| !self.o.runtime.provides(&c.name)) {
+            for x in c.fields.iter().filter(|x| x.name == f && x.is_static && x.is_const) {
+                vals.insert(x.default.as_ref().and_then(literal)?);
+            }
+        }
+        if vals.len() == 1 { vals.into_iter().next() } else { None }
     }
 
     /// whether a value is a field its class only ever sets to a clip it makes (`new MovieClip()`)
@@ -2740,9 +2863,18 @@ impl<'o, 'a> Writer<'o, 'a> {
         // (what a list field holds, learned from what its code pushes onto it)
         if let Expr::Member(recv, m) = f {
             if m == "push" && self.learning && args.len() == 1 {
+                if let Expr::Local(r) = &**recv {
+                    if let Ok((_, ty)) = self.expr(&args[0]) {
+                        let ty = if matches!(&args[0], Expr::Object(_)) { Ty::Rect } else { ty };
+                        let was = self.local_elem.get(r).copied();
+                        self.local_elem.insert(*r, match was { None => ty, Some(w) => join(w, ty) });
+                    }
+                }
                 if let Expr::Member(t, fl) = &**recv {
                     if matches!(**t, Expr::This) {
                         if let Ok((_, ty)) = self.expr(&args[0]) {
+                            // (a record literal pushed: a list of records, whose fields its code reads plainly)
+                            let ty = if matches!(&args[0], Expr::Object(_)) { Ty::Rect } else { ty };
                             let k = member_key(&self.class, fl);
                             let was = self.list_elem.get(&k).copied();
                             self.list_elem.insert(k, match was { None => ty, Some(w) => join(w, ty) });
@@ -2818,6 +2950,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         if let Expr::Member(recv, m) = f {
             if let Some((id, k)) = self.flat_of(recv) {
                 let vs: Vec<String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect::<Result<_, String>>()?;
+                if let Some(mid) = self.methods.get(&member_key(&k, m)).cloned() { self.learn_elems(&mid, args); }
                 return self.flat_call(&id, &k, m, &vs);
             }
         }
@@ -2948,9 +3081,10 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
         }
         // the clip its animation shows (its stance), asked of directly: its jumps, as its own
-        if self.o.fighter {
+        if !self.o.stage {
             if let Expr::Call(g, a) = &**recv {
-                if a.is_empty() && matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "stanceClip" | "getStanceMC") && self.expr(o).is_ok_and(|(w, _)| w == "self")) {
+                if a.is_empty() && (matches!(&**g, Expr::Name(s) if matches!(s.as_str(), "stanceClip" | "getStanceMC"))
+                    || matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "stanceClip" | "getStanceMC") && self.expr(o).is_ok_and(|(w, _)| w == "self"))) {
                     return match (m.as_str(), args) {
                         ("gotoAndStop" | "gotoAndPlay", [l]) => Ok((self.jump_to_value(l)?, Ty::Any)),
                         ("stop" | "play", []) => Ok((String::new(), Ty::Any)),
@@ -3241,14 +3375,54 @@ impl<'o, 'a> Writer<'o, 'a> {
         crate::model::declare::returned(&m.function.body)?.get(f).map(plain_value)
     }
 
+    /// a field of the stage named for a child its clip places, which no code of the class writes:
+    /// the child itself (the field Flash declares and fills for a named instance)
+    fn timeline_child(&self, f: &str) -> bool {
+        if !self.o.stage { return false }
+        let Some(c) = self.o.model.classes.get(&self.class) else { return false };
+        if !c.fields.iter().any(|x| x.name == f && !x.is_static) { return false }
+        let mut written = false;
+        for m in c.methods.iter().map(|m| &m.function).chain(std::iter::once(&c.constructor)) {
+            walk(&m.body, &mut |st| if let Stmt::Assign(Place::Member(Expr::This, g) | Place::Name(g), _) = st { if g == f { written = true; } });
+        }
+        if written { return false }
+        let root = if self.is_itself() { Some(self.o.root) } else { c.symbol };
+        crate::emit::clip_tree(self.o.model, root).into_iter().filter_map(|s| self.o.model.sprites.get(&s))
+            .any(|sp| sp.frames.iter().flatten().any(|p| p.name.as_deref() == Some(f)))
+    }
+
+    /// one of its fields that only ever holds a clip of the stage's planes (learned, every write a part)
+    fn part_field(&self, e: &Expr) -> bool {
+        let Expr::Member(t, f) = e else { return false };
+        matches!(**t, Expr::This) && self.learned && self.part_fields.get(&member_key(&self.class, f)) == Some(&true)
+    }
+
+    /// (a list of records handed on, a field's or a variable's: its elements are records there too)
+    fn learn_elems(&mut self, id: &str, args: &[Expr]) {
+        if !self.learning { return }
+        for (i, a) in args.iter().enumerate() {
+            let elem = match a {
+                Expr::Member(o, fl) if matches!(**o, Expr::This) => self.list_elem.get(&member_key(&self.class, fl)).copied().unwrap_or(Ty::Any),
+                Expr::Local(r) => self.local_elem.get(r).copied().unwrap_or(Ty::Any),
+                // (an empty list fits any)
+                Expr::Array(v) if v.is_empty() => continue,
+                _ => Ty::Any,
+            };
+            let k = (id.to_string(), i);
+            let was = self.param_elem.get(&k).copied();
+            self.param_elem.insert(k, match was { None => elem, Some(w) if w == elem => w, _ => Ty::Any });
+        }
+    }
+
     fn own_call(&mut self, id: &str, args: &[Expr]) -> Result<(String, Ty), String> {
         let typed: Vec<(String, Ty)> = args.iter().map(|x| self.expr(x)).collect::<Result<_, String>>()?;
         if self.learning {
             for (i, (_, t)) in typed.iter().enumerate() {
                 let k = (id.to_string(), i);
                 let was = self.param_ty.get(&k).copied();
-                self.param_ty.insert(k, match was { None => *t, Some(w) => join(w, *t) });
+                self.param_ty.insert(k.clone(), match was { None => *t, Some(w) => join(w, *t) });
             }
+            self.learn_elems(id, args);
         }
         let mut vs: Vec<String> = typed.into_iter().map(|(v, _)| v).collect();
         // (a record's own method: handed the record)
@@ -3335,9 +3509,38 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             // a fighter's state: a projectile is in none of them
             ("inState", [_]) if mine && !self.o.fighter && !self.o.item => return Ok(("false".into(), Ty::Bool)),
+            // another fighter's stats its code writes: kept where that fighter reads its own back, and
+            // the engine's own where it keeps the stat (in this engine's units)
+            ("updateCharacterStats", [Expr::Object(pairs)]) if !mine => {
+                let st = crate::mappings::character_stats();
+                let mut out = Vec::new();
+                for (k, v) in pairs {
+                    let Expr::Str(k) = k else { return Err("writes a stat by a name worked out as it runs".into()) };
+                    let (val, ty) = self.expr(v)?;
+                    out.push(format!("if ({who} != null && {who}.exports != null && {who}.exports.__source != null) {who}.exports.__source.__stats.set({}, {val})", quote(k)));
+                    let name = st.fm_runtime_read_names.get(k).cloned().unwrap_or_else(|| k.clone());
+                    if !st.fm_runtime_stats.contains(&name) || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') { continue }
+                    let value = if matches!(ty, Ty::Bool | Ty::Str) { val.clone() } else {
+                        let unit = st.runtime_read_units.iter().find(|(_, l)| l.contains(&name)).map(|(u, _)| u.as_str());
+                        let f = match unit { Some("size") => self.o.size, Some("accel") => self.o.accel, Some("speed" | "launch") => self.o.speed, _ => 1.0 };
+                        fold(&format!("{} * {}", paren(&val), number(f)))
+                    };
+                    out.push(format!("if ({who} != null) {who}.updateCharacterStats({{ {name}: {value} }})"));
+                }
+                return Ok((out.join(";\n"), Ty::Any));
+            }
+            // another fighter's attack turned off or on by the source's name: the animations that name
+            // is on this engine (`mappings/character/animations.jsonc`), and the actions they start
+            ("allowAttack" | "setAttackEnabled", [on, Expr::Str(label), ..]) if !mine => {
+                let on = self.test(on)?;
+                let anim = crate::mappings::character_animations().ssf2_to_fm.get(label).cloned().unwrap_or_else(|| label.clone());
+                self.util("foeAllowAttack")?;
+                return Ok((format!("foeAllowAttack({who}, {on}, [{}])", quote(&anim)), Ty::Any));
+            }
             ("setState", [st]) if !mine => {
                 let name = self.state_name(st)?;
-                let to = states().get(&name).and_then(|s| s.enter.clone()).ok_or_else(|| format!("sets a fighter's state to {name}, which this engine's fighters have none of"))?;
+                // (one this engine's fighters have none of: nothing, as on the runtime)
+                let Some(to) = states().get(&name).and_then(|s| s.enter.clone()) else { return Ok((format!("// (not ported: the source puts a fighter in its {name} state here, which this engine's fighters have none of)"), Ty::Any)) };
                 return Ok((format!("{who}.toState({to})"), Ty::Any));
             }
             // another projectile's own stats written: the engine's own stat on it, and through the
@@ -3477,9 +3680,41 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let back = scale.map(|s| format!(" / {}", number(s))).unwrap_or_default();
                 return Ok((format!("{who}.getHitboxStats({i}).{field}{back}"), Ty::Num));
             }
-            ("updateHitboxStats", [i, Expr::Member(t, f)]) if matches!(**t, Expr::This) && (mine || self.o.fighter) => {
+            ("updateHitboxStats", [i, Expr::Member(t, f)]) if matches!(**t, Expr::This) && (mine || self.o.fighter) && self.only_record(f).is_some() => {
                 let record = self.only_record(f).ok_or_else(|| format!("writes box stats from {f}, a record worked out as it runs"))?;
                 return self.api(who, m, &[i.clone(), record]);
+            }
+            // (a record worked out as it runs: each field the engine keeps, written as it is then)
+            ("updateHitboxStats", [i, r]) if !matches!(r, Expr::Object(_)) => {
+                let i = box_index(i)?;
+                let (r, _) = self.expr(r)?;
+                if !self.helpers.contains_key("boxWrite") {
+                    let hb = crate::mappings::character_hitbox_stats();
+                    let mut cases = Vec::new();
+                    for f in &hb.fields {
+                        for k in &f.ssf2_keys {
+                            let Ok((field, scale)) = hitbox_field(k) else { continue };
+                            if matches!(k.as_str(), "weightKB" | "power" | "kbConstant") { continue }
+                            let v = match scale { Some(sc) => format!("r.{k} * {}", number(sc)), None => format!("r.{k}") };
+                            cases.push(format!("if (r.{k} != null) s.{field} = {v};"));
+                        }
+                    }
+                    for fl in &hb.flags { cases.push(format!("if (r.{} != null && (r.{} == true) == {}) s.{} = {};", fl.ssf2_key, fl.ssf2_key, fl.when, fl.fm_field, fl.value)); }
+                    // (a fixed launch: the source's rule written out, else the box's own power and growth)
+                    let (base, bs) = hitbox_field("power")?;
+                    let (growth, gs) = hitbox_field("kbConstant")?;
+                    let sc = |v: &str, s: Option<f64>| match s { Some(s) => format!("{v} * {}", number(s)), None => v.to_string() };
+                    let rule = hb.fields.iter().find(|f| f.fm_field == "fixed_knockback").and_then(|r| Some((r.per_unit?, r.constant?)));
+                    let kbc = "(r.kbConstant == null ? 100 : r.kbConstant)";
+                    let pw = "(r.power == null ? 0 : r.power)";
+                    match rule {
+                        Some((per, plus)) => cases.push(format!("if (r.weightKB != null && r.weightKB > 0) {{ s.{base} = {}; s.{growth} = 0; }} else {{ if (r.power != null) s.{base} = {}; if (r.kbConstant != null) s.{growth} = {}; }}",
+                            sc(&format!("((r.weightKB * {} + {}) * {kbc} / 100 + {pw})", number(per), number(plus)), bs), sc("r.power", bs), sc("r.kbConstant", gs))),
+                        None => { cases.push(format!("if (r.power != null) s.{base} = {};", sc("r.power", bs))); cases.push(format!("if (r.kbConstant != null) s.{growth} = {};", sc("r.kbConstant", gs))); }
+                    }
+                    self.helpers.insert("boxWrite".into(), helper(self.o.runtime, "helpers", "box_write", "boxWrite", &[], &cases)?);
+                }
+                return Ok((format!("boxWrite({who}, {i}, {r})"), Ty::Any));
             }
             // a box's stats as the source's record (to deal outright, `takeDamage`): the engine's own
             // box, of the animation the label names, read back in the source's units
@@ -3581,7 +3816,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                 self.blocks.insert("ledges".into());
                 return Ok(("stageLedges()".into(), Ty::Rect));
             }
-            ("getDeathBounds" | "getCameraBounds", []) if who == "stage" => {
+            ("getDeathBounds" | "getCameraBounds", []) if who == "stage" || (self.o.stage && who == "self") => {
                 let f = self.sized_helper("source_rect", "sourceRect")?;
                 return Ok((format!("{f}(stage.{m}())"), Ty::Rect));
             }
@@ -3878,7 +4113,7 @@ self.playFrameLabel({})", quote(f))); }
             // its state, set and tested by the source's names (`runtime/states.jsonc`)
             ("setState", [st]) => {
                 let name = self.state_name(st)?;
-                let to = states().get(&name).and_then(|s| s.enter.clone()).ok_or_else(|| format!("sets its state to {name}, which this engine's fighters have none of"))?;
+                let Some(to) = states().get(&name).and_then(|s| s.enter.clone()) else { return Ok((format!("// (not ported: the source puts it in its {name} state here, which this engine's fighters have none of)"), Ty::Any)) };
                 Ok((format!("self.toState({to})"), Ty::Any))
             }
             // the item it holds: one its own code made (no other here is held by a fighter)
@@ -5119,4 +5354,163 @@ fn holds_records(c: &ClassModel, field: &str) -> bool {
         }
         _ => false,
     })
+}
+
+// ---- drawing that comes to nothing --------------------------------------------------------------
+
+/// the classes whose values only draw pixels or say where to (`runtime/inert.jsonc` names what this
+/// engine never draws): a field declared one of these, or a class that extends one, holds drawing
+const DRAWN: [&str; 6] = ["BitmapData", "Bitmap", "Rectangle", "Point", "ColorTransform", "Matrix"];
+
+fn drawn_type(model: &crate::model::SourceModel, t: &str) -> bool {
+    let mut n = short(t).to_string();
+    for _ in 0..8 {
+        if DRAWN.contains(&n.as_str()) { return true }
+        match model.classes.values().find(|k| short(&k.name) == n) { Some(k) => n = short(&k.super_name).to_string(), None => return false }
+    }
+    false
+}
+
+/// a value that is only ever drawing: a new one of a drawing class, or one cast to one
+fn drawing_value(v: &Expr, model: &crate::model::SourceModel) -> bool {
+    let mut v = v;
+    while let Expr::Coerce(_, x) | Expr::Convert(_, x) = v { v = x; }
+    match v {
+        Expr::New(c, _) => matches!(&**c, Expr::Name(n) if drawn_type(model, n)),
+        Expr::Call(g, _) => matches!(&**g, Expr::Member(c, m) if m == "create" && matches!(&**c, Expr::Name(n) if drawn_type(model, n))),
+        Expr::Binary(BinOp::As, _, c) => matches!(&**c, Expr::Name(n) if drawn_type(model, n)),
+        _ => false,
+    }
+}
+
+/// what a place or value is held under: one of its own fields, or a variable
+#[derive(Clone, Copy, PartialEq)]
+enum DrawRoot<'e> { Field(&'e str), Local(u32), Other }
+
+fn draw_root(e: &Expr) -> DrawRoot<'_> {
+    match e {
+        Expr::Member(t, f) if matches!(**t, Expr::This) => DrawRoot::Field(f),
+        Expr::Local(r) => DrawRoot::Local(*r),
+        Expr::Member(x, _) | Expr::Index(x, _) | Expr::Coerce(_, x) | Expr::Convert(_, x) => draw_root(x),
+        Expr::Binary(BinOp::As, x, _) => draw_root(x),
+        _ => DrawRoot::Other,
+    }
+}
+
+/// the fields of a class, and per function its variables, that only ever feed drawing: written
+/// from values that do nothing on their own, and read only by drawing calls or by writes to others
+/// of the same kind. a statement that only draws, or only fills one of them, comes to nothing here
+pub struct Drawing<'r> {
+    inert: &'r BTreeSet<String>,
+    model: &'r crate::model::SourceModel,
+    pub fields: BTreeSet<String>,
+}
+
+impl<'r> Drawing<'r> {
+    fn held(&self, root: DrawRoot, locals: &BTreeSet<u32>) -> bool {
+        match root { DrawRoot::Field(f) => self.fields.contains(f), DrawRoot::Local(r) => locals.contains(&r), DrawRoot::Other => false }
+    }
+    /// a call that only draws: a drawing method of a picture's data, or of something held for drawing
+    fn drawing_call(&self, e: &Expr, locals: &BTreeSet<u32>) -> bool {
+        let Expr::Call(g, _) = e else { return false };
+        let Expr::Member(recv, m) = &**g else { return false };
+        let Expr::Call(_, args) = e else { return false };
+        self.inert.contains(m) && (matches!(&**recv, Expr::Member(_, b) if b == "bitmapData") || self.held(draw_root(recv), locals))
+            && args.iter().all(|a| Self::quiet(a, self.model))
+    }
+    /// a value whose working out does nothing on its own: reads, arithmetic, casts, a child of a
+    /// clip by place or name, a class's name, a new value of a drawing class
+    fn quiet(e: &Expr, model: &crate::model::SourceModel) -> bool {
+        let mut ok = true;
+        e.walk(&mut |x| match x {
+            Expr::Call(g, _) => {
+                let n = match &**g { Expr::Member(_, n) | Expr::Name(n) => n.as_str(), _ => "" };
+                // (an accessor asked of nothing: a getter)
+                let getter = n.starts_with("get") && matches!(x, Expr::Call(_, a) if a.is_empty());
+                if !getter && !matches!(n, "getChildAt" | "getChildByName" | "getQualifiedClassName" | "create") { ok = false }
+            }
+            Expr::New(c, _) => if !matches!(&**c, Expr::Name(n) if drawn_type(model, n)) { ok = false },
+            Expr::Function(_) | Expr::Assign(..) => ok = false,
+            _ => {}
+        });
+        ok
+    }
+    pub fn void(&self, s: &Stmt, locals: &BTreeSet<u32>, model: &crate::model::SourceModel) -> bool {
+        match s {
+            Stmt::Expr(e) => self.drawing_call(e, locals),
+            Stmt::Assign(p, v) => {
+                let root = match p { Place::Local(r) => DrawRoot::Local(*r), Place::Member(Expr::This, f) => DrawRoot::Field(f), Place::Member(o, _) | Place::Index(o, _) => draw_root(o), _ => DrawRoot::Other };
+                self.held(root, locals) && Self::quiet(v, model)
+            }
+            Stmt::If(c, a, b) => (!a.is_empty() || !b.is_empty()) && Self::quiet(c, model)
+                && a.iter().chain(b.iter()).all(|x| self.void(x, locals, model)),
+            _ => false,
+        }
+    }
+    /// the fields and variables read where it counts (outside what comes to nothing)
+    fn live(&self, list: &[Stmt], locals: &BTreeSet<u32>, model: &crate::model::SourceModel, fields: &mut BTreeSet<String>, vars: &mut BTreeSet<u32>) {
+        for s in list {
+            if self.void(s, locals, model) { continue }
+            for e in s.exprs() {
+                e.walk(&mut |x| match x {
+                    Expr::Member(t, f) if matches!(**t, Expr::This) => { fields.insert(f.clone()); }
+                    Expr::Local(r) => { vars.insert(*r); }
+                    Expr::Function(func) => { let mut g = BTreeSet::new(); crate::model::ast::walk_exprs(&func.body, &mut |y| { if let Expr::Member(t, f) = y { if matches!(**t, Expr::This) { g.insert(f.clone()); } } }); fields.extend(g); }
+                    _ => {}
+                });
+            }
+            for b in s.blocks() { self.live(b, locals, model, fields, vars) }
+        }
+    }
+    /// a function's variables that only feed drawing (its own, not its arguments)
+    pub fn locals(&self, body: &[Stmt], nparams: u32, model: &crate::model::SourceModel) -> BTreeSet<u32> {
+        // (each one every value it is given is drawing: a picture, or a clip's child cast to one)
+        let mut all: BTreeMap<u32, bool> = BTreeMap::new();
+        fn assigned(list: &[Stmt], model: &crate::model::SourceModel, out: &mut BTreeMap<u32, bool>) {
+            for s in list {
+                if let Stmt::Assign(Place::Local(r), v) = s { let had = out.get(r).copied().unwrap_or(true); out.insert(*r, had && (drawing_value(v, model) || matches!(v, Expr::Null | Expr::Undefined))); }
+                for b in s.blocks() { assigned(b, model, out) }
+            }
+        }
+        assigned(body, model, &mut all);
+        let mut l: BTreeSet<u32> = all.into_iter().filter(|(r, ok)| *ok && *r > nparams).map(|(r, _)| r).collect();
+        loop {
+            let (mut f, mut v) = (BTreeSet::new(), BTreeSet::new());
+            self.live(body, &l, model, &mut f, &mut v);
+            let next: BTreeSet<u32> = l.iter().copied().filter(|r| !v.contains(r)).collect();
+            if next == l { return l }
+            l = next;
+        }
+    }
+    pub fn of(class: &ClassModel, model: &'r crate::model::SourceModel, inert: &'r BTreeSet<String>) -> Self {
+        // (a field declared one, or one with no type its code only ever fills with one)
+        let mut filled: BTreeMap<String, bool> = BTreeMap::new();
+        let drawing_value = |v: &Expr| drawing_value(v, model);
+        for m in class.methods.iter().map(|m| &m.function).chain(std::iter::once(&class.constructor)) {
+            walk(&m.body, &mut |st| if let Stmt::Assign(Place::Member(Expr::This, f), v) = st {
+                let ok = drawing_value(v);
+                let had = filled.get(f).copied().unwrap_or(true);
+                filled.insert(f.clone(), had && ok);
+            });
+        }
+        let untyped = |t: Option<&str>| t.is_none_or(|t| matches!(short(t), "Object" | "*"));
+        let mut fields: BTreeSet<String> = class.fields.iter().filter(|f| !f.is_static && (f.type_name.as_deref().is_some_and(|t| drawn_type(model, t))
+            || (untyped(f.type_name.as_deref()) && filled.get(&f.name) == Some(&true)))).map(|f| f.name.clone()).collect();
+        // (and one its code only sets, never declaring it: a property of the object)
+        for (f, all) in &filled { if *all && !class.fields.iter().any(|x| &x.name == f) { fields.insert(f.clone()); } }
+        let mut d = Drawing { inert, model, fields };
+        if d.fields.is_empty() { return d }
+        let fns: Vec<&crate::model::ast::Function> = class.methods.iter().map(|m| &m.function).chain(std::iter::once(&class.constructor)).collect();
+        loop {
+            let mut live = BTreeSet::new();
+            for f in &fns {
+                let l = d.locals(&f.body, f.params.len() as u32, model);
+                let mut v = BTreeSet::new();
+                d.live(&f.body, &l, model, &mut live, &mut v);
+            }
+            let next: BTreeSet<String> = d.fields.iter().filter(|f| !live.contains(*f)).cloned().collect();
+            if next == d.fields { return d }
+            d.fields = next;
+        }
+    }
 }

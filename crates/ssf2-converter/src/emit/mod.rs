@@ -2239,7 +2239,7 @@ const CLIP_OPTIONAL: [(&str, &str); 10] = [
 /// order the source's engine runs them. A projectile that names none of a piece's words goes
 /// without that piece.
 /// A clip and every clip placed inside it, as deep as they go.
-fn clip_tree(model: &SourceModel, root: Option<u16>) -> BTreeSet<u16> {
+pub fn clip_tree(model: &SourceModel, root: Option<u16>) -> BTreeSet<u16> {
     let mut seen = BTreeSet::new();
     let mut work: Vec<u16> = root.into_iter().collect();
     while let Some(s) = work.pop() {

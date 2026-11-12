@@ -347,6 +347,45 @@ function planePart(n) {
 	return stage == null || stage.exports == null || stage.exports.__part == null ? null : stage.exports.__part(n);
 }
 
+// ---- sharedVarsOf
+// what an object's code keeps by name (`setSharedVar`): its source's, where the runtime plays it, else
+// what it publishes
+function sharedVarsOf(o) {
+	if (o == null || o.exports == null) return new haxe.ds.StringMap();
+	var ex = o.exports;
+	if (ex.__source != null && ex.__source.__vars != null) return ex.__source.__vars;
+	if (ex.__vars == null) ex.__vars = new haxe.ds.StringMap();
+	return ex.__vars;
+}
+
+// ---- foeAllowAttack
+// another fighter's attack turned off or back on by the source's name: the actions the animations of
+// that name start (each animation's prefix, and the action it is), each a status effect it holds
+// (kept on what it publishes, `__actionsOff`)
+function foeAllowAttack(o, on, anims) {
+	if (o == null || o.exports == null) return;
+	if (o.exports.__actionsOff == null) o.exports.__actionsOff = [];
+	var off = o.exports.__actionsOff;
+	var table = [
+		["jab", CharacterActions.JAB], ["dash_attack", CharacterActions.DASH_ATTACK],
+		["tilt_forward", CharacterActions.TILT_FORWARD], ["tilt_up", CharacterActions.TILT_UP], ["tilt_down", CharacterActions.TILT_DOWN],
+		["strong_forward", CharacterActions.STRONG_FORWARD], ["strong_up", CharacterActions.STRONG_UP], ["strong_down", CharacterActions.STRONG_DOWN],
+		["aerial_neutral", CharacterActions.AERIAL_NEUTRAL], ["aerial_forward", CharacterActions.AERIAL_FORWARD], ["aerial_back", CharacterActions.AERIAL_BACK],
+		["aerial_up", CharacterActions.AERIAL_UP], ["aerial_down", CharacterActions.AERIAL_DOWN],
+		["special_neutral", CharacterActions.SPECIAL_NEUTRAL], ["special_side", CharacterActions.SPECIAL_SIDE], ["special_up", CharacterActions.SPECIAL_UP], ["special_down", CharacterActions.SPECIAL_DOWN],
+		["grab", CharacterActions.GRAB]
+	];
+	for (anim in anims) {
+		var best = null;
+		for (row in table) if (anim.indexOf(row[0]) == 0 && (best == null || row[0].length > best[0].length)) best = row;
+		if (best == null) continue;
+		var k = -1;
+		for (i in 0...off.length) if (off[i].a == best[1]) k = i;
+		if (on && k >= 0) { o.removeStatusEffect(StatusEffectType.DISABLE_ACTION, off[k].id); off.splice(k, 1); }
+		else if (!on && k < 0) { var e = o.addStatusEffect(StatusEffectType.DISABLE_ACTION, best[1]); off.push({ a: best[1], id: e == null ? null : e.id }); }
+	}
+}
+
 // ---- madeObject
 // an object the stage's code made (not counted with what its boot made, as the runtime counts)
 function madeObject(id, o) {

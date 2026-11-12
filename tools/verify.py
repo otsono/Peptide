@@ -1433,6 +1433,8 @@ def s_built(ctx, r):
         moved_by_code = {c for c in re.findall(r"\b([A-Za-z_]\w*)\.set[XY]\(", src)}
         # ...or, as the runtime path writes it, a clip's place set as a field (`fg.shadow.y = ...`)
         moved_by_code |= {c for c in re.findall(r"\b([A-Za-z_]\w*)\.[xy]\s*=(?!=)", src)}
+        # ...or, as a native stage writes it, a clip of its planes moved through its part
+        moved_by_code |= set(re.findall(r'planePart\("([^"]+)"\)\.set[XY]\(', src))
         # ...or held in a field and placed through it (`fore = fg.gangplankHull`, then `fore.y = ...`,
         # which the runtime writes as a copy of the field's value put back): the clips stored there
         cells = set(re.findall(r"var (__cw\d+) = AS3\.copyOf\(me\.__c_(\w+)\.get\(\)\); \1\.[xy] =", src))

@@ -136,7 +136,7 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     for row in &input.rows {
         // written as plain Fraymakers code where its class has a plain form
         let census = object_census(home(&models, &row.class), &object_runtime, &row.class, units);
-        let native = match native_object(home(&models, &row.class), &object_runtime, dir, row, units, &bounds) {
+        let native = match native_object(home(&models, &row.class), &object_runtime, dir, row, units, &bounds, &projectiles) {
             Ok(()) => true,
             Err(why) => { reports.insert(row.id.clone(), serde_json::json!({ "native": false, "on_runtime": why })); false }
         };
@@ -170,7 +170,9 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     }).collect();
     let mut census = stage_census(&src, &runtime, &spec.class, sym, &pieces, units, false, &mut none_written, &input.objects, &particles);
     // written as plain Fraymakers code where everything it does has a plain form
-    let native = match native_stage(&src, &runtime, &spec.class, sym, &pieces, units, input, id, census.is_empty(), &regions_literal(model), &native_objects, &particles) {
+    // (`PEPTIDE_NATIVE_STAGES=0` keeps every stage on the runtime, to tell the two apart)
+    let wanted = std::env::var("PEPTIDE_NATIVE_STAGES").map(|v| v != "0").unwrap_or(true);
+    let native = match if wanted { native_stage(&src, &runtime, &spec.class, sym, &pieces, units, input, id, census.is_empty(), &regions_literal(model), &native_objects, &particles) } else { Err(vec!["kept on the runtime (PEPTIDE_NATIVE_STAGES=0)".into()]) } {
         Ok(script) => { std::fs::write(scripts.join(format!("{id}Script.hx")), &script)?; true }
         Err(why) => { census.extend(why); census.sort(); census.dedup(); false }
     };
@@ -886,7 +888,19 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
         .filter_map(|(_, pid)| pid.strip_prefix(&prefix).map(|i| (pid.clone(), i.to_string()))).collect();
     let strs = |v: &[String]| v.iter().map(|s| compile::quote(s)).collect::<Vec<_>>().join(", ");
     let rows = |v: Vec<String>| if v.is_empty() { "[]".to_string() } else { format!("[{}]", v.join(", ")) };
+    // (how many children each named clip of its tree places on its first frame: what its code
+    // counts through)
+    let mut kids: BTreeMap<String, usize> = BTreeMap::new();
+    for s in super::clip_tree(src, Some(sym)) {
+        let Some(sp) = src.sprites.get(&s) else { continue };
+        for placed in sp.frames.iter().flatten() {
+            let Some(n) = placed.name.as_ref() else { continue };
+            let k = src.sprites.get(&placed.char_id).and_then(|c| c.frames.first()).map(|f| f.len()).unwrap_or(0);
+            kids.entry(n.clone()).or_insert(k);
+        }
+    }
     let words = [("PAN_X", format!("{}", input.pan.0)), ("PAN_Y", format!("{}", input.pan.1)), ("REGIONS", regions.to_string()),
+        ("KIDS", rows(kids.iter().map(|(n, k)| format!("{{ n: {}, k: {k} }}", compile::quote(n))).collect())),
         ("SURFACES", rows(input.surfaces.iter().map(|(n, s)| format!("{{ n: {}, s: [{}] }}", compile::quote(n), strs(s))).collect())),
         ("FRICTIONS", rows(input.frictions.clone())), ("PUSHES", rows(input.pushes.clone())), ("ACCEL", format!("{}", units.accel)),
         ("SURFACES_ON", surfaces.to_string()), ("CAP", input.particle_cap.to_string()), ("SIZE", format!("{}", units.size)),
@@ -943,7 +957,8 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
 fn regions_literal(model: &crate::stage_parser::StageModel) -> String {
     let regions: Vec<String> = model.named_boxes.iter().map(|(n, r)| {
         let (rx, ry) = model.named_regs.get(n).copied().unwrap_or((r.x, r.y));
-        format!("{{ n: {}, x: {:.1}, y: {:.1}, w: {:.1}, h: {:.1}, rx: {rx:.1}, ry: {ry:.1} }}", compile::quote(n), r.x, r.y, r.w, r.h)
+        let (sx, sy, rot) = model.named_turns.get(n).copied().unwrap_or((1.0, 1.0, 0.0));
+        format!("{{ n: {}, x: {:.1}, y: {:.1}, w: {:.1}, h: {:.1}, rx: {rx:.1}, ry: {ry:.1}, sx: {sx:.4}, sy: {sy:.4}, rot: {rot:.2} }}", compile::quote(n), r.x, r.y, r.w, r.h)
     }).collect();
     if regions.is_empty() { "[]".to_string() } else { format!("[\n\t{}\n]", regions.join(",\n\t")) }
 }
@@ -978,7 +993,8 @@ fn object_census(src: &SourceModel, runtime: &Runtime, class: &str, units: Units
 /// A stage object's script as plain Fraymakers code: its own class (and the clips its animations
 /// show) through the native writer, on `runtime/native/object.hx` with the rules it uses from
 /// `object_rules.hx`. Every file is written only once all of it has a plain form.
-fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectRow, units: Units, bounds: &BTreeMap<String, (f64, f64, f64, f64)>) -> Result<(), Vec<String>> {
+#[allow(clippy::too_many_arguments)]
+fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectRow, units: Units, bounds: &BTreeMap<String, (f64, f64, f64, f64)>, projectiles: &Value) -> Result<(), Vec<String>> {
     let one = |e: String| vec![e];
     let c = class_of(src, &row.class).ok_or_else(|| one(format!("its class {} is not in its package", row.class)))?;
     let merged = super::native_projectile::inherited_class(src, runtime, c).map_err(one)?;
@@ -1003,14 +1019,26 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
         .and_then(|m| crate::model::declare::returned(&m.function.body));
     let plain = |v: &Value| match v { Value::Num(n) => Some(format!("{n}")), Value::Bool(b) => Some(b.to_string()), Value::Str(s) => Some(compile::quote(s)), Value::Null => Some("null".into()), _ => None };
     let declared = |k: &str| own.as_ref().and_then(|o| o.get(k)).and_then(&plain);
+    // (an item, one a fighter picks up: it carries the item handler)
+    let is_item = compile::short(&itself.super_name) == "PeptideItem";
     let mut jumps = super::label_jumps(src, &pieces);
     jumps.entry(itself.name.clone()).or_insert_with(|| super::own_jumps(src, &pieces, root));
-    if std::env::var("PEP_DBG").is_ok() { eprintln!("DBG {} root={:?} pieces={:?} jumps={:?}", row.id, root, pieces.iter().map(|p| (p.fm_name.clone(), p.sym, p.from, p.frames, p.label.clone())).collect::<Vec<_>>(), jumps.get(&itself.name).map(|j| j.labels.keys().cloned().collect::<Vec<_>>())); }
     let labels = super::native_fighter::stance_labels(src, &pieces);
-    let frames_of = super::native_fighter::clip_frames_of(src, &pieces);
+    let mut frames_of = super::native_fighter::clip_frames_of(src, &pieces);
+    // (a clip with no class of its own still has its frames counted, under its symbol)
+    for p in pieces.iter().filter(|p| !p.reversed && p.head == 0 && src.class_of(p.sym).is_none()) {
+        frames_of.entry(format!("#{}", p.sym)).or_default().push((p.fm_name.clone(), p.from, p.frames));
+    }
     let no_stat = |_: &str| -> Option<(String, String)> { None };
     let no_effect = |_: &str| -> Option<(String, Option<u32>)> { None };
-    let no_fired = |_: &str| -> Option<(String, [f64; 4], Option<String>)> { None };
+    // a projectile its stage declares, by the name its code fires it under: its content (the fired
+    // name, as the stage's package registers it), its offset and its launch
+    let no_fired = |name: &str| -> Option<(String, [f64; 4], Option<String>)> {
+        let decl = projectiles.get(name)?;
+        let n = |ks: &[&str]| ks.iter().find_map(|k| match decl.get(k) { Some(Value::Num(v)) => Some(*v), _ => None }).unwrap_or(0.0);
+        Some((crate::projectile_gen::projectile_content_id(name),
+              [n(&["xoffset", "xOffset", "x_offset"]), n(&["yoffset", "yOffset", "y_offset"]), n(&["xspeed", "xSpeed", "x_speed"]), n(&["yspeed", "ySpeed", "y_speed"])], None))
+    };
     let none = |_: &str| -> Option<String> { None };
     let no_store = |_: &str| false;
     let no_anim = |_: &str| -> Option<String> { None };
@@ -1019,7 +1047,7 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     let object = compile::native::Object {
         model: src, itself: Some(itself), classes, jumps: &jumps, runtime, declared: &declared, switches: &switches,
         owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
-        root: root.unwrap_or(0), size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(), made_objects: BTreeMap::new(), particles: BTreeMap::new(), clip_bounds: bounds.clone(),
+        root: root.unwrap_or(0), size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: is_item, stage: false, clip_parts: BTreeMap::new(), made_objects: BTreeMap::new(), particles: BTreeMap::new(), clip_bounds: bounds.clone(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: crate::mappings::api_commands().global_vfx_map.keys().cloned().collect(), effect_pieces: Vec::new(), parts: Vec::new(),
         content: String::new(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
@@ -1081,6 +1109,8 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     slots.insert("fields", w.fields.clone());
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
+    // (the class it is, for another object's code that tests it against one)
+    begin.push(format!("self.exports.__className = {};", compile::quote(compile::short(&c.name))));
     slots.insert("begin", begin);
     slots.insert("own_start", w.start.clone());
     slots.insert("own_tick", w.tick.clone());
@@ -1092,9 +1122,30 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     let start = pieces.iter().find(|p| (Some(p.sym) == root && p.from == 1) || (Some(p.sym) != root && Some(&p.label) == first_label.as_ref()));
     slots.insert("first", start.and_then(|p| w.frames.get(&(p.sym, p.from))).cloned().into_iter().collect());
     let names: Vec<&str> = std::iter::once(itself.name.as_str()).chain(object.classes.iter().map(|k| k.name.as_str())).collect();
-    let out = compile::native::fill_slots(skeleton, &slots).replace("{title}", &row.id).replace("{classes}", &names.join(", "))
+    // an item: the item handler, filled in with what it declares
+    let out = if is_item {
+        let item_skel = runtime.native_files.get("item").ok_or_else(|| one("the runtime has no native/item.hx".into()))?;
+        let mut islots = slots.clone();
+        let moved = islots.remove("begin").unwrap_or_default();
+        islots.insert("start", moved);
+        let moved = islots.remove("every_frame").unwrap_or_default();
+        islots.insert("update", moved);
+        let moved = islots.remove("end").unwrap_or_default();
+        islots.insert("ends", moved);
+        let num = |k: &str, d: f64| own.as_ref().and_then(|o| o.get(k)).and_then(|v| match v { Value::Num(n) => Some(*n), _ => None }).unwrap_or(d);
+        let flag = |k: &str, d: bool| own.as_ref().and_then(|o| o.get(k)).map(|v| match v { Value::Bool(b) => *b, Value::Num(n) => *n != 0.0, _ => d }).unwrap_or(d);
+        let idle = start.map(|p| p.fm_name.clone()).unwrap_or_default();
+        let words = [("TOSS", format!("{}", num("tossSpeed", units.item_toss))), ("PICKUP", flag("canPickup", true).to_string()),
+            ("WIDTH", format!("{}", num("width", 20.0))), ("HEIGHT", format!("{}", num("height", 20.0))), ("SIZE", format!("{}", units.size)), ("SPEED", format!("{}", units.speed)),
+            ("GHOST", flag("ghost", false).to_string()), ("GRAVITY", format!("{}", num("gravity", 0.0) * units.accel)),
+            ("FALL_CAP", format!("{}", num("max_gravity", num("maxgravity", num("max_ySpeed", 0.0))) * units.speed)), ("IDLE_ANIM", compile::quote(&idle))];
+        let mut text = compile::native::fill_slots(item_skel, &islots).replace("{title}", &row.id).replace("{classes}", &names.join(", "))
+            .replace("makeInt(LIFE)", &format!("makeInt({})", (num("time_max", 999999.0) * 2.0) as i64));
+        for (w, v) in words { text = crate::dyn_re(&format!(r"\b{w}\b")).replace_all(&text, v.as_str()).to_string(); }
+        text
+    } else { compile::native::fill_slots(skeleton, &slots).replace("{title}", &row.id).replace("{classes}", &names.join(", "))
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (frames.get() % 2 == 1) {\n\t}\n", "")
-        .replace("\tif (!started.get()) {\n\t\tstarted.set(true);\n\t}\n", "\tif (!started.get()) started.set(true);\n");
+        .replace("\tif (!started.get()) {\n\t\tstarted.set(true);\n\t}\n", "\tif (!started.get()) started.set(true);\n") };
     if let Some(n) = compile::native::declared_twice(&out) { return Err(one(format!("its script declares {n} twice"))) }
     // its files: the script, and its entity with each frame's code on its keyframe
     let lib = dir.join("library");
@@ -1138,8 +1189,9 @@ fn placed_names(src: &SourceModel, root: u16) -> BTreeMap<String, String> {
         if !seen.insert(sym) { continue }
         let Some(sp) = src.sprites.get(&sym) else { continue };
         for placed in sp.frames.iter().flatten() {
-            if let (Some(n), Some(c)) = (placed.name.as_ref(), src.class_of(placed.char_id)) {
-                out.entry(c.name.clone()).or_insert_with(|| n.clone());
+            // (one nobody named: by its symbol, as the walk of the planes files it)
+            if let Some(c) = src.class_of(placed.char_id) {
+                out.entry(c.name.clone()).or_insert_with(|| placed.name.clone().unwrap_or_else(|| format!("#{}", placed.char_id)));
             }
             todo.push(placed.char_id);
         }

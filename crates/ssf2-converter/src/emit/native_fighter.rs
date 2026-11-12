@@ -504,7 +504,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         .replace("{classes}", &classes.join(", "))
         .replace("/* {anims} */", &names.join(", "))
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (frames.get() % 2 == 1) {\n\t}\n", "");
-    if let Some(n) = native::declared_twice(&script) { return Err(vec![format!("its script declares {n} twice")]) }
+    if let Some(n) = native::declared_twice(&script) { if let Ok(p) = std::env::var("PEPTIDE_DUMP_TWICE") { let _ = std::fs::write(p, &script); } return Err(vec![format!("its script declares {n} twice")]) }
 
     // its entity: each frame with code calls it, and what each animation's attack declares runs on its first
     let entity = char_dir.join(format!("library/entities/{char_pascal}.entity"));

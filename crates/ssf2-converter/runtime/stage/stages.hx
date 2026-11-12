@@ -198,6 +198,19 @@ Stages.part = function(n) {
 	p.getLabel = function() { return c.currentLabel; };
 	p.setFallthrough = function(v) { if (c.set_fallthrough != null) c.set_fallthrough(v); else c.fallthrough = v; };
 	p.getFallthrough = function() { return c.get_fallthrough != null ? c.get_fallthrough() : c.fallthrough == true; };
+	// where it is, its size, scale and turn (each the source's), read and written on its clip
+	p.getX = function() { return AS3.num(c.x); };
+	p.getY = function() { return AS3.num(c.y); };
+	p.getWidth = function() { return AS3.num(c.width); };
+	p.getHeight = function() { return AS3.num(c.height); };
+	p.getScaleX = function() { return AS3.num(c.scaleX); };
+	p.getScaleY = function() { return AS3.num(c.scaleY); };
+	p.getRotation = function() { return AS3.num(c.rotation); };
+	p.setX = function(v) { c.x = v; };
+	p.setY = function(v) { c.y = v; };
+	p.setScaleX = function(v) { c.scaleX = v; };
+	p.setScaleY = function(v) { c.scaleY = v; };
+	p.setRotation = function(v) { c.rotation = v; };
 	Stages.parts.set(n, p);
 	return p;
 };

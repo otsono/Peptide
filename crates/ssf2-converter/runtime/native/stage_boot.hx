@@ -143,6 +143,8 @@ function tintsUpkeep(t) {
 //: (REGIONS: each region's rectangle and the point its clip is placed by, this engine's units)
 var namedObjs = [];
 var stageRegions = REGIONS;
+// how many children each named clip places (KIDS: by name)
+var stageKids = KIDS;
 var regionsMade = [];
 function nameObject(n, o) {
 	if (o != null) namedObjs.push({ n: n, o: o });
@@ -552,11 +554,24 @@ function partNamed(n) {
 	var region = null;
 	for (r in stageRegions) if (r.n == n) region = r;
 	if (obj != null && (obj.exports == null || obj.getCurrentFrame == null)) obj = null;
+	// (a name nothing is drawn, filed or placed under is no clip of the stage: none)
+	if (els.length == 0 && sf == null && obj == null && region == null) {
+		var placed = false;
+		for (k in stageKids) if (k.n == n) placed = true;
+		if (!placed) return null;
+	}
 	var p = { name: n, shown: true, alpha: 1.0, fall: false };
 	p.getX = function() { return region == null ? 0.0 : region.rx / SIZE; };
 	p.getY = function() { return region == null ? 0.0 : region.ry / SIZE; };
 	p.getWidth = function() { return region == null ? 0.0 : region.w / SIZE; };
 	p.getHeight = function() { return region == null ? 0.0 : region.h / SIZE; };
+	// its own scale and turn, as the tree placed it (each the source's)
+	p.sx = region == null ? 1.0 : region.sx;
+	p.sy = region == null ? 1.0 : region.sy;
+	p.rot = region == null ? 0.0 : region.rot;
+	p.getScaleX = function() { return p.sx; };
+	p.getScaleY = function() { return p.sy; };
+	p.getRotation = function() { return p.rot; };
 	var each = function(f) { for (e in els) { var v = bootBg[e.i]; if (v != null) f(e, v); } };
 	// (the clip's own picture: the pieces drawn right under it)
 	var own = function(e) { return e.path.length == depth + 1; };
@@ -564,6 +579,41 @@ function partNamed(n) {
 	p.getVisible = function() { return p.shown; };
 	p.setAlpha = function(a) { p.alpha = a; each(function(e, v) { if (v.setAlpha != null) v.setAlpha(a); }); };
 	p.getAlpha = function() { return p.alpha; };
+	// moved, scaled or turned by its code: every piece drawn under it goes with it (about where the
+	// tree placed it)
+	var at = { x: region == null ? 0.0 : region.rx, y: region == null ? 0.0 : region.ry };
+	p.setX = function(x) {
+		var dx = x * SIZE - at.x;
+		at.x = x * SIZE;
+		if (region != null) region.rx = at.x;
+		each(function(e, v) { if (v.setX != null) v.setX(v.getX() + dx); });
+	};
+	p.setY = function(y) {
+		var dy = y * SIZE - at.y;
+		at.y = y * SIZE;
+		if (region != null) region.ry = at.y;
+		each(function(e, v) { if (v.setY != null) v.setY(v.getY() + dy); });
+	};
+	p.setScaleX = function(k) {
+		var r = p.sx == 0 ? 1.0 : k / p.sx;
+		p.sx = k;
+		each(function(e, v) { if (v.setScaleX != null) { v.setScaleX(v.getScaleX() * r); v.setX(at.x + (v.getX() - at.x) * r); } });
+	};
+	p.setScaleY = function(k) {
+		var r = p.sy == 0 ? 1.0 : k / p.sy;
+		p.sy = k;
+		each(function(e, v) { if (v.setScaleY != null) { v.setScaleY(v.getScaleY() * r); v.setY(at.y + (v.getY() - at.y) * r); } });
+	};
+	// sized by its code: scaled to the size asked of the size the tree placed it at
+	p.setWidth = function(w) { if (region != null && region.w > 0) p.setScaleX((p.sx < 0 ? -1 : 1) * w * SIZE * Math.abs(region.sx) / region.w); };
+	p.setHeight = function(h) { if (region != null && region.h > 0) p.setScaleY((p.sy < 0 ? -1 : 1) * h * SIZE * Math.abs(region.sy) / region.h); };
+	// how many children its clip places (KIDS: by name, as the tree has them)
+	p.numKids = function() { for (k in stageKids) if (k.n == n) return k.k; return 0; };
+	p.setRotation = function(a) {
+		var d = a - p.rot;
+		p.rot = a;
+		each(function(e, v) { if (v.setRotation != null) v.setRotation(v.getRotation() + d); });
+	};
 	p.playLabel = function(f, stop) {
 		if (obj != null) { if (obj.exports.__playFrame != null) obj.exports.__playFrame(f); return; }
 		if (!(Std.isOfType(f, Float) || Std.isOfType(f, Int))) {

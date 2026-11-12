@@ -508,3 +508,14 @@ function NAME() {
 	}
 	return 1;
 }
+
+// ---- box_write
+//: box stats its code works out as it runs, a record in the source's terms, written to an object's
+//: box: its cases are each field the mapping gives this engine, with its scale, and the fixed launch
+// box stats worked out as it runs (the source's record) written to an object's box
+function NAME(o, i, r) {
+	if (o == null || r == null) return;
+	var s = {};
+	// {cases}
+	o.updateHitboxStats(i, s);
+}

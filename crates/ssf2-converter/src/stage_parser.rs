@@ -374,6 +374,8 @@ pub struct StageModel {
     /// Where each named clip's own origin sits (its placement point), in this stage's coordinates:
     /// the point the source's code moves the clip by (`sprite.y = plat.getY()`).
     pub named_regs: std::collections::BTreeMap<String, (f64, f64)>,
+    /// each named clip's own scale (x, y) and turn in degrees, as its parent holds it
+    pub named_turns: std::collections::BTreeMap<String, (f64, f64, f64)>,
     /// every library clip's extent in its own space (source pixels), by its library name: what
     /// the code makes a surface the shape of (`createSelfPlatformWithMC`)
     pub clip_bounds: std::collections::BTreeMap<String, Rect>,
@@ -1350,7 +1352,8 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
                 faller: None, behavior: crate::abc_parser::EnemyBehavior::default(),
                 reconstructed_script: None, class_name: None, max_y_speed: None,
                 instance_name: site.inst_name.clone(), declared_kind: site.kind.clone(), art_clip: None, placements: Vec::new(),
-                external_pkg: None, linkage_id: None, fg_anims: vec![], draws_in_front: false, platform_shapes: vec![], body_faces: vec![], child_rects: vec![], no_knockback: false, survives_bounds: false, projectiles: Default::default(), attack_stats: vec![], attack_anims: Default::default(), bounce: None, ledges: (false, false), dynamic: None, fg_name: None, shared_name: false,
+                // (the clip its class names for itself, as a spawned one's)
+                external_pkg: None, linkage_id: actor.and_then(|a| a.linkage_id.clone()), fg_anims: vec![], draws_in_front: false, platform_shapes: vec![], body_faces: vec![], child_rects: vec![], no_knockback: false, survives_bounds: false, projectiles: Default::default(), attack_stats: vec![], attack_anims: Default::default(), bounce: None, ledges: (false, false), dynamic: None, fg_name: None, shared_name: false,
             };
             if let Some(actor) = actor { apply_enemy_stats(&mut hz, actor); }
             if target {
@@ -1758,7 +1761,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
                     let hits = anim_labels.iter().filter(|l| labels.iter().any(|(fl, _)| fl.eq_ignore_ascii_case(l))).count();
                     (hits > 0).then(|| format!("{id}={:?} hits={hits} scenery={} claimed={}", sym_names.get(id), scenery_ids.contains(id), claimed.contains(id)))
                 }).collect();
-                eprintln!("[hz-clip-search] {} labels={anim_labels:?} cands={cands:?}", hz.label);
+                eprintln!("[hz-clip-search] {} labels={anim_labels:?} linkage={:?} art={:?} anims={} cands={cands:?}", hz.label, hz.linkage_id, hz.art_clip, hz.anims.len());
             }
             // THE CLIP THE CLASS NAMES FOR ITSELF comes first: the source states it, so there is
             // nothing to search for, and it holds whether the same clip is also placed on the
@@ -2307,7 +2310,8 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     }
     // the named regions in this stage's own coordinates, like everything else it is handed
     let named_boxes: BTreeMap<String, Rect> = named_boxes.iter().map(|(n, r)| (n.clone(), to_fm(r))).collect();
-    let named_regs: BTreeMap<String, (f64, f64)> = named_regs.iter().map(|(n, (x, y))| (n.clone(), ((x - ox) * scale, (y - oy) * scale))).collect();
+    let named_turns: BTreeMap<String, (f64, f64, f64)> = named_regs.iter().map(|(n, (_, _, sx, sy, r))| (n.clone(), (*sx, *sy, *r))).collect();
+    let named_regs: BTreeMap<String, (f64, f64)> = named_regs.iter().map(|(n, (x, y, ..))| (n.clone(), ((x - ox) * scale, (y - oy) * scale))).collect();
     let terrain_labels = anchors.terrain_labels.clone();
     let terrain_frames = anchors.terrain_frames;
     // does the plane's own timeline move anything drawn? each of its frames is walked with the
@@ -2332,7 +2336,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         let first = drawn(0);
         (1..frames.len()).any(|g| drawn(g) != first)
     });
-    let mut model = StageModel { source: path.to_path_buf(), origin: (ox, oy), terrain_off, terrain_labels, terrain_frames, terrain_art_moves, deferred, id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, sink_columns, art, warnings, scale, weathers, hazard_gate, stage_script, symbol_names: sym_names.values().cloned().collect(), hidden_clips, named_boxes, named_regs, clip_bounds, sprite_bounds,
+    let mut model = StageModel { source: path.to_path_buf(), origin: (ox, oy), terrain_off, terrain_labels, terrain_frames, terrain_art_moves, deferred, id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, sink_columns, art, warnings, scale, weathers, hazard_gate, stage_script, symbol_names: sym_names.values().cloned().collect(), hidden_clips, named_boxes, named_regs, named_turns, clip_bounds, sprite_bounds,
         cam_backgrounds: cam_backgrounds.iter().map(|b| b.linkage_id.clone()).collect(), clip_frame_scripts };
     // a placed clip whose animation is entirely event-driven joins the deferred list, so the plan
     // says its animation was left out on purpose (the idle it can reach is still kept and drawn)
@@ -3104,7 +3108,13 @@ fn walk_frame(
                 if still && inst_clip.is_some_and(|c| labelled.contains(&c)) && !labelled.contains(id) { inst_clip } else { Some(*id) }
             } else { inst_clip };
             let child_only_ground = my_collision && f.iter().any(|(_, _, n, ..)| n.as_deref() == Some("ground"));
-            let child_named: Vec<String> = match name { Some(n) => named.iter().cloned().chain(std::iter::once(n.clone())).collect(), None => named.to_vec() };
+            // (a clip nobody named that has a class of its own is reached by its symbol, `#<id>`: its
+            // code runs on its own timeline, which the stage's native script follows by that name)
+            let child_named: Vec<String> = match name {
+                Some(n) => named.iter().cloned().chain(std::iter::once(n.clone())).collect(),
+                None if !sym.is_empty() => named.iter().cloned().chain(std::iter::once(format!("#{id}"))).collect(),
+                None => named.to_vec(),
+            };
             let child_chain = if frames.len() > 1 {
                 fn gcd(a: usize, b: usize) -> usize { if b == 0 { a } else { gcd(b, a % b) } }
                 (chain_len / gcd(chain_len, frames.len()) * frames.len()).min(1 << 20)
@@ -5484,8 +5494,12 @@ fn extract_labeled_clip_anims(
             all.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max),
             all.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max),
         ));
+        // (a frame that draws nothing is still a frame of the clip: a blank, so its labels and frame
+        // scripts stay on the frames they sit on)
+        let blank = || bounds.map(|(l, t, _, _)| StageArt {
+            png: blank_png(), x: l - ox, y: t - oy, w: 1, h: 1, hold: 1, rotation: 0.0, scale_x: 1.0, scale_y: 1.0, alpha: 1.0, pivot: (0.0, 0.0), tint: TINT_ID });
         let frames: Vec<StageArt> = per_frame.iter()
-            .filter_map(|insts| composite_layer(&insts.iter().collect::<Vec<_>>(), shape_defs, bitmaps, ox, oy, bounds))
+            .filter_map(|insts| composite_layer(&insts.iter().collect::<Vec<_>>(), shape_defs, bitmaps, ox, oy, bounds).or_else(blank))
             .collect();
         // the clip's own frame scripts run as it plays, holds and all: the frames are kept whole
         // and split at its labels below
@@ -7078,7 +7092,7 @@ fn collect_class_sites(
     sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
     shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
     roles: &BTreeMap<String, crate::abc_parser::ClipRole>,
-) -> (Vec<ClassSite>, BTreeMap<String, u16>, std::collections::BTreeSet<String>, BTreeMap<String, Rect>, BTreeMap<String, (f64, f64)>) {
+) -> (Vec<ClassSite>, BTreeMap<String, u16>, std::collections::BTreeSet<String>, BTreeMap<String, Rect>, BTreeMap<String, (f64, f64, f64, f64, f64)>) {
     /// Union of the world AABBs of every shape under a clip.
     fn subtree_bounds(
         tags: &[swf::Tag], parent: Mat, rec: usize,
@@ -7123,7 +7137,7 @@ fn collect_class_sites(
         named: &mut BTreeMap<String, u16>,
         hidden: &mut std::collections::BTreeSet<String>,
         boxes: &mut BTreeMap<String, Rect>,
-        regs: &mut BTreeMap<String, (f64, f64)>,
+        regs: &mut BTreeMap<String, (f64, f64, f64, f64, f64)>,
     ) {
         if rec > 8 { return }
         for tag in tags {
@@ -7144,7 +7158,10 @@ fn collect_class_sites(
             let inst = po.name.as_ref().map(|n| n.to_str_lossy(encoding_rs::WINDOWS_1252).to_string());
             if let Some(n) = inst.clone() {
                 named.entry(n.clone()).or_insert(id);
-                regs.entry(n.clone()).or_insert((world.tx, world.ty));
+                // (with its own scale and turn, as its parent holds it: what its code reads of it)
+                let det = local.a * local.d - local.b * local.c;
+                let (sx, sy) = (local.a.hypot(local.b), local.c.hypot(local.d) * if det < 0.0 { -1.0 } else { 1.0 });
+                regs.entry(n.clone()).or_insert((world.tx, world.ty, sx, sy, local.b.atan2(local.a).to_degrees()));
                 // ...and where it is: a stage asks the match for a region by name (crateria's acid
                 // spares whoever stands in its `safezone`), and the placement is that region.
                 let mut acc = None;
