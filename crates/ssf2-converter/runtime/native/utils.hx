@@ -559,6 +559,20 @@ function pxTint(c, ct) {
 // place casts it, inside the stage's shadow mask (its `shadowMask` animation). FOLLOW_LIGHT: where
 // the light starts (this engine's units)
 var followAt = FOLLOW_LIGHT;
+// the stage's floors (FOLLOW_FLOORS: runs [x0, y0, x1, y1]): a shadow lands on the highest one under
+// a fighter in the air
+var followFloors = FOLLOW_FLOORS;
+function followGround(x, y) {
+	var best = null;
+	for (f in followFloors) {
+		var lo = Math.min(f[0], f[2]);
+		var hi = Math.max(f[0], f[2]);
+		if (x < lo || x > hi) continue;
+		var fy = f[2] == f[0] ? Math.min(f[1], f[3]) : f[1] + (f[3] - f[1]) * (x - f[0]) / (f[2] - f[0]);
+		if (fy >= y - 0.5 && (best == null || fy < best)) best = fy;
+	}
+	return best;
+}
 var followBox = null;
 var followCasts = [];
 // its code moves the light along the stage (the source's units)
@@ -591,8 +605,11 @@ function followShadows() {
 		var shadow = followCasts[i];
 		var sp = shadow.s;
 		if (c == null || c.isDisposed() || !c.getSprite().visible) { sp.visible = false; continue; }
-		// (the ground under it: where it stands, else where it last stood)
+		// (the ground under it: where it stands, else the highest floor below it; none, and its shadow
+		// is nowhere, as over a pit)
 		if (c.isOnFloor()) shadow.ground = c.getY();
+		else shadow.ground = followGround(c.getX(), c.getY());
+		if (shadow.ground == null) { sp.visible = false; continue; }
 		var fx = c.getX();
 		var fy = c.getY();
 		var g = shadow.ground;

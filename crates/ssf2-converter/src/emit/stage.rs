@@ -19,6 +19,8 @@ pub struct StageInput<'a> {
     /// where the stage's light starts, when its code moves it with the fighters (this engine's
     /// units): the stage draws their shadows from it (`followLight`)
     pub follow_light: Option<(f64, f64)>,
+    /// the stage's floors as runs [x0, y0, x1, y1] (this engine's units): where those shadows land
+    pub floors: Vec<[f64; 4]>,
     /// the boot (`DATA.stage.boot`)
     pub tables: &'a StageTables,
     /// the stage entity's animation that shows the stage's own art
@@ -980,6 +982,7 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
         // (the stage's own sprite, which shows the pictures its code draws from)
         .replace("getContent(STAGE_ID)", &format!("getContent({})", compile::quote(id)))
         .replace("FOLLOW_LIGHT", &input.follow_light.map(|(x, y)| format!("[{x}, {y}]")).unwrap_or_else(|| "null".into()))
+        .replace("FOLLOW_FLOORS", &format!("[{}]", input.floors.iter().map(|f| format!("[{:.1}, {:.1}, {:.1}, {:.1}]", f[0], f[1], f[2], f[3])).collect::<Vec<_>>().join(", ")))
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (stageFrames % 2 == 1) {\n\t}\n", "");
     if let Some(n) = compile::native::declared_twice(&script) { return Err(vec![format!("its script declares {n} twice")]) }
     Ok(script)

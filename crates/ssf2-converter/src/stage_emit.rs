@@ -748,6 +748,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     }).collect();
     let input = crate::emit::stage::StageInput {
         follow_light: model.stage_script.as_deref().is_some_and(light_follows).then(|| light_place(model)),
+        floors: if model.stage_script.as_deref().is_some_and(light_follows) { floor_runs(&entity) } else { Vec::new() },
         tables: &boot, anim: STAGE_ANIM, pan: pan_size, objects,
         surfaces: &plat_segs, frictions, pushes,
         particles: model.weathers.iter().enumerate().filter(|(_, w)| w.count > 0)
@@ -5309,6 +5310,32 @@ fn light_place(model: &StageModel) -> (f64, f64) {
         _ => (cx, ground - r_light_height(model)),
     };
     (lx, ly)
+}
+
+/// every floor of the stage's own animation, as runs from one point to the next (this engine's
+/// units): what a shadow cast by the stage lands on below a fighter in the air
+fn floor_runs(entity: &Value) -> Vec<[f64; 4]> {
+    let mut out = Vec::new();
+    let empty = Vec::new();
+    let arr = |k: &str| entity.get(k).and_then(Value::as_array).unwrap_or(&empty);
+    let Some(stage) = arr("animations").iter().find(|a| a["name"] == STAGE_ANIM) else { return out };
+    let layers: BTreeSet<&str> = stage["layers"].as_array().unwrap_or(&empty).iter().filter_map(Value::as_str).collect();
+    let mut kfs = BTreeSet::new();
+    for l in arr("layers").iter().filter(|l| l["$id"].as_str().is_some_and(|id| layers.contains(id))) {
+        for k in l["keyframes"].as_array().unwrap_or(&empty) { if let Some(k) = k.as_str() { kfs.insert(k); } }
+    }
+    let syms: BTreeSet<&str> = arr("keyframes").iter().filter(|k| k["$id"].as_str().is_some_and(|id| kfs.contains(id)))
+        .filter_map(|k| k["symbol"].as_str()).collect();
+    for sy in arr("symbols").iter().filter(|s| s["type"] == "LINE_SEGMENT" && s["$id"].as_str().is_some_and(|id| syms.contains(id))) {
+        if sy["pluginMetadata"]["com.fraymakers.FraymakersMetadata"]["structureType"] != "FLOOR" { continue }
+        let x0 = sy["x"].as_f64().unwrap_or(0.0);
+        let y0 = sy["y"].as_f64().unwrap_or(0.0);
+        let pts: Vec<f64> = sy["points"].as_array().unwrap_or(&empty).iter().filter_map(Value::as_f64).collect();
+        for w in pts.chunks(2).collect::<Vec<_>>().windows(2) {
+            if let ([ax, ay], [bx, by]) = (w[0], w[1]) { out.push([ax + x0, ay + y0, bx + x0, by + y0]); }
+        }
+    }
+    out
 }
 
 /// whether a stage's code moves its light along with the fighters (writes its light's `x`)
