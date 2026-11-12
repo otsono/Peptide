@@ -5277,6 +5277,10 @@ fn write_meta(path: &Path, _stage_id: &str, id: &str, language: &str, object_typ
 /// The stage's own scale is NOT part of this. That scale carries SSF2's world into Fraymakers',
 /// and a camera background is not in the world: it is tethered to the camera and sized against the
 /// SCREEN, so it wants the ratio of the two screens and nothing else. Multiplied by the stage scale
+/// the camera every converted stage declares (its StageStats `camera`): the view at its closest, as
+/// the source's screen is. what the source's code asks of its camera by name (`getCameraParameter`)
+pub const CAMERA_STATS: [(&str, f64); 3] = [("minZoomHeight", 360.0), ("initialHeight", 360.0), ("initialWidth", 640.0)];
+
 /// as well, fourside's moon came out a quarter again the size it is against its own skyline.
 const CAMERA_BG_SCALE: f64 = 1.0;
 
@@ -5315,6 +5319,8 @@ fn stage_stats_hx(id: &str, parallax: &[ParallaxRef], shadow_layers: &str) -> St
         content = id, anim = anim, bg_scale = CAMERA_BG_SCALE)
     }).collect();
     let backgrounds = if entries.is_empty() { String::new() } else { format!("{}\n\t\t", entries.join(",")) };
+    let camera = |n: &str| CAMERA_STATS.iter().find(|(k, _)| *k == n).map(|(_, v)| *v).unwrap_or(0.0);
+    let (min_zoom, init_h, init_w) = (camera("minZoomHeight"), camera("initialHeight"), camera("initialWidth"));
     format!(
         "// Stats for {id} (converted from SSF2)\n\n\
 {{\n\
@@ -5329,9 +5335,9 @@ fn stage_stats_hx(id: &str, parallax: &[ParallaxRef], shadow_layers: &str) -> St
 \t\tzoomY: 0,\n\
 \t\tcamEaseRate: 1 / 11,\n\
 \t\tcamZoomRate: 1 / 15,\n\
-\t\tminZoomHeight: 360,\n\
-\t\tinitialHeight: 360,\n\
-\t\tinitialWidth: 640,\n\
+\t\tminZoomHeight: {min_zoom},\n\
+\t\tinitialHeight: {init_h},\n\
+\t\tinitialWidth: {init_w},\n\
 \t\tbackgrounds: [{backgrounds}]\n\
 \t}}\n\
 }}\n"

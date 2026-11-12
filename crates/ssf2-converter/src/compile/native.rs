@@ -1569,15 +1569,16 @@ impl<'o, 'a> Writer<'o, 'a> {
             // the runtime)
             Place::Member(Expr::Call(g, a), f) if a.is_empty() && matches!(&**g, Expr::Member(_, m) | Expr::Name(m) if m == "getLightSourceMC") => {
                 self.expr(v)?;
-                Ok(vec![format!("// (not ported: the source moves its light's {f} here; this engine's light stays where the conversion put it)")])
+                Ok(vec![format!("// (not ported: the source moves its light's {f} here; this engine's stage lights cannot be changed as it runs, `Stage.updateLightboxStats` has no effect)")])
             }
             // the stage's camera or death bounds moved by its code: the engine's stay where the
             // conversion put them (as on the runtime, which hands its code a copy)
             Place::Member(Expr::Call(g, a), f) if a.is_empty() && matches!(&**g, Expr::Member(_, m) | Expr::Name(m) if matches!(m.as_str(), "getCameraBounds" | "getDeathBounds"))
                 && (self.o.stage || matches!(&**g, Expr::Member(o, _) if self.expr(o).is_ok_and(|(w, _)| w == "stage"))) => {
                 let (Expr::Member(_, m) | Expr::Name(m)) = &**g else { unreachable!() };
-                self.expr(v)?;
-                Ok(vec![format!("// (not ported: the source moves its {m} rectangle's {f} here; this engine's stays where the conversion put it)")])
+                let (val, _) = self.expr(v)?;
+                self.util("stageBounds")?;
+                Ok(vec![format!("stageBoundsSet({}, {}, {val});", m == "getCameraBounds", quote(f))])
             }
             // a field of a named clip of the planes written: shown, faded, let through (a field its own
             // class declares is its own, below)
@@ -2723,6 +2724,11 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// a helper of `helpers.hx` that takes the source's size, written once
     /// a function of `runtime/native/utils.hx`, written once
     fn util(&mut self, name: &str) -> Result<String, String> {
+        // (the stage's camera settings, as the conversion declares them)
+        if name == "cameraParameter" && !self.helpers.contains_key(name) {
+            let cases: Vec<String> = crate::stage_emit::CAMERA_STATS.iter().map(|(k, v)| format!("case {}: return {};", quote(k), number(*v))).collect();
+            self.helpers.insert(name.into(), helper(self.o.runtime, "utils", name, name, &[], &cases)?);
+        }
         if !self.helpers.contains_key(name) { self.helpers.insert(name.into(), helper(self.o.runtime, "utils", name, name, &[("SIZE", number(self.o.size)), ("SPEED", number(self.o.speed)), ("ACCEL", number(self.o.accel))], &[])?); }
         Ok(name.into())
     }
@@ -3816,7 +3822,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 self.blocks.insert("ledges".into());
                 return Ok(("stageLedges()".into(), Ty::Rect));
             }
-            ("getDeathBounds" | "getCameraBounds", []) if who == "stage" || (self.o.stage && who == "self") => {
+            // (the stage's own: what its code keeps of them, which its writes move)
+            ("getDeathBounds" | "getCameraBounds", []) if self.o.stage && (who == "stage" || who == "self") => {
+                self.util("stageBounds")?;
+                return Ok((format!("stageBoundsRec({})", m == "getCameraBounds"), Ty::Rect));
+            }
+            ("getDeathBounds" | "getCameraBounds", []) if who == "stage" => {
                 let f = self.sized_helper("source_rect", "sourceRect")?;
                 return Ok((format!("{f}(stage.{m}())"), Ty::Rect));
             }
@@ -4278,6 +4289,7 @@ self.playFrameLabel({})", quote(f))); }
     fn fill(&mut self, row: &Row, who: &str, args: &[Expr], m: &str) -> Result<(String, Ty), String> {
         if let Some(g) = &row.gap { self.gaps.insert(g.clone()); }
         if let Some(h) = &row.helper {
+            if h == "cameraParameter" { self.util(h)?; }
             if !self.helpers.contains_key(h) { self.helpers.insert(h.clone(), helper(self.o.runtime, "utils", h, h, &[("SIZE", number(self.o.size)), ("SPEED", number(self.o.speed)), ("ACCEL", number(self.o.accel))], &[])?); }
         }
         let mut t = row.code.replace("{self}", who)

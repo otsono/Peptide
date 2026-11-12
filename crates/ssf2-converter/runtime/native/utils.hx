@@ -386,6 +386,65 @@ function foeAllowAttack(o, on, anims) {
 	}
 }
 
+// ---- stageBounds
+// the stage's camera and death bounds as its code keeps them (the source's units): read once from
+// the engine's, then what its code writes. a write moves the engine's own: the death bounds by where
+// they start, the camera held on the middle of the rectangle (`CameraMode.LOCKED`). their size is the
+// engine's, which its code cannot change
+var stageBoundsCam = null;
+var stageBoundsDeath = null;
+var stageViewHeight = 0.0;
+function stageBoundsRec(camera) {
+	var r = camera ? stageBoundsCam : stageBoundsDeath;
+	if (r != null) return r;
+	var a = camera ? stage.getCameraBounds() : stage.getDeathBounds();
+	if (a == null) return null;
+	var rr = a.getRectangle();
+	if (rr == null) return null;
+	var x = (a.getX() + rr.x) / SIZE;
+	var y = (a.getY() + rr.y) / SIZE;
+	r = { x: x, y: y, width: rr.width / SIZE, height: rr.height / SIZE, left: x, top: y, right: x + rr.width / SIZE, bottom: y + rr.height / SIZE };
+	if (camera) stageBoundsCam = r; else stageBoundsDeath = r;
+	return r;
+}
+function stageBoundsSet(camera, f, v) {
+	var r = stageBoundsRec(camera);
+	if (r == null || v == null || v != v) return;
+	switch (f) {
+		case "x": r.x = v;
+		case "y": r.y = v;
+		case "width": r.width = v;
+		case "height": r.height = v;
+	}
+	r.left = r.x; r.top = r.y; r.right = r.x + r.width; r.bottom = r.y + r.height;
+	if (f != "x" && f != "y") return;
+	if (camera) {
+		var c = match.getCamera();
+		if (c == null) return;
+		if (c.getMode() != CameraMode.LOCKED) c.setMode(CameraMode.LOCKED);
+		// (showing the rectangle's height: the view's height at no zoom over it)
+		// (the view's height unzoomed, read before the first zoom: the engine reports it zoomed after)
+		if (stageViewHeight <= 0) stageViewHeight = c.getViewportHeight() / (c.getZoomScaleY() > 0 ? c.getZoomScaleY() : 1);
+		if (r.height > 0) { var z = stageViewHeight / (r.height * SIZE); c.setLockedZoom(z, z); }
+		c.setLockedPosition((r.x + r.width / 2) * SIZE, (r.y + r.height / 2) * SIZE);
+	} else {
+		var a = stage.getDeathBounds();
+		if (a == null) return;
+		var rr = a.getRectangle();
+		a.updateCollisionAreaStats({ startX: r.x * SIZE - rr.x, startY: r.y * SIZE - rr.y });
+	}
+}
+
+// ---- cameraParameter
+// a setting of the stage's camera by the source's name: what the conversion declares it as (its
+// cases: each setting and its value)
+function cameraParameter(k) {
+	switch (k) {
+		// {cases}
+	}
+	return null;
+}
+
 // ---- madeObject
 // an object the stage's code made (not counted with what its boot made, as the runtime counts)
 function madeObject(id, o) {

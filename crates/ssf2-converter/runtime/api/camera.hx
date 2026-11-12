@@ -7,6 +7,9 @@ PeptideCamera.build = function(me) {
 	PeptideBaseAPIObject.build(me);
 	me.__is.push("PeptideCamera");
 	me.__params = new haxe.ds.StringMap();
+	// (what the conversion declares its camera as, until its code sets its own)
+	var declared = PeptideRuntime.data.cameraParams;
+	if (declared != null) for (p in declared) me.__params.set(p.k, p.v);
 	me.__points = [];
 	me.__type = "SSF2Camera";
 	// its clip, as the source reads it: the view's centre and size, in the source's units

@@ -162,7 +162,7 @@
   "deleteForcedTarget": "{self}.deleteForcedTarget({0})",
   // not ported: the camera's zoom, which this engine frames for itself (as on the runtime)
   "updateCameraParameters": { "code": "", "gap": "sets the camera's zoom, which this engine frames for itself" },
-  "getCameraParameter": { "code": "null", "returns": "object", "gap": "sets the camera's zoom, which this engine frames for itself" },
+  "getCameraParameter": { "code": "cameraParameter({0})", "helper": "cameraParameter", "returns": "number" },
   // not ported, as on the runtime: a named box's rectangle
   "getHitBox": { "code": "null", "returns": "rect" },
   // its palette, as the runtime answers it: none set here

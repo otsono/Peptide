@@ -1891,6 +1891,31 @@ def s_stand(ctx, r):
                     merged.append(w2)
                     bad3.append(next(b for b in bad2 if b.startswith(f"entrance {w2['entrance']}:")))
             rows, bad = merged, bad3
+            # an entrance where the port's fighter was CARRIED (it landed at one height and the
+            # stage moved it before the shared moment) while the source's held still: something the
+            # stage puts down at random stood under it (bowser's castle drops its thwomp on one of
+            # six columns, each engine rolling its own). both attempts above fall inside one of its
+            # cycles, so it is asked again once the stage has rolled anew; a fault of the port's
+            # own (a floor it falls through) answers the same way every time and still fails
+            carried = lambda w: (w.get("port") is not None and w.get("port_at") is not None
+                                 and abs(w["port"] - w["port_at"]) > TOL
+                                 and (w.get("source_landed_as_port") is None or abs(w["source_landed_as_port"] - w["source_as_port"]) <= TOL))
+            bad_now = {int(m.group(1)) for b in bad if (m := re.match(r"entrance (\d+):", b))}
+            # (carried at BOTH attempts: one that fell through first and landed on something later
+            # is a fault, not a roll)
+            first = {w["entrance"]: w for w in r.evidence["first_attempt"]}
+            if bad_now and all(carried(w) and carried(first.get(w["entrance"], {})) for w in rows if w["entrance"] in bad_now):
+                eng.tick(1600)
+                s.tick(800)
+                third, _ = attempt()
+                r.evidence["third_attempt"] = third
+                keep = []
+                for w in third:
+                    if w["entrance"] in bad_now and agreed(w):
+                        rows = [w if x["entrance"] == w["entrance"] else x for x in rows]
+                    elif w["entrance"] in bad_now:
+                        keep.append(next(b for b in bad if b.startswith(f"entrance {w['entrance']}:")))
+                bad = keep
     except Exception as ex:
         bad.append(f"the fighters could not be read ({ex!r})")
     r.evidence["rest"] = rows

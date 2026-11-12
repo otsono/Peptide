@@ -735,9 +735,10 @@ fn stage_data(model: &crate::stage_parser::StageModel, src: &crate::model::Sourc
     format!("DATA.stage = {{}};\nDATA.stage.upkeep = function(t) {{{upkeep} }};\nDATA.stage.weatherDeclared = {};\nDATA.stage.structureNames = [{}];\n\
 {lists}{}{}DATA.stage.weatherLists = {};\nDATA.stage.elements = {};\nDATA.stage.surfaces = {};\nDATA.stage.frictions = [{}];\nDATA.stage.pushes = [{}];\n\
 DATA.stage.particles = {};\nDATA.stage.particleCap = {};\nDATA.stage.lib = {};\nDATA.stage.placedAt = [{}];\nDATA.stage.origin = {{ x: {:.4}, y: {:.4} }};\n\
-DATA.origin = DATA.stage.origin;\nDATA.stage.byCode = [{}];\n",
+DATA.origin = DATA.stage.origin;\nDATA.stage.byCode = [{}];\nDATA.cameraParams = [{}];\n",
         !t.weather.is_empty(), strs(&structure_names), stage_boot_data(model, src, input), clip_bounds_data(model, src), list(weather_lists), list(elements), list(surfaces), input.frictions.join(", "), input.pushes.join(", "),
-        list(particles), input.particle_cap, list(lib), input.placed_at, input.origin.0, input.origin.1, strs(&by_code))
+        list(particles), input.particle_cap, list(lib), input.placed_at, input.origin.0, input.origin.1, strs(&by_code),
+        crate::stage_emit::CAMERA_STATS.iter().map(|(k, v)| format!("{{ k: {}, v: {v} }}", compile::quote(k))).collect::<Vec<_>>().join(", "))
 }
 
 /// `DATA.clipBounds`: the extent of each library clip the code names in a string (source pixels,
