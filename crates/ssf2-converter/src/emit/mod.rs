@@ -1104,7 +1104,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     let anim_of: Vec<String> = data.ssf2_to_fm_anim.iter()
         .map(|(l, a)| format!("case {}: return {};", compile::quote(l), compile::quote(a))).collect();
     let script = format!("{}DATA.animOf = function(l) {{ switch (l) {{ {} default: return null; }} }};\n", out.script, anim_of.join(" "));
-    if let Ok((native, _)) = &natively_written {
+    if let Ok((native, _, _)) = &natively_written {
         std::fs::write(dir.join("Script.hx"), native)?;
     } else {
         std::fs::write(dir.join("Script.hx"), &script)?;
@@ -1116,7 +1116,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     landing_stats(&dir, &box_writes, &label_jumps(&model, &pieces))?;
     autolink_entity(&entity_path, &dir.join("HitboxStats.hx"), char_name, &links, units.size)?;
     engine_animations(&entity_path, &dir.join("AnimationStats.hx"), char_name)?;
-    if natively_written.is_ok() { native_fighter::write_attack_meta(&dir.join("AnimationStats.hx"))?; }
+    if let Ok((_, _, meta)) = &natively_written { native_fighter::write_attack_meta(&dir.join("AnimationStats.hx"), meta)?; }
     // each projectile and item the fighter declares runs on the runtime too
     let owner = native_projectile::Owner { attacks: &fighter.attacks, stats: &fighter.stats, anims: pieces.iter().map(|p| (p.fm_name.clone(), p.label.clone())).collect(), native: natively_written.is_ok() };
     let mut natively: Vec<(String, Result<(), String>)> = Vec::new();
@@ -1134,7 +1134,7 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         "fighter_native": natively_written.is_ok(),
         "fighter_on_runtime": fighter_census,
         // what its source does that its Fraymakers code does not
-        "fighter_gaps": natively_written.as_ref().map(|(_, g)| g.iter().cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "fighter_gaps": natively_written.as_ref().map(|(_, g, _)| g.iter().cloned().collect::<Vec<_>>()).unwrap_or_default(),
         "problems": out.problems.iter().chain(projectiles.iter().flat_map(|(_, e)| e.problems.iter())).collect::<Vec<_>>(),
         "unplaced": unplaced,
         "unknown": out.unknown.iter().chain(projectiles.iter().flat_map(|(_, e)| e.unknown.iter())).collect::<BTreeSet<_>>(),

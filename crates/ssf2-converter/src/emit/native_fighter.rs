@@ -266,7 +266,7 @@ pub fn census(f: &Fighting) -> Vec<String> {
 /// The fighter's script, written natively, with its entity's keyframes calling its frames; or
 /// every reason it stays on the runtime.
 pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, first_frame: &BTreeMap<String, String>, stat_code: &[String])
-    -> Result<(String, BTreeSet<String>), Vec<String>> {
+    -> Result<(String, BTreeSet<String>, BTreeMap<String, String>), Vec<String>> {
     let (w, parts) = written(f, true)?;
     let rt = f.runtime;
     let skeleton = rt.native_files.get("fighter").ok_or_else(|| vec!["the runtime has no native/fighter.hx".to_string()])?;
@@ -371,7 +371,6 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
         }
     }
     for (anim, fs) in fields_of { if !fs.is_empty() { meta.insert(anim, format!("{{ {} }}", fs.join(", "))); } }
-    if let Ok(mut m) = attack_meta().lock() { *m = meta; }
     // what other objects' code asks of it: its labels' animations, its clips' fields
     let anim_cases: Vec<String> = f.anim_of.iter().map(|(l, a)| format!("case {}: return {};", compile::quote(l), compile::quote(a))).collect();
     functions.push(table("anim_of", &anim_cases)?);
@@ -592,7 +591,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let script = format!("{}// the files its content is found in, whoever its code is acting as\nvar ownResource = self.getResource();\n\n{}\n\n// ---- act_as: runtime/native/fighter_rules.hx\n{act_as}\n", &script[..head], &script[head..]);
     let mut gaps = w.gaps.clone();
     if blocks.contains("copy_power") && copy_move(f).is_none() { gaps.insert("takes powers, but no clip of its says where it swallows (its code writes no KirbyPower in a frame)".into()); }
-    Ok((script, gaps))
+    Ok((script, gaps, meta))
 }
 
 /// the label its clip is on (the last one at or before the frame it shows), as the source reads it
@@ -801,16 +800,10 @@ fn walk_starts(f: &Fighting, frames: &mut BTreeMap<(u16, u32), String>) {
     }
 }
 
-/// each attack animation's metadata, as `write` worked it out (the animation's name, its literal)
-pub fn attack_meta() -> &'static std::sync::Mutex<BTreeMap<String, String>> {
-    static META: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, String>>> = std::sync::OnceLock::new();
-    META.get_or_init(Default::default)
-}
-
 /// its animations' stats with their attack metadata set: the last pass over the file, as the
 /// others rewrite its lines field by field
-pub fn write_attack_meta(stats: &std::path::Path) -> anyhow::Result<()> {
-    let meta = attack_meta().lock().map(|mut m| std::mem::take(&mut *m)).unwrap_or_default();
+/// (`meta`: each animation's metadata as `write` worked it out, the animation's name to its literal)
+pub fn write_attack_meta(stats: &std::path::Path, meta: &BTreeMap<String, String>) -> anyhow::Result<()> {
     if meta.is_empty() { return Ok(()) }
     let Ok(text) = std::fs::read_to_string(stats) else { return Ok(()) };
     let out: Vec<String> = text.lines().map(|l| {

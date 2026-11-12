@@ -130,9 +130,10 @@ function colorFilters(t, o) {
 
 // ---- declaredOf
 // what another object declares (`getItemStat`, `getEnemyStat`, `getProjectileStat` on it): its
-// stats' metadata, which holds its declaration (read by the stat's own name: `declaredOf(o).damage`)
+// stats' metadata, which holds its declaration (read by the stat's own name: `declaredOf(o).damage`).
+// a disposed object still reads its own; an object that declares nothing (a stock fighter) reads null
 function declaredOf(o) {
-	var d = o == null || o.isDisposed() ? null : o.getGameObjectStatsMetadata();
+	var d = o == null ? null : o.getGameObjectStatsMetadata();
 	return d == null ? {} : d;
 }
 

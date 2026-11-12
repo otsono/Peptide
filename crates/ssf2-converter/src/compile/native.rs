@@ -3459,8 +3459,10 @@ self.playFrameLabel({})", quote(f))); }
         let words = [("PROJECTILE", name.to_string()), ("CONTENT", content), ("FROM", from.to_string()), ("DX", number(dx)), ("DY", number(dy)),
                      ("XS", fold(&format!("{} * {speed}", number(xs)))), ("YS", fold(&format!("{} * {speed}", number(ys)))), ("SIZE", number(self.o.size)),
                      // (fired under a name its entity is not written from: it takes that one's declaration on)
-                     ("DECLARES", declares.map(|r| format!("p.updateGameObjectStatsMetadata({r});")).unwrap_or_default())];
+                     // (nothing to take on drops the statement)
+                     ("DECLARES", declares.map(|r| format!("p.updateGameObjectStatsMetadata({r})")).unwrap_or_default())];
         let def = helper(self.o.runtime, "helpers", if self.o.fighter { "fighter_fire" } else { "fire" }, &f, &words, &[])?;
+        let def = def.lines().filter(|l| l.trim() != ";").collect::<Vec<_>>().join("\n");
         self.helpers.insert(f.clone(), def);
         Ok(f)
     }

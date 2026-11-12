@@ -52,7 +52,7 @@ function NAME(?x, ?y, ?place) {
 	if (y == null) y = 0;
 	var p = match.createProjectile(self.getResource().getContent("CONTENT"), self.getOwner());
 	if (p == null) return null;
-	DECLARES
+	DECLARES;
 	if (place == true && (x != 0 || y != 0)) {
 		p.setX(x * SIZE);
 		p.setY(y * SIZE);
@@ -409,7 +409,7 @@ function NAME(?x, ?y, ?place) {
 	self.exports.__launch = launch;
 	var p = match.createProjectile(self.getResource().getContent("CONTENT"), self);
 	if (p == null) { self.exports.__launch = null; return null; }
-	DECLARES
+	DECLARES;
 	if (p.exports != null) p.exports.__thrownRight = p.isFacingRight();
 	if (self.exports.__launch != null) {
 		self.exports.__launch = null;
