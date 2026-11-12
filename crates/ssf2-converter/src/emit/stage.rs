@@ -891,17 +891,38 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     let rows = |v: Vec<String>| if v.is_empty() { "[]".to_string() } else { format!("[{}]", v.join(", ")) };
     // (how many children each named clip of its tree places on its first frame: what its code
     // counts through)
-    let mut kids: BTreeMap<String, usize> = BTreeMap::new();
-    for s in super::clip_tree(src, Some(sym)) {
+    // ...and each of them in order: a picture placed there (a Flash `Bitmap`) is its library name,
+    // where its corner sits on the stage and its scale (this engine's units), and its size
+    type M = (f64, f64, f64, f64, f64, f64);
+    let mul = |p: M, l: &crate::swf_timeline::Matrix| -> M { (p.0 * l.a + p.2 * l.b, p.1 * l.a + p.3 * l.b, p.0 * l.c + p.2 * l.d, p.1 * l.c + p.3 * l.d,
+        p.0 * l.tx + p.2 * l.ty + p.4, p.1 * l.tx + p.3 * l.ty + p.5) };
+    let mut kids: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
+    let mut todo: Vec<(u16, M, usize)> = vec![(sym, (1.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0)];
+    let mut seen = BTreeSet::new();
+    while let Some((s, world, depth)) = todo.pop() {
+        if depth > 12 || !seen.insert((s, (world.4 * 10.0) as i64, (world.5 * 10.0) as i64)) { continue }
         let Some(sp) = src.sprites.get(&s) else { continue };
         for placed in sp.frames.iter().flatten() {
-            let Some(n) = placed.name.as_ref() else { continue };
-            let k = src.sprites.get(&placed.char_id).and_then(|c| c.frames.first()).map(|f| f.len()).unwrap_or(0);
-            kids.entry(n.clone()).or_insert(k);
+            let w = mul(world, &placed.matrix);
+            if let Some(n) = placed.name.as_ref() {
+                if !kids.contains_key(n) {
+                    let first: Vec<&crate::swf_timeline::Placed> = src.sprites.get(&placed.char_id).and_then(|c| c.frames.first()).map(|f| f.iter().collect()).unwrap_or_default();
+                    let list = first.iter().map(|c| match src.bitmaps.get(&c.char_id) {
+                        Some((bw, bh)) => {
+                            let cw = mul(w, &c.matrix);
+                            format!("{{ b: {}, x: {:.2}, y: {:.2}, sx: {:.4}, sy: {:.4}, w: {bw}, h: {bh} }}", compile::quote(src.symbols.get(&c.char_id).map(String::as_str).unwrap_or("")),
+                                (cw.4 - input.origin.0) * units.size, (cw.5 - input.origin.1) * units.size, cw.0 * units.size, cw.3 * units.size)
+                        }
+                        None => "null".to_string(),
+                    }).collect();
+                    kids.insert(n.clone(), (first.len(), list));
+                }
+            }
+            todo.push((placed.char_id, w, depth + 1));
         }
     }
     let words = [("PAN_X", format!("{}", input.pan.0)), ("PAN_Y", format!("{}", input.pan.1)), ("REGIONS", regions.to_string()),
-        ("KIDS", rows(kids.iter().map(|(n, k)| format!("{{ n: {}, k: {k} }}", compile::quote(n))).collect())),
+        ("KIDS", rows(kids.iter().map(|(n, (k, c))| format!("{{ n: {}, k: {k}, c: [{}] }}", compile::quote(n), c.join(", "))).collect())),
         ("SURFACES", rows(input.surfaces.iter().map(|(n, s)| format!("{{ n: {}, s: [{}] }}", compile::quote(n), strs(s))).collect())),
         ("FRICTIONS", rows(input.frictions.clone())), ("PUSHES", rows(input.pushes.clone())), ("ACCEL", format!("{}", units.accel)),
         ("SURFACES_ON", surfaces.to_string()), ("CAP", input.particle_cap.to_string()), ("SIZE", format!("{}", units.size)),
@@ -948,6 +969,8 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     publish.push(format!("self.exports.__cameraBgs = [{}];", cams.join(", ")));
     slots.insert("publish", publish);
     let script = compile::native::fill_slots(skeleton, &slots).replace("{title}", id).replace("{classes}", class)
+        // (the stage's own sprite, which shows the pictures its code draws from)
+        .replace("getContent(STAGE_ID)", &format!("getContent({})", compile::quote(id)))
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (stageFrames % 2 == 1) {\n\t}\n", "");
     if let Some(n) = compile::native::declared_twice(&script) { return Err(vec![format!("its script declares {n} twice")]) }
     Ok(script)

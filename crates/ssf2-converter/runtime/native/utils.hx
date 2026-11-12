@@ -445,6 +445,113 @@ function cameraParameter(k) {
 	return null;
 }
 
+// ---- pixels
+// the pictures its code draws on and from (`BitmapData`), drawn with the engine's sprites: a picture
+// is a record (`pxCanvas`): one of its library's (`anim`, the stage sprite's animation showing it),
+// one placed on the stage (where its corner sits and its scale, this engine's units), or one its
+// code makes (drawn nowhere until it is copied onto one that is). what its code draws on one is a
+// sprite per place it draws at: a part of another picture (masked to the rectangle copied), or a
+// colour (the white pixel, tinted and stretched over the rectangle filled). a place drawn at again
+// is that sprite changed, as a picture keeps only the last paint there
+var pxSprites = 0;
+function pxCanvas(anim, w, h) {
+	return { anim: anim, width: w == null ? 0 : w, height: h == null ? 0 : h, x: 0.0, y: 0.0, sx: 1.0, sy: 1.0, placed: false,
+		root: null, paints: new haxe.ds.StringMap(), shader: null, cls: anim, rect: null };
+}
+// one the tree placed (a plane's child, `getChildAt`)
+function pxPlaced(k) {
+	if (k == null) return null;
+	if (k.canvas == null) {
+		var c = pxCanvas(null, k.w, k.h);
+		c.cls = k.b; c.x = k.x; c.y = k.y; c.sx = k.sx; c.sy = k.sy; c.placed = true;
+		k.canvas = { bitmapData: c, x: k.x / SIZE, y: k.y / SIZE, width: k.w, height: k.h, kind: "bitmap" };
+	}
+	return k.canvas;
+}
+// the container its paints are drawn in: over the stage's art where the tree placed it
+function pxRoot(c) {
+	if (c.root != null) return c.root;
+	c.root = Container.create();
+	if (c.placed) {
+		stage.getBackgroundEffectsContainer().addChild(c.root);
+		c.root.x = c.x;
+		c.root.y = c.y;
+		c.root.scaleX = c.sx;
+		c.root.scaleY = c.sy;
+	}
+	return c.root;
+}
+function pxSprite(anim) {
+	var s = Sprite.create(self.getResource().getContent(STAGE_ID));
+	s.currentAnimation = anim;
+	pxSprites++;
+	return s;
+}
+// a colour over a rectangle of it (`fillRect`, a pixel for `setPixel`); the clear colour of a
+// picture its code made takes back what was drawn there
+function pxFill(c, x, y, w, h, color) {
+	if (c == null) return;
+	var key = "f" + x + "," + y + "," + w + "," + h;
+	var clear = !c.placed && (color >>> 24) == 0;
+	if (clear && x <= 0 && y <= 0 && w >= c.width && h >= c.height) { pxClear(c); return; }
+	var p = c.paints.get(key);
+	if (clear) { if (p != null) p.s.visible = false; return; }
+	if (p == null) {
+		var sp = pxSprite("px_white");
+		var sh = new SolidColorShader();
+		sp.addShader(sh);
+		p = { s: sp, sh: sh };
+		c.paints.set(key, p);
+	}
+	p.sh.color = color | 0xff000000;
+	p.s.x = x; p.s.y = y; p.s.scaleX = w; p.s.scaleY = h;
+	if (!p.s.visible || !p.on) { p.s.visible = true; p.on = true; pxRoot(c).addChild(p.s); }
+}
+function pxClear(c) {
+	// (hidden, kept for the next paint at the same place: a picture cleared and drawn again each
+	// frame reuses its sprites)
+	for (k in c.paints.keys()) { var p = c.paints.get(k); if (p.box != null) p.box.visible = false; else if (p.s != null) p.s.visible = false; }
+}
+// a rectangle of another picture copied onto it at a point (`copyPixels`): that picture's sprite,
+// moved so the rectangle lands on the point and masked to it. a picture its code made is moved
+// whole (it is drawn in one place at a time)
+function pxCopy(c, src, r, pt) {
+	if (c == null || src == null || r == null || pt == null) return;
+	var key = "c" + pt.x + "," + pt.y + ":" + (src.anim == null ? "made" : src.anim);
+	var p = c.paints.get(key);
+	if (p == null) {
+		var box = Container.create();
+		var mask = pxSprite("px_white");
+		box.addChild(mask);
+		box.addFilter(new MaskFilter(mask));
+		p = { box: box, mask: mask, s: null };
+		c.paints.set(key, p);
+	}
+	if (src.anim != null) {
+		if (p.s == null) { p.s = pxSprite(src.anim); p.box.addChild(p.s); }
+		if (src.shader != null && p.sh != src.shader) { if (p.sh != null) p.s.removeShader(p.sh); p.s.addShader(src.shader); p.sh = src.shader; }
+		p.s.x = -r.x; p.s.y = -r.y;
+	} else {
+		var made = pxRoot(src);
+		if (p.s != made) { made.remove(); p.box.addChild(made); p.s = made; }
+		made.x = -r.x; made.y = -r.y;
+	}
+	p.mask.x = 0; p.mask.y = 0; p.mask.scaleX = r.width; p.mask.scaleY = r.height;
+	p.box.x = pt.x; p.box.y = pt.y;
+	if (!p.box.visible || !p.on) { p.box.visible = true; p.on = true; pxRoot(c).addChild(p.box); }
+}
+// its colours changed (`colorTransform`): every sprite it shows takes them, and what it shows from
+// then on (a number in their place changes nothing)
+function pxTint(c, ct) {
+	if (c == null || ct == null || !Std.isOfType(ct, RgbaColorShader)) return;
+	c.shader = ct;
+	for (k in c.paints.keys()) {
+		var p = c.paints.get(k);
+		if (p.s != null && p.box == null && p.sh != ct) { if (p.sh != null) p.s.removeShader(p.sh); p.s.addShader(ct); p.sh = ct; }
+		else if (p.s != null && p.box != null && p.sh2 != ct) { if (p.sh2 != null) p.s.removeShader(p.sh2); p.s.addShader(ct); p.sh2 = ct; }
+	}
+}
+
 // ---- madeObject
 // an object the stage's code made (not counted with what its boot made, as the runtime counts)
 function madeObject(id, o) {

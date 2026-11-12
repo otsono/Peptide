@@ -618,6 +618,11 @@ function partNamed(n) {
 	p.setHeight = function(h) { if (region != null && region.h > 0) p.setScaleY((p.sy < 0 ? -1 : 1) * h * SIZE * Math.abs(region.sy) / region.h); };
 	// how many children its clip places (KIDS: by name, as the tree has them)
 	p.numKids = function() { for (k in stageKids) if (k.n == n) return k.k; return 0; };
+	// a child of it by place: a picture the tree placed there (`pixels`), else a clip
+	p.childAt = function(i) {
+		for (k in stageKids) if (k.n == n) { var c = k.c[i]; return c == null ? { kind: "clip" } : pxPlaced(c); }
+		return null;
+	};
 	p.setRotation = function(a) {
 		var d = a - p.rot;
 		p.rot = a;

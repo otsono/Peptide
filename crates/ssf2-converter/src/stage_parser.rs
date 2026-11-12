@@ -407,6 +407,9 @@ pub struct StageModel {
     /// than used here, because turning a spawn into content needs the FINAL id -- which is only
     /// settled after parsing (the `ssf2` suffix).
     pub stage_script: Option<String>,
+    /// the pictures of its library its own code draws from (a `BitmapData` class it names), by
+    /// that class's name: what a native stage shows for them
+    pub library_bitmaps: BTreeMap<String, StageArt>,
     /// the terrain clip's frame labels (frame, in source frames): the sections the stage's code
     /// jumps its planes between; the stage's own painted art carries them as frame labels
     pub terrain_labels: Vec<(String, u16)>,
@@ -2336,8 +2339,27 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         let first = drawn(0);
         (1..frames.len()).any(|g| drawn(g) != first)
     });
-    let mut model = StageModel { source: path.to_path_buf(), origin: (ox, oy), terrain_off, terrain_labels, terrain_frames, terrain_art_moves, deferred, id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, sink_columns, art, warnings, scale, weathers, hazard_gate, stage_script, symbol_names: sym_names.values().cloned().collect(), hidden_clips, named_boxes, named_regs, named_turns, clip_bounds, sprite_bounds,
+    let mut model = StageModel { library_bitmaps: BTreeMap::new(), source: path.to_path_buf(), origin: (ox, oy), terrain_off, terrain_labels, terrain_frames, terrain_art_moves, deferred, id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, sink_columns, art, warnings, scale, weathers, hazard_gate, stage_script, symbol_names: sym_names.values().cloned().collect(), hidden_clips, named_boxes, named_regs, named_turns, clip_bounds, sprite_bounds,
         cam_backgrounds: cam_backgrounds.iter().map(|b| b.linkage_id.clone()).collect(), clip_frame_scripts };
+    // the library pictures its own code names (`new rttf_lavabub()`): each one as a picture
+    if let Some(script) = model.stage_script.clone() {
+        for (id, name) in &sym_names {
+            let short = name.rsplit('.').next().unwrap_or(name);
+            let named = script.match_indices(short).any(|(i, _)| {
+                let before = script[..i].chars().last();
+                let after = script[i + short.len()..].chars().next();
+                // (made by name, `new X()`, which the reconstruction writes `X__new()`)
+                !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && (!after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') || script[i + short.len()..].starts_with("__new("))
+            });
+            if !named { continue }
+            let Some((w, h, rgba)) = bitmaps.get(id) else { continue };
+            let Some(img) = image::RgbaImage::from_raw(*w, *h, rgba.clone()) else { continue };
+            let mut png = Vec::new();
+            if image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).is_err() { continue }
+            model.library_bitmaps.insert(short.to_string(), StageArt { png, w: *w, h: *h, ..Default::default() });
+        }
+    }
     // a placed clip whose animation is entirely event-driven joins the deferred list, so the plan
     // says its animation was left out on purpose (the idle it can reach is still kept and drawn)
     for sym in std::mem::take(&mut model.art.deferred_event_clips) {

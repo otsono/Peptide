@@ -271,6 +271,22 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     let stage_refs: Vec<ArtRef> = stage_frames.iter().enumerate()
         .map(|(i, a)| write_layer(&format!("stage{i}"), a))
         .collect::<Result<_>>()?;
+    // the pictures its code draws from (`library_bitmaps`), and a white pixel for what it paints:
+    // each an animation of the stage's own sprite (`bmp_<name>`, `px_white`), at the source's size
+    let mut picture_refs: Vec<(String, ArtRef)> = Vec::new();
+    if !model.library_bitmaps.is_empty() {
+        for (name, art) in &model.library_bitmaps {
+            let anim = format!("bmp_{}", crate::compile::ident(name));
+            picture_refs.push((anim.clone(), write_layer(&anim, art)?));
+        }
+        let white = {
+            use image::ImageEncoder;
+            let mut png = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut png).write_image(&[255u8, 255, 255, 255], 1, 1, image::ExtendedColorType::Rgba8)?;
+            StageArt { png, w: 1, h: 1, ..Default::default() }
+        };
+        picture_refs.push(("px_white".to_string(), write_layer("px_white", &white)?));
+    }
     let mut parallax_refs: Vec<ParallaxRef> = model.art.parallax.iter().enumerate()
         .map(|(i, layer)| write_layer(&format!("parallax{i}"), &layer.art)
             .map(|r| ParallaxRef { tracks: vec![vec![r]], w: layer.art.w, h: layer.art.h,
@@ -579,6 +595,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         None => None,
     };
     let art = ArtRefs {
+        pictures: picture_refs,
         shadow_mask: shadow_mask_ref.clone(),
         background: baked_bg,
         background_front: baked_front,
@@ -1724,6 +1741,8 @@ fn bg_layer_name(sym: &str, idx: usize) -> String {
 /// The depth layers the entity lays out. `stage` is the frame sequence (1 = static);
 /// `background` is the ordered per-element backdrop layers (each 1 = static).
 struct ArtRefs { background: Vec<BgLayerRef>,
+    /// the pictures its code draws from, and the white pixel it paints with, by animation name
+    pictures: Vec<(String, ArtRef)>,
     /// Baked background layers that sit IN FRONT of a promoted (container-hosted) element, so they
     /// are laid out after the background containers instead of before them.
     background_front: Vec<BgLayerRef>,
@@ -2158,6 +2177,10 @@ fn build_entity(model: &StageModel, art: &ArtRefs, carried_names: &BTreeSet<Stri
         }
     }
 
+    for (anim, r) in &art.pictures {
+        let lid = b.make_image(anim, &r.guid, 0.0, 0.0, 1.0);
+        b.parallax_anims.push((anim.to_string(), vec![lid]));
+    }
     let mut animations = vec![json!({
         "$id": b.uid("anim:stage"), "name": STAGE_ANIM, "pluginMetadata": {}, "layers": b.anim_layers
     })];

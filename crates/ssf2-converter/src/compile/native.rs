@@ -1164,14 +1164,15 @@ impl<'o, 'a> Writer<'o, 'a> {
         if !self.drawn.contains_key(&self.class) {
             let none = BTreeSet::new();
             let inert = self.o.runtime.inert_calls.get("BitmapData").unwrap_or(&none);
-            let fields = self.o.model.classes.get(&self.class).map(|c| Drawing::of(c, self.o.model, inert).fields).unwrap_or_default();
+            // (a stage draws its pictures: `pixels`)
+            let fields = if self.o.stage { BTreeSet::new() } else { self.o.model.classes.get(&self.class).map(|c| Drawing::of(c, self.o.model, inert).fields).unwrap_or_default() };
             self.drawn.insert(self.class.clone(), fields);
         }
         {
             let none = BTreeSet::new();
             let inert = self.o.runtime.inert_calls.get("BitmapData").unwrap_or(&none);
             let d = Drawing { inert, model: self.o.model, fields: self.drawn.get(&self.class).cloned().unwrap_or_default() };
-            self.drawn_locals = d.locals(&f.body, f.params.len() as u32, self.o.model);
+            self.drawn_locals = if self.o.stage { BTreeSet::new() } else { d.locals(&f.body, f.params.len() as u32, self.o.model) };
         }
         for (i, p) in f.params.iter().enumerate() {
             let n = ident(&p.name);
@@ -1305,7 +1306,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         let mut dropped = false;
         for s in list {
             // (drawing that comes to nothing here, and what only feeds it: said once)
-            if d.void(s, &self.drawn_locals, self.o.model) {
+            if !self.o.stage && d.void(s, &self.drawn_locals, self.o.model) {
                 if !dropped { out.push(format!("{}// (not ported: the source draws pixels here, which this engine never shows)", "\t".repeat(depth))); dropped = true; }
                 continue;
             }
@@ -2275,6 +2276,31 @@ impl<'o, 'a> Writer<'o, 'a> {
             Expr::Unary(UnOp::Neg, x) => { let (t, _) = self.expr(x)?; (format!("-{}", paren(&t)), Ty::Num) }
             // whether the clip it shows places a named clip of its own (`hasName()`, from the clips' placements)
             // an object tested against one of its package's classes: the class it publishes
+            // a child of a clip of the stage's planes tested as a picture, or taken as one (`pxPlaced`)
+            Expr::Binary(BinOp::Is, x, k) if self.o.stage && matches!(&**k, Expr::Name(n) if short(n) == "Bitmap") => {
+                let (v, _) = self.expr(x)?;
+                (format!("({v} != null && {v}.kind == \"bitmap\")"), Ty::Bool)
+            }
+            Expr::Binary(BinOp::As, x, k) if self.o.stage && matches!(&**k, Expr::Name(n) if short(n) == "Bitmap") => {
+                let (v, _) = self.expr(x)?;
+                (v, Ty::Rect)
+            }
+            // a picture made by its code: an empty one its size, or one of its library's (the stage's
+            // sprite shows it under `bmp_<name>`)
+            Expr::New(c, args) if self.o.stage && matches!(&**c, Expr::Name(n) if self.picture_class(n)) => {
+                let Expr::Name(n) = &**c else { unreachable!() };
+                self.util("pixels")?;
+                let vs: Vec<String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect::<Result<_, String>>()?;
+                if short(n) == "BitmapData" {
+                    let w = vs.first().cloned().unwrap_or_else(|| "0".into());
+                    let h = vs.get(1).cloned().unwrap_or_else(|| "0".into());
+                    (format!("pxCanvas(null, {w}, {h})"), Ty::Rect)
+                } else {
+                    let (w, h) = self.o.model.classes.values().find(|k| short(&k.name) == short(n)).and_then(|k| k.symbol)
+                        .and_then(|sy| self.o.model.bitmaps.get(&sy).copied()).unwrap_or((0, 0));
+                    (format!("pxCanvas({}, {w}, {h})", quote(&format!("bmp_{}", ident(short(n))))), Ty::Rect)
+                }
+            }
             Expr::Binary(BinOp::Is, x, k) if matches!(&**k, Expr::Name(n) if self.o.model.classes.values().any(|c| short(&c.name) == short(n) && !self.o.runtime.provides(&c.name))) => {
                 let Expr::Name(n) = &**k else { unreachable!() };
                 let (v, _) = self.expr(x)?;
@@ -2824,6 +2850,7 @@ impl<'o, 'a> Writer<'o, 'a> {
     // ---- calls --------------------------------------------------------------------------------
 
     fn call(&mut self, f: &Expr, args: &[Expr]) -> Result<(String, Ty), String> {
+        if let Some(r) = self.picture_call(f, args)? { return Ok(r) }
         let top = self.top;
         let r = self.call_written(f, args)?;
         // (a call whose row does nothing gives no value to use)
@@ -3397,6 +3424,38 @@ impl<'o, 'a> Writer<'o, 'a> {
             .any(|sp| sp.frames.iter().flatten().any(|p| p.name.as_deref() == Some(f)))
     }
 
+    /// a class whose objects are pictures: Flash's `BitmapData`, or one of its library's that extends it
+    fn picture_class(&self, n: &str) -> bool {
+        short(n) == "BitmapData" || (short(n) != "Bitmap" && drawn_type(self.o.model, n) && self.o.model.classes.values().any(|k| short(&k.name) == short(n) && short(&k.super_name) == "BitmapData"))
+    }
+
+    /// what a stage's code draws (`runtime/native/utils.hx` `pixels`): a picture's drawing calls, and
+    /// the name of the picture a placed one shows
+    fn picture_call(&mut self, f: &Expr, args: &[Expr]) -> Result<Option<(String, Ty)>, String> {
+        if !self.o.stage { return Ok(None) }
+        if let Expr::Name(n) = f {
+            if n == "getQualifiedClassName" {
+                if let [x @ Expr::Member(_, b)] = args { if b == "bitmapData" { let (v, _) = self.expr(x)?; return Ok(Some((format!("({v} == null ? null : {v}.cls)"), Ty::Str))) } }
+            }
+            return Ok(None);
+        }
+        let Expr::Member(recv, m) = f else { return Ok(None) };
+        if !matches!(m.as_str(), "copyPixels" | "fillRect" | "setPixel" | "setPixel32" | "colorTransform" | "lock" | "unlock") { return Ok(None) }
+        let picture = matches!(&**recv, Expr::Member(_, b) if b == "bitmapData") || self.expr(recv).is_ok_and(|(w, t)| t == Ty::Rect && !w.starts_with("planePart("));
+        if !picture { return Ok(None) }
+        self.util("pixels")?;
+        let (c, _) = self.expr(recv)?;
+        let a = |w: &mut Self, i: usize| -> Result<String, String> { Ok(w.expr(args.get(i).ok_or("a drawing call short of its arguments")?)?.0) };
+        let out = match m.as_str() {
+            "copyPixels" => format!("pxCopy({c}, {}, {}, {})", a(self, 0)?, a(self, 1)?, a(self, 2)?),
+            "fillRect" => { let r = a(self, 0)?; format!("{{ var __r = {r}; pxFill({c}, __r.x, __r.y, __r.width, __r.height, {}); }}", a(self, 1)?) }
+            "setPixel" | "setPixel32" => format!("pxFill({c}, {}, {}, 1, 1, {})", a(self, 0)?, a(self, 1)?, a(self, 2)?),
+            "colorTransform" => format!("pxTint({c}, {})", a(self, 1)?),
+            _ => String::new(),
+        };
+        Ok(Some((out, Ty::Any)))
+    }
+
     /// one of its fields that only ever holds a clip of the stage's planes (learned, every write a part)
     fn part_field(&self, e: &Expr) -> bool {
         let Expr::Member(t, f) = e else { return false };
@@ -3473,6 +3532,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 "removeChild" => Ok(("// (a clip its code takes off its plane: nothing drawn for it here)".into(), Ty::Any)),
                 // (a clip of it by name: the part under that name)
                 "getChildByName" => { self.util("planePart")?; Ok((format!("planePart({})", a(self, 0)?), Ty::Object)) }
+                // (a child of it by place: a picture placed there, `pixels`)
+                "getChildAt" => { self.util("pixels")?; Ok((format!("({who} == null ? null : {who}.childAt({}))", a(self, 0)?), Ty::Rect)) }
                 _ => Err(format!("calls {m} on a clip of its planes, which no plain form answers yet")),
             };
         }
