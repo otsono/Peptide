@@ -552,6 +552,65 @@ function pxTint(c, ct) {
 	}
 }
 
+// ---- followLight
+// the stage's light where its code keeps it (over the fighters as they go). this engine's light
+// cannot move as it runs, so the stage casts the fighters' shadows itself: each fighter's own frame,
+// darkened, laid on the ground it stands over and slanted away from the light, as a light at that
+// place casts it, inside the stage's shadow mask (its `shadowMask` animation). FOLLOW_LIGHT: where
+// the light starts (this engine's units)
+var followAt = FOLLOW_LIGHT;
+var followBox = null;
+var followCasts = [];
+// its code moves the light along the stage (the source's units)
+function followLightAt(x) {
+	if (followAt == null || x == null || x != x) return;
+	followAt = [x * SIZE, followAt[1]];
+}
+function followShadows() {
+	if (followAt == null) return;
+	if (followBox == null) {
+		followBox = Container.create();
+		var mask = Sprite.create(self.getResource().getContent(STAGE_ID));
+		mask.currentAnimation = "shadowMask";
+		followBox.addChild(mask);
+		followBox.addFilter(new MaskFilter(mask));
+		stage.getCharactersBackContainer().addChild(followBox);
+	}
+	var chars = match.getCharacters();
+	for (i in 0...chars.length) {
+		var c = chars[i];
+		if (followCasts.length <= i) {
+			var sp = Sprite.create(c.getGameObjectStat("spriteContent"));
+			var sh = new SolidColorShader();
+			sh.color = 0xff000000;
+			sp.addShader(sh);
+			sp.alpha = 0.5;
+			followBox.addChild(sp);
+			followCasts.push({ s: sp, ground: c.getY() });
+		}
+		var shadow = followCasts[i];
+		var sp = shadow.s;
+		if (c == null || c.isDisposed() || !c.getSprite().visible) { sp.visible = false; continue; }
+		// (the ground under it: where it stands, else where it last stood)
+		if (c.isOnFloor()) shadow.ground = c.getY();
+		var fx = c.getX();
+		var fy = c.getY();
+		var g = shadow.ground;
+		var lx = followAt[0];
+		var ly = followAt[1];
+		if (fy <= ly || g <= ly) { sp.visible = false; continue; }
+		sp.visible = true;
+		sp.currentAnimation = c.getAnimation();
+		sp.currentFrame = c.getCurrentFrame();
+		// its feet, carried along the ray from the light down to the ground; its height laid flat
+		// along the ground, leaning away from the light
+		var at = lx + (fx - lx) * (g - ly) / (fy - ly);
+		var lean = -(fx - lx) / (g - ly);
+		var face = c.isFacingRight() ? 1.0 : -1.0;
+		sp.transformationMatrix = new Matrix(face, 0, lean, 0.25, at, g);
+	}
+}
+
 // ---- madeObject
 // an object the stage's code made (not counted with what its boot made, as the runtime counts)
 function madeObject(id, o) {

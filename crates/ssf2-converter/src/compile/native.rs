@@ -1569,13 +1569,13 @@ impl<'o, 'a> Writer<'o, 'a> {
             // the stage's light moved by its code: the engine's stays where the conversion put it (as on
             // the runtime)
             Place::Member(Expr::Call(g, a), f) if a.is_empty() && matches!(&**g, Expr::Member(_, m) | Expr::Name(m) if m == "getLightSourceMC") => {
-                self.expr(v)?;
+                let (val, _) = self.expr(v)?;
                 // (the engine reads a stage's light from the animation it plays: `Stage.updateLightboxStats`
                 // has no effect, playing another animation rebuilds the stage's containers, fighters and
                 // all, and the frame is the stage's own clock)
-                // (moved along the stage: the conversion put its light so far overhead that every shadow
-                // falls straight down, as one kept over the fighters casts them, `stage_emit::light_follows`)
-                if f == "x" { return Ok(vec!["// (its light keeps over the fighters: the conversion put it overhead of the whole stage)".into()]) }
+                // (along the stage: the stage casts the fighters' shadows from where it puts it, `followLight`)
+                // (its helper is the stage's own, written with the light it starts from: `native_stage`)
+                if f == "x" && self.o.stage { return Ok(vec![format!("followLightAt({val});")]) }
                 Ok(vec![format!("// (not ported: the source moves its light's {f} here; this engine's stage light cannot move as it runs)")])
             }
             // the stage's camera or death bounds moved by its code: the engine's stay where the

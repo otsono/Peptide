@@ -16,6 +16,9 @@ use crate::model::SourceModel;
 
 /// What the stage pipeline hands the runtime path: what it worked out, as data.
 pub struct StageInput<'a> {
+    /// where the stage's light starts, when its code moves it with the fighters (this engine's
+    /// units): the stage draws their shadows from it (`followLight`)
+    pub follow_light: Option<(f64, f64)>,
     /// the boot (`DATA.stage.boot`)
     pub tables: &'a StageTables,
     /// the stage entity's animation that shows the stage's own art
@@ -947,6 +950,11 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
         }
         upkeep.push(format!("{fname}();"));
     }
+    // (a light its code keeps over the fighters: the stage casts their shadows from it each frame)
+    if input.follow_light.is_some() {
+        functions.push(compile::native::helper(runtime, "utils", "followLight", "followLight", &[("SIZE", format!("{}", units.size))], &[]).map_err(|e| vec![e])?);
+        upkeep.push("followShadows();".into());
+    }
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     let mut fields = w.fields.clone();
     fields.extend(weather_fields.iter().map(|(_, i)| format!("var m_weather{i} = [];")));
@@ -971,6 +979,7 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     let script = compile::native::fill_slots(skeleton, &slots).replace("{title}", id).replace("{classes}", class)
         // (the stage's own sprite, which shows the pictures its code draws from)
         .replace("getContent(STAGE_ID)", &format!("getContent({})", compile::quote(id)))
+        .replace("FOLLOW_LIGHT", &input.follow_light.map(|(x, y)| format!("[{x}, {y}]")).unwrap_or_else(|| "null".into()))
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (stageFrames % 2 == 1) {\n\t}\n", "");
     if let Some(n) = compile::native::declared_twice(&script) { return Err(vec![format!("its script declares {n} twice")]) }
     Ok(script)

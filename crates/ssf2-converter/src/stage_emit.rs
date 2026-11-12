@@ -747,6 +747,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         })
     }).collect();
     let input = crate::emit::stage::StageInput {
+        follow_light: model.stage_script.as_deref().is_some_and(light_follows).then(|| light_place(model)),
         tables: &boot, anim: STAGE_ANIM, pan: pan_size, objects,
         surfaces: &plat_segs, frictions, pushes,
         particles: model.weathers.iter().enumerate().filter(|(_, w)| w.count > 0)
@@ -1988,39 +1989,10 @@ fn build_entity(model: &StageModel, art: &ArtRefs, carried_names: &BTreeSet<Stri
     // shadows in SSF2 (so carries no mask plane) came across with nothing to cast from, and its
     // fighters stood on the ground with no shadow at all.
     {
-        // Height is measured from the GROUND the shadows land on, not from the top of the camera
-        // box. The two differ by however far the stage sits from the origin, and a converted stage
-        // sits wherever SSF2 drew it -- clocktown's floor is ~830 down, so measuring from the
-        // camera box put the light 1557 above the floor instead of a stage-height, and the engine
-        // projected every shadow into a ~900px vertical smear.
-        let cx = match &model.camera_box {
-            Some(r) => r.left() + r.w / 2.0,
-            None => 0.0,
-        };
-        // the ground shadows land on, and separately the top of the play area -- a declared light
-        // has to be above the latter to be a light rather than a lamp in the scene.
-        let ground = model.main_floor().map(|f| f.rect.top())
-            .or_else(|| model.camera_box.as_ref().map(|r| r.top()))
-            .unwrap_or(0.0);
-        let top = model.camera_box.as_ref().map(|r| r.top()).unwrap_or(ground);
-        // the stage's own light, but only where it is actually OVERHEAD of the play area. A
-        // symbol that calls itself a light source is as often a lamp standing in the scene, and
-        // one of those sits beside the fighters rather than above them: taken literally it rakes
-        // every shadow sideways across the whole stage. Above the camera box is the test that
-        // tells a light apart from a lit prop, and a prop falls back to the synthesised light.
-        let (lx, ly) = match model.art.light_source {
-            Some(p) if p.1 < top => p,
-            _ => (cx, ground - r_light_height(model)),
-        };
-        // a light its own code keeps over the fighters as they go (`getLightSourceMC().x = ...`)
-        // casts every shadow straight down. this engine's light cannot move as it runs, so it goes
-        // so far overhead that its rays fall straight down everywhere on the stage, as the source's
-        // following light does
+        let (lx, ly) = light_place(model);
+        // (a light its own code keeps over the fighters: no engine light, which cannot move; the
+        // stage draws the fighters' shadows from where its code puts it, `followLight`)
         let follows = model.stage_script.as_deref().is_some_and(light_follows);
-        let (lx, ly) = if follows {
-            let span = model.death_box.as_ref().or(model.camera_box.as_ref()).map(|r| r.w.max(r.h)).unwrap_or(4000.0);
-            (cx, ground - span * 40.0)
-        } else { (lx, ly) };
         // how far the light still lights: everything the camera can frame at full strength, out
         // to the blast zone before it is gone. Both measured from the light itself, since that is
         // what the engine compares against.
@@ -2031,7 +2003,7 @@ fn build_entity(model: &StageModel, art: &ArtRefs, carried_names: &BTreeSet<Stri
         });
         let fade_start = corner(model.camera_box.as_ref()).unwrap_or(1200.0);
         let fade_end = corner(model.death_box.as_ref()).unwrap_or(fade_start * 1.5).max(fade_start);
-        b.add_shadow_light(lx, ly, &[], (fade_start, fade_end));
+        if !follows { b.add_shadow_light(lx, ly, &[], (fade_start, fade_end)); }
         // the source's own mask plane where it has one; otherwise the one the stage's collision
         // implies. Either way the engine gets an animation under the name it reads the mask from.
         match &art.shadow_mask {
@@ -5309,6 +5281,36 @@ fn write_meta(path: &Path, _stage_id: &str, id: &str, language: &str, object_typ
 /// The stage's own scale is NOT part of this. That scale carries SSF2's world into Fraymakers',
 /// and a camera background is not in the world: it is tethered to the camera and sized against the
 /// SCREEN, so it wants the ratio of the two screens and nothing else. Multiplied by the stage scale
+/// where the stage's light is: its own where it sits overhead of the play area, else one the
+/// stage's geometry stands in for (this engine's units)
+fn light_place(model: &StageModel) -> (f64, f64) {
+    // Height is measured from the GROUND the shadows land on, not from the top of the camera
+    // box. The two differ by however far the stage sits from the origin, and a converted stage
+    // sits wherever SSF2 drew it -- clocktown's floor is ~830 down, so measuring from the
+    // camera box put the light 1557 above the floor instead of a stage-height, and the engine
+    // projected every shadow into a ~900px vertical smear.
+    let cx = match &model.camera_box {
+        Some(r) => r.left() + r.w / 2.0,
+        None => 0.0,
+    };
+    // the ground shadows land on, and separately the top of the play area -- a declared light
+    // has to be above the latter to be a light rather than a lamp in the scene.
+    let ground = model.main_floor().map(|f| f.rect.top())
+        .or_else(|| model.camera_box.as_ref().map(|r| r.top()))
+        .unwrap_or(0.0);
+    let top = model.camera_box.as_ref().map(|r| r.top()).unwrap_or(ground);
+    // the stage's own light, but only where it is actually OVERHEAD of the play area. A
+    // symbol that calls itself a light source is as often a lamp standing in the scene, and
+    // one of those sits beside the fighters rather than above them: taken literally it rakes
+    // every shadow sideways across the whole stage. Above the camera box is the test that
+    // tells a light apart from a lit prop, and a prop falls back to the synthesised light.
+    let (lx, ly) = match model.art.light_source {
+        Some(p) if p.1 < top => p,
+        _ => (cx, ground - r_light_height(model)),
+    };
+    (lx, ly)
+}
+
 /// whether a stage's code moves its light along with the fighters (writes its light's `x`)
 pub fn light_follows(script: &str) -> bool {
     script.match_indices("getLightSourceMC()").any(|(i, m)| script[i + m.len()..].trim_start().starts_with(".x"))
