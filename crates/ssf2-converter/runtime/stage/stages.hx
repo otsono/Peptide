@@ -159,6 +159,9 @@ Stages.objects = function() {
 	PeptideRuntime.fm.exports.__named = function(n) { return Stages.named(n); };
 	// ...and its planes, for the objects' scripts that ask the stage for one
 	PeptideRuntime.fm.exports.__planeOf = function(p) { return Planes.get(p); };
+	// ...and a named clip of them, as a script written as Fraymakers code asks for one: the clip,
+	// answering the calls such a script makes (the native stage's `partNamed` answers the same)
+	PeptideRuntime.fm.exports.__part = function(n) { return Stages.part(n); };
 	var byCode = PeptideRuntime.data.stage.byCode;
 	var put = StageBoot.object;
 	StageBoot.object = function(o, owner) {
@@ -172,6 +175,32 @@ Stages.objects = function() {
 
 // a plane the stage's code asks for: the stage clip's own child (planes.hx)
 Stages.planeClip = function(p) { return Planes.get(p); };
+// a named clip of the planes (a plane itself by its clip's name), for a script written as
+// Fraymakers code: shown, faded, sent to a label or a frame, held, let through
+Stages.parts = new haxe.ds.StringMap();
+Stages.part = function(n) {
+	var have = Stages.parts.get(n);
+	if (have != null) return have;
+	Planes.trackAll();
+	var c = null;
+	var root = PeptideRuntime.root;
+	if (root != null) c = root.getChildByName(n);
+	if (c == null) for (b in Planes.bound) if (b.path.length > 0 && b.path[b.path.length - 1] == n) { c = b.c; break; }
+	if (c == null) return null;
+	var p = { name: n };
+	p.setVisible = function(v) { c.visible = v == true; };
+	p.getVisible = function() { return c.visible != false; };
+	p.setAlpha = function(a) { c.alpha = a; };
+	p.getAlpha = function() { return AS3.num(c.alpha); };
+	p.playLabel = function(f, stop) { if (stop) c.gotoAndStop(f); else c.gotoAndPlay(f); };
+	p.hold = function(stop) { if (stop) c.stop(); else c.play(); };
+	p.getFrame = function() { return c.currentFrame; };
+	p.getLabel = function() { return c.currentLabel; };
+	p.setFallthrough = function(v) { if (c.set_fallthrough != null) c.set_fallthrough(v); else c.fallthrough = v; };
+	p.getFallthrough = function() { return c.get_fallthrough != null ? c.get_fallthrough() : c.fallthrough == true; };
+	Stages.parts.set(n, p);
+	return p;
+};
 
 // every frame, ahead of the stage's own code (the boot came first, in `waits`)
 Stages.frame = function(me) {};

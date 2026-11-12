@@ -789,11 +789,16 @@ fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
         // (a clip whose code only sets its own fields to plain values and hides itself is a marker:
         // the conversion read what it marks, and nothing here runs it)
         if super::native_projectile::is_quiet(src, runtime, &c.name) { continue }
+        // (a backdrop clip whose frame code only moves its own timeline by label: the chains of the
+        // sectioned pieces drawn for it carry those jumps)
+        if timeline_only(src, &c.name) { continue }
         classes.push(c);
     }
     let jumps = super::label_jumps(src, pieces);
     let labels = super::native_fighter::stance_labels(src, pieces);
     let frames_of = super::native_fighter::clip_frames_of(src, pieces);
+    // (each clip class it runs, by the name it is placed under: its `self` is that clip of the planes)
+    let parts_of: BTreeMap<String, String> = placed_names(src, sym).into_iter().filter(|(c, _)| classes.iter().any(|k| &k.name == c)).collect();
     let none = |_: &str| -> Option<String> { None };
     let no_stat = |_: &str| -> Option<(String, String)> { None };
     let no_effect = |_: &str| -> Option<(String, Option<u32>)> { None };
@@ -805,7 +810,7 @@ fn stage_census(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     let object = compile::native::Object {
         model: src, itself: Some(itself), classes, jumps: &jumps, runtime, declared: &none, switches: &switches,
         owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
-        root: sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: true,
+        root: sym, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: true, clip_parts: parts_of.clone(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: Vec::new(), effect_pieces: Vec::new(), parts: Vec::new(), content: String::new(), palette: None,
         effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
@@ -858,6 +863,9 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     if surfaces { blocks.push("surfaces") }
     if surfaces || !input.frictions.is_empty() || !input.pushes.is_empty() { blocks.push("ground"); upkeep.push("groundUpkeep();".into()) }
     if t.has_follow() { blocks.push("riding"); upkeep.push("ridingUpkeep();".into()) }
+    // the named clips of its planes, which its code and its objects' code reach (always: an object's
+    // code asks the stage for them)
+    blocks.push("parts");
     let mut seen = BTreeSet::new();
     blocks.retain(|b| seen.insert(*b));
     let strs = |v: &[String]| v.iter().map(|s| compile::quote(s)).collect::<Vec<_>>().join(", ");
@@ -865,10 +873,25 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     let words = [("PAN_X", format!("{}", input.pan.0)), ("PAN_Y", format!("{}", input.pan.1)), ("REGIONS", regions.to_string()),
         ("SURFACES", rows(input.surfaces.iter().map(|(n, s)| format!("{{ n: {}, s: [{}] }}", compile::quote(n), strs(s))).collect())),
         ("FRICTIONS", rows(input.frictions.clone())), ("PUSHES", rows(input.pushes.clone())), ("ACCEL", format!("{}", units.accel)),
-        ("SURFACES_ON", surfaces.to_string())];
+        ("SURFACES_ON", surfaces.to_string()),
+        ("ELEMENTS", rows(t.elements.iter().map(|e| format!("{{ i: {}, seg: {}, path: [{}], labels: [{}], sections: {} }}",
+            e.index, e.segmented, strs(&e.path), strs(&e.labels), super::stage_tables::sections_literal(e))).collect()))];
     let mut functions = Vec::new();
     for b in blocks { functions.push(compile::native::helper(runtime, "stage_boot", b, "", &words, &[]).map_err(|e| vec![e])?) }
     functions.extend(w.functions.iter().cloned());
+    // each clip of its planes with frame code of its own: run as its timeline reaches each frame
+    for (cls, name) in placed_names(src, sym) {
+        let Some(csym) = src.classes.get(&cls).and_then(|c| c.symbol) else { continue };
+        let cases: Vec<String> = w.frames.iter().filter(|((s, _), _)| *s == csym)
+            .map(|((_, f), code)| format!("case {f}: {}", code.lines().map(str::trim).collect::<Vec<_>>().join(" "))).collect();
+        if cases.is_empty() { continue }
+        let fname = format!("timeline_{}", compile::ident(&name));
+        functions.push(compile::native::helper(runtime, "stage_boot", "timeline", &fname, &[("PART", compile::quote(&name)), ("NAMEAt", format!("{fname}At"))], &cases).map_err(|e| vec![e])?);
+        if !functions.iter().any(|f| f.contains("planePart(n)")) {
+            functions.push(compile::native::helper(runtime, "utils", "planePart", "planePart", &[], &[]).map_err(|e| vec![e])?);
+        }
+        upkeep.push(format!("{fname}();"));
+    }
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     slots.insert("fields", w.fields.clone());
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
@@ -879,6 +902,7 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     slots.insert("upkeep", upkeep);
     let mut publish = w.publish.clone();
     publish.push("self.exports.__named = objectNamed;".into());
+    publish.push("self.exports.__part = partNamed;".into());
     slots.insert("publish", publish);
     let script = compile::native::fill_slots(skeleton, &slots).replace("{title}", id).replace("{classes}", class)
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (stageFrames % 2 == 1) {\n\t}\n", "");
@@ -915,7 +939,7 @@ fn object_census(src: &SourceModel, runtime: &Runtime, class: &str, units: Units
     let object = compile::native::Object {
         model: src, itself: Some(itself), classes: Vec::new(), jumps: &jumps, runtime, declared: &none, switches: &switches,
         owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
-        root: 0, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false,
+        root: 0, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: Vec::new(), effect_pieces: Vec::new(), parts: Vec::new(), content: String::new(), palette: None,
         effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
@@ -967,7 +991,7 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     let object = compile::native::Object {
         model: src, itself: Some(itself), classes, jumps: &jumps, runtime, declared: &declared, switches: &switches,
         owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
-        root: root.unwrap_or(0), size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false,
+        root: root.unwrap_or(0), size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: crate::mappings::api_commands().global_vfx_map.keys().cloned().collect(), effect_pieces: Vec::new(), parts: Vec::new(),
         content: String::new(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
@@ -1057,4 +1081,40 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     let anim_stats = lib.join("scripts").join("hazard").join(format!("{}AnimationStats.hx", row.id));
     super::native_projectile::plays_on(&anim_stats, src, &pieces).map_err(|e| one(e.to_string()))?;
     Ok(())
+}
+
+/// whether a clip's class only stops, plays or sends its own timeline to a label (and registers its
+/// frame scripts): its timeline, which the sections drawn for it chain the same way
+fn timeline_only(src: &SourceModel, class: &str) -> bool {
+    let Some(c) = src.classes.get(class) else { return false };
+    fn own(f: &Expr) -> Option<&str> { match f { Expr::Member(t, m) if matches!(**t, Expr::This) => Some(m.as_str()), Expr::Name(m) => Some(m.as_str()), _ => None } }
+    let mut jumps = false;
+    let ok = c.methods.iter().map(|m| &m.function).chain([&c.constructor]).all(|f| f.body.iter().all(|s| match s {
+        Stmt::Return(None) | Stmt::Expr(Expr::SuperCall(..)) => true,
+        Stmt::Expr(Expr::Call(g, a)) => match (own(g), a.as_slice()) {
+            (Some("stop" | "play" | "addFrameScript"), _) => true,
+            (Some("gotoAndStop" | "gotoAndPlay"), [Expr::Str(_)]) => { jumps = true; true }
+            _ => false,
+        },
+        _ => false,
+    }));
+    ok && jumps
+}
+
+/// the name each clip class is placed under in a clip's tree (the first it is placed by)
+fn placed_names(src: &SourceModel, root: u16) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    let mut todo = vec![root];
+    while let Some(sym) = todo.pop() {
+        if !seen.insert(sym) { continue }
+        let Some(sp) = src.sprites.get(&sym) else { continue };
+        for placed in sp.frames.iter().flatten() {
+            if let (Some(n), Some(c)) = (placed.name.as_ref(), src.class_of(placed.char_id)) {
+                out.entry(c.name.clone()).or_insert_with(|| n.clone());
+            }
+            todo.push(placed.char_id);
+        }
+    }
+    out
 }

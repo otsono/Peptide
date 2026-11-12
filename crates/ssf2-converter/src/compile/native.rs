@@ -189,6 +189,9 @@ pub struct Object<'a> {
     pub item: bool,
     /// whether it is a stage (its own class extends the API's stage)
     pub stage: bool,
+    /// a stage's: the name each clip class it runs is placed under in its planes (its `self` is that
+    /// named clip of the planes, `planePart`)
+    pub clip_parts: BTreeMap<String, String>,
     /// a fighter's: the animation each of its clip's labels is (an attack its code starts by name)
     pub root_anim: &'a dyn Fn(&str) -> Option<String>,
     /// a fighter's: the walk's own starting speed, in this engine's units, where it declares one
@@ -1282,6 +1285,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 _ => None,
             };
             if let Some(m) = own {
+                if self.o.clip_parts.contains_key(&self.class) && matches!(m.as_str(), "gotoAndStop" | "gotoAndPlay" | "stop" | "play") {
+                    let who = format!("planePart({})", quote(&self.o.clip_parts[&self.class]));
+                    self.util("planePart")?;
+                    let (t, _) = self.api(&who, m, args)?;
+                    return Ok(format!("{t};"));
+                }
                 {
                     match (m.as_str(), args.as_slice()) {
                         // the engine plays the clip the object shows on every frame, whatever a stop on
@@ -1384,6 +1393,13 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (val, _) = self.expr(v)?;
                 if self.o.owner_native { return Ok(vec![format!("{}({who}, \"self\", {}, {val});", self.owner_field("set")?, quote(f))]) }
                 Ok(vec![if (self.o.owner_stores)(f) { format!("{who}.exports.__source.__c_{}.set({val});", ident(f)) } else { format!("{who}.exports.__source.{} = {val};", ident(f)) }])
+            }
+            // a field of a named clip of the planes written: shown, faded, let through
+            Place::Member(o, f) if self.expr(o).is_ok_and(|(w, _)| w.starts_with("planePart(")) => {
+                let (p, _) = self.expr(o)?;
+                let (val, _) = self.expr(v)?;
+                let call = match f.as_str() { "visible" => "setVisible", "alpha" => "setAlpha", "fallthrough" => "setFallthrough", _ => return Err(format!("writes the {f} of a clip of its planes, which no plain form answers yet")) };
+                Ok(vec![format!("if ({p} != null) {p}.{call}({val});")])
             }
             // a static field of one of its classes, written by the class's name: its field
             Place::Member(Expr::Name(n), f) if self.static_class(n, f).is_some() => {
@@ -1685,6 +1701,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (v, _) = self.expr(x)?;
                 (format!("{}.{}", paren(&v), ident(n)), ty)
             }
+            // (a clip of a stage's planes: the named clip it is placed as)
+            Expr::This if self.o.clip_parts.contains_key(&self.class) => { self.util("planePart")?; (format!("planePart({})", quote(&self.o.clip_parts[&self.class])), Ty::Object) }
             Expr::This if self.is_itself() => ("self".into(), Ty::Object),
             Expr::Member(t, n) if n == "currentFrame" && self.counts_frames() && matches!(**t, Expr::This) && self.field(n).is_none() => (self.clip_frame_helper()?, Ty::Num),
             Expr::Member(t, n) if matches!(n.as_str(), "currentLabel" | "currentFrameLabel") && matches!(**t, Expr::This) && self.field(n).is_none() => {
@@ -1698,6 +1716,17 @@ impl<'o, 'a> Writer<'o, 'a> {
             // where its clip's parent (the fighter) is, in the source's units
             Expr::Member(t, n) if matches!(&**t, Expr::Name(p) if p == "parent") && matches!(n.as_str(), "x" | "y") =>
                 (format!("self.get{}() / {}", n.to_uppercase(), number(self.o.size)), Ty::Num),
+            Expr::Member(t, f) if matches!(**t, Expr::This) && self.o.clip_parts.contains_key(&self.class) && self.field(f).is_none() && self.method(f).is_none() => {
+                self.util("planePart")?;
+                let who = format!("planePart({})", quote(&self.o.clip_parts[&self.class]));
+                return Ok(match f.as_str() {
+                    "visible" => (format!("({who} == null || {who}.getVisible())"), Ty::Bool),
+                    "alpha" => (format!("({who} == null ? 1 : {who}.getAlpha())"), Ty::Num),
+                    "currentFrame" => (format!("({who} == null ? 1 : {who}.getFrame())"), Ty::Num),
+                    "currentLabel" | "currentFrameLabel" => (format!("({who} == null ? null : {who}.getLabel())"), Ty::Str),
+                    _ => (format!("planePart({})", quote(f)), Ty::Object),
+                });
+            }
             Expr::Member(t, f) if matches!(**t, Expr::This) => return self.own(f),
             Expr::Member(t, f) if matches!(&**t, Expr::Local(r) if self.locals.get(r).is_some_and(|(_, h)| *h == Holds::Clip)) => return self.own(f),
             // a static field of one of its classes, read by the class's name: its field
@@ -1714,6 +1743,20 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (who, _) = self.expr(o)?;
                 if self.o.owner_native { return Ok((format!("{}({who}, \"self\", {})", self.owner_field("get")?, quote(f)), Ty::Any)) }
                 return Ok((if (self.o.owner_stores)(f) { format!("{who}.exports.__source.__c_{}.get()", ident(f)) } else { format!("{who}.exports.__source.{}", ident(f)) }, Ty::Any));
+            }
+            // a field of a named clip of the planes: what it shows, its frame, its label, or a clip of
+            // its by name
+            Expr::Member(o, f) if self.expr(o).is_ok_and(|(w, _)| w.starts_with("planePart(")) => {
+                let (p, _) = self.expr(o)?;
+                return Ok(match f.as_str() {
+                    "visible" => (format!("({p} == null || {p}.getVisible())"), Ty::Bool),
+                    "alpha" => (format!("({p} == null ? 1 : {p}.getAlpha())"), Ty::Num),
+                    "currentFrame" => (format!("({p} == null ? 1 : {p}.getFrame())"), Ty::Num),
+                    "currentLabel" | "currentFrameLabel" => (format!("({p} == null ? null : {p}.getLabel())"), Ty::Str),
+                    "fallthrough" => (format!("({p} != null && {p}.getFallthrough())"), Ty::Bool),
+                    "x" | "y" | "scaleX" | "scaleY" | "rotation" | "totalFrames" | "width" | "height" => return Err(format!("reads the {f} of a clip of its planes, which no plain form answers yet")),
+                    _ => { self.util("planePart")?; (format!("planePart({})", quote(f)), Ty::Object) }
+                });
             }
             // one of a stage's camera backgrounds, as the plane it is (`cameraPlanes`)
             Expr::Member(o, f) if self.o.stage && f == "mc" && self.expr(o).is_ok_and(|(w, _)| w.starts_with("cameraPlanes()")) => {
@@ -2577,6 +2620,11 @@ impl<'o, 'a> Writer<'o, 'a> {
         // a clip it holds (an effect) sent to a frame, and held or played on: a clip inside one is
         // drawn into its art here, so nothing sends that anywhere
         if matches!(m.as_str(), "gotoAndStop" | "gotoAndPlay" | "stop" | "play") && !matches!(**recv, Expr::This) && !self.is_clip(recv) {
+            // (a named clip of the stage's planes: what the stage publishes for it)
+            if self.expr(recv).is_ok_and(|(w, _)| w.starts_with("planePart(")) {
+                let (who, _) = self.expr(recv)?;
+                return self.api(&who, m, args);
+            }
             if let Expr::Member(o, n) = &**recv {
                 // (inside an effect of the power it holds: the clip the one it copied draws apart, `powerInner`)
                 if !matches!(**o, Expr::This) && self.field(n).is_none() && !self.is_inner(n) && self.o.fighter && takes_power(self.o.model, self.o.runtime) {
@@ -2865,11 +2913,24 @@ impl<'o, 'a> Writer<'o, 'a> {
         // a stage's planes: named values, which nothing here drives yet (a jump, a field or a child of
         // one keeps the stage on the runtime)
         if who.starts_with("stagePlane(") { return Err(format!("drives its {} plane, which no plain form drives yet", who.trim_start_matches("stagePlane(").trim_end_matches(')'))) }
-        if self.o.stage && mine && args.is_empty() {
-            let plane = match m { "getBackground" => Some("background"), "getForeground" => Some("foreground"), "getMidground" => Some("midground"), "getShadowMask" => Some("shadowMask"), _ => None };
-            if let Some(p) = plane { self.util("stagePlane")?; return Ok((format!("stagePlane({})", quote(p)), Ty::Object)) }
-            if m == "getCameraBackgrounds" { self.util("stagePlane")?; self.util("cameraPlanes")?; return Ok(("cameraPlanes()".into(), Ty::Object)) }
+        // a named clip of the stage's planes: what the stage publishes for it (`planePart`)
+        if who.starts_with("planePart(") {
+            let a = |w: &mut Self, i: usize| -> Result<String, String> { Ok(w.expr(args.get(i).ok_or("names no frame")?)?.0) };
+            return match m {
+                "gotoAndPlay" => Ok((format!("if ({who} != null) {who}.playLabel({}, false)", a(self, 0)?), Ty::Any)),
+                "gotoAndStop" => Ok((format!("if ({who} != null) {who}.playLabel({}, true)", a(self, 0)?), Ty::Any)),
+                "play" => Ok((format!("if ({who} != null) {who}.hold(false)"), Ty::Any)),
+                "stop" => Ok((format!("if ({who} != null) {who}.hold(true)"), Ty::Any)),
+                "setFallthrough" => Ok((format!("if ({who} != null) {who}.setFallthrough({})", a(self, 0)?), Ty::Any)),
+                // (the order a plane draws its clips in: this engine draws each piece on its own layer)
+                "swapChildren" | "swapChildrenAt" | "setChildIndex" => Ok(("// (not ported: a clip moved in its plane's drawing order; this engine draws each piece on its own layer)".into(), Ty::Any)),
+                _ => Err(format!("calls {m} on a clip of its planes, which no plain form answers yet")),
+            };
         }
+        // (a plane is the stage clip's child of its name: the midground's is its terrain)
+        let plane = match m { "getBackground" => Some("background"), "getForeground" => Some("foreground"), "getMidground" => Some("terrain"), "getShadowMask" => Some("shadowMask"), _ => None };
+        if let Some(p) = plane.filter(|_| args.is_empty() && ((self.o.stage && mine) || who == "stage")) { self.util("planePart")?; return Ok((format!("planePart({})", quote(p)), Ty::Object)) }
+        if self.o.stage && mine && args.is_empty() && m == "getCameraBackgrounds" { self.util("stagePlane")?; self.util("cameraPlanes")?; return Ok(("cameraPlanes()".into(), Ty::Object)) }
         // its costumes' colours
         if matches!(m, "paletteData" | "getPaletteSwapData") && args.is_empty() && self.o.palette.is_some() { return Ok((self.costume_palette()?, Ty::Rect)) }
         if mine && self.o.fighter {

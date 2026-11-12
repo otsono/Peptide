@@ -493,3 +493,121 @@ function ridingUpkeep() {
 		}
 	}
 }
+
+// ---- parts
+//: a named clip of one of the stage's planes, as the code reaches it (`getBackground().torches`):
+//: every piece drawn under that name (ELEMENTS: each piece's index, the names over it, the labels it
+//: plays and its sections), shown, hidden, faded and sent to a label or a frame together. a sectioned
+//: piece plays the section a label names; the clip's own picture goes to a frame
+var stageEls = ELEMENTS;
+var partsMade = new haxe.ds.StringMap();
+// a label as the pieces play it (only its letters and digits)
+function phaseOf(l) {
+	var s = "";
+	var t = Std.string(l);
+	for (i in 0...t.length) {
+		var k = t.charCodeAt(i);
+		if ((k >= 48 && k <= 57) || (k >= 65 && k <= 90) || (k >= 97 && k <= 122)) s += t.charAt(i);
+	}
+	return s;
+}
+// a sectioned piece sent to a label or a source frame
+function goPiece(e, v, go) {
+	var sec = e.sections;
+	if (sec == null) { if (v.exports != null) v.exports.__go = go; return; }
+	var k = -1;
+	var at = 0;
+	if (Std.isOfType(go, Float) || Std.isOfType(go, Int)) {
+		var f = (Std.int(go) - 1) * 2;
+		var start = 0;
+		for (i in 0...sec.lens.length) {
+			if (f >= start && f < start + sec.lens[i]) { k = i; at = f - start; }
+			start += sec.lens[i];
+		}
+	} else k = e.labels.indexOf(go);
+	if (k < 0) return;
+	v.setVisible(true);
+	v.playAnimation(sec.anims[k]);
+	if (at > 0) v.playFrame(at + 1);
+}
+function partNamed(n) {
+	var have = partsMade.get(n);
+	if (have != null) return have;
+	var els = [];
+	var depth = -1;
+	for (e in stageEls) {
+		var k = e.path.indexOf(n);
+		if (k < 0) continue;
+		els.push(e);
+		if (depth < 0 || k < depth) depth = k;
+	}
+	var sf = SURFACES_ON ? surfaceNamed(n) : null;
+	if (els.length == 0 && sf == null) return objectNamed(n);
+	var p = { name: n, shown: true, alpha: 1.0, fall: false };
+	var each = function(f) { for (e in els) { var v = bootBg[e.i]; if (v != null) f(e, v); } };
+	// (the clip's own picture: the pieces drawn right under it)
+	var own = function(e) { return e.path.length == depth + 1; };
+	p.setVisible = function(on) { p.shown = on == true; each(function(e, v) { v.setVisible(p.shown); }); };
+	p.getVisible = function() { return p.shown; };
+	p.setAlpha = function(a) { p.alpha = a; each(function(e, v) { if (v.setAlpha != null) v.setAlpha(a); }); };
+	p.getAlpha = function() { return p.alpha; };
+	p.playLabel = function(f, stop) {
+		if (!(Std.isOfType(f, Float) || Std.isOfType(f, Int))) {
+			var l = phaseOf(f);
+			each(function(e, v) { if (e.seg && e.labels.indexOf(l) >= 0) goPiece(e, v, l); });
+			return;
+		}
+		var n2 = Std.int(f) < 1 ? 1 : Std.int(f);
+		each(function(e, v) {
+			if (!own(e)) return;
+			if (e.seg) goPiece(e, v, n2);
+			else if (v.playFrame != null) { v.playFrame(n2 * 2 - 1); if (stop) v.pause(); else v.resume(); }
+		});
+	};
+	p.hold = function(stop) { each(function(e, v) { if (!own(e)) return; if (stop) { if (v.pause != null) v.pause(); } else if (v.resume != null) v.resume(); }); };
+	// the frame its clip is on, as the source counts it: its first sectioned piece's section and frame
+	p.getFrame = function() {
+		for (e in els) {
+			var v = bootBg[e.i];
+			if (v == null || v.getCurrentFrame == null) continue;
+			var at = Std.int((v.getCurrentFrame() - 1) / 2);
+			if (e.sections == null) return at + 1;
+			var start = 0;
+			for (i in 0...e.sections.anims.length) {
+				if (v.getAnimation() == e.sections.anims[i]) return Std.int(start / 2) + at + 1;
+				start += e.sections.lens[i];
+			}
+			return at + 1;
+		}
+		return 1;
+	};
+	p.getLabel = function() {
+		for (e in els) {
+			var v = bootBg[e.i];
+			if (v == null || e.sections == null || v.getAnimation == null) continue;
+			var k = e.sections.anims.indexOf(v.getAnimation());
+			if (k >= 0) return e.labels[k];
+		}
+		return null;
+	};
+	// a surface placed under the name lets fighters through as the code says
+	p.setFallthrough = function(on) { p.fall = on == true; if (sf != null) sf.updateStructureStats({ dropThrough: p.fall }); };
+	p.getFallthrough = function() { return p.fall; };
+	partsMade.set(n, p);
+	return p;
+}
+
+// ---- timeline
+//: a clip of the planes whose own frame code runs as its timeline reaches each frame (PART: the name
+//: it is placed under; its cases are each frame's code)
+var NAMEAt = 0;
+function NAME() {
+	var p = planePart(PART);
+	if (p == null) return;
+	var f = p.getFrame();
+	if (f == NAMEAt) return;
+	NAMEAt = f;
+	switch (f) {
+		// {cases}
+	}
+}

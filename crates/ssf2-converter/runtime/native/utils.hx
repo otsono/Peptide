@@ -340,3 +340,9 @@ function metadataWrite(o, s) {
 	if (o.getGameObjectStatsMetadata() == null) o.updateGameObjectStats({ metadata: s });
 	else o.updateGameObjectStatsMetadata(s);
 }
+
+// ---- planePart
+// a named clip of the stage's planes, as the stage publishes it (`exports.__part`)
+function planePart(n) {
+	return stage == null || stage.exports == null || stage.exports.__part == null ? null : stage.exports.__part(n);
+}
