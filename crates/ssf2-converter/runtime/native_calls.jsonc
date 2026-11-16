@@ -278,6 +278,10 @@
   // the match is live once the stage's code runs (it waits for the fighters)
   "PeptideAPI.isGameStarted": { "code": "true", "returns": "bool" },
   "PeptideAPI.isDebug": { "code": "false", "returns": "bool" },
+  // where it was put, before its own code moved it (`startPosition`)
+  "getStartPosition": { "code": "startPosition()", "helper": "startPosition", "returns": "record" },
+  // a leg of the path it moves along (`moveLegs`)
+  "addMovement": { "code": "addMove({0})", "helper": "moveLegs" },
   // sent at a target the source's way (`homeTowards`)
   "homeTowardsTarget": { "code": "homeTowards({self}, {0}, {1})", "helper": "homeTowards" },
   // the fighter a clip of its belongs to: the one at the root of who owns it (itself, for a fighter)

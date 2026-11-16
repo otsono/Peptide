@@ -1119,6 +1119,8 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
             b.bounds.0, b.bounds.1, b.bounds.2, b.bounds.3, faces.join(", "), b.ledges.0, b.ledges.1)
     });
     let floors = text.contains("ownFloor(") || text.contains("dropOwnFloor(");
+    // (the label of its clip it is on, for its own code that asks)
+    let labelled = text.contains("clipLabel(");
     let mut blocks: Vec<&str> = Vec::new();
     if body.is_some() || floors { blocks.push("faces") }
     if body.is_some() { blocks.push("placed_body") }
@@ -1140,6 +1142,7 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
         ("BODY_ON", body.is_some().to_string()), ("FLOOR_ON", floors.to_string())];
     let mut functions = Vec::new();
     for b in &blocks { functions.push(compile::native::helper(runtime, "object_rules", b, "", &words, if *b == "rehit" { &rehit } else { &[] }).map_err(one)?) }
+    if labelled { functions.push(compile::native::helper(runtime, "fighter_tables", "clip_label", "", &[], &super::native_fighter::clip_labels(src, &pieces)).map_err(one)?) }
     functions.extend(w.functions.iter().cloned());
     // as it is made: where the tree placed it, what it declares, its body, and its own hurt
     let mut begin = Vec::new();

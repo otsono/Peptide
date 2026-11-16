@@ -358,6 +358,48 @@ function fadeTo(o, to) {
 	fadingNow.set(a != to);
 }
 
+// ---- startPosition
+// where it was the first time its code asked (where it was put, before its own code moved it), in the
+// source's units as its own `getX` reads
+var startAt = self.makeObject(null);
+function startPosition() {
+	if (startAt.get() == null) startAt.set({ x: self.getX() / SIZE, y: self.getY() / SIZE });
+	var p = startAt.get();
+	return { x: p.x, y: p.y };
+}
+
+// ---- stageField
+// a field of the stage's own class, as the stage publishes it for other objects' code
+function stageField(n) {
+	var c = stage == null || stage.exports == null || stage.exports.__fieldOf == null ? null : stage.exports.__fieldOf("self", n);
+	return c == null ? null : c.get();
+}
+
+// ---- moveLegs
+// a path it moves along, a leg at a time (`addMovement`): each leg moves it by its speeds (source
+// pixels a frame) for its time, then holds it for its wait, and the last leads back to the first.
+// stepped by a timer of its own every engine frame, half a source frame a step
+var legs = self.makeObject(null);
+var legAt = self.makeInt(0);
+var legT = self.makeFloat(0);
+function addMove(m) {
+	if (legs.get() == null) { legs.set([]); self.addTimer(1, -1, stepLegs, { persistent: true }); }
+	legs.get().push(m);
+}
+function stepLegs() {
+	var all = legs.get();
+	if (all == null || all.length == 0) return;
+	var m = all[legAt.get()];
+	var time = m.moveTime == null ? 0 : m.moveTime;
+	var wait = m.waitTime == null ? 0 : m.waitTime;
+	if (legT.get() < time) {
+		if (m.xSpeed != null) self.setX(self.getX() + m.xSpeed * SIZE * 0.5);
+		if (m.ySpeed != null) self.setY(self.getY() + m.ySpeed * SIZE * 0.5);
+	}
+	legT.set(legT.get() + 0.5);
+	if (legT.get() >= time + wait) { legT.set(0); legAt.set((legAt.get() + 1) % all.length); }
+}
+
 // ---- homeTowards
 // sent at a target, as the source's engine does it: the angle from where it is to where the target
 // stands taken the source's way (its y term is the target's height negated, minus its own: not the
@@ -401,7 +443,7 @@ function gameSettings() {
 function keysIn(o) {
 	var out = [];
 	if (o == null) return out;
-	if (Std.isOfType(o, Array)) { for (i in 0...o.length) out.push(i); return out; }
+	if (o.push != null) { for (i in 0...o.length) out.push(i); return out; }
 	if (o.keys != null) for (k in o.keys()) out.push(k);
 	return out;
 }

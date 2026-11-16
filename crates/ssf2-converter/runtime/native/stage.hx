@@ -54,6 +54,8 @@ var stageFrames = 0;
 // ---- what every stage does
 // the bodies the tree placed are part of the stage from its first frame, ahead of the fighters
 function initialize() {
+	// (its objects wait for its own code to start before theirs does)
+	self.exports.__started = false;
 	// {placed}
 	// {publish}
 }
@@ -68,6 +70,7 @@ function bootStage() {
 	// {spawn}
 	__verifyBuilt = true;
 	// {own_start}
+	self.exports.__started = true;
 }
 
 function update() {
