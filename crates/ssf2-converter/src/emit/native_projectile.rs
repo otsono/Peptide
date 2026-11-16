@@ -269,6 +269,16 @@ pub fn is_quiet(model: &SourceModel, runtime: &Runtime, class: &str) -> bool { q
 /// drawn nowhere (on this path or the runtime's) as the art it is in is drawn whole
 pub fn is_quiet_inside(model: &SourceModel, runtime: &Runtime, class: &str) -> bool { quiet(model, runtime, class, true) }
 
+/// a record or list written out of plain values (`plain`), nested any depth
+fn literal(e: &Expr, plain: &dyn Fn(&Expr) -> bool) -> bool {
+    match e {
+        Expr::Object(kv) => kv.iter().all(|(k, v)| matches!(k, Expr::Str(_)) && (plain(v) || literal(v, plain))),
+        Expr::Array(xs) => xs.iter().all(|x| plain(x) || literal(x, plain)),
+        Expr::Coerce(_, x) | Expr::Convert(_, x) => plain(x) || literal(x, plain),
+        _ => false,
+    }
+}
+
 fn quiet(model: &SourceModel, runtime: &Runtime, class: &str, inside: bool) -> bool {
     // (a class named as a value declares what the clip is, `classAPI = Platform`: the conversion
     // reads it off the tree)
@@ -280,7 +290,11 @@ fn quiet(model: &SourceModel, runtime: &Runtime, class: &str, inside: bool) -> b
         for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor]) {
             let ok = f.body.iter().all(|s| match s {
                 Stmt::Return(None) | Stmt::Expr(Expr::SuperCall(..)) => true,
-                Stmt::Assign(Place::Member(t, _), v) => matches!(t, Expr::This) && plain(v),
+                // (inside: records and lists of plain values too, what a clip declares about itself
+                // that the conversion reads off the tree)
+                Stmt::Assign(Place::Member(t, _), v) => matches!(t, Expr::This) && (plain(v) || (inside && literal(v, &plain))),
+                // (a property of its own clip named bare: `visible = false`)
+                Stmt::Assign(Place::Name(n), v) => matches!(n.as_str(), "visible" | "alpha") && plain(v),
                 Stmt::Expr(Expr::Call(f, a)) => own_name(f).is_some_and(|m| matches!(m, "stop" | "play" | "addFrameScript") || (inside && matches!(m, "gotoAndStop" | "gotoAndPlay" | "nextFrame" | "prevFrame")))
                     // (its frame scripts registered, on whatever the decompiler reads it as)
                     || matches!(&**f, Expr::Member(_, m) if m == "addFrameScript")

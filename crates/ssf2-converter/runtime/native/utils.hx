@@ -455,6 +455,12 @@ function stageField(n) {
 	var c = stage == null || stage.exports == null || stage.exports.__fieldOf == null ? null : stage.exports.__fieldOf("self", n);
 	return c == null ? null : c.get();
 }
+// and written
+function setStageField(n, v) {
+	var c = stage == null || stage.exports == null || stage.exports.__fieldOf == null ? null : stage.exports.__fieldOf("self", n);
+	if (c != null) c.set(v);
+	return v;
+}
 
 // ---- moveLegs
 // a path it moves along, a leg at a time (`addMovement`): each leg moves it by its speeds (source
@@ -566,6 +572,21 @@ function objectsOf(kind) {
 	if (all != null) for (o in all) if (o != null && o.exports != null && o.exports.__classes != null && o.exports.__classes.indexOf(kind) >= 0) out.push(o);
 	return out;
 }
+
+// ---- staticVar
+// a class's static variable its code changes as it runs: one value for every object of the class,
+// kept on the stage by the class's name and its own (its declared value until first written)
+var staticsHere = self.makeObject(null);
+function staticsOf() {
+	if (stage != null && stage.exports != null) {
+		if (stage.exports.__statics == null) stage.exports.__statics = new haxe.ds.StringMap();
+		return stage.exports.__statics;
+	}
+	if (staticsHere.get() == null) staticsHere.set(new haxe.ds.StringMap());
+	return staticsHere.get();
+}
+function staticVar(k, d) { var m = staticsOf(); return m.exists(k) ? m.get(k) : d; }
+function setStaticVar(k, v) { staticsOf().set(k, v); return v; }
 
 // ---- nextUid
 // a fresh id each time it is asked: one count for the whole match, kept on the stage, so no two

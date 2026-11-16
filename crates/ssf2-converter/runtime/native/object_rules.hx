@@ -30,7 +30,7 @@ function makeFace(ty, pts, ledgeL, ledgeR, drop) {
 	st.addToBlacklist(self);
 	st.setX(self.getX());
 	st.setY(self.getY());
-	return { st: st, k: key, x: null, y: null };
+	return { st: st, k: key, x: null, y: null, drop: drop == true };
 }
 // an object let through its faces, or no longer (what it publishes as `__ignore`)
 function ignoreThrough(o, on) {
@@ -43,6 +43,9 @@ function bodyFacesOf() {
 	if (FLOOR_ON) for (f in ownFaces) out.push(f);
 	return out;
 }
+// whether fighters drop through its faces, set by another object's code (what it publishes as
+// `__through`)
+self.exports.__through = function(on) { for (f in bodyFacesOf()) f.st.updateStructureStats({ dropThrough: on == true }); };
 function releaseFaces(faces) {
 	var pool = spareFaces();
 	for (f in faces) {
@@ -130,6 +133,14 @@ function rehitUpkeep() {
 
 // ---- faces_through
 //: whether fighters drop through its floors (its body's and its own)
+var throughNow = self.makeObject(null);
 function facesThrough(on) {
+	throughNow.set(on == true);
 	for (f in bodyFacesOf()) f.st.updateStructureStats({ dropThrough: on == true });
+}
+// whether they do now: as last set, else as its faces were made
+function throughOf() {
+	if (throughNow.get() != null) return throughNow.get();
+	for (f in bodyFacesOf()) return f.drop == true;
+	return false;
 }

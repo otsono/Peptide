@@ -401,6 +401,8 @@ struct Writer<'o, 'a> {
     /// the variables of the function being written that hold a record of a list: the class, and
     /// the list's field
     rec_locals: BTreeMap<u32, (String, String)>,
+    /// the variables of the function that hold the stage now (from the write that set them)
+    stage_locals: BTreeSet<u32>,
     /// what it runs each of this engine's frames besides (the clips its effects place, followed)
     every_frame_extra: BTreeSet<String>,
     /// a value read already for the write being made (`assign`, a field of another class's)
@@ -502,7 +504,7 @@ struct Writer<'o, 'a> {
 
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
-        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rec_fields: BTreeMap::new(), rt_lists: BTreeMap::new(), record: None, rec_locals: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
+        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rec_fields: BTreeMap::new(), rt_lists: BTreeMap::new(), record: None, rec_locals: BTreeMap::new(), stage_locals: BTreeSet::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
                              locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), release: BTreeSet::new(), statics: BTreeSet::new(), body: Vec::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new(), param_ty: BTreeMap::new(), param_elem: BTreeMap::new(), part_fields: BTreeMap::new(), drawn: BTreeMap::new(), drawn_locals: BTreeSet::new(), local_elem: BTreeMap::new(), temp_ty: BTreeMap::new(), list_elem: BTreeMap::new(), defaults: Vec::new() };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "initialize", "update", "onTeardown", "onKill", "onDestroy", "life", "age", "started", "freshHit"]
@@ -1219,6 +1221,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         self.locals.clear();
         self.temp_ty.clear();
         self.rec_locals.clear();
+        self.stage_locals.clear();
         self.effects = 0;
         let debug: BTreeMap<u32, String> = f.local_names.iter().cloned().collect();
         let mut params = Vec::new();
@@ -1609,6 +1612,19 @@ impl<'o, 'a> Writer<'o, 'a> {
                 return self.assign(p, &Expr::New(Box::new(Expr::Name("TextMap".into())), vec![]));
             }
         }
+        // (a constant of its class written the value it declares: nothing changes)
+        if let Place::Member(Expr::This, f) = p {
+            let declared = self.o.model.classes.get(&self.class).and_then(|c| c.fields.iter().find(|x| x.name == *f && x.is_const)).and_then(|x| x.default.as_ref()).and_then(literal);
+            if declared.is_some() && declared == literal(v) { return Ok(vec![format!("// (its constant {f} written the value it declares)")]) }
+        }
+        // (a plain value a clip declares about itself that no code of its package reads back: what the
+        // source's engine reads off the clip, which the conversion read off the tree)
+        if let Place::Member(Expr::This, f) = p {
+            let plain = matches!(v, Expr::Str(_) | Expr::Num(_) | Expr::Int(_) | Expr::Bool(_));
+            if plain && self.field(f).is_none() && !matches!(f.as_str(), "visible" | "alpha" | "x" | "y" | "scaleX" | "scaleY" | "rotation" | "name") && !self.read_anywhere(f) {
+                return Ok(vec![format!("// (it declares its {f}, which the conversion read off the tree)")]);
+            }
+        }
         // (the class a clip's frame declares the game builds over it: read at conversion, the object's own)
         if matches!(p, Place::Member(Expr::This, f) if f == "classAPI") && matches!(v, Expr::Name(_) | Expr::Member(..)) { return Ok(vec![]) }
         // a flattened field made anew, and a field of one written
@@ -1888,6 +1904,32 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (val, _) = self.expr(v)?;
                 Ok(vec![format!("__j{block}_{slot} = {val};")])
             }
+            // (one of its own fields, named bare)
+            Place::Name(n) if !self.captured.contains(&ident(n)) && self.field(n).is_some() => self.assign(&Place::Member(Expr::This, n.clone()), v),
+            // (a static variable of a class of its package's: the one value every object of it shares)
+            Place::Name(n) if !self.captured.contains(&ident(n)) && self.field(n).is_none() && self.static_owner(None, n).is_some() => {
+                let k = self.static_owner(None, n).unwrap_or_default();
+                let declared = self.o.model.classes.get(&k).and_then(|c| c.fields.iter().find(|x| x.name == *n)).filter(|x| x.is_const && !x.is_static).and_then(|x| x.default.as_ref()).and_then(literal);
+                if declared.is_some() && declared == literal(v) { return Ok(vec![format!("// (its constant {n} written the value it declares)")]) }
+                let (val, _) = self.expr(v)?;
+                self.util("staticVar")?;
+                Ok(vec![format!("setStaticVar({}, {val});", quote(&format!("{}.{n}", short(&k))))])
+            }
+            Place::Member(Expr::Name(c), f) if self.static_owner(Some(c), f).is_some() => {
+                let k = self.static_owner(Some(c), f).unwrap_or_default();
+                let (val, _) = self.expr(v)?;
+                self.util("staticVar")?;
+                Ok(vec![format!("setStaticVar({}, {val});", quote(&format!("{}.{f}", short(&k))))])
+            }
+            // (a field of the stage's own class, written from another object's code: what the stage publishes)
+            Place::Member(o, f) if !self.o.stage && self.is_stage_value(o)
+                && self.stage_has_field(f) => {
+                let (val, _) = self.expr(v)?;
+                self.util("stageField")?;
+                Ok(vec![format!("setStageField({}, {val});", quote(f))])
+            }
+            // (a property of its own clip, named bare in its clip's code: the clip's)
+            Place::Name(n) if !self.captured.contains(&ident(n)) && matches!(n.as_str(), "visible" | "alpha" | "x" | "y" | "scaleX" | "scaleY" | "rotation") => self.assign(&Place::Member(Expr::This, n.clone()), v),
             Place::Name(n) if self.captured.contains(&ident(n)) => {
                 let (val, ty) = self.expr(v)?;
                 let had = self.captured_ty.get(&ident(n)).copied().unwrap_or(Ty::Any);
@@ -1929,6 +1971,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                     _ => { self.rec_locals.remove(r); }
                 }
                 let (val, ty) = self.expr(v)?;
+                if val == "stage" { self.stage_locals.insert(*r); } else { self.stage_locals.remove(r); }
                 // (a list of records written out, or one copied from a variable that holds one: so is this)
                 {
                     let mut lit = v;
@@ -2143,8 +2186,8 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             Expr::Member(_, _) if self.own_child_box(e).is_some() => ("true".into(), Ty::Bool),
             // a field of the stage's own class, read from another object's code: what the stage publishes
-            Expr::Member(o, f) if !self.o.stage && self.expr(o).is_ok_and(|(w, _)| w == "stage")
-                && self.o.model.classes.values().any(|c| short(&c.super_name) == "PeptideStage" && (c.fields.iter().any(|x| &x.name == f && !x.is_static) || c.methods.iter().any(|m| { let mut set = false; walk(&m.function.body, &mut |st| if let Stmt::Assign(Place::Member(Expr::This, g), _) = st { if g == f { set = true } }); set }))) => {
+            Expr::Member(o, f) if !self.o.stage && self.is_stage_value(o)
+                && self.stage_has_field(f) => {
                 self.util("stageField")?;
                 (format!("stageField({})", quote(f)), Ty::Any)
             }
@@ -2407,6 +2450,20 @@ impl<'o, 'a> Writer<'o, 'a> {
                 (v, ty)
             }
             // a constant its own class states, read by its bare name: its value
+            // a static variable of a class its code changes as it runs: the value they all share
+            Expr::Name(n) if self.field(n).is_none() && self.static_owner(None, n).is_some_and(|k| self.static_written(&k, n)) => {
+                let k = self.static_owner(None, n).unwrap_or_default();
+                let d = self.o.model.classes.get(&k).and_then(|c| c.fields.iter().find(|x| x.name == *n)).and_then(|x| x.default.as_ref()).and_then(literal).unwrap_or_else(|| "null".into());
+                self.util("staticVar")?;
+                return Ok((format!("staticVar({}, {d})", quote(&format!("{}.{n}", short(&k)))), Ty::Any));
+            }
+            Expr::Member(c, f) if matches!(&**c, Expr::Name(cn) if self.static_owner(Some(cn), f).is_some_and(|k| self.static_written(&k, f))) => {
+                let Expr::Name(cn) = &**c else { unreachable!() };
+                let k = self.static_owner(Some(cn), f).unwrap_or_default();
+                let d = self.o.model.classes.get(&k).and_then(|c| c.fields.iter().find(|x| x.name == *f)).and_then(|x| x.default.as_ref()).and_then(literal).unwrap_or_else(|| "null".into());
+                self.util("staticVar")?;
+                return Ok((format!("staticVar({}, {d})", quote(&format!("{}.{f}", short(&k)))), Ty::Any));
+            }
             Expr::Name(n) if self.field(n).is_none() && self.o.model.classes.get(&self.class).is_some_and(|k| static_value(k, n).is_some()) => {
                 let k = self.o.model.classes.get(&self.class).ok_or("no class")?;
                 let d = static_value(k, n).ok_or("no value")?;
@@ -2800,12 +2857,25 @@ impl<'o, 'a> Writer<'o, 'a> {
                 for a in args { let (t, ty) = self.expr(a)?; texts.push(t); tys.push(ty); }
                 // (a list made of its elements: all but one number, its length)
                 if short(n) == "Array" && !texts.is_empty() && !(texts.len() == 1 && tys[0] == Ty::Num) { return Ok((format!("[{}]", texts.join(", ")), Ty::Object)) }
+                // (one whose arguments its form reads more than once, and one of them is worked out as it
+                // runs: a function of its form, handed each once)
+                let reread = (0..10).any(|i| make.matches(&format!("{{{i}}}")).count() > 1 && texts.get(i).is_some_and(|v| !v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')));
+                if reread && !make.contains("{args}") {
+                    let f = format!("make{}", ident(short(n)));
+                    if !self.helpers.contains_key(&f) {
+                        let mut body = make.clone();
+                        for i in 0..10 { body = body.replace(&format!("{{{i}}}"), &format!("a{i}")); }
+                        let ps: Vec<String> = (0..10).filter(|i| make.contains(&format!("{{{i}}}"))).map(|i| format!("?a{i}")).collect();
+                        self.helpers.insert(f.clone(), format!("// a {} made, its arguments handed once\nfunction {f}({}) {{\n\treturn {body};\n}}", short(n), ps.join(", ")));
+                    }
+                    let used = (0..10).filter(|i| make.contains(&format!("{{{i}}}"))).max().map(|m| m + 1).unwrap_or(0);
+                    let vs: Vec<String> = (0..used).map(|i| texts.get(i).cloned().unwrap_or_else(|| "null".into())).collect();
+                    return Ok((format!("{f}({})", vs.join(", ")), if matches!(short(n), "Array" | "Vector" | "Dictionary") { Ty::Object } else { Ty::Rect }));
+                }
                 let mut out = make.replace("{args}", &texts.join(", "));
                 for i in 0..10 {
                     let slot = format!("{{{i}}}");
                     let Some(v) = texts.get(i) else { out = out.replace(&slot, "null"); continue };
-                    // (one used more than once is read more than once: only a plain one)
-                    if out.matches(&slot).count() > 1 && !v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.') { return Err("makes an object of a value worked out as it runs".into()) }
                     out = out.replace(&slot, &paren(v));
                 }
                 // (a list or a map is no record: its own calls are its own)
@@ -3177,7 +3247,8 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// whether an expression is a value its code holds (not its clip, and not a name of the API's,
     /// though a variable it shares with a closure is one)
     fn a_value(&self, o: &Expr) -> bool {
-        match o { Expr::This => false, Expr::Name(n) => self.captured.contains(&ident(n)), _ => true }
+        // (a static value its class states, named bare, is a value too)
+        match o { Expr::This => false, Expr::Name(n) => self.captured.contains(&ident(n)) || self.field(n).is_some() || self.o.model.classes.get(&self.class).is_some_and(|k| static_value(k, n).is_some()), _ => true }
     }
 
     /// a helper of `helpers.hx` that takes the source's size, written once
@@ -3602,6 +3673,19 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             return Err(format!("calls {}", describe(f)));
         };
+        // a date it keeps set to another hour (the engine's dates do not change: a new one, the same
+        // but for that hour, kept in its place)
+        if m == "setHours" && args.len() == 1 && matches!(&**recv, Expr::Member(t, _) if matches!(**t, Expr::This)) {
+            let Expr::Member(_, f) = &**recv else { unreachable!() };
+            let (id, _) = self.field(f).ok_or_else(|| format!("sets the hour of {f}, which is not its field"))?;
+            let key = member_key(&self.class, f);
+            let plain = self.plain.contains(&key);
+            self.read.insert(key);
+            let (h, _) = self.expr(&args[0])?;
+            let d = if plain { id.clone() } else { format!("{id}.get()") };
+            let made = format!("new Date({d}.getFullYear(), {d}.getMonth(), {d}.getDate(), {h}, {d}.getMinutes(), {d}.getSeconds())");
+            return Ok((if plain { format!("if ({d} != null) {id} = {made}") } else { format!("if ({d} != null) {id}.set({made})") }, Ty::Any));
+        }
         // one of its own methods
         if matches!(**recv, Expr::This) {
             if let Some(id) = self.method(m) { return self.own_call(&id, args) }
@@ -3797,8 +3881,13 @@ impl<'o, 'a> Writer<'o, 'a> {
         }
         // a call a record answers
         // (a field of one that no record answers the call of: an object the record holds)
-        if who_ty == Ty::Rect && (!matches!(&**recv, Expr::Member(..) | Expr::Index(..)) || calls().record_calls.contains_key(m.as_str())) {
-            let row = calls().record_calls.get(m.as_str()).cloned().ok_or_else(|| format!("calls {m} on a record"))?;
+        if who_ty == Ty::Rect && (!matches!(&**recv, Expr::Member(..)) || calls().record_calls.contains_key(m.as_str())) {
+            // (one with no row: the function the record holds under that name, called)
+            let Some(row) = calls().record_calls.get(m.as_str()).cloned() else {
+                let vs: Vec<String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect::<Result<_, String>>()?;
+                let f = format!("{}.{}", paren(&who), ident(m));
+                return Ok((format!("({f} != null ? {f}({}) : null)", vs.join(", ")), Ty::Any));
+            };
             // (a copy of one is a record too)
             return self.fill(&Row { code: row, returns: match m.as_str() { "clone" => Ty::Rect, "intersects" => Ty::Bool, _ => Ty::Any }, helper: None, gap: None }, &who, args, m);
         }
@@ -4493,6 +4582,10 @@ impl<'o, 'a> Writer<'o, 'a> {
             ("forceAttack" | "startAttack", [label, ..]) if mine && !self.o.fighter && !self.o.item => return Ok((self.jump_to_value(label)?, Ty::Any)),
             // whether fighters drop through it: its own floors, or the surface asked
             ("setFallthrough", [v]) if mine && !self.o.fighter && !self.o.stage => { let (v, _) = self.expr(v)?; return Ok((format!("facesThrough({v})"), Ty::Any)) }
+            // (whether they stand fast: the other way round)
+            ("setNoDropThrough", [v]) if mine && !self.o.fighter && !self.o.stage => { let v = self.test(v)?; return Ok((format!("facesThrough(!{})", paren(&v)), Ty::Any)) }
+            ("getNoDropThrough", []) if mine && !self.o.fighter && !self.o.stage => return Ok(("!throughOf()".into(), Ty::Bool)),
+            ("getFallthrough", []) if mine && !self.o.fighter && !self.o.stage => return Ok(("throughOf()".into(), Ty::Bool)),
             ("setFallthrough", [v]) => { let (v, _) = self.expr(v)?; return Ok((format!("if ({who} != null) {who}.updateStructureStats({{ dropThrough: {v} == true }})"), Ty::Any)) }
             // (its own boxes, or another object's: a projectile it fired)
             ("updateHitboxStats", [i, Expr::Object(pairs)]) => {
@@ -5482,8 +5575,87 @@ self.playFrameLabel({})", quote(f))); }
                 });
                 if other { None } else { found }
             }
+            // (a field of its own only ever set to one, as its class is made)
+            Expr::Member(t, f) if matches!(**t, Expr::This) => {
+                let c = self.o.model.classes.get(&self.class)?;
+                let mut found: Option<Vec<(Expr, Expr)>> = None;
+                let mut other = false;
+                for b in c.methods.iter().map(|m| &m.function.body).chain([&c.constructor.body]) {
+                    walk(b, &mut |st| if let Stmt::Assign(Place::Member(Expr::This, g), v) = st {
+                        if g != f { return }
+                        let mut v = v;
+                        while let Expr::Coerce(_, y) | Expr::Convert(_, y) = v { v = y; }
+                        match v { Expr::Object(kv) if found.is_none() => found = Some(kv.clone()), Expr::Null | Expr::Undefined => {}, _ => other = true }
+                    });
+                }
+                if other { None } else { found }
+            }
             _ => None,
         }
+    }
+
+    /// whether the stage's own class keeps a field of this name (a package with no stage class of
+    /// its own, lent to the stage, reaches whatever the stage publishes)
+    fn stage_has_field(&self, f: &str) -> bool {
+        let stages: Vec<&ClassModel> = self.o.model.classes.values().filter(|c| short(&c.super_name) == "PeptideStage").collect();
+        stages.is_empty() || stages.iter().any(|c| c.fields.iter().any(|x| x.name == f && !x.is_static) || c.methods.iter().any(|m| { let mut set = false; walk(&m.function.body, &mut |st| if let Stmt::Assign(Place::Member(Expr::This, g), _) = st { if g == f { set = true } }); set }))
+    }
+
+    /// whether a value is the stage: the API's, or a variable of the function only ever set to it
+    fn is_stage_value(&mut self, e: &Expr) -> bool {
+        if self.expr(e).is_ok_and(|(w, _)| w == "stage") { return true }
+        let Expr::Local(r) = e else { return false };
+        if self.stage_locals.contains(r) { return true }
+        let mut set: Vec<Expr> = Vec::new();
+        walk(&self.body, &mut |st| if let Stmt::Assign(Place::Local(x), v) = st { if x == r { set.push(v.clone()) } });
+        let set: Vec<Expr> = set.into_iter().filter(|v| !matches!(v, Expr::Null | Expr::Undefined)).collect();
+        !set.is_empty() && set.iter().all(|v| !matches!(v, Expr::Local(y) if y == r) && self.is_stage_value(v))
+    }
+
+    /// the class of its package (its own, or the one named) that declares a static variable (or a
+    /// constant) of this name
+    fn static_owner(&self, class: Option<&str>, n: &str) -> Option<String> {
+        let has = |c: &ClassModel| c.fields.iter().any(|x| x.name == n && (x.is_static || x.is_const));
+        match class {
+            Some(cn) => self.o.model.classes.values().find(|c| (c.name == cn || short(&c.name) == short(cn)) && has(c)).map(|c| c.name.clone()),
+            None => {
+                // (its own class, then the package classes it extends)
+                let mut cur = self.o.model.classes.get(&self.class);
+                while let Some(c) = cur {
+                    if has(c) { return Some(c.name.clone()) }
+                    cur = self.o.model.classes.get(&c.super_name);
+                }
+                None
+            }
+        }
+    }
+
+    /// whether any code of its package writes a class's static variable as it runs (beyond the class's
+    /// own setup)
+    fn static_written(&self, class: &str, n: &str) -> bool {
+        let mut any = false;
+        for k in self.o.model.classes.values() {
+            let own = k.name == class;
+            for f in k.methods.iter().map(|m| &m.function).chain([&k.constructor]) {
+                walk(&f.body, &mut |st| match st {
+                    Stmt::Assign(Place::Name(g), _) if own && g == n => any = true,
+                    Stmt::Assign(Place::Member(Expr::Name(c), g), _) if g == n && (c == class || short(c) == short(class)) => any = true,
+                    _ => {}
+                });
+            }
+        }
+        any
+    }
+
+    /// whether any code of its package reads a member of this name (anything's)
+    fn read_anywhere(&self, n: &str) -> bool {
+        let mut read = false;
+        for k in self.o.model.classes.values() {
+            for f in k.methods.iter().map(|m| &m.function).chain([&k.constructor, &k.static_init]) {
+                crate::model::ast::walk_exprs(&f.body, &mut |e| if matches!(e, Expr::Member(_, m) if m == n) { read = true });
+            }
+        }
+        read
     }
 
     /// whether any code of the class being written writes one of its fields

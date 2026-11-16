@@ -51,7 +51,8 @@
   // a date: this engine has no clock to read (a match runs the same on every machine), so "now"
   // is one fixed moment, noon on the first of the year
   "Date": {
-    "make": "({0} == null ? Date.fromTime(1767268800000.0) : ({1} == null ? Date.fromTime(AS3.num({0})) : new Date(AS3.num({0}), AS3.num({1}), ({2} == null ? 1 : AS3.num({2})), ({3} == null ? 0 : AS3.num({3})), ({4} == null ? 0 : AS3.num({4})), ({5} == null ? 0 : AS3.num({5})))))",
+    // (none: the fixed moment; one: a time, or another date copied; more: its parts)
+    "make": "({0} == null ? Date.fromTime(1767268800000.0) : ({1} == null ? (Std.isOfType({0}, Date) ? Date.fromTime({0}.getTime()) : Date.fromTime({0})) : new Date({0}, {1}, ({2} == null ? 1 : {2}), ({3} == null ? 0 : {3}), ({4} == null ? 0 : {4}), ({5} == null ? 0 : {5}))))",
     "is": "Date"
   },
   // an error is what it says: a message, an id and its name

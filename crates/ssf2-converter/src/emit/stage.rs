@@ -1091,6 +1091,9 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
         let Some(k) = src.class_of(sym) else { continue };
         if runtime.provides(&k.name) || k.name == itself.name || k.name == c.name || classes.iter().any(|x: &&crate::model::ClassModel| x.name == k.name) { continue }
         if super::native_projectile::is_quiet(src, runtime, &k.name) { continue }
+        // (a clip nested in its art: its own timeline, or what it declares about itself, is drawn
+        // nowhere, on this path or the runtime's)
+        if !shown.contains(&sym) && super::native_projectile::is_quiet_inside(src, runtime, &k.name) { continue }
         if !shown.contains(&sym) { return Err(one(format!("{} inside it has code of its own", k.name))) }
         classes.push(k);
     }
@@ -1163,7 +1166,7 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
         for p in pieces.iter().filter(|p| p.label == label) { rehit.push(format!("case {}: rehitEvery = {};", compile::quote(&p.fm_name), (r * 2.0) as i64)) }
     }
     if !rehit.is_empty() { blocks.push("rehit") }
-    let through = text.contains("facesThrough(");
+    let through = text.contains("facesThrough(") || text.contains("throughOf(");
     if through { if !blocks.contains(&"faces") { blocks.insert(0, "faces") } blocks.push("faces_through") }
     let words = [("SIZE", format!("{}", units.size)), ("BODY", body.clone().unwrap_or_else(|| "null".into())),
         ("BODY_ON", body.is_some().to_string()), ("FLOOR_ON", floors.to_string())];

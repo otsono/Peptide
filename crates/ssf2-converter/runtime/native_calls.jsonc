@@ -336,6 +336,7 @@
   // a date's parts, as the engine's dates have them
   "getHours": { "code": "{self}.getHours()", "returns": "number" },
   "getMinutes": { "code": "{self}.getMinutes()", "returns": "number" },
+  "getSeconds": { "code": "{self}.getSeconds()", "returns": "number" },
   "getDate": { "code": "{self}.getDate()", "returns": "number" },
   "getDay": { "code": "{self}.getDay()", "returns": "number" },
   "getMonth": { "code": "{self}.getMonth()", "returns": "number" },
@@ -358,7 +359,7 @@
   // a platform that lets one object through (its structures' blacklist), and drops fighters or not
   "addIgnoreObject": { "code": "ignoreOn({self}, {0}, true)", "helper": "ignoreOn" },
   "removeIgnoreObject": { "code": "ignoreOn({self}, {0}, false)", "helper": "ignoreOn" },
-  "setNoDropThrough": "if ({self} != null) {self}.updateStructureStats({ dropThrough: {0} != true })",
+  "setNoDropThrough": "if ({self} != null && {self}.exports != null && {self}.exports.__through != null) {self}.exports.__through({0} != true)",
   // how fast it is going, its own speed and its launch together (the source's units)
   "netSpeed": { "code": "(Math.sqrt(Math.pow({self}.getNetXVelocity(), 2) + Math.pow({self}.getNetYVelocity(), 2)) / {speed})", "returns": "number" },
   "netXSpeed": { "code": "({self}.flipX({self}.getNetXVelocity()) / {speed})", "returns": "number" },
