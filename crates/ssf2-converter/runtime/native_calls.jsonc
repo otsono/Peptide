@@ -161,6 +161,7 @@
   "PeptideAPI.getStage": { "code": "stage", "returns": "object" },
   // an item asked to fly free (its own script throws it)
   "toToss": "if ({self}.exports.__ask != null) {self}.exports.__ask(\"toToss\", null)",
+  "toHeld": "if ({self} != null && {self}.exports != null && {self}.exports.__ask != null) {self}.exports.__ask(\"toHeld\", null)",
   // a fighter grabbed by the one with that id; let go by whoever holds it
   "getUID": { "code": "{self}.getUid()", "returns": "number" },
   "grab": { "code": "grabBy({self}, {0})", "helper": "grabBy", "returns": "bool" },
@@ -221,6 +222,15 @@
   "push": "{self}.push({0})",
   "splice": { "code": "{self}.splice({0}, {1})", "returns": "object" },
   "split": { "code": "{self}.split({0})", "returns": "object" },
+  "join": { "code": "joinedList({self}{,0})", "helper": "joinedList", "returns": "string" },
+  "concat": { "code": "{self}.concat({0})", "returns": "object" },
+  "lastIndexOf": { "code": "{self}.lastIndexOf({0})", "returns": "number" },
+  "charAt": { "code": "{self}.charAt({0})", "returns": "string" },
+  "charCodeAt": { "code": "{self}.charCodeAt({0})", "returns": "number" },
+  "substr": { "code": "{self}.substr({0}{,1})", "returns": "string" },
+  "substring": { "code": "{self}.substring({0}{,1})", "returns": "string" },
+  "toUpperCase": { "code": "{self}.toUpperCase()", "returns": "string" },
+  "toLowerCase": { "code": "{self}.toLowerCase()", "returns": "string" },
   "toString": { "code": "Std.string({self})", "returns": "string" },
   // the match's clock, in the source's frames
   // the stage's structure a line crosses (`ignoreFallthrough` passes over one dropped through)
@@ -268,6 +278,12 @@
   // the match is live once the stage's code runs (it waits for the fighters)
   "PeptideAPI.isGameStarted": { "code": "true", "returns": "bool" },
   "PeptideAPI.isDebug": { "code": "false", "returns": "bool" },
+  // a list turned back to front, and the list itself handed back (this engine's turns it and hands
+  // back nothing)
+  "reverse": { "code": "reversedList({self})", "helper": "reversedList", "returns": "object" },
+  // the match's settings: a versus match on none of the source's stages, with none of its special
+  // modes on, one entry a player as the match's fighters stand
+  "PeptideAPI.getGameSettings": { "code": "gameSettings()", "helper": "gameSettings", "returns": "record" },
   // what the match keeps by name for every object's code
   "PeptideAPI.gameVar": { "code": "gameVars().get({0})", "helper": "gameVars" },
   "PeptideAPI.setGameVar": { "code": "gameVars().set({0}, {1})", "helper": "gameVars" },

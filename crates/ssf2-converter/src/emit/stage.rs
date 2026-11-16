@@ -1156,6 +1156,7 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     let mut end = Vec::new();
     if body.is_some() { end.push("releaseFaces(bodyFaces);".to_string()); end.push("bodyFaces = [];".into()) }
     if floors { end.push("dropOwnFloor();".into()) }
+    end.extend(w.release.iter().cloned());
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     slots.insert("fields", w.fields.clone());
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());

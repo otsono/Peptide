@@ -22,6 +22,9 @@
   "Array": { "make": "[]", "native_only": true },
   "Vector": { "make": "[]", "native_only": true },
   "Dictionary": { "make": "new haxe.ds.ObjectMap()", "native_only": true },
+  // an object the source's code uses as a map (made empty, read and written by keys worked out as it
+  // runs): a map by text, as an object's keys are
+  "TextMap": { "make": "new haxe.ds.StringMap()", "native_only": true },
   "Rectangle": {
     "make": "new Rectangle({args})",
     "is": "Rectangle"

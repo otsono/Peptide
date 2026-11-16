@@ -358,6 +358,37 @@ function fadeTo(o, to) {
 	fadingNow.set(a != to);
 }
 
+// ---- reversedList
+// a list turned back to front in place, and handed back
+function reversedList(l) {
+	if (l == null) return l;
+	l.reverse();
+	return l;
+}
+
+// ---- joinedList
+// a list's items as one text, between each the separator given (a comma where none is)
+function joinedList(l, ?sep) { return l == null ? "" : l.join(sep == null ? "," : sep); }
+
+// ---- gameSettings
+// the match's settings as the source's code reads them: a versus match on none of its stages, none
+// of its special modes on, and a player for each fighter
+function gameSettings() {
+	var players = [];
+	for (c in match.getCharacters()) players.push({ name: "", team: c.getTeam(), costume: c.getCostumeIndex(), human: true });
+	return { levelData: { stage: "", specialModes: 0 }, playerSettings: players };
+}
+
+// ---- keysIn
+// the names an object holds, as a loop over them (`for (k in o)`): a list's places, a map's keys
+function keysIn(o) {
+	var out = [];
+	if (o == null) return out;
+	if (Std.isOfType(o, Array)) { for (i in 0...o.length) out.push(i); return out; }
+	if (o.keys != null) for (k in o.keys()) out.push(k);
+	return out;
+}
+
 // ---- gameVars
 // what the match keeps by name for every object's code (`setGlobalVar`): on the stage, which all of
 // them reach

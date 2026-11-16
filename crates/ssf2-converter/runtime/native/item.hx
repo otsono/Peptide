@@ -133,6 +133,8 @@ function asked(kind, ?v) {
 	if (kind == "hold") holdBy(self.exports.__holder, false);
 	else if (kind == "pickup") pickupOn.set(v == true);
 	else if (kind == "toss") letGo(self.exports.__zDropped == true);
+	// (sent back into its holder's hand by another object's code)
+	else if (kind == "toHeld") base_toHeld();
 	// (sent into its thrown state by another object's code: it goes up at its throw speed, as the
 	// source's does with no direction given)
 	else if (kind == "toToss" && inItemState(1)) {

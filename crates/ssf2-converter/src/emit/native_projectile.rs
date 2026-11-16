@@ -222,7 +222,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     slots.insert("own_start", written.start.clone());
     slots.insert("own_tick", written.tick.clone());
     slots.insert("publish", publish);
-    slots.insert("ends", written.ends.iter().map(|(l, h)| format!("if ({l}.get()) {h}(null);")).collect());
+    slots.insert("ends", written.ends.iter().map(|(l, h)| format!("if ({l}.get()) {h}(null);")).chain(written.release.iter().cloned()).collect());
     let script = native::fill_slots(skeleton, &slots)
         .replace("{title}", title)
         .replace("{classes}", &classes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "))
