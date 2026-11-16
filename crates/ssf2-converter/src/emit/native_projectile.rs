@@ -67,7 +67,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         if shown.contains(&sym) { classes.push(c) }
         else if !is_quiet(model, runtime, &c.name) { return Err(format!("{} inside it has code of its own", c.name)) }
     }
-    if classes.is_empty() && itself.is_none() && !item { return Err("no code of its own".into()) }
+    // (one with no code of its own is the skeleton and what it declares alone)
     // a clip whose code its owner reaches into keeps the object the owner holds
     let names: BTreeSet<&str> = classes.iter().map(|c| c.name.as_str()).collect();
     for c in model.classes.values().filter(|c| !bare && !names.contains(c.name.as_str()) && !runtime.provides(&c.name)) {
@@ -208,6 +208,11 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let mut publish = written.publish.clone();
     // (the rate it hits again at, for another object's code that writes it)
     if publish_refresh { publish.push("self.exports.__refresh = setRefresh;".into()); }
+    // (each stat-driven part of it another object's code can turn off or on: `endControl`)
+    if !taken.switches.is_empty() {
+        let cases: Vec<String> = taken.switches.iter().filter(|(_, v)| functions.iter().any(|t| t.contains(&format!("var {v} ")))).map(|(k, v)| format!("case {}: {v} = on;", compile::quote(k))).collect();
+        if !cases.is_empty() { publish.push(format!("self.exports.__statSwitch = function(stat, on) {{ switch (stat) {{ {} }} }};", cases.join(" "))); }
+    }
     if read_by_others || functions.iter().chain(written.start.iter()).chain(written.tick.iter()).any(|t| t.contains("clipLabel(")) || written.frames.values().any(|t| t.contains("clipLabel(")) {
         functions.push(native::helper(runtime, "fighter_tables", "clip_label", "", &[], &super::native_fighter::clip_labels(model, pieces))?);
         if read_by_others { publish.push("self.exports.__stanceLabel = clipLabel;".into()); }

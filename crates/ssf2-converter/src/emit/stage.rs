@@ -97,6 +97,9 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     // keeps loaded alongside it (`lent_packages`)
     let lent = lent_packages(&runtime, &src, &input.rows);
     let models: Vec<&SourceModel> = std::iter::once(&src).chain(&lent).collect();
+    // (a method of a class a lent package carries is one its objects publish, for the stage's code to call)
+    // (and one of the stage's own package, for an object a lent package carries to call on the stage)
+    if let Ok(mut l) = compile::native::lent_methods().lock() { for m in &models { for c in m.classes.values() { l.extend(c.methods.iter().map(|x| x.name.clone())); } } }
     for r in &input.rows { object_files(home(&models, &r.class), dir, r)?; }
     // the stage's own art is one animation of its entity, showing the stage clip's frames
     let entity = dir.join("library").join("entities").join(format!("{id}.entity"));
@@ -139,7 +142,9 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     let mut written = Vec::new();
     let mut native_objects = Vec::new();
     // (each library clip's measured extent, for a floor an object makes the shape of one)
-    let bounds: BTreeMap<String, (f64, f64, f64, f64)> = model.clip_bounds.iter().map(|(n, r)| (n.clone(), (r.x, r.y, r.w, r.h))).collect();
+    let mut bounds: BTreeMap<String, (f64, f64, f64, f64)> = model.clip_bounds.iter().map(|(n, r)| (n.clone(), (r.x, r.y, r.w, r.h))).collect();
+    // (and each a stage object's class shapes its body from, measured in the package that carries it)
+    for hz in &model.hazards { for (n, r) in &hz.platform_shapes { bounds.entry(n.clone()).or_insert(*r); } }
     for row in &input.rows {
         // written as plain Fraymakers code where its class has a plain form
         let census = object_census(home(&models, &row.class), &object_runtime, &row.class, units);

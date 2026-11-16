@@ -358,6 +358,23 @@ function fadeTo(o, to) {
 	fadingNow.set(a != to);
 }
 
+// ---- homeTowards
+// sent at a target, as the source's engine does it: the angle from where it is to where the target
+// stands taken the source's way (its y term is the target's height negated, minus its own: not the
+// difference), the speed along that angle, and a turn to face the way it goes. a target is an
+// object, or a point in the source's units
+function homeTowards(o, speed, t) {
+	if (o == null || t == null) return;
+	var tx = t.getX != null ? t.getX() / SIZE : t.x;
+	var ty = t.getY != null ? t.getY() / SIZE : t.y;
+	var a = Math.atan2(-ty - o.getY() / SIZE, tx - o.getX() / SIZE);
+	var xs = speed * Math.cos(a);
+	var ys = -speed * Math.sin(a);
+	if (xs <= 0) o.faceLeft(); else o.faceRight();
+	o.setXSpeed(Math.abs(xs) * SPEED);
+	o.setYSpeed(ys * SPEED);
+}
+
 // ---- reversedList
 // a list turned back to front in place, and handed back
 function reversedList(l) {

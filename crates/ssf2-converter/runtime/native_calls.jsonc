@@ -278,6 +278,14 @@
   // the match is live once the stage's code runs (it waits for the fighters)
   "PeptideAPI.isGameStarted": { "code": "true", "returns": "bool" },
   "PeptideAPI.isDebug": { "code": "false", "returns": "bool" },
+  // sent at a target the source's way (`homeTowards`)
+  "homeTowardsTarget": { "code": "homeTowards({self}, {0}, {1})", "helper": "homeTowards" },
+  // the fighter a clip of its belongs to: the one at the root of who owns it (itself, for a fighter)
+  "PeptideAPI.getCharacter": { "code": "self.getRootOwner()", "returns": "object" },
+  // the owner's stick no longer steering a projectile (its stat-driven aim turned off)
+  "endControl": "if ({self} != null && {self}.exports != null && {self}.exports.__statSwitch != null) {self}.exports.__statSwitch(\"controlDirection\", false)",
+  // the clip the source draws its HUD's background in: one this engine draws nowhere, as the runtime's
+  "hudBack": { "code": "clipRecord(null)", "helper": "clipRecord", "returns": "record", "gap": "the HUD background: drawn nowhere here (nor on the runtime)" },
   // a list turned back to front, and the list itself handed back (this engine's turns it and hands
   // back nothing)
   "reverse": { "code": "reversedList({self})", "helper": "reversedList", "returns": "object" },
