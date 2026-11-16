@@ -736,6 +736,9 @@ fn cmd_stage(args: &[String]) -> Result<()> {
     let out_dir = flag_str(args, "--out").unwrap_or_else(|| "stages".to_string());
     let id_override = flag_str(args, "--id");
     let info_only = args.iter().any(|a| a == "--info");
+    // `--census`: what of it is written as Fraymakers code and what holds the rest back (converted in
+    // full, art included, which its objects' animations come from, then deleted: nothing is kept)
+    let census = args.iter().any(|a| a == "--census");
     let flag_vals: std::collections::HashSet<&String> =
         ["--out", "--id"].iter().filter_map(|f| {
             args.iter().position(|a| a == f).and_then(|i| args.get(i + 1))
@@ -807,6 +810,15 @@ fn cmd_stage(args: &[String]) -> Result<()> {
 
     if info_only { return Ok(()); }
 
+    if census {
+        let scratch = std::env::temp_dir().join(format!("peptide-census-{}-{}", model.id, std::process::id()));
+        let r = ssf2_converter::emit_stage(&model, &scratch);
+        let report = std::fs::read_to_string(scratch.join(&model.id).join("runtime_report.json")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&scratch);
+        r?;
+        println!("CENSUS {} {}", model.id, report.replace('\n', " "));
+        return Ok(());
+    }
     let out_root = PathBuf::from(&out_dir);
     let (dir, fraytools) = ssf2_converter::emit_stage(&model, &out_root)?;
     println!("\nemitted FM stage package -> {}", dir.display());
