@@ -265,6 +265,9 @@
   // a hurt its code answers first: no hit is held back here, as on the runtime
   "setHurtInterrupt": { "code": "", "gap": "setHurtInterrupt: a hit its code takes before the engine does" },
   // two objects' boxes against each other, by the source's box kinds: none is answered here, as on the runtime
+  // the match's winners and losers, which this engine tells no fighter while it plays
+  "PeptideAPI.getWinners": { "code": "[]", "returns": "object", "gap": "getWinners: the match's winners" },
+  "PeptideAPI.getLosers": { "code": "[]", "returns": "object", "gap": "getLosers: the match's losers" },
   "PeptideAPI.hitboxTest": { "code": "[]", "returns": "object", "gap": "hitboxTest: two objects' boxes against each other" },
   // the colours its costume is drawn in, changed by its code: kept to itself, as on the runtime
   "setPaletteData": { "code": "", "gap": "setPaletteSwapData: colours its code changes as it runs" },
@@ -275,6 +278,8 @@
   "PeptideUtils.cast": { "code": "{0}", "returns": "object" },
   // the clip of the hat a copied power gives: the engine draws none here, and its colours change nothing
   "copyHatClip": { "code": "null", "returns": "object", "gap": "the hat a copied power gives (getKirbyHatMC)" },
+  // another engine object worn in its costume (an effect keeps its own colours, as on the runtime)
+  "applyPaletteToEffect": "if ({0} != null && {0} != {self} && {0}.getType() != EntityType.VFX) {0}.setCostumeIndex({self}.getCostumeIndex())",
   "PeptideUtils.replacePalette": { "code": "", "gap": "replacePalette: a clip recoloured by its code" },
   // the game's quality settings: every one on, as both engines run here
   "PeptideAPI.getQualitySettings": { "code": "{ weather: true, stage_effects: \"enabled\", ambient_lighting: \"enabled\", global_effects: true }", "returns": "record" },

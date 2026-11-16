@@ -317,6 +317,8 @@ pub struct Written {
 fn reached(o: &Object, c: &ClassModel, m: &crate::model::MethodModel) -> bool {
     if c.frame_scripts.iter().any(|fs| fs.method == m.name) { return true }
     if matches!(m.name.as_str(), "initialize" | "update") { return true }
+    // (another object's own method the API calls on it by name: the runtime's API names it)
+    if !o.fighter && o.runtime.files.values().any(|f| f.contains(&format!(".{}", m.name)) || f.contains(&format!("\"{}\"", m.name))) { return true }
     let model = o.model;
     // each name's mentions, less those as the listener for an event nothing raises (never told,
     // so never run)
@@ -363,7 +365,7 @@ pub fn census(o: &Object) -> Vec<String> {
     let classes: Vec<&ClassModel> = o.itself.into_iter().chain(o.classes.iter().copied()).collect();
     for c in classes {
         w.class = c.name.clone();
-        for m in c.methods.iter().filter(|m| !declares(m) && (!o.fighter || reached(o, c, m))) {
+        for m in c.methods.iter().filter(|m| !declares(m) && reached(o, c, m)) {
             let name = w.methods[&member_key(&c.name, &method_name(m))].clone();
             w.in_frame = c.frame_scripts.iter().any(|fs| fs.method == m.name);
             if let Err(e) = w.function(&name, &m.function) { out.push(format!("{}.{}: {e}", short(&c.name), m.name)); }
@@ -930,7 +932,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         for c in &classes {
             self.class = c.name.clone();
             let frame_of: BTreeMap<&str, u32> = c.frame_scripts.iter().map(|fs| (fs.method.as_str(), fs.frame)).collect();
-            for m in c.methods.iter().filter(|m| !declares(m) && (!self.o.fighter || reached(self.o, c, m))) {
+            for m in c.methods.iter().filter(|m| !declares(m) && reached(self.o, c, m)) {
                 let name = self.methods[&member_key(&c.name, &method_name(m))].clone();
                 self.in_frame = frame_of.contains_key(m.name.as_str());
                 // (a fighter's frame's code is its keyframe's: written there as it is, unless other code
@@ -1197,6 +1199,8 @@ impl<'o, 'a> Writer<'o, 'a> {
     // ---- functions and statements ---------------------------------------------------------------
 
     fn function(&mut self, name: &str, f: &Function) -> Result<String, String> {
+        let held = if self.o.fighter { own_clip_held(f) } else { None };
+        let f = held.as_ref().unwrap_or(f);
         self.body = f.body.clone();
         let outer = std::mem::replace(&mut self.current_fn, name.to_string());
         let r = self.function_written(name, f);
@@ -1542,7 +1546,16 @@ impl<'o, 'a> Writer<'o, 'a> {
                             _ => Err(format!("calls {m} on its {name} part")),
                         };
                     }
-                    if let Some(name) = self.stance_child(c).map(|(n, _)| n).or_else(|| self.own_child(c)) {
+                    // (or a clip inside one, whose art is drawn into the fighter's with it)
+                    let mut at: &Expr = c;
+                    let mut inside = None;
+                    while let Expr::Member(o, n) = at {
+                        if self.stance_child(at).is_some() || self.own_child(at).is_some() { break }
+                        inside = Some(n.clone());
+                        at = o;
+                    }
+                    let within = inside.is_some() && (self.stance_child(at).is_some() || self.own_child(at).is_some());
+                    if let Some(name) = self.stance_child(c).map(|(n, _)| n).or_else(|| self.own_child(c)).or_else(|| if within { inside.clone() } else { None }) {
                         self.gaps.insert(format!("steps its {name} clip, whose art is drawn into the fighter's"));
                         return Ok(format!("// (its {name} clip's art is drawn into the fighter's: its {m} turns nothing here)"));
                     }
@@ -1563,6 +1576,16 @@ impl<'o, 'a> Writer<'o, 'a> {
                 && (matches!(&**g, Expr::Member(o, m) if matches!(m.as_str(), "getMC" | "stanceClip" | "getStanceMC") && self.expr(o).is_ok_and(|(w, _)| w == "self"))
                     || matches!(&**g, Expr::Name(m) if matches!(m.as_str(), "getMC" | "stanceClip" | "getStanceMC") && self.method(m).is_none())) {
                 let (val, _) = self.expr(v)?;
+                let set = match f.as_str() { "scaleX" => "setScaleX", "scaleY" => "setScaleY", "alpha" => "setAlpha", "rotation" => "setRotation", _ => "setVisible" };
+                return Ok(vec![format!("self.{set}({val});")]);
+            }
+        }
+        // (the look of the clip a projectile's or item's animation shows, written in that clip's own
+        // code: the object's, as this engine draws the clip as the object)
+        if let Place::Member(Expr::This, f) = p {
+            if !self.o.fighter && !self.o.stage && matches!(f.as_str(), "scaleX" | "scaleY" | "alpha" | "rotation" | "visible") && self.field(f).is_none()
+                && self.o.itself.is_none_or(|c| c.name != self.class) {
+                let (val, _) = if f == "visible" { (self.test(v)?, Ty::Bool) } else { self.expr(v)? };
                 let set = match f.as_str() { "scaleX" => "setScaleX", "scaleY" => "setScaleY", "alpha" => "setAlpha", "rotation" => "setRotation", _ => "setVisible" };
                 return Ok(vec![format!("self.{set}({val});")]);
             }
@@ -2446,16 +2469,35 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let Expr::Member(_, m) = &**g else { unreachable!() };
                 (self.declared_field(m, f).unwrap_or_default(), Ty::Any)
             }
+            // where the clip its animation shows sits in its root, and where a named clip that clip
+            // places sits in it: the placements each animation's frames make
+            Expr::Member(o, n) if matches!(n.as_str(), "x" | "y") && self.o.fighter && (self.stance_child(o).is_some() || self.own_stance(o)) => {
+                return Ok((self.placed_at(o, n == "x")?, Ty::Num));
+            }
             // where an object (or its clip, drawn as it) is, in the source's units
             Expr::Member(o, n) if matches!(n.as_str(), "x" | "y") && self.a_value(o) && self.expr(o).is_ok_and(|(_, t)| t == Ty::Body) => {
                 let (v, _) = self.expr(o)?;
+                // (its own clip's place in itself, which no plain form reads yet)
+                if v == "self" && !self.o.fighter { return Err("reads where its own clip sits in it".into()) }
                 (format!("{}.get{}() / {}", paren(&v), n.to_uppercase(), number(self.o.size)), Ty::Num)
             }
             Expr::Call(f, a) if a.is_empty() && matches!(&**f, Expr::Member(o, m) if matches!(m.as_str(), "getMC" | "stanceClip" | "getStanceMC") && !matches!(**o, Expr::This)) => {
                 let Expr::Member(o, _) = &**f else { unreachable!() };
                 let (who, _) = self.expr(o)?;
-                if who == "self" && !self.o.fighter { return Err("uses its own clip as a value".into()) }
+                // (the camera's: its view, as the source reads it)
+                if who == "match.getCamera()" { self.util("cameraClip")?; return Ok(("cameraClip()".into(), Ty::Rect)) }
+                // (its own: the object, as this engine draws its clip as the object)
                 (who, Ty::Body)
+            }
+            // where the stage's midground sits in the stage's space: at its origin
+            Expr::Member(o, n) if matches!(n.as_str(), "x" | "y") && matches!(&**o, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(_, m) if m == "getMidground")) => {
+                return Ok((number(if n == "x" { self.o.origin.0 } else { self.o.origin.1 }), Ty::Num));
+            }
+            // where an effect or object it keeps is, as its write above puts it there
+            Expr::Member(o, n) if matches!(n.as_str(), "x" | "y") && !matches!(**o, Expr::This) && !self.is_clip(o) && !matches!(&**o, Expr::Name(p) if p == "parent")
+                && self.owner_clip(o).is_none() && self.expr(o).is_ok_and(|(w, t)| t == Ty::Object && w != "self") => {
+                let (who, _) = self.expr(o)?;
+                return Ok((format!("({who} == null ? 0 : {who}.get{}() / {})", n.to_uppercase(), number(self.o.size)), Ty::Num));
             }
             // a field of its owner's clip (its root, or the clip its animation shows), or where it is
             Expr::Member(mc, n) if self.owner_clip(mc).is_some() && !matches!(n.as_str(), "currentFrameLabel" | "currentLabel") => {
@@ -2687,6 +2729,16 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             Expr::New(c, args) => {
                 let Expr::Name(n) = &**c else { return Err("makes an object of a class worked out as it runs".into()) };
+                // (a clip of its package's whose own code only moves its own timeline: a clip record,
+                // drawn nowhere here, as on the runtime)
+                let pc = self.o.model.classes.get(n).or_else(|| self.o.model.classes.values().find(|c| short(&c.name) == n.as_str()));
+                if let Some(pc) = pc {
+                    if matches!(short(&pc.super_name), "MovieClip" | "Sprite") && crate::emit::native_projectile::is_quiet_inside(self.o.model, self.o.runtime, &pc.name) {
+                        self.gaps.insert(format!("makes a {} clip, which is drawn nowhere here", short(n)));
+                        self.util("clipRecord")?;
+                        return Ok(("clipRecord(null)".into(), Ty::Rect));
+                    }
+                }
                 if self.o.model.classes.contains_key(n) || self.o.model.classes.values().any(|c| short(&c.name) == n.as_str()) { return Err(format!("makes an object of its package's {n}")) }
                 let make = self.o.runtime.native(n).and_then(|k| k.make.clone()).ok_or_else(|| format!("makes an object of {n}, which has no row in native_classes.jsonc"))?;
                 let mut texts = Vec::new();
@@ -2714,6 +2766,20 @@ impl<'o, 'a> Writer<'o, 'a> {
 
     /// one of its own fields or methods, read
     fn own(&mut self, n: &str) -> Result<(String, Ty), String> {
+        // (a field its code never writes that names a clip its clip places is that clip, which
+        // Flash binds to it: drawn whole into its art here, with no object of its own to turn)
+        if let Some(at) = self.placed_child(n) {
+            // (a record holding its look as the clip's placement starts it, which its code reads
+            // and writes as the source's does; drawn nowhere, on this path or the runtime's)
+            self.gaps.insert(format!("turns its {n} clip, whose art is drawn into its own"));
+            let id = format!("{}__clip", ident(n));
+            self.kept.insert(id.clone(), format!("// the look of its {n} clip, as its code turns it\nvar {id} = self.makeObject(null);"));
+            if !self.helpers.contains_key("placedClip") {
+                self.helpers.insert("placedClip".into(), "// a clip its clip places, which its code turns: a record of its look, as its placement starts it\nfunction placedClip(c, x, y, r, sx, sy) {\n\tvar v = c.get();\n\tif (v == null) { v = { x: x, y: y, rotation: r, scaleX: sx, scaleY: sy, alpha: 1, visible: true, currentFrame: 1 }; c.set(v); }\n\treturn v;\n}".into());
+            }
+            let (x, y, r, sx, sy) = at;
+            return Ok((format!("placedClip({id}, {}, {}, {}, {}, {})", number(x), number(y), number(r), number(sx), number(sy)), Ty::Rect));
+        }
         if let Some((id, holds)) = self.field(n) {
             let key = member_key(&self.class, n);
             let plain = self.plain.contains(&key);
@@ -2731,6 +2797,10 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// a closure the code makes, as a function of the script's own: one that captures none of the
     /// function's variables reads only the object's fields and methods, so it is the same anywhere
     fn closure(&mut self, f: &Function) -> Result<String, String> {
+        // (a variable of its maker's it reaches under its package's name: that variable)
+        let qualified = |n: &str| n.contains('.') && self.captured.contains(&ident(short(n))) && !self.o.model.classes.values().any(|c| c.name == n);
+        let renamed = Function { body: map_stmts(f.body.clone(), &mut |e| match &e { Expr::Name(n) if qualified(n) => Expr::Name(short(n).to_string()), _ => e }), ..f.clone() };
+        let f = &renamed;
         let mut captures = false;
         crate::model::ast::walk_exprs(&f.body, &mut |e| if let Expr::Name(n) = e {
             if self.field(n).is_none() && self.method(n).is_none() && n != "Math" && !n.contains("Peptide") { captures = true }
@@ -2743,7 +2813,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             // (and the API's own calls the writer settles itself: an effect it makes)
             let api: BTreeSet<String> = called.into_iter().filter(|n| calls().rows.contains_key(n) || self.engine_row(n).is_some() || matches!(n.as_str(), "createVfx" | "createVfxOverlay" | "gotoAndStop" | "gotoAndPlay" | "stop" | "play")).collect();
             let unknown: Vec<String> = { let mut u = Vec::new(); crate::model::ast::walk_exprs(&f.body, &mut |e| if let Expr::Name(n) = e {
-                if self.field(n).is_none() && self.method(n).is_none() && n != "Math" && !n.contains("Peptide") && !self.captured.contains(&ident(n)) && !f.activation.iter().any(|(_, a)| a == n) && !self.o.model.classes.values().any(|c| short(&c.name) == n || c.name == *n) && !api.contains(n) { u.push(n.clone()) }
+                if self.field(n).is_none() && self.method(n).is_none() && n != "Math" && !n.contains("Peptide") && !self.captured.contains(&ident(n)) && !f.activation.iter().any(|(_, a)| a == n) && !self.o.model.classes.values().any(|c| short(&c.name) == n || c.name == *n) && self.o.runtime.native(n).is_none() && !api.contains(n) { u.push(n.clone()) }
             }); u };
             if !unknown.is_empty() { return Err(format!("a closure that reads {}, which is no variable of its maker", unknown[0])) }
             let (locals, effects) = (std::mem::take(&mut self.locals), self.effects);
@@ -3461,6 +3531,11 @@ impl<'o, 'a> Writer<'o, 'a> {
                     self.effect_on = saved;
                     return r;
                 }
+                // (a variable of its own holding the closure it calls)
+                if self.captured.contains(&ident(n)) {
+                    let vs: Vec<String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect::<Result<_, String>>()?;
+                    return Ok((format!("({0} != null ? {0}({1}) : null)", ident(n), vs.join(", ")), Ty::Any));
+                }
                 if self.is_itself() { return self.api("self", n, args) }
                 return Err(format!("calls {n} on its clip"));
             }
@@ -3601,6 +3676,13 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (who, _) = self.expr(recv)?;
                 return self.api(&who, m, args);
             }
+            // (a clip its clip places, which its code turns: drawn into its art, so held nowhere)
+            if let Expr::Member(o, n) = &**recv {
+                if matches!(**o, Expr::This) && self.placed_child(n).is_some() {
+                    self.gaps.insert(format!("steps its {n} clip, whose art is drawn into the object's"));
+                    return Ok((format!("// (its {n} clip's art is drawn into the object's: its {m} turns nothing here)"), Ty::Any));
+                }
+            }
             if let Expr::Member(o, n) = &**recv {
                 // (inside an effect of the power it holds: the clip the one it copied draws apart, `powerInner`)
                 if !matches!(**o, Expr::This) && self.field(n).is_none() && !self.is_inner(n) && self.o.fighter && takes_power(self.o.model, self.o.runtime) {
@@ -3617,6 +3699,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                     let hold = matches!(m.as_str(), "gotoAndStop" | "stop");
                     let to = match (m.as_str(), args.first()) { ("gotoAndStop" | "gotoAndPlay", Some(f)) => self.expr(f)?.0, _ => "null".into() };
                     return Ok((format!("clipJump({who}, {to}, {hold})"), Ty::Any));
+                }
+                // (a clip nested in an object's own clip, whose art is drawn whole into each of the
+                // object's frames: its playhead is drawn nowhere, here or on the runtime)
+                if !matches!(**o, Expr::This) && (self.field(n).is_none() || !self.writes_field(n)) && !self.is_inner(n) && !self.o.stage && self.nested_in_drawn(o) {
+                    self.gaps.insert(format!("steps its {n} clip, whose art is drawn into the object's"));
+                    return Ok((format!("// (its {n} clip's art is drawn into the object's: its {m} turns nothing here)"), Ty::Any));
                 }
                 if !matches!(**o, Expr::This) && self.field(n).is_none() && !self.is_inner(n) { return Err(format!("sends {n}, a clip inside one it holds, to a frame")) }
             }
@@ -3764,11 +3852,11 @@ impl<'o, 'a> Writer<'o, 'a> {
             self.inner_clips()?;
             format!("withInners(match.createVfx(new VfxStats({{ {} }}), {on}), {})", st.join(", "), quote(&name))
         } else { format!("match.createVfx(new VfxStats({{ {} }}), {on})", st.join(", ")) };
-        if after.is_empty() { return Ok((make, Ty::Any)) }
+        if after.is_empty() { return Ok((make, Ty::Object)) }
         self.effects += 1;
         let v = if self.effects == 1 { "effect".to_string() } else { format!("effect{}", self.effects) };
         let set: Vec<String> = after.iter().map(|a| format!("{v}.{a};")).collect();
-        Ok((format!("var {v} = {make};\nif ({v} != null) {{ {} }}", set.join(" ")), Ty::Any))
+        Ok((format!("var {v} = {make};\nif ({v} != null) {{ {} }}", set.join(" ")), Ty::Object))
     }
 
     /// the helpers that send an effect it holds to a label or a frame
@@ -3972,6 +4060,8 @@ impl<'o, 'a> Writer<'o, 'a> {
 
     /// an API call on an engine object (`who`: `self`, or the variable holding another)
     fn api(&mut self, who: &str, m: &str, args: &[Expr]) -> Result<(String, Ty), String> {
+        // the camera's clip: its view, as the source reads it
+        if who == "match.getCamera()" && m == "getMC" && args.is_empty() { self.util("cameraClip")?; return Ok(("cameraClip()".into(), Ty::Rect)) }
         // an item put back to lying idle: its handler's own state, as the source's handler has it
         if self.o.item && who == "self" && m == "toIdle" && args.is_empty() { return Ok(("itemTo(0)".into(), Ty::Any)) }
         let mine = who == "self";
@@ -4582,7 +4672,11 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             // an attack it starts by name: the engine's state for it, on the animation that shows it
             ("startAttack" | "forceAttack", [Expr::Str(label), rest @ ..]) => {
-                let anim = (self.o.root_anim)(label).ok_or_else(|| format!("starts the attack {label}, which no animation shows"))?;
+                // (one no animation shows has no frames to start: the source's start finds none either)
+                let Some(anim) = (self.o.root_anim)(label) else {
+                    self.gaps.insert(format!("starts the attack {label}, which no animation of its shows"));
+                    return Ok((format!("// (it starts the attack {label}, which no animation of its shows)"), Ty::Any));
+                };
                 block(self, "start_attack");
                 let mut t = format!("startAttack({})", quote(&anim));
                 if let Some(Expr::Str(f)) = rest.first() { t.push_str(&format!(";
@@ -5008,7 +5102,7 @@ self.playFrameLabel({})", quote(f))); }
             }
             _ => None,
         }.ok_or("times something other than its own method")?;
-        let id = format!("{name}Timer");
+        let id = format!("{name}__timer");
         self.kept.insert(id.clone(), format!("// the engine's timer running {name}, while there is one\nvar {id} = self.makeInt(-1);"));
         Ok(id)
     }
@@ -5026,7 +5120,7 @@ self.playFrameLabel({})", quote(f))); }
         let paused = rest.iter().any(|e| matches!(e, Expr::Object(kv) if kv.iter().any(|(k, v)| matches!(k, Expr::Str(k) if k == "pauseHitstun") && matches!(v, Expr::Bool(true)))));
         if !rest.is_empty() && !rest.iter().all(plain_opts) { return Err("makes a timer with options".into()) }
         let id = self.timer_of(f)?;
-        let name = id.strip_suffix("Timer").unwrap_or(&id).to_string();
+        let name = id.strip_suffix("__timer").unwrap_or(&id).to_string();
         let (n, _) = self.expr(frames)?;
         let every = match n.parse::<f64>() { Ok(v) => number((2.0 * v.max(1.0)).round()), Err(_) => format!("Std.int(2 * Math.max(1, {}))", paren(&n)) };
         let times = match self.expr(repeat)?.0 {
@@ -5116,6 +5210,18 @@ self.playFrameLabel({})", quote(f))); }
                 let h = self.handler(handler)?;
                 return Ok((if m == "addEventListener" { format!("{list}.get().remove({h});\n{list}.get().push({h})") } else { format!("{list}.get().remove({h})") }, Ty::Any));
             }
+        }
+        // another object's every frame (a clip's `enterFrame`): a timer of that object's, each source
+        // frame, ending with it
+        if name == "enterFrame" && who != "self" {
+            let h = self.handler(handler)?;
+            let id = format!("{h}__frames");
+            self.kept.insert(id.clone(), format!("// the timer that runs {h} each frame of the object it listens on\nvar {id} = self.makeInt(-1);"));
+            return Ok((if m == "addEventListener" {
+                format!("if ({who} != null && !{who}.isDisposed()) {id}.set({who}.addTimer(2, -1, {h}, {{ persistent: true }}))")
+            } else {
+                format!("if ({who} != null && !{who}.isDisposed() && {id}.get() >= 0) {who}.removeTimer({id}.get());\n{id}.set(-1)")
+            }, Ty::Any));
         }
         let ends = (name == "projDestroyed" || (self.o.item && name == "itemDestroyed")) && who == "self";
         let table = super::events::table();
@@ -5262,6 +5368,96 @@ self.playFrameLabel({})", quote(f))); }
         let placed: Vec<&crate::swf_timeline::Placed> = sp.frames.iter().flatten().filter(|p| p.name.as_deref() == Some(name.as_str())).collect();
         if placed.is_empty() || placed.iter().any(|p| !art_only(self.o.model, p.char_id)) { return None }
         Some(name.clone())
+    }
+
+    /// whether a value is a clip an object's own clip places (its own, through names that are no
+    /// field of its, or another object's, through `getStanceMC()` / `getMC()`)
+    fn nested_in_drawn(&mut self, e: &Expr) -> bool {
+        match e {
+            Expr::This => true,
+            // (a field its code never writes is the placed clip Flash binds to it)
+            Expr::Member(o, n) => (self.field(n).is_none() || !self.writes_field(n)) && !self.is_inner(n) && self.nested_in_drawn(o),
+            Expr::Call(g, a) => a.is_empty() && matches!(&**g, Expr::Member(_, m) if matches!(m.as_str(), "getStanceMC" | "stanceClip" | "getMC")),
+            _ => false,
+        }
+    }
+
+    /// a field of an object's (not a fighter's or a stage's) its code never writes that names a
+    /// clip its clip places, which Flash binds to it: where that placement first puts it (x, y,
+    /// rotation in degrees, scales)
+    fn placed_child(&self, n: &str) -> Option<(f64, f64, f64, f64, f64)> {
+        if self.o.fighter || self.o.stage || self.field(n).is_none() || self.writes_field(n) { return None }
+        let sym = self.o.model.classes.get(&self.class).and_then(|c| c.symbol)?;
+        let p = self.o.model.sprites.get(&sym)?.frames.iter().flatten().find(|p| p.name.as_deref() == Some(n))?;
+        let m = &p.matrix;
+        Some((m.tx, m.ty, m.b.atan2(m.a).to_degrees(), m.a.hypot(m.b), m.c.hypot(m.d)))
+    }
+
+    /// whether any code of the class being written writes one of its fields
+    fn writes_field(&self, n: &str) -> bool {
+        let Some(c) = self.o.model.classes.get(&self.class) else { return true };
+        let mut any = false;
+        for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor]) {
+            walk(&f.body, &mut |st| if let Stmt::Assign(Place::Member(Expr::This, g), _) = st { if g == n { any = true } });
+        }
+        any
+    }
+
+    /// whether a value is the clip its own animation shows (`getStanceMC()` on itself)
+    fn own_stance(&mut self, e: &Expr) -> bool {
+        let Expr::Call(g, a) = e else { return false };
+        a.is_empty() && matches!(&**g, Expr::Member(o, s) if matches!(s.as_str(), "getStanceMC" | "stanceClip") && self.expr(o).is_ok_and(|(w, _)| w == "self"))
+    }
+
+    /// where the clip its animation shows sits in its root (`own_stance`), or a named clip that clip
+    /// places sits in it (`stance_child`), in the source's units: a function of its own script, by
+    /// the animation it plays and the source frame it is on
+    fn placed_at(&mut self, e: &Expr, x: bool) -> Result<String, String> {
+        let axis = if x { "X" } else { "Y" };
+        let pick = |m: &crate::swf_timeline::Matrix| if x { m.tx } else { m.ty };
+        let (name, f) = if self.own_stance(e) { ("stance".to_string(), format!("stance{axis}")) } else {
+            let (n, _) = self.stance_child(e).ok_or("reads a clip its clip places")?;
+            let f = format!("{}{axis}", ident(&n));
+            (n, f)
+        };
+        if self.helpers.contains_key(&f) { return Ok(format!("{f}()")) }
+        let mut cases: Vec<String> = Vec::new();
+        for (anim, sym, from, n) in self.o.anim_clips {
+            let vals: Vec<f64> = if name == "stance" {
+                // (the root's placement of this clip, wherever the root places it)
+                let at = self.o.model.sprites.values().flat_map(|s| s.frames.iter().flatten())
+                    .find(|p| p.char_id == *sym && p.name.as_deref() == Some("stance")).map(|p| pick(&p.matrix)).unwrap_or(0.0);
+                vec![at]
+            } else {
+                let Some(sp) = self.o.model.sprites.get(sym) else { continue };
+                let on: Vec<Option<f64>> = sp.frames.iter().skip(from.saturating_sub(1) as usize).take(*n as usize)
+                    .map(|fr| fr.iter().find(|p| p.name.as_deref() == Some(name.as_str())).map(|p| pick(&p.matrix))).collect();
+                if on.iter().all(|v| v.is_none()) { continue }
+                // (a frame it is not on reads where it last was, else where it first is)
+                let first = on.iter().flatten().next().copied().unwrap_or(0.0);
+                let mut last = first;
+                on.iter().map(|v| { if let Some(v) = v { last = *v } last }).collect()
+            };
+            let q = quote(anim);
+            if cases.iter().any(|c| c.starts_with(&format!("\t\tcase {q}:"))) { continue }
+            if vals.iter().all(|v| *v == vals[0]) {
+                if vals[0] != 0.0 { cases.push(format!("\t\tcase {q}: return {};", number(vals[0]))); }
+            } else {
+                let list: Vec<String> = vals.iter().map(|v| number(*v)).collect();
+                cases.push(format!("\t\tcase {q}: var l = [{}]; return l[k < l.length ? k : l.length - 1];", list.join(", ")));
+            }
+        }
+        let mut lines = vec![format!("// where its {name} clip sits ({axis}), by the animation it plays and its source frame"), format!("function {f}() {{")];
+        if cases.iter().any(|c| c.contains("var l")) { lines.push("\tvar k = Std.int((self.getCurrentFrame() - 1) / 2);".into()); }
+        if !cases.is_empty() {
+            lines.push("\tswitch (self.getAnimation()) {".into());
+            lines.extend(cases);
+            lines.push("\t}".into());
+        }
+        lines.push("\treturn 0;".into());
+        lines.push("}".into());
+        self.helpers.insert(f.clone(), lines.join("\n"));
+        Ok(format!("{f}()"))
     }
 
     /// the test whether the clip its animation shows places a named clip: a function of its own
@@ -5787,6 +5983,34 @@ fn for_in(c: &Expr) -> Option<(u32, u32)> {
 }
 
 /// every expression of a list of statements, put through `f`
+/// a function whose variables that only ever hold one of its own clips (`getStanceMC()`, `getMC()`)
+/// read as that call wherever they are read: the clip, reached the ways its code reaches it
+fn own_clip_held(f: &Function) -> Option<Function> {
+    let own = |v: &Expr| matches!(v, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(t, m) if matches!(**t, Expr::This) && matches!(m.as_str(), "getStanceMC" | "stanceClip" | "getMC")));
+    let mut calls: BTreeMap<u32, Expr> = BTreeMap::new();
+    let mut other: BTreeSet<u32> = BTreeSet::new();
+    walk(&f.body, &mut |st| if let Stmt::Assign(Place::Local(r), v) = st {
+        if own(v) && calls.get(r).is_none_or(|c| c == v) { calls.insert(*r, v.clone()); }
+        else if !matches!(v, Expr::Null | Expr::Undefined) { other.insert(*r); }
+    });
+    calls.retain(|r, _| !other.contains(r) && *r as usize > f.params.len());
+    if calls.is_empty() { return None }
+    // (its writes go: every read is the call)
+    fn unwrite(list: Vec<Stmt>, calls: &BTreeMap<u32, Expr>) -> Vec<Stmt> {
+        list.into_iter().filter(|s| !matches!(s, Stmt::Assign(Place::Local(r), _) if calls.contains_key(r))).map(|s| match s {
+            Stmt::If(c, a, b) => Stmt::If(c, unwrite(a, calls), unwrite(b, calls)),
+            Stmt::Loop(b) => Stmt::Loop(unwrite(b, calls)),
+            Stmt::While(c, b) => Stmt::While(c, unwrite(b, calls)),
+            Stmt::DoWhile(b, c) => Stmt::DoWhile(unwrite(b, calls), c),
+            Stmt::Switch(c, cs, d) => Stmt::Switch(c, cs.into_iter().map(|(k, b)| (k, unwrite(b, calls))).collect(), unwrite(d, calls)),
+            Stmt::Try(b, cs) => Stmt::Try(unwrite(b, calls), cs.into_iter().map(|mut c| { c.body = unwrite(c.body, calls); c }).collect()),
+            other => other,
+        }).collect()
+    }
+    let body = map_stmts(unwrite(f.body.clone(), &calls), &mut |e| match &e { Expr::Local(r) => calls.get(r).cloned().unwrap_or(e), _ => e });
+    Some(Function { body, ..f.clone() })
+}
+
 pub fn map_stmts(list: Vec<Stmt>, f: &mut impl FnMut(Expr) -> Expr) -> Vec<Stmt> {
     list.into_iter().map(|s| match s {
         Stmt::Expr(e) => Stmt::Expr(e.map(f)),

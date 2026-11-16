@@ -67,8 +67,9 @@ pub fn named(runtime: &super::runtime::Runtime, e: &crate::model::ast::Expr) -> 
         Expr::Str(s) => Some(s.clone()),
         Expr::Member(o, n) => {
             let Expr::Name(c) = &**o else { return None };
-            if super::short(c) != "PeptideEvent" { return None }
-            let v = runtime.constants.get(&format!("PeptideEvent.{n}"))?;
+            // (the source's events, else a display event Flash names on its own `Event`)
+            let v = runtime.constants.get(&format!("{}.{n}", super::short(c)))?;
+            if !v.starts_with('"') { return None }
             Some(v.trim_matches('"').to_string())
         }
         _ => None,

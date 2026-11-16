@@ -138,6 +138,12 @@ function effectStep(effect, d) {
 // one sent to a frame by number, as the source counts its clip's frames
 function effectFrame(effect, n, hold) {
 	if (effect == null || effect.isDisposed()) return;
+	// (a label worked out as it runs: sent there as to a label)
+	if (Std.isOfType(n, String)) {
+		if (effect.hasAnimation(n)) effect.playAnimation(n); else effect.playFrameLabel(n);
+		if (hold) effect.pause(); else effect.resume();
+		return;
+	}
 	var f = Std.int(n);
 	switch (effect.getAnimation()) {
 		// {cases}

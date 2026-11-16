@@ -173,6 +173,14 @@ function takeDamageOf(o, stats, ?by) {
 	return true;
 }
 
+// ---- cameraClip
+// the camera's clip, as the source reads it: the view's centre and size, in the stage's space and
+// the source's units
+function cameraClip() {
+	var c = match.getCamera();
+	return { x: c.getX() / SIZE + ORIGIN_X, y: c.getY() / SIZE + ORIGIN_Y, width: c.getViewportWidth() / SIZE, height: c.getViewportHeight() / SIZE };
+}
+
 // ---- boundsOf
 // a box of the stage's (its camera's or its death bounds), in the source's units
 function boundsOf(a) {

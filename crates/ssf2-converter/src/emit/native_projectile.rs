@@ -65,7 +65,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         let Some(c) = model.class_of(sym) else { continue };
         if runtime.provides(&c.name) { continue }
         if shown.contains(&sym) { classes.push(c) }
-        else if !is_quiet(model, runtime, &c.name) { return Err(format!("{} inside it has code of its own", c.name)) }
+        else if !is_quiet_inside(model, runtime, &c.name) { return Err(format!("{} inside it has code of its own", c.name)) }
     }
     // (one with no code of its own is the skeleton and what it declares alone)
     // a clip whose code its owner reaches into keeps the object the owner holds
@@ -262,7 +262,14 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
 
 /// whether a class (and what it extends of the package's) only stops or plays its clip, sets its
 /// own properties to plain values and registers its frame scripts: nothing anyone sees here
-pub fn is_quiet(model: &SourceModel, runtime: &Runtime, class: &str) -> bool {
+pub fn is_quiet(model: &SourceModel, runtime: &Runtime, class: &str) -> bool { quiet(model, runtime, class, false) }
+
+/// `is_quiet`, for a clip nested inside the clip an object's animation shows: one that also moves
+/// its own timeline or takes itself off its parent is quiet too, a nested clip's playhead being
+/// drawn nowhere (on this path or the runtime's) as the art it is in is drawn whole
+pub fn is_quiet_inside(model: &SourceModel, runtime: &Runtime, class: &str) -> bool { quiet(model, runtime, class, true) }
+
+fn quiet(model: &SourceModel, runtime: &Runtime, class: &str, inside: bool) -> bool {
     // (a class named as a value declares what the clip is, `classAPI = Platform`: the conversion
     // reads it off the tree)
     let plain = |e: &Expr| matches!(e, Expr::Null | Expr::Undefined | Expr::Bool(_) | Expr::Num(_) | Expr::Int(_) | Expr::Str(_))
@@ -274,7 +281,9 @@ pub fn is_quiet(model: &SourceModel, runtime: &Runtime, class: &str) -> bool {
             let ok = f.body.iter().all(|s| match s {
                 Stmt::Return(None) | Stmt::Expr(Expr::SuperCall(..)) => true,
                 Stmt::Assign(Place::Member(t, _), v) => matches!(t, Expr::This) && plain(v),
-                Stmt::Expr(Expr::Call(f, _)) => own_name(f).is_some_and(|m| matches!(m, "stop" | "play" | "addFrameScript")),
+                Stmt::Expr(Expr::Call(f, a)) => own_name(f).is_some_and(|m| matches!(m, "stop" | "play" | "addFrameScript") || (inside && matches!(m, "gotoAndStop" | "gotoAndPlay" | "nextFrame" | "prevFrame")))
+                    || (inside && matches!(&**f, Expr::Member(p, m) if m == "removeChild" && matches!(&**p, Expr::Name(n) if n == "parent") || matches!(&**p, Expr::Member(t, n) if matches!(**t, Expr::This) && n == "parent"))
+                        && matches!(a.as_slice(), [Expr::This])),
                 _ => false,
             });
             if !ok { return false }
