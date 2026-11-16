@@ -290,6 +290,11 @@
   // the match is live once the stage's code runs (it waits for the fighters)
   "PeptideAPI.isGameStarted": { "code": "true", "returns": "bool" },
   "PeptideAPI.isDebug": { "code": "false", "returns": "bool" },
+  // the ledges of the stage's floors, in its space (`stageLedges`)
+  "getLedges": { "code": "stageLedges()", "helper": "stageLedges", "returns": "object" },
+  // the smash ball's area and where items fall: this engine's matches have neither for a stage to state
+  "getSmashBallBounds": { "code": "new Rectangle(0, 0, 0, 0)", "returns": "rect", "gap": "getSmashBallBounds: the smash ball's area" },
+  "getItemSpawnBoundsList": { "code": "[new Rectangle(0, 0, 0, 0)]", "returns": "object", "gap": "getItemSpawnBoundsList: where items fall" },
   // where it was put, before its own code moved it (`startPosition`)
   "getStartPosition": { "code": "startPosition()", "helper": "startPosition", "returns": "record" },
   // a leg of the path it moves along (`moveLegs`)

@@ -358,6 +358,30 @@ function fadeTo(o, to) {
 	fadingNow.set(a != to);
 }
 
+// ---- clipJump
+// a clip a record keeps sent to a frame or label and held or played on: a part of the planes the way
+// it is sent, an effect by its own frame calls; to nothing, held or played where it is
+function clipJump(c, to, hold) {
+	if (c == null) return;
+	if (c.playLabel != null) { if (to == null) c.hold(hold); else c.playLabel(to, hold); return; }
+	if (to != null) { if (Std.isOfType(to, String)) c.playFrameLabel(to); else c.playFrame(Std.int(to) * 2 - 1); }
+	if (hold) c.pause(); else c.resume();
+}
+
+// ---- stageLedges
+// the ledges of the stage's floors, in the stage's space: each where its floor ends, as a clip record
+function stageLedges() {
+	var out = [];
+	for (st in match.getStructures()) {
+		if (st.getAllPoints == null) continue;
+		var pts = st.getAllPoints();
+		if (pts == null || pts.length < 2) continue;
+		if (st.getStructureStat("leftLedge") == true) out.push({ x: pts[0].x / SIZE + ORIGIN_X, y: pts[0].y / SIZE + ORIGIN_Y, visible: true });
+		if (st.getStructureStat("rightLedge") == true) { var p = pts[pts.length - 1]; out.push({ x: p.x / SIZE + ORIGIN_X, y: p.y / SIZE + ORIGIN_Y, visible: true }); }
+	}
+	return out;
+}
+
 // ---- qualityPlays
 // the clips the stage's quality settings animate at the highest quality: played on every frame,
 // whatever their own code stops

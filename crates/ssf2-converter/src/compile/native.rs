@@ -1885,6 +1885,15 @@ impl<'o, 'a> Writer<'o, 'a> {
                     _ => { self.rec_locals.remove(r); }
                 }
                 let (val, ty) = self.expr(v)?;
+                // (a list of records written out, or one copied from a variable that holds one: so is this)
+                {
+                    let mut lit = v;
+                    while let Expr::Coerce(_, x) | Expr::Convert(_, x) = lit { lit = x; }
+                    let recs = matches!(lit, Expr::Array(xs) if !xs.is_empty() && xs.iter().all(|x| matches!(x, Expr::Object(_))))
+                        || val.starts_with("[{")
+                        || matches!(lit, Expr::Local(o) if self.local_elem.get(o) == Some(&Ty::Rect));
+                    if recs { self.local_elem.insert(*r, Ty::Rect); }
+                }
                 let (n, was) = self.locals.get(r).cloned().ok_or("an unknown variable")?;
                 // (a record variable set to nothing, or to a value of no known kind, stays a record)
                 let keep = was == Holds::Value(Ty::Rect) && matches!(ty, Ty::Object | Ty::Any);
@@ -2010,10 +2019,14 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             // a class of the API's own it extends asked to do its part first: where the API's class has
             // no such member, that part is nothing (the engine does its own)
-            Expr::SuperCall(n, _) if !n.is_empty() && !self.o.item => {
+            Expr::SuperCall(n, a) if !n.is_empty() && !self.o.item => {
                 let base = self.o.model.classes.get(&self.class).map(|c| c.super_name.clone()).unwrap_or_default();
                 if !self.o.runtime.provides(&base) { return Err(format!("calls the {n} of {}, a class of its package it extends", short(&base))) }
+                // (the API's own call, where it has one: what the source's base does, not this class's
+                // override of it)
+                if let Ok(r) = self.api("self", n, a) { if !r.0.trim().is_empty() { return Ok(r) } }
                 if self.o.runtime.has_member(&base, n) { return Err(format!("calls the API's own {n}, which has a part of its own to do")) }
+                if !self.top { return Err(format!("uses what the API's own {n} gives, which it has none of here")) }
                 (String::new(), Ty::Any)
             }
             // a held clip's colour transform, read to be changed and set again: a fresh one (the
@@ -2716,7 +2729,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             let mut called: BTreeSet<String> = BTreeSet::new();
             crate::model::ast::walk_exprs(&f.body, &mut |e| if let Expr::Call(g, _) = e { if let Expr::Name(n) = &**g { called.insert(n.clone()); } });
             // (and the API's own calls the writer settles itself: an effect it makes)
-            let api: BTreeSet<String> = called.into_iter().filter(|n| calls().rows.contains_key(n) || self.engine_row(n).is_some() || matches!(n.as_str(), "createVfx" | "createVfxOverlay")).collect();
+            let api: BTreeSet<String> = called.into_iter().filter(|n| calls().rows.contains_key(n) || self.engine_row(n).is_some() || matches!(n.as_str(), "createVfx" | "createVfxOverlay" | "gotoAndStop" | "gotoAndPlay" | "stop" | "play")).collect();
             let unknown: Vec<String> = { let mut u = Vec::new(); crate::model::ast::walk_exprs(&f.body, &mut |e| if let Expr::Name(n) = e {
                 if self.field(n).is_none() && self.method(n).is_none() && n != "Math" && !n.contains("Peptide") && !self.captured.contains(&ident(n)) && !f.activation.iter().any(|(_, a)| a == n) && !self.o.model.classes.values().any(|c| short(&c.name) == n || c.name == *n) && !api.contains(n) { u.push(n.clone()) }
             }); u };
@@ -3585,6 +3598,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                     let to = match (m.as_str(), args.first()) { ("gotoAndStop" | "gotoAndPlay", Some(f)) => self.expr(f)?.0, _ => "null".into() };
                     return Ok((format!("powerInner({holder}, {}, {to}, {hold})", quote(n)), Ty::Any));
                 }
+                // (a clip a record of its keeps, a part of the planes or an effect: sent the way it answers)
+                if !matches!(**o, Expr::This) && self.field(n).is_none() && !self.is_inner(n) && self.expr(o).is_ok_and(|(_, t)| t == Ty::Rect) {
+                    let (who, _) = self.expr(recv)?;
+                    self.util("clipJump")?;
+                    let hold = matches!(m.as_str(), "gotoAndStop" | "stop");
+                    let to = match (m.as_str(), args.first()) { ("gotoAndStop" | "gotoAndPlay", Some(f)) => self.expr(f)?.0, _ => "null".into() };
+                    return Ok((format!("clipJump({who}, {to}, {hold})"), Ty::Any));
+                }
                 if !matches!(**o, Expr::This) && self.field(n).is_none() && !self.is_inner(n) { return Err(format!("sends {n}, a clip inside one it holds, to a frame")) }
             }
             let (who, _) = self.expr(recv)?;
@@ -3615,7 +3636,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         }
         // a call a record answers
         // (a field of one that no record answers the call of: an object the record holds)
-        if who_ty == Ty::Rect && (!matches!(&**recv, Expr::Member(..)) || calls().record_calls.contains_key(m.as_str())) {
+        if who_ty == Ty::Rect && (!matches!(&**recv, Expr::Member(..) | Expr::Index(..)) || calls().record_calls.contains_key(m.as_str())) {
             let row = calls().record_calls.get(m.as_str()).cloned().ok_or_else(|| format!("calls {m} on a record"))?;
             return self.fill(&Row { code: row, returns: Ty::Any, helper: None, gap: None }, &who, args, m);
         }
@@ -3998,7 +4019,8 @@ impl<'o, 'a> Writer<'o, 'a> {
             // (one made again from a record its stats were exported to)
             // (one by a name worked out as it runs: each name its code writes that it declares a
             // projectile under, fired by that name)
-            ("createProjectile", [name, rest @ ..]) if mine && self.o.fighter && self.expr(name).is_ok_and(|(_, t)| t == Ty::Str) => {
+            ("createProjectile", [name, rest @ ..]) if mine && self.o.fighter && self.expr(name).is_ok_and(|(_, t)| matches!(t, Ty::Str | Ty::Any)) => {
+                let named_only = self.expr(name).is_ok_and(|(_, t)| t == Ty::Str);
                 let mut names: BTreeSet<String> = BTreeSet::new();
                 for c in self.o.itself.into_iter().chain(self.o.classes.iter().copied()) {
                     for b in c.methods.iter().map(|m| &m.function.body).chain([&c.constructor.body]) {
@@ -4011,7 +4033,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let vs: Vec<String> = rest.iter().map(|x| Ok(self.expr(x)?.0)).collect::<Result<_, String>>()?;
                 let mut cases = Vec::new();
                 for x in &names { let f = self.fire(x, "self")?; cases.push(format!("case {}: {f}({})", quote(x), vs.join(", "))); }
-                return Ok((format!("(switch ({n}) {{ {}; default: null; }})", cases.join("; ")), Ty::Object));
+                let by_name = format!("(switch ({n}) {{ {}; default: null; }})", cases.join("; "));
+                if named_only { return Ok((by_name, Ty::Object)) }
+                // (a value of no known kind: a name, else the record of one exported)
+                if !self.helpers.contains_key("fireStats") { self.helpers.insert("fireStats".into(), helper(self.o.runtime, "utils", "fireStats", "fireStats", &[], &[])?); }
+                let args = std::iter::once(n.clone()).chain(vs.into_iter().take(2)).collect::<Vec<_>>().join(", ");
+                return Ok((format!("(Std.isOfType({n}, String) ? {by_name} : fireStats({args}))"), Ty::Object));
             }
             ("createProjectile", [rec, rest @ ..]) if mine && self.o.fighter && !matches!(rec, Expr::Str(_)) => {
                 if !self.helpers.contains_key("fireStats") { self.helpers.insert("fireStats".into(), helper(self.o.runtime, "utils", "fireStats", "fireStats", &[], &[])?); }
@@ -5720,7 +5747,11 @@ fn static_value(k: &ClassModel, n: &str) -> Option<Expr> {
     let f = k.fields.iter().find(|f| f.is_static && f.name == n)?;
     if let Some(d) = &f.default { return Some(d.clone()) }
     let mut set: Vec<Expr> = Vec::new();
-    walk(&k.static_init.body, &mut |st| if let Stmt::Assign(Place::Member(o, g), v) = st { if g == n && matches!(o, Expr::This | Expr::Name(_)) { set.push(v.clone()); } });
+    walk(&k.static_init.body, &mut |st| match st {
+        Stmt::Assign(Place::Member(o, g), v) if g == n && matches!(o, Expr::This | Expr::Name(_)) => set.push(v.clone()),
+        Stmt::Assign(Place::Name(g), v) if g == n => set.push(v.clone()),
+        _ => {}
+    });
     let mut elsewhere = false;
     for b in k.methods.iter().map(|m| &m.function.body).chain([&k.constructor.body]) {
         walk(b, &mut |st| if let Stmt::Assign(Place::Member(_, g), _) = st { if g == n { elsewhere = true } });
