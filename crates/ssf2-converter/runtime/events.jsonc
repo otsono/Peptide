@@ -28,6 +28,9 @@
     "reverseHit":           "GameObjectEvent.REFLECTBOX_CONNECTED",
     "reverse":              "GameObjectEvent.REFLECTED"
   },
+  // the events the game itself raises for a listener its code adds on the API, as the runtime does:
+  // any other one added there is never told
+  "game": ["gameTickEnd", "targetBroken"],
   // the events an item's handler raises itself (`runtime/native/item.hx`): its own listeners for
   // them, the list the handler tells
   "item": {

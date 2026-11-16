@@ -224,7 +224,8 @@ pub struct Object<'a> {
     pub effect_pieces: Vec<(String, String, u32, u32)>,
     /// a fighter's parts: the named clips its code turns, drawn apart from its animations' art
     pub parts: Vec<Part>,
-    /// the content its own animations are (a part's art is one of them)
+    /// the content its own animations are (a part's art is one of them); a projectile's: its own
+    /// name, as its owner declares it
     pub content: String,
     /// its costumes' colours: the colours its art is drawn in, and what each costume (in the
     /// engine's costume order) turns each into, as ARGB
@@ -2855,6 +2856,14 @@ impl<'o, 'a> Writer<'o, 'a> {
     }
 
     /// whether a value is a copy of its own clip
+    /// a box the source numbers from one, as the engine's index from zero: worked out as it runs
+    /// where the code does
+    fn box_ix(&mut self, e: &Expr) -> Result<String, String> {
+        if let Ok(i) = box_index(e) { return Ok(i) }
+        let (v, _) = self.expr(e)?;
+        Ok(format!("Std.int(Math.max(0, {} - 1))", paren(&v)))
+    }
+
     /// whether a name is a class's (Flash's own the engine has a form of, or the package's)
     fn is_class_name(&self, n: &str) -> bool {
         // (a number, text or truth called on a value converts it: no cast)
@@ -3192,6 +3201,13 @@ impl<'o, 'a> Writer<'o, 'a> {
                     return r;
                 }
                 // the API's own calls with a row (`PeptideAPI.print`)
+                // a listener on the game for an event it never raises: never told
+                (_, "addEventListener" | "removeEventListener", [ev, ..]) if c.contains("PeptideAPI")
+                    && super::events::named(self.o.runtime, ev).is_some_and(|n| !super::events::table().game.contains(&n)) => {
+                    let n = super::events::named(self.o.runtime, ev).unwrap_or_default();
+                    self.gaps.insert(format!("listens to the game for {n}, which the game here never raises"));
+                    return Ok((format!("// (the source listens to the game for {n} here, which the game here never raises)"), Ty::Any));
+                }
                 (_, _, _) if c.contains("PeptideAPI") => {
                     // (one asked by a name written out: its row by name, where it has one)
                     let named = matches!(args.first(), Some(Expr::Str(_))).then(|| calls().rows.get(&format!("PeptideAPI.{m}#name")).cloned()).flatten();
@@ -3691,6 +3707,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let args = std::iter::once(r).chain(vs.into_iter().take(2)).collect::<Vec<_>>().join(", ");
                 return Ok((format!("fireStats({args})"), Ty::Object));
             }
+            // (its owner firing one like itself, from the stats it exports: its own declared name)
+            ("createProjectile", [Expr::Call(g, a), rest @ ..]) if !self.o.fighter && !self.o.content.is_empty() && self.owners.contains(who) && a.is_empty()
+                && matches!(&**g, Expr::Member(o, n) if n == "exportStats" && self.expr(o).is_ok_and(|(w, _)| w == "self")) => {
+                let name = self.o.content.clone();
+                let f = self.fire(&name, who)?;
+                let vs: Result<Vec<String>, String> = rest.iter().map(|x| Ok(self.expr(x)?.0)).collect();
+                return Ok((format!("{f}({})", vs?.join(", ")), Ty::Object));
+            }
             ("createProjectile", [Expr::Str(name), rest @ ..]) if mine || self.owners.contains(who) => {
                 let f = self.fire(name, if mine { "self" } else { who })?;
                 let vs: Result<Vec<String>, String> = rest.iter().map(|x| Ok(self.expr(x)?.0)).collect();
@@ -3705,6 +3729,23 @@ impl<'o, 'a> Writer<'o, 'a> {
                 self.blocks.insert("refresh".into());
                 let (v, _) = self.expr(v)?;
                 return Ok((format!("setRefresh({v})"), Ty::Any));
+            }
+            // the state it is in, as the source numbers it: the source's state whose engine states it is
+            // in (the one naming fewest first, so the narrower wins)
+            ("getState", []) if self.o.fighter || !mine => {
+                if !self.helpers.contains_key("sourceStateOf") {
+                    let mut rows: Vec<(usize, String, String)> = Vec::new();
+                    for (name, st) in states() {
+                        let Some(num) = self.o.runtime.constants.get(&format!("PeptideCState.{name}")) else { continue };
+                        if st.is.is_empty() { continue }
+                        let tests: Vec<String> = st.is.iter().map(|t| if t.starts_with("CStateGroup.") { format!("o.inStateGroup({t})") } else { format!("o.inState({t})") }).collect();
+                        rows.push((st.is.len(), num.clone(), tests.join(" || ")));
+                    }
+                    rows.sort();
+                    let body: Vec<String> = rows.iter().map(|(_, n, t)| format!("\tif ({t}) return {n};")).collect();
+                    self.helpers.insert("sourceStateOf".into(), format!("// the state an object is in, as the source numbers it (`runtime/states.jsonc`)\nfunction sourceStateOf(o) {{\n\tif (o == null || o.inState == null) return -1;\n{}\n\treturn -1;\n}}", body.join("\n")));
+                }
+                return Ok((format!("sourceStateOf({who})"), Ty::Num));
             }
             // a fighter's state: a projectile is in none of them
             ("inState", [_]) if mine && !self.o.fighter && !self.o.item => return Ok(("false".into(), Ty::Bool)),
@@ -3875,7 +3916,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             ("getHitboxStat", [i, Expr::Str(k)]) if mine || self.o.fighter => {
                 let (field, scale) = hitbox_field(k)?;
-                let i = box_index(i)?;
+                let i = self.box_ix(i)?;
                 let back = scale.map(|s| format!(" / {}", number(s))).unwrap_or_default();
                 return Ok((format!("{who}.getHitboxStats({i}).{field}{back}"), Ty::Num));
             }
@@ -3885,7 +3926,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             // (a record worked out as it runs: each field the engine keeps, written as it is then)
             ("updateHitboxStats", [i, r]) if !matches!(r, Expr::Object(_)) => {
-                let i = box_index(i)?;
+                let i = self.box_ix(i)?;
                 let (r, _) = self.expr(r)?;
                 if !self.helpers.contains_key("boxWrite") {
                     let hb = crate::mappings::character_hitbox_stats();
@@ -3918,7 +3959,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             // a box's stats as the source's record (to deal outright, `takeDamage`): the engine's own
             // box, of the animation the label names, read back in the source's units
             ("exportAttackBoxStats" | "exportHitboxStats", [i, rest @ ..]) => {
-                let i = box_index(i)?;
+                let i = self.box_ix(i)?;
                 let anim = match rest.first() { Some(Expr::Str(l)) => format!(", {}", quote(l)), None | Some(Expr::Null | Expr::Undefined) => String::new(), Some(_) => return Err("exports a box of an animation worked out as it runs".into()) };
                 return Ok((format!("{}({who}.getHitboxStats({i}{anim}))", self.box_record()?), Ty::Rect));
             }
@@ -3950,7 +3991,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             ("setFallthrough", [v]) => { let (v, _) = self.expr(v)?; return Ok((format!("if ({who} != null) {who}.updateStructureStats({{ dropThrough: {v} == true }})"), Ty::Any)) }
             // (its own boxes, or another object's: a projectile it fired)
             ("updateHitboxStats", [i, Expr::Object(pairs)]) => {
-                let i = box_index(i)?;
+                let i = self.box_ix(i)?;
                 let mut set = Vec::new();
                 // a fixed launch worked out as it runs: the source's rule written out, where it is
                 // one (above 0), else the box's own power and growth
@@ -4199,7 +4240,8 @@ self.playFrameLabel({})", quote(f))); }
             // its landing: on touching down, the attack goes on from `continue`, or it lands
             ("setLandingLag", [on]) => {
                 let on = self.test(on)?;
-                let cont = self.itself_method("jumpToContinue");
+                // (its own, or the one a class of its package it extends has)
+                let cont = self.itself_method("jumpToContinue").or_else(|| self.methods.iter().find(|(k, _)| k.ends_with("::jumpToContinue")).map(|(_, v)| v.clone()));
                 let name = "setLandingLag".to_string();
                 if !self.helpers.contains_key(&name) {
                     let cont = match cont { Some(c) => c, None => {
@@ -5603,13 +5645,17 @@ fn drawing_value(v: &Expr, model: &crate::model::SourceModel) -> bool {
 fn only_fields_read(body: &[Stmt], r: u32) -> bool {
     let mut fields = 0usize;
     let mut other = 0usize;
+    let mut called = 0usize;
     crate::model::ast::walk_exprs(body, &mut |e| match e {
         Expr::Member(o, _) if matches!(**o, Expr::Local(x) if x == r) => fields += 1,
         // (tested against nothing: whether it was handed one)
         Expr::Binary(BinOp::Eq | BinOp::Ne | BinOp::StrictEq | BinOp::StrictNe, a, b) if matches!((&**a, &**b), (Expr::Local(x), Expr::Null | Expr::Undefined) | (Expr::Null | Expr::Undefined, Expr::Local(x)) if *x == r) => fields += 1,
         Expr::Local(x) if *x == r => other += 1,
+        // (a call on it: an object, no record)
+        Expr::Call(f, _) if matches!(&**f, Expr::Member(o, m) if matches!(**o, Expr::Local(x) if x == r) && !calls().record_calls.contains_key(m.as_str())) => called += 1,
         _ => {}
     });
+    if called > 0 { return false }
     let mut written = false;
     walk(body, &mut |st| if let Stmt::Assign(Place::Local(x) | Place::Member(Expr::Local(x), _), _) = st { if *x == r { written = true; } });
     // (each field read walks the variable once more, inside the read)

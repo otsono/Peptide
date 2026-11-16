@@ -268,6 +268,9 @@
   // the match is live once the stage's code runs (it waits for the fighters)
   "PeptideAPI.isGameStarted": { "code": "true", "returns": "bool" },
   "PeptideAPI.isDebug": { "code": "false", "returns": "bool" },
+  // what the match keeps by name for every object's code
+  "PeptideAPI.gameVar": { "code": "gameVars().get({0})", "helper": "gameVars" },
+  "PeptideAPI.setGameVar": { "code": "gameVars().set({0}, {1})", "helper": "gameVars" },
   // the machine's time: none here, the one fixed moment a `Date` is made at (native_classes.jsonc)
   "PeptideAPI.getTimestamp": { "code": "Date.fromTime(1767268800000.0)", "returns": "object", "gap": "getTimestamp: the machine's clock (a fixed moment here)" },
   // a date's parts, as the engine's dates have them

@@ -358,6 +358,17 @@ function fadeTo(o, to) {
 	fadingNow.set(a != to);
 }
 
+// ---- gameVars
+// what the match keeps by name for every object's code (`setGlobalVar`): on the stage, which all of
+// them reach
+var gameVarsHere = new haxe.ds.StringMap();
+function gameVars() {
+	var st = match.getStage();
+	if (st == null || st.exports == null) return gameVarsHere;
+	if (st.exports.__gameVars == null) st.exports.__gameVars = new haxe.ds.StringMap();
+	return st.exports.__gameVars;
+}
+
 // ---- teammatesOf
 // the fighters on its team but itself
 function teammatesOf(o) {
