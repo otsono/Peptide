@@ -282,6 +282,8 @@ fn quiet(model: &SourceModel, runtime: &Runtime, class: &str, inside: bool) -> b
                 Stmt::Return(None) | Stmt::Expr(Expr::SuperCall(..)) => true,
                 Stmt::Assign(Place::Member(t, _), v) => matches!(t, Expr::This) && plain(v),
                 Stmt::Expr(Expr::Call(f, a)) => own_name(f).is_some_and(|m| matches!(m, "stop" | "play" | "addFrameScript") || (inside && matches!(m, "gotoAndStop" | "gotoAndPlay" | "nextFrame" | "prevFrame")))
+                    // (its frame scripts registered, on whatever the decompiler reads it as)
+                    || matches!(&**f, Expr::Member(_, m) if m == "addFrameScript")
                     || (inside && matches!(&**f, Expr::Member(p, m) if m == "removeChild" && matches!(&**p, Expr::Name(n) if n == "parent") || matches!(&**p, Expr::Member(t, n) if matches!(**t, Expr::This) && n == "parent"))
                         && matches!(a.as_slice(), [Expr::This])),
                 _ => false,

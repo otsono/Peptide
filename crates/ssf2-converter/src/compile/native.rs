@@ -1590,6 +1590,13 @@ impl<'o, 'a> Writer<'o, 'a> {
                 return Ok(vec![format!("self.{set}({val});")]);
             }
         }
+        // (its clip's filters, written: its colours here are the engine's shaders, `setColorFilters`)
+        if let Place::Member(o, f) = p {
+            if f == "filters" && self.own_clip_call(o) {
+                self.gaps.insert("writes its clip's filters, which its colours here are not kept as".into());
+                return Ok(vec!["// (its clip's filters: its colours here are the engine's shaders)".into()]);
+            }
+        }
         // (an object its code uses as a map, made: a map by text)
         if let Place::Member(Expr::This, f) = p {
             if matches!(v, Expr::Object(kv) if kv.is_empty()) && self.is_obj_dict(&Expr::Member(Box::new(Expr::This), f.clone())) {
@@ -1821,7 +1828,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (who, _) = self.expr(o)?;
                 let (val, _) = if f == "visible" { (self.test(v)?, Ty::Bool) } else { self.expr(v)? };
                 let set = match f.as_str() { "scaleX" => "setScaleX", "scaleY" => "setScaleY", "alpha" => "setAlpha", "rotation" => "setRotation", _ => "setVisible" };
-                Ok(vec![format!("{who}.{set}({val});")])
+                // (one it holds may be none: a part its animation places none of, an effect never made)
+                Ok(vec![if who == "self" { format!("self.{set}({val});") } else { format!("{{ var held = {who}; if (held != null) held.{set}({val}); }}") }])
             }
             // a field of a record it keeps
             Place::Member(o, f) if self.a_value(o) && !matches!(o, Expr::Local(_)) && self.expr(o).is_ok_and(|(_, t)| t == Ty::Rect) => {
@@ -2489,6 +2497,11 @@ impl<'o, 'a> Writer<'o, 'a> {
                 // (its own: the object, as this engine draws its clip as the object)
                 (who, Ty::Body)
             }
+            // its clip's filters, read: none here (its colours are the engine's shaders, `setColorFilters`)
+            Expr::Member(o, n) if n == "filters" && self.own_clip_call(o) => {
+                self.gaps.insert("reads its clip's filters, which its colours here are not kept as".into());
+                return Ok(("null".into(), Ty::Any));
+            }
             // where the stage's midground sits in the stage's space: at its origin
             Expr::Member(o, n) if matches!(n.as_str(), "x" | "y") && matches!(&**o, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(_, m) if m == "getMidground")) => {
                 return Ok((number(if n == "x" { self.o.origin.0 } else { self.o.origin.1 }), Ty::Num));
@@ -2675,6 +2688,28 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (a, _) = self.expr(a)?;
                 let (i, _) = self.expr(i)?;
                 (format!("{}.get(Std.string({i}))", paren(&a)), Ty::Rect)
+            }
+            // a record written out in place (or a variable only ever set to one) read by a name worked
+            // out as it runs: the entry of that name, by a switch over the names it states
+            Expr::Index(a, i) if self.literal_of(a).is_some() && !matches!(**i, Expr::Str(_) | Expr::Int(_) | Expr::Num(_)) && self.expr(i).is_ok_and(|(_, t)| t != Ty::Num) => {
+                let kv = self.literal_of(a).unwrap_or_default();
+                let mut h: u64 = 0xcbf29ce484222325;
+                for b in format!("{kv:?}").bytes() { h = (h ^ b as u64).wrapping_mul(0x100000001b3); }
+                let f = format!("entryOf{:x}", h & 0xffffff);
+                if !self.helpers.contains_key(&f) {
+                    let mut lines = vec![format!("// an entry of a record its code writes out, by a name worked out as it runs"), format!("function {f}(k) {{"), "\tswitch (k) {".to_string()];
+                    for (k, v) in &kv {
+                        let Expr::Str(k) = k else { return Err("reads a record by a name worked out as it runs".into()) };
+                        let (v, _) = self.expr(v)?;
+                        lines.push(format!("\t\tcase {}: return {v};", quote(k)));
+                    }
+                    lines.push("\t}".into());
+                    lines.push("\treturn null;".into());
+                    lines.push("}".into());
+                    self.helpers.insert(f.clone(), lines.join("\n"));
+                }
+                let (i, _) = self.expr(i)?;
+                return Ok((format!("{f}({i})"), Ty::Rect));
             }
             Expr::Index(a, i0) => {
                 let i = i0;
@@ -3447,6 +3482,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                     self.util("clipRecord")?;
                     return Ok((format!("clipRecord({x}.id, {x}.w, {x}.h)"), Ty::Rect));
                 }
+            }
+            // a clip a clip record holds, by name
+            if m == "getChildByName" && !matches!(**recv, Expr::This) && (self.holds_clip_record(recv) || self.expr(recv).is_ok_and(|(_, t)| t == Ty::Rect)) {
+                let (c, _) = self.expr(recv)?;
+                let (k, _) = self.expr(args.first().ok_or("names no clip")?)?;
+                self.util("clipRecord")?;
+                self.util("clipAdd")?;
+                return Ok((format!("clipChild({c}, {k})"), Ty::Rect));
             }
             // a clip put in (or taken out of) a clip record its code holds
             if matches!(m.as_str(), "addChild" | "removeChild" | "addChildAt") && !matches!(**recv, Expr::This) && (self.holds_clip_record(recv) || self.expr(recv).is_ok_and(|(_, t)| t == Ty::Rect)) {
@@ -5391,6 +5434,37 @@ self.playFrameLabel({})", quote(f))); }
         let p = self.o.model.sprites.get(&sym)?.frames.iter().flatten().find(|p| p.name.as_deref() == Some(n))?;
         let m = &p.matrix;
         Some((m.tx, m.ty, m.b.atan2(m.a).to_degrees(), m.a.hypot(m.b), m.c.hypot(m.d)))
+    }
+
+    /// whether a value is one of its own clips by the API's call (`getMC()`, `getStanceMC()`), on
+    /// itself or bare
+    fn own_clip_call(&self, e: &Expr) -> bool {
+        let Expr::Call(g, a) = e else { return false };
+        a.is_empty() && match &**g {
+            Expr::Member(t, m) => matches!(**t, Expr::This) && matches!(m.as_str(), "getMC" | "getStanceMC" | "stanceClip"),
+            Expr::Name(m) => matches!(m.as_str(), "getMC" | "getStanceMC" | "stanceClip") && self.method(m).is_none(),
+            _ => false,
+        }
+    }
+
+    /// the record written out in place a value is: itself, or the one a variable of the function
+    /// is only ever set to
+    fn literal_of(&self, e: &Expr) -> Option<Vec<(Expr, Expr)>> {
+        match e {
+            Expr::Object(kv) => Some(kv.clone()),
+            Expr::Local(r) => {
+                let mut found: Option<Vec<(Expr, Expr)>> = None;
+                let mut other = false;
+                walk(&self.body, &mut |st| if let Stmt::Assign(Place::Local(x), v) = st {
+                    if x != r { return }
+                    let mut v = v;
+                    while let Expr::Coerce(_, y) | Expr::Convert(_, y) = v { v = y; }
+                    match v { Expr::Object(kv) if found.is_none() => found = Some(kv.clone()), Expr::Null | Expr::Undefined => {}, _ => other = true }
+                });
+                if other { None } else { found }
+            }
+            _ => None,
+        }
     }
 
     /// whether any code of the class being written writes one of its fields

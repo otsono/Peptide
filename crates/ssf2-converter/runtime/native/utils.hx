@@ -1000,6 +1000,12 @@ function clipAdd(c, k) {
 	if (c != null && k != null && c.kids != null && c.kids.indexOf(k) < 0) c.kids.push(k);
 	return k;
 }
+// a clip it holds by name, as its code looks one up
+function clipChild(c, n) {
+	if (c == null || c.kids == null) return null;
+	for (k in c.kids) if (k != null && k.name == n) return k;
+	return null;
+}
 function clipRemove(c, k) {
 	if (c != null && c.kids != null) c.kids.remove(k);
 	return k;

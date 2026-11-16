@@ -311,6 +311,13 @@
   // the owner's stick no longer steering a projectile (its stat-driven aim turned off)
   "endControl": "if ({self} != null && {self}.exports != null && {self}.exports.__statSwitch != null) {self}.exports.__statSwitch(\"controlDirection\", false)",
   // the clip the source draws its HUD's background in: one this engine draws nowhere, as the runtime's
+  // a library clip made by name outside a stage's code (a stage's own puts it on its planes): a clip
+  // record, drawn nowhere here (nor on the runtime)
+  "PeptideAPI.clipByLinkage": { "code": "clipRecord(null)", "helper": "clipRecord", "returns": "record", "gap": "a library clip made by name: drawn nowhere here (nor on the runtime)" },
+  // its costume put on again by number (its palette reset with it)
+  "setCostume": "{self}.setCostumeIndex(Std.int({0}))",
+  // its box on the HUD, which the engine draws itself: a clip record with nothing in it
+  "getHealthBox": { "code": "clipRecord(null)", "helper": "clipRecord", "returns": "record", "gap": "its HUD box, which the engine draws itself" },
   "hudBack": { "code": "clipRecord(null)", "helper": "clipRecord", "returns": "record", "gap": "the HUD background: drawn nowhere here (nor on the runtime)" },
   // a list turned back to front, and the list itself handed back (this engine's turns it and hands
   // back nothing)
