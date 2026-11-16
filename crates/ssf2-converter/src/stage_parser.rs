@@ -1589,7 +1589,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         let sp_re = crate::re!(r#"createSelfPlatformWithMC\(\s*(?:[\w.]+\.)?getMCByLinkageName\(\s*"([^"]+)"\s*\)"#);
         let sp_prefix_re = crate::re!(r#"createSelfPlatformWithMC\(\s*(?:[\w.]+\.)?getMCByLinkageName\(\s*"([^"]+)"\s*\+"#);
         // a rectangle a class reads off a named child of its own clip
-        let child_re = crate::re!(r"\.(?:getMC|getViewRootContainer)\(\)\.(\w+)\)?\.(?:getRect|getBounds)\(");
+        let child_re = crate::re!(r"\.(?:getMC|getViewRootContainer)\(\)\.(\w+)\)?\.(?:getRect\(|getBounds\(|width\b|height\b)");
         let mut claimed: std::collections::BTreeSet<u16> = Default::default();
         for hz in hazards.iter_mut() {
         // ART THE OBJECT DRAWS IN FRONT. A class can name a clip to be drawn ahead of the

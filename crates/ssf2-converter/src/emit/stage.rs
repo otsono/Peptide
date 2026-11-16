@@ -168,8 +168,8 @@ pub fn runtime_stage(model: &crate::stage_parser::StageModel, dir: &Path, input:
     }
     for row in &input.rows {
         // written as plain Fraymakers code where its class has a plain form
-        let census = object_census(home(&models, &row.class), &object_runtime, &row.class, units, row.instance.clone(), input.origin);
-        let native = match native_object(home(&models, &row.class), &object_runtime, dir, row, units, &bounds, &projectiles, input.origin) {
+        let census = object_census(home(&models, &row.class), &object_runtime, &row.class, units, row.instance.clone(), input.origin, &input.objects);
+        let native = match native_object(home(&models, &row.class), &object_runtime, dir, row, units, &bounds, &projectiles, input.origin, &input.objects) {
             Ok(()) => true,
             Err(why) => { reports.insert(row.id.clone(), serde_json::json!({ "native": false, "on_runtime": why })); false }
         };
@@ -1043,7 +1043,9 @@ fn regions_literal(model: &crate::stage_parser::StageModel) -> String {
 }
 
 /// Every reason a stage object's own class has no plain form yet, one per function.
-fn object_census(src: &SourceModel, runtime: &Runtime, class: &str, units: Units, instance: Option<String>, input_origin: (f64, f64)) -> Vec<String> {
+#[allow(clippy::too_many_arguments)]
+fn object_census(src: &SourceModel, runtime: &Runtime, class: &str, units: Units, instance: Option<String>, input_origin: (f64, f64), objects: &[(String, String)]) -> Vec<String> {
+    let made_objects: BTreeMap<String, String> = objects.iter().map(|(c, id)| (compile::short(c).to_string(), id.clone())).collect();
     let Some(c) = class_of(src, class) else { return vec![format!("its class {class} is not in its package")] };
     let merged = super::native_projectile::inherited_class(src, runtime, c);
     let itself = match &merged { Ok(Some(m)) => m, Ok(None) => c, Err(e) => return vec![e.clone()] };
@@ -1061,7 +1063,7 @@ fn object_census(src: &SourceModel, runtime: &Runtime, class: &str, units: Units
     let object = compile::native::Object {
         model: src, itself: Some(itself), classes: Vec::new(), jumps: &jumps, runtime, declared: &none, switches: &switches,
         owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
-        root: 0, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(), made_objects: BTreeMap::new(), particles: BTreeMap::new(), clip_bounds: BTreeMap::new(),
+        root: 0, size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: false, stage: false, clip_parts: BTreeMap::new(), made_objects: made_objects.clone(), particles: BTreeMap::new(), clip_bounds: BTreeMap::new(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: Vec::new(), effect_pieces: Vec::new(), parts: Vec::new(), content: String::new(), palette: None,
         effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: instance.clone(), origin: input_origin, power_record: false,
@@ -1073,7 +1075,8 @@ fn object_census(src: &SourceModel, runtime: &Runtime, class: &str, units: Units
 /// show) through the native writer, on `runtime/native/object.hx` with the rules it uses from
 /// `object_rules.hx`. Every file is written only once all of it has a plain form.
 #[allow(clippy::too_many_arguments)]
-fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectRow, units: Units, bounds: &BTreeMap<String, (f64, f64, f64, f64)>, projectiles: &Value, input_origin: (f64, f64)) -> Result<(), Vec<String>> {
+fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectRow, units: Units, bounds: &BTreeMap<String, (f64, f64, f64, f64)>, projectiles: &Value, input_origin: (f64, f64), objects: &[(String, String)]) -> Result<(), Vec<String>> {
+    let made_objects: BTreeMap<String, String> = objects.iter().map(|(c, id)| (compile::short(c).to_string(), id.clone())).collect();
     let one = |e: String| vec![e];
     let c = class_of(src, &row.class).ok_or_else(|| one(format!("its class {} is not in its package", row.class)))?;
     let merged = super::native_projectile::inherited_class(src, runtime, c).map_err(one)?;
@@ -1126,7 +1129,7 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     let object = compile::native::Object {
         model: src, itself: Some(itself), classes, jumps: &jumps, runtime, declared: &declared, switches: &switches,
         owner_stat: &no_stat, effect: &no_effect, owner_anims: &[], fired: &no_fired, owner_declares: &none, owner_stores: &no_store,
-        root: root.unwrap_or(0), size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: is_item, stage: false, clip_parts: BTreeMap::new(), made_objects: BTreeMap::new(), particles: BTreeMap::new(), clip_bounds: bounds.clone(),
+        root: root.unwrap_or(0), size: units.size, speed: units.speed, accel: units.accel, fighter: false, item: is_item, stage: false, clip_parts: BTreeMap::new(), made_objects: made_objects.clone(), particles: BTreeMap::new(), clip_bounds: bounds.clone(),
         root_anim: &no_anim, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &links, anim_clips: &[], owner_native: false,
         effect_names: crate::mappings::api_commands().global_vfx_map.keys().cloned().collect(), effect_pieces: Vec::new(), parts: Vec::new(),
         content: String::new(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: row.instance.clone(), origin: input_origin, power_record: false,

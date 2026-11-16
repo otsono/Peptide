@@ -182,13 +182,14 @@ function cameraClip() {
 }
 
 // ---- boundsOf
-// a box of the stage's (its camera's or its death bounds), in the source's units
+// a box of the stage's (its camera's or its death bounds), in the source's units and the space of
+// the code asking (a stage's, from the source's origin)
 function boundsOf(a) {
 	if (a == null) return null;
 	var r = a.getRectangle();
 	if (r == null) return null;
-	var x = (a.getX() + r.x) / SIZE;
-	var y = (a.getY() + r.y) / SIZE;
+	var x = (a.getX() + r.x) / SIZE + ORIGIN_X;
+	var y = (a.getY() + r.y) / SIZE + ORIGIN_Y;
 	var w = r.width / SIZE;
 	var h = r.height / SIZE;
 	return { x: x, y: y, width: w, height: h, left: x, top: y, right: x + w, bottom: y + h };

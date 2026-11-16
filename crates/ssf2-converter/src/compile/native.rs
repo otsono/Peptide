@@ -1017,6 +1017,9 @@ impl<'o, 'a> Writer<'o, 'a> {
                     for body in k.methods.iter().map(|m| &m.function.body).chain([&k.constructor.body]) {
                         walk_exprs(body, &mut |e| if let Expr::Call(f, _) = e {
                             if let Expr::Member(o, n) = &**f { if !matches!(**o, Expr::This) { asked.insert(n.clone()); } }
+                        } else if let Expr::Member(o, n) = e {
+                            // (a getter another object's code reads on it)
+                            if !matches!(**o, Expr::This) && c.methods.iter().any(|m| m.kind == MethodKind::Getter && m.name == *n) { asked.insert(n.clone()); }
                         });
                     }
                 }
@@ -1058,6 +1061,9 @@ impl<'o, 'a> Writer<'o, 'a> {
                     for body in k.methods.iter().map(|m| &m.function.body).chain([&k.constructor.body]) {
                         walk_exprs(body, &mut |e| if let Expr::Call(f, _) = e {
                             if let Expr::Member(o, n) = &**f { if !matches!(**o, Expr::This) { asked.insert(n.clone()); } }
+                        } else if let Expr::Member(o, n) = e {
+                            // (a getter another object's code reads on it)
+                            if !matches!(**o, Expr::This) && c.methods.iter().any(|m| m.kind == MethodKind::Getter && m.name == *n) { asked.insert(n.clone()); }
                         });
                     }
                 }
@@ -2130,6 +2136,11 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (x, y, w, h) = self.own_child_box(c).ok_or("no box")?;
                 (format!("new Rectangle(self.getX() / {s} + {}, self.getY() / {s} + {}, {}, {})", number(x), number(y), number(w), number(h), s = number(self.o.size)), Ty::Rect)
             }
+            // (its size, as measured)
+            Expr::Member(c, n) if matches!(n.as_str(), "width" | "height") && self.own_child_box(c).is_some() => {
+                let (_, _, w, h) = self.own_child_box(c).ok_or("no box")?;
+                (number(if n == "width" { w } else { h }), Ty::Num)
+            }
             Expr::Member(_, _) if self.own_child_box(e).is_some() => ("true".into(), Ty::Bool),
             // a field of the stage's own class, read from another object's code: what the stage publishes
             Expr::Member(o, f) if !self.o.stage && self.expr(o).is_ok_and(|(w, _)| w == "stage")
@@ -2501,6 +2512,14 @@ impl<'o, 'a> Writer<'o, 'a> {
             Expr::Member(o, n) if n == "filters" && self.own_clip_call(o) => {
                 self.gaps.insert("reads its clip's filters, which its colours here are not kept as".into());
                 return Ok(("null".into(), Ty::Any));
+            }
+            // a getter of another object of its package's: what that object publishes for it
+            Expr::Member(o, n) if !matches!(**o, Expr::This) && !self.is_clip(o) && self.a_value(o)
+                && self.o.model.classes.values().any(|c| !self.o.runtime.provides(&c.name) && c.methods.iter().any(|m| m.kind == MethodKind::Getter && m.name == *n))
+                && self.expr(o).is_ok_and(|(w, t)| w != "self" && matches!(t, Ty::Object | Ty::Any)) => {
+                let (who, _) = self.expr(o)?;
+                let n = ident(n);
+                return Ok((format!("({who} != null && {who}.exports.{n} != null ? {who}.exports.{n}() : null)"), Ty::Any));
             }
             // where the stage's midground sits in the stage's space: at its origin
             Expr::Member(o, n) if matches!(n.as_str(), "x" | "y") && matches!(&**o, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(_, m) if m == "getMidground")) => {
@@ -3212,8 +3231,7 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// the measured box of a child of its own clip its class reads (`getMC().name`)
     fn own_child_box(&self, e: &Expr) -> Option<(f64, f64, f64, f64)> {
         let Expr::Member(c, n) = e else { return None };
-        let own = matches!(&**c, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(o, m) if matches!(m.as_str(), "getMC" | "stanceClip" | "getStanceMC") && matches!(**o, Expr::This)));
-        if !own { return None }
+        if !self.own_clip_call(c) { return None }
         // (under its own class, or the class of the package it extends; else the one child of that
         // name any object's class measured)
         let mut names: Vec<String> = Vec::new();
@@ -3781,7 +3799,8 @@ impl<'o, 'a> Writer<'o, 'a> {
         // (a field of one that no record answers the call of: an object the record holds)
         if who_ty == Ty::Rect && (!matches!(&**recv, Expr::Member(..) | Expr::Index(..)) || calls().record_calls.contains_key(m.as_str())) {
             let row = calls().record_calls.get(m.as_str()).cloned().ok_or_else(|| format!("calls {m} on a record"))?;
-            return self.fill(&Row { code: row, returns: Ty::Any, helper: None, gap: None }, &who, args, m);
+            // (a copy of one is a record too)
+            return self.fill(&Row { code: row, returns: match m.as_str() { "clone" => Ty::Rect, "intersects" => Ty::Bool, _ => Ty::Any }, helper: None, gap: None }, &who, args, m);
         }
         // one of its own declaration methods: the record it declares
         if who == "self" && args.is_empty() {

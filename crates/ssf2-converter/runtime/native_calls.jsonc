@@ -274,6 +274,9 @@
   // the stage's camera and death bounds, in the source's units
   "PeptideAPI.getCamBounds": { "code": "boundsOf(stage.getCameraBounds())", "helper": "boundsOf", "returns": "rect" },
   "PeptideAPI.getDeathBounds": { "code": "boundsOf(stage.getDeathBounds())", "helper": "boundsOf", "returns": "rect" },
+  // (the stage's own, asked of the stage)
+  "getCameraBounds": { "code": "boundsOf(stage.getCameraBounds())", "helper": "boundsOf", "returns": "rect" },
+  "getDeathBounds": { "code": "boundsOf(stage.getDeathBounds())", "helper": "boundsOf", "returns": "rect" },
   // a value as another class: the value itself
   "PeptideUtils.cast": { "code": "{0}", "returns": "object" },
   // the clip of the hat a copied power gives: the engine draws none here, and its colours change nothing
@@ -299,7 +302,7 @@
   "getLedges": { "code": "stageLedges()", "helper": "stageLedges", "returns": "object" },
   // the smash ball's area and where items fall: this engine's matches have neither for a stage to state
   "getSmashBallBounds": { "code": "new Rectangle(0, 0, 0, 0)", "returns": "rect", "gap": "getSmashBallBounds: the smash ball's area" },
-  "getItemSpawnBoundsList": { "code": "[new Rectangle(0, 0, 0, 0)]", "returns": "object", "gap": "getItemSpawnBoundsList: where items fall" },
+  "getItemSpawnBoundsList": { "code": "[new Rectangle(0, 0, 0, 0)]", "returns": "record", "gap": "getItemSpawnBoundsList: where items fall" },
   // where it was put, before its own code moved it (`startPosition`)
   "getStartPosition": { "code": "startPosition()", "helper": "startPosition", "returns": "record" },
   // a leg of the path it moves along (`moveLegs`)
@@ -340,7 +343,7 @@
   // the camera's hold on the stage is this engine's
   "PeptideAPI.setCamStageFocus": { "code": "", "gap": "setCamStageFocus: the camera's hold on the stage" },
   // the clips the source's engine places its fighters at: this engine's spawn points are its own
-  "getSpawnPositionMCs": { "code": "[]", "returns": "object", "gap": "getSpawnPositionMCs: the engine's own spawn points" },
+  "getSpawnPositionMCs": { "code": "[]", "returns": "record", "gap": "getSpawnPositionMCs: the engine's own spawn points" },
   // the match's item rotation: this engine's matches name none a stage could hand out
   "PeptideAPI.getAvailableItemList": { "code": "[]", "returns": "object", "gap": "getAvailableItemList: the match's item rotation" },
   // a feature of the mode the match is played in: this engine's matches turn none on
@@ -443,6 +446,12 @@
     "addToDamageMeter": "",
     "removeFromDamageMeter": "",
     "updateBar": "{self}.left = {0}",
+    // (a point or a box copied: the only records the source's API copies)
+    // (two boxes overlapping)
+    "intersects": "({self} != null && {0} != null && {self}.x < {0}.x + {0}.width && {0}.x < {self}.x + {self}.width && {self}.y < {0}.y + {0}.height && {0}.y < {self}.y + {self}.height)",
+    // (a point moved by an offset)
+    "offset": "if ({self} != null) { {self}.x += {0}; {self}.y += {1}; }",
+    "clone": "({self} == null ? null : { x: {self}.x, y: {self}.y, width: {self}.width, height: {self}.height })",
     "reset": ""
   },
 
