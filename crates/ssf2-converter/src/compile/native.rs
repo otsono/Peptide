@@ -314,26 +314,33 @@ pub struct Written {
 /// whether a method of an object's classes is ever run: a frame script, one of the API's hooks, or
 /// named anywhere in the package's code (a call, a listener, a timer). one never named is a
 /// template's leftover, and is not written
-fn reached(model: &SourceModel, c: &ClassModel, m: &crate::model::MethodModel) -> bool {
+fn reached(o: &Object, c: &ClassModel, m: &crate::model::MethodModel) -> bool {
     if c.frame_scripts.iter().any(|fs| fs.method == m.name) { return true }
     if matches!(m.name.as_str(), "initialize" | "update") { return true }
-    static NAMED: OnceLock<std::sync::Mutex<BTreeMap<usize, BTreeSet<String>>>> = OnceLock::new();
+    let model = o.model;
+    // each name's mentions, less those as the listener for an event nothing raises (never told,
+    // so never run)
+    type Counts = BTreeMap<String, i64>;
+    static NAMED: OnceLock<std::sync::Mutex<BTreeMap<usize, Counts>>> = OnceLock::new();
     let key = model as *const SourceModel as usize;
     let mut cache = NAMED.get_or_init(Default::default).lock().unwrap();
     let names = cache.entry(key).or_insert_with(|| {
-        let mut out = BTreeSet::new();
+        let mut out = Counts::new();
         for k in model.classes.values() {
             for f in k.methods.iter().map(|m| &m.function).chain([&k.constructor, &k.static_init]) {
                 crate::model::ast::walk_exprs(&f.body, &mut |e| match e {
-                    Expr::Member(_, n) | Expr::Name(n) => { out.insert(n.clone()); }
-                    Expr::Str(s) => { out.insert(s.clone()); }
+                    Expr::Member(_, n) | Expr::Name(n) | Expr::Str(n) => { *out.entry(n.clone()).or_default() += 1; }
+                    Expr::Call(g, a) if matches!(&**g, Expr::Member(_, l) | Expr::Name(l) if l == "addEventListener" || l == "removeEventListener") => {
+                        let unheard = a.first().and_then(|ev| super::events::named(o.runtime, ev)).is_some_and(|n| super::events::raised_by_nothing(o.runtime, &n));
+                        if let (true, Some(Expr::Member(_, h) | Expr::Name(h))) = (unheard, a.get(1)) { *out.entry(h.clone()).or_default() -= 1; }
+                    }
                     _ => {}
                 });
             }
         }
         out
     });
-    names.contains(&m.name)
+    names.get(&m.name).is_some_and(|n| *n > 0)
 }
 
 /// Write the object's classes as Fraymakers code, or say why they cannot be.
@@ -356,7 +363,7 @@ pub fn census(o: &Object) -> Vec<String> {
     let classes: Vec<&ClassModel> = o.itself.into_iter().chain(o.classes.iter().copied()).collect();
     for c in classes {
         w.class = c.name.clone();
-        for m in c.methods.iter().filter(|m| !declares(m) && (!o.fighter || reached(o.model, c, m))) {
+        for m in c.methods.iter().filter(|m| !declares(m) && (!o.fighter || reached(o, c, m))) {
             let name = w.methods[&member_key(&c.name, &method_name(m))].clone();
             w.in_frame = c.frame_scripts.iter().any(|fs| fs.method == m.name);
             if let Err(e) = w.function(&name, &m.function) { out.push(format!("{}.{}: {e}", short(&c.name), m.name)); }
@@ -923,7 +930,7 @@ impl<'o, 'a> Writer<'o, 'a> {
         for c in &classes {
             self.class = c.name.clone();
             let frame_of: BTreeMap<&str, u32> = c.frame_scripts.iter().map(|fs| (fs.method.as_str(), fs.frame)).collect();
-            for m in c.methods.iter().filter(|m| !declares(m) && (!self.o.fighter || reached(self.o.model, c, m))) {
+            for m in c.methods.iter().filter(|m| !declares(m) && (!self.o.fighter || reached(self.o, c, m))) {
                 let name = self.methods[&member_key(&c.name, &method_name(m))].clone();
                 self.in_frame = frame_of.contains_key(m.name.as_str());
                 // (a fighter's frame's code is its keyframe's: written there as it is, unless other code
@@ -2299,6 +2306,11 @@ impl<'o, 'a> Writer<'o, 'a> {
                 if k == "isForward" { return Ok((format!("({arg}.data.hitboxStats.owner == null || {arg}.data.hitboxStats.owner.isFacingRight())"), Ty::Bool)) }
                 // (whether it hits with an effect: whether it makes the one it hits flinch, as the box is written)
                 if k == "hasEffect" { return Ok((format!("({arg}.data.hitboxStats.flinch != false)"), Ty::Bool)) }
+                // (one this engine keeps none of: nothing, as the box has none here)
+                if crate::mappings::character_hitbox_stats().no_counterpart.iter().any(|x| x == k) {
+                    self.gaps.insert(format!("reads the {k} of the box that hit it, which this engine keeps none of"));
+                    return Ok(("null".into(), Ty::Any));
+                }
                 let (f, scale) = hitbox_field(k)?;
                 let v = format!("{arg}.data.hitboxStats.{f}");
                 return Ok((match scale { Some(sc) => format!("{v} / {}", number(sc)), None => v }, Ty::Num));
@@ -4431,6 +4443,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (k, _) = self.expr(k)?;
                 let engine = engine.unwrap_or_else(|| if matches!(k.chars().next(), Some('"')) { "null".to_string() } else { format!("{who}.getCharacterStat({k})") });
                 return Ok((format!("({who}.exports.__source != null && {who}.exports.__source.__stats != null && {who}.exports.__source.__stats.exists({k}) ? {who}.exports.__source.__stats.get({k}) : {engine})"), Ty::Any));
+            }
+            // another fighter's numbered sound (its owner's, from a projectile's frame): the one its
+            // attack names, read as that attack's stat is, played from that fighter's own sounds
+            ("playAttackSfx" | "playVoiceSfx", [n, ..]) if !mine && matches!(n, Expr::Int(_) | Expr::Num(_)) => {
+                let n = match n { Expr::Int(n) => *n, Expr::Num(v) => *v as i64, _ => 1 };
+                let key = format!("{}{}_id", if m == "playVoiceSfx" { "attackVoice" } else { "attackSound" }, n.max(1));
+                let (id, _) = self.api(who, "getAnimationStat", &[Expr::Str(key)])?;
+                return Ok((format!("{{ var sfx = {id}; sfx == null ? null : AudioClip.play({who}.getResource().getContent(sfx)); }}"), Ty::Object));
             }
             // an attack its code starts on its owner (or any other fighter), and a rocket it sets off on
             // its owner: what that fighter publishes

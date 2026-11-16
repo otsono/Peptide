@@ -441,6 +441,8 @@
     "SSF2Item": "EntityType.ITEM",
     "SSF2Enemy": "EntityType.CUSTOM_GAME_OBJECT",
     // (a stage's path node, which no object here is)
-    "SSF2Beacon": "-1"
+    "SSF2Beacon": "-1",
+    // (a target, which this engine has none of: nothing is one)
+    "SSF2Target": "-1"
   }
 }
