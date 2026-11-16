@@ -16,6 +16,8 @@ use crate::model::SourceModel;
 
 /// What the stage pipeline hands the runtime path: what it worked out, as data.
 pub struct StageInput<'a> {
+    /// the stage's own track (`ssf2_music`), what its code reads as the music playing
+    pub music: Option<String>,
     /// where the stage's light starts, when its code moves it with the fighters (this engine's
     /// units): the stage draws their shadows from it (`followLight`)
     pub follow_light: Option<(f64, f64)>,
@@ -952,6 +954,11 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
         }
         upkeep.push(format!("{fname}();"));
     }
+    // (clips its code makes from the library: drawn where its code puts them each frame)
+    if !input.lib.is_empty() {
+        functions.push(compile::native::helper(runtime, "utils", "libClips", "libClips", &[("SIZE", format!("{}", units.size))], &[]).map_err(|e| vec![e])?);
+        upkeep.push("libUpkeep();".into());
+    }
     // (a light its code keeps over the fighters: the stage casts their shadows from it each frame)
     if input.follow_light.is_some() {
         functions.push(compile::native::helper(runtime, "utils", "followLight", "followLight", &[("SIZE", format!("{}", units.size))], &[]).map_err(|e| vec![e])?);
@@ -981,6 +988,8 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     let script = compile::native::fill_slots(skeleton, &slots).replace("{title}", id).replace("{classes}", class)
         // (the stage's own sprite, which shows the pictures its code draws from)
         .replace("getContent(STAGE_ID)", &format!("getContent({})", compile::quote(id)))
+        .replace("STAGE_MUSIC", &input.music.as_deref().map(compile::quote).unwrap_or_else(|| "null".into()))
+        .replace("LIB_ROWS", &format!("[{}]", input.lib.iter().map(|(n, parts)| format!("{{ n: {}, parts: [{parts}] }}", compile::quote(n))).collect::<Vec<_>>().join(", ")))
         .replace("FOLLOW_LIGHT", &input.follow_light.map(|(x, y)| format!("[{x}, {y}]")).unwrap_or_else(|| "null".into()))
         .replace("FOLLOW_FLOORS", &format!("[{}]", input.floors.iter().map(|f| format!("[{:.1}, {:.1}, {:.1}, {:.1}]", f[0], f[1], f[2], f[3])).collect::<Vec<_>>().join(", ")))
         .replace("\t// what its own class runs each of the source's frames (every second engine frame)\n\tif (stageFrames % 2 == 1) {\n\t}\n", "");
@@ -1147,6 +1156,8 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
     // (the class it is, for another object's code that tests it against one)
     begin.push(format!("self.exports.__className = {};", compile::quote(compile::short(&c.name))));
+    // (a body: another object's code lets things through its faces)
+    if blocks.contains(&"faces") { begin.push("self.exports.__ignore = ignoreThrough;".into()); }
     slots.insert("begin", begin);
     slots.insert("own_start", w.start.clone());
     slots.insert("own_tick", w.tick.clone());

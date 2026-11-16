@@ -747,6 +747,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         })
     }).collect();
     let input = crate::emit::stage::StageInput {
+        music: model.ssf2_music.first().cloned(),
         follow_light: model.stage_script.as_deref().is_some_and(light_follows).then(|| light_place(model)),
         floors: if model.stage_script.as_deref().is_some_and(light_follows) { floor_runs(&entity) } else { Vec::new() },
         tables: &boot, anim: STAGE_ANIM, pan: pan_size, objects,

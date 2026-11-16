@@ -248,6 +248,20 @@
   "PeptideAPI.getCharacters": { "code": "match.getCharacters()", "returns": "object" },
   // the players in the match, in player order
   "PeptideAPI.getPlayers": { "code": "match.getCharacters()", "returns": "object" },
+  // the track playing: the stage's own (STAGE_MUSIC), at the match's time in ms. this engine's music
+  // is its own, so where the source's would be is worked out
+  "PeptideAPI.getCurrentMusicInfo": { "code": "{ linkage: STAGE_MUSIC, position: match.getElapsedFrames() * 1000 / 60 }", "returns": "rect" },
+  // a point the camera keeps in its shot for a while, and let go
+  "addTimedTargetPoint": { "code": "camPoint({self}, {0}, {1})", "helper": "camPoint" },
+  "deleteTimedTargetPoint": { "code": "camPointGone({self}, {0})", "helper": "camPoint" },
+  // a platform that lets one object through (its structures' blacklist), and drops fighters or not
+  "addIgnoreObject": { "code": "ignoreOn({self}, {0}, true)", "helper": "ignoreOn" },
+  "removeIgnoreObject": { "code": "ignoreOn({self}, {0}, false)", "helper": "ignoreOn" },
+  "setNoDropThrough": "if ({self} != null) {self}.updateStructureStats({ dropThrough: {0} != true })",
+  // how fast it is going, its own speed and its launch together (the source's units)
+  "netSpeed": { "code": "(Math.sqrt(Math.pow({self}.getNetXVelocity(), 2) + Math.pow({self}.getNetYVelocity(), 2)) / {speed})", "returns": "number" },
+  "netXSpeed": { "code": "({self}.flipX({self}.getNetXVelocity()) / {speed})", "returns": "number" },
+  "netYSpeed": { "code": "({self}.getNetYVelocity() / {speed})", "returns": "number" },
   "PeptideAPI.stopMusic": { "code": "", "gap": "stopMusic: changing the match's music" },
   // the match's items: every custom game object that is one
   "PeptideAPI.getItems": { "code": "itemsInMatch()", "helper": "itemsInMatch", "returns": "object" },

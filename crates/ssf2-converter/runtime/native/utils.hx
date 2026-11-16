@@ -458,6 +458,10 @@ function pxCanvas(anim, w, h) {
 	return { anim: anim, width: w == null ? 0 : w, height: h == null ? 0 : h, x: 0.0, y: 0.0, sx: 1.0, sy: 1.0, placed: false,
 		root: null, paints: new haxe.ds.StringMap(), shader: null, cls: anim, rect: null };
 }
+// a picture shown on its own (`new Bitmap(data)`): drawn where its code puts it once it is in a plane
+function pxBitmap(data) {
+	return { kind: "bitmap", lib: true, bitmapData: data, x: 0.0, y: 0.0, scaleX: 1.0, scaleY: 1.0, alpha: 1.0, visible: true, part: null, plane: null, vs: [], parts: [] };
+}
 // one the tree placed (a plane's child, `getChildAt`)
 function pxPlaced(k) {
 	if (k == null) return null;
@@ -626,6 +630,111 @@ function followShadows() {
 		var face = c.isFacingRight() ? 1.0 : -1.0;
 		sp.transformationMatrix = new Matrix(face, 0, lean, 0.25, at, g);
 	}
+}
+
+// ---- ignoreOn
+// a platform that lets one object through, or no longer does (`addIgnoreObject`): a structure's own
+// blacklist, or the faces of an object that stands as a body (it publishes `__ignore`)
+function ignoreOn(p, o, on) {
+	if (p == null || o == null) return;
+	var ex = null;
+	try { ex = p.exports; } catch (e:Dynamic) {}
+	if (ex != null && ex.__ignore != null) { ex.__ignore(o, on); return; }
+	if (on) p.addToBlacklist(o); else p.removeFromBlacklist(o);
+}
+
+// ---- libClips
+// clips its code makes from the library (`getMCByLinkageName`) and puts in a plane: each a record its
+// code moves as the source moves the clip, drawn every frame as the effects of its pieces where it
+// is (LIB_ROWS: each clip's pieces, the effect and its corner)
+var stageLibRows = LIB_ROWS;
+var libsMade = [];
+function libClip(n) {
+	var row = null;
+	for (r in stageLibRows) if (r.n == n) row = r;
+	return { lib: true, n: n, parts: row == null ? [] : row.parts, x: 0.0, y: 0.0, scaleX: 1.0, scaleY: 1.0, alpha: 1.0, visible: true, part: null, plane: null, vs: [], name: n };
+}
+function libAdd(c, part, plane) {
+	if (c == null || c.lib != true) return c;
+	c.part = part;
+	c.plane = plane;
+	if (libsMade.indexOf(c) < 0) libsMade.push(c);
+	return c;
+}
+function libRemove(c) {
+	if (c == null || c.lib != true) return;
+	if (c.kind == "bitmap") { if (c.bitmapData != null && c.bitmapData.root != null) c.bitmapData.root.remove(); c.into = null; libsMade.remove(c); return; }
+	for (e in c.vs) e.v.destroy();
+	c.vs = [];
+	libsMade.remove(c);
+	c.part = null;
+}
+// the container a plane's clips are drawn in: one of the camera's backgrounds where the plane is one
+function libInto(plane) {
+	var bgs = stage == null || stage.exports == null ? null : stage.exports.__cameraBgs;
+	if (bgs != null) for (i in 0...bgs.length) if (bgs[i] == plane) {
+		var cs = match.getCamera().getBackgroundContainers();
+		if (cs != null && cs.length > i) return cs[i];
+	}
+	return plane == "foreground" ? self.getForegroundStructuresContainer() : (plane == "terrain" ? self.getBackgroundContainer() : self.getBackgroundBehindContainer());
+}
+function libUpkeep() {
+	for (c in libsMade) {
+		// (a picture shown on its own: its paints' container, where its code puts it)
+		if (c.kind == "bitmap") {
+			var d = c.bitmapData;
+			if (d == null) continue;
+			var root = pxRoot(d);
+			if (c.into == null) { c.into = libInto(c.plane); c.into.addChild(root); }
+			var bgs = stage == null || stage.exports == null ? null : stage.exports.__cameraBgs;
+			var cam = bgs != null && bgs.indexOf(c.plane) >= 0;
+			root.x = (cam ? 0.0 : (c.part == null ? 0.0 : c.part.originX())) + c.x * SIZE;
+			root.y = (cam ? 0.0 : (c.part == null ? 0.0 : c.part.originY())) + c.y * SIZE;
+			root.scaleX = c.scaleX * SIZE;
+			root.scaleY = c.scaleY * SIZE;
+			root.visible = c.visible != false;
+			root.alpha = c.alpha;
+			continue;
+		}
+		if (c.vs.length == 0) {
+			var into = libInto(c.plane);
+			for (p in c.parts) {
+				var v = match.createVfx(new VfxStats({ spriteContent: self.getResource().getContent(p.id), animation: "active", x: 0, y: 0, loop: true, timeout: -1, relativeWith: false, resizeWith: false }));
+				if (v == null) continue;
+				into.addChild(v.getViewRootContainer());
+				c.vs.push({ v: v, ax: p.ax, ay: p.ay, w: p.w });
+			}
+		}
+		// where it is: its place in the plane it was put in, from where the tree placed that plane
+		var ox = c.part == null ? 0.0 : c.part.originX();
+		var oy = c.part == null ? 0.0 : c.part.originY();
+		for (e in c.vs) {
+			e.v.setX(ox + c.x * SIZE + (c.scaleX < 0 ? -(e.ax + e.w) : e.ax));
+			e.v.setY(oy + c.y * SIZE + e.ay);
+			e.v.setScaleX(c.scaleX);
+			e.v.setScaleY(c.scaleY);
+			e.v.setVisible(c.visible != false);
+			e.v.setAlpha(c.alpha);
+		}
+	}
+}
+
+// ---- camPoint
+// a point the camera keeps in its shot for a while (`addTimedTargetPoint`, the source's units and
+// frames), and the same point let go: the engine's own point for each the source's code gives it
+var camPoints = [];
+function camPoint(c, p, n) {
+	if (c == null || p == null) return;
+	var now = match.getElapsedFrames();
+	var live = [];
+	for (r in camPoints) if (r.until > now) live.push(r);
+	camPoints = live;
+	var q = Point.create(p.x * SIZE, p.y * SIZE);
+	camPoints.push({ p: p, q: q, until: now + n * 2 });
+	c.addTimedTargetPoint(q, n * 2);
+}
+function camPointGone(c, p) {
+	for (r in camPoints) if (r.p == p) { c.deleteTimedTargetPoint(r.q); camPoints.remove(r); break; }
 }
 
 // ---- madeObject

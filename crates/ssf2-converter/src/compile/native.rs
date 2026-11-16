@@ -1181,6 +1181,8 @@ impl<'o, 'a> Writer<'o, 'a> {
             params.push(format!("?{n}"));
             // (untyped: what every call of it hands it, where that is a record)
             let ty = match Ty::declared(p.type_name.as_deref()) { Ty::Any => self.param_ty.get(&(name.to_string(), i)).copied().unwrap_or(Ty::Any), t => t };
+            // (one its code only reads fields of, never calling it or handing it on: a record)
+            let ty = if ty == Ty::Any && only_fields_read(&f.body, i as u32 + 1) { Ty::Rect } else { ty };
             self.locals.insert(i as u32 + 1, (n, Holds::Value(ty)));
             match self.param_elem.get(&(name.to_string(), i)).copied() { Some(e) if !self.learning || e == Ty::Rect => { self.local_elem.insert(i as u32 + 1, e); } _ => { self.local_elem.remove(&(i as u32 + 1)); } }
         }
@@ -2006,6 +2008,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (ix, _) = self.expr(i)?;
                 return Ok((format!("{k}_get_{prop}({list}[{ix}])"), if prop == "completed" { Ty::Bool } else { Ty::Rect }));
             }
+            // the size of a picture a field declares (`BitmapData`): its record's
+            Expr::Member(o, f) if self.o.stage && matches!(f.as_str(), "width" | "height") && matches!(&**o, Expr::Member(t, g) if matches!(**t, Expr::This)
+                && self.o.model.classes.get(&self.class).is_some_and(|c| c.fields.iter().any(|x| &x.name == g && x.type_name.as_deref().is_some_and(|t| drawn_type(self.o.model, t))))) => {
+                let (v, _) = self.expr(o)?;
+                (format!("{}.{f}", paren(&v)), Ty::Num)
+            }
             // a field of a named clip of the planes: what it shows, its frame, its label, or a clip of
             // its by name
             Expr::Member(o, f) if self.expr(o).is_ok_and(|(w, _)| w.starts_with("planePart(")) || self.part_field(o) => {
@@ -2290,6 +2298,12 @@ impl<'o, 'a> Writer<'o, 'a> {
             Expr::Binary(BinOp::As, x, k) if self.o.stage && matches!(&**k, Expr::Name(n) if short(n) == "Bitmap") => {
                 let (v, _) = self.expr(x)?;
                 (v, Ty::Rect)
+            }
+            // a picture shown on its own (`new Bitmap(data)`): `pixels`, drawn by `libClips`
+            Expr::New(c, args) if self.o.stage && matches!(&**c, Expr::Name(n) if short(n) == "Bitmap") => {
+                self.util("pixels")?;
+                let d = match args.first() { Some(x) => self.expr(x)?.0, None => "null".into() };
+                (format!("pxBitmap({d})"), Ty::Rect)
             }
             // a picture made by its code: an empty one its size, or one of its library's (the stage's
             // sprite shows it under `bmp_<name>`)
@@ -3439,6 +3453,10 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// the name of the picture a placed one shows
     fn picture_call(&mut self, f: &Expr, args: &[Expr]) -> Result<Option<(String, Ty)>, String> {
         if !self.o.stage { return Ok(None) }
+        // (a clip of its library made by name: `libClips`, which its stage carries when its code makes any)
+        if let (Expr::Member(_, m) | Expr::Name(m), [Expr::Str(n)]) = (f, args) {
+            if matches!(m.as_str(), "getMCByLinkageName" | "clipByLinkage") { return Ok(Some((format!("libClip({})", quote(n)), Ty::Rect))) }
+        }
         if let Expr::Name(n) = f {
             if n == "getQualifiedClassName" {
                 if let [x @ Expr::Member(_, b)] = args { if b == "bitmapData" { let (v, _) = self.expr(x)?; return Ok(Some((format!("({v} == null ? null : {v}.cls)"), Ty::Str))) } }
@@ -3447,7 +3465,11 @@ impl<'o, 'a> Writer<'o, 'a> {
         }
         let Expr::Member(recv, m) = f else { return Ok(None) };
         if !matches!(m.as_str(), "copyPixels" | "fillRect" | "setPixel" | "setPixel32" | "colorTransform" | "lock" | "unlock") { return Ok(None) }
-        let picture = matches!(&**recv, Expr::Member(_, b) if b == "bitmapData") || self.expr(recv).is_ok_and(|(w, t)| t == Ty::Rect && !w.starts_with("planePart("));
+        // (a picture's data, a picture its code holds, or a field it declares as one)
+        let declared = |w: &Self, e: &Expr| matches!(e, Expr::Member(t, f) if matches!(**t, Expr::This)
+            && w.o.model.classes.get(&w.class).is_some_and(|c| c.fields.iter().any(|x| &x.name == f && x.type_name.as_deref().is_some_and(|t| drawn_type(w.o.model, t)))));
+        let picture = matches!(&**recv, Expr::Member(_, b) if b == "bitmapData") || declared(self, recv)
+            || self.expr(recv).is_ok_and(|(w, t)| t == Ty::Rect && !w.starts_with("planePart("));
         if !picture { return Ok(None) }
         self.util("pixels")?;
         let (c, _) = self.expr(recv)?;
@@ -3535,7 +3557,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                 "swapChildren" | "swapChildrenAt" | "setChildIndex" => Ok(("// (not ported: a clip moved in its plane's drawing order; this engine draws each piece on its own layer)".into(), Ty::Any)),
                 // (a clip taken out of its plane: one that draws nothing, a region its code reads and
                 // takes off, is gone with nothing to show)
-                "removeChild" => Ok(("// (a clip its code takes off its plane: nothing drawn for it here)".into(), Ty::Any)),
+                // (a clip its code made from the library taken out, `libClips`; any other is a clip with
+                // nothing drawn for it here)
+                "removeChild" => Ok((format!("if ({who} != null) {who}.removeLib({})", a(self, 0)?), Ty::Any)),
+                "addChild" => { let x = a(self, 0)?; Ok((format!("({who} == null ? {x} : {who}.addLib({x}))"), Ty::Rect)) }
                 // (a clip of it by name: the part under that name)
                 "getChildByName" => { self.util("planePart")?; Ok((format!("planePart({})", a(self, 0)?), Ty::Object)) }
                 // (a child of it by place: a picture placed there, `pixels`)
@@ -5460,6 +5485,22 @@ fn drawing_value(v: &Expr, model: &crate::model::SourceModel) -> bool {
         Expr::Binary(BinOp::As, _, c) => matches!(&**c, Expr::Name(n) if drawn_type(model, n)),
         _ => false,
     }
+}
+
+/// whether a variable is only ever read for its fields (`r.x`), never called, handed on, compared
+/// or written: what its code holds is a record
+fn only_fields_read(body: &[Stmt], r: u32) -> bool {
+    let mut fields = 0usize;
+    let mut other = 0usize;
+    crate::model::ast::walk_exprs(body, &mut |e| match e {
+        Expr::Member(o, _) if matches!(**o, Expr::Local(x) if x == r) => fields += 1,
+        Expr::Local(x) if *x == r => other += 1,
+        _ => {}
+    });
+    let mut written = false;
+    walk(body, &mut |st| if let Stmt::Assign(Place::Local(x) | Place::Member(Expr::Local(x), _), _) = st { if *x == r { written = true; } });
+    // (each field read walks the variable once more, inside the read)
+    fields > 0 && other == fields && !written
 }
 
 /// what a place or value is held under: one of its own fields, or a variable

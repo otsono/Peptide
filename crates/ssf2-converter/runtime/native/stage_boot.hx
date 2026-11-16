@@ -618,6 +618,11 @@ function partNamed(n) {
 	p.setHeight = function(h) { if (region != null && region.h > 0) p.setScaleY((p.sy < 0 ? -1 : 1) * h * SIZE * Math.abs(region.sy) / region.h); };
 	// how many children its clip places (KIDS: by name, as the tree has them)
 	p.numKids = function() { for (k in stageKids) if (k.n == n) return k.k; return 0; };
+	// a clip its code made from the library, put in it or taken out (`libClips`)
+	p.addLib = function(c) { return libAdd(c, p, n); };
+	p.removeLib = function(c) { libRemove(c); };
+	p.originX = function() { return at.x; };
+	p.originY = function() { return at.y; };
 	// a child of it by place: a picture the tree placed there (`pixels`), else a clip
 	p.childAt = function(i) {
 		for (k in stageKids) if (k.n == n) { var c = k.c[i]; return c == null ? { kind: "clip" } : pxPlaced(c); }

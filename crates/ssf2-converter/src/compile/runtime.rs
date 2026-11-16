@@ -37,6 +37,8 @@ pub struct NativeClass {
     pub make: Option<String>,
     /// the engine's class a type test checks against
     pub is: Option<String>,
+    /// for code written as Fraymakers code only: the runtime keeps its own version
+    pub native_only: bool,
     /// the class's own functions the engine's class lacks, as templates of their arguments
     pub statics: BTreeMap<String, String>,
 }
@@ -136,7 +138,9 @@ impl Runtime {
                 let rows = |k: &str| row.get(k).and_then(|v| v.as_object()).map(|o| o.iter()
                     .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect::<BTreeMap<_, _>>()).unwrap_or_default();
                 for (k, v) in rows("constants") { rt.constants.insert(format!("{name}.{k}"), v); }
-                rt.natives.insert(name.clone(), NativeClass { make: text("make"), is: text("is"), statics: rows("statics") });
+                let native_only = row.get("native_only").and_then(|v| v.as_bool()).unwrap_or(false);
+                rt.natives.insert(name.clone(), NativeClass { make: text("make"), is: text("is"), statics: rows("statics"), native_only });
+                if native_only { continue }
                 rt.classes.insert(name.clone(), RuntimeClass { name: name.clone(), native: true, ..Default::default() });
                 rt.globals.insert(name.clone());
             }

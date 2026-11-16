@@ -816,7 +816,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
     /// version of it and content defines none by that name
     fn native_type(&self, n: &str) -> Option<String> {
         if self.pkg.class_named(n).is_some() { return None }
-        self.pkg.runtime.native(n)?.is.clone()
+        self.pkg.runtime.native(n).filter(|c| !c.native_only)?.is.clone()
     }
 
     fn native_type_of(&self, t: &Expr) -> Option<String> {
@@ -1542,7 +1542,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             if let Expr::Name(cls) = &**o {
                 // a function of one of Flash's classes that the engine's version lacks
                 if self.local_name(cls).is_none() && self.pkg.class_named(cls).is_none() {
-                    if let Some(t) = self.pkg.runtime.native(cls).and_then(|c| c.statics.get(m.as_str())).cloned() {
+                    if let Some(t) = self.pkg.runtime.native(cls).filter(|c| !c.native_only).and_then(|c| c.statics.get(m.as_str())).cloned() {
                         return self.native_text(&t, args);
                     }
                 }
@@ -1625,7 +1625,7 @@ impl<'p, 'a> ClassWriter<'p, 'a> {
             Expr::Name(n) => match n.as_str() {
                 "Array" => format!("AS3.array([{a}])"),
                 "Object" => "{}".into(),
-                _ if self.pkg.class_named(n).is_none() && self.pkg.runtime.native(n).is_some_and(|c| c.make.is_some()) => {
+                _ if self.pkg.class_named(n).is_none() && self.pkg.runtime.native(n).is_some_and(|c| c.make.is_some() && !c.native_only) => {
                     let t = self.pkg.runtime.native(n).and_then(|c| c.make.clone()).unwrap_or_default();
                     self.native_text(&t, args)
                 }

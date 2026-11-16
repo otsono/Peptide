@@ -16,11 +16,12 @@
       "distance": "{0}.distance({1})"
     }
   },
-  // a list, and a map by any key (a dictionary keyed by the clips its code makes)
-  "Object": { "make": "{}" },
-  "Array": { "make": "[]" },
-  "Vector": { "make": "[]" },
-  "Dictionary": { "make": "new haxe.ds.ObjectMap()" },
+  // a list, and a map by any key (a dictionary keyed by the clips its code makes), in code written
+  // as Fraymakers code only (`native_only`): the runtime keeps its own (`AS3`)
+  "Object": { "make": "{}", "native_only": true },
+  "Array": { "make": "[]", "native_only": true },
+  "Vector": { "make": "[]", "native_only": true },
+  "Dictionary": { "make": "new haxe.ds.ObjectMap()", "native_only": true },
   "Rectangle": {
     "make": "new Rectangle({args})",
     "is": "Rectangle"

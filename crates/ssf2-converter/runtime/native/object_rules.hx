@@ -32,6 +32,10 @@ function makeFace(ty, pts, ledgeL, ledgeR, drop) {
 	st.setY(self.getY());
 	return { st: st, k: key, x: null, y: null };
 }
+// an object let through its faces, or no longer (what it publishes as `__ignore`)
+function ignoreThrough(o, on) {
+	for (f in bodyFacesOf()) { if (on) f.st.addToBlacklist(o); else f.st.removeFromBlacklist(o); }
+}
 // every face it has now: its body's and its own floor's (each block keeps its own list)
 function bodyFacesOf() {
 	var out = [];
