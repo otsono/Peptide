@@ -224,6 +224,11 @@ pub struct Object<'a> {
     pub effect_pieces: Vec<(String, String, u32, u32)>,
     /// a fighter's parts: the named clips its code turns, drawn apart from its animations' art
     pub parts: Vec<Part>,
+    /// the name the tree placed its clip under (a stage object's `getMC().name`)
+    pub instance: Option<String>,
+    /// where the source's origin sits in the engine's space, in the source's units: a stage's code and
+    /// its objects' read and write places in the stage's own space (none for a fighter's)
+    pub origin: (f64, f64),
     /// the content its own animations are (a part's art is one of them); a projectile's: its own
     /// name, as its owner declares it
     pub content: String,
@@ -1023,6 +1028,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                     walk(body, &mut |st| if let Stmt::Assign(Place::Member(o, n), _) = st { if !matches!(o, Expr::This) { asked.insert(n.clone()); } });
                 }
             }
+            if let Ok(a) = asked_fields().lock() { asked.extend(a.iter().cloned()); }
             let mut cases: BTreeMap<&str, String> = BTreeMap::new();
             for ((_, field), id) in &out.field_ids {
                 if !asked.contains(field) || cases.contains_key(field.as_str()) { continue }
@@ -1547,7 +1553,8 @@ impl<'o, 'a> Writer<'o, 'a> {
         // (its own clip's look, written: its own, as this engine draws the clip as the object)
         if let Place::Member(Expr::Call(g, a), f) = p {
             if a.is_empty() && !self.o.fighter && matches!(f.as_str(), "scaleX" | "scaleY" | "alpha" | "rotation" | "visible")
-                && matches!(&**g, Expr::Member(o, m) if matches!(m.as_str(), "getMC" | "stanceClip" | "getStanceMC") && self.expr(o).is_ok_and(|(w, _)| w == "self")) {
+                && (matches!(&**g, Expr::Member(o, m) if matches!(m.as_str(), "getMC" | "stanceClip" | "getStanceMC") && self.expr(o).is_ok_and(|(w, _)| w == "self"))
+                    || matches!(&**g, Expr::Name(m) if matches!(m.as_str(), "getMC" | "stanceClip" | "getStanceMC") && self.method(m).is_none())) {
                 let (val, _) = self.expr(v)?;
                 let set = match f.as_str() { "scaleX" => "setScaleX", "scaleY" => "setScaleY", "alpha" => "setAlpha", "rotation" => "setRotation", _ => "setVisible" };
                 return Ok(vec![format!("self.{set}({val});")]);
@@ -1773,7 +1780,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (who, _) = self.expr(o)?;
                 if who == "self" { return Err(format!("writes its clip's {f}")) }
                 let (val, _) = self.expr(v)?;
-                Ok(vec![format!("{who}.set{}({});", f.to_uppercase(), fold(&format!("{} * {}", paren(&val), number(self.o.size))))])
+                // (one it holds may be none: an effect with no art here is never made)
+                let plain = who.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '(' || c == ')');
+                let set = format!("{who}.set{}({});", f.to_uppercase(), fold(&format!("{} * {}", paren(&val), number(self.o.size))));
+                Ok(vec![if plain { format!("if ({who} != null) {set}") } else { set }])
             }
             Place::Member(o, f) if !matches!(o, Expr::This) && matches!(f.as_str(), "scaleX" | "scaleY" | "alpha" | "rotation" | "visible")
                 // (a record's, a clip its code made, is its plain field: below)
@@ -2055,11 +2065,38 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let labels = self.o.model.sprites.get(&self.o.root).map(|sp| sp.labels.iter().map(|(f, l)| format!("{{ name: {}, frame: {} }}", quote(l), f + 1)).collect::<Vec<_>>()).unwrap_or_default();
                 (format!("[{}]", labels.join(", ")), Ty::Object)
             }
+            // a field another object's own class keeps, read by the stage's code: what that object publishes
+            Expr::Member(o, f) if self.o.stage && !matches!(**o, Expr::This) && self.expr(o).is_ok_and(|(_, t)| matches!(t, Ty::Object | Ty::Any))
+                && !self.o.model.classes.values().any(|c| c.fields.iter().any(|x| &x.name == f) && short(&c.super_name) == "PeptideStage")
+                && lent_fields().lock().is_ok_and(|l| l.contains(f)) => {
+                let (who, _) = self.expr(o)?;
+                return Ok((format!("{}({who}, \"self\", {})", self.owner_field("get")?, quote(f)), Ty::Any));
+            }
+            // a child of its own clip whose box its class reads (`getMC().hitBox`): there, as its clip carries
+            // it; its box in its parent's space (`getRect(parent)`) where it stands, as measured
+            Expr::Call(g, a) if a.len() == 1 && matches!(&**g, Expr::Member(c, m) if m == "getRect" && self.own_child_box(c).is_some()) => {
+                let Expr::Member(c, _) = &**g else { unreachable!() };
+                let (x, y, w, h) = self.own_child_box(c).ok_or("no box")?;
+                (format!("new Rectangle(self.getX() / {s} + {}, self.getY() / {s} + {}, {}, {})", number(x), number(y), number(w), number(h), s = number(self.o.size)), Ty::Rect)
+            }
+            Expr::Member(_, _) if self.own_child_box(e).is_some() => ("true".into(), Ty::Bool),
             // a field of the stage's own class, read from another object's code: what the stage publishes
             Expr::Member(o, f) if !self.o.stage && self.expr(o).is_ok_and(|(w, _)| w == "stage")
                 && self.o.model.classes.values().any(|c| short(&c.super_name) == "PeptideStage" && (c.fields.iter().any(|x| &x.name == f && !x.is_static) || c.methods.iter().any(|m| { let mut set = false; walk(&m.function.body, &mut |st| if let Stmt::Assign(Place::Member(Expr::This, g), _) = st { if g == f { set = true } }); set }))) => {
                 self.util("stageField")?;
                 (format!("stageField({})", quote(f)), Ty::Any)
+            }
+            // its own clip's look, read: its own (the clip is drawn as the object)
+            Expr::Member(mc, n) if !self.o.fighter && matches!(n.as_str(), "scaleX" | "scaleY" | "alpha" | "rotation" | "visible")
+                && matches!(&**mc, Expr::Call(g, a) if a.is_empty() && (matches!(&**g, Expr::Name(m) if matches!(m.as_str(), "getMC" | "stanceClip" | "getStanceMC") && self.method(m).is_none())
+                    || matches!(&**g, Expr::Member(o, m) if matches!(m.as_str(), "getMC" | "stanceClip" | "getStanceMC") && matches!(**o, Expr::This)))) => {
+                let get = match n.as_str() { "scaleX" => "getScaleX", "scaleY" => "getScaleY", "alpha" => "getAlpha", "rotation" => "getRotation", _ => "getVisible" };
+                (format!("self.{get}()"), if n == "visible" { Ty::Bool } else { Ty::Num })
+            }
+            // the name the tree placed its own clip under
+            Expr::Member(mc, n) if n == "name" && self.o.instance.is_some()
+                && matches!(&**mc, Expr::Call(g, a) if a.is_empty() && (matches!(&**g, Expr::Member(o, m) if m == "getMC" && matches!(**o, Expr::This)) || matches!(&**g, Expr::Name(m) if m == "getMC" && self.method(m).is_none()))) => {
+                (quote(self.o.instance.as_deref().unwrap_or_default()), Ty::Str)
             }
             // (the language's `undefined` named outright: nothing)
             Expr::Name(n) if n == "undefined" && self.field(n).is_none() => ("null".into(), Ty::Object),
@@ -2165,7 +2202,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                     "scaleY" => (format!("({p} == null ? 1 : {p}.getScaleY())"), Ty::Num),
                     "rotation" => (format!("({p} == null ? 0 : {p}.getRotation())"), Ty::Num),
                     "numChildren" => (format!("({p} == null ? 0 : {p}.numKids())"), Ty::Num),
-                    "totalFrames" => return Err(format!("reads the {f} of a clip of its planes, which no plain form answers yet")),
+                    "totalFrames" => (format!("({p} == null ? 1 : {p}.getTotalFrames())"), Ty::Num),
                     _ => { self.util("planePart")?; (format!("planePart({})", quote(f)), Ty::Object) }
                 });
             }
@@ -3002,7 +3039,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             let cases: Vec<String> = crate::stage_emit::CAMERA_STATS.iter().map(|(k, v)| format!("case {}: return {};", quote(k), number(*v))).collect();
             self.helpers.insert(name.into(), helper(self.o.runtime, "utils", name, name, &[], &cases)?);
         }
-        if !self.helpers.contains_key(name) { self.helpers.insert(name.into(), helper(self.o.runtime, "utils", name, name, &[("SIZE", number(self.o.size)), ("SPEED", number(self.o.speed)), ("ACCEL", number(self.o.accel))], &[])?); }
+        if !self.helpers.contains_key(name) { self.helpers.insert(name.into(), helper(self.o.runtime, "utils", name, name, &[("SIZE", number(self.o.size)), ("SPEED", number(self.o.speed)), ("ACCEL", number(self.o.accel)), ("ORIGIN_X", number(self.o.origin.0)), ("ORIGIN_Y", number(self.o.origin.1))], &[])?); }
         Ok(name.into())
     }
 
@@ -3040,6 +3077,22 @@ impl<'o, 'a> Writer<'o, 'a> {
             });
         }
         owner && !other
+    }
+
+    /// the measured box of a child of its own clip its class reads (`getMC().name`)
+    fn own_child_box(&self, e: &Expr) -> Option<(f64, f64, f64, f64)> {
+        let Expr::Member(c, n) = e else { return None };
+        let own = matches!(&**c, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(o, m) if matches!(m.as_str(), "getMC" | "stanceClip" | "getStanceMC") && matches!(**o, Expr::This)));
+        if !own { return None }
+        // (under its own class, or the class of the package it extends; else the one child of that
+        // name any object's class measured)
+        let mut names: Vec<String> = Vec::new();
+        if let Some(c) = self.o.itself { names.push(short(&c.name).to_string()); names.push(short(&c.super_name).to_string()); }
+        for k in &names { if let Some(r) = self.o.clip_bounds.get(&format!("{k}>{n}")) { return Some(*r) } }
+        let suffix = format!(">{n}");
+        let found: Vec<&(f64, f64, f64, f64)> = self.o.clip_bounds.iter().filter(|(k, _)| k.ends_with(&suffix)).map(|(_, v)| v).collect();
+        let first = **found.first()?;
+        found.iter().all(|r| **r == first).then_some(first)
     }
 
     /// whether a name is a class's (Flash's own the engine has a form of, or the package's)
@@ -4417,7 +4470,9 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             return Ok((format!("{name}({who})"), Ty::Str));
         }
-        let row = match calls().rows.get(m).cloned().or_else(|| self.engine_row(m)) {
+        // (a stage's and its objects' own form of a row, where it has one: places in the stage's space)
+        let staged = (self.o.origin != (0.0, 0.0)).then(|| calls().rows.get(&format!("{m}@stage")).cloned()).flatten();
+        let row = match staged.or_else(|| calls().rows.get(m).cloned()).or_else(|| self.engine_row(m)) {
             Some(r) => r,
             None => {
                 // a method of another object's own class (of its package, or of an object it makes
@@ -4798,10 +4853,18 @@ self.playFrameLabel({})", quote(f))); }
         if let Some(g) = &row.gap { self.gaps.insert(g.clone()); }
         if let Some(h) = &row.helper {
             if h == "cameraParameter" { self.util(h)?; }
-            if !self.helpers.contains_key(h) { self.helpers.insert(h.clone(), helper(self.o.runtime, "utils", h, h, &[("SIZE", number(self.o.size)), ("SPEED", number(self.o.speed)), ("ACCEL", number(self.o.accel))], &[])?); }
+            if !self.helpers.contains_key(h) { self.helpers.insert(h.clone(), helper(self.o.runtime, "utils", h, h, &[("SIZE", number(self.o.size)), ("SPEED", number(self.o.speed)), ("ACCEL", number(self.o.accel)), ("ORIGIN_X", number(self.o.origin.0)), ("ORIGIN_Y", number(self.o.origin.1))], &[])?); }
         }
-        let mut t = row.code.replace("{self}", who)
-            .replace("{size}", &number(self.o.size)).replace("{speed}", &number(self.o.speed)).replace("{accel}", &number(self.o.accel));
+        // (an origin of nothing adds and takes nothing: the row is the plain one)
+        let mut code = row.code.clone();
+        for (k, o) in [("{ox}", self.o.origin.0), ("{oy}", self.o.origin.1)] {
+            if o != 0.0 { continue }
+            for i in 0..4 { code = code.replace(&format!("({{{i}}} - {k})"), &format!("{{{i}}}")); }
+            code = code.replace(&format!(" + {k}"), "").replace(&format!(" - {k}"), "");
+        }
+        let mut t = code.replace("{self}", who)
+            .replace("{size}", &number(self.o.size)).replace("{speed}", &number(self.o.speed)).replace("{accel}", &number(self.o.accel))
+            .replace("{ox}", &number(self.o.origin.0)).replace("{oy}", &number(self.o.origin.1));
         // (an argument the call may leave off, `{,1}`: written after a comma where it passes one)
         for i in 0..8 {
             let opt = format!("{{,{i}}}");
@@ -5673,7 +5736,7 @@ fn for_in(c: &Expr) -> Option<(u32, u32)> {
 }
 
 /// every expression of a list of statements, put through `f`
-fn map_stmts(list: Vec<Stmt>, f: &mut impl FnMut(Expr) -> Expr) -> Vec<Stmt> {
+pub fn map_stmts(list: Vec<Stmt>, f: &mut impl FnMut(Expr) -> Expr) -> Vec<Stmt> {
     list.into_iter().map(|s| match s {
         Stmt::Expr(e) => Stmt::Expr(e.map(f)),
         Stmt::Assign(p, e) => Stmt::Assign(p.map(f), e.map(f)),
@@ -5872,6 +5935,19 @@ pub fn asked_of_others() -> &'static std::sync::Mutex<BTreeSet<String>> {
 
 /// the methods of the objects another package lends a fighter (an item its code makes that the
 /// game's shared packages hold): its code calls them on those objects, which publish them
+/// the names other packages' code reads or writes on an object (a stage's code on the objects a lent
+/// package carries): what an object publishes for them, with its own package's
+pub fn asked_fields() -> &'static std::sync::Mutex<BTreeSet<String>> {
+    static T: OnceLock<std::sync::Mutex<BTreeSet<String>>> = OnceLock::new();
+    T.get_or_init(|| std::sync::Mutex::new(BTreeSet::new()))
+}
+
+/// the fields of the classes a lent package carries, for the stage's code that reads them
+pub fn lent_fields() -> &'static std::sync::Mutex<BTreeSet<String>> {
+    static T: OnceLock<std::sync::Mutex<BTreeSet<String>>> = OnceLock::new();
+    T.get_or_init(|| std::sync::Mutex::new(BTreeSet::new()))
+}
+
 pub fn lent_methods() -> &'static std::sync::Mutex<BTreeSet<String>> {
     static LENT: std::sync::OnceLock<std::sync::Mutex<BTreeSet<String>>> = std::sync::OnceLock::new();
     LENT.get_or_init(Default::default)

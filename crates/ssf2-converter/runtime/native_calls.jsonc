@@ -17,10 +17,18 @@
   // who and where
   "getOwner": { "code": "{self}.getOwner()", "returns": "object" },
   "setOwner": "if ({0} != null) {self}.setOwner({0})",
-  "getX": { "code": "{self}.getX() / {size}", "returns": "number" },
-  "getY": { "code": "{self}.getY() / {size}", "returns": "number" },
-  "setX": "{self}.setX({0} * {size})",
-  "setY": "{self}.setY({0} * {size})",
+  // (places in the source's units; a stage's and its objects' in the stage's own space, from the
+  // source's origin, `{ox}` `{oy}`, which is the engine's for everyone else)
+  "getX": { "code": "{self}.getX() / {size} + {ox}", "returns": "number" },
+  "getY": { "code": "{self}.getY() / {size} + {oy}", "returns": "number" },
+  "setX": "{self}.setX(({0} - {ox}) * {size})",
+  "setY": "{self}.setY(({0} - {oy}) * {size})",
+  // (a stage's and its objects' places: in the stage's space, from where each object's clip is
+  // registered, `stagePlace`)
+  "getX@stage": { "code": "placeX({self})", "helper": "stagePlace", "returns": "number" },
+  "getY@stage": { "code": "placeY({self})", "helper": "stagePlace", "returns": "number" },
+  "setX@stage": { "code": "setPlaceX({self}, {0})", "helper": "stagePlace" },
+  "setY@stage": { "code": "setPlaceY({self}, {0})", "helper": "stagePlace" },
   "isFacingRight": { "code": "{self}.isFacingRight()", "returns": "bool" },
   "faceRight": "{self}.faceRight()",
   "faceLeft": "{self}.faceLeft()",
@@ -30,11 +38,13 @@
   "resetRotation": "{self}.resetRotation()",
   "setScale": "{self}.setScaleX({0}); {self}.setScaleY({1})",
   "setVisibility": "{self}.setVisible({0})",
+  "setAlpha": "{self}.setAlpha({0})",
+  "getAlpha": { "code": "{self}.getAlpha()", "returns": "number" },
   // its clip, where nothing reads into it: the object, which shows it
   "getMC": { "code": "{self}", "returns": "object" },
   // a point inside what it covers (a region of the stage's: its rectangle)
   "hitTestRect": { "code": "({self} != null && {self}.hitTestRect != null && {self}.hitTestRect({0}, {size}))", "returns": "bool" },
-  "hitTestPoint": { "code": "({self} != null && {self}.hitTestPoint != null && {self}.hitTestPoint({0} * {size}, {1} * {size}))", "returns": "bool" },
+  "hitTestPoint": { "code": "({self} != null && {self}.hitTestPoint != null && {self}.hitTestPoint(({0} - {ox}) * {size}, ({1} - {oy}) * {size}))", "returns": "bool" },
 
   // how it moves: a projectile's x speed is along the way it faces, on both engines
   "getXSpeed": { "code": "{self}.getXSpeed() / {speed}", "returns": "number" },
@@ -75,7 +85,9 @@
   // the API's own calls (`SSF2API.print`): an empty row is a call that does nothing here
   "PeptideAPI.print": "",
   // a stage set up for the game's quality tier: every setting is on here, so nothing is hidden
-  "PeptideStageQuality.init": "",
+  // the stage's quality settings: at the highest (as the match runs here), the clips of its second
+  // list animate whatever their own code stops (`qualityPlays`)
+  "PeptideStageQuality.init": { "code": "qualityPlays({1})", "helper": "qualityPlays" },
   // (an object's own debug print, the same)
   "trace": "",
   // a number from the match's own random, which a rollback replays alike
@@ -208,7 +220,7 @@
   "getHeight": { "code": "sizeOf({self}, true)", "helper": "sizeOf", "returns": "number" },
   "getScale": { "code": "{ x: {self}.getScaleX(), y: {self}.getScaleY() }", "returns": "record" },
   // the box an object takes up, and a rectangle's own calls (the engine's `Rectangle`)
-  "getBoundsRect": { "code": "boundsRectOf({self})", "helper": "boundsRectOf", "returns": "object" },
+  "getBoundsRect": { "code": "boundsRectOf({self}, {ox}, {oy})", "helper": "boundsRectOf", "returns": "object" },
   "offset": "{self}.x += {0}; {self}.y += {1}",
   "intersection": { "code": "{self}.intersection({0})", "returns": "object" },
   "intersects": { "code": "{self}.intersects({0})", "returns": "bool" },

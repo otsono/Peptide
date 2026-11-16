@@ -574,8 +574,12 @@ function partNamed(n) {
 		if (!placed) return null;
 	}
 	var p = { name: n, shown: true, alpha: 1.0, fall: false };
-	p.getX = function() { return region == null ? 0.0 : region.rx / SIZE; };
-	p.getY = function() { return region == null ? 0.0 : region.ry / SIZE; };
+	// (its place in its parent's space, as its code reads and writes it: the parent puts that space's
+	// origin at `px`, `py` of the stage's)
+	var px = region == null || region.px == null ? 0.0 : region.px;
+	var py = region == null || region.py == null ? 0.0 : region.py;
+	p.getX = function() { return region == null ? 0.0 : (region.rx - px) / SIZE; };
+	p.getY = function() { return region == null ? 0.0 : (region.ry - py) / SIZE; };
 	p.getWidth = function() { return region == null ? 0.0 : region.w / SIZE; };
 	p.getHeight = function() { return region == null ? 0.0 : region.h / SIZE; };
 	// its own scale and turn, as the tree placed it (each the source's)
@@ -596,14 +600,14 @@ function partNamed(n) {
 	// tree placed it)
 	var at = { x: region == null ? 0.0 : region.rx, y: region == null ? 0.0 : region.ry };
 	p.setX = function(x) {
-		var dx = x * SIZE - at.x;
-		at.x = x * SIZE;
+		var dx = x * SIZE + px - at.x;
+		at.x = x * SIZE + px;
 		if (region != null) region.rx = at.x;
 		each(function(e, v) { if (v.setX != null) v.setX(v.getX() + dx); });
 	};
 	p.setY = function(y) {
-		var dy = y * SIZE - at.y;
-		at.y = y * SIZE;
+		var dy = y * SIZE + py - at.y;
+		at.y = y * SIZE + py;
 		if (region != null) region.ry = at.y;
 		each(function(e, v) { if (v.setY != null) v.setY(v.getY() + dy); });
 	};
@@ -666,6 +670,17 @@ function partNamed(n) {
 				start += e.sections.lens[i];
 			}
 			return at + 1;
+		}
+		return 1;
+	};
+	// how many frames its clip has, as the source counts them: its first sectioned piece's sections, else its piece's
+	p.getTotalFrames = function() {
+		if (obj != null) return Std.int((obj.getTotalFrames() + 1) / 2);
+		for (e in els) {
+			var v = bootBg[e.i];
+			if (v == null) continue;
+			if (e.sections != null) { var t = 0; for (l in e.sections.lens) t += l; return Std.int((t + 1) / 2); }
+			if (v.getTotalFrames != null) return Std.int((v.getTotalFrames() + 1) / 2);
 		}
 		return 1;
 	};

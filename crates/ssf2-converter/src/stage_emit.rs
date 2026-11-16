@@ -744,6 +744,13 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
             registration: (hz.anims.is_empty() && hz.instance_name.is_none() && body.is_none() && hz.declared_kind.is_empty())
                 .then(|| hz.attack_boxes.first().map(|b| (b.x + b.w / 2.0, b.y + b.h / 2.0))).flatten(),
             body,
+            instance: hz.instance_name.clone().filter(|n| !n.is_empty()),
+            // a placed body stands at the middle of its clip's box; its code's places are its clip's
+            // registration, that far off
+            anchor: placed_body.then(|| hz.instance_name.as_deref().filter(|n| !model.named_twice.contains(*n)).and_then(|n| Some((model.named_boxes.get(n)?, model.named_regs.get(n)?))))
+                .flatten().map(|(r, (rx, ry))| (r.x + r.w / 2.0 - rx, r.y + r.h / 2.0 - ry)),
+            // (a placed body under a name another clip has too: where its clip is registered is not known)
+            anchor_unknown: placed_body && hz.instance_name.as_deref().is_some_and(|n| model.named_twice.contains(n)),
         })
     }).collect();
     let input = crate::emit::stage::StageInput {

@@ -248,7 +248,7 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
             if super::plays_once(model, p).is_some() { return None }
             super::effect_code(model, ps).map(|c| (n.clone(), c))
         }).collect(),
-        power_record: power_of(f).is_some(),
+        instance: None, origin: (0.0, 0.0), power_record: power_of(f).is_some(),
     };
     if all {
         let why = native::census(&object);

@@ -376,6 +376,11 @@ pub struct StageModel {
     pub named_regs: std::collections::BTreeMap<String, (f64, f64)>,
     /// each named clip's own scale (x, y) and turn in degrees, as its parent holds it
     pub named_turns: std::collections::BTreeMap<String, (f64, f64, f64)>,
+    /// where each named clip's parent puts the origin of the space its code places it in (this
+    /// stage's coordinates): the clip's place there is its registration less this
+    pub named_parents: std::collections::BTreeMap<String, (f64, f64)>,
+    /// the names the tree places more than one clip under, in different places
+    pub named_twice: std::collections::BTreeSet<String>,
     /// every library clip's extent in its own space (source pixels), by its library name: what
     /// the code makes a surface the shape of (`createSelfPlatformWithMC`)
     pub clip_bounds: std::collections::BTreeMap<String, Rect>,
@@ -1042,7 +1047,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             }
         }
     }
-    let (class_sites, named_clips, hidden_clips, named_boxes, named_regs) = collect_class_sites(&swf.tags, &sym_names, &sprites, &shape_bounds, &clip_roles);
+    let (class_sites, named_clips, hidden_clips, named_boxes, mut named_regs) = collect_class_sites(&swf.tags, &sym_names, &sprites, &shape_bounds, &clip_roles);
     let mut extent_memo = BTreeMap::new();
     let sprite_bounds: BTreeMap<u16, Rect> = sprites.keys()
         .filter_map(|id| clip_extent_memo(*id, &sprites, &shape_bounds, &mut extent_memo).map(|r| (*id, r))).collect();
@@ -2313,7 +2318,11 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
     }
     // the named regions in this stage's own coordinates, like everything else it is handed
     let named_boxes: BTreeMap<String, Rect> = named_boxes.iter().map(|(n, r)| (n.clone(), to_fm(r))).collect();
-    let named_turns: BTreeMap<String, (f64, f64, f64)> = named_regs.iter().map(|(n, (_, _, sx, sy, r))| (n.clone(), (*sx, *sy, *r))).collect();
+    let named_twice: std::collections::BTreeSet<String> = named_regs.keys().filter_map(|k| k.strip_suffix("\u{1}twice").map(String::from)).collect();
+    named_regs.retain(|k, _| !k.ends_with("\u{1}twice"));
+    let named_turns: BTreeMap<String, (f64, f64, f64)> = named_regs.iter().map(|(n, (_, _, sx, sy, r, ..))| (n.clone(), (*sx, *sy, *r))).collect();
+    // (where each one's parent puts its own space, in this stage's: its code writes its place in that)
+    let named_parents: BTreeMap<String, (f64, f64)> = named_regs.iter().map(|(n, (x, y, _, _, _, lx, ly))| (n.clone(), ((x - lx - ox) * scale, (y - ly - oy) * scale))).collect();
     let named_regs: BTreeMap<String, (f64, f64)> = named_regs.iter().map(|(n, (x, y, ..))| (n.clone(), ((x - ox) * scale, (y - oy) * scale))).collect();
     let terrain_labels = anchors.terrain_labels.clone();
     let terrain_frames = anchors.terrain_frames;
@@ -2339,7 +2348,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         let first = drawn(0);
         (1..frames.len()).any(|g| drawn(g) != first)
     });
-    let mut model = StageModel { library_bitmaps: BTreeMap::new(), source: path.to_path_buf(), origin: (ox, oy), terrain_off, terrain_labels, terrain_frames, terrain_art_moves, deferred, id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, sink_columns, art, warnings, scale, weathers, hazard_gate, stage_script, symbol_names: sym_names.values().cloned().collect(), hidden_clips, named_boxes, named_regs, named_turns, clip_bounds, sprite_bounds,
+    let mut model = StageModel { library_bitmaps: BTreeMap::new(), source: path.to_path_buf(), origin: (ox, oy), terrain_off, terrain_labels, terrain_frames, terrain_art_moves, deferred, id, display_name, series, ssf2_music, fm_music, platforms, death_box, camera_box, entrances, respawns, ledges, hazards, sink_columns, art, warnings, scale, weathers, hazard_gate, stage_script, symbol_names: sym_names.values().cloned().collect(), hidden_clips, named_boxes, named_regs, named_turns, named_parents, named_twice, clip_bounds, sprite_bounds,
         cam_backgrounds: cam_backgrounds.iter().map(|b| b.linkage_id.clone()).collect(), clip_frame_scripts };
     // the library pictures its own code names (`new rttf_lavabub()`): each one as a picture
     if let Some(script) = model.stage_script.clone() {
@@ -7114,7 +7123,7 @@ fn collect_class_sites(
     sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
     shape_bounds: &BTreeMap<u16, (f64, f64, f64, f64)>,
     roles: &BTreeMap<String, crate::abc_parser::ClipRole>,
-) -> (Vec<ClassSite>, BTreeMap<String, u16>, std::collections::BTreeSet<String>, BTreeMap<String, Rect>, BTreeMap<String, (f64, f64, f64, f64, f64)>) {
+) -> (Vec<ClassSite>, BTreeMap<String, u16>, std::collections::BTreeSet<String>, BTreeMap<String, Rect>, BTreeMap<String, (f64, f64, f64, f64, f64, f64, f64)>) {
     /// Union of the world AABBs of every shape under a clip.
     fn subtree_bounds(
         tags: &[swf::Tag], parent: Mat, rec: usize,
@@ -7159,7 +7168,7 @@ fn collect_class_sites(
         named: &mut BTreeMap<String, u16>,
         hidden: &mut std::collections::BTreeSet<String>,
         boxes: &mut BTreeMap<String, Rect>,
-        regs: &mut BTreeMap<String, (f64, f64, f64, f64, f64)>,
+        regs: &mut BTreeMap<String, (f64, f64, f64, f64, f64, f64, f64)>,
     ) {
         if rec > 8 { return }
         for tag in tags {
@@ -7183,7 +7192,11 @@ fn collect_class_sites(
                 // (with its own scale and turn, as its parent holds it: what its code reads of it)
                 let det = local.a * local.d - local.b * local.c;
                 let (sx, sy) = (local.a.hypot(local.b), local.c.hypot(local.d) * if det < 0.0 { -1.0 } else { 1.0 });
-                regs.entry(n.clone()).or_insert((world.tx, world.ty, sx, sy, local.b.atan2(local.a).to_degrees()));
+                if regs.get(&n).is_some_and(|r| (r.0 - world.tx).abs() > 0.5 || (r.1 - world.ty).abs() > 0.5) {
+                    // (a second clip placed elsewhere under the same name: the name says nothing of which)
+                    regs.insert(format!("{n}\u{1}twice"), (0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0));
+                }
+                regs.entry(n.clone()).or_insert((world.tx, world.ty, sx, sy, local.b.atan2(local.a).to_degrees(), local.tx, local.ty));
                 // ...and where it is: a stage asks the match for a region by name (crateria's acid
                 // spares whoever stands in its `safezone`), and the placement is that region.
                 let mut acc = None;

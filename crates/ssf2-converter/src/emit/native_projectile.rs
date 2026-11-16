@@ -159,7 +159,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         root_anim: &|_| None, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &no_links, anim_clips: &[], owner_native: owner.native,
         effect_names: spec.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
         effect_pieces: spec.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames))).collect(),
-        parts: Vec::new(), content: title.to_string(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), power_record: false,
+        parts: Vec::new(), content: title.to_string(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: None, origin: (0.0, 0.0), power_record: false,
     };
     let written = if bare || (classes.is_empty() && itself.is_none()) { native::Written::default() } else { native::write(&object)? };
 
@@ -462,19 +462,26 @@ fn inherited(model: &SourceModel, runtime: &Runtime, c: &crate::model::ClassMode
         .filter(|p| !runtime.provides(&p.name) && !runtime.provides(compile::short(&p.name)));
     let Some(p) = parent(c) else { return Ok(None) };
     let base = match inherited(model, runtime, p)? { Some(b) => b, None => p.clone() };
-    // (a method that calls the one it replaces would need both kept apart)
+    // (a method that calls the one it replaces keeps that one too, under its name and `__super`, and
+    // its call up is a call of it)
+    use crate::model::ast::Expr;
+    let mut up: BTreeSet<String> = BTreeSet::new();
     for m in &c.methods {
-        let mut calls_up = false;
-        crate::model::ast::walk_exprs(&m.function.body, &mut |e| if let crate::model::ast::Expr::SuperCall(n, _) = e { if !n.is_empty() && base.methods.iter().any(|b| &b.name == n) { calls_up = true } });
-        if calls_up { return Err(format!("{} calls the {} of {} it replaces", c.name, m.name, p.name)) }
+        crate::model::ast::walk_exprs(&m.function.body, &mut |e| if let Expr::SuperCall(n, _) = e { if !n.is_empty() && base.methods.iter().any(|b| &b.name == n) { up.insert(n.clone()); } });
     }
     let mut out = base.clone();
     out.name = c.name.clone();
     out.symbol = c.symbol.or(base.symbol);
     out.fields.retain(|f| !c.fields.iter().any(|g| g.name == f.name));
     out.fields.extend(c.fields.iter().cloned());
+    let kept: Vec<crate::model::MethodModel> = base.methods.iter().filter(|m| up.contains(&m.name)).cloned().map(|mut m| { m.name = format!("{}__super", m.name); m }).collect();
     out.methods.retain(|m| !c.methods.iter().any(|g| g.name == m.name && g.kind == m.kind));
-    out.methods.extend(c.methods.iter().cloned());
+    out.methods.extend(kept);
+    let mut to_up = |e: Expr| match e {
+        Expr::SuperCall(n, a) if up.contains(&n) => Expr::Call(Box::new(Expr::Member(Box::new(Expr::This), format!("{n}__super"))), a),
+        e => e,
+    };
+    out.methods.extend(c.methods.iter().cloned().map(|mut m| { m.function.body = compile::native::map_stmts(m.function.body, &mut to_up); m }));
     // (the child's constructor, past its call up, after the parent's)
     let own: Vec<crate::model::ast::Stmt> = c.constructor.body.iter().filter(|s| !matches!(s, crate::model::ast::Stmt::Expr(crate::model::ast::Expr::SuperCall(n, _)) if n.is_empty())).cloned().collect();
     let mut body: Vec<crate::model::ast::Stmt> = base.constructor.body.iter().filter(|s| !matches!(s, crate::model::ast::Stmt::Return(None))).cloned().collect();

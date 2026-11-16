@@ -243,7 +243,7 @@ function grabBy(o, uid) {
 // ---- boundsRectOf
 // the box an object takes up, in the source's units: the size it declares, else its body's, standing
 // on its feet where it stands
-function boundsRectOf(o) {
+function boundsRectOf(o, ?ox, ?oy) {
 	if (o == null || o.isDisposed()) return new Rectangle(0, 0, 0, 0);
 	var d = o.getGameObjectStatsMetadata();
 	var w = d == null || d.width == null ? 0.0 : d.width;
@@ -252,8 +252,8 @@ function boundsRectOf(o) {
 		w = Math.abs(o.getEcbRightHipX() - o.getEcbLeftHipX()) / SIZE;
 		h = Math.abs(o.getEcbFootY() - o.getEcbHeadY()) / SIZE;
 	}
-	var x = o.getX() / SIZE;
-	var y = o.getY() / SIZE;
+	var x = o.getX() / SIZE + (ox == null ? 0 : ox);
+	var y = o.getY() / SIZE + (oy == null ? 0 : oy);
 	return new Rectangle(x - w / 2, y - h, w, h);
 }
 
@@ -358,12 +358,60 @@ function fadeTo(o, to) {
 	fadingNow.set(a != to);
 }
 
+// ---- qualityPlays
+// the clips the stage's quality settings animate at the highest quality: played on every frame,
+// whatever their own code stops
+var playing = self.makeObject(null);
+function qualityPlays(l) {
+	if (l == null) return;
+	if (playing.get() == null) { playing.set([]); self.addTimer(1, -1, keepPlaying, { persistent: true }); }
+	for (c in l) if (c != null) playing.get().push(c);
+}
+function keepPlaying() {
+	var l = playing.get();
+	if (l == null) return;
+	for (c in l) if (c.hold != null) c.hold(false); else if (c.resume != null) c.resume();
+}
+
+// ---- stagePlace
+// where an object is in the stage's space (ORIGIN_X, ORIGIN_Y: the source's origin in this engine's,
+// in the source's units), as the source has it: from where its clip is registered, which an object
+// of the stage publishes (`exports.__anchor`, this engine's units, from where it stands)
+function anchorOf(o) { return o == null || o.exports == null || o.exports.__anchor == null ? null : o.exports.__anchor; }
+function placeX(o) { if (o == null) return 0.0; var a = anchorOf(o); return (o.getX() - (a == null ? 0 : a.x)) / SIZE + ORIGIN_X; }
+function placeY(o) { if (o == null) return 0.0; var a = anchorOf(o); return (o.getY() - (a == null ? 0 : a.y)) / SIZE + ORIGIN_Y; }
+function setPlaceX(o, v) { if (o == null) return; var a = anchorOf(o); o.setX((v - ORIGIN_X) * SIZE + (a == null ? 0 : a.x)); }
+function setPlaceY(o, v) { if (o == null) return; var a = anchorOf(o); o.setY((v - ORIGIN_Y) * SIZE + (a == null ? 0 : a.y)); }
+
+// ---- setBrightness
+// an object brightened or darkened by its code (-100 to 100, as the source's), replacing the last
+// it set on that object
+var brightOn = self.makeObject(null);
+function setBrightness(t, v) {
+	if (t == null || t.isDisposed()) return;
+	if (v > 100) v = 100;
+	if (v < -100) v = -100;
+	if (brightOn.get() == null) brightOn.set(new haxe.ds.StringMap());
+	var key = Std.string(t.getUid());
+	var was = brightOn.get().get(key);
+	if (was != null) t.removeShader(was);
+	var sh = new RgbaColorShader();
+	sh.redOffset = v * 2.55;
+	sh.greenOffset = v * 2.55;
+	sh.blueOffset = v * 2.55;
+	t.addShader(sh);
+	brightOn.get().set(key, sh);
+}
+
 // ---- startPosition
 // where it was the first time its code asked (where it was put, before its own code moved it), in the
-// source's units as its own `getX` reads
+// source's units and space as its own `getX` reads
 var startAt = self.makeObject(null);
 function startPosition() {
-	if (startAt.get() == null) startAt.set({ x: self.getX() / SIZE, y: self.getY() / SIZE });
+	if (startAt.get() == null) {
+		var a = self.exports == null ? null : self.exports.__anchor;
+		startAt.set({ x: (self.getX() - (a == null ? 0 : a.x)) / SIZE + ORIGIN_X, y: (self.getY() - (a == null ? 0 : a.y)) / SIZE + ORIGIN_Y });
+	}
 	var p = startAt.get();
 	return { x: p.x, y: p.y };
 }
