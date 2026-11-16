@@ -3,7 +3,7 @@
 // block where a projectile's code listens for it).
 
 // ---- owner
-var touchingOwner = self.makeBool(false);
+var touchingOwner = self.makeObject(false);
 
 // each frame: its listeners told as it meets its owner
 function touchFrame() {

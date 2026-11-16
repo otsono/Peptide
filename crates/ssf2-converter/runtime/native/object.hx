@@ -8,7 +8,7 @@
 // how many engine frames it has run
 var frames = self.makeInt(0);
 // whether its first frame's code has run (the source runs it once its maker's code is done)
-var started = self.makeBool(false);
+var started = self.makeObject(false);
 // {fields}
 
 // ---- its own code

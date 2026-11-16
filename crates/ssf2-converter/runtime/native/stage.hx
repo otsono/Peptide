@@ -7,10 +7,18 @@
 
 // ---- what the running stage says it made and how far it has run, where the verify gates ask
 // (tools/verify.py): its frame count, whether its boot finished, and each thing it made as
-// `id|kind|x|y|frame|total;` (`|null` or `|gone` for one that is not there; a structure has no frames)
+// `id|kind|x|y|frame|total;` (`|null` or `|gone` for one that is not there; a structure has no frames;
+// `|held` after a picture its code holds on a frame)
 var __made = [];
 var __verifyFrames = 0;
 var __verifyBuilt = false;
+// the pictures its code holds on a frame (`|held` after one in the dump)
+var heldPieces = [];
+function pieceHeld(v, on) {
+	if (v == null) return;
+	heldPieces.remove(v);
+	if (on) { heldPieces.push(v); if (v.pause != null) v.pause(); } else if (v.resume != null) v.resume();
+}
 function __verifyDump() {
 	var s = "";
 	for (m in __made) {
@@ -21,6 +29,7 @@ function __verifyDump() {
 		else {
 			line = line + "|" + o.getX() + "|" + o.getY();
 			if (m.k != "s") line = line + "|" + o.getCurrentFrame() + "|" + o.getTotalFrames();
+			if (m.k == "v" && heldPieces.indexOf(o) >= 0) line = line + "|held";
 		}
 		s = s + line + ";";
 	}

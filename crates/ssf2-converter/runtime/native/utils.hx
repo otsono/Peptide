@@ -347,6 +347,55 @@ function planePart(n) {
 	return stage == null || stage.exports == null || stage.exports.__part == null ? null : stage.exports.__part(n);
 }
 
+// ---- fadeTo
+// a fade its code steps once a frame, as it asks (a tenth of the way each source frame); fading while
+// it has not got there
+var fadingNow = self.makeObject(false);
+function fadeTo(o, to) {
+	var a = o.getAlpha();
+	a = to > a ? Math.min(to, a + 0.1) : Math.max(to, a - 0.1);
+	o.setAlpha(a);
+	fadingNow.set(a != to);
+}
+
+// ---- teammatesOf
+// the fighters on its team but itself
+function teammatesOf(o) {
+	var out = [];
+	if (o == null) return out;
+	for (c in match.getCharacters()) if (c != o && c.getTeam() == o.getTeam()) out.push(c);
+	return out;
+}
+
+// ---- getDistance
+// how far apart two points are
+function getDistance(a, b) {
+	if (a == null || b == null) return 0.0;
+	var dx = b.x - a.x;
+	var dy = b.y - a.y;
+	return Math.sqrt(dx * dx + dy * dy);
+}
+
+// ---- objectsOf
+// every object on the stage whose class is the one named (as each publishes the classes it is)
+function objectsOf(kind) {
+	var out = [];
+	var all = match.getCustomGameObjects();
+	if (all != null) for (o in all) if (o != null && o.exports != null && o.exports.__classes != null && o.exports.__classes.indexOf(kind) >= 0) out.push(o);
+	return out;
+}
+
+// ---- nextUid
+// a fresh id each time it is asked: one count for the whole match, kept on the stage, so no two
+// objects' ids meet (a rollback never hands an id out twice: it only skips some)
+var uidAt = self.makeInt(0);
+function nextUid() {
+	if (stage == null || stage.exports == null) { uidAt.set(uidAt.get() + 1); return uidAt.get(); }
+	if (stage.exports.__uid == null) stage.exports.__uid = 0;
+	stage.exports.__uid = stage.exports.__uid + 1;
+	return stage.exports.__uid;
+}
+
 // ---- sharedVarsOf
 // what an object's code keeps by name (`setSharedVar`): its source's, where the runtime plays it, else
 // what it publishes

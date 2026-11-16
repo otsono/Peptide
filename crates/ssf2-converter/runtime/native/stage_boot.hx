@@ -164,6 +164,9 @@ function objectNamed(n) {
 		e.setX = function(v) { rect.x += v - e.x; e.x = v; };
 		e.setY = function(v) { rect.y += v - e.y; e.y = v; };
 		e.isDisposed = function() { return false; };
+		e.hitTestPoint = function(px, py) { return px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h; };
+		// (a rectangle in the source's units, `k` this engine's to the source's: whether they overlap)
+		e.hitTestRect = function(o, k) { return o != null && o.x * k < rect.x + rect.w && (o.x + o.width) * k > rect.x && o.y * k < rect.y + rect.h && (o.y + o.height) * k > rect.y; };
 		regionsMade.push(e);
 		return e;
 	}
@@ -245,8 +248,8 @@ function bootSectioned(e, c) {
 	h.setAlpha = function(a) { c.alpha = a; };
 	h.playAnimation = function(a) { var k = sec.anims.indexOf(a); if (k >= 0) h.play(k); };
 	h.playFrame = function(f) {};
-	h.pause = function() { if (h.v != null && !h.v.isDisposed()) h.v.pause(); };
-	h.resume = function() { if (h.v != null && !h.v.isDisposed()) h.v.resume(); };
+	h.pause = function() { if (h.v != null && !h.v.isDisposed()) pieceHeld(h.v, true); };
+	h.resume = function() { if (h.v != null && !h.v.isDisposed()) pieceHeld(h.v, false); };
 	h.getAnimation = function() { return h.k < 0 ? null : sec.anims[h.k]; };
 	h.getCurrentFrame = function() { return h.v == null || h.v.isDisposed() ? 0 : h.v.getCurrentFrame(); };
 	h.getTotalFrames = function() { return h.v == null || h.v.isDisposed() ? 0 : h.v.getTotalFrames(); };
@@ -299,11 +302,11 @@ function bootCarrier(parts, sec) {
 		var k = sec.anims.indexOf(a);
 		if (k < 0) return;
 		h.at = k;
-		each(function(p) { p.playFrameLabel(a); p.resume(); });
+		each(function(p) { p.playFrameLabel(a); pieceHeld(p, false); });
 	};
 	h.playFrame = function(f) { var s = start(h.at); each(function(p) { p.playFrame(s + f - 1); }); };
-	h.pause = function() { each(function(p) { p.pause(); }); };
-	h.resume = function() { each(function(p) { p.resume(); }); };
+	h.pause = function() { each(function(p) { pieceHeld(p, true); }); };
+	h.resume = function() { each(function(p) { pieceHeld(p, false); }); };
 	h.getAnimation = function() {
 		if (parts.length == 0) return null;
 		var f = parts[0].getCurrentFrame();
@@ -401,7 +404,6 @@ function bootGroup(g) {
 //: can give it a ground friction as the match runs (an ice floor)
 var surfaceRows = SURFACES;
 var surfacesMade = new haxe.ds.StringMap();
-var codedFriction = [];
 function surfaceNamed(n) {
 	var have = surfacesMade.get(n);
 	if (have != null) return have;
@@ -440,6 +442,8 @@ function surfaceNamed(n) {
 var frictionRows = FRICTIONS;
 var pushRows = PUSHES;
 var frictionHeld = [];
+// the named surfaces its code gives a friction of their own (`surfaces`)
+var codedFriction = [];
 function groundUpkeep() {
 	if (frictionRows.length == 0 && pushRows.length == 0 && codedFriction.length == 0) return;
 	var ps = match.getCharacters();
@@ -644,10 +648,10 @@ function partNamed(n) {
 		each(function(e, v) {
 			if (!own(e)) return;
 			if (e.seg) goPiece(e, v, n2);
-			else if (v.playFrame != null) { v.playFrame(n2 * 2 - 1); if (stop) v.pause(); else v.resume(); }
+			else if (v.playFrame != null) { v.playFrame(n2 * 2 - 1); pieceHeld(v, stop); }
 		});
 	};
-	p.hold = function(stop) { each(function(e, v) { if (!own(e)) return; if (stop) { if (v.pause != null) v.pause(); } else if (v.resume != null) v.resume(); }); };
+	p.hold = function(stop) { each(function(e, v) { if (!own(e)) return; pieceHeld(v, stop); }); };
 	// the frame its clip is on, as the source counts it: its first sectioned piece's section and frame
 	p.getFrame = function() {
 		if (obj != null) return Std.int((obj.getCurrentFrame() - 1) / 2) + 1;
@@ -677,6 +681,15 @@ function partNamed(n) {
 	// a surface placed under the name lets fighters through as the code says
 	p.setFallthrough = function(on) { p.fall = on == true; if (sf != null) sf.updateStructureStats({ dropThrough: p.fall }); };
 	p.getFallthrough = function() { return p.fall; };
+	// (answering as an effect does, for code that holds it as one: its frames counted as the engine's)
+	p.isDisposed = function() { return false; };
+	p.hasAnimation = function(a) { return false; };
+	p.getAnimation = function() { return null; };
+	p.playFrameLabel = function(l) { p.playLabel(l, false); };
+	p.getCurrentFrame = function() { return p.getFrame() * 2 - 1; };
+	p.playFrame = function(f) { p.playLabel(Std.int((f + 1) / 2), false); };
+	p.pause = function() { p.hold(true); };
+	p.resume = function() { p.hold(false); };
 	partsMade.set(n, p);
 	return p;
 }

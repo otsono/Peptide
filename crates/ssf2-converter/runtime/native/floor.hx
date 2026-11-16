@@ -5,7 +5,7 @@
 // the source tells a projectile it is on the floor the first frames it finds itself there (one
 // made on it too: pikachu's jolt is made at his feet and starts its hops from that touch), where
 // this engine tells only one that comes down onto it
-var toldFloor = self.makeBool(false);
+var toldFloor = self.makeObject(false);
 
 // whether a floor is right under its feet (made this frame, the engine has not put it on one yet)
 function floorBelow() {
@@ -30,7 +30,7 @@ function floorFrame() {
 var airX = self.makeFloat(0);
 var airY = self.makeFloat(0);
 // a rise its code gave it as it touched, kept past the engine's own landing
-var risen = self.makeBool(false);
+var risen = self.makeObject(false);
 var riseX = self.makeFloat(0);
 var riseY = self.makeFloat(0);
 

@@ -6,7 +6,8 @@
 // written after a comma where it passes one), `{size}` `{speed}` `{accel}` the
 // units the source's numbers are scaled by. a row is a string, or an object with the `code` and
 // what its value is (`returns`: bool, number, string, object, or record for one whose fields its
-// code reads plainly, a rectangle or a palette), which a test of it needs to know.
+// code reads plainly, a rectangle or a palette), which a test of it needs to know. an API call
+// keyed `PeptideAPI.<call>#name` is the row for that call asked by a name written out.
 //
 // a call with no row here takes the runtime's own row (`api_calls.jsonc`) where that is the
 // engine's calls alone. one with neither, and none of the few the writer settles itself
@@ -31,12 +32,18 @@
   "setVisibility": "{self}.setVisible({0})",
   // its clip, where nothing reads into it: the object, which shows it
   "getMC": { "code": "{self}", "returns": "object" },
+  // a point inside what it covers (a region of the stage's: its rectangle)
+  "hitTestRect": { "code": "({self} != null && {self}.hitTestRect != null && {self}.hitTestRect({0}, {size}))", "returns": "bool" },
+  "hitTestPoint": { "code": "({self} != null && {self}.hitTestPoint != null && {self}.hitTestPoint({0} * {size}, {1} * {size}))", "returns": "bool" },
 
   // how it moves: a projectile's x speed is along the way it faces, on both engines
   "getXSpeed": { "code": "{self}.getXSpeed() / {speed}", "returns": "number" },
   "getYSpeed": { "code": "{self}.getYSpeed() / {speed}", "returns": "number" },
   "setXSpeed": "{self}.setXSpeed({0} * {speed})",
   "setYSpeed": "{self}.setYSpeed({0} * {speed})",
+  // a launch given outright: a knockback (the source's units) or a speed, at a heading in degrees
+  "applyKnockback": "{self}.setXKnockback(Math.cos(({1}) * Math.PI / 180) * ({0}) * 0.213725 * {speed}); {self}.setYKnockback(-Math.sin(({1}) * Math.PI / 180) * ({0}) * 0.213725 * {speed})",
+  "applyKnockbackSpeed": "{self}.setXKnockback(Math.cos(({1}) * Math.PI / 180) * ({0}) * {speed}); {self}.setYKnockback(-Math.sin(({1}) * Math.PI / 180) * ({0}) * {speed})",
   // its speed set by a heading: degrees, up from the way it faces
   "angleControl": "{self}.setXSpeed({self}.flipX(Math.cos({1} * Math.PI / 180) * {0} * {speed})); {self}.setYSpeed(-Math.sin({1} * Math.PI / 180) * {0} * {speed})",
 
@@ -83,6 +90,11 @@
   // a sound it played, stopped (the clip `playSound` answered; a number it holds instead stops nothing)
   "stopSound": "if ({0} != null && !Std.isOfType({0}, Float)) {0}.stop()",
   "destroy": "{self}.kill()",
+  // a fade it steps a frame at a time, as its code asks
+  "fadeIn": { "code": "fadeTo({self}, 1)", "helper": "fadeTo" },
+  "fadeOut": { "code": "fadeTo({self}, 0)", "helper": "fadeTo" },
+  "isFading": { "code": "fadingNow.get()", "helper": "fadeTo", "returns": "bool" },
+  "resetFade": { "code": "fadingNow.set(false); {self}.setAlpha(1)", "helper": "fadeTo" },
 
   // a fighter's own variables, kept by its script (a fighter still on the runtime keeps them on
   // the object it published)
@@ -248,6 +260,32 @@
   "PeptideAPI.getCharacters": { "code": "match.getCharacters()", "returns": "object" },
   // the players in the match, in player order
   "PeptideAPI.getPlayers": { "code": "match.getCharacters()", "returns": "object" },
+  // the fighters on its team but itself
+  "getTeammates": { "code": "teammatesOf({self})", "helper": "teammatesOf", "returns": "object" },
+  // every object on the stage of one of the API's kinds (its class, down to the API's, as it publishes)
+  "PeptideAPI.getEnemies": { "code": "objectsOf(\"PeptideEnemy\")", "helper": "objectsOf", "returns": "object" },
+  "PeptideAPI.getPlatforms": { "code": "objectsOf(\"PeptidePlatform\")", "helper": "objectsOf", "returns": "object" },
+  // the match is live once the stage's code runs (it waits for the fighters)
+  "PeptideAPI.isGameStarted": { "code": "true", "returns": "bool" },
+  "PeptideAPI.isDebug": { "code": "false", "returns": "bool" },
+  // the machine's time: none here, the one fixed moment a `Date` is made at (native_classes.jsonc)
+  "PeptideAPI.getTimestamp": { "code": "Date.fromTime(1767268800000.0)", "returns": "object", "gap": "getTimestamp: the machine's clock (a fixed moment here)" },
+  // a date's parts, as the engine's dates have them
+  "getHours": { "code": "{self}.getHours()", "returns": "number" },
+  "getMinutes": { "code": "{self}.getMinutes()", "returns": "number" },
+  "getDate": { "code": "{self}.getDate()", "returns": "number" },
+  "getDay": { "code": "{self}.getDay()", "returns": "number" },
+  "getMonth": { "code": "{self}.getMonth()", "returns": "number" },
+  "getFullYear": { "code": "{self}.getFullYear()", "returns": "number" },
+  // the camera's hold on the stage is this engine's
+  "PeptideAPI.setCamStageFocus": { "code": "", "gap": "setCamStageFocus: the camera's hold on the stage" },
+  // the clips the source's engine places its fighters at: this engine's spawn points are its own
+  "getSpawnPositionMCs": { "code": "[]", "returns": "object", "gap": "getSpawnPositionMCs: the engine's own spawn points" },
+  // the match's item rotation: this engine's matches name none a stage could hand out
+  "PeptideAPI.getAvailableItemList": { "code": "[]", "returns": "object", "gap": "getAvailableItemList: the match's item rotation" },
+  // a feature of the mode the match is played in: this engine's matches turn none on
+  "PeptideAPI.hasFeature": { "code": "false", "returns": "bool" },
+  "PeptideAPI.getItemFrequency": { "code": "0", "returns": "number", "gap": "getItemFrequency: the match's item rate" },
   // the track playing: the stage's own (STAGE_MUSIC), at the match's time in ms. this engine's music
   // is its own, so where the source's would be is worked out
   "PeptideAPI.getCurrentMusicInfo": { "code": "{ linkage: STAGE_MUSIC, position: match.getElapsedFrames() * 1000 / 60 }", "returns": "rect" },
@@ -282,6 +320,9 @@
   // a launch by the source's formula, and its speed (source pixels a source frame)
   "PeptideAPI.knockbackOf": { "code": "knockbackOf({0}, {1}, {2}, {3}, {4}, {5}{,6})", "helper": "knockbackOf", "returns": "number" },
   "PeptideAPI.knockbackVelocityOf": { "code": "(({0}) * 0.213725)", "returns": "number" },
+  // a fresh id (an attack record's, so its next hit lands again): its own counter, under its own id
+  "PeptideAPI.getUID": { "code": "nextUid()", "helper": "nextUid", "returns": "number" },
+  "PeptideAPI.generateUID": { "code": "nextUid()", "helper": "nextUid", "returns": "number" },
   // a box's damage as its charge leaves it (nothing charges here)
   "PeptideAPI.calculateChargeDamage": { "code": "({0} == null || {0}.damage == null ? 0 : {0}.damage)", "returns": "number" },
   "PeptideAPI.getPlayer": { "code": "playerNumbered({0})", "helper": "playerNumbered", "returns": "object" },
@@ -290,6 +331,8 @@
   "resetTime": "age.set(0)",
   // what the stage files under a name (a structure, else a region): asked of the stage
   "PeptideAPI.getPlatform": { "code": "(stage == null || stage.exports.__named == null ? null : stage.exports.__named({0}))", "returns": "object" },
+  // an object the stage placed under a name (`#name`: asked by a name written out)
+  "PeptideAPI.getEnemy#name": { "code": "(stage == null || stage.exports.__named == null ? null : stage.exports.__named({0}))", "returns": "object" },
   "PeptideAPI.getCollisionBoundary": { "code": "(stage == null || stage.exports.__named == null ? null : stage.exports.__named({0}))", "returns": "object" },
   // a stage object's stats written by its code, and the floor it gives itself (`object_rules.hx`)
   "updateEnemyStats": { "code": "enemyStats({self}, {0})", "helper": "enemyStats" },

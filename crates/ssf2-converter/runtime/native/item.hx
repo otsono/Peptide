@@ -11,7 +11,7 @@
 var life = self.makeInt(LIFE);
 var age = self.makeInt(0);
 // whether its first frame's code has run (the source runs it once its maker's code is done)
-var started = self.makeBool(false);
+var started = self.makeObject(false);
 // how many engine frames it has been out, held or not
 var frames = self.makeInt(0);
 // {fields}
@@ -22,11 +22,11 @@ var itemState = self.makeInt(0);
 // who holds it, and whether that one picked it up here (then this handler throws it for them:
 // a fighter that made it throws it itself)
 var holder = self.makeObject(null);
-var pickedUp = self.makeBool(false);
+var pickedUp = self.makeObject(false);
 // whether it can be picked up now (its code turns this off: `canPickup`)
-var pickupOn = self.makeBool(true);
+var pickupOn = self.makeObject(true);
 // whether it was let go without a throw (its holder was hit or grabbed)
-var zDropped = self.makeBool(false);
+var zDropped = self.makeObject(false);
 // what its holder's attack is put to first, while it is held (`setFrameInterrupt`)
 var frameInterrupt = self.makeObject(null);
 // the attack its holder was last seen starting, by the source's name for it

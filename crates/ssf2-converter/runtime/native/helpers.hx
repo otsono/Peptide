@@ -128,6 +128,13 @@ function NAME(effect, label, hold) {
 	if (effect.hasAnimation(label)) effect.playAnimation(label); else effect.playFrameLabel(label);
 	if (hold) effect.pause(); else effect.resume();
 }
+// one stepped a frame on or back, and held there
+function effectStep(effect, d) {
+	if (effect == null || effect.isDisposed()) return;
+	var f = effect.getCurrentFrame() + 2 * d;
+	effect.playFrame(f < 1 ? 1 : f);
+	effect.pause();
+}
 // one sent to a frame by number, as the source counts its clip's frames
 function effectFrame(effect, n, hold) {
 	if (effect == null || effect.isDisposed()) return;

@@ -942,12 +942,17 @@ fn native_stage(src: &SourceModel, runtime: &Runtime, class: &str, sym: u16, pie
     if need_clip { functions.push(compile::native::helper(runtime, "utils", "clipRecord", "clipRecord", &[], &[]).map_err(|e| vec![e])?) }
     functions.extend(w.functions.iter().cloned());
     // each clip of its planes with frame code of its own: run as its timeline reaches each frame
+    let mut timelines: BTreeSet<String> = BTreeSet::new();
+    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
     for (cls, name) in placed_names(src, sym) {
+        if !seen.insert((cls.clone(), name.clone())) { continue }
         let Some(csym) = src.classes.get(&cls).and_then(|c| c.symbol) else { continue };
         let cases: Vec<String> = w.frames.iter().filter(|((s, _), _)| *s == csym)
             .map(|((_, f), code)| format!("case {f}: {}", code.lines().map(str::trim).collect::<Vec<_>>().join(" "))).collect();
         if cases.is_empty() { continue }
-        let fname = format!("timeline_{}", compile::ident(&name));
+        // (two clips placed under one name: each its own timeline)
+        let mut fname = format!("timeline_{}", compile::ident(&name));
+        if !timelines.insert(fname.clone()) { fname = format!("{fname}_{}", compile::ident(&cls)); timelines.insert(fname.clone()); }
         functions.push(compile::native::helper(runtime, "stage_boot", "timeline", &fname, &[("PART", compile::quote(&name)), ("NAMEAt", format!("{fname}At"))], &cases).map_err(|e| vec![e])?);
         if !functions.iter().any(|f| f.contains("planePart(n)")) {
             functions.push(compile::native::helper(runtime, "utils", "planePart", "planePart", &[], &[]).map_err(|e| vec![e])?);
@@ -1156,6 +1161,10 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
     // (the class it is, for another object's code that tests it against one)
     begin.push(format!("self.exports.__className = {};", compile::quote(compile::short(&c.name))));
+    // (and every class it is, down to the API's: another object's code asks for every one of a kind)
+    let (line, base) = pkg.chain(&c.name);
+    let kinds: Vec<String> = line.iter().map(|k| compile::quote(compile::short(&k.name))).chain(base.map(|b| compile::quote(compile::short(&b)))).collect();
+    begin.push(format!("self.exports.__classes = [{}];", kinds.join(", ")));
     // (a body: another object's code lets things through its faces)
     if blocks.contains(&"faces") { begin.push("self.exports.__ignore = ignoreThrough;".into()); }
     slots.insert("begin", begin);
