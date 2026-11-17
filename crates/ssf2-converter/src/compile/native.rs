@@ -2910,7 +2910,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             Expr::Index(a, i0) => {
                 let i = i0;
                 // (an element of a list field its code only pushes records onto)
-                let learned = match &**a { Expr::Member(t, fl) if matches!(**t, Expr::This) => self.list_elem.get(&member_key(&self.class, fl)).copied(), Expr::Local(r) => self.local_elem.get(r).copied(),
+                let learned = match &**a { Expr::Member(t, fl) if matches!(**t, Expr::This) => self.list_elem.get(&member_key(&self.class, fl)).copied().or_else(|| self.pushes_records(fl).then_some(Ty::Rect)), Expr::Local(r) => self.local_elem.get(r).copied(),
                     // (a list field of its own named bare, as a closure names it)
                     Expr::Name(n) if self.field(n).is_some() => self.list_elem.get(&member_key(&self.class, n)).copied(),
                     // (a static list its class states, of records: `new Point(..)`s or `{..}`s)
@@ -3091,6 +3091,8 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// a jump its clip makes to a frame worked out as it runs: by label for a text, by number for a
     /// number, and by whichever it turns out to be where the code does not say
     fn jump_to_value(&mut self, label: &Expr) -> Result<String, String> {
+        // (an object's, to a label written out: its own jump by that label)
+        if let (Expr::Str(l), false) = (label, self.o.fighter) { return Ok(self.jump(l)?.trim_end_matches(';').to_string()) }
         let (l, ty) = self.expr(label)?;
         // (by number: no label of its clip is needed)
         if ty == Ty::Num {
@@ -3698,6 +3700,11 @@ impl<'o, 'a> Writer<'o, 'a> {
                         if let Ok((_, ty)) = self.expr(&args[0]) {
                             // (a record literal pushed: a list of records, whose fields its code reads plainly)
                             let ty = if matches!(&args[0], Expr::Object(_)) { Ty::Rect } else { ty };
+                            // (a field of its own pushed: what learning has seen it hold, its type not yet set)
+                            let ty = match (&args[0], ty) {
+                                (Expr::Member(t2, g), Ty::Any) if matches!(**t2, Expr::This) => self.seen.get(&member_key(&self.class, g)).copied().unwrap_or(Ty::Any),
+                                (_, t) => t,
+                            };
                             let k = member_key(&self.class, fl);
                             let was = self.list_elem.get(&k).copied();
                             self.list_elem.insert(k, match was { None => ty, Some(w) => join(w, ty) });
@@ -5843,6 +5850,29 @@ self.playFrameLabel({})", quote(f))); }
             }
             _ => None,
         }
+    }
+
+    /// whether every value its code pushes onto a list field of its own is a record: a library clip
+    /// made by name, a record written out, or a field of its own only ever set to one of those
+    fn pushes_records(&self, fl: &str) -> bool {
+        let Some(c) = self.o.model.classes.get(&self.class) else { return false };
+        let made = |e: &Expr| matches!(e, Expr::Object(_)) || matches!(e, Expr::Call(g, a) if a.len() == 1 && matches!(&**g, Expr::Member(_, m) | Expr::Name(m) if matches!(m.as_str(), "getMCByLinkageName" | "clipByLinkage")));
+        let field_made = |g: &str| {
+            let mut any = false; let mut all = true;
+            for b in c.methods.iter().map(|m| &m.function.body).chain([&c.constructor.body]) {
+                walk(b, &mut |st| if let Stmt::Assign(Place::Member(Expr::This, h), v) = st { if h == g { if made(v) { any = true } else if !matches!(v, Expr::Null | Expr::Undefined) { all = false } } });
+            }
+            any && all
+        };
+        let mut pushed: Vec<Expr> = Vec::new();
+        for b in c.methods.iter().map(|m| &m.function.body).chain([&c.constructor.body]) {
+            walk_exprs(b, &mut |e| if let Expr::Call(g, a) = e {
+                if let (Expr::Member(l, m), [x]) = (&**g, a.as_slice()) {
+                    if m == "push" && matches!(&**l, Expr::Member(t, f) if matches!(**t, Expr::This) && f == fl) { pushed.push(x.clone()); }
+                }
+            });
+        }
+        !pushed.is_empty() && pushed.iter().all(|x| made(x) || matches!(x, Expr::Member(t, g) if matches!(**t, Expr::This) && field_made(g)))
     }
 
     /// whether the stage's own class keeps a field of this name (a package with no stage class of
