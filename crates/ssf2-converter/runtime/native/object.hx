@@ -27,6 +27,13 @@ function initialize() {
 // whether the stage's own code has started (a stage on the runtime, or none, has)
 var waitingStart = self.makeObject(false);
 function stageStarted() { return stage == null || stage.exports == null || stage.exports.__started != false; }
+// (another object's code asking of it before its own start has run: its start first, as the
+// source's object is whole by the time anything can ask it)
+function startIfWaiting() {
+	if (!waitingStart.get()) return;
+	waitingStart.set(false);
+	ownStart();
+}
 function ownStart() {
 	// {own_start}
 }

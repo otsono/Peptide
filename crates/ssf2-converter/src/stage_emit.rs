@@ -5140,6 +5140,8 @@ fn hazard_boot(model: &StageModel, plan: &mut Vec<Value>) -> Vec<BootObject> {
     // ...and the same for an object one of the stage's OWN OBJECTS makes: planet namek's house
     // spawns its chunk, and a chunk the boot placed as well was one the source never had, dying
     // at once where it was put.
+    // ...and for one only code anywhere makes (a clip's own frame: saffron city's chansey lays its
+    // egg), which the tree places nowhere: a copy stood up at boot fell out of the match at once.
     let text = crate::stage_text::StageText::of(model);
     let self_spawned: std::collections::BTreeSet<String> = model.hazards.iter().enumerate()
         .filter_map(|(i, hz)| {
@@ -5149,7 +5151,7 @@ fn hazard_boot(model: &StageModel, plan: &mut Vec<Value>) -> Vec<BootObject> {
             let hid = hazard_id(&model.id, i, hz);
             // the ask reads the same whether the class is still named as SSF2 wrote it or has
             // already been lowered onto the content this port ships it as
-            (!recycles_itself(hz, model) && text.makes(c, &hid)).then_some(hid)
+            (!recycles_itself(hz, model) && (hz.parked || text.makes(c, &hid))).then_some(hid)
         })
         .collect();
     for (i, hz) in model.hazards.iter().enumerate() {
@@ -5490,7 +5492,7 @@ mod hazard_tests {
             interval: 0, active: 20,
             range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], body_box: false, hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, class_name: None, max_y_speed: None, instance_name: None, declared_kind: String::new(), art_clip: None,
             external_pkg: None, linkage_id: None, fg_anims: vec![], draws_in_front: false,
-            platform_shapes: vec![], body_faces: vec![], child_rects: vec![], placements: vec![], no_knockback: false, survives_bounds: false, projectiles: Default::default(), attack_stats: vec![], attack_anims: Default::default(), bounce: None, ledges: (false, false), dynamic: None, fg_name: None, shared_name: false, placed_clip: None,
+            platform_shapes: vec![], body_faces: vec![], child_rects: vec![], placements: vec![], no_knockback: false, survives_bounds: false, projectiles: Default::default(), attack_stats: vec![], attack_anims: Default::default(), bounce: None, ledges: (false, false), dynamic: None, fg_name: None, shared_name: false, parked: false, placed_clip: None,
         }
     }
 

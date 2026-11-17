@@ -1220,7 +1220,22 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     slots.insert("own_start", w.start[made..].to_vec());
     slots.insert("own_tick", w.tick.clone());
     slots.insert("every_frame", every);
-    slots.insert("publish", w.publish.clone());
+    // (its methods another object's code calls start it first where it has not yet: `startIfWaiting`)
+    let method_pub = crate::re!(r"^self\.exports\.([A-Za-z_]\w*) = ([A-Za-z_]\w*);$");
+    let publish: Vec<String> = w.publish.iter().map(|l| match method_pub.captures(l) {
+        Some(c) if !c[1].starts_with("__") && !is_item && w.functions.iter().any(|f| f.contains(&format!("function {}(", &c[2]))) => {
+            // (its own parameters, as its function declares them)
+            let head = format!("function {}(", &c[2]);
+            let params: Vec<String> = w.functions.iter().find_map(|f| f.find(&head).map(|i| {
+                let rest = &f[i + head.len()..];
+                rest[..rest.find(')').unwrap_or(0)].split(',').map(|p| p.trim().trim_start_matches('?').to_string()).filter(|p| !p.is_empty()).collect()
+            })).unwrap_or_default();
+            let decl: Vec<String> = params.iter().map(|p| format!("?{p}")).collect();
+            format!("self.exports.{} = function({}) {{ startIfWaiting(); return {}({}); }};", &c[1], decl.join(", "), &c[2], params.join(", "))
+        }
+        _ => l.clone(),
+    }).collect();
+    slots.insert("publish", publish);
     slots.insert("end", end);
     // (its first frame's code, once its maker's code is done: the frame it starts on)
     let first_label = root.and_then(|r| src.sprites.get(&r)).and_then(|s| s.labels.iter().find(|(f, _)| *f == 0)).map(|(_, l)| l.clone());

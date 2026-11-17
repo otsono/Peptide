@@ -189,6 +189,8 @@ pub struct Hazard {
     /// twilight's `layout01`..) moves the placed clips with the timeline, and the objects the port
     /// makes for them follow the same labels. Empty for an object nothing places.
     pub placements: Vec<(String, f64, f64)>,
+    /// nothing places it: only code makes it (it ships as content and is not put down at boot)
+    pub parked: bool,
     /// The clip the stage hands this object to draw with (`setStance`), by the name the tree gives
     /// it. None when the object owns its own art.
     pub art_clip: Option<String>,
@@ -1336,7 +1338,10 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
             let c = hz.class_name.as_deref().unwrap_or("");
             !*parked || placed_classes_in_tree.contains(c) || code_spawns(m, c)
         })
-        .map(|(hz, _)| hz)
+        .map(|(mut hz, parked)| {
+            hz.parked = parked && !placed_classes_in_tree.contains(hz.class_name.as_deref().unwrap_or(""));
+            hz
+        })
         .collect()).unwrap_or_default();
     // PLACED objects: a class the tree names over a collision clip. The clip states the class, the
     // size and the position, and the placement name is the handle the stage's own code reaches it
@@ -1379,7 +1384,7 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
                 reconstructed_script: None, class_name: None, max_y_speed: None,
                 instance_name: site.inst_name.clone(), declared_kind: site.kind.clone(), art_clip: None, placements: Vec::new(),
                 // (the clip its class names for itself, as a spawned one's)
-                external_pkg: None, linkage_id: actor.and_then(|a| a.linkage_id.clone()), fg_anims: vec![], draws_in_front: false, platform_shapes: vec![], body_faces: vec![], child_rects: vec![], no_knockback: false, survives_bounds: false, projectiles: Default::default(), attack_stats: vec![], attack_anims: Default::default(), bounce: None, ledges: (false, false), dynamic: None, fg_name: None, shared_name: false, placed_clip: sym_names.get(&site.clip).map(|n| n.rsplit('.').next().unwrap_or(n).to_string()),
+                external_pkg: None, linkage_id: actor.and_then(|a| a.linkage_id.clone()), fg_anims: vec![], draws_in_front: false, platform_shapes: vec![], body_faces: vec![], child_rects: vec![], no_knockback: false, survives_bounds: false, projectiles: Default::default(), attack_stats: vec![], attack_anims: Default::default(), bounce: None, ledges: (false, false), dynamic: None, fg_name: None, shared_name: false, parked: false, placed_clip: sym_names.get(&site.clip).map(|n| n.rsplit('.').next().unwrap_or(n).to_string()),
             };
             if let Some(actor) = actor { apply_enemy_stats(&mut hz, actor); }
             if target {
@@ -2965,7 +2970,7 @@ fn object_from_declarations(
         faller: None, behavior: crate::abc_parser::EnemyBehavior::default(),
         reconstructed_script: None, class_name: None, max_y_speed: None,
         instance_name: None, declared_kind: String::new(), art_clip: None, placements: Vec::new(),
-        external_pkg: actor.external_pkg, linkage_id: actor.linkage_id.clone(), fg_anims: vec![], draws_in_front: false, platform_shapes: vec![], body_faces: vec![], child_rects: vec![], no_knockback: false, survives_bounds: false, projectiles: Default::default(), attack_stats: vec![], attack_anims: Default::default(), bounce: None, ledges: (false, false), dynamic: None, fg_name: None, shared_name: false, placed_clip: None,
+        external_pkg: actor.external_pkg, linkage_id: actor.linkage_id.clone(), fg_anims: vec![], draws_in_front: false, platform_shapes: vec![], body_faces: vec![], child_rects: vec![], no_knockback: false, survives_bounds: false, projectiles: Default::default(), attack_stats: vec![], attack_anims: Default::default(), bounce: None, ledges: (false, false), dynamic: None, fg_name: None, shared_name: false, parked: false, placed_clip: None,
     };
     apply_enemy_stats(&mut hz, actor);
     Some((hz, placed.is_none()))
