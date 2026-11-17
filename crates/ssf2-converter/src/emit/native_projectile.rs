@@ -203,9 +203,11 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let entity_for = |name: &str, decl: &Value| -> Option<String> {
         if let Some(k) = spec.entities.get(name) { return Some(k.clone()) }
         let clip = decl.get("linkage_id").and_then(|v| v.str()).unwrap_or(name);
-        [clip, name].into_iter().map(crate::projectile_gen::projectile_content_id).find(|content| {
-            char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(content))).exists()
-        }).map(|_| clip.to_string())
+        // (the one of the two its entity was written as)
+        [clip, name].into_iter().find(|n| {
+            let content = crate::projectile_gen::projectile_content_id(n);
+            char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content))).exists()
+        }).map(String::from)
     };
     let fired = |name: &str| -> Option<(String, [f64; 4], Option<String>)> {
         let (decl, own) = match decls.projectiles.get(name) {
@@ -326,7 +328,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         let n = |k: &str, d: f64| match spec.stats.get(k) { Some(Value::Num(v)) => *v, _ => d };
         let b = |k: &str, d: bool| match spec.stats.get(k) { Some(Value::Bool(v)) => *v, Some(Value::Num(v)) => *v != 0.0, _ => d };
         let words = [("TOSS", num(n("tossSpeed", units.item_toss))), ("PICKUP", b("canPickup", true).to_string()),
-            ("WIDTH", num(n("width", 20.0))), ("HEIGHT", num(n("height", 20.0))), ("SIZE", num(units.size)), ("SPEED", num(units.speed)),
+            ("WIDTH", num(n("width", 20.0))), ("HEIGHT", num(n("height", 20.0))), ("SIZE", num(units.size)), ("SPEED", num(units.speed)), ("TOSS_ANGLE", num(units.toss_angle)), ("TOSS_FRAME", num(units.toss_frame * 2.0)),
             ("GHOST", b("ghost", false).to_string()), ("GRAVITY", num(n("gravity", 0.0) * units.accel)),
             ("FALL_CAP", num(n("max_gravity", n("maxgravity", 0.0)) * units.speed)), ("IDLE_ANIM", compile::quote(&start)),
             // (how it slows along the floor, `slideDecay`: a positive one keeps that share of its

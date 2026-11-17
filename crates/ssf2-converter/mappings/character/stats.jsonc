@@ -24,6 +24,14 @@
   // frame, before the velocity scale), measured live off sandbag's bomb: it rises ~63 px over
   // the first eight frames of its throw against its gravity.
   "item_toss_speed": 13.0,
+  // item_toss_angle: the angle above level the source's engine throws a held item forward at
+  // (degrees; behind it the same, turned), measured live off sandbag's capsule thrown forward:
+  // it leaves at 17.6 px a frame and rises about 2.3 px its first frame.
+  "item_toss_angle": 8.0,
+  // item_toss_frame: the source frame of a fighter's throw stance a held item leaves the hand on
+  // (counted from 0): every fighter's stance holds its item point back three frames and then
+  // throws it ahead (mario, fox, link, pikachu, sandbag), and sandbag's capsule leaves there.
+  "item_toss_frame": 3,
   // item_gravity: what the source's engine pulls a thrown item down with (source px per frame
   // per frame), measured off the same throw: its rise turns to a fall of ~30 px over the next
   // eight frames. an item pulled from the items package declares no physics of its own.

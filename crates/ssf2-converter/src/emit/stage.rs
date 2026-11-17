@@ -125,7 +125,7 @@ pub fn stage(model: &crate::stage_parser::StageModel, dir: &Path, input: &StageI
         reversed: false, borrowed: false, item_box: Vec::new(), on: None,
     }).into_iter().collect();
     let scaling = &crate::mappings::character_stats().scaling;
-    let units = Units { size: model.scale, speed: scaling.velocity_scale(), item_toss: scaling.item_toss_speed, accel: scaling.accel_scale() };
+    let units = Units { size: model.scale, speed: scaling.velocity_scale(), item_toss: scaling.item_toss_speed, toss_angle: scaling.item_toss_angle, toss_frame: scaling.item_toss_frame, accel: scaling.accel_scale() };
     let none = Value::Null;
     // what the stage's classes declare they fire, by the name their code fires each under: every
     // script of the stage finds them there (`DATA.pkg.projectiles`)

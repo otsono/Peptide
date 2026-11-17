@@ -304,7 +304,11 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let order = ["attack", "sounds", "refresh", "hits", "walk_hold", "asked", "rocket", "jump_in_attack", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "ledges", "home", "own_floor", "nearest", "ground_test", "recover", "copy_power"];
     for b in order.iter().filter(|b| blocks.contains(**b)) {
         let words: Vec<(&str, String)> = match *b {
-            "items" => vec![("TOSS", num(f.units.item_toss)), ("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed))],
+            "items" => {
+                let by = |k: &str, d: f64| match f.fighter.stats.get(k) { Some(Value::Num(n)) => *n, _ => d };
+                vec![("TOSS", num(f.units.item_toss)), ("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed)), ("TOSS_ANGLE", num(f.units.toss_angle)),
+                     ("TOSS_FRAME", num(f.units.toss_frame * 2.0)), ("TILT_TOSS", num(by("tiltTossMultiplier", 1.0))), ("SMASH_TOSS", num(by("smashTossMultiplier", 1.2)))]
+            }
             "ledges" | "own_floor" | "ground_test" => vec![("SIZE", num(f.units.size))],
             "copy_power" => {
                 // (the move that swallows, read from the clip whose code takes the power)

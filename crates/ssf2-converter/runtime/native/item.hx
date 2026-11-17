@@ -29,6 +29,8 @@ var pickupOn = self.makeObject(true);
 var zDropped = self.makeObject(false);
 // what its holder's attack is put to first, while it is held (`setFrameInterrupt`)
 var frameInterrupt = self.makeObject(null);
+// the attack its maker last put to it (what a throw it then asks for is thrown off)
+var lastAsked = self.makeObject(null);
 // the attack its holder was last seen starting, by the source's name for it
 var holderAttack = self.makeObject(null);
 // its own listeners for the events this handler raises: picked up, thrown
@@ -95,19 +97,38 @@ function letGo(dropped) {
 	tell(tossListeners, { holder: who, dropped: dropped });
 }
 // thrown by the holder this handler holds it for, the way they hold the stick: up, down, back or ahead
+// thrown the way its holder holds the stick (a little up along its facing, as the source's forward
+// throw goes), a smash harder by the holder's own multiplier (`__tossBy`: tilt, smash)
+// it leaves the hand on the holder's throw stance's TOSS_FRAME (in engine frames), where the holder
+// has one (`item_throw_<way>`, `item_throw_air_<way>`), else at once
+var throwing = self.makeObject(false);
 function throwFromHolder() {
 	var who = holder.get();
-	if (who == null) return;
+	if (who == null || throwing.get()) return;
 	var c = who.getHeldControls();
-	var angle = 12;
+	var angle = TOSS_ANGLE;
 	if (c != null && c.UP) angle = 90;
 	else if (c != null && c.DOWN) angle = 270;
-	else if (c != null && ((c.LEFT && who.isFacingRight()) || (c.RIGHT && !who.isFacingRight()))) angle = 158;
+	else if (c != null && ((c.LEFT && who.isFacingRight()) || (c.RIGHT && !who.isFacingRight()))) angle = 180 - TOSS_ANGLE;
+	var by = who.exports != null && who.exports.__tossBy != null ? who.exports.__tossBy : [1, 1.2];
+	var attack = holderAttack.get();
+	var speed = TOSS_SPEED * (attack == "a_forwardsmash" || attack == "a_up" || attack == "a_down" ? by[1] : by[0]);
+	var way = angle == 90 ? "up" : angle == 270 ? "down" : angle == TOSS_ANGLE ? "forward" : "back";
+	var stance = (who.isOnFloor() ? "item_throw_" : "item_throw_air_") + way;
+	if (!who.hasAnimation(stance)) { leaveHand(who, angle, speed); return; }
+	throwing.set(true);
+	who.playAnimation(stance);
+	self.addTimer(TOSS_FRAME + 1, 1, function() {
+		throwing.set(false);
+		if (inItemState(1) && holder.get() == who) leaveHand(who, angle, speed);
+	}, { persistent: true });
+}
+function leaveHand(who, angle, speed) {
 	var a = angle * Math.PI / 180;
 	placeOn(who);
 	letGo(false);
-	self.setXSpeed(who.flipX(Math.cos(a) * TOSS_SPEED * SPEED));
-	self.setYSpeed(-Math.sin(a) * TOSS_SPEED * SPEED);
+	self.setXSpeed(who.flipX(Math.cos(a) * speed * SPEED));
+	self.setYSpeed(-Math.sin(a) * speed * SPEED);
 }
 // what the API's item does itself where the item's own class calls it (`super.toToss()`)
 function base_toToss() { if (!inItemState(2)) letGo(false); }
@@ -117,7 +138,7 @@ function base_toHeld() { if (holder.get() != null) holdBy(holder.get(), pickedUp
 function tossByHolder() {
 	var who = holder.get();
 	if (who == null || !inItemState(1)) return;
-	if (!pickedUp.get() && who.exports != null && who.exports.__tossItem != null) who.exports.__tossItem();
+	if (!pickedUp.get() && who.exports != null && who.exports.__tossItem != null) who.exports.__tossItem(null, lastAsked.get());
 	else throwFromHolder();
 }
 // where its holder holds it: the holder's own item point where it publishes one, else ahead of its middle
@@ -148,6 +169,7 @@ function asked(kind, ?v) {
 		self.setYSpeed(-TOSS_SPEED * SPEED);
 	}
 	else if (kind == "interrupt") {
+		lastAsked.set(v == null ? null : v.targetFrame);
 		var f = frameInterrupt.get();
 		if (f != null) f(v);
 	}
@@ -235,6 +257,8 @@ function initialize() {
 	self.exports.__ask = asked;
 	self.exports.__isItem = true;
 	self.exports.__inItemState = inItemState;
+	// (the speed it is thrown at, by whoever throws it)
+	self.exports.__tossSpeed = TOSS_SPEED;
 	self.addEventListener(GameObjectEvent.HITBOX_CONNECTED, hitOnlyThrown, { persistent: true });
 	// how it slows along the floor is its own (`slideDecay`), not the engine's friction
 	self.updateGameObjectStats({ friction: SLIDE_FRICTION });

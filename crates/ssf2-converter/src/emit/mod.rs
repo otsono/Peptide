@@ -105,6 +105,10 @@ pub struct Units {
     pub speed: f64,
     /// the speed the source's engine throws a held item with, in its units
     pub item_toss: f64,
+    /// the angle above level the source's engine throws a held item forward at, in degrees
+    pub toss_angle: f64,
+    /// the source frame of a throw stance a held item leaves the hand on
+    pub toss_frame: f64,
     /// an acceleration of the source's in this engine's units
     pub accel: f64,
 }
@@ -287,7 +291,7 @@ pub fn fighter(char_dir: &std::path::Path, char_name: &str, char_pascal: &str,
     let (pieces, missing): (Vec<Piece>, Vec<Piece>) = pieces.into_iter().partition(|p| has.contains(&p.fm_name));
     unplaced.extend(missing.iter().map(|p| format!("{} (label {}): the entity has no such animation", p.fm_name, p.label)));
     let scaling = &crate::mappings::character_stats().scaling;
-    let units = Units { size: scaling.size_multiplier, speed: scaling.velocity_scale(), item_toss: scaling.item_toss_speed, accel: scaling.accel_scale() };
+    let units = Units { size: scaling.size_multiplier, speed: scaling.velocity_scale(), item_toss: scaling.item_toss_speed, toss_angle: scaling.item_toss_angle, toss_frame: scaling.item_toss_frame, accel: scaling.accel_scale() };
     let mut projectile_pieces = crate::entity_gen::take_projectile_pieces();
     // the entity each declaration was written as: by its own name, else by its clip's
     let mut entities: BTreeMap<String, String> = BTreeMap::new();

@@ -381,8 +381,11 @@ function stopListening() {
 }
 
 // ---- items
-//: TOSS an item's throw speed where it states none, in this engine's units. `itemBox` and
-//: `itemContent` are written for it from its animations and declarations
+//: TOSS an item's throw speed where it states none, in this engine's units; TILT_TOSS and
+//: SMASH_TOSS what it multiplies a throw by, off a tilt or a smash (`tiltTossMultiplier`,
+//: `smashTossMultiplier`), TOSS_ANGLE the angle a forward throw leaves at, TOSS_FRAME the engine
+//: frame of its throw stance an item leaves the hand on. `itemBox` and `itemContent` are written
+//: for it from its animations and declarations
 // an item it generates: a custom game object of its own riding its item box until it is thrown.
 // the item's handler takes the hold and the throw as asks on its exports (`__holder`, `__ask`)
 function heldItem() {
@@ -434,6 +437,7 @@ function makeItem(name, size, ox, oy, ?x, ?y) {
 // an item it has made, held from now on
 function holdMade(it, name) {
 	self.exports.__tossItem = tossItem;
+	self.exports.__tossBy = [TILT_TOSS, SMASH_TOSS];
 	self.exports.__makeItem = makeItem;
 	self.exports.__dropItem = dropItem;
 	placeItem(it);
@@ -445,20 +449,45 @@ function holdMade(it, name) {
 	self.exports.__heldItem = it;
 	return it;
 }
-// thrown the way it holds the stick: up, down, or along its facing
+// thrown the way it holds the stick: up, down, or along its facing (a little up, measured on the
+// source's forward throw), behind it the same way turned
 function itemDirection() {
 	var c = self.getHeldControls();
 	if (c != null && c.UP) return 90;
 	if (c != null && c.DOWN) return 270;
-	if (c != null && ((c.LEFT && self.isFacingRight()) || (c.RIGHT && !self.isFacingRight()))) return 158;
-	return 12;
+	if (c != null && ((c.LEFT && self.isFacingRight()) || (c.RIGHT && !self.isFacingRight()))) return 180 - TOSS_ANGLE;
+	return TOSS_ANGLE;
 }
-function tossItem(?angle) {
+// the throw stance the source plays for a direction it throws in (`toss` clip's labels, written
+// as `item_throw_<way>`, `item_throw_air_<way>` off the floor)
+function tossStance(angle) {
+	var way = angle == 90 ? "up" : angle == 270 ? "down" : angle > 90 && angle < 270 ? "back" : "forward";
+	var name = (self.isOnFloor() ? "item_throw_" : "item_throw_air_") + way;
+	return self.hasAnimation(name) ? name : null;
+}
+// thrown off the attack it starts (`attack`, the source's name for it): it plays its throw stance
+// and lets go as the stance shows its TOSS_FRAME (in engine frames, from 0), from where the stance holds it then; a
+// smash throws harder. a throw its code asks for at an angle goes at once
+var tossing = self.makeObject(false);
+function tossItem(?angle, ?attack) {
 	var it = heldItem();
-	if (it == null) return;
+	if (it == null || tossing.get()) return;
+	var asked = angle != null;
 	if (angle == null) angle = itemDirection();
+	var smash = attack == "a_forwardsmash" || attack == "a_up" || attack == "a_down";
+	var stance = asked ? null : tossStance(angle);
+	if (stance == null) { letItemGo(it, angle, smash); return; }
+	tossing.set(true);
+	self.playAnimation(stance);
+	self.addTimer(TOSS_FRAME + 1, 1, function() {
+		tossing.set(false);
+		var held = heldItem();
+		if (held != null) letItemGo(held, angle, smash);
+	}, { persistent: true });
+}
+function letItemGo(it, angle, smash) {
 	var a = angle * Math.PI / 180;
-	var speed = it.exports.__tossSpeed != null ? it.exports.__tossSpeed : TOSS;
+	var speed = (it.exports.__tossSpeed != null ? it.exports.__tossSpeed : TOSS) * (smash ? SMASH_TOSS : TILT_TOSS);
 	placeItem(it);
 	it.exports.__holder = null;
 	askItem(it, "toss");

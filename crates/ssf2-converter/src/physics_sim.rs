@@ -43,6 +43,12 @@ pub struct ScaleParams {
     /// The speed the source's engine throws a held item with (source px per frame).
     #[serde(default)]
     pub item_toss_speed: f64,
+    /// The angle above level the source's engine throws a held item forward at (degrees).
+    #[serde(default)]
+    pub item_toss_angle: f64,
+    /// The source frame of a throw stance a held item leaves the hand on.
+    #[serde(default)]
+    pub item_toss_frame: f64,
     /// What the source's engine pulls a thrown item down with (source px per frame per frame).
     #[serde(default)]
     pub item_gravity: f64,
@@ -71,6 +77,8 @@ impl Default for ScaleParams {
     fn default() -> Self {
         ScaleParams {
             item_toss_speed: 0.0,
+            item_toss_angle: 0.0,
+            item_toss_frame: 0.0,
             item_gravity: 0.0,
             item_max_fall: 0.0,
             size_multiplier: default_size_multiplier(),

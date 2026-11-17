@@ -669,7 +669,10 @@ effect and kept on its place (`withInners`, `innerClip`, `followInners`). an eff
 it (stop, jump to a label, take itself off) is kept, and each frame does what its frame's code
 says (`keepCoded`, `runEffectCode`). every item is a custom game object carrying
 `runtime/native/item.hx`'s SSF2ItemHandler: its state (free, held, thrown, gone), anyone picking
-it up with grab and its own code throwing it on that holder's next attack, hits while thrown or
+it up with grab and its own code throwing it on that holder's next attack (the holder plays its
+throw stance, `item_throw_<way>`, and the item leaves the hand on the stance's `item_toss_frame`,
+at its toss speed times the holder's tilt or smash multiplier and `item_toss_angle` up, both in
+`mappings/character/stats.jsonc`), hits while thrown or
 once its own code sets up its attack (writes its box stats or refreshes it) since its state last
 changed, slows along the floor by its own `slideDecay` (a positive one keeps that share of its
 speed each source frame, else it is linear friction), and the events it raises (`events.jsonc`

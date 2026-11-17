@@ -3104,8 +3104,11 @@ pub fn pull_shared_projectiles(
             for c in &abc.classes {
                 let Some(stem) = c.name.strip_suffix("Ext") else { continue };
                 if stem.is_empty() || c.name == "SSF2CharacterExt" { continue }
-                let n = stem.to_string();
-                if !scopes.contains(&n) { scopes.push(n) }
+                // (as the class spells it, and lowercased: the package's clips may answer to
+                // either, `IsaacExt` holding the stats of the clips `isaac` names)
+                for n in [stem.to_string(), stem.to_lowercase()] {
+                    if !scopes.contains(&n) { scopes.push(n) }
+                }
             }
         }
         let from_file = package_id.trim_end_matches(".ssf").to_string();
