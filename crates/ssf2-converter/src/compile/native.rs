@@ -1588,6 +1588,14 @@ impl<'o, 'a> Writer<'o, 'a> {
     fn stmt(&mut self, s: &Stmt, depth: usize) -> Result<Vec<String>, String> {
         let tab = "\t".repeat(depth);
         Ok(match s {
+            // an entry taken out of a map it keeps (`delete map[k]`), by the key it was put in under
+            Stmt::Expr(Expr::Delete(d)) if matches!(&**d, Place::Index(a, _) if self.is_obj_dict(a) || self.is_dict(a)) => {
+                let Place::Index(a, k) = &**d else { unreachable!() };
+                let text = self.is_obj_dict(a);
+                let (m, _) = self.expr(a)?;
+                let (k, _) = self.expr(k)?;
+                vec![if text { format!("{tab}{}.remove(Std.string({k}));", paren(&m)) } else { format!("{tab}{}.remove({k});", paren(&m)) }]
+            }
             Stmt::Expr(e) => {
                 let t = self.statement_call(e)?;
                 if t.is_empty() { vec![] } else { t.lines().map(|l| format!("{tab}{l}")).collect() }
@@ -2450,6 +2458,13 @@ impl<'o, 'a> Writer<'o, 'a> {
                 // override of it)
                 if let Ok(r) = self.api("self", n, a) { if !r.0.trim().is_empty() { return Ok(r) } }
                 if self.o.runtime.has_member(&base, n) { return Err(format!("calls the API's own {n}, which has a part of its own to do")) }
+                // (an attack started by its name, answered: whether it has that animation, played if so)
+                if n == "startAttack" && !self.o.fighter && !self.top {
+                    if let Some(x) = a.first() {
+                        let (l, _) = self.expr(x)?;
+                        return Ok((format!("{{ var started = self.hasAnimation({l}); if (started) self.playAnimation({l}); started; }}"), Ty::Bool));
+                    }
+                }
                 if !self.top { return Err(format!("uses what the API's own {n} gives, which it has none of here")) }
                 (String::new(), Ty::Any)
             }
@@ -2574,6 +2589,12 @@ impl<'o, 'a> Writer<'o, 'a> {
             Expr::Member(t, g) if matches!(**t, Expr::This) && self.record.is_some() && self.field(g).is_none() && self.method(g).is_some() => {
                 let id = self.method(g).unwrap_or_default();
                 (format!("function(?a, ?b, ?c) {{ return {id}(me, a, b, c); }}"), Ty::Object)
+            }
+            // (where a clip of the object's own (not the object's class) is placed, named bare: the one
+            // place every placement in the tree puts it, in the source's units)
+            Expr::Name(n) if matches!(n.as_str(), "x" | "y") && self.field(n).is_none() && !self.is_itself() && self.record.is_none() && self.one_placement().is_some() => {
+                let (x, y) = self.one_placement().unwrap_or_default();
+                (number(if n == "x" { x } else { y }), Ty::Num)
             }
             Expr::This if self.record.is_some() => ("me".into(), Ty::Object),
             // a field of a record of a list it keeps, read from outside the record: on the record
@@ -3522,6 +3543,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 if n != f { return }
                 if matches!(v, Expr::Object(kv) if kv.is_empty()) { made = true }
                 else if matches!(v, Expr::New(c, a) if a.is_empty() && matches!(&**c, Expr::Name(n) if short(n) == "Array")) { made = true; list = true }
+                // (let go, set to nothing: still the field it keeps its map in)
+                else if matches!(v, Expr::Null | Expr::Undefined) {}
                 else { other = true }
             });
             walk(b, &mut |st| if let Stmt::Assign(Place::Index(a, k), _) = st { if field(a) { if matches!(k, Expr::Str(_)) { texts = true } else { keyed = true } } });
@@ -4204,6 +4227,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                     return Ok((format!("({0} != null ? {0}({1}) : null)", ident(n), vs.join(", ")), Ty::Any));
                 }
                 if self.is_itself() { return self.api("self", n, args) }
+                // (a clip its clip places, asked for by a name written out: that clip)
+                if n == "getChildByName" { if let [Expr::Str(c)] = args { return self.expr(&Expr::Member(Box::new(Expr::This), c.clone())) } }
                 return Err(format!("calls {n} on its clip"));
             }
             return Err(format!("calls {}", describe(f)));
@@ -4229,6 +4254,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let (f, _) = self.expr(&Expr::Member(Box::new(Expr::This), m.clone()))?;
                 let vs: Vec<String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect::<Result<_, String>>()?;
                 return Ok((format!("({f} != null ? {f}({}) : null)", vs.join(", ")), Ty::Any));
+            }
+            // (a clip its clip places, asked for by a name written out: that clip, as its name reads it)
+            if m == "getChildByName" && !self.is_itself() {
+                if let [Expr::Str(n)] = args { return self.expr(&Expr::Member(Box::new(Expr::This), n.clone())) }
             }
             // (the object's own class calls the API on itself)
             if !self.is_itself() { return Err(format!("calls {m} on its clip")) }
@@ -4441,6 +4470,9 @@ impl<'o, 'a> Writer<'o, 'a> {
         if matches!(m.as_str(), "localToGlobal" | "globalToLocal") && args.len() == 1
             && matches!(&**recv, Expr::Call(g, a) if a.is_empty() && matches!(&**g, Expr::Member(_, n) | Expr::Name(n) if n == "getMidground")) {
             let (p, _) = self.expr(&args[0])?;
+            // (one a clip record of the screen gave, its HUD's: where it falls in the camera's view)
+            let from_screen = m == "globalToLocal" && matches!(&args[0], Expr::Call(h, _) if matches!(&**h, Expr::Member(x, k) if k == "localToGlobal" && self.expr(x).is_ok_and(|(_, t)| t == Ty::Rect)));
+            if from_screen { self.util("cameraClip")?; self.util("screenToStage")?; return Ok((format!("screenToStage({p})"), Ty::Rect)) }
             return Ok((p, Ty::Rect));
         }
         // a text's first match of a text put in place of (a pattern is the engine's own: below)
@@ -4480,8 +4512,9 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let f = format!("{}.{}", paren(&who), ident(m));
                 return Ok((format!("({f} != null ? {f}({}) : null)", vs.join(", ")), Ty::Any));
             };
-            // (a copy of one is a record too)
-            return self.fill(&Row { code: row, returns: match m.as_str() { "clone" => Ty::Rect, "intersects" => Ty::Bool, _ => Ty::Any }, helper: None, gap: None }, &who, args, m);
+            // (a copy of one is a record too, as is a point it answers)
+            if m == "localToGlobal" { self.util("clipRecord")?; self.util("clipAdd")?; }
+            return self.fill(&Row { code: row, returns: match m.as_str() { "clone" | "localToGlobal" => Ty::Rect, "intersects" => Ty::Bool, _ => Ty::Any }, helper: None, gap: None }, &who, args, m);
         }
         // one of its own declaration methods: the record it declares
         if who == "self" && args.is_empty() {
@@ -4824,6 +4857,16 @@ impl<'o, 'a> Writer<'o, 'a> {
         // one keeps the stage on the runtime)
         if who.starts_with("stagePlane(") { return Err(format!("drives its {} plane, which no plain form drives yet", who.trim_start_matches("stagePlane(").trim_end_matches(')'))) }
         // an object made by its class: the content the class was converted to, made on the stage
+        // (an enemy a fighter's package makes by class: the content that class shipped as, fired by
+        // the fighter it belongs to)
+        if m == "PeptideAPI.makeEnemy" && !self.o.stage && self.o.made_objects.is_empty() {
+            if let Some(Expr::Name(c) | Expr::Str(c)) = args.first() {
+                if self.o.model.classes.values().any(|k| short(&k.name) == short(c)) {
+                    let id = crate::projectile_gen::projectile_content_id(short(c));
+                    return Ok((format!("{{ var firer = self.getRootOwner() != null ? self.getRootOwner() : self; var made = firer.getResource().getContent({}); made == null ? null : match.createProjectile(made, firer); }}", quote(&id)), Ty::Object));
+                }
+            }
+        }
         if matches!(m, "PeptideAPI.makeEnemy" | "PeptideAPI.spawnPlatform" | "PeptideAPI.placePickup") {
             if let Some(Expr::Name(c) | Expr::Str(c)) = args.first() {
                 let id = self.o.made_objects.get(short(c)).cloned().ok_or_else(|| format!("makes an object of {c}, a class this package does not convert"))?;
@@ -4851,6 +4894,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 // takes off, is gone with nothing to show)
                 // (a clip its code made from the library taken out, `libClips`; any other is a clip with
                 // nothing drawn for it here)
+                // (a point on the screen, in the plane's space: the midground's is the stage's)
+                "globalToLocal" => { self.util("cameraClip")?; self.util("screenToStage")?; Ok((format!("screenToStage({})", a(self, 0)?), Ty::Rect)) }
                 "removeChild" => Ok((format!("if ({who} != null) {who}.removeLib({})", a(self, 0)?), Ty::Any)),
                 // (every one taken out: the library clips its code put in; what the tree placed draws on)
                 "removeChildren" => Ok((format!("if ({who} != null) {who}.removeLibs()"), Ty::Any)),
@@ -6397,6 +6442,19 @@ self.playFrameLabel({})", quote(f))); }
 
     /// whether a value is the clip a fighter's own animation shows: the call itself, or a field of its
     /// own only ever set to it
+    /// where the tree places the clip of the class being written, where every placement agrees
+    fn one_placement(&self) -> Option<(f64, f64)> {
+        let sym = self.o.model.classes.get(&self.class)?.symbol?;
+        let mut at: Option<(f64, f64)> = None;
+        for sp in self.o.model.sprites.values() {
+            for p in sp.frames.iter().flatten().filter(|p| p.char_id == sym) {
+                let here = (p.matrix.tx, p.matrix.ty);
+                match at { None => at = Some(here), Some(a) if (a.0 - here.0).abs() > 0.01 || (a.1 - here.1).abs() > 0.01 => return None, _ => {} }
+            }
+        }
+        at
+    }
+
     fn own_stance_value(&mut self, e: &Expr) -> bool {
         if !self.o.fighter { return false }
         if self.own_stance(e) { return true }

@@ -194,6 +194,16 @@ function cameraClip() {
 	return { x: c.getX() / SIZE + ORIGIN_X, y: c.getY() / SIZE + ORIGIN_Y, width: c.getViewportWidth() / SIZE, height: c.getViewportHeight() / SIZE };
 }
 
+// ---- screenToStage
+// a point on the screen (the source's 640 by 360) in the stage's space: where it falls in the
+// camera's view, its centre and size as the source reads them (`cameraClip`)
+function screenToStage(p) {
+	var c = cameraClip();
+	var x = p == null ? 0.0 : p.x;
+	var y = p == null ? 0.0 : p.y;
+	return { x: c.x + (x / 640 - 0.5) * c.width, y: c.y + (y / 360 - 0.5) * c.height };
+}
+
 // ---- boundsOf
 // a box of the stage's (its camera's or its death bounds), in the source's units and the space of
 // the code asking (a stage's, from the source's origin)
@@ -1157,7 +1167,24 @@ function clipPlay(r, on) { if (r != null) r.playing = on; }
 // a clip put in another (its code's `addChild`), and taken out
 function clipAdd(c, k) {
 	if (c != null && k != null && c.kids != null && c.kids.indexOf(k) < 0) c.kids.push(k);
+	// (the one it is in, asked for when its place on the screen is: a function, so no record holds
+	// the one it is in, nor that one it)
+	if (k != null && c != null && (k.kids != null || k.lib == true)) k.parentOf = function() { return c; };
 	return k;
+}
+// a point in a clip record's own space, in the screen's: its place and every one it is in, added
+function clipGlobal(c, p) {
+	var x = p == null ? 0.0 : p.x;
+	var y = p == null ? 0.0 : p.y;
+	var at = c;
+	var guard = 0;
+	while (at != null && guard < 32) {
+		x += at.x == null ? 0 : at.x;
+		y += at.y == null ? 0 : at.y;
+		at = at.parentOf == null ? null : at.parentOf();
+		guard++;
+	}
+	return { x: x, y: y };
 }
 // a clip it holds by name, as its code looks one up
 function clipChild(c, n) {

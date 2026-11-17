@@ -389,6 +389,11 @@
   // a library class asked for by a name its code builds: its name, as a clip class its code makes
   // records of (`k.new()`), drawn nowhere here
   "getDefinitionByName": { "code": "{ id: {0}, w: 0, h: 0, name: {0} }", "returns": "record" },
+  // a projectile another object fires (an item its holder swings): what that object publishes for
+  // it, where it does; the game's own items fire nothing here
+  "createProjectile": { "code": "({self} != null && {self}.exports != null && {self}.exports.__fire != null ? {self}.exports.__fire({0}) : null)", "returns": "object", "gap": "an item's own projectile, fired by its holder" },
+  // a clip's own frame code taken off: the clips its code makes by linkage are drawn nowhere here
+  "PeptideUtils.removeFrameScripts": { "code": "", "gap": "removeFrameScripts: a clip's own frame code taken off" },
   "PeptideAPI.addHUDDetection": { "code": "", "gap": "addHUDDetection: the HUD seeing what is behind it" },
   "PeptideAPI.removeHUDDetection": { "code": "", "gap": "removeHUDDetection: the HUD seeing what is behind it" },
   // a function run every so many milliseconds (the source's frames, at least one) until let go: an
@@ -505,6 +510,8 @@
     "moveTo": "if ({self} != null) { var vv = {self}.vec; var va = {0}; var vb = {1}; var vc = {0}; var vd = {1}; if (vv == null) {self}.vec = { x0: va, y0: vb, x1: vc, y1: vd }; else { vv.x0 = Math.min(vv.x0, va); vv.y0 = Math.min(vv.y0, vb); vv.x1 = Math.max(vv.x1, vc); vv.y1 = Math.max(vv.y1, vd); } }",
     "lineTo": "if ({self} != null) { var vv = {self}.vec; var va = {0}; var vb = {1}; var vc = {0}; var vd = {1}; if (vv == null) {self}.vec = { x0: va, y0: vb, x1: vc, y1: vd }; else { vv.x0 = Math.min(vv.x0, va); vv.y0 = Math.min(vv.y0, vb); vv.x1 = Math.max(vv.x1, vc); vv.y1 = Math.max(vv.y1, vd); } }",
     "curveTo": "if ({self} != null) { var vv = {self}.vec; var va = {2}; var vb = {3}; var vc = {2}; var vd = {3}; if (vv == null) {self}.vec = { x0: va, y0: vb, x1: vc, y1: vd }; else { vv.x0 = Math.min(vv.x0, va); vv.y0 = Math.min(vv.y0, vb); vv.x1 = Math.max(vv.x1, vc); vv.y1 = Math.max(vv.y1, vd); } }",
+    // (a point in a clip record's space, in the screen's: `clipGlobal`)
+    "localToGlobal": "clipGlobal({self}, {0})",
     "beginFill": "",
     "beginBitmapFill": "",
     "beginGradientFill": "",
