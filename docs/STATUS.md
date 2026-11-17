@@ -2318,8 +2318,8 @@ the live list of open converter issues. strike an entry when you fix it.
   foreground, bowser's castle's dust cloud (an effect the thwomp attaches by name from the
   game's shared effects, `attachEffect("global_dust_cloud")`, which the port does not play).
 
-- **gangplank galleon wedges the engine at the intro.** the match never reaches the stand;
-  no script error is logged. not read yet.
+- **gangplank galleon passes every gate.** its boat's own script carries the hull and the boat's
+  back with it, which S4 reads from the object's script as it reads the stage's.
 
 - **jungle hijinx's barrel hits fighters at spawn.** the barrel cannon declares a launch of
   115 and the port makes that a hit box; the source's barrel is entered and fired from, which
