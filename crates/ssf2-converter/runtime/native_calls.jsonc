@@ -403,6 +403,8 @@
   // a platform that lets one object through (its structures' blacklist), and drops fighters or not
   "addIgnoreObject": { "code": "ignoreOn({self}, {0}, true)", "helper": "ignoreOn" },
   "removeIgnoreObject": { "code": "ignoreOn({self}, {0}, false)", "helper": "ignoreOn" },
+  // the list turned round: only the objects on it touch the platform
+  "setIgnoreObjectListInversed": { "code": "ignoreInverse({self}, {0})", "helper": "ignoreOn" },
   "setNoDropThrough": "if ({self} != null && {self}.exports != null && {self}.exports.__through != null) {self}.exports.__through({0} != true)",
   // how fast it is going, its own speed and its launch together (the source's units)
   "netSpeed": { "code": "(Math.sqrt(Math.pow({self}.getNetXVelocity(), 2) + Math.pow({self}.getNetYVelocity(), 2)) / {speed})", "returns": "number" },

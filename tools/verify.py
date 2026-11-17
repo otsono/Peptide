@@ -1447,6 +1447,19 @@ def s_built(ctx, r):
             moved_by_code |= {re.sub(r"__clip$", "", c) for c in re.findall(r"\b([A-Za-z_]\w*)\b", args)}
     except OSError:
         pass
+    # ...or one an object's own script moves (gangplank galleon's boat carries its hull): a clip of the
+    # planes it holds in a field and moves through it, or moves outright
+    try:
+        import glob as _glob
+        for path in _glob.glob(os.path.join(ROOT, "stages", ctx["cid"], "library", "scripts", "hazard", "*Script.hx")):
+            with open(path, encoding="utf8") as f:
+                osrc = f.read()
+            moved_by_code |= set(re.findall(r'planePart\("([^"]+)"\)\.set[XY]\(', osrc))
+            for cell, name in re.findall(r'\b(\w+)\.set\(planePart\("([^"]+)"\)\)', osrc):
+                if re.search(r'\b' + re.escape(cell) + r'\.get\(\)\.set[XY]\(', osrc):
+                    moved_by_code.add(name)
+    except OSError:
+        pass
     # ...or it is an object's own picture (its clip is one the object is placed as), which goes
     # where the object's code takes it
     moved_by_code |= {c for m in planned if m.get("kind") == "object" for c in (m.get("clips") or [])}

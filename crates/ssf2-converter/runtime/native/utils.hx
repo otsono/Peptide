@@ -946,8 +946,35 @@ function ignoreOn(p, o, on) {
 	if (p == null || o == null) return;
 	var ex = null;
 	try { ex = p.exports; } catch (e:Dynamic) {}
+	// (a list turned round, `setIgnoreObjectListInversed`: only the listed touch it, so every fighter
+	// but those is let through)
+	var inv = ignoreInverted(p);
+	if (inv != null) {
+		inv.allow.remove(o);
+		if (on) inv.allow.push(o);
+		// (each let through once, and only one it let through taken back: the engine has no list entry
+		// to take out otherwise)
+		for (c in match.getCharacters()) {
+			var block = inv.allow.indexOf(c) < 0;
+			var was = inv.blocked.indexOf(c) >= 0;
+			if (block && !was) { inv.blocked.push(c); ignoreOne(p, ex, c, true); }
+			if (!block && was) { inv.blocked.remove(c); ignoreOne(p, ex, c, false); }
+		}
+		return;
+	}
+	ignoreOne(p, ex, o, on);
+}
+function ignoreOne(p, ex, o, on) {
 	if (ex != null && ex.__ignore != null) { ex.__ignore(o, on); return; }
 	if (on) p.addToBlacklist(o); else p.removeFromBlacklist(o);
+}
+var ignoreTurned = [];
+function ignoreInverted(p) { for (r in ignoreTurned) if (r.p == p) return r; return null; }
+function ignoreInverse(p, on) {
+	if (p == null) return;
+	var r = ignoreInverted(p);
+	if (on == true && r == null) ignoreTurned.push({ p: p, allow: [], blocked: [] });
+	if (on != true && r != null) ignoreTurned.remove(r);
 }
 
 // ---- libClips
