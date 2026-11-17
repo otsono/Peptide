@@ -405,6 +405,12 @@ struct Writer<'o, 'a> {
     /// fields of its classes that keep one of the runtime's classes with a record form as a record,
     /// where its code uses one as a value (a timer the code points another field at): that class
     rt_fields: BTreeMap<String, String>,
+    /// list fields whose elements are lists its code pushes only records onto (learned)
+    nested_recs: BTreeMap<String, bool>,
+    /// a method's parameters every one of its calls hands a clip of the planes (learned)
+    part_params: BTreeMap<(String, usize), bool>,
+    /// the most arguments any of its own calls hands each of its methods (learned)
+    max_args: BTreeMap<String, usize>,
     /// clip classes of its package it makes with `new` whose frames have code: records whose
     /// timeline runs (`clipRun`), their frame scripts handed the record
     clip_recs: BTreeSet<String>,
@@ -531,7 +537,7 @@ struct Writer<'o, 'a> {
 
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
-        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rec_fields: BTreeMap::new(), rt_lists: BTreeMap::new(), lit_rt: BTreeMap::new(), rt_fields: BTreeMap::new(), foreign_handlers: BTreeSet::new(), clip_recs: BTreeSet::new(), part_lists: BTreeMap::new(), part_locals: BTreeSet::new(), part_written: BTreeSet::new(), record: None, rec_locals: BTreeMap::new(), stage_locals: BTreeSet::new(), empty_locals: BTreeSet::new(), self_locals: BTreeMap::new(), game_ticks: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
+        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rec_fields: BTreeMap::new(), rt_lists: BTreeMap::new(), lit_rt: BTreeMap::new(), rt_fields: BTreeMap::new(), foreign_handlers: BTreeSet::new(), clip_recs: BTreeSet::new(), max_args: BTreeMap::new(), part_params: BTreeMap::new(), nested_recs: BTreeMap::new(), part_lists: BTreeMap::new(), part_locals: BTreeSet::new(), part_written: BTreeSet::new(), record: None, rec_locals: BTreeMap::new(), stage_locals: BTreeSet::new(), empty_locals: BTreeSet::new(), self_locals: BTreeMap::new(), game_ticks: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
                              locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), release: BTreeSet::new(), statics: BTreeSet::new(), body: Vec::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new(), param_ty: BTreeMap::new(), param_elem: BTreeMap::new(), part_fields: BTreeMap::new(), drawn: BTreeMap::new(), drawn_locals: BTreeSet::new(), local_elem: BTreeMap::new(), temp_ty: BTreeMap::new(), list_elem: BTreeMap::new(), defaults: Vec::new() };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "characters", "initialize", "update", "onTeardown", "onKill", "onDestroy", "life", "age", "started", "freshHit"]
@@ -883,6 +889,9 @@ impl<'o, 'a> Writer<'o, 'a> {
             f.part_lists = self.part_lists.iter().filter(|(_, v)| **v).map(|(k, v)| (k.clone(), *v)).collect();
             f.part_written = self.part_written.clone();
             f.foreign_handlers = self.foreign_handlers.clone();
+            f.max_args = self.max_args.clone();
+            f.part_params = self.part_params.clone();
+            f.nested_recs = self.nested_recs.clone();
             // (a hurt its code answers first is handed a record: `setHurtInterrupt(checkHurt)`)
             for c in self.o.itself.into_iter().chain(self.o.classes.iter().copied()) {
                 for m in &c.methods {
@@ -1322,9 +1331,59 @@ impl<'o, 'a> Writer<'o, 'a> {
 
     // ---- functions and statements ---------------------------------------------------------------
 
+    /// a method whose last parameters none of its own calls ever hands (and that is never handed
+    /// out as a value, where whoever calls it might): those are their defaults throughout
+    fn unpassed_defaults(&self, name: &str, f: &Function) -> Option<Function> {
+        let passed = *self.max_args.get(name)?;
+        let n = f.params.len();
+        if passed >= n { return None }
+        // (handed out anywhere as a value: anyone may call it with more)
+        let m = self.methods.iter().find(|(_, v)| v.as_str() == name).map(|(k, _)| k.split_once("::").map(|x| x.1.to_string()).unwrap_or_default())?;
+        let mut as_value = false;
+        // (and called by that name on anything, anywhere in its package, with more)
+        let mut most = passed;
+        for c in self.o.model.classes.values() {
+            for b in c.methods.iter().map(|x| &x.function.body).chain([&c.constructor.body]) {
+                walk_exprs(b, &mut |e| if let Expr::Call(g, a) = e { if matches!(&**g, Expr::Member(_, x) | Expr::Name(x) if *x == m) { most = most.max(a.len()) } });
+            }
+        }
+        if most >= n { return None }
+        for c in self.o.model.classes.values() {
+            for b in c.methods.iter().map(|x| &x.function.body).chain([&c.constructor.body]) {
+                let (mut all, mut called) = (0usize, 0usize);
+                walk_exprs(b, &mut |e| {
+                    if matches!(e, Expr::Member(t, g) if matches!(**t, Expr::This) && *g == m) || matches!(e, Expr::Name(g) if *g == m) { all += 1 }
+                    if let Expr::Call(g, _) = e { if matches!(&**g, Expr::Member(t, x) if matches!(**t, Expr::This) && *x == m) || matches!(&**g, Expr::Name(x) if *x == m) { called += 1 } }
+                });
+                if all > called { as_value = true }
+            }
+        }
+        if as_value { return None }
+        let mut fixed: BTreeMap<u32, Expr> = BTreeMap::new();
+        for r in (passed as u32 + 1)..=(n as u32) {
+            // (its default, as the body's first test of it sets it; one the body writes again is left)
+            let lit = f.body.iter().find_map(|st| match st {
+                Stmt::If(Expr::Binary(BinOp::Eq, a, b), then, els) if els.is_empty() && **a == Expr::Local(r) && matches!(**b, Expr::Null | Expr::Undefined) => match then.as_slice() {
+                    [Stmt::Assign(Place::Local(x), v)] if *x == r && matches!(v, Expr::Bool(_) | Expr::Int(_) | Expr::Num(_) | Expr::Str(_) | Expr::Null) => Some(v.clone()),
+                    _ => None,
+                },
+                _ => None,
+            }).or_else(|| f.params.get(r as usize - 1).and_then(|p| p.default.clone())).unwrap_or(Expr::Null);
+            let mut writes = 0;
+            walk(&f.body, &mut |st| if matches!(st, Stmt::Assign(Place::Local(x), _) if *x == r) { writes += 1 });
+            if writes > 1 { return None }
+            fixed.insert(r, lit);
+        }
+        let body: Vec<Stmt> = f.body.iter().filter(|st| !matches!(st, Stmt::If(Expr::Binary(BinOp::Eq, a, _), _, _) if matches!(**a, Expr::Local(r) if fixed.contains_key(&r)))).cloned().collect();
+        let body = map_stmts(body, &mut |e| match &e { Expr::Local(r) if fixed.contains_key(r) => fixed[r].clone(), _ => e });
+        Some(Function { body, ..f.clone() })
+    }
+
     fn function(&mut self, name: &str, f: &Function) -> Result<String, String> {
         let held = if self.o.fighter { own_clip_held(f) } else { None };
         let f = held.as_ref().unwrap_or(f);
+        let folded = if self.learned { self.unpassed_defaults(name, f) } else { None };
+        let f = folded.as_ref().unwrap_or(f);
         self.body = f.body.clone();
         let outer = std::mem::replace(&mut self.current_fn, name.to_string());
         let r = self.function_written(name, f);
@@ -1398,6 +1457,10 @@ impl<'o, 'a> Writer<'o, 'a> {
         let top = std::mem::replace(&mut self.frame_top, std::mem::take(&mut self.inline));
         let np = std::mem::replace(&mut self.nparams, nparams);
         self.defaults = defaults;
+        // (a parameter every call hands a clip of the planes: that clip)
+        for i in 0..nparams as usize {
+            if self.part_params.get(&(name.to_string(), i)) == Some(&true) { self.part_locals.insert(i as u32 + 1); }
+        }
         let r = self.function_body(name, f, &params, nparams, &debug, &captured);
         self.nparams = np;
         self.frame_top = top;
@@ -1534,6 +1597,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 let test = self.test(c)?;
                 // (a test that always passes is its body)
                 if test == "true" { return self.block(then, depth) }
+                // (one that never passes is what it does otherwise)
+                if test == "false" { return self.block(els, depth) }
                 let mut out = vec![format!("{tab}if ({test}) {{")];
                 out.extend(self.block(then, depth + 1)?);
                 if !els.is_empty() {
@@ -2438,7 +2503,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                 (format!("[{}]", labels.join(", ")), Ty::Object)
             }
             // a field another object's own class keeps, read by the stage's code: what that object publishes
-            Expr::Member(o, f) if self.o.stage && !matches!(**o, Expr::This) && self.expr(o).is_ok_and(|(w, t)| matches!(t, Ty::Object | Ty::Any) && !w.starts_with("planePart("))
+            Expr::Member(o, f) if self.o.stage && !matches!(**o, Expr::This) && self.expr(o).is_ok_and(|(w, t)| matches!(t, Ty::Object | Ty::Any) && !w.starts_with("planePart(") && !(f == "mc" && w.starts_with("cameraPlanes()[")))
                 && !self.o.model.classes.values().any(|c| c.fields.iter().any(|x| &x.name == f) && short(&c.super_name) == "PeptideStage")
                 && (lent_fields().lock().is_ok_and(|l| l.contains(f)) || self.o.model.classes.values().any(|c| short(&c.super_name) != "PeptideStage" && !self.o.runtime.provides(&c.name) && c.fields.iter().any(|x| &x.name == f && !x.is_static))) => {
                 if let Ok(mut a) = asked_fields().lock() { a.insert(f.clone()); }
@@ -2604,6 +2669,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                     "scaleY" => (format!("({p} == null ? 1 : {p}.getScaleY())"), Ty::Num),
                     "rotation" => (format!("({p} == null ? 0 : {p}.getRotation())"), Ty::Num),
                     "numChildren" => (format!("({p} == null ? 0 : {p}.numKids())"), Ty::Num),
+                    "currentLabels" => (format!("({p} == null ? [] : {p}.labelList())"), Ty::Rect),
                     "totalFrames" => (format!("({p} == null ? 1 : {p}.getTotalFrames())"), Ty::Num),
                     // (a field its code keeps on the clip)
                     _ if self.part_written.contains(f) => (format!("({p} == null ? null : {p}.{})", ident(f)), Ty::Any),
@@ -2611,9 +2677,9 @@ impl<'o, 'a> Writer<'o, 'a> {
                 });
             }
             // one of a stage's camera backgrounds, as the clip of its planes it is (by its name)
-            Expr::Member(o, f) if self.o.stage && f == "mc" && self.expr(o).is_ok_and(|(w, _)| w.starts_with("cameraPlanes()[") && w.ends_with(']')) => {
+            Expr::Member(o, f) if self.o.stage && f == "mc" && self.expr(o).is_ok_and(|(w, _)| (w.starts_with("cameraPlanes()[") || w.starts_with("(cameraPlanes())[")) && w.ends_with(']')) => {
                 let (v, _) = self.expr(o)?;
-                let i = v.trim_start_matches("cameraPlanes()[").trim_end_matches(']').to_string();
+                let i = v.trim_start_matches("(cameraPlanes())[").trim_start_matches("cameraPlanes()[").trim_end_matches(']').to_string();
                 self.util("planePart")?;
                 self.util("cameraBgName")?;
                 return Ok((format!("planePart(cameraBgName({i}))"), Ty::Object));
@@ -3155,6 +3221,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                     // (a list field of its own named bare, as a closure names it, or one its class's setup gives)
                     Expr::Name(n) if self.field(n).is_some() => self.list_elem.get(&member_key(&self.class, n)).copied().or_else(|| set_once(n)),
                     Expr::Name(n) => set_once(n),
+                    // (an element of a list inside a list field of lists of records)
+                    Expr::Index(l, _) if matches!(&**l, Expr::Member(t, fl) if matches!(**t, Expr::This) && self.nested_recs.get(&member_key(&self.class, fl)) == Some(&true)) => Some(Ty::Rect),
                     _ => None };
                 let (a, ta) = self.expr(a)?;
                 let (i, ti) = self.expr(i)?;
@@ -3976,6 +4044,20 @@ impl<'o, 'a> Writer<'o, 'a> {
         }
         // (what a list field holds, learned from what its code pushes onto it)
         if let Expr::Member(recv, m) = f {
+            // (onto a list inside a list field: a list of lists of records, while every push is one)
+            if m == "push" && self.learning && args.len() == 1 {
+                if let Expr::Index(l, _) = &**recv {
+                    if let Expr::Member(t, fl) = &**l {
+                        if matches!(**t, Expr::This) {
+                            let rec = matches!(&args[0], Expr::Object(_)) || matches!(&args[0], Expr::New(c, _) if matches!(&**c, Expr::Name(n) if matches!(short(n), "Point" | "Rectangle")))
+                                || self.expr(&args[0]).is_ok_and(|(_, t)| t == Ty::Rect);
+                            let k = member_key(&self.class, fl);
+                            let had = self.nested_recs.get(&k).copied().unwrap_or(true);
+                            self.nested_recs.insert(k, had && rec);
+                        }
+                    }
+                }
+            }
             if m == "push" && self.learning && args.len() == 1 {
                 if let Expr::Local(r) = &**recv {
                     if let Ok((_, ty)) = self.expr(&args[0]) {
@@ -4328,7 +4410,10 @@ impl<'o, 'a> Writer<'o, 'a> {
                     self.gaps.insert(format!("steps its {n} clip, whose art is drawn into the object's"));
                     return Ok((format!("// (its {n} clip's art is drawn into the object's: its {m} turns nothing here)"), Ty::Any));
                 }
-                if !matches!(**o, Expr::This) && self.field(n).is_none() && !self.is_inner(n) { return Err(format!("sends {n}, a clip inside one it holds, to a frame")) }
+                if !matches!(**o, Expr::This) && self.field(n).is_none() && !self.is_inner(n) {
+                    if std::env::var("PEPTIDE_NATIVE_WHY").is_ok() { eprintln!("[no plain form] jump on {:?} = {:?} / recv {:?}", o, self.expr(o), self.expr(recv)); }
+                    return Err(format!("sends {n}, a clip inside one it holds, to a frame"))
+                }
             }
             let (who, _) = self.expr(recv)?;
             let hold = matches!(m.as_str(), "gotoAndStop" | "stop");
@@ -4659,7 +4744,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             return Ok(None);
         }
         let Expr::Member(recv, m) = f else { return Ok(None) };
-        if !matches!(m.as_str(), "copyPixels" | "fillRect" | "setPixel" | "setPixel32" | "colorTransform" | "lock" | "unlock") { return Ok(None) }
+        if !matches!(m.as_str(), "copyPixels" | "fillRect" | "setPixel" | "setPixel32" | "colorTransform" | "lock" | "unlock" | "draw") { return Ok(None) }
         // (a picture's data, a picture its code holds, or a field it declares as one)
         let declared = |w: &Self, e: &Expr| matches!(e, Expr::Member(t, f) if matches!(**t, Expr::This)
             && w.o.model.classes.get(&w.class).is_some_and(|c| c.fields.iter().any(|x| &x.name == f && x.type_name.as_deref().is_some_and(|t| drawn_type(w.o.model, t)))));
@@ -4674,6 +4759,8 @@ impl<'o, 'a> Writer<'o, 'a> {
             "fillRect" => { let r = a(self, 0)?; format!("{{ var __r = {r}; pxFill({c}, __r.x, __r.y, __r.width, __r.height, {}); }}", a(self, 1)?) }
             "setPixel" | "setPixel32" => format!("pxFill({c}, {}, {}, 1, 1, {})", a(self, 0)?, a(self, 1)?, a(self, 2)?),
             "colorTransform" => format!("pxTint({c}, {})", a(self, 1)?),
+            // (a clip drawn into it: a gap, this engine drawing no clip into a picture)
+            "draw" => { self.gaps.insert("draws a clip into a picture, which this engine does not".into()); "// (a clip drawn into a picture: not drawn here)".into() }
             _ => String::new(),
         };
         Ok(Some((out, Ty::Any)))
@@ -4711,6 +4798,14 @@ impl<'o, 'a> Writer<'o, 'a> {
                 self.param_ty.insert(k.clone(), match was { None => *t, Some(w) => join(w, *t) });
             }
             self.learn_elems(id, args);
+            for (i, (w, _)) in typed.iter().enumerate() {
+                let k = (id.to_string(), i);
+                let part = w.starts_with("planePart(");
+                let had = self.part_params.get(&k).copied().unwrap_or(true);
+                self.part_params.insert(k, had && part);
+            }
+            let was = self.max_args.get(id).copied().unwrap_or(0);
+            self.max_args.insert(id.to_string(), was.max(args.len()));
         }
         let mut vs: Vec<String> = typed.into_iter().map(|(v, _)| v).collect();
         // (a record's own method: handed the record)
@@ -5946,7 +6041,7 @@ self.playFrameLabel({})", quote(f))); }
             self.kept.insert(listening.clone(), format!("// whether {h} listens for meeting its owner now\nvar {listening} = self.makeBool(false);"));
             return Ok((format!("{listening}.set({})", m == "addEventListener"), Ty::Any));
         }
-        if matches!(name.as_str(), "projDestroyed" | "itemDestroyed" | "enemyDestroyed") && who != "self" && self.o.fighter {
+        if matches!(name.as_str(), "projDestroyed" | "itemDestroyed" | "enemyDestroyed") && who != "self" {
             let h = self.handler(handler)?;
             return Ok((if m == "addEventListener" { format!("{who}.addEventListener(EntityEvent.DISPOSE, {h}, {{ persistent: true }})") } else { format!("{who}.removeEventListener(EntityEvent.DISPOSE, {h})") }, Ty::Any));
         }

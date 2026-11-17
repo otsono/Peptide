@@ -44,6 +44,10 @@
     "make": "({ var __glow = new GlowFilter(); if ({0} != null) __glow.color = {0}; if ({1} != null) __glow.alpha = {1}; if ({2} != null) __glow.radius = {2}; __glow; })",
     "is": "GlowFilter"
   },
+  // Flash's blur: this engine's filters have none, so it is its values, which nothing draws
+  "BlurFilter": {
+    "make": "{ blurX: {0}, blurY: {1}, quality: {2} }"
+  },
   // a pattern is the engine's: `test` is `match`, and a string's replace takes one (AS3.replace)
   "RegExp": {
     "make": "new EReg({0}, ({1} == null ? \"\" : {1}))"

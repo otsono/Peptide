@@ -634,6 +634,13 @@ function partNamed(n) {
 	p.addLib = function(c) { return libAdd(c, p, n); };
 	p.removeLib = function(c) { libRemove(c); };
 	p.removeLibs = function() { for (c in p.libKids()) libRemove(c); };
+	// (the labels its pieces are cut at, as its code lists them: each by name)
+	p.labelList = function() {
+		var out = [];
+		var seen = [];
+		for (e in els) if (e.labels != null) for (l in e.labels) if (seen.indexOf(l) < 0) { seen.push(l); out.push({ name: l, frame: seen.length }); }
+		return out;
+	};
 	p.originX = function() { return at.x; };
 	p.originY = function() { return at.y; };
 	// a child of it by place: a picture the tree placed there (`pixels`), else a clip

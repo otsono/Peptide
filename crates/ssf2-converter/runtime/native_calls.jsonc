@@ -384,6 +384,11 @@
   "PeptideAPI.enableSmashBallSpawn": { "code": "", "gap": "enableSmashBallSpawn: the game's smash ball" },
   // the match's music changed by its code: this engine's music is its own (as on the runtime)
   "PeptideAPI.playMusic": { "code": "", "gap": "playMusic: changing the match's music" },
+  // a picture of the screen as it stands: this engine takes none (as on the runtime)
+  "PeptideAPI.getSnapshot": { "code": "null", "returns": "object", "gap": "getSnapshot: a picture of the screen" },
+  // a library class asked for by a name its code builds: its name, as a clip class its code makes
+  // records of (`k.new()`), drawn nowhere here
+  "getDefinitionByName": { "code": "{ id: {0}, w: 0, h: 0, name: {0} }", "returns": "record" },
   "PeptideAPI.addHUDDetection": { "code": "", "gap": "addHUDDetection: the HUD seeing what is behind it" },
   "PeptideAPI.removeHUDDetection": { "code": "", "gap": "removeHUDDetection: the HUD seeing what is behind it" },
   // a function run every so many milliseconds (the source's frames, at least one) until let go: an
