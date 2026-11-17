@@ -599,6 +599,8 @@ function partNamed(n) {
 	// moved, scaled or turned by its code: every piece drawn under it goes with it (about where the
 	// tree placed it)
 	var at = { x: region == null ? 0.0 : region.rx, y: region == null ? 0.0 : region.ry };
+	// (where a region it is stands, this engine's units: what the camera keeps in its shot)
+	p.at = region == null ? null : at;
 	p.setX = function(x) {
 		var dx = x * SIZE + px - at.x;
 		at.x = x * SIZE + px;
@@ -625,10 +627,13 @@ function partNamed(n) {
 	p.setWidth = function(w) { if (region != null && region.w > 0) p.setScaleX((p.sx < 0 ? -1 : 1) * w * SIZE * Math.abs(region.sx) / region.w); };
 	p.setHeight = function(h) { if (region != null && region.h > 0) p.setScaleY((p.sy < 0 ? -1 : 1) * h * SIZE * Math.abs(region.sy) / region.h); };
 	// how many children its clip places (KIDS: by name, as the tree has them)
-	p.numKids = function() { for (k in stageKids) if (k.n == n) return k.k; return 0; };
-	// a clip its code made from the library, put in it or taken out (`libClips`)
+	// (what the tree placed in it, and the library clips its code has put in since)
+	p.libKids = function() { var o = []; for (c in libsMade) if (c.part == p) o.push(c); return o; };
+	p.numKids = function() { var placed = 0; for (k in stageKids) if (k.n == n) placed = k.k; return placed + p.libKids().length; };
+	// a clip its code made from the library, put in it or taken out (`libClips`), or all of them
 	p.addLib = function(c) { return libAdd(c, p, n); };
 	p.removeLib = function(c) { libRemove(c); };
+	p.removeLibs = function() { for (c in p.libKids()) libRemove(c); };
 	p.originX = function() { return at.x; };
 	p.originY = function() { return at.y; };
 	// a child of it by place: a picture the tree placed there (`pixels`), else a clip

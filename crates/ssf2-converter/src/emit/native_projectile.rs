@@ -340,6 +340,9 @@ fn quiet(model: &SourceModel, runtime: &Runtime, class: &str, inside: bool) -> b
                 Stmt::Return(None) | Stmt::Expr(Expr::SuperCall(..)) => true,
                 // (inside: records and lists of plain values too, what a clip declares about itself
                 // that the conversion reads off the tree)
+                // (inside: a named child of its own shown or hidden, which the tree's reading files with
+                // the clip, `Class::child`)
+                Stmt::Assign(Place::Member(Expr::Member(t, _), p), v) if inside && matches!(**t, Expr::This) && matches!(p.as_str(), "visible" | "alpha") => plain(v),
                 Stmt::Assign(Place::Member(t, _), v) => matches!(t, Expr::This) && (plain(v) || (inside && literal(v, &plain))),
                 // (a property of its own clip named bare: `visible = false`)
                 Stmt::Assign(Place::Name(n), v) => matches!(n.as_str(), "visible" | "alpha") && plain(v),
@@ -350,7 +353,10 @@ fn quiet(model: &SourceModel, runtime: &Runtime, class: &str, inside: bool) -> b
                         && matches!(a.as_slice(), [Expr::This])),
                 _ => false,
             });
-            if !ok { return false }
+            if !ok {
+                if std::env::var("PEPTIDE_NATIVE_WHY").is_ok() { eprintln!("[not quiet] {}: {:?}", c.name, flat(&f.body).into_iter().map(|s| format!("{s:?}").chars().take(160).collect::<String>()).collect::<Vec<_>>()); }
+                return false
+            }
         }
         if runtime.provides(&c.super_name) || matches!(compile::short(&c.super_name), "MovieClip" | "Sprite") { return true }
         cur = model.classes.get(&c.super_name);

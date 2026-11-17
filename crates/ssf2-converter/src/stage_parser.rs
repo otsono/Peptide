@@ -7330,7 +7330,9 @@ fn collect_class_sites(
                         }
                         ground = acc.map(|(x0, y0, x1, y1)| Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
                     }
-                    let already = out.iter().any(|s| s.class_api == api
+                    // (the same clip seen again, as a box repeats across frames; clips the tree names
+                    // apart are each their own, however they overlap: nintendo 3ds's three mudd terrains)
+                    let already = out.iter().any(|s| s.class_api == api && s.inst_name == inst_name
                         && (s.aabb.x - aabb.x).abs() < 0.5 && (s.aabb.y - aabb.y).abs() < 0.5);
                     if !already {
                         out.push(ClassSite { class_api: api, kind: role.kind.clone(), inst_name, aabb, ground, clip: id,

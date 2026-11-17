@@ -8,6 +8,7 @@
 
 // ---- FrameTimer
 //: bool get_completed
+//: record get_data
 // FIELD: a countdown in frames, ticked on, complete once it has run its length
 var FIELD_length = self.makeInt(0);
 var FIELD_elapsed = self.makeInt(0);

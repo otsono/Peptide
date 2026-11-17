@@ -111,6 +111,12 @@ function ownFloor(x, y, w, h, ?terrain) {
 	}
 	return ownFaces.length == 0 ? null : ownFaces[0].st;
 }
+// (the shape of a clip its code made and drew into: what it drew, `vec`, where the clip sits)
+function ownFloorOfClip(c, ?terrain) {
+	if (c == null || c.vec == null) return null;
+	var v = c.vec;
+	return ownFloor(c.x + v.x0, c.y + v.y0, v.x1 - v.x0, v.y1 - v.y0, terrain);
+}
 function dropOwnFloor() {
 	if (ownFaces.length == 0) return;
 	var faces = ownFaces;

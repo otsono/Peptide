@@ -105,7 +105,8 @@ function numberIn(n, base) {
 // on that object; none (`null`, `false`) takes them off
 var colorFiltersOn = self.makeObject(null);
 function colorFilters(t, o) {
-	if (t == null || t.isDisposed()) return;
+	// (a library clip its code made, a record: its colours are drawn nowhere here)
+	if (t == null || t.isDisposed == null || t.isDisposed()) return;
 	if (colorFiltersOn.get() == null) colorFiltersOn.set(new haxe.ds.StringMap());
 	var key = Std.string(t.getUid());
 	var was = colorFiltersOn.get().get(key);
@@ -254,6 +255,8 @@ function grabBy(o, uid) {
 	if (o == null || o.isDisposed()) return false;
 	var g = null;
 	for (c in match.getCharacters()) if (c.getUid() == uid) g = c;
+	// (asked by the stage, which no fighter is: a hold by nobody, which this engine has none of)
+	if (g == null && self.getType == null) return false;
 	if (g == null) g = self.getType() == EntityType.CHARACTER ? self : self.getRootOwner();
 	if (g == null || g == o || g.getType() != EntityType.CHARACTER) return false;
 	g.attemptGrab(o);
@@ -365,6 +368,8 @@ function metadataWrite(o, s) {
 // ---- planePart
 // a named clip of the stage's planes, as the stage publishes it (`exports.__part`)
 function planePart(n) {
+	// (a clip handed over itself: that clip)
+	if (n != null && !Std.isOfType(n, String)) return n;
 	return stage == null || stage.exports == null || stage.exports.__part == null ? null : stage.exports.__part(n);
 }
 
@@ -944,7 +949,7 @@ var libsMade = [];
 function libClip(n) {
 	var row = null;
 	for (r in stageLibRows) if (r.n == n) row = r;
-	return { lib: true, n: n, parts: row == null ? [] : row.parts, x: 0.0, y: 0.0, scaleX: 1.0, scaleY: 1.0, alpha: 1.0, visible: true, part: null, plane: null, vs: [], name: n };
+	return { lib: true, n: n, parts: row == null ? [] : row.parts, x: 0.0, y: 0.0, scaleX: 1.0, scaleY: 1.0, alpha: 1.0, visible: true, part: null, plane: null, vs: [], name: n, currentFrame: 1 };
 }
 function libAdd(c, part, plane) {
 	if (c == null || c.lib != true) return c;
@@ -1008,6 +1013,8 @@ function libUpkeep() {
 			e.v.setVisible(c.visible != false);
 			e.v.setAlpha(c.alpha);
 		}
+		// (the frame it shows, the source's: two of this engine's a frame)
+		if (c.vs.length > 0) c.currentFrame = Std.int((c.vs[0].v.getCurrentFrame() - 1) / 2) + 1;
 	}
 }
 
@@ -1027,6 +1034,39 @@ function camPoint(c, p, n) {
 }
 function camPointGone(c, p) {
 	for (r in camPoints) if (r.p == p) { c.deleteTimedTargetPoint(r.q); camPoints.remove(r); break; }
+}
+
+// ---- deathSwitch
+// the death bounds' switches its code flips (`enableFallDeath`), kept and read back as it set them;
+// this engine's bounds stay as they are
+var deathOff = self.makeObject(null);
+function deathSwitch(k, on) {
+	if (deathOff.get() == null) deathOff.set(new haxe.ds.StringMap());
+	deathOff.get().set(k, on != true);
+}
+function deathOn(k) { return deathOff.get() == null || deathOff.get().get(k) != true; }
+
+// ---- foeOwnStats
+// another fighter's own stats, as far as this engine can say them: its name (the one its damage
+// counter shows); the picture it is shown by is its own package's, drawn nowhere here
+function foeOwnStats(c) {
+	var n = c == null || c.getDefaultDamageCounterName == null ? null : c.getDefaultDamageCounterName();
+	return { statsName: n, displayName: n, thumbnail: null };
+}
+
+// ---- camPart
+// a clip of the planes the camera keeps in its shot for a while (the source's frames), at where the
+// part stands, and the same clip let go
+var camParts = [];
+function camPart(c, p, n) {
+	if (c == null || p == null || p.at == null) return;
+	camPartGone(c, p);
+	var q = Point.create(p.at.x, p.at.y);
+	camParts.push({ p: p, q: q });
+	c.addTimedTargetPoint(q, n * 2);
+}
+function camPartGone(c, p) {
+	for (r in camParts) if (r.p == p) { c.deleteTimedTargetPoint(r.q); camParts.remove(r); break; }
 }
 
 // ---- madeObject
