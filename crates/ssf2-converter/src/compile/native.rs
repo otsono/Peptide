@@ -317,6 +317,8 @@ pub struct Written {
 fn reached(o: &Object, c: &ClassModel, m: &crate::model::MethodModel) -> bool {
     if c.frame_scripts.iter().any(|fs| fs.method == m.name) { return true }
     if matches!(m.name.as_str(), "initialize" | "update") { return true }
+    // (an accessor is run by a read or a write of its property, which a count of names misses)
+    if matches!(m.kind, MethodKind::Getter | MethodKind::Setter) { return true }
     // (a parent's method its class calls up to, merged in under its own name: called by that call)
     if m.name.ends_with("__super") { return true }
     // (another object's own method the API calls on it by name: the native skeletons name it)

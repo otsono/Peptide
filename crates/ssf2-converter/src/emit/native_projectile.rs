@@ -293,6 +293,16 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         functions.push(native::helper(runtime, "fighter_tables", "clip_label", "", &[], &super::native_fighter::clip_labels(model, pieces))?);
         if read_by_others { publish.push("self.exports.__stanceLabel = clipLabel;".into()); }
     }
+    // a floor its own code gives it (`makeOwnFloor`): the object rules' faces, moved with it each
+    // frame and let go as it ends, as a stage object's are
+    let floor_text = functions.iter().chain(written.start.iter()).chain(written.tick.iter()).chain(written.frames.values()).any(|t| t.contains("ownFloor(") || t.contains("dropOwnFloor("));
+    let mut ends_extra: Vec<String> = Vec::new();
+    if floor_text {
+        let words = [("SIZE", num(units.size)), ("BODY", "null".to_string()), ("BODY_ON", "false".to_string()), ("FLOOR_ON", "true".to_string())];
+        for b in ["faces", "own_floor"] { functions.push(native::helper(runtime, "object_rules", b, "", &words, &[])?); }
+        update.push("facesFollow(ownFaces);".into());
+        ends_extra.push("dropOwnFloor();".into());
+    }
     let mut slots: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     slots.insert("fields", written.fields.clone());
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
@@ -303,7 +313,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     slots.insert("own_start", written.start.clone());
     slots.insert("own_tick", written.tick.clone());
     slots.insert("publish", publish);
-    slots.insert("ends", written.ends.iter().map(|(l, h)| format!("if ({l}.get()) {h}(null);")).chain(written.release.iter().cloned()).collect());
+    slots.insert("ends", written.ends.iter().map(|(l, h)| format!("if ({l}.get()) {h}(null);")).chain(written.release.iter().cloned()).chain(ends_extra).collect());
     let script = native::fill_slots(skeleton, &slots)
         .replace("{title}", title)
         .replace("{classes}", &classes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "))
