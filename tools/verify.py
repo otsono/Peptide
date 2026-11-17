@@ -3049,8 +3049,10 @@ def walk_speed(eng, per_source):
     print(f"[walk] {type(eng).__name__} rows {i}..{j}: " + " ".join(f"{r[0]}:{r[1]:.1f}" for r in rows[max(0, i - 2):j + 1]), file=sys.stderr)
     raw = [l for l in eng.log()[mark_s:].splitlines() if re.match(r"(?:<< )?\s*\d+\t", l)]
     print("[walk-raw] " + " | ".join(l.strip()[:60] for l in raw[max(0, i - 1):i + 6]), file=sys.stderr)
-    ordered = sorted(steps)
-    median = ordered[len(ordered) // 2]
+    # (the typical step is a moving one's: a walk that stands still between strides, sandbag's
+    # hop, has many still frames, and a median over those made every real stride look a teleport)
+    ordered = sorted(d for d in steps if d > 0.01)
+    median = ordered[len(ordered) // 2] if ordered else 0.0
     kept = [d for d in steps if median <= 0 or d <= 3 * median]
     return sum(kept) / len(kept) if kept else 0.0
 

@@ -234,7 +234,7 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
         model, itself: parts.itself, classes: parts.classes.clone(), jumps: &jumps, runtime: f.runtime, declared: &declares, switches: &switches,
         owner_stat: &no_stat, effect: &made, owner_anims: &anims, fired: &fired, owner_declares: &declares, owner_stores: &stores,
         root: parts.root, size: f.units.size, speed: f.units.speed, accel: f.units.accel, fighter: true, item: false, stage: false, clip_parts: BTreeMap::new(), made_objects: BTreeMap::new(), particles: BTreeMap::new(), clip_bounds: BTreeMap::new(),
-        root_anim: &root_anim, walk_start: (start > 0.0).then_some(start), stance_labels: &labels, clip_frames: &frames_of, frame_links: f.frame_links, anim_clips: &clips, owner_native: false,
+        root_anim: &root_anim, walk_start: Some(start), stance_labels: &labels, clip_frames: &frames_of, frame_links: f.frame_links, anim_clips: &clips, owner_native: false,
         effect_names: f.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
         effect_pieces: f.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames)))
             .chain(part_pieces(f.parts))
@@ -296,7 +296,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let rocket = rocketing.first().map(|l| compile::quote(l));
     if rocket.is_some() { blocks.insert("rocket".into()); }
     let mut functions = w.functions.clone();
-    let order = ["attack", "sounds", "refresh", "hits", "asked", "rocket", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "ledges", "home", "own_floor", "nearest", "ground_test", "recover", "copy_power"];
+    let order = ["attack", "sounds", "refresh", "hits", "walk_hold", "asked", "rocket", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "ledges", "home", "own_floor", "nearest", "ground_test", "recover", "copy_power"];
     for b in order.iter().filter(|b| blocks.contains(**b)) {
         let words: Vec<(&str, String)> = match *b {
             "items" => vec![("TOSS", num(f.units.item_toss)), ("SIZE", num(f.units.size)), ("SPEED", num(f.units.speed))],
@@ -792,10 +792,31 @@ fn walk_starts(f: &Fighting, frames: &mut BTreeMap<(u16, u32), String>) {
         let walking = f.pieces.iter().any(|p| p.sym == *sym && *frame >= p.from && *frame < p.from + p.frames && walks.contains(p.fm_name.as_str()));
         *code = pattern.replace_all(code, |c: &regex::Captures| {
             let v = &c[1];
-            if !walking { format!("self.setXSpeed({v})") }
+            // (one written anywhere lets a held zero go, which nothing holds otherwise)
+            if !walking && start == "0" && v.parse::<f64>().is_ok_and(|n| n != 0.0) { format!("walkHold(false); self.setXSpeed({v})") }
+            else if !walking { format!("self.setXSpeed({v})") }
+            // (a walk that starts from nothing: a zero holds it still until the next write)
+            else if start == "0" && v.parse::<f64>().is_ok_and(|n| n == 0.0) { "walkHold(true); self.setXSpeed(0)".to_string() }
+            else if start == "0" && v.parse::<f64>().is_ok() { format!("walkHold(false); self.setXSpeed({v})") }
+            else if start == "0" { format!("walkHold({v} == 0); self.setXSpeed({v})") }
             else if v.parse::<f64>().is_ok_and(|n| n == 0.0) { format!("self.setXSpeed({start})") }
             else { format!("self.setXSpeed({v} == 0 ? {start} : {v})") }
         }).into_owned();
+    }
+    // (a walk that starts from nothing and holds a zero somewhere: any speed written outright lets
+    // that zero go)
+    if start == "0" && frames.values().any(|c| c.contains("walkHold(true)")) {
+        let outright = regex::Regex::new(r"(^|[;{}\s])self\.setXSpeed\((-?[0-9.]+)\)").expect("speed pattern");
+        for ((sym, frame), code) in frames.iter_mut() {
+            let walking = f.pieces.iter().any(|p| p.sym == *sym && *frame >= p.from && *frame < p.from + p.frames && walks.contains(p.fm_name.as_str()));
+            *code = outright.replace_all(code, |c: &regex::Captures| {
+                if !c[2].parse::<f64>().is_ok_and(|n| n != 0.0) { return c[0].to_string() }
+                // (in a walk, the speed takes the step the source's walk adds the frame it is written,
+                // as the walk's own start does: a frame and a half of its acceleration, its way)
+                if walking { format!("{}walkHold(false); self.setXSpeed({} + {}1.5 * self.getCharacterStat(\"walkSpeedAcceleration\"))", &c[1], &c[2], if c[2].starts_with('-') { "-" } else { "" }) }
+                else { format!("{}walkHold(false); self.setXSpeed({})", &c[1], &c[2]) }
+            }).into_owned();
+        }
     }
 }
 

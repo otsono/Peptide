@@ -620,6 +620,26 @@ function engineStat(name) {
 	return b.get(name);
 }
 
+// ---- walk_hold
+// a zero x speed its code writes in a walk, where its walk starts from nothing (the source's
+// accel_start of 0): it stands still until its code writes another speed, as the source's walk
+// does, rather than walking up from zero on this engine's own walk; the walk's own pace again on
+// the next write, or once it leaves the walk
+var walkHeld = self.makeObject(null);
+function walkHold(on) {
+	var held = walkHeld.get();
+	if (on && held == null) {
+		walkHeld.set({ cap: self.getCharacterStat("walkSpeedCap"), acc: self.getCharacterStat("walkSpeedAcceleration"), init: self.getCharacterStat("walkSpeedInitial") });
+		self.updateCharacterStats({ walkSpeedCap: 0, walkSpeedAcceleration: 0, walkSpeedInitial: 0 });
+		self.addEventListener(EntityEvent.STATE_CHANGE, walkLetGo, { persistent: true });
+	} else if (!on && held != null) {
+		walkHeld.set(null);
+		self.updateCharacterStats({ walkSpeedCap: held.cap, walkSpeedAcceleration: held.acc, walkSpeedInitial: held.init });
+		self.removeEventListener(EntityEvent.STATE_CHANGE, walkLetGo);
+	}
+}
+function walkLetGo(?e) { walkHold(false); }
+
 // ---- asked
 //: what another object's code asks of it, published as it starts (`self.exports`): an attack
 //: started at a frame of its clip, and the fields of its clips. `animOf`, `fieldOf` and

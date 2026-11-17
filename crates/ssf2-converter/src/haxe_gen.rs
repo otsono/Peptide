@@ -869,6 +869,9 @@ fn generate_character_stats(data: &CharacterData, char_id: &str) -> String {
     // over a fifteen-frame walk without it; a script's own grounded x write takes the same step)
     let walk_initial = if s.walk_initial > 0.0 && s.walk_speed > 0.0 {
         (ssf2_speed_to_fm(s.walk_initial * s.walk_speed) + 1.5 * walk_accel).min(walk_cap).max(0.0)
+    } else if s.walk_initial == 0.0 && s.walk_speed > 0.0 {
+        // (a walk declared to start from nothing starts from nothing: its code's own writes move it)
+        0.0
     } else { c_num("walkSpeedInitial") };
     let run_initial = if s.dash_initial > 0.0 && s.dash_speed > 0.0 {
         ssf2_speed_to_fm(s.dash_initial * s.dash_speed).min(dash_speed).max(0.0)

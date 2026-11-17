@@ -5506,7 +5506,10 @@ impl<'o, 'a> Writer<'o, 'a> {
             ("setXSpeed", [v]) if self.o.walk_start.is_some() => {
                 let (v, _) = self.expr(v)?;
                 let speed = fold(&format!("{} * {}", paren(&v), number(self.o.speed)));
-                if speed.parse::<f64>().is_ok_and(|n| n != 0.0) || !self.in_frame { return Ok((format!("self.setXSpeed({speed})"), Ty::Any)) }
+                // (a walk that starts from nothing marks every write in it: the next one lets a held zero go)
+                let from_nothing = self.o.walk_start == Some(0.0);
+                if (speed.parse::<f64>().is_ok_and(|n| n != 0.0) && !from_nothing) || !self.in_frame { return Ok((format!("self.setXSpeed({speed})"), Ty::Any)) }
+                if from_nothing { block(self, "walk_hold"); }
                 // (whether the frame is one of a walk's is settled per animation, `native_fighter::walk_starts`)
                 Ok((format!("self.setXSpeed({speed} /*walk*/)"), Ty::Any))
             }
