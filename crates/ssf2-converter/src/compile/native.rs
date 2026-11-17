@@ -4986,7 +4986,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 return Ok((format!("ownFloor({}, {}, {}, {}, {terrain})", number(x), number(y), number(w), number(h)), Ty::Object));
             }
             // (a clip its code made and drew into: the extent it drew)
-            ("createSelfPlatformWithMC", [c, rest @ ..]) if mine && !self.o.fighter && self.expr(c).is_ok_and(|(_, t)| t == Ty::Rect) => {
+            ("createSelfPlatformWithMC", [c, rest @ ..]) if mine && !self.o.fighter && self.expr(c).is_ok_and(|(_, t)| t == Ty::Rect)
+                && !matches!(c, Expr::Call(g, _) if matches!(&**g, Expr::Member(_, n) | Expr::Name(n) if matches!(n.as_str(), "getMCByLinkageName" | "clipByLinkage"))) => {
                 let (c, _) = self.expr(c)?;
                 let terrain = match rest.first() { Some(t) => self.expr(t)?.0, None => "false".into() };
                 return Ok((format!("ownFloorOfClip({c}, {terrain})"), Ty::Object));
