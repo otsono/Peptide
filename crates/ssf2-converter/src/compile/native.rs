@@ -6070,18 +6070,21 @@ self.playFrameLabel({})", quote(f))); }
                 Err(_) => format!("{id}.set(-1);\nif ({left} != 0) {{\n\t{id}Left.set({left});\n\t{make};\n}}"),
             };
             let first = if now { format!(";\n{call}") } else { String::new() };
-            // (a longer one made in a frame's code is due a source frame sooner the first time: a
-            // timer for that first tick, which starts the repeating one unless the tick stopped it)
+            // (a longer one made in a frame's code is due a source frame sooner the first time, then
+            // on its period: one engine timer made as the source makes it, ticking every frame and
+            // counting down to each tick, so timers that come due on one frame run in the order
+            // they were made, as the source's do)
             let longer = n.parse::<f64>().ok().filter(|v| self.in_frame && v.round() > 1.0);
             if let Some(v) = longer {
                 let opts = format!("{{ persistent: {keep}, pauseCondition: frozen }}");
-                let body = if finite { format!("{id}Left.set({id}Left.get() - 1); if ({id}Left.get() == 0) {id}.set(-1); {call};") } else { format!("{call};") };
-                let rest = match times.parse::<f64>() { Ok(t) if t < 0.0 => "-1".to_string(), Ok(t) => number(t - 1.0), Err(_) => format!("({times} < 0 ? -1 : {times} - 1)") };
-                let more = match rest.parse::<f64>() { Ok(0.0) => None, Ok(_) => Some(String::new()), Err(_) => Some(format!(" && {rest} != 0")) };
-                let again = more.map(|m| format!("if ({id}.get() != -1{m}) {id}.set(self.addTimer({every}, {rest}, {tick}, {opts}));")).unwrap_or_default();
-                let once = format!("{id}.set(self.addTimer({}, 1, function() {{ {body} {again} }}, {opts}))", number(2.0 * v.round() - 2.0));
-                let once = if finite { format!("{id}Left.set({left});\n{once}") } else { once };
-                return Ok((format!("self.removeTimer({id}.get());\n{once}"), Ty::Any));
+                let due = format!("{id}Due");
+                self.kept.insert(due.clone(), format!("// the engine frames until {name}'s timer next ticks\nvar {due} = self.makeInt(0);"));
+                let stop = format!("{{ self.removeTimer({id}.get()); {id}.set(-1); }}");
+                let body = if finite { format!("{id}Left.set({id}Left.get() - 1); if ({id}Left.get() == 0) {stop} {call};") } else { format!("{call};") };
+                let ticker = format!("function() {{ {due}.set({due}.get() - 1); if ({due}.get() > 0) return; {due}.set({every}); {body} }}");
+                let make = format!("{due}.set({});\n{id}.set(self.addTimer(1, -1, {ticker}, {opts}))", number(2.0 * v.round() - 2.0));
+                let make = if finite { format!("{id}Left.set({left});\n{make}") } else { make };
+                return Ok((format!("self.removeTimer({id}.get());\n{make}"), Ty::Any));
             }
             return Ok((format!("self.removeTimer({id}.get());\n{make}{first}"), Ty::Any));
         }
