@@ -734,6 +734,19 @@ function playLabelIn(anim, label) {
 	self.playFrameLabel(label);
 }
 
+// ---- jump_in_attack
+//: an attack that allows a jump (`allowJump`, declared or written as it plays) jumps on the spot
+//: while it goes on: pressed on the floor, the fighter leaves it at its own jump speed, still in
+//: the attack (the engine's own `allowJump` ends the attack, which is the source's
+//: `jumpCancelAttack`)
+function jumpInAttackFrame() {
+	if (!self.inStateGroup(CStateGroup.ATTACK) || !self.isOnFloor()) return;
+	if (attackStat("allowJump", attackMeta().allowJump) != true) return;
+	var p = self.getPressedControls();
+	if (p == null || p.JUMP != true) return;
+	self.setYSpeed(-self.getCharacterStat("jumpSpeed"));
+}
+
 // ---- tick_end
 // what its code listens for at the end of every frame of the game: the end of its own update, in
 // the order its code asked

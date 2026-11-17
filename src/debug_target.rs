@@ -173,20 +173,21 @@ pub trait DebugTarget {
     }
 }
 
-/// Where the next decoded frame lands. Set when a `shot` goes out, read when the engine's hex
-/// reply arrives — the two happen on different threads, so the path can't just be a local.
-static SHOT_PATH: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+/// Where each decoded frame lands, oldest first. A path is queued when a `shot` goes out and taken
+/// when the engine's hex reply arrives (the two happen on different threads); a burst of shots,
+/// one per engine frame, comes back in the order it was asked for, so each lands at its own path.
+static SHOT_PATHS: std::sync::Mutex<std::collections::VecDeque<std::path::PathBuf>> = std::sync::Mutex::new(std::collections::VecDeque::new());
 
-/// Remember where the frame that's about to come back should be written.
+/// Remember where the next frame asked for should be written.
 pub fn set_shot_path(p: &std::path::Path) {
-    *SHOT_PATH.lock().unwrap() = Some(p.to_path_buf());
+    SHOT_PATHS.lock().unwrap().push_back(p.to_path_buf());
 }
 
 /// Decode a `SHOT:` hex payload to the requested PNG path and describe what happened. Shared by
 /// the session daemon and the trait path so both report a frame the same way.
 pub fn write_shot(hex: &str) -> String {
     let hex = hex.trim();
-    let path = SHOT_PATH.lock().unwrap().clone()
+    let path = SHOT_PATHS.lock().unwrap().pop_front()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp/peptide-shot.png"));
     if hex.is_empty() {
         return "SHOT: the engine returned an empty frame".into();

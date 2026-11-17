@@ -36,7 +36,8 @@
     "air_ease":               [{ "field": "terminalVelocity", "as": "cap", "clamp": true }],
     "cancelWhenAirborne":     [{ "field": "leaveGroundCancel", "as": "bool" }],
     "canFallOff":             [{ "field": "slideOff", "as": "bool" }],
-    "allowJump":              [{ "field": "allowJump", "as": "bool" }],
+    // (`allowJump` jumps on the spot while the attack goes on: `jump_in_attack` in
+    // native/fighter_rules.hx. a jump that ends the attack is `jumpCancelAttack`, the engine's own)
     "jumpCancelAttack":       [{ "field": "allowJump", "as": "bool" }],
     "disableJump":            [{ "field": "allowJump", "as": "not" }],
     "allowTurn":              [{ "field": "allowTurn", "as": "bool" }],
