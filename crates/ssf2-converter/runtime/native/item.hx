@@ -34,6 +34,10 @@ var holderAttack = self.makeObject(null);
 // its own listeners for the events this handler raises: picked up, thrown
 var pickupListeners = self.makeObject([]);
 var tossListeners = self.makeObject([]);
+var touchListeners = self.makeObject([]);
+// whether its own code has set its boxes' stats or started its attack anew since its state last
+// changed (then its boxes hit whatever state it is in)
+var armed = self.makeBool(false);
 // what it declares: thrown at this speed (source units), can be picked up, boxes to the size
 var TOSS_SPEED = TOSS;
 var CAN_PICKUP = PICKUP;
@@ -45,6 +49,7 @@ function inItemState(n) { return itemState.get() == n; }
 function itemTo(n) {
 	if (itemState.get() == n) return;
 	itemState.set(n);
+	armed.set(false);
 	var a = n == 1 ? "projectileHeld" : n == 2 ? "projectileActive" : n == 0 ? IDLE_ANIM : null;
 	if (a != null && self.hasAnimation(a)) self.playAnimation(a);
 }
@@ -208,9 +213,16 @@ function handleItem() {
 function cameToRest() {
 	if (inItemState(2) && self.isOnFloor() && Math.abs(self.getXSpeed()) < 0.5 && Math.abs(self.getYSpeed()) < 0.5) itemTo(0);
 }
-// its boxes hit only while it flies from a throw
+// its attack started anew by its own code
+function armHits() {
+	armed.set(true);
+	self.reactivateHitboxes();
+}
+// its boxes hit only while it flies from a throw, or once its own code sets up its attack;
+// meeting another's, they touch it either way
 function hitOnlyThrown(e) {
-	if (!inItemState(2)) e.data.hitboxStats.disabled = true;
+	if (!inItemState(2) && !armed.get()) e.data.hitboxStats.disabled = true;
+	tell(touchListeners, e);
 }
 
 // ---- its own code
@@ -224,6 +236,8 @@ function initialize() {
 	self.exports.__isItem = true;
 	self.exports.__inItemState = inItemState;
 	self.addEventListener(GameObjectEvent.HITBOX_CONNECTED, hitOnlyThrown, { persistent: true });
+	// how it slows along the floor is its own (`slideDecay`), not the engine's friction
+	self.updateGameObjectStats({ friction: SLIDE_FRICTION });
 	// {start}
 	// {own_start}
 	// {publish}
@@ -235,9 +249,11 @@ function update() {
 		// {first}
 	}
 	handleItem();
+	if (!inItemState(1) && self.isOnFloor()) self.setXSpeed(self.getXSpeed() * SLIDE_KEEP);
 	cameToRest();
-	// its lifetime runs out while nobody holds it
-	if (!inItemState(1) && age.inc() >= life.get()) {
+	// its lifetime runs out while nobody holds it (one that declares none lasts until its own code
+	// ends it)
+	if (!inItemState(1) && age.inc() >= life.get() && life.get() >= 0) {
 		itemTo(3);
 		self.kill();
 		return;

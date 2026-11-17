@@ -55,6 +55,37 @@ function platformBetween(a, b, ?options) {
 	return null;
 }
 
+// ---- groundAt
+// the stage's ground at a point (in the source's units): a structure whose line passes within a
+// pixel of it, or the solid ground it is inside of (the structures' lines a line from it out to
+// the right crosses an odd number of times: a platform's flat line is never crossed, so only an
+// enclosed body holds a point). the options leave out what the source's do: platforms, terrain
+// (`platforms`/`terrains: false`, `ignoreFallthrough`) or the structures listed (`ignoreList`)
+function groundAt(x, y, ?o) {
+	var platforms = o == null || (o.platforms != false && o.ignoreFallthrough != true);
+	var terrains = o == null || (o.terrains != false && o.terrain != false);
+	var ignore = o == null ? null : o.ignoreList;
+	var near = [Point.create(x * SIZE, (y - 1) * SIZE), Point.create(x * SIZE, (y + 1) * SIZE)];
+	var from = Point.create(x * SIZE, y * SIZE);
+	var to = Point.create(x * SIZE + 100000, y * SIZE);
+	var crossed = 0;
+	var last = null;
+	for (st in match.getStructures()) {
+		var drop = st.getStructureStat("dropThrough") == true;
+		if (drop ? !platforms : !terrains) continue;
+		if (ignore != null && ignore.indexOf(st) >= 0) continue;
+		var pts = st.getAllPoints();
+		if (pts == null) continue;
+		var i = 0;
+		while (i + 1 < pts.length) {
+			if (Point.lineSegmentsIntersect(near[0], near[1], pts[i], pts[i + 1]) != null) return st;
+			if (Point.lineSegmentsIntersect(from, to, pts[i], pts[i + 1]) != null) { crossed++; last = st; }
+			i++;
+		}
+	}
+	return crossed % 2 == 1 ? last : null;
+}
+
 // ---- labelOf
 // the label an effect it holds is on: the animation it plays (each label of an effect is one)
 function labelOf(effect) {

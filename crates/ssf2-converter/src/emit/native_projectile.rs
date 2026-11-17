@@ -240,7 +240,10 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let written = if bare || (classes.is_empty() && itself.is_none()) { native::Written::default() } else { native::write(&object)? };
 
     // its script
-    let life = spec.stats.get("time_max").and_then(|v| match v { Value::Num(n) => Some(*n), _ => None }).unwrap_or(60.0);
+    // (an item that declares no lifetime lasts until its own code ends it: a bob-omb walks, counts
+    // down and explodes)
+    let declared_life = spec.stats.get("time_max").and_then(|v| match v { Value::Num(n) => Some(*n), _ => None });
+    let life = declared_life.unwrap_or(if item { -0.5 } else { 60.0 });
     let start = start_animation(char_dir, entity_key).or_else(|| pieces.first().map(|p| p.fm_name.clone())).unwrap_or_default();
     let first = pieces.iter().find(|p| p.fm_name == start && p.from == 1).and_then(|p| written.frames.get(&(p.sym, 1)));
     let reversible = !matches!(spec.stats.get("canBeReversed"), Some(Value::Bool(false)));
@@ -325,7 +328,12 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         let words = [("TOSS", num(n("tossSpeed", units.item_toss))), ("PICKUP", b("canPickup", true).to_string()),
             ("WIDTH", num(n("width", 20.0))), ("HEIGHT", num(n("height", 20.0))), ("SIZE", num(units.size)), ("SPEED", num(units.speed)),
             ("GHOST", b("ghost", false).to_string()), ("GRAVITY", num(n("gravity", 0.0) * units.accel)),
-            ("FALL_CAP", num(n("max_gravity", n("maxgravity", 0.0)) * units.speed)), ("IDLE_ANIM", compile::quote(&start))];
+            ("FALL_CAP", num(n("max_gravity", n("maxgravity", 0.0)) * units.speed)), ("IDLE_ANIM", compile::quote(&start)),
+            // (how it slows along the floor, `slideDecay`: a positive one keeps that share of its
+            // speed each of the source's frames, so its root each engine frame; none or a negative
+            // one takes that much off linearly, the engine's own friction)
+            ("SLIDE_KEEP", num({ let d = n("slideDecay", 0.85); if d > 0.0 { d.sqrt() } else { 1.0 } })),
+            ("SLIDE_FRICTION", num({ let d = n("slideDecay", 0.85); if d > 0.0 { 0.0 } else { -d * units.accel } }))];
         let mut t = script;
         for (w, v) in words { t = crate::dyn_re(&format!(r"\b{w}\b")).replace_all(&t, v.as_str()).to_string(); }
         t

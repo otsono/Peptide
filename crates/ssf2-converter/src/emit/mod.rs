@@ -293,8 +293,12 @@ pub fn fighter(char_dir: &std::path::Path, char_name: &str, char_pascal: &str,
     let mut entities: BTreeMap<String, String> = BTreeMap::new();
     for (name, decl) in fighter.projectiles.entries().iter().chain(fighter.items.entries()) {
         let linkage = decl.get("linkage_id").and_then(|v| v.str()).map(String::from);
+        // (or the entity written under its name with its fighter's own prefix off: a package of
+        // several fighters names theirs `<fighter>_<name>`, and the entity drops the prefix)
+        let id = crate::projectile_gen::projectile_content_id(name);
         let key = if projectile_pieces.contains_key(name) { Some(name.clone()) }
-            else { linkage.filter(|l| projectile_pieces.contains_key(l)) };
+            else { linkage.filter(|l| projectile_pieces.contains_key(l)) }
+            .or_else(|| projectile_pieces.keys().find(|k| crate::projectile_gen::projectile_content_id(&format!("{char_name}_{k}")) == id).cloned());
         if let Some(k) = key { entities.insert(name.clone(), k); }
     }
     // an entity is the fighter's own when a declaration is written as it or names it as its clip

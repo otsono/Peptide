@@ -964,8 +964,6 @@ fn process_character(
             sounds.extend(extra);
         }
     }
-    let sounds = sounds;
-
     // Discover projectiles, effects, head sprite.
     let (mut projectiles, mut effects, head_sprite) = image_extractor::discover_projectiles_and_head_from_swf(
         parsed_swf, char_name, char_data.thumbnail.as_deref(),
@@ -1090,6 +1088,8 @@ fn process_character(
         }
     }
 
+    // (the code of what is borrowed from another package, for the sounds it plays: below)
+    let lent_code: Vec<String>;
     // A PROJECTILE THAT SPAWNS ANOTHER: a spring places a during-clip that hands off to the
     // persistent spring and then kills itself, so the spring the player sees is named only by a
     // projectile, never by the character. Discovery above reads the CHARACTER's spawn calls, so
@@ -1114,9 +1114,15 @@ fn process_character(
                 let rt = crate::compile::Runtime::locate().map(|d| crate::compile::Runtime::load(&d)).unwrap_or_default();
                 if let Ok((m, _)) = rt.read_package(&bytes) {
                     let cid = crate::projectile_gen::projectile_content_id;
+                    // (declared by a fighter of the package, or listed by its main class: an items
+                    // package lists its items there)
+                    let named = |d: &crate::model::declare::Value| d.get("linkage_id").and_then(|v| v.str()).is_some_and(|l| cid(l) == cid(&p.name));
                     let class = m.fighters().iter().find_map(|f| f.projectiles.entries().iter()
-                        .find(|(n, d)| cid(n) == cid(&p.name) || d.get("linkage_id").and_then(|v| v.str()).is_some_and(|l| cid(l) == cid(&p.name)))
-                        .and_then(|(_, d)| d.get("classAPI").and_then(|v| v.class()).map(String::from)));
+                        .find(|(n, d)| cid(n) == cid(&p.name) || named(d))
+                        .and_then(|(_, d)| d.get("classAPI").and_then(|v| v.class()).map(String::from)))
+                        .or_else(|| m.main_class().and_then(|mc| mc.methods.iter()
+                            .filter_map(|meth| match crate::model::declare::returned(&meth.function.body) { Some(crate::model::declare::Value::Arr(l)) => Some(l), _ => None })
+                            .flatten().find(|d| named(d)).and_then(|d| d.get("classAPI").and_then(|v| v.class()).map(String::from))));
                     if let Some(c) = class {
                         for abc in &lent { theirs.extend(crate::abc_parser::extract_class_methods(abc, &c).into_values()); }
                     }
@@ -1208,7 +1214,25 @@ fn process_character(
             }
             if !added { break }  // nothing new could be found; stop rather than spin
         }
+        lent_code = projectiles.iter().filter(|p| image_extractor::borrowed_package(&p.name).is_some())
+            .flat_map(&mut behaviour).collect();
     }
+    // A SOUND SOMETHING BORROWED FROM ANOTHER PACKAGE PLAYS (a bob-omb's fuse and blast): asked of
+    // the shared packages the way the character's own are
+    {
+        let have: std::collections::BTreeSet<String> = sounds.iter().map(|s| s.name.clone()).collect();
+        let mut want: std::collections::BTreeSet<String> = lent_code.iter()
+            .flat_map(|c| sound_extractor::sound_ids_named_in(c))
+            .filter(|id| !have.contains(id))
+            .collect();
+        if !want.is_empty() {
+            let asked = want.len();
+            let extra = sound_extractor::pull_shared_sounds(&mut want, &sounds_dir, char_name);
+            log::info!("{} of {asked} sounds what it borrows names came from a shared package", extra.len());
+            sounds.extend(extra);
+        }
+    }
+    let sounds = sounds;
 
     // In a multi-char .ssf the SWF prefixes a sub-character's projectiles with its id
     // (e.g. sheik's "sheik_uspecDamage"), but the fireProjectile spawn call uses the

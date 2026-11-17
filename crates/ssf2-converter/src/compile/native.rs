@@ -458,6 +458,8 @@ struct Writer<'o, 'a> {
     /// a statement with no plain form fails its function (the census), rather than being left out
     /// and said
     strict: bool,
+    /// an item's box stats being written: its own code starting its attack (`armHits`)
+    arming: bool,
     /// the animations its code jumps into at a label inside them (`playLabelIn`)
     mid_targets: BTreeSet<String>,
     /// state containers the helpers need, by name
@@ -544,7 +546,7 @@ struct Writer<'o, 'a> {
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
         let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rec_fields: BTreeMap::new(), rt_lists: BTreeMap::new(), lit_rt: BTreeMap::new(), rt_fields: BTreeMap::new(), foreign_handlers: BTreeSet::new(), clip_recs: BTreeSet::new(), max_args: BTreeMap::new(), part_params: BTreeMap::new(), nested_recs: BTreeMap::new(), part_lists: BTreeMap::new(), part_locals: BTreeSet::new(), part_written: BTreeSet::new(), record: None, rec_locals: BTreeMap::new(), stage_locals: BTreeSet::new(), empty_locals: BTreeSet::new(), self_locals: BTreeMap::new(), game_ticks: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
-                             locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), release: BTreeSet::new(), statics: BTreeSet::new(), body: Vec::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new(), param_ty: BTreeMap::new(), param_elem: BTreeMap::new(), part_fields: BTreeMap::new(), drawn: BTreeMap::new(), drawn_locals: BTreeSet::new(), local_elem: BTreeMap::new(), temp_ty: BTreeMap::new(), list_elem: BTreeMap::new(), defaults: Vec::new(), strict: false };
+                             locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), release: BTreeSet::new(), statics: BTreeSet::new(), body: Vec::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new(), param_ty: BTreeMap::new(), param_elem: BTreeMap::new(), part_fields: BTreeMap::new(), drawn: BTreeMap::new(), drawn_locals: BTreeSet::new(), local_elem: BTreeMap::new(), temp_ty: BTreeMap::new(), list_elem: BTreeMap::new(), defaults: Vec::new(), strict: false, arming: false };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "characters", "initialize", "update", "onTeardown", "onKill", "onDestroy", "life", "age", "started", "freshHit"]
             .into_iter().map(String::from).collect();
@@ -2202,13 +2204,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 self.class = saved;
                 r
             }
-            // (a field of another object an object writes: that object keeps its fields to itself,
-            // which is a gap)
+            // (a field of another object an object writes: through what that object publishes of
+            // the fields others' code writes on it)
             Place::Member(o, f) if !self.o.fighter && !matches!(o, Expr::This) && !self.is_clip(o) && !matches!(o, Expr::Name(_) | Expr::Local(_)) && self.expr(o).is_ok_and(|(w, _)| w != "self") => {
                 let (who, _) = self.expr(o)?;
                 let (val, _) = self.expr(v)?;
-                self.gaps.insert(format!("writes {f} on another object, which keeps its fields to itself when it is native"));
-                Ok(vec![format!("if ({who} != null && {who}.exports.__source != null) {who}.exports.__source.{} = {val};", ident(f))])
+                Ok(vec![format!("{}({who}, \"self\", {}, {val});", self.owner_field("set")?, quote(f))])
             }
             Place::Member(o, f) if self.o.fighter && !matches!(o, Expr::This) && !self.is_clip(o) && !matches!(o, Expr::Name(_)) => {
                 let (who, _) = self.expr(o)?;
@@ -4340,11 +4341,12 @@ impl<'o, 'a> Writer<'o, 'a> {
                 }
                 // the ground on a line, and an enemy made: a fighter's blocks
                 (_, "hitTestGround" | "hitTestGroundBetweenPoints", _) if c.contains("PeptideAPI") && self.o.fighter => {
-                    self.blocks.insert("ground_test".into());
+                    if m != "hitTestGround" { self.blocks.insert("ground_test".into()); }
                     let vs: Result<Vec<String>, String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect();
                     let vs = vs?;
                     let opt = |i: usize| vs.get(i).cloned().unwrap_or_else(|| "null".into());
-                    return Ok((if m == "hitTestGround" { format!("groundBetween({0}, {1} - 1, {0}, {1} + 1, {2})", opt(0), opt(1), opt(2)) }
+                    if m == "hitTestGround" { self.util("groundAt")?; }
+                    return Ok((if m == "hitTestGround" { format!("groundAt({0}, {1}, {2})", opt(0), opt(1), opt(2)) }
                         else { format!("(({0}) == null || ({1}) == null ? null : groundBetween(({0}).x, ({0}).y, ({1}).x, ({1}).y, {2}))", opt(0), opt(1), opt(2)) }, Ty::Object));
                 }
                 (_, "makeEnemy", [k]) if c.contains("PeptideAPI") && self.o.fighter => {
@@ -4913,6 +4915,16 @@ impl<'o, 'a> Writer<'o, 'a> {
         if who == "match.getCamera()" && m == "getMC" && args.is_empty() { self.util("cameraClip")?; return Ok(("cameraClip()".into(), Ty::Rect)) }
         // an item put back to lying idle: its handler's own state, as the source's handler has it
         if self.o.item && who == "self" && m == "toIdle" && args.is_empty() { return Ok(("itemTo(0)".into(), Ty::Any)) }
+        // (an item's attack its own code starts anew: its boxes hit whatever state it is in)
+        if self.o.item && who == "self" && m == "refreshAttackID" && args.is_empty() { return Ok(("armHits()".into(), Ty::Any)) }
+        // (an item's box stats its own code writes: its attack set up, so its boxes hit too)
+        if self.o.item && who == "self" && m == "updateHitboxStats" && !self.arming {
+            self.arming = true;
+            let r = self.api(who, m, args);
+            self.arming = false;
+            let (t, ty) = r?;
+            return Ok((if t.starts_with("//") { t } else { format!("{t};\narmed.set(true)") }, ty));
+        }
         let mine = who == "self";
         // a stage's planes: named values, which nothing here drives yet (a jump, a field or a child of
         // one is said in its gaps)
@@ -4992,7 +5004,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             // (one made again from a record its stats were exported to)
             // (one by a name worked out as it runs: each name its code writes that it declares a
             // projectile under, fired by that name)
-            ("createProjectile", [name, rest @ ..]) if mine && self.o.fighter && self.expr(name).is_ok_and(|(_, t)| matches!(t, Ty::Str | Ty::Any)) => {
+            ("createProjectile", [name, rest @ ..]) if mine && self.o.fighter && !matches!(name, Expr::Str(n) if (self.o.fired)(n).is_some()) && self.expr(name).is_ok_and(|(_, t)| matches!(t, Ty::Str | Ty::Any)) => {
                 let named_only = self.expr(name).is_ok_and(|(_, t)| t == Ty::Str);
                 let mut names: BTreeSet<String> = BTreeSet::new();
                 for c in self.o.itself.into_iter().chain(self.o.classes.iter().copied()) {
@@ -6175,6 +6187,7 @@ self.playFrameLabel({})", quote(f))); }
         let raised = table.engine.get(&name).or_else(|| table.state.get(&name));
         // (one neither this engine nor the native skeletons ever raise is heard by no one)
         if raised.is_none() && !ends && !self.o.runtime.files.values().any(|t| t.contains(&format!("\"{name}\""))) {
+            self.gaps.insert(format!("listens for {name}, which nothing here raises"));
             return Ok((format!("// (it listens for the source's {name}, which nothing here raises)"), Ty::Any));
         }
         let engine = if ends { &name } else { raised.ok_or_else(|| format!("listens for {name}, which this engine does not raise"))? };

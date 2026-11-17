@@ -418,7 +418,8 @@ function generateItem(name, ?by) {
 }
 // an item another object of its asks it to make (one item opening into another), lying free
 // where that one says
-function makeItem(name, ?x, ?y) {
+// (x and y in the asking object's own units, the size and origin it keeps them by)
+function makeItem(name, size, ox, oy, ?x, ?y) {
 	if (name == "random") name = anyItemName();
 	var id = itemContent(name);
 	var content = id == null ? null : self.getResource().getContent(id);
@@ -427,7 +428,7 @@ function makeItem(name, ?x, ?y) {
 	it.exports.__isItem = true;
 	it.exports.__np = true;
 	it.exports.__itemName = name;
-	if (x != null) { it.setX(x); it.setY(y); }
+	if (x != null) { it.setX((x - ox) * size); it.setY((y - oy) * size); }
 	return it;
 }
 // an item it has made, held from now on

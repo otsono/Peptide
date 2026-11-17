@@ -13,7 +13,7 @@
 //! [`ProjectileGenCtx`] and call [`generate_projectiles`]; nothing here knows or
 //! cares what kind of file the owner is.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -314,6 +314,61 @@ fn classes_built_in(code: &str) -> Vec<String> {
 }
 
 pub fn generate_projectiles(
+    ctx: &ProjectileGenCtx,
+    projectiles: &[DiscoveredProjectile],
+) -> Result<()> {
+    // a clip borrowed from another package draws with that package's pictures: each package's
+    // borrowed clips are made from it, with its pictures brought into this project first
+    let mut own: Vec<DiscoveredProjectile> = Vec::new();
+    let mut lent: Vec<(std::rc::Rc<Vec<u8>>, Vec<DiscoveredProjectile>)> = Vec::new();
+    for p in projectiles {
+        match crate::image_extractor::borrowed_package(&p.name) {
+            Some(b) => match lent.iter_mut().find(|(x, _)| std::rc::Rc::ptr_eq(x, &b)) {
+                Some((_, v)) => v.push(p.clone()),
+                None => lent.push((b, vec![p.clone()])),
+            },
+            None => own.push(p.clone()),
+        }
+    }
+    for (bytes, group) in &lent {
+        let buf = swf::decompress_swf(&bytes[..]).context("decompress a lending package")?;
+        let parsed = swf::parse_swf(&buf).context("parse a lending package")?;
+        let img_result = lent_pictures(ctx, &parsed, bytes, group)?;
+        let sub = ProjectileGenCtx { parsed_swf: &parsed, img_result: &img_result, ..*ctx };
+        generate_own_projectiles(&sub, group)?;
+    }
+    generate_own_projectiles(ctx, &own)
+}
+
+/// The pictures a package lends with the clips borrowed from it, written into this project under
+/// names of their own (a lending package numbers its pictures as this one does), each with the guid
+/// sidecar the pack reads
+fn lent_pictures(ctx: &ProjectileGenCtx, parsed: &swf::Swf<'_>, bytes: &[u8], group: &[DiscoveredProjectile]) -> Result<ImageExtractionResult> {
+    let root = ctx.entities_dir.parent().and_then(|l| l.parent()).context("the project's root")?;
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in bytes.iter().step_by(97) { h = (h ^ *b as u64).wrapping_mul(0x100000001b3); }
+    let tag = format!("lent{:08x}", h & 0xffff_ffff);
+    let tmp = root.join(format!(".{tag}"));
+    let roots: Vec<u16> = group.iter().flat_map(|p| std::iter::once(p.sprite_id).chain(p.inner_sprite_id).chain(p.states.iter().map(|s| s.inner_sprite_id))).collect();
+    let only = crate::image_extractor::ids_under_sprites(parsed, &roots);
+    let mut img = crate::image_extractor::extract_images_from_swf_only(parsed, &tmp, &tag, &BTreeMap::new(), &BTreeMap::new(), Some(&only), &[])?;
+    let sprites = root.join("library/sprites");
+    std::fs::create_dir_all(&sprites)?;
+    for im in img.images.values_mut() {
+        let from = tmp.join(&im.png_path);
+        let file = format!("{tag}_{}", std::path::Path::new(&im.png_path).file_name().and_then(|f| f.to_str()).unwrap_or("picture.png"));
+        if from.exists() { std::fs::rename(&from, sprites.join(&file))?; }
+        im.symbol_name = format!("{tag}_{}", im.symbol_name);
+        im.png_path = format!("library/sprites/{file}");
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    for (png_rel, guid) in &crate::entity_gen::get_image_meta_guids(&img) {
+        std::fs::write(root.join(format!("{png_rel}.meta")), crate::entity_gen::generate_meta(guid))?;
+    }
+    Ok(img)
+}
+
+fn generate_own_projectiles(
     ctx: &ProjectileGenCtx,
     projectiles: &[DiscoveredProjectile],
 ) -> Result<()> {

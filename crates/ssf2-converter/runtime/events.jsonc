@@ -35,7 +35,9 @@
   // them, the list the handler tells
   "item": {
     "itemPickup": "pickupListeners",
-    "itemTossed": "tossListeners"
+    "itemTossed": "tossListeners",
+    // its boxes meeting another object's, hit or not (the event is the box's connection)
+    "itemTouch": "touchListeners"
   },
   // the fields of the record an item's handler hands its frame interrupt (its holder's attack put
   // to it first), read as they are, and what each is
