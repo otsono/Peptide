@@ -83,6 +83,20 @@ as its stats' metadata, the methods others call on it).
 hold one of, flattened under the field's name. `//:` lines in a skeleton are notes for whoever
 edits it, left out of what is written.
 
+### what an object makes
+
+every name an object's code makes something by is read off the source, wherever it declares it:
+
+- a projectile it fires: its owner's declarations, its own class's `getProjectileStats`, or its
+  own declaration's `projectiles` (an item that fires shots lists them there).
+- an object it makes by its class: that class, with its `ownStats` as its declaration (an enemy),
+  or the API's projectile running its clip's code (a clip class).
+- one it makes that its package does not carry: lent from the game's shared package that declares
+  it, art and class, and so is what the lent object's own code makes in turn.
+- a clip class is dynamic in the source, so a name its own code writes on itself is a field.
+- content named like one of the engine's own globals (`runtime/engine.names`) is renamed, so it
+  never hides the engine's.
+
 ### gaps
 
 each conversion writes `port_report.json`:
@@ -90,7 +104,7 @@ each conversion writes `port_report.json`:
 | object | fields |
 |---|---|
 | fighter | `gaps` (the fighter's own), `projectile_gaps` (by entity), `items_without_own_code`, `unplaced`, `projectiles`, `box_writes` |
-| stage | `gaps`, `objects` (each `{gaps}`), `projectiles` (each `{gaps, unplaced}`), `unplaced` |
+| stage | `gaps`, `objects` (each `{gaps}`; one whose class cannot be written is left out, `not written: why`), `projectiles` (each `{gaps, unplaced}`), `unplaced` |
 
 `tools/tests/gap_scan.py` converts every installed package to scratch and tallies the gaps, so the
 next row to write is the one most content needs.
