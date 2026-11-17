@@ -450,7 +450,7 @@ pub fn fighter(char_dir: &std::path::Path, char_name: &str, char_pascal: &str,
             l.boxes.iter().map(|(i, f)| (i.to_string(), serde_json::Value::Object(
                 f.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect()))).collect()))).collect::<serde_json::Map<_, _>>(),
     });
-    std::fs::write(char_dir.join("port_report.json"), serde_json::to_string_pretty(&report)?)?;
+    write_port_report(char_dir, char_name, report)?;
     // the plan the verify gates hold the fighter to gains the walk speeds its walk clips set
     let plan_path = char_dir.join("verify.json");
     if let Some(mut plan) = std::fs::read(&plan_path).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) {
@@ -1270,3 +1270,35 @@ pub fn clip_tree(model: &SourceModel, root: Option<u16>) -> BTreeSet<u16> {
     seen
 }
 
+thread_local! {
+    /// the projects this conversion has written a fighter's report into, and the fighter it was
+    static REPORTED: std::cell::RefCell<BTreeMap<std::path::PathBuf, String>> = Default::default();
+}
+
+/// A fighter's `port_report.json`. Several fighters of one package share a project (zelda and
+/// sheik, wario and wario man): the first one's report is the project's, and each one after it
+/// adds what it leaves out under its own name, rather than writing over it
+fn write_port_report(char_dir: &std::path::Path, char_name: &str, report: serde_json::Value) -> anyhow::Result<()> {
+    let path = char_dir.join("port_report.json");
+    let first = REPORTED.with(|r| {
+        let mut r = r.borrow_mut();
+        match r.get(char_dir) { Some(owner) if owner != char_name => false, _ => { r.insert(char_dir.to_path_buf(), char_name.to_string()); true } }
+    });
+    let merged = if first { report } else {
+        let mut base: serde_json::Value = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::json!({}));
+        let named = |v: &serde_json::Value| -> Vec<serde_json::Value> { v.as_array().map(|a| a.iter().map(|g| serde_json::json!(format!("{char_name}: {}", g.as_str().unwrap_or_default()))).collect()).unwrap_or_default() };
+        for key in ["gaps", "unplaced", "projectiles"] {
+            let add = if key == "projectiles" { report[key].as_array().cloned().unwrap_or_default() } else { named(&report[key]) };
+            let list = base[key].as_array().cloned().unwrap_or_default().into_iter().chain(add).collect::<Vec<_>>();
+            base[key] = serde_json::Value::Array(list);
+        }
+        for key in ["projectile_gaps", "items_without_own_code", "box_writes"] {
+            let mut m = base[key].as_object().cloned().unwrap_or_default();
+            for (k, v) in report[key].as_object().cloned().unwrap_or_default() { m.entry(k).or_insert(v); }
+            base[key] = serde_json::Value::Object(m);
+        }
+        base
+    };
+    std::fs::write(&path, serde_json::to_string_pretty(&merged)?)?;
+    Ok(())
+}
