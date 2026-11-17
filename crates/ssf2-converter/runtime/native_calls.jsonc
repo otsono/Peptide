@@ -9,10 +9,10 @@
 // code reads plainly, a rectangle or a palette), which a test of it needs to know. an API call
 // keyed `PeptideAPI.<call>#name` is the row for that call asked by a name written out.
 //
-// a call with no row here takes the runtime's own row (`api_calls.jsonc`) where that is the
-// engine's calls alone. one with neither, and none of the few the writer settles itself
-// (listeners, a jump by label, a stat by name), keeps the object on the runtime: the conversion reports which call it
-// was, so the next row to write is the one most content needs.
+// a call with no row here, and none of the few the writer settles itself (listeners, a jump by
+// label, a stat by name), is left out of the script and said in the object's gaps
+// (`port_report.json`), so the next row to write is the one most content needs. a row with a
+// `gap` does what its `code` says and says the rest.
 {
   // who and where
   "getOwner": { "code": "{self}.getOwner()", "returns": "object" },
@@ -167,6 +167,17 @@
   "killDarkener": { "code": "darkenStage(false)", "helper": "darkenStage" },
   // not ported: a fighter turned metal (`gap` notes it in the report)
   "setMetalStatus": { "code": "", "gap": "turns metal, which nothing here shows" },
+  // (a projectile's gravity, written as it flies: as its declared one converts)
+  "modifyGravity": "{self}.updateProjectileStats({ gravity: {0} * {accel} })",
+  // (the clip its animation shows, asked of itself: it is its own clip here)
+  "stanceClip": { "code": "{self}", "returns": "object" },
+  // (whether a projectile flies on through a wall or the floor it meets, and whether a platform
+  // keeps a rider's speed: settings this engine's objects have none of)
+  "modifyContinueOnCrash": { "code": "", "gap": "sets whether it flies on through a wall it meets, which this engine's projectiles have no setting for" },
+  "modifyContinueOnGround": { "code": "", "gap": "sets whether it flies on along the floor it meets, which this engine's projectiles have no setting for" },
+  "setConserveHorizontalMomentum": { "code": "", "gap": "sets whether a rider keeps its speed across, which this engine's platforms have no setting for" },
+  "setConserveUpwardMomentum": { "code": "", "gap": "sets whether a rider keeps its speed up, which this engine's platforms have no setting for" },
+  "setConserveDownwardMomentum": { "code": "", "gap": "sets whether a rider keeps its speed down, which this engine's platforms have no setting for" },
   "swapDepths": "",
   "swapChildren": "",
   "getMidground": { "code": "stage", "returns": "object" },
@@ -532,5 +543,101 @@
     "SSF2Beacon": "-1",
     // (a target, which this engine has none of: nothing is one)
     "SSF2Target": "-1"
-  }
+  },
+  // the engine's own calls for the rest of the API: one the engine answers outright, a value
+  // its objects here always have (a fighter is never a CPU's, never metal), or nothing, with
+  // the gap it leaves
+  "getSmashTimer": "({self}.pressedStrongAttack != null && {self}.pressedStrongAttack() != -1 ? 0 : 99)",
+  "getXScale": "{self}.getScaleX()",
+  "getYScale": "{self}.getScaleY()",
+  "getSizeRatio": "{self}.getSizeMultiplier()",
+  "dealDamage": "{self}.addDamage({0})",
+  "forceHitStun": "{self}.forceStartHitstop(Std.int(Math.ceil({0})) * 2)",
+  "toLand": "{self}.toState(CState.LAND)",
+  "toHeavyLand": "{self}.toState(CState.LAND, \"land_heavy\")",
+  "goHelpless": "{self}.toState(CState.FALL_SPECIAL)",
+  "toFlying": "{self}.toState(CState.HURT_HEAVY)",
+  "toCrashLand": "{self}.toState(CState.CRASH_BOUNCE)",
+  "toBounce": "{self}.toState(CState.CRASH_BOUNCE)",
+  "toJump": "{self}.toState(CState.JUMP_SQUAT)",
+  "toDodgeRoll": "{self}.toState(CState.ROLL)",
+  "resetJumps": "{self}.setDoubleJumpCount(0)",
+  "setInvisibilityTimer": {"code": "null", "returns": "object", "gap": "setInvisibilityTimer: a fighter turned invisible for a while"},
+  "maxOutJumps": "{self}.setDoubleJumpCount({self}.getCharacterStat(\"doubleJumpSpeeds\").length)",
+  "getMidairJumpCount": "{self}.getDoubleJumpCount()",
+  "releaseOpponent": "{self}.releaseAllCharacters()",
+  "grabReleaseOpponent": "{self}.releaseAllCharacters()",
+  "releaseLedge": "{self}.releaseLedge()",
+  "getCostume": "{self}.getCostumeIndex()",
+  "getLives": "{self}.getLives()",
+  "getID": "{self}.getUid()",
+  "getTeamID": "{self}.getTeam()",
+  "getMetalStatus": "false",
+  "isForcedCrash": "false",
+  "isCPU": "false",
+  "cpuLevel": "0",
+  "cpuAction": "0",
+  "cpuForcedAction": "-1",
+  "cpuTarget": "null",
+  "getShieldPower": "1",
+  "tetherCount": "0",
+  "isStandby": "false",
+  "getStandby": "false",
+  "inFinalSmash": "false",
+  "finalCutscene": "null",
+  "copyPower": "null",
+  "getBounceSpeed": "0",
+  "nearTopLeft": "false",
+  "nearTopRight": "false",
+  "nearBottomLeft": "false",
+  "nearBottomRight": "false",
+  "shake": "match.getCamera().shake({0})",
+  "getLinkageID": "{self}.exports == null ? null : {self}.exports.__linkageId",
+  "getUses": "{self}.exports.__uses == null ? 0 : {self}.exports.__uses",
+  "isFacingLeft": "!{self}.isFacingRight()",
+  "isIntangible": "{self}.hasBodyStatus(BodyStatus.INTANGIBLE)",
+  "isReversed": "{self}.isReversed != null && {self}.isReversed()",
+  "inHitStun": "{self}.getHitstop() > 0",
+  "addToCamera": "match.getCamera().addTarget({self})",
+  "camUnfocus": "match.getCamera().deleteTimedTarget({self})",
+  "dispose": "null",
+  "endFinalCutscene": "null",
+  "lightFlash": "null",
+  "pickupItem": {"code": "null", "returns": "object", "gap": "pickupItem: picking up an item off the stage"},
+  "playCpuInputs": "null",
+  "removeStageFocus": "null",
+  "resetCpuInputs": "null",
+  "setCamBoxSize": "null",
+  "setAccelFriction": {"code": "null", "returns": "object", "gap": "setAccelFriction: a surface's own friction"},
+  "setDecelFriction": {"code": "null", "returns": "object", "gap": "setDecelFriction: a surface's own friction"},
+  "setCpuQueue": "null",
+  "setFinalMeter": "null",
+  "setMode": "null",
+  "setStageFocus": {"code": "null", "returns": "object", "gap": "camera stage focus"},
+  "setTeamID": {"code": "null", "returns": "object", "gap": "setTeamID: changing a fighter's team"},
+  "startFinalCutscene": {"code": "null", "returns": "object", "gap": "startFinalCutscene: a final smash cutscene"},
+  "swapFighter": {"code": "null", "returns": "object", "gap": "swapFighter: turning into another fighter"},
+  "throbDamage": "null",
+  "toFinalForm": {"code": "null", "returns": "object", "gap": "toFinalForm: a final form"},
+  "flipX": "{self}.flipX({0})",
+  "resetKnockback": "{self}.setXKnockback(0); {self}.setYKnockback(0)",
+  "resetMovement": "{self}.setXSpeed(0); {self}.setYSpeed(0)",
+  "removeFromCamera": "{self}.getType() == EntityType.CHARACTER ? null : match.getCamera().deleteTarget({self})",
+  "setPosition": "{self}.setX({0} * {size}); {self}.setY({1} * {size})",
+  "addHUDDetection": {"code": "null", "returns": "object", "gap": "addHUDDetection: the HUD seeing what is behind it"},
+  "removeHUDDetection": {"code": "null", "returns": "object", "gap": "removeHUDDetection: the HUD seeing what is behind it"},
+  "getSnapshot": {"code": "null", "returns": "object", "gap": "getSnapshot: the all-star mode's run so far"},
+  "warioWareEffect": {"code": "null", "returns": "object", "gap": "warioWareEffect: the microgames' screen effect"},
+  "getTopLeftPoint": "Point.create(match.getCamera().getX() / {size}, match.getCamera().getY() / {size})",
+  "getMode": "match.getCamera().getMode()",
+  "activateItem": "{self}.exports.__askActive = true",
+  "deactivateItem": "{self}.exports.__askActive = false",
+  "setStarKOEnabled": {"code": "null", "returns": "object", "gap": "setStarKOEnabled: the stage turning star KOs off"},
+  "updatePlayerSettings": {"code": "null", "returns": "object", "gap": "updatePlayerSettings: a player's respawn place"},
+  "breakTarget": "{self}.isDisposed() ? null : {self}.kill()",
+  "initialize": "null",
+  "update": "null",
+  "getSizeStatus": "0",
+  "toBarrel": {"code": "null", "returns": "object", "gap": "toBarrel: a fighter carried inside a barrel"},
+  "setScreenKOEnabled": {"code": "null", "returns": "object", "gap": "setScreenKOEnabled: the stage turning screen KOs off"}
 }

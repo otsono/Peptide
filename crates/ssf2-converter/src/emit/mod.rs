@@ -1,11 +1,9 @@
-//! One emit path: an engine object's script, assembled from the runtime, the object's data and
-//! its compiled classes, in that order and in marked sections (see `docs/CONVERTER_DESIGN.md`).
+//! The object writer's shared parts: a fighter's script and its projectiles' and items', the pieces
+//! (animations) each one's clip is cut into, and the tables its declared stats give the engine.
 //!
 //! Nothing here knows what kind of object it writes: a fighter is its declared class, its clip,
-//! and the classes and clips they reach. The runtime's files decide what the engine does with
-//! them.
+//! and the classes and clips they reach. Each object's code is written by `compile::native`.
 
-mod shake;
 pub mod native_fighter;
 pub mod native_projectile;
 pub mod stage;
@@ -100,40 +98,6 @@ pub fn label_jumps(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, cr
     out
 }
 
-/// the plain stats every attack a clip's frames show declares alike, by the root labels its
-/// pieces sit under
-fn declared_by_clip(model: &SourceModel, pieces: &[Piece], attacks: &Value, class: &str) -> BTreeMap<String, f64> {
-    let Value::Obj(atks) = attacks else { return BTreeMap::new() };
-    let labels: BTreeSet<&str> = pieces.iter().filter(|p| model.class_of(p.sym).is_some_and(|c| c.name == class)).map(|p| p.label.as_str()).collect();
-    let mut out: Option<BTreeMap<String, f64>> = None;
-    for l in labels {
-        let Some((_, Value::Obj(fields))) = atks.iter().find(|(k, _)| k == l) else { continue };
-        let these: BTreeMap<String, f64> = fields.iter().filter_map(|(k, v)| match v {
-            Value::Num(n) => Some((k.clone(), *n)),
-            Value::Bool(b) => Some((k.clone(), if *b { 1.0 } else { 0.0 })),
-            _ => None,
-        }).collect();
-        out = Some(match out { None => these, Some(had) => had.into_iter().filter(|(k, v)| these.get(k) == Some(v)).collect() });
-    }
-    out.unwrap_or_default()
-}
-
-/// the numbered sounds of the one attack a clip's frames show (every root label its pieces sit
-/// under is that attack's): what a play of `attackSound<n>` or `attackVoice<n>` plays. none where
-/// the attack stops its last sound (or voice) as it ends, which the runtime keeps to stop
-fn sounds_by_clip(model: &SourceModel, pieces: &[Piece], attacks: &Value, class: &str) -> BTreeMap<String, String> {
-    let Value::Obj(atks) = attacks else { return BTreeMap::new() };
-    let labels: BTreeSet<&str> = pieces.iter().filter(|p| model.class_of(p.sym).is_some_and(|c| c.name == class)).map(|p| p.label.as_str()).collect();
-    let [label] = labels.into_iter().collect::<Vec<_>>()[..] else { return BTreeMap::new() };
-    let Some((_, Value::Obj(fields))) = atks.iter().find(|(k, _)| k == label) else { return BTreeMap::new() };
-    let on = |k: &str| fields.iter().any(|(f, v)| f == k && !matches!(v, Value::Bool(false) | Value::Null));
-    fields.iter().filter_map(|(k, v)| {
-        let Value::Str(id) = v else { return None };
-        let kept = (k.starts_with("attackSound") && !on("cancelSoundOnEnd")) || (k.starts_with("attackVoice") && !on("cancelVoiceOnEnd"));
-        (kept && k.ends_with("_id")).then(|| (k.clone(), id.clone()))
-    }).collect()
-}
-
 /// the scales between the two worlds
 #[derive(Clone, Copy, Debug)]
 pub struct Units {
@@ -143,109 +107,6 @@ pub struct Units {
     pub item_toss: f64,
     /// an acceleration of the source's in this engine's units
     pub accel: f64,
-}
-
-pub struct Emitted {
-    pub script: String,
-    pub problems: Vec<String>,
-    pub unknown: BTreeSet<String>,
-    /// frames whose script goes on their keyframe, by (clip symbol, frame): the class and the
-    /// script's function text
-    pub frames: BTreeMap<(u16, u32), (String, String)>,
-    /// the landings the engine makes, each by the animations it lands in
-    pub landings: Vec<(crate::compile::Landing, Vec<String>)>,
-    /// the clips whose frames the engine plays as the object's own (`native_clip`), when they are
-    pub native: Option<Native>,
-}
-
-/// the clips an object's animations show, played by the engine as its own
-#[derive(Clone, Debug)]
-pub struct Native {
-    pub syms: BTreeSet<u16>,
-    /// where the animations show several clips, each is the one its object's clip places under a
-    /// label (one state each): entering an animation puts the object's clip on that label first.
-    /// by animation
-    pub under: BTreeMap<String, String>,
-    /// the clips that play a lead-in of their own before their first section (no animation shows
-    /// their first frame): the runtime plays it, and the engine takes the clip up where it ends
-    pub lead_in: BTreeSet<u16>,
-    /// a fighter's: the engine starts its animations itself (its states), and its rules hear of it
-    pub fighter: bool,
-}
-
-/// Which frames' scripts move onto their animation's keyframes, for one object: a frame of a clip
-/// its animations show, except the frames the runtime runs itself. Those stay the clip's methods:
-/// the clip's first frame (it runs as the clip is made), an animation's first frame (its entry
-/// runs it), a frame a jump names outright (a jump runs the
-/// frame it lands on at once, from the code that made it), a frame of a clip an effect also plays
-/// (effects play their clips themselves), and a script method anything else calls by name.
-pub struct FramePlan {
-    /// class -> the methods written apart
-    pub detach: BTreeMap<String, BTreeSet<String>>,
-    /// (symbol, frame) -> (class, method)
-    pub frame_of: BTreeMap<(u16, u32), (String, String)>,
-}
-
-pub fn frame_plan(model: &SourceModel, pieces: &[Piece], effect_syms: &BTreeSet<u16>) -> FramePlan {
-    use crate::model::ast::{walk_exprs, Expr};
-    // what jumps name outright, anywhere in the package: labels and frame numbers
-    let mut labels: BTreeSet<String> = BTreeSet::new();
-    let mut numbers: BTreeSet<u32> = BTreeSet::new();
-    // how often each class's code asks for each name (a frame script's registration is one of them)
-    let mut asked: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for c in model.classes.values() {
-        for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor, &c.static_init]) {
-            walk_exprs(&f.body, &mut |e| {
-                match e {
-                    Expr::Call(callee, args) => {
-                        let jump = match &**callee {
-                            Expr::Member(_, m) | Expr::Name(m) => matches!(m.as_str(), "gotoAndPlay" | "gotoAndStop" | "playFrame"),
-                            _ => false,
-                        };
-                        if jump {
-                            match args.first() {
-                                Some(Expr::Str(l)) => { labels.insert(l.clone()); }
-                                Some(Expr::Int(n)) => { numbers.insert(*n as u32); }
-                                Some(Expr::Num(n)) => { numbers.insert(*n as u32); }
-                                _ => {}
-                            }
-                        }
-                    }
-                    Expr::Member(_, n) | Expr::Name(n) => { *asked.entry((c.name.clone(), n.clone())).or_default() += 1; }
-                    _ => {}
-                }
-            });
-        }
-    }
-    let mut plan = FramePlan { detach: BTreeMap::new(), frame_of: BTreeMap::new() };
-    let syms: BTreeSet<u16> = pieces.iter().map(|p| p.sym).collect();
-    for sym in syms {
-        if effect_syms.contains(&sym) { continue }
-        let Some(c) = model.class_of(sym) else { continue };
-        // the frames the runtime enters a clip on: its first (a clip runs it as it is made), and
-        // each animation's first (the last clip frame of one that plays the clip backwards)
-        let mut firsts: BTreeSet<u32> = pieces.iter().filter(|p| p.sym == sym)
-            .map(|p| if p.reversed { p.from + p.frames - 1 } else { p.from }).collect();
-        firsts.insert(1);
-        let labelled: BTreeSet<u32> = model.sprites.get(&sym).map(|sp| sp.labels.iter()
-            .filter(|(_, l)| labels.contains(l)).map(|(f, _)| *f as u32 + 1).collect()).unwrap_or_default();
-        let mut registered: BTreeMap<&str, usize> = BTreeMap::new();
-        for fs in &c.frame_scripts { *registered.entry(fs.method.as_str()).or_default() += 1; }
-        for fs in &c.frame_scripts {
-            let f = fs.frame + 1;
-            let once = registered.get(fs.method.as_str()) == Some(&1);
-            // asked for only by its registration
-            let only_registered = asked.get(&(c.name.clone(), fs.method.clone())).copied().unwrap_or(0) <= 1;
-            if firsts.contains(&f) || labelled.contains(&f) || numbers.contains(&f) || !once || !only_registered { continue }
-            // a keyframe runs only on a frame an animation shows: a frame no piece of the clip covers
-            // (a lead-in its labels start after) keeps its script on the clip
-            if !pieces.iter().any(|p| p.sym == sym && f >= p.from && f < p.from + p.frames) { continue }
-            if !c.methods.iter().any(|m| m.name == fs.method && !m.is_static) { continue }
-            plan.detach.entry(c.name.clone()).or_default().insert(fs.method.clone());
-            plan.frame_of.insert((sym, f), (c.name.clone(), fs.method.clone()));
-        }
-    }
-    plan
 }
 
 /// The classes an object reaches: its own class and the classes it extends, every clip its
@@ -290,51 +151,6 @@ pub fn reachable(model: &SourceModel, runtime: &Runtime, roots: &[String], clip_
     (classes, symbols)
 }
 
-/// What an object's script carries: the classes and clips its own class and clip reach, and the
-/// effects it can attach with theirs. An effect is one it can attach when its code or what it
-/// declares names it (a projectile's trail is in its stats), or when its code attaches one by a
-/// name it works out as it runs; a stage carries every effect. A piece borrowed from another
-/// package carries no symbol of this one, so no code of it.
-fn attachable(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, decls: &Decls, roots: &[u16]) -> (BTreeSet<String>, BTreeSet<u16>) {
-    let effects: Vec<(&String, u16)> = spec.effects.iter()
-        .filter_map(|(name, ps)| Some((name, ps.first()?.sym))).filter(|(_, s)| *s != 0).collect();
-    // the calls that attach an effect, by the API rows written as the runtime's attach
-    let attaches: BTreeSet<&str> = runtime.calls.iter().filter(|(_, t)| t.starts_with("Effects.attach("))
-        .map(|(m, _)| m.as_str()).collect();
-    let mut named: BTreeSet<String> = BTreeSet::new();
-    fn strings(v: &Value, out: &mut BTreeSet<String>) {
-        match v {
-            Value::Str(s) => { out.insert(s.clone()); }
-            Value::Arr(items) => for i in items { strings(i, out) },
-            Value::Obj(kv) => for (_, i) in kv { strings(i, out) },
-            _ => {}
-        }
-    }
-    for v in [&spec.stats, decls.attacks, decls.projectiles, decls.items] { strings(v, &mut named); }
-    let mut any = spec.kind == "stage";
-    let mut syms: Vec<u16> = roots.to_vec();
-    loop {
-        let (classes, symbols) = reachable(model, runtime, std::slice::from_ref(&spec.class), &syms);
-        for c in &classes {
-            let Some(cm) = model.classes.get(c) else { continue };
-            let fs = cm.methods.iter().map(|m| &m.function).chain([&cm.constructor, &cm.static_init]);
-            for f in fs {
-                ast::walk_exprs(&f.body, &mut |e| match e {
-                    Expr::Str(s) => { named.insert(s.clone()); }
-                    Expr::Call(callee, args) => if let Expr::Member(_, m) = callee.as_ref() {
-                        if attaches.contains(m.as_str()) && !matches!(args.first(), Some(Expr::Str(_))) { any = true }
-                    },
-                    _ => {}
-                });
-            }
-        }
-        let more: Vec<u16> = effects.iter().filter(|(n, s)| (any || named.contains(*n)) && !syms.contains(s))
-            .map(|(_, s)| *s).collect();
-        if more.is_empty() { return (classes, symbols) }
-        syms.extend(more);
-    }
-}
-
 /// A declared value as a script literal.
 pub fn literal(v: &Value, class_ident: &dyn Fn(&str) -> Option<String>) -> String {
     match v {
@@ -369,22 +185,9 @@ pub fn literal(v: &Value, class_ident: &dyn Fn(&str) -> Option<String>) -> Strin
     }
 }
 
-/// A piece as a script literal.
-fn piece_literal(p: &Piece) -> String {
-    format!("{{ anim: {}, label: {}, sym: {}, from: {}, frames: {}, head: {}, reversed: {}, borrowed: {}, itemBox: [{}], on: {} }}",
-        compile::quote(&p.fm_name), compile::quote(&p.label), p.sym, p.from, p.frames, p.head, p.reversed, p.borrowed,
-        p.item_box.iter().map(|(k, x, y)| format!("[{k}, {x}, {y}]")).collect::<Vec<_>>().join(", "),
-        p.on.as_deref().map_or("null".to_string(), compile::quote))
-}
-
-/// One object the package declares, as its script is written: which kind of engine object it
-/// runs on (the entry the runtime gives it), the class that runs it, the clip that is its art,
-/// and its own declared stats.
+/// One object the package declares, as its script is written: the class that runs it, the clip
+/// that is its art, and its own declared stats.
 pub struct ObjectSpec<'a> {
-    pub kind: &'a str,
-    /// the projectiles and items the conversion made that the package does not declare (the
-    /// game's own items a fighter generates): their content, for the objects that make them
-    pub others: &'a [String],
     /// the effects the conversion made, by linkage: every object can attach one
     pub effects: &'a BTreeMap<String, Vec<Piece>>,
     /// the entity each declared projectile or item was written as (several declarations can
@@ -395,15 +198,6 @@ pub struct ObjectSpec<'a> {
     /// the clip by its symbol, when it is known that way rather than by a linkage name
     pub clip_sym: Option<u16>,
     pub stats: Value,
-    /// the code the autolink calls of a clip's class become (`autolink_calls`), by class
-    pub autolink: BTreeMap<String, (String, String)>,
-    /// data the conversion worked out for the object outside its package, as script statements
-    /// (a stage's boot tables): written with the rest of its data
-    pub data: String,
-    /// code the conversion puts on the entity's keyframes beside the clip's own frames (what an
-    /// attack's declared stats and the engine's states run on a first frame): the runtime it
-    /// reaches is kept
-    pub keyed: String,
 }
 
 /// What a package declares that every object of it reads: a fighter's attacks, projectiles and
@@ -421,515 +215,12 @@ impl<'a> Decls<'a> {
     }
 }
 
-/// The tables every object of a package reads: what the package declares, and the content each
-/// declared projectile and item was converted to.
-fn package_data(decls: &Decls, others: &[String], entities: &BTreeMap<String, String>,
-                ident_of: &dyn Fn(&str) -> Option<String>) -> String {
-    let mut contents: Vec<(String, Value)> = Vec::new();
-    let names = decls.projectiles.entries().iter().chain(decls.items.entries()).map(|(n, _)| n).chain(others.iter());
-    for name in names {
-        if contents.iter().any(|(n, _)| n == name) { continue }
-        let entity = entities.get(name).unwrap_or(name);
-        contents.push((name.clone(), Value::Str(crate::projectile_gen::projectile_content_id(entity))));
-    }
-    // the objects made by class, only where the package makes any
-    let objects = if decls.objects.is_empty() { String::new() } else {
-        let kv: Vec<(String, Value)> = decls.objects.iter().map(|(c, id)| (c.clone(), Value::Str(id.clone()))).collect();
-        format!(", objects: {}", literal(&Value::Obj(kv), ident_of))
-    };
-    format!("DATA.pkg = {{ attacks: {}, projectiles: {}, items: {}, contents: {}{objects} }};\n",
-        literal(decls.attacks, ident_of), literal(decls.projectiles, ident_of),
-        literal(decls.items, ident_of), literal(&Value::Obj(contents), ident_of))
-}
-
-/// A fighter's script.
-#[allow(clippy::too_many_arguments)]
-pub fn fighter_script(model: &SourceModel, runtime: &Runtime, fighter: &crate::model::declare::Fighter,
-                      pieces: &[Piece], units: Units, title: &str, others: &[String],
-                      effects: &BTreeMap<String, Vec<Piece>>, entities: &BTreeMap<String, String>,
-                      autolink: BTreeMap<String, (String, String)>, keyed: String, data: String) -> Emitted {
-    let spec = ObjectSpec {
-        kind: "fighter",
-        keyed,
-        others,
-        effects,
-        entities,
-        class: fighter.class().unwrap_or_default().to_string(),
-        clip: fighter.clip().unwrap_or_default().to_string(),
-        clip_sym: None,
-        stats: fighter.stats.clone(),
-        autolink,
-        data,
-    };
-    object_script(model, runtime, &spec, &Decls::of(fighter), pieces, units, title)
-}
-
-/// An object's script: the runtime, the classes the object reaches, its data, and its entry.
-pub fn object_script(model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, decls: &Decls,
-                     pieces: &[Piece], units: Units, title: &str) -> Emitted {
-    let mut out = String::new();
-    let mut problems = Vec::new();
-    let mut unknown = BTreeSet::new();
-    let class = spec.class.clone();
-    let clip = spec.clip.clone();
-    let clip_sym = spec.clip_sym.or_else(|| model.symbol_of(&clip));
-    // what a projectile's update calls each frame for its declared stats, where they take any
-    let mut flies: Option<String> = None;
-    // a stage's camera backgrounds are clips of its own, which its code can reach into
-    let camera_syms: Vec<u16> = if spec.kind != "stage" { Vec::new() } else {
-        model.declared("camera").as_ref().and_then(|c| c.get("backgrounds").cloned())
-            .map(|b| match b { Value::Arr(items) => items, _ => Vec::new() }).unwrap_or_default().iter()
-            .filter_map(|b| b.get("linkage_id").and_then(|v| v.str()).and_then(|l| model.symbol_of(l))).collect()
-    };
-    // the effects' clips too: the ones this object can attach run here (`attachable`)
-    let roots: Vec<u16> = clip_sym.into_iter().chain(camera_syms).collect();
-    let (classes, symbols) = attachable(model, runtime, spec, decls, &roots);
-    let pkg = compile::Package::new(model, runtime);
-
-    out.push_str(&format!("// {title}: converted from SSF2 by Peptide.\n//\n// sections, in order: the runtime (copies of runtime/*.hx: edit those, not these), this\n// {}'s classes as the source defines them, its data, and the entry the engine calls.\n\n", spec.kind));
-
-    // the runtime goes here once the rest is written: only what the rest reaches of it
-    let runtime_at = out.len();
-
-    // the engine's state containers, made before anything else runs (the engine makes them only
-    // at the script's top level, and the classes' statics take theirs as their sections run):
-    // the statics, the script's own object's fields, and room for the six largest other classes
-    // it carries at once, twice over (a clip and the one replacing it)
-    let mut sizes: Vec<(usize, usize)> = Vec::new();
-    let (mut own_n, mut own_o) = (0usize, 0usize);
-    for m in pkg.chain(&spec.class).0 {
-        for f in m.fields.iter().filter(|f| !f.is_static && pkg.stored.contains(&f.name)) {
-            if matches!(f.type_name.as_deref().map(compile::short), Some("Number" | "int" | "uint")) { own_n += 1 } else { own_o += 1 }
-        }
-    }
-    for c in &classes {
-        let Some(m) = pkg.class_named(c) else { continue };
-        for f in m.fields.iter().filter(|f| f.is_static && pkg.stored.contains(&f.name)) {
-            if matches!(f.type_name.as_deref().map(compile::short), Some("Number" | "int" | "uint")) { own_n += 1 } else { own_o += 1 }
-        }
-    }
-    for c in &classes {
-        let Some(m) = pkg.class_named(c) else { continue };
-        if m.name == spec.class { continue }
-        let (mut nums, mut objs) = (0usize, 0usize);
-        for f in m.fields.iter().filter(|f| !f.is_static && pkg.stored.contains(&f.name)) {
-            if matches!(f.type_name.as_deref().map(compile::short), Some("Number" | "int" | "uint")) { nums += 1 } else { objs += 1 }
-        }
-        sizes.push((nums, objs));
-    }
-    sizes.sort_by_key(|(n, o)| std::cmp::Reverse(n + o));
-    let (nums, objs) = sizes.iter().take(6).fold((0, 0), |a, (n, o)| (a.0 + n, a.1 + o));
-    out.push_str(&format!("// ---- state: the engine's containers for everything a rollback puts back\nRollback.start();\nPeptideRuntime.makePool({{ num: {}, obj: {} }});\n\n",
-        8 + own_n + 2 * nums, 8 + own_o + 2 * objs));
-
-    // the classes, bases before what extends them
-    let mut order: Vec<String> = Vec::new();
-    let mut placed: BTreeSet<String> = BTreeSet::new();
-    fn place(n: &str, model: &SourceModel, classes: &BTreeSet<String>, placed: &mut BTreeSet<String>, order: &mut Vec<String>) {
-        if placed.contains(n) || !classes.contains(n) { return }
-        placed.insert(n.to_string());
-        if let Some(c) = model.classes.get(n) {
-            let base = model.classes.get(&c.super_name).map(|b| b.name.clone())
-                .or_else(|| model.classes.values().find(|x| compile::short(&x.name) == c.super_name).map(|b| b.name.clone()));
-            if let Some(b) = base { place(&b, model, classes, placed, order) }
-        }
-        order.push(n.to_string());
-    }
-    for c in &classes { place(c, model, &classes, &mut placed, &mut order) }
-    let effect_syms: BTreeSet<u16> = spec.effects.values().flat_map(|ps| ps.iter().map(|p| p.sym)).collect();
-    let native = if matches!(spec.kind, "projectile" | "object" | "fighter") {
-        native_clip(model, pieces, clip_sym).map(|n| Native { fighter: spec.kind == "fighter", ..n })
-    } else { None };
-    // (the object's own clip the runtime keeps under its native ones keeps its frame scripts)
-    let kept = runtime_clip(pieces, clip_sym).filter(|_| native.is_some());
-    let planned: Vec<Piece> = pieces.iter().filter(|p| Some(p.sym) != kept).cloned().collect();
-    let plan = frame_plan(model, &planned, &effect_syms);
-    let none = BTreeSet::new();
-    let mut jumps = label_jumps(model, pieces);
-    for (c, code) in &spec.autolink { jumps.entry(c.clone()).or_default().autolink = Some(code.clone()); }
-    for (c, j) in jumps.iter_mut() { j.declared = declared_by_clip(model, pieces, decls.attacks, c); }
-    if spec.kind == "fighter" { for (c, j) in jumps.iter_mut() { j.sounds = sounds_by_clip(model, pieces, decls.attacks, c); } }
-    let mut detached: BTreeMap<(String, String), String> = BTreeMap::new();
-    let mut found: Vec<crate::compile::Landing> = Vec::new();
-    // each class's static initializer, in the order the classes are made (a base before its own)
-    let mut cinits: Vec<String> = Vec::new();
-    let cinit_at = crate::re!(r"(?m)^([A-Za-z_]\w*)\.cinit = ");
-    // whether any of the package's code walks a clip's children by place (the only way code reaches
-    // a child placed under no name)
-    let mut walks_children = false;
-    // which of a clip's rarely asked methods the package's code names anywhere (DATA.clipUses):
-    // a clip makes only those, each being an interpreted closure made for every clip the timelines
-    // place (seven a fighter's attack). code that names none makes none
-    // (any of the package's code: a clip made in one script is reached from another, as a stage's
-    // code moves the clip of an object it spawned, so each script makes what any of them names)
-    let mut clip_uses: BTreeSet<&str> = BTreeSet::new();
-    for cm in model.classes.values().filter(|cm| !runtime.provides(&cm.name)) {
-        for f in cm.methods.iter().map(|m| &m.function).chain([&cm.constructor, &cm.static_init]) {
-            ast::walk_exprs(&f.body, &mut |e| if let Expr::Member(_, n) = e {
-                if let Some((m, _)) = CLIP_OPTIONAL.iter().find(|(_, needle)| needle == n) { clip_uses.insert(m); }
-            });
-        }
-    }
-    // every name the package's code reads (a member, a bare name) and every text it holds: a named
-    // child none of them can reach is not made (below)
-    let mut read_names: BTreeSet<String> = BTreeSet::new();
-    // (a text that is only ever an object's key is data, as an attack's stats name its boxes)
-    let mut said: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-    let mut starts: BTreeSet<String> = BTreeSet::new();
-    for cm in model.classes.values().filter(|cm| !runtime.provides(&cm.name)) {
-        for f in cm.methods.iter().map(|m| &m.function).chain([&cm.constructor, &cm.static_init]) {
-            ast::walk_exprs(&f.body, &mut |e| match e {
-                Expr::Member(_, n) | Expr::Name(n) => { read_names.insert(n.clone()); }
-                Expr::Str(s) if !s.is_empty() => { said.entry(s.clone()).or_default().0 += 1; }
-                Expr::Object(pairs) => for (k, _) in pairs {
-                    if let Expr::Str(s) = k { said.entry(s.clone()).or_default().1 += 1; }
-                },
-                // a name built as the code runs starts with the text on the left of its `+`
-                Expr::Binary(ast::BinOp::Add, l, _) => {
-                    let mut l = &**l;
-                    while let Expr::Binary(ast::BinOp::Add, x, _) = l { l = &**x; }
-                    if let Expr::Str(s) = l { if !s.is_empty() { starts.insert(s.clone()); } }
-                }
-                _ => {}
-            });
-        }
-    }
-    let texts: BTreeSet<String> = said.into_iter().filter(|(_, (all, keys))| all > keys).map(|(s, _)| s).collect();
-    // the effects an attach can make as the engine's own alone: a shared one this engine has, else
-    // one piece of a clip with no code of its own (a stage's own effects go the runtime's way, the
-    // stage being no game object)
-    let mut vfx: BTreeMap<String, Option<compile::NativeVfx>> = BTreeMap::new();
-    if spec.kind != "stage" {
-        let lits = compile::string_literals(model);
-        for (name, ps) in spec.effects {
-            // (the section it starts in: what a clip that goes at its end has after it never shows)
-            let native = ps.iter().find(|p| p.from == 1).and_then(|p| {
-                // (one borrowed from another package carries no symbol, and none of its code)
-                let gone = if ps.len() == 1 && (p.sym == 0 || model.class_of(p.sym).is_none()) { None } else { plays_once(model, p)? };
-                Some(compile::NativeVfx { stats: format!("spriteContent: {{eng}}.getResource().getContent({}), animation: {}", compile::quote(name), compile::quote(&p.fm_name)), gone, own: ps.len() == 1 })
-            });
-            vfx.insert(name.clone(), native);
-        }
-        for (name, constant) in &crate::mappings::api_commands().global_vfx_map {
-            if lits.contains(name) { vfx.insert(name.clone(), Some(compile::NativeVfx { stats: format!("spriteContent: \"global::vfx.vfx\", animation: GlobalVfx.{constant}"), gone: None, own: false })); }
-        }
-    }
-    // a sound the code plays and lets go of is the engine's own, unless an attack of a fighter's
-    // stops the last one it played as it ends (`cancelSoundOnEnd`)
-    fn says(v: &Value, key: &str) -> bool {
-        match v {
-            Value::Obj(o) => o.iter().any(|(k, x)| (k == key && !matches!(x, Value::Bool(false) | Value::Null)) || says(x, key)),
-            Value::Arr(a) => a.iter().any(|x| says(x, key)),
-            _ => false,
-        }
-    }
-    let plain_sounds = spec.kind != "fighter" || !says(decls.attacks, "cancelSoundOnEnd");
-    for c in &order {
-        let Some((text, p, u, d, l)) = compile::compile_class_detached(model, runtime, c, plan.detach.get(c).unwrap_or(&none), jumps.get(c).cloned(), (spec.kind != "stage").then_some(&vfx), plain_sounds) else { continue };
-        cinits.extend(cinit_at.captures_iter(&text).map(|m| format!("{}.cinit", &m[1])));
-        found.extend(l);
-        problems.extend(p.into_iter().map(|x| format!("{c}: {x}")));
-        unknown.extend(u);
-        if !runtime.provides(c) {
-            for (method, needle) in CLIP_OPTIONAL {
-                if text.contains(needle) || d.iter().any(|(_, t)| t.contains(needle)) { clip_uses.insert(method); }
-            }
-        }
-        walks_children |= !runtime.provides(c) && WALKS_CHILDREN.iter().any(|n| text.contains(n) || d.iter().any(|(_, t)| t.contains(n)));
-        out.push_str(&text);
-        out.push('\n');
-        for (m, t) in d { detached.insert((c.clone(), m), t); }
-    }
-    let frames: BTreeMap<(u16, u32), (String, String)> = plan.frame_of.iter()
-        .filter_map(|(k, (c, m))| Some((*k, (c.clone(), detached.get(&(c.clone(), m.clone()))?.clone())))).collect();
-
-    // the data
-    // a class the data names: its section when this script carries it, else its name
-    let ident_of = |n: &str| {
-        let carried = runtime.provides(n) || pkg.class_named(n).is_some_and(|c| classes.contains(&c.name));
-        if carried { pkg.class_ident(n) } else { None }
-    };
-    out.push_str(&format!("// ---- data: {title} (generated from the package)\nvar DATA = {{}};\n"));
-    // the statics the classes work out, set once as the object starts (`PeptideRuntime.statics`)
-    out.push_str(&format!("DATA.cinits = [{}];\n", cinits.join(", ")));
-    out.push_str(&format!("DATA.units = {{ size: {}, speed: {}, itemToss: {}, accel: {} }};\n", units.size, units.speed, units.item_toss, units.accel));
-    // the source's events the engine raises, by name (runtime/events.jsonc)
-    out.push_str(&compile::events::table().data());
-    out.push_str(&format!("DATA.clipUses = {{ {} }};\n", clip_uses.iter().map(|m| format!("{m}: true")).collect::<Vec<_>>().join(", ")));
-    out.push_str("DATA.timelines = new haxe.ds.IntMap();\nDATA.classes = new haxe.ds.IntMap();\n");
-    // the library bitmaps the timelines place, each a picture whose data is its class
-    let mut bitmaps: BTreeSet<u16> = BTreeSet::new();
-    for s in &symbols {
-        let Some(sp) = model.sprites.get(s) else { continue };
-        // a frame's children as logic sees them: the clips it places that have a class or a name,
-        // and anything else it places under a name (a text field the code writes to: devil's
-        // machine types into one), which is a clip with nothing in it here. a bitmap with a class
-        // and no name is there only for code that walks the children (race to the finish asks a
-        // placed picture its class): with none, a fighter's art frames are not made and dropped
-        // as its clips play
-        let mut names: BTreeSet<String> = BTreeSet::new();
-        // a named child no code can reach (nothing reads its name, holds it as a text, builds it
-        // from a text it starts with or walks the children), whose clip keeps to itself, is not
-        // made: a fighter's frames each place its boxes under names its code never asks for (an
-        // attack's stats name them as keys, which is data), and making them was most of the cost
-        // of a change of state. a stage's planes are found by name, so a stage
-        // makes every one; the runtime asks for a clip's `stance` and `xframe` itself
-        let unreached = |p: &&crate::swf_timeline::Placed| -> bool {
-            let Some(n) = &p.name else { return false };
-            spec.kind != "stage" && !walks_children && n != "stance" && n != "xframe"
-                && !read_names.contains(n) && !texts.contains(n) && !starts.iter().any(|t| n.starts_with(t.as_str()))
-                && keeps_to_itself(model, &pkg, p.char_id, &mut BTreeSet::new())
-        };
-        let frames: Vec<String> = sp.frames.iter().map(|placed| {
-            let kids: Vec<String> = placed.iter().filter(|p| {
-                (model.sprites.contains_key(&p.char_id) && model.symbols.contains_key(&p.char_id)) || p.name.is_some()
-                    || (walks_children && model.bitmaps.contains_key(&p.char_id) && model.symbols.contains_key(&p.char_id))
-            }).filter(|p| !unreached(p)).map(|p| {
-                if model.bitmaps.contains_key(&p.char_id) { bitmaps.insert(p.char_id); }
-                if let Some(n) = &p.name { names.insert(n.clone()); }
-                // where the frame puts it (x, y, scale x and y, rotation in degrees), when it moves it
-                // off the parent's origin: code reads a placed child's place (target test luigi's
-                // damage zones stand where their markers do)
-                let m = &p.matrix;
-                let at = if *m == crate::swf_timeline::Matrix::default() { String::new() } else {
-                    let sx = (m.a * m.a + m.b * m.b).sqrt();
-                    let sy = (m.c * m.c + m.d * m.d).sqrt() * if m.a * m.d - m.b * m.c < 0.0 { -1.0 } else { 1.0 };
-                    let rot = m.b.atan2(m.a).to_degrees();
-                    let n = |v: f64| { let r = (v * 1000.0).round() / 1000.0; if r == 0.0 { "0".to_string() } else { format!("{r}") } };
-                    format!(", [{}, {}, {}, {}, {}]", n(m.tx), n(m.ty), n(sx), n(sy), n(rot))
-                };
-                format!("[{}, {}, {}{at}]", p.depth, p.char_id, p.name.as_deref().map(compile::quote).unwrap_or_else(|| "null".into()))
-            }).collect();
-            format!("[{}]", kids.join(", "))
-        }).collect();
-        let labels: Vec<String> = sp.labels.iter().map(|(f, l)| format!("[{}, {}]", f + 1, compile::quote(l))).collect();
-        // the named children go to the fields of the same name
-        let bind = if names.is_empty() { "null".to_string() } else {
-            let cases: Vec<String> = names.iter().map(|n| {
-                let id = compile::ident(n);
-                if pkg.stored.contains(n) {
-                    format!("case {}: if (me.__c_{id} != null) me.__c_{id}.set(c); else me.{id} = c;", compile::quote(n))
-                } else {
-                    format!("case {}: me.{id} = c;", compile::quote(n))
-                }
-            }).collect();
-            format!("function(me, n, c) {{ switch (n) {{ {} }} }}", cases.join(" "))
-        };
-        out.push_str(&format!("DATA.timelines.set({s}, {{ frames: [{}], labels: [{}], bind: {bind} }});\n", frames.join(", "), labels.join(", ")));
-        if let Some(c) = model.symbols.get(s) {
-            if let Some(id) = pkg.class_ident(c).filter(|_| classes.contains(c) || runtime.provides(c)) {
-                out.push_str(&format!("DATA.classes.set({s}, {id});\n"));
-            }
-        }
-    }
-    if !bitmaps.is_empty() {
-        out.push_str("DATA.bitmaps = new haxe.ds.IntMap();\n");
-        for b in &bitmaps {
-            let (w, h) = model.bitmaps[b];
-            out.push_str(&format!("DATA.bitmaps.set({b}, {{ name: {}, w: {w}, h: {h} }});\n", compile::quote(&model.symbols[b])));
-        }
-    }
-    let pieces_lit: Vec<String> = pieces.iter().map(piece_literal).collect();
-    out.push_str(&format!("DATA.pieces = [\n\t{}\n];\n", pieces_lit.join(",\n\t")));
-    // the animation a label starts, from any other animation of the same clip: where a landing
-    // made by code that is not the clip's own (the fighter's landing lag) takes the fighter
-    let mut lands: Vec<String> = Vec::new();
-    for j in label_jumps(model, pieces).values() {
-        for (label, (anim, start)) in &j.labels {
-            if !start { continue }
-            for from in j.anims.iter().filter(|a| *a != anim) {
-                lands.push(format!("case {}: return {};", compile::quote(&format!("{label}/{from}")), compile::quote(anim)));
-            }
-        }
-    }
-    lands.sort();
-    lands.dedup();
-    // each landing by the animations it lands in: its clip's own, or every animation its label
-    // starts (a landing the fighter's own code sets up for whatever move it is in)
-    let landings: Vec<(crate::compile::Landing, Vec<String>)> = found.into_iter().map(|l| {
-        let anims: BTreeSet<String> = match &l.anim {
-            Some(a) => [a.clone()].into(),
-            None => jumps.values().filter_map(|j| match j.labels.get(&l.label) { Some((a, true)) => Some(a.clone()), _ => None }).collect(),
-        };
-        (l, anims.into_iter().collect())
-    }).collect();
-    let landed: BTreeSet<&String> = landings.iter().flat_map(|(_, a)| a.iter()).collect();
-    out.push_str(&format!("DATA.isLanding = function(a) {{ switch (a) {{ {} default: return false; }} }};\n",
-        landed.iter().map(|a| format!("case {}: return true;", compile::quote(a))).collect::<Vec<_>>().join(" ")));
-    out.push_str(&format!("DATA.lands = function(label, from) {{ switch (label + \"/\" + from) {{ {} default: return null; }} }};\n", lands.join(" ")));
-    out.push_str(&format!("DATA.object = {{ kind: {}, linkage: {}, cls: {}, clip: {}, stats: {} }};\n",
-        compile::quote(spec.kind), compile::quote(&clip), ident_of(&class).unwrap_or_else(|| "null".into()),
-        clip_sym.map(|s| s.to_string()).unwrap_or_else(|| "null".into()), literal(&spec.stats, &ident_of)));
-    out.push_str(&package_data(decls, spec.others, spec.entities, &ident_of));
-    // what the conversion worked out for this object outside its package (a stage's boot)
-    out.push_str(&spec.data);
-    // how a hitbox's stats cross between the source's fields and this engine's (the measured
-    // factors in mappings/character/hitbox_stats.jsonc)
-    let hb = crate::mappings::character_hitbox_stats();
-    let rows: Vec<String> = hb.fields.iter().filter(|f| !f.ssf2_keys.is_empty()).map(|f| format!(
-        "{{ fm: {}, keys: [{}], scale: {}, frames: {}, plus: {}, perDamage: {}, constant: {} }}", compile::quote(&f.fm_field),
-        f.ssf2_keys.iter().map(|k| compile::quote(k)).collect::<Vec<_>>().join(", "),
-        f.scale.map(|v| v.to_string()).unwrap_or_else(|| "null".into()), f.isframe, f.plus_frames,
-        f.unstated_per_damage.map(|v| v.to_string()).unwrap_or_else(|| "null".into()),
-        f.unstated_constant.map(|v| v.to_string()).unwrap_or_else(|| "null".into()))).collect();
-    out.push_str(&format!("DATA.hitboxFields = [\n\t{}\n];\nDATA.frameRatio = {};\n", rows.join(",\n\t"), crate::entity_gen::FRAME_RATIO));
-    let flags: Vec<String> = hb.flags.iter().map(|f| format!("{{ key: {}, when: {}, fm: {}, value: {} }}",
-        compile::quote(&f.ssf2_key), f.when, compile::quote(&f.fm_field), f.value)).collect();
-    out.push_str(&format!("DATA.hitboxFlags = [{}];\n", flags.join(", ")));
-    // ...and the launch a FIXED (`weightKB`) hit gives, which is not the field's own number
-    let fixed = hb.fields.iter().find(|f| f.fm_field == "fixed_knockback")
-        .and_then(|f| Some(format!("{{ perUnit: {}, constant: {} }}", f.per_unit?, f.constant?)))
-        .unwrap_or_else(|| "null".into());
-    out.push_str(&format!("DATA.fixedKnockback = {fixed};\n"));
-    // its entity's keyframes run its frames, and the engine plays them (see `clock_entity`)
-    // a fighter's stats as this engine keeps them: the names the source reads them by, the unit
-    // of each, and a record of one stat for a write (mappings/character/stats.jsonc)
-    {
-        let st = crate::mappings::character_stats();
-        let mut names: Vec<(String, Value)> = st.fm_runtime_read_names.iter().map(|(k, v)| (k.clone(), Value::Str(v.clone()))).collect();
-        names.push(("weight1".into(), Value::Str("weight".into())));
-        let units: Vec<String> = st.runtime_read_units.iter().map(|(u, list)| format!("{}: [{}]", compile::ident(u),
-            list.iter().map(|n| compile::quote(n)).collect::<Vec<_>>().join(", "))).collect();
-        let cases: Vec<String> = st.fm_runtime_stats.iter().filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-            .map(|n| format!("case {}: return {{ {n}: v }};", compile::quote(n))).collect();
-        // what a read answers for a stat no character states (stats.jsonc `runtime_read_defaults`)
-        let defaults: Vec<String> = st.runtime_read_defaults.iter()
-            .map(|(k, v)| format!("case {}: return {v};", compile::quote(k))).collect();
-        out.push_str(&format!("DATA.stats = {{ names: {}, units: {{ {} }}, defaults: function(k) {{ switch (k) {{ {} default: return null; }} }}, record: function(k, v) {{ switch (k) {{ {} default: return null; }} }} }};\n",
-            literal(&Value::Obj(names), &|_| None), units.join(", "), defaults.join(", "), cases.join(" ")));
-    }
-    // the API calls its code can reach by a name it builds as it runs
-    if let Some(t) = compile::api_lookup_table(model, runtime) { out.push_str(&t); }
-    // the shared effects its code names, as this engine's global ones (mappings/commands.jsonc)
-    out.push_str("DATA.globalVfx = new haxe.ds.StringMap();\n");
-    let lits = compile::string_literals(model);
-    for (name, constant) in &crate::mappings::api_commands().global_vfx_map {
-        if lits.contains(name) {
-            out.push_str(&format!("DATA.globalVfx.set({}, GlobalVfx.{constant});\n", compile::quote(name)));
-        }
-    }
-    // the effects, by linkage: the clip each runs and the animations that show it
-    out.push_str("DATA.effects = new haxe.ds.StringMap();\n");
-    for (name, ps) in spec.effects {
-        out.push_str(&format!("DATA.effects.set({}, [{}]);\n", compile::quote(name),
-            ps.iter().map(piece_literal).collect::<Vec<_>>().join(", ")));
-    }
-    // a stage's object can have no clip by design (a zone its code sizes): it runs on an empty one
-    if clip_sym.is_none() && spec.kind != "object" { problems.push(format!("the {} clip {clip} is no symbol", spec.kind)); }
-
-    // a projectile's own frame work: only the pieces its declaration or its code names
-    if spec.kind == "projectile" {
-        // what it says itself: its declared stats, its own class and the ones it extends, and the
-        // code on its own frames (not the package's other classes, which every script carries)
-        let mut text = format!("{:?}", spec.stats);
-        let declared = text.len();
-        // (its code is the classes bound to its clip and to the clips placed inside it, where the
-        // declaration names a base: pikachu's jolt hops from a clip it places)
-        let tree = clip_tree(model, clip_sym);
-        let own: Vec<String> = std::iter::once(class.clone())
-            .chain(tree.iter().filter_map(|s| model.class_of(*s)).map(|c| c.name.clone()))
-            .flat_map(|n| { let mut v = vec![n.clone()]; v.extend(model.supers(&n)); v }).collect();
-        // (the API classes it extends are the runtime's, which names everything)
-        for name in own {
-            if runtime.provides(&name) { continue }
-            let Some(c) = model.classes.get(&name) else { continue };
-            for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor, &c.static_init]) {
-                ast::walk_exprs(&f.body, &mut |e| if let Expr::Member(_, n) | Expr::Name(n) | Expr::Str(n) = e { text.push(' '); text.push_str(n); });
-            }
-        }
-        for ((s, _), (_, t)) in &frames { if tree.contains(s) { text.push_str(t) } }
-        let item = decls.items.entries().iter().any(|(n, d)| n == title
-            || d.get("linkage_id").and_then(|v| v.str()) == Some(clip.as_str()));
-        // what its declared stats have it do as it flies, as code of its own (runtime/
-        // projectile_stats.jsonc), where nothing changes them as it flies: its code names none of
-        // them, and every declaration sharing its clip states them alike. a held item flies by its
-        // holder, and keeps the runtime's
-        let code = &text[declared..];
-        let stats: BTreeMap<String, f64> = spec.stats.entries().iter().filter_map(|(k, v)| match v {
-            Value::Num(n) => Some((k.clone(), *n)), Value::Bool(b) => Some((k.clone(), if *b { 1.0 } else { 0.0 })), _ => None }).collect();
-        let entity = spec.entities.get(title);
-        let sharing: Vec<&Value> = decls.projectiles.entries().iter().chain(decls.items.entries())
-            .filter(|(n, d)| (entity.is_some() && spec.entities.get(n) == entity) || d.get("linkage_id").and_then(|v| v.str()) == Some(clip.as_str()))
-            .map(|(_, d)| d).collect();
-        let written = |k: &str| crate::dyn_re(&format!(r"\b{k}\b")).is_match(code)
-            || sharing.iter().any(|d| format!("{:?}", d.get(k)) != format!("{:?}", spec.stats.get(k)));
-        let units_of = [("speed", units.speed), ("accel", units.accel), ("size", units.size)];
-        let names: BTreeMap<String, String> = spec.stats.entries().iter().filter_map(|(k, v)| v.str().map(|s| (k.clone(), s.to_string()))).collect();
-        // an effect it names, as the engine's effect stats: a shared one is this engine's global
-        // one, else the one it carries (one it has neither of draws nothing, and keeps the runtime's)
-        let effect = |n: &str| match crate::mappings::api_commands().global_vfx_map.iter().find(|(g, _)| g.as_str() == n) {
-            Some((_, c)) => Some(format!("spriteContent: \"global::vfx.vfx\", animation: GlobalVfx.{c}")),
-            None => spec.effects.get(n).and_then(|ps| ps.first()).map(|p|
-                format!("spriteContent: self.getResource().getContent({}), animation: {}", compile::quote(n), compile::quote(&p.fm_name))),
-        };
-        let taken = if item { Default::default() } else { compile::projectile_stats::table().rows(&stats, &names, &effect, &written, &units_of) };
-        out.push_str(&projectile_frames(&text, item, &taken.replaced));
-        if !taken.calls.is_empty() {
-            out.push_str("// ---- what its declared stats have it do each frame it flies: runtime/projectile_stats.jsonc\n");
-            for l in &taken.code { out.push_str(l); out.push('\n'); }
-        }
-        flies = taken.frame;
-    }
-    if let Some(n) = &native {
-        // and each animation's next: the one that shows the clip's next frame once it is played
-        // out (the clip plays on into its next section; a projectile's animation that ends on its
-        // own ends the projectile, so the update moves it on)
-        out.push_str("DATA.nativeSyms = new haxe.ds.IntMap();\nDATA.sections = new haxe.ds.StringMap();\n");
-        for s in &n.syms { out.push_str(&format!("DATA.nativeSyms.set({s}, true);\n")); }
-        // (a fighter's engine ends its own animations: only one whose clip plays on into another
-        // its engine has no way to, a charge let go into its attack, goes on)
-        for p in pieces.iter().filter(|p| n.fighter && !p.borrowed) {
-            if let Some(on) = &p.on { out.push_str(&format!("DATA.sections.set({}, {});\n", compile::quote(&p.fm_name), compile::quote(on))); }
-        }
-        for p in pieces.iter().filter(|p| !n.fighter && !p.borrowed && !p.reversed && p.head == 0) {
-            let total = model.sprites.get(&p.sym).map(|s| s.frames.len() as u32).unwrap_or(0);
-            let next = if p.from + p.frames > total { 1 } else { p.from + p.frames };
-            let Some(q) = pieces.iter().find(|q| !q.borrowed && q.sym == p.sym && next >= q.from && next < q.from + q.frames) else { continue };
-            if q.fm_name != p.fm_name {
-                out.push_str(&format!("DATA.sections.set({}, {});\n", compile::quote(&p.fm_name), compile::quote(&q.fm_name)));
-            }
-        }
-    }
-    // the entry: what the engine calls
-    let entry = format!("entry/{}.hx", spec.kind);
-    match runtime.files.get(&entry) {
-        Some(text) => {
-            // (a projectile's update calls its stats' frame function only where they wrote one)
-            let frame = compile::projectile_stats::table().frame_call();
-            let setters: Vec<String> = if spec.kind == "projectile" {
-                compile::native::others_write_stats(model).into_iter()
-                    .filter(|k| !matches!(compile::native::stat_row(k), Some(compile::native::StatRow::Engine(_) | compile::native::StatRow::Note(_))))
-                    .map(|k| format!("\tself.exports.__{} = {{ set: function(v) {{ PeptideRuntime.run(function() {{ PeptideProjectile.updateProjectileStats(PeptideRuntime.object, {{ {}: v }}); }}); }} }};\n",
-                        compile::ident(&k), compile::ident(&k))).collect()
-            } else { Vec::new() };
-            let text: String = text.lines().filter(|l| flies.is_some() || frame.as_ref().is_none_or(|f| !l.contains(f.as_str())))
-                .map(|l| if l.trim() == "// {setters}" { setters.concat() } else { format!("{l}\n") }).collect();
-            out.push_str(&format!("\n// ---- runtime: runtime/{entry}\n{text}"))
-        }
-        None => problems.push(format!("the runtime has no {entry}")),
-    }
-    // the runtime: its language layer first, then everything else in path order, pruned to what
-    // this object's script and the code on its keyframes reach
-    let mut files: Vec<(&str, &str)> = runtime.files.iter().filter(|(p, _)| !p.starts_with("entry/"))
-        .map(|(p, t)| (p.as_str(), t.as_str())).collect();
-    files.sort_by_key(|(p, _)| (!p.starts_with("core/as3"), !p.starts_with("core/"), p.to_string()));
-    let mut seed = out[runtime_at..].to_string();
-    for (_, text) in frames.values() { seed.push_str(text); }
-    seed.push_str(&spec.keyed);
-    // what the entity's keyframes call (`clock_entity`)
-    if native.is_some() { seed.push_str(" PeptideRuntime.clipAt PeptideRuntime.frameDone PeptideRuntime.passing PeptideRuntime.born PeptideRuntime.enterLabel PeptideRuntime.entered PeptideRuntime.leadIn "); }
-    let kept = shake::shake(&files, &seed);
-    let kept = format!("{kept}{}", rollback_fields(&kept));
-    out.insert_str(runtime_at, &kept);
-    Emitted { script: out, problems, unknown, frames, landings, native }
-}
-
 /// The fighter's script, written after `haxe_gen::generate` has written everything else (art,
 /// boxes, stats, the splits, and an entity with every frame and no code on it).
-pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal: &str,
+pub fn fighter(char_dir: &std::path::Path, char_name: &str, char_pascal: &str,
                        data: &crate::extractor::CharacterData,
                        sprite_boxes: &BTreeMap<String, crate::sprite_parser::AnimationBoxData>,
-                       input_path: &std::path::Path) -> anyhow::Result<Emitted> {
+                       input_path: &std::path::Path) -> anyhow::Result<()> {
     let runtime = Runtime::locate().map(|d| Runtime::load(&d)).unwrap_or_default();
     let (model, renamed) = runtime.read_package(&std::fs::read(input_path)?)?;
     let fighters = model.fighters();
@@ -1034,9 +325,20 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     let mut lent_of: BTreeMap<String, &SourceModel> = BTreeMap::new();
     for (m, decls) in &lent {
         for (key, decl) in decls {
-            let mut items = with_lent.items.entries().to_vec();
-            items.push((key.clone(), decl.clone()));
-            with_lent.items = Value::Obj(items);
+            // (one the conversion drew no art for has nothing to show: not lent)
+            if !projectile_pieces.keys().any(|k| k.eq_ignore_ascii_case(key)) { continue }
+            // (a projectile by its class, `PeptideProjectile` extended; else an item)
+            let class = decl.get("classAPI").and_then(|v| v.class()).and_then(|c| m.classes.get(c).or_else(|| m.classes.values().find(|x| compile::short(&x.name) == c)));
+            let projectile = class.is_some_and(|c| std::iter::once(c.super_name.clone()).chain(m.supers(&c.name)).any(|s| compile::short(&s) == "PeptideProjectile"));
+            if projectile {
+                let mut list = with_lent.projectiles.entries().to_vec();
+                list.push((key.clone(), decl.clone()));
+                with_lent.projectiles = Value::Obj(list);
+            } else {
+                let mut items = with_lent.items.entries().to_vec();
+                items.push((key.clone(), decl.clone()));
+                with_lent.items = Value::Obj(items);
+            }
             entities.insert(key.clone(), key.clone());
             lent_of.insert(key.clone(), m);
             unplaced.retain(|u| !u.starts_with(&format!("{key}: made from another package")));
@@ -1059,31 +361,27 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
         autolink_calls(&links, &entity_hitboxes(&json), &stated)
     };
     for l in &links { unplaced.extend(l.dropped.iter().map(|d| format!("{} autolink, {d}: the engine's autolink has no such setting", l.anim))); }
-    let mut cancels = attack_cancels(data, &model, &pieces, units, false);
     let mut native_cancels = attack_cancels(data, &model, &pieces, units, true);
     // what each attack's declared stats have its animations run on their first frame
     // (`code` in runtime/attack_stats.jsonc)
     // (they start a timer on a function written into its script once)
     let mut taken = std::collections::BTreeSet::new();
     for a in &data.attacks {
-        let code = compile::attack_stats::table().first_frame(&a.stats);
-        let native_code = compile::attack_stats::table().first_frame_of(&a.stats, true);
-        if code.is_empty() { continue }
+        let native_code = compile::attack_stats::table().first_frame(&a.stats);
+        if native_code.is_empty() { continue }
         // every animation under the source label the attack's own animation is
         let fm = data.ssf2_to_fm_anim.get(&a.ssf2_name).cloned().unwrap_or_else(|| a.name.clone());
         let Some(label) = pieces.iter().find(|p| p.fm_name == fm).map(|p| p.label.clone()).filter(|l| !l.is_empty()) else { continue };
         for p in pieces.iter().filter(|p| p.label == label) {
-            for (into, code) in [(&mut cancels, &code), (&mut native_cancels, &native_code)] {
-                let c = into.entry(p.fm_name.clone()).or_default();
-                for (first, t, key) in code {
-                    if *first && p.fm_name != fm { continue }
-                    taken.insert(key.clone());
-                    // two rows that share a timer write its start once
-                    for line in t.lines() {
-                        if c.lines().any(|l| l == line) { continue }
-                        if !c.is_empty() { c.push('\n'); }
-                        c.push_str(line);
-                    }
+            let c = native_cancels.entry(p.fm_name.clone()).or_default();
+            for (first, t, key) in &native_code {
+                if *first && p.fm_name != fm { continue }
+                taken.insert(key.clone());
+                // two rows that share a timer write its start once
+                for line in t.lines() {
+                    if c.lines().any(|l| l == line) { continue }
+                    if !c.is_empty() { c.push('\n'); }
+                    c.push_str(line);
                 }
             }
         }
@@ -1094,28 +392,21 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     for (anim, parts) in &compile::engine_anims::table().code {
         if !has(anim) { continue }
         for (_, code) in parts.iter().filter(|(needs, _)| needs.as_deref().is_none_or(has)) {
-            for into in [&mut cancels, &mut native_cancels] {
-                let c = into.entry(anim.clone()).or_default();
-                if !c.is_empty() { c.push('\n'); }
-                c.push_str(code);
-            }
+            let c = native_cancels.entry(anim.clone()).or_default();
+            if !c.is_empty() { c.push('\n'); }
+            c.push_str(code);
         }
     }
     // (the scale of the source's pixels, filled in)
-    for c in cancels.values_mut().chain(native_cancels.values_mut()) { *c = c.replace("{size}", &literal(&Value::Num(units.size), &|_| None)); }
-    let keyed: String = cancels.values().cloned().collect::<Vec<_>>().join("\n");
-    let mut stat_code = compile::attack_stats::table().code(&taken);
-    // (a fighter written as Fraymakers code takes a row's own lines for it, where it has them)
-    let mut native_stat_code = compile::attack_stats::table().code_of(&taken, true);
+    for c in native_cancels.values_mut() { *c = c.replace("{size}", &literal(&Value::Num(units.size), &|_| None)); }
+    let keyed: String = native_cancels.values().cloned().collect::<Vec<_>>().join("\n");
+    let mut native_stat_code = compile::attack_stats::table().code(&taken);
     // the functions the source's own states run, for the ones its animations' code names
     for (name, lines) in &compile::engine_anims::table().functions {
-        if regex::Regex::new(&format!(r"\b{name}\b")).is_ok_and(|r| r.is_match(&keyed)) { stat_code.extend(lines.iter().cloned()); native_stat_code.extend(lines.iter().cloned()); }
+        if regex::Regex::new(&format!(r"\b{name}\b")).is_ok_and(|r| r.is_match(&keyed)) { native_stat_code.extend(lines.iter().cloned()); }
     }
     let size_text = literal(&Value::Num(units.size), &|_| None);
-    for l in stat_code.iter_mut().chain(native_stat_code.iter_mut()) { *l = l.replace("{size}", &size_text); }
-    let stat_code = if stat_code.is_empty() { String::new() } else {
-        format!("// ---- what its attacks' declared stats and the source's own states have it do: runtime/attack_stats.jsonc, runtime/engine_animations.jsonc\n{}\n", stat_code.join("\n"))
-    };
+    for l in native_stat_code.iter_mut() { *l = l.replace("{size}", &size_text); }
     // its own code as Fraymakers code, where it can be (`native_fighter`)
     let anim_of: BTreeMap<String, String> = data.ssf2_to_fm_anim.iter().map(|(l, a)| (l.clone(), a.clone())).collect();
     let entity_keys: BTreeSet<String> = projectile_pieces.keys().cloned().collect();
@@ -1125,70 +416,48 @@ pub fn runtime_fighter(char_dir: &std::path::Path, char_name: &str, char_pascal:
     let fighting = native_fighter::Fighting { model: &model, runtime: &runtime, fighter, pieces: &pieces, units, effects: &effects, entities: &entities, anim_of: &anim_of, entity_keys: &entity_keys, frame_links: &frame_links, autolink: &calls, parts: &data.parts, part_placements: &data.part_placements, content: char_name,
         palette: std::fs::read_to_string(char_dir.join("library/costumes.palettes")).ok().and_then(|t| native_fighter::palette_of(&t)), effect_inners: &effect_inners };
     let stat_lines = native_stat_code;
-    let natively_written = if std::env::var("PEPTIDE_NATIVE_FIGHTERS").map(|v| v != "0").unwrap_or(true) {
-        native_fighter::write(char_dir, char_pascal, char_name, &fighting, &native_cancels, &stat_lines)
-    } else { Err(vec!["written on the runtime (PEPTIDE_NATIVE_FIGHTERS=0)".into()]) };
-    let fighter_census = natively_written.as_ref().err().cloned().unwrap_or_default();
-    let out = fighter_script(&model, &runtime, fighter, &pieces, units, char_name, &others, &effects, &entities, calls, keyed, stat_code);
-    // the animation each of the source's labels is here (an attack started from outside the
-    // fighter's code is entered by it)
-    let anim_of: Vec<String> = data.ssf2_to_fm_anim.iter()
-        .map(|(l, a)| format!("case {}: return {};", compile::quote(l), compile::quote(a))).collect();
-    let script = format!("{}DATA.animOf = function(l) {{ switch (l) {{ {} default: return null; }} }};\n", out.script, anim_of.join(" "));
-    if let Ok((native, _, _)) = &natively_written {
-        std::fs::write(dir.join("Script.hx"), native)?;
-    } else {
-        std::fs::write(dir.join("Script.hx"), &script)?;
-        clock_entity(&char_dir.join(format!("library/entities/{char_pascal}.entity")), char_name, &model, &pieces, &out.frames, &cancels, out.native.as_ref())?;
-        landing_stats(&dir, &out.landings, &label_jumps(&model, &pieces))?;
-    }
+    let (script, fighter_gaps, meta) = native_fighter::write(char_dir, char_pascal, char_name, &fighting, &native_cancels, &stat_lines)
+        .map_err(|why| anyhow::anyhow!("{}", why.join("; ")))?;
+    std::fs::write(dir.join("Script.hx"), &script)?;
     // what a clip's frame writes of its boxes as it starts an animation is that animation's own
     let box_writes = entry_box_writes(&model, &pieces);
     landing_stats(&dir, &box_writes, &label_jumps(&model, &pieces))?;
     autolink_entity(&entity_path, &dir.join("HitboxStats.hx"), char_name, &links, units.size)?;
     engine_animations(&entity_path, &dir.join("AnimationStats.hx"), char_name)?;
-    if let Ok((_, _, meta)) = &natively_written { native_fighter::write_attack_meta(&dir.join("AnimationStats.hx"), meta)?; }
-    // each projectile and item the fighter declares runs on the runtime too
-    let owner = native_projectile::Owner { attacks: &fighter.attacks, stats: &fighter.stats, anims: pieces.iter().map(|p| (p.fm_name.clone(), p.label.clone())).collect(), native: natively_written.is_ok() };
-    let mut natively: Vec<(String, Result<(), String>)> = Vec::new();
+    native_fighter::write_attack_meta(&dir.join("AnimationStats.hx"), &meta)?;
+    // each projectile and item the fighter declares, and each object it makes by class
+    let owner = native_projectile::Owner { attacks: &fighter.attacks, stats: &fighter.stats, anims: pieces.iter().map(|p| (p.fm_name.clone(), p.label.clone())).collect(), native: true, origin: (0.0, 0.0) };
     let mut item_gaps: Vec<(String, String)> = Vec::new();
-    let projectiles = runtime_projectiles(char_dir, &model, &runtime, fighter, units, &others,
-        &effects, &entities, &mut projectile_pieces, &mut unplaced, &owner, &mut natively, &mut item_gaps, &lent_of)?;
+    let projectiles = fighter_projectiles(char_dir, &model, &runtime, fighter, units,
+        &effects, &entities, &mut projectile_pieces, &mut unplaced, &owner, &mut item_gaps, &lent_of)?;
     // every item is a custom game object carrying the item handler
     for (name, _) in fighter.items.entries() {
         let Some(key) = entities.get(name) else { continue };
         custom_game_object(char_dir, key)?;
     }
     let report = serde_json::json!({
-        // whether the fighter's own code is written as Fraymakers code, and what keeps it on the
-        // runtime, function by function, where it is not
-        "fighter_native": natively_written.is_ok(),
-        "fighter_on_runtime": fighter_census,
-        // what its source does that its Fraymakers code does not
-        "fighter_gaps": natively_written.as_ref().map(|(_, g, _)| g.iter().cloned().collect::<Vec<_>>()).unwrap_or_default(),
-        "problems": out.problems.iter().chain(projectiles.iter().flat_map(|(_, e)| e.problems.iter())).collect::<Vec<_>>(),
+        // what its source does that its Fraymakers code does not, the fighter's own and each
+        // projectile's and item's
+        "gaps": fighter_gaps.iter().collect::<Vec<_>>(),
+        "projectile_gaps": projectiles.iter().map(|(n, g)| (n.clone(), serde_json::json!(g))).collect::<serde_json::Map<_, _>>(),
         "unplaced": unplaced,
-        "unknown": out.unknown.iter().chain(projectiles.iter().flat_map(|(_, e)| e.unknown.iter())).collect::<BTreeSet<_>>(),
         "projectiles": projectiles.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-        // the projectiles written as Fraymakers code, and why each other one is still the runtime's
-        "native": natively.iter().filter(|(_, r)| r.is_ok()).map(|(n, _)| n).collect::<Vec<_>>(),
         // the items whose own code is not written, which carry the item handler alone, and why
         "items_without_own_code": item_gaps.iter().map(|(n, why)| (n.clone(), serde_json::Value::String(why.clone()))).collect::<serde_json::Map<_, _>>(),
-        "on_runtime": natively.iter().filter_map(|(n, r)| r.as_ref().err().map(|e| (n.clone(), serde_json::Value::String(e.clone())))).collect::<serde_json::Map<_, _>>(),
         // the box stats an animation took from what its clip writes as it starts (by the source's
         // box number and field names), so a check against the declared boxes knows them
         "box_writes": box_writes.iter().map(|(l, _)| (l.anim.clone().unwrap_or_default(), serde_json::Value::Object(
             l.boxes.iter().map(|(i, f)| (i.to_string(), serde_json::Value::Object(
                 f.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect()))).collect()))).collect::<serde_json::Map<_, _>>(),
     });
-    std::fs::write(char_dir.join("runtime_report.json"), serde_json::to_string_pretty(&report)?)?;
+    std::fs::write(char_dir.join("port_report.json"), serde_json::to_string_pretty(&report)?)?;
     // the plan the verify gates hold the fighter to gains the walk speeds its walk clips set
     let plan_path = char_dir.join("verify.json");
     if let Some(mut plan) = std::fs::read(&plan_path).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) {
         plan["walk_script_speeds"] = serde_json::json!(walk_script_speeds(&model, fighter, &pieces, units.speed));
         std::fs::write(&plan_path, serde_json::to_string_pretty(&plan)?)?;
     }
-    Ok(out)
+    Ok(())
 }
 
 /// An item written as Fraymakers code, made a custom game object: its entity, its script and its
@@ -1215,160 +484,6 @@ fn custom_game_object(char_dir: &std::path::Path, key: &str) -> anyhow::Result<(
         std::fs::write(&manifest, serde_json::to_string_pretty(&json)?)?;
     }
     Ok(())
-}
-
-/// An entity's animations carry the source's frames on their keyframes: the clip the engine plays
-/// as the object's own (`native_clip`) has each frame's code on its keyframe, the code itself or the
-/// clip's own method for that frame, run on the clip, and each animation's first keyframe enters it.
-pub(crate) fn clock_entity(path: &std::path::Path, key: &str, model: &SourceModel, pieces: &[Piece],
-                frames: &BTreeMap<(u16, u32), (String, String)>, extra: &BTreeMap<String, String>,
-                native: Option<&Native>) -> anyhow::Result<()> {
-    let Some(n) = native else { return Ok(()) };
-    let Ok(bytes) = std::fs::read(path) else { return Ok(()) };
-    let mut json: serde_json::Value = serde_json::from_slice(&bytes)?;
-    // a frame's code on its keyframe, run on the clip: the frame's own script, or its method
-    let native_code = |sym: u16, f: u32| -> Option<String> {
-        if let Some((class, text)) = frames.get(&(sym, f)) {
-            let text = text.replacen("function()", "function(me)", 1);
-            return Some(format!("// frame {f} of {class}\n({text})(PeptideRuntime.clipAt({f}));\nPeptideRuntime.frameDone();"));
-        }
-        let (c, m) = model.class_of(sym).and_then(|c| c.frame_scripts.iter().find(|fs| fs.frame + 1 == f).map(|fs| (c.name.clone(), fs.method.clone())))?;
-        Some(format!("// frame {f} of {c}: its `{m}`\nPeptideRuntime.clipAt({f}).{}();\nPeptideRuntime.frameDone();", compile::ident(&m)))
-    };
-    let mut new_keyframes: Vec<serde_json::Value> = Vec::new();
-    let mut new_layers: Vec<serde_json::Value> = Vec::new();
-    let mut layer_of: BTreeMap<String, String> = BTreeMap::new();
-    let mut label_of: BTreeMap<String, String> = BTreeMap::new();
-    {
-        let kfs: BTreeMap<String, u64> = json["keyframes"].as_array().map(|a| a.iter().filter_map(|k|
-            Some((k["$id"].as_str()?.to_string(), k["length"].as_u64().unwrap_or(1)))).collect()).unwrap_or_default();
-        let lens: BTreeMap<String, u64> = json["layers"].as_array().map(|a| a.iter().filter_map(|l| {
-            let n: u64 = l["keyframes"].as_array()?.iter().filter_map(|k| kfs.get(k.as_str()?)).sum();
-            Some((l["$id"].as_str()?.to_string(), n))
-        }).collect()).unwrap_or_default();
-        for p in pieces {
-            let Some(anim) = json["animations"].as_array().and_then(|a| a.iter().find(|x| x["name"] == p.fm_name.as_str())) else { continue };
-            let total = anim["layers"].as_array().map(|ls| ls.iter().filter_map(|l| lens.get(l.as_str()?)).copied().max().unwrap_or(0)).unwrap_or(0) as u32;
-            if total == 0 { continue }
-            // (a native object's own clip the runtime keeps: `runtime_clip`)
-            if !n.syms.contains(&p.sym) { continue }
-            // the entry that puts the object's clip on the label that places this one
-            let enter = match n.under.get(&p.fm_name) { Some(l) => format!("PeptideRuntime.enterLabel({});\n", compile::quote(l)), None => String::new() };
-            // (engine frame, source frame) for each keyframe: only frames with code, and the clip's
-            // first frame on the engine's second as well, for the object's birth. the clip frame
-            // each source frame of the animation shows: its section in the order it plays
-            // (backwards for one played backwards), then its lead-in's
-            let mut at: Vec<(u32, u32)> = Vec::new();
-            for k in 0..(p.frames + p.head) {
-                let f = if k >= p.frames { 1 + (k - p.frames) } else if p.reversed { p.from + p.frames - 1 - k } else { p.from + k };
-                // (a fighter's every animation has an entry: its rules hear of it)
-                let entry = k == 0 && (!enter.is_empty() || n.fighter || extra.contains_key(&p.fm_name));
-                if native_code(p.sym, f).is_none() && !entry { continue }
-                at.push((2 * k, f));
-                if k == 0 && f == 1 { at.push((1, f)); }
-            }
-            let tag = format!("{key}::{}::clock", p.fm_name);
-            let mut ids: Vec<String> = Vec::new();
-            let mut cursor = 0u32;
-            for (i, f) in at.into_iter().filter(|(i, _)| *i < total) {
-                if i > cursor {
-                    let id = crate::uuid_gen::det_uuid(&format!("{tag}::gap{cursor}"));
-                    new_keyframes.push(serde_json::json!({ "$id": id, "type": "FRAME_SCRIPT", "length": i - cursor, "code": "", "pluginMetadata": {} }));
-                    ids.push(id);
-                }
-                let id = crate::uuid_gen::det_uuid(&format!("{tag}::{i}"));
-                let text = {
-                    let own = native_code(p.sym, f).unwrap_or_default();
-                    // a fighter's entry goes through its rules: an animation the engine starts is
-                    // entered once the engine has entered its state, one its code starts at once;
-                    // a variant of the engine's (a turn borrowing the stand's frames) is not a new
-                    // clip, and keeps the one it is on
-                    let entry = |body: String| if n.fighter {
-                        format!("PeptideRuntime.entered({}, {}, function() {{\n{body}\n}});{}", compile::quote(&p.fm_name), p.borrowed,
-                            extra.get(&p.fm_name).map(|x| format!("\n{x}")).unwrap_or_default())
-                    } else { body };
-                    match (i, f) {
-                        // the clip's first frame as the object is made: on the second engine frame
-                        (1, _) => format!("// this is frame 1 of the clip in SSF2, run here for compatibility as the object is made:\n// SSF2 runs a new clip's first frame at the end of the frame it was made in, after its maker's\n// code (which can place it, set it up or send it to another frame first, and then this never\n// runs), where Fraymakers runs a new object's first keyframe while making it. entered any other\n// way, the frame runs on the first engine frame as usual\nif (PeptideRuntime.born == true) {{\n{enter}{own}\n}}"),
-                        // entered later (a jump, a loop, the engine's own state); and an animation's
-                        // first frame passed through by a jump into its middle does not run
-                        (0, 1) => format!("if (PeptideRuntime.born != true) {{\n{}\n}}", entry(format!("{enter}if (PeptideRuntime.passing != true) {{\n{own}\n}}"))),
-                        (0, _) => entry(format!("{enter}if (PeptideRuntime.passing != true) {{\n{own}\n}}")),
-                        _ => own,
-                    }
-                };
-                // a clip still in its lead-in plays that out first: the animation the engine starts it
-                // on (as the object is made) runs none of its frames until the clip reaches them
-                let text = if n.lead_in.contains(&p.sym) { format!("if (!PeptideRuntime.leadIn(PeptideRuntime.shownClip())) {{\n{text}\n}}") } else { text };
-                new_keyframes.push(serde_json::json!({ "$id": id, "type": "FRAME_SCRIPT", "length": 1,
-                    "code": text, "pluginMetadata": {} }));
-                ids.push(id);
-                cursor = i + 1;
-            }
-            if cursor < total {
-                let id = crate::uuid_gen::det_uuid(&format!("{tag}::tail"));
-                new_keyframes.push(serde_json::json!({ "$id": id, "type": "FRAME_SCRIPT", "length": total - cursor, "code": "", "pluginMetadata": {} }));
-                ids.push(id);
-            }
-            let layer = crate::uuid_gen::det_uuid(&format!("{tag}::layer"));
-            new_layers.push(serde_json::json!({ "$id": layer, "name": "Source frames", "type": "FRAME_SCRIPT",
-                "keyframes": ids, "hidden": false, "locked": false, "pluginMetadata": {} }));
-            layer_of.insert(p.fm_name.clone(), layer);
-            // the source's labels, for a jump its code makes by one, where the animation has none
-            // (a projectile's entity is written without them)
-            let labelled = anim["layers"].as_array().is_some_and(|ls| ls.iter().any(|l| l.as_str().and_then(|id| json["layers"].as_array()?.iter().find(|x| x["$id"] == id)).is_some_and(|x| x["type"] == "LABEL" && x["name"] != "Source labels")));
-            if !labelled && !p.reversed {
-                let mut marks: Vec<(u32, String)> = model.sprites.get(&p.sym).map(|s| s.labels.iter()
-                    .map(|(f0, l)| (*f0 as u32 + 1, l.clone()))
-                    .filter(|(f, _)| *f > p.from && *f < p.from + p.frames)
-                    .map(|(f, l)| (2 * (f - p.from), l)).collect()).unwrap_or_default();
-                let shadowed = marks.iter().any(|(_, l)| *l == p.fm_name);
-                marks.insert(0, (0, if shadowed { String::new() } else { p.fm_name.clone() }));
-                marks.retain(|(i, _)| *i < total);
-                let ltag = format!("{key}::{}::labels", p.fm_name);
-                let mut lids: Vec<String> = Vec::new();
-                for (n, (at, name)) in marks.iter().enumerate() {
-                    let next = marks.get(n + 1).map(|(i, _)| *i).unwrap_or(total);
-                    let id = crate::uuid_gen::det_uuid(&format!("{ltag}::{at}"));
-                    new_keyframes.push(serde_json::json!({ "$id": id, "type": "LABEL", "length": (next - at).max(1), "name": name, "pluginMetadata": {} }));
-                    lids.push(id);
-                }
-                let lid = crate::uuid_gen::det_uuid(&format!("{ltag}::layer"));
-                new_layers.push(serde_json::json!({ "$id": lid, "name": "Source labels", "type": "LABEL",
-                    "keyframes": lids, "hidden": false, "locked": false, "pluginMetadata": {} }));
-                label_of.insert(p.fm_name.clone(), lid);
-            }
-        }
-    }
-    if layer_of.is_empty() { return Ok(()) }
-    // a conversion run again replaces the layer it wrote before
-    let old: BTreeSet<String> = json["layers"].as_array().map(|a| a.iter()
-        .filter(|l| l["name"] == "Source frames" || l["name"] == "Source labels").filter_map(|l| l["$id"].as_str().map(String::from)).collect()).unwrap_or_default();
-    let old_kfs: BTreeSet<String> = json["layers"].as_array().map(|a| a.iter()
-        .filter(|l| old.contains(l["$id"].as_str().unwrap_or("")))
-        .flat_map(|l| l["keyframes"].as_array().cloned().unwrap_or_default())
-        .filter_map(|k| k.as_str().map(String::from)).collect()).unwrap_or_default();
-    if let Some(a) = json["layers"].as_array_mut() { a.retain(|l| !old.contains(l["$id"].as_str().unwrap_or(""))); a.extend(new_layers); }
-    if let Some(a) = json["keyframes"].as_array_mut() { a.retain(|k| !old_kfs.contains(k["$id"].as_str().unwrap_or(""))); a.extend(new_keyframes); }
-    if let Some(a) = json["animations"].as_array_mut() {
-        for anim in a.iter_mut() {
-            let name = anim["name"].as_str().unwrap_or("").to_string();
-            if let Some(ls) = anim["layers"].as_array_mut() {
-                ls.retain(|l| !old.contains(l.as_str().unwrap_or("")));
-                if let Some(layer) = layer_of.get(&name) { ls.push(serde_json::Value::String(layer.clone())); }
-                if let Some(layer) = label_of.get(&name) { ls.push(serde_json::Value::String(layer.clone())); }
-            }
-        }
-    }
-    std::fs::write(path, serde_json::to_string_pretty(&json)?)?;
-    Ok(())
-}
-
-/// A projectile's entity: its keyframes, each frame's code on its own where the engine plays the
-/// clip as its own (`native_clip`)
-pub(crate) fn native_entity(entity: &std::path::Path, key: &str, model: &SourceModel,
-                            pieces: &[Piece], emitted: &Emitted) -> anyhow::Result<()> {
-    clock_entity(entity, key, model, pieces, &emitted.frames, &BTreeMap::new(), emitted.native.as_ref())
 }
 
 /// An attack that declares `cancel` can be cut short: while it plays, holding the button it was
@@ -1496,41 +611,68 @@ pub(crate) fn entity_animations(path: &std::path::Path) -> BTreeSet<String> {
 /// its code makes it by (`linkage_id`) and the class that runs it (`classAPI`). Each package that
 /// declares one, with the declarations it has, by the name the fighter makes it by.
 fn lent_items(runtime: &Runtime, wanted: &[String]) -> Vec<(SourceModel, Vec<(String, Value)>)> {
-    let mut out = Vec::new();
-    if wanted.is_empty() { return out }
-    for pkg in crate::shared_packages::packages() {
-        let Ok((m, _)) = runtime.read_package(&pkg.swf) else { continue };
-        let Some(main) = m.main_class() else { continue };
-        let mut found: Vec<(String, Value)> = Vec::new();
-        for meth in &main.methods {
-            let Some(Value::Arr(list)) = crate::model::declare::returned(&meth.function.body) else { continue };
-            for d in list {
-                let (Some(clip), Some(_)) = (d.get("linkage_id").and_then(|v| v.str()), d.get("classAPI").and_then(|v| v.class())) else { continue };
-                let Some(key) = wanted.iter().find(|w| w.eq_ignore_ascii_case(clip)) else { continue };
-                if found.iter().any(|(k, _)| k == key) { continue }
-                found.push((key.clone(), d.clone()));
+    if wanted.is_empty() { return Vec::new() }
+    // each shared package once: its model, and every declaration its main class lists
+    let pkgs: Vec<(SourceModel, Vec<Value>)> = crate::shared_packages::packages().iter().filter_map(|pkg| {
+        let (m, _) = runtime.read_package(&pkg.swf).ok()?;
+        let decls: Vec<Value> = m.main_class()?.methods.iter()
+            .filter_map(|meth| match crate::model::declare::returned(&meth.function.body) { Some(Value::Arr(list)) => Some(list), _ => None })
+            .flatten().filter(|d| d.get("linkage_id").and_then(|v| v.str()).is_some() && d.get("classAPI").and_then(|v| v.class()).is_some()).collect();
+        Some((m, decls))
+    }).collect();
+    // what a lent object's own code makes by name is lent too, until nothing new is asked for
+    let mut want: Vec<String> = wanted.to_vec();
+    let mut found: Vec<Vec<(String, Value)>> = vec![Vec::new(); pkgs.len()];
+    let mut asked = 0;
+    while asked < want.len() {
+        let name = want[asked].clone();
+        asked += 1;
+        for (i, (m, decls)) in pkgs.iter().enumerate() {
+            let Some(d) = decls.iter().find(|d| d.get("linkage_id").and_then(|v| v.str()).is_some_and(|l| l.eq_ignore_ascii_case(&name))) else { continue };
+            if found.iter().flatten().any(|(k, _)| k.eq_ignore_ascii_case(&name)) { break }
+            found[i].push((name.clone(), d.clone()));
+            // (and the projectiles its declaration says it fires, `projectiles`, with it)
+            for (pn, pd) in d.get("projectiles").map(|v| v.entries().to_vec()).unwrap_or_default() {
+                if !found[i].iter().any(|(k, _)| k.eq_ignore_ascii_case(&pn)) { found[i].push((pn, pd)); }
             }
+            let Some(c) = d.get("classAPI").and_then(|v| v.class()).and_then(|c| m.classes.get(c).or_else(|| m.classes.values().find(|x| compile::short(&x.name) == c))) else { break };
+            for k in std::iter::once(c.name.clone()).chain(m.supers(&c.name)).filter_map(|n| m.classes.get(&n)) {
+                for f in k.methods.iter().map(|x| &x.function).chain([&k.constructor]) {
+                    crate::model::ast::walk_exprs(&f.body, &mut |e| if let crate::model::ast::Expr::Call(g, a) = e {
+                        let made = matches!(&**g, crate::model::ast::Expr::Member(_, n) | crate::model::ast::Expr::Name(n)
+                            if matches!(n.as_str(), "createProjectile" | "spawnProjectile" | "makePickup" | "makeFighterPickup" | "placePickup"));
+                        if let (true, Some(crate::model::ast::Expr::Str(n))) = (made, a.first()) {
+                            if !want.iter().any(|w| w.eq_ignore_ascii_case(n)) { want.push(n.clone()); }
+                        }
+                    });
+                }
+            }
+            break;
         }
-        if !found.is_empty() { out.push((m, found)); }
     }
-    out
+    pkgs.into_iter().zip(found).filter(|(_, f)| !f.is_empty()).map(|((m, _), f)| (m, f)).collect()
 }
 
-/// The runtime's path for the projectiles and items a fighter declares: each one the current
-/// pipeline wrote an entity for gets its script written the runtime's way, from its own
+/// The projectiles and items a fighter declares, and the objects it makes by class: each one the
+/// pipeline wrote an entity for gets its script written as Fraymakers code, from its own
 /// declaration (the class that runs it, the clip that is its art, its stats).
 #[allow(clippy::too_many_arguments)]
-fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime: &Runtime,
-                       fighter: &crate::model::declare::Fighter, units: Units, others: &[String],
+fn fighter_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime: &Runtime,
+                       fighter: &crate::model::declare::Fighter, units: Units,
                        effects: &BTreeMap<String, Vec<Piece>>, entities: &BTreeMap<String, String>,
                        pieces_of: &mut BTreeMap<String, Vec<Piece>>,
                        unplaced: &mut Vec<String>, owner: &native_projectile::Owner,
-                       natively: &mut Vec<(String, Result<(), String>)>,
                        item_gaps: &mut Vec<(String, String)>,
-                       lent: &BTreeMap<String, &SourceModel>) -> anyhow::Result<Vec<(String, Emitted)>> {
+                       lent: &BTreeMap<String, &SourceModel>) -> anyhow::Result<Vec<(String, Vec<String>)>> {
     let own_model = model;
     let mut out = Vec::new();
     let decls: Vec<&(String, Value)> = fighter.projectiles.entries().iter().chain(fighter.items.entries()).collect();
+    // (and what an object's own class declares it fires, `getProjectileStats`: a projectile one
+    // of its objects fires is declared there, not by the fighter)
+    let class_declared: Vec<(String, Value)> = model.classes.values()
+        .filter_map(|c| c.methods.iter().find(|m| m.name == "getProjectileStats" && !m.is_static))
+        .filter_map(|m| crate::model::declare::returned(&m.function.body))
+        .flat_map(|v| v.entries().to_vec()).collect();
     // one script per entity, from the first declaration written as it (a projectile fired by
     // another declaration sharing its clip takes that one's stats as it starts)
     for (entity_key, pieces) in std::mem::take(pieces_of) {
@@ -1539,8 +681,9 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
         // written as it by name, else named as its clip (a declaration fired under one name that
         // draws with a clip of another has an entity for each)
         let by_clip = |d: &Value| d.get("linkage_id").and_then(|v| v.str()) == Some(entity_key.as_str());
-        let found = decls.iter().find(|(n, _)| entities.get(n) == Some(&entity_key))
-            .or_else(|| decls.iter().find(|(_, d)| by_clip(d)));
+        let found = decls.iter().copied().find(|(n, _)| entities.get(n) == Some(&entity_key))
+            .or_else(|| decls.iter().copied().find(|(_, d)| by_clip(d)))
+            .or_else(|| class_declared.iter().find(|(n, d)| n.eq_ignore_ascii_case(&entity_key) || by_clip(d)));
         let Some((name, decl)) = found.map(|e| (&e.0, &e.1)) else {
             // not declared, but the package explains it: a class of its own (an enemy it spawns
             // by class) runs on the clip the entity draws; anything else keeps its script
@@ -1559,13 +702,37 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
                 let entity = char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content)));
                 let has = entity_animations(&entity);
                 let pieces: Vec<Piece> = pieces.into_iter().filter(|p| has.contains(&p.fm_name)).collect();
-                let spec = ObjectSpec { keyed: String::new(), kind: "projectile", others, effects, entities, class: c.name.clone(),
-                    clip: entity_key.clone(), clip_sym: Some(sym), stats, autolink: BTreeMap::new(), data: String::new() };
-                let emitted = object_script(model, runtime, &spec, &Decls::of(fighter), &pieces, units, &entity_key);
-                std::fs::write(&script, &emitted.script)?;
-                native_entity(&entity, &entity_key, model, &pieces, &emitted)?;
+                // (a clip class is the code of the clip it draws, run as one of its shown clips; the
+                // object itself is then the API's projectile)
+                let clip_class = matches!(compile::short(&c.super_name), "MovieClip" | "Sprite");
+                let spec = ObjectSpec { effects, entities, class: if clip_class { "PeptideProjectile".into() } else { c.name.clone() },
+                    clip: entity_key.clone(), clip_sym: Some(sym), stats };
+                let (text, gaps) = native_projectile::write(char_dir, model, runtime, &spec, &Decls::of(fighter), &pieces, units, &entity_key, &entity_key, owner, false)
+                    .map_err(|e| anyhow::anyhow!("{entity_key}: {e}"))?;
+                std::fs::write(&script, &text)?;
                 unplaced.retain(|u| !u.starts_with(&format!("{entity_key}: made from another package")));
-                out.push((entity_key, emitted));
+                out.push((entity_key, gaps));
+                continue;
+            }
+            // (one nothing declares and no class of its own runs: the API's projectile, running
+            // its clip's own code)
+            // (its art must be a clip of this package: one drawn from another package's clip, a
+            // power taken from another fighter, has its code there)
+            let own_clip = |sym: u16| model.sprites.contains_key(&sym)
+                && model.class_of(sym).is_none_or(|c| std::iter::once(c.super_name.clone()).chain(model.supers(&c.name)).any(|s| matches!(compile::short(&s), "MovieClip" | "Sprite")));
+            if let (Some(sym), true) = (pieces.first().map(|p| p.sym).filter(|s| own_clip(*s)), script.exists()) {
+                let content = crate::projectile_gen::projectile_content_id(&entity_key);
+                let entity = char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content)));
+                let has = entity_animations(&entity);
+                let pieces: Vec<Piece> = pieces.into_iter().filter(|p| has.contains(&p.fm_name)).collect();
+                let spec = ObjectSpec { effects, entities, class: "PeptideProjectile".into(),
+                    clip: entity_key.clone(), clip_sym: Some(sym), stats: Value::Null };
+                let (text, mut gaps) = native_projectile::write(char_dir, model, runtime, &spec, &Decls::of(fighter), &pieces, units, &entity_key, &entity_key, owner, false)
+                    .map_err(|e| anyhow::anyhow!("{entity_key}: {e}"))?;
+                gaps.push("declared by nothing it carries: its stats are the engine's defaults".into());
+                std::fs::write(&script, &text)?;
+                unplaced.retain(|u| !u.starts_with(&format!("{entity_key}: made from another package")));
+                out.push((entity_key, gaps));
                 continue;
             }
             pieces_of.insert(entity_key, pieces);
@@ -1578,47 +745,28 @@ fn runtime_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
         let (pieces, missing): (Vec<Piece>, Vec<Piece>) = pieces.into_iter().partition(|p| has.contains(&p.fm_name));
         unplaced.extend(missing.iter().map(|p| format!("{entity_key}: {} has no such animation", p.fm_name)));
         let spec = ObjectSpec {
-            keyed: String::new(),
-            kind: "projectile",
-            others,
             effects,
             entities,
             class: decl.get("classAPI").and_then(|v| v.class()).unwrap_or("PeptideProjectile").to_string(),
             clip: decl.get("linkage_id").and_then(|v| v.str()).unwrap_or(name).to_string(),
             clip_sym: None,
             stats: decl.clone(),
-            autolink: BTreeMap::new(),
-            data: String::new(),
         };
         let script = char_dir.join(format!("library/scripts/Projectile/{}Script.hx", crate::haxe_gen::snake_to_pascal(&entity_key)));
-        // its own code as Fraymakers code, where it can be (`native_projectile`). an item is always
-        // written so: one whose own code cannot be carries the item handler alone, with the reason
+        // its own code as Fraymakers code (`native_projectile`); an item whose own code cannot be
+        // written carries the item handler alone, with the reason
         let item = native_projectile::is_item(&Decls::of(fighter), &spec, name);
-        if script.exists() && (item || std::env::var("PEPTIDE_NATIVE_PROJECTILES").map(|v| v != "0").unwrap_or(true)) {
-            let mut written = native_projectile::write(char_dir, model, runtime, &spec, &Decls::of(fighter), &pieces, units, name, &entity_key, owner, false);
-            if item {
-                if let Err(why) = &written {
-                    item_gaps.push((entity_key.clone(), why.clone()));
-                    written = native_projectile::write(char_dir, model, runtime, &spec, &Decls::of(fighter), &pieces, units, name, &entity_key, owner, true);
-                }
-            }
-            match written {
-                Ok(text) => {
-                    std::fs::write(&script, &text)?;
-                    natively.push((entity_key.clone(), Ok(())));
-                    out.push((entity_key, Emitted { script: text, problems: Vec::new(), unknown: BTreeSet::new(), frames: BTreeMap::new(), landings: Vec::new(), native: None }));
-                    continue;
-                }
-                Err(why) => natively.push((entity_key.clone(), Err(why))),
+        if !script.exists() { unplaced.push(format!("{entity_key}: no projectile script at {}", script.display())); continue }
+        let mut written = native_projectile::write(char_dir, model, runtime, &spec, &Decls::of(fighter), &pieces, units, name, &entity_key, owner, false);
+        if item {
+            if let Err(why) = &written {
+                item_gaps.push((entity_key.clone(), why.clone()));
+                written = native_projectile::write(char_dir, model, runtime, &spec, &Decls::of(fighter), &pieces, units, name, &entity_key, owner, true);
             }
         }
-        let emitted = object_script(model, runtime, &spec, &Decls::of(fighter), &pieces, units, name);
-        if script.exists() {
-            std::fs::write(&script, &emitted.script)?;
-            native_entity(&entity, &entity_key, model, &pieces, &emitted)?;
-        }
-        else { unplaced.push(format!("{entity_key}: no projectile script at {}", script.display())); }
-        out.push((entity_key, emitted));
+        let (text, gaps) = written.map_err(|e| anyhow::anyhow!("{entity_key}: {e}"))?;
+        std::fs::write(&script, &text)?;
+        out.push((entity_key, gaps));
     }
     Ok(out)
 }
@@ -1682,39 +830,6 @@ fn walk_script_speeds(model: &SourceModel, fighter: &crate::model::declare::Figh
         }
     }
     out
-}
-
-/// What a rollback puts back of an object's own fields: every field the runtime's kept files
-/// write on an object (`o.__name = ...`), and on its engine object's exports, as a record a frame
-/// (`runtime/core/rollback.hx`). The ones written once as an object is made and never again are
-/// left out; they cannot differ between two frames.
-fn rollback_fields(runtime_text: &str) -> String {
-    const FIXED: &[&str] = &["__is", "__type", "__fm", "__mc", "__tl", "__sym", "__scripts", "__object", "__vfx",
-        "__pieces", "__global", "__locked", "__born", "__name", "__linkageId", "__declared", "__source", "__errors",
-        "__gaps", "__verifyPulse", "__bound", "__cellHolds", "__kids", "__enteredOn", "__held", "__half",
-        "__part", "__playing", "__loops", "__was", "__anim"];
-    let assign = crate::re!(r"\.(__[A-Za-z0-9_]+)\s*(?:=[^=]|\+\+|--|\+=|-=)");
-    let export = crate::re!(r"exports\.(__[A-Za-z0-9_]+)\s*(?:=[^=]|\+\+|--|\+=|-=)");
-    let code = shake::code_text(runtime_text);
-    let ex: std::collections::BTreeSet<String> = export.captures_iter(&code).map(|c| c[1].to_string())
-        .filter(|n| !FIXED.contains(&n.as_str())).collect();
-    let names: Vec<String> = assign.captures_iter(&code).map(|c| c[1].to_string())
-        .filter(|n| !FIXED.contains(&n.as_str()) && !n.starts_with("__c_") && !ex.contains(n))
-        .collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-    let ex: Vec<String> = ex.into_iter().collect();
-    // a field ever given a list or a map is copied with the record (it is changed in place); any
-    // other is read as it is, which is most of them and costs nothing
-    let collection = crate::re!(r"\.(__[A-Za-z0-9_]+)\s*=\s*(?:\[|new haxe\.ds\.|[A-Za-z_.]*\.copy\(\))");
-    let lists: std::collections::BTreeSet<String> = collection.captures_iter(&code).map(|c| c[1].to_string()).collect();
-    let read = |n: &String, v: &str| if lists.contains(n) { format!("Rollback.copy({v})") } else { v.to_string() };
-    let save = |list: &[String]| list.iter().map(|n| read(n, &format!("o.{n}"))).collect::<Vec<_>>().join(", ");
-    let load = |list: &[String]| list.iter().enumerate().map(|(i, n)| format!("o.{n} = {};", read(n, &format!("s[{i}]")))).collect::<Vec<_>>().join(" ");
-    format!("// ---- rollback: the fields the runtime above writes on an object (generated from it)\n\
-        Rollback.saveObject = function(o) {{ return [{}]; }};\n\
-        Rollback.loadObject = function(o, s) {{ {} }};\n\
-        Rollback.saveExports = function(o) {{ return o == null ? null : [{}]; }};\n\
-        Rollback.loadExports = function(o, s) {{ if (o == null || s == null) return; {} }};\n",
-        save(&names), load(&names), save(&ex), load(&ex))
 }
 
 #[cfg(test)]
@@ -2052,36 +1167,6 @@ fn entry_box_writes(model: &SourceModel, pieces: &[Piece]) -> Vec<(crate::compil
     out
 }
 
-/// the clips an object's frames are the engine's own on: the frames each animation shows (a
-/// section played backwards last to first, a lead-in's frames after its section's) have their code
-/// on the entity's keyframes and the engine plays them; the runtime keeps only the clip's record
-/// (where it is, the children its frames place) for code that reads it, and runs a frame no
-/// animation shows when code sends the clip there, or the clip plays into it on its own (a lead-in
-/// before its first section). where the object's animations show several clips, each is the one
-/// the object's clip places under a label: the animation's own, else the one that places its clip
-/// (a stance whose own labels are the animations, under the label of the object's that places it)
-pub fn native_clip(model: &SourceModel, pieces: &[Piece], root: Option<u16>) -> Option<Native> {
-    let kept = runtime_clip(pieces, root);
-    let pieces: Vec<Piece> = pieces.iter().filter(|p| Some(p.sym) != kept).cloned().collect();
-    let pieces = pieces.as_slice();
-    if pieces.is_empty() { return None }
-    let syms: BTreeSet<u16> = pieces.iter().map(|p| p.sym).collect();
-    let lead_in: BTreeSet<u16> = syms.iter().copied()
-        .filter(|&sym| !pieces.iter().any(|p| p.sym == sym && (p.from == 1 || p.head > 0))).collect();
-    let mut under = BTreeMap::new();
-    if syms.len() > 1 {
-        let sprite = root.and_then(|r| model.sprites.get(&r));
-        let places = |f0: usize, sym: u16| sprite.and_then(|s| s.frames.get(f0)).is_some_and(|ks| ks.iter().any(|k| k.char_id == sym && k.name.is_some()));
-        for p in pieces {
-            let labels = sprite.map(|s| s.labels.as_slice()).unwrap_or_default();
-            let label = labels.iter().find(|(f0, l)| *l == p.label && places(*f0, p.sym))
-                .or_else(|| labels.iter().find(|(f0, _)| places(*f0, p.sym)));
-            if let Some((_, l)) = label { under.insert(p.fm_name.clone(), l.clone()); }
-        }
-    }
-    Some(Native { syms, under, lead_in, fighter: false })
-}
-
 /// an effect's clip that plays its frames once and goes, as the engine's own effect does: its class,
 /// a plain clip's, does nothing but register its frame scripts, and the first of those stops it and
 /// takes it off its parent (what comes after never runs). the frame that script is on, where it is
@@ -2172,72 +1257,6 @@ pub fn effect_code(model: &SourceModel, pieces: &[Piece]) -> Option<Vec<(String,
     (!out.is_empty()).then_some(out)
 }
 
-/// the object's own clip, where its animations also show clips it places (a class's object whose
-/// states are clips under its labels, with the projectile's spawn, idle and destroy made of its own
-/// frames): its frames stay the runtime's, run as its labels are entered, as they are where its
-/// states alone are animations, and the animations made of it carry no code
-pub fn runtime_clip(pieces: &[Piece], root: Option<u16>) -> Option<u16> {
-    let root = root?;
-    (pieces.iter().any(|p| p.sym == root) && pieces.iter().any(|p| p.sym != root)).then_some(root)
-}
-
-/// whether a placed clip does nothing anyone can see once nobody's code reaches it: its class (and
-/// each it extends that the package defines, down to Flash's own clip) only sets its own
-/// properties to plain values, stops or plays itself and registers its frame scripts, and every
-/// clip its frames place is the same (a box the source's engine reads off the art, which this
-/// one has in its entity)
-fn keeps_to_itself(model: &SourceModel, pkg: &compile::Package, sym: u16, seen: &mut BTreeSet<u16>) -> bool {
-    use crate::model::ast::{Place, Stmt};
-    if !seen.insert(sym) { return true }
-    fn plain(e: &Expr) -> bool {
-        matches!(e, Expr::Undefined | Expr::Null | Expr::Bool(_) | Expr::Num(_) | Expr::Int(_) | Expr::Str(_))
-            || matches!(e, Expr::Unary(_, x) | Expr::Coerce(_, x) | Expr::Convert(_, x) if plain(x))
-    }
-    fn own(e: &Expr) -> bool { matches!(e, Expr::This) }
-    fn quiet(body: &[Stmt]) -> bool {
-        body.iter().all(|s| match s {
-            Stmt::Return(None) => true,
-            Stmt::Assign(Place::Member(o, _), v) => own(o) && plain(v),
-            Stmt::Assign(Place::Name(_), v) => plain(v),
-            Stmt::Expr(Expr::SuperCall(..)) => true,
-            Stmt::Expr(Expr::Call(c, a)) => {
-                let m = match &**c { Expr::Member(o, m) if own(o) => m, Expr::Name(m) => m, _ => return false };
-                matches!(m.as_str(), "stop" | "play" | "addFrameScript")
-                    && a.iter().all(|x| plain(x) || matches!(x, Expr::Member(o, _) if own(o)) || matches!(x, Expr::Name(_)))
-            }
-            _ => false,
-        })
-    }
-    if let Some(cls) = model.symbols.get(&sym) {
-        if pkg.runtime.provides(cls) && !matches!(compile::short(cls), "MovieClip" | "Sprite") { return false }
-        if !pkg.runtime.provides(cls) {
-            let (chain, base) = pkg.chain(cls);
-            if chain.is_empty() || !base.as_deref().is_some_and(|b| matches!(compile::short(b), "MovieClip" | "Sprite")) { return false }
-            for c in &chain {
-                let bodies = c.methods.iter().map(|m| &m.function).chain([&c.constructor, &c.static_init]);
-                for f in bodies { if !quiet(&f.body) { return false } }
-            }
-        }
-    }
-    let Some(sp) = model.sprites.get(&sym) else { return true };
-    sp.frames.iter().flatten().filter(|p| model.sprites.contains_key(&p.char_id))
-        .all(|p| keeps_to_itself(model, pkg, p.char_id, seen))
-}
-
-const WALKS_CHILDREN: [&str; 4] = ["getChildAt", "numChildren", "removeChildAt", "getObjectsUnderPoint"];
-/// a clip's methods the runtime itself never asks for, each made only for a package whose code
-/// names it (by the name the code would write: a getter by its property)
-const CLIP_OPTIONAL: [(&str, &str); 10] = [
-    ("nextFrame", "nextFrame"), ("prevFrame", "prevFrame"), ("addChildAt", "addChildAt"),
-    ("removeChildren", "removeChildren"), ("get_numChildren", "numChildren"), ("setChildIndex", "setChildIndex"),
-    ("swapChildren", "swapChildren"), ("getChildAt", "getChildAt"), ("globalToLocal", "globalToLocal"),
-    ("get_graphics", "graphics"),
-];
-
-/// A projectile's `Projectiles.frame` and `Projectiles.engineFrame`: the runtime's pieces its own
-/// script names (its declared stats, the code that writes them, the events it listens for), in the
-/// order the source's engine runs them. A projectile that names none of a piece's words goes
-/// without that piece.
 /// A clip and every clip placed inside it, as deep as they go.
 pub fn clip_tree(model: &SourceModel, root: Option<u16>) -> BTreeSet<u16> {
     let mut seen = BTreeSet::new();
@@ -2251,29 +1270,3 @@ pub fn clip_tree(model: &SourceModel, root: Option<u16>) -> BTreeSet<u16> {
     seen
 }
 
-fn projectile_frames(text: &str, item: bool, replaced: &[String]) -> String {
-    let says = |words: &[&str]| words.iter().any(|w| crate::dyn_re(&format!(r"\b{w}\b")).is_match(text));
-    let ground = says(&["groundTouch", "GROUND_TOUCH"]);
-    let mut frame = vec!["if (Projectiles.gone(me)) return;", "if (Projectiles.lifetime(me)) return;"];
-    if ground { frame.push("Projectiles.floorStart(me);") }
-    if ground || says(&["__landsTo"]) { frame.push("Projectiles.landing(me);") }
-    if says(&["trailEffect"]) { frame.push("Projectiles.trail(me);") }
-    frame.extend(["Projectiles.hasOwnCode(me);"]);
-    let mut engine = vec!["if (Projectiles.gone(me)) return;"];
-    if says(&["createSelfPlatform", "__selfPlatforms"]) { engine.push("Projectiles.platforms(me);") }
-    if says(&["refreshRate"]) { engine.push("Projectiles.refresh(me);") }
-    engine.extend(["Attacks.carry(me);", "Projectiles.lateHit(me);"]);
-    if item { engine.extend(["Projectiles.held(me);", "if (me.__fm.exports.__holder != null) return;"]) }
-    if ground { engine.push("Projectiles.floorRecord(me);") }
-    if says(&["xdecay", "homingSpeed"]) { engine.push("Projectiles.steer(me);") }
-    if says(&["projCollide", "projCollideOwner", "PROJ_COLLIDE", "PROJ_COLLIDE_OWNER"]) { engine.push("Projectiles.touchOwner(me);") }
-    if says(&["influenceXMovement", "influenceYMovement"]) { engine.push("Projectiles.influence(me);") }
-    if says(&["controlDirection"]) { engine.push("Projectiles.control(me);") }
-    if says(&["rotate"]) { engine.push("Projectiles.rotate(me);") }
-    // (a piece its stats' own code stands in for is not run here: `flyByStats`)
-    let kept = |l: &&str| !replaced.iter().any(|r| l.starts_with(&format!("{r}(")));
-    let frame: Vec<&str> = frame.into_iter().filter(kept).collect();
-    let engine: Vec<&str> = engine.into_iter().filter(kept).collect();
-    format!("Projectiles.frame = function(me) {{\n\t{}\n}};\nProjectiles.engineFrame = function(me) {{\n\t{}\n}};\n",
-        frame.join("\n\t"), engine.join("\n\t"))
-}

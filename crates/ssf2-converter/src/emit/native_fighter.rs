@@ -1,10 +1,10 @@
-//! A fighter written as plain Fraymakers code (`compile::native`), where its own code can be.
+//! A fighter written as plain Fraymakers code (`compile::native`).
 //!
 //! Its own class (the package's character class) runs as the fighter itself, and the classes of
 //! the clips its animations show are its frame scripts. Its script is `runtime/native/fighter.hx`
 //! filled in: that code, the rules the source's engine plays every fighter by
 //! (`runtime/native/fighter_rules.hx`), and the tables they read, worked out from what it declares.
-//! Anything the writer has no plain way to say keeps the fighter on the runtime, with the reasons.
+//! What it has no plain way to say is left out and said in its gaps.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -250,6 +250,7 @@ fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a
         }).collect(),
         instance: None, origin: (0.0, 0.0), power_record: power_of(f).is_some(),
     };
+    // (`all`: every statement it has no plain form for, as reasons, for the census)
     if all {
         let why = native::census(&object);
         if !why.is_empty() { return Err(why) }
@@ -263,24 +264,16 @@ pub fn census(f: &Fighting) -> Vec<String> {
     match written(f, true) { Ok(_) => Vec::new(), Err(e) => e }
 }
 
-/// The fighter's script, written natively, with its entity's keyframes calling its frames; or
-/// every reason it stays on the runtime.
+/// The fighter's script, written as Fraymakers code, with its entity's keyframes calling its
+/// frames; or every reason it cannot be written.
 pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, first_frame: &BTreeMap<String, String>, stat_code: &[String])
     -> Result<(String, BTreeSet<String>, BTreeMap<String, String>), Vec<String>> {
-    let (w, parts) = written(f, true)?;
+    let (w, parts) = written(f, false)?;
     let rt = f.runtime;
-    let skeleton = rt.native_files.get("fighter").ok_or_else(|| vec!["the runtime has no native/fighter.hx".to_string()])?;
+    let skeleton = rt.native_files.get("fighter").ok_or_else(|| vec!["runtime/native/fighter.hx is missing".to_string()])?;
     let one = |e: String| vec![e];
-    // what its animations run on their first frame for what their attacks declare: plain code
-    // only (a row the runtime answers keeps it there)
-    let runtime_names = crate::re!(r"\b(PeptideRuntime|AS3|Attacks|Fighters|Objects|Events|Timers|DATA)\.");
-    let mut why = Vec::new();
-    for (anim, code) in first_frame {
-        if runtime_names.is_match(code) { why.push(format!("{anim}: what its declared stats have it do reads the runtime")); }
-    }
+
     let code_text = stat_code.join("\n");
-    if runtime_names.is_match(&code_text) { why.push("what its declared stats have it do reads the runtime".into()); }
-    if !why.is_empty() { return Err(why) }
 
     // the rules every fighter is played by, and what its code calls of them
     let mut blocks: BTreeSet<String> = w.blocks.clone();

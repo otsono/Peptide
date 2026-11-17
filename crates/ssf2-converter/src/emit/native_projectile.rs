@@ -1,10 +1,10 @@
-//! A projectile written as plain Fraymakers code (`compile::native`), where its own code can be.
+//! A projectile or item written as plain Fraymakers code (`compile::native`).
 //!
-//! Its script is `runtime/native/projectile.hx` filled in: its own classes' code, what its
-//! declared stats have it do each frame (`runtime/projectile_stats.jsonc`), and its lifetime. Its
-//! entity's keyframes call its frame scripts, and its animations move on into each other the way
-//! its clip plays on (`nextAnimation`). Anything the writer has no plain way to say leaves the
-//! projectile on the runtime, with the reason.
+//! Its script is `runtime/native/projectile.hx` (an item's, `item.hx`) filled in: its own classes'
+//! code, what its declared stats have it do each frame (`runtime/projectile_stats.jsonc`), and its
+//! lifetime. Its entity's keyframes call its frame scripts, and its animations move on into each
+//! other the way its clip plays on (`nextAnimation`). What it has no plain way to say is left out
+//! and said in its gaps.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -24,6 +24,20 @@ pub struct Owner<'a> {
     pub anims: Vec<(String, String)>,
     /// whether the owner is written as Fraymakers code
     pub native: bool,
+    /// the space its places are in: a stage's own (the source's origin, in the source's units),
+    /// for one a stage's object fires; else the engine's, `(0, 0)`
+    pub origin: (f64, f64),
+}
+
+/// the short names of the classes a class extends, nearest first, through its package's own
+fn class_chain(model: &SourceModel, c: &crate::model::ClassModel) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut sup = compile::short(&c.super_name).to_string();
+    while !sup.is_empty() && !out.contains(&sup) {
+        out.push(sup.clone());
+        sup = model.classes.values().find(|k| compile::short(&k.name) == sup).map(|k| compile::short(&k.super_name).to_string()).unwrap_or_default();
+    }
+    out
 }
 
 /// whether a declaration is one of the fighter's items (an item is always a custom game object
@@ -32,19 +46,23 @@ pub fn is_item(decls: &Decls, spec: &ObjectSpec, title: &str) -> bool {
     decls.items.entries().iter().any(|(n, d)| n == title || d.get("linkage_id").and_then(|v| v.str()) == Some(spec.clip.as_str()))
 }
 
-/// The projectile's script and entity, written natively; or why it stays on the runtime.
+/// The projectile's script and entity, written as Fraymakers code, with what it leaves out; or why
+/// it cannot be written.
 /// (`bare`: an item whose own code cannot be written carries the item handler alone)
 #[allow(clippy::too_many_arguments)]
 pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &ObjectSpec, decls: &Decls,
-             pieces: &[Piece], units: Units, title: &str, entity_key: &str, owner: &Owner, bare: bool) -> Result<String, String> {
-    let item = is_item(decls, spec, title);
-    let skeleton = runtime.native_files.get(if item { "item" } else { "projectile" }).ok_or("the runtime has no native/projectile.hx or native/item.hx")?;
+             pieces: &[Piece], units: Units, title: &str, entity_key: &str, owner: &Owner, bare: bool) -> Result<(String, Vec<String>), String> {
+    let mut gaps: Vec<String> = Vec::new();
     // its own class, where its package gives it one: the API's projectile, extended
     let found = if bare || matches!(compile::short(&spec.class), "PeptideProjectile" | "PeptideItem") { None } else {
         let c = model.classes.get(&spec.class).or_else(|| model.classes.values().find(|c| compile::short(&c.name) == compile::short(&spec.class)))
             .ok_or_else(|| format!("its class {} is not in its package", spec.class))?;
         Some(c)
     };
+    // (an item is one it declares as one, or one whose class is the API's item, extended)
+    let item = is_item(decls, spec, title) || compile::short(&spec.class) == "PeptideItem"
+        || found.is_some_and(|c| class_chain(model, c).iter().any(|s| s == "PeptideItem"));
+    let skeleton = runtime.native_files.get(if item { "item" } else { "projectile" }).ok_or("runtime/native/projectile.hx or item.hx is missing")?;
     // (a class that extends another of its package's is the two as one: `inherited`)
     let merged = match found { Some(c) => inherited(model, runtime, c)?, None => None };
     let itself = merged.as_ref().or(found);
@@ -58,14 +76,16 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     };
 
     // the classes whose code it runs: the classes of the clips its animations show. any other clip
-    // inside it with code of its own keeps it on the runtime
+    // inside it with code of its own is said in its gaps
     let shown: BTreeSet<u16> = pieces.iter().map(|p| p.sym).collect();
     let mut classes = Vec::new();
     for sym in clip_tree(model, Some(clip_sym)).into_iter().filter(|_| !bare) {
         let Some(c) = model.class_of(sym) else { continue };
         if runtime.provides(&c.name) { continue }
         if shown.contains(&sym) { classes.push(c) }
-        else if !is_quiet_inside(model, runtime, &c.name) { return Err(format!("{} inside it has code of its own", c.name)) }
+        // (a clip nested in its art with code of its own: its art is drawn whole, and its code is
+        // said, not run)
+        else if !is_quiet_inside(model, runtime, &c.name) { gaps.push(format!("{} inside its art has code of its own, which nothing here runs", compile::short(&c.name))) }
     }
     // (one with no code of its own is the skeleton and what it declares alone)
     // a clip whose code its owner reaches into keeps the object the owner holds
@@ -74,7 +94,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         for f in c.methods.iter().map(|m| &m.function) {
             let mut listens = false;
             crate::model::ast::walk_exprs(&f.body, &mut |e| if let Expr::Str(s) = e { if matches!(s.as_str(), "projDestroyed" | "itemDestroyed") { listens = true } });
-            if listens { return Err(format!("{} listens for a projectile's end", c.name)) }
+            if listens { gaps.push(format!("{} listens for a projectile's end, from a clip nothing here runs", compile::short(&c.name))) }
         }
     }
 
@@ -136,7 +156,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
             format!("spriteContent: self.getResource().getContent({}), animation: {}", compile::quote(n), compile::quote(&p.fm_name))),
     };
     let units_of = [("speed", units.speed), ("accel", units.accel), ("size", units.size)];
-    let mut taken = compile::projectile_stats::table().rows_for(&stats, &stat_names, &effect, &|k| !agreed(k), &units_of, true);
+    let mut taken = compile::projectile_stats::table().rows(&stats, &stat_names, &effect, &|k| !agreed(k), &units_of);
     for l in taken.code.iter_mut() { *l = l.replace("{@clip}", &compile::quote(&spec.clip)); }
     // (one only its code turns on starts off)
     for k in written_only.keys() {
@@ -171,13 +191,32 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         Some((format!("spriteContent: self.getResource().getContent({}), animation: {}", compile::quote(name), compile::quote(&p.fm_name)), gone))
     };
     // a projectile its owner declares, for one its code fires
+    // (and one its own class declares it fires, `getProjectileStats`, drawn by the entity written
+    // for its clip)
+    // (or one its own declaration says it fires, `projectiles`)
+    let own_fired: Vec<(String, Value)> = itself.into_iter().flat_map(|c| std::iter::once(c.name.clone()).chain(model.supers(&c.name)))
+        .filter_map(|n| model.classes.get(&n).or_else(|| model.classes.values().find(|k| compile::short(&k.name) == compile::short(&n))))
+        .find_map(|k| k.methods.iter().find(|m| m.name == "getProjectileStats" && !m.is_static))
+        .and_then(|m| crate::model::declare::returned(&m.function.body))
+        .map(|v| v.entries().to_vec()).unwrap_or_default().into_iter()
+        .chain(spec.stats.get("projectiles").map(|v| v.entries().to_vec()).unwrap_or_default()).collect();
+    let entity_for = |name: &str, decl: &Value| -> Option<String> {
+        if let Some(k) = spec.entities.get(name) { return Some(k.clone()) }
+        let clip = decl.get("linkage_id").and_then(|v| v.str()).unwrap_or(name);
+        [clip, name].into_iter().map(crate::projectile_gen::projectile_content_id).find(|content| {
+            char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(content))).exists()
+        }).map(|_| clip.to_string())
+    };
     let fired = |name: &str| -> Option<(String, [f64; 4], Option<String>)> {
-        let decl = decls.projectiles.get(name)?;
-        let key = spec.entities.get(name)?;
+        let (decl, own) = match decls.projectiles.get(name) {
+            Some(d) => (d.clone(), false),
+            None => (own_fired.iter().find(|(n, _)| n == name)?.1.clone(), true),
+        };
+        let key = entity_for(name, &decl)?;
         let n = |ks: &[&str]| ks.iter().find_map(|k| match decl.get(k) { Some(Value::Num(v)) => Some(*v), _ => None }).unwrap_or(0.0);
-        Some((crate::projectile_gen::projectile_content_id(key),
+        Some((crate::projectile_gen::projectile_content_id(&key),
               [n(&["xoffset", "xOffset", "x_offset"]), n(&["yoffset", "yOffset", "y_offset"]), n(&["xspeed", "xSpeed", "x_speed"]), n(&["yspeed", "ySpeed", "y_speed"])],
-              super::fired_record(decls, spec.entities, name)))
+              if own { super::declared_record(&decl) } else { super::fired_record(decls, spec.entities, name) }))
     };
     // a stat its owner states, for a read of it: what it declares, where its code has not changed it
     let owner_stat_of = |k: &str| -> Option<String> {
@@ -196,7 +235,7 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         root_anim: &|_| None, walk_start: None, stance_labels: &labels, clip_frames: &frames_of, frame_links: &no_links, anim_clips: &[], owner_native: owner.native,
         effect_names: spec.effects.keys().cloned().chain(crate::mappings::api_commands().global_vfx_map.keys().cloned()).collect(),
         effect_pieces: spec.effects.iter().flat_map(|(n, ps)| ps.iter().map(move |p| (n.clone(), p.fm_name.clone(), p.from, p.frames))).collect(),
-        parts: Vec::new(), content: title.to_string(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: None, origin: (0.0, 0.0), power_record: false,
+        parts: Vec::new(), content: title.to_string(), palette: None, effect_inners: BTreeMap::new(), effect_code: BTreeMap::new(), instance: None, origin: owner.origin, power_record: false,
     };
     let written = if bare || (classes.is_empty() && itself.is_none()) { native::Written::default() } else { native::write(&object)? };
 
@@ -294,7 +333,9 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     keyframes_with(&entity_path, entity_key, model, pieces, &written.frames, true, &BTreeMap::new()).map_err(|e| e.to_string())?;
     let anim_stats = char_dir.join(format!("library/scripts/Projectile/{}AnimationStats.hx", crate::haxe_gen::snake_to_pascal(entity_key)));
     plays_on(&anim_stats, model, pieces).map_err(|e| e.to_string())?;
-    Ok(script)
+    gaps.extend(written.gaps.iter().cloned());
+    gaps.extend(taken.untaken.iter().cloned());
+    Ok((script, gaps))
 }
 
 /// whether a class (and what it extends of the package's) only stops or plays its clip, sets its
@@ -303,7 +344,7 @@ pub fn is_quiet(model: &SourceModel, runtime: &Runtime, class: &str) -> bool { q
 
 /// `is_quiet`, for a clip nested inside the clip an object's animation shows: one that also moves
 /// its own timeline or takes itself off its parent is quiet too, a nested clip's playhead being
-/// drawn nowhere (on this path or the runtime's) as the art it is in is drawn whole
+/// drawn nowhere, as the art it is in is drawn whole
 pub fn is_quiet_inside(model: &SourceModel, runtime: &Runtime, class: &str) -> bool { quiet(model, runtime, class, true) }
 
 /// a record or list written out of plain values (`plain`), nested any depth
@@ -536,7 +577,7 @@ fn num(n: f64) -> String { if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}",
 pub fn inherited_class(model: &SourceModel, runtime: &Runtime, c: &crate::model::ClassModel) -> Result<Option<crate::model::ClassModel>, String> { inherited(model, runtime, c) }
 
 fn inherited(model: &SourceModel, runtime: &Runtime, c: &crate::model::ClassModel) -> Result<Option<crate::model::ClassModel>, String> {
-    // (the API's own classes, which the runtime answers, are no parent written here)
+    // (the API's own classes are no parent written here)
     let parent = |c: &crate::model::ClassModel| model.classes.get(&c.super_name).or_else(|| model.classes.values().find(|p| p.name != c.name && compile::short(&p.name) == compile::short(&c.super_name)))
         .filter(|p| !runtime.provides(&p.name) && !runtime.provides(compile::short(&p.name)));
     let Some(p) = parent(c) else { return Ok(None) };

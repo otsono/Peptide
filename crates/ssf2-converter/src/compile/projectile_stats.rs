@@ -6,17 +6,19 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 #[derive(Debug, Default)]
-struct Code { when: Option<String>, yields_to: Option<String>, same_as: Option<String>, reads: Vec<String>, replaces: String, code: Vec<String>, call: String, switch: Option<String>, switches: BTreeMap<String, String>, start: Option<String>, native: bool }
+struct Code { when: Option<String>, yields_to: Option<String>, same_as: Option<String>, reads: Vec<String>, code: Vec<String>, call: String, switch: Option<String>, switches: BTreeMap<String, String>, start: Option<String> }
 
-/// what a projectile's stats take: the lines written into its script, the calls its update makes
-/// each frame, and the runtime pieces they stand in for
+/// what a projectile's stats take: the lines written into its script, and the calls its update
+/// makes each frame
 #[derive(Debug, Default)]
 pub struct Taken {
-    pub code: Vec<String>, pub calls: Vec<String>, pub replaced: Vec<String>, pub frame: Option<String>,
+    pub code: Vec<String>, pub calls: Vec<String>, pub frame: Option<String>,
     /// the variable that turns a taken row off and on, by its stat (`switch`)
     pub switches: BTreeMap<String, String>,
     /// what the object's initialize runs once, for the taken rows that say (`start`)
     pub starts: Vec<String>,
+    /// the rows its stats state that are not taken, as it changes what they read as it flies
+    pub untaken: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -32,19 +34,17 @@ pub fn table() -> &'static ProjectileStats {
         t.when_tests = json["when_tests"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()).unwrap_or_default();
         t.frame = json["frame"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
         if let Some(o) = json["code"].as_object() {
-            t.code = o.iter().filter_map(|(k, v)| Some((k.clone(), Code {
+            t.code = o.iter().map(|(k, v)| (k.clone(), Code {
                 when: v["when"].as_str().map(String::from),
                 yields_to: v["yields_to"].as_str().map(String::from),
                 same_as: v["same_as"].as_str().map(String::from),
                 reads: v["reads"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
-                replaces: v["replaces"].as_str()?.to_string(),
                 code: v["code"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
                 call: v["call"].as_str().unwrap_or_default().to_string(),
                 switch: v["switch"].as_str().map(String::from),
                 switches: v["switches"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()).unwrap_or_default(),
                 start: v["start"].as_str().map(String::from),
-                native: v["native"].as_bool().unwrap_or(false),
-            }))).collect();
+            })).collect();
             // a row that writes another's code takes it from there
             let shared: Vec<(usize, Vec<String>, String)> = t.code.iter().enumerate().filter_map(|(i, (_, c))| {
                 let (_, o) = t.code.iter().find(|(k, _)| Some(k) == c.same_as.as_ref())?;
@@ -84,8 +84,7 @@ impl ProjectileStats {
         self.frame.iter().find_map(|l| l.strip_prefix("function ")?.split('(').next().map(|n| format!("{n}();")))
     }
 
-    /// what a projectile's stats write into its script, what its update calls each frame, and the
-    /// runtime pieces that code stands in for.
+    /// what a projectile's stats write into its script, and what its update calls each frame.
     /// a row is taken when the projectile states its stat (and its `when` holds), when nothing it
     /// `reads` is `written` (its code changes it as it flies, or another declaration sharing the
     /// clip states it otherwise), and when the row it `yields_to` is not taken. `units` fills
@@ -93,24 +92,22 @@ impl ProjectileStats {
     /// `effect` resolves to the engine's effect stats, and fills them in as `{@effect}`
     pub fn rows(&self, stats: &BTreeMap<String, f64>, names: &BTreeMap<String, String>, effect: &dyn Fn(&str) -> Option<String>,
                 written: &dyn Fn(&str) -> bool, units: &[(&str, f64)]) -> Taken {
-        self.rows_for(stats, names, effect, written, units, false)
-    }
-
-    /// `rows`, for an object whose own code is written as Fraymakers code (`native`): the rows
-    /// only that takes are taken too
-    pub fn rows_for(&self, stats: &BTreeMap<String, f64>, names: &BTreeMap<String, String>, effect: &dyn Fn(&str) -> Option<String>,
-                written: &dyn Fn(&str) -> bool, units: &[(&str, f64)], native: bool) -> Taken {
         // a stat that names an effect holds when the object can make it
         let effect_of = |k: &str| names.get(k).filter(|n| !n.is_empty()).and_then(|n| effect(n));
         let states = |k: &str, c: &Code| if c.when.as_deref() == Some("effect") { effect_of(k).is_some() }
             else { stats.get(k).is_some_and(|v| holds(c.when.as_deref(), *v)) };
         // (one its code writes as it flies is taken where the write only turns it off and on: its
-        // switch, and the switches of what it reads, which the write sets; natively only)
-        let switched = |k: &str, c: &Code| native && (c.switch.is_some() || c.switches.contains_key(k));
-        let taken: Vec<&(String, Code)> = self.code.iter().filter(|(k, c)| (native || !c.native) && states(k, c)
+        // switch, and the switches of what it reads, which the write sets)
+        let switched = |k: &str, c: &Code| c.switch.is_some() || c.switches.contains_key(k);
+        let taken: Vec<&(String, Code)> = self.code.iter().filter(|(k, c)| states(k, c)
             && (!written(k) || switched(k, c)) && !c.reads.iter().any(|r| written(r) && !switched(r, c))).collect();
         let keys: Vec<&str> = taken.iter().map(|(k, _)| k.as_str()).collect();
         let mut out = Taken::default();
+        // (one its stats state that its code's writes keep from being taken: said)
+        for (k, c) in self.code.iter().filter(|(k, c)| states(k, c) && !keys.contains(&k.as_str())) {
+            if c.yields_to.as_deref().is_some_and(|y| keys.contains(&y)) || c.same_as.as_deref().is_some_and(|y| keys.contains(&y)) { continue }
+            out.untaken.push(format!("moves by its declared {k}, which its code or another declaration of its clip changes as it flies: not ported"));
+        }
         for (k, c) in taken {
             if c.yields_to.as_deref().is_some_and(|y| keys.contains(&y)) { continue }
             for line in &c.code {
@@ -123,7 +120,6 @@ impl ProjectileStats {
             for (st, v) in &c.switches { out.switches.entry(st.clone()).or_insert_with(|| v.clone()); }
             if let Some(st) = &c.start { out.starts.push(st.clone()); }
             if !c.call.is_empty() { out.calls.push(c.call.clone()); }
-            if !out.replaced.contains(&c.replaces) { out.replaced.push(c.replaces.clone()) }
         }
         // the function the update calls, running each taken row's call
         if !out.calls.is_empty() {

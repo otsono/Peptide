@@ -320,10 +320,3 @@ pub fn weather_row(w: &BootWeather) -> String {
         q(&w.id), w.hw, w.hh, w.count, w.cap, draw_literal(&w.dy), draw_literal(&w.dx))
 }
 
-/// The runtime's stage boot (`runtime/stage/boot.hx`), as the stage script carries it.
-pub fn boot_runtime() -> anyhow::Result<String> {
-    let dir = crate::compile::Runtime::locate()
-        .ok_or_else(|| anyhow::anyhow!("the runtime's files are not where the converter looks for them"))?;
-    let path = dir.join("stage").join("boot.hx");
-    std::fs::read_to_string(&path).map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))
-}

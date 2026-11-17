@@ -409,11 +409,11 @@ fn a_mapping_note_never_carries_a_separator() {
 }
 
 
-/// The compiler writes the source's own code; the runtime's code lives in `runtime/**/*.hx`. So no
-/// string in the new converter's Rust defines a named Haxe function: behaviour a person would edit
-/// never hides in a Rust string (see docs/CONVERTER_DESIGN.md).
+/// The writer translates the source's own code; the code every object shares lives in
+/// `runtime/native/*.hx`. So no string in the converter's Rust defines a named Haxe function:
+/// behaviour a person would edit never hides in a Rust string (see docs/CONVERTER_DESIGN.md).
 #[test]
-fn no_runtime_code_in_the_compilers_strings() {
+fn no_shared_code_in_the_writers_strings() {
     let root = repo_root().join("crates/ssf2-converter/src");
     let mut bad = Vec::new();
     for dir in ["model", "compile", "emit"] {
@@ -433,5 +433,5 @@ fn no_runtime_code_in_the_compilers_strings() {
             }
         }
     }
-    assert!(bad.is_empty(), "named Haxe functions in the compiler's strings:\n{}", bad.join("\n"));
+    assert!(bad.is_empty(), "named Haxe functions in the writer's strings:\n{}", bad.join("\n"));
 }

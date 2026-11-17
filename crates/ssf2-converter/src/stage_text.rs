@@ -1,6 +1,6 @@
 //! What a stage's decompiled code says, read as text.
 //!
-//! A stage's scripts are written by the runtime from the package's own classes (`emit::stage`).
+//! A stage's scripts are written from the package's own classes (`emit::stage`).
 //! The stage pipeline still takes a handful of decisions about the DATA it writes from the
 //! decompiled text of those classes (`StageModel::stage_script` for the stage's class, each
 //! object's `reconstructed_script` for its own): which sounds to bring across, which objects the

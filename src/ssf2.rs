@@ -813,7 +813,7 @@ fn cmd_stage(args: &[String]) -> Result<()> {
     if census {
         let scratch = std::env::temp_dir().join(format!("peptide-census-{}-{}", model.id, std::process::id()));
         let r = ssf2_converter::emit_stage(&model, &scratch);
-        let report = std::fs::read_to_string(scratch.join(&model.id).join("runtime_report.json")).unwrap_or_default();
+        let report = std::fs::read_to_string(scratch.join(&model.id).join("port_report.json")).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&scratch);
         r?;
         println!("CENSUS {} {}", model.id, report.replace('\n', " "));
@@ -1036,63 +1036,6 @@ fn cmd_tags(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn cmd_compile(args: &[String]) -> Result<()> {
-    use ssf2_converter::compile;
-    if args.first().map(|s| s.as_str()) == Some("--lang-suite") {
-        let rt = compile::Runtime::locate().map(|d| compile::Runtime::load(&d)).unwrap_or_default();
-        print!("{}", compile::suite::language_suite(&rt));
-        return Ok(());
-    }
-    let path = args.first().map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("usage: peptide ssf2 compile <file.ssf> [class | --fighters]"))?;
-    let want = args.get(1).cloned();
-    let rt = compile::Runtime::locate().map(|d| compile::Runtime::load(&d)).unwrap_or_default();
-    let (m, renamed) = rt.read_package(&std::fs::read(&path)?)?;
-    for p in &renamed { eprintln!("api names: {p}"); }
-    // each fighter's script and its projectiles', as the runtime's path writes them: what they
-    // call that nothing provides, one line each
-    if want.as_deref() == Some("--fighters") {
-        use ssf2_converter::emit;
-        let sc = &ssf2_converter::mappings::character_stats().scaling;
-        let units = emit::Units { size: sc.size_multiplier, speed: sc.velocity_scale(), item_toss: sc.item_toss_speed, accel: sc.accel_scale() };
-        for f in m.fighters() {
-            let mut unknown: std::collections::BTreeSet<String> = Default::default();
-            let mut problems: Vec<String> = Vec::new();
-            let none = Default::default();
-            let no_entities = Default::default();
-            let out = emit::fighter_script(&m, &rt, &f, &[], units, &f.getter, &[], &none, &no_entities, Default::default(), String::new(), String::new());
-            unknown.extend(out.unknown);
-            problems.extend(out.problems);
-            for (name, decl) in f.projectiles.entries().iter().chain(f.items.entries()) {
-                let spec = emit::ObjectSpec {
-                    keyed: String::new(),
-                    kind: "projectile", others: &[], effects: &none, entities: &no_entities,
-                    class: decl.get("classAPI").and_then(|v| v.class()).unwrap_or("PeptideProjectile").to_string(),
-                    clip: decl.get("linkage_id").and_then(|v| v.str()).unwrap_or(name).to_string(),
-                    clip_sym: None,
-                    stats: decl.clone(),
-                    autolink: Default::default(),
-                    data: String::new(),
-                };
-                let o = emit::object_script(&m, &rt, &spec, &emit::Decls::of(&f), &[], units, name);
-                unknown.extend(o.unknown);
-                problems.extend(o.problems);
-            }
-            for u in &unknown { println!("{}\t{}\tunknown\t{u}", path.display(), f.getter); }
-            for p in &problems { println!("{}\t{}\tproblem\t{p}", path.display(), f.getter); }
-        }
-        return Ok(());
-    }
-    let out = compile::compile_package(&m, &rt);
-    for (name, text) in out.classes.iter().filter(|(n, _)| want.as_deref().is_none_or(|w| n.contains(w))) {
-        let _ = name;
-        println!("{text}");
-    }
-    for p in &out.problems { eprintln!("problem: {p}"); }
-    eprintln!("{} classes, {} problems, {} names nothing defines", out.classes.len(), out.problems.len(), out.unknown.len());
-    Ok(())
-}
-
 fn cmd_model(args: &[String]) -> Result<()> {
     use ssf2_converter::model::{ast, SourceModel};
     let path = args.first().map(PathBuf::from)
@@ -1282,8 +1225,6 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         "decompile" | "class" => cmd_decompile(rest),
         // what a package is made of, as the converter's source model reads it
         "model" => cmd_model(rest),
-        // a package's classes, compiled by the new converter's compiler
-        "compile" => cmd_compile(rest),
         "tags" => cmd_tags(rest),
         "session" => crate::ssf2_bridge::session(rest),
         "tell" => crate::ssf2_bridge::tell(rest),

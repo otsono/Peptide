@@ -73,9 +73,6 @@ pub struct ProjectileGenCtx<'a> {
     pub owner_anims: &'a BTreeMap<String, String>,
     pub palette_collection_guid: Option<&'a str>,
     pub palette_base_map_id: Option<&'a str>,
-    /// The runtime runs each clip's own frame scripts (a fighter's projectiles), so the entity
-    /// carries none of them.
-    pub runtime_runs_frames: bool,
 }
 
 /// Emit every projectile's `.entity` + Script/Stats/AnimationStats/HitboxStats
@@ -853,7 +850,7 @@ pub fn generate_projectiles(
                 proj_script.insert_str(0, &crate::api_mappings::hitbox_reads_helper());
             }
         }
-        let mut proj_json = entity_gen::generate_projectile_entity(owner_id, &proj_info, ctx.runtime_runs_frames);
+        let mut proj_json = entity_gen::generate_projectile_entity(owner_id, &proj_info);
         // Fill in paletteMap if available.
         if let (Some(cg), Some(pm)) = (ctx.palette_collection_guid, ctx.palette_base_map_id) {
             let mut proj_val: serde_json::Value =

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# every fighter's six gates on the runtime's path, one at a time, from a frozen copy of the build
+# every fighter's six gates, one at a time, from a frozen copy of the build
 # (a long run holds its own binary and tables while the tree moves; see tools/freeze.sh).
 #
 #   tools/verify-roster.sh [fighter ...]      the whole roster when none are named
@@ -23,7 +23,7 @@ else
 fi
 for c in $roster; do
     log="$LOGS/$c.log"
-    PEPTIDE_BIN="$FROZEN/peptide" PEPTIDE_RUNTIME=1 python3 tools/verify.py char "$c" --ssf2 > "$log" 2>&1
+    PEPTIDE_BIN="$FROZEN/peptide" python3 tools/verify.py char "$c" --ssf2 > "$log" 2>&1
     passed=$(grep -cE '^\s+C[1-6] \S+\s+PASS' "$log")
     first=$(grep -E '^\s+C[1-6] \S+\s+FAIL' "$log" | head -1 | cut -c1-200)
     echo "$c $passed/6 $first" | tee -a "$OUT"

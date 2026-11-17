@@ -62,7 +62,7 @@ it converts, per character:
 | Bitmap sprites (one per animation frame) | → | `library/sprites/*.png` + `.meta` sidecars |
 | Per-frame collision boxes (hitboxes, hurtboxes, grab/ledge/reflect/absorb/touch boxes…) | → | `COLLISION_BOX` / `COLLISION_BODY` / `POINT` layers in the character entity (`<Pascal>.entity`) |
 | Animation timelines | → | `animations` / `layers` / `keyframes` in the character entity |
-| AS3 character logic and frame scripts (ABC bytecode) | → | `Script.hx`, compiled onto the runtime (`emit::runtime_fighter`, §5.3); a frame's code goes on its `FRAME_SCRIPT` keyframe |
+| AS3 character logic and frame scripts (ABC bytecode) | → | `Script.hx`, written as plain Fraymakers code (`emit::fighter`, §5.3); a frame's code goes on its `FRAME_SCRIPT` keyframe |
 | Character stats (weight, gravity, speeds…) | → | `CharacterStats.hx` (data-driven via `mappings/character/stats.jsonc`) |
 | Attack / hitbox data | → | `HitboxStats.hx` (data-driven via `mappings/character/hitbox_stats.jsonc`) |
 | Animation flags | → | `AnimationStats.hx` |
@@ -122,10 +122,10 @@ peptide/  (repo root — Cargo workspace; the `peptide` binary is the product)
 │   │   ├── swf_timeline.rs    display list frame by frame — the ONE reader, shared by the
 │   │   │                      character and stage paths (matrix, ratio, blend, alpha, visibility)
 │   │   ├── abc_parser.rs      AVM2/ABC bytecode parser + semantic extractors (~2650 LOC)
-│   │   ├── decompiler.rs      ABC bytecode → Haxe-ish source (~2050 LOC), the current path
+│   │   ├── decompiler.rs      ABC bytecode → Haxe-ish source (~2050 LOC)
 │   │   ├── model/             the source model and its decompiler (see §5.3)
-│   │   ├── compile/           the model's trees to Haxe (see §5.3)
-│   │   ├── emit/              each object's script on the runtime's path (see §5.3)
+│   │   ├── compile/           the native writer: the model's trees as Fraymakers code (see §5.3)
+│   │   ├── emit/              each object's script, filled into its skeleton (see §5.3)
 │   │   ├── extractor.rs       Bridges abc_parser output into CharacterData
 │   │   ├── anim_splitter.rs   Splits multi-move SSF2 sprites into FM animations
 │   │   ├── sprite_parser.rs   Per-frame collision-box geometry from SWF timelines
@@ -404,16 +404,16 @@ process_character():
        ├─ generate_sound_entries  (per-WAV .meta sidecar)
        └─ conversion_stats.json
     │
-[10b] emit::runtime_fighter      the fighter's Script.hx and one for each projectile and item
+[10b] emit::fighter              the fighter's Script.hx and one for each projectile and item
     │                            it declares (§5.3), code onto the entity's keyframes,
-    │                            runtime_report.json
+    │                            port_report.json
     │
 [11] write_conversion_log        Snapshot api_mappings::snapshot_conversion_log()
                                  → <char>/conversion_log.json with:
                                    - character (the derived id),
-                                   - unknown + ssf2_only counts (from the text passes
-                                     that still run; the runtime's own gaps are in
-                                     runtime_report.json),
+                                   - unknown + ssf2_only counts (from the text passes;
+                                     what the written scripts leave out is in
+                                     port_report.json),
                                    - ssf2_source: { package_id, package_guid,
                                      source_method } (always present when
                                      `Main` exists); adds parent_normal_stats_id
@@ -440,12 +440,12 @@ three sub-systems are worth calling out:
   modules walk those timelines frame-by-frame and produce per-animation,
   per-frame, per-layer data structures.
 
-- **rewriter pipeline** (`api_mappings::translate_ssf2_to_fm`): the old text path. fighters
-  and stages no longer go through it; a projectile or item a fighter makes from another package
-  still does -- see [§5.5](#55-the-translation-pipeline-api_mappingsrs) for the
+- **rewriter pipeline** (`api_mappings::translate_ssf2_to_fm`): the text passes over decompiled
+  code. no converted script comes from it: every fighter, projectile, item and stage is written by
+  the native writer (§5.3). see [§5.5](#55-the-translation-pipeline-api_mappingsrs) for the
   exact order.
 
-`haxe_gen::generate` and then `emit::runtime_fighter` write the *output* -- `main.rs` just
+`haxe_gen::generate` and then `emit::fighter` write the *output* -- `main.rs` just
 prepares the inputs and hands everything to them.
 
 ---
@@ -548,7 +548,7 @@ points; `lookup_api` is a small inline SSF2 → FM table used during decompilati
 the JSONC rewriter in `api_mappings`.
 
 #### `model/` (the source model)
-reads a package once, in the source's own shape, for the compiler to translate (see
+reads a package once, in the source's own shape, for the native writer to translate (see
 [`docs/CONVERTER_DESIGN.md`](docs/CONVERTER_DESIGN.md)). `SourceModel::read` gives every class
 (superclass, fields, methods as trees, the frame scripts its constructor registers), every
 symbol binding, and every sprite's frames and labels. `peptide ssf2 model <file.ssf> [class]
@@ -564,56 +564,53 @@ its decompiler knows AS3 and nothing about either engine:
 | `tidy.rs` | folds join slots and temps back into `c ? a : b`, `a && b`, `a \|\| b`, gives loops their `while`/`do` form and switches their source values; each rewrite keeps evaluation order |
 
 `tests/source_model.rs` holds the bar: every class of every corpus package reads with nothing
-unreadable and no join slot left. the old `decompiler.rs` still feeds the current emitters
-until they are replaced.
+unreadable and no join slot left.
 
-#### `compile/` (the compiler) and `runtime/`
-the model's trees to Haxe (`compile_package`), in the source's shape: each class a section with
-`build` (fields and methods), `init` (its constructor) and `create`. it knows AS3 and nothing
-about the game; where AS3 and the engine's interpreter disagree it calls the runtime's `AS3` layer
-(`runtime/core/as3.hx`). `compile/runtime.rs` reads the runtime's files for the classes and globals
-they define, the one list of what exists. `peptide ssf2 compile <file.ssf> [class]` prints the
-output; `--lang-suite` prints the language suite.
+#### `compile/` (the native writer) and `runtime/`
+`compile/native.rs` writes the model's trees as plain Fraymakers code: a class's fields become the
+engine's state containers (a rollback puts them back), its methods and frame scripts the script's
+functions, and every API call the engine's own. there is one path and no fallback: a statement
+the writer has no plain form for is left out with a `// (not ported: <why>)` comment where it
+stood and listed in that object's gaps; a writer failure that isn't a statement (a structural
+problem) fails the conversion.
 
-checks: `tests/compile_corpus.rs` compiles the corpus and parses the output with
-`tools/hxcheck` when `haxe` is installed, `tests/runtime_parses.rs` parses `runtime/` itself (it is
-inlined into every script, so one stray brace drops them all), and `verify.py`'s S1/C1 parse every
-script a conversion wrote; `tools/tests/lang_suite.py` runs the language suite in the engine.
+`runtime/` holds the API's tables and the skeletons every script is filled from:
 
-`runtime/engine.names` lists the engine's own script globals; a content class by one of those
-names is written with a `_` after it.
+| file | holds |
+|---|---|
+| `api_classes.jsonc` | the API's class surface as data: each class, what it extends, its members, getters and setters, plus `globals`. the writer resolves a name content inherits from an API class against it (`compile/runtime.rs` reads it) |
+| `native_calls.jsonc` | each API call as the engine's code, what its value is, the `utils.hx` block it calls (`helper`) and the gap it leaves (`gap`) |
+| `api_names.jsonc` | SSF2's API and SDK names against the ones output uses (`playFrame`, `GROUND_TOUCH`; a verb takes Fraymakers' name where Fraymakers has one). a package is read through it (`Runtime::read_package` renames the model first); the rename reports an entry that would merge two of content's names |
+| `api_constants.jsonc`, `native_classes.jsonc`, `inert.jsonc` | the API's constants; Flash's classes the engine has its own version of; drawing calls this engine does nothing for |
+| `attack_stats.jsonc`, `autolink.jsonc`, `engine_animations.jsonc`, `events.jsonc`, `projectile_stats.jsonc`, `states.jsonc` | what declared stats, autolinks, the source engine's own states, events, projectile stats and fighter states become |
+| `engine.names` | the engine's own script globals; content's field, method or class by one of those names is written under another name |
+| `native/*.hx` | the skeletons (`fighter.hx`, `projectile.hx`, `item.hx`, `object.hx`, `stage.hx`) and the blocks they take only where an object's code needs them (`fighter_rules.hx`, `fighter_tables.hx`, `object_rules.hx`, `stage_boot.hx`, `helpers.hx`, `utils.hx`, `classes.hx`, `floor.hx`, `touch.hx`, `refresh.hx`, `parts.hx`) |
 
-`runtime/api_names.jsonc` lists SSF2's API and SDK names against the runtime's own. a package is
-read through it (`Runtime::read_package` renames the model before anything compiles it), so output
-calls `PeptideCharacter`, `playFrame`, `PeptideEvent.GROUND_TOUCH` and never SSF2's names (a verb takes Fraymakers' name where Fraymakers has one); the SDK classes every
-package bundles are answered by the runtime and never emitted. add a row here when content uses an
-SSF2 name the runtime answers under its own; the rename reports a table entry that would merge two
-of content's names.
+the SDK classes every package bundles are answered by these tables and never emitted.
 
-#### `emit/` (the runtime's path)
-every fighter converts this way: `haxe_gen::generate` writes the art, entities (every frame, no
-code in them), stats and sounds, then `emit::runtime_fighter` writes
-the fighter's script and one for each projectile and item it declares. each is the runtime's files,
-the classes the object reaches, its data (timelines, pieces, its declaration, the package's
-tables) and `runtime/entry/<kind>.hx`. `runtime_report.json` beside the project lists what did not
-place: a member nothing provides (`unknown`), an animation no source frame shows or a source frame
-no animation shows (`unplaced`). the verify gates run on it unchanged.
+checks: `tests/native_parses.rs` parses `runtime/native/*.hx` with the haxe toolchain when it's
+installed, `tests/native_fighters.rs` checks sample fighters leave no statement out,
+`tests/native_projectiles.rs` holds link's arrow to a short script with no gaps, and `verify.py`'s S1/C1 parse every script a conversion wrote.
 
-a declared projectile whose own code can be said in plain Fraymakers code skips the runtime
-entirely (`emit/native_projectile.rs`, `compile/native.rs`): its classes' fields become the
-engine's state containers, its methods and frame scripts become the script's functions (the
-entity's keyframes call them), and every API call is a row of `runtime/native_calls.jsonc` (or
-an `api_calls.jsonc` row that reaches nothing of the runtime). the parts every projectile has
-(lifetime, costume, reflection, the source's fresh-hit bonus) are `runtime/native/projectile.hx`,
-the source's floor touch is `floor.hx`, the functions its code may need (an owner's attack
-stat, its owner's label, firing another projectile) are blocks of `helpers.hx`, what its declared
-stats do each frame are the rows of `runtime/projectile_stats.jsonc`, and fighter states are
-`runtime/states.jsonc`. a class of its own (`classAPI`) runs as the object itself: its
-`initialize` as it starts, its `update` each source frame. link's arrow is about 160 lines this way. anything the writer
-has no plain form for keeps the projectile on the runtime, and `runtime_report.json` names the
-reason under `on_runtime` (the projectiles that made it are under `native`), so the next row
-to write is the one most content needs. `PEPTIDE_NATIVE_PROJECTILES=0` puts every one back on
-the runtime, for a comparison.
+#### `emit/` (each object's script)
+`haxe_gen::generate` writes a fighter's art, entities (every frame, no code in them), stats and
+sounds, then `emit::fighter` writes the fighter's script and one for each projectile and item it
+declares, each its skeleton filled in. `port_report.json` beside the project lists what each
+leaves out: `gaps` (the fighter's own), `projectile_gaps` (by entity), `items_without_own_code`,
+`unplaced` (an animation no source frame shows or a source frame no animation shows),
+`projectiles` and `box_writes`. a stage's is `gaps`, `objects` (each `{gaps}`), `projectiles`
+(each `{gaps, unplaced}`) and `unplaced`. `tools/tests/gap_scan.py` tallies the gaps across the
+installed game, so the next row to write is the one most content needs.
+
+a projectile (`emit/native_projectile.rs`): its classes' fields are the engine's state
+containers, its methods and frame scripts the script's functions (the entity's keyframes call
+them). the parts every projectile has (lifetime, costume, reflection, the source's fresh-hit
+bonus) are `runtime/native/projectile.hx`, the source's floor touch is `floor.hx`, the functions
+its code may need (an owner's attack stat, its owner's label, firing another projectile) are
+blocks of `helpers.hx`, what its declared stats do each frame are the rows of
+`runtime/projectile_stats.jsonc`, and fighter states are `runtime/states.jsonc`. a class of its
+own (`classAPI`) runs as the object itself: its `initialize` as it starts, its `update` each
+source frame. link's arrow is about 160 lines this way.
 
 a fighter goes the same way (`emit/native_fighter.rs`, the same writer): its own class runs as
 the fighter, the classes of the clips its animations show are its frame scripts (each class's
@@ -650,8 +647,7 @@ them by the label it shows. a jump to the frame it is on stays there (playing an
 from inside its own first frame would run that frame again, forever). a native fighter or
 projectile plays its clip on into the next animation itself (`playOn`, a charge's base into its
 attack), where the engine would end the move or hold the frame. what other objects' code asks of a fighter it publishes on its exports (its clips'
-fields as containers, an attack started, a rocket, its attack's stats, its label), and a
-fighter on the runtime publishes the same, so a projectile reaches either the same way. where
+fields as containers, an attack started, a rocket, its attack's stats, its label). where
 some class of the package reads another object's clip label, each native object publishes its
 own (`__stanceLabel`, read with `stanceLabelOf`); where some class writes another object's
 projectile stats, the writer sets one the engine keeps straight on it (`proj.updateProjectileStats`),
@@ -676,7 +672,7 @@ says (`keepCoded`, `runEffectCode`). every item is a custom game object carrying
 it up with grab and its own code throwing it on that holder's next attack, hits only while
 thrown, and the events it raises (`events.jsonc` `item`). each of its stances' labels is an
 animation (`toss_spinRight`), and its own jumps go to the stance its state shows (`playStance`).
-an item whose own code has no plain form carries the handler alone, and `runtime_report.json`'s
+an item whose own code has no plain form carries the handler alone, and `port_report.json`'s
 `items_without_own_code` says why. another object's code reads an item's state through what the
 handler publishes (`__inItemState`), and `setColorFilters` is `colorFilters`.
 what an item, a projectile or an enemy declares is its stats' metadata (`metadata` in its
@@ -737,11 +733,7 @@ animation; the source goes straight to the label). a named clip its clip places 
 only moves its own playhead is art drawn into the fighter's: a test of it reads the clips'
 placements (`hasName()`), and turning its frames is a noted gap. a colour transform set on its
 clip is one `RgbaColorShader` (`showTint`), Flash's classes are made as `native_classes.jsonc`
-says, and the game's tick end is the end of its update. a row of `native_calls.jsonc` can name a
-block of `runtime/native/utils.hx` its code calls (`helper`) and a gap it leaves (`gap`).
-`runtime_report.json` says `fighter_native`, lists every function still holding it on the
-runtime under `fighter_on_runtime`, and what the native code leaves out under `fighter_gaps`.
-`PEPTIDE_NATIVE_FIGHTERS=0` keeps every fighter on the runtime.
+says, and the game's tick end is the end of its update.
 
 ### 5.4 extraction layer
 
@@ -792,9 +784,8 @@ ADPCM uses a generic FLV wrapper.
 
 ### 5.5 the translation pipeline (`api_mappings.rs`)
 
-the old text path. a fighter's script and the projectiles and items it declares come from the
-runtime (§5.3); what still goes through here is a projectile or item made from another
-package. `translate_ssf2_to_fm(code)` is the single entry every block of decompiled
+the text passes over decompiled code. no converted script comes from here: every script is the
+native writer's (§5.3). `translate_ssf2_to_fm(code)` is the single entry every block of decompiled
 Haxe passes through. the fixed order:
 
 1. **`remove_readiness_guards`** -- strip `if (SSF2API.isReady())` wrappers, inline the body.
@@ -829,11 +820,9 @@ installs the `EffectAnimGuard` (effect → primary-animation map), counts the po
 placeholder), and runs the stat-scaling wrappers (`ssf2_gravity_to_fm`, …) that route every
 value through `stats.jsonc :: multipliers`. it emits the three character stats files via
 `generate_hitbox_stats` / `generate_character_stats` / `generate_animation_stats`; `Script.hx`
-is `emit::runtime_fighter`'s. `generate_manifest` writes `library/manifest.json`;
-`generate_projectile_script` (the text path, for a projectile or item made from another
-package) uses a local-state-machine (`Common.initLocalStateMachine()` + one `LState` per SSF2
-frame label); the `generate_projectile_*` fns pull real values from `getProjectileStats()` data
-via `best_match_projectile_data`. `generate_sound_entries` writes per-WAV `.meta` sidecars, and
+is `emit::fighter`'s. `generate_manifest` writes `library/manifest.json`; the
+`generate_projectile_*` fns pull real values from `getProjectileStats()` data via
+`best_match_projectile_data`. `generate_sound_entries` writes per-WAV `.meta` sidecars, and
 `script_meta` emits the `.hx.meta` sidecar variants.
 
 #### `entity_gen.rs` (~2700 LOC)
@@ -845,7 +834,8 @@ frame and carries no code (`emit::clock_entity` writes each frame's code onto it
 `generate_menu_entity` builds the head entity (`full` / `css` / `icon` / `stock` / ten `hud*`
 variants); `generate_projectile_entity` handles multi-state projectiles (anim names from inner
 FrameLabels, else the FM template trio), with the clip's frame scripts on its keyframes for a
-stage and none for a fighter's projectile (`runtime_runs_frames`: the runtime runs them);
+stage and none for a fighter's projectile (`runtime_runs_frames`: its script's keyframes are
+written by `emit::fighter`);
 `generate_effect_entity` emits one image-only `.entity` per effect.
 `box_type_to_fm` & friends do the SSF2-box → FM-layer mapping (table in `AGENT_CONTEXT.md`).
 COLLISION_BOX and IMAGE rotation both use the CW-positive, 0-360-normalized convention (no
@@ -979,8 +969,9 @@ animation's own, as `runtime/attack_stats.jsonc` maps them.
 a projectile's declared steering (x slowdown, homing, stick influence, stick aim, rotation) and trail are code
 in `runtime/projectile_stats.jsonc`: each row its stats take writes its variables and a named
 function into the projectile's script, gathered in `flyByStats()`, which its `update()` calls every
-frame it flies. a row stays with the runtime when the projectile's code names a stat it reads, or
-another declaration sharing its clip states one otherwise.
+frame it flies. a row is left to the projectile's own code where that code writes the stat as it
+flies (unless the write only turns it on and off), or another declaration sharing its clip states
+one otherwise.
 
 an attack's `code` rows in `runtime/attack_stats.jsonc`, and the source's own states in
 `runtime/engine_animations.jsonc`, keep the timer in the timeline: the per-frame function and its
@@ -1184,7 +1175,7 @@ characters/mario/
     │   │   ├── CharacterStats.hx           movement physics
     │   │   ├── HitboxStats.hx              per-attack hitbox data
     │   │   ├── AnimationStats.hx           animation flags
-    │   │   ├── Script.hx                   the fighter, compiled onto the runtime
+    │   │   ├── Script.hx                   the fighter, as plain Fraymakers code
     │   │   └── *.hx.meta
     │   └── Projectile/
     │       └── <Pascal>{Script,Stats,HitboxStats,AnimationStats}.hx (+ .meta)

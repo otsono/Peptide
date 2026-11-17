@@ -300,7 +300,6 @@ pub fn generate(output_dir: &Path, char_name: &str, char_pascal: &str, data: &Ch
             projectile_data: &data.projectile_data,
             palette_collection_guid: palette_collection_guid.as_deref(),
             palette_base_map_id: palette_base_map_id.as_deref(),
-            runtime_runs_frames: true,
         };
         crate::projectile_gen::generate_projectiles(&ctx, projectiles)?;
     }

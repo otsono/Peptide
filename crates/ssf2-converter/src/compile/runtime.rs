@@ -1,10 +1,9 @@
-//! What the runtime provides, read from its own files.
+//! What the API provides and the shared code every script is filled from, read from `runtime/`.
 //!
-//! The runtime (`runtime/**/*.hx`) is the source's API and engine behaviour, written in Haxe. Its
-//! files are the one list of what exists: the compiler reads them for the classes they define
-//! (`// class NAME extends BASE`, then the members that class's `build` gives an object as
-//! `me.NAME = ...`) and the names they make global (a top-level `var NAME` or `function NAME`).
-//! Nothing here is a second copy of that list.
+//! The API's classes and their members are `api_classes.jsonc`; its names, calls, constants and
+//! the Flash classes the engine has its own version of are the other tables there; the skeletons
+//! and helpers every object's script is filled from are `native/*.hx`. Nothing here is a second
+//! copy of those files.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -47,19 +46,12 @@ pub struct NativeClass {
 pub struct Runtime {
     pub classes: BTreeMap<String, RuntimeClass>,
     pub globals: BTreeSet<String>,
-    /// members that take their arguments as one array (declared `function(rest)`), as AS3's
-    /// `...rest` parameters do
-    pub variadic: BTreeSet<String>,
     /// every file, by its path under the runtime directory, and its text
     pub files: BTreeMap<String, String>,
     /// the names the engine's own script scope has (`engine.names`)
     pub engine_names: BTreeSet<String>,
     /// SSF2's API names -> the runtime's (`api_names.jsonc`)
     pub names: crate::model::rename::Names,
-    /// API calls written as the Fraymakers calls they are, by member (`api_calls.jsonc`)
-    pub calls: BTreeMap<String, String>,
-    /// the rows one kind of object writes its own way (`api_calls.jsonc`'s `by_kind`), by kind
-    pub kind_calls: BTreeMap<String, BTreeMap<String, String>>,
     /// methods that do nothing here, by class, and classes whose making only makes a value
     /// (`inert.jsonc`)
     pub inert_calls: BTreeMap<String, BTreeSet<String>>,
@@ -92,7 +84,7 @@ impl Runtime {
             }
         }
         c.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime"));
-        c.into_iter().find(|p| p.join("core").is_dir())
+        c.into_iter().find(|p| p.join("native").is_dir())
     }
 
     /// Read every runtime file under `dir`.
@@ -109,17 +101,6 @@ impl Runtime {
         }
         if let Ok(text) = std::fs::read_to_string(dir.join("api_names.jsonc")) {
             rt.names = crate::model::rename::Names::parse(&text);
-        }
-        if let Ok(text) = std::fs::read_to_string(dir.join("api_calls.jsonc")) {
-            let json: serde_json::Value = serde_json::from_str(&crate::mappings::strip_jsonc(&text))
-                .unwrap_or_else(|e| panic!("runtime/api_calls.jsonc is malformed: {e}"));
-            if let Some(o) = json.as_object() {
-                rt.calls = o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect();
-                if let Some(kinds) = o.get("by_kind").and_then(|v| v.as_object()) {
-                    rt.kind_calls = kinds.iter().filter_map(|(kind, rows)| Some((kind.clone(), rows.as_object()?.iter()
-                        .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()))).collect();
-                }
-            }
         }
         if let Ok(text) = std::fs::read_to_string(dir.join("inert.jsonc")) {
             let json: serde_json::Value = serde_json::from_str(&crate::mappings::strip_jsonc(&text))
@@ -156,6 +137,20 @@ impl Runtime {
                 rt.tables.insert(name.clone());
             }
         }
+        // the API's classes, as declarations (`api_classes.jsonc`)
+        if let Ok(text) = std::fs::read_to_string(dir.join("api_classes.jsonc")) {
+            let json: serde_json::Value = serde_json::from_str(&crate::mappings::strip_jsonc(&text))
+                .unwrap_or_else(|e| panic!("runtime/api_classes.jsonc is malformed: {e}"));
+            let set = |v: &serde_json::Value| -> BTreeSet<String> { v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default() };
+            for (name, row) in json["classes"].as_object().into_iter().flatten() {
+                rt.classes.entry(name.clone()).or_insert_with(|| RuntimeClass {
+                    name: name.clone(), extends: row["extends"].as_str().map(String::from),
+                    members: set(&row["members"]), getters: set(&row["getters"]), setters: set(&row["setters"]),
+                    ..Default::default() });
+                rt.globals.insert(name.clone());
+            }
+            rt.globals.extend(set(&json["globals"]));
+        }
         if let Ok(text) = std::fs::read_to_string(dir.join("engine.names")) {
             rt.engine_names = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(String::from).collect();
         }
@@ -164,15 +159,7 @@ impl Runtime {
             let Ok(text) = std::fs::read_to_string(&p) else { continue };
             let rel = p.strip_prefix(dir).unwrap_or(&p).to_string_lossy().replace('\\', "/");
             if let Some(kind) = rel.strip_prefix("native/").and_then(|r| r.strip_suffix(".hx")) {
-                rt.native_files.insert(kind.to_string(), text);
-                continue;
-            }
-            rt.read_file(&text);
-            // a name written twice is not a constant
-            let re = crate::dyn_re(r#"(?m)^([A-Za-z_][A-Za-z0-9_]*\.[A-Z][A-Z0-9_]*) = ("[^"\\]*"|-?[0-9]+(?:\.[0-9]+)?|true|false);\s*$"#);
-            for c in re.captures_iter(&text) {
-                let k = c[1].to_string();
-                if rt.constants.insert(k.clone(), c[2].to_string()).is_some() { rt.constants.insert(k, String::new()); }
+                rt.native_files.insert(kind.to_string(), text.clone());
             }
             rt.files.insert(rel, text);
         }
@@ -185,70 +172,7 @@ impl Runtime {
         self.natives.get(class).or_else(|| self.natives.get(super::short(class)))
     }
 
-    /// The rows as one kind of object writes them: its own rows over everyone's.
-    pub fn for_kind(mut self, kind: &str) -> Runtime {
-        if let Some(rows) = self.kind_calls.get(kind) {
-            for (k, v) in rows { self.calls.insert(k.clone(), v.clone()); }
-        }
-        self
-    }
 
-    /// Learn what one file defines.
-    pub fn read_file(&mut self, text: &str) {
-        let mut cur: Option<String> = None;
-        for line in text.lines() {
-            let t = line.trim_start();
-            if let Some(rest) = t.strip_prefix("// class ") {
-                let mut parts = rest.split_whitespace();
-                let name = parts.next().unwrap_or("").to_string();
-                let extends = match (parts.next(), parts.next()) { (Some("extends"), Some(b)) => Some(b.to_string()), _ => None };
-                self.classes.entry(name.clone()).or_insert_with(|| RuntimeClass { name: name.clone(), extends, ..Default::default() });
-                self.globals.insert(name.clone());
-                cur = Some(name);
-                continue;
-            }
-            if !line.starts_with([' ', '\t']) {
-                // a top-level definition: a global
-                for kw in ["var ", "function "] {
-                    if let Some(rest) = t.strip_prefix(kw) {
-                        let n: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
-                        if !n.is_empty() { self.globals.insert(n); }
-                    }
-                }
-            }
-            // a member: `me.NAME = ...` in a class's build, or `CLASS.NAME = ...` for a static, of the
-            // class it names wherever it is put (a stage's install puts statics on the API)
-            let named: Option<(String, String)> = {
-                let head: String = t.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
-                let tail = &t[head.len()..];
-                (!head.is_empty() && tail.starts_with('.') && self.classes.contains_key(&head) && Some(&head) != cur.as_ref())
-                    .then(|| (head.clone(), tail[1..].to_string()))
-            };
-            let own = cur.as_ref().and_then(|c| t.strip_prefix(&format!("{c}.")).map(|r| r.to_string()));
-            let on_object = named.is_none() && t.starts_with("me.");
-            let target = match named {
-                Some((c, rest)) => Some((c, rest)),
-                None => cur.clone().zip(t.strip_prefix("me.").map(|r| r.to_string()).or(own)),
-            };
-            if let Some((c, rest)) = target {
-                let c = &c;
-                let rest = rest.as_str();
-                let n: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
-                if n.is_empty() || !rest[n.len()..].trim_start().starts_with('=') { continue }
-                if rest[n.len()..].trim_start().trim_start_matches('=').trim_start().starts_with("function(rest)") {
-                    self.variadic.insert(n.clone());
-                }
-                let takes_me = rest[n.len()..].trim_start().trim_start_matches('=').trim_start().starts_with("function(me");
-                let class = self.classes.get_mut(c).unwrap();
-                if on_object { class.own.insert(n.clone()); } else if takes_me { class.statics.insert(n.clone()); }
-                if let Some(p) = n.strip_prefix("get_") { class.getters.insert(p.to_string()); }
-                if let Some(p) = n.strip_prefix("set_") { class.setters.insert(p.to_string()); }
-                // a static handed the object is the class's, not the object's: read as a value
-                // (`self.destroy` handed to a listener) it is not on the object to read
-                if on_object || !takes_me { class.members.insert(n); }
-            }
-        }
-    }
 
     /// A package read into a model with SSF2's API names already the runtime's: what every path
     /// that compiles content reads it through. Returns the names the table would merge.
@@ -258,8 +182,6 @@ impl Runtime {
         Ok((model, problems))
     }
 
-    /// whether a top-level name is already taken, by the engine or by the runtime itself
-    pub fn takes(&self, name: &str) -> bool { self.engine_names.contains(name) || self.globals.contains(name) }
 
     pub fn provides(&self, class: &str) -> bool {
         self.classes.contains_key(class) || self.classes.contains_key(super::short(class))
@@ -278,32 +200,7 @@ impl Runtime {
         false
     }
 
-    /// the runtime class, this one or one it extends, that keeps a method as its static: the
-    /// nearest class that has the name decides (one that puts it on the object keeps it there)
-    pub fn static_of(&self, class: &str, name: &str) -> Option<String> {
-        let mut cur = self.classes.get(class).or_else(|| self.classes.get(super::short(class)));
-        let mut n = 0;
-        while let Some(c) = cur {
-            if c.own.contains(name) { return None }
-            if c.statics.contains(name) { return Some(c.name.clone()) }
-            n += 1;
-            if n > 32 { break }
-            cur = c.extends.as_ref().and_then(|e| self.classes.get(e));
-        }
-        None
-    }
 
-    pub fn has_getter(&self, class: &str, name: &str) -> bool {
-        let mut cur = self.classes.get(class).or_else(|| self.classes.get(super::short(class)));
-        let mut n = 0;
-        while let Some(c) = cur {
-            if c.getters.contains(name) { return true }
-            n += 1;
-            if n > 32 { break }
-            cur = c.extends.as_ref().and_then(|e| self.classes.get(e));
-        }
-        false
-    }
 
     /// every property name any runtime class reads or writes through an accessor
     pub fn accessors(&self) -> BTreeSet<String> {

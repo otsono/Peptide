@@ -28,9 +28,11 @@ FrayTools to publish. see [`README.md`](README.md) for the pitch.
 
 ## must-knows (don't learn these the hard way)
 
-- **edit the JSONC, not the Rust.** most conversion behavior lives in
-  `crates/ssf2-converter/mappings/*.jsonc` (API renames, stat scaling, anim names). tune the
-  data, not the code. (DEVELOPMENT §6.)
+- **edit the JSONC and the .hx, not the Rust.** most conversion behavior lives in
+  `crates/ssf2-converter/mappings/*.jsonc` (stat scaling, anim names) and
+  `crates/ssf2-converter/runtime/` (the API's calls, names and classes as JSONC tables, and the
+  `native/*.hx` skeletons every converted script is filled from). tune the data, not the code.
+  (DEVELOPMENT §5.3, §6.)
 - **engine-side code: minimum bytecode, maximum hscript.** put engine behavior in
   `commands.hsx`, not hand-emitted bytecode. (AGENT_CONTEXT.)
 - **THE converter must work on content that does not exist yet.** this is the first rule and

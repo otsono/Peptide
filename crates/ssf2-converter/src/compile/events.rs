@@ -47,17 +47,6 @@ pub fn table() -> &'static EventTable {
     })
 }
 
-impl EventTable {
-    /// the tables as the script's data: a function from a source event's name to the engine's
-    /// event, for listeners the runtime's own code adds by name
-    pub fn data(&self) -> String {
-        let cases = |m: &BTreeMap<String, String>| m.iter()
-            .map(|(k, v)| format!("case {}: return {v};", super::quote(k))).collect::<Vec<_>>().join(" ");
-        format!("DATA.engineEvent = function(t) {{ switch (t) {{ {} default: return null; }} }};\n\
-                 DATA.stateEvent = function(t) {{ switch (t) {{ {} default: return null; }} }};\n",
-            cases(&self.engine), cases(&self.state))
-    }
-}
 
 /// the source event a listener call names: a string, or a constant of the API's event table
 /// (`PeptideEvent.GROUND_TOUCH`, read from `api_constants.jsonc`)

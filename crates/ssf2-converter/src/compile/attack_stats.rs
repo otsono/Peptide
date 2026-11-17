@@ -23,7 +23,7 @@ pub struct AttackStats {
 }
 
 #[derive(Debug, Default)]
-struct Code { when: Option<String>, unless: Option<String>, first: bool, call: Vec<String>, code: Vec<String>, same_as: Option<String>, native: Option<Vec<String>>, native_call: Option<Vec<String>> }
+struct Code { when: Option<String>, unless: Option<String>, first: bool, call: Vec<String>, code: Vec<String>, same_as: Option<String> }
 
 pub fn table() -> &'static AttackStats {
     static T: OnceLock<AttackStats> = OnceLock::new();
@@ -56,8 +56,6 @@ pub fn table() -> &'static AttackStats {
                 first: v["first"].as_bool().unwrap_or(false),
                 call: lines(&v["call"])?,
                 code: lines(&v["code"]).unwrap_or_default(),
-                native: lines(&v["native"]),
-                native_call: lines(&v["native_call"]),
                 same_as: v["same_as"].as_str().map(String::from),
             }))).collect();
         }
@@ -128,16 +126,13 @@ impl AttackStats {
     /// false), with `{v}` its value and `{name}` the value of another stat it declares (`{name|d}`
     /// gives `d` when it declares none, else 0). each comes with whether only the attack's own
     /// animation runs it (`first`), rather than every one under its label, and the row it is
-    pub fn first_frame(&self, stats: &BTreeMap<String, f64>) -> Vec<(bool, String, String)> { self.first_frame_of(stats, false) }
-
-    /// the same, for a fighter written as Fraymakers code: a row's `native_call` lines where it has them
-    pub fn first_frame_of(&self, stats: &BTreeMap<String, f64>, native: bool) -> Vec<(bool, String, String)> {
+    pub fn first_frame(&self, stats: &BTreeMap<String, f64>) -> Vec<(bool, String, String)> {
         let mut out = Vec::new();
         for (key, c) in &self.code {
             let Some(&v) = stats.get(key) else { continue };
             let ok = match c.when.as_deref() { Some("positive") => v > 0.0, Some("negative") => v < 0.0, Some("true") => v != 0.0, Some("false") => v == 0.0, _ => true };
             if !ok || c.unless.as_ref().is_some_and(|u| stats.get(u) == Some(&0.0)) { continue }
-            let call = if native { c.native_call.as_ref().unwrap_or(&c.call) } else { &c.call };
+            let call = &c.call;
             out.push((c.first, call.iter().map(|l| fill(l, v, stats)).collect::<Vec<_>>().join("\n"), key.clone()));
         }
         out
@@ -145,14 +140,11 @@ impl AttackStats {
 
     /// the code the fighter's script holds for the rows its attacks take, each once (a row that is
     /// `same_as` another writes that one's)
-    pub fn code(&self, taken: &std::collections::BTreeSet<String>) -> Vec<String> { self.code_of(taken, false) }
-
-    /// the same, for a fighter written as Fraymakers code: a row's `native` lines where it has them
-    pub fn code_of(&self, taken: &std::collections::BTreeSet<String>, native: bool) -> Vec<String> {
+    pub fn code(&self, taken: &std::collections::BTreeSet<String>) -> Vec<String> {
         let owners: std::collections::BTreeSet<&str> = taken.iter().filter_map(|k| self.code.get(k)
             .map(|c| c.same_as.as_deref().unwrap_or(k))).collect();
         owners.into_iter().filter_map(|k| self.code.get(k))
-            .flat_map(|c| if native { c.native.clone().unwrap_or_else(|| c.code.clone()) } else { c.code.clone() }).collect()
+            .flat_map(|c| c.code.clone()).collect()
     }
 
     /// whether a row of this stat holds only alongside one of the given stats
@@ -164,7 +156,7 @@ impl AttackStats {
     pub fn maps(&self, key: &str) -> bool { self.rows.contains_key(key) }
 
     /// the engine fields a stat of the given number sets, as source text; None when the value
-    /// falls outside every row that names the stat (a positive slowdown: a share, the runtime's)
+    /// falls outside every row that names the stat (a positive slowdown: a share, its `code` row's)
     pub fn native(&self, key: &str, v: f64) -> Option<Vec<(String, String)>> {
         self.native_in(&self.rows, key, v)
     }

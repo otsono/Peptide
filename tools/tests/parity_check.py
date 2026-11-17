@@ -211,7 +211,7 @@ def check_char(cid):
     # what an animation's clip writes of its boxes as it starts is that animation's own (the
     # conversion records each write, by the source's box number and field names)
     try:
-        box_writes = json.load(open(os.path.join(REPO, f"characters/{cid}/runtime_report.json"))).get("box_writes", {})
+        box_writes = json.load(open(os.path.join(REPO, f"characters/{cid}/port_report.json"))).get("box_writes", {})
     except (OSError, ValueError):
         box_writes = {}
     try:

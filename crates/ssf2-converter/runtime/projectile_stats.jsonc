@@ -10,22 +10,20 @@
 //   yields_to  another row that, taken too, does this one's work as well
 //   same_as    another row whose code this one writes (one function serving both stats)
 //   reads      the other stats its code reads
-//   replaces   the runtime's piece it stands in for
 //   code       the lines it writes into the script, once: `{v}` the stat's value, `{name}` another
 //              stat the projectile states (0 when none, `{name|d}` d), `{@speed}` `{@accel}`
 //              `{@size}` the source's units in this engine's, `{@effect}` the effect's stats,
 //              `{@clip}` the clip it shows (text)
 //   call       what its update runs each frame
 //   start      what its initialize runs once, instead of a `call` each frame
-//   native     true: taken only where the object's code is written as Fraymakers code (the
-//              runtime does this one its own way)
 //   switch     the variable its code turns it off and on again with: a write of the stat sets it
-//              to whether the value holds (its `when`), or on again for what it declares, where
-//              the object's code is written as Fraymakers code (compile/native.rs)
+//              to whether the value holds (its `when`), or on again for what it declares
+//              (compile/native.rs)
 //   switches   other stats it reads that turn a part of it off and on, each to its variable (on
 //              for any value but false and 0)
-// a row is not taken when the projectile's own code changes a stat it reads as it flies, or
-// another declaration that shares its clip states one otherwise: the runtime's piece runs then.
+// a row is not taken when the projectile's own code changes a stat it reads as it flies (other
+// than through its switches), or another declaration that shares its clip states one otherwise:
+// what that row does is then said in the projectile's gaps.
 // rows run in the order written here, from `frame`: the function the update calls, `{calls}` each
 // taken row's `call`
 {
@@ -45,7 +43,7 @@
     "}"
   ],
   "code": {
-    "bounce": { "when": "positive", "reads": ["bounce_decay"], "replaces": "Projectiles.bounce", "native": true,
+    "bounce": { "when": "positive", "reads": ["bounce_decay"],
       "start": "self.addEventListener(EntityEvent.COLLIDE_FLOOR, bounceOff, { persistent: true });",
       "code": [
         "// it bounces off the floor at {v}, each bounce `bounce_decay` of the one before, and ends",
@@ -61,7 +59,7 @@
         "\tself.setYSpeed(-height);",
         "}"
       ] },
-    "limit": { "when": "positive", "reads": ["limitOverwrite"], "replaces": "Projectiles.limit", "start": "keepToLimit();", "native": true,
+    "limit": { "when": "positive", "reads": ["limitOverwrite"], "start": "keepToLimit();",
       "code": [
         "// at most {v} of it out at once for its owner: the oldest goes to make room when",
         "// `limitOverwrite` is set, else this one does not stay. the ones out are kept on the owner, by clip",
@@ -90,7 +88,7 @@
         "\tout.push(self);",
         "}"
       ] },
-    "homingSpeed": { "when": "nonnegative", "reads": ["xdecay", "homingEase"], "replaces": "Projectiles.steer", "call": "homeIn();",
+    "homingSpeed": { "when": "nonnegative", "reads": ["xdecay", "homingEase"], "call": "homeIn();",
       "code": [
         "// homing: the heading turns toward the middle of the nearest opponent that can be hit, a share",
         "// of the turn each source frame (`homingEase`, half as much an engine frame), keeping its own",
@@ -130,7 +128,7 @@
         "\tself.setYSpeed(Math.sin(homingHeading) * speed);",
         "}"
       ] },
-    "xdecay": { "when": "true", "yields_to": "homingSpeed", "reads": ["homingSpeed"], "replaces": "Projectiles.steer", "call": "slowDown();",
+    "xdecay": { "when": "true", "yields_to": "homingSpeed", "reads": ["homingSpeed"], "call": "slowDown();",
       "code": [
         "// its x slowdown: a steady push back against the way it faces, each source frame. it stops at",
         "// nothing when it slows a shot going forward; a negative one speeds it up (zelda's din's fire),",
@@ -142,7 +140,7 @@
         "\tself.setXSpeed(slowdown > 0 && speed >= 0 && slowed < 0 ? 0 : slowed);",
         "}"
       ] },
-    "influenceXMovement": { "when": "positive", "reads": ["influenceYMovement", "influenceXFactor", "influenceYFactor"], "replaces": "Projectiles.influence", "call": "followStick();", "switch": "nudgedAcross",
+    "influenceXMovement": { "when": "positive", "reads": ["influenceYMovement", "influenceXFactor", "influenceYFactor"], "call": "followStick();", "switch": "nudgedAcross",
       "switches": { "influenceYMovement": "nudgedUp" },
       "code": [
         "// the owner's held stick nudges it, per axis: stepped toward the held way by the axis' factor",
@@ -177,9 +175,9 @@
         "\t}",
         "}"
       ] },
-    "influenceYMovement": { "when": "positive", "yields_to": "influenceXMovement", "same_as": "influenceXMovement", "reads": ["influenceXMovement", "influenceXFactor", "influenceYFactor"], "replaces": "Projectiles.influence", "switch": "nudgedUp",
+    "influenceYMovement": { "when": "positive", "yields_to": "influenceXMovement", "same_as": "influenceXMovement", "reads": ["influenceXMovement", "influenceXFactor", "influenceYFactor"], "switch": "nudgedUp",
       "switches": { "influenceXMovement": "nudgedAcross" } },
-    "controlDirection": { "when": "nonnegative", "reads": ["xspeed", "calcAngle"], "replaces": "Projectiles.control", "call": "aimByStick();", "switch": "aimed",
+    "controlDirection": { "when": "nonnegative", "reads": ["xspeed", "calcAngle"], "call": "aimByStick();", "switch": "aimed",
       "start": "self.updateGameObjectStats({ deathBoundsDestroy: false });",
       "code": [
         "// the owner aims it with the stick, eight ways, at its launch's x speed: eased a sixth of the",
@@ -210,7 +208,7 @@
         "\tself.setYSpeed(-Math.sin(aim) * aimSpeed);",
         "}"
       ] },
-    "trailEffect": { "when": "effect", "reads": ["trailEffectInterval", "trailEffectRotate"], "replaces": "Projectiles.trail", "call": "dropTrail();", "switch": "trailOn",
+    "trailEffect": { "when": "effect", "reads": ["trailEffectInterval", "trailEffectRotate"], "call": "dropTrail();", "switch": "trailOn",
       "switches": { "trailEffectRotate": "trailTurns" },
       "code": [
         "// its trail: its effect dropped where it is every `trailEffectInterval` engine frames (every one",
@@ -231,7 +229,7 @@
         "\ttrail.setRotation(trail.isFacingRight() ? angle : -angle);",
         "}"
       ] },
-    "rotate": { "when": "true", "replaces": "Projectiles.rotate", "call": "faceFlight();", "switch": "rotating",
+    "rotate": { "when": "true", "call": "faceFlight();", "switch": "rotating",
       "code": [
         "// turned to face the way it flies. this engine turns an object after mirroring it, so one",
         "// facing left turns the other way round for the same climb",

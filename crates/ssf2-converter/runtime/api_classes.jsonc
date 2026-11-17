@@ -1,0 +1,624 @@
+// the API's classes as the converter resolves content against them: each class, the class it
+// extends, and the members it has (a getter or setter is read or written through its accessor).
+// a call on one of them is written as its row in native_calls.jsonc; one with no row is said in
+// the object's gaps. `globals` are the API's own names: a content field by one is no API call.
+{
+ "classes": {
+  "Bitmap": {
+   "members": [
+    "bitmapData",
+    "create",
+    "height",
+    "width",
+    "x"
+   ]
+  },
+  "BitmapData": {
+   "members": [
+    "clone",
+    "colorTransform",
+    "copyPixels",
+    "create",
+    "dispose",
+    "draw",
+    "fill",
+    "fillRect",
+    "getPixel",
+    "getPixel32",
+    "lock",
+    "rect",
+    "setPixel",
+    "setPixel32",
+    "transparent",
+    "unlock",
+    "width"
+   ]
+  },
+  "Dictionary": {
+   "members": [
+    "__dict",
+    "__o",
+    "__s",
+    "create",
+    "get",
+    "has",
+    "keys",
+    "plain",
+    "remove",
+    "set"
+   ]
+  },
+  "DisplayObject": {
+   "getters": [
+    "root"
+   ],
+   "members": [
+    "__auto",
+    "alpha",
+    "blendMode",
+    "cacheAsBitmap",
+    "create",
+    "filters",
+    "getBounds",
+    "getRect",
+    "get_root",
+    "globalToLocal",
+    "height",
+    "hitTestObject",
+    "hitTestPoint",
+    "loaderInfo",
+    "localToGlobal",
+    "mask",
+    "mouseX",
+    "mouseY",
+    "name",
+    "opaqueBackground",
+    "parent",
+    "rotation",
+    "rotationX",
+    "rotationY",
+    "rotationZ",
+    "scale9Grid",
+    "scaleX",
+    "scaleY",
+    "scaleZ",
+    "scrollRect",
+    "stage",
+    "transform",
+    "unnamed",
+    "visible",
+    "width",
+    "x",
+    "y",
+    "z"
+   ]
+  },
+  "Graphics": {
+   "members": [
+    "beginBitmapFill",
+    "beginFill",
+    "clear",
+    "curveTo",
+    "drawCircle",
+    "drawEllipse",
+    "drawRect",
+    "drawRoundRect",
+    "endFill",
+    "lineStyle",
+    "lineTo",
+    "moveTo"
+   ]
+  },
+  "MovieClip": {
+   "extends": "DisplayObject",
+   "members": [
+    "__enteredOn",
+    "__kids",
+    "__part",
+    "__playing",
+    "__scripts",
+    "__sym",
+    "__tl",
+    "addChild",
+    "addChildAt",
+    "addFrameScript",
+    "buttonMode",
+    "contains",
+    "create",
+    "currentFrame",
+    "currentFrameLabel",
+    "currentLabel",
+    "currentScene",
+    "enabled",
+    "framesLoaded",
+    "getBounds",
+    "getChildAt",
+    "getChildByName",
+    "getChildIndex",
+    "getRect",
+    "gotoAndPlay",
+    "gotoAndStop",
+    "graphics",
+    "hitArea",
+    "isPlaying",
+    "mouseChildren",
+    "mouseEnabled",
+    "movedX",
+    "movedY",
+    "nextFrame",
+    "numChildren",
+    "play",
+    "prevFrame",
+    "put",
+    "removeChild",
+    "removeChildAt",
+    "removeChildren",
+    "sameAsBefore",
+    "samePlacing",
+    "scenes",
+    "setChildIndex",
+    "soundTransform",
+    "stop",
+    "swapChildren",
+    "swapChildrenAt",
+    "symOf",
+    "syms",
+    "tabChildren",
+    "tabEnabled",
+    "totalFrames",
+    "trackAsMenu",
+    "useHandCursor"
+   ]
+  },
+  "PeptideAPI": {
+   "members": [
+    "__listeners",
+    "addEventListener",
+    "addHUDDetection",
+    "addTimedCameraTarget",
+    "calculateChargeDamage",
+    "camera",
+    "characterByUid",
+    "characterOf",
+    "clipByLinkage",
+    "createVfx",
+    "createVfxOverlay",
+    "currentActiveFinalSmash",
+    "deinit",
+    "deleteTimedCameraTarget",
+    "enableSmashBallSpawn",
+    "fixBG",
+    "gameVar",
+    "generateUID",
+    "getAvailableItemList",
+    "getCamBounds",
+    "getCamera",
+    "getCharacter",
+    "getCharacters",
+    "getCollisionBoundary",
+    "getCostumeData",
+    "getCurrentMusicInfo",
+    "getDeathBounds",
+    "getElapsedFrames",
+    "getEnemies",
+    "getEnemy",
+    "getGameMode",
+    "getGameSettings",
+    "getGameTimer",
+    "getItem",
+    "getItemFrequency",
+    "getItems",
+    "getLosers",
+    "getPlatform",
+    "getPlatformBetweenPoints",
+    "getPlatforms",
+    "getPlayer",
+    "getPlayers",
+    "getProjectile",
+    "getQualitySettings",
+    "getSmashBallInstance",
+    "getStage",
+    "getTarget",
+    "getTimestamp",
+    "getUID",
+    "getWinners",
+    "hasEventListener",
+    "hasFeature",
+    "hitTestGround",
+    "hitTestGroundBetweenPoints",
+    "hitboxTest",
+    "init",
+    "isDebug",
+    "isFSCutscenePlaying",
+    "isGameStarted",
+    "isHazardsOn",
+    "isReady",
+    "knockbackOf",
+    "knockbackVelocityOf",
+    "lightFlash",
+    "makeEnemy",
+    "makePickup",
+    "matchStatistics",
+    "objectOf",
+    "placePickup",
+    "playMusic",
+    "playSound",
+    "print",
+    "random",
+    "randomBetween",
+    "randomInteger",
+    "randomUnit",
+    "removeEventListener",
+    "removeHUDDetection",
+    "removeTimedCameraTarget",
+    "setCamStageFocus",
+    "setGameVar",
+    "shakeCamera",
+    "spawnPlatform",
+    "spawnProjectile",
+    "stopMusic",
+    "stopSound",
+    "uid"
+   ]
+  },
+  "PeptideAsset": {
+   "extends": "MovieClip",
+   "members": [
+    "__props",
+    "create",
+    "deinitAPI",
+    "getProp",
+    "initAPI",
+    "register"
+   ]
+  },
+  "PeptideBaseAPIObject": {
+   "members": [
+    "__fm",
+    "__listeners",
+    "__type",
+    "__vars",
+    "metadata"
+   ]
+  },
+  "PeptideBeacon": {
+   "extends": "PeptideGameObject",
+   "members": [
+    "__type",
+    "build",
+    "create",
+    "init"
+   ]
+  },
+  "PeptideCamera": {
+   "extends": "PeptideBaseAPIObject",
+   "members": [
+    "__mc",
+    "__params",
+    "__points",
+    "__type",
+    "dimmed"
+   ]
+  },
+  "PeptideCharacter": {
+   "extends": "PeptideGameObject",
+   "members": [
+    "__fm",
+    "__stats",
+    "__type",
+    "rocketAttack",
+    "statDefault"
+   ]
+  },
+  "PeptideCharacterExt": {
+   "extends": "PeptideCharacter",
+   "members": [
+    "build",
+    "clearListener",
+    "create",
+    "effects",
+    "init"
+   ]
+  },
+  "PeptideCollisionBoundary": {
+   "extends": "PeptideBaseAPIObject",
+   "members": [
+    "__surface",
+    "__type",
+    "metadata"
+   ]
+  },
+  "PeptideControlBits": {
+   "extends": "Object",
+   "getters": [
+    "BUTTON1",
+    "C_LEFT",
+    "C_UP",
+    "DASH",
+    "DOWN",
+    "DT_DASH",
+    "GRAB",
+    "RIGHT",
+    "SHIELD2",
+    "TAP_JUMP",
+    "TAUNT"
+   ],
+   "members": [
+    "BUTTON2",
+    "C_RIGHT",
+    "DOWN",
+    "JUMP2",
+    "TAP_JUMP",
+    "__copy",
+    "__is",
+    "bits",
+    "build",
+    "create",
+    "get_BUTTON1",
+    "get_C_LEFT",
+    "get_C_UP",
+    "get_DASH",
+    "get_DOWN",
+    "get_DT_DASH",
+    "get_GRAB",
+    "get_RIGHT",
+    "get_SHIELD2",
+    "get_TAP_JUMP",
+    "get_TAUNT",
+    "init"
+   ]
+  },
+  "PeptideCustomMatch": {
+   "extends": "PeptideBaseAPIObject",
+   "members": []
+  },
+  "PeptideCustomMenu": {
+   "extends": "PeptideBaseAPIObject",
+   "members": []
+  },
+  "PeptideCustomMode": {
+   "extends": "PeptideBaseAPIObject",
+   "members": []
+  },
+  "PeptideEnemy": {
+   "extends": "PeptideGameObject",
+   "members": [
+    "__fading",
+    "__type",
+    "fadeStep"
+   ]
+  },
+  "PeptideFinalSmashBar": {
+   "extends": "Object",
+   "members": [
+    "__clip",
+    "__is",
+    "__left",
+    "__most",
+    "build",
+    "create",
+    "init"
+   ]
+  },
+  "PeptideFrameTimer": {
+   "extends": "Object",
+   "getters": [
+    "completed",
+    "data",
+    "duration",
+    "elapsedFrames"
+   ],
+   "members": [
+    "__copy",
+    "__data",
+    "__is",
+    "__length",
+    "__ran",
+    "build",
+    "create",
+    "finish",
+    "get_completed",
+    "get_data",
+    "get_duration",
+    "get_elapsedFrames",
+    "init",
+    "reset",
+    "set_data",
+    "set_duration",
+    "set_elapsedFrames",
+    "tick"
+   ],
+   "setters": [
+    "data",
+    "duration",
+    "elapsedFrames"
+   ]
+  },
+  "PeptideGameObject": {
+   "extends": "PeptideBaseAPIObject",
+   "members": [
+    "__selfPlatforms"
+   ]
+  },
+  "PeptideGameTimer": {
+   "extends": "PeptideBaseAPIObject",
+   "members": []
+  },
+  "PeptideItem": {
+   "extends": "PeptideGameObject",
+   "members": [
+    "__type"
+   ]
+  },
+  "PeptidePlatform": {
+   "extends": "PeptideCollisionBoundary",
+   "getters": [
+    "fallthrough"
+   ],
+   "members": [
+    "__fallSet",
+    "__fallthrough",
+    "__start",
+    "__type",
+    "get_fallthrough",
+    "set_fallthrough"
+   ],
+   "setters": [
+    "fallthrough"
+   ]
+  },
+  "PeptideProjectile": {
+   "extends": "PeptideGameObject",
+   "members": [
+    "__type"
+   ]
+  },
+  "PeptideStage": {
+   "extends": "PeptideBaseAPIObject",
+   "members": [
+    "__camBgs",
+    "__fm",
+    "__light",
+    "__type"
+   ]
+  },
+  "PeptideStageQuality": {
+   "members": [
+    "init"
+   ]
+  },
+  "PeptideTarget": {
+   "extends": "PeptideGameObject",
+   "members": [
+    "__tstate",
+    "__type",
+    "onHurt",
+    "ownStats",
+    "update"
+   ]
+  },
+  "PeptideUtils": {
+   "members": [
+    "calculateDifferenceBetweenAngles",
+    "calculateSpeed",
+    "calculateXSpeed",
+    "calculateYSpeed",
+    "cast_",
+    "cloneObject",
+    "decel",
+    "forceBase360",
+    "getAngleBetween",
+    "getControlsAngle",
+    "getCostumeObject",
+    "getDistance",
+    "getVelocityVector",
+    "removeFrameScripts",
+    "replacePalette",
+    "rotateRectangleAroundOrigin",
+    "safeGotoAndStop",
+    "safeRemoveMC",
+    "setBrightness",
+    "setColorFilters",
+    "setTint",
+    "toDegrees",
+    "toRadians"
+   ]
+  },
+  "Transform": {
+   "getters": [
+    "colorTransform"
+   ],
+   "members": [
+    "__ct",
+    "create",
+    "get_colorTransform",
+    "set_colorTransform"
+   ],
+   "setters": [
+    "colorTransform"
+   ]
+  }
+ },
+ "globals": [
+  "AS3",
+  "Actions",
+  "AttackRules",
+  "Attacks",
+  "Bitmap",
+  "BitmapData",
+  "Bodies",
+  "Dictionary",
+  "DisplayObject",
+  "Effects",
+  "Events",
+  "Fighters",
+  "Graphics",
+  "Hitboxes",
+  "Items",
+  "MovieClip",
+  "Objects",
+  "PeptideAPI",
+  "PeptideAsset",
+  "PeptideBaseAPIObject",
+  "PeptideBeacon",
+  "PeptideCamera",
+  "PeptideCharacter",
+  "PeptideCharacterExt",
+  "PeptideCollisionBoundary",
+  "PeptideControlBits",
+  "PeptideCustomMatch",
+  "PeptideCustomMenu",
+  "PeptideCustomMode",
+  "PeptideEnemy",
+  "PeptideFinalSmashBar",
+  "PeptideFrameTimer",
+  "PeptideGameObject",
+  "PeptideGameTimer",
+  "PeptideItem",
+  "PeptidePlatform",
+  "PeptideProjectile",
+  "PeptideRuntime",
+  "PeptideStage",
+  "PeptideStageQuality",
+  "PeptideTarget",
+  "PeptideUtils",
+  "Planes",
+  "Platforms",
+  "Projectiles",
+  "Rollback",
+  "Sounds",
+  "Stage",
+  "StageAPI",
+  "StageBoot",
+  "StageObjects",
+  "Stages",
+  "States",
+  "Timers",
+  "Transform",
+  "Visuals",
+  "Weather",
+  "__clipGroup",
+  "__follow",
+  "__made",
+  "__nameObject",
+  "__namedObjs",
+  "__objectNamed",
+  "__panContainer",
+  "__panConts",
+  "__panRates",
+  "__platFollow",
+  "__selfCheck",
+  "__verifyBuilt",
+  "__verifyDump",
+  "__verifyFrames",
+  "__verifyPulse",
+  "initialize",
+  "m_alpha",
+  "m_owned",
+  "m_shown",
+  "m_tint",
+  "onKill",
+  "onTeardown",
+  "update"
+ ]
+}

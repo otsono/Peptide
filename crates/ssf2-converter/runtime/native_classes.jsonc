@@ -6,7 +6,7 @@
 // catch) checks against, where its name can be read as a value. `statics` are the class's own
 // functions the engine's class lacks, as templates of their arguments; the rest are called as
 // they are. `constants` are written in place. a member the engine's object lacks is a row in
-// api_calls.jsonc, under its name.
+// native_calls.jsonc, under its name.
 {
   "Point": {
     // the engine's point: `add`, `offset`, `equals`, `clone`, `polar`, `interpolate` as Flash's

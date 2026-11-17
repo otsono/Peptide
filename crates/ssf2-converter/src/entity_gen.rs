@@ -363,8 +363,8 @@ fn finish_entity(mut entity: Value) -> String {
 thread_local! {
     static PROJECTILE_PIECES: std::cell::RefCell<BTreeMap<String, Vec<crate::emit::Piece>>> = Default::default();
 }
-/// For the runtime's path: which source frames each projectile entity's animations show, by the
-/// entity's id, as the entity was written.
+/// Which source frames each projectile entity's animations show, by the entity's id, as the
+/// entity was written.
 pub fn take_projectile_pieces() -> BTreeMap<String, Vec<crate::emit::Piece>> {
     PROJECTILE_PIECES.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
@@ -447,7 +447,7 @@ pub fn generate_entity(
         };
         let base_len = split_len.max(1);
         let head = split.append_head_frames as u32;     // extra frames taken from source [0, head)
-        // every frame is kept: the runtime runs the source's frame scripts itself, and a frame
+        // every frame is kept: the script runs the source's frame code on its keyframes, and a frame
         // whose script ends the move is never shown because that script runs before the frame is
         let frame_count = base_len + head;               // total emitted frames
         let split_start_u = split.start_frame as u32;
@@ -549,8 +549,8 @@ pub fn generate_entity(
         }
 
         // ── 2. FRAME_SCRIPT layer ─────────────────────────────────────────────
-        // one blank keyframe spanning the animation: the runtime runs the source's frame scripts
-        // itself, and the fighter's script puts its own code on keyframes (`emit::clock_entity`)
+        // one blank keyframe spanning the animation: the fighter's script puts the source's frame
+        // code on keyframes (`emit::native_projectile::keyframes_with`)
         {
             let layer_id = uuid(char_id, &format!("layer_script_{}", anim_name));
             let tail_kf_id = uuid(char_id, &format!("kf_script_tail_{}", anim_name));
@@ -1323,7 +1323,7 @@ pub fn generate_entity(
 /// The throws whose attack says it turns its fighter around (`flip`). The source turns the
 /// thrower as the throw begins and states the throw for the way it then faces (its clip drawn
 /// mirrored, its launch forward); this engine turns no one in a throw, so these throws are drawn
-/// and launched already turned, and the runtime turns the thrower once the throw is over. The
+/// and launched already turned, and the fighter's script turns the thrower once the throw is over. The
 /// throws are the engine's throw animations (`mappings/character/stats_tables.jsonc`).
 pub fn turned_throws(data: &CharacterData) -> std::collections::BTreeSet<String> {
     let tables = crate::mappings::character_stats_tables();
@@ -2274,12 +2274,11 @@ fn push_script_layer(
     layer_id
 }
 
-/// `runtime_runs_frames`: the runtime runs the clip's own frame scripts (a fighter's projectile),
-/// so its script layers stay blank.
+/// Its script layers stay blank: its script puts the clip's frame code on keyframes
+/// (`emit::native_projectile::keyframes_with`).
 pub fn generate_projectile_entity(
     char_id: &str,
     proj: &ProjectileInfo,
-    runtime_runs_frames: bool,
 ) -> String {
     let none: BTreeMap<u16, String> = BTreeMap::new();
     let mut keyframes: Vec<Value> = Vec::new();
@@ -2289,7 +2288,7 @@ pub fn generate_projectile_entity(
 
     let proj_id = &proj.name;
     let total_frames = proj.inner_frame_count.max(1) as u32;
-    // what each animation shows of the source's clips (for the runtime's path): the clip placed
+    // what each animation shows of the source's clips: the clip placed
     // as `stance` under the idle state's label, else the projectile's own clip
     let (idle_sym, idle_label) = match proj.inner_sprite_id {
         Some(id) => (id, "attack_idle".to_string()),
@@ -2320,7 +2319,7 @@ pub fn generate_projectile_entity(
     // script on frame 10 at frame 40.
     let idle_script_layer: Option<String> = (!proj.frame_scripts.is_empty()).then(|| {
         push_script_layer(&mut keyframes, &mut layers, char_id, &format!("proj_{}_scr", proj_id), total_frames,
-            if runtime_runs_frames { &none } else { &proj.frame_scripts })
+            &none)
     });
 
     // ── Build collision box layers for idle (from inner sprite boxes) ────
@@ -2463,7 +2462,7 @@ pub fn generate_projectile_entity(
         // the state's own timeline scripts, on the state's own timeline
         let script_layer_id = push_script_layer(&mut keyframes, &mut layers, char_id,
             &format!("proj_{}_extra_{}_script", proj_id, state_slug), total.max(1) as u32,
-            if runtime_runs_frames { &none } else { &state_data.frame_scripts });
+            &none);
 
         // its boxes (a thrown item's hits are its toss clip's; one held hits nothing)
         let box_layer_ids: Vec<String> = match &state_data.boxes {
@@ -2533,7 +2532,7 @@ pub fn generate_projectile_entity(
 
     // a platform the clip gives itself: a floor line a structure content stands on
     push_platform_animations(&mut keyframes, &mut layers, &mut symbols, &mut animations, char_id, &proj_id.to_string(), &proj.platforms);
-    // the pieces the runtime plays: one per animation the entity kept (a name two of them shared
+    // the pieces its script plays: one per animation the entity kept (a name two of them shared
     // is the one that shows the clip's own frames, not a borrowed one)
     {
         let kept: std::collections::BTreeSet<&str> = animations.iter().filter_map(|a| a["name"].as_str()).collect();

@@ -82,7 +82,7 @@ sweep-stages-live:
 verify:
     python3 tools/verify.py sample
 
-# every fighter's six gates on the runtime's path, from a frozen build: `just verify-roster`, or
+# every fighter's six gates, from a frozen build: `just verify-roster`, or
 # name some (`just verify-roster mario sonic`). hours for the whole roster; results in
 # build/verify/roster.txt
 verify-roster *FIGHTERS:
@@ -91,7 +91,7 @@ verify-roster *FIGHTERS:
 # each fighter's hits landed on both engines, damage and launch side by side (aerials included):
 # `just hits-roster`, or one fighter (`just hits-roster mario`). results in build/verify/hits-<id>.json
 hits-roster *FIGHTERS:
-    PEPTIDE_RUNTIME=1 python3 tools/tests/hit_parity.py --all {{FIGHTERS}}
+    python3 tools/tests/hit_parity.py --all {{FIGHTERS}}
 
 # one subject through every gate: `just verify-one stage fourside` / `just verify-one char mario`
 verify-one KIND ID *ARGS:

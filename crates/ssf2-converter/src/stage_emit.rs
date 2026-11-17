@@ -399,7 +399,7 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
     // draw for a linkage and where each piece's art sits against the clip's own origin
     let mut lib_entries: Vec<Value> = Vec::new();
     let mut lib_table: Vec<String> = Vec::new();
-    // ...and the same by name, for the runtime's stage (which finds the clip's own symbol)
+    // ...and the same by name, for the stage's script (which finds the clip's own symbol)
     let mut lib_rows: Vec<(String, String)> = Vec::new();
     // the linkage names the stage's code makes on demand: it adds and removes these at runtime (a
     // stream of butterflies flying across, spawned on a random timer and dropped off-screen), so
@@ -710,8 +710,8 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         plan.push(json!({ "kind": "weather", "id": format!("{}_weather{i}", model.id),
                           "var": format!("m_weather{i}"), "count": w.count.min(WEATHER_MAX_PARTICLES) }));
     }
-    // THE STAGE'S SCRIPT: the stage's own class run by the runtime, over the boot above as data,
-    // and each object with a class of its own run by that class (`emit::stage`).
+    // THE STAGE'S SCRIPT: the stage's own class written as Fraymakers code, over the boot above,
+    // and each object with a class of its own written from that class (`emit::stage`).
     let objects: Vec<(String, String)> = model.hazards.iter().enumerate()
         .filter(|(_, hz)| hz.instance_name.as_deref().is_none_or(str::is_empty))
         .filter_map(|(i, hz)| Some((hz.class_name.clone().filter(|c| !c.is_empty())?, hazard_id(&model.id, i, hz))))
@@ -773,10 +773,9 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
         log::warn!("{id}: no package to read the stage's classes from, so it is written with no script");
         (Vec::new(), Default::default())
     } else {
-        let (out, objects, played) = crate::emit::stage::runtime_stage(model, &dir, &input)
+        let (objects, played) = crate::emit::stage::stage(model, &dir, &input)
             .with_context(|| format!("{id}: the stage's script"))?;
-        log::info!("{id}: the stage script runs on the runtime ({} problems, {} unknown names, {} objects on their own classes, see runtime_report.json)",
-            out.problems.len(), out.unknown.len(), objects.len());
+        log::info!("{id}: the stage's script and {} objects written, what each leaves out in port_report.json", objects.len());
         (objects, played)
     };
     // an object the stage's own code makes over and over runs its own class, body and all: the
@@ -2483,8 +2482,8 @@ impl PngPool {
     }
 }
 
-/// What an object's script holds until the runtime writes its own over it (`emit::stage`).
-const RUNTIME_WRITES: &str = "// the runtime writes this object's script (emit::stage)\n";
+/// What an object's script holds until its own class's script is written over it (`emit::stage`).
+const OWN_CLASS_WRITES: &str = "// its own class's script is written over this (emit::stage)\n";
 
 fn emit_hazards(model: &StageModel, lib: &Path) -> Result<Vec<Value>> {
     let mut entries = Vec::new();
@@ -2567,9 +2566,9 @@ fn emit_hazards(model: &StageModel, lib: &Path) -> Result<Vec<Value>> {
         write_json(&lib.join("entities").join(format!("{hid}.entity")), &hazard_entity(&hid, hz, &sprite_guid, img_x, img_y, img_scale))?;
         write_meta(&lib.join("entities").join(format!("{hid}.entity.meta")), &hid, &hid, "", Some("CUSTOM_GAME_OBJECT"), None)?;
 
-        // an object with a class of its own runs that class: its script is the runtime's
+        // an object with a class of its own runs that class: its script is written from it
         // (`emit::stage`), written over this one; one without is a template of what it declares
-        let script = if hz.class_name.as_deref().is_some_and(|c| !c.is_empty()) { RUNTIME_WRITES.to_string() } else {
+        let script = if hz.class_name.as_deref().is_some_and(|c| !c.is_empty()) { OWN_CLASS_WRITES.to_string() } else {
             let script = if recycles_itself(hz, model) && !cols.is_empty() {
                 thwomp_script_hx(&cols)
             } else if let Some((speed, label)) = &hz.bounce {
@@ -2667,7 +2666,6 @@ fn emit_hazard_projectiles(model: &StageModel, lib: &Path) -> Result<Vec<Value>>
         projectile_data: &data,
         palette_collection_guid: None,
         palette_base_map_id: None,
-        runtime_runs_frames: false,
     };
     crate::projectile_gen::generate_projectiles(&ctx, &found)?;
     let mut entries = Vec::new();
@@ -2867,9 +2865,9 @@ fn emit_multi_anim_hazard(
     write_json(&lib.join("entities").join(format!("{hid}.entity")), &hazard_entity_multi(hid, &hzanims, &hit_boxes, expects_to_be_hit(hz) || hz.body_box))?;
     write_meta(&lib.join("entities").join(format!("{hid}.entity.meta")), hid, hid, "", Some("CUSTOM_GAME_OBJECT"), None)?;
 
-    // an object with a class of its own runs that class: its script is the runtime's
+    // an object with a class of its own runs that class: its script is written from it
     // (`emit::stage`), written over this one; one without is a template of what it declares
-    let script = if hz.class_name.as_deref().is_some_and(|c| !c.is_empty()) { RUNTIME_WRITES.to_string() } else {
+    let script = if hz.class_name.as_deref().is_some_and(|c| !c.is_empty()) { OWN_CLASS_WRITES.to_string() } else {
         let script = if let Some((speed, label)) = &hz.bounce {
             // ...standing on the body the clip declares, which is what a fighter lands on
             let (decls, helpers) = hz.behavior.self_platform
@@ -5550,8 +5548,8 @@ mod hazard_tests {
     fn hazard_spawns_with_null_owner() {
         // a null hitbox owner is neutral and passes the engine's team-hit validation (hits
         // everyone), and createCustomGameObject accepts a null owner.
-        let boot = crate::emit::stage_tables::boot_runtime().expect("the runtime's stage boot");
-        assert!(boot.contains("createCustomGameObject(self.getResource().getContent(o.id), owner)"),
+        let boot = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime/native/stage_boot.hx")).expect("the stage boot's pieces");
+        assert!(boot.contains("match.createCustomGameObject(self.getResource().getContent(o.id), owner)"),
                 "the boot makes an object with the owner it is handed: {boot}");
     }
 

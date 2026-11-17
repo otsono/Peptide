@@ -1,5 +1,6 @@
-# names the engine's script scope already has, one per line. a content class with one of these
-# names is written under another (the compiler adds `_`), so it never hides the engine's own.
+# names the engine's script scope already has, one per line. content's own field, method or class
+# by one of these names is written under another (compile/native.rs), so it never hides the
+# engine's own.
 # measured from inside a running fighter: a name here answered non-null there. add a name when
 # the engine gains one.
 self

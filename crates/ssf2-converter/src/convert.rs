@@ -1098,12 +1098,50 @@ fn process_character(
     // linkage the source names, and pull it from a shared package when this file does not carry it.
     {
         let abcs = crate::projectile_gen::parse_abcs(parsed_swf);
+        // (one pulled from a shared package has its code there: what it fires is read from that
+        // package's code where the fighter's own has none for it)
+        let mut shared: Option<(Vec<crate::abc_parser::AbcFile>, std::collections::BTreeMap<String, String>)> = None;
+        let mut behaviour = |p: &image_extractor::DiscoveredProjectile| -> Vec<String> {
+            let own = crate::projectile_gen::all_behaviour(&abcs, p);
+            if !own.is_empty() { return own.into_values().collect() }
+            // (the shared packages' code, and the class each one's own declarations give a clip:
+            // an item's code is its class's, which only its package's declaration names)
+            let (shared_abcs, class_of) = shared.get_or_insert_with(|| {
+                let rt = crate::compile::Runtime::locate().map(|d| crate::compile::Runtime::load(&d)).unwrap_or_default();
+                let mut abcs = Vec::new();
+                let mut class_of = std::collections::BTreeMap::new();
+                for pkg in crate::shared_packages::packages() {
+                    let Ok(movie) = swf::decompress_swf(&pkg.swf[..]) else { continue };
+                    let Ok(parsed) = swf::parse_swf(&movie) else { continue };
+                    abcs.extend(crate::projectile_gen::parse_abcs(&parsed));
+                    let Ok((m, _)) = rt.read_package(&pkg.swf) else { continue };
+                    let Some(main) = m.main_class() else { continue };
+                    for meth in &main.methods {
+                        let Some(crate::model::declare::Value::Arr(list)) = crate::model::declare::returned(&meth.function.body) else { continue };
+                        for d in list {
+                            if let (Some(l), Some(c)) = (d.get("linkage_id").and_then(|v| v.str()), d.get("classAPI").and_then(|v| v.class())) {
+                                class_of.entry(l.to_ascii_lowercase()).or_insert_with(|| c.to_string());
+                            }
+                        }
+                    }
+                }
+                (abcs, class_of)
+            });
+            let class_api = class_of.get(&p.name.to_ascii_lowercase()).cloned();
+            let mut out: Vec<String> = crate::projectile_gen::all_behaviour(shared_abcs, p).into_values().collect();
+            if let Some(c) = class_api {
+                for abc in shared_abcs.iter() {
+                    out.extend(crate::abc_parser::extract_class_methods(abc, &c).into_values());
+                }
+            }
+            out
+        };
         let cid = crate::projectile_gen::projectile_content_id;
         loop {
             let have: std::collections::BTreeSet<String> =
                 projectiles.iter().map(|p| cid(&p.name)).collect();
             let nested: std::collections::BTreeSet<String> = projectiles.iter()
-                .flat_map(|p| crate::projectile_gen::all_behaviour(&abcs, p).into_values().collect::<Vec<_>>())
+                .flat_map(&mut behaviour)
                 .flat_map(|code| crate::api_mappings::projectile_names_fired_in(&code))
                 .filter(|n| !have.contains(&cid(n)))
                 .collect();
@@ -1266,15 +1304,15 @@ fn process_character(
     }
 
     // Generate Fraymakers files: art, boxes, stats and the entity, then the fighter's script from
-    // the runtime (see docs/CONVERTER_DESIGN.md)
+    // its own code (see docs/CONVERTER_DESIGN.md)
     haxe_gen::generate(output, char_name, &char_pascal, &char_data, &sprite_boxes, &img_result,
         costumes, &sounds, &projectiles, &effects, head_sprite.as_ref(), parsed_swf,
         multi_char_slot, input_path)?;
-    // a package whose fighter the runtime cannot read (one that declares none) has no script to
+    // a package whose fighter the writer cannot read (one that declares none) has no script to
     // write: the rest of the project is still written, and its log says why the script is missing
     let mut validation = validation;
-    match crate::emit::runtime_fighter(&char_output_dir, char_name, &char_pascal, &char_data, &sprite_boxes, input_path) {
-        Ok(out) => log::info!("runtime path: {} problems, {} names nothing defines", out.problems.len(), out.unknown.len()),
+    match crate::emit::fighter(&char_output_dir, char_name, &char_pascal, &char_data, &sprite_boxes, input_path) {
+        Ok(()) => log::info!("{char_name}: its script written, what it leaves out in port_report.json"),
         Err(e) => {
             log::error!("{char_name}: no fighter script: {e}");
             validation.push(format!("no fighter script: {e}"));

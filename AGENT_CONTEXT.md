@@ -183,7 +183,8 @@ converts Super Smash Flash 2 (SSF2) character `.ssf` files into Fraymakers chara
 compatible with FrayTools. it extracts:
 - bitmap images (PNG sprites per frame)
 - collision box data (hitboxes, hurtboxes, grab/ledge/reflect/absorb boxes) per animation frame
-- frame scripts (decompiled from ABC bytecode and rewritten through the JSONC command table)
+- frame scripts and classes (read from ABC bytecode and written as plain Fraymakers code; see
+  [`docs/CONVERTER_DESIGN.md`](docs/CONVERTER_DESIGN.md))
 - sound references (WAV via `ffmpeg`)
 - palette / costume data (15 costumes per character from `misc.ssf`)
 - projectile and effect sprites as standalone `.entity` files
@@ -860,8 +861,7 @@ cut, so both cuts agree. a jump to a label of another piece cut from the SAME cl
 script's `stancePlayFrame`/`gotoAndPlay`/`gotoAndStop`, a method's `_jumpLabel`) resolves to that
 piece, from that label's frame: a label name is shared across clips (`loop` starts the stand's
 loop and the walk's), so nothing resolves a label by name alone; the frame scripts read the
-clip's sibling pieces at convert time (`entity_gen`), and the runtime tables carry each label's
-source clip (`_lblSrc`) for the same test.
+clip's sibling pieces at convert time (`entity_gen`).
 
 ---
 

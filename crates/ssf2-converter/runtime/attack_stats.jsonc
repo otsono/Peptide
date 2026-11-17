@@ -1,7 +1,7 @@
 // an attack's stats as this engine's own animation stats, settled at conversion. an attack's
 // declared stats go into its animation's AnimationStats; a write its code makes while it plays
 // (`updateAttackStats({...})`) becomes `updateAnimationStats({...})` on the spot. a stat with no
-// row here stays with the runtime.
+// row here is said in the fighter's gaps.
 //
 // each row: the engine field it sets and how its value converts.
 //   bool      the value, as true or false
@@ -67,8 +67,8 @@
   // attack that takes the row (the same code under two rows once); `call` is the lines its first
   // frame runs, most often setting the script's values for the attack and starting a timer on
   // the script's function (a line two rows share runs once): `{v}` is the stat's value, `{name}`
-  // another stat the attack declares (0 when none, `{name|d}` d). `self` is the fighter,
-  // `PeptideRuntime.object` the source's object for it
+  // another stat the attack declares (0 when none, `{name|d}` d). `self` is the fighter, and
+  // `{field:name}` a field of the attack's own clip
   "code": {
     "chargetime_max": { "unless": "useChargeBar",
       "call": [
@@ -79,47 +79,6 @@
         "engineChargeTimer = self.addTimer(1, -1, chargeAttack, { persistent: true });"
       ],
       "code": [
-        "// a charge the source's engine runs: an attack that declares a charge time and does not say",
-        "// it charges itself (`useChargeBar: 0`) is charged while its clip is in \"charging\". held, it",
-        "// stays (the clip loops itself); let go, or in the air when it does not charge there, it",
-        "// plays \"attack\"; charged to its time, it plays \"finishedcharge\", and from there a release",
-        "// plays \"attack\". how long it charged is the attack's `chargetime`, for the move's own code.",
-        "// its animations start the timer; it stops once another animation plays",
-        "var engineChargeMost = 0.0;",
-        "var engineChargeInAir = 1;",
-        "var engineCharged = 0.0;",
-        "var engineChargeIn = null;",
-        "var engineChargeTimer = -1;",
-        "function chargeAttack() {",
-        "\tif (self.getAnimation() != engineChargeIn) {",
-        "\t\tself.removeTimer(engineChargeTimer);",
-        "\t\tengineChargeTimer = -1;",
-        "\t\tengineCharged = 0;",
-        "\t\treturn;",
-        "\t}",
-        "\tvar clip = PeptideRuntime.shownClip();",
-        "\tvar at = PeptideRuntime.xframeOf(clip);",
-        "\tif (at != \"charging\" && at != \"finishedcharge\") {",
-        "\t\tengineCharged = 0;",
-        "\t\treturn;",
-        "\t}",
-        "\tvar c = self.getHeldControls();",
-        "\tvar held = c != null && AS3.truthy(c.SPECIAL);",
-        "\tvar go = null;",
-        "\tif (at == \"charging\") {",
-        "\t\tengineCharged += 0.5;",
-        "\t\tif (!held || (!self.isOnFloor() && engineChargeInAir == 0)) go = \"attack\";",
-        "\t\telse if (engineCharged >= engineChargeMost) go = \"finishedcharge\";",
-        "\t} else if (!held) go = \"attack\";",
-        "\tif (go == null) return;",
-        "\tAttacks.update(PeptideRuntime.object, { chargetime: engineCharged });",
-        "\tPeptideRuntime.setXframe(clip, go);",
-        "\tengineCharged = 0;",
-        "\tclip.gotoAndPlay(go);",
-        "}"
-      ],
-      // (written as Fraymakers code: the label its clip is on, and the jump, are its own)
-      "native": [
         "// a charge the source's engine runs: an attack that declares a charge time and does not say",
         "// it charges itself (`useChargeBar: 0`) is charged while its clip is in \"charging\". held, it",
         "// stays (the clip loops itself); let go, or in the air when it does not charge there, it",
@@ -159,16 +118,6 @@
       ] },
     "flip": { "when": "true", "first": true, "call": "turnAround();",
       "code": [
-        "// an attack that says it flips turns its fighter around as it begins (marth's back air). this",
-        "// engine turns no one in a throw: a throw that flips is drawn and launched already turned",
-        "// (entity_gen.rs `turned_throws`), and the thrower turns once it is over",
-        "function turnAround() {",
-        "\tif (self.inState(CState.THROW_UP) || self.inState(CState.THROW_DOWN) || self.inState(CState.THROW_FORWARD) || self.inState(CState.THROW_BACK) || self.inState(CState.GRAB_HOLD)) PeptideRuntime.object.__turnAtEnd = true;",
-        "\telse if (self.isFacingRight()) self.faceLeft();",
-        "\telse self.faceRight();",
-        "}"
-      ],
-      "native": [
         "// an attack that says it flips turns its fighter around as it begins (marth's back air). this",
         "// engine turns no one in a throw: the thrower turns once it is over",
         "var turnAtEnd = false;",
@@ -225,49 +174,9 @@
         "self.updateAnimationStats({ aerialFriction: 0 });"
       ] },
     "combo_max": { "when": "positive",
+      // (the two fields are the attack's own clip's containers, which its first frame hands the
+      // watch, `{field:name}`)
       "call": [
-        "comboChargeTime = {chargetime_max|0};",
-        "comboHoldRepeat = {holdRepeat|0};",
-        "comboIn = self.getAnimation();",
-        "self.removeTimer(comboTimer);",
-        "comboTimer = self.addTimer(1, -1, watchCombo, { persistent: true });"
-      ],
-      "code": [
-        "// the source's combo protocol, which its engine runs and the clip only answers: while the",
-        "// attack plays, its button pressed (or held, for one that repeats on a hold) tells the clip to",
-        "// go on, through the two fields the fighter keeps (handled, continuePlaying); one that also",
-        "// charges goes on only once it is attacking (its `xframe` at \"attack\"). its animations start",
-        "// the timer; it stops once another animation plays",
-        "var comboChargeTime = 0.0;",
-        "var comboHoldRepeat = 0;",
-        "var comboIn = null;",
-        "var comboTimer = -1;",
-        "function watchCombo() {",
-        "\tif (self.getAnimation() != comboIn) {",
-        "\t\tself.removeTimer(comboTimer);",
-        "\t\tcomboTimer = -1;",
-        "\t\treturn;",
-        "\t}",
-        "\tif (comboChargeTime > 0) {",
-        "\t\tvar at = PeptideRuntime.xframeOf(PeptideRuntime.shownClip());",
-        "\t\tif (at != null && at != \"attack\") return;",
-        "\t}",
-        "\tvar me = PeptideRuntime.object;",
-        "\tif (me.handled != false) return;",
-        "\tvar special = self.inState(CState.SPECIAL_NEUTRAL) || self.inState(CState.SPECIAL_SIDE) || self.inState(CState.SPECIAL_UP) || self.inState(CState.SPECIAL_DOWN);",
-        "\tvar pressed = self.getPressedControls();",
-        "\tvar held = self.getHeldControls();",
-        "\tvar press = special ? pressed.SPECIAL : (pressed.ATTACK || pressed.GRAB);",
-        "\tvar hold = special ? held.SPECIAL : (held.ATTACK || held.GRAB);",
-        "\tif (AS3.truthy(press) || (comboHoldRepeat != 0 && AS3.truthy(hold))) {",
-        "\t\tme.continuePlaying = true;",
-        "\t\tme.handled = true;",
-        "\t}",
-        "}"
-      ],
-      // (written as Fraymakers code: the two fields are the attack's own clip's containers, which
-      // its first frame hands the watch, `{field:name}`)
-      "native_call": [
         "comboChargeTime = {chargetime_max|0};",
         "comboHoldRepeat = {holdRepeat|0};",
         "comboIn = self.getAnimation();",
@@ -276,7 +185,7 @@
         "self.removeTimer(comboTimer);",
         "comboTimer = self.addTimer(1, -1, watchCombo, { persistent: true });"
       ],
-      "native": [
+      "code": [
         "// the source's combo protocol, which its engine runs and the clip only answers: while the",
         "// attack plays, its button pressed (or held, for one that repeats on a hold) tells the clip to",
         "// go on, through two fields of the attack's clip (handled, continuePlaying); one that also",
