@@ -5385,6 +5385,20 @@ impl<'o, 'a> Writer<'o, 'a> {
                     let (v, _) = self.expr(v)?;
                     set.push(match scale { Some(s) => format!("{field}: {} * {}", paren(&v), number(s)), None => format!("{field}: {v}") });
                 }
+                // (a damage written on a box whose freezes are unstated moves them too: the source works
+                // an unstated freeze out from the damage the hit lands with, by the rule in
+                // hitbox_stats.jsonc)
+                let freeze = self.o.jumps.get(&self.class).map(|j| j.freeze_unstated).unwrap_or((false, false));
+                if let Some(d) = named("damage") {
+                    let hb = crate::mappings::character_hitbox_stats();
+                    let (d, _) = self.expr(d)?;
+                    for (on, fm, src) in [(freeze.0, "hitstop", "hitStun"), (freeze.1, "selfHitstop", "selfHitStun")] {
+                        if !on || named(src).is_some() { continue }
+                        let Some(rule) = hb.fields.iter().find(|f| f.fm_field == fm) else { continue };
+                        let (Some(per), Some(c)) = (rule.unstated_per_damage, rule.unstated_constant) else { continue };
+                        set.push(format!("{fm}: Math.floor({} * {} + {}) * 2", paren(&d), number(per), number(c)));
+                    }
+                }
                 // (one that writes nothing this engine keeps writes nothing)
                 if set.is_empty() { return Ok(("// (the source writes box stats here that this engine keeps none of)".into(), Ty::Any)) }
                 return Ok((format!("{who}.updateHitboxStats({i}, {{ {} }})", set.join(", ")), Ty::Any));

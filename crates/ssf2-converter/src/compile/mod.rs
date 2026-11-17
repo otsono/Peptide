@@ -153,5 +153,9 @@ pub struct ClipJumps {
     /// shows, for a play of them its code makes: none where the clip shows anything else, or where
     /// the attack stops its last sound or voice as it ends
     pub sounds: BTreeMap<String, String>,
+    /// whether the attacks the clip shows leave their boxes' freezes unstated (the victim's, the
+    /// attacker's): the source works an unstated one out from the damage as the hit lands, so a
+    /// damage its code writes moves it too
+    pub freeze_unstated: (bool, bool),
 }
 

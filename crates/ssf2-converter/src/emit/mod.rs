@@ -51,7 +51,7 @@ pub struct Piece {
 /// makes, which play its clip (or the stance its clip places) by label
 pub fn own_jumps(model: &SourceModel, pieces: &[Piece], root: Option<u16>) -> crate::compile::ClipJumps {
     let own: Vec<&Piece> = pieces.iter().filter(|p| !p.borrowed && !p.reversed && p.head == 0).collect();
-    let mut j = crate::compile::ClipJumps { anims: own.iter().map(|p| p.fm_name.clone()).collect(), labels: BTreeMap::new(), autolink: None, declared: BTreeMap::new(), sounds: BTreeMap::new() };
+    let mut j = crate::compile::ClipJumps { anims: own.iter().map(|p| p.fm_name.clone()).collect(), labels: BTreeMap::new(), autolink: None, declared: BTreeMap::new(), sounds: BTreeMap::new(), freeze_unstated: (false, false) };
     // (its clip's own labels first: each one plays the stance it places there from its start, or the
     // clip itself from the label)
     if let Some(sp) = root.and_then(|r| model.sprites.get(&r)) {
@@ -85,7 +85,7 @@ pub fn label_jumps(model: &SourceModel, pieces: &[Piece]) -> BTreeMap<String, cr
         let Some(c) = model.class_of(sym) else { continue };
         let Some(sprite) = model.sprites.get(&sym) else { continue };
         let own: Vec<&Piece> = pieces.iter().filter(|p| p.sym == sym && !p.borrowed && !p.reversed && p.head == 0).collect();
-        let mut j = crate::compile::ClipJumps { anims: own.iter().map(|p| p.fm_name.clone()).collect(), labels: BTreeMap::new(), autolink: None, declared: BTreeMap::new(), sounds: BTreeMap::new() };
+        let mut j = crate::compile::ClipJumps { anims: own.iter().map(|p| p.fm_name.clone()).collect(), labels: BTreeMap::new(), autolink: None, declared: BTreeMap::new(), sounds: BTreeMap::new(), freeze_unstated: (false, false) };
         for (f0, label) in &sprite.labels {
             let f = *f0 as u32 + 1;
             let hits: Vec<&&Piece> = own.iter().filter(|p| f >= p.from && f < p.from + p.frames).collect();
@@ -850,7 +850,7 @@ mod landing_stats_tests {
             boxes: vec![(1, vec![("damage".into(), 9.0)])],
         };
         let mut jumps = BTreeMap::new();
-        jumps.insert("Clip".to_string(), crate::compile::ClipJumps { anims: vec!["aerial_up".into(), "aerial_up_land".into()], labels: BTreeMap::new(), autolink: None , declared: BTreeMap::new(), sounds: BTreeMap::new() });
+        jumps.insert("Clip".to_string(), crate::compile::ClipJumps { anims: vec!["aerial_up".into(), "aerial_up_land".into()], labels: BTreeMap::new(), autolink: None , declared: BTreeMap::new(), sounds: BTreeMap::new(), freeze_unstated: (false, false) });
         landing_stats(&dir, &[(landing, vec!["aerial_up_land".into()])], &jumps).unwrap();
         let anim = std::fs::read_to_string(dir.join("AnimationStats.hx")).unwrap();
         let hit = std::fs::read_to_string(dir.join("HitboxStats.hx")).unwrap();

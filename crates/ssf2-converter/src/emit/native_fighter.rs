@@ -193,6 +193,14 @@ fn shown_parts(placements: &[crate::entity_gen::PartPlacement]) -> Vec<native::P
 fn written<'a>(f: &Fighting<'a>, all: bool) -> Result<(native::Written, Parts<'a>), Vec<String>> {
     let parts = parts(f.model, f.runtime, f.fighter).map_err(|e| vec![e])?;
     let mut jumps = label_jumps(f.model, f.pieces);
+    // (whether the attacks each clip shows leave their boxes' freezes unstated)
+    let unstated = |a: &Value, key: &str| a.get("attackBoxes").map(|b| b.entries().to_vec()).unwrap_or_default().iter()
+        .all(|(_, bx)| match bx.get(key) { Some(Value::Num(n)) => *n < 0.0 || *n == 255.0, None => true, _ => false });
+    for j in jumps.values_mut() {
+        let attacks: Vec<&Value> = f.pieces.iter().filter(|p| j.anims.contains(&p.fm_name)).filter_map(|p| f.fighter.attacks.get(&p.label)).collect();
+        if attacks.is_empty() { continue }
+        j.freeze_unstated = (attacks.iter().all(|a| unstated(a, "hitStun")), attacks.iter().all(|a| unstated(a, "selfHitStun")));
+    }
     for (c, code) in f.autolink { jumps.entry(c.clone()).or_default().autolink = Some(code.clone()); }
     let labels = stance_labels(f.model, f.pieces);
     let frames_of = clip_frames_of(f.model, f.pieces);
