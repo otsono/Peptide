@@ -1096,6 +1096,63 @@ function clipRecord(id, ?w, ?h) {
 		kids: [], id: id, width: w == null ? 0.0 : w, height: h == null ? 0.0 : h, drawn: null };
 }
 
+// ---- clipRun
+// a clip of its library whose frames have code, made by its code: a clip record whose timeline runs
+// a frame each of the source's frames (every second engine frame) while it plays, from its first,
+// each frame's script run as the timeline enters it (`frames`, the class's own, handed the record).
+// a jump by label or number goes there and runs that frame's script; a label the clip lacks goes
+// nowhere, as the source's player stops there with an error
+var clipsRunning = [];
+var clipsTicking = false;
+function clipRun(r, total, labels, frames) {
+	r.totalFrames = total;
+	r.labelList = labels;
+	r.frames = frames;
+	r.currentFrame = 1;
+	r.currentLabel = clipLabelAt(r, 1);
+	r.playing = true;
+	r.entered = false;
+	clipsRunning.push(r);
+	if (!clipsTicking) { clipsTicking = true; self.addTimer(2, -1, clipsStep, { persistent: true }); }
+	return r;
+}
+function clipLabelAt(r, n) {
+	var l = null;
+	for (p in r.labelList) if (p[0] <= n) l = p[1];
+	return l;
+}
+function clipEnter(r) {
+	r.entered = true;
+	r.currentLabel = clipLabelAt(r, r.currentFrame);
+	if (r.frames != null) r.frames(r, r.currentFrame);
+}
+function clipsStep() {
+	for (r in clipsRunning.copy()) {
+		if (!r.entered) { clipEnter(r); continue; }
+		if (!r.playing) continue;
+		r.currentFrame = r.currentFrame >= r.totalFrames ? 1 : r.currentFrame + 1;
+		clipEnter(r);
+	}
+}
+function clipGo(r, to, stop) {
+	if (r == null || r.totalFrames == null) return;
+	var n = null;
+	if (Std.isOfType(to, String)) { for (p in r.labelList) if (p[1] == to) { n = p[0]; break; } }
+	else n = Std.int(to);
+	if (n == null) return;
+	n = n < 1 ? 1 : (n > r.totalFrames ? r.totalFrames : n);
+	r.playing = !stop;
+	// (to the frame it is on: nothing is entered, so no script runs again)
+	if (n == r.currentFrame && r.entered) return;
+	r.currentFrame = n;
+	clipEnter(r);
+}
+function clipStep(r, d) {
+	if (r == null || r.totalFrames == null) return;
+	clipGo(r, r.currentFrame + d, true);
+}
+function clipPlay(r, on) { if (r != null) r.playing = on; }
+
 // ---- clipAdd
 // a clip put in another (its code's `addChild`), and taken out
 function clipAdd(c, k) {

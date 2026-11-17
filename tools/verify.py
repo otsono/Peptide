@@ -2479,6 +2479,10 @@ def c_moves(ctx, r):
         # special that hops off the ground on its first frame (sonic's) is in it at once
         names = {mv.upper()} | ({mv.upper() + "_AIR"} if airborne or mv.startswith("special_") else set())
         idx = next((i for i, (a, _) in enumerate(runs) if a.upper() in names), None)
+        # ...or a section of it under its own label (`special_neutral_attack`), where the move's
+        # first frame sends it straight on: the source's player shows that label in the same move
+        if idx is None:
+            idx = next((i for i, (a, _) in enumerate(runs) if a.lower().startswith(mv.lower() + "_") and a.lower() in fm), None)
         died = next((i for i, (a, _) in enumerate(runs) if a.upper() == "REVIVAL"), None)
         if idx is None:
             if died is not None:

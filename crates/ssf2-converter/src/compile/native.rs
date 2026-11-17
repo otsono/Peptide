@@ -405,6 +405,9 @@ struct Writer<'o, 'a> {
     /// fields of its classes that keep one of the runtime's classes with a record form as a record,
     /// where its code uses one as a value (a timer the code points another field at): that class
     rt_fields: BTreeMap<String, String>,
+    /// clip classes of its package it makes with `new` whose frames have code: records whose
+    /// timeline runs (`clipRun`), their frame scripts handed the record
+    clip_recs: BTreeSet<String>,
     /// handlers its code listens on another object with: the event's caller is that object there
     foreign_handlers: BTreeSet<String>,
     /// list fields its code fills only with clips of the planes (or nothing): true while every one is
@@ -528,7 +531,7 @@ struct Writer<'o, 'a> {
 
 impl<'o, 'a> Writer<'o, 'a> {
     fn new(o: &'o Object<'a>) -> Result<Self, String> {
-        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rec_fields: BTreeMap::new(), rt_lists: BTreeMap::new(), lit_rt: BTreeMap::new(), rt_fields: BTreeMap::new(), foreign_handlers: BTreeSet::new(), part_lists: BTreeMap::new(), part_locals: BTreeSet::new(), part_written: BTreeSet::new(), record: None, rec_locals: BTreeMap::new(), stage_locals: BTreeSet::new(), empty_locals: BTreeSet::new(), self_locals: BTreeMap::new(), game_ticks: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
+        let mut w = Writer { o, flat: BTreeMap::new(), flat_used: BTreeMap::new(), pkg: Vec::new(), pkg_ids: BTreeMap::new(), recs: Vec::new(), rec_lists: BTreeMap::new(), rec_fields: BTreeMap::new(), rt_lists: BTreeMap::new(), lit_rt: BTreeMap::new(), rt_fields: BTreeMap::new(), foreign_handlers: BTreeSet::new(), clip_recs: BTreeSet::new(), part_lists: BTreeMap::new(), part_locals: BTreeSet::new(), part_written: BTreeSet::new(), record: None, rec_locals: BTreeMap::new(), stage_locals: BTreeSet::new(), empty_locals: BTreeSet::new(), self_locals: BTreeMap::new(), game_ticks: BTreeMap::new(), every_frame_extra: BTreeSet::new(), given: None, fields: BTreeMap::new(), methods: BTreeMap::new(), class: String::new(),
                              locals: BTreeMap::new(), helpers: BTreeMap::new(), gaps: BTreeSet::new(), mid_targets: BTreeSet::new(), kept: BTreeMap::new(), read: BTreeSet::new(), top: false, effects: 0, own_stats: BTreeSet::new(), floor: BTreeMap::new(), floor_speed: false, ends: BTreeMap::new(), release: BTreeSet::new(), statics: BTreeSet::new(), body: Vec::new(), touches: BTreeMap::new(), owners: ["self.getOwner()".to_string()].into(), blocks: BTreeSet::new(), stat_keys: BTreeSet::new(), jump_by_number: None, effect_on: "self".into(), testing: false, in_frame: false, captured: BTreeSet::new(), captured_ty: BTreeMap::new(), learning: false, seen: BTreeMap::new(), learned: false, plain: BTreeSet::new(), globals: BTreeSet::new(), inline: false, frame_top: false, nparams: 0, current_fn: String::new(), returns: BTreeMap::new(), method_ty: BTreeMap::new(), param_ty: BTreeMap::new(), param_elem: BTreeMap::new(), part_fields: BTreeMap::new(), drawn: BTreeMap::new(), drawn_locals: BTreeSet::new(), local_elem: BTreeMap::new(), temp_ty: BTreeMap::new(), list_elem: BTreeMap::new(), defaults: Vec::new() };
         // every class's names, each kept as it is unless two classes share one
         let mut taken: BTreeSet<String> = ["self", "match", "stage", "characters", "initialize", "update", "onTeardown", "onKill", "onDestroy", "life", "age", "started", "freshHit"]
@@ -711,7 +714,11 @@ impl<'o, 'a> Writer<'o, 'a> {
         }
         // a class of the package's own made anywhere else (into a list): a record, its methods
         // functions handed it
-        let plain_class = |n: &str| o.model.classes.values().find(|c| short(&c.name) == short(n) && c.symbol.is_none() && matches!(short(&c.super_name), "Object" | "")
+        let plain_class = |n: &str| o.model.classes.values().find(|c| short(&c.name) == short(n) && ((c.symbol.is_none() && matches!(short(&c.super_name), "Object" | ""))
+                // (or a clip of its library whose frames have code that does more than move its own
+                // timeline: a record whose timeline runs)
+                || (c.symbol.is_some() && matches!(short(&c.super_name), "MovieClip" | "Sprite") && !c.frame_scripts.is_empty()
+                    && !crate::emit::native_projectile::is_quiet_inside(o.model, o.runtime, &c.name)))
             // (not one the runtime has its own of: a FrameTimer)
             && !o.runtime.provides(&c.name) && flat_template(o.runtime, short(n)).is_none()
             && !o.runtime.names.classes.iter().any(|(src, r)| short(r) == short(&c.name) && flat_template(o.runtime, src).is_some()));
@@ -792,6 +799,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                 for (f, k) in rt_value_fields(o, c) { w.lit_rt.entry(f).or_insert(k); }
             }
         }
+        w.clip_recs = w.recs.iter().filter(|k| k.symbol.is_some()).map(|k| k.name.clone()).collect();
         for k in w.recs.clone() {
             if !k.unreadable.is_empty() { return Err(format!("{} has code that could not be read", k.name)) }
             if k.methods.iter().any(|m| m.is_static) { return Err(format!("{} has statics", k.name)) }
@@ -937,7 +945,11 @@ impl<'o, 'a> Writer<'o, 'a> {
             let kid = ident(short(&k.name));
             let fields: Vec<(String, String)> = self.fields.iter().filter(|(key, _)| key.starts_with(&format!("{}::", k.name)))
                 .map(|(key, (id, _))| (key.split_once("::").map(|x| x.1.to_string()).unwrap_or_default(), id.clone())).collect();
-            let body: Vec<Stmt> = k.constructor.body.iter().filter(|s| !matches!(s, Stmt::Expr(Expr::SuperCall(..)))).cloned().collect();
+            let clip = self.clip_recs.contains(&k.name);
+            // (a clip's frame scripts are registered by the timeline the record runs, not by its code)
+            let body: Vec<Stmt> = k.constructor.body.iter().filter(|s| !matches!(s, Stmt::Expr(Expr::SuperCall(..))))
+                .filter(|s| !(clip && matches!(s, Stmt::Expr(Expr::Call(g, _)) if matches!(&**g, Expr::Member(_, m) | Expr::Name(m) if m == "addFrameScript"))))
+                .cloned().collect();
             let f = Function { body, ..k.constructor.clone() };
             let text = self.function(&format!("{kid}_new"), &f).map_err(|e| format!("{}'s constructor: {e}", short(&k.name)));
             let text = match text { Ok(t) => t, Err(e) => { self.record = None; return Err(e) } };
@@ -948,7 +960,29 @@ impl<'o, 'a> Writer<'o, 'a> {
                 format!("{}: {d}", ident(f))
             }).collect();
             let mut lines: Vec<String> = text.lines().map(String::from).collect();
-            if let Some(open) = lines.iter().position(|l| l.trim_end().ends_with('{')) { lines.insert(open + 1, format!("\tvar me = {{ {} }};", start.join(", "))); }
+            if clip {
+                // (a clip: a clip record, with the clips it places under names, its fields, and its
+                // timeline running from its first frame, whose script runs as it enters it)
+                let sym = k.symbol;
+                let sp = sym.and_then(|s| self.o.model.sprites.get(&s));
+                let total = sp.map(|x| x.frame_count.max(1)).unwrap_or(1);
+                let labels: Vec<String> = sp.map(|x| x.labels.iter().map(|(f, l)| format!("[{}, {}]", f + 1, quote(l))).collect()).unwrap_or_default();
+                let mut setup = vec!["\tvar me = clipRecord(null);".to_string()];
+                let mut kids = Vec::new();
+                clip_record_of(self.o.model, sym, "me", 0, &mut kids);
+                setup.extend(kids.into_iter().map(|l| format!("\t{l}")));
+                setup.extend(start.iter().map(|kv| { let (f, d) = kv.split_once(": ").unwrap_or((kv, "null")); format!("\tme.{f} = {d};") }));
+                setup.push(format!("\tclipRun(me, {total}, [{}], {kid}_frames);", labels.join(", ")));
+                if let Some(open) = lines.iter().position(|l| l.trim_end().ends_with('{')) { for (i, l) in setup.into_iter().enumerate() { lines.insert(open + 1 + i, l); } }
+                self.util("clipRecord")?;
+                self.util("clipRun")?;
+                // (each frame's script, by the frame it is on)
+                let mut cases = Vec::new();
+                for fs in &k.frame_scripts {
+                    if let Some(id) = self.methods.get(&member_key(&k.name, &fs.method)) { cases.push(format!("\t\tcase {}: {id}(me);", fs.frame + 1)); }
+                }
+                out.functions.push(format!("// the scripts a {} runs entering its frames\nfunction {kid}_frames(me, n) {{\n\tswitch (n) {{\n{}\n\t}}\n}}", short(&k.name), cases.join("\n")));
+            } else if let Some(open) = lines.iter().position(|l| l.trim_end().ends_with('{')) { lines.insert(open + 1, format!("\tvar me = {{ {} }};", start.join(", "))); }
             if let Some(close) = lines.iter().rposition(|l| l.trim() == "}") { lines.insert(close, "\treturn me;".into()); }
             out.functions.push(format!("// a {} its code keeps several of: a record, its methods handed it\n{}", short(&k.name), lines.join("\n")));
             let copies: Vec<String> = fields.iter().map(|(f, id)| {
@@ -1664,6 +1698,14 @@ impl<'o, 'a> Writer<'o, 'a> {
     }
 
     fn assign(&mut self, p: &Place, v: &Expr) -> Result<Vec<String>, String> {
+        // (a clip record's look: its plain field, drawn nowhere here)
+        if let Place::Member(x, f) = p {
+            if matches!(f.as_str(), "x" | "y" | "visible" | "alpha" | "scaleX" | "scaleY" | "rotation" | "width" | "height") && self.clip_rec_value(x) {
+                let (r, _) = self.expr(x)?;
+                let (val, _) = self.expr(v)?;
+                return Ok(vec![format!("{}.{f} = {val};", paren(&r))]);
+            }
+        }
         // (one of the runtime's classes kept as a record: made in its record form, its properties
         // set through it)
         if let Place::Member(h, f) = p {
@@ -2262,6 +2304,16 @@ impl<'o, 'a> Writer<'o, 'a> {
 
     /// the class of a record a value is, where it is one of a list it keeps (`this.foes[i]`, or a
     /// variable holding one)
+    /// whether `x` is a clip record whose timeline runs (`clipRun`): the one being written, or one a
+    /// field or variable of its holds
+    fn clip_rec_value(&self, x: &Expr) -> bool {
+        match x {
+            Expr::This => self.record.as_ref().is_some_and(|k| self.clip_recs.contains(k)),
+            Expr::Member(t, f) if matches!(**t, Expr::This) => self.rec_fields.get(&member_key(&self.class, f)).is_some_and(|k| self.clip_recs.contains(k)),
+            _ => self.record_of(x).is_some_and(|k| self.clip_recs.contains(&k)),
+        }
+    }
+
     fn record_of(&self, x: &Expr) -> Option<String> {
         match x {
             Expr::Local(r) => self.rec_locals.get(r).map(|(k, _)| k.clone()),
@@ -2446,6 +2498,18 @@ impl<'o, 'a> Writer<'o, 'a> {
                 (n, match h { Holds::Itself | Holds::Clip => Ty::Object, Holds::Value(t) => t })
             }
             // (a record's own code: the record)
+            // (where a clip record's timeline is)
+            Expr::Member(x, n) if matches!(n.as_str(), "currentFrame" | "currentLabel" | "currentFrameLabel" | "totalFrames") && self.clip_rec_value(x) => {
+                let (r, _) = self.expr(x)?;
+                let n = if n == "currentFrameLabel" { "currentLabel" } else { n.as_str() };
+                (format!("{}.{n}", paren(&r)), if n == "currentLabel" { Ty::Str } else { Ty::Num })
+            }
+            Expr::Name(n) if matches!(n.as_str(), "currentFrame" | "currentLabel" | "totalFrames") && self.clip_rec_value(&Expr::This) && self.field(n).is_none() => (format!("me.{n}"), if n == "currentLabel" { Ty::Str } else { Ty::Num }),
+            // (one of a record's own methods as a value: that method, handed the record)
+            Expr::Member(t, g) if matches!(**t, Expr::This) && self.record.is_some() && self.field(g).is_none() && self.method(g).is_some() => {
+                let id = self.method(g).unwrap_or_default();
+                (format!("function(?a, ?b, ?c) {{ return {id}(me, a, b, c); }}"), Ty::Object)
+            }
             Expr::This if self.record.is_some() => ("me".into(), Ty::Object),
             // a field of a record of a list it keeps, read from outside the record: on the record
             Expr::Member(x, n) if self.record_of(x).is_some_and(|k| self.fields.contains_key(&member_key(&k, n))) => {
@@ -2555,7 +2619,7 @@ impl<'o, 'a> Writer<'o, 'a> {
                 return Ok((format!("planePart(cameraBgName({i}))"), Ty::Object));
             }
             // (a camera background held in a variable: its part, under `mc`)
-            Expr::Member(o, f) if self.o.stage && f == "mc" && !matches!(**o, Expr::This) => {
+            Expr::Member(o, f) if self.o.stage && f == "mc" && !matches!(**o, Expr::This) && !self.expr(o).is_ok_and(|(w, _)| w.starts_with("planePart(")) => {
                 let (v, t) = self.expr(o)?;
                 // (a record's: what it holds, a record where it holds a clip record)
                 return Ok((format!("{v}.mc"), if t == Ty::Rect { Ty::Rect } else { Ty::Object }));
@@ -3768,6 +3832,26 @@ impl<'o, 'a> Writer<'o, 'a> {
     }
 
     fn call_written(&mut self, f: &Expr, args: &[Expr]) -> Result<(String, Ty), String> {
+        // (a clip record's timeline, moved: `clipRun`'s)
+        let clip_op = match f {
+            Expr::Member(recv, m) if self.clip_rec_value(recv) => Some(((**recv).clone(), m.clone())),
+            Expr::Name(m) if self.clip_rec_value(&Expr::This) && self.method(m).is_none() => Some((Expr::This, m.clone())),
+            _ => None,
+        };
+        if let Some((recv, m)) = clip_op.filter(|(_, m)| matches!(m.as_str(), "gotoAndStop" | "gotoAndPlay" | "play" | "stop" | "nextFrame" | "prevFrame")) {
+            let (r, _) = self.expr(&recv)?;
+            self.util("clipRun")?;
+            let a = match args.first() { Some(x) => Some(self.expr(x)?.0), None => None };
+            return Ok((match (m.as_str(), a) {
+                ("gotoAndStop", Some(a)) => format!("clipGo({r}, {a}, true)"),
+                ("gotoAndPlay", Some(a)) => format!("clipGo({r}, {a}, false)"),
+                ("nextFrame", _) => format!("clipStep({r}, 1)"),
+                ("prevFrame", _) => format!("clipStep({r}, -1)"),
+                ("play", _) => format!("clipPlay({r}, true)"),
+                ("stop", _) => format!("clipPlay({r}, false)"),
+                _ => return Err(format!("calls {m} on a clip with nothing to go to")),
+            }, Ty::Any));
+        }
         // (a call on one of the runtime's classes a record written out in place keeps: its record form)
         if let Expr::Member(h, m) = f {
             if let Some(r) = self.lit_rt_use(h, m, Some(args))? { return Ok(r) }
@@ -4119,6 +4203,13 @@ impl<'o, 'a> Writer<'o, 'a> {
                     let id = crate::projectile_gen::projectile_content_id(short(n));
                     let owner = match rest.first() { Some(o) => self.expr(o)?.0, None => "self".into() };
                     return Ok((format!("{{ var firer = {owner}; var made = firer == null ? null : firer.getResource().getContent({}); made == null ? null : match.createProjectile(made, firer); }}", quote(&id)), Ty::Object));
+                }
+                // an item of its package placed by a fighter by class: made as one of its own items
+                // (lying free where its code puts it, as the source places one; its content is the one
+                // made by its class, under the class's name)
+                (_, "placePickup", [Expr::Name(k) | Expr::Str(k)]) if c.contains("PeptideAPI") && self.o.fighter => {
+                    let id = crate::projectile_gen::projectile_content_id(short(k));
+                    return Ok((format!("{{ var made = self.getResource().getContent({}); var it = made == null ? null : match.createCustomGameObject(made, self); if (it != null) {{ it.exports.__isItem = true; it.exports.__np = true; it.exports.__itemName = {}; }} it; }}", quote(&id), quote(short(k))), Ty::Object));
                 }
                 // a listener on the game for the end of each frame: run at the end of its own, while it listens
                 (_, "addEventListener" | "removeEventListener", [ev, h, ..]) if c.contains("PeptideAPI")
@@ -4688,6 +4779,14 @@ impl<'o, 'a> Writer<'o, 'a> {
         match (m, args) {
             ("addEventListener" | "removeEventListener", [ev, handler, ..]) => return self.listener(who, m, ev, handler),
             ("addTimer", [frames, repeat, f, rest @ ..]) if mine => return self.timer(frames, repeat, f, rest),
+            // (on another object: that object's timer, running its handler a source frame each two of
+            // this engine's, as the timers of its own)
+            ("addTimer", [frames, repeat, f, ..]) if !mine && !who.starts_with("planePart(") => {
+                let (n, _) = self.expr(frames)?;
+                let (t, _) = self.expr(repeat)?;
+                let h = match f { Expr::Member(x, g) if matches!(**x, Expr::This) && self.record.is_some() && self.method(g).is_some() => self.expr(f)?.0, _ => self.handler(f)? };
+                return Ok((format!("({who} == null ? null : {who}.addTimer(Std.int(2 * Math.max(1, {})), ({t} <= 0 ? -1 : {t}), {h}, {{ persistent: true }}))", paren(&n)), Ty::Num));
+            }
             // (fired through its owner's call: from the owner, the same way, as the source's runs it)
             // (one made again from a record its stats were exported to)
             // (one by a name worked out as it runs: each name its code writes that it declares a
@@ -5627,6 +5726,8 @@ self.playFrameLabel({})", quote(f))); }
         }
         // (an origin of nothing adds and takes nothing: the row is the plain one)
         let mut code = row.code.clone();
+        // (the stage's own track, named only in the stage's script: none, read from anywhere else)
+        if !self.o.stage { code = code.replace("STAGE_MUSIC", "null"); }
         for (k, o) in [("{ox}", self.o.origin.0), ("{oy}", self.o.origin.1)] {
             if o != 0.0 { continue }
             for i in 0..4 { code = code.replace(&format!("({{{i}}} - {k})"), &format!("{{{i}}}")); }

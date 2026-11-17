@@ -382,6 +382,8 @@
   // the smash ball on the stage: none here
   "PeptideAPI.getSmashBallInstance": { "code": "null", "returns": "object", "gap": "getSmashBallInstance: the smash ball" },
   "PeptideAPI.enableSmashBallSpawn": { "code": "", "gap": "enableSmashBallSpawn: the game's smash ball" },
+  // the match's music changed by its code: this engine's music is its own (as on the runtime)
+  "PeptideAPI.playMusic": { "code": "", "gap": "playMusic: changing the match's music" },
   "PeptideAPI.addHUDDetection": { "code": "", "gap": "addHUDDetection: the HUD seeing what is behind it" },
   "PeptideAPI.removeHUDDetection": { "code": "", "gap": "removeHUDDetection: the HUD seeing what is behind it" },
   // a function run every so many milliseconds (the source's frames, at least one) until let go: an
