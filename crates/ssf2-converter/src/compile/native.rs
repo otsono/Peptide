@@ -3545,8 +3545,13 @@ impl<'o, 'a> Writer<'o, 'a> {
     /// whether a value is a dictionary its class keeps in a field (only ever made as one)
     fn is_dict(&self, e: &Expr) -> bool {
         let Expr::Member(t, f) = e else { return false };
-        if !matches!(**t, Expr::This) { return false }
-        let Some(c) = self.o.model.classes.get(&self.class) else { return false };
+        // (another object's field: the map its own class keeps there)
+        let class = if matches!(**t, Expr::This) { self.class.clone() } else { match self.field_keeper(t, f) { Some(k) => k, None => return false } };
+        self.dict_in(&class, f)
+    }
+
+    fn dict_in(&self, class: &str, f: &str) -> bool {
+        let Some(c) = self.o.model.classes.get(class) else { return false };
         let mut any = false;
         let mut other = false;
         for b in c.methods.iter().map(|m| &m.function.body).chain([&c.constructor.body]) {
@@ -3558,12 +3563,26 @@ impl<'o, 'a> Writer<'o, 'a> {
         any && !other
     }
 
+    /// the one class of the package that declares a field another object's is read by (`who.f`),
+    /// where `who` is not this object
+    fn field_keeper(&self, who: &Expr, f: &str) -> Option<String> {
+        if matches!(who, Expr::This) { return None }
+        let mut keepers = self.o.model.classes.values().filter(|c| c.fields.iter().any(|d| d.name == f && !d.is_static) && !self.o.runtime.provides(&c.name));
+        let k = keepers.next()?;
+        if keepers.next().is_some() { return None }
+        (k.name != self.class).then(|| k.name.clone())
+    }
+
     /// a field it keeps an object in that its code uses as a map (made empty, filled and read by keys
     /// worked out as it runs, never by a field's name): a map by text, as the source's object keys
     fn is_obj_dict(&self, e: &Expr) -> bool {
         let Expr::Member(t, f) = e else { return false };
-        if !matches!(**t, Expr::This) { return false }
-        let Some(c) = self.o.model.classes.get(&self.class) else { return false };
+        let class = if matches!(**t, Expr::This) { self.class.clone() } else { match self.field_keeper(t, f) { Some(k) => k, None => return false } };
+        self.obj_dict_in(&class, f)
+    }
+
+    fn obj_dict_in(&self, class: &str, f: &str) -> bool {
+        let Some(c) = self.o.model.classes.get(class) else { return false };
         let (mut made, mut other, mut keyed, mut named) = (false, false, false, false);
         // (a list made empty and then written by text keys is a map by text too)
         let mut list = false;
