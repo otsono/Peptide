@@ -54,10 +54,13 @@ pub struct ImageLocalMatrix {
     pub b: f64,
     pub c: f64,
     pub d: f64,
+    /// how opaque the placement draws it (its colour transform's alpha multiplier, multiplied
+    /// down through every clip it is placed in): 1 is solid
+    pub alpha: f64,
 }
 
 impl Default for ImageLocalMatrix {
-    fn default() -> Self { Self { tx: 0.0, ty: 0.0, sx: 1.0, sy: 1.0, rotation: 0.0, a: 1.0, b: 0.0, c: 0.0, d: 1.0 } }
+    fn default() -> Self { Self { tx: 0.0, ty: 0.0, sx: 1.0, sy: 1.0, rotation: 0.0, a: 1.0, b: 0.0, c: 0.0, d: 1.0, alpha: 1.0 } }
 }
 
 impl ImageLocalMatrix {
@@ -85,6 +88,7 @@ impl ImageLocalMatrix {
             sy,
             rotation: b.atan2(a).to_degrees(),
             a, b, c, d,
+            alpha: 1.0,
         }
     }
 
@@ -103,7 +107,7 @@ impl ImageLocalMatrix {
         let d = self.b * other.c + self.d * other.d;
         let tx = self.a * other.tx + self.c * other.ty + self.tx;
         let ty = self.b * other.tx + self.d * other.ty + self.ty;
-        Self::from_abcd(a, b, c, d, tx, ty)
+        Self { alpha: self.alpha * other.alpha, ..Self::from_abcd(a, b, c, d, tx, ty) }
     }
 
     /// Returns true if this matrix contains a skew (not just scale + rotation + flip).
@@ -1860,10 +1864,7 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
                     // a placement that states no matrix keeps the one its depth already has
                     // (a Replace swaps the picture and nothing else): read as identity, sora's
                     // keyblade glow lost its 0.18 scale on its second frame and drew 250 px wide
-                    let mat = match po.matrix {
-                        Some(_) => po_to_mat(po),
-                        None => disp.get(&po.depth).map(|e| e.2).unwrap_or_default(),
-                    };
+                    let mat = placed_mat(po, disp.get(&po.depth).map(|e| e.2));
                     match &po.action {
                         swf::PlaceObjectAction::Place(cid) | swf::PlaceObjectAction::Replace(cid) => {
                             if let Some(sname) = symbols.get(cid) {
@@ -1883,7 +1884,7 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
                         swf::PlaceObjectAction::Modify => {
                             // A MODIFY with no matrix only re-states the object —
                             // keep its existing transform.
-                            if po.matrix.is_some() {
+                            if po.matrix.is_some() || po.color_transform.is_some() {
                                 if let Some(e) = disp.get_mut(&po.depth) { e.2 = mat; }
                             }
                         }
@@ -1964,12 +1965,8 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
             }
             swf::Tag::PlaceObject(po) => {
                 // as above: no matrix stated means the depth's own is kept
-                let mat = match po.matrix {
-                    Some(_) => po_to_mat(po),
-                    None => disp.get(&po.depth).map(|e| e.2)
-                        .or_else(|| unnamed_placements.get(&po.depth).map(|e| e.1))
-                        .unwrap_or_default(),
-                };
+                let mat = placed_mat(po, disp.get(&po.depth).map(|e| e.2)
+                        .or_else(|| unnamed_placements.get(&po.depth).map(|e| e.1)));
                 if std::env::var("PEPTIDE_DUMP_EFFECTS").is_ok() {
                     eprintln!("[place] sprite {} frame {} depth {} action {:?} matrix {:?} ratio {:?} cxform {:?} blend {:?} visible {:?}",
                         inner_sprite_id, cur_frame, po.depth, po.action, po.matrix.map(|m| (m.a.to_f32(), m.d.to_f32(), m.tx.get() as f32 / 20.0, m.ty.get() as f32 / 20.0)), po.ratio,
@@ -2026,7 +2023,7 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
                     swf::PlaceObjectAction::Modify => {
                         // A MODIFY with no matrix only re-states the object —
                         // keep its existing transform.
-                        if po.matrix.is_some() {
+                        if po.matrix.is_some() || po.color_transform.is_some() {
                             if let Some(e) = disp.get_mut(&po.depth) { e.2 = mat; }
                             if let Some(e) = unnamed_placements.get_mut(&po.depth) { e.1 = mat; }
                         }
@@ -2085,8 +2082,8 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
 fn with_pivot(mat: ImageLocalMatrix, pivot: Option<&(f64, f64)>) -> ImageLocalMatrix {
     let Some(&(ox, oy)) = pivot else { return mat };
     if ox == 0.0 && oy == 0.0 { return mat }
-    ImageLocalMatrix::from_abcd(mat.a, mat.b, mat.c, mat.d,
-        mat.tx + ox * mat.a + oy * mat.c, mat.ty + ox * mat.b + oy * mat.d)
+    ImageLocalMatrix { alpha: mat.alpha, ..ImageLocalMatrix::from_abcd(mat.a, mat.b, mat.c, mat.d,
+        mat.tx + ox * mat.a + oy * mat.c, mat.ty + ox * mat.b + oy * mat.d) }
 }
 
 /// A part placed inside an animation's clip, where the root places that clip: the two matrices
@@ -2095,8 +2092,21 @@ fn with_pivot(mat: ImageLocalMatrix, pivot: Option<&(f64, f64)>) -> ImageLocalMa
 fn placed_by(root: &crate::sprite_parser::XframeTransform, l: &ImageLocalMatrix) -> ImageLocalMatrix {
     let (ra, rb, rc, rd) = (root.a, root.b, root.c, root.d);
     let (tx, ty) = root.apply(l.tx, l.ty);
-    ImageLocalMatrix::from_abcd(ra * l.a + rc * l.b, rb * l.a + rd * l.b,
-                                ra * l.c + rc * l.d, rb * l.c + rd * l.d, tx, ty)
+    ImageLocalMatrix { alpha: l.alpha, ..ImageLocalMatrix::from_abcd(ra * l.a + rc * l.b, rb * l.a + rd * l.b,
+                                ra * l.c + rc * l.d, rb * l.c + rd * l.d, tx, ty) }
+}
+
+/// A placement's transform, as SWF keeps it at its depth: what it does not restate (its matrix,
+/// its colour transform) stays what the depth had, except a fresh `Place`, which starts clean
+fn placed_mat(po: &swf::PlaceObject, prev: Option<ImageLocalMatrix>) -> ImageLocalMatrix {
+    let fresh = matches!(po.action, swf::PlaceObjectAction::Place(_));
+    let mut m = match po.matrix { Some(_) => po_to_mat(po), None => prev.unwrap_or_default() };
+    m.alpha = match &po.color_transform {
+        Some(c) => (c.a_multiply.to_f64() + c.a_add as f64 / 256.0).clamp(0.0, 1.0),
+        None if fresh => 1.0,
+        None => prev.map(|p| p.alpha).unwrap_or(1.0),
+    };
+    m
 }
 
 fn po_to_mat(po: &swf::PlaceObject) -> ImageLocalMatrix {

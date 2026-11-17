@@ -2210,7 +2210,7 @@ fn push_part_layers(
                     let sym_id = uuid(char_id, &format!("{key}_img_sym_{suffix}"));
                     let (sx, sy, rot, x, y) = proj_image_xform(Some(&mat));
                     symbols.push(json!({
-                        "$id": sym_id, "alpha": 1, "imageAsset": guid, "pivotX": 0, "pivotY": 0,
+                        "$id": sym_id, "alpha": image_alpha(mat.alpha), "imageAsset": guid, "pivotX": 0, "pivotY": 0,
                         "pluginMetadata": {}, "rotation": rot, "scaleX": sx, "scaleY": sy,
                         "type": "IMAGE", "x": x, "y": y
                     }));
@@ -2725,7 +2725,7 @@ pub fn generate_effect_entity(
                         let sym_id = uuid(char_id, &format!("eff_{}_seg{}_p{}_img_sym_{}", effect_id, seg_idx, part, frame_idx));
                         let (sx, sy, rot, x, y) = proj_image_xform(Some(mat));
                         symbols.push(json!({
-                            "$id": sym_id, "alpha": 1, "imageAsset": guid,
+                            "$id": sym_id, "alpha": image_alpha(mat.alpha), "imageAsset": guid,
                             "pivotX": 0, "pivotY": 0, "pluginMetadata": {},
                             "rotation": rot, "scaleX": sx, "scaleY": sy, "type": "IMAGE", "x": x, "y": y
                         }));
@@ -2885,4 +2885,10 @@ mod turned_tests {
         let k3 = out["keyframes"].as_array().unwrap().iter().find(|k| k["$id"] == "k3").unwrap().clone();
         assert_eq!(k3["symbol"], json!("s_pt-turned"));
     }
+}
+
+/// A picture's opacity as its symbol states it: 1 written as the integer it always was, anything
+/// less to three places
+fn image_alpha(a: f64) -> Value {
+    if a >= 0.9995 { json!(1) } else { json!((a.max(0.0) * 1000.0).round() / 1000.0) }
 }
