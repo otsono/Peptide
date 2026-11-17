@@ -17,6 +17,8 @@ var started = self.makeObject(false);
 // ---- what every stage object does
 function initialize() {
 	// {begin}
+	// (what its class sets up as it is made, at once: the source makes it whole before anything asks of it)
+	// {construct}
 	// (its own start waits for the stage's, as the source starts the stage's code before its objects')
 	if (stageStarted()) ownStart(); else waitingStart.set(true);
 	// {publish}
@@ -56,3 +58,4 @@ function onKill() {
 function onTeardown() {
 	// {end}
 }
+

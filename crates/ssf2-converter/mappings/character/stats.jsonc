@@ -115,7 +115,9 @@
   // double-jump speeds. `{recv}` is the object asked
   "runtime_read_exprs": {
     "jumpSpeedMidair": "({recv}.getCharacterStat(\"doubleJumpSpeeds\")[0] + 1.5 * {recv}.getCharacterStat(\"gravity\")) / {velocity_scale}",
-    "jumpSpeedList": "{recv}.getCharacterStat(\"doubleJumpSpeeds\").map(function(__v) { return (__v + 1.5 * {recv}.getCharacterStat(\"gravity\")) / {velocity_scale}; }).join(\",\")"
+    "jumpSpeedList": "{recv}.getCharacterStat(\"doubleJumpSpeeds\").map(function(__v) { return (__v + 1.5 * {recv}.getCharacterStat(\"gravity\")) / {velocity_scale}; }).join(\",\")",
+    // the name the fighter shows: the one its damage counter shows by default
+    "displayName": "{recv}.getDefaultDamageCounterName()"
   },
 
   "fm_runtime_read_names": {

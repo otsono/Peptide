@@ -747,10 +747,11 @@ pub fn emit_stage(model: &StageModel, out_root: &Path) -> Result<(PathBuf, PathB
             instance: hz.instance_name.clone().filter(|n| !n.is_empty()),
             // a placed body stands at the middle of its clip's box; its code's places are its clip's
             // registration, that far off
-            anchor: placed_body.then(|| hz.instance_name.as_deref().filter(|n| !model.named_twice.contains(*n)).and_then(|n| Some((model.named_boxes.get(n)?, model.named_regs.get(n)?))))
+            anchor: placed_body.then(|| hz.instance_name.as_deref().map(|n| anchor_key(model, n, hz.placed_clip.as_deref())).and_then(|k| Some((model.named_boxes.get(&k).or_else(|| model.clip_boxes.get(&k))?, model.named_regs.get(&k).or_else(|| model.clip_regs.get(&k))?))))
                 .flatten().map(|(r, (rx, ry))| (r.x + r.w / 2.0 - rx, r.y + r.h / 2.0 - ry)),
-            // (a placed body under a name another clip has too: where its clip is registered is not known)
-            anchor_unknown: placed_body && hz.instance_name.as_deref().is_some_and(|n| model.named_twice.contains(n)),
+            // (a placed body under a name another clip of its own kind has too: where its clip is
+            // registered is not known)
+            anchor_unknown: placed_body && hz.instance_name.as_deref().is_some_and(|n| { let k = anchor_key(model, n, hz.placed_clip.as_deref()); model.named_twice.contains(&k) || model.clip_twice.contains(&k) || (k != n && !model.clip_regs.contains_key(&k)) }),
         })
     }).collect();
     let input = crate::emit::stage::StageInput {
@@ -5489,7 +5490,7 @@ mod hazard_tests {
             interval: 0, active: 20,
             range: 0.0, period: 120, rehit: 30, kb_growth: 40.0, label: "TestHazard".into(), art: None, anims: vec![], attack_boxes: vec![], body_box: false, hitbox_dirs: vec![], anim_labels: vec![], faller: None, behavior: crate::abc_parser::EnemyBehavior::default(), reconstructed_script: None, class_name: None, max_y_speed: None, instance_name: None, declared_kind: String::new(), art_clip: None,
             external_pkg: None, linkage_id: None, fg_anims: vec![], draws_in_front: false,
-            platform_shapes: vec![], body_faces: vec![], child_rects: vec![], placements: vec![], no_knockback: false, survives_bounds: false, projectiles: Default::default(), attack_stats: vec![], attack_anims: Default::default(), bounce: None, ledges: (false, false), dynamic: None, fg_name: None, shared_name: false,
+            platform_shapes: vec![], body_faces: vec![], child_rects: vec![], placements: vec![], no_knockback: false, survives_bounds: false, projectiles: Default::default(), attack_stats: vec![], attack_anims: Default::default(), bounce: None, ledges: (false, false), dynamic: None, fg_name: None, shared_name: false, placed_clip: None,
         }
     }
 
@@ -5862,3 +5863,11 @@ fn with_hitbox_rearm(script: String, rehit: u32) -> String {
     }
 }
 
+/// the key a placed object's clip is measured under: its name, else (where another clip has that
+/// name too) its name with its own clip's
+fn anchor_key(model: &crate::stage_parser::StageModel, name: &str, class: Option<&str>) -> String {
+    if !model.named_twice.contains(name) { return name.to_string() }
+    let Some(c) = class else { return name.to_string() };
+    let short = c.rsplit(['.', ':']).next().unwrap_or(c);
+    format!("{name}\u{2}{short}")
+}

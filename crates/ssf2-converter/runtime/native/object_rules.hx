@@ -26,6 +26,14 @@ function makeFace(ty, pts, ledgeL, ledgeR, drop) {
 		if (st == null) return null;
 	}
 	st.updateStructureStats({ disabled: false });
+	// (whose face it is, for another object's code that asks what a fighter stands on)
+	var ex = stage == null ? null : stage.exports;
+	if (ex != null) {
+		if (ex.__faceOwners == null) ex.__faceOwners = [];
+		var known = false;
+		for (fo in ex.__faceOwners) if (fo.st == st) { fo.o = self; known = true; }
+		if (!known) ex.__faceOwners.push({ st: st, o: self });
+	}
 	// a body never stands on its own faces
 	st.addToBlacklist(self);
 	st.setX(self.getX());

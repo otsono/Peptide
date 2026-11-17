@@ -124,20 +124,20 @@ function effectArt(name) {
 // an effect it holds sent to a label (each of an effect's labels is an animation of it, else a
 // label inside the one it plays) and held there or played on
 function NAME(effect, label, hold) {
-	if (effect == null || effect.isDisposed()) return;
+	if (effect == null || effect.isDisposed == null || effect.isDisposed()) return;
 	if (effect.hasAnimation(label)) effect.playAnimation(label); else effect.playFrameLabel(label);
 	if (hold) effect.pause(); else effect.resume();
 }
 // one stepped a frame on or back, and held there
 function effectStep(effect, d) {
-	if (effect == null || effect.isDisposed()) return;
+	if (effect == null || effect.isDisposed == null || effect.isDisposed()) return;
 	var f = effect.getCurrentFrame() + 2 * d;
 	effect.playFrame(f < 1 ? 1 : f);
 	effect.pause();
 }
 // one sent to a frame by number, as the source counts its clip's frames
 function effectFrame(effect, n, hold) {
-	if (effect == null || effect.isDisposed()) return;
+	if (effect == null || effect.isDisposed == null || effect.isDisposed()) return;
 	// (a label worked out as it runs: sent there as to a label)
 	if (Std.isOfType(n, String)) {
 		if (effect.hasAnimation(n)) effect.playAnimation(n); else effect.playFrameLabel(n);
@@ -440,14 +440,16 @@ function NAME(?x, ?y, ?place) {
 // a field of one of its owner's clips ("self" its own class, "root" its clip, "stance" the clip its
 // animation shows), through what the owner publishes
 function NAME(o, clip, name) {
-	var c = o == null || o.exports.__fieldOf == null ? null : o.exports.__fieldOf(clip, name);
+	// (one already gone has no script left to answer)
+	var c = o == null || o.isDisposed() || o.exports.__fieldOf == null ? null : o.exports.__fieldOf(clip, name);
 	return c == null ? null : c.get();
 }
 
 // ---- owner_set_field
 // a field of one of its owner's clips written, through what the owner publishes
 function NAME(o, clip, name, v) {
-	var c = o == null || o.exports.__fieldOf == null ? null : o.exports.__fieldOf(clip, name);
+	// (one already gone has no script left to answer)
+	var c = o == null || o.isDisposed() || o.exports.__fieldOf == null ? null : o.exports.__fieldOf(clip, name);
 	if (c != null) c.set(v);
 }
 

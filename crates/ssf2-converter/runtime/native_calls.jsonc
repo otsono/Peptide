@@ -226,7 +226,8 @@
   "intersects": { "code": "{self}.intersects({0})", "returns": "bool" },
   "isEmpty": { "code": "{self}.isEmpty()", "returns": "bool" },
   // a list's and a text's own calls
-  "slice": { "code": "{self}.slice({0}{,1})", "returns": "object" },
+  // (a text cut as Flash cuts one, a list by its own: whichever it is as it runs)
+  "slice": { "code": "anySlice({self}, {0}{,1})", "helper": "textSlice", "returns": "object" },
   "shift": { "code": "{self}.shift()", "returns": "object" },
   "pop": { "code": "{self}.pop()", "returns": "object" },
   "unshift": "{self}.unshift({0})",
@@ -235,7 +236,8 @@
   "splice": { "code": "{self}.splice({0}, {1})", "returns": "object" },
   "split": { "code": "{self}.split({0})", "returns": "object" },
   "join": { "code": "joinedList({self}{,0})", "helper": "joinedList", "returns": "string" },
-  "concat": { "code": "{self}.concat({0})", "returns": "object" },
+  // (a text joined to another, a list to another list: whichever it is as it runs)
+  "concat": { "code": "anyConcat({self}, {0})", "helper": "textSlice", "returns": "object" },
   "lastIndexOf": { "code": "{self}.lastIndexOf({0})", "returns": "number" },
   "charAt": { "code": "{self}.charAt({0})", "returns": "string" },
   "charCodeAt": { "code": "{self}.charCodeAt({0})", "returns": "number" },
@@ -322,6 +324,7 @@
   // its box on the HUD, which the engine draws itself: a clip record with nothing in it
   "getHealthBox": { "code": "clipRecord(null)", "helper": "clipRecord", "returns": "record", "gap": "its HUD box, which the engine draws itself" },
   "hudBack": { "code": "clipRecord(null)", "helper": "clipRecord", "returns": "record", "gap": "the HUD background: drawn nowhere here (nor on the runtime)" },
+  "hudFront": { "code": "clipRecord(null)", "helper": "clipRecord", "returns": "record", "gap": "the HUD foreground: drawn nowhere here (nor on the runtime)" },
   // a list turned back to front, and the list itself handed back (this engine's turns it and hands
   // back nothing)
   "reverse": { "code": "reversedList({self})", "helper": "reversedList", "returns": "object" },
@@ -425,7 +428,8 @@
   "PeptideAPI.getGameTimer": { "code": "null", "returns": "object" },
   "getCurrentTime": { "code": "Std.int(match.getElapsedFrames() / 2)", "returns": "number" },
   // the floor it stands on
-  "getCurrentPlatform": { "code": "{self}.getCurrentFloor()", "returns": "object" },
+  // (the object whose floor it stands on: the source's platform is an object)
+  "getCurrentPlatform": { "code": "floorOwner({self})", "helper": "floorOwner", "returns": "object" },
   "PeptideAPI.getElapsedFrames": { "code": "Std.int(match.getElapsedFrames() / 2)", "returns": "number" },
   "PeptideAPI.randomBetween": { "code": "Random.getInt({0}, {1})", "returns": "number" },
   "PeptideAPI.randomUnit": { "code": "Random.getFloat(0, 1)", "returns": "number" },
@@ -448,6 +452,10 @@
     "removeFromDamageMeter": "",
     "updateBar": "{self}.left = {0}",
     // (a point or a box copied: the only records the source's API copies)
+    // (a clip's place in the drawing order of the one it is drawn in: this engine keeps each object
+    // on its own layer, so the first, and moving one changes nothing)
+    "getChildIndex": "0",
+    "setChildIndex": "",
     // (two boxes overlapping)
     "intersects": "({self} != null && {0} != null && {self}.x < {0}.x + {0}.width && {0}.x < {self}.x + {self}.width && {self}.y < {0}.y + {0}.height && {0}.y < {self}.y + {self}.height)",
     // (a point moved by an offset)

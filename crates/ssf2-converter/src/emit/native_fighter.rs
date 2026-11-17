@@ -548,7 +548,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     // (a stat of the attack it is in is read off the attack's metadata: named outright, the field;
     // numbered as it runs, the declared one of that number)
     let stat_named = regex::Regex::new(r#"attackStat\("([A-Za-z_][A-Za-z0-9_]*)"\)"#).expect("stat pattern");
-    let stat_numbered = regex::Regex::new(r#"attackStat\("(attackSound|attackVoice)" \+ (Std\.int\(Math\.max\(1, [^()]*\)\)) \+ "_id"\)"#).expect("numbered pattern");
+    let stat_numbered = regex::Regex::new(r#"attackStat\("(attackSound|attackVoice)" \+ (Std\.int\(Math\.max\(1, (?:[^()]|\([^()]*\))*\)\)) \+ "_id"\)"#).expect("numbered pattern");
     let numbered = |pre: &str| -> Vec<u32> {
         let mut n: BTreeSet<u32> = BTreeSet::new();
         for (_, a) in attacks.entries() { for (k, _) in a.entries() { if let Some(i) = k.strip_prefix(pre).and_then(|r| r.strip_suffix("_id")).and_then(|r| r.parse().ok()) { n.insert(i); } } }

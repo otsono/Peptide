@@ -65,6 +65,11 @@ pub fn holds(when: Option<&str>, v: f64) -> bool {
 
 impl ProjectileStats {
     /// the `when` a stat's switch holds for: its own row's, or any value but false and 0
+    /// whether a stat's row draws an effect the stat names (`when` `effect`)
+    pub fn is_effect(&self, stat: &str) -> bool {
+        self.code.iter().any(|(k, c)| k == stat && c.when.as_deref() == Some("effect"))
+    }
+
     pub fn when_of(&self, stat: &str) -> String {
         self.code.iter().find(|(k, _)| k == stat).and_then(|(_, c)| c.when.clone()).filter(|w| w != "effect").unwrap_or_else(|| "true".into())
     }
@@ -99,8 +104,11 @@ impl ProjectileStats {
         let effect_of = |k: &str| names.get(k).filter(|n| !n.is_empty()).and_then(|n| effect(n));
         let states = |k: &str, c: &Code| if c.when.as_deref() == Some("effect") { effect_of(k).is_some() }
             else { stats.get(k).is_some_and(|v| holds(c.when.as_deref(), *v)) };
+        // (one its code writes as it flies is taken where the write only turns it off and on: its
+        // switch, and the switches of what it reads, which the write sets; natively only)
+        let switched = |k: &str, c: &Code| native && (c.switch.is_some() || c.switches.contains_key(k));
         let taken: Vec<&(String, Code)> = self.code.iter().filter(|(k, c)| (native || !c.native) && states(k, c)
-            && !written(k) && !c.reads.iter().any(|r| written(r))).collect();
+            && (!written(k) || switched(k, c)) && !c.reads.iter().any(|r| written(r) && !switched(r, c))).collect();
         let keys: Vec<&str> = taken.iter().map(|(k, _)| k.as_str()).collect();
         let mut out = Taken::default();
         for (k, c) in taken {

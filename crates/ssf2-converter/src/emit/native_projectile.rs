@@ -84,7 +84,36 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
         .filter(|(n, d)| (entity.is_some() && spec.entities.get(n) == entity) || d.get("linkage_id").and_then(|v| v.str()) == Some(spec.clip.as_str()))
         .map(|(_, d)| d).collect();
     let agreed = |k: &str| sharing.iter().all(|d| format!("{:?}", d.get(k)) == format!("{:?}", spec.stats.get(k)));
+    // (an effect its code names as it flies, `updateProjectileStats({ trailEffect: "x" })`, that it
+    // does not declare: the row for it, off until the code writes it, where its code writes one)
+    let mut written_effects: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // (its classes as its package has them, with every method of theirs)
+    let mut own_names: BTreeSet<String> = itself.into_iter().chain(classes.iter().copied()).map(|c| compile::short(&c.name).to_string()).collect();
+    own_names.insert(compile::short(&spec.class).to_string());
+    // (and the package classes each extends)
+    let mut more: Vec<String> = own_names.iter().cloned().collect();
+    while let Some(n) = more.pop() {
+        if let Some(c) = model.classes.values().find(|c| compile::short(&c.name) == n) {
+            let sup = compile::short(&c.super_name).to_string();
+            if model.classes.values().any(|k| compile::short(&k.name) == sup) && own_names.insert(sup.clone()) { more.push(sup); }
+        }
+    }
+    for c in model.classes.values().filter(|c| own_names.contains(compile::short(&c.name))) {
+        for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor]) {
+            crate::model::ast::walk_exprs(&f.body, &mut |e| if let Expr::Call(g, a) = e {
+                if !matches!(&**g, Expr::Member(_, m) | Expr::Name(m) if m == "updateProjectileStats") { return }
+                if let Some(Expr::Object(kv)) = a.first() {
+                    for (k, v) in kv { if let (Expr::Str(k), Expr::Str(v)) = (k, v) { written_effects.entry(k.clone()).or_default().insert(v.clone()); } }
+                }
+            });
+        }
+    }
+    let written_only: BTreeMap<String, String> = written_effects.into_iter()
+        .filter(|(k, vs)| vs.len() == 1 && spec.stats.get(k).is_none() && compile::projectile_stats::table().is_effect(k))
+        .filter_map(|(k, vs)| vs.into_iter().next().map(|v| (k, v))).collect();
+
     let declared = |k: &str| -> Option<String> {
+        if let Some(v) = written_only.get(k) { return Some(compile::quote(v)) }
         if !agreed(k) { return None }
         Some(match spec.stats.get(k) {
             None | Some(Value::Null) => "null".into(),
@@ -98,7 +127,9 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     // what its declared stats have it do each frame
     let stats: BTreeMap<String, f64> = spec.stats.entries().iter().filter_map(|(k, v)| match v {
         Value::Num(n) => Some((k.clone(), *n)), Value::Bool(b) => Some((k.clone(), if *b { 1.0 } else { 0.0 })), _ => None }).collect();
-    let stat_names: BTreeMap<String, String> = spec.stats.entries().iter().filter_map(|(k, v)| v.str().map(|s| (k.clone(), s.to_string()))).collect();
+    let mut stat_names: BTreeMap<String, String> = spec.stats.entries().iter().filter_map(|(k, v)| v.str().map(|s| (k.clone(), s.to_string()))).collect();
+    for (k, v) in &written_only { stat_names.insert(k.clone(), v.clone()); }
+
     let effect = |n: &str| match crate::mappings::api_commands().global_vfx_map.iter().find(|(g, _)| g.as_str() == n) {
         Some((_, c)) => Some(format!("spriteContent: \"global::vfx.vfx\", animation: GlobalVfx.{c}")),
         None => spec.effects.get(n).and_then(|ps| ps.first()).map(|p|
@@ -107,6 +138,12 @@ pub fn write(char_dir: &Path, model: &SourceModel, runtime: &Runtime, spec: &Obj
     let units_of = [("speed", units.speed), ("accel", units.accel), ("size", units.size)];
     let mut taken = compile::projectile_stats::table().rows_for(&stats, &stat_names, &effect, &|k| !agreed(k), &units_of, true);
     for l in taken.code.iter_mut() { *l = l.replace("{@clip}", &compile::quote(&spec.clip)); }
+    // (one only its code turns on starts off)
+    for k in written_only.keys() {
+        if let Some(sw) = taken.switches.get(k).cloned() {
+            for l in taken.code.iter_mut() { if l.trim() == format!("var {sw} = true;") { *l = l.replace(" = true;", " = false;"); } }
+        }
+    }
 
     // an attack stat its owner declares, by the owner's animation: the attack each shows
     let owner_stat = |k: &str| -> Option<(String, String)> {
@@ -288,7 +325,18 @@ fn quiet(model: &SourceModel, runtime: &Runtime, class: &str, inside: bool) -> b
     let mut cur = model.classes.get(class);
     while let Some(c) = cur {
         for f in c.methods.iter().map(|m| &m.function).chain([&c.constructor]) {
-            let ok = f.body.iter().all(|s| match s {
+            // (a test that changes nothing, `if (parent != null)`, around statements that are quiet)
+            fn flat(list: &[Stmt]) -> Vec<&Stmt> {
+                let mut out = Vec::new();
+                for s in list {
+                    match s {
+                        Stmt::If(c, a, b) if !c.has_effect() => { out.extend(flat(a)); out.extend(flat(b)); }
+                        other => out.push(other),
+                    }
+                }
+                out
+            }
+            let ok = flat(&f.body).into_iter().all(|s| match s {
                 Stmt::Return(None) | Stmt::Expr(Expr::SuperCall(..)) => true,
                 // (inside: records and lists of plain values too, what a clip declares about itself
                 // that the conversion reads off the tree)

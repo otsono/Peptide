@@ -70,6 +70,18 @@ function textSlice(text, start, ?end) {
 	var b = end == null ? n : (end < 0 ? Std.int(Math.max(0, n + end)) : Std.int(Math.min(end, n)));
 	return b > a ? text.substring(a, b) : "";
 }
+// (a text joined to another, or a list to another list)
+function anyConcat(v, x) {
+	if (v == null) return null;
+	if (Std.isOfType(v, String)) return v + (x == null ? "null" : Std.string(x));
+	return v.concat(x);
+}
+// (a value of no known kind: a text cut the same way, a list by its own slice)
+function anySlice(v, start, ?end) {
+	if (v == null) return null;
+	if (Std.isOfType(v, String)) return textSlice(v, start, end);
+	return end == null ? v.slice(start) : v.slice(start, end);
+}
 
 // ---- numberIn
 // a whole number written in a base (2 to 36), as Flash's `toString(base)` writes it
@@ -571,6 +583,34 @@ function objectsOf(kind) {
 	var all = match.getCustomGameObjects();
 	if (all != null) for (o in all) if (o != null && o.exports != null && o.exports.__classes != null && o.exports.__classes.indexOf(kind) >= 0) out.push(o);
 	return out;
+}
+
+// ---- floorOwner
+// the object whose floor a fighter stands on (one of the faces a stage object's body makes), else
+// none: the source's platform is an object, the engine's floors of the stage are not
+function floorOwner(c) {
+	if (c == null || c.getCurrentFloor == null) return null;
+	var st = c.getCurrentFloor();
+	if (st == null || stage == null || stage.exports == null || stage.exports.__faceOwners == null) return null;
+	for (fo in stage.exports.__faceOwners) if (fo.st == st) return (fo.o != null && !fo.o.isDisposed()) ? fo.o : null;
+	return null;
+}
+
+// ---- drawOrderParent
+// the clip an object's clip is drawn in, as its code reads it for drawing order: this engine draws
+// each object on its own layer, so every place in it is the first and moving one changes nothing
+function drawOrderParent() {
+	return { getChildIndex: function(c) { return 0; }, setChildIndex: function(c, i) { return null; }, numChildren: 0 };
+}
+
+// ---- replaceFirst
+// a text with the first place a piece of text appears in it put in place of (the source's
+// `replace` with a text to find, which changes only the first)
+function replaceFirst(s, a, b) {
+	if (s == null) return null;
+	var t = Std.string(s);
+	var i = t.indexOf(a);
+	return i < 0 ? t : t.substr(0, i) + b + t.substr(i + a.length);
 }
 
 // ---- staticVar

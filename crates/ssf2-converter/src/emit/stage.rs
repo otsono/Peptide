@@ -1213,7 +1213,11 @@ fn native_object(src: &SourceModel, runtime: &Runtime, dir: &Path, row: &ObjectR
     // (a body: another object's code lets things through its faces)
     if blocks.contains(&"faces") { begin.push("self.exports.__ignore = ignoreThrough;".into()); }
     slots.insert("begin", begin);
-    slots.insert("own_start", w.start.clone());
+    // (its construction, and the static values set up before it, as it is made: the rest as it starts)
+    // (an item's handler starts it its own way: all of it as it starts)
+    let made = if is_item { 0 } else { w.start.iter().position(|l| l == "construct();").map(|i| i + 1).unwrap_or(0) };
+    slots.insert("construct", w.start[..made].to_vec());
+    slots.insert("own_start", w.start[made..].to_vec());
     slots.insert("own_tick", w.tick.clone());
     slots.insert("every_frame", every);
     slots.insert("publish", w.publish.clone());
