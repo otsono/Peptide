@@ -3045,6 +3045,25 @@ fn trim_transparent(rgba: Vec<u8>, w: u32, h: u32) -> Option<(Vec<u8>, u32, u32)
     Some((out, nw, nh))
 }
 
+thread_local! {
+    /// each projectile drawn with a clip borrowed from another package, by its name: that package
+    /// (its code and its declarations are there, not in the borrower's)
+    static BORROWED: std::cell::RefCell<std::collections::BTreeMap<String, std::rc::Rc<Vec<u8>>>> = Default::default();
+}
+
+fn note_borrowed(name: &str, bytes: &[u8]) {
+    BORROWED.with(|b| {
+        let mut b = b.borrow_mut();
+        let shared = b.values().find(|v| v.as_slice() == bytes).cloned().unwrap_or_else(|| std::rc::Rc::new(bytes.to_vec()));
+        b.insert(crate::projectile_gen::projectile_content_id(name), shared);
+    });
+}
+
+/// The package a projectile's clip was borrowed from, by the projectile's content id, where it was
+pub fn borrowed_package(name: &str) -> Option<std::rc::Rc<Vec<u8>>> {
+    BORROWED.with(|b| b.borrow().get(&crate::projectile_gen::projectile_content_id(name)).cloned())
+}
+
 /// A PROJECTILE A CHARACTER SPAWNS THAT ITS OWN FILE DOES NOT CARRY. The game keeps shared
 /// packages loaded and a clip resolves out of them exactly as a class does, which is how a
 /// fighter can spawn something it never ships: chibirobo fires a blaster and carries no such
@@ -3119,6 +3138,7 @@ pub fn pull_shared_projectiles(
             }
             if !mine.is_empty() {
                 log::info!("{} projectile(s) came across from {from}", mine.len());
+                for p in &mine { note_borrowed(&p.name, bytes); }
                 got.extend(mine);
             }
         }
@@ -3153,11 +3173,16 @@ pub fn pull_shared_projectiles(
                 .and_then(|(_, d)| d.names.get("linkage_id"))
             else { continue };
             let link_id = folded(link);
-            let Some(src) = seen.iter().find(|p| folded(&p.name) == link_id).cloned() else { continue };
+            // (a clip the package's own scopes did not walk to is found by its linkage, as the
+            // package's own conversion finds it)
+            let Some(src) = seen.iter().find(|p| folded(&p.name) == link_id).cloned()
+                .or_else(|| discover_projectiles_by_linkage(&parsed, std::slice::from_ref(link)).into_iter().next())
+            else { continue };
             // named as the borrower fires it, drawn with the clip the owner says it draws with
             let mut copy = src;
             copy.name = id.trim_end_matches("Projectile").to_string();
             log::info!("'{link}' is what {from} draws '{id}' with, its own table says so");
+            note_borrowed(&copy.name, bytes);
             want.remove(&id);
             through_table.push(copy);
         }

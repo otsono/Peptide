@@ -666,6 +666,8 @@ fn fighter_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
                        lent: &BTreeMap<String, &SourceModel>) -> anyhow::Result<Vec<(String, Vec<String>)>> {
     let own_model = model;
     let mut out = Vec::new();
+    // (the packages clips were borrowed from, read once each: their models and fighters)
+    let mut borrowed: Vec<(std::rc::Rc<Vec<u8>>, SourceModel, Vec<crate::model::declare::Fighter>)> = Vec::new();
     let decls: Vec<&(String, Value)> = fighter.projectiles.entries().iter().chain(fighter.items.entries()).collect();
     // (and what an object's own class declares it fires, `getProjectileStats`: a projectile one
     // of its objects fires is declared there, not by the fighter)
@@ -716,6 +718,37 @@ fn fighter_projectiles(char_dir: &std::path::Path, model: &SourceModel, runtime:
             }
             // (one nothing declares and no class of its own runs: the API's projectile, running
             // its clip's own code)
+            // (a clip borrowed from another fighter's package, a power taken from that fighter: its
+            // code and its declaration are that package's, and it is written from there)
+            if let Some(bytes) = crate::image_extractor::borrowed_package(&entity_key) {
+                if !borrowed.iter().any(|(b, _, _)| std::rc::Rc::ptr_eq(b, &bytes)) {
+                    if let Ok((m, _)) = runtime.read_package(&bytes) { let fs = m.fighters(); borrowed.push((bytes.clone(), m, fs)); }
+                }
+                let cid = crate::projectile_gen::projectile_content_id;
+                if let (Some((_, m, fs)), Some(sym), true) = (borrowed.iter().find(|(b, _, _)| std::rc::Rc::ptr_eq(b, &bytes)), pieces.first().map(|p| p.sym), script.exists()) {
+                    let found = fs.iter().find_map(|f| f.projectiles.entries().iter()
+                        .find(|(n, d)| cid(n) == cid(&entity_key) || d.get("linkage_id").and_then(|v| v.str()).is_some_and(|l| cid(l) == cid(&entity_key)))
+                        .map(|(n, d)| (f, n.clone(), d.clone())));
+                    let content = cid(&entity_key);
+                    let entity = char_dir.join(format!("library/entities/{}.entity", crate::haxe_gen::sanitize_entity_name(&content)));
+                    let has = entity_animations(&entity);
+                    let pieces: Vec<Piece> = pieces.iter().filter(|p| has.contains(&p.fm_name)).cloned().collect();
+                    let (decls, title, stats, class, clip) = match &found {
+                        Some((f, n, d)) => (Decls::of(f), n.clone(), d.clone(),
+                            d.get("classAPI").and_then(|v| v.class()).unwrap_or("PeptideProjectile").to_string(),
+                            d.get("linkage_id").and_then(|v| v.str()).unwrap_or(&entity_key).to_string()),
+                        None => (Decls::of(fighter), entity_key.clone(), Value::Null, "PeptideProjectile".to_string(), entity_key.clone()),
+                    };
+                    let spec = ObjectSpec { effects, entities, class, clip, clip_sym: Some(sym), stats };
+                    let (text, mut gaps) = native_projectile::write(char_dir, m, runtime, &spec, &decls, &pieces, units, &title, &entity_key, owner, false)
+                        .map_err(|e| anyhow::anyhow!("{entity_key}: {e}"))?;
+                    if found.is_none() { gaps.push("declared by nothing its package carries: its stats are the engine's defaults".into()); }
+                    std::fs::write(&script, &text)?;
+                    unplaced.retain(|u| !u.starts_with(&format!("{entity_key}: made from another package")));
+                    out.push((entity_key, gaps));
+                    continue;
+                }
+            }
             // (its art must be a clip of this package: one drawn from another package's clip, a
             // power taken from another fighter, has its code there)
             let own_clip = |sym: u16| model.sprites.contains_key(&sym)

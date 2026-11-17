@@ -441,7 +441,7 @@ function NAME(?x, ?y, ?place) {
 // animation shows), through what the owner publishes
 function NAME(o, clip, name) {
 	// (one already gone has no script left to answer)
-	var c = o == null || o.isDisposed() || o.exports.__fieldOf == null ? null : o.exports.__fieldOf(clip, name);
+	var c = o == null || o.isDisposed() || o.exports == null || o.exports.__fieldOf == null ? null : o.exports.__fieldOf(clip, name);
 	return c == null ? null : c.get();
 }
 
@@ -449,7 +449,7 @@ function NAME(o, clip, name) {
 // a field of one of its owner's clips written, through what the owner publishes
 function NAME(o, clip, name, v) {
 	// (one already gone has no script left to answer)
-	var c = o == null || o.isDisposed() || o.exports.__fieldOf == null ? null : o.exports.__fieldOf(clip, name);
+	var c = o == null || o.isDisposed() || o.exports == null || o.exports.__fieldOf == null ? null : o.exports.__fieldOf(clip, name);
 	if (c != null) c.set(v);
 }
 

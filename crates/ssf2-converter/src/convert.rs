@@ -1104,6 +1104,25 @@ fn process_character(
         let mut behaviour = |p: &image_extractor::DiscoveredProjectile| -> Vec<String> {
             let own = crate::projectile_gen::all_behaviour(&abcs, p);
             if !own.is_empty() { return own.into_values().collect() }
+            // (one borrowed from another fighter's package: its code is that package's)
+            if let Some(bytes) = image_extractor::borrowed_package(&p.name) {
+                let lent: Vec<crate::abc_parser::AbcFile> = swf::decompress_swf(&bytes[..]).ok()
+                    .and_then(|movie| swf::parse_swf(&movie).ok().map(|parsed| crate::projectile_gen::parse_abcs(&parsed)))
+                    .unwrap_or_default();
+                let mut theirs: Vec<String> = crate::projectile_gen::all_behaviour(&lent, p).into_values().collect();
+                // (and the class its owner's declaration there names for it)
+                let rt = crate::compile::Runtime::locate().map(|d| crate::compile::Runtime::load(&d)).unwrap_or_default();
+                if let Ok((m, _)) = rt.read_package(&bytes) {
+                    let cid = crate::projectile_gen::projectile_content_id;
+                    let class = m.fighters().iter().find_map(|f| f.projectiles.entries().iter()
+                        .find(|(n, d)| cid(n) == cid(&p.name) || d.get("linkage_id").and_then(|v| v.str()).is_some_and(|l| cid(l) == cid(&p.name)))
+                        .and_then(|(_, d)| d.get("classAPI").and_then(|v| v.class()).map(String::from)));
+                    if let Some(c) = class {
+                        for abc in &lent { theirs.extend(crate::abc_parser::extract_class_methods(abc, &c).into_values()); }
+                    }
+                }
+                if !theirs.is_empty() { return theirs }
+            }
             // (the shared packages' code, and the class each one's own declarations give a clip:
             // an item's code is its class's, which only its package's declaration names)
             let (shared_abcs, class_of) = shared.get_or_insert_with(|| {

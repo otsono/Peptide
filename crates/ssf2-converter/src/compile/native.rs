@@ -951,6 +951,12 @@ impl<'o, 'a> Writer<'o, 'a> {
 
     /// whether every value the class's code puts in a field is the object itself
     /// (`self.self = SSF2API.getProjectile(this)`)
+    /// whether every class of the package that declares a field keeps the object it runs as in it
+    fn holds_itself_everywhere(&self, field: &str) -> bool {
+        let keepers: Vec<&ClassModel> = self.o.model.classes.values().filter(|c| !self.o.runtime.provides(&c.name) && c.fields.iter().any(|d| d.name == field && !d.is_static)).collect();
+        !keepers.is_empty() && keepers.iter().all(|c| self.holds_itself(c, field))
+    }
+
     fn holds_itself(&self, c: &ClassModel, field: &str) -> bool {
         self.holds_itself_seen(c, field, &mut BTreeSet::new())
     }
@@ -2750,6 +2756,9 @@ impl<'o, 'a> Writer<'o, 'a> {
             }
             // a constant of one of its package's classes, read through an object of it: its value
             Expr::Member(o, f) if !matches!(**o, Expr::This) && self.const_of(f).is_some() => (self.const_of(f).unwrap_or_default(), Ty::Any),
+            // (a field every class of the package that has it keeps the object it runs as in, its
+            // `self`: on another object, that object)
+            Expr::Member(o, f) if !matches!(**o, Expr::This) && self.holds_itself_everywhere(f) => self.expr(o)?,
             // a field of another object's own class (one its package defines): through what it publishes
             Expr::Member(o, f) if !matches!(**o, Expr::This) && !matches!(f.as_str(), "x" | "y" | "length")
                 // (from an object a call answers, a field its class's code writes and declares no slot of too:
