@@ -127,7 +127,8 @@ function leaveHand(who, angle, speed) {
 	var a = angle * Math.PI / 180;
 	placeOn(who);
 	letGo(false);
-	self.setXSpeed(who.flipX(Math.cos(a) * speed * SPEED));
+	// (its x speed is along the way it faces, which `placeOn` turned to its holder's)
+	self.setXSpeed(Math.cos(a) * speed * SPEED);
 	self.setYSpeed(-Math.sin(a) * speed * SPEED);
 }
 // what the API's item does itself where the item's own class calls it (`super.toToss()`)
@@ -163,11 +164,10 @@ function asked(kind, ?v) {
 	else if (kind == "toHeld") base_toHeld();
 	// (sent into its thrown state by another object's code: it goes up at its throw speed, as the
 	// source's does with no direction given)
-	else if (kind == "toToss" && inItemState(1)) {
-		letGo(false);
-		self.setXSpeed(0);
-		self.setYSpeed(-TOSS_SPEED * SPEED);
-	}
+	// (sent into its thrown state by another object's code: its state alone, its hits armed as a
+	// throw's, still where its holder holds it: sandbag's up special rides its bob-omb back down
+	// on its item box until it goes off)
+	else if (kind == "toToss" && inItemState(1)) itemTo(2);
 	else if (kind == "interrupt") {
 		lastAsked.set(v == null ? null : v.targetFrame);
 		var f = frameInterrupt.get();
@@ -199,7 +199,7 @@ function attackOf(who) {
 // move; lying free, anyone touching it who presses grab picks it up
 function handleItem() {
 	var who = holder.get();
-	if (inItemState(1) && who != null) {
+	if ((inItemState(1) || inItemState(2)) && who != null) {
 		if (who.isDisposed() || knocked(who)) {
 			if (!who.isDisposed()) placeOn(who);
 			letGo(true);
@@ -237,8 +237,14 @@ function cameToRest() {
 }
 // its attack started anew by its own code
 function armHits() {
-	armed.set(true);
+	armAll();
 	self.reactivateHitboxes();
+}
+// its attack set up by its own code: its boxes hit; lying free, they hit anyone, its maker too (a
+// bob-omb's blast hurts the one who threw it), where a throw's never hits its thrower
+function armAll() {
+	armed.set(true);
+	if (inItemState(0) && holder.get() == null && self.getOwner() != null) self.setOwner(null);
 }
 // its boxes hit only while it flies from a throw, or once its own code sets up its attack;
 // meeting another's, they touch it either way
@@ -257,6 +263,8 @@ function initialize() {
 	self.exports.__ask = asked;
 	self.exports.__isItem = true;
 	self.exports.__inItemState = inItemState;
+	// (the one that made it, kept for its code's asks of its maker once its blast is anyone's)
+	self.exports.__maker = self.getOwner();
 	// (the speed it is thrown at, by whoever throws it)
 	self.exports.__tossSpeed = TOSS_SPEED;
 	self.addEventListener(GameObjectEvent.HITBOX_CONNECTED, hitOnlyThrown, { persistent: true });

@@ -437,7 +437,8 @@
   // (the ground at a point: a line it is on, or solid ground it is inside)
   "PeptideAPI.hitTestGround": { "code": "groundAt({0}, {1}{,2})", "helper": "groundAt", "returns": "object" },
   // an item another object makes: its owner makes it, lying free where it says
-  "PeptideAPI.makePickup": { "code": "(self.getOwner() != null && self.getOwner().exports.__makeItem != null ? self.getOwner().exports.__makeItem({0}, {size}, {ox}, {oy}{,1}{,2}) : null)", "returns": "object" },
+  // (its maker: the owner, or the one an item keeps once its blast is anyone's, `__maker`)
+  "PeptideAPI.makePickup": { "code": "((self.exports.__maker != null ? self.exports.__maker : self.getOwner()) != null && (self.exports.__maker != null ? self.exports.__maker : self.getOwner()).exports.__makeItem != null ? (self.exports.__maker != null ? self.exports.__maker : self.getOwner()).exports.__makeItem({0}, {size}, {ox}, {oy}{,1}{,2}) : null)", "returns": "object" },
   // a launch by the source's formula, and its speed (source pixels a source frame)
   "PeptideAPI.knockbackOf": { "code": "knockbackOf({0}, {1}, {2}, {3}, {4}, {5}{,6})", "helper": "knockbackOf", "returns": "number" },
   "PeptideAPI.knockbackVelocityOf": { "code": "(({0}) * 0.213725)", "returns": "number" },

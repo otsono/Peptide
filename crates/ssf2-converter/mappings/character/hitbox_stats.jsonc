@@ -53,8 +53,10 @@
     { "ssf2_key": "forceTumbleFall",   "when": true,  "fm_field": "tumbleType",           "value": "TumbleType.ALWAYS" },
     { "ssf2_key": "canDI",             "when": false, "fm_field": "directionalInfluence", "value": "false" },
     { "ssf2_key": "bypassShield",      "when": true,  "fm_field": "shieldable",           "value": "false" },
-    { "ssf2_key": "onlyAffectsGround", "when": true,  "fm_field": "physicsHitConditions", "value": "PhysicsHitCondition.GROUNDED" },
-    { "ssf2_key": "onlyAffectsAir",    "when": true,  "fm_field": "physicsHitConditions", "value": "PhysicsHitCondition.AIRBORNE" },
+    // (a box that hits only fighters on the floor, or off it, `onlyAffectsGround`/`onlyAffectsAir`,
+    // is told in its attack's box metadata and judged as it connects (fighter_rules.hx `hits`): this
+    // engine's own condition drops the hit on the first box it rejects, where the source tries each
+    // box on its own, so sandbag's down air, a box for each, hit no one)
     // a box that freezes the one it hits (`freeze`, a count of frames: sora's blizzard, black mage's
     // down tilt) freezes it here as well; this engine keeps the length its freeze lasts
     { "ssf2_key": "freeze",            "when": true,  "fm_field": "freezeType",           "value": "FreezeType.FREEZE" },

@@ -2221,8 +2221,8 @@ impl<'o, 'a> Writer<'o, 'a> {
                 }
                 if who == "self" { return Err(format!("writes {f} on itself")) }
                 let (val, _) = self.expr(v)?;
-                let set = if (self.o.owner_stores)(f) { format!("__c_{}.set({val})", ident(f)) } else { format!("{} = {val}", ident(f)) };
-                Ok(vec![format!("if ({who} != null && {who}.exports.__source != null) {who}.exports.__source.{set};")])
+                // (through what that object publishes of the fields others' code writes on it)
+                Ok(vec![format!("{}({who}, \"self\", {}, {val});", self.owner_field("set")?, quote(f))])
             }
             Place::Temp(t) => {
                 let (val, ty) = self.expr(v)?;
@@ -4930,7 +4930,7 @@ impl<'o, 'a> Writer<'o, 'a> {
             let r = self.api(who, m, args);
             self.arming = false;
             let (t, ty) = r?;
-            return Ok((if t.starts_with("//") { t } else { format!("{t};\narmed.set(true)") }, ty));
+            return Ok((if t.starts_with("//") { t } else { format!("{t};\narmAll()") }, ty));
         }
         let mine = who == "self";
         // a stage's planes: named values, which nothing here drives yet (a jump, a field or a child of
@@ -5594,6 +5594,22 @@ impl<'o, 'a> Writer<'o, 'a> {
             // an x speed its code sets: the walk's own start under a held direction
             // (a zero written on the ground under a held direction is the walk's start speed, the
             // source's walk rule: a speed written as some other number is the engine's own write)
+            // (an x speed written with no second argument is the source's world space, rightward
+            // positive, where this engine's is along the way it faces: turned the way it faces, as
+            // sandbag's air down special dashes the way it is held, whichever way he faces. one
+            // written `false` is along its facing already, a zero has no way, and one worked out
+            // from the speed the engine reports is along its facing as that is)
+            ("setXSpeed", [v]) if !matches!(v, Expr::Int(0)) && !matches!(v, Expr::Num(n) if *n == 0.0) && {
+                let mut read = false;
+                crate::model::ast::walk_exprs(&[Stmt::Expr(v.clone())], &mut |e| if let Expr::Call(g, _) = e {
+                    if matches!(&**g, Expr::Member(_, n) if matches!(n.as_str(), "getXSpeed" | "getNetXSpeed" | "getXVelocity")) { read = true; }
+                });
+                !read
+            } => {
+                let (v, _) = self.expr(v)?;
+                let speed = fold(&format!("{} * {}", paren(&v), number(self.o.speed)));
+                Ok((format!("self.setXSpeed(self.flipX({speed}))"), Ty::Any))
+            }
             ("setXSpeed", [v]) if self.o.walk_start.is_some() => {
                 let (v, _) = self.expr(v)?;
                 let speed = fold(&format!("{} * {}", paren(&v), number(self.o.speed)));
@@ -6213,11 +6229,15 @@ self.playFrameLabel({})", quote(f))); }
         // function that runs it with the speed it came down at, and a note of whether it listens
         if who == "self" && engine.contains("COLLIDE_FLOOR") {
             let listening = format!("{h}Listening");
-            // (told plainly, the listener is itself; told with the speed it came down at, a function that does)
-            let wrapper = if self.floor_speed { format!("{h}OnFloor") } else { h.clone() };
+            // (told plainly, the listener is itself; told with the speed it came down at, a function that does;
+            // a fighter's, a source frame after it touches down, as the source tells a fighter)
+            let wrapper = if self.o.fighter { format!("{h}Landed") } else if self.floor_speed { format!("{h}OnFloor") } else { h.clone() };
             self.floor.insert(h.clone(), listening.clone());
             self.kept.insert(listening.clone(), format!("// whether {h} listens for the floor now\nvar {listening} = self.{}(false);", bool_make(self.o.fighter)));
-            if self.floor_speed {
+            if self.o.fighter {
+                let def = helper(self.o.runtime, "helpers", "fighter_floor_listener", &wrapper, &[("LISTENER", h.clone()), ("LISTENING", listening.clone())], &[])?;
+                self.helpers.insert(wrapper.clone(), def);
+            } else if self.floor_speed {
                 let def = helper(self.o.runtime, "helpers", "floor_listener", &wrapper, &[("LISTENER", h.clone())], &[])?;
                 self.helpers.insert(wrapper.clone(), def);
             }

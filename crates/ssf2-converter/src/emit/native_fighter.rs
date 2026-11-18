@@ -338,14 +338,19 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let mut keys: BTreeSet<String> = w.stat_keys.iter().filter(|k| !k.contains(':') && !k.ends_with('*')).cloned().collect();
     for k in ["cancelSoundOnEnd", "cancelVoiceOnEnd", "refreshRate"] { keys.insert(k.into()); }
     if blocks.contains("jump_in_attack") { keys.insert("allowJump".into()); }
-    let box_keys = ["hitLag", "bypassGrabbed", "bypassNonGrabbed", "hasEffect", "reverse_character", "poison", "poisonInterval", "poisonLength"];
+    let box_keys = ["hitLag", "bypassGrabbed", "bypassNonGrabbed", "hasEffect", "reverse_character", "poison", "poisonInterval", "poisonLength", "onlyAffectsAir", "onlyAffectsGround"];
     // (each animation carries what the source says of it as its metadata: the label it shows, the
     // class of its clip, the labels inside it; an attack's, the attack, what it declares that this
     // engine has no stat for, and its boxes' by the source's box number)
     let mut fields_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // (where the item box turns a held item, each animation's: `itemTurn`, [first frame, degrees])
+    let turns = item_turns(&char_dir.join(format!("library/entities/{char_pascal}.entity")));
     for p in f.pieces {
         if fields_of.contains_key(&p.fm_name) { continue }
         let mut fs = Vec::new();
+        if let Some(t) = turns.get(&p.fm_name) {
+            fs.push(format!("itemTurn: [{}]", t.iter().map(|(k, d)| format!("[{k}, {}]", num(*d))).collect::<Vec<_>>().join(", ")));
+        }
         if !p.label.is_empty() { fs.push(format!("label: {}", compile::quote(&p.label))); }
         if let Some(c) = f.model.class_of(p.sym) { fs.push(format!("clip: {}", compile::quote(&c.name))); }
         if let Some((before, inside)) = clip_label_data(f.model, p) {
@@ -913,3 +918,30 @@ fn clip_label_data(model: &SourceModel, p: &Piece) -> Option<(Option<String>, Ve
     Some((before, inside))
 }
 
+/// the turn of each animation's item box (`itembox0`, the source's `itemBox`, which turns the item
+/// it holds), as [first engine frame, degrees from -180 to 180] where it changes; an animation
+/// whose box never turns has none
+fn item_turns(entity: &Path) -> BTreeMap<String, Vec<(u32, f64)>> {
+    let mut out = BTreeMap::new();
+    let Ok(text) = std::fs::read_to_string(entity) else { return out };
+    let Ok(d) = serde_json::from_str::<serde_json::Value>(&text) else { return out };
+    let by_id = |k: &str| -> BTreeMap<String, &serde_json::Value> {
+        d[k].as_array().map(|a| a.iter().filter_map(|x| Some((x["$id"].as_str()?.to_string(), x))).collect()).unwrap_or_default()
+    };
+    let (layers, keys, syms) = (by_id("layers"), by_id("keyframes"), by_id("symbols"));
+    for a in d["animations"].as_array().into_iter().flatten() {
+        let Some(name) = a["name"].as_str() else { continue };
+        let Some(l) = a["layers"].as_array().into_iter().flatten().filter_map(|i| layers.get(i.as_str()?)).find(|l| l["name"] == "itembox0") else { continue };
+        let mut at = 1u32;
+        let mut list: Vec<(u32, f64)> = Vec::new();
+        for k in l["keyframes"].as_array().into_iter().flatten().filter_map(|i| keys.get(i.as_str()?)) {
+            let deg = k["symbol"].as_str().and_then(|s| syms.get(s)).and_then(|s| s["rotation"].as_f64()).unwrap_or(0.0);
+            let deg = ((deg + 180.0).rem_euclid(360.0) - 180.0) * 10.0;
+            let deg = deg.round() / 10.0;
+            if list.last().map(|x| x.1) != Some(deg) { list.push((at, deg)); }
+            at += k["length"].as_u64().unwrap_or(1) as u32;
+        }
+        if list.iter().any(|x| x.1 != 0.0) { out.insert(name.to_string(), list); }
+    }
+    out
+}

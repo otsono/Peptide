@@ -174,6 +174,31 @@ function onBoxConnected(e) {
 	if (!isHeld && foe == thrownFoe.get() && boxMeta(box).bypassGrabbed == true) { hs.disabled = true; return; }
 	if (isHeld) thrownFoe.set(foe);
 	if (!isHeld && boxMeta(box).bypassNonGrabbed == true) { hs.disabled = true; return; }
+	// a box that hits only fighters off the floor, or only on it (`onlyAffectsAir`,
+	// `onlyAffectsGround`): one that does not fit the foe hands the hit to the attack's next box
+	// that does, its stats taken on, as the source tries each box on its own; none, no hit
+	var air = foe.isOnFloor() != true;
+	var fits = function(m) { return (m.onlyAffectsAir != true || air) && (m.onlyAffectsGround != true || !air); };
+	if (!fits(boxMeta(box))) {
+		var other = -1;
+		var bs = attackMeta().boxes;
+		var n = bs == null ? 0 : bs.length;
+		for (i in 1...(n + 1)) if (i != box && other < 0 && fits(boxMeta(i)) && self.getHitboxStats(i - 1) != null) other = i;
+		if (other < 0) { hs.disabled = true; return; }
+		var o = self.getHitboxStats(other - 1);
+		if (o.damage != null) hs.damage = o.damage;
+		if (o.angle != null) hs.angle = o.angle;
+		if (o.baseKnockback != null) hs.baseKnockback = o.baseKnockback;
+		if (o.knockbackGrowth != null) hs.knockbackGrowth = o.knockbackGrowth;
+		if (o.hitstop != null) hs.hitstop = o.hitstop;
+		if (o.selfHitstop != null) hs.selfHitstop = o.selfHitstop;
+		if (o.hitstun != null) hs.hitstun = o.hitstun;
+		if (o.directionalInfluence != null) hs.directionalInfluence = o.directionalInfluence;
+		if (o.shieldable != null) hs.shieldable = o.shieldable;
+		if (o.tumbleType != null) hs.tumbleType = o.tumbleType;
+		if (o.reversibleAngle != null) hs.reversibleAngle = o.reversibleAngle;
+		box = other;
+	}
 	// a box that turns its launch for a fighter behind the attacker judges where the attacker
 	// stood before this frame's move
 	if (hs.reversibleAngle == true) {
@@ -397,6 +422,11 @@ function placeItem(it) {
 	var b = itemBox();
 	it.setX(self.getX() + self.flipX(b.x * SIZE));
 	it.setY(self.getY() + b.y * SIZE);
+	// turned as the item box turns it on this frame (`itemTurn`), the other way facing left
+	var turn = 0.0;
+	var t = animMeta().itemTurn;
+	if (t != null) for (r in t) if (self.getCurrentFrame() >= r[0]) turn = r[1];
+	it.setRotation(self.isFacingRight() ? turn : -turn);
 	self.exports.__ibx = b.x;
 	self.exports.__iby = b.y;
 }
@@ -491,7 +521,11 @@ function letItemGo(it, angle, smash) {
 	placeItem(it);
 	it.exports.__holder = null;
 	askItem(it, "toss");
-	it.setXSpeed(self.flipX(Math.cos(a) * speed * SPEED));
+	// (an object's x speed is along the way it faces: it faces the thrower's way, and forward is
+	// the throw's)
+	if (self.isFacingRight()) it.faceRight(); else it.faceLeft();
+	it.setRotation(0);
+	it.setXSpeed(Math.cos(a) * speed * SPEED);
 	it.setYSpeed(-Math.sin(a) * speed * SPEED);
 	self.exports.__heldItem = null;
 }
@@ -502,6 +536,7 @@ function dropItem(?z) {
 	it.exports.__holder = null;
 	askItem(it, "toss");
 	it.exports.__zDropped = z == true;
+	it.setRotation(0);
 	it.setXSpeed(0);
 	it.setYSpeed(0);
 	self.exports.__heldItem = null;

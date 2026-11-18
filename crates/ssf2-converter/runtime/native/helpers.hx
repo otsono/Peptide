@@ -86,6 +86,16 @@ function NAME(?e) {
 	onFloor(LISTENER);
 }
 
+// ---- fighter_floor_listener
+//: LISTENER its floor listener, LISTENING the note of whether it listens
+// LISTENER, told of the floor when the source tells a fighter of it: the clip shows its next
+// frame on the floor first, and its landing goes on the frame after (sandbag's down air strikes
+// on that frame before its landing takes it to `continue`: measured, two source frames after the
+// touch), while it still listens and is still on the floor
+function NAME(?e) {
+	self.addTimer(4, 1, function() { if (LISTENING.get() && self.isOnFloor()) LISTENER(e); }, { persistent: true });
+}
+
 // ---- jump_to
 //: its cases are each label its clips have, as the jump to it
 // a jump by label another object's code asks of it (its owner's script, through `exports.__playFrame`)
