@@ -1858,7 +1858,14 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
             }
             match stag {
                 swf::Tag::ShowFrame => {
-                    frames.push(disp.values().map(|(id, sym, mat)| (*id, sym.clone(), *mat)).collect());
+                    // (an unnamed bitmap shape draws its picture at the fill's own scale and
+                    // offset, over whatever placement the depth holds now)
+                    frames.push(disp.values().map(|(id, sym, mat)| {
+                        let m = if !symbols.contains_key(id) && img_result.shape_to_bitmap.contains_key(id) {
+                            with_fill(*mat, img_result.shape_pivot.get(id), img_result.shape_fill_scale.get(id))
+                        } else { *mat };
+                        (*id, sym.clone(), m)
+                    }).collect());
                 }
                 swf::Tag::PlaceObject(po) => {
                     // a placement that states no matrix keeps the one its depth already has
@@ -1873,7 +1880,7 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
                             } else if let Some(&bitmap_id) = img_result.shape_to_bitmap.get(cid) {
                                 // Unnamed shape with a bitmap fill — resolve to symbol name
                                 if let Some(img) = img_result.images.get(&bitmap_id) {
-                                    disp.insert(po.depth, (*cid, img.symbol_name.clone(), with_pivot(mat, img_result.shape_pivot.get(cid))));
+                                    disp.insert(po.depth, (*cid, img.symbol_name.clone(), mat));
                                 }
                             } else if all_sprites.contains_key(cid) {
                                 // a clip inside a clip: noted with the frame it was placed on, and
@@ -1941,6 +1948,9 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
     let mut effect_frames: Vec<Vec<(u16, String, ImageLocalMatrix)>> = Vec::new();
     // the depths holding a child left out by name: nothing placed or restated there is drawn
     let mut skipped_depths: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
+    // each depth's placement as the SWF states it, before a bitmap fill's offset and scale are
+    // folded in (a frame that restates nothing keeps this, not the folded one)
+    let mut raw_mats: BTreeMap<u16, ImageLocalMatrix> = BTreeMap::new();
 
     for stag in &sprite.tags {
         match stag {
@@ -1965,8 +1975,10 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
             }
             swf::Tag::PlaceObject(po) => {
                 // as above: no matrix stated means the depth's own is kept
-                let mat = placed_mat(po, disp.get(&po.depth).map(|e| e.2)
+                let mat = placed_mat(po, raw_mats.get(&po.depth).copied()
+                        .or_else(|| disp.get(&po.depth).map(|e| e.2))
                         .or_else(|| unnamed_placements.get(&po.depth).map(|e| e.1)));
+                raw_mats.insert(po.depth, mat);
                 if std::env::var("PEPTIDE_DUMP_EFFECTS").is_ok() {
                     eprintln!("[place] sprite {} frame {} depth {} action {:?} matrix {:?} ratio {:?} cxform {:?} blend {:?} visible {:?}",
                         inner_sprite_id, cur_frame, po.depth, po.action, po.matrix.map(|m| (m.a.to_f32(), m.d.to_f32(), m.tx.get() as f32 / 20.0, m.ty.get() as f32 / 20.0)), po.ratio,
@@ -2014,9 +2026,10 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
                             // Named bitmap/shape placed directly → an image.
                             disp.insert(po.depth, (*cid, sname.clone(), mat));
                         } else if let Some(&bitmap_id) = img_result.shape_to_bitmap.get(cid) {
-                            // Direct shape placement with bitmap fill
+                            // Direct shape placement with bitmap fill: the picture at the fill's own
+                            // offset and scale (an explosion grows its picture by its fill)
                             if let Some(img) = img_result.images.get(&bitmap_id) {
-                                disp.insert(po.depth, (*cid, img.symbol_name.clone(), with_pivot(mat, img_result.shape_pivot.get(cid))));
+                                disp.insert(po.depth, (*cid, img.symbol_name.clone(), with_fill(mat, img_result.shape_pivot.get(cid), img_result.shape_fill_scale.get(cid))));
                             }
                         }
                     }
@@ -2024,7 +2037,11 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
                         // A MODIFY with no matrix only re-states the object —
                         // keep its existing transform.
                         if po.matrix.is_some() || po.color_transform.is_some() {
-                            if let Some(e) = disp.get_mut(&po.depth) { e.2 = mat; }
+                            if let Some(e) = disp.get_mut(&po.depth) {
+                                e.2 = if !symbols.contains_key(&e.0) && img_result.shape_to_bitmap.contains_key(&e.0) {
+                                    with_fill(mat, img_result.shape_pivot.get(&e.0), img_result.shape_fill_scale.get(&e.0))
+                                } else { mat };
+                            }
                             if let Some(e) = unnamed_placements.get_mut(&po.depth) { e.1 = mat; }
                         }
                     }
@@ -2032,6 +2049,7 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
             }
             swf::Tag::RemoveObject(ro) => {
                 disp.remove(&ro.depth);
+                raw_mats.remove(&ro.depth);
                 unnamed_placements.remove(&ro.depth);
                 skipped_depths.remove(&ro.depth);
             }
@@ -2074,15 +2092,13 @@ pub fn extract_projectile_frame_images_from_swf_skipping(
     Ok(ProjectileFrameImages { frames, matrices, image_guids, parts })
 }
 
-/// A shape's raster starts at the shape's own bounds, not at its origin: the placement puts
-/// the shape's (0,0) where the matrix says, and the picture's top-left is the bounds' minimum
-/// carried through the same matrix. Without this a rasterized vector effect hung off the
-/// spawn point by its whole bounds (sora's blizzard drew below the feet where the source draws
-/// it over the chest). The character path does the same (`raster`'s `origin_px`).
-fn with_pivot(mat: ImageLocalMatrix, pivot: Option<&(f64, f64)>) -> ImageLocalMatrix {
-    let Some(&(ox, oy)) = pivot else { return mat };
-    if ox == 0.0 && oy == 0.0 { return mat }
-    ImageLocalMatrix { alpha: mat.alpha, ..ImageLocalMatrix::from_abcd(mat.a, mat.b, mat.c, mat.d,
+/// A bitmap shape's picture where the shape is placed: the fill's offset (in the picture's
+/// pixels) and its scale, under the placement, as the character path places one
+fn with_fill(mat: ImageLocalMatrix, pivot: Option<&(f64, f64)>, fill: Option<&(f64, f64)>) -> ImageLocalMatrix {
+    let (fx, fy) = fill.copied().unwrap_or((1.0, 1.0));
+    let (px, py) = pivot.copied().unwrap_or((0.0, 0.0));
+    let (ox, oy) = (px * fx, py * fy);
+    ImageLocalMatrix { alpha: mat.alpha, ..ImageLocalMatrix::from_abcd(mat.a * fx, mat.b * fx, mat.c * fy, mat.d * fy,
         mat.tx + ox * mat.a + oy * mat.c, mat.ty + ox * mat.b + oy * mat.d) }
 }
 

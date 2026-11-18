@@ -896,7 +896,7 @@ mod landing_stats_tests {
         let anim = std::fs::read_to_string(dir.join("AnimationStats.hx")).unwrap();
         let hit = std::fs::read_to_string(dir.join("HitboxStats.hx")).unwrap();
         std::fs::remove_dir_all(&dir).ok();
-        assert!(anim.contains("aerial_up_land: { landType:LandType.NONE, allowMovement: false, leaveGroundCancel: true }"), "{anim}");
+        assert!(anim.contains("aerial_up_land: { landType:LandType.NONE, allowMovement: false, leaveGroundType: LeaveGroundType.NONE }"), "{anim}");
         assert!(anim.contains("aerial_up: {landType:LandType.NONE}"), "{anim}");
         assert!(hit.contains("\taerial_up_land: {"), "{hit}");
         assert!(hit.contains("hitbox0: { angle: 80, limb: AttackLimb.FOOT, damage: 9 }"), "{hit}");

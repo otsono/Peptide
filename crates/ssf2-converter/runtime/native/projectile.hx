@@ -41,6 +41,8 @@ function update() {
 		started.set(true);
 		// {first}
 	}
+	// (one its first frame's code ended runs nothing more)
+	if (self.isDisposed()) return;
 	// its lifetime runs out
 	if (age.inc() >= life.get()) {
 		self.kill();

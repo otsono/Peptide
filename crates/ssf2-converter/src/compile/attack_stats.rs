@@ -60,7 +60,7 @@ pub fn table() -> &'static AttackStats {
             }))).collect();
         }
         if let Some(o) = json["defaults"].as_object() {
-            t.defaults = o.iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
+            t.defaults = o.iter().map(|(k, v)| (k.clone(), v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))).collect();
         }
         t
     })

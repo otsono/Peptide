@@ -377,7 +377,8 @@ function NAME(on) {
 // touched down in an attack that goes on there: from `continue`, with no steering, ending if it leaves the floor
 function NAME(?e) {
 	self.removeEventListener(EntityEvent.COLLIDE_FLOOR, jumpToContinue);
-	self.updateAnimationStats({ allowMovement: false, leaveGroundCancel: true });
+	self.updateAnimationStats({ allowMovement: false });
+	attackWrite("cancelWhenAirborne", true);
 	stanceJump("continue");
 }
 

@@ -289,6 +289,11 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let declares_jump = f.fighter.attacks.entries().iter().any(|(_, a)| matches!(a.get("allowJump"), Some(Value::Bool(true))) || matches!(a.get("allowJump"), Some(Value::Num(n)) if *n != 0.0));
     let writes_jump = w.functions.iter().chain(w.frames.values()).chain(w.start.iter()).any(|t| t.contains("attackWrite(\"allowJump\""));
     if declares_jump || writes_jump { blocks.insert("jump_in_attack".into()); }
+    // (an attack the source lets an aerial or a special cut short off the floor, the same way)
+    let cancel_keys = ["airCancel", "airCancelSpecial"];
+    let declares_cancel = f.fighter.attacks.entries().iter().any(|(_, a)| cancel_keys.iter().any(|k| matches!(a.get(k), Some(Value::Bool(true))) || matches!(a.get(k), Some(Value::Num(n)) if *n != 0.0)));
+    let writes_cancel = w.functions.iter().chain(w.frames.values()).chain(w.start.iter()).any(|t| cancel_keys.iter().any(|k| t.contains(&format!("attackWrite(\"{k}\""))));
+    if declares_cancel || writes_cancel { blocks.insert("air_cancel".into()); blocks.insert("actions".into()); }
     for b in ["attack", "sounds", "refresh", "hits", "asked", "start_attack"] { blocks.insert(b.into()); }
     // the attack a rocket rides in: the one whose clip has a `rocket` frame to start it at (its air
     // one where it has two)
@@ -301,7 +306,7 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let rocket = rocketing.first().map(|l| compile::quote(l));
     if rocket.is_some() { blocks.insert("rocket".into()); }
     let mut functions = w.functions.clone();
-    let order = ["attack", "sounds", "refresh", "hits", "walk_hold", "asked", "rocket", "jump_in_attack", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "ledges", "home", "own_floor", "nearest", "ground_test", "recover", "copy_power"];
+    let order = ["attack", "sounds", "refresh", "hits", "walk_hold", "asked", "rocket", "jump_in_attack", "air_cancel", "controls", "start_attack", "floor_hold", "effects", "items", "actions", "place_effect", "tint", "tick_end", "mid_jump", "last_used", "char_stats", "ledges", "home", "own_floor", "nearest", "ground_test", "recover", "copy_power"];
     for b in order.iter().filter(|b| blocks.contains(**b)) {
         let words: Vec<(&str, String)> = match *b {
             "items" => {
@@ -336,8 +341,9 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     let mut cases: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in f.pieces { if !p.label.is_empty() && attacks.get(&p.label).is_some() { cases.entry(p.label.clone()).or_default().push(compile::quote(&p.fm_name)); } }
     let mut keys: BTreeSet<String> = w.stat_keys.iter().filter(|k| !k.contains(':') && !k.ends_with('*')).cloned().collect();
-    for k in ["cancelSoundOnEnd", "cancelVoiceOnEnd", "refreshRate", "allowFastFall"] { keys.insert(k.into()); }
+    for k in ["cancelSoundOnEnd", "cancelVoiceOnEnd", "refreshRate", "allowFastFall", "cancelWhenAirborne"] { keys.insert(k.into()); }
     if blocks.contains("jump_in_attack") { keys.insert("allowJump".into()); }
+    if blocks.contains("air_cancel") { for k in cancel_keys { keys.insert(k.into()); } }
     let box_keys = ["hitLag", "bypassGrabbed", "bypassNonGrabbed", "hasEffect", "reverse_character", "poison", "poisonInterval", "poisonLength", "onlyAffectsAir", "onlyAffectsGround"];
     // (each animation carries what the source says of it as its metadata: the label it shows, the
     // class of its clip, the labels inside it; an attack's, the attack, what it declares that this
@@ -477,10 +483,11 @@ pub fn write(char_dir: &Path, char_pascal: &str, title: &str, f: &Fighting, firs
     slots.insert("functions", functions.join("\n\n").lines().map(String::from).collect());
     slots.insert("start", vec!["listenForHits();".into()]);
     slots.insert("own_start", w.start.clone());
-    let mut update = vec!["hitFrame();".to_string(), "attackFrame();".into(), "fastFallFrame();".into()];
+    let mut update = vec!["hitFrame();".to_string(), "attackFrame();".into(), "fastFallFrame();".into(), "fallOffFrame();".into()];
     if blocks.contains("last_used") { update.push("usedFrame();".into()); }
     if blocks.contains("own_floor") { update.push("ownFloorFrame();".into()); }
     if blocks.contains("jump_in_attack") { update.push("jumpInAttackFrame();".into()); }
+    if blocks.contains("air_cancel") { update.push("airCancelFrame();".into()); }
     if blocks.contains("items") { update.push("itemFrame();".into()); }
     if blocks.contains("copy_power") { update.push("powerFrame();".into()); }
     // a clip its animations show, made anew as the fighter comes to it: its fields, its frame code's

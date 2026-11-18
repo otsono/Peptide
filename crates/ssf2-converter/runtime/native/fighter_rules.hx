@@ -71,6 +71,18 @@ function fastFallFrame() {
 	if (fast == null || !(fast > 0) || self.getYSpeed() < 0 || self.getYSpeed() >= fast) return;
 	self.setYSpeed(fast);
 }
+// an attack that ends when it leaves the floor (`cancelWhenAirborne`, true unless stated) falls
+// once it slides off an edge; one its own code sends up goes on in the air
+var wasOnFloor = self.makeBool(true);
+function fallOffFrame() {
+	var on = self.isOnFloor();
+	var was = wasOnFloor.get();
+	wasOnFloor.set(on);
+	if (on || !was || !self.inStateGroup(CStateGroup.ATTACK) || self.getYSpeed() < 0) return;
+	var cancel = attackStat("cancelWhenAirborne", attackMeta().cancelWhenAirborne);
+	if (cancel == false || cancel == 0) return;
+	self.toState(CState.FALL);
+}
 function attackFrame() {
 	// (what runs as one ends reads that one's stats: it is still the attack it is in)
 	if (attackTurning) return;
@@ -479,12 +491,17 @@ function makeItem(name, size, ox, oy, ?x, ?y) {
 	if (x != null) { it.setX((x - ox) * size); it.setY((y - oy) * size); }
 	return it;
 }
-// an item it has made, held from now on
-function holdMade(it, name) {
+// what it publishes for the items it holds: its throw, its drop, how it makes one (an item
+// picked up off the floor goes into this hand too)
+function itemHand() {
 	self.exports.__tossItem = tossItem;
 	self.exports.__tossBy = [TILT_TOSS, SMASH_TOSS];
 	self.exports.__makeItem = makeItem;
 	self.exports.__dropItem = dropItem;
+}
+// an item it has made, held from now on
+function holdMade(it, name) {
+	itemHand();
 	placeItem(it);
 	it.exports.__holder = self;
 	it.exports.__isItem = true;
@@ -564,10 +581,13 @@ function removeItem() {
 // every frame it holds one, the item rides the box; an attack begun while holding it is put to the item first
 var itemAttack = self.makeObject(null);
 function itemFrame() {
+	if (self.exports.__tossItem == null) itemHand();
 	var it = heldItem();
 	if (it == null) { itemAttack.set(null); return; }
 	placeItem(it);
 	var label = animMeta().attack;
+	// (one being taken up is held through the press that took it up)
+	if (it.exports.__takingUp == true) { itemAttack.set(label); return; }
 	if (label != itemAttack.get()) {
 		itemAttack.set(label);
 		if (label != null) askItem(it, "interrupt", { targetFrame: label, character: self, cStick: false, zair: false });
@@ -825,6 +845,39 @@ function jumpInAttackFrame() {
 	var p = self.getPressedControls();
 	if (p == null || p.JUMP != true) return;
 	self.setYSpeed(-self.getCharacterStat("jumpSpeed"));
+}
+
+// ---- air_cancel
+//: an attack that may be cut short in the air (`airCancel`, `airCancelSpecial`, declared or
+//: written as it plays): off the floor, a press of attack starts the aerial the stick asks for,
+//: and a press of special the special, in place of the rest of the attack. an action its code has
+//: turned off stays off
+var cancelAerials = [CState.AERIAL_NEUTRAL, CState.AERIAL_FORWARD, CState.AERIAL_BACK, CState.AERIAL_UP, CState.AERIAL_DOWN];
+var cancelSpecials = [CState.SPECIAL_NEUTRAL, CState.SPECIAL_SIDE, CState.SPECIAL_SIDE, CState.SPECIAL_UP, CState.SPECIAL_DOWN];
+var cancelNames = [["aerial_neutral", "aerial_forward", "aerial_back", "aerial_up", "aerial_down"], ["special_neutral", "special_side", "special_side", "special_up", "special_down"]];
+function airCancelFrame() {
+	if (!self.inStateGroup(CStateGroup.ATTACK) || self.isOnFloor()) return;
+	var p = self.getPressedControls();
+	if (p == null) return;
+	var meta = attackMeta();
+	var bySpecial = attackStat("airCancelSpecial", meta.airCancelSpecial);
+	var byAttack = attackStat("airCancel", meta.airCancel);
+	var special = p.SPECIAL == true && (bySpecial == true || bySpecial == 1);
+	var attack = !special && p.ATTACK == true && (byAttack == true || byAttack == 1);
+	if (!attack && !special) return;
+	var c = self.getHeldControls();
+	var right = self.isFacingRight();
+	var way = 0;
+	if (c != null && c.UP == true) way = 3;
+	else if (c != null && c.DOWN == true) way = 4;
+	else if (c != null && ((c.RIGHT == true && right) || (c.LEFT == true && !right))) way = 1;
+	else if (c != null && ((c.LEFT == true && right) || (c.RIGHT == true && !right))) way = 2;
+	var name = cancelNames[special ? 1 : 0][way];
+	if (!attackAllowed([name])) return;
+	// (a special turned back faces the way it is held)
+	if (special && way == 2) { if (right) self.faceLeft(); else self.faceRight(); }
+	self.toState(special ? cancelSpecials[way] : cancelAerials[way]);
+	if (special && self.hasAnimation(name + "_air")) self.playAnimation(name + "_air");
 }
 
 // ---- tick_end

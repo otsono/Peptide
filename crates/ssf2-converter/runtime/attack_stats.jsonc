@@ -34,7 +34,10 @@
     // a cap on the fall while it is in force (0 hangs in the air: sora's side special), off when
     // negative; the engine holds it through its own physics, after timers
     "air_ease":               [{ "field": "terminalVelocity", "as": "cap", "clamp": true }],
-    "cancelWhenAirborne":     [{ "field": "leaveGroundCancel", "as": "bool" }],
+    // (leaving the floor is the fighter's own rule, `fallOffFrame` in native/fighter_rules.hx: a
+    // slide off an edge ends the attack into a fall, a launch of its own does not. the engine
+    // itself plays on)
+    "cancelWhenAirborne":     [{ "field": "leaveGroundType", "as": "value", "value": "LeaveGroundType.NONE" }],
     "canFallOff":             [{ "field": "slideOff", "as": "bool" }],
     // (`allowJump` jumps on the spot while the attack goes on: `jump_in_attack` in
     // native/fighter_rules.hx. a jump that ends the attack is `jumpCancelAttack`, the engine's own)
@@ -85,6 +88,8 @@
         "// stays (the clip loops itself); let go, or in the air when it does not charge there, it",
         "// plays \"attack\"; charged to its time, it plays \"finishedcharge\", and from there a release",
         "// plays \"attack\". how long it charged is the attack's `chargetime`, for the move's own code.",
+        "// held is the button the source holds the move by: special (`BUTTON1`) for a move started",
+        "// from special, attack or grab (`BUTTON2`) for one started from attack.",
         "// its animations start the timer; it stops once another animation plays",
         "var engineChargeMost = 0.0;",
         "var engineChargeInAir = 1;",
@@ -104,7 +109,8 @@
         "\t\treturn;",
         "\t}",
         "\tvar c = self.getHeldControls();",
-        "\tvar held = c != null && c.SPECIAL == true;",
+        "\tvar bySpecial = self.inState(CState.SPECIAL_NEUTRAL) || self.inState(CState.SPECIAL_SIDE) || self.inState(CState.SPECIAL_UP) || self.inState(CState.SPECIAL_DOWN);",
+        "\tvar held = c != null && (bySpecial ? c.SPECIAL == true : (c.ATTACK == true || c.GRAB == true));",
         "\tvar go = null;",
         "\tif (at == \"charging\") {",
         "\t\tengineCharged += 0.5;",
@@ -222,7 +228,7 @@
       ] }
   },
   // what an attack that states nothing has: it goes off a floor's edge and ends once airborne
-  "defaults": { "leaveGroundCancel": true, "slideOff": true },
+  "defaults": { "leaveGroundType": "LeaveGroundType.NONE", "slideOff": true },
   // stats a landing's own animation takes that an attack's would not: a landing animation is only
   // ever on the floor, so steering there is off when the floor's steering is
   "landing": {

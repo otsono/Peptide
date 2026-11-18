@@ -33,6 +33,9 @@ var frameInterrupt = self.makeObject(null);
 var lastAsked = self.makeObject(null);
 // the attack its holder was last seen starting, by the source's name for it
 var holderAttack = self.makeObject(null);
+// the engine frames left of the pickup it was taken up in, through which its holder's state is
+// the pickup's and no attack of its own
+var takingUp = self.makeInt(0);
 // its own listeners for the events this handler raises: picked up, thrown
 var pickupListeners = self.makeObject([]);
 var tossListeners = self.makeObject([]);
@@ -206,6 +209,7 @@ function handleItem() {
 			return;
 		}
 		placeOn(who);
+		if (takeUpFrame(who)) return;
 		if (pickedUp.get()) {
 			var attack = attackOf(who);
 			if (attack != holderAttack.get()) {
@@ -221,15 +225,60 @@ function handleItem() {
 	}
 	if (CAN_PICKUP && pickupOn.get() && inItemState(0)) {
 		for (c in match.getCharacters()) {
-			if (c.isDisposed() || knocked(c)) continue;
+			if (c.isDisposed() || knocked(c) || !canTake(c)) continue;
 			var ctl = c.getPressedControls();
-			if (ctl == null || !ctl.GRAB) continue;
+			if (ctl == null || (!ctl.GRAB && !ctl.ATTACK)) continue;
 			if (Math.abs(c.getX() - self.getX()) > HALF_WIDTH + 30 || self.getY() < c.getY() - (c.getEcbFootY() - c.getEcbHeadY()) - HEIGHT_UP || self.getY() > c.getY() + 20) continue;
-			holdBy(c, true);
-			placeOn(c);
+			pickUpBy(c);
 			return;
 		}
 	}
+}
+// the frames it is being taken up in: the press that took it up starts an attack on the engine's
+// side as well, which the pickup stands in for (it is put back in its pickup stance), and nobody
+// throws it off that press (`__takingUp`, which a holder's own hand reads too)
+function takeUpFrame(who) {
+	var left = takingUp.get();
+	if (left > 0) takingUp.set(left - 1);
+	if (left > 0 && who.hasAnimation("item_pickup") && who.getAnimation() != "item_pickup" && who.inStateGroup(CStateGroup.ATTACK)) {
+		who.toState(CState.TAUNT);
+		who.playAnimation("item_pickup");
+	}
+	var taking = left > 0 || who.getAnimation() == "item_pickup";
+	self.exports.__takingUp = taking;
+	if (taking) holderAttack.set(attackOf(who));
+	return taking;
+}
+// whether a fighter can take it off the floor: standing on it, holding nothing, and not yet
+// into anything but the attack the press itself started (the source picks an item up where
+// that press would attack)
+function canTake(c) {
+	if (!c.isOnFloor()) return false;
+	if (c.exports != null && c.exports.__heldItem != null && !c.exports.__heldItem.isDisposed()) return false;
+	if (c.inStateGroup(CStateGroup.ATTACK)) return c.getCurrentFrame() <= 1;
+	return !c.inState(CState.SHIELD_IN) && !c.inState(CState.SHIELD_LOOP) && !c.inState(CState.SHIELD_OUT)
+		&& !c.inState(CState.GRAB) && !c.inState(CState.GRAB_HOLD) && !c.inState(CState.LEDGE_HANG);
+}
+// picked up: the fighter plays its pickup stance where it has one, in place of the attack the
+// press started. a fighter that makes items of its own takes it into its own hand (its code
+// throws it, the item's own code sees its attacks first); any other is thrown by this handler
+function pickUpBy(c) {
+	var own = c.exports != null && c.exports.__tossItem != null;
+	// (held in place as a taunt holds it, not an attack: one ended in an attack's state goes on
+	// into the next of its moves, which a holder's hand throws the item off)
+	if (c.hasAnimation("item_pickup")) {
+		c.toState(CState.TAUNT);
+		c.playAnimation("item_pickup");
+	}
+	if (own) self.exports.__holder = c;
+	holdBy(c, !own);
+	// (the stance it picks it up in is no attack of its own to throw it off: the engine shows the
+	// state it was put in a frame on)
+	holderAttack.set(attackOf(c));
+	takingUp.set(3);
+	self.exports.__takingUp = true;
+	if (c.exports != null) c.exports.__heldItem = self;
+	placeOn(c);
 }
 // lying free once a throw has come to rest on the floor (its own code bounces it till then)
 function cameToRest() {
@@ -280,6 +329,9 @@ function update() {
 		started.set(true);
 		// {first}
 	}
+	// (one its first frame's code ended runs nothing more: a capsule made inside another ends
+	// itself there, and its floor touch would open it)
+	if (inItemState(3)) return;
 	handleItem();
 	if (!inItemState(1) && self.isOnFloor()) self.setXSpeed(self.getXSpeed() * SLIDE_KEEP);
 	cameToRest();
