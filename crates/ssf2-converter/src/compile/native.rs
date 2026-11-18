@@ -4055,6 +4055,13 @@ impl<'o, 'a> Writer<'o, 'a> {
                         self.statics.insert((k.name.clone(), x.name.clone()));
                     }
                     let vs: Vec<String> = args.iter().map(|x| Ok(self.expr(x)?.0)).collect::<Result<_, String>>()?;
+                    // (a parameter every call hands a clip of the planes: that clip, as its own methods' are)
+                    if self.learning {
+                        for (i, v) in vs.iter().enumerate() {
+                            let had = self.part_params.get(&(id.clone(), i)).copied().unwrap_or(true);
+                            self.part_params.insert((id.clone(), i), had && v.starts_with("planePart("));
+                        }
+                    }
                     return Ok((format!("{id}({})", vs.join(", ")), self.method_ty.get(&id).copied().unwrap_or(Ty::Any)));
                 }
             }

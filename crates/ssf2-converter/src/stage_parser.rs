@@ -2305,48 +2305,37 @@ pub fn parse_stage_opts(path: &Path, render_art_flag: bool) -> Result<StageModel
         for txt in stage_script.iter().cloned().chain(hazards.iter().filter_map(|h| h.reconstructed_script.clone())) {
             for c in re.captures_iter(&txt) { names.insert(c[1].to_string()); }
         }
+        // (and any other class of the package's that makes one: a background class the stage
+        // hands its plane to, `CharacterBTTBackground.init(plane)`)
+        if let Ok(parsed) = crate::swf_parser::parse(&swf_data) {
+            for block in &parsed.abc_blocks {
+                let Ok(abc) = crate::abc_parser::parse(block) else { continue };
+                for body in &abc.method_bodies {
+                    let txt = crate::decompiler::decompile_method(body, &abc, "scan", &[]);
+                    for c in re.captures_iter(&txt) { names.insert(c[1].to_string()); }
+                }
+            }
+        }
         for name in names {
             let want = name.to_ascii_lowercase();
-            let Some(cid) = sym_names.iter().find(|(id, n)| clip_name_is(n, &want) && sprites.contains_key(id)).map(|(id, _)| *id) else {
-                log::warn!("the stage's code makes a clip '{name}' by linkage and the package carries none by that name");
-                continue;
-            };
-            // the clip's OWN timeline, frame by frame, over as long as it and the clips inside it
-            // take to come round together (a butterfly turns over its own 111 frames)
-            let mut frames: Vec<StageArt> = {
-                let sprite_frames: BTreeMap<u16, Vec<Vec<PlacedChild>>> = sprites.iter().map(|(id, tags)| (*id, build_frames(tags))).collect();
-                let labelled = labelled_clips(&sprites);
-                let no_phase: std::collections::HashMap<(u16, (i64, i64)), usize> = Default::default();
-                let clip = sprite_frames.get(&cid).cloned().unwrap_or_default();
-                fn gcd(a: usize, b: usize) -> usize { if b == 0 { a } else { gcd(b, a % b) } }
-                let nested: Vec<usize> = clip.iter().flat_map(|f| f.iter())
-                    .filter_map(|c| sprite_frames.get(&c.0).map(|fr| fr.len())).filter(|n| *n > 1).collect();
-                let together = nested.iter().fold(clip.len().max(1), |acc, n| acc / gcd(acc, *n) * n);
-                let span = if together <= 720 { together } else { nested.iter().copied().max().unwrap_or(1).max(clip.len()) };
-                let per_frame: Vec<Vec<Instance>> = (0..span).map(|g| {
-                    let mut out = Vec::new();
-                    if let Some(children) = clip.get(g % clip.len().max(1)) {
-                        walk_frame(children, Mat::id(), g, None, None, &planes, &sym_names, &shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &no_phase, Some(cid), 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, &std::collections::BTreeSet::new(), false, &std::collections::BTreeSet::new(), false, false, &[], 1, None);
-                    }
-                    out.retain(|i| shape_defs.contains_key(&i.shape_id));
-                    out
-                }).collect();
-                let all: Vec<&Instance> = per_frame.iter().flatten().collect();
-                let bounds = (!all.is_empty()).then(|| (
-                    all.iter().map(|i| i.aabb.left()).fold(f64::MAX, f64::min),
-                    all.iter().map(|i| i.aabb.top()).fold(f64::MAX, f64::min),
-                    all.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max),
-                    all.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max),
-                ));
-                let mut out: Vec<StageArt> = Vec::new();
-                for f in per_frame.iter().filter_map(|insts| composite_layer(&insts.iter().collect::<Vec<_>>(), &shape_defs, &bitmaps, 0.0, 0.0, bounds)) {
-                    match out.last_mut() {
-                        Some(prev) if prev.png == f.png && prev.x == f.x && prev.y == f.y && prev.rotation == f.rotation
-                            && prev.scale_x == f.scale_x && prev.scale_y == f.scale_y => prev.hold += 1,
-                        _ => out.push(f),
+            // (one the stage's package does not carry: the game's shared packages hold it, as a
+            // platform's clip only the game's library draws is found there)
+            let local = sym_names.iter().find(|(id, n)| clip_name_is(n, &want) && sprites.contains_key(id)).map(|(id, _)| *id);
+            let mut frames: Vec<StageArt> = match local {
+                Some(cid) => lib_clip_frames(cid, &planes, &sym_names, &sprites, &shape_defs, &bitmaps),
+                None => {
+                    let shared = (0..crate::shared_packages::manifest_packages().len()).filter_map(pkg_art).find_map(|a| {
+                        let cid = a.sym_names.iter().find(|(id, n)| clip_name_is(n, &want) && a.sprites.contains_key(id)).map(|(id, _)| *id)?;
+                        Some(lib_clip_frames(cid, &planes, &a.sym_names, &a.sprites, &a.shape_defs, &a.bitmaps))
+                    });
+                    match shared {
+                        Some(f) => { log::info!("the stage's code makes a clip '{name}' by linkage, drawn out of a shared package"); f }
+                        None => {
+                            log::warn!("the stage's code makes a clip '{name}' by linkage and no package carries one by that name");
+                            continue;
+                        }
                     }
                 }
-                out
             };
             if frames.is_empty() {
                 log::info!("the stage's code makes a clip '{name}' by linkage and it draws nothing");
@@ -2840,6 +2829,53 @@ fn plain_name(t: &str) -> String {
         .collect()
 }
 
+/// a library clip's own timeline, frame by frame, rasterised: over as long as it and the clips
+/// inside it take to come round together (a butterfly turns over its own 111 frames)
+fn lib_clip_frames(cid: u16, planes: &PlaneMap, sym_names: &BTreeMap<u16, String>, sprites: &BTreeMap<u16, &Vec<swf::Tag>>,
+                   shape_defs: &BTreeMap<u16, &swf::Shape>, bitmaps: &BTreeMap<u16, (u32, u32, Vec<u8>)>) -> Vec<StageArt> {
+    let sprite_frames: BTreeMap<u16, Vec<Vec<PlacedChild>>> = sprites.iter().map(|(id, tags)| (*id, build_frames(tags))).collect();
+    let labelled = labelled_clips(sprites);
+    let no_phase: std::collections::HashMap<(u16, (i64, i64)), usize> = Default::default();
+    let clip = sprite_frames.get(&cid).cloned().unwrap_or_default();
+    fn gcd(a: usize, b: usize) -> usize { if b == 0 { a } else { gcd(b, a % b) } }
+    let nested: Vec<usize> = clip.iter().flat_map(|f| f.iter())
+        .filter_map(|c| sprite_frames.get(&c.0).map(|fr| fr.len())).filter(|n| *n > 1).collect();
+    let together = nested.iter().fold(clip.len().max(1), |acc, n| acc / gcd(acc, *n) * n);
+    let span = if together <= 720 { together } else { nested.iter().copied().max().unwrap_or(1).max(clip.len()) };
+    let per_frame: Vec<Vec<Instance>> = (0..span).map(|g| {
+        let mut out = Vec::new();
+        if let Some(children) = clip.get(g % clip.len().max(1)) {
+            walk_frame(children, Mat::id(), g, None, None, planes, sym_names, shape_defs, &sprite_frames, &mut out, 0, (0.0, 0.0), 0, None, &no_phase, Some(cid), 1.0, crate::swf_timeline::Tint::ID, &[], &labelled, &std::collections::BTreeSet::new(), false, &std::collections::BTreeSet::new(), false, false, &[], 1, None);
+        }
+        out.retain(|i| shape_defs.contains_key(&i.shape_id));
+        out
+    }).collect();
+    let all: Vec<&Instance> = per_frame.iter().flatten().collect();
+    let bounds = (!all.is_empty()).then(|| (
+        all.iter().map(|i| i.aabb.left()).fold(f64::MAX, f64::min),
+        all.iter().map(|i| i.aabb.top()).fold(f64::MAX, f64::min),
+        all.iter().map(|i| i.aabb.right()).fold(f64::MIN, f64::max),
+        all.iter().map(|i| i.aabb.bottom()).fold(f64::MIN, f64::max),
+    ));
+    // (a long one is drawn every `step`th frame, each held for the frames it stands for: a whole
+    // picture a frame would ship hundreds of megabytes for a slow colour cycle)
+    let step = per_frame.len().div_ceil(LIB_CLIP_FRAMES).max(1);
+    let mut out: Vec<StageArt> = Vec::new();
+    for (g, insts) in per_frame.iter().enumerate().step_by(step) {
+        let Some(mut f) = composite_layer(&insts.iter().collect::<Vec<_>>(), shape_defs, bitmaps, 0.0, 0.0, bounds) else { continue };
+        f.hold = (step.min(per_frame.len() - g)) as u32;
+        match out.last_mut() {
+            Some(prev) if prev.png == f.png && prev.x == f.x && prev.y == f.y && prev.rotation == f.rotation
+                && prev.scale_x == f.scale_x && prev.scale_y == f.scale_y => prev.hold += f.hold,
+            _ => out.push(f),
+        }
+    }
+    out
+}
+
+/// the most pictures a library clip a stage's code makes is drawn with
+const LIB_CLIP_FRAMES: usize = 120;
+
 fn clip_name_is(symbol: &str, want_lower: &str) -> bool {
     let leaf = symbol.rsplit('.').next().unwrap_or(symbol);
     let trimmed = match leaf.rfind('_') {
@@ -2869,7 +2905,8 @@ fn pkg_art(index: usize) -> Option<&'static PkgArt> {
         std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     if let Some(a) = cache.lock().ok()?.get(&index) { return Some(a) }
-    let pkg = crate::shared_packages::packages().get(index)?;
+    // (indexed over every package the manifest names: the ones loaded alongside come first)
+    let pkg = crate::shared_packages::manifest_packages().get(index)?;
     // the tags outlive the call: the package holds the movie they are read out of
     let tags: &'static [swf::Tag<'static>] = Box::leak(pkg.tags().into_boxed_slice());
     let mut art = PkgArt {

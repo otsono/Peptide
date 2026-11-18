@@ -173,3 +173,23 @@ pub fn packages() -> &'static [SharedPackage] {
         out
     })
 }
+
+/// Every package the manifest names, in any of its lists: the ones loaded alongside
+/// ([`packages`], first and in the same order) and then the rest (the modes', the menus'). A
+/// clip a stage's code makes by name can live in any of them (the target tests' background is
+/// a mode's), so a search for one that `packages` does not answer goes on through these.
+pub fn manifest_packages() -> &'static [SharedPackage] {
+    static ALL: OnceLock<Vec<SharedPackage>> = OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut out: Vec<SharedPackage> = packages().iter().map(|p| SharedPackage {
+            id: p.id.clone(), swf: p.swf.clone(), buf: swf::decompress_swf(&p.swf[..]).ok(),
+        }).collect();
+        let have: std::collections::BTreeSet<String> = out.iter().map(|p| p.id.clone()).collect();
+        for (id, swf) in every_package() {
+            if have.contains(&id) { continue }
+            let buf = swf::decompress_swf(&swf[..]).ok();
+            out.push(SharedPackage { id, swf, buf });
+        }
+        out
+    })
+}

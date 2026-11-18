@@ -567,8 +567,10 @@ function partNamed(n) {
 	var region = null;
 	for (r in stageRegions) if (r.n == n) region = r;
 	if (obj != null && (obj.exports == null || obj.getCurrentFrame == null)) obj = null;
-	// (a name nothing is drawn, filed or placed under is no clip of the stage: none)
-	if (els.length == 0 && sf == null && obj == null && region == null) {
+	// (a name nothing is drawn, filed or placed under is no clip of the stage: none; a camera
+	// background is a plane of it all the same, one its code may draw into)
+	var cams = self.exports.__cameraBgs;
+	if (els.length == 0 && sf == null && obj == null && region == null && (cams == null || cams.indexOf(n) < 0)) {
 		var placed = false;
 		for (k in stageKids) if (k.n == n) placed = true;
 		if (!placed) return null;
